@@ -1,0 +1,159 @@
+@import "tailwindcss";
+
+/* ============================================
+   AI KB Creator - Glassmorphic Theme
+   ============================================ */
+
+@theme {
+  --color-background: oklch(0.145 0.015 285);
+  --color-foreground: oklch(0.95 0.01 280);
+  --color-card: oklch(0.2 0.02 280);
+  --color-card-foreground: oklch(0.95 0.01 280);
+  --color-primary: oklch(0.65 0.2 260);
+  --color-primary-foreground: oklch(0.98 0.005 260);
+  --color-secondary: oklch(0.3 0.02 280);
+  --color-secondary-foreground: oklch(0.9 0.01 280);
+  --color-muted: oklch(0.25 0.015 280);
+  --color-muted-foreground: oklch(0.65 0.01 280);
+  --color-accent: oklch(0.35 0.03 280);
+  --color-accent-foreground: oklch(0.95 0.01 280);
+  --color-destructive: oklch(0.55 0.2 25);
+  --color-border: oklch(0.35 0.02 280);
+  --color-ring: oklch(0.65 0.2 260);
+  --color-success: oklch(0.65 0.2 145);
+  --color-warning: oklch(0.7 0.15 80);
+  --color-info: oklch(0.6 0.15 240);
+
+  --radius-lg: 0.75rem;
+  --radius-md: 0.5rem;
+  --radius-sm: 0.25rem;
+}
+
+/* Glassmorphic base utilities */
+@utility glass-card {
+  border-radius: var(--radius-lg);
+  border: 1px solid oklch(1 0 0 / 0.1);
+  background: oklch(from var(--color-card) l c h / 0.8);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 8px 32px oklch(0 0 0 / 0.3);
+}
+
+@utility glass-card-hover {
+  border-radius: var(--radius-lg);
+  border: 1px solid oklch(1 0 0 / 0.1);
+  background: oklch(from var(--color-card) l c h / 0.8);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 8px 32px oklch(0 0 0 / 0.3);
+  transition: all 0.2s ease;
+  &:hover {
+    border-color: oklch(1 0 0 / 0.2);
+    box-shadow: 0 12px 40px oklch(0 0 0 / 0.4);
+  }
+}
+
+/* Gradient mesh background */
+@utility mesh-gradient {
+  background:
+    radial-gradient(ellipse at 20% 50%, oklch(0.3 0.1 280 / 0.4) 0%, transparent 50%),
+    radial-gradient(ellipse at 80% 20%, oklch(0.25 0.08 240 / 0.3) 0%, transparent 50%),
+    radial-gradient(ellipse at 50% 80%, oklch(0.2 0.06 320 / 0.2) 0%, transparent 50%),
+    var(--color-background);
+}
+
+/* TipTap editor styles */
+.tiptap {
+  outline: none;
+}
+
+.tiptap p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  color: var(--color-muted-foreground);
+  pointer-events: none;
+  height: 0;
+}
+
+.tiptap table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1rem 0;
+}
+
+.tiptap td,
+.tiptap th {
+  border: 1px solid oklch(1 0 0 / 0.1);
+  padding: 0.5rem;
+  min-width: 100px;
+}
+
+.tiptap th {
+  background: oklch(1 0 0 / 0.05);
+  font-weight: 600;
+}
+
+.tiptap ul[data-type="taskList"] {
+  list-style: none;
+  padding-left: 0;
+}
+
+.tiptap ul[data-type="taskList"] li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.tiptap ul[data-type="taskList"] li[data-checked="true"] > div > p {
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+
+.tiptap .confluence-drawio {
+  position: relative;
+  border: 1px solid oklch(1 0 0 / 0.1);
+  border-radius: var(--radius-md);
+  padding: 0.5rem;
+  margin: 1rem 0;
+}
+
+.tiptap .panel-info,
+.tiptap .panel-warning,
+.tiptap .panel-note,
+.tiptap .panel-tip {
+  border-left: 3px solid;
+  padding: 0.75rem 1rem;
+  margin: 1rem 0;
+  border-radius: var(--radius-sm);
+}
+
+.tiptap .panel-info { border-color: var(--color-info); background: oklch(from var(--color-info) l c h / 0.1); }
+.tiptap .panel-warning { border-color: var(--color-warning); background: oklch(from var(--color-warning) l c h / 0.1); }
+.tiptap .panel-note { border-color: var(--color-primary); background: oklch(from var(--color-primary) l c h / 0.1); }
+.tiptap .panel-tip { border-color: var(--color-success); background: oklch(from var(--color-success) l c h / 0.1); }
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: oklch(0.4 0.02 280);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: oklch(0.5 0.02 280);
+}

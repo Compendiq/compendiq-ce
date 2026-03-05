@@ -1,0 +1,16 @@
+services:
+  postgres-test:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: kb_user
+      POSTGRES_PASSWORD: changeme-postgres
+      POSTGRES_DB: kb_creator_test
+    ports:
+      - "5433:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kb_user -d kb_creator_test"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
