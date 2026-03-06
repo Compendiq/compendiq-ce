@@ -170,9 +170,10 @@ function ConfluenceTab({ settings, onSave }: { settings: SettingsResponse; onSav
 function OllamaTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: Record<string, unknown>) => void }) {
   const [model, setModel] = useState(settings.ollamaModel);
 
-  const { data: models, isLoading: loadingModels, refetch } = useQuery({
+  const { data: models, isFetching: loadingModels, refetch } = useQuery({
     queryKey: ['ollama-models'],
     queryFn: () => apiFetch<{ name: string }[]>('/ollama/models'),
+    enabled: false,
     retry: false,
   });
 
