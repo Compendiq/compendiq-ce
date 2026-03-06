@@ -4,18 +4,49 @@ import { gfm } from 'turndown-plugin-gfm';
 import { marked } from 'marked';
 import he from 'he';
 
+// JSDOM 28's HTML parser treats <![CDATA[...]]> as comments. Pre-process to
+// convert CDATA sections into text that survives HTML parsing.
+function stripCdata(xhtml: string): string {
+  return xhtml.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, (_, content) => {
+    return content
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  });
+}
+
+// JSDOM 28 does not support CSS selectors with escaped colons for namespaced
+// elements (ac:structured-macro, ri:page, etc). getElementsByTagName works.
+function byTag(root: Document | Element, tag: string): Element[] {
+  return [...root.getElementsByTagName(tag)];
+}
+
+function getMacroName(el: Element): string {
+  return el.getAttribute('ac:name') ?? el.getAttribute('data-macro-name') ?? '';
+}
+
+function getParamValue(macro: Element, name: string): string | null {
+  for (const param of byTag(macro as unknown as Element, 'ac:parameter')) {
+    if (param.getAttribute('ac:name') === name) {
+      return param.textContent;
+    }
+  }
+  return null;
+}
+
 /**
  * Converts Confluence storage format (XHTML) to clean HTML for TipTap editor.
  * Handles common Confluence macros: code blocks, task lists, panels, links, images, draw.io.
  */
 export function confluenceToHtml(storageXhtml: string, pageId?: string): string {
-  const dom = new JSDOM(`<body>${storageXhtml}</body>`, { contentType: 'text/html' });
+  const dom = new JSDOM(`<body>${stripCdata(storageXhtml)}</body>`, { contentType: 'text/html' });
   const doc = dom.window.document;
 
   // Process code blocks: ac:structured-macro[name=code] -> <pre><code>
-  for (const macro of doc.querySelectorAll('ac\\:structured-macro[ac\\:name="code"], ac\\:structured-macro[data-macro-name="code"]')) {
+  for (const macro of byTag(doc, 'ac:structured-macro')) {
+    if (getMacroName(macro) !== 'code') continue;
     const language = getParamValue(macro, 'language') ?? '';
-    const bodyEl = macro.querySelector('ac\\:plain-text-body');
+    const bodyEl = byTag(macro, 'ac:plain-text-body')[0];
     const code = bodyEl?.textContent ?? '';
 
     const pre = doc.createElement('pre');
@@ -27,13 +58,13 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string): string 
   }
 
   // Process task lists: ac:task-list -> <ul data-type="taskList">
-  for (const taskList of doc.querySelectorAll('ac\\:task-list')) {
+  for (const taskList of byTag(doc, 'ac:task-list')) {
     const ul = doc.createElement('ul');
     ul.setAttribute('data-type', 'taskList');
 
-    for (const task of taskList.querySelectorAll('ac\\:task')) {
-      const statusEl = task.querySelector('ac\\:task-status');
-      const bodyEl = task.querySelector('ac\\:task-body');
+    for (const task of byTag(taskList, 'ac:task')) {
+      const statusEl = byTag(task, 'ac:task-status')[0];
+      const bodyEl = byTag(task, 'ac:task-body')[0];
       const checked = statusEl?.textContent === 'complete';
 
       const li = doc.createElement('li');
@@ -47,38 +78,43 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string): string 
   }
 
   // Process panels: ac:structured-macro[name=info|warning|note|tip] -> <div class="panel-*">
-  for (const panelType of ['info', 'warning', 'note', 'tip']) {
-    for (const macro of doc.querySelectorAll(`ac\\:structured-macro[ac\\:name="${panelType}"], ac\\:structured-macro[data-macro-name="${panelType}"]`)) {
-      const bodyEl = macro.querySelector('ac\\:rich-text-body');
-      const div = doc.createElement('div');
-      div.className = `panel-${panelType}`;
-      div.innerHTML = bodyEl?.innerHTML ?? '';
-      macro.replaceWith(div);
-    }
+  const panelTypes = new Set(['info', 'warning', 'note', 'tip']);
+  for (const macro of byTag(doc, 'ac:structured-macro')) {
+    const name = getMacroName(macro);
+    if (!panelTypes.has(name)) continue;
+    const bodyEl = byTag(macro, 'ac:rich-text-body')[0];
+    const div = doc.createElement('div');
+    div.className = `panel-${name}`;
+    div.innerHTML = bodyEl?.innerHTML ?? '';
+    macro.replaceWith(div);
   }
 
   // Process expand macros: ac:structured-macro[name=expand] -> <details>
-  for (const macro of doc.querySelectorAll('ac\\:structured-macro[ac\\:name="expand"], ac\\:structured-macro[data-macro-name="expand"]')) {
+  for (const macro of byTag(doc, 'ac:structured-macro')) {
+    if (getMacroName(macro) !== 'expand') continue;
     const title = getParamValue(macro, 'title') ?? 'Click to expand';
-    const bodyEl = macro.querySelector('ac\\:rich-text-body');
+    const bodyEl = byTag(macro, 'ac:rich-text-body')[0];
 
     const details = doc.createElement('details');
     const summary = doc.createElement('summary');
     summary.textContent = title;
     details.appendChild(summary);
     if (bodyEl) {
-      const content = doc.createElement('div');
-      content.innerHTML = bodyEl.innerHTML;
-      details.appendChild(content);
+      // Move children directly to avoid nesting extra <div> on each round-trip
+      const fragment = doc.createDocumentFragment();
+      while (bodyEl.firstChild) {
+        fragment.appendChild(bodyEl.firstChild);
+      }
+      details.appendChild(fragment);
     }
     macro.replaceWith(details);
   }
 
   // Process Confluence links: ac:link -> <a>
-  for (const link of doc.querySelectorAll('ac\\:link')) {
-    const pageRef = link.querySelector('ri\\:page');
-    const attachRef = link.querySelector('ri\\:attachment');
-    const bodyEl = link.querySelector('ac\\:link-body, ac\\:plain-text-link-body');
+  for (const link of byTag(doc, 'ac:link')) {
+    const pageRef = byTag(link, 'ri:page')[0];
+    const attachRef = byTag(link, 'ri:attachment')[0];
+    const bodyEl = byTag(link, 'ac:link-body')[0] ?? byTag(link, 'ac:plain-text-link-body')[0];
 
     const a = doc.createElement('a');
     if (pageRef) {
@@ -98,9 +134,9 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string): string 
   }
 
   // Process images: ac:image -> <img>
-  for (const image of doc.querySelectorAll('ac\\:image')) {
-    const attachRef = image.querySelector('ri\\:attachment');
-    const urlRef = image.querySelector('ri\\:url');
+  for (const image of byTag(doc, 'ac:image')) {
+    const attachRef = byTag(image, 'ri:attachment')[0];
+    const urlRef = byTag(image, 'ri:url')[0];
 
     const img = doc.createElement('img');
     if (attachRef) {
@@ -120,7 +156,8 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string): string 
   }
 
   // Process draw.io macros -> <div class="confluence-drawio">
-  for (const macro of doc.querySelectorAll('ac\\:structured-macro[ac\\:name="drawio"], ac\\:structured-macro[data-macro-name="drawio"]')) {
+  for (const macro of byTag(doc, 'ac:structured-macro')) {
+    if (getMacroName(macro) !== 'drawio') continue;
     const diagramName = getParamValue(macro, 'diagramName') ?? 'diagram';
 
     const div = doc.createElement('div');
@@ -147,7 +184,8 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string): string 
   }
 
   // Process table of contents macro -> placeholder
-  for (const macro of doc.querySelectorAll('ac\\:structured-macro[ac\\:name="toc"], ac\\:structured-macro[data-macro-name="toc"]')) {
+  for (const macro of byTag(doc, 'ac:structured-macro')) {
+    if (getMacroName(macro) !== 'toc') continue;
     const div = doc.createElement('div');
     div.className = 'confluence-toc';
     div.textContent = '[Table of Contents]';
@@ -155,9 +193,9 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string): string 
   }
 
   // Remove remaining unknown macros - preserve as data attributes
-  for (const macro of doc.querySelectorAll('ac\\:structured-macro')) {
-    const name = macro.getAttribute('ac:name') ?? macro.getAttribute('data-macro-name') ?? 'unknown';
-    const bodyEl = macro.querySelector('ac\\:rich-text-body');
+  for (const macro of byTag(doc, 'ac:structured-macro')) {
+    const name = getMacroName(macro) || 'unknown';
+    const bodyEl = byTag(macro, 'ac:rich-text-body')[0];
 
     const div = doc.createElement('div');
     div.className = 'confluence-macro-unknown';
@@ -167,7 +205,7 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string): string 
   }
 
   // Clean remaining Confluence-specific elements
-  for (const el of doc.querySelectorAll('ac\\:emoticon, ri\\:user')) {
+  for (const el of [...byTag(doc, 'ac:emoticon'), ...byTag(doc, 'ri:user')]) {
     el.remove();
   }
 
@@ -201,8 +239,7 @@ export function htmlToConfluence(html: string): string {
     }
 
     const body = doc.createElement('ac:plain-text-body');
-    const cdata = doc.createCDATASection(code);
-    body.appendChild(cdata);
+    body.textContent = code;
     macro.appendChild(body);
 
     pre.replaceWith(macro);
@@ -340,13 +377,4 @@ export function htmlToText(html: string): string {
   const dom = new JSDOM(`<body>${html}</body>`, { contentType: 'text/html' });
   const text = dom.window.document.body.textContent ?? '';
   return he.decode(text).replace(/\s+/g, ' ').trim();
-}
-
-function getParamValue(macro: Element, name: string): string | null {
-  for (const param of macro.querySelectorAll('ac\\:parameter')) {
-    if (param.getAttribute('ac:name') === name) {
-      return param.textContent;
-    }
-  }
-  return null;
 }

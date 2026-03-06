@@ -1,3 +1,4 @@
+import { useEffect, useRef, useCallback } from 'react';
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
@@ -21,6 +22,8 @@ interface EditorProps {
   onChange?: (html: string) => void;
   editable?: boolean;
   placeholder?: string;
+  /** Key for localStorage auto-save (e.g. "page-draft-12345"). Omit to disable. */
+  draftKey?: string;
 }
 
 function ToolbarButton({
@@ -138,7 +141,40 @@ function EditorToolbar({ editor }: { editor: EditorType }) {
   );
 }
 
-export function Editor({ content, onChange, editable = true, placeholder }: EditorProps) {
+const AUTO_SAVE_DELAY = 2000;
+
+export function getDraft(key: string): string | null {
+  try {
+    return localStorage.getItem(`draft:${key}`);
+  } catch {
+    return null;
+  }
+}
+
+export function clearDraft(key: string): void {
+  try {
+    localStorage.removeItem(`draft:${key}`);
+  } catch { /* ignore */ }
+}
+
+export function Editor({ content, onChange, editable = true, placeholder, draftKey }: EditorProps) {
+  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  const saveDraft = useCallback((html: string) => {
+    if (!draftKey) return;
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => {
+      try {
+        localStorage.setItem(`draft:${draftKey}`, html);
+      } catch { /* quota exceeded — ignore */ }
+    }, AUTO_SAVE_DELAY);
+  }, [draftKey]);
+
+  // Cleanup timer on unmount
+  useEffect(() => () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+  }, []);
+
   const editor = useEditor({
     extensions: [
       StarterKit.configure({
@@ -158,7 +194,9 @@ export function Editor({ content, onChange, editable = true, placeholder }: Edit
     editable,
     immediatelyRender: false,
     onUpdate: ({ editor: ed }) => {
-      onChange?.(ed.getHTML());
+      const html = ed.getHTML();
+      onChange?.(html);
+      saveDraft(html);
     },
   });
 

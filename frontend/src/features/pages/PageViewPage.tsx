@@ -1,5 +1,6 @@
 import { useState, useCallback, useMemo, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { m } from 'framer-motion';
 import {
   ArrowLeft, Edit3, Save, X, Trash2, Wand2, FileText,
@@ -7,7 +8,7 @@ import {
 } from 'lucide-react';
 import DOMPurify from 'dompurify';
 import { usePage, useUpdatePage, useDeletePage } from '../../shared/hooks/use-pages';
-import { Editor } from '../../shared/components/Editor';
+import { Editor, getDraft, clearDraft } from '../../shared/components/Editor';
 import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
 import { TableOfContents } from '../../shared/components/TableOfContents';
 import { DuplicateDetector } from './DuplicateDetector';
@@ -22,10 +23,13 @@ export function PageViewPage() {
   const updateMutation = useUpdatePage();
   const deleteMutation = useDeletePage();
 
+  const queryClient = useQueryClient();
   const [editing, setEditing] = useState(false);
   const [editTitle, setEditTitle] = useState('');
   const [editHtml, setEditHtml] = useState('');
   const contentRef = useRef<HTMLDivElement>(null);
+
+  const draftKey = id ? `page-${id}` : undefined;
 
   const sanitizedHtml = useMemo(
     () => (page ? DOMPurify.sanitize(page.bodyHtml) : ''),
@@ -33,11 +37,22 @@ export function PageViewPage() {
   );
 
   const startEditing = useCallback(() => {
-    if (!page) return;
+    if (!page || !id) return;
     setEditTitle(page.title);
-    setEditHtml(page.bodyHtml);
+    const draft = getDraft(`page-${id}`);
+    if (draft && draft !== page.bodyHtml) {
+      const useDraft = window.confirm('A draft was found for this page. Restore it?');
+      setEditHtml(useDraft ? draft : page.bodyHtml);
+    } else {
+      setEditHtml(page.bodyHtml);
+    }
     setEditing(true);
-  }, [page]);
+  }, [page, id]);
+
+  const cancelEditing = useCallback(() => {
+    if (draftKey) clearDraft(draftKey);
+    setEditing(false);
+  }, [draftKey]);
 
   const handleSave = async () => {
     if (!id || !page) return;
@@ -48,10 +63,26 @@ export function PageViewPage() {
         bodyHtml: editHtml,
         version: page.version,
       });
+      if (draftKey) clearDraft(draftKey);
       setEditing(false);
       toast.success('Page saved successfully');
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to save page');
+      const message = err instanceof Error ? err.message : 'Failed to save page';
+      // Handle version conflict (HTTP 409)
+      if (message.includes('modified since you loaded')) {
+        toast.error('Version conflict — the page was edited elsewhere.', {
+          action: {
+            label: 'Reload',
+            onClick: () => {
+              queryClient.invalidateQueries({ queryKey: ['pages', id] });
+              setEditing(false);
+            },
+          },
+          duration: 10000,
+        });
+      } else {
+        toast.error(message);
+      }
     }
   };
 
@@ -114,7 +145,7 @@ export function PageViewPage() {
           {editing ? (
             <>
               <button
-                onClick={() => setEditing(false)}
+                onClick={cancelEditing}
                 className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-white/5"
               >
                 <X size={14} /> Cancel
@@ -192,7 +223,7 @@ export function PageViewPage() {
 
       {/* Content with optional Table of Contents */}
       {editing ? (
-        <Editor content={editHtml} onChange={setEditHtml} />
+        <Editor content={editHtml} onChange={setEditHtml} draftKey={draftKey} />
       ) : (
         <div className="flex gap-4">
           <div

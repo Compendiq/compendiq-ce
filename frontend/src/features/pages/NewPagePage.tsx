@@ -3,8 +3,10 @@ import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, Save } from 'lucide-react';
 import { useCreatePage } from '../../shared/hooks/use-pages';
 import { useSpaces } from '../../shared/hooks/use-spaces';
-import { Editor } from '../../shared/components/Editor';
+import { Editor, clearDraft } from '../../shared/components/Editor';
 import { toast } from 'sonner';
+
+const NEW_PAGE_DRAFT_KEY = 'new-page';
 
 export function NewPagePage() {
   const navigate = useNavigate();
@@ -26,6 +28,7 @@ export function NewPagePage() {
         title: title.trim(),
         bodyHtml,
       });
+      clearDraft(NEW_PAGE_DRAFT_KEY);
       navigate(`/pages/${result.id}`);
       toast.success('Page created');
     } catch (err) {
@@ -78,7 +81,7 @@ export function NewPagePage() {
         </div>
       </div>
 
-      <Editor content="" onChange={setBodyHtml} placeholder="Start writing your article..." />
+      <Editor content="" onChange={setBodyHtml} placeholder="Start writing your article..." draftKey={NEW_PAGE_DRAFT_KEY} />
     </div>
   );
 }
