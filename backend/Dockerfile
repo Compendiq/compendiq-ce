@@ -55,6 +55,8 @@ COPY --chown=node:node --from=builder /app/packages/contracts/dist/ ./node_modul
 COPY --chown=node:node --from=builder /app/packages/contracts/package.json ./node_modules/@kb-creator/contracts/package.json
 # Copy compiled backend
 COPY --chown=node:node --from=builder /app/backend/dist/ dist/
+# Copy SQL migration files (not emitted by tsc)
+COPY --chown=node:node --from=builder /app/backend/src/db/migrations/ dist/db/migrations/
 
 USER node
 
@@ -64,7 +66,7 @@ ENV PORT=3051
 EXPOSE 3051
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD ["node", "-e", "fetch('http://127.0.0.1:3051/health').then(r=>{if(!r.ok)throw r.status;process.exit(0)}).catch(()=>process.exit(1))"]
+  CMD ["node", "-e", "fetch('http://127.0.0.1:3051/api/health').then(r=>{if(!r.ok)throw r.status;process.exit(0)}).catch(()=>process.exit(1))"]
 
 ENTRYPOINT ["dumb-init", "--"]
 CMD ["node", "dist/index.js"]

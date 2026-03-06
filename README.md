@@ -52,8 +52,7 @@ ai-kb-creator/
 |       +-- providers/     # Context providers (Query, Auth, Router)
 +-- packages/
 |   +-- contracts/         # Shared Zod schemas + TypeScript types (@kb-creator/contracts)
-+-- docker/                # Docker Compose files for development
-+-- docker-compose.yml     # Production Docker Compose (4 services)
++-- docker/                # Docker Compose files (dev + production)
 +-- e2e/                   # Playwright E2E tests
 +-- docs/                  # Architecture decisions, action plan
 ```
@@ -174,10 +173,10 @@ For production deployment with all services:
 
 ```bash
 # Create .env with production secrets (see Configuration section)
-docker compose up -d
+docker compose -f docker/docker-compose.yml up -d
 ```
 
-The production `docker-compose.yml` runs 4 services:
+The production `docker/docker-compose.yml` runs 4 services:
 - **frontend** -- nginx serving the built React app (port 8080)
 - **backend** -- Node.js Fastify server (port 3051, internal)
 - **postgres** -- PostgreSQL 17 with pgvector (`pgvector/pgvector:pg17`)

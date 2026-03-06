@@ -588,7 +588,7 @@ stores/
 ### Decision: 4-service stack (frontend + backend + PostgreSQL with pgvector + Redis)
 
 ```yaml
-# docker-compose.yml
+# docker/docker-compose.yml
 services:
   backend:
     build: ./backend

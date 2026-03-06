@@ -1,6 +1,9 @@
 services:
   frontend:
     image: diinlu/ai-kb-creator-frontend:dev
+    build:
+      context: ..
+      dockerfile: frontend/Dockerfile
     ports:
       - "${FRONTEND_PORT:-8080}:8080"
     depends_on:
@@ -10,6 +13,9 @@ services:
 
   backend:
     image: diinlu/ai-kb-creator-backend:dev
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
     environment:
       NODE_ENV: production
       PORT: "3051"
