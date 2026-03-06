@@ -409,6 +409,7 @@ describe('content-converter', () => {
       // Unknown macros lose their original structure
       // They become divs with data attributes, not restored to ac:structured-macro
       expect(html).toContain('confluence-macro-unknown');
+      expect(xhtml).not.toContain('ac:name="jira"');
     });
 
     it('documents TOC macro is replaced with placeholder', () => {

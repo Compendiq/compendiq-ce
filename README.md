@@ -177,7 +177,7 @@ docker compose -f docker/docker-compose.yml up -d
 ```
 
 The production `docker/docker-compose.yml` runs 4 services:
-- **frontend** -- nginx serving the built React app (port 8080)
+- **frontend** -- nginx serving the built React app (port 8081)
 - **backend** -- Node.js Fastify server (port 3051, internal)
 - **postgres** -- PostgreSQL 17 with pgvector (`pgvector/pgvector:pg17`)
 - **redis** -- Redis 8 Alpine with password auth and LRU eviction
