@@ -66,7 +66,7 @@ export function SettingsPage() {
         </div>
 
         <div className="p-6">
-          {isLoading && activeTab !== 'labels' && activeTab !== 'errors' ? (
+          {(isLoading || !settings) && activeTab !== 'labels' && activeTab !== 'errors' ? (
             <div className="flex h-32 items-center justify-center text-muted-foreground">
               Loading settings...
             </div>
@@ -74,7 +74,7 @@ export function SettingsPage() {
             <ConfluenceTab settings={settings!} onSave={(v) => updateSettings.mutate(v)} />
           ) : activeTab === 'spaces' ? (
             <SpacesTab
-              selectedSpaces={(settings as Record<string, unknown>)?.selectedSpaces as string[] ?? []}
+              selectedSpaces={settings?.selectedSpaces ?? []}
               onSave={(v) => updateSettings.mutate(v)}
             />
           ) : activeTab === 'ollama' ? (
