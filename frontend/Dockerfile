@@ -35,10 +35,10 @@ COPY frontend/nginx-security-headers.conf /etc/nginx/security-headers.conf
 COPY frontend/nginx-cache-nocache.conf /etc/nginx/cache-nocache.conf
 COPY frontend/nginx-cache-immutable.conf /etc/nginx/cache-immutable.conf
 
-EXPOSE 8080
+EXPOSE 8081
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-  CMD ["/usr/bin/wget", "--spider", "--quiet", "http://127.0.0.1:8080/"]
+  CMD ["/usr/bin/wget", "--spider", "--quiet", "http://127.0.0.1:8081/"]
 
 USER nginx
 CMD ["-g", "daemon off;"]

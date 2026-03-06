@@ -66,7 +66,7 @@ export function SettingsPage() {
         </div>
 
         <div className="p-6">
-          {isLoading && activeTab !== 'labels' && activeTab !== 'errors' ? (
+          {(isLoading || !settings) && activeTab !== 'labels' && activeTab !== 'errors' ? (
             <div className="flex h-32 items-center justify-center text-muted-foreground">
               Loading settings...
             </div>
@@ -74,7 +74,7 @@ export function SettingsPage() {
             <ConfluenceTab settings={settings!} onSave={(v) => updateSettings.mutate(v)} />
           ) : activeTab === 'spaces' ? (
             <SpacesTab
-              selectedSpaces={(settings as Record<string, unknown>)?.selectedSpaces as string[] ?? []}
+              selectedSpaces={settings?.selectedSpaces ?? []}
               onSave={(v) => updateSettings.mutate(v)}
             />
           ) : activeTab === 'ollama' ? (
@@ -170,9 +170,10 @@ function ConfluenceTab({ settings, onSave }: { settings: SettingsResponse; onSav
 function OllamaTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: Record<string, unknown>) => void }) {
   const [model, setModel] = useState(settings.ollamaModel);
 
-  const { data: models, isLoading: loadingModels, refetch } = useQuery({
+  const { data: models, isFetching: loadingModels, refetch } = useQuery({
     queryKey: ['ollama-models'],
     queryFn: () => apiFetch<{ name: string }[]>('/ollama/models'),
+    enabled: false,
     retry: false,
   });
 

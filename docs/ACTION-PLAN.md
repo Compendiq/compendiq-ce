@@ -411,7 +411,7 @@ Full schema in ADR-006.
 ### 6.2 Docker Compose (Production) — ADR-011
 - [ ] Multi-stage Dockerfile for backend (build + slim runtime)
 - [ ] Multi-stage Dockerfile for frontend (build + nginx)
-- [ ] `docker-compose.yml`: `pgvector/pgvector:pg17` + Redis 8 + backend + frontend
+- [ ] `docker/docker-compose.yml`: `pgvector/pgvector:pg17` + Redis 8 + backend + frontend
 - [ ] Health checks for all 4 services
 - [ ] Volume for PostgreSQL data persistence
 - [ ] Redis password + maxmemory config
