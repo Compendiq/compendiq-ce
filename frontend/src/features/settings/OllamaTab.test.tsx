@@ -64,7 +64,14 @@ const mockModels = [
   { name: 'mistral' },
 ];
 
-const mockStatus = {
+const mockStatus: {
+  connected: boolean;
+  provider: string;
+  ollamaBaseUrl: string;
+  openaiBaseUrl: string;
+  embeddingModel: string;
+  error?: string;
+} = {
   connected: true,
   provider: 'ollama',
   ollamaBaseUrl: 'http://localhost:11434',
