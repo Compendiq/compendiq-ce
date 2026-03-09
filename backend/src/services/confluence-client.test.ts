@@ -1,10 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-// Mock fs before importing the module
-vi.mock('fs', () => ({
-  readFileSync: vi.fn(() => { throw new Error('File not found'); }),
-}));
-
 // Mock undici request
 vi.mock('undici', () => ({
   request: vi.fn(),
@@ -15,7 +10,21 @@ vi.mock('../utils/ssrf-guard.js', () => ({
   validateUrl: vi.fn(),
 }));
 
+// Mock logger
+vi.mock('../utils/logger.js', () => ({
+  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
+}));
+
+// Mock tls-config — default: no connect options
+const mockBuildConnectOptions = vi.fn().mockReturnValue(undefined);
+const mockIsVerifySslEnabled = vi.fn().mockReturnValue(true);
+vi.mock('../utils/tls-config.js', () => ({
+  buildConnectOptions: (...args: unknown[]) => mockBuildConnectOptions(...args),
+  isVerifySslEnabled: (...args: unknown[]) => mockIsVerifySslEnabled(...args),
+}));
+
 import { request } from 'undici';
+import { ConfluenceClient, ConfluenceError } from './confluence-client.js';
 
 const mockRequest = vi.mocked(request);
 
@@ -23,54 +32,17 @@ describe('ConfluenceClient', () => {
   const baseUrl = 'https://confluence.example.com';
   const pat = 'test-pat-token';
 
-  // We need to dynamically import the module after mocks are set up
-  // and env vars are configured, since caBundleContents is loaded at module level.
-  async function createClient(envOverrides: Record<string, string | undefined> = {}) {
-    const originalEnv = { ...process.env };
-    Object.assign(process.env, envOverrides);
-
-    // Reset module registry so caBundleContents is re-evaluated
-    vi.resetModules();
-
-    // Re-mock after resetModules
-    vi.doMock('fs', () => ({
-      readFileSync: vi.fn((...args: unknown[]) => {
-        const mockFn = envOverrides._mockCaBundle
-          ? () => envOverrides._mockCaBundle
-          : () => { throw new Error('File not found'); };
-        return mockFn();
-      }),
-    }));
-    vi.doMock('undici', () => ({ request: mockRequest }));
-    vi.doMock('../utils/ssrf-guard.js', () => ({ validateUrl: vi.fn() }));
-
-    const mod = await import('./confluence-client.js');
-    const client = new mod.ConfluenceClient(baseUrl, pat);
-
-    // Restore env
-    for (const key of Object.keys(envOverrides)) {
-      if (key.startsWith('_')) continue;
-      if (originalEnv[key] === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = originalEnv[key];
-      }
-    }
-
-    return { client, ConfluenceClient: mod.ConfluenceClient, ConfluenceError: mod.ConfluenceError };
-  }
-
   beforeEach(() => {
     vi.clearAllMocks();
+    mockBuildConnectOptions.mockReturnValue(undefined);
+    mockIsVerifySslEnabled.mockReturnValue(true);
   });
 
   describe('SSL configuration', () => {
     it('should not set connect options when SSL is verified and no CA bundle', async () => {
-      const { client } = await createClient({
-        CONFLUENCE_VERIFY_SSL: 'true',
-        NODE_EXTRA_CA_CERTS: undefined,
-      });
+      mockBuildConnectOptions.mockReturnValue(undefined);
 
+      const client = new ConfluenceClient(baseUrl, pat);
       mockRequest.mockResolvedValue({
         statusCode: 200,
         body: { text: async () => JSON.stringify({ results: [], start: 0, limit: 100, size: 0 }) },
@@ -83,11 +55,9 @@ describe('ConfluenceClient', () => {
     });
 
     it('should disable SSL verification when CONFLUENCE_VERIFY_SSL=false', async () => {
-      const { client } = await createClient({
-        CONFLUENCE_VERIFY_SSL: 'false',
-        NODE_EXTRA_CA_CERTS: undefined,
-      });
+      mockBuildConnectOptions.mockReturnValue({ rejectUnauthorized: false });
 
+      const client = new ConfluenceClient(baseUrl, pat);
       mockRequest.mockResolvedValue({
         statusCode: 200,
         body: { text: async () => JSON.stringify({ results: [], start: 0, limit: 100, size: 0 }) },
@@ -99,14 +69,11 @@ describe('ConfluenceClient', () => {
       expect(callArgs[1]).toHaveProperty('connect', { rejectUnauthorized: false });
     });
 
-    it('should pass CA bundle in connect options when NODE_EXTRA_CA_CERTS is set', async () => {
+    it('should pass CA bundle in connect options when configured', async () => {
       const fakeCaBundle = '-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----';
-      const { client } = await createClient({
-        CONFLUENCE_VERIFY_SSL: 'true',
-        NODE_EXTRA_CA_CERTS: '/etc/ssl/certs/ca-certificates.crt',
-        _mockCaBundle: fakeCaBundle,
-      });
+      mockBuildConnectOptions.mockReturnValue({ ca: fakeCaBundle });
 
+      const client = new ConfluenceClient(baseUrl, pat);
       mockRequest.mockResolvedValue({
         statusCode: 200,
         body: { text: async () => JSON.stringify({ results: [], start: 0, limit: 100, size: 0 }) },
@@ -120,12 +87,9 @@ describe('ConfluenceClient', () => {
     });
 
     it('should prefer rejectUnauthorized=false over CA bundle when CONFLUENCE_VERIFY_SSL=false', async () => {
-      const { client } = await createClient({
-        CONFLUENCE_VERIFY_SSL: 'false',
-        NODE_EXTRA_CA_CERTS: '/etc/ssl/certs/ca-certificates.crt',
-        _mockCaBundle: 'fake-ca-bundle',
-      });
+      mockBuildConnectOptions.mockReturnValue({ rejectUnauthorized: false });
 
+      const client = new ConfluenceClient(baseUrl, pat);
       mockRequest.mockResolvedValue({
         statusCode: 200,
         body: { text: async () => JSON.stringify({ results: [], start: 0, limit: 100, size: 0 }) },
@@ -140,8 +104,7 @@ describe('ConfluenceClient', () => {
 
   describe('request headers', () => {
     it('should send Bearer PAT in Authorization header', async () => {
-      const { client } = await createClient({ NODE_EXTRA_CA_CERTS: undefined });
-
+      const client = new ConfluenceClient(baseUrl, pat);
       mockRequest.mockResolvedValue({
         statusCode: 200,
         body: { text: async () => JSON.stringify({ results: [], start: 0, limit: 100, size: 0 }) },
@@ -158,8 +121,7 @@ describe('ConfluenceClient', () => {
 
   describe('error handling', () => {
     it('should throw ConfluenceError with 401 for unauthorized', async () => {
-      const { client, ConfluenceError } = await createClient({ NODE_EXTRA_CA_CERTS: undefined });
-
+      const client = new ConfluenceClient(baseUrl, pat);
       mockRequest.mockResolvedValue({
         statusCode: 401,
         body: { text: async () => 'Unauthorized' },
@@ -170,8 +132,7 @@ describe('ConfluenceClient', () => {
     });
 
     it('should throw ConfluenceError with 403 for forbidden', async () => {
-      const { client } = await createClient({ NODE_EXTRA_CA_CERTS: undefined });
-
+      const client = new ConfluenceClient(baseUrl, pat);
       mockRequest.mockResolvedValue({
         statusCode: 403,
         body: { text: async () => 'Forbidden' },
@@ -181,8 +142,7 @@ describe('ConfluenceClient', () => {
     });
 
     it('should throw ConfluenceError with 404 for not found', async () => {
-      const { client } = await createClient({ NODE_EXTRA_CA_CERTS: undefined });
-
+      const client = new ConfluenceClient(baseUrl, pat);
       mockRequest.mockResolvedValue({
         statusCode: 404,
         body: { text: async () => 'Not found' },
@@ -194,17 +154,7 @@ describe('ConfluenceClient', () => {
 
   describe('URL handling', () => {
     it('should strip trailing slashes from base URL', async () => {
-      vi.resetModules();
-      vi.doMock('fs', () => ({
-        readFileSync: vi.fn(() => { throw new Error('not found'); }),
-      }));
-      vi.doMock('undici', () => ({ request: mockRequest }));
-      vi.doMock('../utils/ssrf-guard.js', () => ({ validateUrl: vi.fn() }));
-      delete process.env.NODE_EXTRA_CA_CERTS;
-
-      const mod = await import('./confluence-client.js');
-      const client = new mod.ConfluenceClient('https://confluence.example.com///', pat);
-
+      const client = new ConfluenceClient('https://confluence.example.com///', pat);
       mockRequest.mockResolvedValue({
         statusCode: 200,
         body: { text: async () => JSON.stringify({ results: [], start: 0, limit: 100, size: 0 }) },
@@ -219,11 +169,9 @@ describe('ConfluenceClient', () => {
 
   describe('downloadAttachment SSL', () => {
     it('should disable SSL for downloads when CONFLUENCE_VERIFY_SSL=false', async () => {
-      const { client } = await createClient({
-        CONFLUENCE_VERIFY_SSL: 'false',
-        NODE_EXTRA_CA_CERTS: undefined,
-      });
+      mockBuildConnectOptions.mockReturnValue({ rejectUnauthorized: false });
 
+      const client = new ConfluenceClient(baseUrl, pat);
       mockRequest.mockResolvedValue({
         statusCode: 200,
         body: (async function* () {
@@ -237,14 +185,11 @@ describe('ConfluenceClient', () => {
       expect(callArgs[1]).toHaveProperty('connect', { rejectUnauthorized: false });
     });
 
-    it('should pass CA bundle for downloads when NODE_EXTRA_CA_CERTS is set', async () => {
+    it('should pass CA bundle for downloads when configured', async () => {
       const fakeCaBundle = '-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----';
-      const { client } = await createClient({
-        CONFLUENCE_VERIFY_SSL: 'true',
-        NODE_EXTRA_CA_CERTS: '/etc/ssl/certs/ca-certificates.crt',
-        _mockCaBundle: fakeCaBundle,
-      });
+      mockBuildConnectOptions.mockReturnValue({ ca: fakeCaBundle });
 
+      const client = new ConfluenceClient(baseUrl, pat);
       mockRequest.mockResolvedValue({
         statusCode: 200,
         body: (async function* () {

@@ -1,37 +1,12 @@
 import { FastifyInstance } from 'fastify';
 import { request as undiciRequest } from 'undici';
-import { readFileSync } from 'fs';
 import { UpdateSettingsSchema, TestConfluenceSchema } from '@kb-creator/contracts';
 import { query } from '../db/postgres.js';
 import { encryptPat } from '../utils/crypto.js';
 import { validateUrl } from '../utils/ssrf-guard.js';
 import { logAuditEvent } from '../services/audit-service.js';
 import { logger } from '../utils/logger.js';
-
-/**
- * Load custom CA certificates for undici (mirrors confluence-client.ts).
- */
-function loadCaBundle(): string | undefined {
-  const caPath = process.env.NODE_EXTRA_CA_CERTS;
-  if (!caPath) return undefined;
-  try {
-    return readFileSync(caPath, 'utf-8');
-  } catch {
-    return undefined;
-  }
-}
-
-const caBundleContents = loadCaBundle();
-
-function buildConnectOptions(): Record<string, unknown> | undefined {
-  if (process.env.CONFLUENCE_VERIFY_SSL === 'false') {
-    return { rejectUnauthorized: false };
-  }
-  if (caBundleContents) {
-    return { ca: caBundleContents };
-  }
-  return undefined;
-}
+import { buildConnectOptions } from '../utils/tls-config.js';
 
 export async function settingsRoutes(fastify: FastifyInstance) {
   // All settings routes require auth

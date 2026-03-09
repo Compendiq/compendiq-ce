@@ -9,11 +9,9 @@ vi.mock('undici', () => ({
   request: (...args: unknown[]) => mockUndiciRequest(...args),
 }));
 
-// Mock fs for CA bundle loading
-vi.mock('fs', () => ({
-  readFileSync: vi.fn().mockImplementation(() => {
-    throw new Error('no file');
-  }),
+// Mock TLS config
+vi.mock('../utils/tls-config.js', () => ({
+  buildConnectOptions: vi.fn().mockReturnValue(undefined),
 }));
 
 // Mock external dependencies
