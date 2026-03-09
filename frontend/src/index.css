@@ -575,7 +575,122 @@
   &:hover {
     border-color: var(--glass-border-hover);
     box-shadow: 0 12px 40px var(--glass-shadow-hover);
+    transform: translateY(-1px);
   }
+}
+
+/* ===========================
+   BUTTON UTILITIES
+   =========================== */
+
+@utility glass-button-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  border-radius: var(--radius-lg);
+  background-color: var(--color-primary);
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  font-weight: 500;
+  color: var(--color-primary-foreground);
+  transition: background-color 0.15s ease, transform 0.1s ease;
+  &:hover { background-color: oklch(from var(--color-primary) l c h / 0.9); }
+  &:active { transform: scale(0.98); }
+  &:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--color-background), 0 0 0 4px oklch(from var(--color-primary) l c h / 0.5);
+  }
+  &:disabled { opacity: 0.5; pointer-events: none; }
+}
+
+@utility glass-button-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  border-radius: var(--radius-md);
+  border: 1px solid oklch(from var(--color-border) l c h / 0.5);
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  transition: background-color 0.15s ease, transform 0.1s ease;
+  &:hover { background-color: oklch(from var(--color-foreground) l c h / 0.05); }
+  &:active { transform: scale(0.98); }
+  &:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--color-background), 0 0 0 4px oklch(from var(--color-primary) l c h / 0.5);
+  }
+  &:disabled { opacity: 0.5; pointer-events: none; }
+}
+
+@utility glass-button-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  padding: 0.375rem;
+  color: var(--color-muted-foreground);
+  transition: background-color 0.15s ease, color 0.15s ease, transform 0.1s ease;
+  &:hover {
+    background-color: oklch(from var(--color-foreground) l c h / 0.05);
+    color: var(--color-foreground);
+  }
+  &:active { transform: scale(0.98); }
+  &:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--color-background), 0 0 0 4px oklch(from var(--color-primary) l c h / 0.5);
+  }
+}
+
+/* ===========================
+   INPUT UTILITIES
+   =========================== */
+
+@utility glass-input {
+  width: 100%;
+  border-radius: var(--radius-md);
+  border: 1px solid oklch(from var(--color-border) l c h / 0.5);
+  background-color: oklch(from var(--color-foreground) l c h / 0.05);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  &:focus {
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 1px var(--color-primary);
+  }
+}
+
+@utility glass-select {
+  border-radius: var(--radius-md);
+  background-color: oklch(from var(--color-foreground) l c h / 0.05);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  outline: none;
+  transition: box-shadow 0.15s ease;
+  &:focus {
+    box-shadow: 0 0 0 1px var(--color-primary);
+  }
+}
+
+/* ===========================
+   SKELETON LOADER
+   =========================== */
+
+@utility skeleton {
+  background: linear-gradient(90deg, var(--color-muted) 25%, oklch(from var(--color-muted) calc(l + 0.05) c h) 50%, var(--color-muted) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+  border-radius: var(--radius-md);
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
 }
 
 /* Gradient mesh background */

@@ -8,6 +8,8 @@ import { useAuthStore } from '../../stores/auth-store';
 import { useSpaces, useSync } from '../../shared/hooks/use-spaces';
 import { usePages, useEmbeddingStatus } from '../../shared/hooks/use-pages';
 import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
+
+import { EmptyState } from '../../shared/components/EmptyState';
 import { KnowledgeGaps } from './KnowledgeGaps';
 
 const stagger = {
@@ -142,9 +144,12 @@ export function DashboardPage() {
             ))}
           </div>
         ) : (
-          <div className="glass-card p-6 text-center text-sm text-muted-foreground">
-            No articles yet. Sync your Confluence spaces to see recent pages.
-          </div>
+          <EmptyState
+            icon={BookOpen}
+            title="No articles synced yet"
+            description="Sync your Confluence spaces to see recent pages here"
+            action={{ label: 'Go to Settings', onClick: () => navigate('/settings') }}
+          />
         )}
       </m.div>
 

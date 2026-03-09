@@ -8,6 +8,8 @@ import { useSpaces, useSync, useSyncStatus } from '../../shared/hooks/use-spaces
 import { useSettings } from '../../shared/hooks/use-settings';
 import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../../shared/components/EmbeddingStatusBadge';
+import { SkeletonPageItem } from '../../shared/components/Skeleton';
+import { EmptyState } from '../../shared/components/EmptyState';
 import { BulkOperations } from './BulkOperations';
 import { cn } from '../../shared/lib/cn';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
@@ -120,7 +122,7 @@ export function PagesPage() {
           </button>
           <button
             onClick={() => navigate('/pages/new')}
-            className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            className="glass-button-primary"
           >
             <Plus size={16} />
             New Page
@@ -155,14 +157,14 @@ export function PagesPage() {
               placeholder="Search pages..."
               value={search}
               onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-              className="w-full rounded-md bg-foreground/5 py-2 pl-10 pr-4 text-sm outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-primary"
+              className="glass-input border-transparent pl-10 pr-4"
             />
           </div>
 
           <select
             value={spaceKey}
             onChange={(e) => { setSpaceKey(e.target.value); setPage(1); setForcePageList(false); }}
-            className="rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+            className="glass-select"
           >
             <option value="">All Spaces</option>
             {spaces?.map((s) => (
@@ -173,7 +175,7 @@ export function PagesPage() {
           <select
             value={sort}
             onChange={(e) => setSort(e.target.value as typeof sort)}
-            className="rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+            className="glass-select"
           >
             <option value="modified">Last Modified</option>
             <option value="title">Title</option>
@@ -211,7 +213,7 @@ export function PagesPage() {
               <select
                 value={author}
                 onChange={(e) => { setAuthor(e.target.value); setPage(1); }}
-                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="glass-select w-full"
                 data-testid="filter-author"
               >
                 <option value="">All Authors</option>
@@ -227,7 +229,7 @@ export function PagesPage() {
               <select
                 value={labels}
                 onChange={(e) => { setLabels(e.target.value); setPage(1); }}
-                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="glass-select w-full"
                 data-testid="filter-labels"
               >
                 <option value="">All Labels</option>
@@ -243,7 +245,7 @@ export function PagesPage() {
               <select
                 value={freshness}
                 onChange={(e) => { setFreshness(e.target.value); setPage(1); }}
-                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="glass-select w-full"
                 data-testid="filter-freshness"
               >
                 <option value="">Any</option>
@@ -260,7 +262,7 @@ export function PagesPage() {
               <select
                 value={embeddingStatus}
                 onChange={(e) => { setEmbeddingStatus(e.target.value); setPage(1); }}
-                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="glass-select w-full"
                 data-testid="filter-embedding"
               >
                 <option value="">Any</option>
@@ -276,7 +278,7 @@ export function PagesPage() {
                 type="date"
                 value={dateFrom}
                 onChange={(e) => { setDateFrom(e.target.value); setPage(1); }}
-                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="glass-select w-full"
                 data-testid="filter-date-from"
               />
             </div>
@@ -286,7 +288,7 @@ export function PagesPage() {
                 type="date"
                 value={dateTo}
                 onChange={(e) => { setDateTo(e.target.value); setPage(1); }}
-                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="glass-select w-full"
                 data-testid="filter-date-to"
               />
             </div>
@@ -342,17 +344,15 @@ export function PagesPage() {
       {isLoading ? (
         <div className="space-y-3">
           {Array.from({ length: 5 }).map((_, i) => (
-            <div key={i} className="glass-card h-16 animate-pulse" />
+            <SkeletonPageItem key={i} />
           ))}
         </div>
       ) : !pagesData?.items.length ? (
-        <div className="glass-card flex flex-col items-center justify-center py-16 text-center">
-          <FolderOpen size={48} className="mb-4 text-muted-foreground" />
-          <p className="text-lg font-medium">No pages found</p>
-          <p className="text-sm text-muted-foreground">
-            {search ? 'Try a different search term' : 'Sync your Confluence spaces to see pages here'}
-          </p>
-        </div>
+        <EmptyState
+          icon={FolderOpen}
+          title="No pages found"
+          description={search ? 'Try a different search term' : 'Sync your Confluence spaces to see pages here'}
+        />
       ) : (
         <div className="space-y-2">
           {pagesData.items.map((pageItem, i) => (
