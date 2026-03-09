@@ -4,7 +4,7 @@ import {
   ChevronRight,
   ChevronDown,
   FileText,
-  FolderOpen,
+  Layers,
   PanelLeftClose,
   PanelLeft,
   ChevronsUpDown,
@@ -85,7 +85,7 @@ function SidebarTreeNode({
     <div>
       <div
         className={cn(
-          'group flex items-center gap-1 rounded-md py-1 pr-2 text-sm transition-colors cursor-pointer',
+          'group flex items-center gap-1.5 rounded-md py-1.5 pr-2 text-sm transition-colors cursor-pointer',
           isActive
             ? 'bg-primary/15 text-primary font-medium'
             : 'text-muted-foreground hover:bg-white/5 hover:text-foreground',
@@ -102,17 +102,17 @@ function SidebarTreeNode({
             className="shrink-0 rounded p-0.5 hover:bg-white/10"
             aria-label={isExpanded ? 'Collapse' : 'Expand'}
           >
-            {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+            {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
           </button>
         ) : (
           <span className="w-[20px] shrink-0" />
         )}
         {hasChildren ? (
-          <FolderOpen size={14} className="shrink-0 text-primary/70" />
+          <Layers size={15} className="shrink-0 text-primary/70" />
         ) : (
-          <FileText size={14} className="shrink-0 text-muted-foreground/70" />
+          <FileText size={15} className="shrink-0 text-muted-foreground/70" />
         )}
-        <span className="truncate text-xs">{node.page.title}</span>
+        <span className="truncate text-sm">{node.page.title}</span>
       </div>
 
       {hasChildren && isExpanded && (
