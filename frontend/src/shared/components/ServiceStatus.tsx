@@ -47,10 +47,14 @@ export function ServiceStatus() {
       const newAlerts: ServiceAlert[] = [];
 
       if (data.services?.ollama === false) {
+        const provider = (data as HealthStatus & { llmProvider?: string }).llmProvider;
+        const label = provider === 'openai'
+          ? 'LLM server is unreachable'
+          : 'Ollama server is down';
         newAlerts.push({
           id: 'ollama',
           service: 'ollama',
-          label: 'Ollama server is down',
+          label,
           icon: Server,
           colorClass: 'text-warning',
           bgClass: 'bg-warning/15 border-warning/30',

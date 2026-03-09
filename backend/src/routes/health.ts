@@ -1,10 +1,9 @@
 import { FastifyInstance } from 'fastify';
 import { checkConnection as checkPg } from '../db/postgres.js';
 import { checkRedisConnection } from '../plugins/redis.js';
-import { getOllamaCircuitBreakerStatus } from '../services/circuit-breaker.js';
+import { getOllamaCircuitBreakerStatus, getOpenaiCircuitBreakerStatus } from '../services/circuit-breaker.js';
+import { checkHealth as checkLlmHealth, getActiveProviderType } from '../services/ollama-service.js';
 import { logger } from '../utils/logger.js';
-import { getOllamaBaseUrl, getLlmAuthHeaders, llmDispatcher } from '../utils/llm-config.js';
-import type { Dispatcher } from 'undici';
 
 // Track whether startup checks have passed
 let startupComplete = false;
@@ -13,37 +12,13 @@ export function markStartupComplete(): void {
   startupComplete = true;
 }
 
-/** Build fetch options with TLS dispatcher and auth headers for Ollama health checks. */
-function ollamaFetchOptions(timeoutMs: number): RequestInit & { dispatcher?: Dispatcher } {
-  const opts: RequestInit & { dispatcher?: Dispatcher } = {
-    signal: AbortSignal.timeout(timeoutMs),
-    headers: getLlmAuthHeaders(),
-  };
-  if (llmDispatcher) {
-    opts.dispatcher = llmDispatcher;
-  }
-  return opts;
-}
-
-async function checkOllama(): Promise<boolean> {
+/** Check LLM connectivity using the active provider's health check. */
+async function checkLlm(): Promise<boolean> {
   try {
-    const url = getOllamaBaseUrl();
-    const res = await fetch(`${url}/api/tags`, ollamaFetchOptions(3000));
-    return res.ok;
+    const result = await checkLlmHealth();
+    return result.connected;
   } catch {
-    logger.debug('Ollama health check failed');
-    return false;
-  }
-}
-
-async function checkOllamaModels(): Promise<boolean> {
-  try {
-    const url = getOllamaBaseUrl();
-    const res = await fetch(`${url}/api/tags`, ollamaFetchOptions(5000));
-    if (!res.ok) return false;
-    const data = (await res.json()) as { models?: Array<{ name: string }> };
-    return Array.isArray(data.models) && data.models.length > 0;
-  } catch {
+    logger.debug('LLM health check failed');
     return false;
   }
 }
@@ -81,43 +56,49 @@ export async function healthRoutes(fastify: FastifyInstance) {
 
   // GET /api/health/start - Startup probe
   // Has the service completed initialization?
-  // Checks migrations ran + at least one Ollama model available.
+  // Checks migrations ran + LLM provider reachable.
   // Used by k8s startup probe.
   fastify.get('/health/start', async (_request, reply) => {
-    const postgres = await checkPg();
-    const ollamaReady = await checkOllamaModels();
+    const [postgres, llmReady] = await Promise.all([
+      checkPg(),
+      checkLlm(),
+    ]);
 
-    const ready = startupComplete && postgres && ollamaReady;
+    const ready = startupComplete && postgres;
 
     reply.status(ready ? 200 : 503).send({
       status: ready ? 'ok' : 'starting',
       checks: {
         startupComplete,
         postgres,
-        ollamaModelsAvailable: ollamaReady,
+        llmAvailable: llmReady,
+        llmProvider: getActiveProviderType(),
       },
       version: '1.0.0',
     });
   });
 
   // GET /api/health - backward compatibility alias for /api/health/ready
-  // Also includes Ollama status for full picture.
+  // Also includes LLM status for full picture.
   fastify.get('/health', async (_request, reply) => {
-    const [postgres, redis, ollama] = await Promise.all([
+    const [postgres, redis, llm] = await Promise.all([
       checkPg(),
       checkRedisConnection(fastify.redis),
-      checkOllama(),
+      checkLlm(),
     ]);
 
     const allHealthy = postgres && redis;
     const status = allHealthy ? 'ok' : (postgres || redis) ? 'degraded' : 'error';
-
-    const circuitBreakers = getOllamaCircuitBreakerStatus();
+    const providerType = getActiveProviderType();
 
     reply.status(allHealthy ? 200 : 503).send({
       status,
-      services: { postgres, redis, ollama },
-      circuitBreakers,
+      services: { postgres, redis, ollama: llm },
+      llmProvider: providerType,
+      circuitBreakers: {
+        ollama: getOllamaCircuitBreakerStatus(),
+        openai: getOpenaiCircuitBreakerStatus(),
+      },
       version: '1.0.0',
       uptime: process.uptime(),
     });
