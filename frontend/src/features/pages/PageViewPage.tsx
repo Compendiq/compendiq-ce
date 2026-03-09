@@ -208,6 +208,15 @@ export function PageViewPage() {
             </>
           ) : (
             <>
+              <VersionHistory
+                pageId={id!}
+                currentBodyText={page.bodyText}
+                model="qwen3:latest"
+              />
+              <DuplicateDetector
+                pageId={id!}
+                pageTitle={page.title}
+              />
               <AutoTagger
                 pageId={id!}
                 currentLabels={page.labels}
@@ -281,8 +290,6 @@ export function PageViewPage() {
             </div>
             <div className="hidden w-64 shrink-0 space-y-4 lg:block sticky top-4 self-start max-h-[calc(100vh-2rem)] overflow-y-auto">
               <TableOfContents headings={tocHeadings} contentRef={contentRef} />
-              <VersionHistory pageId={id!} currentBodyText={page.bodyText} model="qwen3:latest" />
-              <DuplicateDetector pageId={id!} pageTitle={page.title} />
             </div>
           </div>
           <FlowchartGenerator pageId={id!} bodyHtml={page.bodyHtml} />

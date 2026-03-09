@@ -167,17 +167,30 @@ export function useDeletePage() {
   });
 }
 
+export interface EmbeddingStatusData {
+  totalPages: number;
+  embeddedPages: number;
+  dirtyPages: number;
+  totalEmbeddings: number;
+  isProcessing: boolean;
+}
+
 export function useEmbeddingStatus() {
-  return useQuery<{
-    totalPages: number;
-    dirtyPages: number;
-    totalEmbeddings: number;
-    isProcessing: boolean;
-  }>({
+  return useQuery<EmbeddingStatusData>({
     queryKey: ['embeddings', 'status'],
     queryFn: () => apiFetch('/embeddings/status'),
     refetchInterval: (query) => {
       return query.state.data?.isProcessing ? 3000 : false;
+    },
+  });
+}
+
+export function useTriggerEmbedding() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => apiFetch('/embeddings/process', { method: 'POST' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['embeddings', 'status'] });
     },
   });
 }

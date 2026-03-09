@@ -17,6 +17,7 @@ interface ChunkMetadata {
 
 interface EmbeddingStatus {
   totalPages: number;
+  embeddedPages: number;
   dirtyPages: number;
   totalEmbeddings: number;
   isProcessing: boolean;
@@ -212,14 +213,16 @@ export async function processDirtyPages(userId: string): Promise<{ processed: nu
  * Get embedding status for a user.
  */
 export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatus> {
-  const [totalResult, dirtyResult, embeddingResult] = await Promise.all([
+  const [totalResult, dirtyResult, embeddingResult, embeddedPagesResult] = await Promise.all([
     query<{ count: string }>('SELECT COUNT(*) as count FROM cached_pages WHERE user_id = $1', [userId]),
     query<{ count: string }>('SELECT COUNT(*) as count FROM cached_pages WHERE user_id = $1 AND embedding_dirty = TRUE', [userId]),
     query<{ count: string }>('SELECT COUNT(*) as count FROM page_embeddings WHERE user_id = $1', [userId]),
+    query<{ count: string }>('SELECT COUNT(DISTINCT confluence_id) as count FROM page_embeddings WHERE user_id = $1', [userId]),
   ]);
 
   return {
     totalPages: parseInt(totalResult.rows[0].count, 10),
+    embeddedPages: parseInt(embeddedPagesResult.rows[0].count, 10),
     dirtyPages: parseInt(dirtyResult.rows[0].count, 10),
     totalEmbeddings: parseInt(embeddingResult.rows[0].count, 10),
     isProcessing: processingUsers.has(userId),

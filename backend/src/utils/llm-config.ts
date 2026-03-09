@@ -1,5 +1,5 @@
 import { readFileSync, existsSync } from 'fs';
-import { Agent, type Dispatcher } from 'undici';
+import { Agent, fetch as undiciFetch, type Dispatcher } from 'undici';
 import { logger } from './logger.js';
 
 /**
@@ -183,6 +183,6 @@ export function buildOllamaFetch(): typeof fetch | undefined {
       mergedInit.dispatcher = llmDispatcher;
     }
 
-    return fetch(input, mergedInit);
+    return undiciFetch(input as any, mergedInit as any) as unknown as Promise<Response>;
   };
 }
