@@ -79,7 +79,7 @@ describe('CircuitBreaker', () => {
     it('should reject calls immediately when OPEN', async () => {
       await expect(breaker.execute(async () => 'should not run')).rejects.toThrow(CircuitBreakerOpenError);
       await expect(breaker.execute(async () => 'should not run')).rejects.toThrow(
-        'test: Ollama service temporarily unavailable',
+        'test: LLM server temporarily unavailable',
       );
     });
 

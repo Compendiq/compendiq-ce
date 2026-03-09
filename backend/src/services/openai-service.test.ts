@@ -13,7 +13,7 @@ vi.mock('undici', async (importOriginal) => {
 });
 
 vi.mock('./circuit-breaker.js', () => ({
-  ollamaBreakers: {
+  openaiBreakers: {
     chat: { execute: vi.fn((fn: () => unknown) => fn()) },
     embed: { execute: vi.fn((fn: () => unknown) => fn()) },
     list: { execute: vi.fn((fn: () => unknown) => fn()) },

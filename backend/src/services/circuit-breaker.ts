@@ -66,7 +66,7 @@ export class CircuitBreaker {
 
     if (status.state === 'OPEN') {
       throw new CircuitBreakerOpenError(
-        `${this.name}: Ollama service temporarily unavailable`,
+        `${this.name}: LLM server temporarily unavailable`,
       );
     }
 
@@ -161,6 +161,7 @@ export const ollamaBreakers = {
 export const openaiBreakers = {
   chat: new CircuitBreaker('openai-chat'),
   embed: new CircuitBreaker('openai-embed'),
+  list: new CircuitBreaker('openai-list'),
 } as const;
 
 /**
@@ -181,5 +182,6 @@ export function getOpenaiCircuitBreakerStatus(): Record<string, CircuitBreakerSt
   return {
     chat: openaiBreakers.chat.getStatus(),
     embed: openaiBreakers.embed.getStatus(),
+    list: openaiBreakers.list.getStatus(),
   };
 }
