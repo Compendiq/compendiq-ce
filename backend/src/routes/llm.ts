@@ -109,9 +109,10 @@ export async function llmRoutes(fastify: FastifyInstance) {
     try {
       return await provider.listModels();
     } catch (err) {
-      logger.error({ err, provider: providerType }, 'Failed to list models');
-      const errorType = err instanceof Error ? err.constructor.name : 'UnknownError';
-      throw fastify.httpErrors.serviceUnavailable(`LLM server unavailable (${providerType}): ${errorType}`);
+      logger.warn({ err, provider: providerType }, 'Failed to list models — returning empty list');
+      // Return empty list instead of 503 so the UI stays functional
+      // and the circuit breaker isn't tripped by repeated polling
+      return [];
     }
   });
 
