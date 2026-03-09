@@ -143,6 +143,7 @@ function EditorToolbar({ editor }: { editor: EditorType }) {
 
 const AUTO_SAVE_DELAY = 2000;
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function getDraft(key: string): string | null {
   try {
     return localStorage.getItem(`draft:${key}`);
@@ -151,6 +152,7 @@ export function getDraft(key: string): string | null {
   }
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function clearDraft(key: string): void {
   try {
     localStorage.removeItem(`draft:${key}`);

@@ -57,7 +57,7 @@ interface VersionHistoryProps {
   model: string;
 }
 
-export function VersionHistory({ pageId, currentBodyText, model }: VersionHistoryProps) {
+export function VersionHistory({ pageId, currentBodyText: _currentBodyText, model }: VersionHistoryProps) {
   const [expanded, setExpanded] = useState(false);
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
   const [compareVersions, setCompareVersions] = useState<[number, number] | null>(null);

@@ -52,5 +52,6 @@ export function FreshnessBadge({ lastModified, className }: FreshnessBadgeProps)
   );
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export { getFreshnessLevel };
 export type { FreshnessLevel, FreshnessBadgeProps };

@@ -63,7 +63,6 @@ export function AiAssistantPage() {
     apiFetch<Conversation[]>('/llm/conversations')
       .then(setConversations)
       .catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally run only on mount
   }, []);
 
   useEffect(() => {

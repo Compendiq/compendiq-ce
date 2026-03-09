@@ -59,12 +59,8 @@ const mockErrors = {
 };
 
 describe('ErrorDashboard', () => {
-  let fetchCallCount: number;
-
   beforeEach(() => {
-    fetchCallCount = 0;
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
-      fetchCallCount++;
       const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
 
       if (url.includes('/admin/errors/summary')) {
