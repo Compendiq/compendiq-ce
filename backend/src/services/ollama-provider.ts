@@ -6,7 +6,7 @@
 
 import { Ollama } from 'ollama';
 import type { Config } from 'ollama';
-import { Agent } from 'undici';
+import { Agent, fetch as undiciFetch } from 'undici';
 import pLimit from 'p-limit';
 import { logger } from '../utils/logger.js';
 import { ollamaBreakers } from './circuit-breaker.js';
@@ -41,19 +41,17 @@ function buildLlmDispatcher(): Agent | undefined {
 const llmDispatcher = buildLlmDispatcher();
 
 /**
- * Wrap the global `fetch` so every Ollama request gets an abort-signal
- * timeout.  If the caller already supplies a signal the caller's signal
- * wins (the ollama SDK sets signals for streaming requests).
- * When LLM_VERIFY_SSL=false an undici dispatcher that skips TLS verification
- * is injected into each request.
+ * Fetch wrapper using undici's fetch so the `dispatcher` option is
+ * actually honored. Global fetch() silently ignores `dispatcher`, which
+ * means LLM_VERIFY_SSL=false had no effect.
  */
 const ollamaFetch: typeof fetch = (input, init?) => {
   const hasSignal = init?.signal != null;
-  return fetch(input, {
+  return undiciFetch(input as any, {
     ...init,
     signal: hasSignal ? init!.signal : AbortSignal.timeout(OLLAMA_REQUEST_TIMEOUT_MS),
-    ...(llmDispatcher ? { dispatcher: llmDispatcher } : {}),
-  } as RequestInit);
+    dispatcher: llmDispatcher,
+  } as any) as unknown as ReturnType<typeof fetch>;
 };
 
 function buildOllamaConfig(): Partial<Config> {

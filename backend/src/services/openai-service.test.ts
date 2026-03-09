@@ -1,5 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
+const { mockFetch } = vi.hoisted(() => ({
+  mockFetch: vi.fn(),
+}));
+
+vi.mock('undici', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('undici')>();
+  return {
+    ...actual,
+    fetch: mockFetch,
+  };
+});
+
 vi.mock('./circuit-breaker.js', () => ({
   ollamaBreakers: {
     chat: { execute: vi.fn((fn: () => unknown) => fn()) },
@@ -21,10 +33,9 @@ function mockEmbedding(seed: number): number[] {
 
 describe('OpenAIProvider', () => {
   const originalEnv = { ...process.env };
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    fetchSpy = vi.spyOn(globalThis, 'fetch');
+    mockFetch.mockReset();
     process.env.OPENAI_BASE_URL = 'https://api.test.com/v1';
     process.env.OPENAI_API_KEY = 'test-key-123';
   });
@@ -36,7 +47,7 @@ describe('OpenAIProvider', () => {
 
   describe('checkHealth', () => {
     it('should return connected: true when API responds with 200', async () => {
-      fetchSpy.mockResolvedValueOnce(
+      mockFetch.mockResolvedValueOnce(
         new Response(JSON.stringify({ data: [] }), { status: 200 }),
       );
 
@@ -44,7 +55,7 @@ describe('OpenAIProvider', () => {
       const result = await provider.checkHealth();
 
       expect(result).toEqual({ connected: true });
-      expect(fetchSpy).toHaveBeenCalledWith(
+      expect(mockFetch).toHaveBeenCalledWith(
         'https://api.test.com/v1/models',
         expect.objectContaining({
           headers: expect.objectContaining({
@@ -55,7 +66,7 @@ describe('OpenAIProvider', () => {
     });
 
     it('should return connected: false with error on HTTP error', async () => {
-      fetchSpy.mockResolvedValueOnce(
+      mockFetch.mockResolvedValueOnce(
         new Response('Unauthorized', { status: 401 }),
       );
 
@@ -67,7 +78,7 @@ describe('OpenAIProvider', () => {
     });
 
     it('should return connected: false with error on network failure', async () => {
-      fetchSpy.mockRejectedValueOnce(new Error('Connection refused'));
+      mockFetch.mockRejectedValueOnce(new Error('Connection refused'));
 
       const provider = new OpenAIProvider();
       const result = await provider.checkHealth();
@@ -79,7 +90,7 @@ describe('OpenAIProvider', () => {
 
   describe('listModels', () => {
     it('should return parsed model list', async () => {
-      fetchSpy.mockResolvedValueOnce(
+      mockFetch.mockResolvedValueOnce(
         new Response(
           JSON.stringify({
             data: [
@@ -101,7 +112,7 @@ describe('OpenAIProvider', () => {
     });
 
     it('should throw on HTTP error', async () => {
-      fetchSpy.mockResolvedValueOnce(
+      mockFetch.mockResolvedValueOnce(
         new Response('Internal Server Error', { status: 500 }),
       );
 
@@ -112,7 +123,7 @@ describe('OpenAIProvider', () => {
 
   describe('chat', () => {
     it('should return assistant message content', async () => {
-      fetchSpy.mockResolvedValueOnce(
+      mockFetch.mockResolvedValueOnce(
         new Response(
           JSON.stringify({
             choices: [{ message: { content: 'Hello from GPT' } }],
@@ -127,7 +138,7 @@ describe('OpenAIProvider', () => {
       ]);
 
       expect(result).toBe('Hello from GPT');
-      const callBody = JSON.parse(fetchSpy.mock.calls[0][1]?.body as string);
+      const callBody = JSON.parse(mockFetch.mock.calls[0][1]?.body as string);
       expect(callBody.model).toBe('gpt-4o');
       expect(callBody.stream).toBe(false);
     });
@@ -135,7 +146,7 @@ describe('OpenAIProvider', () => {
 
   describe('generateEmbedding', () => {
     it('should return embeddings in correct order', async () => {
-      fetchSpy.mockResolvedValueOnce(
+      mockFetch.mockResolvedValueOnce(
         new Response(
           JSON.stringify({
             data: [
@@ -157,7 +168,7 @@ describe('OpenAIProvider', () => {
     });
 
     it('should handle single text input', async () => {
-      fetchSpy.mockResolvedValueOnce(
+      mockFetch.mockResolvedValueOnce(
         new Response(
           JSON.stringify({
             data: [{ index: 0, embedding: mockEmbedding(0.1) }],
@@ -191,7 +202,7 @@ describe('OpenAIProvider', () => {
         },
       });
 
-      fetchSpy.mockResolvedValueOnce(
+      mockFetch.mockResolvedValueOnce(
         new Response(stream, { status: 200 }),
       );
 
@@ -214,14 +225,14 @@ describe('OpenAIProvider', () => {
     it('should use default base URL when env var is not set', async () => {
       delete process.env.OPENAI_BASE_URL;
 
-      fetchSpy.mockResolvedValueOnce(
+      mockFetch.mockResolvedValueOnce(
         new Response(JSON.stringify({ data: [] }), { status: 200 }),
       );
 
       const provider = new OpenAIProvider();
       await provider.checkHealth();
 
-      expect(fetchSpy).toHaveBeenCalledWith(
+      expect(mockFetch).toHaveBeenCalledWith(
         'https://api.openai.com/v1/models',
         expect.anything(),
       );
@@ -229,15 +240,16 @@ describe('OpenAIProvider', () => {
 
     it('should not set Authorization header when API key is empty', async () => {
       delete process.env.OPENAI_API_KEY;
+      delete process.env.LLM_BEARER_TOKEN;
 
-      fetchSpy.mockResolvedValueOnce(
+      mockFetch.mockResolvedValueOnce(
         new Response(JSON.stringify({ data: [] }), { status: 200 }),
       );
 
       const provider = new OpenAIProvider();
       await provider.checkHealth();
 
-      const headers = fetchSpy.mock.calls[0][1]?.headers as Record<string, string>;
+      const headers = mockFetch.mock.calls[0][1]?.headers as Record<string, string>;
       expect(headers.Authorization).toBeUndefined();
     });
   });
