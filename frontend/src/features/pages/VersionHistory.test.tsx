@@ -66,16 +66,17 @@ describe('VersionHistory', () => {
     useAuthStore.getState().clearAuth();
   });
 
-  it('renders the Version History header', () => {
+  it('renders the History toolbar button', () => {
     render(
       <VersionHistory pageId="page-1" model="qwen3.5" />,
       { wrapper: createWrapper() },
     );
 
-    expect(screen.getByText('Version History')).toBeInTheDocument();
+    expect(screen.getByText('History')).toBeInTheDocument();
+    expect(screen.getByTitle('Version history')).toBeInTheDocument();
   });
 
-  it('shows versions when expanded', async () => {
+  it('opens dialog and shows versions when clicked', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockVersionsResponse());
 
     render(
@@ -83,8 +84,11 @@ describe('VersionHistory', () => {
       { wrapper: createWrapper() },
     );
 
-    // Click to expand
-    fireEvent.click(screen.getByText('Version History'));
+    // Click the toolbar button to open dialog
+    fireEvent.click(screen.getByText('History'));
+
+    // Dialog title should appear
+    expect(screen.getByText('Version History')).toBeInTheDocument();
 
     await waitFor(() => {
       expect(screen.getByText('v3')).toBeInTheDocument();
@@ -101,14 +105,14 @@ describe('VersionHistory', () => {
       { wrapper: createWrapper() },
     );
 
-    fireEvent.click(screen.getByText('Version History'));
+    fireEvent.click(screen.getByText('History'));
 
     await waitFor(() => {
       expect(screen.getByText('Current')).toBeInTheDocument();
     });
   });
 
-  it('shows version count badge', async () => {
+  it('shows version count badge in dialog', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockVersionsResponse());
 
     render(
@@ -116,7 +120,7 @@ describe('VersionHistory', () => {
       { wrapper: createWrapper() },
     );
 
-    fireEvent.click(screen.getByText('Version History'));
+    fireEvent.click(screen.getByText('History'));
 
     await waitFor(() => {
       expect(screen.getByText('3')).toBeInTheDocument();
@@ -136,14 +140,14 @@ describe('VersionHistory', () => {
       { wrapper: createWrapper() },
     );
 
-    fireEvent.click(screen.getByText('Version History'));
+    fireEvent.click(screen.getByText('History'));
 
     await waitFor(() => {
       expect(screen.getByText(/No version history available/)).toBeInTheDocument();
     });
   });
 
-  it('shows loading state', async () => {
+  it('shows loading state in dialog', async () => {
     vi.spyOn(globalThis, 'fetch').mockReturnValue(
       new Promise(() => {}),
     );
@@ -153,10 +157,34 @@ describe('VersionHistory', () => {
       { wrapper: createWrapper() },
     );
 
-    fireEvent.click(screen.getByText('Version History'));
+    fireEvent.click(screen.getByText('History'));
 
     await waitFor(() => {
       expect(screen.getByText('Loading versions...')).toBeInTheDocument();
+    });
+  });
+
+  it('closes dialog via close button', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({ versions: [], pageId: 'page-1' }),
+        { headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+    expect(screen.getByText('Version History')).toBeInTheDocument();
+
+    // Click the close button
+    fireEvent.click(screen.getByLabelText('Close'));
+
+    await waitFor(() => {
+      expect(screen.queryByText('Version History')).not.toBeInTheDocument();
     });
   });
 });

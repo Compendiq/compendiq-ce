@@ -124,10 +124,11 @@ describe('PageViewPage', () => {
     expect(sidebar).toHaveClass('sticky', 'top-4', 'self-start');
   });
 
-  it('sidebar contains version history and duplicate detector sections', () => {
+  it('toolbar contains History and Duplicates buttons', () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
 
-    expect(screen.getByText('Duplicate Detection')).toBeInTheDocument();
+    expect(screen.getByText('History')).toBeInTheDocument();
+    expect(screen.getByText('Duplicates')).toBeInTheDocument();
   });
 
   it('renders inline code and code blocks visually', () => {
