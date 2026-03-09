@@ -216,4 +216,57 @@ describe('Health routes', () => {
       expect(body.uptime).toBeGreaterThan(0);
     });
   });
+
+  describe('Ollama Bearer token in health checks', () => {
+    it('should include Authorization header when LLM_BEARER_TOKEN is set', async () => {
+      process.env.LLM_BEARER_TOKEN = 'test-token-123';
+      mockFetch.mockResolvedValue({ ok: true, json: async () => ({ models: [{ name: 'test' }] }) });
+
+      await app.inject({ method: 'GET', url: '/api/health' });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Authorization: 'Bearer test-token-123',
+          }),
+        }),
+      );
+
+      delete process.env.LLM_BEARER_TOKEN;
+    });
+
+    it('should not include Authorization header when LLM_BEARER_TOKEN is not set', async () => {
+      delete process.env.LLM_BEARER_TOKEN;
+      mockFetch.mockResolvedValue({ ok: true, json: async () => ({ models: [{ name: 'test' }] }) });
+
+      await app.inject({ method: 'GET', url: '/api/health' });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          headers: {},
+        }),
+      );
+    });
+
+    it('should include Authorization header in startup probe Ollama check', async () => {
+      process.env.LLM_BEARER_TOKEN = 'startup-token';
+      markStartupComplete();
+      mockFetch.mockResolvedValue({ ok: true, json: async () => ({ models: [{ name: 'test' }] }) });
+
+      await app.inject({ method: 'GET', url: '/api/health/start' });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Authorization: 'Bearer startup-token',
+          }),
+        }),
+      );
+
+      delete process.env.LLM_BEARER_TOKEN;
+    });
+  });
 });

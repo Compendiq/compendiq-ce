@@ -11,10 +11,21 @@ export function markStartupComplete(): void {
   startupComplete = true;
 }
 
+function getOllamaFetchHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (process.env.LLM_BEARER_TOKEN) {
+    headers['Authorization'] = `Bearer ${process.env.LLM_BEARER_TOKEN}`;
+  }
+  return headers;
+}
+
 async function checkOllama(): Promise<boolean> {
   try {
     const url = process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434';
-    const res = await fetch(`${url}/api/tags`, { signal: AbortSignal.timeout(3000) });
+    const res = await fetch(`${url}/api/tags`, {
+      signal: AbortSignal.timeout(3000),
+      headers: getOllamaFetchHeaders(),
+    });
     return res.ok;
   } catch {
     logger.debug('Ollama health check failed');
@@ -25,7 +36,10 @@ async function checkOllama(): Promise<boolean> {
 async function checkOllamaModels(): Promise<boolean> {
   try {
     const url = process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434';
-    const res = await fetch(`${url}/api/tags`, { signal: AbortSignal.timeout(5000) });
+    const res = await fetch(`${url}/api/tags`, {
+      signal: AbortSignal.timeout(5000),
+      headers: getOllamaFetchHeaders(),
+    });
     if (!res.ok) return false;
     const data = (await res.json()) as { models?: Array<{ name: string }> };
     return Array.isArray(data.models) && data.models.length > 0;
