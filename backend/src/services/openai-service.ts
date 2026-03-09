@@ -11,9 +11,9 @@
  *   OPENAI_API_KEY   - API key (fallback)
  */
 
-import { Agent } from 'undici';
+import { Agent, fetch as undiciFetch } from 'undici';
 import { logger } from '../utils/logger.js';
-import { ollamaBreakers } from './circuit-breaker.js';
+import { openaiBreakers } from './circuit-breaker.js';
 import pLimit from 'p-limit';
 import type {
   LlmProvider,
@@ -67,6 +67,18 @@ function makeHeaders(config: OpenAIConfig): Record<string, string> {
   return headers;
 }
 
+/**
+ * Fetch wrapper using undici's fetch so the `dispatcher` option is
+ * actually honored. Global fetch() silently ignores `dispatcher`, which
+ * means LLM_VERIFY_SSL=false had no effect.
+ */
+function llmFetch(url: string | URL, init?: RequestInit): Promise<Response> {
+  return undiciFetch(url, {
+    ...init,
+    dispatcher: llmDispatcher,
+  } as any) as unknown as Promise<Response>;
+}
+
 async function openaiRequest(
   path: string,
   body?: unknown,
@@ -76,13 +88,12 @@ async function openaiRequest(
   const url = `${config.baseUrl}${path}`;
   const headers = makeHeaders(config);
 
-  return fetch(url, {
+  return llmFetch(url, {
     method: body ? 'POST' : 'GET',
     headers,
     body: body ? JSON.stringify(body) : undefined,
     signal: signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    ...(llmDispatcher ? { dispatcher: llmDispatcher } : {}),
-  } as RequestInit);
+  });
 }
 
 export class OpenAIProvider implements LlmProvider {
@@ -104,7 +115,7 @@ export class OpenAIProvider implements LlmProvider {
   }
 
   async listModels(): Promise<LlmModel[]> {
-    return ollamaBreakers.list.execute(async () => {
+    return openaiBreakers.list.execute(async () => {
       const response = await openaiRequest('/models');
       if (!response.ok) {
         const text = await response.text();
@@ -133,7 +144,7 @@ export class OpenAIProvider implements LlmProvider {
     messages: ChatMessage[],
     signal?: AbortSignal,
   ): AsyncGenerator<StreamChunk> {
-    const generator = await ollamaBreakers.chat.execute(() =>
+    const generator = await openaiBreakers.chat.execute(() =>
       llmLimit(async () => {
         const response = await openaiRequest(
           '/chat/completions',
@@ -220,7 +231,7 @@ export class OpenAIProvider implements LlmProvider {
   }
 
   async chat(model: string, messages: ChatMessage[]): Promise<string> {
-    return ollamaBreakers.chat.execute(async () => {
+    return openaiBreakers.chat.execute(async () => {
       return llmLimit(async () => {
         const response = await openaiRequest('/chat/completions', {
           model,
@@ -243,7 +254,7 @@ export class OpenAIProvider implements LlmProvider {
   }
 
   async generateEmbedding(text: string | string[]): Promise<number[][]> {
-    return ollamaBreakers.embed.execute(async () => {
+    return openaiBreakers.embed.execute(async () => {
       return llmLimit(async () => {
         const input = Array.isArray(text) ? text : [text];
 
