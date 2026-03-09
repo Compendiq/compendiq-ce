@@ -176,7 +176,7 @@ function OllamaTab({ settings, onSave }: { settings: SettingsResponse; onSave: (
 
   const { data: status } = useQuery({
     queryKey: ['ollama-status'],
-    queryFn: () => apiFetch<{ connected: boolean; ollamaBaseUrl: string; embeddingModel: string }>('/ollama/status'),
+    queryFn: () => apiFetch<{ connected: boolean; error?: string; ollamaBaseUrl: string; embeddingModel: string }>('/ollama/status'),
   });
 
   const { data: models, isFetching: loadingModels, error: modelsError, refetch } = useQuery({
@@ -191,7 +191,7 @@ function OllamaTab({ settings, onSave }: { settings: SettingsResponse; onSave: (
         <label className="mb-1.5 block text-sm font-medium">Ollama Server</label>
         <div className="flex items-center gap-2 rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm text-muted-foreground">
           <span className={`inline-block h-2 w-2 rounded-full ${status?.connected ? 'bg-green-500' : 'bg-red-500'}`} />
-          {status?.ollamaBaseUrl ?? 'Loading...'} {status?.connected === false && '(disconnected)'}
+          {status?.ollamaBaseUrl ?? 'Loading...'} {status?.connected === false && `(disconnected${status.error ? `: ${status.error}` : ''})`}
         </div>
       </div>
 

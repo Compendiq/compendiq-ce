@@ -19,10 +19,15 @@ function getOllamaFetchHeaders(): Record<string, string> {
   return headers;
 }
 
+/** Build the Ollama API URL, stripping any trailing slash from the base. */
+function ollamaApiUrl(path: string): string {
+  const base = (process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434').replace(/\/+$/, '');
+  return `${base}${path}`;
+}
+
 async function checkOllama(): Promise<boolean> {
   try {
-    const url = process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434';
-    const res = await fetch(`${url}/api/tags`, {
+    const res = await fetch(ollamaApiUrl('/api/tags'), {
       signal: AbortSignal.timeout(3000),
       headers: getOllamaFetchHeaders(),
     });
@@ -35,8 +40,7 @@ async function checkOllama(): Promise<boolean> {
 
 async function checkOllamaModels(): Promise<boolean> {
   try {
-    const url = process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434';
-    const res = await fetch(`${url}/api/tags`, {
+    const res = await fetch(ollamaApiUrl('/api/tags'), {
       signal: AbortSignal.timeout(5000),
       headers: getOllamaFetchHeaders(),
     });
