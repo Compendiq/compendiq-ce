@@ -748,12 +748,53 @@
   opacity: 0.6;
 }
 
-.tiptap .confluence-drawio {
+/* Draw.io diagrams (shared between editor and page view) */
+.confluence-drawio {
   position: relative;
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-md);
   padding: 0.5rem;
   margin: 1rem 0;
+  background: oklch(from var(--color-card) l c h / 0.5);
+  overflow: hidden;
+}
+
+.confluence-drawio img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius-sm);
+  margin: 0 auto;
+}
+
+.confluence-drawio .drawio-edit-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-top: 0.5rem;
+  padding: 0.25rem 0.75rem;
+  font-size: 0.75rem;
+  color: var(--color-primary);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  text-decoration: none;
+  transition: background 0.15s ease;
+}
+
+.confluence-drawio .drawio-edit-link:hover {
+  background: oklch(from var(--color-primary) l c h / 0.1);
+}
+
+/* Page view images — zoom-in cursor, rounded corners */
+.prose img {
+  border-radius: var(--radius-md);
+  max-width: 100%;
+  height: auto;
+  transition: opacity 0.15s ease;
+}
+
+.prose img:hover {
+  opacity: 0.9;
 }
 
 .tiptap .panel-info,
