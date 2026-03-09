@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect } from 'react';
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import {
   ChevronRight,
@@ -141,6 +141,8 @@ export function SidebarTreeView() {
     toggleTreeSidebar,
     treeSidebarSpaceKey,
     setTreeSidebarSpaceKey,
+    treeSidebarWidth,
+    setTreeSidebarWidth,
   } = useUiStore();
 
   // Determine active page ID from URL
@@ -159,6 +161,32 @@ export function SidebarTreeView() {
 
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [spaceDropdownOpen, setSpaceDropdownOpen] = useState(false);
+  const [isResizing, setIsResizing] = useState(false);
+  const sidebarRef = useRef<HTMLElement>(null);
+
+  const handleResizeStart = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      setIsResizing(true);
+      const startX = e.clientX;
+      const startWidth = treeSidebarWidth;
+
+      function onMouseMove(ev: MouseEvent) {
+        const newWidth = startWidth + (ev.clientX - startX);
+        setTreeSidebarWidth(newWidth);
+      }
+
+      function onMouseUp() {
+        setIsResizing(false);
+        document.removeEventListener('mousemove', onMouseMove);
+        document.removeEventListener('mouseup', onMouseUp);
+      }
+
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
+    },
+    [treeSidebarWidth, setTreeSidebarWidth],
+  );
 
   // Auto-expand path to the currently viewed page
   useEffect(() => {
@@ -210,7 +238,14 @@ export function SidebarTreeView() {
   const selectedSpace = spaces?.find((s) => s.key === treeSidebarSpaceKey);
 
   return (
-    <aside className="flex w-64 flex-col border-r border-white/10 bg-card/40 backdrop-blur-sm">
+    <aside
+      ref={sidebarRef}
+      className={cn(
+        'relative flex flex-col border-r border-white/10 bg-card/40 backdrop-blur-sm',
+        isResizing && 'select-none',
+      )}
+      style={{ width: `${treeSidebarWidth}px` }}
+    >
       {/* Header */}
       <div className="flex h-10 items-center justify-between border-b border-white/10 px-3">
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
@@ -313,6 +348,18 @@ export function SidebarTreeView() {
           </span>
         </div>
       )}
+
+      {/* Resize handle */}
+      <div
+        role="separator"
+        aria-label="Resize tree sidebar"
+        aria-orientation="vertical"
+        onMouseDown={handleResizeStart}
+        className={cn(
+          'absolute right-0 top-0 bottom-0 w-1 cursor-col-resize transition-colors hover:bg-primary/40',
+          isResizing && 'bg-primary/60',
+        )}
+      />
     </aside>
   );
 }

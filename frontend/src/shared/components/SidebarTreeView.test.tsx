@@ -114,4 +114,58 @@ describe('SidebarTreeView', () => {
     expect(screen.getByText('Development')).toBeInTheDocument();
     expect(screen.getByText('Operations')).toBeInTheDocument();
   });
+
+  it('renders resize handle', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    expect(screen.getByRole('separator', { name: 'Resize tree sidebar' })).toBeInTheDocument();
+  });
+
+  it('applies persisted width from store', () => {
+    useUiStore.setState({ treeSidebarWidth: 320 });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const aside = screen.getByRole('separator', { name: 'Resize tree sidebar' }).parentElement!;
+    expect(aside.style.width).toBe('320px');
+  });
+
+  it('starts resizing on mousedown and updates width on mousemove', () => {
+    useUiStore.setState({ treeSidebarWidth: 256 });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const handle = screen.getByRole('separator', { name: 'Resize tree sidebar' });
+
+    fireEvent.mouseDown(handle, { clientX: 256 });
+    fireEvent.mouseMove(document, { clientX: 356 });
+    fireEvent.mouseUp(document);
+
+    expect(useUiStore.getState().treeSidebarWidth).toBe(356);
+  });
+
+  it('clamps width to minimum of 180px', () => {
+    useUiStore.setState({ treeSidebarWidth: 256 });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const handle = screen.getByRole('separator', { name: 'Resize tree sidebar' });
+
+    fireEvent.mouseDown(handle, { clientX: 256 });
+    fireEvent.mouseMove(document, { clientX: 50 });
+    fireEvent.mouseUp(document);
+
+    expect(useUiStore.getState().treeSidebarWidth).toBe(180);
+  });
+
+  it('clamps width to maximum of 600px', () => {
+    useUiStore.setState({ treeSidebarWidth: 256 });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const handle = screen.getByRole('separator', { name: 'Resize tree sidebar' });
+
+    fireEvent.mouseDown(handle, { clientX: 256 });
+    fireEvent.mouseMove(document, { clientX: 700 });
+    fireEvent.mouseUp(document);
+
+    expect(useUiStore.getState().treeSidebarWidth).toBe(600);
+  });
+
+  it('does not render resize handle when collapsed', () => {
+    useUiStore.setState({ treeSidebarCollapsed: true });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    expect(screen.queryByRole('separator', { name: 'Resize tree sidebar' })).not.toBeInTheDocument();
+  });
 });
