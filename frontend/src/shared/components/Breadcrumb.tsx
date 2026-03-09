@@ -2,8 +2,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { ChevronRight, Home } from 'lucide-react';
 
 const routeLabels: Record<string, string> = {
-  '/': 'Dashboard',
-  '/pages': 'Pages',
+  '/': 'Pages',
   '/pages/new': 'New Page',
   '/ai': 'AI Assistant',
   '/settings': 'Settings',
@@ -17,7 +16,7 @@ export function Breadcrumb() {
     return (
       <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-sm text-muted-foreground">
         <Home size={14} />
-        <span className="text-foreground font-medium">Dashboard</span>
+        <span className="text-foreground font-medium">Pages</span>
       </nav>
     );
   }

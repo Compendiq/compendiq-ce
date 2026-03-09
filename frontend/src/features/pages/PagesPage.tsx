@@ -1,20 +1,24 @@
 import { useState, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { m } from 'framer-motion';
-import { Search, FileText, Plus, RefreshCw, ChevronLeft, ChevronRight, FolderOpen, Filter, X, List } from 'lucide-react';
+import { Search, FileText, Plus, RefreshCw, ChevronLeft, ChevronRight, FolderOpen, Filter, X, List, Layers, BookOpen, Bot } from 'lucide-react';
 import DOMPurify from 'dompurify';
-import { usePages, usePageFilterOptions, usePage } from '../../shared/hooks/use-pages';
+import { usePages, usePageFilterOptions, usePage, useEmbeddingStatus } from '../../shared/hooks/use-pages';
 import { useSpaces, useSync, useSyncStatus } from '../../shared/hooks/use-spaces';
 import { useSettings } from '../../shared/hooks/use-settings';
+import { useAuthStore } from '../../stores/auth-store';
 import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../../shared/components/EmbeddingStatusBadge';
 import { BulkOperations } from './BulkOperations';
+import { KnowledgeGaps } from '../dashboard/KnowledgeGaps';
 import { cn } from '../../shared/lib/cn';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 
 export function PagesPage() {
   const navigate = useNavigate();
   const isLight = useIsLightTheme();
+  const user = useAuthStore((s) => s.user);
+  const { data: embeddingStatusData } = useEmbeddingStatus();
   const [spaceKey, setSpaceKey] = useState<string>('');
   const [search, setSearch] = useState('');
   const [author, setAuthor] = useState<string>('');
@@ -126,6 +130,22 @@ export function PagesPage() {
             New Page
           </button>
         </div>
+      </div>
+
+      {/* Compact stats */}
+      <div className="flex flex-wrap gap-3">
+        {[
+          { icon: Layers, label: 'Spaces', value: spaces ? String(spaces.length) : '--', color: 'text-info' },
+          { icon: BookOpen, label: 'Total', value: pagesData ? String(pagesData.total) : '--', color: 'text-success' },
+          { icon: Bot, label: 'Embedded', value: embeddingStatusData ? String(embeddingStatusData.totalEmbeddings) : '--', color: 'text-primary' },
+          { icon: RefreshCw, label: 'Dirty', value: embeddingStatusData ? String(embeddingStatusData.dirtyPages) : '--', color: 'text-warning' },
+        ].map(({ icon: Icon, label, value, color }) => (
+          <div key={label} className="glass-card flex items-center gap-2 px-3 py-2">
+            <Icon size={14} className={color} />
+            <span className="text-xs text-muted-foreground">{label}</span>
+            <span className="text-sm font-semibold">{value}</span>
+          </div>
+        ))}
       </div>
 
       {/* Sync progress */}
@@ -447,6 +467,9 @@ export function PagesPage() {
       />
       </>
       )}
+
+      {/* Knowledge Gaps (admin only) */}
+      {user?.role === 'admin' && <KnowledgeGaps />}
     </div>
   );
 }
