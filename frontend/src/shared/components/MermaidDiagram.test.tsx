@@ -98,4 +98,21 @@ describe('MermaidDiagram', () => {
     const { container } = render(<MermaidDiagram code="graph TD\n  A --> B" className="mt-4" />);
     expect(container.firstChild).toHaveClass('mt-4');
   });
+
+  it('renders diagrams with style directives and special characters', async () => {
+    const code = [
+      'graph LR',
+      '    A[Start] --> B{vSphere Available?};',
+      '    B -- Yes --> D[Create Snapshots (vc-003 & vc-004)];',
+      '    style A fill:#f9f,stroke:#333,stroke-width:2px',
+    ].join('\n');
+
+    render(<MermaidDiagram code={code} />);
+
+    await waitFor(() => {
+      expect(mockRender).toHaveBeenCalled();
+      const [, renderedCode] = mockRender.mock.calls[0];
+      expect(renderedCode).toBe(code);
+    });
+  });
 });
