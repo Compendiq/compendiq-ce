@@ -1,10 +1,37 @@
 import { FastifyInstance } from 'fastify';
+import { request as undiciRequest } from 'undici';
+import { readFileSync } from 'fs';
 import { UpdateSettingsSchema, TestConfluenceSchema } from '@kb-creator/contracts';
 import { query } from '../db/postgres.js';
 import { encryptPat } from '../utils/crypto.js';
 import { validateUrl } from '../utils/ssrf-guard.js';
 import { logAuditEvent } from '../services/audit-service.js';
 import { logger } from '../utils/logger.js';
+
+/**
+ * Load custom CA certificates for undici (mirrors confluence-client.ts).
+ */
+function loadCaBundle(): string | undefined {
+  const caPath = process.env.NODE_EXTRA_CA_CERTS;
+  if (!caPath) return undefined;
+  try {
+    return readFileSync(caPath, 'utf-8');
+  } catch {
+    return undefined;
+  }
+}
+
+const caBundleContents = loadCaBundle();
+
+function buildConnectOptions(): Record<string, unknown> | undefined {
+  if (process.env.CONFLUENCE_VERIFY_SSL === 'false') {
+    return { rejectUnauthorized: false };
+  }
+  if (caBundleContents) {
+    return { ca: caBundleContents };
+  }
+  return undefined;
+}
 
 export async function settingsRoutes(fastify: FastifyInstance) {
   // All settings routes require auth
@@ -127,17 +154,33 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      const res = await fetch(`${url}/rest/api/space?limit=1`, {
+      const opts: Record<string, unknown> = {
+        method: 'GET',
         headers: { Authorization: `Bearer ${pat}` },
         signal: AbortSignal.timeout(10_000),
-      });
+      };
+      const connectOpts = buildConnectOptions();
+      if (connectOpts) {
+        opts.connect = connectOpts;
+      }
 
-      if (res.ok) {
+      const { statusCode, body: responseBody } = await undiciRequest(
+        `${url}/rest/api/space?limit=1`,
+        opts as Parameters<typeof undiciRequest>[1],
+      );
+      // Drain response body to avoid memory leak
+      await responseBody.dump();
+
+      if (statusCode >= 200 && statusCode < 300) {
         return { success: true, message: 'Connection successful' };
       }
-      return { success: false, message: `HTTP ${res.status}: ${res.statusText}` };
+      return { success: false, message: `HTTP ${statusCode}` };
     } catch (err) {
-      return { success: false, message: err instanceof Error ? err.message : 'Connection failed' };
+      const message = err instanceof Error ? err.message : 'Connection failed';
+      const cause = err instanceof Error && err.cause instanceof Error ? err.cause.message : '';
+      const detail = cause && cause !== message ? `${message}: ${cause}` : message;
+      logger.warn({ err, url }, 'Confluence test connection failed');
+      return { success: false, message: detail };
     }
   });
 }
