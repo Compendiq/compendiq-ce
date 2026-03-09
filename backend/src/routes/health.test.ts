@@ -268,5 +268,23 @@ describe('Health routes', () => {
 
       delete process.env.LLM_BEARER_TOKEN;
     });
+
+    it('should not include Authorization header when LLM_AUTH_TYPE is none', async () => {
+      process.env.LLM_BEARER_TOKEN = 'should-be-ignored';
+      process.env.LLM_AUTH_TYPE = 'none';
+      mockFetch.mockResolvedValue({ ok: true, json: async () => ({ models: [{ name: 'test' }] }) });
+
+      await app.inject({ method: 'GET', url: '/api/health' });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          headers: {},
+        }),
+      );
+
+      delete process.env.LLM_BEARER_TOKEN;
+      delete process.env.LLM_AUTH_TYPE;
+    });
   });
 });
