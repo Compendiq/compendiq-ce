@@ -4,7 +4,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { m } from 'framer-motion';
 import {
   ArrowLeft, Edit3, Save, X, Trash2, Wand2, FileText,
-  ExternalLink, Clock, User, Tag,
+  ExternalLink, Clock, User,
 } from 'lucide-react';
 import DOMPurify from 'dompurify';
 import { usePage, useUpdatePage, useDeletePage } from '../../shared/hooks/use-pages';
@@ -13,6 +13,7 @@ import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
 import { TableOfContents } from '../../shared/components/TableOfContents';
 import { DuplicateDetector } from './DuplicateDetector';
 import { AutoTagger } from './AutoTagger';
+import { TagEditor } from './TagEditor';
 import { VersionHistory } from './VersionHistory';
 import { toast } from 'sonner';
 
@@ -203,14 +204,7 @@ export function PageViewPage() {
           </span>
         )}
         <span className="text-xs">v{page.version}</span>
-        {page.labels.length > 0 && (
-          <div className="flex items-center gap-1">
-            <Tag size={12} />
-            {page.labels.map((l) => (
-              <span key={l} className="rounded bg-white/5 px-1.5 py-0.5 text-xs">{l}</span>
-            ))}
-          </div>
-        )}
+        <TagEditor pageId={id!} labels={page.labels} />
         <a
           href={`#confluence-page:${id}`}
           target="_blank"

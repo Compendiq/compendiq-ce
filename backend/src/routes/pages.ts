@@ -27,6 +27,10 @@ const IdParamSchema = z.object({ id: z.string().min(1) });
 const VersionParamSchema = z.object({ id: z.string().min(1), version: z.coerce.number().int().positive() });
 const AutoTagBodySchema = z.object({ model: z.string().min(1) });
 const ApplyTagsBodySchema = z.object({ tags: z.array(z.string().min(1)).min(1) });
+const UpdateLabelsBodySchema = z.object({
+  addLabels: z.array(z.string().min(1).max(100)).default([]),
+  removeLabels: z.array(z.string().min(1).max(100)).default([]),
+});
 
 export async function pagesRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -670,6 +674,69 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     await cache.invalidate(userId, 'pages');
 
     return { labels: mergedLabels };
+  });
+
+  // PUT /api/pages/:id/labels - add/remove labels on a single page
+  fastify.put('/pages/:id/labels', async (request) => {
+    const { id } = IdParamSchema.parse(request.params);
+    const userId = request.userId;
+    const { addLabels: labelsToAdd, removeLabels: labelsToRemove } = UpdateLabelsBodySchema.parse(request.body);
+
+    if (labelsToAdd.length === 0 && labelsToRemove.length === 0) {
+      throw fastify.httpErrors.badRequest('At least one of addLabels or removeLabels must be provided');
+    }
+
+    // Fetch existing labels
+    const existing = await query<{ labels: string[] }>(
+      'SELECT labels FROM cached_pages WHERE user_id = $1 AND confluence_id = $2',
+      [userId, id],
+    );
+
+    if (existing.rows.length === 0) {
+      throw fastify.httpErrors.notFound('Page not found');
+    }
+
+    let labels = existing.rows[0].labels || [];
+
+    // Remove labels
+    if (labelsToRemove.length > 0) {
+      const removeSet = new Set(labelsToRemove);
+      labels = labels.filter((l) => !removeSet.has(l));
+    }
+
+    // Add labels (deduplicating)
+    if (labelsToAdd.length > 0) {
+      const labelSet = new Set(labels);
+      for (const label of labelsToAdd) {
+        labelSet.add(label);
+      }
+      labels = [...labelSet];
+    }
+
+    await query(
+      'UPDATE cached_pages SET labels = $3 WHERE user_id = $1 AND confluence_id = $2',
+      [userId, id, labels],
+    );
+
+    // Sync to Confluence
+    const client = await getClientForUser(userId);
+    if (client) {
+      try {
+        if (labelsToAdd.length > 0) {
+          await client.addLabels(id, labelsToAdd);
+        }
+        for (const label of labelsToRemove) {
+          await client.removeLabel(id, label);
+        }
+      } catch (err) {
+        logger.error({ err, confluenceId: id, userId }, 'Failed to sync labels to Confluence');
+      }
+    }
+
+    // Invalidate cache
+    await cache.invalidate(userId, 'pages');
+
+    return { labels };
   });
 
   // POST /api/admin/auto-tag-all - auto-tag all pages without labels (admin)
