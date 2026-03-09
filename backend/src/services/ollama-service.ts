@@ -1,11 +1,29 @@
 import { Ollama } from 'ollama';
+import type { Config } from 'ollama';
 import pLimit from 'p-limit';
 import { sanitizeLlmInput } from '../utils/sanitize-llm-input.js';
 import { logger } from '../utils/logger.js';
 import { ollamaBreakers } from './circuit-breaker.js';
 
-const ollamaConfig: { host: string; headers?: Record<string, string> } = {
+/** Default timeout for Ollama HTTP requests (30 s). */
+const OLLAMA_REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * Wrap the global `fetch` so every Ollama request gets an abort-signal
+ * timeout.  If the caller already supplies a signal the caller's signal
+ * wins (the ollama SDK sets signals for streaming requests).
+ */
+const ollamaFetch: typeof fetch = (input, init?) => {
+  const hasSignal = init?.signal != null;
+  return fetch(input, {
+    ...init,
+    signal: hasSignal ? init!.signal : AbortSignal.timeout(OLLAMA_REQUEST_TIMEOUT_MS),
+  });
+};
+
+const ollamaConfig: Partial<Config> = {
   host: process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434',
+  fetch: ollamaFetch,
 };
 
 if (process.env.LLM_BEARER_TOKEN) {
@@ -81,12 +99,19 @@ export async function listModels(): Promise<Array<{ name: string; size: number; 
   });
 }
 
-export async function checkHealth(): Promise<boolean> {
+export interface OllamaHealthResult {
+  connected: boolean;
+  error?: string;
+}
+
+export async function checkHealth(): Promise<OllamaHealthResult> {
   try {
     await ollama.list();
-    return true;
-  } catch {
-    return false;
+    return { connected: true };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    logger.debug({ err }, 'Ollama health check failed');
+    return { connected: false, error: message };
   }
 }
 
