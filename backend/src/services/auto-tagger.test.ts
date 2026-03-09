@@ -1,10 +1,23 @@
 import { describe, it, expect, vi } from 'vitest';
-import { parseTagResponse, ALLOWED_TAGS } from './auto-tagger.js';
+import { parseTagResponse, ALLOWED_TAGS, autoTagContent } from './auto-tagger.js';
 
 // Mock ollama-service to avoid real API calls
+const mockChat = vi.fn();
 vi.mock('./ollama-service.js', () => ({
-  chat: vi.fn(),
+  chat: (...args: unknown[]) => mockChat(...args),
   generateEmbedding: vi.fn(),
+}));
+
+vi.mock('./content-converter.js', () => ({
+  htmlToMarkdown: vi.fn().mockReturnValue('some markdown content'),
+}));
+
+vi.mock('../utils/sanitize-llm-input.js', () => ({
+  sanitizeLlmInput: vi.fn().mockReturnValue({ sanitized: 'sanitized content' }),
+}));
+
+vi.mock('../utils/logger.js', () => ({
+  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
 describe('AutoTagger', () => {
@@ -90,6 +103,37 @@ describe('AutoTagger', () => {
 
     it('should have 12 tags', () => {
       expect(ALLOWED_TAGS).toHaveLength(12);
+    });
+  });
+
+  describe('autoTagContent', () => {
+    it('should return parsed tags on successful LLM response', async () => {
+      mockChat.mockResolvedValueOnce('["architecture", "deployment"]');
+
+      const result = await autoTagContent('qwen3:32b', 'some content');
+      expect(result).toEqual(['architecture', 'deployment']);
+      expect(mockChat).toHaveBeenCalledOnce();
+    });
+
+    it('should wrap LLM errors with descriptive message', async () => {
+      mockChat.mockRejectedValueOnce(new Error('connect ECONNREFUSED 127.0.0.1:11434'));
+
+      await expect(autoTagContent('qwen3:32b', 'some content'))
+        .rejects.toThrow('Auto-tag LLM call failed: connect ECONNREFUSED 127.0.0.1:11434');
+    });
+
+    it('should wrap non-Error LLM failures with descriptive message', async () => {
+      mockChat.mockRejectedValueOnce('string error');
+
+      await expect(autoTagContent('qwen3:32b', 'some content'))
+        .rejects.toThrow('Auto-tag LLM call failed: string error');
+    });
+
+    it('should wrap fetch failed errors', async () => {
+      mockChat.mockRejectedValueOnce(new TypeError('fetch failed'));
+
+      await expect(autoTagContent('qwen3:32b', 'some content'))
+        .rejects.toThrow('Auto-tag LLM call failed: fetch failed');
     });
   });
 });

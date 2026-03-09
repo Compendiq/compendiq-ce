@@ -1,0 +1,211 @@
+import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vitest';
+import Fastify from 'fastify';
+import sensible from '@fastify/sensible';
+import { ZodError } from 'zod';
+import { pagesRoutes } from './pages.js';
+
+// Mock external dependencies
+vi.mock('../services/redis-cache.js', () => {
+  return {
+    RedisCache: class MockRedisCache {
+      get = vi.fn().mockResolvedValue(null);
+      set = vi.fn().mockResolvedValue(undefined);
+      invalidate = vi.fn().mockResolvedValue(undefined);
+    },
+  };
+});
+
+vi.mock('../services/sync-service.js', () => ({
+  getClientForUser: vi.fn().mockResolvedValue({
+    deletePage: vi.fn().mockResolvedValue(undefined),
+    getPage: vi.fn().mockResolvedValue({
+      id: 'page-1',
+      title: 'Test Page',
+      body: { storage: { value: '<p>content</p>' } },
+      version: { number: 1 },
+    }),
+    addLabels: vi.fn().mockResolvedValue(undefined),
+    removeLabel: vi.fn().mockResolvedValue(undefined),
+  }),
+}));
+
+vi.mock('../services/content-converter.js', () => ({
+  htmlToConfluence: vi.fn().mockReturnValue('<p>content</p>'),
+  confluenceToHtml: vi.fn().mockReturnValue('<p>content</p>'),
+  htmlToText: vi.fn().mockReturnValue('content'),
+}));
+
+vi.mock('../services/attachment-handler.js', () => ({
+  cleanPageAttachments: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('../services/audit-service.js', () => ({
+  logAuditEvent: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('../services/duplicate-detector.js', () => ({
+  findDuplicates: vi.fn().mockResolvedValue([]),
+  scanAllDuplicates: vi.fn().mockResolvedValue([]),
+}));
+
+const mockAutoTagPage = vi.fn();
+vi.mock('../services/auto-tagger.js', () => ({
+  autoTagPage: (...args: unknown[]) => mockAutoTagPage(...args),
+  applyTags: vi.fn().mockResolvedValue([]),
+  autoTagAllPages: vi.fn().mockResolvedValue(undefined),
+  ALLOWED_TAGS: ['architecture', 'deployment', 'troubleshooting', 'how-to', 'api', 'security', 'database', 'monitoring', 'configuration', 'onboarding', 'policy', 'runbook'],
+}));
+
+vi.mock('../services/version-tracker.js', () => ({
+  getVersionHistory: vi.fn().mockResolvedValue([]),
+  getVersion: vi.fn().mockResolvedValue(null),
+  getSemanticDiff: vi.fn().mockResolvedValue('no diff'),
+  saveVersionSnapshot: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('../utils/logger.js', () => ({
+  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
+}));
+
+const mockQueryFn = vi.fn();
+vi.mock('../db/postgres.js', () => ({
+  query: (...args: unknown[]) => mockQueryFn(...args),
+  getPool: vi.fn().mockReturnValue({}),
+  runMigrations: vi.fn(),
+  closePool: vi.fn(),
+}));
+
+describe('POST /api/pages/:id/auto-tag', () => {
+  let app: ReturnType<typeof Fastify>;
+
+  beforeAll(async () => {
+    app = Fastify({ logger: false });
+    await app.register(sensible);
+
+    app.setErrorHandler((error, _request, reply) => {
+      if (error instanceof ZodError) {
+        reply.status(400).send({
+          error: 'ValidationError',
+          message: error.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; '),
+          statusCode: 400,
+        });
+        return;
+      }
+      reply.status(error.statusCode ?? 500).send({ error: error.message, statusCode: error.statusCode ?? 500 });
+    });
+
+    app.decorate('authenticate', async (request: { userId: string; username: string; userRole: string }) => {
+      request.userId = 'test-user-id';
+      request.username = 'testuser';
+      request.userRole = 'user';
+    });
+    app.decorate('requireAdmin', async (request: { userId: string; username: string; userRole: string }) => {
+      request.userId = 'test-user-id';
+      request.username = 'testuser';
+      request.userRole = 'admin';
+    });
+    app.decorate('redis', {});
+
+    await app.register(pagesRoutes, { prefix: '/api' });
+    await app.ready();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockQueryFn.mockResolvedValue({ rows: [{ labels: ['existing'] }], rowCount: 1 });
+  });
+
+  it('should return suggested tags on success', async () => {
+    mockAutoTagPage.mockResolvedValueOnce({
+      suggestedTags: ['architecture', 'deployment'],
+      existingLabels: ['existing'],
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/page-1/auto-tag',
+      payload: { model: 'qwen3:32b' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.suggestedTags).toEqual(['architecture', 'deployment']);
+    expect(body.existingLabels).toEqual(['existing']);
+  });
+
+  it('should return 404 when page is not found', async () => {
+    mockAutoTagPage.mockRejectedValueOnce(new Error('Page not found: page-999'));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/page-999/auto-tag',
+      payload: { model: 'qwen3:32b' },
+    });
+
+    expect(response.statusCode).toBe(404);
+    const body = JSON.parse(response.body);
+    expect(body.error).toContain('not found');
+  });
+
+  it('should return 503 when LLM server is unreachable (ECONNREFUSED)', async () => {
+    mockAutoTagPage.mockRejectedValueOnce(
+      new Error('Auto-tag LLM call failed: connect ECONNREFUSED 127.0.0.1:11434'),
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/page-1/auto-tag',
+      payload: { model: 'qwen3:32b' },
+    });
+
+    expect(response.statusCode).toBe(503);
+    const body = JSON.parse(response.body);
+    expect(body.error).toBe('LLM server is not reachable');
+  });
+
+  it('should return 503 when LLM fetch fails', async () => {
+    mockAutoTagPage.mockRejectedValueOnce(
+      new Error('Auto-tag LLM call failed: fetch failed'),
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/page-1/auto-tag',
+      payload: { model: 'qwen3:32b' },
+    });
+
+    expect(response.statusCode).toBe(503);
+    const body = JSON.parse(response.body);
+    expect(body.error).toBe('LLM server is not reachable');
+  });
+
+  it('should return 502 for other LLM errors', async () => {
+    mockAutoTagPage.mockRejectedValueOnce(
+      new Error('Auto-tag LLM call failed: model "bad-model" not found'),
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/page-1/auto-tag',
+      payload: { model: 'bad-model' },
+    });
+
+    expect(response.statusCode).toBe(502);
+    const body = JSON.parse(response.body);
+    expect(body.error).toBe('Auto-tagging failed — check LLM server connection');
+  });
+
+  it('should return 400 when model is missing from body', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/page-1/auto-tag',
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+});
