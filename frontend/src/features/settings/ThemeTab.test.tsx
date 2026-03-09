@@ -79,13 +79,20 @@ describe('ThemeTab', () => {
     expect(screen.getByTestId('tab-theme')).toHaveTextContent('Theme');
   });
 
-  it('renders all 10 theme options', async () => {
+  it('renders theme category sections', async () => {
     render(<SettingsPage />, { wrapper: createWrapper() });
     await navigateToThemeTab();
 
-    const grid = screen.getByTestId('theme-grid');
-    expect(grid).toBeInTheDocument();
+    expect(screen.getByTestId('theme-category-dark')).toBeInTheDocument();
+    expect(screen.getByTestId('theme-category-bright')).toBeInTheDocument();
+    expect(screen.getByTestId('theme-category-catppuccin')).toBeInTheDocument();
+  });
 
+  it('renders all 24 theme options across categories', async () => {
+    render(<SettingsPage />, { wrapper: createWrapper() });
+    await navigateToThemeTab();
+
+    // Dark themes
     expect(screen.getByTestId('theme-midnight-blue')).toBeInTheDocument();
     expect(screen.getByTestId('theme-ocean-depth')).toBeInTheDocument();
     expect(screen.getByTestId('theme-emerald-dark')).toBeInTheDocument();
@@ -96,6 +103,24 @@ describe('ThemeTab', () => {
     expect(screen.getByTestId('theme-cyber-teal')).toBeInTheDocument();
     expect(screen.getByTestId('theme-sunset-glow')).toBeInTheDocument();
     expect(screen.getByTestId('theme-slate-minimal')).toBeInTheDocument();
+
+    // Bright themes
+    expect(screen.getByTestId('theme-cloud-white')).toBeInTheDocument();
+    expect(screen.getByTestId('theme-lavender-bloom')).toBeInTheDocument();
+    expect(screen.getByTestId('theme-mint-fresh')).toBeInTheDocument();
+    expect(screen.getByTestId('theme-peach-blossom')).toBeInTheDocument();
+    expect(screen.getByTestId('theme-sky-blue')).toBeInTheDocument();
+    expect(screen.getByTestId('theme-lemon-drop')).toBeInTheDocument();
+    expect(screen.getByTestId('theme-rose-garden')).toBeInTheDocument();
+    expect(screen.getByTestId('theme-sage-light')).toBeInTheDocument();
+    expect(screen.getByTestId('theme-sand-dune')).toBeInTheDocument();
+    expect(screen.getByTestId('theme-ice-crystal')).toBeInTheDocument();
+
+    // Catppuccin themes
+    expect(screen.getByTestId('theme-catppuccin-latte')).toBeInTheDocument();
+    expect(screen.getByTestId('theme-catppuccin-frappe')).toBeInTheDocument();
+    expect(screen.getByTestId('theme-catppuccin-macchiato')).toBeInTheDocument();
+    expect(screen.getByTestId('theme-catppuccin-mocha')).toBeInTheDocument();
   });
 
   it('shows active badge on the current theme', async () => {
@@ -118,6 +143,24 @@ describe('ThemeTab', () => {
     fireEvent.click(screen.getByTestId('theme-ocean-depth'));
 
     expect(useThemeStore.getState().theme).toBe('ocean-depth');
+  });
+
+  it('switches to a bright theme', async () => {
+    render(<SettingsPage />, { wrapper: createWrapper() });
+    await navigateToThemeTab();
+
+    fireEvent.click(screen.getByTestId('theme-cloud-white'));
+
+    expect(useThemeStore.getState().theme).toBe('cloud-white');
+  });
+
+  it('switches to a catppuccin theme', async () => {
+    render(<SettingsPage />, { wrapper: createWrapper() });
+    await navigateToThemeTab();
+
+    fireEvent.click(screen.getByTestId('theme-catppuccin-mocha'));
+
+    expect(useThemeStore.getState().theme).toBe('catppuccin-mocha');
   });
 
   it('calls onSave with the selected theme id', async () => {
@@ -146,5 +189,16 @@ describe('ThemeTab', () => {
     expect(screen.getByText('Deep blue-violet with electric blue accents')).toBeInTheDocument();
     expect(screen.getByText('Ocean Depth')).toBeInTheDocument();
     expect(screen.getByText('Slate Minimal')).toBeInTheDocument();
+    expect(screen.getByText('Cloud White')).toBeInTheDocument();
+    expect(screen.getByText('Catppuccin Mocha')).toBeInTheDocument();
+  });
+
+  it('displays category headers', async () => {
+    render(<SettingsPage />, { wrapper: createWrapper() });
+    await navigateToThemeTab();
+
+    expect(screen.getByText('Dark')).toBeInTheDocument();
+    expect(screen.getByText('Bright')).toBeInTheDocument();
+    expect(screen.getByText('Catppuccin')).toBeInTheDocument();
   });
 });
