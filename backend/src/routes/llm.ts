@@ -14,6 +14,7 @@ import {
   GenerateRequestSchema,
   SummarizeRequestSchema,
   AskRequestSchema,
+  GenerateDiagramRequestSchema,
 } from '@kb-creator/contracts';
 import { z } from 'zod';
 import { sanitizeLlmInput } from '../utils/sanitize-llm-input.js';
@@ -261,6 +262,48 @@ export async function llmRoutes(fastify: FastifyInstance) {
     const generator = streamChat(model, [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: sanitizedMarkdown },
+    ]);
+
+    await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
+  });
+
+  // POST /api/llm/generate-diagram - stream Mermaid diagram from article content
+  fastify.post('/llm/generate-diagram', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
+    const body = GenerateDiagramRequestSchema.parse(request.body);
+    const { content, model, diagramType = 'flowchart' } = body;
+
+    if (content.length > MAX_INPUT_LENGTH) {
+      throw fastify.httpErrors.badRequest(`Content too large (max ${MAX_INPUT_LENGTH} characters)`);
+    }
+
+    const markdown = htmlToMarkdown(content);
+
+    // Sanitize before sending to LLM
+    const { sanitized, warnings } = sanitizeLlmInput(markdown);
+    if (warnings.length > 0) {
+      await logAuditEvent(request.userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/generate-diagram' }, request);
+    }
+
+    const systemPrompt = getSystemPrompt(`generate_diagram_${diagramType}` as SystemPromptKey);
+
+    // Check LLM cache
+    const cacheKey = buildLlmCacheKey(model, systemPrompt, sanitized);
+    const cached = await llmCache.getCachedResponse(cacheKey);
+    if (cached) {
+      reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      reply.raw.write(`data: ${JSON.stringify({ content: cached.content, done: true, cached: true })}\n\n`);
+      reply.raw.end();
+      return;
+    }
+
+    const generator = streamChat(model, [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: sanitized },
     ]);
 
     await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
