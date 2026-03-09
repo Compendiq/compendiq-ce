@@ -7,6 +7,7 @@ export const UserSettingsSchema = z.object({
   ollamaModel: z.string(),
   theme: z.string(),
   syncIntervalMin: z.number().int().min(1).max(1440),
+  showSpaceHomeContent: z.boolean(),
 });
 
 export const UpdateSettingsSchema = UserSettingsSchema.partial();
@@ -20,6 +21,7 @@ export const SettingsResponseSchema = z.object({
   theme: z.string(),
   syncIntervalMin: z.number(),
   confluenceConnected: z.boolean(),
+  showSpaceHomeContent: z.boolean(),
 });
 
 export const TestConfluenceSchema = z.object({
