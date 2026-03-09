@@ -161,19 +161,19 @@ describe('Health routes', () => {
       expect(body.status).toBe('ok');
       expect(body.services).toHaveProperty('postgres');
       expect(body.services).toHaveProperty('redis');
-      expect(body.services).toHaveProperty('ollama');
+      expect(body.services).toHaveProperty('llm');
       expect(body).toHaveProperty('circuitBreakers');
       expect(body.circuitBreakers).toHaveProperty('ollama');
       expect(body.circuitBreakers).toHaveProperty('openai');
       expect(body).toHaveProperty('llmProvider');
     });
 
-    it('should report ollama=false when LLM provider is unreachable', async () => {
+    it('should report llm=false when LLM provider is unreachable', async () => {
       mockCheckHealth.mockResolvedValue({ connected: false, error: 'timeout' });
 
       const response = await app.inject({ method: 'GET', url: '/api/health' });
       const body = JSON.parse(response.body);
-      expect(body.services.ollama).toBe(false);
+      expect(body.services.llm).toBe(false);
     });
 
     it('should use active provider for health check', async () => {
@@ -182,7 +182,7 @@ describe('Health routes', () => {
 
       const response = await app.inject({ method: 'GET', url: '/api/health' });
       const body = JSON.parse(response.body);
-      expect(body.services.ollama).toBe(true);
+      expect(body.services.llm).toBe(true);
       expect(body.llmProvider).toBe('openai');
       expect(mockCheckHealth).toHaveBeenCalled();
     });

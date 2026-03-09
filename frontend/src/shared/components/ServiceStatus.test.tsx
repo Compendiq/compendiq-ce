@@ -12,7 +12,7 @@ function Wrapper({ children }: { children: React.ReactNode }) {
 describe('ServiceStatus', () => {
   beforeEach(() => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({ status: 'ok', services: { postgres: true, redis: true, ollama: true } }), {
+      new Response(JSON.stringify({ status: 'ok', llmProvider: 'ollama', services: { postgres: true, redis: true, llm: true } }), {
         headers: { 'Content-Type': 'application/json' },
       }),
     );
@@ -32,6 +32,7 @@ describe('ServiceStatus', () => {
 
     // No alerts should be visible
     expect(screen.queryByText('Ollama server is down')).not.toBeInTheDocument();
+    expect(screen.queryByText('LLM server is unreachable')).not.toBeInTheDocument();
     expect(screen.queryByText('Redis is unavailable')).not.toBeInTheDocument();
   });
 
@@ -40,7 +41,8 @@ describe('ServiceStatus', () => {
       new Response(
         JSON.stringify({
           status: 'degraded',
-          services: { postgres: true, redis: true, ollama: false },
+          llmProvider: 'ollama',
+          services: { postgres: true, redis: true, llm: false },
         }),
         { headers: { 'Content-Type': 'application/json' } },
       ),
@@ -53,12 +55,33 @@ describe('ServiceStatus', () => {
     });
   });
 
+  it('shows provider-aware alert when OpenAI provider is disconnected', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          status: 'degraded',
+          llmProvider: 'openai',
+          services: { postgres: true, redis: true, llm: false },
+        }),
+        { headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    render(<ServiceStatus />, { wrapper: Wrapper });
+
+    await waitFor(() => {
+      expect(screen.getByText('LLM server is unreachable')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('Ollama server is down')).not.toBeInTheDocument();
+  });
+
   it('shows alert when Redis is disconnected', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(
         JSON.stringify({
           status: 'degraded',
-          services: { postgres: true, redis: false, ollama: true },
+          llmProvider: 'ollama',
+          services: { postgres: true, redis: false, llm: true },
         }),
         { headers: { 'Content-Type': 'application/json' } },
       ),
@@ -86,7 +109,8 @@ describe('ServiceStatus', () => {
       new Response(
         JSON.stringify({
           status: 'degraded',
-          services: { postgres: true, redis: false, ollama: false },
+          llmProvider: 'ollama',
+          services: { postgres: true, redis: false, llm: false },
         }),
         { headers: { 'Content-Type': 'application/json' } },
       ),
@@ -105,7 +129,8 @@ describe('ServiceStatus', () => {
       new Response(
         JSON.stringify({
           status: 'degraded',
-          services: { postgres: true, redis: true, ollama: false },
+          llmProvider: 'ollama',
+          services: { postgres: true, redis: true, llm: false },
         }),
         { headers: { 'Content-Type': 'application/json' } },
       ),
