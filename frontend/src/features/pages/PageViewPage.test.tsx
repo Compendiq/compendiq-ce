@@ -27,8 +27,16 @@ const mockPage = {
   status: 'current',
 };
 
+const mockPageWithCode = {
+  ...mockPage,
+  bodyHtml: '<p>Use <code>console.log()</code> for debugging.</p><pre><code class="language-javascript">const x = 42;\nconsole.log(x);</code></pre>',
+  bodyText: 'Use console.log() for debugging. const x = 42; console.log(x);',
+};
+
+let currentMockPage = mockPage;
+
 vi.mock('../../shared/hooks/use-pages', () => ({
-  usePage: () => ({ data: mockPage, isLoading: false }),
+  usePage: () => ({ data: currentMockPage, isLoading: false }),
   useUpdatePage: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useUpdatePageLabels: () => ({ mutate: vi.fn(), isPending: false }),
   useDeletePage: () => ({ mutateAsync: vi.fn() }),
@@ -55,6 +63,7 @@ function createWrapper() {
 
 describe('PageViewPage', () => {
   beforeEach(() => {
+    currentMockPage = mockPage;
     useAuthStore.getState().setAuth('test-token', {
       id: '1',
       username: 'testuser',
@@ -95,5 +104,24 @@ describe('PageViewPage', () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
 
     expect(screen.getByText('Duplicate Detection')).toBeInTheDocument();
+  });
+
+  it('renders inline code and code blocks visually', () => {
+    currentMockPage = mockPageWithCode;
+    const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
+
+    // Content area should have prose classes for code styling
+    const contentArea = container.querySelector('.prose.prose-invert');
+    expect(contentArea).toBeInTheDocument();
+
+    // Inline code should be rendered
+    const inlineCode = container.querySelector('code');
+    expect(inlineCode).toBeInTheDocument();
+    expect(inlineCode!.textContent).toBe('console.log()');
+
+    // Code block should be rendered with language class
+    const codeBlock = container.querySelector('pre code.language-javascript');
+    expect(codeBlock).toBeInTheDocument();
+    expect(codeBlock!.textContent).toContain('const x = 42');
   });
 });
