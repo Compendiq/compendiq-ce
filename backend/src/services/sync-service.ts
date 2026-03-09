@@ -1,7 +1,7 @@
 import { query } from '../db/postgres.js';
 import { ConfluenceClient, ConfluencePage } from './confluence-client.js';
 import { confluenceToHtml, htmlToText } from './content-converter.js';
-import { syncDrawioAttachments, cleanPageAttachments } from './attachment-handler.js';
+import { syncDrawioAttachments, syncImageAttachments, cleanPageAttachments } from './attachment-handler.js';
 import { saveVersionSnapshot } from './version-tracker.js';
 import { decryptPat } from '../utils/crypto.js';
 import { logger } from '../utils/logger.js';
@@ -150,8 +150,9 @@ async function syncPage(
   const bodyHtml = confluenceToHtml(bodyStorage, page.id);
   const bodyText = htmlToText(bodyHtml);
 
-  // Sync draw.io attachments
+  // Sync draw.io and image attachments
   await syncDrawioAttachments(client, userId, page.id, bodyStorage);
+  await syncImageAttachments(client, userId, page.id, bodyStorage);
 
   // Extract metadata
   const labels = page.metadata?.labels?.results?.map((l) => l.name) ?? [];

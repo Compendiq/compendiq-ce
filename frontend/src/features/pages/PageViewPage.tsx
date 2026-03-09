@@ -1,13 +1,15 @@
-import { useState, useCallback, useMemo, useRef } from 'react';
+import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { useQueryClient } from '@tanstack/react-query';
-import { m } from 'framer-motion';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { m, AnimatePresence } from 'framer-motion';
 import {
   ArrowLeft, Edit3, Save, X, Trash2, Wand2, FileText,
   ExternalLink, Clock, User,
 } from 'lucide-react';
 import DOMPurify from 'dompurify';
+import type { SettingsResponse } from '@kb-creator/contracts';
 import { usePage, useUpdatePage, useDeletePage } from '../../shared/hooks/use-pages';
+import { apiFetch } from '../../shared/lib/api';
 import { Editor, getDraft, clearDraft } from '../../shared/components/Editor';
 import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
 import { TableOfContents } from '../../shared/components/TableOfContents';
@@ -16,6 +18,50 @@ import { AutoTagger } from './AutoTagger';
 import { TagEditor } from './TagEditor';
 import { VersionHistory } from './VersionHistory';
 import { toast } from 'sonner';
+
+// Configure DOMPurify to preserve attributes needed for draw.io and images
+DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
+  // Allow data-diagram-name and data-drawio attributes
+  if (data.attrName === 'data-diagram-name' || data.attrName === 'data-drawio') {
+    data.forceKeepAttr = true;
+  }
+});
+
+function ImageLightbox({ src, alt, onClose }: { src: string; alt: string; onClose: () => void }) {
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', handleKey);
+    return () => document.removeEventListener('keydown', handleKey);
+  }, [onClose]);
+
+  return (
+    <m.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
+      onClick={onClose}
+      role="dialog"
+      aria-label={`Image preview: ${alt}`}
+    >
+      <button
+        onClick={onClose}
+        className="absolute top-4 right-4 rounded-full bg-white/10 p-2 text-white hover:bg-white/20"
+        aria-label="Close preview"
+      >
+        <X size={20} />
+      </button>
+      <img
+        src={src}
+        alt={alt}
+        className="max-h-[90vh] max-w-[90vw] rounded-lg object-contain"
+        onClick={(e) => e.stopPropagation()}
+      />
+    </m.div>
+  );
+}
 
 export function PageViewPage() {
   const { id } = useParams<{ id: string }>();
@@ -28,14 +74,58 @@ export function PageViewPage() {
   const [editing, setEditing] = useState(false);
   const [editTitle, setEditTitle] = useState('');
   const [editHtml, setEditHtml] = useState('');
+  const [lightboxSrc, setLightboxSrc] = useState<{ src: string; alt: string } | null>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+
+  const { data: settings } = useQuery({
+    queryKey: ['settings'],
+    queryFn: () => apiFetch<SettingsResponse>('/settings'),
+    staleTime: 5 * 60 * 1000,
+  });
 
   const draftKey = id ? `page-${id}` : undefined;
 
   const sanitizedHtml = useMemo(
-    () => (page ? DOMPurify.sanitize(page.bodyHtml) : ''),
+    () => (page ? DOMPurify.sanitize(page.bodyHtml, {
+      ADD_ATTR: ['data-diagram-name', 'data-drawio'],
+    }) : ''),
     [page],
   );
+
+  // Attach click-to-zoom on images and update draw.io edit links
+  useEffect(() => {
+    const container = contentRef.current;
+    if (!container || editing) return;
+
+    // Click-to-zoom for images
+    const handleImageClick = (e: Event) => {
+      const img = e.currentTarget as HTMLImageElement;
+      setLightboxSrc({ src: img.src, alt: img.alt || 'Image preview' });
+    };
+
+    const images = container.querySelectorAll('img');
+    for (const img of images) {
+      img.style.cursor = 'zoom-in';
+      img.addEventListener('click', handleImageClick);
+    }
+
+    // Update draw.io "Edit in Confluence" links with real Confluence URL
+    if (settings?.confluenceUrl && id) {
+      const editLinks = container.querySelectorAll('a.drawio-edit-link');
+      for (const link of editLinks) {
+        const anchor = link as HTMLAnchorElement;
+        anchor.href = `${settings.confluenceUrl}/pages/viewpage.action?pageId=${encodeURIComponent(id)}`;
+        anchor.target = '_blank';
+        anchor.rel = 'noreferrer';
+      }
+    }
+
+    return () => {
+      for (const img of images) {
+        img.removeEventListener('click', handleImageClick);
+      }
+    };
+  }, [sanitizedHtml, editing, settings?.confluenceUrl, id]);
 
   const startEditing = useCallback(() => {
     if (!page || !id) return;
@@ -205,14 +295,16 @@ export function PageViewPage() {
         )}
         <span className="text-xs">v{page.version}</span>
         <TagEditor pageId={id!} labels={page.labels} editing={editing} />
-        <a
-          href={`#confluence-page:${id}`}
-          target="_blank"
-          rel="noreferrer"
-          className="ml-auto flex items-center gap-1 text-primary hover:underline"
-        >
-          Open in Confluence <ExternalLink size={12} />
-        </a>
+        {settings?.confluenceUrl && (
+          <a
+            href={`${settings.confluenceUrl}/pages/viewpage.action?pageId=${encodeURIComponent(id!)}`}
+            target="_blank"
+            rel="noreferrer"
+            className="ml-auto flex items-center gap-1 text-primary hover:underline"
+          >
+            Open in Confluence <ExternalLink size={12} />
+          </a>
+        )}
       </div>
 
       {/* Content with optional Table of Contents */}
@@ -232,6 +324,17 @@ export function PageViewPage() {
           </div>
         </div>
       )}
+
+      {/* Image lightbox */}
+      <AnimatePresence>
+        {lightboxSrc && (
+          <ImageLightbox
+            src={lightboxSrc.src}
+            alt={lightboxSrc.alt}
+            onClose={() => setLightboxSrc(null)}
+          />
+        )}
+      </AnimatePresence>
     </m.div>
   );
 }

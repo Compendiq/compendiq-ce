@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -31,6 +31,18 @@ const mockPageWithCode = {
   ...mockPage,
   bodyHtml: '<p>Use <code>console.log()</code> for debugging.</p><pre><code class="language-javascript">const x = 42;\nconsole.log(x);</code></pre>',
   bodyText: 'Use console.log() for debugging. const x = 42; console.log(x);',
+};
+
+const mockPageWithImages = {
+  ...mockPage,
+  bodyHtml: '<h2>Screenshots</h2><img src="/api/attachments/page-1/dashboard.png" alt="dashboard.png" width="600"><p>External:</p><img src="https://example.com/diagram.svg" alt="external">',
+  bodyText: 'Screenshots External:',
+};
+
+const mockPageWithDrawio = {
+  ...mockPage,
+  bodyHtml: '<h2>Architecture</h2><div class="confluence-drawio" data-diagram-name="system-topology"><img src="/api/attachments/page-1/system-topology.png" alt="Draw.io diagram: system-topology"><a class="drawio-edit-link" href="#" data-drawio="true">Edit in Confluence</a></div>',
+  bodyText: 'Architecture',
 };
 
 let currentMockPage = mockPage;
@@ -123,5 +135,95 @@ describe('PageViewPage', () => {
     const codeBlock = container.querySelector('pre code.language-javascript');
     expect(codeBlock).toBeInTheDocument();
     expect(codeBlock!.textContent).toContain('const x = 42');
+  });
+
+  it('renders images with correct src attributes', () => {
+    currentMockPage = mockPageWithImages;
+    const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
+
+    const images = container.querySelectorAll('img');
+    expect(images).toHaveLength(2);
+
+    // Local attachment image
+    expect(images[0]).toHaveAttribute('src', '/api/attachments/page-1/dashboard.png');
+    expect(images[0]).toHaveAttribute('alt', 'dashboard.png');
+
+    // External image
+    expect(images[1]).toHaveAttribute('src', 'https://example.com/diagram.svg');
+  });
+
+  it('renders draw.io diagrams with data attributes preserved', () => {
+    currentMockPage = mockPageWithDrawio;
+    const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
+
+    const drawioDiv = container.querySelector('.confluence-drawio');
+    expect(drawioDiv).toBeInTheDocument();
+    expect(drawioDiv).toHaveAttribute('data-diagram-name', 'system-topology');
+
+    const drawioImg = drawioDiv!.querySelector('img');
+    expect(drawioImg).toHaveAttribute('src', '/api/attachments/page-1/system-topology.png');
+
+    const editLink = drawioDiv!.querySelector('a.drawio-edit-link');
+    expect(editLink).toBeInTheDocument();
+    expect(editLink!.textContent).toBe('Edit in Confluence');
+  });
+
+  it('opens lightbox when clicking an image', () => {
+    currentMockPage = mockPageWithImages;
+    const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
+
+    const image = container.querySelector('img');
+    expect(image).toBeInTheDocument();
+
+    // Images should have zoom-in cursor
+    expect(image!.style.cursor).toBe('zoom-in');
+
+    // Click the image
+    fireEvent.click(image!);
+
+    // Lightbox should appear with a dialog role
+    const lightbox = screen.getByRole('dialog');
+    expect(lightbox).toBeInTheDocument();
+
+    // Close button should be present
+    const closeBtn = screen.getByLabelText('Close preview');
+    expect(closeBtn).toBeInTheDocument();
+  });
+
+  it('closes lightbox when clicking close button', async () => {
+    currentMockPage = mockPageWithImages;
+    const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
+
+    const image = container.querySelector('img');
+    fireEvent.click(image!);
+
+    // Lightbox is open
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+
+    // Click close
+    fireEvent.click(screen.getByLabelText('Close preview'));
+
+    // Wait for AnimatePresence exit animation
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+  });
+
+  it('closes lightbox on Escape key', async () => {
+    currentMockPage = mockPageWithImages;
+    const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
+
+    const image = container.querySelector('img');
+    fireEvent.click(image!);
+
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+
+    // Press Escape
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    // Wait for AnimatePresence exit animation
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
   });
 });
