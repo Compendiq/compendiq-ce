@@ -170,11 +170,15 @@ function ConfluenceTab({ settings, onSave }: { settings: SettingsResponse; onSav
 function OllamaTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: Record<string, unknown>) => void }) {
   const [model, setModel] = useState(settings.ollamaModel);
 
-  const { data: models, isFetching: loadingModels, refetch } = useQuery({
+  const { data: status } = useQuery({
+    queryKey: ['ollama-status'],
+    queryFn: () => apiFetch<{ connected: boolean; ollamaBaseUrl: string; embeddingModel: string }>('/ollama/status'),
+  });
+
+  const { data: models, isFetching: loadingModels, error: modelsError, refetch } = useQuery({
     queryKey: ['ollama-models'],
     queryFn: () => apiFetch<{ name: string }[]>('/ollama/models'),
-    enabled: false,
-    retry: false,
+    retry: 1,
   });
 
   return (
@@ -182,7 +186,8 @@ function OllamaTab({ settings, onSave }: { settings: SettingsResponse; onSave: (
       <div>
         <label className="mb-1.5 block text-sm font-medium">Ollama Server</label>
         <div className="flex items-center gap-2 rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm text-muted-foreground">
-          Shared server (configured by admin)
+          <span className={`inline-block h-2 w-2 rounded-full ${status?.connected ? 'bg-green-500' : 'bg-red-500'}`} />
+          {status?.ollamaBaseUrl ?? 'Loading...'} {status?.connected === false && '(disconnected)'}
         </div>
       </div>
 
@@ -193,19 +198,28 @@ function OllamaTab({ settings, onSave }: { settings: SettingsResponse; onSave: (
             value={model}
             onChange={(e) => setModel(e.target.value)}
             className="flex-1 rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm outline-none focus:border-primary"
+            data-testid="ollama-model-select"
           >
-            {models?.map((m) => (
-              <option key={m.name} value={m.name}>{m.name}</option>
-            )) ?? <option value={model}>{model}</option>}
+            {models && models.length > 0
+              ? models.map((m) => (
+                  <option key={m.name} value={m.name}>{m.name}</option>
+                ))
+              : <option value={model}>{model}</option>}
           </select>
           <button
             onClick={() => refetch()}
             disabled={loadingModels}
-            className="rounded-md border border-white/10 px-3 py-2 text-sm hover:bg-white/5"
+            className="rounded-md border border-white/10 px-3 py-2 text-sm hover:bg-white/5 disabled:opacity-50"
+            data-testid="ollama-scan-btn"
           >
-            Scan
+            {loadingModels ? 'Scanning...' : 'Scan'}
           </button>
         </div>
+        {modelsError && (
+          <p className="mt-1.5 text-xs text-destructive" data-testid="ollama-scan-error">
+            Failed to scan models: {modelsError.message}
+          </p>
+        )}
       </div>
 
       <div>
