@@ -41,7 +41,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
       <CommandPalette />
 
       {/* Top navigation bar */}
-      <header className="flex h-12 shrink-0 items-center border-b border-white/10 bg-card/80 px-4 backdrop-blur-md">
+      <header className="flex h-12 shrink-0 items-center border-b border-border/50 bg-card/80 px-4 backdrop-blur-md">
         {/* Logo */}
         <Link to="/" className="flex items-center gap-2 mr-6">
           <span className="text-sm font-semibold text-foreground">AI KB Creator</span>
@@ -62,7 +62,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
                   'flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors',
                   active
                     ? 'bg-primary/15 text-primary font-medium'
-                    : 'text-muted-foreground hover:bg-white/5 hover:text-foreground',
+                    : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
                 )}
               >
                 <Icon size={16} />
@@ -76,11 +76,11 @@ export function AppLayout({ children }: { children: ReactNode }) {
         <div className="ml-auto flex items-center gap-3">
           <button
             onClick={openCommandPalette}
-            className="flex items-center gap-1.5 rounded-md bg-white/5 px-2.5 py-1 text-xs text-muted-foreground hover:bg-white/10 transition-colors"
+            className="flex items-center gap-1.5 rounded-md bg-foreground/5 px-2.5 py-1 text-xs text-muted-foreground hover:bg-foreground/10 transition-colors"
           >
             <Search size={12} />
             <span>Search...</span>
-            <kbd className="rounded border border-white/10 px-1 py-0.5 text-[10px]">
+            <kbd className="rounded border border-border/50 px-1 py-0.5 text-[10px]">
               {navigator.platform?.includes('Mac') ? '\u2318' : 'Ctrl'}K
             </kbd>
           </button>
@@ -96,7 +96,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
         {/* Main content */}
         <div className="flex flex-1 flex-col overflow-hidden">
           {/* Breadcrumb bar */}
-          <div className="flex h-9 shrink-0 items-center border-b border-white/10 bg-card/40 px-4 backdrop-blur-sm">
+          <div className="flex h-9 shrink-0 items-center border-b border-border/50 bg-card/40 px-4 backdrop-blur-sm">
             <Breadcrumb />
           </div>
 

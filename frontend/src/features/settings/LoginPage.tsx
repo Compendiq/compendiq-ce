@@ -49,7 +49,7 @@ export function LoginPage() {
               onChange={(e) => setUsername(e.target.value)}
               required
               minLength={3}
-              className="w-full rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+              className="w-full rounded-md border border-border/50 bg-foreground/5 px-3 py-2 text-sm outline-none focus:border-primary focus:ring-1 focus:ring-primary"
               placeholder="Enter username"
             />
           </div>
@@ -62,7 +62,7 @@ export function LoginPage() {
               onChange={(e) => setPassword(e.target.value)}
               required
               minLength={8}
-              className="w-full rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+              className="w-full rounded-md border border-border/50 bg-foreground/5 px-3 py-2 text-sm outline-none focus:border-primary focus:ring-1 focus:ring-primary"
               placeholder="Enter password"
             />
           </div>

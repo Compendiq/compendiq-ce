@@ -135,7 +135,7 @@ describe('PageViewPage', () => {
     const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
 
     // Content area should have prose classes for code styling
-    const contentArea = container.querySelector('.prose.prose-invert');
+    const contentArea = container.querySelector('.prose');
     expect(contentArea).toBeInTheDocument();
 
     // Inline code should be rendered
@@ -258,7 +258,7 @@ describe('PageViewPage', () => {
     currentMockPage = mockPageWithHeadings;
     const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
 
-    const contentArea = container.querySelector('.prose.prose-invert');
+    const contentArea = container.querySelector('.prose');
     expect(contentArea).toBeInTheDocument();
 
     // All heading levels should render
@@ -284,7 +284,7 @@ describe('PageViewPage', () => {
     currentMockPage = mockPageWithPanelsAndTasks;
     const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
 
-    const contentArea = container.querySelector('.prose.prose-invert');
+    const contentArea = container.querySelector('.prose');
     expect(contentArea).toBeInTheDocument();
 
     // Info and warning panels

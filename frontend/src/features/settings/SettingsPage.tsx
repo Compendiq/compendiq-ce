@@ -48,7 +48,7 @@ export function SettingsPage() {
 
       <div className="glass-card">
         {/* Tab bar */}
-        <div className="flex border-b border-white/10 overflow-x-auto">
+        <div className="flex border-b border-border/50 overflow-x-auto">
           {visibleTabs.map((tab) => (
             <button
               key={tab.id}
@@ -124,7 +124,7 @@ function ConfluenceTab({ settings, onSave }: { settings: SettingsResponse; onSav
           type="url"
           value={url}
           onChange={(e) => setUrl(e.target.value)}
-          className="w-full rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm outline-none focus:border-primary"
+          className="w-full rounded-md border border-border/50 bg-foreground/5 px-3 py-2 text-sm outline-none focus:border-primary"
           placeholder="https://confluence.company.com"
         />
       </div>
@@ -140,7 +140,7 @@ function ConfluenceTab({ settings, onSave }: { settings: SettingsResponse; onSav
           type="password"
           value={pat}
           onChange={(e) => setPat(e.target.value)}
-          className="w-full rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm outline-none focus:border-primary"
+          className="w-full rounded-md border border-border/50 bg-foreground/5 px-3 py-2 text-sm outline-none focus:border-primary"
           placeholder={settings.hasConfluencePat ? '••••••••••' : 'Enter PAT'}
         />
       </div>
@@ -155,7 +155,7 @@ function ConfluenceTab({ settings, onSave }: { settings: SettingsResponse; onSav
         <button
           onClick={testConnection}
           disabled={testing || !url}
-          className="rounded-md border border-white/10 px-4 py-2 text-sm hover:bg-white/5 disabled:opacity-50"
+          className="rounded-md border border-border/50 px-4 py-2 text-sm hover:bg-foreground/5 disabled:opacity-50"
         >
           {testing ? 'Testing...' : 'Test Connection'}
         </button>
@@ -241,7 +241,7 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
             className={`rounded-md px-4 py-2 text-sm font-medium transition-colors ${
               provider === 'ollama'
                 ? 'bg-primary/15 text-primary border border-primary/30'
-                : 'border border-white/10 text-muted-foreground hover:bg-white/5'
+                : 'border border-border/50 text-muted-foreground hover:bg-foreground/5'
             }`}
             data-testid="provider-ollama-btn"
           >
@@ -252,7 +252,7 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
             className={`rounded-md px-4 py-2 text-sm font-medium transition-colors ${
               provider === 'openai'
                 ? 'bg-primary/15 text-primary border border-primary/30'
-                : 'border border-white/10 text-muted-foreground hover:bg-white/5'
+                : 'border border-border/50 text-muted-foreground hover:bg-foreground/5'
             }`}
             data-testid="provider-openai-btn"
           >
@@ -265,7 +265,7 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
       {provider === 'ollama' ? (
         <div>
           <label className="mb-1.5 block text-sm font-medium">Ollama Server</label>
-          <div className="flex items-center gap-2 rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm text-muted-foreground">
+          <div className="flex items-center gap-2 rounded-md border border-border/50 bg-foreground/5 px-3 py-2 text-sm text-muted-foreground">
             <span className={`inline-block h-2 w-2 rounded-full ${status?.connected ? 'bg-green-500' : 'bg-red-500'}`} />
             {ollamaStatus?.ollamaBaseUrl ?? 'Loading...'} {status?.connected === false && `(disconnected${status.error ? `: ${status.error}` : ''})`}
           </div>
@@ -279,7 +279,7 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
                 type="url"
                 value={openaiBaseUrl}
                 onChange={(e) => setOpenaiBaseUrl(e.target.value)}
-                className="flex-1 rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm outline-none focus:border-primary"
+                className="flex-1 rounded-md border border-border/50 bg-foreground/5 px-3 py-2 text-sm outline-none focus:border-primary"
                 placeholder="https://api.openai.com/v1"
                 data-testid="openai-base-url-input"
               />
@@ -303,7 +303,7 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
               type="password"
               value={openaiApiKey}
               onChange={(e) => setOpenaiApiKey(e.target.value)}
-              className="w-full rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm outline-none focus:border-primary"
+              className="w-full rounded-md border border-border/50 bg-foreground/5 px-3 py-2 text-sm outline-none focus:border-primary"
               placeholder={settings.hasOpenaiApiKey ? '••••••••••' : 'Enter API key'}
               data-testid="openai-api-key-input"
             />
@@ -318,7 +318,7 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
           <select
             value={currentModel}
             onChange={(e) => setCurrentModel(e.target.value)}
-            className="flex-1 rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm outline-none focus:border-primary"
+            className="flex-1 rounded-md border border-border/50 bg-foreground/5 px-3 py-2 text-sm outline-none focus:border-primary"
             data-testid="ollama-model-select"
           >
             {models && models.length > 0
@@ -330,7 +330,7 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
           <button
             onClick={() => refetchModels()}
             disabled={loadingModels}
-            className="rounded-md border border-white/10 px-3 py-2 text-sm hover:bg-white/5 disabled:opacity-50"
+            className="rounded-md border border-border/50 px-3 py-2 text-sm hover:bg-foreground/5 disabled:opacity-50"
             data-testid="ollama-scan-btn"
           >
             {loadingModels ? 'Scanning...' : 'Scan'}
@@ -352,7 +352,7 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
               type="text"
               value={openaiModel}
               onChange={(e) => setOpenaiModel(e.target.value)}
-              className="w-full rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm outline-none focus:border-primary"
+              className="w-full rounded-md border border-border/50 bg-foreground/5 px-3 py-2 text-sm outline-none focus:border-primary"
               placeholder="Or type a model name..."
               data-testid="openai-model-input"
             />
@@ -363,7 +363,7 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
       {/* Embedding model */}
       <div>
         <label className="mb-1.5 block text-sm font-medium">Embedding Model</label>
-        <div className="rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm text-muted-foreground">
+        <div className="rounded-md border border-border/50 bg-foreground/5 px-3 py-2 text-sm text-muted-foreground">
           {settings.embeddingModel} (server-wide, read-only)
         </div>
       </div>

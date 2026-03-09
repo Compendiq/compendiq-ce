@@ -107,3 +107,41 @@ describe('LLM provider switching', () => {
     expect(mod.ollama).toBeDefined();
   });
 });
+
+// Per-user provider resolution tests
+vi.mock('../db/postgres.js', () => ({
+  query: vi.fn(),
+}));
+
+describe('per-user provider resolution', () => {
+  it('should return ollama when user has no settings', async () => {
+    const { query } = await import('../db/postgres.js');
+    (query as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ rows: [] });
+
+    const { resolveUserProvider } = await import('./llm-provider.js');
+    const result = await resolveUserProvider('user-1');
+    expect(result.type).toBe('ollama');
+  });
+
+  it('should return openai when user has llm_provider=openai', async () => {
+    const { query } = await import('../db/postgres.js');
+    (query as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      rows: [{ llm_provider: 'openai' }],
+    });
+
+    const { resolveUserProvider } = await import('./llm-provider.js');
+    const result = await resolveUserProvider('user-1');
+    expect(result.type).toBe('openai');
+  });
+
+  it('should return ollama when user has llm_provider=ollama', async () => {
+    const { query } = await import('../db/postgres.js');
+    (query as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      rows: [{ llm_provider: 'ollama' }],
+    });
+
+    const { resolveUserProvider } = await import('./llm-provider.js');
+    const result = await resolveUserProvider('user-1');
+    expect(result.type).toBe('ollama');
+  });
+});

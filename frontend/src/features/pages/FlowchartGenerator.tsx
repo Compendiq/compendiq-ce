@@ -77,7 +77,7 @@ export function FlowchartGenerator({ pageId, bodyHtml }: FlowchartGeneratorProps
     return (
       <button
         onClick={() => setOpen(true)}
-        className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-white/5"
+        className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
         title="Generate diagram from article"
       >
         <GitBranch size={14} /> Diagram
@@ -93,7 +93,7 @@ export function FlowchartGenerator({ pageId, bodyHtml }: FlowchartGeneratorProps
         </h3>
         <button
           onClick={() => setOpen(false)}
-          className="rounded p-1 text-muted-foreground hover:bg-white/5"
+          className="rounded p-1 text-muted-foreground hover:bg-foreground/5"
         >
           <X size={14} />
         </button>
@@ -110,7 +110,7 @@ export function FlowchartGenerator({ pageId, bodyHtml }: FlowchartGeneratorProps
               'rounded-md px-2.5 py-1 text-xs capitalize',
               diagramType === type
                 ? 'bg-primary/15 text-primary'
-                : 'text-muted-foreground hover:bg-white/5',
+                : 'text-muted-foreground hover:bg-foreground/5',
             )}
           >
             {type}
@@ -123,7 +123,7 @@ export function FlowchartGenerator({ pageId, bodyHtml }: FlowchartGeneratorProps
         <select
           value={model}
           onChange={(e) => setModel(e.target.value)}
-          className="flex-1 rounded-md bg-white/5 px-2 py-1.5 text-sm outline-none"
+          className="flex-1 rounded-md bg-foreground/5 px-2 py-1.5 text-sm outline-none"
         >
           {models.map((m) => (
             <option key={m.name} value={m.name}>{m.name}</option>
@@ -149,7 +149,7 @@ export function FlowchartGenerator({ pageId, bodyHtml }: FlowchartGeneratorProps
 
       {/* Streaming indicator */}
       {isStreaming && diagramCode && (
-        <div className="rounded-lg border border-white/10 bg-white/5 p-4">
+        <div className="rounded-lg border border-border/50 bg-foreground/5 p-4">
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <Loader2 size={12} className="animate-spin" /> Generating diagram...
           </div>

@@ -1,14 +1,16 @@
 import { FastifyInstance, FastifyReply } from 'fastify';
 import { query } from '../db/postgres.js';
 import {
-  streamChat, getSystemPrompt, ChatMessage, SystemPromptKey,
+  getSystemPrompt, ChatMessage, SystemPromptKey,
+  listModels, checkHealth,
   isLlmVerifySslEnabled, getLlmAuthType,
   getActiveProviderType, getProvider,
 } from '../services/ollama-service.js';
+import { providerStreamChat } from '../services/llm-provider.js';
 import { hybridSearch, buildRagContext } from '../services/rag-service.js';
 import { htmlToMarkdown } from '../services/content-converter.js';
 import { getEmbeddingStatus, processDirtyPages, reEmbedAll } from '../services/embedding-service.js';
-import { getOllamaCircuitBreakerStatus } from '../services/circuit-breaker.js';
+import { getOllamaCircuitBreakerStatus, getOpenaiCircuitBreakerStatus } from '../services/circuit-breaker.js';
 import { LlmCache, buildLlmCacheKey, buildRagCacheKey } from '../services/llm-cache.js';
 import {
   ImproveRequestSchema,
@@ -137,7 +139,10 @@ export async function llmRoutes(fastify: FastifyInstance) {
 
   // GET /api/ollama/circuit-breaker-status
   fastify.get('/ollama/circuit-breaker-status', async () => {
-    return getOllamaCircuitBreakerStatus();
+    return {
+      ollama: getOllamaCircuitBreakerStatus(),
+      openai: getOpenaiCircuitBreakerStatus(),
+    };
   });
 
   // Maximum input size to prevent abuse (100KB)
@@ -147,6 +152,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
   fastify.post('/llm/improve', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
     const body = ImproveRequestSchema.parse(request.body);
     const { content, type, model } = body;
+    const userId = request.userId;
 
     if (content.length > MAX_INPUT_LENGTH) {
       throw fastify.httpErrors.badRequest(`Content too large (max ${MAX_INPUT_LENGTH} characters)`);
@@ -158,7 +164,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
     // Sanitize before sending to LLM
     const { sanitized, warnings } = sanitizeLlmInput(markdown);
     if (warnings.length > 0) {
-      await logAuditEvent(request.userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/improve' }, request);
+      await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/improve' }, request);
     }
 
     const systemPrompt = getSystemPrompt(`improve_${type}` as SystemPromptKey);
@@ -178,7 +184,8 @@ export async function llmRoutes(fastify: FastifyInstance) {
       return;
     }
 
-    const generator = streamChat(model, [
+    // Resolve per-user LLM provider and stream
+    const generator = providerStreamChat(userId, model, [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: sanitized },
     ]);
@@ -188,7 +195,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
       await query(
         `INSERT INTO llm_improvements (user_id, confluence_id, improvement_type, model, original_content, improved_content, status)
          VALUES ($1, $2, $3, $4, $5, '', 'streaming')`,
-        [request.userId, body.pageId, type, model, content.slice(0, 10000)],
+        [userId, body.pageId, type, model, content.slice(0, 10000)],
       );
     }
 
@@ -199,6 +206,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
   fastify.post('/llm/generate', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
     const body = GenerateRequestSchema.parse(request.body);
     const { prompt, model, template } = body;
+    const userId = request.userId;
 
     if (prompt.length > MAX_INPUT_LENGTH) {
       throw fastify.httpErrors.badRequest(`Prompt too large (max ${MAX_INPUT_LENGTH} characters)`);
@@ -207,7 +215,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
     // Sanitize before sending to LLM
     const { sanitized, warnings } = sanitizeLlmInput(prompt);
     if (warnings.length > 0) {
-      await logAuditEvent(request.userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/generate' }, request);
+      await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/generate' }, request);
     }
 
     const systemPrompt = template
@@ -229,7 +237,8 @@ export async function llmRoutes(fastify: FastifyInstance) {
       return;
     }
 
-    const generator = streamChat(model, [
+    // Resolve per-user LLM provider and stream
+    const generator = providerStreamChat(userId, model, [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: sanitized },
     ]);
@@ -241,6 +250,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
   fastify.post('/llm/summarize', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
     const body = SummarizeRequestSchema.parse(request.body);
     const { content, model, length = 'medium' } = body;
+    const userId = request.userId;
 
     if (content.length > MAX_INPUT_LENGTH) {
       throw fastify.httpErrors.badRequest(`Content too large (max ${MAX_INPUT_LENGTH} characters)`);
@@ -251,7 +261,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
     // Sanitize before sending to LLM
     const { sanitized: sanitizedMarkdown, warnings } = sanitizeLlmInput(markdown);
     if (warnings.length > 0) {
-      await logAuditEvent(request.userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/summarize' }, request);
+      await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/summarize' }, request);
     }
 
     const lengthInstructions: Record<string, string> = {
@@ -277,7 +287,8 @@ export async function llmRoutes(fastify: FastifyInstance) {
       return;
     }
 
-    const generator = streamChat(model, [
+    // Resolve per-user LLM provider and stream
+    const generator = providerStreamChat(userId, model, [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: sanitizedMarkdown },
     ]);
@@ -319,7 +330,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
       return;
     }
 
-    const generator = streamChat(model, [
+    const generator = providerStreamChat(request.userId, model, [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: sanitized },
     ]);
@@ -428,7 +439,8 @@ export async function llmRoutes(fastify: FastifyInstance) {
     const onClose = () => controller.abort();
     request.raw.on('close', onClose);
 
-    const generator = streamChat(model, messages, controller.signal);
+    // Resolve per-user LLM provider and stream
+    const generator = providerStreamChat(userId, model, messages, controller.signal);
     let fullAnswer = '';
 
     reply.raw.writeHead(200, {

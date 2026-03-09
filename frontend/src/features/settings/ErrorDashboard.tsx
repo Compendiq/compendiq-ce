@@ -98,17 +98,17 @@ export function ErrorDashboard() {
 
       {/* Summary stats */}
       <div className="grid grid-cols-3 gap-3">
-        <div className="rounded-lg border border-white/10 p-3">
+        <div className="rounded-lg border border-border/50 p-3">
           <p className="text-xs text-muted-foreground">Today</p>
           <p className={cn('text-2xl font-bold', totalErrors24h > 0 ? 'text-destructive' : 'text-success')} data-testid="errors-today">
             {totalErrors24h}
           </p>
         </div>
-        <div className="rounded-lg border border-white/10 p-3">
+        <div className="rounded-lg border border-border/50 p-3">
           <p className="text-xs text-muted-foreground">This Week</p>
           <p className="text-2xl font-bold" data-testid="errors-week">{totalErrors7d}</p>
         </div>
-        <div className="rounded-lg border border-white/10 p-3">
+        <div className="rounded-lg border border-border/50 p-3">
           <p className="text-xs text-muted-foreground">Unresolved</p>
           <p className={cn('text-2xl font-bold', (summary?.unresolvedCount ?? 0) > 0 ? 'text-warning' : 'text-success')} data-testid="errors-unresolved">
             {summary?.unresolvedCount ?? 0}
@@ -139,7 +139,7 @@ export function ErrorDashboard() {
       {isLoading ? (
         <div className="space-y-2">
           {Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} className="h-16 animate-pulse rounded-lg bg-white/5" />
+            <div key={i} className="h-16 animate-pulse rounded-lg bg-foreground/5" />
           ))}
         </div>
       ) : !errors?.items?.length ? (
@@ -151,7 +151,7 @@ export function ErrorDashboard() {
           {errors.items.map((error) => (
             <div
               key={error.id}
-              className="rounded-lg border border-white/5 hover:border-white/10"
+              className="rounded-lg border border-border/30 hover:border-border/50"
               data-testid={`error-row-${error.id}`}
             >
               {/* Error header */}
@@ -163,7 +163,7 @@ export function ErrorDashboard() {
                 <AlertTriangle size={14} className={cn(error.resolved ? 'text-muted-foreground' : 'text-destructive')} />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
-                    <span className="rounded bg-white/5 px-1.5 py-0.5 text-xs font-mono">
+                    <span className="rounded bg-foreground/5 px-1.5 py-0.5 text-xs font-mono">
                       {error.errorType}
                     </span>
                     <span className="truncate text-sm">{error.message}</span>
@@ -199,7 +199,7 @@ export function ErrorDashboard() {
 
               {/* Expanded stack trace */}
               {expandedId === error.id && (
-                <div className="border-t border-white/5 p-3" data-testid={`error-detail-${error.id}`}>
+                <div className="border-t border-border/30 p-3" data-testid={`error-detail-${error.id}`}>
                   {error.stack && (
                     <div className="mb-3">
                       <p className="mb-1 text-xs font-medium text-muted-foreground">Stack Trace</p>

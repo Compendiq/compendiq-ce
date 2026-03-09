@@ -1,10 +1,30 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en" data-theme="midnight-blue" data-theme-type="dark">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AI KB Creator</title>
+    <script>
+      // Prevent FOUC: read persisted theme before React loads
+      (function() {
+        var LIGHT = ['cloud-white','lavender-bloom','mint-fresh','peach-blossom',
+          'sky-blue','lemon-drop','rose-garden','sage-light','sand-dune',
+          'ice-crystal','catppuccin-latte'];
+        try {
+          var raw = localStorage.getItem('kb-theme');
+          if (raw) {
+            var parsed = JSON.parse(raw);
+            var theme = parsed && parsed.state && parsed.state.theme;
+            if (theme) {
+              document.documentElement.setAttribute('data-theme', theme);
+              document.documentElement.dataset.themeType =
+                LIGHT.indexOf(theme) !== -1 ? 'light' : 'dark';
+            }
+          }
+        } catch(e) {}
+      })();
+    </script>
   </head>
   <body class="min-h-screen bg-background text-foreground antialiased">
     <div id="root"></div>

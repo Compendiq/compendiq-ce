@@ -83,13 +83,13 @@ export function TagEditor({ pageId, labels, editing = false }: TagEditorProps) {
       {labels.map((label) => (
         <span
           key={label}
-          className="group flex items-center gap-0.5 rounded bg-white/5 px-1.5 py-0.5 text-xs"
+          className="group flex items-center gap-0.5 rounded bg-foreground/5 px-1.5 py-0.5 text-xs"
         >
           {label}
           <button
             onClick={() => handleRemove(label)}
             disabled={updateLabelsMutation.isPending}
-            className={`ml-0.5 rounded-sm p-0.5 text-muted-foreground hover:bg-white/10 hover:text-foreground ${editing ? 'inline-flex' : 'hidden group-hover:inline-flex'}`}
+            className={`ml-0.5 rounded-sm p-0.5 text-muted-foreground hover:bg-foreground/10 hover:text-foreground ${editing ? 'inline-flex' : 'hidden group-hover:inline-flex'}`}
             aria-label={`Remove tag ${label}`}
           >
             <X size={10} />
@@ -105,12 +105,12 @@ export function TagEditor({ pageId, labels, editing = false }: TagEditorProps) {
           onBlur={handleAdd}
           placeholder="tag name"
           disabled={updateLabelsMutation.isPending}
-          className="w-24 rounded bg-white/5 px-1.5 py-0.5 text-xs outline-none focus:ring-1 focus:ring-primary"
+          className="w-24 rounded bg-foreground/5 px-1.5 py-0.5 text-xs outline-none focus:ring-1 focus:ring-primary"
         />
       ) : (
         <button
           onClick={() => setIsAdding(true)}
-          className="flex items-center gap-0.5 rounded px-1 py-0.5 text-xs text-muted-foreground hover:bg-white/5 hover:text-foreground"
+          className="flex items-center gap-0.5 rounded px-1 py-0.5 text-xs text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
           aria-label="Add tag"
         >
           <Plus size={10} />

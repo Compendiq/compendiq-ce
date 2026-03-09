@@ -227,9 +227,11 @@ export class OpenAIProvider implements LlmProvider {
       return llmLimit(async () => {
         const input = Array.isArray(text) ? text : [text];
 
+        const REQUIRED_DIMS = 768;
         const response = await openaiRequest('/embeddings', {
           model: process.env.EMBEDDING_MODEL ?? 'text-embedding-3-small',
           input,
+          dimensions: REQUIRED_DIMS,
         });
 
         if (!response.ok) {
@@ -242,9 +244,18 @@ export class OpenAIProvider implements LlmProvider {
         };
 
         // Sort by index to ensure correct order
-        return data.data
+        const embeddings = data.data
           .sort((a, b) => a.index - b.index)
           .map((d) => d.embedding);
+
+        // Validate dimensions match pgvector column
+        if (embeddings.length > 0 && embeddings[0].length !== REQUIRED_DIMS) {
+          throw new Error(
+            `Embedding dimension mismatch: got ${embeddings[0].length}, expected ${REQUIRED_DIMS} (pgvector column is vector(${REQUIRED_DIMS}))`,
+          );
+        }
+
+        return embeddings;
       });
     });
   }
