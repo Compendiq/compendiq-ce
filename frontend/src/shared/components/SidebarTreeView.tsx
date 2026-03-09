@@ -96,7 +96,7 @@ function SidebarTreeNode({
           'group flex items-center gap-1.5 rounded-md py-1.5 pr-2 text-sm transition-colors cursor-pointer',
           isActive
             ? 'bg-primary/15 text-primary font-medium'
-            : 'text-muted-foreground hover:bg-white/5 hover:text-foreground',
+            : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
         )}
         style={{ paddingLeft: `${level * 16 + 8}px` }}
         onClick={() => navigate(`/pages/${node.page.id}`)}
@@ -107,7 +107,7 @@ function SidebarTreeNode({
               e.stopPropagation();
               toggleExpand(node.page.id);
             }}
-            className="shrink-0 rounded p-0.5 hover:bg-white/10"
+            className="shrink-0 rounded p-0.5 hover:bg-foreground/10"
             aria-label={isExpanded ? 'Collapse' : 'Expand'}
           >
             {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
@@ -235,10 +235,10 @@ export function SidebarTreeView() {
 
   if (treeSidebarCollapsed) {
     return (
-      <div className="flex w-10 flex-col items-center border-r border-white/10 bg-card/40 pt-2 backdrop-blur-sm">
+      <div className="flex w-10 flex-col items-center border-r border-border/50 bg-card/40 pt-2 backdrop-blur-sm">
         <button
           onClick={toggleTreeSidebar}
-          className="rounded-md p-1.5 text-muted-foreground hover:bg-white/5 hover:text-foreground"
+          className="rounded-md p-1.5 text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
           aria-label="Expand tree sidebar"
         >
           <PanelLeft size={16} />
@@ -253,19 +253,19 @@ export function SidebarTreeView() {
     <aside
       ref={sidebarRef}
       className={cn(
-        'relative flex flex-col border-r border-white/10 bg-card/40 backdrop-blur-sm',
+        'relative flex flex-col border-r border-border/50 bg-card/40 backdrop-blur-sm',
         isResizing && 'select-none',
       )}
       style={{ width: `${treeSidebarWidth}px` }}
     >
       {/* Header */}
-      <div className="flex h-10 items-center justify-between border-b border-white/10 px-3">
+      <div className="flex h-10 items-center justify-between border-b border-border/50 px-3">
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
           Page Tree
         </span>
         <button
           onClick={toggleTreeSidebar}
-          className="rounded-md p-1 text-muted-foreground hover:bg-white/5 hover:text-foreground"
+          className="rounded-md p-1 text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
           aria-label="Collapse tree sidebar"
         >
           <PanelLeftClose size={14} />
@@ -273,11 +273,11 @@ export function SidebarTreeView() {
       </div>
 
       {/* Space selector */}
-      <div className="border-b border-white/10 p-2">
+      <div className="border-b border-border/50 p-2">
         <div className="relative">
           <button
             onClick={() => setSpaceDropdownOpen(!spaceDropdownOpen)}
-            className="flex w-full items-center justify-between rounded-md bg-white/5 px-2.5 py-1.5 text-xs text-foreground hover:bg-white/10 transition-colors"
+            className="flex w-full items-center justify-between rounded-md bg-foreground/5 px-2.5 py-1.5 text-xs text-foreground hover:bg-foreground/10 transition-colors"
           >
             <span className="truncate">
               {selectedSpace ? `${selectedSpace.name} (${selectedSpace.key})` : 'All Spaces'}
@@ -285,14 +285,14 @@ export function SidebarTreeView() {
             <ChevronsUpDown size={12} className="shrink-0 text-muted-foreground" />
           </button>
           {spaceDropdownOpen && (
-            <div className="absolute left-0 right-0 top-full z-50 mt-1 rounded-md border border-white/10 bg-card shadow-xl backdrop-blur-xl">
+            <div className="absolute left-0 right-0 top-full z-50 mt-1 rounded-md border border-border/50 bg-card shadow-xl backdrop-blur-xl">
               <button
                 onClick={() => {
                   setTreeSidebarSpaceKey(undefined);
                   setSpaceDropdownOpen(false);
                 }}
                 className={cn(
-                  'flex w-full items-center px-2.5 py-1.5 text-xs hover:bg-white/5 transition-colors',
+                  'flex w-full items-center px-2.5 py-1.5 text-xs hover:bg-foreground/5 transition-colors',
                   !treeSidebarSpaceKey ? 'text-primary font-medium' : 'text-foreground',
                 )}
               >
@@ -306,7 +306,7 @@ export function SidebarTreeView() {
                     setSpaceDropdownOpen(false);
                   }}
                   className={cn(
-                    'flex w-full items-center justify-between px-2.5 py-1.5 text-xs hover:bg-white/5 transition-colors',
+                    'flex w-full items-center justify-between px-2.5 py-1.5 text-xs hover:bg-foreground/5 transition-colors',
                     treeSidebarSpaceKey === space.key
                       ? 'text-primary font-medium'
                       : 'text-foreground',
@@ -328,7 +328,7 @@ export function SidebarTreeView() {
             {[...Array(8)].map((_, i) => (
               <div
                 key={i}
-                className="h-6 animate-pulse rounded bg-white/5"
+                className="h-6 animate-pulse rounded bg-foreground/5"
                 style={{ width: `${60 + Math.random() * 30}%`, marginLeft: `${(i % 3) * 16}px` }}
               />
             ))}
@@ -354,7 +354,7 @@ export function SidebarTreeView() {
 
       {/* Footer stats */}
       {treeData && (
-        <div className="border-t border-white/10 px-3 py-1.5">
+        <div className="border-t border-border/50 px-3 py-1.5">
           <span className="text-[10px] text-muted-foreground">
             {treeData.total} pages{treeSidebarSpaceKey ? ` in ${treeSidebarSpaceKey}` : ''}
           </span>

@@ -104,18 +104,18 @@ export function BulkOperations({
 
   return (
     <div className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2" data-testid="bulk-operations-bar">
-      <div className="glass-card flex items-center gap-3 rounded-2xl border border-white/15 bg-card/90 px-6 py-3 shadow-2xl backdrop-blur-xl">
+      <div className="glass-card flex items-center gap-3 rounded-2xl border border-border/60 bg-card/90 px-6 py-3 shadow-2xl backdrop-blur-xl">
         {/* Selection count */}
         <span className="text-sm font-medium" data-testid="selection-count">
           {selectedIds.length} page{selectedIds.length !== 1 ? 's' : ''} selected
         </span>
 
-        <div className="mx-1 h-5 w-px bg-white/10" />
+        <div className="mx-1 h-5 w-px bg-foreground/10" />
 
         {/* Select All / Deselect All */}
         <button
           onClick={selectedIds.length === totalCount ? onDeselectAll : onSelectAll}
-          className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-white/5 hover:text-foreground"
+          className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
           data-testid="select-toggle"
         >
           {selectedIds.length === totalCount ? (
@@ -131,13 +131,13 @@ export function BulkOperations({
           )}
         </button>
 
-        <div className="mx-1 h-5 w-px bg-white/10" />
+        <div className="mx-1 h-5 w-px bg-foreground/10" />
 
         {/* Action buttons */}
         <button
           onClick={() => bulkSync.mutate()}
           disabled={isLoading}
-          className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium hover:bg-white/5 disabled:opacity-50"
+          className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium hover:bg-foreground/5 disabled:opacity-50"
           title="Re-sync from Confluence"
           data-testid="bulk-sync-btn"
         >
@@ -148,7 +148,7 @@ export function BulkOperations({
         <button
           onClick={() => bulkEmbed.mutate()}
           disabled={isLoading}
-          className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium hover:bg-white/5 disabled:opacity-50"
+          className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium hover:bg-foreground/5 disabled:opacity-50"
           title="Re-embed for RAG"
           data-testid="bulk-embed-btn"
         >
@@ -161,7 +161,7 @@ export function BulkOperations({
           <button
             onClick={() => setShowTagPopover(!showTagPopover)}
             disabled={isLoading}
-            className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium hover:bg-white/5 disabled:opacity-50"
+            className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium hover:bg-foreground/5 disabled:opacity-50"
             data-testid="bulk-tag-btn"
           >
             <Tag size={14} />
@@ -170,7 +170,7 @@ export function BulkOperations({
 
           {showTagPopover && (
             <div
-              className="absolute bottom-full left-0 mb-2 w-64 rounded-xl border border-white/10 bg-card/95 p-3 shadow-xl backdrop-blur-xl"
+              className="absolute bottom-full left-0 mb-2 w-64 rounded-xl border border-border/50 bg-card/95 p-3 shadow-xl backdrop-blur-xl"
               data-testid="tag-popover"
             >
               <div className="mb-2 flex gap-2">
@@ -204,7 +204,7 @@ export function BulkOperations({
                   onChange={(e) => setTagInput(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleTagSubmit()}
                   placeholder={tagAction === 'add' ? 'Enter tag to add...' : 'Enter tag to remove...'}
-                  className="flex-1 rounded-md bg-white/5 px-2 py-1.5 text-xs outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-primary"
+                  className="flex-1 rounded-md bg-foreground/5 px-2 py-1.5 text-xs outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-primary"
                   data-testid="tag-input"
                 />
                 <button
@@ -255,12 +255,12 @@ export function BulkOperations({
           </button>
         )}
 
-        <div className="mx-1 h-5 w-px bg-white/10" />
+        <div className="mx-1 h-5 w-px bg-foreground/10" />
 
         {/* Close */}
         <button
           onClick={onClose}
-          className="rounded-lg p-1.5 text-muted-foreground hover:bg-white/5 hover:text-foreground"
+          className="rounded-lg p-1.5 text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
           data-testid="bulk-close-btn"
         >
           <X size={14} />

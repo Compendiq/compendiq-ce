@@ -69,7 +69,7 @@ export function DashboardPage() {
             className="glass-card-hover p-5"
           >
             <div className="flex items-center gap-3">
-              <div className={`rounded-lg bg-white/5 p-2.5 ${color}`}>
+              <div className={`rounded-lg bg-foreground/5 p-2.5 ${color}`}>
                 <Icon size={20} />
               </div>
               <div>
@@ -97,7 +97,7 @@ export function DashboardPage() {
               onClick={() => handleQuickAction(path, label)}
               className="glass-card-hover flex flex-col items-center gap-2 p-4"
             >
-              <div className={`rounded-lg bg-white/5 p-2.5 ${color}`}>
+              <div className={`rounded-lg bg-foreground/5 p-2.5 ${color}`}>
                 <Icon size={20} />
               </div>
               <span className="text-sm font-medium">{label}</span>

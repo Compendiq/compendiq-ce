@@ -84,14 +84,14 @@ export function MermaidDiagram({ code, className }: MermaidDiagramProps) {
   };
 
   return (
-    <div className={cn('rounded-lg border border-white/10 bg-white/5', className)}>
+    <div className={cn('rounded-lg border border-border/50 bg-foreground/5', className)}>
       {/* Toolbar */}
-      <div className="flex items-center justify-between border-b border-white/10 px-3 py-1.5">
+      <div className="flex items-center justify-between border-b border-border/50 px-3 py-1.5">
         <span className="text-xs text-muted-foreground">Mermaid Diagram</span>
         <div className="flex items-center gap-1">
           <button
             onClick={handleCopy}
-            className="rounded p-1 text-muted-foreground hover:bg-white/10 hover:text-foreground"
+            className="rounded p-1 text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
             title="Copy Mermaid source"
           >
             {copied ? <Check size={14} /> : <Copy size={14} />}
@@ -99,7 +99,7 @@ export function MermaidDiagram({ code, className }: MermaidDiagramProps) {
           {svgContent && (
             <button
               onClick={handleDownloadSvg}
-              className="rounded p-1 text-muted-foreground hover:bg-white/10 hover:text-foreground"
+              className="rounded p-1 text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
               title="Download as SVG"
             >
               <Download size={14} />
@@ -115,7 +115,7 @@ export function MermaidDiagram({ code, className }: MermaidDiagramProps) {
 
       {/* Error fallback: show raw code */}
       {error && (
-        <div className="border-t border-white/10 p-3">
+        <div className="border-t border-border/50 p-3">
           <p className="mb-2 text-xs text-red-400">Diagram rendering failed: {error}</p>
           <pre className="max-h-48 overflow-auto rounded bg-black/30 p-2 text-xs text-muted-foreground">
             {code}

@@ -49,7 +49,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
             An unexpected error occurred. Please try again.
           </p>
           {this.state.error && (
-            <pre className="mb-6 overflow-auto rounded-md bg-white/5 p-3 text-left text-xs text-muted-foreground">
+            <pre className="mb-6 overflow-auto rounded-md bg-foreground/5 p-3 text-left text-xs text-muted-foreground">
               {this.state.error.message}
             </pre>
           )}

@@ -127,7 +127,7 @@ function TreeNodeComponent({
         transition={{ duration: 0.15, delay: level * 0.02 }}
         className={cn(
           'group relative flex items-center gap-2 rounded-lg py-2 pr-3 transition-colors',
-          'hover:bg-white/[0.06]',
+          'hover:bg-foreground/[0.06]',
           level === 0 && 'font-medium',
         )}
         style={{ paddingLeft: `${level * 20 + 12}px` }}
@@ -141,7 +141,7 @@ function TreeNodeComponent({
             }}
             className={cn(
               'shrink-0 rounded-md p-1 transition-all duration-200',
-              'text-muted-foreground hover:bg-white/10 hover:text-foreground',
+              'text-muted-foreground hover:bg-foreground/10 hover:text-foreground',
             )}
             aria-label={isExpanded ? 'Collapse' : 'Expand'}
           >
@@ -280,8 +280,8 @@ export function PageTreeView({ pages, homepageId }: PageTreeViewProps) {
           onClick={expandAll}
           className={cn(
             'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs transition-colors',
-            'bg-white/[0.04] text-muted-foreground',
-            'hover:bg-white/[0.08] hover:text-foreground',
+            'bg-foreground/[0.04] text-muted-foreground',
+            'hover:bg-foreground/[0.08] hover:text-foreground',
           )}
         >
           <ChevronsUpDown size={13} />
@@ -291,8 +291,8 @@ export function PageTreeView({ pages, homepageId }: PageTreeViewProps) {
           onClick={collapseAll}
           className={cn(
             'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs transition-colors',
-            'bg-white/[0.04] text-muted-foreground',
-            'hover:bg-white/[0.08] hover:text-foreground',
+            'bg-foreground/[0.04] text-muted-foreground',
+            'hover:bg-foreground/[0.08] hover:text-foreground',
           )}
         >
           <ChevronsDownUp size={13} />
@@ -304,7 +304,7 @@ export function PageTreeView({ pages, homepageId }: PageTreeViewProps) {
       </div>
 
       {/* Tree */}
-      <div className="rounded-xl border border-white/[0.06] bg-card/40 p-2 backdrop-blur-sm">
+      <div className="rounded-xl border border-border/30 bg-card/40 p-2 backdrop-blur-sm">
         {tree.map((node, index) => (
           <TreeNodeComponent
             key={node.page.id}

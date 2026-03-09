@@ -10,9 +10,11 @@ import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../../shared/components/EmbeddingStatusBadge';
 import { BulkOperations } from './BulkOperations';
 import { cn } from '../../shared/lib/cn';
+import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 
 export function PagesPage() {
   const navigate = useNavigate();
+  const isLight = useIsLightTheme();
   const [spaceKey, setSpaceKey] = useState<string>('');
   const [search, setSearch] = useState('');
   const [author, setAuthor] = useState<string>('');
@@ -111,7 +113,7 @@ export function PagesPage() {
           <button
             onClick={() => syncMutation.mutate()}
             disabled={syncStatus?.status === 'syncing'}
-            className="glass-card flex items-center gap-2 px-4 py-2 text-sm hover:bg-white/5 disabled:opacity-50"
+            className="glass-card flex items-center gap-2 px-4 py-2 text-sm hover:bg-foreground/5 disabled:opacity-50"
           >
             <RefreshCw size={16} className={cn(syncStatus?.status === 'syncing' && 'animate-spin')} />
             {syncStatus?.status === 'syncing' ? 'Syncing...' : 'Sync'}
@@ -133,7 +135,7 @@ export function PagesPage() {
             <span>Syncing {syncStatus.progress.space}...</span>
             <span>{syncStatus.progress.current}/{syncStatus.progress.total}</span>
           </div>
-          <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10">
+          <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-foreground/10">
             <div
               className="h-full rounded-full bg-primary transition-all"
               style={{ width: `${(syncStatus.progress.current / syncStatus.progress.total) * 100}%` }}
@@ -153,14 +155,14 @@ export function PagesPage() {
               placeholder="Search pages..."
               value={search}
               onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-              className="w-full rounded-md bg-white/5 py-2 pl-10 pr-4 text-sm outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-primary"
+              className="w-full rounded-md bg-foreground/5 py-2 pl-10 pr-4 text-sm outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-primary"
             />
           </div>
 
           <select
             value={spaceKey}
             onChange={(e) => { setSpaceKey(e.target.value); setPage(1); setForcePageList(false); }}
-            className="rounded-md bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+            className="rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
           >
             <option value="">All Spaces</option>
             {spaces?.map((s) => (
@@ -171,7 +173,7 @@ export function PagesPage() {
           <select
             value={sort}
             onChange={(e) => setSort(e.target.value as typeof sort)}
-            className="rounded-md bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+            className="rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
           >
             <option value="modified">Last Modified</option>
             <option value="title">Title</option>
@@ -185,7 +187,7 @@ export function PagesPage() {
               'flex items-center gap-1.5 rounded-md px-3 py-2 text-sm transition-colors',
               showAdvancedFilters || activeFilterCount > 0
                 ? 'bg-primary/15 text-primary'
-                : 'bg-white/5 text-muted-foreground hover:bg-white/10',
+                : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
             )}
             data-testid="advanced-filters-toggle"
           >
@@ -202,14 +204,14 @@ export function PagesPage() {
 
         {/* Advanced filters panel */}
         {showAdvancedFilters && (
-          <div className="flex flex-wrap items-end gap-3 border-t border-white/10 pt-3" data-testid="advanced-filters-panel">
+          <div className="flex flex-wrap items-end gap-3 border-t border-border/50 pt-3" data-testid="advanced-filters-panel">
             {/* Author filter */}
             <div className="min-w-40">
               <label className="mb-1 block text-xs text-muted-foreground">Author</label>
               <select
                 value={author}
                 onChange={(e) => { setAuthor(e.target.value); setPage(1); }}
-                className="w-full rounded-md bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
                 data-testid="filter-author"
               >
                 <option value="">All Authors</option>
@@ -225,7 +227,7 @@ export function PagesPage() {
               <select
                 value={labels}
                 onChange={(e) => { setLabels(e.target.value); setPage(1); }}
-                className="w-full rounded-md bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
                 data-testid="filter-labels"
               >
                 <option value="">All Labels</option>
@@ -241,7 +243,7 @@ export function PagesPage() {
               <select
                 value={freshness}
                 onChange={(e) => { setFreshness(e.target.value); setPage(1); }}
-                className="w-full rounded-md bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
                 data-testid="filter-freshness"
               >
                 <option value="">Any</option>
@@ -258,7 +260,7 @@ export function PagesPage() {
               <select
                 value={embeddingStatus}
                 onChange={(e) => { setEmbeddingStatus(e.target.value); setPage(1); }}
-                className="w-full rounded-md bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
                 data-testid="filter-embedding"
               >
                 <option value="">Any</option>
@@ -274,7 +276,7 @@ export function PagesPage() {
                 type="date"
                 value={dateFrom}
                 onChange={(e) => { setDateFrom(e.target.value); setPage(1); }}
-                className="w-full rounded-md bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
                 data-testid="filter-date-from"
               />
             </div>
@@ -284,7 +286,7 @@ export function PagesPage() {
                 type="date"
                 value={dateTo}
                 onChange={(e) => { setDateTo(e.target.value); setPage(1); }}
-                className="w-full rounded-md bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
                 data-testid="filter-date-to"
               />
             </div>
@@ -315,13 +317,13 @@ export function PagesPage() {
               <div className="flex gap-2">
                 <button
                   onClick={() => navigate(`/pages/${homePage.id}`)}
-                  className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-white/5"
+                  className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
                 >
                   <FileText size={14} /> View Full Page
                 </button>
                 <button
                   onClick={() => setForcePageList(true)}
-                  className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-white/5"
+                  className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
                   data-testid="show-page-list"
                 >
                   <List size={14} /> Show All Pages
@@ -329,7 +331,7 @@ export function PagesPage() {
               </div>
             </div>
             <div
-              className="glass-card prose prose-invert max-w-none p-6"
+              className={`glass-card prose max-w-none p-6${isLight ? '' : ' prose-invert'}`}
               dangerouslySetInnerHTML={{ __html: sanitizedHomeHtml }}
             />
           </m.div>
@@ -369,7 +371,7 @@ export function PagesPage() {
                 {/* Checkbox for bulk selection */}
                 <button
                   onClick={(e) => toggleSelection(pageItem.id, e)}
-                  className="shrink-0 flex h-5 w-5 items-center justify-center rounded border border-white/20 hover:border-primary/50"
+                  className="shrink-0 flex h-5 w-5 items-center justify-center rounded border border-border hover:border-primary/50"
                   data-testid={`checkbox-${pageItem.id}`}
                   aria-label={`Select ${pageItem.title}`}
                 >

@@ -35,28 +35,28 @@ export function ThemeTab({ onSave }: ThemeTabProps) {
                     className={`group relative flex flex-col rounded-lg border p-3 text-left transition-all ${
                       isActive
                         ? 'border-primary bg-primary/10 ring-1 ring-primary'
-                        : 'border-white/10 hover:border-white/20 hover:bg-white/5'
+                        : 'border-border/50 hover:border-border hover:bg-muted/50'
                     }`}
                   >
                     {/* Color preview swatches */}
                     <div className="mb-2.5 flex gap-1.5">
                       <div
-                        className="h-6 w-6 rounded-full border border-white/10"
+                        className="h-6 w-6 rounded-full border border-border/50"
                         style={{ background: t.preview.bg }}
                         title="Background"
                       />
                       <div
-                        className="h-6 w-6 rounded-full border border-white/10"
+                        className="h-6 w-6 rounded-full border border-border/50"
                         style={{ background: t.preview.card }}
                         title="Card"
                       />
                       <div
-                        className="h-6 w-6 rounded-full border border-white/10"
+                        className="h-6 w-6 rounded-full border border-border/50"
                         style={{ background: t.preview.primary }}
                         title="Primary"
                       />
                       <div
-                        className="h-6 w-6 rounded-full border border-white/10"
+                        className="h-6 w-6 rounded-full border border-border/50"
                         style={{ background: t.preview.accent }}
                         title="Accent"
                       />
