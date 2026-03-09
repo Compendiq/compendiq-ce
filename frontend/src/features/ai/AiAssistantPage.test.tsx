@@ -390,6 +390,151 @@ describe('AiAssistantPage', () => {
     });
   });
 
+  describe('diagram mode - Use in article', () => {
+    it('shows "Use in article" button after diagram generation when page is selected', async () => {
+      mockPageData = {
+        data: { id: 'p1', title: 'My Article', bodyHtml: '<p>Content</p>', bodyText: 'Content', version: 3 },
+      };
+
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'llama3' }]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([]);
+      });
+
+      // Mock SSE to return diagram code
+      async function* fakeDiagramStream() {
+        yield { content: 'graph TD\n  A --> B' };
+      }
+      streamSSEMock.mockReturnValue(fakeDiagramStream());
+
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
+
+      // Switch to diagram mode
+      fireEvent.click(screen.getByText('Diagram'));
+
+      // Wait for models to load
+      await waitFor(() => {
+        const buttons = screen.getAllByRole('button');
+        const diagramBtn = buttons.find((b) => b.textContent?.includes('Generate Diagram'));
+        expect(diagramBtn).not.toBeDisabled();
+      });
+
+      // Click generate
+      const buttons = screen.getAllByRole('button');
+      const diagramBtn = buttons.find((b) => b.textContent?.includes('Generate Diagram'))!;
+      fireEvent.click(diagramBtn);
+
+      // Wait for stream to complete and button to appear
+      await waitFor(() => {
+        expect(screen.getByText('Use in article')).toBeInTheDocument();
+      });
+    });
+
+    it('does not show "Use in article" button when no page is selected', async () => {
+      mockPageData = { data: undefined };
+
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'llama3' }]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([]);
+      });
+
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai']) });
+
+      // Switch to diagram mode
+      fireEvent.click(screen.getByText('Diagram'));
+
+      // The button should not appear (no page context)
+      expect(screen.queryByText('Use in article')).not.toBeInTheDocument();
+    });
+
+    it('calls apiFetch with PUT when "Use in article" is clicked in diagram mode', async () => {
+      mockPageData = {
+        data: { id: 'p1', title: 'My Article', bodyHtml: '<p>Content</p>', bodyText: 'Content', version: 3 },
+      };
+
+      apiFetchMock.mockImplementation((path: string, opts?: RequestInit) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'llama3' }]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        if (path === '/pages/p1' && opts?.method === 'PUT') {
+          return Promise.resolve({ id: 'p1', title: 'My Article', version: 4 });
+        }
+        return Promise.resolve([]);
+      });
+
+      async function* fakeDiagramStream() {
+        yield { content: 'graph TD\n  A --> B' };
+      }
+      streamSSEMock.mockReturnValue(fakeDiagramStream());
+
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
+
+      // Switch to diagram mode
+      fireEvent.click(screen.getByText('Diagram'));
+
+      // Wait for models to load
+      await waitFor(() => {
+        const btns = screen.getAllByRole('button');
+        const diagramBtn = btns.find((b) => b.textContent?.includes('Generate Diagram'));
+        expect(diagramBtn).not.toBeDisabled();
+      });
+
+      // Click generate
+      const btns = screen.getAllByRole('button');
+      const diagramBtn = btns.find((b) => b.textContent?.includes('Generate Diagram'))!;
+      fireEvent.click(diagramBtn);
+
+      // Wait for "Use in article" button
+      await waitFor(() => {
+        expect(screen.getByText('Use in article')).toBeInTheDocument();
+      });
+
+      // Click "Use in article"
+      fireEvent.click(screen.getByText('Use in article'));
+
+      // Verify the PUT call was made
+      await waitFor(() => {
+        const putCall = apiFetchMock.mock.calls.find(
+          (args: unknown[]) =>
+            args[0] === '/pages/p1' && (args[1] as RequestInit | undefined)?.method === 'PUT',
+        );
+        expect(putCall).toBeDefined();
+        const body = JSON.parse((putCall![1] as RequestInit)?.body as string);
+        expect(body.title).toBe('My Article');
+        expect(body.version).toBe(3);
+        expect(body.bodyHtml).toContain('<pre><code class="language-mermaid">');
+        expect(body.bodyHtml).toContain('graph TD');
+      });
+
+      // Verify success toast
+      await waitFor(() => {
+        expect(toastSuccessMock).toHaveBeenCalledWith('Diagram inserted into article');
+      });
+    });
+  });
+
   describe('empty state messages', () => {
     it('shows only the correct empty state for improve mode without spurious messages', () => {
       render(<AiAssistantPage />, { wrapper: createWrapper() });
