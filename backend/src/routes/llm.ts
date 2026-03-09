@@ -2,7 +2,7 @@ import { FastifyInstance, FastifyReply } from 'fastify';
 import { query } from '../db/postgres.js';
 import {
   streamChat, getSystemPrompt, ChatMessage, SystemPromptKey,
-  listModels, checkHealth,
+  listModels, checkHealth, isLlmVerifySslEnabled, getLlmAuthType,
 } from '../services/ollama-service.js';
 import { hybridSearch, buildRagContext } from '../services/rag-service.js';
 import { htmlToMarkdown } from '../services/content-converter.js';
@@ -116,6 +116,8 @@ export async function llmRoutes(fastify: FastifyInstance) {
       ollamaBaseUrl: process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434',
       embeddingModel: process.env.EMBEDDING_MODEL ?? 'nomic-embed-text',
       authConfigured: !!process.env.LLM_BEARER_TOKEN,
+      authType: getLlmAuthType(),
+      verifySsl: isLlmVerifySslEnabled(),
     };
   });
 

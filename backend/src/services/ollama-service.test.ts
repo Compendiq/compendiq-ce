@@ -4,6 +4,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // based on the LLM_BEARER_TOKEN env var. Since the module initializes at import time,
 // we use dynamic imports with vi.resetModules() to test different configurations.
 
+vi.mock('undici', () => ({
+  Agent: class MockAgent {
+    constructor(public opts: Record<string, unknown>) {}
+  },
+}));
+
 vi.mock('./circuit-breaker.js', () => ({
   ollamaBreakers: {
     chat: { execute: vi.fn((fn: () => unknown) => fn()) },
@@ -95,6 +101,60 @@ describe('ollama-service bearer token configuration', () => {
 
     expect(capturedConfig).toBeDefined();
     expect(typeof capturedConfig!.fetch).toBe('function');
+  });
+
+  it('should not set Authorization header when LLM_AUTH_TYPE is none even if LLM_BEARER_TOKEN is set', async () => {
+    process.env.LLM_BEARER_TOKEN = 'my-secret-token';
+    process.env.LLM_AUTH_TYPE = 'none';
+
+    await import('./ollama-service.js');
+
+    expect(capturedConfig).toBeDefined();
+    expect(capturedConfig!.headers).toBeUndefined();
+  });
+
+  it('should set Authorization header when LLM_AUTH_TYPE is bearer (default)', async () => {
+    process.env.LLM_BEARER_TOKEN = 'my-secret-token';
+    delete process.env.LLM_AUTH_TYPE;
+
+    await import('./ollama-service.js');
+
+    expect(capturedConfig).toBeDefined();
+    expect(capturedConfig!.headers).toEqual({
+      Authorization: 'Bearer my-secret-token',
+    });
+  });
+
+  it('should export isLlmVerifySslEnabled returning true by default', async () => {
+    delete process.env.LLM_VERIFY_SSL;
+    delete process.env.LLM_BEARER_TOKEN;
+
+    const mod = await import('./ollama-service.js');
+    expect(mod.isLlmVerifySslEnabled()).toBe(true);
+  });
+
+  it('should export isLlmVerifySslEnabled returning false when LLM_VERIFY_SSL=false', async () => {
+    process.env.LLM_VERIFY_SSL = 'false';
+    delete process.env.LLM_BEARER_TOKEN;
+
+    const mod = await import('./ollama-service.js');
+    expect(mod.isLlmVerifySslEnabled()).toBe(false);
+  });
+
+  it('should export getLlmAuthType returning bearer by default', async () => {
+    delete process.env.LLM_AUTH_TYPE;
+    delete process.env.LLM_BEARER_TOKEN;
+
+    const mod = await import('./ollama-service.js');
+    expect(mod.getLlmAuthType()).toBe('bearer');
+  });
+
+  it('should export getLlmAuthType returning none when LLM_AUTH_TYPE=none', async () => {
+    process.env.LLM_AUTH_TYPE = 'none';
+    delete process.env.LLM_BEARER_TOKEN;
+
+    const mod = await import('./ollama-service.js');
+    expect(mod.getLlmAuthType()).toBe('none');
   });
 
   it('should return connected: true from checkHealth when ollama.list() succeeds', async () => {

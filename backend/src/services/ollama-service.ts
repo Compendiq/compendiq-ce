@@ -1,5 +1,6 @@
 import { Ollama } from 'ollama';
 import type { Config } from 'ollama';
+import { Agent } from 'undici';
 import pLimit from 'p-limit';
 import { sanitizeLlmInput } from '../utils/sanitize-llm-input.js';
 import { logger } from '../utils/logger.js';
@@ -8,17 +9,43 @@ import { ollamaBreakers } from './circuit-breaker.js';
 /** Default timeout for Ollama HTTP requests (30 s). */
 const OLLAMA_REQUEST_TIMEOUT_MS = 30_000;
 
+/** Whether to verify TLS certificates for LLM connections (default: true). */
+const llmVerifySsl = process.env.LLM_VERIFY_SSL !== 'false';
+
+/** Auth type for LLM connections: 'bearer' (default) or 'none'. */
+const llmAuthType = (process.env.LLM_AUTH_TYPE ?? 'bearer').toLowerCase();
+
+if (!llmVerifySsl) {
+  logger.warn('LLM_VERIFY_SSL=false — TLS certificate verification is disabled for LLM/Ollama connections');
+}
+
+/**
+ * Build an undici Agent that disables TLS verification when LLM_VERIFY_SSL=false.
+ * Returns undefined when default TLS behaviour is acceptable.
+ */
+function buildLlmDispatcher(): Agent | undefined {
+  if (!llmVerifySsl) {
+    return new Agent({ connect: { rejectUnauthorized: false } });
+  }
+  return undefined;
+}
+
+const llmDispatcher = buildLlmDispatcher();
+
 /**
  * Wrap the global `fetch` so every Ollama request gets an abort-signal
  * timeout.  If the caller already supplies a signal the caller's signal
  * wins (the ollama SDK sets signals for streaming requests).
+ * When LLM_VERIFY_SSL=false an undici dispatcher that skips TLS verification
+ * is injected into each request.
  */
 const ollamaFetch: typeof fetch = (input, init?) => {
   const hasSignal = init?.signal != null;
   return fetch(input, {
     ...init,
     signal: hasSignal ? init!.signal : AbortSignal.timeout(OLLAMA_REQUEST_TIMEOUT_MS),
-  });
+    ...(llmDispatcher ? { dispatcher: llmDispatcher } : {}),
+  } as RequestInit);
 };
 
 const ollamaConfig: Partial<Config> = {
@@ -26,10 +53,12 @@ const ollamaConfig: Partial<Config> = {
   fetch: ollamaFetch,
 };
 
-if (process.env.LLM_BEARER_TOKEN) {
+if (llmAuthType === 'bearer' && process.env.LLM_BEARER_TOKEN) {
   ollamaConfig.headers = {
     Authorization: `Bearer ${process.env.LLM_BEARER_TOKEN}`,
   };
+} else if (llmAuthType !== 'bearer' && llmAuthType !== 'none') {
+  logger.warn({ llmAuthType }, 'Unknown LLM_AUTH_TYPE value — falling back to no auth');
 }
 
 const ollama = new Ollama(ollamaConfig);
@@ -257,6 +286,16 @@ export function askWithContext(
   ];
 
   return streamChat(model, messages, signal);
+}
+
+/** Whether TLS verification is enabled for LLM connections. */
+export function isLlmVerifySslEnabled(): boolean {
+  return llmVerifySsl;
+}
+
+/** The configured LLM auth type ('bearer' | 'none'). */
+export function getLlmAuthType(): string {
+  return llmAuthType;
 }
 
 export { ollama };
