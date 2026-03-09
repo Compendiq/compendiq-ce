@@ -2,11 +2,11 @@ import { useNavigate } from 'react-router-dom';
 import { m } from 'framer-motion';
 import {
   BookOpen, Layers, Bot, RefreshCw,
-  Plus, Settings, FileText, Sparkles,
+  Plus, Settings, FileText, Sparkles, Cpu, Loader2,
 } from 'lucide-react';
 import { useAuthStore } from '../../stores/auth-store';
 import { useSpaces, useSync } from '../../shared/hooks/use-spaces';
-import { usePages, useEmbeddingStatus } from '../../shared/hooks/use-pages';
+import { usePages, useEmbeddingStatus, useTriggerEmbedding } from '../../shared/hooks/use-pages';
 import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
 import { KnowledgeGaps } from './KnowledgeGaps';
 
@@ -34,12 +34,17 @@ export function DashboardPage() {
   const { data: recentPages } = usePages({ sort: 'modified', limit: 5 });
   const { data: embeddingStatus } = useEmbeddingStatus();
   const syncMutation = useSync();
+  const triggerEmbedding = useTriggerEmbedding();
+
+  const embeddedPagesLabel = embeddingStatus
+    ? `${embeddingStatus.embeddedPages} / ${embeddingStatus.totalPages}`
+    : '--';
 
   const stats = [
     { icon: Layers, label: 'Spaces', value: spaces ? String(spaces.length) : '--', color: 'text-info' },
     { icon: BookOpen, label: 'Pages', value: pages ? String(pages.total) : '--', color: 'text-success' },
-    { icon: Bot, label: 'Embedded', value: embeddingStatus ? String(embeddingStatus.totalEmbeddings) : '--', color: 'text-primary' },
-    { icon: RefreshCw, label: 'Dirty Pages', value: embeddingStatus ? String(embeddingStatus.dirtyPages) : '--', color: 'text-warning' },
+    { icon: Bot, label: 'Embedded Pages', value: embeddedPagesLabel, color: 'text-primary' },
+    { icon: Cpu, label: 'Chunks', value: embeddingStatus ? String(embeddingStatus.totalEmbeddings) : '--', color: 'text-warning' },
   ];
 
   const handleQuickAction = (path: string, label: string) => {
@@ -80,6 +85,47 @@ export function DashboardPage() {
           </m.div>
         ))}
       </m.div>
+
+      {/* Embedding trigger */}
+      {embeddingStatus && embeddingStatus.dirtyPages > 0 && (
+        <m.div
+          initial={{ opacity: 0, y: 16 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.15 }}
+          className="mt-4 glass-card p-4 flex items-center justify-between"
+        >
+          <div className="flex items-center gap-3">
+            <div className="rounded-lg bg-foreground/5 p-2.5 text-blue-400">
+              <Cpu size={20} />
+            </div>
+            <div>
+              <p className="text-sm font-medium">
+                {embeddingStatus.dirtyPages} {embeddingStatus.dirtyPages === 1 ? 'page needs' : 'pages need'} embedding
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {embeddingStatus.embeddedPages} / {embeddingStatus.totalPages} pages embedded
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => triggerEmbedding.mutate()}
+            disabled={embeddingStatus.isProcessing || triggerEmbedding.isPending}
+            className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {embeddingStatus.isProcessing ? (
+              <>
+                <Loader2 size={16} className="animate-spin" />
+                Processing...
+              </>
+            ) : (
+              <>
+                <Sparkles size={16} />
+                Embed Now
+              </>
+            )}
+          </button>
+        </m.div>
+      )}
 
       {/* Quick Actions */}
       <m.div
