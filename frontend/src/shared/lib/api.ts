@@ -44,7 +44,7 @@ export async function apiFetch<T = unknown>(
   let res = await fetch(`${API_BASE}${path}`, { ...options, headers, credentials: 'include' });
 
   // Reactive token refresh on 401
-  if (res.status === 401 && accessToken) {
+  if (res.status === 401) {
     const newToken = await refreshAccessToken();
     if (newToken) {
       headers.set('Authorization', `Bearer ${newToken}`);
@@ -64,4 +64,27 @@ export async function apiFetch<T = unknown>(
     return res.json();
   }
   return undefined as T;
+}
+
+/**
+ * Call the backend logout endpoint to revoke tokens and clear the refresh cookie,
+ * then clear frontend auth state. Always clears frontend state even if the backend
+ * call fails (e.g. network error or expired token).
+ */
+export async function logoutApi(): Promise<void> {
+  const { accessToken } = useAuthStore.getState();
+  try {
+    const headers: HeadersInit = {};
+    if (accessToken) {
+      headers['Authorization'] = `Bearer ${accessToken}`;
+    }
+    await fetch(`${API_BASE}/auth/logout`, {
+      method: 'POST',
+      headers,
+      credentials: 'include',
+    });
+  } catch {
+    // Best effort — always clear frontend state below
+  }
+  useAuthStore.getState().clearAuth();
 }
