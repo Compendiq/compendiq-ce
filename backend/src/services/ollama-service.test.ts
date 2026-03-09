@@ -188,3 +188,32 @@ describe('ollama-service bearer token configuration', () => {
     expect(result.error).toBe('Connection refused');
   });
 });
+
+describe('ollama-service system prompts — diagram special character quoting', () => {
+  const originalEnv = { ...process.env };
+
+  beforeEach(() => {
+    capturedConfig = undefined;
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  const diagramTypes = ['flowchart', 'sequence', 'state', 'mindmap'] as const;
+
+  for (const type of diagramTypes) {
+    it(`generate_diagram_${type} system prompt should instruct quoting labels with special characters`, async () => {
+      delete process.env.LLM_BEARER_TOKEN;
+
+      const mod = await import('./ollama-service.js');
+      const prompt = mod.getSystemPrompt(`generate_diagram_${type}` as import('./ollama-service.js').SystemPromptKey);
+
+      expect(prompt).toContain('MUST wrap the entire label text in double quotes');
+      expect(prompt).toContain('parentheses ()');
+      expect(prompt).toContain('brackets []');
+      expect(prompt).toContain('braces {}');
+    });
+  }
+});
