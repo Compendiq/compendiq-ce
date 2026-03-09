@@ -4,8 +4,7 @@ import { m, AnimatePresence } from 'framer-motion';
 import {
   ChevronRight,
   FileText,
-  FolderOpen,
-  Folder,
+  Layers,
   ChevronsUpDown,
   ChevronsDownUp,
   Hash,
@@ -140,7 +139,7 @@ function TreeNodeComponent({
               animate={{ rotate: isExpanded ? 90 : 0 }}
               transition={{ duration: 0.2, ease: 'easeInOut' }}
             >
-              <ChevronRight size={14} />
+              <ChevronRight size={16} />
             </m.div>
           </button>
         ) : (
@@ -161,16 +160,12 @@ function TreeNodeComponent({
             )}
           >
             {hasChildren ? (
-              isExpanded ? (
-                <FolderOpen size={14} />
-              ) : (
-                <Folder size={14} />
-              )
+              <Layers size={16} />
             ) : (
-              <FileText size={14} />
+              <FileText size={16} />
             )}
           </span>
-          <span className="truncate text-sm">{node.page.title}</span>
+          <span className="truncate text-base">{node.page.title}</span>
         </button>
 
         {/* Metadata — visible on hover or always on larger screens */}
