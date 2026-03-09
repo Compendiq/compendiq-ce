@@ -62,8 +62,12 @@ export const LIGHT_THEMES: ReadonlySet<ThemeId> = new Set([
   'catppuccin-latte',
 ]);
 
+export function isLightTheme(theme: ThemeId): boolean {
+  return LIGHT_THEMES.has(theme);
+}
+
 export const THEMES: ThemeMeta[] = [
-  // ── Dark themes ──
+  // -- Dark themes --
   {
     id: 'midnight-blue',
     label: 'Midnight Blue',
@@ -134,7 +138,7 @@ export const THEMES: ThemeMeta[] = [
     category: 'dark',
     preview: { bg: '#161618', card: '#222225', primary: '#909296', accent: '#c1c2c5' },
   },
-  // ── Bright themes ──
+  // -- Bright themes --
   {
     id: 'cloud-white',
     label: 'Cloud White',
@@ -205,7 +209,7 @@ export const THEMES: ThemeMeta[] = [
     category: 'bright',
     preview: { bg: '#f1f5f9', card: '#ffffff', primary: '#64748b', accent: '#94a3b8' },
   },
-  // ── Catppuccin themes ──
+  // -- Catppuccin themes --
   {
     id: 'catppuccin-latte',
     label: 'Catppuccin Latte',
@@ -215,7 +219,7 @@ export const THEMES: ThemeMeta[] = [
   },
   {
     id: 'catppuccin-frappe',
-    label: 'Catppuccin Frappé',
+    label: 'Catppuccin Frappe',
     description: 'Catppuccin mid-dark with muted pastels',
     category: 'catppuccin',
     preview: { bg: '#303446', card: '#292c3c', primary: '#8caaee', accent: '#ca9ee6' },
@@ -247,12 +251,35 @@ interface ThemeState {
   setTheme: (theme: ThemeId) => void;
 }
 
+/**
+ * Apply the data-theme attribute + data-theme-type to <html>.
+ * The CSS uses [data-theme="..."] selectors for theme variables
+ * and [data-theme-type="light"] for shared light-theme overrides.
+ */
+export function applyThemeToDocument(theme: ThemeId): void {
+  const root = document.documentElement;
+  root.setAttribute('data-theme', theme);
+  root.dataset.themeType = isLightTheme(theme) ? 'light' : 'dark';
+}
+
 export const useThemeStore = create<ThemeState>()(
   persist(
     (set) => ({
       theme: 'midnight-blue',
-      setTheme: (theme) => set({ theme }),
+      setTheme: (theme: ThemeId) => {
+        applyThemeToDocument(theme);
+        set({ theme });
+      },
     }),
-    { name: 'kb-theme' },
+    {
+      name: 'kb-theme',
+      onRehydrateStorage: () => {
+        return (state?: ThemeState) => {
+          if (state?.theme) {
+            applyThemeToDocument(state.theme);
+          }
+        };
+      },
+    },
   ),
 );

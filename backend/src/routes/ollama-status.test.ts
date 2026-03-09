@@ -269,7 +269,7 @@ describe('Ollama status and models routes', () => {
       expect(body[1].name).toBe('llama3');
     });
 
-    it('should return 503 with error details when Ollama is unavailable', async () => {
+    it('should return 503 with error type (not raw message) when Ollama is unavailable', async () => {
       mockListModels.mockRejectedValue(new Error('Connection refused'));
 
       const response = await app.inject({
@@ -280,7 +280,9 @@ describe('Ollama status and models routes', () => {
       expect(response.statusCode).toBe(503);
       const body = JSON.parse(response.body);
       expect(body.message).toContain('LLM server unavailable');
-      expect(body.message).toContain('Connection refused');
+      // Should contain error type, not the raw error message (security: avoids leaking internal details)
+      expect(body.message).toContain('Error');
+      expect(body.message).not.toContain('Connection refused');
     });
   });
 });

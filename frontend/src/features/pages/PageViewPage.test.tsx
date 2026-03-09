@@ -135,7 +135,7 @@ describe('PageViewPage', () => {
     const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
 
     // Content area should have prose classes for code styling
-    const contentArea = container.querySelector('.prose.prose-invert');
+    const contentArea = container.querySelector('.prose');
     expect(contentArea).toBeInTheDocument();
 
     // Inline code should be rendered
@@ -180,15 +180,17 @@ describe('PageViewPage', () => {
     expect(editLink!.textContent).toBe('Edit in Confluence');
   });
 
-  it('opens lightbox when clicking an image', () => {
+  it('opens lightbox when clicking an image', async () => {
     currentMockPage = mockPageWithImages;
     const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
 
-    const image = container.querySelector('img');
-    expect(image).toBeInTheDocument();
-
-    // Images should have zoom-in cursor
-    expect(image!.style.cursor).toBe('zoom-in');
+    // Wait for TipTap to render and the rAF-based image click handler to attach
+    let image: HTMLImageElement | null = null;
+    await waitFor(() => {
+      image = container.querySelector('img');
+      expect(image).toBeTruthy();
+      expect(image!.style.cursor).toBe('zoom-in');
+    });
 
     // Click the image
     fireEvent.click(image!);
@@ -206,7 +208,14 @@ describe('PageViewPage', () => {
     currentMockPage = mockPageWithImages;
     const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
 
-    const image = container.querySelector('img');
+    // Wait for image click handler
+    let image: HTMLImageElement | null = null;
+    await waitFor(() => {
+      image = container.querySelector('img');
+      expect(image).toBeTruthy();
+      expect(image!.style.cursor).toBe('zoom-in');
+    });
+
     fireEvent.click(image!);
 
     // Lightbox is open
@@ -225,9 +234,15 @@ describe('PageViewPage', () => {
     currentMockPage = mockPageWithImages;
     const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
 
-    const image = container.querySelector('img');
-    fireEvent.click(image!);
+    // Wait for image click handler
+    let image: HTMLImageElement | null = null;
+    await waitFor(() => {
+      image = container.querySelector('img');
+      expect(image).toBeTruthy();
+      expect(image!.style.cursor).toBe('zoom-in');
+    });
 
+    fireEvent.click(image!);
     expect(screen.getByRole('dialog')).toBeInTheDocument();
 
     // Press Escape
@@ -243,7 +258,7 @@ describe('PageViewPage', () => {
     currentMockPage = mockPageWithHeadings;
     const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
 
-    const contentArea = container.querySelector('.prose.prose-invert');
+    const contentArea = container.querySelector('.prose');
     expect(contentArea).toBeInTheDocument();
 
     // All heading levels should render
@@ -269,7 +284,7 @@ describe('PageViewPage', () => {
     currentMockPage = mockPageWithPanelsAndTasks;
     const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
 
-    const contentArea = container.querySelector('.prose.prose-invert');
+    const contentArea = container.querySelector('.prose');
     expect(contentArea).toBeInTheDocument();
 
     // Info and warning panels

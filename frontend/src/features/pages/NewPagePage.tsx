@@ -40,7 +40,7 @@ export function NewPagePage() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <button onClick={() => navigate('/pages')} className="rounded p-1.5 text-muted-foreground hover:bg-white/5">
+          <button onClick={() => navigate('/pages')} className="rounded p-1.5 text-muted-foreground hover:bg-foreground/5">
             <ArrowLeft size={18} />
           </button>
           <h1 className="text-xl font-bold">New Page</h1>
@@ -62,7 +62,7 @@ export function NewPagePage() {
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               placeholder="Page title..."
-              className="w-full rounded-md bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+              className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
             />
           </div>
           <div className="w-48">
@@ -70,7 +70,7 @@ export function NewPagePage() {
             <select
               value={spaceKey}
               onChange={(e) => setSpaceKey(e.target.value)}
-              className="w-full rounded-md bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+              className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
             >
               <option value="">Select space...</option>
               {spaces?.map((s) => (

@@ -109,9 +109,9 @@ export async function llmRoutes(fastify: FastifyInstance) {
     try {
       return await provider.listModels();
     } catch (err) {
-      const detail = err instanceof Error ? err.message : 'Unknown error';
       logger.error({ err, provider: providerType }, 'Failed to list models');
-      throw fastify.httpErrors.serviceUnavailable(`LLM server unavailable (${providerType}): ${detail}`);
+      const errorType = err instanceof Error ? err.constructor.name : 'UnknownError';
+      throw fastify.httpErrors.serviceUnavailable(`LLM server unavailable (${providerType}): ${errorType}`);
     }
   });
 

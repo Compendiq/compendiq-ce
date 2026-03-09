@@ -127,7 +127,7 @@ export function ServiceStatus() {
               </div>
               <button
                 onClick={() => dismissAlert(alert.id)}
-                className="rounded p-1 text-muted-foreground hover:bg-white/5"
+                className="rounded p-1 text-muted-foreground hover:bg-foreground/5"
                 aria-label={`Dismiss ${alert.service} alert`}
               >
                 <X size={14} />

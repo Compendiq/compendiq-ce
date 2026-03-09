@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { useThemeStore, THEMES, THEME_IDS, LIGHT_THEMES, THEME_CATEGORIES, type ThemeId } from './theme-store';
+import { useThemeStore, THEMES, THEME_IDS, LIGHT_THEMES, THEME_CATEGORIES, isLightTheme, applyThemeToDocument, type ThemeId } from './theme-store';
 
 describe('theme-store', () => {
   beforeEach(() => {
@@ -80,5 +80,62 @@ describe('theme-store', () => {
   it('sets bright themes', () => {
     useThemeStore.getState().setTheme('cloud-white');
     expect(useThemeStore.getState().theme).toBe('cloud-white');
+  });
+
+  describe('isLightTheme', () => {
+    it('returns true for light themes', () => {
+      expect(isLightTheme('cloud-white')).toBe(true);
+      expect(isLightTheme('lavender-bloom')).toBe(true);
+      expect(isLightTheme('catppuccin-latte')).toBe(true);
+      expect(isLightTheme('ice-crystal')).toBe(true);
+    });
+
+    it('returns false for dark themes', () => {
+      expect(isLightTheme('midnight-blue')).toBe(false);
+      expect(isLightTheme('ocean-depth')).toBe(false);
+      expect(isLightTheme('catppuccin-mocha')).toBe(false);
+      expect(isLightTheme('violet-storm')).toBe(false);
+    });
+  });
+
+  describe('applyThemeToDocument', () => {
+    it('sets data-theme attribute on document root', () => {
+      applyThemeToDocument('ocean-depth');
+      expect(document.documentElement.getAttribute('data-theme')).toBe('ocean-depth');
+    });
+
+    it('sets data-theme-type to dark for dark themes', () => {
+      applyThemeToDocument('midnight-blue');
+      expect(document.documentElement.dataset.themeType).toBe('dark');
+    });
+
+    it('sets data-theme-type to light for light themes', () => {
+      applyThemeToDocument('cloud-white');
+      expect(document.documentElement.dataset.themeType).toBe('light');
+    });
+
+    it('sets data-theme-type to light for catppuccin-latte', () => {
+      applyThemeToDocument('catppuccin-latte');
+      expect(document.documentElement.dataset.themeType).toBe('light');
+    });
+
+    it('sets data-theme-type to dark for catppuccin-mocha', () => {
+      applyThemeToDocument('catppuccin-mocha');
+      expect(document.documentElement.dataset.themeType).toBe('dark');
+    });
+  });
+
+  describe('setTheme applies to document', () => {
+    it('updates data-theme when setTheme is called', () => {
+      useThemeStore.getState().setTheme('emerald-dark');
+      expect(document.documentElement.getAttribute('data-theme')).toBe('emerald-dark');
+      expect(document.documentElement.dataset.themeType).toBe('dark');
+    });
+
+    it('updates data-theme-type to light for bright themes', () => {
+      useThemeStore.getState().setTheme('mint-fresh');
+      expect(document.documentElement.getAttribute('data-theme')).toBe('mint-fresh');
+      expect(document.documentElement.dataset.themeType).toBe('light');
+    });
   });
 });

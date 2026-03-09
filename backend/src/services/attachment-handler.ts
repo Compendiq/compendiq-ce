@@ -1,6 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { ConfluenceClient } from './confluence-client.js';
+import { ConfluenceClient, ConfluenceAttachment } from './confluence-client.js';
 import { logger } from '../utils/logger.js';
 
 const ATTACHMENTS_BASE = process.env.ATTACHMENTS_DIR ?? 'data/attachments';
@@ -78,12 +78,14 @@ export function getMimeType(filename: string): string {
 
 /**
  * Sync draw.io attachments for a page.
+ * Accepts pre-fetched attachments to avoid duplicate API calls.
  */
 export async function syncDrawioAttachments(
   client: ConfluenceClient,
   userId: string,
   pageId: string,
   bodyStorage: string,
+  attachments: ConfluenceAttachment[],
 ): Promise<string[]> {
   // Find drawio macro names in the storage format
   const drawioPattern = /ac:structured-macro[^>]*ac:name="drawio"[^>]*>[\s\S]*?<ac:parameter ac:name="diagramName">([^<]+)<\/ac:parameter/g;
@@ -96,8 +98,6 @@ export async function syncDrawioAttachments(
 
   if (diagramNames.length === 0) return [];
 
-  // Fetch page attachments from Confluence
-  const { results: attachments } = await client.getPageAttachments(pageId);
   const cachedFiles: string[] = [];
 
   for (const name of diagramNames) {
@@ -125,12 +125,14 @@ const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.svg', '.web
 /**
  * Sync image attachments referenced in a page's XHTML body.
  * Downloads all <ac:image><ri:attachment ri:filename="..."> images from Confluence.
+ * Accepts pre-fetched attachments to avoid duplicate API calls.
  */
 export async function syncImageAttachments(
   client: ConfluenceClient,
   userId: string,
   pageId: string,
   bodyStorage: string,
+  attachments: ConfluenceAttachment[],
 ): Promise<string[]> {
   // Find image attachment filenames in the storage format
   const imagePattern = /<ac:image[^>]*>[\s\S]*?<ri:attachment\s+ri:filename="([^"]+)"[\s\S]*?<\/ac:image>/g;
@@ -143,8 +145,6 @@ export async function syncImageAttachments(
 
   if (filenames.length === 0) return [];
 
-  // Fetch page attachments from Confluence
-  const { results: attachments } = await client.getPageAttachments(pageId);
   const cachedFiles: string[] = [];
 
   for (const filename of filenames) {
