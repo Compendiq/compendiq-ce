@@ -5,6 +5,7 @@ import { query } from '../db/postgres.js';
 import { encryptPat } from '../utils/crypto.js';
 import { validateUrl } from '../utils/ssrf-guard.js';
 import { logAuditEvent } from '../services/audit-service.js';
+import { setActiveProvider } from '../services/ollama-service.js';
 import { logger } from '../utils/logger.js';
 import { confluenceDispatcher } from '../utils/tls-config.js';
 
@@ -141,6 +142,11 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       `UPDATE user_settings SET ${updates.join(', ')} WHERE user_id = $${paramIdx}`,
       values,
     );
+
+    // If LLM provider changed, update the active in-memory provider
+    if (body.llmProvider !== undefined) {
+      setActiveProvider(body.llmProvider as 'ollama' | 'openai');
+    }
 
     // If PAT or URL changed, invalidate all user data (ADR-017)
     if (body.confluencePat !== undefined || body.confluenceUrl !== undefined) {

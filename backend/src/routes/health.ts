@@ -93,7 +93,7 @@ export async function healthRoutes(fastify: FastifyInstance) {
 
     reply.status(allHealthy ? 200 : 503).send({
       status,
-      services: { postgres, redis, ollama: llm },
+      services: { postgres, redis, llm },
       llmProvider: providerType,
       circuitBreakers: {
         ollama: getOllamaCircuitBreakerStatus(),
