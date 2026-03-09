@@ -43,7 +43,9 @@ export async function apiFetch<T = unknown>(
 
   let res = await fetch(`${API_BASE}${path}`, { ...options, headers, credentials: 'include' });
 
-  // Reactive token refresh on 401
+  // Reactive token refresh on 401 (covers both expired tokens and
+  // page-reload where accessToken was cleared from memory but
+  // the httpOnly refresh cookie is still present)
   if (res.status === 401) {
     const newToken = await refreshAccessToken();
     if (newToken) {

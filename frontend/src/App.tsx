@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { useAuthStore } from './stores/auth-store';
@@ -14,7 +15,23 @@ import { AiAssistantPage } from './features/ai/AiAssistantPage';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const accessToken = useAuthStore((s) => s.accessToken);
+  const [restoring, setRestoring] = useState(!accessToken && isAuthenticated);
+
+  useEffect(() => {
+    // On page reload, accessToken is null but isAuthenticated is true
+    // (persisted in localStorage). Restore the token via refresh cookie.
+    if (!accessToken && isAuthenticated) {
+      fetch('/api/auth/refresh', { method: 'POST', credentials: 'include' })
+        .then((res) => (res.ok ? res.json() : Promise.reject(new Error('refresh failed'))))
+        .then((data) => useAuthStore.getState().setAuth(data.accessToken, data.user))
+        .catch(() => useAuthStore.getState().clearAuth())
+        .finally(() => setRestoring(false));
+    }
+  }, [accessToken, isAuthenticated]);
+
   if (!isAuthenticated) return <Navigate to="/login" replace />;
+  if (restoring) return null;
   return <>{children}</>;
 }
 
