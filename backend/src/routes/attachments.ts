@@ -17,6 +17,13 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
     const mimeType = getMimeType(filename);
     reply.header('Content-Type', mimeType);
     reply.header('Cache-Control', 'public, max-age=3600');
+
+    // SVG files can contain embedded JavaScript — prevent execution
+    if (mimeType === 'image/svg+xml') {
+      reply.header('Content-Security-Policy', 'sandbox');
+      reply.header('Content-Disposition', 'attachment');
+    }
+
     return reply.send(data);
   });
 }
