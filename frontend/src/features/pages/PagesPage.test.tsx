@@ -79,10 +79,10 @@ describe('PagesPage', () => {
     vi.restoreAllMocks();
   });
 
-  it('renders the page title and search bar', () => {
+  it('renders the page title and filter controls', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     expect(screen.getByText('Pages')).toBeInTheDocument();
-    expect(screen.getByPlaceholderText('Search pages...')).toBeInTheDocument();
+    expect(screen.getByTestId('advanced-filters-toggle')).toBeInTheDocument();
   });
 
   it('renders the advanced filters toggle button', () => {
