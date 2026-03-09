@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
+import { LazyMotion, domAnimation } from 'framer-motion';
 import { PagesPage } from './PagesPage';
 
 function createWrapper() {
@@ -12,7 +13,9 @@ function createWrapper() {
     return (
       <QueryClientProvider client={queryClient}>
         <MemoryRouter>
-          {children}
+          <LazyMotion features={domAnimation}>
+            {children}
+          </LazyMotion>
         </MemoryRouter>
       </QueryClientProvider>
     );
@@ -65,6 +68,16 @@ describe('PagesPage', () => {
       }
       if (url.includes('/sync/status')) {
         return new Response(JSON.stringify({ status: 'idle' }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.includes('/embeddings/status')) {
+        return new Response(JSON.stringify({ totalPages: 10, embeddedPages: 8, dirtyPages: 2, totalEmbeddings: 50, isProcessing: false }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.includes('/analytics/knowledge-gaps')) {
+        return new Response(JSON.stringify({ gaps: [], total: 0, periodDays: 30 }), {
           headers: { 'Content-Type': 'application/json' },
         });
       }
@@ -173,6 +186,14 @@ describe('PagesPage', () => {
     // Freshness options are static (not from API), so they're always available
     fireEvent.change(select, { target: { value: 'stale' } });
     expect(select.value).toBe('stale');
+  });
+
+  it('renders compact stats row', async () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    expect(screen.getByText('Spaces')).toBeInTheDocument();
+    expect(screen.getByText('Total')).toBeInTheDocument();
+    expect(screen.getByText('Embedded')).toBeInTheDocument();
+    expect(screen.getByText('Chunks')).toBeInTheDocument();
   });
 
   it('renders article title left-aligned without preceding icon', async () => {
