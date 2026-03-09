@@ -134,6 +134,30 @@ describe('ConfluenceClient', () => {
 
       await expect(client.getSpaces()).rejects.toThrow('Resource not found');
     });
+
+    it('should include Confluence error message in 400 errors', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+      mockRequest.mockResolvedValue({
+        statusCode: 400,
+        body: { text: async () => JSON.stringify({ message: 'Content body cannot be converted to valid storage format' }) },
+      } as never);
+
+      await expect(client.getSpaces()).rejects.toThrow(
+        'Confluence API error: HTTP 400: Content body cannot be converted to valid storage format',
+      );
+    });
+
+    it('should handle non-JSON error responses gracefully', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+      mockRequest.mockResolvedValue({
+        statusCode: 500,
+        body: { text: async () => 'Internal Server Error' },
+      } as never);
+
+      await expect(client.getSpaces()).rejects.toThrow(
+        'Confluence API error: HTTP 500: Internal Server Error',
+      );
+    });
   });
 
   describe('URL handling', () => {

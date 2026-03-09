@@ -97,7 +97,17 @@ export class ConfluenceClient {
     }
     if (statusCode >= 400) {
       logger.error({ statusCode, url, body: text.slice(0, 500) }, 'Confluence API error');
-      throw new ConfluenceError(`Confluence API error: HTTP ${statusCode}`, statusCode);
+      // Extract Confluence error message from response for actionable diagnostics
+      let detail = '';
+      try {
+        const parsed = JSON.parse(text);
+        detail = parsed.message || parsed.reason || '';
+      } catch {
+        // Response may not be JSON; use raw excerpt
+        detail = text.slice(0, 200);
+      }
+      const suffix = detail ? `: ${detail}` : '';
+      throw new ConfluenceError(`Confluence API error: HTTP ${statusCode}${suffix}`, statusCode);
     }
 
     return JSON.parse(text) as T;
