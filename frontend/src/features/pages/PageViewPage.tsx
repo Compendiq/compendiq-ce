@@ -15,6 +15,7 @@ import { DuplicateDetector } from './DuplicateDetector';
 import { AutoTagger } from './AutoTagger';
 import { TagEditor } from './TagEditor';
 import { VersionHistory } from './VersionHistory';
+import { FlowchartGenerator } from './FlowchartGenerator';
 import { toast } from 'sonner';
 
 export function PageViewPage() {
@@ -219,18 +220,21 @@ export function PageViewPage() {
       {editing ? (
         <Editor content={editHtml} onChange={setEditHtml} draftKey={draftKey} />
       ) : (
-        <div className="flex gap-4">
-          <div
-            ref={contentRef}
-            className="glass-card prose prose-invert max-w-none flex-1 p-6"
-            dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
-          />
-          <div className="hidden w-64 shrink-0 space-y-4 lg:block sticky top-4 self-start max-h-[calc(100vh-2rem)] overflow-y-auto">
-            <TableOfContents htmlContent={sanitizedHtml} contentRef={contentRef} />
-            <VersionHistory pageId={id!} currentBodyText={page.bodyText} model="qwen3:latest" />
-            <DuplicateDetector pageId={id!} pageTitle={page.title} />
+        <>
+          <div className="flex gap-4">
+            <div
+              ref={contentRef}
+              className="glass-card prose prose-invert max-w-none flex-1 p-6"
+              dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
+            />
+            <div className="hidden w-64 shrink-0 space-y-4 lg:block sticky top-4 self-start max-h-[calc(100vh-2rem)] overflow-y-auto">
+              <TableOfContents htmlContent={sanitizedHtml} contentRef={contentRef} />
+              <VersionHistory pageId={id!} currentBodyText={page.bodyText} model="qwen3:latest" />
+              <DuplicateDetector pageId={id!} pageTitle={page.title} />
+            </div>
           </div>
-        </div>
+          <FlowchartGenerator pageId={id!} bodyHtml={page.bodyHtml} />
+        </>
       )}
     </m.div>
   );
