@@ -10,21 +10,24 @@ describe('tls-config', () => {
     vi.unstubAllEnvs();
   });
 
-  it('should return undefined when no CA bundle and SSL verification enabled', async () => {
+  it('should not create dispatcher when no CA bundle and SSL verification enabled', async () => {
     vi.stubEnv('CONFLUENCE_VERIFY_SSL', 'true');
     vi.stubEnv('NODE_EXTRA_CA_CERTS', '');
 
-    // Mock fs to simulate no files found
     vi.doMock('fs', () => ({
       readFileSync: vi.fn().mockImplementation(() => { throw new Error('ENOENT'); }),
       existsSync: vi.fn().mockReturnValue(false),
     }));
+    vi.doMock('undici', () => ({
+      Agent: vi.fn(),
+    }));
 
-    const { buildConnectOptions } = await import('./tls-config.js');
+    const { confluenceDispatcher, buildConnectOptions } = await import('./tls-config.js');
+    expect(confluenceDispatcher).toBeUndefined();
     expect(buildConnectOptions()).toBeUndefined();
   });
 
-  it('should return rejectUnauthorized false when CONFLUENCE_VERIFY_SSL is false', async () => {
+  it('should create dispatcher with rejectUnauthorized false when CONFLUENCE_VERIFY_SSL is false', async () => {
     vi.stubEnv('CONFLUENCE_VERIFY_SSL', 'false');
     vi.stubEnv('NODE_EXTRA_CA_CERTS', '');
 
@@ -33,11 +36,19 @@ describe('tls-config', () => {
       existsSync: vi.fn().mockReturnValue(false),
     }));
 
-    const { buildConnectOptions } = await import('./tls-config.js');
-    expect(buildConnectOptions()).toEqual({ rejectUnauthorized: false });
+    const MockAgent = vi.fn();
+    vi.doMock('undici', () => ({
+      Agent: MockAgent,
+    }));
+
+    const { confluenceDispatcher } = await import('./tls-config.js');
+    expect(confluenceDispatcher).toBeDefined();
+    expect(MockAgent).toHaveBeenCalledWith({
+      connect: { rejectUnauthorized: false },
+    });
   });
 
-  it('should load CA bundle from NODE_EXTRA_CA_CERTS', async () => {
+  it('should create dispatcher with CA bundle from NODE_EXTRA_CA_CERTS', async () => {
     const fakeCert = '-----BEGIN CERTIFICATE-----\nMIIBfake\n-----END CERTIFICATE-----\n';
     vi.stubEnv('CONFLUENCE_VERIFY_SSL', 'true');
     vi.stubEnv('NODE_EXTRA_CA_CERTS', '/custom/ca.pem');
@@ -47,8 +58,16 @@ describe('tls-config', () => {
       existsSync: vi.fn().mockReturnValue(false),
     }));
 
-    const { buildConnectOptions } = await import('./tls-config.js');
-    expect(buildConnectOptions()).toEqual({ ca: fakeCert });
+    const MockAgent = vi.fn();
+    vi.doMock('undici', () => ({
+      Agent: MockAgent,
+    }));
+
+    const { confluenceDispatcher } = await import('./tls-config.js');
+    expect(confluenceDispatcher).toBeDefined();
+    expect(MockAgent).toHaveBeenCalledWith({
+      connect: { ca: fakeCert },
+    });
   });
 
   it('should fall back to system CA paths when NODE_EXTRA_CA_CERTS not set', async () => {
@@ -61,8 +80,16 @@ describe('tls-config', () => {
       existsSync: vi.fn().mockReturnValue(true),
     }));
 
-    const { buildConnectOptions } = await import('./tls-config.js');
-    expect(buildConnectOptions()).toEqual({ ca: fakeCert });
+    const MockAgent = vi.fn();
+    vi.doMock('undici', () => ({
+      Agent: MockAgent,
+    }));
+
+    const { confluenceDispatcher } = await import('./tls-config.js');
+    expect(confluenceDispatcher).toBeDefined();
+    expect(MockAgent).toHaveBeenCalledWith({
+      connect: { ca: fakeCert },
+    });
   });
 
   it('should report verify SSL status', async () => {
@@ -72,6 +99,9 @@ describe('tls-config', () => {
     vi.doMock('fs', () => ({
       readFileSync: vi.fn().mockImplementation(() => { throw new Error('ENOENT'); }),
       existsSync: vi.fn().mockReturnValue(false),
+    }));
+    vi.doMock('undici', () => ({
+      Agent: vi.fn(),
     }));
 
     const { isVerifySslEnabled } = await import('./tls-config.js');

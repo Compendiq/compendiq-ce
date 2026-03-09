@@ -6,7 +6,7 @@ import { encryptPat } from '../utils/crypto.js';
 import { validateUrl } from '../utils/ssrf-guard.js';
 import { logAuditEvent } from '../services/audit-service.js';
 import { logger } from '../utils/logger.js';
-import { buildConnectOptions } from '../utils/tls-config.js';
+import { confluenceDispatcher } from '../utils/tls-config.js';
 
 export async function settingsRoutes(fastify: FastifyInstance) {
   // All settings routes require auth
@@ -134,9 +134,8 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         headers: { Authorization: `Bearer ${pat}` },
         signal: AbortSignal.timeout(10_000),
       };
-      const connectOpts = buildConnectOptions();
-      if (connectOpts) {
-        opts.connect = connectOpts;
+      if (confluenceDispatcher) {
+        opts.dispatcher = confluenceDispatcher;
       }
 
       const { statusCode, body: responseBody } = await undiciRequest(

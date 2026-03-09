@@ -15,16 +15,17 @@ vi.mock('../utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
-// Mock tls-config — default: no connect options
-const mockBuildConnectOptions = vi.fn().mockReturnValue(undefined);
-const mockIsVerifySslEnabled = vi.fn().mockReturnValue(true);
+// Mock tls-config — default: no custom dispatcher
+const mockDispatcher = { isMockDispatcher: true };
 vi.mock('../utils/tls-config.js', () => ({
-  buildConnectOptions: (...args: unknown[]) => mockBuildConnectOptions(...args),
-  isVerifySslEnabled: (...args: unknown[]) => mockIsVerifySslEnabled(...args),
+  confluenceDispatcher: undefined,
+  buildConnectOptions: vi.fn().mockReturnValue(undefined),
+  isVerifySslEnabled: vi.fn().mockReturnValue(true),
 }));
 
 import { request } from 'undici';
 import { ConfluenceClient, ConfluenceError } from './confluence-client.js';
+import * as tlsConfig from '../utils/tls-config.js';
 
 const mockRequest = vi.mocked(request);
 
@@ -34,14 +35,12 @@ describe('ConfluenceClient', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockBuildConnectOptions.mockReturnValue(undefined);
-    mockIsVerifySslEnabled.mockReturnValue(true);
+    // Reset to no dispatcher by default
+    (tlsConfig as { confluenceDispatcher: unknown }).confluenceDispatcher = undefined;
   });
 
-  describe('SSL configuration', () => {
-    it('should not set connect options when SSL is verified and no CA bundle', async () => {
-      mockBuildConnectOptions.mockReturnValue(undefined);
-
+  describe('TLS dispatcher', () => {
+    it('should not set dispatcher when no custom TLS config', async () => {
       const client = new ConfluenceClient(baseUrl, pat);
       mockRequest.mockResolvedValue({
         statusCode: 200,
@@ -51,11 +50,11 @@ describe('ConfluenceClient', () => {
       await client.getSpaces();
 
       const callArgs = mockRequest.mock.calls[0];
-      expect(callArgs[1]).not.toHaveProperty('connect');
+      expect(callArgs[1]).not.toHaveProperty('dispatcher');
     });
 
-    it('should disable SSL verification when CONFLUENCE_VERIFY_SSL=false', async () => {
-      mockBuildConnectOptions.mockReturnValue({ rejectUnauthorized: false });
+    it('should pass dispatcher when custom TLS config exists', async () => {
+      (tlsConfig as { confluenceDispatcher: unknown }).confluenceDispatcher = mockDispatcher;
 
       const client = new ConfluenceClient(baseUrl, pat);
       mockRequest.mockResolvedValue({
@@ -66,39 +65,24 @@ describe('ConfluenceClient', () => {
       await client.getSpaces();
 
       const callArgs = mockRequest.mock.calls[0];
-      expect(callArgs[1]).toHaveProperty('connect', { rejectUnauthorized: false });
+      expect((callArgs[1] as Record<string, unknown>).dispatcher).toBe(mockDispatcher);
     });
 
-    it('should pass CA bundle in connect options when configured', async () => {
-      const fakeCaBundle = '-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----';
-      mockBuildConnectOptions.mockReturnValue({ ca: fakeCaBundle });
+    it('should pass dispatcher for attachment downloads', async () => {
+      (tlsConfig as { confluenceDispatcher: unknown }).confluenceDispatcher = mockDispatcher;
 
       const client = new ConfluenceClient(baseUrl, pat);
       mockRequest.mockResolvedValue({
         statusCode: 200,
-        body: { text: async () => JSON.stringify({ results: [], start: 0, limit: 100, size: 0 }) },
+        body: (async function* () {
+          yield Buffer.from('file-content');
+        })(),
       } as never);
 
-      await client.getSpaces();
+      await client.downloadAttachment('/download/attachments/123/file.pdf');
 
       const callArgs = mockRequest.mock.calls[0];
-      expect(callArgs[1]).toHaveProperty('connect');
-      expect((callArgs[1] as Record<string, unknown>).connect).toEqual({ ca: fakeCaBundle });
-    });
-
-    it('should prefer rejectUnauthorized=false over CA bundle when CONFLUENCE_VERIFY_SSL=false', async () => {
-      mockBuildConnectOptions.mockReturnValue({ rejectUnauthorized: false });
-
-      const client = new ConfluenceClient(baseUrl, pat);
-      mockRequest.mockResolvedValue({
-        statusCode: 200,
-        body: { text: async () => JSON.stringify({ results: [], start: 0, limit: 100, size: 0 }) },
-      } as never);
-
-      await client.getSpaces();
-
-      const callArgs = mockRequest.mock.calls[0];
-      expect(callArgs[1]).toHaveProperty('connect', { rejectUnauthorized: false });
+      expect((callArgs[1] as Record<string, unknown>).dispatcher).toBe(mockDispatcher);
     });
   });
 
@@ -164,43 +148,6 @@ describe('ConfluenceClient', () => {
 
       const callUrl = mockRequest.mock.calls[0][0] as string;
       expect(callUrl).toBe('https://confluence.example.com/rest/api/space?start=0&limit=100&type=global');
-    });
-  });
-
-  describe('downloadAttachment SSL', () => {
-    it('should disable SSL for downloads when CONFLUENCE_VERIFY_SSL=false', async () => {
-      mockBuildConnectOptions.mockReturnValue({ rejectUnauthorized: false });
-
-      const client = new ConfluenceClient(baseUrl, pat);
-      mockRequest.mockResolvedValue({
-        statusCode: 200,
-        body: (async function* () {
-          yield Buffer.from('file-content');
-        })(),
-      } as never);
-
-      await client.downloadAttachment('/download/attachments/123/file.pdf');
-
-      const callArgs = mockRequest.mock.calls[0];
-      expect(callArgs[1]).toHaveProperty('connect', { rejectUnauthorized: false });
-    });
-
-    it('should pass CA bundle for downloads when configured', async () => {
-      const fakeCaBundle = '-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----';
-      mockBuildConnectOptions.mockReturnValue({ ca: fakeCaBundle });
-
-      const client = new ConfluenceClient(baseUrl, pat);
-      mockRequest.mockResolvedValue({
-        statusCode: 200,
-        body: (async function* () {
-          yield Buffer.from('file-content');
-        })(),
-      } as never);
-
-      await client.downloadAttachment('/download/attachments/123/file.pdf');
-
-      const callArgs = mockRequest.mock.calls[0];
-      expect((callArgs[1] as Record<string, unknown>).connect).toEqual({ ca: fakeCaBundle });
     });
   });
 });

@@ -1,4 +1,5 @@
 import { readFileSync, existsSync } from 'fs';
+import { Agent } from 'undici';
 import { logger } from './logger.js';
 
 /**
@@ -57,7 +58,7 @@ if (!verifySsl) {
 }
 
 /**
- * Build TLS connect options for undici requests to Confluence.
+ * Build TLS connect options for undici.
  * Respects CONFLUENCE_VERIFY_SSL and NODE_EXTRA_CA_CERTS env vars.
  */
 export function buildConnectOptions(): Record<string, unknown> | undefined {
@@ -68,6 +69,23 @@ export function buildConnectOptions(): Record<string, unknown> | undefined {
     return { ca: caBundleContents };
   }
   return undefined;
+}
+
+/**
+ * Pre-configured undici Agent with TLS options for Confluence connections.
+ * In undici v7, TLS connect options must be set at Agent construction time —
+ * they are ignored when passed per-request to request().
+ */
+const connectOpts = buildConnectOptions();
+export const confluenceDispatcher: Agent | undefined = connectOpts
+  ? new Agent({ connect: connectOpts })
+  : undefined;
+
+if (confluenceDispatcher) {
+  logger.info(
+    { verifySsl, hasCustomCa: !!caBundleContents },
+    'Created undici Agent with custom TLS configuration for Confluence',
+  );
 }
 
 /**

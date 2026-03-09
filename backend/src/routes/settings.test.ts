@@ -11,6 +11,7 @@ vi.mock('undici', () => ({
 
 // Mock TLS config
 vi.mock('../utils/tls-config.js', () => ({
+  confluenceDispatcher: undefined,
   buildConnectOptions: vi.fn().mockReturnValue(undefined),
 }));
 

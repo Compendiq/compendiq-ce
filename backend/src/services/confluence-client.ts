@@ -1,7 +1,7 @@
 import { request } from 'undici';
 import { validateUrl } from '../utils/ssrf-guard.js';
 import { logger } from '../utils/logger.js';
-import { buildConnectOptions, isVerifySslEnabled } from '../utils/tls-config.js';
+import { confluenceDispatcher } from '../utils/tls-config.js';
 
 interface ConfluenceSpace {
   key: string;
@@ -78,9 +78,8 @@ export class ConfluenceClient {
       body: body ? JSON.stringify(body) : undefined,
       signal: signal ?? AbortSignal.timeout(30_000),
     };
-    const connectOpts = buildConnectOptions();
-    if (connectOpts) {
-      opts.connect = connectOpts;
+    if (confluenceDispatcher) {
+      opts.dispatcher = confluenceDispatcher;
     }
 
     const { statusCode, body: responseBody } = await request(url, opts as Parameters<typeof request>[1]);
@@ -151,9 +150,8 @@ export class ConfluenceClient {
       headers: { 'Authorization': `Bearer ${this.pat}` },
       signal: AbortSignal.timeout(60_000),
     };
-    const connectOpts = buildConnectOptions();
-    if (connectOpts) {
-      opts.connect = connectOpts;
+    if (confluenceDispatcher) {
+      opts.dispatcher = confluenceDispatcher;
     }
 
     const { statusCode, body } = await request(url, opts as Parameters<typeof request>[1]);
