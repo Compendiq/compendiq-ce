@@ -3,7 +3,7 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import { m } from 'framer-motion';
 import {
   Send, Bot, User, Loader2, MessageSquare, Plus, Trash2,
-  Wand2, FileText, ListCollapse, Sparkles, GitBranch,
+  Wand2, FileText, ListCollapse, Sparkles, GitBranch, FileInput,
 } from 'lucide-react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -51,6 +51,7 @@ export function AiAssistantPage() {
   const [improvedContent, setImprovedContent] = useState<string>('');
   const [diagramType, setDiagramType] = useState<string>('flowchart');
   const [diagramCode, setDiagramCode] = useState<string>('');
+  const [isInsertingDiagram, setIsInsertingDiagram] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -340,6 +341,28 @@ export function AiAssistantPage() {
     }
   }, [page, model, diagramType, pageId, isStreaming]);
 
+  const handleInsertDiagram = useCallback(async () => {
+    if (!diagramCode || !page || !pageId || isInsertingDiagram) return;
+    setIsInsertingDiagram(true);
+    try {
+      const diagramHtml = `\n<pre><code class="language-mermaid">${diagramCode}</code></pre>\n`;
+      const updatedHtml = page.bodyHtml + diagramHtml;
+      await apiFetch(`/pages/${pageId}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          title: page.title,
+          bodyHtml: updatedHtml,
+          version: page.version,
+        }),
+      });
+      toast.success('Diagram inserted into article');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to insert diagram');
+    } finally {
+      setIsInsertingDiagram(false);
+    }
+  }, [diagramCode, page, pageId, isInsertingDiagram]);
+
   const startNewConversation = () => {
     setMessages([]);
     setConversationId(null);
@@ -584,7 +607,22 @@ export function AiAssistantPage() {
 
           {/* Mermaid diagram for diagram mode */}
           {mode === 'diagram' && diagramCode && !isStreaming && (
-            <MermaidDiagram code={diagramCode} className="mt-4" />
+            <>
+              <MermaidDiagram code={diagramCode} className="mt-4" />
+              {page && pageId && (
+                <button
+                  onClick={handleInsertDiagram}
+                  disabled={isInsertingDiagram}
+                  className="mt-2 flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                >
+                  {isInsertingDiagram ? (
+                    <><Loader2 size={14} className="animate-spin" /> Inserting...</>
+                  ) : (
+                    <><FileInput size={14} /> Use in article</>
+                  )}
+                </button>
+              )}
+            </>
           )}
         </div>
 
