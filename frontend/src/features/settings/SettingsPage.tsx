@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import type { SettingsResponse, LlmProviderType } from '@kb-creator/contracts';
 import { apiFetch } from '../../shared/lib/api';
 import { useAuthStore } from '../../stores/auth-store';
+import { useSettings } from '../../shared/hooks/use-settings';
 import { SpacesTab } from './SpacesTab';
 import { LabelManager } from './LabelManager';
 import { ErrorDashboard } from './ErrorDashboard';
@@ -17,10 +18,7 @@ export function SettingsPage() {
   const isAdmin = user?.role === 'admin';
   const [activeTab, setActiveTab] = useState<TabId>('confluence');
 
-  const { data: settings, isLoading } = useQuery({
-    queryKey: ['settings'],
-    queryFn: () => apiFetch<SettingsResponse>('/settings'),
-  });
+  const { data: settings, isLoading } = useSettings();
 
   const updateSettings = useMutation({
     mutationFn: (body: Record<string, unknown>) =>

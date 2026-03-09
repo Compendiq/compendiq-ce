@@ -51,8 +51,16 @@ export function AiAssistantPage() {
   const [diagramCode, setDiagramCode] = useState<string>('');
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const { data: page } = usePage(pageId ?? undefined);
   const { data: embeddingStatus } = useEmbeddingStatus();
+
+  // Abort any in-flight stream on unmount
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
 
   // Load settings, models and conversations on mount
   useEffect(() => {
@@ -101,6 +109,10 @@ export function AiAssistantPage() {
 
   const handleAsk = useCallback(async () => {
     if (!input.trim() || !model || isStreaming) return;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     const question = input.trim();
     setInput('');
     setMessages((prev) => [...prev, { role: 'user', content: question }]);
@@ -114,6 +126,7 @@ export function AiAssistantPage() {
       for await (const chunk of streamSSE<{ content?: string; done?: boolean; final?: boolean; conversationId?: string; sources?: Source[] }>(
         '/llm/ask',
         { question, model, conversationId },
+        controller.signal,
       )) {
         if (chunk.content) {
           assistantContent += chunk.content;
@@ -139,6 +152,7 @@ export function AiAssistantPage() {
         });
       }
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
       toast.error(err instanceof Error ? err.message : 'Failed to get response');
       setMessages((prev) => prev.slice(0, -1));
     } finally {
@@ -148,6 +162,10 @@ export function AiAssistantPage() {
 
   const handleImprove = useCallback(async () => {
     if (!page || !model || isStreaming) return;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setIsStreaming(true);
     setShowDiffView(false);
     setImprovedContent('');
@@ -162,7 +180,7 @@ export function AiAssistantPage() {
         type: improvementType,
         model,
         pageId,
-      })) {
+      }, controller.signal)) {
         if (chunk.content) {
           result += chunk.content;
           setMessages((prev) => {
@@ -176,6 +194,7 @@ export function AiAssistantPage() {
       setImprovedContent(result);
       setShowDiffView(true);
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
       toast.error(err instanceof Error ? err.message : 'Improvement failed');
     } finally {
       setIsStreaming(false);
@@ -184,6 +203,10 @@ export function AiAssistantPage() {
 
   const handleGenerate = useCallback(async () => {
     if (!input.trim() || !model || isStreaming) return;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     const prompt = input.trim();
     setInput('');
     setMessages([{ role: 'user', content: `Generate: ${prompt}` }]);
@@ -193,7 +216,7 @@ export function AiAssistantPage() {
     setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
 
     try {
-      for await (const chunk of streamSSE('/llm/generate', { prompt, model })) {
+      for await (const chunk of streamSSE('/llm/generate', { prompt, model }, controller.signal)) {
         if (chunk.content) {
           result += chunk.content;
           setMessages((prev) => {
@@ -204,6 +227,7 @@ export function AiAssistantPage() {
         }
       }
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
       toast.error(err instanceof Error ? err.message : 'Generation failed');
     } finally {
       setIsStreaming(false);
@@ -212,6 +236,10 @@ export function AiAssistantPage() {
 
   const handleSummarize = useCallback(async () => {
     if (!page || !model || isStreaming) return;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setIsStreaming(true);
     setMessages([{ role: 'user', content: `Summarize: ${page.title}` }]);
 
@@ -222,7 +250,7 @@ export function AiAssistantPage() {
       for await (const chunk of streamSSE('/llm/summarize', {
         content: page.bodyHtml,
         model,
-      })) {
+      }, controller.signal)) {
         if (chunk.content) {
           result += chunk.content;
           setMessages((prev) => {
@@ -233,6 +261,7 @@ export function AiAssistantPage() {
         }
       }
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
       toast.error(err instanceof Error ? err.message : 'Summarization failed');
     } finally {
       setIsStreaming(false);
@@ -241,6 +270,10 @@ export function AiAssistantPage() {
 
   const handleDiagram = useCallback(async () => {
     if (!page || !model || isStreaming) return;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setIsStreaming(true);
     setDiagramCode('');
     setMessages([{ role: 'user', content: `Generate ${diagramType} diagram: ${page.title}` }]);
@@ -254,7 +287,7 @@ export function AiAssistantPage() {
         model,
         diagramType,
         pageId,
-      })) {
+      }, controller.signal)) {
         if (chunk.content) {
           result += chunk.content;
           setMessages((prev) => {
@@ -266,6 +299,7 @@ export function AiAssistantPage() {
       }
       setDiagramCode(result);
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
       toast.error(err instanceof Error ? err.message : 'Diagram generation failed');
     } finally {
       setIsStreaming(false);

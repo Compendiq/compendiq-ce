@@ -1,17 +1,17 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import { query, runMigrations, closePool } from '../db/postgres.js';
+import { query } from '../db/postgres.js';
 import { trackError, listErrors, resolveError, getErrorSummary } from './error-tracker.js';
-import { isDbAvailable } from '../test-db-helper.js';
+import { isDbAvailable, setupTestDb, teardownTestDb } from '../test-db-helper.js';
 
 const dbAvailable = await isDbAvailable();
 
 describe.skipIf(!dbAvailable)('Error Tracker', () => {
   beforeAll(async () => {
-    await runMigrations();
+    await setupTestDb();
   });
 
   afterAll(async () => {
-    await closePool();
+    await teardownTestDb();
   });
 
   beforeEach(async () => {

@@ -1,4 +1,4 @@
-import { runMigrations, getPool, closePool } from './db/postgres.js';
+import { runMigrations, getPool, closePool, checkConnection } from './db/postgres.js';
 
 let initialized = false;
 let _dbAvailable: boolean | null = null;
@@ -9,14 +9,7 @@ let _dbAvailable: boolean | null = null;
  */
 export async function isDbAvailable(): Promise<boolean> {
   if (_dbAvailable !== null) return _dbAvailable;
-  try {
-    const pool = getPool();
-    const client = await pool.connect();
-    client.release();
-    _dbAvailable = true;
-  } catch {
-    _dbAvailable = false;
-  }
+  _dbAvailable = await checkConnection();
   return _dbAvailable;
 }
 
