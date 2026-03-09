@@ -10,7 +10,10 @@ interface TocHeading {
 }
 
 interface TableOfContentsProps {
-  htmlContent: string;
+  /** Raw HTML content to parse headings from (legacy mode) */
+  htmlContent?: string;
+  /** Pre-parsed headings list (preferred, from ArticleViewer) */
+  headings?: TocHeading[];
   contentRef?: React.RefObject<HTMLElement | null>;
 }
 
@@ -33,13 +36,14 @@ function parseHeadings(html: string): TocHeading[] {
   return headings;
 }
 
-export function TableOfContents({ htmlContent, contentRef }: TableOfContentsProps) {
+export function TableOfContents({ htmlContent, headings: headingsProp, contentRef }: TableOfContentsProps) {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [isMobileOpen, setIsMobileOpen] = useState(false);
   const [readingProgress, setReadingProgress] = useState(0);
   const observerRef = useRef<IntersectionObserver | null>(null);
 
-  const headings = useMemo(() => parseHeadings(htmlContent), [htmlContent]);
+  const parsedHeadings = useMemo(() => (htmlContent ? parseHeadings(htmlContent) : []), [htmlContent]);
+  const headings = headingsProp ?? parsedHeadings;
 
   // Scroll tracking via IntersectionObserver
   useEffect(() => {
