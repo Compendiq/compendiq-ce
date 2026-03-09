@@ -1,9 +1,11 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import { setupTestDb, truncateAllTables, teardownTestDb } from '../test-db-helper.js';
+import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../test-db-helper.js';
 import { query } from '../db/postgres.js';
 import { saveVersionSnapshot, getVersionHistory, getVersion } from './version-tracker.js';
 
-describe('VersionTracker', () => {
+const dbAvailable = await isDbAvailable();
+
+describe.skipIf(!dbAvailable)('VersionTracker', () => {
   let userId: string;
 
   beforeAll(async () => {
