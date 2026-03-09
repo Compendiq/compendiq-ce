@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { GitBranch, Loader2, X } from 'lucide-react';
 import { streamSSE } from '../../shared/lib/sse';
 import { MermaidDiagram } from '../../shared/components/MermaidDiagram';
@@ -22,6 +22,15 @@ export function FlowchartGenerator({ pageId, bodyHtml }: FlowchartGeneratorProps
   const [model, setModel] = useState('');
   const [models, setModels] = useState<Array<{ name: string }>>([]);
 
+  const abortRef = useRef<AbortController | null>(null);
+
+  // Abort any in-flight stream on unmount
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
+
   useEffect(() => {
     if (!open || models.length > 0) return;
     apiFetch<Array<{ name: string }>>('/ollama/models')
@@ -36,6 +45,10 @@ export function FlowchartGenerator({ pageId, bodyHtml }: FlowchartGeneratorProps
 
   const handleGenerate = useCallback(async () => {
     if (!model || isStreaming || !bodyHtml) return;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setIsStreaming(true);
     setDiagramCode('');
 
@@ -46,13 +59,14 @@ export function FlowchartGenerator({ pageId, bodyHtml }: FlowchartGeneratorProps
         model,
         diagramType,
         pageId,
-      })) {
+      }, controller.signal)) {
         if (chunk.content) {
           result += chunk.content;
           setDiagramCode(result);
         }
       }
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
       toast.error(err instanceof Error ? err.message : 'Diagram generation failed');
     } finally {
       setIsStreaming(false);

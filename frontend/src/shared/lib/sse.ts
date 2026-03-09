@@ -3,10 +3,13 @@ import { useAuthStore } from '../../stores/auth-store';
 /**
  * Stream SSE events from a POST endpoint.
  * Yields parsed data objects from each SSE line.
+ *
+ * Pass an AbortSignal to cancel the stream on unmount/navigation.
  */
 export async function* streamSSE<T = { content: string; done: boolean }>(
   path: string,
   body: unknown,
+  signal?: AbortSignal,
 ): AsyncGenerator<T> {
   const { accessToken } = useAuthStore.getState();
 
@@ -18,6 +21,7 @@ export async function* streamSSE<T = { content: string; done: boolean }>(
     },
     credentials: 'include',
     body: JSON.stringify(body),
+    signal,
   });
 
   if (!res.ok) {

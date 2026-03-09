@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import { m, AnimatePresence } from 'framer-motion';
 import {
   ArrowLeft, Edit3, Save, X, Trash2, Wand2, FileText,
@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import type { SettingsResponse } from '@kb-creator/contracts';
 import { usePage, useUpdatePage, useDeletePage } from '../../shared/hooks/use-pages';
-import { apiFetch } from '../../shared/lib/api';
+import { useSettings } from '../../shared/hooks/use-settings';
 import { Editor, getDraft, clearDraft } from '../../shared/components/Editor';
 import { ArticleViewer } from '../../shared/components/ArticleViewer';
 import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
@@ -74,11 +74,7 @@ export function PageViewPage() {
   const [tocHeadings, setTocHeadings] = useState<TocHeading[]>([]);
   const contentRef = useRef<HTMLDivElement>(null);
 
-  const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: () => apiFetch<SettingsResponse>('/settings'),
-    staleTime: 5 * 60 * 1000,
-  });
+  const { data: settings } = useSettings();
 
   const draftKey = id ? `page-${id}` : undefined;
 
@@ -98,6 +94,8 @@ export function PageViewPage() {
     }
     setEditing(true);
   }, [page, id]);
+
+  const closeLightbox = useCallback(() => setLightboxSrc(null), []);
 
   const cancelEditing = useCallback(() => {
     if (draftKey) clearDraft(draftKey);
@@ -297,7 +295,7 @@ export function PageViewPage() {
           <ImageLightbox
             src={lightboxSrc.src}
             alt={lightboxSrc.alt}
-            onClose={() => setLightboxSrc(null)}
+            onClose={closeLightbox}
           />
         )}
       </AnimatePresence>
