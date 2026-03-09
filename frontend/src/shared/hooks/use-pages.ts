@@ -48,6 +48,31 @@ export function usePages(params: {
   });
 }
 
+interface PageTreeItem {
+  id: string;
+  spaceKey: string;
+  title: string;
+  parentId: string | null;
+  labels: string[];
+  lastModifiedAt: string | null;
+}
+
+interface PageTreeResponse {
+  items: PageTreeItem[];
+  total: number;
+}
+
+export function usePageTree(params: { spaceKey?: string } = {}) {
+  const searchParams = new URLSearchParams();
+  if (params.spaceKey) searchParams.set('spaceKey', params.spaceKey);
+  const qs = searchParams.toString();
+
+  return useQuery<PageTreeResponse>({
+    queryKey: ['pages', 'tree', params],
+    queryFn: () => apiFetch(`/pages/tree${qs ? `?${qs}` : ''}`),
+  });
+}
+
 export function usePage(id: string | undefined) {
   return useQuery<PageDetail>({
     queryKey: ['pages', id],
@@ -113,4 +138,4 @@ export function useEmbeddingStatus() {
   });
 }
 
-export type { PageSummary, PageDetail, PaginatedPages };
+export type { PageSummary, PageDetail, PaginatedPages, PageTreeItem, PageTreeResponse };

@@ -43,4 +43,18 @@ export type PageSummary = z.infer<typeof PageSummarySchema>;
 export type PageDetail = z.infer<typeof PageDetailSchema>;
 export type CreatePageInput = z.infer<typeof CreatePageSchema>;
 export type UpdatePageInput = z.infer<typeof UpdatePageSchema>;
+export const PageTreeItemSchema = z.object({
+  id: z.string(),
+  spaceKey: z.string(),
+  title: z.string(),
+  parentId: z.string().nullable(),
+  labels: z.array(z.string()),
+  lastModifiedAt: z.coerce.date().nullable(),
+});
+
+export const PageTreeQuerySchema = z.object({
+  spaceKey: z.string().optional(),
+});
+
 export type PageListQuery = z.infer<typeof PageListQuerySchema>;
+export type PageTreeItem = z.infer<typeof PageTreeItemSchema>;

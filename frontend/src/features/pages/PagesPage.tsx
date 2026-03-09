@@ -2,7 +2,7 @@ import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { m } from 'framer-motion';
 import { Search, FileText, Plus, RefreshCw, ChevronLeft, ChevronRight, FolderOpen, List, GitBranch } from 'lucide-react';
-import { usePages } from '../../shared/hooks/use-pages';
+import { usePages, usePageTree } from '../../shared/hooks/use-pages';
 import { useSpaces, useSync, useSyncStatus } from '../../shared/hooks/use-spaces';
 import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
 import { BulkOperations } from './BulkOperations';
@@ -15,7 +15,7 @@ export function PagesPage() {
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState<'title' | 'modified' | 'author'>('modified');
-  const [viewMode, setViewMode] = useState<'list' | 'tree'>('list');
+  const [viewMode, setViewMode] = useState<'list' | 'tree'>('tree');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   const { data: spaces } = useSpaces();
@@ -24,6 +24,9 @@ export function PagesPage() {
     search: search || undefined,
     page,
     sort,
+  });
+  const { data: treeData, isLoading: isTreeLoading } = usePageTree({
+    spaceKey: spaceKey || undefined,
   });
   const syncMutation = useSync();
   const { data: syncStatus } = useSyncStatus();
@@ -98,16 +101,18 @@ export function PagesPage() {
 
       {/* Filters */}
       <div className="glass-card flex flex-wrap items-center gap-3 p-4">
-        <div className="relative flex-1 min-w-48">
-          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <input
-            type="text"
-            placeholder="Search pages..."
-            value={search}
-            onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-            className="w-full rounded-md bg-white/5 py-2 pl-10 pr-4 text-sm outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-primary"
-          />
-        </div>
+        {viewMode === 'list' && (
+          <div className="relative flex-1 min-w-48">
+            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+            <input
+              type="text"
+              placeholder="Search pages..."
+              value={search}
+              onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+              className="w-full rounded-md bg-white/5 py-2 pl-10 pr-4 text-sm outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-primary"
+            />
+          </div>
+        )}
 
         <select
           value={spaceKey}
@@ -120,15 +125,17 @@ export function PagesPage() {
           ))}
         </select>
 
-        <select
-          value={sort}
-          onChange={(e) => setSort(e.target.value as typeof sort)}
-          className="rounded-md bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
-        >
-          <option value="modified">Last Modified</option>
-          <option value="title">Title</option>
-          <option value="author">Author</option>
-        </select>
+        {viewMode === 'list' && (
+          <select
+            value={sort}
+            onChange={(e) => setSort(e.target.value as typeof sort)}
+            className="rounded-md bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+          >
+            <option value="modified">Last Modified</option>
+            <option value="title">Title</option>
+            <option value="author">Author</option>
+          </select>
+        )}
 
         {/* View toggle */}
         <div className="flex rounded-md border border-white/10">
@@ -160,7 +167,25 @@ export function PagesPage() {
       </div>
 
       {/* Page list */}
-      {isLoading ? (
+      {viewMode === 'tree' ? (
+        isTreeLoading ? (
+          <div className="space-y-3">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <div key={i} className="glass-card h-16 animate-pulse" />
+            ))}
+          </div>
+        ) : !treeData?.items.length ? (
+          <div className="glass-card flex flex-col items-center justify-center py-16 text-center">
+            <FolderOpen size={48} className="mb-4 text-muted-foreground" />
+            <p className="text-lg font-medium">No pages found</p>
+            <p className="text-sm text-muted-foreground">
+              Sync your Confluence spaces to see pages here
+            </p>
+          </div>
+        ) : (
+          <PageTreeView pages={treeData.items} />
+        )
+      ) : isLoading ? (
         <div className="space-y-3">
           {Array.from({ length: 5 }).map((_, i) => (
             <div key={i} className="glass-card h-16 animate-pulse" />
@@ -174,8 +199,6 @@ export function PagesPage() {
             {search ? 'Try a different search term' : 'Sync your Confluence spaces to see pages here'}
           </p>
         </div>
-      ) : viewMode === 'tree' ? (
-        <PageTreeView pages={pagesData.items} />
       ) : (
         <div className="space-y-2">
           {pagesData.items.map((pageItem, i) => (
@@ -237,8 +260,8 @@ export function PagesPage() {
         </div>
       )}
 
-      {/* Pagination */}
-      {pagesData && pagesData.totalPages > 1 && (
+      {/* Pagination (list view only) */}
+      {viewMode === 'list' && pagesData && pagesData.totalPages > 1 && (
         <div className="flex items-center justify-center gap-4">
           <button
             onClick={() => setPage((p) => Math.max(1, p - 1))}
