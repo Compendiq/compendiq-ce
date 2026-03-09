@@ -43,10 +43,16 @@ export async function autoTagContent(
 
   const { sanitized } = sanitizeLlmInput(text);
 
-  const response = await chat(model, [
-    { role: 'system', content: SYSTEM_PROMPT },
-    { role: 'user', content: sanitized },
-  ]);
+  let response: string;
+  try {
+    response = await chat(model, [
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'user', content: sanitized },
+    ]);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Auto-tag LLM call failed: ${message}`);
+  }
 
   return parseTagResponse(response);
 }
