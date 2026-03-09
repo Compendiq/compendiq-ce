@@ -54,14 +54,41 @@ export function AiAssistantPage() {
   const { data: page } = usePage(pageId ?? undefined);
   const { data: embeddingStatus } = useEmbeddingStatus();
 
-  // Load models and conversations on mount
+  // Load settings, models and conversations on mount
   useEffect(() => {
-    apiFetch<Array<{ name: string }>>('/ollama/models')
-      .then((m) => {
-        setModels(m);
-        if (m.length > 0) setModel((prev) => prev || m[0].name);
+    // Load user settings to get their preferred provider and model
+    apiFetch<{ llmProvider: string; ollamaModel: string; openaiModel: string | null }>('/settings')
+      .then((settings) => {
+        const provider = settings.llmProvider ?? 'ollama';
+        const preferredModel = provider === 'openai'
+          ? settings.openaiModel ?? ''
+          : settings.ollamaModel ?? '';
+
+        // Load models for the active provider
+        apiFetch<Array<{ name: string }>>(`/ollama/models?provider=${provider}`)
+          .then((m) => {
+            setModels(m);
+            // Use preferred model if available, otherwise first from list
+            if (preferredModel) {
+              setModel(preferredModel);
+            } else if (m.length > 0) {
+              setModel((prev) => prev || m[0].name);
+            }
+          })
+          .catch(() => {
+            // If model list fails but we have a preferred model, use it
+            if (preferredModel) setModel(preferredModel);
+          });
       })
-      .catch(() => {});
+      .catch(() => {
+        // Fallback: load Ollama models directly
+        apiFetch<Array<{ name: string }>>('/ollama/models')
+          .then((m) => {
+            setModels(m);
+            if (m.length > 0) setModel((prev) => prev || m[0].name);
+          })
+          .catch(() => {});
+      });
 
     apiFetch<Conversation[]>('/llm/conversations')
       .then(setConversations)

@@ -9,16 +9,30 @@ const mockCheckHealth = vi.fn();
 const mockIsLlmVerifySslEnabled = vi.fn().mockReturnValue(true);
 const mockGetLlmAuthType = vi.fn().mockReturnValue('bearer');
 
-vi.mock('../services/ollama-service.js', () => ({
-  listModels: (...args: unknown[]) => mockListModels(...args),
-  checkHealth: (...args: unknown[]) => mockCheckHealth(...args),
-  isLlmVerifySslEnabled: (...args: unknown[]) => mockIsLlmVerifySslEnabled(...args),
-  getLlmAuthType: (...args: unknown[]) => mockGetLlmAuthType(...args),
-  streamChat: vi.fn(),
-  chat: vi.fn(),
-  getSystemPrompt: vi.fn(),
-  generateEmbedding: vi.fn(),
-}));
+vi.mock('../services/ollama-service.js', () => {
+  const listModels = (...args: unknown[]) => mockListModels(...args);
+  const checkHealth = (...args: unknown[]) => mockCheckHealth(...args);
+  const mockProvider = {
+    name: 'ollama',
+    listModels,
+    checkHealth,
+    streamChat: vi.fn(),
+    chat: vi.fn(),
+    generateEmbedding: vi.fn(),
+  };
+  return {
+    listModels,
+    checkHealth,
+    isLlmVerifySslEnabled: (...args: unknown[]) => mockIsLlmVerifySslEnabled(...args),
+    getLlmAuthType: (...args: unknown[]) => mockGetLlmAuthType(...args),
+    streamChat: vi.fn(),
+    chat: vi.fn(),
+    getSystemPrompt: vi.fn(),
+    generateEmbedding: vi.fn(),
+    getActiveProviderType: vi.fn().mockReturnValue('ollama'),
+    getProvider: vi.fn().mockReturnValue(mockProvider),
+  };
+});
 
 vi.mock('../services/circuit-breaker.js', () => ({
   getOllamaCircuitBreakerStatus: vi.fn().mockReturnValue({
@@ -265,7 +279,7 @@ describe('Ollama status and models routes', () => {
 
       expect(response.statusCode).toBe(503);
       const body = JSON.parse(response.body);
-      expect(body.message).toContain('Ollama server unavailable');
+      expect(body.message).toContain('LLM server unavailable');
       expect(body.message).toContain('Connection refused');
     });
   });

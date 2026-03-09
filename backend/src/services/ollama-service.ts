@@ -1,13 +1,31 @@
-import { Ollama } from 'ollama';
-import type { Config } from 'ollama';
-import { Agent } from 'undici';
-import pLimit from 'p-limit';
+/**
+ * LLM service facade.
+ *
+ * Maintains the original module-level API surface so existing route handlers
+ * and services continue to work.  Under the hood, all calls are delegated to
+ * the currently active LlmProvider instance (Ollama or OpenAI-compatible).
+ *
+ * The active provider can be switched at runtime via `setActiveProvider()`.
+ */
+
 import { sanitizeLlmInput } from '../utils/sanitize-llm-input.js';
 import { logger } from '../utils/logger.js';
-import { ollamaBreakers } from './circuit-breaker.js';
+import { OllamaProvider } from './ollama-provider.js';
+import { OpenAIProvider } from './openai-service.js';
+import type {
+  LlmProvider,
+  LlmProviderType,
+  ChatMessage,
+  StreamChunk,
+  HealthResult,
+  LlmModel,
+} from './llm-provider.js';
 
-/** Default timeout for Ollama HTTP requests (30 s). */
-const OLLAMA_REQUEST_TIMEOUT_MS = 30_000;
+// Re-export types from the provider interface for backward compatibility
+export type { ChatMessage, StreamChunk };
+export type { HealthResult as OllamaHealthResult };
+
+// ─── SSL / Auth config (shared across providers) ────────────────────────────
 
 /** Whether to verify TLS certificates for LLM connections (default: true). */
 const llmVerifySsl = process.env.LLM_VERIFY_SSL !== 'false';
@@ -19,62 +37,51 @@ if (!llmVerifySsl) {
   logger.warn('LLM_VERIFY_SSL=false — TLS certificate verification is disabled for LLM/Ollama connections');
 }
 
-/**
- * Build an undici Agent that disables TLS verification when LLM_VERIFY_SSL=false.
- * Returns undefined when default TLS behaviour is acceptable.
- */
-function buildLlmDispatcher(): Agent | undefined {
-  if (!llmVerifySsl) {
-    return new Agent({ connect: { rejectUnauthorized: false } });
-  }
-  return undefined;
-}
-
-const llmDispatcher = buildLlmDispatcher();
-
-/**
- * Wrap the global `fetch` so every Ollama request gets an abort-signal
- * timeout.  If the caller already supplies a signal the caller's signal
- * wins (the ollama SDK sets signals for streaming requests).
- * When LLM_VERIFY_SSL=false an undici dispatcher that skips TLS verification
- * is injected into each request.
- */
-const ollamaFetch: typeof fetch = (input, init?) => {
-  const hasSignal = init?.signal != null;
-  return fetch(input, {
-    ...init,
-    signal: hasSignal ? init!.signal : AbortSignal.timeout(OLLAMA_REQUEST_TIMEOUT_MS),
-    ...(llmDispatcher ? { dispatcher: llmDispatcher } : {}),
-  } as RequestInit);
-};
-
-const ollamaConfig: Partial<Config> = {
-  host: process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434',
-  fetch: ollamaFetch,
-};
-
-if (llmAuthType === 'bearer' && process.env.LLM_BEARER_TOKEN) {
-  ollamaConfig.headers = {
-    Authorization: `Bearer ${process.env.LLM_BEARER_TOKEN}`,
-  };
-} else if (llmAuthType !== 'bearer' && llmAuthType !== 'none') {
+if (llmAuthType !== 'bearer' && llmAuthType !== 'none') {
   logger.warn({ llmAuthType }, 'Unknown LLM_AUTH_TYPE value — falling back to no auth');
 }
 
-const ollama = new Ollama(ollamaConfig);
-
-// Max 2 concurrent LLM calls
-const llmLimit = pLimit(2);
-
-export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
+/** Whether TLS verification is enabled for LLM connections. */
+export function isLlmVerifySslEnabled(): boolean {
+  return llmVerifySsl;
 }
 
-export interface StreamChunk {
-  content: string;
-  done: boolean;
+/** The configured LLM auth type ('bearer' | 'none'). */
+export function getLlmAuthType(): string {
+  return llmAuthType;
 }
+
+// ─── Provider registry ─────────────────────────────────────────────────────
+
+const providers: Record<LlmProviderType, LlmProvider> = {
+  ollama: new OllamaProvider(),
+  openai: new OpenAIProvider(),
+};
+
+let activeProviderType: LlmProviderType =
+  (process.env.LLM_PROVIDER as LlmProviderType) === 'openai' ? 'openai' : 'ollama';
+
+export function getActiveProvider(): LlmProvider {
+  return providers[activeProviderType];
+}
+
+export function getActiveProviderType(): LlmProviderType {
+  return activeProviderType;
+}
+
+export function setActiveProvider(type: LlmProviderType): void {
+  if (!providers[type]) {
+    throw new Error(`Unknown LLM provider: ${type}`);
+  }
+  logger.info({ from: activeProviderType, to: type }, 'Switching LLM provider');
+  activeProviderType = type;
+}
+
+export function getProvider(type: LlmProviderType): LlmProvider {
+  return providers[type];
+}
+
+// ─── System prompts (provider-agnostic) ─────────────────────────────────────
 
 const SYSTEM_PROMPTS = {
   improve_grammar: `You are a technical writing assistant. Improve the grammar, spelling, and punctuation of the following article while preserving its meaning and structure. Return the improved text in Markdown format. Only output the improved text, no explanations.`,
@@ -116,94 +123,33 @@ export function getSystemPrompt(key: SystemPromptKey): string {
   return SYSTEM_PROMPTS[key];
 }
 
-export async function listModels(): Promise<Array<{ name: string; size: number; modifiedAt: Date; digest: string }>> {
-  return ollamaBreakers.list.execute(async () => {
-    const response = await ollama.list();
-    return response.models.map((m) => ({
-      name: m.name,
-      size: m.size,
-      modifiedAt: m.modified_at,
-      digest: m.digest,
-    }));
-  });
+// ─── Delegated functions (backward-compatible API) ──────────────────────────
+
+export async function listModels(): Promise<LlmModel[]> {
+  return getActiveProvider().listModels();
 }
 
-export interface OllamaHealthResult {
-  connected: boolean;
-  error?: string;
+export async function checkHealth(): Promise<HealthResult> {
+  return getActiveProvider().checkHealth();
 }
 
-export async function checkHealth(): Promise<OllamaHealthResult> {
-  try {
-    await ollama.list();
-    return { connected: true };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unknown error';
-    logger.debug({ err }, 'Ollama health check failed');
-    return { connected: false, error: message };
-  }
-}
-
-export async function* streamChat(
+export function streamChat(
   model: string,
   messages: ChatMessage[],
   signal?: AbortSignal,
 ): AsyncGenerator<StreamChunk> {
-  const generator = await ollamaBreakers.chat.execute(() =>
-    llmLimit(() =>
-      ollama.chat({
-        model,
-        messages,
-        stream: true,
-      }),
-    ),
-  );
-
-  try {
-    for await (const part of generator) {
-      // Check if client disconnected
-      if (signal?.aborted) {
-        // Try to abort the underlying stream
-        if (typeof (generator as unknown as AsyncGenerator).return === 'function') {
-          await (generator as unknown as AsyncGenerator).return(undefined);
-        }
-        return;
-      }
-      yield {
-        content: part.message.content,
-        done: part.done,
-      };
-    }
-  } catch (err) {
-    if (signal?.aborted || (err instanceof Error && err.name === 'AbortError')) {
-      logger.debug('Stream aborted by client disconnect');
-      return;
-    }
-    throw err;
-  }
+  return getActiveProvider().streamChat(model, messages, signal);
 }
 
 export async function chat(model: string, messages: ChatMessage[]): Promise<string> {
-  return ollamaBreakers.chat.execute(async () => {
-    const response = await llmLimit(() =>
-      ollama.chat({ model, messages, stream: false }),
-    );
-    return response.message.content;
-  });
+  return getActiveProvider().chat(model, messages);
 }
 
 export async function generateEmbedding(text: string | string[]): Promise<number[][]> {
-  return ollamaBreakers.embed.execute(async () => {
-    const model = process.env.EMBEDDING_MODEL ?? 'nomic-embed-text';
-    const input = Array.isArray(text) ? text : [text];
-
-    const response = await llmLimit(() =>
-      ollama.embed({ model, input }),
-    );
-
-    return response.embeddings;
-  });
+  return getActiveProvider().generateEmbedding(text);
 }
+
+// ─── High-level helpers (use the active provider under the hood) ────────────
 
 export function improveContent(
   model: string,
@@ -288,14 +234,5 @@ export function askWithContext(
   return streamChat(model, messages, signal);
 }
 
-/** Whether TLS verification is enabled for LLM connections. */
-export function isLlmVerifySslEnabled(): boolean {
-  return llmVerifySsl;
-}
-
-/** The configured LLM auth type ('bearer' | 'none'). */
-export function getLlmAuthType(): string {
-  return llmAuthType;
-}
-
-export { ollama };
+/** @deprecated Access the Ollama client directly via OllamaProvider. */
+export const ollama = (providers.ollama as OllamaProvider).client;
