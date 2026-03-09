@@ -34,6 +34,12 @@ export const UpdatePageSchema = z.object({
 export const PageListQuerySchema = z.object({
   spaceKey: z.string().optional(),
   search: z.string().optional(),
+  author: z.string().optional(),
+  labels: z.string().optional(), // comma-separated label names
+  freshness: z.enum(['fresh', 'recent', 'aging', 'stale']).optional(),
+  embeddingStatus: z.enum(['pending', 'done']).optional(),
+  dateFrom: z.string().optional(), // ISO date string
+  dateTo: z.string().optional(),   // ISO date string
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(50),
   sort: z.enum(['title', 'modified', 'author']).default('title'),

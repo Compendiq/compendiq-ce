@@ -98,7 +98,7 @@ export class ConfluenceClient {
     if (statusCode >= 400) {
       logger.error({ statusCode, url, body: text.slice(0, 500) }, 'Confluence API error');
       // Extract Confluence error message from response for actionable diagnostics
-      let detail = '';
+      let detail: string;
       try {
         const parsed = JSON.parse(text);
         detail = parsed.message || parsed.reason || '';

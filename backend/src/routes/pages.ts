@@ -36,10 +36,11 @@ export async function pagesRoutes(fastify: FastifyInstance) {
   fastify.get('/pages', async (request) => {
     const userId = request.userId;
     const params = PageListQuerySchema.parse(request.query);
-    const { spaceKey, search, page = 1, limit = 50, sort = 'title' } = params;
+    const { spaceKey, search, author, labels, freshness, embeddingStatus, dateFrom, dateTo, page = 1, limit = 50, sort = 'title' } = params;
 
-    // Try cache for non-search requests
-    if (!search) {
+    // Try cache for simple requests (no filters active)
+    const hasFilters = search || author || labels || freshness || embeddingStatus || dateFrom || dateTo;
+    if (!hasFilters) {
       const cacheKey = `${spaceKey ?? 'all'}:${page}:${limit}:${sort}`;
       const cached = await cache.get(userId, 'pages', cacheKey);
       if (cached) return cached;
@@ -59,6 +60,52 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       // Full-text search using plainto_tsquery for safe handling of arbitrary user input
       whereClause += ` AND to_tsvector('english', coalesce(cp.title, '') || ' ' || coalesce(cp.body_text, '')) @@ plainto_tsquery('english', $${paramIdx++})`;
       values.push(search.trim());
+    }
+
+    if (author) {
+      whereClause += ` AND cp.author = $${paramIdx++}`;
+      values.push(author);
+    }
+
+    if (labels) {
+      // labels is a comma-separated string; filter pages that contain ALL specified labels
+      const labelList = labels.split(',').map((l) => l.trim()).filter(Boolean);
+      if (labelList.length > 0) {
+        whereClause += ` AND cp.labels @> $${paramIdx++}`;
+        values.push(labelList);
+      }
+    }
+
+    if (freshness) {
+      // Map freshness levels to day ranges based on FreshnessBadge logic
+      const freshnessMap: Record<string, [string, string | null]> = {
+        fresh:  [`NOW() - INTERVAL '7 days'`, null],
+        recent: [`NOW() - INTERVAL '30 days'`, `NOW() - INTERVAL '7 days'`],
+        aging:  [`NOW() - INTERVAL '90 days'`, `NOW() - INTERVAL '30 days'`],
+        stale:  [null as unknown as string, `NOW() - INTERVAL '90 days'`],
+      };
+      const [after, before] = freshnessMap[freshness];
+      if (after) {
+        whereClause += ` AND cp.last_modified_at >= ${after}`;
+      }
+      if (before) {
+        whereClause += ` AND cp.last_modified_at < ${before}`;
+      }
+    }
+
+    if (embeddingStatus) {
+      whereClause += ` AND cp.embedding_dirty = $${paramIdx++}`;
+      values.push(embeddingStatus === 'pending');
+    }
+
+    if (dateFrom) {
+      whereClause += ` AND cp.last_modified_at >= $${paramIdx++}`;
+      values.push(dateFrom);
+    }
+
+    if (dateTo) {
+      whereClause += ` AND cp.last_modified_at <= $${paramIdx++}`;
+      values.push(dateTo);
     }
 
     // Sort
@@ -120,7 +167,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       totalPages: Math.ceil(total / limit),
     };
 
-    if (!search) {
+    if (!hasFilters) {
       const cacheKey = `${spaceKey ?? 'all'}:${page}:${limit}:${sort}`;
       await cache.set(userId, 'pages', cacheKey, response);
     }
@@ -173,6 +220,27 @@ export async function pagesRoutes(fastify: FastifyInstance) {
 
     await cache.set(userId, 'pages', cacheKey, response);
     return response;
+  });
+
+  // GET /api/pages/filters - get available filter options (distinct authors, labels)
+  fastify.get('/pages/filters', async (request) => {
+    const userId = request.userId;
+
+    const [authorsResult, labelsResult] = await Promise.all([
+      query<{ author: string }>(
+        `SELECT DISTINCT author FROM cached_pages WHERE user_id = $1 AND author IS NOT NULL ORDER BY author ASC`,
+        [userId],
+      ),
+      query<{ label: string }>(
+        `SELECT DISTINCT unnest(labels) AS label FROM cached_pages WHERE user_id = $1 ORDER BY label ASC`,
+        [userId],
+      ),
+    ]);
+
+    return {
+      authors: authorsResult.rows.map((r) => r.author),
+      labels: labelsResult.rows.map((r) => r.label),
+    };
   });
 
   // GET /api/pages/:id - get page with content

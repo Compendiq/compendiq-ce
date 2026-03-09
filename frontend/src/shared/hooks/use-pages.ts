@@ -27,16 +27,30 @@ interface PaginatedPages {
   totalPages: number;
 }
 
-export function usePages(params: {
+export interface PageFilters {
   spaceKey?: string;
   search?: string;
+  author?: string;
+  labels?: string;
+  freshness?: 'fresh' | 'recent' | 'aging' | 'stale';
+  embeddingStatus?: 'pending' | 'done';
+  dateFrom?: string;
+  dateTo?: string;
   page?: number;
   limit?: number;
   sort?: 'title' | 'modified' | 'author';
-} = {}) {
+}
+
+export function usePages(params: PageFilters = {}) {
   const searchParams = new URLSearchParams();
   if (params.spaceKey) searchParams.set('spaceKey', params.spaceKey);
   if (params.search) searchParams.set('search', params.search);
+  if (params.author) searchParams.set('author', params.author);
+  if (params.labels) searchParams.set('labels', params.labels);
+  if (params.freshness) searchParams.set('freshness', params.freshness);
+  if (params.embeddingStatus) searchParams.set('embeddingStatus', params.embeddingStatus);
+  if (params.dateFrom) searchParams.set('dateFrom', params.dateFrom);
+  if (params.dateTo) searchParams.set('dateTo', params.dateTo);
   if (params.page) searchParams.set('page', String(params.page));
   if (params.limit) searchParams.set('limit', String(params.limit));
   if (params.sort) searchParams.set('sort', params.sort);
@@ -70,6 +84,19 @@ export function usePageTree(params: { spaceKey?: string } = {}) {
   return useQuery<PageTreeResponse>({
     queryKey: ['pages', 'tree', params],
     queryFn: () => apiFetch(`/pages/tree${qs ? `?${qs}` : ''}`),
+  });
+}
+
+interface FilterOptions {
+  authors: string[];
+  labels: string[];
+}
+
+export function usePageFilterOptions() {
+  return useQuery<FilterOptions>({
+    queryKey: ['pages', 'filters'],
+    queryFn: () => apiFetch('/pages/filters'),
+    staleTime: 60_000, // refresh once per minute
   });
 }
 
@@ -138,4 +165,4 @@ export function useEmbeddingStatus() {
   });
 }
 
-export type { PageSummary, PageDetail, PaginatedPages, PageTreeItem, PageTreeResponse };
+export type { PageSummary, PageDetail, PaginatedPages, PageTreeItem, PageTreeResponse, FilterOptions };
