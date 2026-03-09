@@ -282,7 +282,7 @@ export function AiAssistantPage() {
   };
 
   return (
-    <div className="flex h-[calc(100vh-3rem)] gap-4">
+    <div className="flex h-full gap-4">
       {/* Sidebar - Conversation History */}
       <div className="hidden w-64 flex-col lg:flex">
         <div className="glass-card flex flex-col h-full">

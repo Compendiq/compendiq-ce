@@ -1,9 +1,11 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { m } from 'framer-motion';
-import { Search, FileText, Plus, RefreshCw, ChevronLeft, ChevronRight, FolderOpen, Filter, X } from 'lucide-react';
-import { usePages, usePageFilterOptions } from '../../shared/hooks/use-pages';
+import { Search, FileText, Plus, RefreshCw, ChevronLeft, ChevronRight, FolderOpen, Filter, X, List } from 'lucide-react';
+import DOMPurify from 'dompurify';
+import { usePages, usePageFilterOptions, usePage } from '../../shared/hooks/use-pages';
 import { useSpaces, useSync, useSyncStatus } from '../../shared/hooks/use-spaces';
+import { useSettings } from '../../shared/hooks/use-settings';
 import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
 import { BulkOperations } from './BulkOperations';
 import { cn } from '../../shared/lib/cn';
@@ -23,8 +25,25 @@ export function PagesPage() {
   const [sort, setSort] = useState<'title' | 'modified' | 'author'>('modified');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
+  const { data: settings } = useSettings();
   const { data: spaces } = useSpaces();
   const { data: filterOptions } = usePageFilterOptions();
+
+  // Determine if we should show the space home page content
+  const selectedSpace = useMemo(
+    () => (spaceKey ? spaces?.find((s) => s.key === spaceKey) : undefined),
+    [spaceKey, spaces],
+  );
+  const showHomeContent = !!(settings?.showSpaceHomeContent && spaceKey && selectedSpace?.homepageId);
+  const [forcePageList, setForcePageList] = useState(false);
+  const { data: homePage, isLoading: homePageLoading } = usePage(
+    showHomeContent && !forcePageList ? selectedSpace?.homepageId ?? undefined : undefined,
+  );
+  const sanitizedHomeHtml = useMemo(
+    () => (homePage ? DOMPurify.sanitize(homePage.bodyHtml) : ''),
+    [homePage],
+  );
+
   const { data: pagesData, isLoading } = usePages({
     spaceKey: spaceKey || undefined,
     search: search || undefined,
@@ -137,7 +156,7 @@ export function PagesPage() {
 
           <select
             value={spaceKey}
-            onChange={(e) => { setSpaceKey(e.target.value); setPage(1); }}
+            onChange={(e) => { setSpaceKey(e.target.value); setPage(1); setForcePageList(false); }}
             className="rounded-md bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
           >
             <option value="">All Spaces</option>
@@ -282,6 +301,38 @@ export function PagesPage() {
         )}
       </div>
 
+      {/* Space home content (when enabled and a space is selected) */}
+      {showHomeContent && !forcePageList ? (
+        homePageLoading ? (
+          <div className="glass-card h-96 animate-pulse" />
+        ) : homePage ? (
+          <m.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold">{homePage.title}</h2>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => navigate(`/pages/${homePage.id}`)}
+                  className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-white/5"
+                >
+                  <FileText size={14} /> View Full Page
+                </button>
+                <button
+                  onClick={() => setForcePageList(true)}
+                  className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-white/5"
+                  data-testid="show-page-list"
+                >
+                  <List size={14} /> Show All Pages
+                </button>
+              </div>
+            </div>
+            <div
+              className="glass-card prose prose-invert max-w-none p-6"
+              dangerouslySetInnerHTML={{ __html: sanitizedHomeHtml }}
+            />
+          </m.div>
+        ) : null
+      ) : (
+      <>
       {/* Page list */}
       {isLoading ? (
         <div className="space-y-3">
@@ -328,8 +379,7 @@ export function PagesPage() {
                   onClick={() => navigate(`/pages/${pageItem.id}`)}
                   className="flex min-w-0 flex-1 items-center gap-4"
                 >
-                  <FileText size={20} className="shrink-0 text-primary" />
-                  <div className="min-w-0 flex-1">
+                  <div className="min-w-0 flex-1 text-left">
                     <p className="truncate font-medium">{pageItem.title}</p>
                     <div className="flex items-center gap-3 text-xs text-muted-foreground">
                       <span>{pageItem.spaceKey}</span>
@@ -389,6 +439,8 @@ export function PagesPage() {
         onDeselectAll={deselectAll}
         onClose={deselectAll}
       />
+      </>
+      )}
     </div>
   );
 }

@@ -137,7 +137,7 @@ describe('FlowchartGenerator', () => {
     await waitFor(() => {
       // Verify the generate-diagram API was called
       const calls = fetchSpy.mock.calls;
-      const diagramCall = calls.find(([url]) =>
+      const diagramCall = calls.find(([url]: [unknown]) =>
         typeof url === 'string' && url.includes('/llm/generate-diagram'),
       );
       expect(diagramCall).toBeDefined();
