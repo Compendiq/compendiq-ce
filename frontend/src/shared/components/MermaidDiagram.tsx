@@ -6,7 +6,7 @@ import { cn } from '../lib/cn';
 mermaid.initialize({
   startOnLoad: false,
   theme: 'dark',
-  securityLevel: 'loose',
+  securityLevel: 'antiscript',
   fontFamily: 'inherit',
 });
 
