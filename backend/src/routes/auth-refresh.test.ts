@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
-import { setupTestDb, truncateAllTables, teardownTestDb } from '../test-db-helper.js';
+import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../test-db-helper.js';
 import { query } from '../db/postgres.js';
 import {
   generateAccessToken,
@@ -12,7 +12,9 @@ import {
   verifyToken,
 } from '../plugins/auth.js';
 
-describe('Refresh Token Rotation and Revocation', () => {
+const dbAvailable = await isDbAvailable();
+
+describe.skipIf(!dbAvailable)('Refresh Token Rotation and Revocation', () => {
   let testUserId: string;
 
   const testPayload = () => ({
@@ -216,6 +218,48 @@ describe('Refresh Token Rotation and Revocation', () => {
       const payload = await verifyToken(accessToken);
       expect(payload.sub).toBe(testUserId);
       expect(payload.username).toBe('testuser');
+    });
+  });
+
+  describe('Logout with expired access token (refresh cookie fallback)', () => {
+    it('should allow user identification from refresh token when access token is unavailable', async () => {
+      // Simulate the logout flow when access token has expired:
+      // 1. Generate refresh token (as if user was logged in)
+      const { token: refreshToken } = await generateRefreshToken(testPayload());
+
+      // 2. Verify refresh token to extract user ID (fallback path)
+      const payload = await verifyRefreshToken(refreshToken);
+      expect(payload.sub).toBe(testUserId);
+
+      // 3. Revoke all user tokens (logout)
+      await revokeAllUserTokens(payload.sub);
+
+      // 4. Verify all tokens are revoked
+      const result = await query<{ revoked: boolean }>(
+        'SELECT revoked FROM refresh_tokens WHERE user_id = $1',
+        [testUserId],
+      );
+      expect(result.rows.every((r) => r.revoked)).toBe(true);
+    });
+
+    it('should revoke the specific refresh token JTI during logout fallback', async () => {
+      const { token: refreshToken } = await generateRefreshToken(testPayload());
+
+      // Verify and get payload with JTI
+      const payload = await verifyRefreshToken(refreshToken);
+
+      // Revoke specific JTI (as the logout route does before revoking all)
+      await revokeToken(payload.jti);
+
+      // Then revoke all user tokens
+      await revokeAllUserTokens(payload.sub);
+
+      // Verify the specific JTI is revoked
+      const result = await query<{ revoked: boolean }>(
+        'SELECT revoked FROM refresh_tokens WHERE jti = $1',
+        [payload.jti],
+      );
+      expect(result.rows[0].revoked).toBe(true);
     });
   });
 });

@@ -34,6 +34,12 @@ export const UpdatePageSchema = z.object({
 export const PageListQuerySchema = z.object({
   spaceKey: z.string().optional(),
   search: z.string().optional(),
+  author: z.string().optional(),
+  labels: z.string().optional(), // comma-separated label names
+  freshness: z.enum(['fresh', 'recent', 'aging', 'stale']).optional(),
+  embeddingStatus: z.enum(['pending', 'done']).optional(),
+  dateFrom: z.string().optional(), // ISO date string
+  dateTo: z.string().optional(),   // ISO date string
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(50),
   sort: z.enum(['title', 'modified', 'author']).default('title'),
@@ -43,4 +49,18 @@ export type PageSummary = z.infer<typeof PageSummarySchema>;
 export type PageDetail = z.infer<typeof PageDetailSchema>;
 export type CreatePageInput = z.infer<typeof CreatePageSchema>;
 export type UpdatePageInput = z.infer<typeof UpdatePageSchema>;
+export const PageTreeItemSchema = z.object({
+  id: z.string(),
+  spaceKey: z.string(),
+  title: z.string(),
+  parentId: z.string().nullable(),
+  labels: z.array(z.string()),
+  lastModifiedAt: z.coerce.date().nullable(),
+});
+
+export const PageTreeQuerySchema = z.object({
+  spaceKey: z.string().optional(),
+});
+
 export type PageListQuery = z.infer<typeof PageListQuerySchema>;
+export type PageTreeItem = z.infer<typeof PageTreeItemSchema>;

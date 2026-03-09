@@ -1,205 +1,244 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// Mock undici before any imports
-const mockUndiciRequest = vi.fn();
-vi.mock('undici', () => ({
-  request: (...args: unknown[]) => mockUndiciRequest(...args),
-  Agent: vi.fn().mockImplementation(() => ({})),
-}));
-
-// Mock circuit breakers
 vi.mock('./circuit-breaker.js', () => ({
-  openaiBreakers: {
-    chat: {
-      execute: vi.fn().mockImplementation(async (fn: () => Promise<unknown>) => fn()),
-    },
-    embed: {
-      execute: vi.fn().mockImplementation(async (fn: () => Promise<unknown>) => fn()),
-    },
+  ollamaBreakers: {
+    chat: { execute: vi.fn((fn: () => unknown) => fn()) },
+    embed: { execute: vi.fn((fn: () => unknown) => fn()) },
+    list: { execute: vi.fn((fn: () => unknown) => fn()) },
   },
 }));
 
-// Mock logger
 vi.mock('../utils/logger.js', () => ({
-  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
+  logger: { debug: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn() },
 }));
 
-import {
-  openaiChat,
-  openaiGenerateEmbedding,
-  REQUIRED_EMBEDDING_DIMENSIONS,
-  type OpenAIConfig,
-} from './openai-service.js';
+import { OpenAIProvider } from './openai-service.js';
 
-const testConfig: OpenAIConfig = {
-  baseUrl: 'https://api.openai.com',
-  apiKey: 'test-api-key',
-  model: 'gpt-4o-mini',
-};
+/** Create a mock embedding array of exactly 768 dimensions. */
+function mockEmbedding(seed: number): number[] {
+  return Array.from({ length: 768 }, (_, i) => seed + i * 0.001);
+}
 
-describe('openai-service', () => {
+describe('OpenAIProvider', () => {
+  const originalEnv = { ...process.env };
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+
   beforeEach(() => {
-    vi.clearAllMocks();
+    fetchSpy = vi.spyOn(globalThis, 'fetch');
+    process.env.OPENAI_BASE_URL = 'https://api.test.com/v1';
+    process.env.OPENAI_API_KEY = 'test-key-123';
   });
 
   afterEach(() => {
+    process.env = { ...originalEnv };
     vi.restoreAllMocks();
   });
 
-  describe('REQUIRED_EMBEDDING_DIMENSIONS', () => {
-    it('should be 768 to match pgvector column', () => {
-      expect(REQUIRED_EMBEDDING_DIMENSIONS).toBe(768);
-    });
-  });
+  describe('checkHealth', () => {
+    it('should return connected: true when API responds with 200', async () => {
+      fetchSpy.mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [] }), { status: 200 }),
+      );
 
-  describe('openaiChat', () => {
-    it('should make a request to the chat completions endpoint', async () => {
-      mockUndiciRequest.mockResolvedValue({
-        statusCode: 200,
-        headers: { 'content-type': 'application/json' },
-        body: {
-          text: vi.fn().mockResolvedValue(JSON.stringify({
-            choices: [{ message: { content: 'Hello from OpenAI' } }],
-          })),
-        },
-      });
+      const provider = new OpenAIProvider();
+      const result = await provider.checkHealth();
 
-      const result = await openaiChat(testConfig, [
-        { role: 'user', content: 'say hello' },
-      ]);
-
-      expect(result).toBe('Hello from OpenAI');
-      expect(mockUndiciRequest).toHaveBeenCalledWith(
-        'https://api.openai.com/v1/chat/completions',
+      expect(result).toEqual({ connected: true });
+      expect(fetchSpy).toHaveBeenCalledWith(
+        'https://api.test.com/v1/models',
         expect.objectContaining({
-          method: 'POST',
           headers: expect.objectContaining({
-            'Authorization': 'Bearer test-api-key',
+            Authorization: 'Bearer test-key-123',
           }),
         }),
       );
-
-      // Verify the request body contains the model
-      const callArgs = mockUndiciRequest.mock.calls[0];
-      const body = JSON.parse(callArgs[1].body as string);
-      expect(body.model).toBe('gpt-4o-mini');
-      expect(body.messages).toEqual([{ role: 'user', content: 'say hello' }]);
     });
 
-    it('should throw on non-2xx response', async () => {
-      mockUndiciRequest.mockResolvedValue({
-        statusCode: 429,
-        headers: {},
-        body: {
-          text: vi.fn().mockResolvedValue('Rate limit exceeded'),
-        },
-      });
+    it('should return connected: false with error on HTTP error', async () => {
+      fetchSpy.mockResolvedValueOnce(
+        new Response('Unauthorized', { status: 401 }),
+      );
 
-      await expect(openaiChat(testConfig, [{ role: 'user', content: 'test' }]))
-        .rejects.toThrow('OpenAI API error 429');
+      const provider = new OpenAIProvider();
+      const result = await provider.checkHealth();
+
+      expect(result.connected).toBe(false);
+      expect(result.error).toContain('401');
+    });
+
+    it('should return connected: false with error on network failure', async () => {
+      fetchSpy.mockRejectedValueOnce(new Error('Connection refused'));
+
+      const provider = new OpenAIProvider();
+      const result = await provider.checkHealth();
+
+      expect(result.connected).toBe(false);
+      expect(result.error).toBe('Connection refused');
     });
   });
 
-  describe('openaiGenerateEmbedding', () => {
-    it('should request exactly 768 dimensions', async () => {
-      const mockEmbedding = new Array(768).fill(0.1);
-      mockUndiciRequest.mockResolvedValue({
-        statusCode: 200,
-        headers: { 'content-type': 'application/json' },
-        body: {
-          text: vi.fn().mockResolvedValue(JSON.stringify({
-            data: [{ embedding: mockEmbedding }],
-          })),
-        },
-      });
-
-      const result = await openaiGenerateEmbedding(testConfig, 'test text');
-
-      expect(result).toEqual([mockEmbedding]);
-
-      // Verify the request includes dimensions parameter
-      const callArgs = mockUndiciRequest.mock.calls[0];
-      const body = JSON.parse(callArgs[1].body as string);
-      expect(body.dimensions).toBe(768);
-      expect(body.model).toBe('text-embedding-3-small');
-    });
-
-    it('should handle batch input', async () => {
-      const mockEmbedding = new Array(768).fill(0.1);
-      mockUndiciRequest.mockResolvedValue({
-        statusCode: 200,
-        headers: { 'content-type': 'application/json' },
-        body: {
-          text: vi.fn().mockResolvedValue(JSON.stringify({
+  describe('listModels', () => {
+    it('should return parsed model list', async () => {
+      fetchSpy.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
             data: [
-              { embedding: mockEmbedding },
-              { embedding: mockEmbedding },
+              { id: 'gpt-4o', created: 1700000000, owned_by: 'openai' },
+              { id: 'gpt-4o-mini', created: 1700000001, owned_by: 'openai' },
             ],
-          })),
-        },
-      });
+          }),
+          { status: 200 },
+        ),
+      );
 
-      const result = await openaiGenerateEmbedding(testConfig, ['text 1', 'text 2']);
+      const provider = new OpenAIProvider();
+      const models = await provider.listModels();
+
+      expect(models).toHaveLength(2);
+      expect(models[0].name).toBe('gpt-4o');
+      expect(models[1].name).toBe('gpt-4o-mini');
+      expect(models[0].digest).toBe('openai');
+    });
+
+    it('should throw on HTTP error', async () => {
+      fetchSpy.mockResolvedValueOnce(
+        new Response('Internal Server Error', { status: 500 }),
+      );
+
+      const provider = new OpenAIProvider();
+      await expect(provider.listModels()).rejects.toThrow('Failed to list models');
+    });
+  });
+
+  describe('chat', () => {
+    it('should return assistant message content', async () => {
+      fetchSpy.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { content: 'Hello from GPT' } }],
+          }),
+          { status: 200 },
+        ),
+      );
+
+      const provider = new OpenAIProvider();
+      const result = await provider.chat('gpt-4o', [
+        { role: 'user', content: 'Hi' },
+      ]);
+
+      expect(result).toBe('Hello from GPT');
+      const callBody = JSON.parse(fetchSpy.mock.calls[0][1]?.body as string);
+      expect(callBody.model).toBe('gpt-4o');
+      expect(callBody.stream).toBe(false);
+    });
+  });
+
+  describe('generateEmbedding', () => {
+    it('should return embeddings in correct order', async () => {
+      fetchSpy.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: [
+              { index: 1, embedding: mockEmbedding(0.2) },
+              { index: 0, embedding: mockEmbedding(0.1) },
+            ],
+          }),
+          { status: 200 },
+        ),
+      );
+
+      const provider = new OpenAIProvider();
+      const result = await provider.generateEmbedding(['text1', 'text2']);
+
       expect(result).toHaveLength(2);
-
-      const callArgs = mockUndiciRequest.mock.calls[0];
-      const body = JSON.parse(callArgs[1].body as string);
-      expect(body.input).toEqual(['text 1', 'text 2']);
+      // Should be sorted by index
+      expect(result[0]).toEqual(mockEmbedding(0.1));
+      expect(result[1]).toEqual(mockEmbedding(0.2));
     });
 
-    it('should throw when returned dimensions do not match 768', async () => {
-      // Simulate an API that ignores the dimensions parameter
-      const wrongDimensionEmbedding = new Array(1536).fill(0.1);
-      mockUndiciRequest.mockResolvedValue({
-        statusCode: 200,
-        headers: { 'content-type': 'application/json' },
-        body: {
-          text: vi.fn().mockResolvedValue(JSON.stringify({
-            data: [{ embedding: wrongDimensionEmbedding }],
-          })),
+    it('should handle single text input', async () => {
+      fetchSpy.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: [{ index: 0, embedding: mockEmbedding(0.1) }],
+          }),
+          { status: 200 },
+        ),
+      );
+
+      const provider = new OpenAIProvider();
+      const result = await provider.generateEmbedding('single text');
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).toEqual(mockEmbedding(0.1));
+    });
+  });
+
+  describe('streamChat', () => {
+    it('should yield stream chunks from SSE response', async () => {
+      const sseData = [
+        'data: {"choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}\n\n',
+        'data: {"choices":[{"delta":{"content":" World"},"finish_reason":null}]}\n\n',
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+        'data: [DONE]\n\n',
+      ].join('');
+
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode(sseData));
+          controller.close();
         },
       });
 
-      await expect(openaiGenerateEmbedding(testConfig, 'test'))
-        .rejects.toThrow('Embedding dimension mismatch: got 1536, expected 768');
+      fetchSpy.mockResolvedValueOnce(
+        new Response(stream, { status: 200 }),
+      );
+
+      const provider = new OpenAIProvider();
+      const chunks: Array<{ content: string; done: boolean }> = [];
+
+      for await (const chunk of provider.streamChat('gpt-4o', [
+        { role: 'user', content: 'Hi' },
+      ])) {
+        chunks.push(chunk);
+      }
+
+      expect(chunks.length).toBeGreaterThanOrEqual(2);
+      expect(chunks.some((c) => c.content === 'Hello')).toBe(true);
+      expect(chunks.some((c) => c.content === ' World')).toBe(true);
+    });
+  });
+
+  describe('configuration', () => {
+    it('should use default base URL when env var is not set', async () => {
+      delete process.env.OPENAI_BASE_URL;
+
+      fetchSpy.mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [] }), { status: 200 }),
+      );
+
+      const provider = new OpenAIProvider();
+      await provider.checkHealth();
+
+      expect(fetchSpy).toHaveBeenCalledWith(
+        'https://api.openai.com/v1/models',
+        expect.anything(),
+      );
     });
 
-    it('should use default embedding model when none provided', async () => {
-      const mockEmbedding = new Array(768).fill(0.1);
-      mockUndiciRequest.mockResolvedValue({
-        statusCode: 200,
-        headers: { 'content-type': 'application/json' },
-        body: {
-          text: vi.fn().mockResolvedValue(JSON.stringify({
-            data: [{ embedding: mockEmbedding }],
-          })),
-        },
-      });
+    it('should not set Authorization header when API key is empty', async () => {
+      delete process.env.OPENAI_API_KEY;
 
-      await openaiGenerateEmbedding(testConfig, 'test');
+      fetchSpy.mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [] }), { status: 200 }),
+      );
 
-      const callArgs = mockUndiciRequest.mock.calls[0];
-      const body = JSON.parse(callArgs[1].body as string);
-      expect(body.model).toBe('text-embedding-3-small');
-    });
+      const provider = new OpenAIProvider();
+      await provider.checkHealth();
 
-    it('should use custom embedding model when provided', async () => {
-      const mockEmbedding = new Array(768).fill(0.1);
-      mockUndiciRequest.mockResolvedValue({
-        statusCode: 200,
-        headers: { 'content-type': 'application/json' },
-        body: {
-          text: vi.fn().mockResolvedValue(JSON.stringify({
-            data: [{ embedding: mockEmbedding }],
-          })),
-        },
-      });
-
-      await openaiGenerateEmbedding(testConfig, 'test', 'text-embedding-3-large');
-
-      const callArgs = mockUndiciRequest.mock.calls[0];
-      const body = JSON.parse(callArgs[1].body as string);
-      expect(body.model).toBe('text-embedding-3-large');
+      const headers = fetchSpy.mock.calls[0][1]?.headers as Record<string, string>;
+      expect(headers.Authorization).toBeUndefined();
     });
   });
 });

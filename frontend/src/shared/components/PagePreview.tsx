@@ -111,6 +111,7 @@ export function PagePreview({ pageId, children, className }: PagePreviewProps) {
  * Wraps page links inside HTML content with PagePreview hover cards.
  * Returns an array of React elements with page links wrapped in PagePreview.
  */
+// eslint-disable-next-line react-refresh/only-export-components
 export function usePageLinksWithPreview(contentRef: React.RefObject<HTMLElement | null>) {
   useEffect(() => {
     if (!contentRef.current) return;

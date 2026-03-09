@@ -326,7 +326,28 @@ export function htmlToConfluence(html: string): string {
     img.replaceWith(acImage);
   }
 
-  return doc.body.innerHTML;
+  let result = doc.body.innerHTML;
+
+  // Post-process: self-close void elements for XHTML compatibility.
+  // JSDOM innerHTML uses HTML serialization (<br>, <img ...>) but Confluence
+  // storage format requires valid XHTML (<br />, <img ... />).
+  result = result.replace(
+    /<(area|base|br|col|embed|hr|img|input|link|meta|source|track|wbr)(\s[^>]*)?\s*>/gi,
+    '<$1$2 />',
+  );
+
+  // Post-process: wrap ac:plain-text-body content in CDATA sections.
+  // Confluence requires CDATA inside <ac:plain-text-body> for code macros.
+  result = result.replace(
+    /<ac:plain-text-body>([\s\S]*?)<\/ac:plain-text-body>/g,
+    (_, content: string) => {
+      // Unescape HTML entities back to raw text for CDATA
+      const raw = he.decode(content);
+      return `<ac:plain-text-body><![CDATA[${raw}]]></ac:plain-text-body>`;
+    },
+  );
+
+  return result;
 }
 
 /**

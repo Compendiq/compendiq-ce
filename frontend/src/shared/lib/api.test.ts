@@ -1,95 +1,181 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { useAuthStore } from '../../stores/auth-store';
-import { apiFetch } from './api';
+
+const mockSetAuth = vi.fn();
+const mockClearAuth = vi.fn();
+let storeState: Record<string, unknown> = {};
+
+vi.mock('../../stores/auth-store', () => ({
+  useAuthStore: Object.assign(
+    (selector: (s: Record<string, unknown>) => unknown) => selector(storeState),
+    {
+      getState: () => storeState,
+    },
+  ),
+}));
+
+// Import after mocks are set up
+const { apiFetch, logoutApi } = await import('./api');
 
 describe('apiFetch', () => {
-  const fetchSpy = vi.spyOn(globalThis, 'fetch');
-
   beforeEach(() => {
-    vi.clearAllMocks();
-    useAuthStore.setState({
+    storeState = {
       accessToken: 'valid-token',
       user: { id: '1', username: 'test', role: 'user' },
       isAuthenticated: true,
-    });
+      setAuth: mockSetAuth,
+      clearAuth: mockClearAuth,
+    };
+    mockSetAuth.mockClear();
+    mockClearAuth.mockClear();
   });
 
   afterEach(() => {
-    useAuthStore.getState().clearAuth();
+    vi.restoreAllMocks();
   });
 
-  it('sends Authorization header when accessToken is present', async () => {
-    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    }));
+  it('sends Authorization header when access token exists', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
 
     await apiFetch('/test');
 
-    expect(fetchSpy).toHaveBeenCalledOnce();
-    const [, init] = fetchSpy.mock.calls[0];
-    const headers = new Headers(init?.headers);
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      '/api/test',
+      expect.objectContaining({
+        headers: expect.any(Headers),
+      }),
+    );
+    const call = vi.mocked(globalThis.fetch).mock.calls[0];
+    const headers = call[1]?.headers as Headers;
     expect(headers.get('Authorization')).toBe('Bearer valid-token');
   });
 
-  it('attempts token refresh on 401 even when accessToken is null (page reload case)', async () => {
-    // Simulate page reload: isAuthenticated=true but accessToken=null
-    useAuthStore.setState({ accessToken: null, isAuthenticated: true });
+  it('attempts token refresh on 401 even when accessToken is null', async () => {
+    storeState.accessToken = null;
 
-    // First call returns 401
-    fetchSpy.mockResolvedValueOnce(new Response('Unauthorized', { status: 401 }));
-    // Refresh call succeeds
-    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({
-      accessToken: 'refreshed-token',
-      user: { id: '1', username: 'test', role: 'user' },
-    }), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    }));
-    // Retry with new token succeeds
-    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({ data: 'ok' }), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    }));
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      // First call: 401 (no token sent)
+      .mockResolvedValueOnce(new Response('Unauthorized', { status: 401 }))
+      // Refresh call: success
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ accessToken: 'new-token', user: { id: '1', username: 'test', role: 'user' } }),
+          { headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      // Retry call: success
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: 'ok' }), {
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
 
-    const result = await apiFetch('/settings');
+    const result = await apiFetch('/test');
 
     expect(result).toEqual({ data: 'ok' });
-    // 3 calls: original 401, refresh, retry
-    expect(fetchSpy).toHaveBeenCalledTimes(3);
-    expect(fetchSpy.mock.calls[1][0]).toBe('/api/auth/refresh');
-    // Retry uses refreshed token
-    const retryHeaders = new Headers(fetchSpy.mock.calls[2][1]?.headers);
-    expect(retryHeaders.get('Authorization')).toBe('Bearer refreshed-token');
+    // Should have called refresh endpoint
+    expect(fetchSpy).toHaveBeenCalledWith('/api/auth/refresh', expect.objectContaining({ method: 'POST' }));
+    // Should have set auth with new token
+    expect(mockSetAuth).toHaveBeenCalledWith('new-token', { id: '1', username: 'test', role: 'user' });
   });
 
-  it('clears auth and throws when refresh fails and no accessToken', async () => {
-    useAuthStore.setState({ accessToken: null, isAuthenticated: true });
+  it('clears auth and throws when refresh fails on 401', async () => {
+    storeState.accessToken = null;
 
-    fetchSpy.mockResolvedValueOnce(new Response('Unauthorized', { status: 401 }));
-    // Refresh fails
-    fetchSpy.mockResolvedValueOnce(new Response('Forbidden', { status: 403 }));
+    vi.spyOn(globalThis, 'fetch')
+      // First call: 401
+      .mockResolvedValueOnce(new Response('Unauthorized', { status: 401 }))
+      // Refresh call: fail
+      .mockResolvedValueOnce(new Response('Invalid', { status: 401 }));
 
-    await expect(apiFetch('/settings')).rejects.toThrow('Session expired');
-    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    await expect(apiFetch('/test')).rejects.toThrow('Session expired');
+    expect(mockClearAuth).toHaveBeenCalled();
   });
 
-  it('refreshes token on 401 when accessToken was set but expired', async () => {
-    fetchSpy.mockResolvedValueOnce(new Response('Unauthorized', { status: 401 }));
-    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({
-      accessToken: 'new-token',
+  it('attempts refresh on 401 when accessToken exists but expired', async () => {
+    storeState.accessToken = 'expired-token';
+
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('Unauthorized', { status: 401 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ accessToken: 'refreshed', user: { id: '1', username: 'test', role: 'user' } }),
+          { headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ result: 'success' }), {
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+
+    const result = await apiFetch('/data');
+    expect(result).toEqual({ result: 'success' });
+    expect(mockSetAuth).toHaveBeenCalledWith('refreshed', expect.any(Object));
+  });
+});
+
+describe('logoutApi', () => {
+  beforeEach(() => {
+    storeState = {
+      accessToken: 'my-token',
       user: { id: '1', username: 'test', role: 'user' },
-    }), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    }));
-    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    }));
+      isAuthenticated: true,
+      setAuth: mockSetAuth,
+      clearAuth: mockClearAuth,
+    };
+    mockSetAuth.mockClear();
+    mockClearAuth.mockClear();
+  });
 
-    await apiFetch('/test');
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
 
-    expect(fetchSpy).toHaveBeenCalledTimes(3);
+  it('calls backend logout and clears auth', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ message: 'Logged out' }), {
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    await logoutApi();
+
+    expect(fetchSpy).toHaveBeenCalledWith('/api/auth/logout', expect.objectContaining({
+      method: 'POST',
+      credentials: 'include',
+      headers: { Authorization: 'Bearer my-token' },
+    }));
+    expect(mockClearAuth).toHaveBeenCalled();
+  });
+
+  it('clears auth even when backend call fails', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Network error'));
+
+    await logoutApi();
+
+    expect(mockClearAuth).toHaveBeenCalled();
+  });
+
+  it('sends request without Authorization when no token', async () => {
+    storeState.accessToken = null;
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ message: 'Logged out' }), {
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    await logoutApi();
+
+    expect(fetchSpy).toHaveBeenCalledWith('/api/auth/logout', expect.objectContaining({
+      method: 'POST',
+      credentials: 'include',
+      headers: {},
+    }));
+    expect(mockClearAuth).toHaveBeenCalled();
   });
 });

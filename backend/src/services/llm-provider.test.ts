@@ -1,310 +1,147 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// Mock DB
-const mockQuery = vi.fn();
-vi.mock('../db/postgres.js', () => ({
-  query: (...args: unknown[]) => mockQuery(...args),
+vi.mock('./circuit-breaker.js', () => ({
+  ollamaBreakers: {
+    chat: { execute: vi.fn((fn: () => unknown) => fn()) },
+    embed: { execute: vi.fn((fn: () => unknown) => fn()) },
+    list: { execute: vi.fn((fn: () => unknown) => fn()) },
+  },
 }));
 
-// Mock crypto
-vi.mock('../utils/crypto.js', () => ({
-  decryptPat: vi.fn().mockReturnValue('decrypted-api-key'),
-  encryptPat: vi.fn().mockReturnValue('encrypted-value'),
+vi.mock('../utils/sanitize-llm-input.js', () => ({
+  sanitizeLlmInput: vi.fn((input: string) => ({ sanitized: input, warnings: [] })),
 }));
 
-// Mock logger
 vi.mock('../utils/logger.js', () => ({
-  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
+  logger: { debug: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn() },
 }));
 
-// Mock ollama-service
-const mockOllamaStreamChat = vi.fn();
-const mockOllamaChat = vi.fn();
-const mockOllamaGenerateEmbedding = vi.fn();
-vi.mock('./ollama-service.js', () => ({
-  streamChat: (...args: unknown[]) => mockOllamaStreamChat(...args),
-  chat: (...args: unknown[]) => mockOllamaChat(...args),
-  generateEmbedding: (...args: unknown[]) => mockOllamaGenerateEmbedding(...args),
+vi.mock('ollama', () => ({
+  Ollama: class MockOllama {
+    list = vi.fn().mockResolvedValue({ models: [] });
+    chat = vi.fn().mockResolvedValue({ message: { content: 'ollama-test' } });
+    embed = vi.fn().mockResolvedValue({ embeddings: [[0.1]] });
+  },
 }));
 
-// Mock openai-service
-const mockOpenaiStreamChat = vi.fn();
-const mockOpenaiChat = vi.fn();
-const mockOpenaiGenerateEmbedding = vi.fn();
-vi.mock('./openai-service.js', () => ({
-  openaiStreamChat: (...args: unknown[]) => mockOpenaiStreamChat(...args),
-  openaiChat: (...args: unknown[]) => mockOpenaiChat(...args),
-  openaiGenerateEmbedding: (...args: unknown[]) => mockOpenaiGenerateEmbedding(...args),
-  REQUIRED_EMBEDDING_DIMENSIONS: 768,
-}));
+describe('LLM provider switching', () => {
+  const originalEnv = { ...process.env };
 
-import { resolveUserProvider, providerStreamChat, providerChat, providerGenerateEmbedding } from './llm-provider.js';
-import { decryptPat } from '../utils/crypto.js';
-
-describe('llm-provider', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetModules();
   });
 
   afterEach(() => {
-    vi.restoreAllMocks();
+    process.env = { ...originalEnv };
   });
 
-  describe('resolveUserProvider', () => {
-    it('should default to ollama when no user_settings row exists', async () => {
-      mockQuery.mockResolvedValue({ rows: [] });
+  it('should default to ollama provider', async () => {
+    delete process.env.LLM_PROVIDER;
 
-      const provider = await resolveUserProvider('user-1');
-      expect(provider.type).toBe('ollama');
-      expect(provider.openaiConfig).toBeUndefined();
-    });
-
-    it('should return ollama when user has llm_provider=ollama', async () => {
-      mockQuery.mockResolvedValue({
-        rows: [{
-          llm_provider: 'ollama',
-          openai_base_url: null,
-          openai_api_key: null,
-          openai_model: null,
-        }],
-      });
-
-      const provider = await resolveUserProvider('user-1');
-      expect(provider.type).toBe('ollama');
-    });
-
-    it('should return openai with decrypted config when user has llm_provider=openai', async () => {
-      mockQuery.mockResolvedValue({
-        rows: [{
-          llm_provider: 'openai',
-          openai_base_url: 'https://api.openai.com',
-          openai_api_key: 'encrypted-key',
-          openai_model: 'gpt-4o',
-        }],
-      });
-
-      const provider = await resolveUserProvider('user-1');
-      expect(provider.type).toBe('openai');
-      expect(provider.openaiConfig).toEqual({
-        baseUrl: 'https://api.openai.com',
-        apiKey: 'decrypted-api-key',
-        model: 'gpt-4o',
-      });
-      expect(decryptPat).toHaveBeenCalledWith('encrypted-key');
-    });
-
-    it('should strip trailing slashes from base URL', async () => {
-      mockQuery.mockResolvedValue({
-        rows: [{
-          llm_provider: 'openai',
-          openai_base_url: 'https://api.openai.com///',
-          openai_api_key: 'encrypted-key',
-          openai_model: 'gpt-4o',
-        }],
-      });
-
-      const provider = await resolveUserProvider('user-1');
-      expect(provider.openaiConfig?.baseUrl).toBe('https://api.openai.com');
-    });
-
-    it('should fall back to ollama when openai config is incomplete (no api_key)', async () => {
-      mockQuery.mockResolvedValue({
-        rows: [{
-          llm_provider: 'openai',
-          openai_base_url: 'https://api.openai.com',
-          openai_api_key: null,
-          openai_model: 'gpt-4o',
-        }],
-      });
-
-      const provider = await resolveUserProvider('user-1');
-      expect(provider.type).toBe('ollama');
-    });
-
-    it('should fall back to ollama when openai config is incomplete (no base_url)', async () => {
-      mockQuery.mockResolvedValue({
-        rows: [{
-          llm_provider: 'openai',
-          openai_base_url: null,
-          openai_api_key: 'encrypted-key',
-          openai_model: 'gpt-4o',
-        }],
-      });
-
-      const provider = await resolveUserProvider('user-1');
-      expect(provider.type).toBe('ollama');
-    });
-
-    it('should fall back to ollama when decryption fails', async () => {
-      mockQuery.mockResolvedValue({
-        rows: [{
-          llm_provider: 'openai',
-          openai_base_url: 'https://api.openai.com',
-          openai_api_key: 'corrupted-key',
-          openai_model: 'gpt-4o',
-        }],
-      });
-      vi.mocked(decryptPat).mockImplementationOnce(() => {
-        throw new Error('Decryption failed');
-      });
-
-      const provider = await resolveUserProvider('user-1');
-      expect(provider.type).toBe('ollama');
-    });
-
-    it('should use default model when openai_model is null', async () => {
-      mockQuery.mockResolvedValue({
-        rows: [{
-          llm_provider: 'openai',
-          openai_base_url: 'https://api.openai.com',
-          openai_api_key: 'encrypted-key',
-          openai_model: null,
-        }],
-      });
-
-      const provider = await resolveUserProvider('user-1');
-      expect(provider.type).toBe('openai');
-      expect(provider.openaiConfig?.model).toBe('gpt-4o-mini');
-    });
-
-    it('should be per-user -- different users can have different providers', async () => {
-      // User A: ollama
-      mockQuery.mockResolvedValueOnce({
-        rows: [{ llm_provider: 'ollama', openai_base_url: null, openai_api_key: null, openai_model: null }],
-      });
-      // User B: openai
-      mockQuery.mockResolvedValueOnce({
-        rows: [{
-          llm_provider: 'openai',
-          openai_base_url: 'https://api.openai.com',
-          openai_api_key: 'encrypted-key-b',
-          openai_model: 'gpt-4o',
-        }],
-      });
-
-      const providerA = await resolveUserProvider('user-a');
-      const providerB = await resolveUserProvider('user-b');
-
-      expect(providerA.type).toBe('ollama');
-      expect(providerB.type).toBe('openai');
-    });
+    const mod = await import('./ollama-service.js');
+    expect(mod.getActiveProviderType()).toBe('ollama');
   });
 
-  describe('providerStreamChat', () => {
-    it('should delegate to ollama when user has ollama provider', async () => {
-      mockQuery.mockResolvedValue({
-        rows: [{ llm_provider: 'ollama', openai_base_url: null, openai_api_key: null, openai_model: null }],
-      });
+  it('should use openai provider when LLM_PROVIDER=openai', async () => {
+    process.env.LLM_PROVIDER = 'openai';
 
-      async function* fakeGen() {
-        yield { content: 'hello', done: true };
-      }
-      mockOllamaStreamChat.mockReturnValue(fakeGen());
-
-      const messages = [{ role: 'user' as const, content: 'test' }];
-      const chunks: Array<{ content: string; done: boolean }> = [];
-      for await (const chunk of providerStreamChat('user-1', 'qwen3.5', messages)) {
-        chunks.push(chunk);
-      }
-
-      expect(chunks).toEqual([{ content: 'hello', done: true }]);
-      expect(mockOllamaStreamChat).toHaveBeenCalledWith('qwen3.5', messages, undefined);
-      expect(mockOpenaiStreamChat).not.toHaveBeenCalled();
-    });
-
-    it('should delegate to openai when user has openai provider', async () => {
-      mockQuery.mockResolvedValue({
-        rows: [{
-          llm_provider: 'openai',
-          openai_base_url: 'https://api.openai.com',
-          openai_api_key: 'encrypted-key',
-          openai_model: 'gpt-4o',
-        }],
-      });
-
-      async function* fakeGen() {
-        yield { content: 'from openai', done: true };
-      }
-      mockOpenaiStreamChat.mockReturnValue(fakeGen());
-
-      const messages = [{ role: 'user' as const, content: 'test' }];
-      const chunks: Array<{ content: string; done: boolean }> = [];
-      for await (const chunk of providerStreamChat('user-1', '', messages)) {
-        chunks.push(chunk);
-      }
-
-      expect(chunks).toEqual([{ content: 'from openai', done: true }]);
-      expect(mockOpenaiStreamChat).toHaveBeenCalledWith(
-        expect.objectContaining({ baseUrl: 'https://api.openai.com', model: 'gpt-4o' }),
-        messages,
-        undefined,
-      );
-      expect(mockOllamaStreamChat).not.toHaveBeenCalled();
-    });
+    const mod = await import('./ollama-service.js');
+    expect(mod.getActiveProviderType()).toBe('openai');
   });
 
-  describe('providerChat', () => {
-    it('should delegate to ollama for ollama users', async () => {
-      mockQuery.mockResolvedValue({
-        rows: [{ llm_provider: 'ollama', openai_base_url: null, openai_api_key: null, openai_model: null }],
-      });
-      mockOllamaChat.mockResolvedValue('ollama response');
+  it('should switch provider at runtime via setActiveProvider', async () => {
+    delete process.env.LLM_PROVIDER;
 
-      const result = await providerChat('user-1', 'qwen3.5', [{ role: 'user', content: 'test' }]);
-      expect(result).toBe('ollama response');
-      expect(mockOllamaChat).toHaveBeenCalled();
-      expect(mockOpenaiChat).not.toHaveBeenCalled();
-    });
+    const mod = await import('./ollama-service.js');
+    expect(mod.getActiveProviderType()).toBe('ollama');
 
-    it('should delegate to openai for openai users', async () => {
-      mockQuery.mockResolvedValue({
-        rows: [{
-          llm_provider: 'openai',
-          openai_base_url: 'https://api.openai.com',
-          openai_api_key: 'encrypted-key',
-          openai_model: 'gpt-4o',
-        }],
-      });
-      mockOpenaiChat.mockResolvedValue('openai response');
+    mod.setActiveProvider('openai');
+    expect(mod.getActiveProviderType()).toBe('openai');
 
-      const result = await providerChat('user-1', '', [{ role: 'user', content: 'test' }]);
-      expect(result).toBe('openai response');
-      expect(mockOpenaiChat).toHaveBeenCalled();
-      expect(mockOllamaChat).not.toHaveBeenCalled();
-    });
+    mod.setActiveProvider('ollama');
+    expect(mod.getActiveProviderType()).toBe('ollama');
   });
 
-  describe('providerGenerateEmbedding', () => {
-    it('should delegate to ollama for ollama users', async () => {
-      mockQuery.mockResolvedValue({
-        rows: [{ llm_provider: 'ollama', openai_base_url: null, openai_api_key: null, openai_model: null }],
-      });
-      mockOllamaGenerateEmbedding.mockResolvedValue([[0.1, 0.2, 0.3]]);
+  it('should throw on unknown provider type', async () => {
+    const mod = await import('./ollama-service.js');
+    expect(() => mod.setActiveProvider('invalid' as 'ollama')).toThrow('Unknown LLM provider');
+  });
 
-      const result = await providerGenerateEmbedding('user-1', 'some text');
-      expect(result).toEqual([[0.1, 0.2, 0.3]]);
-      expect(mockOllamaGenerateEmbedding).toHaveBeenCalledWith('some text');
-      expect(mockOpenaiGenerateEmbedding).not.toHaveBeenCalled();
+  it('should get specific provider via getProvider', async () => {
+    const mod = await import('./ollama-service.js');
+
+    const ollamaProvider = mod.getProvider('ollama');
+    expect(ollamaProvider.name).toBe('ollama');
+
+    const openaiProvider = mod.getProvider('openai');
+    expect(openaiProvider.name).toBe('openai');
+  });
+
+  it('should export system prompt functions', async () => {
+    const mod = await import('./ollama-service.js');
+
+    expect(mod.getSystemPrompt('ask')).toContain('knowledgeable assistant');
+    expect(mod.getSystemPrompt('generate')).toContain('documentation writer');
+    expect(mod.getSystemPrompt('summarize')).toContain('summary');
+  });
+
+  it('should delegate listModels to active provider', async () => {
+    delete process.env.LLM_PROVIDER;
+    const mod = await import('./ollama-service.js');
+
+    // Default provider is Ollama
+    const models = await mod.listModels();
+    expect(Array.isArray(models)).toBe(true);
+  });
+
+  it('should delegate checkHealth to active provider', async () => {
+    delete process.env.LLM_PROVIDER;
+    const mod = await import('./ollama-service.js');
+
+    const health = await mod.checkHealth();
+    expect(health).toHaveProperty('connected');
+  });
+
+  it('should export backward-compatible ollama client', async () => {
+    const mod = await import('./ollama-service.js');
+    expect(mod.ollama).toBeDefined();
+  });
+});
+
+// Per-user provider resolution tests
+vi.mock('../db/postgres.js', () => ({
+  query: vi.fn(),
+}));
+
+describe('per-user provider resolution', () => {
+  it('should return ollama when user has no settings', async () => {
+    const { query } = await import('../db/postgres.js');
+    (query as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ rows: [] });
+
+    const { resolveUserProvider } = await import('./llm-provider.js');
+    const result = await resolveUserProvider('user-1');
+    expect(result.type).toBe('ollama');
+  });
+
+  it('should return openai when user has llm_provider=openai', async () => {
+    const { query } = await import('../db/postgres.js');
+    (query as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      rows: [{ llm_provider: 'openai' }],
     });
 
-    it('should delegate to openai for openai users', async () => {
-      mockQuery.mockResolvedValue({
-        rows: [{
-          llm_provider: 'openai',
-          openai_base_url: 'https://api.openai.com',
-          openai_api_key: 'encrypted-key',
-          openai_model: 'gpt-4o',
-        }],
-      });
-      mockOpenaiGenerateEmbedding.mockResolvedValue([[0.4, 0.5, 0.6]]);
+    const { resolveUserProvider } = await import('./llm-provider.js');
+    const result = await resolveUserProvider('user-1');
+    expect(result.type).toBe('openai');
+  });
 
-      const result = await providerGenerateEmbedding('user-1', 'some text');
-      expect(result).toEqual([[0.4, 0.5, 0.6]]);
-      expect(mockOpenaiGenerateEmbedding).toHaveBeenCalledWith(
-        expect.objectContaining({ baseUrl: 'https://api.openai.com' }),
-        'some text',
-      );
-      expect(mockOllamaGenerateEmbedding).not.toHaveBeenCalled();
+  it('should return ollama when user has llm_provider=ollama', async () => {
+    const { query } = await import('../db/postgres.js');
+    (query as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      rows: [{ llm_provider: 'ollama' }],
     });
+
+    const { resolveUserProvider } = await import('./llm-provider.js');
+    const result = await resolveUserProvider('user-1');
+    expect(result.type).toBe('ollama');
   });
 });

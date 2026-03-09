@@ -1,25 +1,85 @@
+/**
+ * LLM Provider abstraction layer.
+ *
+ * Defines a common interface for LLM backends (Ollama, OpenAI-compatible APIs)
+ * so the rest of the application can work with any provider transparently.
+ *
+ * Also provides per-user provider resolution from user_settings (multi-user support).
+ */
+
 import { query } from '../db/postgres.js';
-import { decryptPat } from '../utils/crypto.js';
 import { logger } from '../utils/logger.js';
 import {
   streamChat as ollamaStreamChat,
   chat as ollamaChat,
   generateEmbedding as ollamaGenerateEmbedding,
 } from './ollama-service.js';
-import {
-  openaiStreamChat,
-  openaiChat,
-  openaiGenerateEmbedding,
-  type OpenAIConfig,
-} from './openai-service.js';
-import type { ChatMessage, StreamChunk } from './ollama-service.js';
+import { OpenAIProvider } from './openai-service.js';
+
+// ─── Shared interfaces ──────────────────────────────────────────────────────
+
+export interface ChatMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
+
+export interface StreamChunk {
+  content: string;
+  done: boolean;
+}
+
+export interface LlmModel {
+  name: string;
+  size: number;
+  modifiedAt: Date;
+  digest: string;
+}
+
+export interface HealthResult {
+  connected: boolean;
+  error?: string;
+}
+
+/**
+ * Common interface that all LLM providers must implement.
+ */
+export interface LlmProvider {
+  readonly name: string;
+
+  /** Check connectivity to the LLM backend. */
+  checkHealth(): Promise<HealthResult>;
+
+  /** List available models. */
+  listModels(): Promise<LlmModel[]>;
+
+  /** Stream a chat completion, yielding chunks as they arrive. */
+  streamChat(
+    model: string,
+    messages: ChatMessage[],
+    signal?: AbortSignal,
+  ): AsyncGenerator<StreamChunk>;
+
+  /** Non-streaming chat completion. */
+  chat(model: string, messages: ChatMessage[]): Promise<string>;
+
+  /** Generate embeddings for one or more texts. */
+  generateEmbedding(text: string | string[]): Promise<number[][]>;
+}
 
 export type LlmProviderType = 'ollama' | 'openai';
+
+// ─── Per-user provider resolution ───────────────────────────────────────────
 
 /** Resolved per-user LLM provider configuration. */
 export interface ResolvedProvider {
   type: LlmProviderType;
-  openaiConfig?: OpenAIConfig;
+}
+
+// Lazily initialized OpenAI provider instance for per-user routing
+let _openaiProvider: OpenAIProvider | null = null;
+function getOpenAIProvider(): OpenAIProvider {
+  if (!_openaiProvider) _openaiProvider = new OpenAIProvider();
+  return _openaiProvider;
 }
 
 /**
@@ -29,11 +89,8 @@ export interface ResolvedProvider {
 export async function resolveUserProvider(userId: string): Promise<ResolvedProvider> {
   const result = await query<{
     llm_provider: string;
-    openai_base_url: string | null;
-    openai_api_key: string | null;
-    openai_model: string | null;
   }>(
-    'SELECT llm_provider, openai_base_url, openai_api_key, openai_model FROM user_settings WHERE user_id = $1',
+    'SELECT llm_provider FROM user_settings WHERE user_id = $1',
     [userId],
   );
 
@@ -41,32 +98,7 @@ export async function resolveUserProvider(userId: string): Promise<ResolvedProvi
     return { type: 'ollama' };
   }
 
-  const row = result.rows[0];
-
-  if (!row.openai_api_key || !row.openai_base_url) {
-    logger.warn(
-      { userId },
-      'User has llm_provider=openai but missing base_url or api_key, falling back to ollama',
-    );
-    return { type: 'ollama' };
-  }
-
-  let apiKey: string;
-  try {
-    apiKey = decryptPat(row.openai_api_key);
-  } catch (err) {
-    logger.error({ err, userId }, 'Failed to decrypt OpenAI API key, falling back to ollama');
-    return { type: 'ollama' };
-  }
-
-  return {
-    type: 'openai',
-    openaiConfig: {
-      baseUrl: row.openai_base_url.replace(/\/+$/, ''), // strip trailing slashes
-      apiKey,
-      model: row.openai_model ?? 'gpt-4o-mini',
-    },
-  };
+  return { type: 'openai' };
 }
 
 /**
@@ -81,14 +113,8 @@ export async function* providerStreamChat(
 ): AsyncGenerator<StreamChunk> {
   const provider = await resolveUserProvider(userId);
 
-  if (provider.type === 'openai' && provider.openaiConfig) {
-    // For OpenAI, override the model with the user's configured model
-    // unless the request explicitly specifies one
-    const config: OpenAIConfig = {
-      ...provider.openaiConfig,
-      model: model || provider.openaiConfig.model,
-    };
-    yield* openaiStreamChat(config, messages, signal);
+  if (provider.type === 'openai') {
+    yield* getOpenAIProvider().streamChat(model, messages, signal);
   } else {
     yield* ollamaStreamChat(model, messages, signal);
   }
@@ -104,12 +130,8 @@ export async function providerChat(
 ): Promise<string> {
   const provider = await resolveUserProvider(userId);
 
-  if (provider.type === 'openai' && provider.openaiConfig) {
-    const config: OpenAIConfig = {
-      ...provider.openaiConfig,
-      model: model || provider.openaiConfig.model,
-    };
-    return openaiChat(config, messages);
+  if (provider.type === 'openai') {
+    return getOpenAIProvider().chat(model, messages);
   } else {
     return ollamaChat(model, messages);
   }
@@ -125,8 +147,8 @@ export async function providerGenerateEmbedding(
 ): Promise<number[][]> {
   const provider = await resolveUserProvider(userId);
 
-  if (provider.type === 'openai' && provider.openaiConfig) {
-    return openaiGenerateEmbedding(provider.openaiConfig, text);
+  if (provider.type === 'openai') {
+    return getOpenAIProvider().generateEmbedding(text);
   } else {
     return ollamaGenerateEmbedding(text);
   }

@@ -1,4 +1,5 @@
 import { FastifyInstance } from 'fastify';
+import { Agent } from 'undici';
 import { checkConnection as checkPg } from '../db/postgres.js';
 import { checkRedisConnection } from '../plugins/redis.js';
 import { getOllamaCircuitBreakerStatus } from '../services/circuit-breaker.js';
@@ -11,10 +12,47 @@ export function markStartupComplete(): void {
   startupComplete = true;
 }
 
+function getOllamaFetchHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {};
+  const authType = (process.env.LLM_AUTH_TYPE ?? 'bearer').toLowerCase();
+  if (authType === 'bearer' && process.env.LLM_BEARER_TOKEN) {
+    headers['Authorization'] = `Bearer ${process.env.LLM_BEARER_TOKEN}`;
+  }
+  return headers;
+}
+
+/**
+ * Build an undici Agent that disables TLS verification when LLM_VERIFY_SSL=false.
+ * Must match the behaviour of ollama-service.ts so health checks agree with
+ * the actual Ollama SDK client.
+ */
+function buildHealthDispatcher(): Agent | undefined {
+  if (process.env.LLM_VERIFY_SSL === 'false') {
+    return new Agent({ connect: { rejectUnauthorized: false } });
+  }
+  return undefined;
+}
+
+const healthDispatcher = buildHealthDispatcher();
+
+/** Build the Ollama API URL, stripping any trailing slash from the base. */
+function ollamaApiUrl(path: string): string {
+  const base = (process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434').replace(/\/+$/, '');
+  return `${base}${path}`;
+}
+
+/** Perform a fetch to Ollama that respects LLM_VERIFY_SSL and LLM_AUTH_TYPE. */
+function ollamaFetch(url: string, timeoutMs: number): Promise<Response> {
+  return fetch(url, {
+    signal: AbortSignal.timeout(timeoutMs),
+    headers: getOllamaFetchHeaders(),
+    ...(healthDispatcher ? { dispatcher: healthDispatcher } : {}),
+  } as RequestInit);
+}
+
 async function checkOllama(): Promise<boolean> {
   try {
-    const url = process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434';
-    const res = await fetch(`${url}/api/tags`, { signal: AbortSignal.timeout(3000) });
+    const res = await ollamaFetch(ollamaApiUrl('/api/tags'), 3000);
     return res.ok;
   } catch {
     logger.debug('Ollama health check failed');
@@ -24,8 +62,7 @@ async function checkOllama(): Promise<boolean> {
 
 async function checkOllamaModels(): Promise<boolean> {
   try {
-    const url = process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434';
-    const res = await fetch(`${url}/api/tags`, { signal: AbortSignal.timeout(5000) });
+    const res = await ollamaFetch(ollamaApiUrl('/api/tags'), 5000);
     if (!res.ok) return false;
     const data = (await res.json()) as { models?: Array<{ name: string }> };
     return Array.isArray(data.models) && data.models.length > 0;

@@ -143,6 +143,7 @@ function EditorToolbar({ editor }: { editor: EditorType }) {
 
 const AUTO_SAVE_DELAY = 2000;
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function getDraft(key: string): string | null {
   try {
     return localStorage.getItem(`draft:${key}`);
@@ -151,6 +152,7 @@ export function getDraft(key: string): string | null {
   }
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function clearDraft(key: string): void {
   try {
     localStorage.removeItem(`draft:${key}`);
@@ -211,7 +213,6 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
           '[&_table]:border-collapse [&_td]:border [&_td]:border-white/10 [&_td]:p-2 [&_th]:border [&_th]:border-white/10 [&_th]:bg-white/5 [&_th]:p-2',
           '[&_pre]:rounded-md [&_pre]:bg-white/5 [&_pre]:p-4',
           '[&_ul[data-type=taskList]]:list-none [&_ul[data-type=taskList]]:pl-0',
-          '[&_.confluence-drawio]:relative [&_.confluence-drawio]:rounded-md [&_.confluence-drawio]:border [&_.confluence-drawio]:border-white/10 [&_.confluence-drawio]:p-2',
         )}
       />
     </div>

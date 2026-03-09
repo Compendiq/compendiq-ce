@@ -1,258 +1,262 @@
-import { Agent, request as undiciRequest } from 'undici';
-import pLimit from 'p-limit';
-import { logger } from '../utils/logger.js';
-import { openaiBreakers } from './circuit-breaker.js';
-import type { ChatMessage, StreamChunk } from './ollama-service.js';
-
 /**
- * Required dimension for pgvector column (vector(768)).
- * OpenAI's text-embedding-3-small supports a `dimensions` parameter
- * to truncate output to the requested size.
+ * OpenAI-compatible API provider.
+ *
+ * Implements the LlmProvider interface using the standard OpenAI chat/completions
+ * and embeddings API. Works with any OpenAI-compatible endpoint (OpenAI, Azure OpenAI,
+ * LM Studio, vLLM, llama.cpp server, LocalAI, etc.).
+ *
+ * Configuration via environment variables:
+ *   OPENAI_BASE_URL  - API base URL (default: https://api.openai.com/v1)
+ *   OPENAI_API_KEY   - API key (required when using this provider)
  */
-export const REQUIRED_EMBEDDING_DIMENSIONS = 768;
 
-// Max 2 concurrent OpenAI calls (matches Ollama limit)
+import { logger } from '../utils/logger.js';
+import { ollamaBreakers } from './circuit-breaker.js';
+import pLimit from 'p-limit';
+import type {
+  LlmProvider,
+  ChatMessage,
+  StreamChunk,
+  LlmModel,
+  HealthResult,
+} from './llm-provider.js';
+
+const REQUEST_TIMEOUT_MS = 60_000;
+
+// Max 2 concurrent LLM calls (same as Ollama)
 const llmLimit = pLimit(2);
 
-/** Per-user OpenAI configuration resolved from user_settings. */
 export interface OpenAIConfig {
   baseUrl: string;
   apiKey: string;
-  model: string;
 }
 
-/**
- * Build an undici Agent that respects LLM_VERIFY_SSL.
- * Uses the same pattern as tls-config.ts for Confluence connections.
- */
-function buildOpenAIDispatcher(): Agent | undefined {
-  const verifySsl = process.env.LLM_VERIFY_SSL !== 'false';
-  if (!verifySsl) {
-    logger.warn('LLM_VERIFY_SSL=false — TLS certificate verification is disabled for OpenAI-compatible connections');
-    return new Agent({ connect: { rejectUnauthorized: false } });
+function getConfig(): OpenAIConfig {
+  return {
+    baseUrl: (process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1').replace(/\/+$/, ''),
+    apiKey: process.env.OPENAI_API_KEY ?? '',
+  };
+}
+
+function makeHeaders(config: OpenAIConfig): Record<string, string> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  if (config.apiKey) {
+    headers['Authorization'] = `Bearer ${config.apiKey}`;
   }
-  return undefined;
+  return headers;
 }
 
-const openaiDispatcher = buildOpenAIDispatcher();
-
-/**
- * Make an HTTP request to an OpenAI-compatible endpoint, respecting
- * LLM_VERIFY_SSL via the undici dispatcher.
- */
 async function openaiRequest(
-  url: string,
-  body: Record<string, unknown>,
-  apiKey: string,
+  path: string,
+  body?: unknown,
   signal?: AbortSignal,
 ): Promise<Response> {
-  const opts: Record<string, unknown> = {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(body),
-    signal: signal ?? AbortSignal.timeout(120_000),
-  };
-  if (openaiDispatcher) {
-    opts.dispatcher = openaiDispatcher;
-  }
+  const config = getConfig();
+  const url = `${config.baseUrl}${path}`;
+  const headers = makeHeaders(config);
 
-  const { statusCode, headers, body: responseBody } = await undiciRequest(
-    url,
-    opts as Parameters<typeof undiciRequest>[1],
-  );
-
-  // Read the body as text for non-streaming responses
-  const text = await responseBody.text();
-
-  if (statusCode < 200 || statusCode >= 300) {
-    throw new Error(`OpenAI API error ${statusCode}: ${text.slice(0, 500)}`);
-  }
-
-  return new Response(text, {
-    status: statusCode,
-    headers: Object.fromEntries(
-      Object.entries(headers).filter(([, v]) => typeof v === 'string') as [string, string][],
-    ),
+  return fetch(url, {
+    method: body ? 'POST' : 'GET',
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+    signal: signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
 }
 
-/**
- * Make a streaming HTTP request to an OpenAI-compatible endpoint.
- * Returns the raw undici response body for SSE parsing.
- */
-async function openaiStreamRequest(
-  url: string,
-  body: Record<string, unknown>,
-  apiKey: string,
-  signal?: AbortSignal,
-): Promise<Awaited<ReturnType<typeof undiciRequest>>> {
-  const opts: Record<string, unknown> = {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({ ...body, stream: true }),
-    signal: signal ?? AbortSignal.timeout(120_000),
-  };
-  if (openaiDispatcher) {
-    opts.dispatcher = openaiDispatcher;
+export class OpenAIProvider implements LlmProvider {
+  readonly name = 'openai';
+
+  async checkHealth(): Promise<HealthResult> {
+    try {
+      const response = await openaiRequest('/models');
+      if (response.ok) {
+        return { connected: true };
+      }
+      const text = await response.text();
+      return { connected: false, error: `HTTP ${response.status}: ${text.slice(0, 200)}` };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      logger.debug({ err }, 'OpenAI health check failed');
+      return { connected: false, error: message };
+    }
   }
 
-  const response = await undiciRequest(
-    url,
-    opts as Parameters<typeof undiciRequest>[1],
-  );
-
-  if (response.statusCode < 200 || response.statusCode >= 300) {
-    const text = await response.body.text();
-    throw new Error(`OpenAI API error ${response.statusCode}: ${text.slice(0, 500)}`);
-  }
-
-  return response;
-}
-
-/**
- * Stream chat completion from an OpenAI-compatible API.
- * Uses separate circuit breakers from Ollama.
- */
-export async function* openaiStreamChat(
-  config: OpenAIConfig,
-  messages: ChatMessage[],
-  signal?: AbortSignal,
-): AsyncGenerator<StreamChunk> {
-  const response = await openaiBreakers.chat.execute(() =>
-    llmLimit(() =>
-      openaiStreamRequest(
-        `${config.baseUrl}/v1/chat/completions`,
-        {
-          model: config.model,
-          messages: messages.map((m) => ({ role: m.role, content: m.content })),
-        },
-        config.apiKey,
-        signal,
-      ),
-    ),
-  );
-
-  const decoder = new TextDecoder();
-  let buffer = '';
-
-  try {
-    for await (const chunk of response.body) {
-      if (signal?.aborted) {
-        // Drain the rest of the body
-        response.body.destroy();
-        return;
+  async listModels(): Promise<LlmModel[]> {
+    return ollamaBreakers.list.execute(async () => {
+      const response = await openaiRequest('/models');
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`Failed to list models: HTTP ${response.status} - ${text.slice(0, 200)}`);
       }
 
-      buffer += decoder.decode(chunk as Buffer, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
+      const data = (await response.json()) as {
+        data: Array<{
+          id: string;
+          created?: number;
+          owned_by?: string;
+        }>;
+      };
 
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith('data: ')) continue;
+      return data.data.map((m) => ({
+        name: m.id,
+        size: 0,
+        modifiedAt: m.created ? new Date(m.created * 1000) : new Date(),
+        digest: m.owned_by ?? '',
+      }));
+    });
+  }
 
-        const data = trimmed.slice(6);
-        if (data === '[DONE]') {
-          yield { content: '', done: true };
+  async *streamChat(
+    model: string,
+    messages: ChatMessage[],
+    signal?: AbortSignal,
+  ): AsyncGenerator<StreamChunk> {
+    const generator = await ollamaBreakers.chat.execute(() =>
+      llmLimit(async () => {
+        const response = await openaiRequest(
+          '/chat/completions',
+          {
+            model,
+            messages: messages.map((m) => ({ role: m.role, content: m.content })),
+            stream: true,
+          },
+          signal,
+        );
+
+        if (!response.ok) {
+          const text = await response.text();
+          throw new Error(`Chat request failed: HTTP ${response.status} - ${text.slice(0, 200)}`);
+        }
+
+        return response;
+      }),
+    );
+
+    const reader = generator.body?.getReader();
+    if (!reader) throw new Error('No response body');
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    try {
+      while (true) {
+        if (signal?.aborted) {
+          reader.cancel();
           return;
         }
 
-        try {
-          const parsed = JSON.parse(data) as {
-            choices?: Array<{ delta?: { content?: string }; finish_reason?: string | null }>;
-          };
-          const content = parsed.choices?.[0]?.delta?.content ?? '';
-          const done = parsed.choices?.[0]?.finish_reason != null;
-          if (content || done) {
-            yield { content, done };
+        const { done: readerDone, value } = await reader.read();
+        if (readerDone) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        // Process complete SSE lines
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith('data: ')) continue;
+
+          const data = trimmed.slice(6);
+          if (data === '[DONE]') {
+            yield { content: '', done: true };
+            return;
           }
-        } catch {
-          // Skip malformed SSE lines
-          logger.debug({ data: data.slice(0, 100) }, 'Skipping malformed SSE line from OpenAI');
+
+          try {
+            const parsed = JSON.parse(data) as {
+              choices: Array<{
+                delta?: { content?: string };
+                finish_reason?: string | null;
+              }>;
+            };
+
+            const choice = parsed.choices?.[0];
+            if (choice?.delta?.content) {
+              yield {
+                content: choice.delta.content,
+                done: choice.finish_reason != null,
+              };
+            } else if (choice?.finish_reason) {
+              yield { content: '', done: true };
+            }
+          } catch {
+            // Skip malformed JSON lines
+          }
         }
       }
-    }
-  } catch (err) {
-    if (signal?.aborted || (err instanceof Error && err.name === 'AbortError')) {
-      logger.debug('OpenAI stream aborted by client disconnect');
-      return;
-    }
-    throw err;
-  }
-}
-
-/**
- * Non-streaming chat completion from an OpenAI-compatible API.
- */
-export async function openaiChat(config: OpenAIConfig, messages: ChatMessage[]): Promise<string> {
-  return openaiBreakers.chat.execute(async () => {
-    const response = await llmLimit(() =>
-      openaiRequest(
-        `${config.baseUrl}/v1/chat/completions`,
-        {
-          model: config.model,
-          messages: messages.map((m) => ({ role: m.role, content: m.content })),
-        },
-        config.apiKey,
-      ),
-    );
-
-    const json = await response.json() as {
-      choices?: Array<{ message?: { content?: string } }>;
-    };
-    return json.choices?.[0]?.message?.content ?? '';
-  });
-}
-
-/**
- * Generate embeddings from an OpenAI-compatible API.
- * Requests exactly REQUIRED_EMBEDDING_DIMENSIONS (768) dimensions
- * to match the pgvector column definition.
- */
-export async function openaiGenerateEmbedding(
-  config: OpenAIConfig,
-  text: string | string[],
-  embeddingModel?: string,
-): Promise<number[][]> {
-  return openaiBreakers.embed.execute(async () => {
-    const input = Array.isArray(text) ? text : [text];
-    const model = embeddingModel ?? 'text-embedding-3-small';
-
-    const response = await llmLimit(() =>
-      openaiRequest(
-        `${config.baseUrl}/v1/embeddings`,
-        {
-          model,
-          input,
-          dimensions: REQUIRED_EMBEDDING_DIMENSIONS,
-        },
-        config.apiKey,
-      ),
-    );
-
-    const json = await response.json() as {
-      data?: Array<{ embedding: number[] }>;
-    };
-
-    const embeddings = json.data?.map((d) => d.embedding) ?? [];
-
-    // Validate dimensions
-    for (const emb of embeddings) {
-      if (emb.length !== REQUIRED_EMBEDDING_DIMENSIONS) {
-        throw new Error(
-          `Embedding dimension mismatch: got ${emb.length}, expected ${REQUIRED_EMBEDDING_DIMENSIONS}. ` +
-          `The pgvector column is defined as vector(${REQUIRED_EMBEDDING_DIMENSIONS}). ` +
-          `Model '${model}' may not support the 'dimensions' parameter.`,
-        );
+    } catch (err) {
+      if (signal?.aborted || (err instanceof Error && err.name === 'AbortError')) {
+        logger.debug('OpenAI stream aborted by client disconnect');
+        return;
       }
+      throw err;
+    } finally {
+      reader.releaseLock();
     }
+  }
 
-    return embeddings;
-  });
+  async chat(model: string, messages: ChatMessage[]): Promise<string> {
+    return ollamaBreakers.chat.execute(async () => {
+      return llmLimit(async () => {
+        const response = await openaiRequest('/chat/completions', {
+          model,
+          messages: messages.map((m) => ({ role: m.role, content: m.content })),
+          stream: false,
+        });
+
+        if (!response.ok) {
+          const text = await response.text();
+          throw new Error(`Chat request failed: HTTP ${response.status} - ${text.slice(0, 200)}`);
+        }
+
+        const data = (await response.json()) as {
+          choices: Array<{ message: { content: string } }>;
+        };
+
+        return data.choices[0]?.message?.content ?? '';
+      });
+    });
+  }
+
+  async generateEmbedding(text: string | string[]): Promise<number[][]> {
+    return ollamaBreakers.embed.execute(async () => {
+      return llmLimit(async () => {
+        const input = Array.isArray(text) ? text : [text];
+
+        const REQUIRED_DIMS = 768;
+        const response = await openaiRequest('/embeddings', {
+          model: process.env.EMBEDDING_MODEL ?? 'text-embedding-3-small',
+          input,
+          dimensions: REQUIRED_DIMS,
+        });
+
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(`Embedding request failed: HTTP ${response.status} - ${errText.slice(0, 200)}`);
+        }
+
+        const data = (await response.json()) as {
+          data: Array<{ embedding: number[]; index: number }>;
+        };
+
+        // Sort by index to ensure correct order
+        const embeddings = data.data
+          .sort((a, b) => a.index - b.index)
+          .map((d) => d.embedding);
+
+        // Validate dimensions match pgvector column
+        if (embeddings.length > 0 && embeddings[0].length !== REQUIRED_DIMS) {
+          throw new Error(
+            `Embedding dimension mismatch: got ${embeddings[0].length}, expected ${REQUIRED_DIMS} (pgvector column is vector(${REQUIRED_DIMS}))`,
+          );
+        }
+
+        return embeddings;
+      });
+    });
+  }
 }

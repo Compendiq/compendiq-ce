@@ -1,7 +1,7 @@
 import { query } from '../db/postgres.js';
 import { ConfluenceClient, ConfluencePage } from './confluence-client.js';
 import { confluenceToHtml, htmlToText } from './content-converter.js';
-import { syncDrawioAttachments, cleanPageAttachments } from './attachment-handler.js';
+import { syncDrawioAttachments, syncImageAttachments, cleanPageAttachments } from './attachment-handler.js';
 import { saveVersionSnapshot } from './version-tracker.js';
 import { decryptPat } from '../utils/crypto.js';
 import { logger } from '../utils/logger.js';
@@ -41,6 +41,7 @@ export async function syncUser(userId: string): Promise<void> {
   const client = await getClientForUser(userId);
   if (!client) {
     logger.warn({ userId }, 'No Confluence credentials configured, skipping sync');
+    syncStatuses.set(userId, { userId, status: 'idle' });
     return;
   }
 
@@ -51,6 +52,7 @@ export async function syncUser(userId: string): Promise<void> {
   const spaces = settingsResult.rows[0]?.selected_spaces ?? [];
   if (spaces.length === 0) {
     logger.info({ userId }, 'No spaces selected, skipping sync');
+    syncStatuses.set(userId, { userId, status: 'idle' });
     return;
   }
 
@@ -81,12 +83,13 @@ async function syncSpace(client: ConfluenceClient, userId: string, spaceKey: str
   const spaces = await client.getSpaces();
   const space = spaces.results.find((s) => s.key === spaceKey);
   if (space) {
+    const homepageId = space.homepage?.id ?? null;
     await query(
-      `INSERT INTO cached_spaces (user_id, space_key, space_name)
-       VALUES ($1, $2, $3)
+      `INSERT INTO cached_spaces (user_id, space_key, space_name, homepage_id)
+       VALUES ($1, $2, $3, $4)
        ON CONFLICT (user_id, space_key)
-       DO UPDATE SET space_name = $3, last_synced = NOW()`,
-      [userId, spaceKey, space.name],
+       DO UPDATE SET space_name = $3, homepage_id = $4, last_synced = NOW()`,
+      [userId, spaceKey, space.name, homepageId],
     );
   }
 
@@ -147,8 +150,9 @@ async function syncPage(
   const bodyHtml = confluenceToHtml(bodyStorage, page.id);
   const bodyText = htmlToText(bodyHtml);
 
-  // Sync draw.io attachments
+  // Sync draw.io and image attachments
   await syncDrawioAttachments(client, userId, page.id, bodyStorage);
+  await syncImageAttachments(client, userId, page.id, bodyStorage);
 
   // Extract metadata
   const labels = page.metadata?.labels?.results?.map((l) => l.name) ?? [];
@@ -230,6 +234,13 @@ async function detectDeletedPages(
  */
 export function getSyncStatus(userId: string): SyncStatus {
   return syncStatuses.get(userId) ?? { userId, status: 'idle' };
+}
+
+/**
+ * Set sync status for a user (used by route handler to set 'syncing' before dispatch).
+ */
+export function setSyncStatus(userId: string, status: SyncStatus): void {
+  syncStatuses.set(userId, status);
 }
 
 /**

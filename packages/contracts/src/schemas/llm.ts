@@ -36,6 +36,13 @@ export const AskRequestSchema = z.object({
   conversationId: z.string().uuid().optional(),
 });
 
+export const GenerateDiagramRequestSchema = z.object({
+  content: z.string().min(1),
+  model: z.string().min(1),
+  diagramType: z.enum(['flowchart', 'sequence', 'state', 'mindmap']).default('flowchart'),
+  pageId: z.string().optional(),
+});
+
 export const ConversationSchema = z.object({
   id: z.string().uuid(),
   model: z.string(),
@@ -76,6 +83,8 @@ export type ImproveRequest = z.infer<typeof ImproveRequestSchema>;
 export type GenerateRequest = z.infer<typeof GenerateRequestSchema>;
 export type SummarizeRequest = z.infer<typeof SummarizeRequestSchema>;
 export type AskRequest = z.infer<typeof AskRequestSchema>;
+export type GenerateDiagramRequest = z.infer<typeof GenerateDiagramRequestSchema>;
+export type DiagramType = z.infer<typeof GenerateDiagramRequestSchema>['diagramType'];
 export type Conversation = z.infer<typeof ConversationSchema>;
 export type Improvement = z.infer<typeof ImprovementSchema>;
 export type OllamaModel = z.infer<typeof OllamaModelSchema>;
