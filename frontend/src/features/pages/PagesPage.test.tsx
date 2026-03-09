@@ -174,4 +174,13 @@ describe('PagesPage', () => {
     fireEvent.change(select, { target: { value: 'stale' } });
     expect(select.value).toBe('stale');
   });
+
+  it('renders article title left-aligned without preceding icon', async () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    const title = await screen.findByText('Test Page');
+    expect(title).toBeInTheDocument();
+    // Title container should have text-left alignment
+    const container = title.parentElement!;
+    expect(container.className).toContain('text-left');
+  });
 });

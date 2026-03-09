@@ -379,8 +379,7 @@ export function PagesPage() {
                   onClick={() => navigate(`/pages/${pageItem.id}`)}
                   className="flex min-w-0 flex-1 items-center gap-4"
                 >
-                  <FileText size={20} className="shrink-0 text-primary" />
-                  <div className="min-w-0 flex-1">
+                  <div className="min-w-0 flex-1 text-left">
                     <p className="truncate font-medium">{pageItem.title}</p>
                     <div className="flex items-center gap-3 text-xs text-muted-foreground">
                       <span>{pageItem.spaceKey}</span>
