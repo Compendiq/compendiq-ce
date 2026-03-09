@@ -120,6 +120,53 @@ export async function syncDrawioAttachments(
   return cachedFiles;
 }
 
+const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp']);
+
+/**
+ * Sync image attachments referenced in a page's XHTML body.
+ * Downloads all <ac:image><ri:attachment ri:filename="..."> images from Confluence.
+ */
+export async function syncImageAttachments(
+  client: ConfluenceClient,
+  userId: string,
+  pageId: string,
+  bodyStorage: string,
+): Promise<string[]> {
+  // Find image attachment filenames in the storage format
+  const imagePattern = /<ac:image[^>]*>[\s\S]*?<ri:attachment\s+ri:filename="([^"]+)"[\s\S]*?<\/ac:image>/g;
+  const filenames: string[] = [];
+  let match;
+
+  while ((match = imagePattern.exec(bodyStorage)) !== null) {
+    filenames.push(match[1]);
+  }
+
+  if (filenames.length === 0) return [];
+
+  // Fetch page attachments from Confluence
+  const { results: attachments } = await client.getPageAttachments(pageId);
+  const cachedFiles: string[] = [];
+
+  for (const filename of filenames) {
+    // Only sync known image types
+    const ext = path.extname(filename).toLowerCase();
+    if (!IMAGE_EXTENSIONS.has(ext)) continue;
+
+    const attachment = attachments.find((a) => a.title === filename);
+
+    if (attachment?._links?.download) {
+      try {
+        await cacheAttachment(client, userId, pageId, attachment._links.download, filename);
+        cachedFiles.push(filename);
+      } catch (err) {
+        logger.error({ err, pageId, filename }, 'Failed to cache image attachment');
+      }
+    }
+  }
+
+  return cachedFiles;
+}
+
 /**
  * Clean up all attachments for a page.
  */

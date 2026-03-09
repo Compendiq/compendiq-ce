@@ -101,8 +101,8 @@ export function AppLayout({ children }: { children: ReactNode }) {
           </div>
 
           {/* Main content area */}
-          <main className="flex-1 overflow-y-auto">
-            <div className="px-6 pt-3">
+          <main className="flex flex-1 flex-col overflow-hidden">
+            <div className="shrink-0 px-6 pt-3">
               <ServiceStatus />
             </div>
             <m.div
@@ -110,7 +110,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.2 }}
-              className="p-6"
+              className="min-h-0 flex-1 overflow-y-auto p-6"
             >
               {children}
             </m.div>

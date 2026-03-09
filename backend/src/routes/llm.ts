@@ -101,16 +101,18 @@ export async function llmRoutes(fastify: FastifyInstance) {
     try {
       return await listModels();
     } catch (err) {
+      const detail = err instanceof Error ? err.message : 'Unknown error';
       logger.error({ err }, 'Failed to list models');
-      throw fastify.httpErrors.serviceUnavailable('Ollama server unavailable');
+      throw fastify.httpErrors.serviceUnavailable(`Ollama server unavailable: ${detail}`);
     }
   });
 
   // GET /api/ollama/status
   fastify.get('/ollama/status', async () => {
-    const connected = await checkHealth();
+    const health = await checkHealth();
     return {
-      connected,
+      connected: health.connected,
+      error: health.error,
       ollamaBaseUrl: process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434',
       embeddingModel: process.env.EMBEDDING_MODEL ?? 'nomic-embed-text',
       authConfigured: !!process.env.LLM_BEARER_TOKEN,

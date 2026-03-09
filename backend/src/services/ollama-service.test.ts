@@ -87,4 +87,44 @@ describe('ollama-service bearer token configuration', () => {
     expect(capturedConfig).toBeDefined();
     expect(capturedConfig!.host).toBe('http://localhost:11434');
   });
+
+  it('should provide a custom fetch function with timeout support', async () => {
+    delete process.env.LLM_BEARER_TOKEN;
+
+    await import('./ollama-service.js');
+
+    expect(capturedConfig).toBeDefined();
+    expect(typeof capturedConfig!.fetch).toBe('function');
+  });
+
+  it('should return connected: true from checkHealth when ollama.list() succeeds', async () => {
+    delete process.env.LLM_BEARER_TOKEN;
+
+    const mod = await import('./ollama-service.js');
+    const result = await mod.checkHealth();
+
+    expect(result).toEqual({ connected: true });
+  });
+
+  it('should return connected: false with error from checkHealth when ollama.list() fails', async () => {
+    delete process.env.LLM_BEARER_TOKEN;
+
+    // Re-mock ollama to make list() fail for this test
+    vi.doMock('ollama', () => ({
+      Ollama: class MockOllama {
+        constructor(config: Record<string, unknown>) {
+          capturedConfig = config;
+        }
+        list = vi.fn().mockRejectedValue(new Error('Connection refused'));
+        chat = vi.fn();
+        embed = vi.fn();
+      },
+    }));
+
+    const mod = await import('./ollama-service.js');
+    const result = await mod.checkHealth();
+
+    expect(result.connected).toBe(false);
+    expect(result.error).toBe('Connection refused');
+  });
 });

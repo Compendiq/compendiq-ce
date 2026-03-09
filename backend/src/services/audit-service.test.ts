@@ -1,9 +1,11 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
-import { setupTestDb, truncateAllTables, teardownTestDb } from '../test-db-helper.js';
+import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../test-db-helper.js';
 import { query } from '../db/postgres.js';
 import { logAuditEvent, getAuditLog, AuditAction } from './audit-service.js';
 
-describe('Audit Service', () => {
+const dbAvailable = await isDbAvailable();
+
+describe.skipIf(!dbAvailable)('Audit Service', () => {
   let testUserId: string;
 
   beforeAll(async () => {

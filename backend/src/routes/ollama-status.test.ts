@@ -102,7 +102,7 @@ describe('Ollama status and models routes', () => {
 
   describe('GET /api/ollama/status', () => {
     it('should return connected status with ollamaBaseUrl', async () => {
-      mockCheckHealth.mockResolvedValue(true);
+      mockCheckHealth.mockResolvedValue({ connected: true });
 
       const response = await app.inject({
         method: 'GET',
@@ -118,8 +118,8 @@ describe('Ollama status and models routes', () => {
       expect(typeof body.authConfigured).toBe('boolean');
     });
 
-    it('should return disconnected status when Ollama is unreachable', async () => {
-      mockCheckHealth.mockResolvedValue(false);
+    it('should return disconnected status with error when Ollama is unreachable', async () => {
+      mockCheckHealth.mockResolvedValue({ connected: false, error: 'fetch failed' });
 
       const response = await app.inject({
         method: 'GET',
@@ -129,11 +129,12 @@ describe('Ollama status and models routes', () => {
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
       expect(body.connected).toBe(false);
+      expect(body.error).toBe('fetch failed');
       expect(body.ollamaBaseUrl).toBeDefined();
     });
 
     it('should return default ollamaBaseUrl when env var is not set', async () => {
-      mockCheckHealth.mockResolvedValue(true);
+      mockCheckHealth.mockResolvedValue({ connected: true });
       const originalUrl = process.env.OLLAMA_BASE_URL;
       delete process.env.OLLAMA_BASE_URL;
 
@@ -150,7 +151,7 @@ describe('Ollama status and models routes', () => {
     });
 
     it('should return authConfigured=false when LLM_BEARER_TOKEN is not set', async () => {
-      mockCheckHealth.mockResolvedValue(true);
+      mockCheckHealth.mockResolvedValue({ connected: true });
       const originalToken = process.env.LLM_BEARER_TOKEN;
       delete process.env.LLM_BEARER_TOKEN;
 
@@ -167,7 +168,7 @@ describe('Ollama status and models routes', () => {
     });
 
     it('should return authConfigured=true when LLM_BEARER_TOKEN is set', async () => {
-      mockCheckHealth.mockResolvedValue(true);
+      mockCheckHealth.mockResolvedValue({ connected: true });
       const originalToken = process.env.LLM_BEARER_TOKEN;
       process.env.LLM_BEARER_TOKEN = 'test-token';
 
@@ -207,7 +208,7 @@ describe('Ollama status and models routes', () => {
       expect(body[1].name).toBe('llama3');
     });
 
-    it('should return 503 when Ollama is unavailable', async () => {
+    it('should return 503 with error details when Ollama is unavailable', async () => {
       mockListModels.mockRejectedValue(new Error('Connection refused'));
 
       const response = await app.inject({
@@ -218,6 +219,7 @@ describe('Ollama status and models routes', () => {
       expect(response.statusCode).toBe(503);
       const body = JSON.parse(response.body);
       expect(body.message).toContain('Ollama server unavailable');
+      expect(body.message).toContain('Connection refused');
     });
   });
 });

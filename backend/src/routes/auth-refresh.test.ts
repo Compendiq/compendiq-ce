@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
-import { setupTestDb, truncateAllTables, teardownTestDb } from '../test-db-helper.js';
+import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../test-db-helper.js';
 import { query } from '../db/postgres.js';
 import {
   generateAccessToken,
@@ -12,7 +12,9 @@ import {
   verifyToken,
 } from '../plugins/auth.js';
 
-describe('Refresh Token Rotation and Revocation', () => {
+const dbAvailable = await isDbAvailable();
+
+describe.skipIf(!dbAvailable)('Refresh Token Rotation and Revocation', () => {
   let testUserId: string;
 
   const testPayload = () => ({
