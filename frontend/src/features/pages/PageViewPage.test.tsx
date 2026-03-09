@@ -30,6 +30,7 @@ const mockPage = {
 vi.mock('../../shared/hooks/use-pages', () => ({
   usePage: () => ({ data: mockPage, isLoading: false }),
   useUpdatePage: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useUpdatePageLabels: () => ({ mutate: vi.fn(), isPending: false }),
   useDeletePage: () => ({ mutateAsync: vi.fn() }),
 }));
 

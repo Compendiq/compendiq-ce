@@ -138,6 +138,22 @@ export function useUpdatePage() {
   });
 }
 
+export function useUpdatePageLabels() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, addLabels, removeLabels }: { id: string; addLabels?: string[]; removeLabels?: string[] }) =>
+      apiFetch<{ labels: string[] }>(`/pages/${id}/labels`, {
+        method: 'PUT',
+        body: JSON.stringify({ addLabels, removeLabels }),
+      }),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['pages', variables.id] });
+      queryClient.invalidateQueries({ queryKey: ['pages'] });
+      queryClient.invalidateQueries({ queryKey: ['pages', 'filters'] });
+    },
+  });
+}
+
 export function useDeletePage() {
   const queryClient = useQueryClient();
   return useMutation({
