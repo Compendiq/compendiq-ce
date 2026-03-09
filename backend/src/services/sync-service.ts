@@ -3,6 +3,7 @@ import { ConfluenceClient, ConfluencePage } from './confluence-client.js';
 import { confluenceToHtml, htmlToText } from './content-converter.js';
 import { syncDrawioAttachments, syncImageAttachments, cleanPageAttachments } from './attachment-handler.js';
 import { saveVersionSnapshot } from './version-tracker.js';
+import { processDirtyPages } from './embedding-service.js';
 import { decryptPat } from '../utils/crypto.js';
 import { logger } from '../utils/logger.js';
 
@@ -62,6 +63,15 @@ export async function syncUser(userId: string): Promise<void> {
     for (const spaceKey of spaces) {
       await syncSpace(client, userId, spaceKey);
     }
+
+    // Trigger embedding for dirty pages asynchronously after sync
+    processDirtyPages(userId).then(({ processed, errors }) => {
+      if (processed > 0 || errors > 0) {
+        logger.info({ userId, processed, errors }, 'Post-sync embedding completed');
+      }
+    }).catch((err) => {
+      logger.error({ err, userId }, 'Post-sync embedding failed');
+    });
 
     syncStatuses.set(userId, {
       userId,

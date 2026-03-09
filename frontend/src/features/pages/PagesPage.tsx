@@ -7,6 +7,7 @@ import { usePages, usePageFilterOptions, usePage } from '../../shared/hooks/use-
 import { useSpaces, useSync, useSyncStatus } from '../../shared/hooks/use-spaces';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
+import { EmbeddingStatusBadge } from '../../shared/components/EmbeddingStatusBadge';
 import { BulkOperations } from './BulkOperations';
 import { cn } from '../../shared/lib/cn';
 
@@ -389,6 +390,7 @@ export function PagesPage() {
                       )}
                     </div>
                   </div>
+                  <EmbeddingStatusBadge embeddingDirty={pageItem.embeddingDirty} />
                   {pageItem.lastModifiedAt && (
                     <FreshnessBadge lastModified={pageItem.lastModifiedAt} />
                   )}

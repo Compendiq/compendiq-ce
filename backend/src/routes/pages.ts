@@ -203,8 +203,9 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       parent_id: string | null;
       labels: string[];
       last_modified_at: Date | null;
+      embedding_dirty: boolean;
     }>(
-      `SELECT confluence_id, space_key, title, parent_id, labels, last_modified_at
+      `SELECT confluence_id, space_key, title, parent_id, labels, last_modified_at, embedding_dirty
        FROM cached_pages ${whereClause}
        ORDER BY title ASC`,
       values,
@@ -218,6 +219,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
         parentId: row.parent_id,
         labels: row.labels,
         lastModifiedAt: row.last_modified_at,
+        embeddingDirty: row.embedding_dirty,
       })),
       total: result.rows.length,
     };
