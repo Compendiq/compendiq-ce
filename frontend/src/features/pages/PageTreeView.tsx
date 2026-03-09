@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { cn } from '../../shared/lib/cn';
 import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
+import { EmbeddingStatusBadge } from '../../shared/components/EmbeddingStatusBadge';
 import type { PageTreeItem } from '../../shared/hooks/use-pages';
 
 interface TreeNode {
@@ -193,6 +194,7 @@ function TreeNodeComponent({
           <span className="rounded-full bg-muted/40 px-2 py-0.5 text-[10px] text-muted-foreground">
             {node.page.spaceKey}
           </span>
+          <EmbeddingStatusBadge embeddingDirty={node.page.embeddingDirty} />
           {node.page.lastModifiedAt && (
             <FreshnessBadge lastModified={node.page.lastModifiedAt} />
           )}

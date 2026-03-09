@@ -69,6 +69,7 @@ interface PageTreeItem {
   parentId: string | null;
   labels: string[];
   lastModifiedAt: string | null;
+  embeddingDirty: boolean;
 }
 
 interface PageTreeResponse {
