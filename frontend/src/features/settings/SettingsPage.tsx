@@ -7,8 +7,9 @@ import { useAuthStore } from '../../stores/auth-store';
 import { SpacesTab } from './SpacesTab';
 import { LabelManager } from './LabelManager';
 import { ErrorDashboard } from './ErrorDashboard';
+import { ThemeTab } from './ThemeTab';
 
-type TabId = 'confluence' | 'ollama' | 'spaces' | 'account' | 'labels' | 'errors';
+type TabId = 'confluence' | 'ollama' | 'spaces' | 'theme' | 'account' | 'labels' | 'errors';
 
 export function SettingsPage() {
   const queryClient = useQueryClient();
@@ -35,6 +36,7 @@ export function SettingsPage() {
     { id: 'confluence', label: 'Confluence' },
     { id: 'spaces', label: 'Spaces' },
     { id: 'ollama', label: 'Ollama' },
+    { id: 'theme', label: 'Theme' },
     { id: 'account', label: 'Account' },
     { id: 'labels', label: 'Labels', adminOnly: true },
     { id: 'errors', label: 'Errors', adminOnly: true },
@@ -66,7 +68,7 @@ export function SettingsPage() {
         </div>
 
         <div className="p-6">
-          {(isLoading || !settings) && activeTab !== 'labels' && activeTab !== 'errors' ? (
+          {(isLoading || !settings) && activeTab !== 'labels' && activeTab !== 'errors' && activeTab !== 'theme' ? (
             <div className="flex h-32 items-center justify-center text-muted-foreground">
               Loading settings...
             </div>
@@ -79,6 +81,8 @@ export function SettingsPage() {
             />
           ) : activeTab === 'ollama' ? (
             <OllamaTab settings={settings!} onSave={(v) => updateSettings.mutate(v)} />
+          ) : activeTab === 'theme' ? (
+            <ThemeTab onSave={(v) => updateSettings.mutate(v)} />
           ) : activeTab === 'labels' && isAdmin ? (
             <LabelManager />
           ) : activeTab === 'errors' && isAdmin ? (

@@ -1,10 +1,11 @@
 @import "tailwindcss";
 
 /* ============================================
-   AI KB Creator - Glassmorphic Theme
+   AI KB Creator - Glassmorphic Themes
    ============================================ */
 
 @theme {
+  /* Default theme: Midnight Blue */
   --color-background: oklch(0.145 0.015 285);
   --color-foreground: oklch(0.95 0.01 280);
   --color-card: oklch(0.2 0.02 280);
@@ -27,6 +28,200 @@
   --radius-lg: 0.75rem;
   --radius-md: 0.5rem;
   --radius-sm: 0.25rem;
+
+  /* Mesh gradient colors (overridden per theme) */
+  --mesh-1: oklch(0.3 0.1 280 / 0.4);
+  --mesh-2: oklch(0.25 0.08 240 / 0.3);
+  --mesh-3: oklch(0.2 0.06 320 / 0.2);
+}
+
+/* ---- Theme: Ocean Depth ---- */
+[data-theme="ocean-depth"] {
+  --color-background: oklch(0.14 0.02 200);
+  --color-foreground: oklch(0.95 0.01 200);
+  --color-card: oklch(0.19 0.025 200);
+  --color-card-foreground: oklch(0.95 0.01 200);
+  --color-primary: oklch(0.7 0.15 195);
+  --color-primary-foreground: oklch(0.15 0.02 195);
+  --color-secondary: oklch(0.28 0.02 200);
+  --color-secondary-foreground: oklch(0.9 0.01 200);
+  --color-muted: oklch(0.24 0.015 200);
+  --color-muted-foreground: oklch(0.65 0.01 200);
+  --color-accent: oklch(0.33 0.03 195);
+  --color-accent-foreground: oklch(0.95 0.01 200);
+  --color-border: oklch(0.33 0.02 200);
+  --color-ring: oklch(0.7 0.15 195);
+  --mesh-1: oklch(0.28 0.08 195 / 0.4);
+  --mesh-2: oklch(0.23 0.06 210 / 0.3);
+  --mesh-3: oklch(0.18 0.05 180 / 0.2);
+}
+
+/* ---- Theme: Emerald Dark ---- */
+[data-theme="emerald-dark"] {
+  --color-background: oklch(0.14 0.02 155);
+  --color-foreground: oklch(0.95 0.01 150);
+  --color-card: oklch(0.19 0.025 155);
+  --color-card-foreground: oklch(0.95 0.01 150);
+  --color-primary: oklch(0.65 0.2 145);
+  --color-primary-foreground: oklch(0.15 0.03 145);
+  --color-secondary: oklch(0.28 0.02 155);
+  --color-secondary-foreground: oklch(0.9 0.01 150);
+  --color-muted: oklch(0.24 0.015 155);
+  --color-muted-foreground: oklch(0.65 0.01 150);
+  --color-accent: oklch(0.33 0.03 150);
+  --color-accent-foreground: oklch(0.95 0.01 150);
+  --color-border: oklch(0.33 0.02 155);
+  --color-ring: oklch(0.65 0.2 145);
+  --mesh-1: oklch(0.28 0.08 145 / 0.4);
+  --mesh-2: oklch(0.23 0.06 160 / 0.3);
+  --mesh-3: oklch(0.18 0.05 130 / 0.2);
+}
+
+/* ---- Theme: Rose Noir ---- */
+[data-theme="rose-noir"] {
+  --color-background: oklch(0.145 0.015 350);
+  --color-foreground: oklch(0.95 0.01 350);
+  --color-card: oklch(0.2 0.025 350);
+  --color-card-foreground: oklch(0.95 0.01 350);
+  --color-primary: oklch(0.6 0.22 350);
+  --color-primary-foreground: oklch(0.98 0.005 350);
+  --color-secondary: oklch(0.28 0.02 350);
+  --color-secondary-foreground: oklch(0.9 0.01 350);
+  --color-muted: oklch(0.24 0.015 350);
+  --color-muted-foreground: oklch(0.65 0.01 350);
+  --color-accent: oklch(0.33 0.04 350);
+  --color-accent-foreground: oklch(0.95 0.01 350);
+  --color-border: oklch(0.33 0.025 350);
+  --color-ring: oklch(0.6 0.22 350);
+  --mesh-1: oklch(0.28 0.1 350 / 0.4);
+  --mesh-2: oklch(0.23 0.08 330 / 0.3);
+  --mesh-3: oklch(0.18 0.06 10 / 0.2);
+}
+
+/* ---- Theme: Amber Night ---- */
+[data-theme="amber-night"] {
+  --color-background: oklch(0.145 0.015 70);
+  --color-foreground: oklch(0.95 0.01 70);
+  --color-card: oklch(0.2 0.025 70);
+  --color-card-foreground: oklch(0.95 0.01 70);
+  --color-primary: oklch(0.75 0.18 80);
+  --color-primary-foreground: oklch(0.15 0.02 80);
+  --color-secondary: oklch(0.28 0.02 70);
+  --color-secondary-foreground: oklch(0.9 0.01 70);
+  --color-muted: oklch(0.24 0.015 70);
+  --color-muted-foreground: oklch(0.65 0.01 70);
+  --color-accent: oklch(0.33 0.04 65);
+  --color-accent-foreground: oklch(0.95 0.01 70);
+  --color-border: oklch(0.33 0.025 70);
+  --color-ring: oklch(0.75 0.18 80);
+  --mesh-1: oklch(0.28 0.08 80 / 0.4);
+  --mesh-2: oklch(0.23 0.06 60 / 0.3);
+  --mesh-3: oklch(0.18 0.05 40 / 0.2);
+}
+
+/* ---- Theme: Arctic Frost ---- */
+[data-theme="arctic-frost"] {
+  --color-background: oklch(0.15 0.01 230);
+  --color-foreground: oklch(0.95 0.005 230);
+  --color-card: oklch(0.2 0.015 230);
+  --color-card-foreground: oklch(0.95 0.005 230);
+  --color-primary: oklch(0.72 0.12 230);
+  --color-primary-foreground: oklch(0.15 0.01 230);
+  --color-secondary: oklch(0.28 0.01 230);
+  --color-secondary-foreground: oklch(0.9 0.005 230);
+  --color-muted: oklch(0.24 0.01 230);
+  --color-muted-foreground: oklch(0.65 0.005 230);
+  --color-accent: oklch(0.33 0.02 230);
+  --color-accent-foreground: oklch(0.95 0.005 230);
+  --color-border: oklch(0.33 0.015 230);
+  --color-ring: oklch(0.72 0.12 230);
+  --mesh-1: oklch(0.28 0.06 230 / 0.4);
+  --mesh-2: oklch(0.23 0.04 220 / 0.3);
+  --mesh-3: oklch(0.18 0.03 240 / 0.2);
+}
+
+/* ---- Theme: Violet Storm ---- */
+[data-theme="violet-storm"] {
+  --color-background: oklch(0.13 0.03 290);
+  --color-foreground: oklch(0.95 0.01 290);
+  --color-card: oklch(0.18 0.04 290);
+  --color-card-foreground: oklch(0.95 0.01 290);
+  --color-primary: oklch(0.65 0.2 290);
+  --color-primary-foreground: oklch(0.98 0.005 290);
+  --color-secondary: oklch(0.27 0.03 290);
+  --color-secondary-foreground: oklch(0.9 0.01 290);
+  --color-muted: oklch(0.23 0.025 290);
+  --color-muted-foreground: oklch(0.65 0.01 290);
+  --color-accent: oklch(0.33 0.05 290);
+  --color-accent-foreground: oklch(0.95 0.01 290);
+  --color-border: oklch(0.33 0.035 290);
+  --color-ring: oklch(0.65 0.2 290);
+  --mesh-1: oklch(0.28 0.12 290 / 0.4);
+  --mesh-2: oklch(0.23 0.08 310 / 0.3);
+  --mesh-3: oklch(0.18 0.06 270 / 0.2);
+}
+
+/* ---- Theme: Cyber Teal ---- */
+[data-theme="cyber-teal"] {
+  --color-background: oklch(0.12 0.02 175);
+  --color-foreground: oklch(0.95 0.01 175);
+  --color-card: oklch(0.17 0.025 175);
+  --color-card-foreground: oklch(0.95 0.01 175);
+  --color-primary: oklch(0.7 0.17 170);
+  --color-primary-foreground: oklch(0.12 0.02 170);
+  --color-secondary: oklch(0.26 0.02 175);
+  --color-secondary-foreground: oklch(0.9 0.01 175);
+  --color-muted: oklch(0.22 0.015 175);
+  --color-muted-foreground: oklch(0.65 0.01 175);
+  --color-accent: oklch(0.31 0.03 170);
+  --color-accent-foreground: oklch(0.95 0.01 175);
+  --color-border: oklch(0.31 0.025 175);
+  --color-ring: oklch(0.7 0.17 170);
+  --mesh-1: oklch(0.26 0.08 170 / 0.4);
+  --mesh-2: oklch(0.21 0.06 185 / 0.3);
+  --mesh-3: oklch(0.16 0.05 160 / 0.2);
+}
+
+/* ---- Theme: Sunset Glow ---- */
+[data-theme="sunset-glow"] {
+  --color-background: oklch(0.14 0.015 30);
+  --color-foreground: oklch(0.95 0.01 30);
+  --color-card: oklch(0.19 0.025 30);
+  --color-card-foreground: oklch(0.95 0.01 30);
+  --color-primary: oklch(0.65 0.2 25);
+  --color-primary-foreground: oklch(0.98 0.005 25);
+  --color-secondary: oklch(0.28 0.02 30);
+  --color-secondary-foreground: oklch(0.9 0.01 30);
+  --color-muted: oklch(0.24 0.015 30);
+  --color-muted-foreground: oklch(0.65 0.01 30);
+  --color-accent: oklch(0.33 0.04 45);
+  --color-accent-foreground: oklch(0.95 0.01 30);
+  --color-border: oklch(0.33 0.025 30);
+  --color-ring: oklch(0.65 0.2 25);
+  --mesh-1: oklch(0.28 0.1 25 / 0.4);
+  --mesh-2: oklch(0.23 0.08 45 / 0.3);
+  --mesh-3: oklch(0.18 0.06 10 / 0.2);
+}
+
+/* ---- Theme: Slate Minimal ---- */
+[data-theme="slate-minimal"] {
+  --color-background: oklch(0.15 0.003 260);
+  --color-foreground: oklch(0.92 0.003 260);
+  --color-card: oklch(0.2 0.005 260);
+  --color-card-foreground: oklch(0.92 0.003 260);
+  --color-primary: oklch(0.65 0.01 260);
+  --color-primary-foreground: oklch(0.98 0.003 260);
+  --color-secondary: oklch(0.28 0.005 260);
+  --color-secondary-foreground: oklch(0.88 0.003 260);
+  --color-muted: oklch(0.24 0.003 260);
+  --color-muted-foreground: oklch(0.6 0.005 260);
+  --color-accent: oklch(0.33 0.005 260);
+  --color-accent-foreground: oklch(0.92 0.003 260);
+  --color-border: oklch(0.33 0.005 260);
+  --color-ring: oklch(0.65 0.01 260);
+  --mesh-1: oklch(0.25 0.005 260 / 0.3);
+  --mesh-2: oklch(0.2 0.003 270 / 0.2);
+  --mesh-3: oklch(0.18 0.003 250 / 0.15);
 }
 
 /* Glassmorphic base utilities */
@@ -54,9 +249,9 @@
 /* Gradient mesh background */
 @utility mesh-gradient {
   background:
-    radial-gradient(ellipse at 20% 50%, oklch(0.3 0.1 280 / 0.4) 0%, transparent 50%),
-    radial-gradient(ellipse at 80% 20%, oklch(0.25 0.08 240 / 0.3) 0%, transparent 50%),
-    radial-gradient(ellipse at 50% 80%, oklch(0.2 0.06 320 / 0.2) 0%, transparent 50%),
+    radial-gradient(ellipse at 20% 50%, var(--mesh-1) 0%, transparent 50%),
+    radial-gradient(ellipse at 80% 20%, var(--mesh-2) 0%, transparent 50%),
+    radial-gradient(ellipse at 50% 80%, var(--mesh-3) 0%, transparent 50%),
     var(--color-background);
 }
 
