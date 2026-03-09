@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import fs from 'fs/promises';
 import { syncImageAttachments, syncDrawioAttachments } from './attachment-handler.js';
 import type { ConfluenceClient } from './confluence-client.js';
