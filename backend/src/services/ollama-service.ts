@@ -95,16 +95,18 @@ export function getProvider(type: LlmProviderType): LlmProvider {
 
 // ─── System prompts (provider-agnostic) ─────────────────────────────────────
 
+const LANGUAGE_PRESERVATION_INSTRUCTION = `IMPORTANT: Keep the text in its ORIGINAL language. If the text is in German, respond in German. If in English, respond in English. Never translate — only improve the text while preserving its language.`;
+
 const SYSTEM_PROMPTS = {
-  improve_grammar: `You are a technical writing assistant. Improve the grammar, spelling, and punctuation of the following article while preserving its meaning and structure. Return the improved text in Markdown format. Only output the improved text, no explanations.`,
+  improve_grammar: `You are a technical writing assistant. Improve the grammar, spelling, and punctuation of the following article while preserving its meaning and structure. Return the improved text in Markdown format. Only output the improved text, no explanations. ${LANGUAGE_PRESERVATION_INSTRUCTION}`,
 
-  improve_structure: `You are a technical writing assistant. Improve the structure and organization of the following article. Add clear headings, improve paragraph flow, and ensure logical order. Return the improved text in Markdown format. Only output the improved text, no explanations.`,
+  improve_structure: `You are a technical writing assistant. Improve the structure and organization of the following article. Add clear headings, improve paragraph flow, and ensure logical order. Return the improved text in Markdown format. Only output the improved text, no explanations. ${LANGUAGE_PRESERVATION_INSTRUCTION}`,
 
-  improve_clarity: `You are a technical writing assistant. Improve the clarity and readability of the following article. Simplify complex sentences, remove jargon where possible, and ensure each point is clear. Return the improved text in Markdown format. Only output the improved text, no explanations.`,
+  improve_clarity: `You are a technical writing assistant. Improve the clarity and readability of the following article. Simplify complex sentences, remove jargon where possible, and ensure each point is clear. Return the improved text in Markdown format. Only output the improved text, no explanations. ${LANGUAGE_PRESERVATION_INSTRUCTION}`,
 
-  improve_technical: `You are a technical expert reviewer. Review the following article for technical accuracy. Fix any technical errors, update outdated information, and add missing technical details. Return the improved text in Markdown format. Only output the improved text, no explanations.`,
+  improve_technical: `You are a technical expert reviewer. Review the following article for technical accuracy. Fix any technical errors, update outdated information, and add missing technical details. Return the improved text in Markdown format. Only output the improved text, no explanations. ${LANGUAGE_PRESERVATION_INSTRUCTION}`,
 
-  improve_completeness: `You are a technical writing assistant. Review the following article for completeness. Identify and fill in any missing sections, add examples where helpful, and ensure all topics are adequately covered. Return the improved text in Markdown format. Only output the improved text, no explanations.`,
+  improve_completeness: `You are a technical writing assistant. Review the following article for completeness. Identify and fill in any missing sections, add examples where helpful, and ensure all topics are adequately covered. Return the improved text in Markdown format. Only output the improved text, no explanations. ${LANGUAGE_PRESERVATION_INSTRUCTION}`,
 
   generate: `You are a technical documentation writer. Generate a well-structured knowledge base article based on the user's request. Use clear headings, code examples where appropriate, and follow best practices for technical documentation. Return the article in Markdown format.`,
 
@@ -116,9 +118,9 @@ const SYSTEM_PROMPTS = {
 
   generate_troubleshooting: `You are a support engineer creating documentation. Generate a troubleshooting guide with: Symptom description, Possible causes, Diagnostic steps, Resolution steps, and Prevention measures for each issue. Return in Markdown format.`,
 
-  summarize: `You are a technical writing assistant. Provide a concise summary of the following article. Focus on the key points, decisions, and actionable items. Return the summary in Markdown format.`,
+  summarize: `You are a technical writing assistant. Provide a concise summary of the following article. Focus on the key points, decisions, and actionable items. Return the summary in Markdown format. ${LANGUAGE_PRESERVATION_INSTRUCTION}`,
 
-  ask: `You are a knowledgeable assistant that answers questions based on the provided knowledge base context. Answer accurately based on the context. If the context doesn't contain enough information, say so. Always cite which articles your answer is based on.`,
+  ask: `You are a knowledgeable assistant that answers questions based on the provided knowledge base context. Answer accurately based on the context. If the context doesn't contain enough information, say so. Always cite which articles your answer is based on. Respond in the same language as the user's question.`,
 
   generate_diagram_flowchart: `You are a diagram generation assistant. Analyze the provided article text and generate a Mermaid flowchart diagram that captures the main processes, decisions, and flows described in the content. Use the Mermaid flowchart syntax (graph TD or graph LR). Output ONLY the raw Mermaid diagram code with no markdown fences, no explanations, and no surrounding text. Start directly with "graph" or "flowchart". IMPORTANT: If any node label contains special characters like parentheses (), brackets [], or braces {}, you MUST wrap the entire label text in double quotes. Example: A["Deploy (30min downtime)"] instead of A[Deploy (30min downtime)].`,
 
