@@ -41,6 +41,7 @@ export async function syncUser(userId: string): Promise<void> {
   const client = await getClientForUser(userId);
   if (!client) {
     logger.warn({ userId }, 'No Confluence credentials configured, skipping sync');
+    syncStatuses.set(userId, { userId, status: 'idle' });
     return;
   }
 
@@ -51,6 +52,7 @@ export async function syncUser(userId: string): Promise<void> {
   const spaces = settingsResult.rows[0]?.selected_spaces ?? [];
   if (spaces.length === 0) {
     logger.info({ userId }, 'No spaces selected, skipping sync');
+    syncStatuses.set(userId, { userId, status: 'idle' });
     return;
   }
 
@@ -230,6 +232,13 @@ async function detectDeletedPages(
  */
 export function getSyncStatus(userId: string): SyncStatus {
   return syncStatuses.get(userId) ?? { userId, status: 'idle' };
+}
+
+/**
+ * Set sync status for a user (used by route handler to set 'syncing' before dispatch).
+ */
+export function setSyncStatus(userId: string, status: SyncStatus): void {
+  syncStatuses.set(userId, status);
 }
 
 /**

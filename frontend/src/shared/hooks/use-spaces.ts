@@ -34,6 +34,8 @@ export function useSync() {
   return useMutation({
     mutationFn: () => apiFetch('/sync', { method: 'POST' }),
     onSuccess: () => {
+      // Invalidate sync status so the UI picks up 'syncing' state and starts polling
+      queryClient.invalidateQueries({ queryKey: ['sync', 'status'] });
       queryClient.invalidateQueries({ queryKey: ['spaces'] });
       queryClient.invalidateQueries({ queryKey: ['pages'] });
     },
