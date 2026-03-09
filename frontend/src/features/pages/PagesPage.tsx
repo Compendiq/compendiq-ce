@@ -1,9 +1,9 @@
 import { useState, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { m } from 'framer-motion';
-import { Search, FileText, Plus, RefreshCw, ChevronLeft, ChevronRight, FolderOpen, Filter, X, List, Layers, BookOpen, Bot } from 'lucide-react';
+import { Search, FileText, Plus, RefreshCw, ChevronLeft, ChevronRight, FolderOpen, Filter, X, List, Layers, BookOpen, Bot, Cpu, Loader2, Sparkles } from 'lucide-react';
 import DOMPurify from 'dompurify';
-import { usePages, usePageFilterOptions, usePage, useEmbeddingStatus } from '../../shared/hooks/use-pages';
+import { usePages, usePageFilterOptions, usePage, useEmbeddingStatus, useTriggerEmbedding } from '../../shared/hooks/use-pages';
 import { useSpaces, useSync, useSyncStatus } from '../../shared/hooks/use-spaces';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { useAuthStore } from '../../stores/auth-store';
@@ -19,6 +19,7 @@ export function PagesPage() {
   const isLight = useIsLightTheme();
   const user = useAuthStore((s) => s.user);
   const { data: embeddingStatusData } = useEmbeddingStatus();
+  const triggerEmbedding = useTriggerEmbedding();
   const [spaceKey, setSpaceKey] = useState<string>('');
   const [search, setSearch] = useState('');
   const [author, setAuthor] = useState<string>('');
@@ -137,8 +138,8 @@ export function PagesPage() {
         {[
           { icon: Layers, label: 'Spaces', value: spaces ? String(spaces.length) : '--', color: 'text-info' },
           { icon: BookOpen, label: 'Total', value: pagesData ? String(pagesData.total) : '--', color: 'text-success' },
-          { icon: Bot, label: 'Embedded', value: embeddingStatusData ? String(embeddingStatusData.totalEmbeddings) : '--', color: 'text-primary' },
-          { icon: RefreshCw, label: 'Dirty', value: embeddingStatusData ? String(embeddingStatusData.dirtyPages) : '--', color: 'text-warning' },
+          { icon: Bot, label: 'Embedded', value: embeddingStatusData ? `${embeddingStatusData.embeddedPages} / ${embeddingStatusData.totalPages}` : '--', color: 'text-primary' },
+          { icon: Cpu, label: 'Chunks', value: embeddingStatusData ? String(embeddingStatusData.totalEmbeddings) : '--', color: 'text-warning' },
         ].map(({ icon: Icon, label, value, color }) => (
           <div key={label} className="glass-card flex items-center gap-2 px-3 py-2">
             <Icon size={14} className={color} />
@@ -147,6 +148,35 @@ export function PagesPage() {
           </div>
         ))}
       </div>
+
+      {/* Embedding trigger */}
+      {embeddingStatusData && embeddingStatusData.dirtyPages > 0 && (
+        <div className="glass-card flex items-center justify-between p-3">
+          <div className="flex items-center gap-2">
+            <Cpu size={14} className="text-blue-400" />
+            <span className="text-sm">
+              {embeddingStatusData.dirtyPages} {embeddingStatusData.dirtyPages === 1 ? 'page needs' : 'pages need'} embedding
+            </span>
+          </div>
+          <button
+            onClick={() => triggerEmbedding.mutate()}
+            disabled={embeddingStatusData.isProcessing || triggerEmbedding.isPending}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {embeddingStatusData.isProcessing ? (
+              <>
+                <Loader2 size={12} className="animate-spin" />
+                Processing...
+              </>
+            ) : (
+              <>
+                <Sparkles size={12} />
+                Embed Now
+              </>
+            )}
+          </button>
+        </div>
+      )}
 
       {/* Sync progress */}
       {syncStatus?.status === 'syncing' && syncStatus.progress && (

@@ -72,7 +72,7 @@ describe('PagesPage', () => {
         });
       }
       if (url.includes('/embeddings/status')) {
-        return new Response(JSON.stringify({ totalPages: 10, dirtyPages: 2, totalEmbeddings: 50, isProcessing: false }), {
+        return new Response(JSON.stringify({ totalPages: 10, embeddedPages: 8, dirtyPages: 2, totalEmbeddings: 50, isProcessing: false }), {
           headers: { 'Content-Type': 'application/json' },
         });
       }
@@ -193,7 +193,7 @@ describe('PagesPage', () => {
     expect(screen.getByText('Spaces')).toBeInTheDocument();
     expect(screen.getByText('Total')).toBeInTheDocument();
     expect(screen.getByText('Embedded')).toBeInTheDocument();
-    expect(screen.getByText('Dirty')).toBeInTheDocument();
+    expect(screen.getByText('Chunks')).toBeInTheDocument();
   });
 
   it('renders article title left-aligned without preceding icon', async () => {
