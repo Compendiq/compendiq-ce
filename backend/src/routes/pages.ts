@@ -8,7 +8,7 @@ import { logAuditEvent } from '../services/audit-service.js';
 import { findDuplicates, scanAllDuplicates } from '../services/duplicate-detector.js';
 import { autoTagPage, applyTags, autoTagAllPages, ALLOWED_TAGS, AllowedTag } from '../services/auto-tagger.js';
 import { getVersionHistory, getVersion, getSemanticDiff, saveVersionSnapshot } from '../services/version-tracker.js';
-import { PageListQuerySchema, CreatePageSchema, UpdatePageSchema } from '@kb-creator/contracts';
+import { PageListQuerySchema, PageTreeQuerySchema, CreatePageSchema, UpdatePageSchema } from '@kb-creator/contracts';
 import { z } from 'zod';
 import { logger } from '../utils/logger.js';
 
@@ -125,6 +125,53 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       await cache.set(userId, 'pages', cacheKey, response);
     }
 
+    return response;
+  });
+
+  // GET /api/pages/tree - all pages with minimal fields for hierarchy view
+  fastify.get('/pages/tree', async (request) => {
+    const userId = request.userId;
+    const params = PageTreeQuerySchema.parse(request.query);
+
+    const cacheKey = `tree:${params.spaceKey ?? 'all'}`;
+    const cached = await cache.get(userId, 'pages', cacheKey);
+    if (cached) return cached;
+
+    let whereClause = 'WHERE user_id = $1';
+    const values: unknown[] = [userId];
+
+    if (params.spaceKey) {
+      whereClause += ' AND space_key = $2';
+      values.push(params.spaceKey);
+    }
+
+    const result = await query<{
+      confluence_id: string;
+      space_key: string;
+      title: string;
+      parent_id: string | null;
+      labels: string[];
+      last_modified_at: Date | null;
+    }>(
+      `SELECT confluence_id, space_key, title, parent_id, labels, last_modified_at
+       FROM cached_pages ${whereClause}
+       ORDER BY title ASC`,
+      values,
+    );
+
+    const response = {
+      items: result.rows.map((row) => ({
+        id: row.confluence_id,
+        spaceKey: row.space_key,
+        title: row.title,
+        parentId: row.parent_id,
+        labels: row.labels,
+        lastModifiedAt: row.last_modified_at,
+      })),
+      total: result.rows.length,
+    };
+
+    await cache.set(userId, 'pages', cacheKey, response);
     return response;
   });
 

@@ -3,7 +3,7 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { PageTreeView, buildTree, countDescendants } from './PageTreeView';
-import type { PageSummary } from '../../shared/hooks/use-pages';
+import type { PageTreeItem } from '../../shared/hooks/use-pages';
 
 const mockNavigate = vi.fn();
 vi.mock('react-router-dom', async () => {
@@ -24,23 +24,19 @@ function Wrapper({ children }: { children: React.ReactNode }) {
   );
 }
 
-function makePage(overrides: Partial<PageSummary> = {}): PageSummary {
+function makePage(overrides: Partial<PageTreeItem> = {}): PageTreeItem {
   return {
     id: 'page-1',
     spaceKey: 'DEV',
     title: 'Test Page',
-    version: 1,
     parentId: null,
     labels: [],
-    author: null,
     lastModifiedAt: '2026-03-01T00:00:00Z',
-    lastSynced: '2026-03-01T00:00:00Z',
-    embeddingDirty: false,
     ...overrides,
   };
 }
 
-const hierarchyPages: PageSummary[] = [
+const hierarchyPages: PageTreeItem[] = [
   makePage({ id: 'root-1', title: 'Root Page 1', parentId: null }),
   makePage({ id: 'child-1a', title: 'Child 1A', parentId: 'root-1' }),
   makePage({ id: 'child-1b', title: 'Child 1B', parentId: 'root-1' }),

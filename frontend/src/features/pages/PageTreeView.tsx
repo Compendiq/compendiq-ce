@@ -4,18 +4,19 @@ import { m } from 'framer-motion';
 import { ChevronRight, ChevronDown, FileText, FolderOpen } from 'lucide-react';
 import { cn } from '../../shared/lib/cn';
 import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
-import type { PageSummary } from '../../shared/hooks/use-pages';
+import type { PageTreeItem } from '../../shared/hooks/use-pages';
 
 interface TreeNode {
-  page: PageSummary;
+  page: PageTreeItem;
   children: TreeNode[];
 }
 
 interface PageTreeViewProps {
-  pages: PageSummary[];
+  pages: PageTreeItem[];
+  isLoading?: boolean;
 }
 
-function buildTree(pages: PageSummary[]): TreeNode[] {
+function buildTree(pages: PageTreeItem[]): TreeNode[] {
   const nodeMap = new Map<string, TreeNode>();
   const roots: TreeNode[] = [];
 
