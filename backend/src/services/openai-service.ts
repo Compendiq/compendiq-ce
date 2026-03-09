@@ -7,9 +7,11 @@
  *
  * Configuration via environment variables:
  *   OPENAI_BASE_URL  - API base URL (default: https://api.openai.com/v1)
- *   OPENAI_API_KEY   - API key (required when using this provider)
+ *   LLM_BEARER_TOKEN - API key (preferred, shared with Ollama provider)
+ *   OPENAI_API_KEY   - API key (fallback)
  */
 
+import { Agent } from 'undici';
 import { logger } from '../utils/logger.js';
 import { ollamaBreakers } from './circuit-breaker.js';
 import pLimit from 'p-limit';
@@ -26,6 +28,23 @@ const REQUEST_TIMEOUT_MS = 60_000;
 // Max 2 concurrent LLM calls (same as Ollama)
 const llmLimit = pLimit(2);
 
+/** Whether to verify TLS certificates for LLM connections (default: true). */
+const llmVerifySsl = process.env.LLM_VERIFY_SSL !== 'false';
+
+/**
+ * Build an undici Agent that disables TLS verification when LLM_VERIFY_SSL=false.
+ * Returns undefined when default TLS behaviour is acceptable.
+ */
+function buildLlmDispatcher(): Agent | undefined {
+  if (!llmVerifySsl) {
+    logger.warn('LLM_VERIFY_SSL=false — TLS certificate verification is disabled for OpenAI-compatible connections');
+    return new Agent({ connect: { rejectUnauthorized: false } });
+  }
+  return undefined;
+}
+
+const llmDispatcher = buildLlmDispatcher();
+
 export interface OpenAIConfig {
   baseUrl: string;
   apiKey: string;
@@ -34,7 +53,7 @@ export interface OpenAIConfig {
 function getConfig(): OpenAIConfig {
   return {
     baseUrl: (process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1').replace(/\/+$/, ''),
-    apiKey: process.env.OPENAI_API_KEY ?? '',
+    apiKey: process.env.LLM_BEARER_TOKEN ?? process.env.OPENAI_API_KEY ?? '',
   };
 }
 
@@ -62,7 +81,8 @@ async function openaiRequest(
     headers,
     body: body ? JSON.stringify(body) : undefined,
     signal: signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  });
+    ...(llmDispatcher ? { dispatcher: llmDispatcher } : {}),
+  } as RequestInit);
 }
 
 export class OpenAIProvider implements LlmProvider {
