@@ -110,7 +110,11 @@ export function AiAssistantPage() {
   }, [messages]);
 
   const handleAsk = useCallback(async () => {
-    if (!input.trim() || !model || isStreaming) return;
+    if (!input.trim() || isStreaming) return;
+    if (!model) {
+      toast.error('No model available. Check your LLM provider settings.');
+      return;
+    }
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -163,7 +167,15 @@ export function AiAssistantPage() {
   }, [input, model, isStreaming, conversationId]);
 
   const handleImprove = useCallback(async () => {
-    if (!page || !model || isStreaming) return;
+    if (isStreaming) return;
+    if (!page) {
+      toast.error('No page selected. Open a page first, then click "AI Improve".');
+      return;
+    }
+    if (!model) {
+      toast.error('No model available. Check your LLM provider settings.');
+      return;
+    }
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -204,7 +216,11 @@ export function AiAssistantPage() {
   }, [page, model, improvementType, pageId, isStreaming]);
 
   const handleGenerate = useCallback(async () => {
-    if (!input.trim() || !model || isStreaming) return;
+    if (!input.trim() || isStreaming) return;
+    if (!model) {
+      toast.error('No model available. Check your LLM provider settings.');
+      return;
+    }
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -237,7 +253,15 @@ export function AiAssistantPage() {
   }, [input, model, isStreaming]);
 
   const handleSummarize = useCallback(async () => {
-    if (!page || !model || isStreaming) return;
+    if (isStreaming) return;
+    if (!page) {
+      toast.error('No page selected. Open a page first, then click "AI Improve".');
+      return;
+    }
+    if (!model) {
+      toast.error('No model available. Check your LLM provider settings.');
+      return;
+    }
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -271,7 +295,15 @@ export function AiAssistantPage() {
   }, [page, model, isStreaming]);
 
   const handleDiagram = useCallback(async () => {
-    if (!page || !model || isStreaming) return;
+    if (isStreaming) return;
+    if (!page) {
+      toast.error('No page selected. Open a page first, then use "Diagram" mode.');
+      return;
+    }
+    if (!model) {
+      toast.error('No model available. Check your LLM provider settings.');
+      return;
+    }
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -414,15 +446,21 @@ export function AiAssistantPage() {
 
           <div className="flex-1" />
 
-          <select
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            className="rounded-md bg-foreground/5 px-2 py-1 text-sm outline-none"
-          >
-            {models.map((m) => (
-              <option key={m.name} value={m.name}>{m.name}</option>
-            ))}
-          </select>
+          {models.length === 0 ? (
+            <span className="flex items-center gap-1.5 rounded-md bg-foreground/5 px-2 py-1 text-sm text-muted-foreground">
+              <Loader2 size={12} className="animate-spin" /> Loading models...
+            </span>
+          ) : (
+            <select
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              className="rounded-md bg-foreground/5 px-2 py-1 text-sm outline-none"
+            >
+              {models.map((m) => (
+                <option key={m.name} value={m.name}>{m.name}</option>
+              ))}
+            </select>
+          )}
 
           {page && (
             <span className="flex items-center gap-1 rounded bg-primary/10 px-2 py-0.5 text-xs text-primary">
@@ -483,10 +521,10 @@ export function AiAssistantPage() {
               </p>
               <p className="text-sm text-muted-foreground">
                 {mode === 'ask' && 'Your questions will be answered using RAG over your Confluence pages'}
-                {mode === 'improve' && page ? `Ready to improve: ${page.title}` : 'Open a page first'}
+                {mode === 'improve' && (page ? `Ready to improve: ${page.title}` : 'Navigate to a page and click "AI Improve" to get started')}
                 {mode === 'generate' && 'AI will create a full article based on your prompt'}
-                {mode === 'summarize' && page ? `Ready to summarize: ${page.title}` : 'Open a page first'}
-                {mode === 'diagram' && page ? `Ready to diagram: ${page.title}` : 'Open a page first'}
+                {mode === 'summarize' && (page ? `Ready to summarize: ${page.title}` : 'Navigate to a page and click "AI Improve" to get started')}
+                {mode === 'diagram' && (page ? `Ready to diagram: ${page.title}` : 'Navigate to a page and click "AI Improve" to get started')}
               </p>
             </div>
           )}
@@ -564,7 +602,7 @@ export function AiAssistantPage() {
               />
               <button
                 onClick={handleSubmit}
-                disabled={isStreaming || !input.trim()}
+                disabled={isStreaming || !input.trim() || !model}
                 className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
               >
                 {isStreaming ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
@@ -573,11 +611,13 @@ export function AiAssistantPage() {
           ) : (
             <button
               onClick={handleSubmit}
-              disabled={isStreaming || !page}
+              disabled={isStreaming || !page || !model}
               className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
             >
               {isStreaming ? (
                 <><Loader2 size={14} className="animate-spin" /> Processing...</>
+              ) : !model ? (
+                <><Loader2 size={14} className="animate-spin" /> Loading models...</>
               ) : (
                 <>
                   {mode === 'improve' && <><Wand2 size={14} /> Improve Page</>}
