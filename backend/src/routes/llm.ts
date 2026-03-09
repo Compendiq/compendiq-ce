@@ -2,7 +2,7 @@ import { FastifyInstance, FastifyReply } from 'fastify';
 import { query } from '../db/postgres.js';
 import {
   streamChat, getSystemPrompt, ChatMessage, SystemPromptKey,
-  listModels, checkHealth,
+  isLlmVerifySslEnabled, getLlmAuthType,
   getActiveProviderType, getProvider,
 } from '../services/ollama-service.js';
 import { hybridSearch, buildRagContext } from '../services/rag-service.js';
@@ -130,6 +130,8 @@ export async function llmRoutes(fastify: FastifyInstance) {
       authConfigured: providerType === 'ollama'
         ? !!process.env.LLM_BEARER_TOKEN
         : !!process.env.OPENAI_API_KEY,
+      authType: getLlmAuthType(),
+      verifySsl: isLlmVerifySslEnabled(),
     };
   });
 

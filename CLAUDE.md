@@ -76,7 +76,7 @@ ai-kb-creator/
 | Service | Connection | Auth |
 |---------|-----------|------|
 | Confluence Data Center 9.2.15 | Per-user URL from `user_settings` | Bearer PAT (AES-256-GCM encrypted at rest) |
-| Ollama | Shared server, `OLLAMA_BASE_URL` env var (default `http://localhost:11434`) | Optional Bearer token via `LLM_BEARER_TOKEN` env var |
+| Ollama | Shared server, `OLLAMA_BASE_URL` env var (default `http://localhost:11434`), `LLM_VERIFY_SSL` (default `true`) | Optional Bearer token via `LLM_BEARER_TOKEN` env var, `LLM_AUTH_TYPE` (`bearer`\|`none`, default `bearer`) |
 | PostgreSQL | `POSTGRES_URL` env var | Password via env |
 | Redis | `REDIS_URL` env var | Password via env |
 
@@ -151,4 +151,6 @@ Copy `.env.example` to `.env`. Key vars:
 - `REDIS_PASSWORD` (required)
 - `OLLAMA_BASE_URL` (default: `http://localhost:11434`)
 - `LLM_BEARER_TOKEN` (optional, Bearer token for authenticated Ollama/LLM proxies)
+- `LLM_AUTH_TYPE` (optional, `bearer` or `none`, default: `bearer`)
+- `LLM_VERIFY_SSL` (optional, set to `false` to disable TLS verification for LLM connections)
 - `EMBEDDING_MODEL` (default: `nomic-embed-text`, server-wide, locked to 768 dims)

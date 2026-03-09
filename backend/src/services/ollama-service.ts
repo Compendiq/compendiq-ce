@@ -25,6 +25,32 @@ import type {
 export type { ChatMessage, StreamChunk };
 export type { HealthResult as OllamaHealthResult };
 
+// ─── SSL / Auth config (shared across providers) ────────────────────────────
+
+/** Whether to verify TLS certificates for LLM connections (default: true). */
+const llmVerifySsl = process.env.LLM_VERIFY_SSL !== 'false';
+
+/** Auth type for LLM connections: 'bearer' (default) or 'none'. */
+const llmAuthType = (process.env.LLM_AUTH_TYPE ?? 'bearer').toLowerCase();
+
+if (!llmVerifySsl) {
+  logger.warn('LLM_VERIFY_SSL=false — TLS certificate verification is disabled for LLM/Ollama connections');
+}
+
+if (llmAuthType !== 'bearer' && llmAuthType !== 'none') {
+  logger.warn({ llmAuthType }, 'Unknown LLM_AUTH_TYPE value — falling back to no auth');
+}
+
+/** Whether TLS verification is enabled for LLM connections. */
+export function isLlmVerifySslEnabled(): boolean {
+  return llmVerifySsl;
+}
+
+/** The configured LLM auth type ('bearer' | 'none'). */
+export function getLlmAuthType(): string {
+  return llmAuthType;
+}
+
 // ─── Provider registry ─────────────────────────────────────────────────────
 
 const providers: Record<LlmProviderType, LlmProvider> = {
