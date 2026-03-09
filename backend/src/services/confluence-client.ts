@@ -235,6 +235,48 @@ export class ConfluenceClient {
     await this.fetch(`/rest/api/content/${encodeURIComponent(id)}`, { method: 'DELETE' });
   }
 
+  async getLabels(pageId: string): Promise<string[]> {
+    const response = await this.fetch<{ results: Array<{ name: string }> }>(
+      `/rest/api/content/${encodeURIComponent(pageId)}/label`,
+    );
+    return response.results.map((l) => l.name);
+  }
+
+  async addLabels(pageId: string, labels: string[]): Promise<void> {
+    if (labels.length === 0) return;
+    const body = labels.map((name) => ({ prefix: 'global', name }));
+    await this.fetch(`/rest/api/content/${encodeURIComponent(pageId)}/label`, {
+      method: 'POST',
+      body,
+    });
+  }
+
+  async removeLabel(pageId: string, label: string): Promise<void> {
+    await this.fetch(
+      `/rest/api/content/${encodeURIComponent(pageId)}/label/${encodeURIComponent(label)}`,
+      { method: 'DELETE' },
+    );
+  }
+
+  async setLabels(pageId: string, desiredLabels: string[]): Promise<void> {
+    const currentLabels = await this.getLabels(pageId);
+    const currentSet = new Set(currentLabels);
+    const desiredSet = new Set(desiredLabels);
+
+    const toAdd = desiredLabels.filter((l) => !currentSet.has(l));
+    const toRemove = currentLabels.filter((l) => !desiredSet.has(l));
+
+    // Remove labels that shouldn't be there
+    for (const label of toRemove) {
+      await this.removeLabel(pageId, label);
+    }
+
+    // Add missing labels
+    if (toAdd.length > 0) {
+      await this.addLabels(pageId, toAdd);
+    }
+  }
+
   async getAllPagesInSpace(spaceKey: string): Promise<ConfluencePage[]> {
     const pages: ConfluencePage[] = [];
     let start = 0;
