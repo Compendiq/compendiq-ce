@@ -1,6 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { ConfluenceClient } from './confluence-client.js';
+import { ConfluenceClient, ConfluenceAttachment } from './confluence-client.js';
 import { logger } from '../utils/logger.js';
 
 const ATTACHMENTS_BASE = process.env.ATTACHMENTS_DIR ?? 'data/attachments';
@@ -78,12 +78,14 @@ export function getMimeType(filename: string): string {
 
 /**
  * Sync draw.io attachments for a page.
+ * Accepts pre-fetched attachments to avoid duplicate API calls.
  */
 export async function syncDrawioAttachments(
   client: ConfluenceClient,
   userId: string,
   pageId: string,
   bodyStorage: string,
+  attachments: ConfluenceAttachment[],
 ): Promise<string[]> {
   // Find drawio macro names in the storage format
   const drawioPattern = /ac:structured-macro[^>]*ac:name="drawio"[^>]*>[\s\S]*?<ac:parameter ac:name="diagramName">([^<]+)<\/ac:parameter/g;
@@ -96,8 +98,6 @@ export async function syncDrawioAttachments(
 
   if (diagramNames.length === 0) return [];
 
-  // Fetch page attachments from Confluence
-  const { results: attachments } = await client.getPageAttachments(pageId);
   const cachedFiles: string[] = [];
 
   for (const name of diagramNames) {
@@ -113,6 +113,53 @@ export async function syncDrawioAttachments(
         cachedFiles.push(pngName);
       } catch (err) {
         logger.error({ err, pageId, name }, 'Failed to cache draw.io attachment');
+      }
+    }
+  }
+
+  return cachedFiles;
+}
+
+const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp']);
+
+/**
+ * Sync image attachments referenced in a page's XHTML body.
+ * Downloads all <ac:image><ri:attachment ri:filename="..."> images from Confluence.
+ * Accepts pre-fetched attachments to avoid duplicate API calls.
+ */
+export async function syncImageAttachments(
+  client: ConfluenceClient,
+  userId: string,
+  pageId: string,
+  bodyStorage: string,
+  attachments: ConfluenceAttachment[],
+): Promise<string[]> {
+  // Find image attachment filenames in the storage format
+  const imagePattern = /<ac:image[^>]*>[\s\S]*?<ri:attachment\s+ri:filename="([^"]+)"[\s\S]*?<\/ac:image>/g;
+  const filenames: string[] = [];
+  let match;
+
+  while ((match = imagePattern.exec(bodyStorage)) !== null) {
+    filenames.push(match[1]);
+  }
+
+  if (filenames.length === 0) return [];
+
+  const cachedFiles: string[] = [];
+
+  for (const filename of filenames) {
+    // Only sync known image types
+    const ext = path.extname(filename).toLowerCase();
+    if (!IMAGE_EXTENSIONS.has(ext)) continue;
+
+    const attachment = attachments.find((a) => a.title === filename);
+
+    if (attachment?._links?.download) {
+      try {
+        await cacheAttachment(client, userId, pageId, attachment._links.download, filename);
+        cachedFiles.push(filename);
+      } catch (err) {
+        logger.error({ err, pageId, filename }, 'Failed to cache image attachment');
       }
     }
   }

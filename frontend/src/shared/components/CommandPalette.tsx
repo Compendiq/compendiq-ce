@@ -186,7 +186,7 @@ export function CommandPalette() {
           >
             <div className="glass-card overflow-hidden shadow-2xl">
               {/* Search input */}
-              <div className="flex items-center gap-3 border-b border-white/10 px-4 py-3">
+              <div className="flex items-center gap-3 border-b border-border/50 px-4 py-3">
                 <Search size={18} className="text-muted-foreground" />
                 <input
                   ref={inputRef}
@@ -198,7 +198,7 @@ export function CommandPalette() {
                   className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
                   aria-label="Search"
                 />
-                <kbd className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                <kbd className="rounded border border-border/50 px-1.5 py-0.5 text-[10px] text-muted-foreground">
                   ESC
                 </kbd>
               </div>
@@ -222,7 +222,7 @@ export function CommandPalette() {
                             'flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors',
                             selectedIndex === idx
                               ? 'bg-primary/15 text-primary'
-                              : 'text-foreground hover:bg-white/5',
+                              : 'text-foreground hover:bg-foreground/5',
                           )}
                         >
                           <FileText size={14} className="shrink-0" />
@@ -265,7 +265,7 @@ export function CommandPalette() {
                             'flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors',
                             selectedIndex === idx
                               ? 'bg-primary/15 text-primary'
-                              : 'text-foreground hover:bg-white/5',
+                              : 'text-foreground hover:bg-foreground/5',
                           )}
                         >
                           <Clock size={14} className="shrink-0 text-muted-foreground" />
@@ -296,7 +296,7 @@ export function CommandPalette() {
                           'flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors',
                           selectedIndex === baseIdx
                             ? 'bg-primary/15 text-primary'
-                            : 'text-foreground hover:bg-white/5',
+                            : 'text-foreground hover:bg-foreground/5',
                         )}
                       >
                         <Icon size={14} className="shrink-0" />
@@ -308,10 +308,10 @@ export function CommandPalette() {
               </div>
 
               {/* Footer */}
-              <div className="flex items-center gap-4 border-t border-white/10 px-4 py-2 text-[11px] text-muted-foreground">
-                <span><kbd className="rounded border border-white/10 px-1 py-0.5">↑↓</kbd> Navigate</span>
-                <span><kbd className="rounded border border-white/10 px-1 py-0.5">↵</kbd> Select</span>
-                <span><kbd className="rounded border border-white/10 px-1 py-0.5">esc</kbd> Close</span>
+              <div className="flex items-center gap-4 border-t border-border/50 px-4 py-2 text-[11px] text-muted-foreground">
+                <span><kbd className="rounded border border-border/50 px-1 py-0.5">↑↓</kbd> Navigate</span>
+                <span><kbd className="rounded border border-border/50 px-1 py-0.5">↵</kbd> Select</span>
+                <span><kbd className="rounded border border-border/50 px-1 py-0.5">esc</kbd> Close</span>
               </div>
             </div>
           </m.div>

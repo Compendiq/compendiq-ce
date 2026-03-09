@@ -63,7 +63,7 @@ export function DiffView({ original, improved, onAccept, onReject }: DiffViewPro
       className="glass-card overflow-hidden"
     >
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+      <div className="flex items-center justify-between border-b border-border/50 px-4 py-3">
         <div className="flex items-center gap-4">
           <h3 className="text-sm font-medium">Changes</h3>
           <span className="text-xs text-success">+{stats.additions}</span>
@@ -72,14 +72,14 @@ export function DiffView({ original, improved, onAccept, onReject }: DiffViewPro
 
         <div className="flex items-center gap-2">
           {/* View toggle */}
-          <div className="flex rounded-md border border-white/10">
+          <div className="flex rounded-md border border-border/50">
             <button
               onClick={() => setViewMode('unified')}
               className={cn(
                 'flex items-center gap-1 px-2 py-1 text-xs transition-colors',
                 viewMode === 'unified'
                   ? 'bg-primary/15 text-primary'
-                  : 'text-muted-foreground hover:bg-white/5',
+                  : 'text-muted-foreground hover:bg-foreground/5',
               )}
               title="Unified view"
             >
@@ -91,7 +91,7 @@ export function DiffView({ original, improved, onAccept, onReject }: DiffViewPro
                 'flex items-center gap-1 px-2 py-1 text-xs transition-colors',
                 viewMode === 'side-by-side'
                   ? 'bg-primary/15 text-primary'
-                  : 'text-muted-foreground hover:bg-white/5',
+                  : 'text-muted-foreground hover:bg-foreground/5',
               )}
               title="Side-by-side view"
             >
@@ -122,7 +122,7 @@ export function DiffView({ original, improved, onAccept, onReject }: DiffViewPro
             {/* Original */}
             <div>
               <p className="mb-2 text-xs font-medium text-muted-foreground">Original</p>
-              <pre className="whitespace-pre-wrap break-words rounded-md bg-white/5 p-3 text-sm leading-relaxed">
+              <pre className="whitespace-pre-wrap break-words rounded-md bg-foreground/5 p-3 text-sm leading-relaxed">
                 {sideBySide.left.map((part, i) => (
                   <span
                     key={i}
@@ -138,7 +138,7 @@ export function DiffView({ original, improved, onAccept, onReject }: DiffViewPro
             {/* Improved */}
             <div>
               <p className="mb-2 text-xs font-medium text-muted-foreground">Improved</p>
-              <pre className="whitespace-pre-wrap break-words rounded-md bg-white/5 p-3 text-sm leading-relaxed">
+              <pre className="whitespace-pre-wrap break-words rounded-md bg-foreground/5 p-3 text-sm leading-relaxed">
                 {sideBySide.right.map((part, i) => (
                   <span
                     key={i}
@@ -157,11 +157,11 @@ export function DiffView({ original, improved, onAccept, onReject }: DiffViewPro
 
       {/* Actions */}
       {(onAccept || onReject) && (
-        <div className="flex items-center justify-end gap-3 border-t border-white/10 px-4 py-3">
+        <div className="flex items-center justify-end gap-3 border-t border-border/50 px-4 py-3">
           {onReject && (
             <button
               onClick={onReject}
-              className="flex items-center gap-1.5 rounded-lg border border-white/10 px-4 py-2 text-sm text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground"
+              className="flex items-center gap-1.5 rounded-lg border border-border/50 px-4 py-2 text-sm text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
             >
               <X size={14} /> Reject
             </button>

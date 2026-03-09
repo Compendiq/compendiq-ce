@@ -66,7 +66,7 @@ export function DuplicateDetector({ pageId, pageTitle }: DuplicateDetectorProps)
       animate={{ opacity: 1, y: 0 }}
       className="glass-card overflow-hidden"
     >
-      <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+      <div className="flex items-center justify-between border-b border-border/50 px-4 py-3">
         <div className="flex items-center gap-2">
           <Copy size={16} className="text-primary" />
           <h3 className="text-sm font-semibold">Duplicate Detection</h3>
@@ -99,12 +99,12 @@ export function DuplicateDetector({ pageId, pageTitle }: DuplicateDetectorProps)
                 return (
                   <div
                     key={dup.confluenceId}
-                    className="flex items-center justify-between gap-3 rounded-lg bg-white/5 px-4 py-3"
+                    className="flex items-center justify-between gap-3 rounded-lg bg-foreground/5 px-4 py-3"
                   >
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
                         <p className="truncate text-sm font-medium">{dup.title}</p>
-                        <span className="shrink-0 rounded bg-white/5 px-1.5 py-0.5 text-xs text-muted-foreground">
+                        <span className="shrink-0 rounded bg-foreground/5 px-1.5 py-0.5 text-xs text-muted-foreground">
                           {dup.spaceKey}
                         </span>
                       </div>
@@ -119,13 +119,13 @@ export function DuplicateDetector({ pageId, pageTitle }: DuplicateDetectorProps)
                     <div className="flex shrink-0 gap-2">
                       <button
                         onClick={() => handleCompare(dup.confluenceId)}
-                        className="flex items-center gap-1 rounded-md border border-white/10 px-2.5 py-1 text-xs hover:bg-white/5 transition-colors"
+                        className="flex items-center gap-1 rounded-md border border-border/50 px-2.5 py-1 text-xs hover:bg-foreground/5 transition-colors"
                       >
                         Compare
                       </button>
                       <button
                         onClick={() => navigate(`/pages/${dup.confluenceId}`)}
-                        className="flex items-center gap-1 rounded-md border border-white/10 px-2.5 py-1 text-xs hover:bg-white/5 transition-colors"
+                        className="flex items-center gap-1 rounded-md border border-border/50 px-2.5 py-1 text-xs hover:bg-foreground/5 transition-colors"
                       >
                         <ExternalLink size={10} /> View
                       </button>

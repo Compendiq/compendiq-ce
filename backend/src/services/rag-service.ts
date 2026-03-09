@@ -1,5 +1,5 @@
 import { query, getPool } from '../db/postgres.js';
-import { generateEmbedding } from './ollama-service.js';
+import { providerGenerateEmbedding } from './llm-provider.js';
 import pgvector from 'pgvector';
 import { logger } from '../utils/logger.js';
 
@@ -174,8 +174,8 @@ export async function hybridSearch(
 ): Promise<SearchResult[]> {
   logger.info({ userId, question: question.slice(0, 100) }, 'Running hybrid RAG search');
 
-  // Generate question embedding
-  const embeddings = await generateEmbedding(question);
+  // Generate question embedding using the user's configured provider
+  const embeddings = await providerGenerateEmbedding(userId, question);
   const questionEmbedding = embeddings[0];
 
   // Run vector and keyword search in parallel

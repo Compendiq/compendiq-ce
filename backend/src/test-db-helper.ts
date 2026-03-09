@@ -1,6 +1,17 @@
-import { runMigrations, getPool, closePool } from './db/postgres.js';
+import { runMigrations, getPool, closePool, checkConnection } from './db/postgres.js';
 
 let initialized = false;
+let _dbAvailable: boolean | null = null;
+
+/**
+ * Check whether the test PostgreSQL instance is reachable.
+ * Result is cached after the first probe.
+ */
+export async function isDbAvailable(): Promise<boolean> {
+  if (_dbAvailable !== null) return _dbAvailable;
+  _dbAvailable = await checkConnection();
+  return _dbAvailable;
+}
 
 export async function setupTestDb(): Promise<void> {
   if (initialized) return;

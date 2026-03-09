@@ -8,6 +8,7 @@ interface ConfluenceSpace {
   name: string;
   type: string;
   status: string;
+  homepage?: { id: string; title: string };
 }
 
 interface ConfluencePage {
@@ -97,14 +98,24 @@ export class ConfluenceClient {
     }
     if (statusCode >= 400) {
       logger.error({ statusCode, url, body: text.slice(0, 500) }, 'Confluence API error');
-      throw new ConfluenceError(`Confluence API error: HTTP ${statusCode}`, statusCode);
+      // Extract Confluence error message from response for actionable diagnostics
+      let detail: string;
+      try {
+        const parsed = JSON.parse(text);
+        detail = parsed.message || parsed.reason || '';
+      } catch {
+        // Response may not be JSON; use raw excerpt
+        detail = text.slice(0, 200);
+      }
+      const suffix = detail ? `: ${detail}` : '';
+      throw new ConfluenceError(`Confluence API error: HTTP ${statusCode}${suffix}`, statusCode);
     }
 
     return JSON.parse(text) as T;
   }
 
   async getSpaces(start = 0, limit = 100): Promise<PaginatedResponse<ConfluenceSpace>> {
-    return this.fetch(`/rest/api/space?start=${start}&limit=${limit}&type=global`);
+    return this.fetch(`/rest/api/space?start=${start}&limit=${limit}&type=global&expand=homepage`);
   }
 
   async getAllSpaces(): Promise<ConfluenceSpace[]> {
@@ -223,6 +234,48 @@ export class ConfluenceClient {
 
   async deletePage(id: string): Promise<void> {
     await this.fetch(`/rest/api/content/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  }
+
+  async getLabels(pageId: string): Promise<string[]> {
+    const response = await this.fetch<{ results: Array<{ name: string }> }>(
+      `/rest/api/content/${encodeURIComponent(pageId)}/label`,
+    );
+    return response.results.map((l) => l.name);
+  }
+
+  async addLabels(pageId: string, labels: string[]): Promise<void> {
+    if (labels.length === 0) return;
+    const body = labels.map((name) => ({ prefix: 'global', name }));
+    await this.fetch(`/rest/api/content/${encodeURIComponent(pageId)}/label`, {
+      method: 'POST',
+      body,
+    });
+  }
+
+  async removeLabel(pageId: string, label: string): Promise<void> {
+    await this.fetch(
+      `/rest/api/content/${encodeURIComponent(pageId)}/label/${encodeURIComponent(label)}`,
+      { method: 'DELETE' },
+    );
+  }
+
+  async setLabels(pageId: string, desiredLabels: string[]): Promise<void> {
+    const currentLabels = await this.getLabels(pageId);
+    const currentSet = new Set(currentLabels);
+    const desiredSet = new Set(desiredLabels);
+
+    const toAdd = desiredLabels.filter((l) => !currentSet.has(l));
+    const toRemove = currentLabels.filter((l) => !desiredSet.has(l));
+
+    // Remove labels that shouldn't be there
+    for (const label of toRemove) {
+      await this.removeLabel(pageId, label);
+    }
+
+    // Add missing labels
+    if (toAdd.length > 0) {
+      await this.addLabels(pageId, toAdd);
+    }
   }
 
   async getAllPagesInSpace(spaceKey: string): Promise<ConfluencePage[]> {

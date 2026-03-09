@@ -1,24 +1,29 @@
 import { FastifyInstance, FastifyReply } from 'fastify';
 import { query } from '../db/postgres.js';
 import {
-  streamChat, getSystemPrompt, ChatMessage, SystemPromptKey,
+  getSystemPrompt, ChatMessage, SystemPromptKey,
   listModels, checkHealth,
+  isLlmVerifySslEnabled, getLlmAuthType,
+  getActiveProviderType, getProvider,
 } from '../services/ollama-service.js';
+import { providerStreamChat } from '../services/llm-provider.js';
 import { hybridSearch, buildRagContext } from '../services/rag-service.js';
 import { htmlToMarkdown } from '../services/content-converter.js';
 import { getEmbeddingStatus, processDirtyPages, reEmbedAll } from '../services/embedding-service.js';
-import { getOllamaCircuitBreakerStatus } from '../services/circuit-breaker.js';
+import { getOllamaCircuitBreakerStatus, getOpenaiCircuitBreakerStatus } from '../services/circuit-breaker.js';
 import { LlmCache, buildLlmCacheKey, buildRagCacheKey } from '../services/llm-cache.js';
 import {
   ImproveRequestSchema,
   GenerateRequestSchema,
   SummarizeRequestSchema,
   AskRequestSchema,
+  GenerateDiagramRequestSchema,
 } from '@kb-creator/contracts';
 import { z } from 'zod';
 import { sanitizeLlmInput } from '../utils/sanitize-llm-input.js';
 import { logAuditEvent } from '../services/audit-service.js';
 import { logger } from '../utils/logger.js';
+import type { LlmProviderType } from '../services/llm-provider.js';
 
 const IdParamSchema = z.object({ id: z.string().min(1) });
 const ImprovementsQuerySchema = z.object({ pageId: z.string().optional() });
@@ -95,28 +100,49 @@ export async function llmRoutes(fastify: FastifyInstance) {
   // Create LLM cache instance
   const llmCache = new LlmCache(fastify.redis);
 
-  // GET /api/ollama/models - list available models
-  fastify.get('/ollama/models', async () => {
+  // GET /api/ollama/models - list available models (supports ?provider=ollama|openai)
+  fastify.get('/ollama/models', async (request) => {
+    const { provider: providerParam } = z.object({ provider: z.enum(['ollama', 'openai']).optional() }).parse(request.query);
+    const providerType: LlmProviderType = providerParam ?? getActiveProviderType();
+    const provider = getProvider(providerType);
+
     try {
-      return await listModels();
+      return await provider.listModels();
     } catch (err) {
-      logger.error({ err }, 'Failed to list models');
-      throw fastify.httpErrors.serviceUnavailable('Ollama server unavailable');
+      logger.error({ err, provider: providerType }, 'Failed to list models');
+      const errorType = err instanceof Error ? err.constructor.name : 'UnknownError';
+      throw fastify.httpErrors.serviceUnavailable(`LLM server unavailable (${providerType}): ${errorType}`);
     }
   });
 
-  // GET /api/ollama/status
-  fastify.get('/ollama/status', async () => {
-    const connected = await checkHealth();
+  // GET /api/ollama/status - (supports ?provider=ollama|openai)
+  fastify.get('/ollama/status', async (request) => {
+    const { provider: providerParam } = z.object({ provider: z.enum(['ollama', 'openai']).optional() }).parse(request.query);
+    const providerType: LlmProviderType = providerParam ?? getActiveProviderType();
+    const provider = getProvider(providerType);
+
+    const health = await provider.checkHealth();
     return {
-      connected,
+      connected: health.connected,
+      error: health.error,
+      provider: providerType,
+      ollamaBaseUrl: process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434',
+      openaiBaseUrl: process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1',
       embeddingModel: process.env.EMBEDDING_MODEL ?? 'nomic-embed-text',
+      authConfigured: providerType === 'ollama'
+        ? !!process.env.LLM_BEARER_TOKEN
+        : !!(process.env.LLM_BEARER_TOKEN || process.env.OPENAI_API_KEY),
+      authType: getLlmAuthType(),
+      verifySsl: isLlmVerifySslEnabled(),
     };
   });
 
   // GET /api/ollama/circuit-breaker-status
   fastify.get('/ollama/circuit-breaker-status', async () => {
-    return getOllamaCircuitBreakerStatus();
+    return {
+      ollama: getOllamaCircuitBreakerStatus(),
+      openai: getOpenaiCircuitBreakerStatus(),
+    };
   });
 
   // Maximum input size to prevent abuse (100KB)
@@ -126,6 +152,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
   fastify.post('/llm/improve', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
     const body = ImproveRequestSchema.parse(request.body);
     const { content, type, model } = body;
+    const userId = request.userId;
 
     if (content.length > MAX_INPUT_LENGTH) {
       throw fastify.httpErrors.badRequest(`Content too large (max ${MAX_INPUT_LENGTH} characters)`);
@@ -137,7 +164,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
     // Sanitize before sending to LLM
     const { sanitized, warnings } = sanitizeLlmInput(markdown);
     if (warnings.length > 0) {
-      await logAuditEvent(request.userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/improve' }, request);
+      await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/improve' }, request);
     }
 
     const systemPrompt = getSystemPrompt(`improve_${type}` as SystemPromptKey);
@@ -157,7 +184,8 @@ export async function llmRoutes(fastify: FastifyInstance) {
       return;
     }
 
-    const generator = streamChat(model, [
+    // Resolve per-user LLM provider and stream
+    const generator = providerStreamChat(userId, model, [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: sanitized },
     ]);
@@ -167,7 +195,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
       await query(
         `INSERT INTO llm_improvements (user_id, confluence_id, improvement_type, model, original_content, improved_content, status)
          VALUES ($1, $2, $3, $4, $5, '', 'streaming')`,
-        [request.userId, body.pageId, type, model, content.slice(0, 10000)],
+        [userId, body.pageId, type, model, content.slice(0, 10000)],
       );
     }
 
@@ -178,6 +206,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
   fastify.post('/llm/generate', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
     const body = GenerateRequestSchema.parse(request.body);
     const { prompt, model, template } = body;
+    const userId = request.userId;
 
     if (prompt.length > MAX_INPUT_LENGTH) {
       throw fastify.httpErrors.badRequest(`Prompt too large (max ${MAX_INPUT_LENGTH} characters)`);
@@ -186,7 +215,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
     // Sanitize before sending to LLM
     const { sanitized, warnings } = sanitizeLlmInput(prompt);
     if (warnings.length > 0) {
-      await logAuditEvent(request.userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/generate' }, request);
+      await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/generate' }, request);
     }
 
     const systemPrompt = template
@@ -208,7 +237,8 @@ export async function llmRoutes(fastify: FastifyInstance) {
       return;
     }
 
-    const generator = streamChat(model, [
+    // Resolve per-user LLM provider and stream
+    const generator = providerStreamChat(userId, model, [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: sanitized },
     ]);
@@ -220,6 +250,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
   fastify.post('/llm/summarize', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
     const body = SummarizeRequestSchema.parse(request.body);
     const { content, model, length = 'medium' } = body;
+    const userId = request.userId;
 
     if (content.length > MAX_INPUT_LENGTH) {
       throw fastify.httpErrors.badRequest(`Content too large (max ${MAX_INPUT_LENGTH} characters)`);
@@ -230,7 +261,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
     // Sanitize before sending to LLM
     const { sanitized: sanitizedMarkdown, warnings } = sanitizeLlmInput(markdown);
     if (warnings.length > 0) {
-      await logAuditEvent(request.userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/summarize' }, request);
+      await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/summarize' }, request);
     }
 
     const lengthInstructions: Record<string, string> = {
@@ -256,9 +287,52 @@ export async function llmRoutes(fastify: FastifyInstance) {
       return;
     }
 
-    const generator = streamChat(model, [
+    // Resolve per-user LLM provider and stream
+    const generator = providerStreamChat(userId, model, [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: sanitizedMarkdown },
+    ]);
+
+    await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
+  });
+
+  // POST /api/llm/generate-diagram - stream Mermaid diagram from article content
+  fastify.post('/llm/generate-diagram', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
+    const body = GenerateDiagramRequestSchema.parse(request.body);
+    const { content, model, diagramType = 'flowchart' } = body;
+
+    if (content.length > MAX_INPUT_LENGTH) {
+      throw fastify.httpErrors.badRequest(`Content too large (max ${MAX_INPUT_LENGTH} characters)`);
+    }
+
+    const markdown = htmlToMarkdown(content);
+
+    // Sanitize before sending to LLM
+    const { sanitized, warnings } = sanitizeLlmInput(markdown);
+    if (warnings.length > 0) {
+      await logAuditEvent(request.userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/generate-diagram' }, request);
+    }
+
+    const systemPrompt = getSystemPrompt(`generate_diagram_${diagramType}` as SystemPromptKey);
+
+    // Check LLM cache
+    const cacheKey = buildLlmCacheKey(model, systemPrompt, sanitized);
+    const cached = await llmCache.getCachedResponse(cacheKey);
+    if (cached) {
+      reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      reply.raw.write(`data: ${JSON.stringify({ content: cached.content, done: true, cached: true })}\n\n`);
+      reply.raw.end();
+      return;
+    }
+
+    const generator = providerStreamChat(request.userId, model, [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: sanitized },
     ]);
 
     await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
@@ -365,7 +439,8 @@ export async function llmRoutes(fastify: FastifyInstance) {
     const onClose = () => controller.abort();
     request.raw.on('close', onClose);
 
-    const generator = streamChat(model, messages, controller.signal);
+    // Resolve per-user LLM provider and stream
+    const generator = providerStreamChat(userId, model, messages, controller.signal);
     let fullAnswer = '';
 
     reply.raw.writeHead(200, {

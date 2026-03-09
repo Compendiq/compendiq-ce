@@ -1,20 +1,62 @@
-import { useState, useCallback, useMemo, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { m } from 'framer-motion';
+import { m, AnimatePresence } from 'framer-motion';
 import {
   ArrowLeft, Edit3, Save, X, Trash2, Wand2, FileText,
-  ExternalLink, Clock, User, Tag,
+  ExternalLink, Clock, User,
 } from 'lucide-react';
-import DOMPurify from 'dompurify';
+import type { SettingsResponse } from '@kb-creator/contracts';
 import { usePage, useUpdatePage, useDeletePage } from '../../shared/hooks/use-pages';
+import { useSettings } from '../../shared/hooks/use-settings';
 import { Editor, getDraft, clearDraft } from '../../shared/components/Editor';
+import { ArticleViewer } from '../../shared/components/ArticleViewer';
 import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
 import { TableOfContents } from '../../shared/components/TableOfContents';
+import type { TocHeading } from '../../shared/components/TableOfContents';
 import { DuplicateDetector } from './DuplicateDetector';
 import { AutoTagger } from './AutoTagger';
+import { TagEditor } from './TagEditor';
 import { VersionHistory } from './VersionHistory';
+import { FlowchartGenerator } from './FlowchartGenerator';
+import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { toast } from 'sonner';
+
+function ImageLightbox({ src, alt, onClose }: { src: string; alt: string; onClose: () => void }) {
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', handleKey);
+    return () => document.removeEventListener('keydown', handleKey);
+  }, [onClose]);
+
+  return (
+    <m.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
+      onClick={onClose}
+      role="dialog"
+      aria-label={`Image preview: ${alt}`}
+    >
+      <button
+        onClick={onClose}
+        className="absolute top-4 right-4 rounded-full bg-foreground/10 p-2 text-white hover:bg-foreground/20"
+        aria-label="Close preview"
+      >
+        <X size={20} />
+      </button>
+      <img
+        src={src}
+        alt={alt}
+        className="max-h-[90vh] max-w-[90vw] rounded-lg object-contain"
+        onClick={(e) => e.stopPropagation()}
+      />
+    </m.div>
+  );
+}
 
 export function PageViewPage() {
   const { id } = useParams<{ id: string }>();
@@ -22,19 +64,23 @@ export function PageViewPage() {
   const { data: page, isLoading } = usePage(id);
   const updateMutation = useUpdatePage();
   const deleteMutation = useDeletePage();
+  const isLight = useIsLightTheme();
 
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState(false);
   const [editTitle, setEditTitle] = useState('');
   const [editHtml, setEditHtml] = useState('');
+  const [lightboxSrc, setLightboxSrc] = useState<{ src: string; alt: string } | null>(null);
+  const [tocHeadings, setTocHeadings] = useState<TocHeading[]>([]);
   const contentRef = useRef<HTMLDivElement>(null);
+
+  const { data: settings } = useSettings();
 
   const draftKey = id ? `page-${id}` : undefined;
 
-  const sanitizedHtml = useMemo(
-    () => (page ? DOMPurify.sanitize(page.bodyHtml) : ''),
-    [page],
-  );
+  const handleImageClick = useCallback((src: string, alt: string) => {
+    setLightboxSrc({ src, alt });
+  }, []);
 
   const startEditing = useCallback(() => {
     if (!page || !id) return;
@@ -48,6 +94,8 @@ export function PageViewPage() {
     }
     setEditing(true);
   }, [page, id]);
+
+  const closeLightbox = useCallback(() => setLightboxSrc(null), []);
 
   const cancelEditing = useCallback(() => {
     if (draftKey) clearDraft(draftKey);
@@ -127,14 +175,14 @@ export function PageViewPage() {
       {/* Top bar */}
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-3 min-w-0">
-          <button onClick={() => navigate('/pages')} className="rounded p-1.5 text-muted-foreground hover:bg-white/5">
+          <button onClick={() => navigate('/pages')} className="rounded p-1.5 text-muted-foreground hover:bg-foreground/5">
             <ArrowLeft size={18} />
           </button>
           {editing ? (
             <input
               value={editTitle}
               onChange={(e) => setEditTitle(e.target.value)}
-              className="flex-1 rounded-md bg-white/5 px-3 py-1.5 text-lg font-bold outline-none focus:ring-1 focus:ring-primary"
+              className="flex-1 rounded-md bg-foreground/5 px-3 py-1.5 text-lg font-bold outline-none focus:ring-1 focus:ring-primary"
             />
           ) : (
             <h1 className="truncate text-xl font-bold">{page.title}</h1>
@@ -146,7 +194,7 @@ export function PageViewPage() {
             <>
               <button
                 onClick={cancelEditing}
-                className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-white/5"
+                className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
               >
                 <X size={14} /> Cancel
               </button>
@@ -167,13 +215,13 @@ export function PageViewPage() {
               />
               <button
                 onClick={() => navigate(`/ai?pageId=${id}`)}
-                className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-white/5"
+                className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
               >
                 <Wand2 size={14} /> AI Improve
               </button>
               <button
                 onClick={startEditing}
-                className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-white/5"
+                className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
               >
                 <Edit3 size={14} /> Edit
               </button>
@@ -203,41 +251,54 @@ export function PageViewPage() {
           </span>
         )}
         <span className="text-xs">v{page.version}</span>
-        {page.labels.length > 0 && (
-          <div className="flex items-center gap-1">
-            <Tag size={12} />
-            {page.labels.map((l) => (
-              <span key={l} className="rounded bg-white/5 px-1.5 py-0.5 text-xs">{l}</span>
-            ))}
-          </div>
+        <TagEditor pageId={id!} labels={page.labels} editing={editing} />
+        {settings?.confluenceUrl && (
+          <a
+            href={`${settings.confluenceUrl}/pages/viewpage.action?pageId=${encodeURIComponent(id!)}`}
+            target="_blank"
+            rel="noreferrer"
+            className="ml-auto flex items-center gap-1 text-primary hover:underline"
+          >
+            Open in Confluence <ExternalLink size={12} />
+          </a>
         )}
-        <a
-          href={`#confluence-page:${id}`}
-          target="_blank"
-          rel="noreferrer"
-          className="ml-auto flex items-center gap-1 text-primary hover:underline"
-        >
-          Open in Confluence <ExternalLink size={12} />
-        </a>
       </div>
 
       {/* Content with optional Table of Contents */}
       {editing ? (
         <Editor content={editHtml} onChange={setEditHtml} draftKey={draftKey} />
       ) : (
-        <div className="flex gap-4">
-          <div
-            ref={contentRef}
-            className="glass-card prose prose-invert max-w-none flex-1 p-6"
-            dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
-          />
-          <div className="hidden w-64 shrink-0 space-y-4 lg:block">
-            <TableOfContents htmlContent={sanitizedHtml} contentRef={contentRef} />
-            <VersionHistory pageId={id!} currentBodyText={page.bodyText} model="qwen3:latest" />
-            <DuplicateDetector pageId={id!} pageTitle={page.title} />
+        <>
+          <div className="flex gap-4">
+            <div className="glass-card flex-1 overflow-hidden" ref={contentRef}>
+              <ArticleViewer
+                content={page.bodyHtml}
+                onImageClick={handleImageClick}
+                confluenceUrl={settings?.confluenceUrl}
+                pageId={id}
+                onHeadingsReady={setTocHeadings}
+              />
+            </div>
+            <div className="hidden w-64 shrink-0 space-y-4 lg:block sticky top-4 self-start max-h-[calc(100vh-2rem)] overflow-y-auto">
+              <TableOfContents headings={tocHeadings} contentRef={contentRef} />
+              <VersionHistory pageId={id!} currentBodyText={page.bodyText} model="qwen3:latest" />
+              <DuplicateDetector pageId={id!} pageTitle={page.title} />
+            </div>
           </div>
-        </div>
+          <FlowchartGenerator pageId={id!} bodyHtml={page.bodyHtml} />
+        </>
       )}
+
+      {/* Image lightbox */}
+      <AnimatePresence>
+        {lightboxSrc && (
+          <ImageLightbox
+            src={lightboxSrc.src}
+            alt={lightboxSrc.alt}
+            onClose={closeLightbox}
+          />
+        )}
+      </AnimatePresence>
     </m.div>
   );
 }

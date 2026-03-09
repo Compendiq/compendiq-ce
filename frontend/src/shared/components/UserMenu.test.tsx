@@ -1,20 +1,27 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { UserMenu } from './UserMenu';
 
-const mockClearAuth = vi.fn();
+const mockLogoutApi = vi.fn().mockResolvedValue(undefined);
 
 vi.mock('../../stores/auth-store', () => ({
   useAuthStore: (selector: (s: Record<string, unknown>) => unknown) =>
     selector({
       user: { username: 'testuser' },
-      clearAuth: mockClearAuth,
     }),
+}));
+
+vi.mock('../lib/api', () => ({
+  logoutApi: (...args: unknown[]) => mockLogoutApi(...args),
 }));
 
 describe('UserMenu', () => {
   beforeEach(() => {
-    mockClearAuth.mockClear();
+    mockLogoutApi.mockClear();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('renders the user avatar and username', () => {
@@ -42,6 +49,23 @@ describe('UserMenu', () => {
     // Radix opens async on pointer events
     await vi.waitFor(() => {
       expect(trigger).toHaveAttribute('data-state', 'open');
+    });
+  });
+
+  it('calls logoutApi when Sign out is selected', async () => {
+    render(<UserMenu />);
+    const trigger = screen.getByRole('button');
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' });
+
+    await vi.waitFor(() => {
+      expect(trigger).toHaveAttribute('data-state', 'open');
+    });
+
+    const signOut = screen.getByText('Sign out');
+    fireEvent.click(signOut);
+
+    await vi.waitFor(() => {
+      expect(mockLogoutApi).toHaveBeenCalled();
     });
   });
 });

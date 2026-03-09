@@ -72,9 +72,9 @@ export function PagePreview({ pageId, children, className }: PagePreviewProps) {
             <div className="glass-card overflow-hidden p-3 shadow-xl">
               {isLoading ? (
                 <div className="space-y-2">
-                  <div className="h-4 w-3/4 animate-pulse rounded bg-white/10" />
-                  <div className="h-3 w-full animate-pulse rounded bg-white/10" />
-                  <div className="h-3 w-2/3 animate-pulse rounded bg-white/10" />
+                  <div className="h-4 w-3/4 animate-pulse rounded bg-foreground/10" />
+                  <div className="h-3 w-full animate-pulse rounded bg-foreground/10" />
+                  <div className="h-3 w-2/3 animate-pulse rounded bg-foreground/10" />
                 </div>
               ) : page ? (
                 <>
@@ -111,6 +111,7 @@ export function PagePreview({ pageId, children, className }: PagePreviewProps) {
  * Wraps page links inside HTML content with PagePreview hover cards.
  * Returns an array of React elements with page links wrapped in PagePreview.
  */
+// eslint-disable-next-line react-refresh/only-export-components
 export function usePageLinksWithPreview(contentRef: React.RefObject<HTMLElement | null>) {
   useEffect(() => {
     if (!contentRef.current) return;

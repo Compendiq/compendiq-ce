@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Search, Edit2, Trash2, Merge, Check, X } from 'lucide-react';
 import { apiFetch } from '../../shared/lib/api';
-import { cn } from '../../shared/lib/cn';
+
 
 interface LabelInfo {
   name: string;
@@ -96,14 +96,14 @@ export function LabelManager() {
           placeholder="Filter labels..."
           value={searchFilter}
           onChange={(e) => setSearchFilter(e.target.value)}
-          className="w-full rounded-md bg-white/5 py-2 pl-10 pr-4 text-sm outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-primary"
+          className="w-full rounded-md bg-foreground/5 py-2 pl-10 pr-4 text-sm outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-primary"
           data-testid="label-search"
         />
       </div>
 
       {/* Merge dialog */}
       {mergeSource && (
-        <div className="rounded-lg border border-white/10 bg-white/5 p-3" data-testid="merge-dialog">
+        <div className="rounded-lg border border-border/50 bg-foreground/5 p-3" data-testid="merge-dialog">
           <p className="mb-2 text-sm">
             Merge <span className="font-medium text-primary">{mergeSource}</span> into:
           </p>
@@ -111,7 +111,7 @@ export function LabelManager() {
             <select
               value={mergeTarget}
               onChange={(e) => setMergeTarget(e.target.value)}
-              className="flex-1 rounded-md bg-white/5 px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-primary"
+              className="flex-1 rounded-md bg-foreground/5 px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-primary"
               data-testid="merge-target-select"
             >
               <option value="">Select target label...</option>
@@ -145,7 +145,7 @@ export function LabelManager() {
       {isLoading ? (
         <div className="space-y-2">
           {Array.from({ length: 5 }).map((_, i) => (
-            <div key={i} className="h-12 animate-pulse rounded-lg bg-white/5" />
+            <div key={i} className="h-12 animate-pulse rounded-lg bg-foreground/5" />
           ))}
         </div>
       ) : filteredLabels.length === 0 ? (
@@ -153,9 +153,9 @@ export function LabelManager() {
           {labels?.length === 0 ? 'No labels found across any pages' : 'No labels match your filter'}
         </div>
       ) : (
-        <div className="rounded-lg border border-white/10">
+        <div className="rounded-lg border border-border/50">
           {/* Header */}
-          <div className="flex items-center border-b border-white/10 px-4 py-2 text-xs font-medium text-muted-foreground">
+          <div className="flex items-center border-b border-border/50 px-4 py-2 text-xs font-medium text-muted-foreground">
             <span className="flex-1">Label Name</span>
             <span className="w-24 text-right">Pages</span>
             <span className="w-36 text-right">Actions</span>
@@ -165,7 +165,7 @@ export function LabelManager() {
           {filteredLabels.map((label) => (
             <div
               key={label.name}
-              className="flex items-center border-b border-white/5 px-4 py-2.5 last:border-b-0 hover:bg-white/[0.02]"
+              className="flex items-center border-b border-border/30 px-4 py-2.5 last:border-b-0 hover:bg-foreground/[0.02]"
               data-testid={`label-row-${label.name}`}
             >
               {editingLabel === label.name ? (
@@ -178,7 +178,7 @@ export function LabelManager() {
                       if (e.key === 'Enter') handleRename();
                       if (e.key === 'Escape') setEditingLabel(null);
                     }}
-                    className="flex-1 rounded bg-white/5 px-2 py-1 text-sm outline-none focus:ring-1 focus:ring-primary"
+                    className="flex-1 rounded bg-foreground/5 px-2 py-1 text-sm outline-none focus:ring-1 focus:ring-primary"
                     data-testid="rename-input"
                     autoFocus
                   />
@@ -192,7 +192,7 @@ export function LabelManager() {
                   </button>
                   <button
                     onClick={() => setEditingLabel(null)}
-                    className="rounded p-1 text-muted-foreground hover:bg-white/5"
+                    className="rounded p-1 text-muted-foreground hover:bg-foreground/5"
                   >
                     <X size={14} />
                   </button>
@@ -204,7 +204,7 @@ export function LabelManager() {
                   <div className="flex w-36 items-center justify-end gap-1">
                     <button
                       onClick={() => startEdit(label.name)}
-                      className="rounded p-1.5 text-muted-foreground hover:bg-white/5 hover:text-foreground"
+                      className="rounded p-1.5 text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
                       title="Rename"
                       data-testid={`rename-${label.name}`}
                     >
@@ -212,7 +212,7 @@ export function LabelManager() {
                     </button>
                     <button
                       onClick={() => setMergeSource(label.name)}
-                      className="rounded p-1.5 text-muted-foreground hover:bg-white/5 hover:text-foreground"
+                      className="rounded p-1.5 text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
                       title="Merge into another label"
                       data-testid={`merge-${label.name}`}
                     >

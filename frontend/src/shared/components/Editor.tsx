@@ -13,6 +13,7 @@ import {
   Table as TableIcon, Image as ImageIcon, CodeSquare,
 } from 'lucide-react';
 import { cn } from '../lib/cn';
+import { useIsLightTheme } from '../hooks/use-is-light-theme';
 import type { Editor as EditorType } from '@tiptap/react';
 
 const lowlight = createLowlight(common);
@@ -46,7 +47,7 @@ function ToolbarButton({
       title={title}
       className={cn(
         'rounded p-1.5 transition-colors',
-        active ? 'bg-primary/20 text-primary' : 'text-muted-foreground hover:bg-white/5 hover:text-foreground',
+        active ? 'bg-primary/20 text-primary' : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
         disabled && 'opacity-30 cursor-not-allowed',
       )}
     >
@@ -56,12 +57,12 @@ function ToolbarButton({
 }
 
 function ToolbarSeparator() {
-  return <div className="mx-1 h-5 w-px bg-white/10" />;
+  return <div className="mx-1 h-5 w-px bg-foreground/10" />;
 }
 
 function EditorToolbar({ editor }: { editor: EditorType }) {
   return (
-    <div className="flex flex-wrap items-center gap-0.5 border-b border-white/10 px-2 py-1.5">
+    <div className="flex flex-wrap items-center gap-0.5 border-b border-border/50 px-2 py-1.5">
       <ToolbarButton onClick={() => editor.chain().focus().toggleBold().run()} active={editor.isActive('bold')} title="Bold">
         <Bold size={16} />
       </ToolbarButton>
@@ -143,6 +144,7 @@ function EditorToolbar({ editor }: { editor: EditorType }) {
 
 const AUTO_SAVE_DELAY = 2000;
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function getDraft(key: string): string | null {
   try {
     return localStorage.getItem(`draft:${key}`);
@@ -151,6 +153,7 @@ export function getDraft(key: string): string | null {
   }
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function clearDraft(key: string): void {
   try {
     localStorage.removeItem(`draft:${key}`);
@@ -158,6 +161,7 @@ export function clearDraft(key: string): void {
 }
 
 export function Editor({ content, onChange, editable = true, placeholder, draftKey }: EditorProps) {
+  const isLight = useIsLightTheme();
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const saveDraft = useCallback((html: string) => {
@@ -206,12 +210,12 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       <EditorContent
         editor={editor}
         className={cn(
-          'prose prose-invert max-w-none px-4 py-3',
+          'prose max-w-none px-4 py-3',
+          !isLight && 'prose-invert',
           '[&_.tiptap]:min-h-[200px] [&_.tiptap]:outline-none',
-          '[&_table]:border-collapse [&_td]:border [&_td]:border-white/10 [&_td]:p-2 [&_th]:border [&_th]:border-white/10 [&_th]:bg-white/5 [&_th]:p-2',
-          '[&_pre]:rounded-md [&_pre]:bg-white/5 [&_pre]:p-4',
+          '[&_table]:border-collapse [&_td]:border [&_td]:border-border/50 [&_td]:p-2 [&_th]:border [&_th]:border-border/50 [&_th]:bg-foreground/5 [&_th]:p-2',
+          '[&_pre]:rounded-md [&_pre]:bg-foreground/5 [&_pre]:p-4',
           '[&_ul[data-type=taskList]]:list-none [&_ul[data-type=taskList]]:pl-0',
-          '[&_.confluence-drawio]:relative [&_.confluence-drawio]:rounded-md [&_.confluence-drawio]:border [&_.confluence-drawio]:border-white/10 [&_.confluence-drawio]:p-2',
         )}
       />
     </div>

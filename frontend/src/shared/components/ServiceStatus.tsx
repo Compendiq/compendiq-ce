@@ -6,10 +6,9 @@ import { cn } from '../lib/cn';
 interface HealthStatus {
   status: string;
   services?: {
-    postgres?: string;
-    redis?: string;
-    ollama?: string;
-    confluence?: string;
+    postgres?: boolean;
+    redis?: boolean;
+    ollama?: boolean;
   };
 }
 
@@ -47,18 +46,7 @@ export function ServiceStatus() {
       const data: HealthStatus = await res.json();
       const newAlerts: ServiceAlert[] = [];
 
-      if (data.services?.confluence === 'disconnected') {
-        newAlerts.push({
-          id: 'confluence',
-          service: 'confluence',
-          label: 'Confluence is unreachable',
-          icon: WifiOff,
-          colorClass: 'text-destructive',
-          bgClass: 'bg-destructive/15 border-destructive/30',
-        });
-      }
-
-      if (data.services?.ollama === 'disconnected') {
+      if (data.services?.ollama === false) {
         newAlerts.push({
           id: 'ollama',
           service: 'ollama',
@@ -69,7 +57,7 @@ export function ServiceStatus() {
         });
       }
 
-      if (data.services?.redis === 'disconnected') {
+      if (data.services?.redis === false) {
         newAlerts.push({
           id: 'redis',
           service: 'redis',
@@ -139,7 +127,7 @@ export function ServiceStatus() {
               </div>
               <button
                 onClick={() => dismissAlert(alert.id)}
-                className="rounded p-1 text-muted-foreground hover:bg-white/5"
+                className="rounded p-1 text-muted-foreground hover:bg-foreground/5"
                 aria-label={`Dismiss ${alert.service} alert`}
               >
                 <X size={14} />

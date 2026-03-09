@@ -20,12 +20,13 @@ interface SyncedSpace {
 
 interface SpacesTabProps {
   selectedSpaces?: string[];
+  showSpaceHomeContent?: boolean;
   onSave: (values: Record<string, unknown>) => void;
 }
 
 const EMPTY_SPACES: string[] = [];
 
-export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, onSave }: SpacesTabProps) {
+export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, showSpaceHomeContent = true, onSave }: SpacesTabProps) {
   const queryClient = useQueryClient();
   const [selected, setSelected] = useState<Set<string>>(new Set(initialSelected));
 
@@ -90,7 +91,7 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, onSa
         <button
           onClick={() => fetchSpaces()}
           disabled={loadingAvailable}
-          className="flex items-center gap-1.5 rounded-md border border-white/10 px-3 py-1.5 text-sm hover:bg-white/5 disabled:opacity-50"
+          className="flex items-center gap-1.5 rounded-md border border-border/50 px-3 py-1.5 text-sm hover:bg-foreground/5 disabled:opacity-50"
         >
           {loadingAvailable ? (
             <Loader2 size={14} className="animate-spin" />
@@ -98,6 +99,33 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, onSa
             <RefreshCw size={14} />
           )}
           Fetch Spaces
+        </button>
+      </div>
+
+      {/* Show space home content toggle */}
+      <div className="flex items-center justify-between rounded-lg border border-border/50 bg-foreground/5 px-4 py-3">
+        <div>
+          <p className="text-sm font-medium">Show space home content</p>
+          <p className="text-xs text-muted-foreground">
+            When selecting a space, display its home page content instead of the page list.
+          </p>
+        </div>
+        <button
+          role="switch"
+          aria-checked={showSpaceHomeContent}
+          onClick={() => onSave({ showSpaceHomeContent: !showSpaceHomeContent })}
+          className={cn(
+            'relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+            showSpaceHomeContent ? 'bg-primary' : 'bg-foreground/20',
+          )}
+          data-testid="toggle-space-home-content"
+        >
+          <span
+            className={cn(
+              'pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow-sm transition-transform',
+              showSpaceHomeContent ? 'translate-x-5' : 'translate-x-0',
+            )}
+          />
         </button>
       </div>
 
@@ -114,7 +142,7 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, onSa
                   'flex w-full items-center gap-3 rounded-lg border px-4 py-3 text-left transition-colors',
                   isSelected
                     ? 'border-primary/30 bg-primary/10'
-                    : 'border-white/10 bg-white/5 hover:bg-white/10',
+                    : 'border-border/50 bg-foreground/5 hover:bg-foreground/10',
                 )}
                 role="listitem"
               >
@@ -138,7 +166,7 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, onSa
           })}
         </div>
       ) : (
-        <div className="rounded-lg border border-white/10 bg-white/5 py-8 text-center text-sm text-muted-foreground">
+        <div className="rounded-lg border border-border/50 bg-foreground/5 py-8 text-center text-sm text-muted-foreground">
           Click "Fetch Spaces" to load available Confluence spaces.
         </div>
       )}
@@ -155,7 +183,7 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, onSa
         <button
           onClick={() => syncMutation.mutate()}
           disabled={selected.size === 0 || syncMutation.isPending}
-          className="flex items-center gap-1.5 rounded-md border border-white/10 px-4 py-2 text-sm hover:bg-white/5 disabled:opacity-50"
+          className="flex items-center gap-1.5 rounded-md border border-border/50 px-4 py-2 text-sm hover:bg-foreground/5 disabled:opacity-50"
         >
           {syncMutation.isPending ? (
             <Loader2 size={14} className="animate-spin" />

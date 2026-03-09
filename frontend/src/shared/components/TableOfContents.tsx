@@ -10,7 +10,10 @@ interface TocHeading {
 }
 
 interface TableOfContentsProps {
-  htmlContent: string;
+  /** Raw HTML content to parse headings from (legacy mode) */
+  htmlContent?: string;
+  /** Pre-parsed headings list (preferred, from ArticleViewer) */
+  headings?: TocHeading[];
   contentRef?: React.RefObject<HTMLElement | null>;
 }
 
@@ -33,13 +36,14 @@ function parseHeadings(html: string): TocHeading[] {
   return headings;
 }
 
-export function TableOfContents({ htmlContent, contentRef }: TableOfContentsProps) {
+export function TableOfContents({ htmlContent, headings: headingsProp, contentRef }: TableOfContentsProps) {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [isMobileOpen, setIsMobileOpen] = useState(false);
   const [readingProgress, setReadingProgress] = useState(0);
   const observerRef = useRef<IntersectionObserver | null>(null);
 
-  const headings = useMemo(() => parseHeadings(htmlContent), [htmlContent]);
+  const parsedHeadings = useMemo(() => (htmlContent ? parseHeadings(htmlContent) : []), [htmlContent]);
+  const headings = headingsProp ?? parsedHeadings;
 
   // Scroll tracking via IntersectionObserver
   useEffect(() => {
@@ -137,7 +141,7 @@ export function TableOfContents({ htmlContent, contentRef }: TableOfContentsProp
                     heading.level === 3 && 'pl-6 text-xs',
                     activeId === heading.id
                       ? 'bg-primary/15 text-primary'
-                      : 'text-muted-foreground hover:bg-white/5 hover:text-foreground',
+                      : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
                   )}
                 >
                   {heading.text}
@@ -151,5 +155,6 @@ export function TableOfContents({ htmlContent, contentRef }: TableOfContentsProp
   );
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export { parseHeadings };
 export type { TocHeading };

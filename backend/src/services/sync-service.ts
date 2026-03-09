@@ -1,8 +1,9 @@
 import { query } from '../db/postgres.js';
-import { ConfluenceClient, ConfluencePage } from './confluence-client.js';
+import { ConfluenceClient, ConfluencePage, ConfluenceSpace } from './confluence-client.js';
 import { confluenceToHtml, htmlToText } from './content-converter.js';
-import { syncDrawioAttachments, cleanPageAttachments } from './attachment-handler.js';
+import { syncDrawioAttachments, syncImageAttachments, cleanPageAttachments } from './attachment-handler.js';
 import { saveVersionSnapshot } from './version-tracker.js';
+import { processDirtyPages } from './embedding-service.js';
 import { decryptPat } from '../utils/crypto.js';
 import { logger } from '../utils/logger.js';
 
@@ -41,6 +42,7 @@ export async function syncUser(userId: string): Promise<void> {
   const client = await getClientForUser(userId);
   if (!client) {
     logger.warn({ userId }, 'No Confluence credentials configured, skipping sync');
+    syncStatuses.set(userId, { userId, status: 'idle' });
     return;
   }
 
@@ -51,15 +53,29 @@ export async function syncUser(userId: string): Promise<void> {
   const spaces = settingsResult.rows[0]?.selected_spaces ?? [];
   if (spaces.length === 0) {
     logger.info({ userId }, 'No spaces selected, skipping sync');
+    syncStatuses.set(userId, { userId, status: 'idle' });
     return;
   }
 
   syncStatuses.set(userId, { userId, status: 'syncing' });
 
   try {
+    // Fetch all spaces once to avoid redundant API calls per space
+    const allSpaces = await client.getAllSpaces();
+    const spacesByKey = new Map(allSpaces.map((s) => [s.key, s]));
+
     for (const spaceKey of spaces) {
-      await syncSpace(client, userId, spaceKey);
+      await syncSpace(client, userId, spaceKey, spacesByKey.get(spaceKey));
     }
+
+    // Trigger embedding for dirty pages asynchronously after sync
+    processDirtyPages(userId).then(({ processed, errors }) => {
+      if (processed > 0 || errors > 0) {
+        logger.info({ userId, processed, errors }, 'Post-sync embedding completed');
+      }
+    }).catch((err) => {
+      logger.error({ err, userId }, 'Post-sync embedding failed');
+    });
 
     syncStatuses.set(userId, {
       userId,
@@ -74,19 +90,18 @@ export async function syncUser(userId: string): Promise<void> {
   }
 }
 
-async function syncSpace(client: ConfluenceClient, userId: string, spaceKey: string): Promise<void> {
+async function syncSpace(client: ConfluenceClient, userId: string, spaceKey: string, space?: ConfluenceSpace): Promise<void> {
   logger.info({ userId, spaceKey }, 'Syncing space');
 
-  // Upsert space metadata
-  const spaces = await client.getSpaces();
-  const space = spaces.results.find((s) => s.key === spaceKey);
+  // Upsert space metadata (uses pre-fetched space data to avoid redundant API calls)
   if (space) {
+    const homepageId = space.homepage?.id ?? null;
     await query(
-      `INSERT INTO cached_spaces (user_id, space_key, space_name)
-       VALUES ($1, $2, $3)
+      `INSERT INTO cached_spaces (user_id, space_key, space_name, homepage_id)
+       VALUES ($1, $2, $3, $4)
        ON CONFLICT (user_id, space_key)
-       DO UPDATE SET space_name = $3, last_synced = NOW()`,
-      [userId, spaceKey, space.name],
+       DO UPDATE SET space_name = $3, homepage_id = $4, last_synced = NOW()`,
+      [userId, spaceKey, space.name, homepageId],
     );
   }
 
@@ -147,8 +162,10 @@ async function syncPage(
   const bodyHtml = confluenceToHtml(bodyStorage, page.id);
   const bodyText = htmlToText(bodyHtml);
 
-  // Sync draw.io attachments
-  await syncDrawioAttachments(client, userId, page.id, bodyStorage);
+  // Fetch attachments once, pass to both sync functions to avoid duplicate API calls
+  const { results: attachments } = await client.getPageAttachments(page.id);
+  await syncDrawioAttachments(client, userId, page.id, bodyStorage, attachments);
+  await syncImageAttachments(client, userId, page.id, bodyStorage, attachments);
 
   // Extract metadata
   const labels = page.metadata?.labels?.results?.map((l) => l.name) ?? [];
@@ -230,6 +247,13 @@ async function detectDeletedPages(
  */
 export function getSyncStatus(userId: string): SyncStatus {
   return syncStatuses.get(userId) ?? { userId, status: 'idle' };
+}
+
+/**
+ * Set sync status for a user (used by route handler to set 'syncing' before dispatch).
+ */
+export function setSyncStatus(userId: string, status: SyncStatus): void {
+  syncStatuses.set(userId, status);
 }
 
 /**

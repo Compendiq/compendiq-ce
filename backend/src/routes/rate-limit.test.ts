@@ -1,11 +1,13 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { buildApp } from '../app.js';
-import { setupTestDb, truncateAllTables, teardownTestDb } from '../test-db-helper.js';
+import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../test-db-helper.js';
 import { generateAccessToken } from '../plugins/auth.js';
 import { query } from '../db/postgres.js';
 import { FastifyInstance } from 'fastify';
 
-describe('Per-route rate limiting', () => {
+const dbAvailable = await isDbAvailable();
+
+describe.skipIf(!dbAvailable)('Per-route rate limiting', () => {
   let app: FastifyInstance;
   let testUserId: string;
   let adminToken: string;

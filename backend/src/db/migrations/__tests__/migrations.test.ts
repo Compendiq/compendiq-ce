@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { setupTestDb, truncateAllTables, teardownTestDb } from '../../../test-db-helper.js';
+import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../../test-db-helper.js';
 import { query } from '../../postgres.js';
 
-describe('Database migrations', () => {
+const dbAvailable = await isDbAvailable();
+
+describe.skipIf(!dbAvailable)('Database migrations', () => {
   beforeAll(async () => {
     await setupTestDb();
   });

@@ -3,7 +3,7 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import { m } from 'framer-motion';
 import {
   Send, Bot, User, Loader2, MessageSquare, Plus, Trash2,
-  Wand2, FileText, ListCollapse, Sparkles,
+  Wand2, FileText, ListCollapse, Sparkles, GitBranch,
 } from 'lucide-react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -11,7 +11,9 @@ import { apiFetch } from '../../shared/lib/api';
 import { streamSSE } from '../../shared/lib/sse';
 import { usePage, useEmbeddingStatus } from '../../shared/hooks/use-pages';
 import { cn } from '../../shared/lib/cn';
+import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { DiffView } from '../../shared/components/DiffView';
+import { MermaidDiagram } from '../../shared/components/MermaidDiagram';
 import { SourceCitations, type Source } from './SourceCitations';
 import { toast } from 'sonner';
 
@@ -28,12 +30,13 @@ interface Conversation {
   createdAt: string;
 }
 
-type Mode = 'ask' | 'improve' | 'generate' | 'summarize';
+type Mode = 'ask' | 'improve' | 'generate' | 'summarize' | 'diagram';
 
 export function AiAssistantPage() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const pageId = searchParams.get('pageId');
+  const isLight = useIsLightTheme();
 
   const [mode, setMode] = useState<Mode>(pageId ? 'improve' : 'ask');
   const [messages, setMessages] = useState<Message[]>([]);
@@ -46,24 +49,60 @@ export function AiAssistantPage() {
   const [improvementType, setImprovementType] = useState<string>('grammar');
   const [showDiffView, setShowDiffView] = useState(false);
   const [improvedContent, setImprovedContent] = useState<string>('');
+  const [diagramType, setDiagramType] = useState<string>('flowchart');
+  const [diagramCode, setDiagramCode] = useState<string>('');
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const { data: page } = usePage(pageId ?? undefined);
   const { data: embeddingStatus } = useEmbeddingStatus();
 
-  // Load models and conversations on mount
+  // Abort any in-flight stream on unmount
   useEffect(() => {
-    apiFetch<Array<{ name: string }>>('/ollama/models')
-      .then((m) => {
-        setModels(m);
-        if (m.length > 0) setModel((prev) => prev || m[0].name);
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
+
+  // Load settings, models and conversations on mount
+  useEffect(() => {
+    // Load user settings to get their preferred provider and model
+    apiFetch<{ llmProvider: string; ollamaModel: string; openaiModel: string | null }>('/settings')
+      .then((settings) => {
+        const provider = settings.llmProvider ?? 'ollama';
+        const preferredModel = provider === 'openai'
+          ? settings.openaiModel ?? ''
+          : settings.ollamaModel ?? '';
+
+        // Load models for the active provider
+        apiFetch<Array<{ name: string }>>(`/ollama/models?provider=${provider}`)
+          .then((m) => {
+            setModels(m);
+            // Use preferred model if available, otherwise first from list
+            if (preferredModel) {
+              setModel(preferredModel);
+            } else if (m.length > 0) {
+              setModel((prev) => prev || m[0].name);
+            }
+          })
+          .catch(() => {
+            // If model list fails but we have a preferred model, use it
+            if (preferredModel) setModel(preferredModel);
+          });
       })
-      .catch(() => {});
+      .catch(() => {
+        // Fallback: load Ollama models directly
+        apiFetch<Array<{ name: string }>>('/ollama/models')
+          .then((m) => {
+            setModels(m);
+            if (m.length > 0) setModel((prev) => prev || m[0].name);
+          })
+          .catch(() => {});
+      });
 
     apiFetch<Conversation[]>('/llm/conversations')
       .then(setConversations)
       .catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally run only on mount
   }, []);
 
   useEffect(() => {
@@ -72,6 +111,10 @@ export function AiAssistantPage() {
 
   const handleAsk = useCallback(async () => {
     if (!input.trim() || !model || isStreaming) return;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     const question = input.trim();
     setInput('');
     setMessages((prev) => [...prev, { role: 'user', content: question }]);
@@ -85,6 +128,7 @@ export function AiAssistantPage() {
       for await (const chunk of streamSSE<{ content?: string; done?: boolean; final?: boolean; conversationId?: string; sources?: Source[] }>(
         '/llm/ask',
         { question, model, conversationId },
+        controller.signal,
       )) {
         if (chunk.content) {
           assistantContent += chunk.content;
@@ -110,6 +154,7 @@ export function AiAssistantPage() {
         });
       }
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
       toast.error(err instanceof Error ? err.message : 'Failed to get response');
       setMessages((prev) => prev.slice(0, -1));
     } finally {
@@ -119,6 +164,10 @@ export function AiAssistantPage() {
 
   const handleImprove = useCallback(async () => {
     if (!page || !model || isStreaming) return;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setIsStreaming(true);
     setShowDiffView(false);
     setImprovedContent('');
@@ -133,7 +182,7 @@ export function AiAssistantPage() {
         type: improvementType,
         model,
         pageId,
-      })) {
+      }, controller.signal)) {
         if (chunk.content) {
           result += chunk.content;
           setMessages((prev) => {
@@ -147,6 +196,7 @@ export function AiAssistantPage() {
       setImprovedContent(result);
       setShowDiffView(true);
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
       toast.error(err instanceof Error ? err.message : 'Improvement failed');
     } finally {
       setIsStreaming(false);
@@ -155,6 +205,10 @@ export function AiAssistantPage() {
 
   const handleGenerate = useCallback(async () => {
     if (!input.trim() || !model || isStreaming) return;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     const prompt = input.trim();
     setInput('');
     setMessages([{ role: 'user', content: `Generate: ${prompt}` }]);
@@ -164,7 +218,7 @@ export function AiAssistantPage() {
     setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
 
     try {
-      for await (const chunk of streamSSE('/llm/generate', { prompt, model })) {
+      for await (const chunk of streamSSE('/llm/generate', { prompt, model }, controller.signal)) {
         if (chunk.content) {
           result += chunk.content;
           setMessages((prev) => {
@@ -175,6 +229,7 @@ export function AiAssistantPage() {
         }
       }
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
       toast.error(err instanceof Error ? err.message : 'Generation failed');
     } finally {
       setIsStreaming(false);
@@ -183,6 +238,10 @@ export function AiAssistantPage() {
 
   const handleSummarize = useCallback(async () => {
     if (!page || !model || isStreaming) return;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setIsStreaming(true);
     setMessages([{ role: 'user', content: `Summarize: ${page.title}` }]);
 
@@ -193,7 +252,7 @@ export function AiAssistantPage() {
       for await (const chunk of streamSSE('/llm/summarize', {
         content: page.bodyHtml,
         model,
-      })) {
+      }, controller.signal)) {
         if (chunk.content) {
           result += chunk.content;
           setMessages((prev) => {
@@ -204,11 +263,50 @@ export function AiAssistantPage() {
         }
       }
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
       toast.error(err instanceof Error ? err.message : 'Summarization failed');
     } finally {
       setIsStreaming(false);
     }
   }, [page, model, isStreaming]);
+
+  const handleDiagram = useCallback(async () => {
+    if (!page || !model || isStreaming) return;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    setIsStreaming(true);
+    setDiagramCode('');
+    setMessages([{ role: 'user', content: `Generate ${diagramType} diagram: ${page.title}` }]);
+
+    let result = '';
+    setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
+
+    try {
+      for await (const chunk of streamSSE('/llm/generate-diagram', {
+        content: page.bodyHtml,
+        model,
+        diagramType,
+        pageId,
+      }, controller.signal)) {
+        if (chunk.content) {
+          result += chunk.content;
+          setMessages((prev) => {
+            const updated = [...prev];
+            updated[updated.length - 1] = { role: 'assistant', content: result };
+            return updated;
+          });
+        }
+      }
+      setDiagramCode(result);
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      toast.error(err instanceof Error ? err.message : 'Diagram generation failed');
+    } finally {
+      setIsStreaming(false);
+    }
+  }, [page, model, diagramType, pageId, isStreaming]);
 
   const startNewConversation = () => {
     setMessages([]);
@@ -243,16 +341,17 @@ export function AiAssistantPage() {
     else if (mode === 'improve') handleImprove();
     else if (mode === 'generate') handleGenerate();
     else if (mode === 'summarize') handleSummarize();
+    else if (mode === 'diagram') handleDiagram();
   };
 
   return (
-    <div className="flex h-[calc(100vh-3rem)] gap-4">
+    <div className="flex h-full gap-4">
       {/* Sidebar - Conversation History */}
       <div className="hidden w-64 flex-col lg:flex">
         <div className="glass-card flex flex-col h-full">
-          <div className="flex items-center justify-between border-b border-white/10 p-3">
+          <div className="flex items-center justify-between border-b border-border/50 p-3">
             <span className="text-sm font-medium">Conversations</span>
-            <button onClick={startNewConversation} className="rounded p-1 hover:bg-white/5" title="New conversation">
+            <button onClick={startNewConversation} className="rounded p-1 hover:bg-foreground/5" title="New conversation">
               <Plus size={16} />
             </button>
           </div>
@@ -262,7 +361,7 @@ export function AiAssistantPage() {
                 key={conv.id}
                 className={cn(
                   'group flex items-center gap-2 rounded-md px-2 py-1.5 text-sm cursor-pointer',
-                  conversationId === conv.id ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-white/5',
+                  conversationId === conv.id ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-foreground/5',
                 )}
               >
                 <button onClick={() => loadConversation(conv.id)} className="flex-1 truncate text-left">
@@ -270,7 +369,7 @@ export function AiAssistantPage() {
                 </button>
                 <button
                   onClick={(e) => { e.stopPropagation(); deleteConversation(conv.id); }}
-                  className="opacity-0 group-hover:opacity-100 rounded p-0.5 hover:bg-white/10"
+                  className="opacity-0 group-hover:opacity-100 rounded p-0.5 hover:bg-foreground/10"
                 >
                   <Trash2 size={12} />
                 </button>
@@ -280,7 +379,7 @@ export function AiAssistantPage() {
 
           {/* Embedding status */}
           {embeddingStatus && (
-            <div className="border-t border-white/10 p-3 text-xs text-muted-foreground">
+            <div className="border-t border-border/50 p-3 text-xs text-muted-foreground">
               <p>Embeddings: {embeddingStatus.totalEmbeddings}</p>
               {embeddingStatus.dirtyPages > 0 && (
                 <p className="text-warning">{embeddingStatus.dirtyPages} pages need embedding</p>
@@ -299,13 +398,14 @@ export function AiAssistantPage() {
             { key: 'improve', icon: Wand2, label: 'Improve' },
             { key: 'generate', icon: Sparkles, label: 'Generate' },
             { key: 'summarize', icon: ListCollapse, label: 'Summarize' },
+            { key: 'diagram', icon: GitBranch, label: 'Diagram' },
           ] as const).map(({ key, icon: Icon, label }) => (
             <button
               key={key}
               onClick={() => setMode(key)}
               className={cn(
                 'flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors',
-                mode === key ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-white/5',
+                mode === key ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-foreground/5',
               )}
             >
               <Icon size={14} /> {label}
@@ -317,7 +417,7 @@ export function AiAssistantPage() {
           <select
             value={model}
             onChange={(e) => setModel(e.target.value)}
-            className="rounded-md bg-white/5 px-2 py-1 text-sm outline-none"
+            className="rounded-md bg-foreground/5 px-2 py-1 text-sm outline-none"
           >
             {models.map((m) => (
               <option key={m.name} value={m.name}>{m.name}</option>
@@ -341,7 +441,26 @@ export function AiAssistantPage() {
                 onClick={() => setImprovementType(type)}
                 className={cn(
                   'rounded-md px-2.5 py-1 text-xs capitalize',
-                  improvementType === type ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-white/5',
+                  improvementType === type ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-foreground/5',
+                )}
+              >
+                {type}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Diagram type selector */}
+        {mode === 'diagram' && (
+          <div className="glass-card mb-4 flex items-center gap-2 p-3">
+            <span className="text-sm text-muted-foreground">Type:</span>
+            {['flowchart', 'sequence', 'state', 'mindmap'].map((type) => (
+              <button
+                key={type}
+                onClick={() => setDiagramType(type)}
+                className={cn(
+                  'rounded-md px-2.5 py-1 text-xs capitalize',
+                  diagramType === type ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-foreground/5',
                 )}
               >
                 {type}
@@ -360,12 +479,14 @@ export function AiAssistantPage() {
                 {mode === 'improve' && 'Select a page and improvement type'}
                 {mode === 'generate' && 'Describe the article you want to generate'}
                 {mode === 'summarize' && 'Select a page to summarize'}
+                {mode === 'diagram' && 'Generate a diagram from a page'}
               </p>
               <p className="text-sm text-muted-foreground">
                 {mode === 'ask' && 'Your questions will be answered using RAG over your Confluence pages'}
                 {mode === 'improve' && page ? `Ready to improve: ${page.title}` : 'Open a page first'}
                 {mode === 'generate' && 'AI will create a full article based on your prompt'}
                 {mode === 'summarize' && page ? `Ready to summarize: ${page.title}` : 'Open a page first'}
+                {mode === 'diagram' && page ? `Ready to diagram: ${page.title}` : 'Open a page first'}
               </p>
             </div>
           )}
@@ -387,10 +508,10 @@ export function AiAssistantPage() {
                   'max-w-[80%] rounded-lg px-4 py-3 text-sm',
                   msg.role === 'user'
                     ? 'bg-primary/15 text-foreground'
-                    : 'bg-white/5',
+                    : 'bg-foreground/5',
                 )}
               >
-                <div className="prose prose-invert prose-sm max-w-none">
+                <div className={cn('prose prose-sm max-w-none', !isLight && 'prose-invert')}>
                   {msg.content ? (
                     <Markdown remarkPlugins={[remarkGfm]}>{msg.content}</Markdown>
                   ) : (isStreaming && i === messages.length - 1 ? (
@@ -421,6 +542,11 @@ export function AiAssistantPage() {
               }}
               onReject={() => setShowDiffView(false)}
             />
+          )}
+
+          {/* Mermaid diagram for diagram mode */}
+          {mode === 'diagram' && diagramCode && !isStreaming && (
+            <MermaidDiagram code={diagramCode} className="mt-4" />
           )}
         </div>
 
@@ -453,7 +579,11 @@ export function AiAssistantPage() {
               {isStreaming ? (
                 <><Loader2 size={14} className="animate-spin" /> Processing...</>
               ) : (
-                <>{mode === 'improve' ? <><Wand2 size={14} /> Improve Page</> : <><ListCollapse size={14} /> Summarize Page</>}</>
+                <>
+                  {mode === 'improve' && <><Wand2 size={14} /> Improve Page</>}
+                  {mode === 'summarize' && <><ListCollapse size={14} /> Summarize Page</>}
+                  {mode === 'diagram' && <><GitBranch size={14} /> Generate Diagram</>}
+                </>
               )}
             </button>
           )}
