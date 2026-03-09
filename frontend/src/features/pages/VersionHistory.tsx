@@ -5,6 +5,7 @@ import { History, ChevronRight, Eye, GitCompare, Sparkles, Loader2, X } from 'lu
 import { apiFetch } from '../../shared/lib/api';
 import { DiffView } from '../../shared/components/DiffView';
 import { cn } from '../../shared/lib/cn';
+import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 
 interface PageVersionSummary {
   versionNumber: number;
@@ -58,6 +59,7 @@ interface VersionHistoryProps {
 }
 
 export function VersionHistory({ pageId, currentBodyText: _currentBodyText, model }: VersionHistoryProps) {
+  const isLight = useIsLightTheme();
   const [expanded, setExpanded] = useState(false);
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
   const [compareVersions, setCompareVersions] = useState<[number, number] | null>(null);
@@ -98,13 +100,13 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
       {/* Header */}
       <button
         onClick={() => setExpanded(!expanded)}
-        className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-white/5 transition-colors"
+        className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-foreground/5 transition-colors"
       >
         <div className="flex items-center gap-2">
           <History size={16} className="text-primary" />
           <h3 className="text-sm font-semibold">Version History</h3>
           {versions.length > 0 && (
-            <span className="rounded bg-white/5 px-1.5 py-0.5 text-xs text-muted-foreground">
+            <span className="rounded bg-foreground/5 px-1.5 py-0.5 text-xs text-muted-foreground">
               {versions.length}
             </span>
           )}
@@ -125,7 +127,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
             initial={{ height: 0 }}
             animate={{ height: 'auto' }}
             exit={{ height: 0 }}
-            className="overflow-hidden border-t border-white/10"
+            className="overflow-hidden border-t border-border/50"
           >
             {isLoading ? (
               <div className="flex items-center justify-center gap-2 py-6 text-muted-foreground">
@@ -143,7 +145,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                     key={`${version.versionNumber}-${version.isCurrent}`}
                     className={cn(
                       'flex items-center gap-3 px-4 py-2.5',
-                      i !== versions.length - 1 && 'border-b border-white/5',
+                      i !== versions.length - 1 && 'border-b border-border/30',
                       selectedVersion === version.versionNumber && 'bg-primary/5',
                     )}
                   >
@@ -152,11 +154,11 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                       <div
                         className={cn(
                           'h-2.5 w-2.5 rounded-full',
-                          version.isCurrent ? 'bg-success' : 'bg-white/20',
+                          version.isCurrent ? 'bg-success' : 'bg-foreground/20',
                         )}
                       />
                       {i < versions.length - 1 && (
-                        <div className="mt-1 h-4 w-px bg-white/10" />
+                        <div className="mt-1 h-4 w-px bg-foreground/10" />
                       )}
                     </div>
 
@@ -181,7 +183,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                         onClick={() => setSelectedVersion(
                           selectedVersion === version.versionNumber ? null : version.versionNumber,
                         )}
-                        className="rounded p-1 text-muted-foreground hover:bg-white/5 hover:text-foreground"
+                        className="rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
                         title="Preview version"
                       >
                         <Eye size={12} />
@@ -190,14 +192,14 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                         <>
                           <button
                             onClick={() => handleCompare(version.versionNumber, versions[i + 1].versionNumber)}
-                            className="rounded p-1 text-muted-foreground hover:bg-white/5 hover:text-foreground"
+                            className="rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
                             title="Compare with previous version"
                           >
                             <GitCompare size={12} />
                           </button>
                           <button
                             onClick={() => handleSemanticDiff(versions[i + 1].versionNumber, version.versionNumber)}
-                            className="rounded p-1 text-muted-foreground hover:bg-white/5 hover:text-primary"
+                            className="rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-primary"
                             title="AI semantic diff with previous version"
                           >
                             <Sparkles size={12} />
@@ -212,19 +214,19 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
 
             {/* Version preview */}
             {selectedVersionData && (
-              <div className="border-t border-white/10 p-4">
+              <div className="border-t border-border/50 p-4">
                 <div className="flex items-center justify-between mb-2">
                   <h4 className="text-xs font-medium text-muted-foreground">
                     Version {selectedVersionData.versionNumber} Preview
                   </h4>
                   <button
                     onClick={() => setSelectedVersion(null)}
-                    className="rounded p-1 text-muted-foreground hover:bg-white/5"
+                    className="rounded p-1 text-muted-foreground hover:bg-foreground/5"
                   >
                     <X size={12} />
                   </button>
                 </div>
-                <div className="prose prose-invert max-h-48 overflow-y-auto text-xs">
+                <div className={cn('prose max-h-48 overflow-y-auto text-xs', !isLight && 'prose-invert')}>
                   <pre className="whitespace-pre-wrap text-xs text-muted-foreground">
                     {selectedVersionData.bodyText ?? 'No content available'}
                   </pre>
@@ -244,7 +246,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
 
             {/* Semantic diff */}
             {showSemanticDiff && (
-              <div className="border-t border-white/10 p-4">
+              <div className="border-t border-border/50 p-4">
                 <div className="flex items-center justify-between mb-2">
                   <h4 className="text-xs font-medium text-muted-foreground flex items-center gap-1">
                     <Sparkles size={12} className="text-primary" />
@@ -252,7 +254,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                   </h4>
                   <button
                     onClick={() => { setShowSemanticDiff(false); setCompareVersions(null); }}
-                    className="rounded p-1 text-muted-foreground hover:bg-white/5"
+                    className="rounded p-1 text-muted-foreground hover:bg-foreground/5"
                   >
                     <X size={12} />
                   </button>
@@ -267,7 +269,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                     Failed to generate semantic diff.
                   </p>
                 ) : semanticDiffMutation.data ? (
-                  <div className="prose prose-invert max-h-48 overflow-y-auto text-sm">
+                  <div className={cn('prose max-h-48 overflow-y-auto text-sm', !isLight && 'prose-invert')}>
                     <pre className="whitespace-pre-wrap text-xs">{semanticDiffMutation.data.diff}</pre>
                   </div>
                 ) : null}
@@ -299,7 +301,7 @@ function CompareView({
 
   if (!version1 || !version2) {
     return (
-      <div className="border-t border-white/10 p-4">
+      <div className="border-t border-border/50 p-4">
         <div className="flex items-center justify-center gap-2 py-4 text-muted-foreground">
           <Loader2 size={14} className="animate-spin" />
           <span className="text-sm">Loading versions for comparison...</span>
@@ -309,14 +311,14 @@ function CompareView({
   }
 
   return (
-    <div className="border-t border-white/10">
+    <div className="border-t border-border/50">
       <div className="flex items-center justify-between px-4 py-2">
         <h4 className="text-xs font-medium text-muted-foreground">
           Comparing v{v1} vs v{v2}
         </h4>
         <button
           onClick={onClose}
-          className="rounded p-1 text-muted-foreground hover:bg-white/5"
+          className="rounded p-1 text-muted-foreground hover:bg-foreground/5"
         >
           <X size={12} />
         </button>

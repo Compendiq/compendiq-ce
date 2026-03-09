@@ -50,7 +50,7 @@ export function KnowledgeGaps() {
       {/* Header */}
       <button
         onClick={() => setExpanded(!expanded)}
-        className="flex w-full items-center justify-between px-5 py-4 text-left hover:bg-white/5 transition-colors"
+        className="flex w-full items-center justify-between px-5 py-4 text-left hover:bg-foreground/5 transition-colors"
       >
         <div className="flex items-center gap-3">
           <div className="rounded-lg bg-warning/10 p-2">
@@ -68,11 +68,11 @@ export function KnowledgeGaps() {
 
       {/* Expanded list */}
       {expanded && (
-        <div className="border-t border-white/10">
+        <div className="border-t border-border/50">
           {isLoading ? (
             <div className="space-y-2 p-4">
               {[1, 2, 3].map((i) => (
-                <div key={i} className="h-10 animate-pulse rounded-lg bg-white/5" />
+                <div key={i} className="h-10 animate-pulse rounded-lg bg-foreground/5" />
               ))}
             </div>
           ) : gapCount === 0 ? (
@@ -89,7 +89,7 @@ export function KnowledgeGaps() {
                   key={gap.query}
                   className={cn(
                     'flex items-center justify-between gap-3 px-5 py-3',
-                    i !== data!.gaps.length - 1 && 'border-b border-white/5',
+                    i !== data!.gaps.length - 1 && 'border-b border-border/30',
                   )}
                 >
                   <div className="min-w-0 flex-1">

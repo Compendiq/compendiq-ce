@@ -11,6 +11,7 @@ import { apiFetch } from '../../shared/lib/api';
 import { streamSSE } from '../../shared/lib/sse';
 import { usePage, useEmbeddingStatus } from '../../shared/hooks/use-pages';
 import { cn } from '../../shared/lib/cn';
+import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { DiffView } from '../../shared/components/DiffView';
 import { MermaidDiagram } from '../../shared/components/MermaidDiagram';
 import { SourceCitations, type Source } from './SourceCitations';
@@ -35,6 +36,7 @@ export function AiAssistantPage() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const pageId = searchParams.get('pageId');
+  const isLight = useIsLightTheme();
 
   const [mode, setMode] = useState<Mode>(pageId ? 'improve' : 'ask');
   const [messages, setMessages] = useState<Message[]>([]);
@@ -313,9 +315,9 @@ export function AiAssistantPage() {
       {/* Sidebar - Conversation History */}
       <div className="hidden w-64 flex-col lg:flex">
         <div className="glass-card flex flex-col h-full">
-          <div className="flex items-center justify-between border-b border-white/10 p-3">
+          <div className="flex items-center justify-between border-b border-border/50 p-3">
             <span className="text-sm font-medium">Conversations</span>
-            <button onClick={startNewConversation} className="rounded p-1 hover:bg-white/5" title="New conversation">
+            <button onClick={startNewConversation} className="rounded p-1 hover:bg-foreground/5" title="New conversation">
               <Plus size={16} />
             </button>
           </div>
@@ -325,7 +327,7 @@ export function AiAssistantPage() {
                 key={conv.id}
                 className={cn(
                   'group flex items-center gap-2 rounded-md px-2 py-1.5 text-sm cursor-pointer',
-                  conversationId === conv.id ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-white/5',
+                  conversationId === conv.id ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-foreground/5',
                 )}
               >
                 <button onClick={() => loadConversation(conv.id)} className="flex-1 truncate text-left">
@@ -333,7 +335,7 @@ export function AiAssistantPage() {
                 </button>
                 <button
                   onClick={(e) => { e.stopPropagation(); deleteConversation(conv.id); }}
-                  className="opacity-0 group-hover:opacity-100 rounded p-0.5 hover:bg-white/10"
+                  className="opacity-0 group-hover:opacity-100 rounded p-0.5 hover:bg-foreground/10"
                 >
                   <Trash2 size={12} />
                 </button>
@@ -343,7 +345,7 @@ export function AiAssistantPage() {
 
           {/* Embedding status */}
           {embeddingStatus && (
-            <div className="border-t border-white/10 p-3 text-xs text-muted-foreground">
+            <div className="border-t border-border/50 p-3 text-xs text-muted-foreground">
               <p>Embeddings: {embeddingStatus.totalEmbeddings}</p>
               {embeddingStatus.dirtyPages > 0 && (
                 <p className="text-warning">{embeddingStatus.dirtyPages} pages need embedding</p>
@@ -369,7 +371,7 @@ export function AiAssistantPage() {
               onClick={() => setMode(key)}
               className={cn(
                 'flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors',
-                mode === key ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-white/5',
+                mode === key ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-foreground/5',
               )}
             >
               <Icon size={14} /> {label}
@@ -381,7 +383,7 @@ export function AiAssistantPage() {
           <select
             value={model}
             onChange={(e) => setModel(e.target.value)}
-            className="rounded-md bg-white/5 px-2 py-1 text-sm outline-none"
+            className="rounded-md bg-foreground/5 px-2 py-1 text-sm outline-none"
           >
             {models.map((m) => (
               <option key={m.name} value={m.name}>{m.name}</option>
@@ -405,7 +407,7 @@ export function AiAssistantPage() {
                 onClick={() => setImprovementType(type)}
                 className={cn(
                   'rounded-md px-2.5 py-1 text-xs capitalize',
-                  improvementType === type ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-white/5',
+                  improvementType === type ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-foreground/5',
                 )}
               >
                 {type}
@@ -424,7 +426,7 @@ export function AiAssistantPage() {
                 onClick={() => setDiagramType(type)}
                 className={cn(
                   'rounded-md px-2.5 py-1 text-xs capitalize',
-                  diagramType === type ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-white/5',
+                  diagramType === type ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-foreground/5',
                 )}
               >
                 {type}
@@ -472,10 +474,10 @@ export function AiAssistantPage() {
                   'max-w-[80%] rounded-lg px-4 py-3 text-sm',
                   msg.role === 'user'
                     ? 'bg-primary/15 text-foreground'
-                    : 'bg-white/5',
+                    : 'bg-foreground/5',
                 )}
               >
-                <div className="prose prose-invert prose-sm max-w-none">
+                <div className={cn('prose prose-sm max-w-none', !isLight && 'prose-invert')}>
                   {msg.content ? (
                     <Markdown remarkPlugins={[remarkGfm]}>{msg.content}</Markdown>
                   ) : (isStreaming && i === messages.length - 1 ? (

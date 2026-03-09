@@ -40,6 +40,9 @@
   --glass-border-hover: oklch(1 0 0 / 0.2);
   --glass-shadow: oklch(0 0 0 / 0.3);
   --glass-shadow-hover: oklch(0 0 0 / 0.4);
+
+  /* Inline code color (overridden for light themes) */
+  --inline-code-color: oklch(0.85 0.12 30);
 }
 
 /* ===========================
@@ -239,18 +242,8 @@
    BRIGHT THEMES
    =========================== */
 
-/* Light theme glass overrides (shared) */
-[data-theme="cloud-white"],
-[data-theme="lavender-bloom"],
-[data-theme="mint-fresh"],
-[data-theme="peach-blossom"],
-[data-theme="sky-blue"],
-[data-theme="lemon-drop"],
-[data-theme="rose-garden"],
-[data-theme="sage-light"],
-[data-theme="sand-dune"],
-[data-theme="ice-crystal"],
-[data-theme="catppuccin-latte"] {
+/* Light theme glass overrides (shared via data-theme-type attribute) */
+[data-theme-type="light"] {
   --glass-border: oklch(0 0 0 / 0.08);
   --glass-border-hover: oklch(0 0 0 / 0.15);
   --glass-shadow: oklch(0 0 0 / 0.06);
@@ -259,6 +252,7 @@
   --color-success: oklch(0.55 0.2 145);
   --color-warning: oklch(0.6 0.18 80);
   --color-info: oklch(0.5 0.18 240);
+  --inline-code-color: oklch(0.45 0.15 25);
 }
 
 /* ---- Theme: Cloud White ---- */
@@ -605,7 +599,7 @@
   padding: 0.15em 0.35em;
   font-size: 0.875em;
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
-  color: oklch(0.85 0.12 30);
+  color: var(--inline-code-color, oklch(0.85 0.12 30));
   word-break: break-word;
 }
 
@@ -979,17 +973,7 @@
 /* ============================================
    Light theme prose overrides
    ============================================ */
-[data-theme="cloud-white"] .prose,
-[data-theme="lavender-bloom"] .prose,
-[data-theme="mint-fresh"] .prose,
-[data-theme="peach-blossom"] .prose,
-[data-theme="sky-blue"] .prose,
-[data-theme="lemon-drop"] .prose,
-[data-theme="rose-garden"] .prose,
-[data-theme="sage-light"] .prose,
-[data-theme="sand-dune"] .prose,
-[data-theme="ice-crystal"] .prose,
-[data-theme="catppuccin-latte"] .prose {
+[data-theme-type="light"] .prose {
   --tw-prose-body: var(--color-foreground);
   --tw-prose-headings: var(--color-foreground);
   --tw-prose-lead: var(--color-muted-foreground);
@@ -1011,50 +995,78 @@
 }
 
 /* Light theme inline code overrides */
-[data-theme="cloud-white"] .prose :where(code):not(:where(pre code)),
-[data-theme="lavender-bloom"] .prose :where(code):not(:where(pre code)),
-[data-theme="mint-fresh"] .prose :where(code):not(:where(pre code)),
-[data-theme="peach-blossom"] .prose :where(code):not(:where(pre code)),
-[data-theme="sky-blue"] .prose :where(code):not(:where(pre code)),
-[data-theme="lemon-drop"] .prose :where(code):not(:where(pre code)),
-[data-theme="rose-garden"] .prose :where(code):not(:where(pre code)),
-[data-theme="sage-light"] .prose :where(code):not(:where(pre code)),
-[data-theme="sand-dune"] .prose :where(code):not(:where(pre code)),
-[data-theme="ice-crystal"] .prose :where(code):not(:where(pre code)),
-[data-theme="catppuccin-latte"] .prose :where(code):not(:where(pre code)) {
+[data-theme-type="light"] .prose :where(code):not(:where(pre code)) {
   background: oklch(0 0 0 / 0.06);
   border-color: oklch(0 0 0 / 0.1);
   color: oklch(0.45 0.15 25);
 }
 
 /* Light theme code blocks */
-[data-theme="cloud-white"] .prose :where(pre),
-[data-theme="lavender-bloom"] .prose :where(pre),
-[data-theme="mint-fresh"] .prose :where(pre),
-[data-theme="peach-blossom"] .prose :where(pre),
-[data-theme="sky-blue"] .prose :where(pre),
-[data-theme="lemon-drop"] .prose :where(pre),
-[data-theme="rose-garden"] .prose :where(pre),
-[data-theme="sage-light"] .prose :where(pre),
-[data-theme="sand-dune"] .prose :where(pre),
-[data-theme="ice-crystal"] .prose :where(pre),
-[data-theme="catppuccin-latte"] .prose :where(pre) {
+[data-theme-type="light"] .prose :where(pre) {
   background: oklch(from var(--color-muted) l c h / 0.4);
   border-color: oklch(0 0 0 / 0.08);
 }
 
-[data-theme="cloud-white"] .prose :where(pre code),
-[data-theme="lavender-bloom"] .prose :where(pre code),
-[data-theme="mint-fresh"] .prose :where(pre code),
-[data-theme="peach-blossom"] .prose :where(pre code),
-[data-theme="sky-blue"] .prose :where(pre code),
-[data-theme="lemon-drop"] .prose :where(pre code),
-[data-theme="rose-garden"] .prose :where(pre code),
-[data-theme="sage-light"] .prose :where(pre code),
-[data-theme="sand-dune"] .prose :where(pre code),
-[data-theme="ice-crystal"] .prose :where(pre code),
-[data-theme="catppuccin-latte"] .prose :where(pre code) {
+[data-theme-type="light"] .prose :where(pre code) {
   color: oklch(0.3 0.02 280);
+}
+
+/* ============================================
+   Light theme syntax highlighting overrides
+   ============================================ */
+[data-theme-type="light"] .hljs-comment,
+[data-theme-type="light"] .hljs-quote {
+  color: oklch(0.5 0.01 280);
+}
+
+[data-theme-type="light"] .hljs-keyword,
+[data-theme-type="light"] .hljs-selector-tag {
+  color: oklch(0.45 0.22 290);
+}
+
+[data-theme-type="light"] .hljs-string,
+[data-theme-type="light"] .hljs-template-tag,
+[data-theme-type="light"] .hljs-template-variable,
+[data-theme-type="light"] .hljs-addition {
+  color: oklch(0.45 0.18 145);
+}
+
+[data-theme-type="light"] .hljs-number,
+[data-theme-type="light"] .hljs-literal,
+[data-theme-type="light"] .hljs-variable,
+[data-theme-type="light"] .hljs-link {
+  color: oklch(0.5 0.18 55);
+}
+
+[data-theme-type="light"] .hljs-title,
+[data-theme-type="light"] .hljs-title\.class_,
+[data-theme-type="light"] .hljs-title\.function_ {
+  color: oklch(0.48 0.16 220);
+}
+
+[data-theme-type="light"] .hljs-type,
+[data-theme-type="light"] .hljs-built_in {
+  color: oklch(0.45 0.17 195);
+}
+
+[data-theme-type="light"] .hljs-attr,
+[data-theme-type="light"] .hljs-attribute {
+  color: oklch(0.5 0.16 80);
+}
+
+[data-theme-type="light"] .hljs-symbol,
+[data-theme-type="light"] .hljs-bullet {
+  color: oklch(0.45 0.2 350);
+}
+
+[data-theme-type="light"] .hljs-meta,
+[data-theme-type="light"] .hljs-selector-id,
+[data-theme-type="light"] .hljs-selector-class {
+  color: oklch(0.45 0.18 260);
+}
+
+[data-theme-type="light"] .hljs-deletion {
+  color: oklch(0.5 0.22 25);
 }
 
 /* TipTap editor styles */

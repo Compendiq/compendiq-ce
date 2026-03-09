@@ -18,6 +18,7 @@ import { AutoTagger } from './AutoTagger';
 import { TagEditor } from './TagEditor';
 import { VersionHistory } from './VersionHistory';
 import { FlowchartGenerator } from './FlowchartGenerator';
+import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { toast } from 'sonner';
 
 // Configure DOMPurify to preserve attributes needed for draw.io and images
@@ -49,7 +50,7 @@ function ImageLightbox({ src, alt, onClose }: { src: string; alt: string; onClos
     >
       <button
         onClick={onClose}
-        className="absolute top-4 right-4 rounded-full bg-white/10 p-2 text-white hover:bg-white/20"
+        className="absolute top-4 right-4 rounded-full bg-foreground/10 p-2 text-white hover:bg-foreground/20"
         aria-label="Close preview"
       >
         <X size={20} />
@@ -70,6 +71,7 @@ export function PageViewPage() {
   const { data: page, isLoading } = usePage(id);
   const updateMutation = useUpdatePage();
   const deleteMutation = useDeletePage();
+  const isLight = useIsLightTheme();
 
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState(false);
@@ -219,14 +221,14 @@ export function PageViewPage() {
       {/* Top bar */}
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-3 min-w-0">
-          <button onClick={() => navigate('/pages')} className="rounded p-1.5 text-muted-foreground hover:bg-white/5">
+          <button onClick={() => navigate('/pages')} className="rounded p-1.5 text-muted-foreground hover:bg-foreground/5">
             <ArrowLeft size={18} />
           </button>
           {editing ? (
             <input
               value={editTitle}
               onChange={(e) => setEditTitle(e.target.value)}
-              className="flex-1 rounded-md bg-white/5 px-3 py-1.5 text-lg font-bold outline-none focus:ring-1 focus:ring-primary"
+              className="flex-1 rounded-md bg-foreground/5 px-3 py-1.5 text-lg font-bold outline-none focus:ring-1 focus:ring-primary"
             />
           ) : (
             <h1 className="truncate text-xl font-bold">{page.title}</h1>
@@ -238,7 +240,7 @@ export function PageViewPage() {
             <>
               <button
                 onClick={cancelEditing}
-                className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-white/5"
+                className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
               >
                 <X size={14} /> Cancel
               </button>
@@ -259,13 +261,13 @@ export function PageViewPage() {
               />
               <button
                 onClick={() => navigate(`/ai?pageId=${id}`)}
-                className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-white/5"
+                className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
               >
                 <Wand2 size={14} /> AI Improve
               </button>
               <button
                 onClick={startEditing}
-                className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-white/5"
+                className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
               >
                 <Edit3 size={14} /> Edit
               </button>
@@ -316,7 +318,7 @@ export function PageViewPage() {
           <div className="flex gap-4">
             <div
               ref={contentRef}
-              className="glass-card prose prose-invert max-w-none flex-1 p-6"
+              className={`glass-card prose max-w-none flex-1 p-6${isLight ? '' : ' prose-invert'}`}
               dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
             />
             <div className="hidden w-64 shrink-0 space-y-4 lg:block sticky top-4 self-start max-h-[calc(100vh-2rem)] overflow-y-auto">

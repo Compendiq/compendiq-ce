@@ -137,7 +137,7 @@ export function TableOfContents({ htmlContent, contentRef }: TableOfContentsProp
                     heading.level === 3 && 'pl-6 text-xs',
                     activeId === heading.id
                       ? 'bg-primary/15 text-primary'
-                      : 'text-muted-foreground hover:bg-white/5 hover:text-foreground',
+                      : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
                   )}
                 >
                   {heading.text}

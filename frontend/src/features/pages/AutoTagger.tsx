@@ -88,7 +88,7 @@ export function AutoTagger({ pageId, currentLabels, model }: AutoTaggerProps) {
       <button
         onClick={() => autoTagMutation.mutate()}
         disabled={autoTagMutation.isPending}
-        className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-white/5 disabled:opacity-50"
+        className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5 disabled:opacity-50"
         title="Suggest tags using AI"
       >
         {autoTagMutation.isPending ? (
@@ -117,14 +117,14 @@ export function AutoTagger({ pageId, currentLabels, model }: AutoTaggerProps) {
               className="glass-card mx-4 w-full max-w-md overflow-hidden"
             >
               {/* Dialog header */}
-              <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
+              <div className="flex items-center justify-between border-b border-border/50 px-5 py-4">
                 <div className="flex items-center gap-2">
                   <Tag size={16} className="text-primary" />
                   <h3 className="font-semibold">Suggested Tags</h3>
                 </div>
                 <button
                   onClick={() => setShowDialog(false)}
-                  className="rounded p-1 text-muted-foreground hover:bg-white/5"
+                  className="rounded p-1 text-muted-foreground hover:bg-foreground/5"
                 >
                   <X size={16} />
                 </button>
@@ -144,7 +144,7 @@ export function AutoTagger({ pageId, currentLabels, model }: AutoTaggerProps) {
                         'flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-medium transition-colors',
                         selectedTags.has(tag)
                           ? 'bg-primary/20 text-primary ring-1 ring-primary/30'
-                          : 'bg-white/5 text-muted-foreground hover:bg-white/10',
+                          : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
                       )}
                     >
                       {selectedTags.has(tag) && <Check size={12} />}
@@ -160,7 +160,7 @@ export function AutoTagger({ pageId, currentLabels, model }: AutoTaggerProps) {
                       {currentLabels.map((label) => (
                         <span
                           key={label}
-                          className="rounded bg-white/5 px-2 py-0.5 text-xs text-muted-foreground"
+                          className="rounded bg-foreground/5 px-2 py-0.5 text-xs text-muted-foreground"
                         >
                           {label}
                         </span>
@@ -171,10 +171,10 @@ export function AutoTagger({ pageId, currentLabels, model }: AutoTaggerProps) {
               </div>
 
               {/* Actions */}
-              <div className="flex items-center justify-end gap-3 border-t border-white/10 px-5 py-3">
+              <div className="flex items-center justify-end gap-3 border-t border-border/50 px-5 py-3">
                 <button
                   onClick={() => setShowDialog(false)}
-                  className="rounded-lg border border-white/10 px-4 py-2 text-sm text-muted-foreground hover:bg-white/5"
+                  className="rounded-lg border border-border/50 px-4 py-2 text-sm text-muted-foreground hover:bg-foreground/5"
                 >
                   Cancel
                 </button>
