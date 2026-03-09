@@ -1069,6 +1069,52 @@
   color: oklch(0.5 0.22 25);
 }
 
+/* ============================================
+   Code block copy button
+   ============================================ */
+
+.code-copy-btn {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  padding: 0.25rem 0.625rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--color-muted-foreground);
+  background: oklch(from var(--color-card) l c h / 0.8);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+  backdrop-filter: blur(8px);
+  z-index: 1;
+}
+
+pre:hover .code-copy-btn {
+  opacity: 1;
+}
+
+.code-copy-btn:hover {
+  background: oklch(from var(--color-primary) l c h / 0.15);
+  color: var(--color-primary);
+  border-color: oklch(from var(--color-primary) l c h / 0.3);
+}
+
+.code-copy-btn.copied {
+  opacity: 1;
+  color: var(--color-success);
+  border-color: oklch(from var(--color-success) l c h / 0.3);
+}
+
+/* ============================================
+   Article viewer — TipTap read-only overrides
+   ============================================ */
+
+.article-viewer .tiptap {
+  padding: 1.5rem;
+}
+
 /* TipTap editor styles */
 .tiptap {
   outline: none;
