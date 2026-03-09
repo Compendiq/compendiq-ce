@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { PageTreeView, buildTree, countDescendants } from './PageTreeView';
@@ -122,7 +122,7 @@ describe('PageTreeView', () => {
     expect(screen.getByText('Child 1B')).toBeInTheDocument();
   });
 
-  it('collapses expanded node', () => {
+  it('collapses expanded node', async () => {
     render(<PageTreeView pages={hierarchyPages} />, { wrapper: Wrapper });
 
     // Expand
@@ -133,7 +133,9 @@ describe('PageTreeView', () => {
     // Collapse
     const collapseBtn = screen.getByLabelText('Collapse');
     fireEvent.click(collapseBtn);
-    expect(screen.queryByText('Child 1A')).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByText('Child 1A')).not.toBeInTheDocument();
+    });
   });
 
   it('navigates to page on click', () => {
@@ -157,14 +159,16 @@ describe('PageTreeView', () => {
     expect(screen.getByText('Grandchild 1A1')).toBeInTheDocument();
   });
 
-  it('Collapse All hides all nested nodes', () => {
+  it('Collapse All hides all nested nodes', async () => {
     render(<PageTreeView pages={hierarchyPages} />, { wrapper: Wrapper });
 
     fireEvent.click(screen.getByText('Expand All'));
     expect(screen.getByText('Child 1A')).toBeInTheDocument();
 
     fireEvent.click(screen.getByText('Collapse All'));
-    expect(screen.queryByText('Child 1A')).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByText('Child 1A')).not.toBeInTheDocument();
+    });
   });
 
   it('shows descendant count for nodes with children', () => {

@@ -1,7 +1,15 @@
 import { useState, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { m } from 'framer-motion';
-import { ChevronRight, ChevronDown, FileText, FolderOpen } from 'lucide-react';
+import { m, AnimatePresence } from 'framer-motion';
+import {
+  ChevronRight,
+  FileText,
+  FolderOpen,
+  Folder,
+  ChevronsUpDown,
+  ChevronsDownUp,
+  Hash,
+} from 'lucide-react';
 import { cn } from '../../shared/lib/cn';
 import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
 import type { PageTreeItem } from '../../shared/hooks/use-pages';
@@ -46,16 +54,32 @@ function countDescendants(node: TreeNode): number {
   return count;
 }
 
+const childrenVariants = {
+  hidden: { opacity: 0, height: 0 },
+  visible: {
+    opacity: 1,
+    height: 'auto',
+    transition: { duration: 0.2, ease: 'easeOut' as const },
+  },
+  exit: {
+    opacity: 0,
+    height: 0,
+    transition: { duration: 0.15, ease: 'easeIn' as const },
+  },
+};
+
 function TreeNodeComponent({
   node,
   level = 0,
   expandedSet,
   toggleExpand,
+  isLast = false,
 }: {
   node: TreeNode;
   level?: number;
   expandedSet: Set<string>;
   toggleExpand: (id: string) => void;
+  isLast?: boolean;
 }) {
   const navigate = useNavigate();
   const isExpanded = expandedSet.has(node.page.id);
@@ -63,12 +87,39 @@ function TreeNodeComponent({
   const descendantCount = useMemo(() => countDescendants(node), [node]);
 
   return (
-    <div>
+    <div className="relative">
+      {/* Vertical connector line from parent */}
+      {level > 0 && (
+        <div
+          className="absolute top-0 w-px bg-border/40"
+          style={{
+            left: `${(level - 1) * 20 + 22}px`,
+            height: isLast ? '20px' : '100%',
+          }}
+          aria-hidden="true"
+        />
+      )}
+
+      {/* Horizontal connector line to this node */}
+      {level > 0 && (
+        <div
+          className="absolute top-[20px] h-px bg-border/40"
+          style={{
+            left: `${(level - 1) * 20 + 22}px`,
+            width: '12px',
+          }}
+          aria-hidden="true"
+        />
+      )}
+
       <m.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
+        initial={{ opacity: 0, x: -4 }}
+        animate={{ opacity: 1, x: 0 }}
+        transition={{ duration: 0.15, delay: level * 0.02 }}
         className={cn(
-          'glass-card-hover flex items-center gap-2 py-2 pr-3 text-left',
+          'group relative flex items-center gap-2 rounded-lg py-2 pr-3 transition-colors',
+          'hover:bg-white/[0.06]',
+          level === 0 && 'font-medium',
         )}
         style={{ paddingLeft: `${level * 20 + 12}px` }}
       >
@@ -79,56 +130,95 @@ function TreeNodeComponent({
               e.stopPropagation();
               toggleExpand(node.page.id);
             }}
-            className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-white/10"
+            className={cn(
+              'shrink-0 rounded-md p-1 transition-all duration-200',
+              'text-muted-foreground hover:bg-white/10 hover:text-foreground',
+            )}
             aria-label={isExpanded ? 'Collapse' : 'Expand'}
           >
-            {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            <m.div
+              animate={{ rotate: isExpanded ? 90 : 0 }}
+              transition={{ duration: 0.2, ease: 'easeInOut' }}
+            >
+              <ChevronRight size={14} />
+            </m.div>
           </button>
         ) : (
-          <span className="w-5 shrink-0" />
+          <span className="w-[26px] shrink-0" />
         )}
 
         {/* Page link */}
         <button
           onClick={() => navigate(`/pages/${node.page.id}`)}
-          className="flex min-w-0 flex-1 items-center gap-2"
+          className="flex min-w-0 flex-1 items-center gap-2.5"
         >
-          {hasChildren ? (
-            <FolderOpen size={16} className="shrink-0 text-primary" />
-          ) : (
-            <FileText size={16} className="shrink-0 text-primary" />
-          )}
+          <span
+            className={cn(
+              'flex shrink-0 items-center justify-center rounded-md p-1',
+              hasChildren
+                ? 'bg-primary/10 text-primary'
+                : 'bg-muted/50 text-muted-foreground',
+            )}
+          >
+            {hasChildren ? (
+              isExpanded ? (
+                <FolderOpen size={14} />
+              ) : (
+                <Folder size={14} />
+              )
+            ) : (
+              <FileText size={14} />
+            )}
+          </span>
           <span className="truncate text-sm">{node.page.title}</span>
         </button>
 
-        {/* Metadata */}
-        <div className="flex shrink-0 items-center gap-2">
+        {/* Metadata — visible on hover or always on larger screens */}
+        <div className="flex shrink-0 items-center gap-1.5 opacity-60 transition-opacity group-hover:opacity-100">
           {hasChildren && (
-            <span className="rounded bg-white/5 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+            <span
+              className={cn(
+                'inline-flex items-center gap-1 rounded-full px-2 py-0.5',
+                'bg-primary/10 text-[10px] font-medium text-primary',
+              )}
+            >
+              <Hash size={8} />
               {descendantCount}
             </span>
           )}
-          <span className="text-[10px] text-muted-foreground">{node.page.spaceKey}</span>
+          <span className="rounded-full bg-muted/40 px-2 py-0.5 text-[10px] text-muted-foreground">
+            {node.page.spaceKey}
+          </span>
           {node.page.lastModifiedAt && (
             <FreshnessBadge lastModified={node.page.lastModifiedAt} />
           )}
         </div>
       </m.div>
 
-      {/* Children */}
-      {hasChildren && isExpanded && (
-        <div>
-          {node.children.map((child) => (
-            <TreeNodeComponent
-              key={child.page.id}
-              node={child}
-              level={level + 1}
-              expandedSet={expandedSet}
-              toggleExpand={toggleExpand}
-            />
-          ))}
-        </div>
-      )}
+      {/* Children with animated expand/collapse */}
+      <AnimatePresence initial={false}>
+        {hasChildren && isExpanded && (
+          <m.div
+            key={`children-${node.page.id}`}
+            initial="hidden"
+            animate="visible"
+            exit="exit"
+            variants={childrenVariants}
+            className="relative overflow-hidden"
+          >
+            {node.children.map((child, index) => (
+              <TreeNodeComponent
+                key={child.page.id}
+                node={child}
+                level={level + 1}
+                expandedSet={expandedSet}
+                toggleExpand={toggleExpand}
+                isLast={index === node.children.length - 1}
+              />
+            ))}
+          </m.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -179,32 +269,43 @@ export function PageTreeView({ pages }: PageTreeViewProps) {
   return (
     <div>
       {/* Controls */}
-      <div className="mb-2 flex items-center gap-2 text-xs">
+      <div className="mb-3 flex items-center gap-1.5">
         <button
           onClick={expandAll}
-          className="rounded px-2 py-1 text-muted-foreground hover:bg-white/5 hover:text-foreground"
+          className={cn(
+            'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs transition-colors',
+            'bg-white/[0.04] text-muted-foreground',
+            'hover:bg-white/[0.08] hover:text-foreground',
+          )}
         >
+          <ChevronsUpDown size={13} />
           Expand All
         </button>
         <button
           onClick={collapseAll}
-          className="rounded px-2 py-1 text-muted-foreground hover:bg-white/5 hover:text-foreground"
+          className={cn(
+            'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs transition-colors',
+            'bg-white/[0.04] text-muted-foreground',
+            'hover:bg-white/[0.08] hover:text-foreground',
+          )}
         >
+          <ChevronsDownUp size={13} />
           Collapse All
         </button>
-        <span className="ml-auto text-muted-foreground">
+        <span className="ml-auto text-xs text-muted-foreground">
           {pages.length} pages, {tree.length} root nodes
         </span>
       </div>
 
       {/* Tree */}
-      <div className="space-y-0.5">
-        {tree.map((node) => (
+      <div className="rounded-xl border border-white/[0.06] bg-card/40 p-2 backdrop-blur-sm">
+        {tree.map((node, index) => (
           <TreeNodeComponent
             key={node.page.id}
             node={node}
             expandedSet={expandedIds}
             toggleExpand={toggleExpand}
+            isLast={index === tree.length - 1}
           />
         ))}
       </div>
