@@ -131,7 +131,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
       embeddingModel: process.env.EMBEDDING_MODEL ?? 'nomic-embed-text',
       authConfigured: providerType === 'ollama'
         ? !!process.env.LLM_BEARER_TOKEN
-        : !!process.env.OPENAI_API_KEY,
+        : !!(process.env.LLM_BEARER_TOKEN || process.env.OPENAI_API_KEY),
       authType: getLlmAuthType(),
       verifySsl: isLlmVerifySslEnabled(),
     };
