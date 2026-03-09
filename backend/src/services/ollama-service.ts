@@ -3,9 +3,12 @@ import pLimit from 'p-limit';
 import { sanitizeLlmInput } from '../utils/sanitize-llm-input.js';
 import { logger } from '../utils/logger.js';
 import { ollamaBreakers } from './circuit-breaker.js';
+import { getOllamaBaseUrl, buildOllamaFetch } from '../utils/llm-config.js';
 
+const customFetch = buildOllamaFetch();
 const ollama = new Ollama({
-  host: process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434',
+  host: getOllamaBaseUrl(),
+  ...(customFetch ? { fetch: customFetch } : {}),
 });
 
 // Max 2 concurrent LLM calls
@@ -65,12 +68,18 @@ export async function listModels(): Promise<Array<{ name: string; size: number; 
   });
 }
 
-export async function checkHealth(): Promise<boolean> {
+export interface OllamaHealthResult {
+  connected: boolean;
+  error?: string;
+}
+
+export async function checkHealth(): Promise<OllamaHealthResult> {
   try {
     await ollama.list();
-    return true;
-  } catch {
-    return false;
+    return { connected: true };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    return { connected: false, error: message };
   }
 }
 

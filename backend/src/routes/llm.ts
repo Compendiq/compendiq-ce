@@ -107,9 +107,10 @@ export async function llmRoutes(fastify: FastifyInstance) {
 
   // GET /api/ollama/status
   fastify.get('/ollama/status', async () => {
-    const connected = await checkHealth();
+    const health = await checkHealth();
     return {
-      connected,
+      connected: health.connected,
+      error: health.error,
       embeddingModel: process.env.EMBEDDING_MODEL ?? 'nomic-embed-text',
     };
   });

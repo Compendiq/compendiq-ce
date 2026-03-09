@@ -3,6 +3,8 @@ import { checkConnection as checkPg } from '../db/postgres.js';
 import { checkRedisConnection } from '../plugins/redis.js';
 import { getOllamaCircuitBreakerStatus } from '../services/circuit-breaker.js';
 import { logger } from '../utils/logger.js';
+import { getOllamaBaseUrl, getLlmAuthHeaders, llmDispatcher } from '../utils/llm-config.js';
+import type { Dispatcher } from 'undici';
 
 // Track whether startup checks have passed
 let startupComplete = false;
@@ -11,10 +13,22 @@ export function markStartupComplete(): void {
   startupComplete = true;
 }
 
+/** Build fetch options with TLS dispatcher and auth headers for Ollama health checks. */
+function ollamaFetchOptions(timeoutMs: number): RequestInit & { dispatcher?: Dispatcher } {
+  const opts: RequestInit & { dispatcher?: Dispatcher } = {
+    signal: AbortSignal.timeout(timeoutMs),
+    headers: getLlmAuthHeaders(),
+  };
+  if (llmDispatcher) {
+    opts.dispatcher = llmDispatcher;
+  }
+  return opts;
+}
+
 async function checkOllama(): Promise<boolean> {
   try {
-    const url = process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434';
-    const res = await fetch(`${url}/api/tags`, { signal: AbortSignal.timeout(3000) });
+    const url = getOllamaBaseUrl();
+    const res = await fetch(`${url}/api/tags`, ollamaFetchOptions(3000));
     return res.ok;
   } catch {
     logger.debug('Ollama health check failed');
@@ -24,8 +38,8 @@ async function checkOllama(): Promise<boolean> {
 
 async function checkOllamaModels(): Promise<boolean> {
   try {
-    const url = process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434';
-    const res = await fetch(`${url}/api/tags`, { signal: AbortSignal.timeout(5000) });
+    const url = getOllamaBaseUrl();
+    const res = await fetch(`${url}/api/tags`, ollamaFetchOptions(5000));
     if (!res.ok) return false;
     const data = (await res.json()) as { models?: Array<{ name: string }> };
     return Array.isArray(data.models) && data.models.length > 0;
