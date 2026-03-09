@@ -212,5 +212,6 @@ export function PageTreeView({ pages }: PageTreeViewProps) {
   );
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export { buildTree, countDescendants };
 export type { TreeNode };
