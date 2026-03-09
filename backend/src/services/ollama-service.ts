@@ -12,18 +12,30 @@ import { sanitizeLlmInput } from '../utils/sanitize-llm-input.js';
 import { logger } from '../utils/logger.js';
 import { OllamaProvider } from './ollama-provider.js';
 import { OpenAIProvider } from './openai-service.js';
-import type {
-  LlmProvider,
-  LlmProviderType,
-  ChatMessage,
-  StreamChunk,
-  HealthResult,
-  LlmModel,
-} from './llm-provider.js';
+import type { LlmProvider, LlmProviderType } from './llm-provider.js';
 
-// Re-export types from the provider interface for backward compatibility
-export type { ChatMessage, StreamChunk };
-export type { HealthResult as OllamaHealthResult };
+// Local type definitions (also defined in llm-provider.ts — kept here to avoid circular imports)
+export interface ChatMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
+
+export interface StreamChunk {
+  content: string;
+  done: boolean;
+}
+
+export interface LlmModel {
+  name: string;
+  size: number;
+  modifiedAt: Date;
+  digest: string;
+}
+
+export interface OllamaHealthResult {
+  connected: boolean;
+  error?: string;
+}
 
 // ─── SSL / Auth config (shared across providers) ────────────────────────────
 
@@ -129,7 +141,7 @@ export async function listModels(): Promise<LlmModel[]> {
   return getActiveProvider().listModels();
 }
 
-export async function checkHealth(): Promise<HealthResult> {
+export async function checkHealth(): Promise<OllamaHealthResult> {
   return getActiveProvider().checkHealth();
 }
 

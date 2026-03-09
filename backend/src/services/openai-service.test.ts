@@ -14,6 +14,11 @@ vi.mock('../utils/logger.js', () => ({
 
 import { OpenAIProvider } from './openai-service.js';
 
+/** Create a mock embedding array of exactly 768 dimensions. */
+function mockEmbedding(seed: number): number[] {
+  return Array.from({ length: 768 }, (_, i) => seed + i * 0.001);
+}
+
 describe('OpenAIProvider', () => {
   const originalEnv = { ...process.env };
   let fetchSpy: ReturnType<typeof vi.spyOn>;
@@ -134,8 +139,8 @@ describe('OpenAIProvider', () => {
         new Response(
           JSON.stringify({
             data: [
-              { index: 1, embedding: [0.2, 0.3] },
-              { index: 0, embedding: [0.1, 0.4] },
+              { index: 1, embedding: mockEmbedding(0.2) },
+              { index: 0, embedding: mockEmbedding(0.1) },
             ],
           }),
           { status: 200 },
@@ -147,15 +152,15 @@ describe('OpenAIProvider', () => {
 
       expect(result).toHaveLength(2);
       // Should be sorted by index
-      expect(result[0]).toEqual([0.1, 0.4]);
-      expect(result[1]).toEqual([0.2, 0.3]);
+      expect(result[0]).toEqual(mockEmbedding(0.1));
+      expect(result[1]).toEqual(mockEmbedding(0.2));
     });
 
     it('should handle single text input', async () => {
       fetchSpy.mockResolvedValueOnce(
         new Response(
           JSON.stringify({
-            data: [{ index: 0, embedding: [0.1, 0.2, 0.3] }],
+            data: [{ index: 0, embedding: mockEmbedding(0.1) }],
           }),
           { status: 200 },
         ),
@@ -165,7 +170,7 @@ describe('OpenAIProvider', () => {
       const result = await provider.generateEmbedding('single text');
 
       expect(result).toHaveLength(1);
-      expect(result[0]).toEqual([0.1, 0.2, 0.3]);
+      expect(result[0]).toEqual(mockEmbedding(0.1));
     });
   });
 

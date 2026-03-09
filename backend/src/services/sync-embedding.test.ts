@@ -14,6 +14,7 @@ vi.mock('./embedding-service.js', () => ({
 vi.mock('./confluence-client.js', () => ({
   ConfluenceClient: class MockConfluenceClient {
     getSpaces = mocks.getSpaces;
+    getAllSpaces = vi.fn().mockResolvedValue([]);
     getAllPagesInSpace = mocks.getAllPagesInSpace;
     getModifiedPages = vi.fn().mockResolvedValue([]);
   },
