@@ -1,9 +1,11 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { m } from 'framer-motion';
-import { Search, FileText, Plus, RefreshCw, ChevronLeft, ChevronRight, FolderOpen, Filter, X, List } from 'lucide-react';
+import { Search, FileText, Plus, RefreshCw, ChevronLeft, ChevronRight, FolderOpen, Filter, X, List, Loader2 } from 'lucide-react';
 import DOMPurify from 'dompurify';
-import { usePages, usePageFilterOptions, usePage } from '../../shared/hooks/use-pages';
+import { toast } from 'sonner';
+import { usePages, usePageFilterOptions, usePage, useEmbeddingStatus } from '../../shared/hooks/use-pages';
 import { useSpaces, useSync, useSyncStatus } from '../../shared/hooks/use-spaces';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
@@ -63,6 +65,19 @@ export function PagesPage() {
   });
   const syncMutation = useSync();
   const { data: syncStatus } = useSyncStatus();
+  const { data: embeddingStatusData } = useEmbeddingStatus();
+  const queryClient = useQueryClient();
+  const wasProcessingRef = useRef(false);
+
+  useEffect(() => {
+    if (embeddingStatusData?.isProcessing) {
+      wasProcessingRef.current = true;
+    } else if (wasProcessingRef.current && embeddingStatusData && !embeddingStatusData.isProcessing) {
+      wasProcessingRef.current = false;
+      toast.success('Embedding complete — all pages are up to date');
+      queryClient.invalidateQueries({ queryKey: ['pages'] });
+    }
+  }, [embeddingStatusData, queryClient]);
 
   const activeFilterCount = [author, labels, freshness, embeddingStatus, dateFrom, dateTo].filter(Boolean).length;
 
@@ -140,6 +155,27 @@ export function PagesPage() {
               className="h-full rounded-full bg-primary transition-all"
               style={{ width: `${(syncStatus.progress.current / syncStatus.progress.total) * 100}%` }}
             />
+          </div>
+        </div>
+      )}
+
+      {/* Embedding progress */}
+      {embeddingStatusData?.isProcessing && (
+        <div className="glass-card flex items-center gap-3 p-3 border border-primary/30" data-testid="embedding-progress-banner">
+          <Loader2 size={16} className="animate-spin text-primary" />
+          <span className="text-sm">
+            Embedding in progress — {embeddingStatusData.dirtyPages} pages remaining
+          </span>
+          <div className="ml-auto flex items-center gap-2">
+            <div className="h-1.5 w-32 overflow-hidden rounded-full bg-foreground/10">
+              <div
+                className="h-full rounded-full bg-primary transition-all"
+                style={{ width: `${((embeddingStatusData.totalPages - embeddingStatusData.dirtyPages) / Math.max(embeddingStatusData.totalPages, 1)) * 100}%` }}
+              />
+            </div>
+            <span className="text-xs text-muted-foreground">
+              {embeddingStatusData.totalPages - embeddingStatusData.dirtyPages}/{embeddingStatusData.totalPages}
+            </span>
           </div>
         </div>
       )}
