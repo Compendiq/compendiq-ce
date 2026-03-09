@@ -3,7 +3,7 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import { m } from 'framer-motion';
 import {
   Send, Bot, User, Loader2, MessageSquare, Plus, Trash2,
-  Wand2, FileText, ListCollapse, Sparkles,
+  Wand2, FileText, ListCollapse, Sparkles, GitBranch,
 } from 'lucide-react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -12,6 +12,7 @@ import { streamSSE } from '../../shared/lib/sse';
 import { usePage, useEmbeddingStatus } from '../../shared/hooks/use-pages';
 import { cn } from '../../shared/lib/cn';
 import { DiffView } from '../../shared/components/DiffView';
+import { MermaidDiagram } from '../../shared/components/MermaidDiagram';
 import { SourceCitations, type Source } from './SourceCitations';
 import { toast } from 'sonner';
 
@@ -28,7 +29,7 @@ interface Conversation {
   createdAt: string;
 }
 
-type Mode = 'ask' | 'improve' | 'generate' | 'summarize';
+type Mode = 'ask' | 'improve' | 'generate' | 'summarize' | 'diagram';
 
 export function AiAssistantPage() {
   const [searchParams] = useSearchParams();
@@ -46,6 +47,8 @@ export function AiAssistantPage() {
   const [improvementType, setImprovementType] = useState<string>('grammar');
   const [showDiffView, setShowDiffView] = useState(false);
   const [improvedContent, setImprovedContent] = useState<string>('');
+  const [diagramType, setDiagramType] = useState<string>('flowchart');
+  const [diagramCode, setDiagramCode] = useState<string>('');
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { data: page } = usePage(pageId ?? undefined);
@@ -209,6 +212,39 @@ export function AiAssistantPage() {
     }
   }, [page, model, isStreaming]);
 
+  const handleDiagram = useCallback(async () => {
+    if (!page || !model || isStreaming) return;
+    setIsStreaming(true);
+    setDiagramCode('');
+    setMessages([{ role: 'user', content: `Generate ${diagramType} diagram: ${page.title}` }]);
+
+    let result = '';
+    setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
+
+    try {
+      for await (const chunk of streamSSE('/llm/generate-diagram', {
+        content: page.bodyHtml,
+        model,
+        diagramType,
+        pageId,
+      })) {
+        if (chunk.content) {
+          result += chunk.content;
+          setMessages((prev) => {
+            const updated = [...prev];
+            updated[updated.length - 1] = { role: 'assistant', content: result };
+            return updated;
+          });
+        }
+      }
+      setDiagramCode(result);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Diagram generation failed');
+    } finally {
+      setIsStreaming(false);
+    }
+  }, [page, model, diagramType, pageId, isStreaming]);
+
   const startNewConversation = () => {
     setMessages([]);
     setConversationId(null);
@@ -242,6 +278,7 @@ export function AiAssistantPage() {
     else if (mode === 'improve') handleImprove();
     else if (mode === 'generate') handleGenerate();
     else if (mode === 'summarize') handleSummarize();
+    else if (mode === 'diagram') handleDiagram();
   };
 
   return (
@@ -298,6 +335,7 @@ export function AiAssistantPage() {
             { key: 'improve', icon: Wand2, label: 'Improve' },
             { key: 'generate', icon: Sparkles, label: 'Generate' },
             { key: 'summarize', icon: ListCollapse, label: 'Summarize' },
+            { key: 'diagram', icon: GitBranch, label: 'Diagram' },
           ] as const).map(({ key, icon: Icon, label }) => (
             <button
               key={key}
@@ -349,6 +387,25 @@ export function AiAssistantPage() {
           </div>
         )}
 
+        {/* Diagram type selector */}
+        {mode === 'diagram' && (
+          <div className="glass-card mb-4 flex items-center gap-2 p-3">
+            <span className="text-sm text-muted-foreground">Type:</span>
+            {['flowchart', 'sequence', 'state', 'mindmap'].map((type) => (
+              <button
+                key={type}
+                onClick={() => setDiagramType(type)}
+                className={cn(
+                  'rounded-md px-2.5 py-1 text-xs capitalize',
+                  diagramType === type ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-white/5',
+                )}
+              >
+                {type}
+              </button>
+            ))}
+          </div>
+        )}
+
         {/* Messages */}
         <div className="glass-card flex-1 overflow-y-auto p-4 space-y-4">
           {messages.length === 0 && (
@@ -359,12 +416,14 @@ export function AiAssistantPage() {
                 {mode === 'improve' && 'Select a page and improvement type'}
                 {mode === 'generate' && 'Describe the article you want to generate'}
                 {mode === 'summarize' && 'Select a page to summarize'}
+                {mode === 'diagram' && 'Generate a diagram from a page'}
               </p>
               <p className="text-sm text-muted-foreground">
                 {mode === 'ask' && 'Your questions will be answered using RAG over your Confluence pages'}
                 {mode === 'improve' && page ? `Ready to improve: ${page.title}` : 'Open a page first'}
                 {mode === 'generate' && 'AI will create a full article based on your prompt'}
                 {mode === 'summarize' && page ? `Ready to summarize: ${page.title}` : 'Open a page first'}
+                {mode === 'diagram' && page ? `Ready to diagram: ${page.title}` : 'Open a page first'}
               </p>
             </div>
           )}
@@ -421,6 +480,11 @@ export function AiAssistantPage() {
               onReject={() => setShowDiffView(false)}
             />
           )}
+
+          {/* Mermaid diagram for diagram mode */}
+          {mode === 'diagram' && diagramCode && !isStreaming && (
+            <MermaidDiagram code={diagramCode} className="mt-4" />
+          )}
         </div>
 
         {/* Input */}
@@ -452,7 +516,11 @@ export function AiAssistantPage() {
               {isStreaming ? (
                 <><Loader2 size={14} className="animate-spin" /> Processing...</>
               ) : (
-                <>{mode === 'improve' ? <><Wand2 size={14} /> Improve Page</> : <><ListCollapse size={14} /> Summarize Page</>}</>
+                <>
+                  {mode === 'improve' && <><Wand2 size={14} /> Improve Page</>}
+                  {mode === 'summarize' && <><ListCollapse size={14} /> Summarize Page</>}
+                  {mode === 'diagram' && <><GitBranch size={14} /> Generate Diagram</>}
+                </>
               )}
             </button>
           )}

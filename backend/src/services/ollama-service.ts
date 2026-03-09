@@ -53,6 +53,14 @@ const SYSTEM_PROMPTS = {
   summarize: `You are a technical writing assistant. Provide a concise summary of the following article. Focus on the key points, decisions, and actionable items. Return the summary in Markdown format.`,
 
   ask: `You are a knowledgeable assistant that answers questions based on the provided knowledge base context. Answer accurately based on the context. If the context doesn't contain enough information, say so. Always cite which articles your answer is based on.`,
+
+  generate_diagram_flowchart: `You are a diagram generation assistant. Analyze the provided article text and generate a Mermaid flowchart diagram that captures the main processes, decisions, and flows described in the content. Use the Mermaid flowchart syntax (graph TD or graph LR). Output ONLY the raw Mermaid diagram code with no markdown fences, no explanations, and no surrounding text. Start directly with "graph" or "flowchart".`,
+
+  generate_diagram_sequence: `You are a diagram generation assistant. Analyze the provided article text and generate a Mermaid sequence diagram that captures the interactions between participants/systems described in the content. Use the Mermaid sequenceDiagram syntax. Output ONLY the raw Mermaid diagram code with no markdown fences, no explanations, and no surrounding text. Start directly with "sequenceDiagram".`,
+
+  generate_diagram_state: `You are a diagram generation assistant. Analyze the provided article text and generate a Mermaid state diagram that captures the states and transitions described in the content. Use the Mermaid stateDiagram-v2 syntax. Output ONLY the raw Mermaid diagram code with no markdown fences, no explanations, and no surrounding text. Start directly with "stateDiagram-v2".`,
+
+  generate_diagram_mindmap: `You are a diagram generation assistant. Analyze the provided article text and generate a Mermaid mindmap diagram that captures the key concepts and their relationships described in the content. Use the Mermaid mindmap syntax. Output ONLY the raw Mermaid diagram code with no markdown fences, no explanations, and no surrounding text. Start directly with "mindmap".`,
 } as const;
 
 export type SystemPromptKey = keyof typeof SYSTEM_PROMPTS;
@@ -188,6 +196,20 @@ export function summarizeContent(
 
   return streamChat(model, [
     { role: 'system', content: `${getSystemPrompt('summarize')} ${lengthInstructions[length]}` },
+    { role: 'user', content: sanitized },
+  ], signal);
+}
+
+export function generateDiagram(
+  model: string,
+  content: string,
+  diagramType: 'flowchart' | 'sequence' | 'state' | 'mindmap' = 'flowchart',
+  signal?: AbortSignal,
+): AsyncGenerator<StreamChunk> {
+  const { sanitized } = sanitizeLlmInput(content);
+  const systemPrompt = getSystemPrompt(`generate_diagram_${diagramType}` as SystemPromptKey);
+  return streamChat(model, [
+    { role: 'system', content: systemPrompt },
     { role: 'user', content: sanitized },
   ], signal);
 }
