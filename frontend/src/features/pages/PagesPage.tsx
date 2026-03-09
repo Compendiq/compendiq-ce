@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { m } from 'framer-motion';
-import { Search, FileText, Plus, RefreshCw, ChevronLeft, ChevronRight, FolderOpen, Filter, X } from 'lucide-react';
+import { Search, Plus, RefreshCw, ChevronLeft, ChevronRight, FolderOpen, Filter, X } from 'lucide-react';
 import { usePages, usePageFilterOptions } from '../../shared/hooks/use-pages';
 import { useSpaces, useSync, useSyncStatus } from '../../shared/hooks/use-spaces';
 import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
@@ -328,8 +328,7 @@ export function PagesPage() {
                   onClick={() => navigate(`/pages/${pageItem.id}`)}
                   className="flex min-w-0 flex-1 items-center gap-4"
                 >
-                  <FileText size={20} className="shrink-0 text-primary" />
-                  <div className="min-w-0 flex-1">
+                  <div className="min-w-0 flex-1 text-left">
                     <p className="truncate font-medium">{pageItem.title}</p>
                     <div className="flex items-center gap-3 text-xs text-muted-foreground">
                       <span>{pageItem.spaceKey}</span>
