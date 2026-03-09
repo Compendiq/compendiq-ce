@@ -77,6 +77,7 @@ export function SettingsPage() {
           ) : activeTab === 'spaces' ? (
             <SpacesTab
               selectedSpaces={settings?.selectedSpaces ?? []}
+              showSpaceHomeContent={settings?.showSpaceHomeContent ?? true}
               onSave={(v) => updateSettings.mutate(v)}
             />
           ) : activeTab === 'ollama' ? (

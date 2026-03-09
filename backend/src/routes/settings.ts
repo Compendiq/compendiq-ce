@@ -20,8 +20,9 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       ollama_model: string;
       theme: string;
       sync_interval_min: number;
+      show_space_home_content: boolean;
     }>(
-      'SELECT confluence_url, confluence_pat, selected_spaces, ollama_model, theme, sync_interval_min FROM user_settings WHERE user_id = $1',
+      'SELECT confluence_url, confluence_pat, selected_spaces, ollama_model, theme, sync_interval_min, show_space_home_content FROM user_settings WHERE user_id = $1',
       [request.userId],
     );
 
@@ -37,6 +38,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         theme: 'glass-dark',
         syncIntervalMin: 15,
         confluenceConnected: false,
+        showSpaceHomeContent: true,
       };
     }
 
@@ -50,6 +52,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       theme: row.theme,
       syncIntervalMin: row.sync_interval_min,
       confluenceConnected: !!(row.confluence_url && row.confluence_pat),
+      showSpaceHomeContent: row.show_space_home_content,
     };
   });
 
@@ -88,6 +91,11 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     if (body.syncIntervalMin !== undefined) {
       updates.push(`sync_interval_min = $${paramIdx++}`);
       values.push(body.syncIntervalMin);
+    }
+
+    if (body.showSpaceHomeContent !== undefined) {
+      updates.push(`show_space_home_content = $${paramIdx++}`);
+      values.push(body.showSpaceHomeContent);
     }
 
     if (updates.length === 0) {
