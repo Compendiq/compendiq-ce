@@ -144,4 +144,48 @@ describe('TagEditor', () => {
     expect(screen.getByLabelText('Add tag')).toBeInTheDocument();
     expect(screen.queryByLabelText(/Remove tag/)).not.toBeInTheDocument();
   });
+
+  it('shows remove buttons always visible when editing is true', () => {
+    render(
+      <TagEditor pageId="page-1" labels={['architecture', 'deployment']} editing />,
+      { wrapper: createWrapper() },
+    );
+
+    const removeBtn = screen.getByLabelText('Remove tag architecture');
+    expect(removeBtn.className).toContain('inline-flex');
+    expect(removeBtn.className).not.toContain('hidden');
+  });
+
+  it('hides remove buttons by default when editing is false', () => {
+    render(
+      <TagEditor pageId="page-1" labels={['architecture']} />,
+      { wrapper: createWrapper() },
+    );
+
+    const removeBtn = screen.getByLabelText('Remove tag architecture');
+    expect(removeBtn.className).toContain('hidden');
+  });
+
+  it('calls API to remove a tag in editing mode', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({ labels: [] }),
+        { headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    render(
+      <TagEditor pageId="page-1" labels={['deployment']} editing />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByLabelText('Remove tag deployment'));
+
+    await waitFor(() => {
+      expect(fetchSpy).toHaveBeenCalledWith(
+        expect.stringContaining('/pages/page-1/labels'),
+        expect.objectContaining({ method: 'PUT' }),
+      );
+    });
+  });
 });

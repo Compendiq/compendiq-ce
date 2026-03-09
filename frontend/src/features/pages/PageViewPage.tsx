@@ -204,7 +204,7 @@ export function PageViewPage() {
           </span>
         )}
         <span className="text-xs">v{page.version}</span>
-        <TagEditor pageId={id!} labels={page.labels} />
+        <TagEditor pageId={id!} labels={page.labels} editing={editing} />
         <a
           href={`#confluence-page:${id}`}
           target="_blank"
