@@ -25,8 +25,8 @@ const mockTreeData = {
 };
 
 const mockSpaces = [
-  { key: 'DEV', name: 'Development', lastSynced: '2026-03-01T00:00:00Z', pageCount: 4 },
-  { key: 'OPS', name: 'Operations', lastSynced: '2026-03-01T00:00:00Z', pageCount: 2 },
+  { key: 'DEV', name: 'Development', homepageId: 'root-1', lastSynced: '2026-03-01T00:00:00Z', pageCount: 4 },
+  { key: 'OPS', name: 'Operations', homepageId: null, lastSynced: '2026-03-01T00:00:00Z', pageCount: 2 },
 ];
 
 vi.mock('../hooks/use-pages', () => ({
@@ -113,5 +113,22 @@ describe('SidebarTreeView', () => {
     fireEvent.click(screen.getByText('All Spaces'));
     expect(screen.getByText('Development')).toBeInTheDocument();
     expect(screen.getByText('Operations')).toBeInTheDocument();
+  });
+
+  it('roots tree at homepage children when space with homepageId is selected', () => {
+    // Set the space to DEV which has homepageId='root-1'
+    useUiStore.setState({
+      treeSidebarCollapsed: false,
+      treeSidebarSpaceKey: 'DEV',
+    });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    // root-1 (Getting Started) has homepageId set, so its children should be roots
+    // Children of root-1 are: Installation, Configuration
+    expect(screen.getByText('Installation')).toBeInTheDocument();
+    expect(screen.getByText('Configuration')).toBeInTheDocument();
+    // root-1 itself (Getting Started) should NOT appear as a root node
+    // (it might still be in the DOM as part of the header, but not as a tree node)
+    // API Reference (root-2) should not appear since it's not a child of root-1
+    expect(screen.queryByText('API Reference')).not.toBeInTheDocument();
   });
 });

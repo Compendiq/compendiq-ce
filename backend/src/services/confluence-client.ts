@@ -8,6 +8,7 @@ interface ConfluenceSpace {
   name: string;
   type: string;
   status: string;
+  homepage?: { id: string; title: string };
 }
 
 interface ConfluencePage {
@@ -114,7 +115,7 @@ export class ConfluenceClient {
   }
 
   async getSpaces(start = 0, limit = 100): Promise<PaginatedResponse<ConfluenceSpace>> {
-    return this.fetch(`/rest/api/space?start=${start}&limit=${limit}&type=global`);
+    return this.fetch(`/rest/api/space?start=${start}&limit=${limit}&type=global&expand=homepage`);
   }
 
   async getAllSpaces(): Promise<ConfluenceSpace[]> {

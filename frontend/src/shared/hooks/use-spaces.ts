@@ -4,6 +4,7 @@ import { apiFetch } from '../lib/api';
 interface Space {
   key: string;
   name: string;
+  homepageId: string | null;
   lastSynced: string;
   pageCount: number;
 }

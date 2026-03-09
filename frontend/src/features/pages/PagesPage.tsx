@@ -336,7 +336,7 @@ export function PagesPage() {
             </p>
           </div>
         ) : (
-          <PageTreeView pages={treeData.items} />
+          <PageTreeView pages={treeData.items} homepageId={spaceKey ? spaces?.find((s) => s.key === spaceKey)?.homepageId : undefined} />
         )
       ) : isLoading ? (
         <div className="space-y-3">
