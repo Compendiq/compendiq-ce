@@ -83,12 +83,13 @@ async function syncSpace(client: ConfluenceClient, userId: string, spaceKey: str
   const spaces = await client.getSpaces();
   const space = spaces.results.find((s) => s.key === spaceKey);
   if (space) {
+    const homepageId = space.homepage?.id ?? null;
     await query(
-      `INSERT INTO cached_spaces (user_id, space_key, space_name)
-       VALUES ($1, $2, $3)
+      `INSERT INTO cached_spaces (user_id, space_key, space_name, homepage_id)
+       VALUES ($1, $2, $3, $4)
        ON CONFLICT (user_id, space_key)
-       DO UPDATE SET space_name = $3, last_synced = NOW()`,
-      [userId, spaceKey, space.name],
+       DO UPDATE SET space_name = $3, homepage_id = $4, last_synced = NOW()`,
+      [userId, spaceKey, space.name, homepageId],
     );
   }
 

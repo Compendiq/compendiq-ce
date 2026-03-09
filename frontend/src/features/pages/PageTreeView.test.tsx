@@ -74,6 +74,31 @@ describe('buildTree', () => {
     const tree = buildTree([]);
     expect(tree).toHaveLength(0);
   });
+
+  it('roots tree at homepage children when homepageId is provided', () => {
+    const pages: PageTreeItem[] = [
+      makePage({ id: 'home', title: 'Home', parentId: null }),
+      makePage({ id: 'child-a', title: 'Child A', parentId: 'home' }),
+      makePage({ id: 'child-b', title: 'Child B', parentId: 'home' }),
+      makePage({ id: 'grandchild', title: 'Grandchild', parentId: 'child-a' }),
+    ];
+    const tree = buildTree(pages, 'home');
+    expect(tree).toHaveLength(2);
+    expect(tree[0].page.title).toBe('Child A');
+    expect(tree[1].page.title).toBe('Child B');
+    expect(tree[0].children).toHaveLength(1);
+    expect(tree[0].children[0].page.title).toBe('Grandchild');
+  });
+
+  it('falls back to normal roots when homepageId not found', () => {
+    const tree = buildTree(hierarchyPages, 'nonexistent-id');
+    expect(tree).toHaveLength(2); // same as without homepageId
+  });
+
+  it('falls back to normal roots when homepageId is null', () => {
+    const tree = buildTree(hierarchyPages, null);
+    expect(tree).toHaveLength(2);
+  });
 });
 
 describe('countDescendants', () => {

@@ -20,10 +20,11 @@ interface TreeNode {
 
 interface PageTreeViewProps {
   pages: PageTreeItem[];
+  homepageId?: string | null;
   isLoading?: boolean;
 }
 
-function buildTree(pages: PageTreeItem[]): TreeNode[] {
+function buildTree(pages: PageTreeItem[], homepageId?: string | null): TreeNode[] {
   const nodeMap = new Map<string, TreeNode>();
   const roots: TreeNode[] = [];
 
@@ -41,6 +42,14 @@ function buildTree(pages: PageTreeItem[]): TreeNode[] {
       roots.push(node);
     }
   });
+
+  // If homepageId is provided, root the tree at the homepage's children
+  if (homepageId) {
+    const homepageNode = nodeMap.get(homepageId);
+    if (homepageNode) {
+      return homepageNode.children;
+    }
+  }
 
   return roots;
 }
@@ -218,10 +227,10 @@ function TreeNodeComponent({
   );
 }
 
-export function PageTreeView({ pages }: PageTreeViewProps) {
+export function PageTreeView({ pages, homepageId }: PageTreeViewProps) {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
-  const tree = useMemo(() => buildTree(pages), [pages]);
+  const tree = useMemo(() => buildTree(pages, homepageId), [pages, homepageId]);
 
   const toggleExpand = useCallback((id: string) => {
     setExpandedIds((prev) => {

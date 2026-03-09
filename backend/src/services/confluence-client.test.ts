@@ -160,6 +160,41 @@ describe('ConfluenceClient', () => {
     });
   });
 
+  describe('getSpaces homepage expansion', () => {
+    it('should include expand=homepage in the getSpaces URL', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+      mockRequest.mockResolvedValue({
+        statusCode: 200,
+        body: { text: async () => JSON.stringify({ results: [], start: 0, limit: 100, size: 0 }) },
+      } as never);
+
+      await client.getSpaces();
+
+      const callUrl = mockRequest.mock.calls[0][0] as string;
+      expect(callUrl).toContain('expand=homepage');
+    });
+
+    it('should return homepage data when Confluence provides it', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+      const spacesResponse = {
+        results: [
+          { key: 'ITE', name: 'ITE Space', type: 'global', status: 'current', homepage: { id: '12345', title: 'Home' } },
+        ],
+        start: 0,
+        limit: 100,
+        size: 1,
+      };
+      mockRequest.mockResolvedValue({
+        statusCode: 200,
+        body: { text: async () => JSON.stringify(spacesResponse) },
+      } as never);
+
+      const result = await client.getSpaces();
+
+      expect(result.results[0].homepage).toEqual({ id: '12345', title: 'Home' });
+    });
+  });
+
   describe('URL handling', () => {
     it('should strip trailing slashes from base URL', async () => {
       const client = new ConfluenceClient('https://confluence.example.com///', pat);
@@ -171,7 +206,7 @@ describe('ConfluenceClient', () => {
       await client.getSpaces();
 
       const callUrl = mockRequest.mock.calls[0][0] as string;
-      expect(callUrl).toBe('https://confluence.example.com/rest/api/space?start=0&limit=100&type=global');
+      expect(callUrl).toBe('https://confluence.example.com/rest/api/space?start=0&limit=100&type=global&expand=homepage');
     });
   });
 

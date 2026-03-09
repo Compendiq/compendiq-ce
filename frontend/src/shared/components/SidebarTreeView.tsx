@@ -20,7 +20,7 @@ interface TreeNode {
   children: TreeNode[];
 }
 
-function buildTree(pages: PageTreeItem[]): TreeNode[] {
+function buildTree(pages: PageTreeItem[], homepageId?: string | null): TreeNode[] {
   const nodeMap = new Map<string, TreeNode>();
   const roots: TreeNode[] = [];
 
@@ -43,6 +43,14 @@ function buildTree(pages: PageTreeItem[]): TreeNode[] {
     nodes.forEach((n) => sortChildren(n.children));
   }
   sortChildren(roots);
+
+  // If homepageId is provided, root the tree at the homepage's children
+  if (homepageId) {
+    const homepageNode = nodeMap.get(homepageId);
+    if (homepageNode) {
+      return homepageNode.children;
+    }
+  }
 
   return roots;
 }
@@ -157,7 +165,11 @@ export function SidebarTreeView() {
   });
 
   const pages = useMemo(() => treeData?.items ?? [], [treeData]);
-  const tree = useMemo(() => buildTree(pages), [pages]);
+  const homepageId = useMemo(
+    () => treeSidebarSpaceKey ? spaces?.find((s) => s.key === treeSidebarSpaceKey)?.homepageId : undefined,
+    [treeSidebarSpaceKey, spaces],
+  );
+  const tree = useMemo(() => buildTree(pages, homepageId), [pages, homepageId]);
 
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [spaceDropdownOpen, setSpaceDropdownOpen] = useState(false);
