@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { m, AnimatePresence } from 'framer-motion';
@@ -6,26 +6,20 @@ import {
   ArrowLeft, Edit3, Save, X, Trash2, Wand2, FileText,
   ExternalLink, Clock, User,
 } from 'lucide-react';
-import DOMPurify from 'dompurify';
+import type { SettingsResponse } from '@kb-creator/contracts';
 import { usePage, useUpdatePage, useDeletePage } from '../../shared/hooks/use-pages';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { Editor, getDraft, clearDraft } from '../../shared/components/Editor';
+import { ArticleViewer } from '../../shared/components/ArticleViewer';
 import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
 import { TableOfContents } from '../../shared/components/TableOfContents';
+import type { TocHeading } from '../../shared/components/TableOfContents';
 import { DuplicateDetector } from './DuplicateDetector';
 import { AutoTagger } from './AutoTagger';
 import { TagEditor } from './TagEditor';
 import { VersionHistory } from './VersionHistory';
 import { FlowchartGenerator } from './FlowchartGenerator';
 import { toast } from 'sonner';
-
-// Configure DOMPurify to preserve attributes needed for draw.io and images
-DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
-  // Allow data-diagram-name and data-drawio attributes
-  if (data.attrName === 'data-diagram-name' || data.attrName === 'data-drawio') {
-    data.forceKeepAttr = true;
-  }
-});
 
 function ImageLightbox({ src, alt, onClose }: { src: string; alt: string; onClose: () => void }) {
   useEffect(() => {
@@ -75,53 +69,16 @@ export function PageViewPage() {
   const [editTitle, setEditTitle] = useState('');
   const [editHtml, setEditHtml] = useState('');
   const [lightboxSrc, setLightboxSrc] = useState<{ src: string; alt: string } | null>(null);
+  const [tocHeadings, setTocHeadings] = useState<TocHeading[]>([]);
   const contentRef = useRef<HTMLDivElement>(null);
 
   const { data: settings } = useSettings();
 
   const draftKey = id ? `page-${id}` : undefined;
 
-  const sanitizedHtml = useMemo(
-    () => (page ? DOMPurify.sanitize(page.bodyHtml, {
-      ADD_ATTR: ['data-diagram-name', 'data-drawio'],
-    }) : ''),
-    [page],
-  );
-
-  // Attach click-to-zoom on images and update draw.io edit links
-  useEffect(() => {
-    const container = contentRef.current;
-    if (!container || editing) return;
-
-    // Click-to-zoom for images
-    const handleImageClick = (e: Event) => {
-      const img = e.currentTarget as HTMLImageElement;
-      setLightboxSrc({ src: img.src, alt: img.alt || 'Image preview' });
-    };
-
-    const images = container.querySelectorAll('img');
-    for (const img of images) {
-      img.style.cursor = 'zoom-in';
-      img.addEventListener('click', handleImageClick);
-    }
-
-    // Update draw.io "Edit in Confluence" links with real Confluence URL
-    if (settings?.confluenceUrl && id) {
-      const editLinks = container.querySelectorAll('a.drawio-edit-link');
-      for (const link of editLinks) {
-        const anchor = link as HTMLAnchorElement;
-        anchor.href = `${settings.confluenceUrl}/pages/viewpage.action?pageId=${encodeURIComponent(id)}`;
-        anchor.target = '_blank';
-        anchor.rel = 'noreferrer';
-      }
-    }
-
-    return () => {
-      for (const img of images) {
-        img.removeEventListener('click', handleImageClick);
-      }
-    };
-  }, [sanitizedHtml, editing, settings?.confluenceUrl, id]);
+  const handleImageClick = useCallback((src: string, alt: string) => {
+    setLightboxSrc({ src, alt });
+  }, []);
 
   const startEditing = useCallback(() => {
     if (!page || !id) return;
@@ -311,13 +268,17 @@ export function PageViewPage() {
       ) : (
         <>
           <div className="flex gap-4">
-            <div
-              ref={contentRef}
-              className="glass-card prose prose-invert max-w-none flex-1 p-6"
-              dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
-            />
+            <div className="glass-card flex-1 overflow-hidden" ref={contentRef}>
+              <ArticleViewer
+                content={page.bodyHtml}
+                onImageClick={handleImageClick}
+                confluenceUrl={settings?.confluenceUrl}
+                pageId={id}
+                onHeadingsReady={setTocHeadings}
+              />
+            </div>
             <div className="hidden w-64 shrink-0 space-y-4 lg:block sticky top-4 self-start max-h-[calc(100vh-2rem)] overflow-y-auto">
-              <TableOfContents htmlContent={sanitizedHtml} contentRef={contentRef} />
+              <TableOfContents headings={tocHeadings} contentRef={contentRef} />
               <VersionHistory pageId={id!} currentBodyText={page.bodyText} model="qwen3:latest" />
               <DuplicateDetector pageId={id!} pageTitle={page.title} />
             </div>

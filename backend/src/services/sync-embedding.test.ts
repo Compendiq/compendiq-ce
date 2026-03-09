@@ -1,0 +1,115 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+const mocks = vi.hoisted(() => ({
+  processDirtyPages: vi.fn().mockResolvedValue({ processed: 3, errors: 0 }),
+  getSpaces: vi.fn().mockResolvedValue({ results: [] }),
+  getAllPagesInSpace: vi.fn().mockResolvedValue([]),
+  query: vi.fn(),
+}));
+
+vi.mock('./embedding-service.js', () => ({
+  processDirtyPages: mocks.processDirtyPages,
+}));
+
+vi.mock('./confluence-client.js', () => ({
+  ConfluenceClient: class MockConfluenceClient {
+    getSpaces = mocks.getSpaces;
+    getAllSpaces = vi.fn().mockResolvedValue([]);
+    getAllPagesInSpace = mocks.getAllPagesInSpace;
+    getModifiedPages = vi.fn().mockResolvedValue([]);
+  },
+}));
+
+vi.mock('./content-converter.js', () => ({
+  confluenceToHtml: vi.fn().mockReturnValue('<p>html</p>'),
+  htmlToText: vi.fn().mockReturnValue('plain text'),
+}));
+
+vi.mock('./attachment-handler.js', () => ({
+  syncDrawioAttachments: vi.fn().mockResolvedValue(undefined),
+  syncImageAttachments: vi.fn().mockResolvedValue(undefined),
+  cleanPageAttachments: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('./version-tracker.js', () => ({
+  saveVersionSnapshot: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('../utils/crypto.js', () => ({
+  decryptPat: vi.fn().mockReturnValue('decrypted-pat'),
+}));
+
+vi.mock('../utils/logger.js', () => ({
+  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
+}));
+
+vi.mock('../db/postgres.js', () => ({
+  query: (...args: unknown[]) => mocks.query(...args),
+}));
+
+import { syncUser } from './sync-service.js';
+
+describe('syncUser auto-embedding', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.processDirtyPages.mockResolvedValue({ processed: 3, errors: 0 });
+  });
+
+  function setupSuccessfulSync() {
+    mocks.query
+      // 1. getClientForUser: user_settings
+      .mockResolvedValueOnce({
+        rows: [{ confluence_url: 'https://confluence.example.com', confluence_pat: 'encrypted-pat' }],
+      })
+      // 2. selected_spaces
+      .mockResolvedValueOnce({ rows: [{ selected_spaces: ['DEV'] }] })
+      // 3. last_synced (no previous sync → full sync)
+      .mockResolvedValueOnce({ rows: [{ last_synced: null }] })
+      // 4. detectDeletedPages: existing pages
+      .mockResolvedValueOnce({ rows: [] })
+      // 5. update space sync timestamp
+      .mockResolvedValueOnce({ rows: [] });
+
+    mocks.getSpaces.mockResolvedValueOnce({ results: [] });
+    mocks.getAllPagesInSpace.mockResolvedValueOnce([]);
+  }
+
+  it('should call processDirtyPages after successful sync', async () => {
+    setupSuccessfulSync();
+
+    await syncUser('user-1');
+
+    await vi.waitFor(() => {
+      expect(mocks.processDirtyPages).toHaveBeenCalledWith('user-1');
+    });
+  });
+
+  it('should not call processDirtyPages when no credentials configured', async () => {
+    mocks.query.mockResolvedValueOnce({
+      rows: [{ confluence_url: null, confluence_pat: null }],
+    });
+
+    await syncUser('user-2');
+
+    expect(mocks.processDirtyPages).not.toHaveBeenCalled();
+  });
+
+  it('should not call processDirtyPages when no spaces selected', async () => {
+    mocks.query
+      .mockResolvedValueOnce({
+        rows: [{ confluence_url: 'https://confluence.example.com', confluence_pat: 'encrypted-pat' }],
+      })
+      .mockResolvedValueOnce({ rows: [{ selected_spaces: [] }] });
+
+    await syncUser('user-3');
+
+    expect(mocks.processDirtyPages).not.toHaveBeenCalled();
+  });
+
+  it('should not block sync completion if embedding fails', async () => {
+    mocks.processDirtyPages.mockRejectedValueOnce(new Error('Ollama offline'));
+    setupSuccessfulSync();
+
+    await expect(syncUser('user-4')).resolves.toBeUndefined();
+  });
+});

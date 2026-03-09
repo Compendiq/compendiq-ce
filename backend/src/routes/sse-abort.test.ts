@@ -6,7 +6,7 @@ vi.mock('../services/ollama-service.js', () => ({
   streamChat: vi.fn(),
   getSystemPrompt: vi.fn().mockReturnValue('System prompt'),
   listModels: vi.fn().mockResolvedValue([]),
-  checkHealth: vi.fn().mockResolvedValue(true),
+  checkHealth: vi.fn().mockResolvedValue({ connected: true }),
 }));
 
 vi.mock('../services/rag-service.js', () => ({
