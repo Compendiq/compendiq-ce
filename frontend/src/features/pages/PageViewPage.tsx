@@ -18,6 +18,7 @@ import { DuplicateDetector } from './DuplicateDetector';
 import { AutoTagger } from './AutoTagger';
 import { TagEditor } from './TagEditor';
 import { VersionHistory } from './VersionHistory';
+import { FlowchartGenerator } from './FlowchartGenerator';
 import { toast } from 'sonner';
 
 function ImageLightbox({ src, alt, onClose }: { src: string; alt: string; onClose: () => void }) {
@@ -267,22 +268,25 @@ export function PageViewPage() {
       {editing ? (
         <Editor content={editHtml} onChange={setEditHtml} draftKey={draftKey} />
       ) : (
-        <div className="flex gap-4">
-          <div className="glass-card flex-1 overflow-hidden" ref={contentRef}>
-            <ArticleViewer
-              content={page.bodyHtml}
-              onImageClick={handleImageClick}
-              confluenceUrl={settings?.confluenceUrl}
-              pageId={id}
-              onHeadingsReady={setTocHeadings}
-            />
+        <>
+          <div className="flex gap-4">
+            <div className="glass-card flex-1 overflow-hidden" ref={contentRef}>
+              <ArticleViewer
+                content={page.bodyHtml}
+                onImageClick={handleImageClick}
+                confluenceUrl={settings?.confluenceUrl}
+                pageId={id}
+                onHeadingsReady={setTocHeadings}
+              />
+            </div>
+            <div className="hidden w-64 shrink-0 space-y-4 lg:block sticky top-4 self-start max-h-[calc(100vh-2rem)] overflow-y-auto">
+              <TableOfContents headings={tocHeadings} contentRef={contentRef} />
+              <VersionHistory pageId={id!} currentBodyText={page.bodyText} model="qwen3:latest" />
+              <DuplicateDetector pageId={id!} pageTitle={page.title} />
+            </div>
           </div>
-          <div className="hidden w-64 shrink-0 space-y-4 lg:block sticky top-4 self-start max-h-[calc(100vh-2rem)] overflow-y-auto">
-            <TableOfContents headings={tocHeadings} contentRef={contentRef} />
-            <VersionHistory pageId={id!} currentBodyText={page.bodyText} model="qwen3:latest" />
-            <DuplicateDetector pageId={id!} pageTitle={page.title} />
-          </div>
-        </div>
+          <FlowchartGenerator pageId={id!} bodyHtml={page.bodyHtml} />
+        </>
       )}
 
       {/* Image lightbox */}

@@ -6,14 +6,33 @@ import sensible from '@fastify/sensible';
 const mockListModels = vi.fn();
 const mockCheckHealth = vi.fn();
 
-vi.mock('../services/ollama-service.js', () => ({
-  listModels: (...args: unknown[]) => mockListModels(...args),
-  checkHealth: (...args: unknown[]) => mockCheckHealth(...args),
-  streamChat: vi.fn(),
-  chat: vi.fn(),
-  getSystemPrompt: vi.fn(),
-  generateEmbedding: vi.fn(),
-}));
+const mockIsLlmVerifySslEnabled = vi.fn().mockReturnValue(true);
+const mockGetLlmAuthType = vi.fn().mockReturnValue('bearer');
+
+vi.mock('../services/ollama-service.js', () => {
+  const listModels = (...args: unknown[]) => mockListModels(...args);
+  const checkHealth = (...args: unknown[]) => mockCheckHealth(...args);
+  const mockProvider = {
+    name: 'ollama',
+    listModels,
+    checkHealth,
+    streamChat: vi.fn(),
+    chat: vi.fn(),
+    generateEmbedding: vi.fn(),
+  };
+  return {
+    listModels,
+    checkHealth,
+    isLlmVerifySslEnabled: (...args: unknown[]) => mockIsLlmVerifySslEnabled(...args),
+    getLlmAuthType: (...args: unknown[]) => mockGetLlmAuthType(...args),
+    streamChat: vi.fn(),
+    chat: vi.fn(),
+    getSystemPrompt: vi.fn(),
+    generateEmbedding: vi.fn(),
+    getActiveProviderType: vi.fn().mockReturnValue('ollama'),
+    getProvider: vi.fn().mockReturnValue(mockProvider),
+  };
+});
 
 vi.mock('../services/circuit-breaker.js', () => ({
   getOllamaCircuitBreakerStatus: vi.fn().mockReturnValue({
@@ -187,6 +206,48 @@ describe('Ollama status and models routes', () => {
         delete process.env.LLM_BEARER_TOKEN;
       }
     });
+
+    it('should return authType and verifySsl in status response', async () => {
+      mockCheckHealth.mockResolvedValue({ connected: true });
+      mockGetLlmAuthType.mockReturnValue('bearer');
+      mockIsLlmVerifySslEnabled.mockReturnValue(false);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/ollama/status',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.authType).toBe('bearer');
+      expect(body.verifySsl).toBe(false);
+    });
+
+    it('should return verifySsl=true when SSL verification is enabled', async () => {
+      mockCheckHealth.mockResolvedValue({ connected: true });
+      mockIsLlmVerifySslEnabled.mockReturnValue(true);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/ollama/status',
+      });
+
+      const body = JSON.parse(response.body);
+      expect(body.verifySsl).toBe(true);
+    });
+
+    it('should return authType=none when configured', async () => {
+      mockCheckHealth.mockResolvedValue({ connected: true });
+      mockGetLlmAuthType.mockReturnValue('none');
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/ollama/status',
+      });
+
+      const body = JSON.parse(response.body);
+      expect(body.authType).toBe('none');
+    });
   });
 
   describe('GET /api/ollama/models', () => {
@@ -218,7 +279,7 @@ describe('Ollama status and models routes', () => {
 
       expect(response.statusCode).toBe(503);
       const body = JSON.parse(response.body);
-      expect(body.message).toContain('Ollama server unavailable');
+      expect(body.message).toContain('LLM server unavailable');
       expect(body.message).toContain('Connection refused');
     });
   });
