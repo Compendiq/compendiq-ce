@@ -27,6 +27,8 @@ services:
       PAT_ENCRYPTION_KEY: ${PAT_ENCRYPTION_KEY:?PAT_ENCRYPTION_KEY is required}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-nomic-embed-text}
+      CONFLUENCE_VERIFY_SSL: ${CONFLUENCE_VERIFY_SSL:-true}
+      NODE_EXTRA_CA_CERTS: ${CONTAINER_CA_BUNDLE_PATH:-/etc/ssl/certs/ca-certificates.crt}
     depends_on:
       postgres:
         condition: service_healthy
@@ -35,6 +37,13 @@ services:
     restart: unless-stopped
     volumes:
       - attachments:/app/data
+      - "${HOST_CA_BUNDLE_PATH:-/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem}:${CONTAINER_CA_BUNDLE_PATH:-/etc/ssl/certs/ca-certificates.crt}:ro"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3051/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   postgres:
     image: pgvector/pgvector:pg17
