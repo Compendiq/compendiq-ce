@@ -115,6 +115,7 @@ describe('Ollama status and models routes', () => {
       expect(body.ollamaBaseUrl).toBeDefined();
       expect(typeof body.ollamaBaseUrl).toBe('string');
       expect(body.embeddingModel).toBeDefined();
+      expect(typeof body.authConfigured).toBe('boolean');
     });
 
     it('should return disconnected status when Ollama is unreachable', async () => {
@@ -146,6 +147,44 @@ describe('Ollama status and models routes', () => {
 
       // Restore
       if (originalUrl) process.env.OLLAMA_BASE_URL = originalUrl;
+    });
+
+    it('should return authConfigured=false when LLM_BEARER_TOKEN is not set', async () => {
+      mockCheckHealth.mockResolvedValue(true);
+      const originalToken = process.env.LLM_BEARER_TOKEN;
+      delete process.env.LLM_BEARER_TOKEN;
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/ollama/status',
+      });
+
+      const body = JSON.parse(response.body);
+      expect(body.authConfigured).toBe(false);
+
+      // Restore
+      if (originalToken) process.env.LLM_BEARER_TOKEN = originalToken;
+    });
+
+    it('should return authConfigured=true when LLM_BEARER_TOKEN is set', async () => {
+      mockCheckHealth.mockResolvedValue(true);
+      const originalToken = process.env.LLM_BEARER_TOKEN;
+      process.env.LLM_BEARER_TOKEN = 'test-token';
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/ollama/status',
+      });
+
+      const body = JSON.parse(response.body);
+      expect(body.authConfigured).toBe(true);
+
+      // Restore
+      if (originalToken) {
+        process.env.LLM_BEARER_TOKEN = originalToken;
+      } else {
+        delete process.env.LLM_BEARER_TOKEN;
+      }
     });
   });
 

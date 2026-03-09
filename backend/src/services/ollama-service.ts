@@ -4,9 +4,17 @@ import { sanitizeLlmInput } from '../utils/sanitize-llm-input.js';
 import { logger } from '../utils/logger.js';
 import { ollamaBreakers } from './circuit-breaker.js';
 
-const ollama = new Ollama({
+const ollamaConfig: { host: string; headers?: Record<string, string> } = {
   host: process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434',
-});
+};
+
+if (process.env.LLM_BEARER_TOKEN) {
+  ollamaConfig.headers = {
+    Authorization: `Bearer ${process.env.LLM_BEARER_TOKEN}`,
+  };
+}
+
+const ollama = new Ollama(ollamaConfig);
 
 // Max 2 concurrent LLM calls
 const llmLimit = pLimit(2);
