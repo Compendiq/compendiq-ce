@@ -1,6 +1,24 @@
 import { request } from 'undici';
+import { readFileSync } from 'fs';
 import { validateUrl } from '../utils/ssrf-guard.js';
 import { logger } from '../utils/logger.js';
+
+/**
+ * Load custom CA certificates for undici (which doesn't respect NODE_EXTRA_CA_CERTS).
+ * Returns the CA bundle contents or undefined if not configured / not found.
+ */
+function loadCaBundle(): string | undefined {
+  const caPath = process.env.NODE_EXTRA_CA_CERTS;
+  if (!caPath) return undefined;
+  try {
+    return readFileSync(caPath, 'utf-8');
+  } catch {
+    logger.warn({ caPath }, 'Could not read CA bundle file, falling back to default CAs');
+    return undefined;
+  }
+}
+
+const caBundleContents = loadCaBundle();
 
 interface ConfluenceSpace {
   key: string;
@@ -53,6 +71,16 @@ export class ConfluenceClient {
     this.verifySsl = process.env.CONFLUENCE_VERIFY_SSL !== 'false';
   }
 
+  private buildConnectOptions(): Record<string, unknown> | undefined {
+    if (!this.verifySsl) {
+      return { rejectUnauthorized: false };
+    }
+    if (caBundleContents) {
+      return { ca: caBundleContents };
+    }
+    return undefined;
+  }
+
   private async fetch<T>(path: string, options: {
     method?: string;
     body?: unknown;
@@ -79,8 +107,9 @@ export class ConfluenceClient {
       body: body ? JSON.stringify(body) : undefined,
       signal: signal ?? AbortSignal.timeout(30_000),
     };
-    if (!this.verifySsl) {
-      opts.connect = { rejectUnauthorized: false };
+    const connectOpts = this.buildConnectOptions();
+    if (connectOpts) {
+      opts.connect = connectOpts;
     }
 
     const { statusCode, body: responseBody } = await request(url, opts as Parameters<typeof request>[1]);
@@ -151,8 +180,9 @@ export class ConfluenceClient {
       headers: { 'Authorization': `Bearer ${this.pat}` },
       signal: AbortSignal.timeout(60_000),
     };
-    if (!this.verifySsl) {
-      opts.connect = { rejectUnauthorized: false };
+    const connectOpts = this.buildConnectOptions();
+    if (connectOpts) {
+      opts.connect = connectOpts;
     }
 
     const { statusCode, body } = await request(url, opts as Parameters<typeof request>[1]);
