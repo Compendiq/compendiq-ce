@@ -251,6 +251,82 @@ describe('LlmTab (OllamaTab)', () => {
     });
   });
 
+  it('shows test connection button', async () => {
+    mockFetchResponses();
+    render(<SettingsPage />, { wrapper: createWrapper() });
+    await navigateToLlmTab();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('llm-test-btn')).toBeInTheDocument();
+      expect(screen.getByTestId('llm-test-btn').textContent).toBe('Test Connection');
+    });
+  });
+
+  it('shows success when test connection succeeds', async () => {
+    mockFetchResponses();
+    render(<SettingsPage />, { wrapper: createWrapper() });
+    await navigateToLlmTab();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('llm-test-btn')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('llm-test-btn'));
+
+    await waitFor(() => {
+      const result = screen.getByTestId('llm-test-result');
+      expect(result).toBeInTheDocument();
+      expect(result.textContent).toContain('Connected to');
+    });
+  });
+
+  it('shows error when test connection fails', async () => {
+    mockFetchResponses({
+      status: {
+        connected: false,
+        error: 'Connection refused',
+        provider: 'ollama',
+        ollamaBaseUrl: 'http://localhost:11434',
+        openaiBaseUrl: 'https://api.openai.com/v1',
+        embeddingModel: 'nomic-embed-text',
+      },
+    });
+    render(<SettingsPage />, { wrapper: createWrapper() });
+    await navigateToLlmTab();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('llm-test-btn')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('llm-test-btn'));
+
+    await waitFor(() => {
+      const result = screen.getByTestId('llm-test-result');
+      expect(result).toBeInTheDocument();
+      expect(result.textContent).toContain('Connection refused');
+    });
+  });
+
+  it('clears test result when switching providers', async () => {
+    mockFetchResponses();
+    render(<SettingsPage />, { wrapper: createWrapper() });
+    await navigateToLlmTab();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('llm-test-btn')).toBeInTheDocument();
+    });
+
+    // Test connection first
+    fireEvent.click(screen.getByTestId('llm-test-btn'));
+    await waitFor(() => {
+      expect(screen.getByTestId('llm-test-result')).toBeInTheDocument();
+    });
+
+    // Switch provider - result should clear
+    fireEvent.click(screen.getByTestId('provider-openai-btn'));
+    expect(screen.queryByTestId('llm-test-result')).not.toBeInTheDocument();
+  });
+
   it('shows OpenAI API key configured status', async () => {
     mockFetchResponses({
       settings: {
