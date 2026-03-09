@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { PageTreeView, buildTree, countDescendants } from './PageTreeView';
-import type { PageSummary } from '../../shared/hooks/use-pages';
+import type { PageTreeItem } from '../../shared/hooks/use-pages';
 
 const mockNavigate = vi.fn();
 vi.mock('react-router-dom', async () => {
@@ -24,23 +24,19 @@ function Wrapper({ children }: { children: React.ReactNode }) {
   );
 }
 
-function makePage(overrides: Partial<PageSummary> = {}): PageSummary {
+function makePage(overrides: Partial<PageTreeItem> = {}): PageTreeItem {
   return {
     id: 'page-1',
     spaceKey: 'DEV',
     title: 'Test Page',
-    version: 1,
     parentId: null,
     labels: [],
-    author: null,
     lastModifiedAt: '2026-03-01T00:00:00Z',
-    lastSynced: '2026-03-01T00:00:00Z',
-    embeddingDirty: false,
     ...overrides,
   };
 }
 
-const hierarchyPages: PageSummary[] = [
+const hierarchyPages: PageTreeItem[] = [
   makePage({ id: 'root-1', title: 'Root Page 1', parentId: null }),
   makePage({ id: 'child-1a', title: 'Child 1A', parentId: 'root-1' }),
   makePage({ id: 'child-1b', title: 'Child 1B', parentId: 'root-1' }),
@@ -77,6 +73,31 @@ describe('buildTree', () => {
   it('handles empty array', () => {
     const tree = buildTree([]);
     expect(tree).toHaveLength(0);
+  });
+
+  it('roots tree at homepage children when homepageId is provided', () => {
+    const pages: PageTreeItem[] = [
+      makePage({ id: 'home', title: 'Home', parentId: null }),
+      makePage({ id: 'child-a', title: 'Child A', parentId: 'home' }),
+      makePage({ id: 'child-b', title: 'Child B', parentId: 'home' }),
+      makePage({ id: 'grandchild', title: 'Grandchild', parentId: 'child-a' }),
+    ];
+    const tree = buildTree(pages, 'home');
+    expect(tree).toHaveLength(2);
+    expect(tree[0].page.title).toBe('Child A');
+    expect(tree[1].page.title).toBe('Child B');
+    expect(tree[0].children).toHaveLength(1);
+    expect(tree[0].children[0].page.title).toBe('Grandchild');
+  });
+
+  it('falls back to normal roots when homepageId not found', () => {
+    const tree = buildTree(hierarchyPages, 'nonexistent-id');
+    expect(tree).toHaveLength(2); // same as without homepageId
+  });
+
+  it('falls back to normal roots when homepageId is null', () => {
+    const tree = buildTree(hierarchyPages, null);
+    expect(tree).toHaveLength(2);
   });
 });
 
@@ -126,7 +147,7 @@ describe('PageTreeView', () => {
     expect(screen.getByText('Child 1B')).toBeInTheDocument();
   });
 
-  it('collapses expanded node', () => {
+  it('collapses expanded node', async () => {
     render(<PageTreeView pages={hierarchyPages} />, { wrapper: Wrapper });
 
     // Expand
@@ -137,7 +158,9 @@ describe('PageTreeView', () => {
     // Collapse
     const collapseBtn = screen.getByLabelText('Collapse');
     fireEvent.click(collapseBtn);
-    expect(screen.queryByText('Child 1A')).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByText('Child 1A')).not.toBeInTheDocument();
+    });
   });
 
   it('navigates to page on click', () => {
@@ -161,14 +184,16 @@ describe('PageTreeView', () => {
     expect(screen.getByText('Grandchild 1A1')).toBeInTheDocument();
   });
 
-  it('Collapse All hides all nested nodes', () => {
+  it('Collapse All hides all nested nodes', async () => {
     render(<PageTreeView pages={hierarchyPages} />, { wrapper: Wrapper });
 
     fireEvent.click(screen.getByText('Expand All'));
     expect(screen.getByText('Child 1A')).toBeInTheDocument();
 
     fireEvent.click(screen.getByText('Collapse All'));
-    expect(screen.queryByText('Child 1A')).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByText('Child 1A')).not.toBeInTheDocument();
+    });
   });
 
   it('shows descendant count for nodes with children', () => {

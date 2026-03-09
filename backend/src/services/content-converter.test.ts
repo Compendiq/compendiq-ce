@@ -178,12 +178,38 @@ describe('content-converter', () => {
   // ========== htmlToConfluence (round-trip) ==========
 
   describe('htmlToConfluence', () => {
+    it('self-closes void elements for valid XHTML', () => {
+      const xhtml = htmlToConfluence('<p>Hello</p><br><hr><p>World</p>');
+      expect(xhtml).toContain('<br />');
+      expect(xhtml).toContain('<hr />');
+      // Must not contain unclosed void elements
+      expect(xhtml).not.toMatch(/<br>/);
+      expect(xhtml).not.toMatch(/<hr>/);
+    });
+
+    it('self-closes img tags with attributes for valid XHTML', () => {
+      const xhtml = htmlToConfluence('<p><img src="test.png" alt="test" width="100"></p>');
+      expect(xhtml).toMatch(/<img [^>]*\/>/);
+      expect(xhtml).not.toMatch(/<img [^/]+">/);
+    });
+
+    it('wraps code block content in CDATA sections', () => {
+      const xhtml = htmlToConfluence('<pre><code class="language-js">var x = 1 && y < 2;</code></pre>');
+      expect(xhtml).toContain('<![CDATA[var x = 1 && y < 2;]]>');
+      expect(xhtml).toContain('ac:plain-text-body');
+    });
+
+    it('correctly unescapes HTML entities in CDATA sections', () => {
+      const xhtml = htmlToConfluence('<pre><code>a &lt; b &amp;&amp; c &gt; d</code></pre>');
+      expect(xhtml).toContain('<![CDATA[a < b && c > d]]>');
+    });
+
     it('round-trips code blocks', () => {
       const html = confluenceToHtml(CODE_BLOCK_PAGE);
       const xhtml = htmlToConfluence(html);
       expect(xhtml).toContain('ac:name="code"');
       expect(xhtml).toContain('ac:name="language"');
-      // Content is preserved (as text, not CDATA — JSDOM HTML mode)
+      expect(xhtml).toContain('<![CDATA[');
       expect(xhtml).toContain('npm install');
     });
 
@@ -232,7 +258,7 @@ describe('content-converter', () => {
     it('round-trips complex page preserving structure', () => {
       const html = confluenceToHtml(COMPLEX_PAGE, '42');
       const xhtml = htmlToConfluence(html);
-      // Code blocks restored (content as text, not CDATA)
+      // Code blocks restored with CDATA wrapping
       expect(xhtml).toContain('ac:name="code"');
       expect(xhtml).toContain('docker compose');
       // Panels restored

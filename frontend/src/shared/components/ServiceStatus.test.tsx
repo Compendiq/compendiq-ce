@@ -12,7 +12,7 @@ function Wrapper({ children }: { children: React.ReactNode }) {
 describe('ServiceStatus', () => {
   beforeEach(() => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({ status: 'ok', services: {} }), {
+      new Response(JSON.stringify({ status: 'ok', services: { postgres: true, redis: true, ollama: true } }), {
         headers: { 'Content-Type': 'application/json' },
       }),
     );
@@ -31,26 +31,8 @@ describe('ServiceStatus', () => {
     });
 
     // No alerts should be visible
-    expect(screen.queryByText('Confluence is unreachable')).not.toBeInTheDocument();
     expect(screen.queryByText('Ollama server is down')).not.toBeInTheDocument();
-  });
-
-  it('shows alert when Confluence is disconnected', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          status: 'degraded',
-          services: { confluence: 'disconnected' },
-        }),
-        { headers: { 'Content-Type': 'application/json' } },
-      ),
-    );
-
-    render(<ServiceStatus />, { wrapper: Wrapper });
-
-    await waitFor(() => {
-      expect(screen.getByText('Confluence is unreachable')).toBeInTheDocument();
-    });
+    expect(screen.queryByText('Redis is unavailable')).not.toBeInTheDocument();
   });
 
   it('shows alert when Ollama is disconnected', async () => {
@@ -58,7 +40,7 @@ describe('ServiceStatus', () => {
       new Response(
         JSON.stringify({
           status: 'degraded',
-          services: { ollama: 'disconnected' },
+          services: { postgres: true, redis: true, ollama: false },
         }),
         { headers: { 'Content-Type': 'application/json' } },
       ),
@@ -76,7 +58,7 @@ describe('ServiceStatus', () => {
       new Response(
         JSON.stringify({
           status: 'degraded',
-          services: { redis: 'disconnected' },
+          services: { postgres: true, redis: false, ollama: true },
         }),
         { headers: { 'Content-Type': 'application/json' } },
       ),
@@ -104,7 +86,7 @@ describe('ServiceStatus', () => {
       new Response(
         JSON.stringify({
           status: 'degraded',
-          services: { confluence: 'disconnected', ollama: 'disconnected' },
+          services: { postgres: true, redis: false, ollama: false },
         }),
         { headers: { 'Content-Type': 'application/json' } },
       ),
@@ -113,8 +95,8 @@ describe('ServiceStatus', () => {
     render(<ServiceStatus />, { wrapper: Wrapper });
 
     await waitFor(() => {
-      expect(screen.getByText('Confluence is unreachable')).toBeInTheDocument();
       expect(screen.getByText('Ollama server is down')).toBeInTheDocument();
+      expect(screen.getByText('Redis is unavailable')).toBeInTheDocument();
     });
   });
 
@@ -123,7 +105,7 @@ describe('ServiceStatus', () => {
       new Response(
         JSON.stringify({
           status: 'degraded',
-          services: { confluence: 'disconnected' },
+          services: { postgres: true, redis: true, ollama: false },
         }),
         { headers: { 'Content-Type': 'application/json' } },
       ),
@@ -132,14 +114,14 @@ describe('ServiceStatus', () => {
     render(<ServiceStatus />, { wrapper: Wrapper });
 
     await waitFor(() => {
-      expect(screen.getByText('Confluence is unreachable')).toBeInTheDocument();
+      expect(screen.getByText('Ollama server is down')).toBeInTheDocument();
     });
 
-    const dismissBtn = screen.getByLabelText('Dismiss confluence alert');
+    const dismissBtn = screen.getByLabelText('Dismiss ollama alert');
     fireEvent.click(dismissBtn);
 
     await waitFor(() => {
-      expect(screen.queryByText('Confluence is unreachable')).not.toBeInTheDocument();
+      expect(screen.queryByText('Ollama server is down')).not.toBeInTheDocument();
     });
   });
 

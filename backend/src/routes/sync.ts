@@ -1,5 +1,5 @@
 import { FastifyInstance } from 'fastify';
-import { syncUser, getSyncStatus } from '../services/sync-service.js';
+import { syncUser, getSyncStatus, setSyncStatus } from '../services/sync-service.js';
 import { logAuditEvent } from '../services/audit-service.js';
 import { logger } from '../utils/logger.js';
 
@@ -14,6 +14,10 @@ export async function syncRoutes(fastify: FastifyInstance) {
     if (status.status === 'syncing') {
       return reply.status(409).send({ message: 'Sync already in progress', status });
     }
+
+    // Set status to syncing immediately so the response reflects it
+    // and the frontend can start polling right away
+    setSyncStatus(userId, { userId, status: 'syncing' });
 
     await logAuditEvent(userId, 'SYNC_STARTED', 'sync', undefined, {}, request);
 

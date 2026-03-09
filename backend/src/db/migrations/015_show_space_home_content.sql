@@ -1,0 +1,2 @@
+ALTER TABLE user_settings
+  ADD COLUMN IF NOT EXISTS show_space_home_content BOOLEAN NOT NULL DEFAULT TRUE;

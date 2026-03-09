@@ -19,9 +19,10 @@ export async function spacesRoutes(fastify: FastifyInstance) {
     const result = await query<{
       space_key: string;
       space_name: string;
+      homepage_id: string | null;
       last_synced: Date;
     }>(
-      'SELECT space_key, space_name, last_synced FROM cached_spaces WHERE user_id = $1 ORDER BY space_name',
+      'SELECT space_key, space_name, homepage_id, last_synced FROM cached_spaces WHERE user_id = $1 ORDER BY space_name',
       [userId],
     );
 
@@ -35,6 +36,7 @@ export async function spacesRoutes(fastify: FastifyInstance) {
     const spaces = result.rows.map((row) => ({
       key: row.space_key,
       name: row.space_name,
+      homepageId: row.homepage_id,
       lastSynced: row.last_synced,
       pageCount: counts.get(row.space_key) ?? 0,
     }));

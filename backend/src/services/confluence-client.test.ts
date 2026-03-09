@@ -134,6 +134,65 @@ describe('ConfluenceClient', () => {
 
       await expect(client.getSpaces()).rejects.toThrow('Resource not found');
     });
+
+    it('should include Confluence error message in 400 errors', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+      mockRequest.mockResolvedValue({
+        statusCode: 400,
+        body: { text: async () => JSON.stringify({ message: 'Content body cannot be converted to valid storage format' }) },
+      } as never);
+
+      await expect(client.getSpaces()).rejects.toThrow(
+        'Confluence API error: HTTP 400: Content body cannot be converted to valid storage format',
+      );
+    });
+
+    it('should handle non-JSON error responses gracefully', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+      mockRequest.mockResolvedValue({
+        statusCode: 500,
+        body: { text: async () => 'Internal Server Error' },
+      } as never);
+
+      await expect(client.getSpaces()).rejects.toThrow(
+        'Confluence API error: HTTP 500: Internal Server Error',
+      );
+    });
+  });
+
+  describe('getSpaces homepage expansion', () => {
+    it('should include expand=homepage in the getSpaces URL', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+      mockRequest.mockResolvedValue({
+        statusCode: 200,
+        body: { text: async () => JSON.stringify({ results: [], start: 0, limit: 100, size: 0 }) },
+      } as never);
+
+      await client.getSpaces();
+
+      const callUrl = mockRequest.mock.calls[0][0] as string;
+      expect(callUrl).toContain('expand=homepage');
+    });
+
+    it('should return homepage data when Confluence provides it', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+      const spacesResponse = {
+        results: [
+          { key: 'ITE', name: 'ITE Space', type: 'global', status: 'current', homepage: { id: '12345', title: 'Home' } },
+        ],
+        start: 0,
+        limit: 100,
+        size: 1,
+      };
+      mockRequest.mockResolvedValue({
+        statusCode: 200,
+        body: { text: async () => JSON.stringify(spacesResponse) },
+      } as never);
+
+      const result = await client.getSpaces();
+
+      expect(result.results[0].homepage).toEqual({ id: '12345', title: 'Home' });
+    });
   });
 
   describe('URL handling', () => {
@@ -147,7 +206,94 @@ describe('ConfluenceClient', () => {
       await client.getSpaces();
 
       const callUrl = mockRequest.mock.calls[0][0] as string;
-      expect(callUrl).toBe('https://confluence.example.com/rest/api/space?start=0&limit=100&type=global');
+      expect(callUrl).toBe('https://confluence.example.com/rest/api/space?start=0&limit=100&type=global&expand=homepage');
+    });
+  });
+
+  describe('label management', () => {
+    it('should fetch labels for a page', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+      mockRequest.mockResolvedValue({
+        statusCode: 200,
+        body: { text: async () => JSON.stringify({ results: [{ name: 'api' }, { name: 'security' }] }) },
+      } as never);
+
+      const labels = await client.getLabels('12345');
+
+      expect(labels).toEqual(['api', 'security']);
+      const callUrl = mockRequest.mock.calls[0][0] as string;
+      expect(callUrl).toContain('/rest/api/content/12345/label');
+    });
+
+    it('should add labels to a page', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+      mockRequest.mockResolvedValue({
+        statusCode: 200,
+        body: { text: async () => JSON.stringify({ results: [] }) },
+      } as never);
+
+      await client.addLabels('12345', ['api', 'security']);
+
+      const callArgs = mockRequest.mock.calls[0];
+      const callUrl = callArgs[0] as string;
+      const opts = callArgs[1] as Record<string, unknown>;
+      expect(callUrl).toContain('/rest/api/content/12345/label');
+      expect(opts.method).toBe('POST');
+      expect(opts.body).toBe(JSON.stringify([
+        { prefix: 'global', name: 'api' },
+        { prefix: 'global', name: 'security' },
+      ]));
+    });
+
+    it('should skip addLabels when labels array is empty', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+
+      await client.addLabels('12345', []);
+
+      expect(mockRequest).not.toHaveBeenCalled();
+    });
+
+    it('should remove a label from a page', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+      mockRequest.mockResolvedValue({
+        statusCode: 200,
+        body: { text: async () => '{}' },
+      } as never);
+
+      await client.removeLabel('12345', 'api');
+
+      const callArgs = mockRequest.mock.calls[0];
+      const callUrl = callArgs[0] as string;
+      const opts = callArgs[1] as Record<string, unknown>;
+      expect(callUrl).toContain('/rest/api/content/12345/label/api');
+      expect(opts.method).toBe('DELETE');
+    });
+
+    it('should set labels by computing diff', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+
+      // First call: getLabels returns ['api', 'old-tag']
+      // Second call: removeLabel for 'old-tag'
+      // Third call: addLabels for ['security']
+      let callCount = 0;
+      mockRequest.mockImplementation(async () => {
+        callCount++;
+        if (callCount === 1) {
+          return {
+            statusCode: 200,
+            body: { text: async () => JSON.stringify({ results: [{ name: 'api' }, { name: 'old-tag' }] }) },
+          } as never;
+        }
+        return {
+          statusCode: 200,
+          body: { text: async () => '{}' },
+        } as never;
+      });
+
+      await client.setLabels('12345', ['api', 'security']);
+
+      // 1: getLabels, 2: removeLabel('old-tag'), 3: addLabels(['security'])
+      expect(mockRequest).toHaveBeenCalledTimes(3);
     });
   });
 });

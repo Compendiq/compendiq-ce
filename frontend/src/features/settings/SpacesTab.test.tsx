@@ -162,4 +162,49 @@ describe('SpacesTab', () => {
     render(<SpacesTab onSave={mockOnSave} />, { wrapper: createWrapper() });
     expect(screen.getByText('Sync Selected')).toBeInTheDocument();
   });
+
+  describe('showSpaceHomeContent toggle', () => {
+    it('renders the toggle', () => {
+      render(
+        <SpacesTab showSpaceHomeContent={true} onSave={mockOnSave} />,
+        { wrapper: createWrapper() },
+      );
+      expect(screen.getByText('Show space home content')).toBeInTheDocument();
+      expect(screen.getByTestId('toggle-space-home-content')).toBeInTheDocument();
+    });
+
+    it('toggle is checked when showSpaceHomeContent is true', () => {
+      render(
+        <SpacesTab showSpaceHomeContent={true} onSave={mockOnSave} />,
+        { wrapper: createWrapper() },
+      );
+      expect(screen.getByTestId('toggle-space-home-content')).toHaveAttribute('aria-checked', 'true');
+    });
+
+    it('toggle is unchecked when showSpaceHomeContent is false', () => {
+      render(
+        <SpacesTab showSpaceHomeContent={false} onSave={mockOnSave} />,
+        { wrapper: createWrapper() },
+      );
+      expect(screen.getByTestId('toggle-space-home-content')).toHaveAttribute('aria-checked', 'false');
+    });
+
+    it('calls onSave with toggled value when clicked', () => {
+      render(
+        <SpacesTab showSpaceHomeContent={true} onSave={mockOnSave} />,
+        { wrapper: createWrapper() },
+      );
+      fireEvent.click(screen.getByTestId('toggle-space-home-content'));
+      expect(mockOnSave).toHaveBeenCalledWith({ showSpaceHomeContent: false });
+    });
+
+    it('calls onSave with true when toggling from off to on', () => {
+      render(
+        <SpacesTab showSpaceHomeContent={false} onSave={mockOnSave} />,
+        { wrapper: createWrapper() },
+      );
+      fireEvent.click(screen.getByTestId('toggle-space-home-content'));
+      expect(mockOnSave).toHaveBeenCalledWith({ showSpaceHomeContent: true });
+    });
+  });
 });

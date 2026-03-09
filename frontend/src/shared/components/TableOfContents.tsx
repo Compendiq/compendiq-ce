@@ -151,5 +151,6 @@ export function TableOfContents({ htmlContent, contentRef }: TableOfContentsProp
   );
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export { parseHeadings };
 export type { TocHeading };

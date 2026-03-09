@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Search, Edit2, Trash2, Merge, Check, X } from 'lucide-react';
 import { apiFetch } from '../../shared/lib/api';
-import { cn } from '../../shared/lib/cn';
+
 
 interface LabelInfo {
   name: string;

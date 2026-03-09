@@ -3,6 +3,7 @@ import { htmlToMarkdown } from './content-converter.js';
 import { sanitizeLlmInput } from '../utils/sanitize-llm-input.js';
 import { query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
+import { getClientForUser } from './sync-service.js';
 
 export const ALLOWED_TAGS = [
   'architecture',
@@ -170,6 +171,19 @@ export async function applyTags(
     'UPDATE cached_pages SET labels = $3 WHERE user_id = $1 AND confluence_id = $2',
     [userId, confluenceId, mergedLabels],
   );
+
+  // Sync labels to Confluence
+  try {
+    const client = await getClientForUser(userId);
+    if (client) {
+      const newTags = tags.filter((t) => !existingLabels.includes(t));
+      if (newTags.length > 0) {
+        await client.addLabels(confluenceId, newTags);
+      }
+    }
+  } catch (err) {
+    logger.error({ err, confluenceId, userId }, 'Failed to sync labels to Confluence');
+  }
 
   return mergedLabels;
 }

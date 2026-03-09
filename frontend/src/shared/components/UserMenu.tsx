@@ -1,10 +1,10 @@
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { LogOut, User } from 'lucide-react';
 import { useAuthStore } from '../../stores/auth-store';
+import { logoutApi } from '../lib/api';
 
 export function UserMenu() {
   const user = useAuthStore((s) => s.user);
-  const clearAuth = useAuthStore((s) => s.clearAuth);
 
   return (
     <DropdownMenu.Root>
@@ -29,7 +29,7 @@ export function UserMenu() {
           </DropdownMenu.Label>
           <DropdownMenu.Separator className="my-1 h-px bg-white/10" />
           <DropdownMenu.Item
-            onSelect={clearAuth}
+            onSelect={() => void logoutApi()}
             className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-muted-foreground outline-none hover:bg-white/5 hover:text-foreground transition-colors"
           >
             <LogOut size={14} />

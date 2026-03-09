@@ -123,11 +123,14 @@ if (llmDispatcher) {
 
 /**
  * Get auth headers for LLM/Ollama requests.
+ * Reads env vars at call time to support dynamic token changes and test scenarios.
  * Returns empty object when no auth is configured.
  */
 export function getLlmAuthHeaders(): Record<string, string> {
-  if (authType === 'bearer' && bearerToken) {
-    return { Authorization: `Bearer ${bearerToken}` };
+  const currentAuthType = (process.env.LLM_AUTH_TYPE ?? 'bearer').toLowerCase();
+  const currentToken = process.env.LLM_BEARER_TOKEN ?? '';
+  if (currentAuthType === 'bearer' && currentToken) {
+    return { Authorization: `Bearer ${currentToken}` };
   }
   return {};
 }

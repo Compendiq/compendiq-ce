@@ -178,17 +178,43 @@ export async function authRoutes(fastify: FastifyInstance) {
   });
 
   fastify.post('/logout', async (request, reply) => {
-    // Try to revoke all user tokens if authenticated
+    let userId: string | null = null;
+
+    // Try to extract user ID from Bearer token first
     try {
       const authHeader = request.headers.authorization;
       if (authHeader?.startsWith('Bearer ')) {
         const { verifyToken } = await import('../plugins/auth.js');
         const payload = await verifyToken(authHeader.slice(7));
-        await revokeAllUserTokens(payload.sub);
-        await logAuditEvent(payload.sub, 'LOGOUT', 'user', payload.sub, {}, request);
+        userId = payload.sub;
       }
     } catch {
-      // Best effort: still clear cookie even if token is invalid
+      // Access token expired or invalid — fall through to refresh cookie
+    }
+
+    // Fallback: extract user ID from the refresh token cookie (handles expired access tokens)
+    if (!userId) {
+      try {
+        const refreshTokenCookie = request.cookies[REFRESH_COOKIE];
+        if (refreshTokenCookie) {
+          const payload = await verifyRefreshToken(refreshTokenCookie);
+          userId = payload.sub;
+          // Also revoke this specific JTI since we verified it
+          await revokeToken(payload.jti);
+        }
+      } catch {
+        // Refresh token also invalid — nothing to revoke
+      }
+    }
+
+    // Revoke all tokens for the identified user
+    if (userId) {
+      try {
+        await revokeAllUserTokens(userId);
+        await logAuditEvent(userId, 'LOGOUT', 'user', userId, {}, request);
+      } catch {
+        // Best effort
+      }
     }
 
     reply

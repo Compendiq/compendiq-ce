@@ -2,7 +2,8 @@ import { FastifyInstance, FastifyReply } from 'fastify';
 import { query } from '../db/postgres.js';
 import {
   streamChat, getSystemPrompt, ChatMessage, SystemPromptKey,
-  listModels, checkHealth,
+  isLlmVerifySslEnabled, getLlmAuthType,
+  getActiveProviderType, getProvider,
 } from '../services/ollama-service.js';
 import { hybridSearch, buildRagContext } from '../services/rag-service.js';
 import { htmlToMarkdown } from '../services/content-converter.js';
@@ -14,11 +15,13 @@ import {
   GenerateRequestSchema,
   SummarizeRequestSchema,
   AskRequestSchema,
+  GenerateDiagramRequestSchema,
 } from '@kb-creator/contracts';
 import { z } from 'zod';
 import { sanitizeLlmInput } from '../utils/sanitize-llm-input.js';
 import { logAuditEvent } from '../services/audit-service.js';
 import { logger } from '../utils/logger.js';
+import type { LlmProviderType } from '../services/llm-provider.js';
 
 const IdParamSchema = z.object({ id: z.string().min(1) });
 const ImprovementsQuerySchema = z.object({ pageId: z.string().optional() });
@@ -95,23 +98,40 @@ export async function llmRoutes(fastify: FastifyInstance) {
   // Create LLM cache instance
   const llmCache = new LlmCache(fastify.redis);
 
-  // GET /api/ollama/models - list available models
-  fastify.get('/ollama/models', async () => {
+  // GET /api/ollama/models - list available models (supports ?provider=ollama|openai)
+  fastify.get('/ollama/models', async (request) => {
+    const { provider: providerParam } = z.object({ provider: z.enum(['ollama', 'openai']).optional() }).parse(request.query);
+    const providerType: LlmProviderType = providerParam ?? getActiveProviderType();
+    const provider = getProvider(providerType);
+
     try {
-      return await listModels();
+      return await provider.listModels();
     } catch (err) {
-      logger.error({ err }, 'Failed to list models');
-      throw fastify.httpErrors.serviceUnavailable('Ollama server unavailable');
+      const detail = err instanceof Error ? err.message : 'Unknown error';
+      logger.error({ err, provider: providerType }, 'Failed to list models');
+      throw fastify.httpErrors.serviceUnavailable(`LLM server unavailable (${providerType}): ${detail}`);
     }
   });
 
-  // GET /api/ollama/status
-  fastify.get('/ollama/status', async () => {
-    const health = await checkHealth();
+  // GET /api/ollama/status - (supports ?provider=ollama|openai)
+  fastify.get('/ollama/status', async (request) => {
+    const { provider: providerParam } = z.object({ provider: z.enum(['ollama', 'openai']).optional() }).parse(request.query);
+    const providerType: LlmProviderType = providerParam ?? getActiveProviderType();
+    const provider = getProvider(providerType);
+
+    const health = await provider.checkHealth();
     return {
       connected: health.connected,
       error: health.error,
+      provider: providerType,
+      ollamaBaseUrl: process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434',
+      openaiBaseUrl: process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1',
       embeddingModel: process.env.EMBEDDING_MODEL ?? 'nomic-embed-text',
+      authConfigured: providerType === 'ollama'
+        ? !!process.env.LLM_BEARER_TOKEN
+        : !!process.env.OPENAI_API_KEY,
+      authType: getLlmAuthType(),
+      verifySsl: isLlmVerifySslEnabled(),
     };
   });
 
@@ -260,6 +280,48 @@ export async function llmRoutes(fastify: FastifyInstance) {
     const generator = streamChat(model, [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: sanitizedMarkdown },
+    ]);
+
+    await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
+  });
+
+  // POST /api/llm/generate-diagram - stream Mermaid diagram from article content
+  fastify.post('/llm/generate-diagram', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
+    const body = GenerateDiagramRequestSchema.parse(request.body);
+    const { content, model, diagramType = 'flowchart' } = body;
+
+    if (content.length > MAX_INPUT_LENGTH) {
+      throw fastify.httpErrors.badRequest(`Content too large (max ${MAX_INPUT_LENGTH} characters)`);
+    }
+
+    const markdown = htmlToMarkdown(content);
+
+    // Sanitize before sending to LLM
+    const { sanitized, warnings } = sanitizeLlmInput(markdown);
+    if (warnings.length > 0) {
+      await logAuditEvent(request.userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/generate-diagram' }, request);
+    }
+
+    const systemPrompt = getSystemPrompt(`generate_diagram_${diagramType}` as SystemPromptKey);
+
+    // Check LLM cache
+    const cacheKey = buildLlmCacheKey(model, systemPrompt, sanitized);
+    const cached = await llmCache.getCachedResponse(cacheKey);
+    if (cached) {
+      reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      reply.raw.write(`data: ${JSON.stringify({ content: cached.content, done: true, cached: true })}\n\n`);
+      reply.raw.end();
+      return;
+    }
+
+    const generator = streamChat(model, [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: sanitized },
     ]);
 
     await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });

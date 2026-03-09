@@ -1,32 +1,75 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { m } from 'framer-motion';
-import { Search, FileText, Plus, RefreshCw, ChevronLeft, ChevronRight, FolderOpen, List, GitBranch } from 'lucide-react';
-import { usePages } from '../../shared/hooks/use-pages';
+import { Search, FileText, Plus, RefreshCw, ChevronLeft, ChevronRight, FolderOpen, Filter, X, List } from 'lucide-react';
+import DOMPurify from 'dompurify';
+import { usePages, usePageFilterOptions, usePage } from '../../shared/hooks/use-pages';
 import { useSpaces, useSync, useSyncStatus } from '../../shared/hooks/use-spaces';
+import { useSettings } from '../../shared/hooks/use-settings';
 import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
 import { BulkOperations } from './BulkOperations';
-import { PageTreeView } from './PageTreeView';
 import { cn } from '../../shared/lib/cn';
 
 export function PagesPage() {
   const navigate = useNavigate();
   const [spaceKey, setSpaceKey] = useState<string>('');
   const [search, setSearch] = useState('');
+  const [author, setAuthor] = useState<string>('');
+  const [labels, setLabels] = useState<string>('');
+  const [freshness, setFreshness] = useState<string>('');
+  const [embeddingStatus, setEmbeddingStatus] = useState<string>('');
+  const [dateFrom, setDateFrom] = useState<string>('');
+  const [dateTo, setDateTo] = useState<string>('');
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState<'title' | 'modified' | 'author'>('modified');
-  const [viewMode, setViewMode] = useState<'list' | 'tree'>('list');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
+  const { data: settings } = useSettings();
   const { data: spaces } = useSpaces();
+  const { data: filterOptions } = usePageFilterOptions();
+
+  // Determine if we should show the space home page content
+  const selectedSpace = useMemo(
+    () => (spaceKey ? spaces?.find((s) => s.key === spaceKey) : undefined),
+    [spaceKey, spaces],
+  );
+  const showHomeContent = !!(settings?.showSpaceHomeContent && spaceKey && selectedSpace?.homepageId);
+  const [forcePageList, setForcePageList] = useState(false);
+  const { data: homePage, isLoading: homePageLoading } = usePage(
+    showHomeContent && !forcePageList ? selectedSpace?.homepageId ?? undefined : undefined,
+  );
+  const sanitizedHomeHtml = useMemo(
+    () => (homePage ? DOMPurify.sanitize(homePage.bodyHtml) : ''),
+    [homePage],
+  );
+
   const { data: pagesData, isLoading } = usePages({
     spaceKey: spaceKey || undefined,
     search: search || undefined,
+    author: author || undefined,
+    labels: labels || undefined,
+    freshness: (freshness || undefined) as 'fresh' | 'recent' | 'aging' | 'stale' | undefined,
+    embeddingStatus: (embeddingStatus || undefined) as 'pending' | 'done' | undefined,
+    dateFrom: dateFrom || undefined,
+    dateTo: dateTo || undefined,
     page,
     sort,
   });
   const syncMutation = useSync();
   const { data: syncStatus } = useSyncStatus();
+
+  const activeFilterCount = [author, labels, freshness, embeddingStatus, dateFrom, dateTo].filter(Boolean).length;
+
+  const clearAllFilters = useCallback(() => {
+    setAuthor('');
+    setLabels('');
+    setFreshness('');
+    setEmbeddingStatus('');
+    setDateFrom('');
+    setDateTo('');
+    setPage(1);
+  }, []);
 
   const toggleSelection = useCallback((id: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -97,68 +140,199 @@ export function PagesPage() {
       )}
 
       {/* Filters */}
-      <div className="glass-card flex flex-wrap items-center gap-3 p-4">
-        <div className="relative flex-1 min-w-48">
-          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <input
-            type="text"
-            placeholder="Search pages..."
-            value={search}
-            onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-            className="w-full rounded-md bg-white/5 py-2 pl-10 pr-4 text-sm outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-primary"
-          />
+      <div className="glass-card space-y-3 p-4">
+        <div className="flex flex-wrap items-center gap-3">
+          {/* Search */}
+          <div className="relative flex-1 min-w-48">
+            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+            <input
+              type="text"
+              placeholder="Search pages..."
+              value={search}
+              onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+              className="w-full rounded-md bg-white/5 py-2 pl-10 pr-4 text-sm outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-primary"
+            />
+          </div>
+
+          <select
+            value={spaceKey}
+            onChange={(e) => { setSpaceKey(e.target.value); setPage(1); setForcePageList(false); }}
+            className="rounded-md bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+          >
+            <option value="">All Spaces</option>
+            {spaces?.map((s) => (
+              <option key={s.key} value={s.key}>{s.name}</option>
+            ))}
+          </select>
+
+          <select
+            value={sort}
+            onChange={(e) => setSort(e.target.value as typeof sort)}
+            className="rounded-md bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+          >
+            <option value="modified">Last Modified</option>
+            <option value="title">Title</option>
+            <option value="author">Author</option>
+          </select>
+
+          {/* Advanced filters toggle */}
+          <button
+            onClick={() => setShowAdvancedFilters((v) => !v)}
+            className={cn(
+              'flex items-center gap-1.5 rounded-md px-3 py-2 text-sm transition-colors',
+              showAdvancedFilters || activeFilterCount > 0
+                ? 'bg-primary/15 text-primary'
+                : 'bg-white/5 text-muted-foreground hover:bg-white/10',
+            )}
+            data-testid="advanced-filters-toggle"
+          >
+            <Filter size={14} />
+            Filters
+            {activeFilterCount > 0 && (
+              <span className="ml-1 flex h-5 w-5 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground">
+                {activeFilterCount}
+              </span>
+            )}
+          </button>
+
         </div>
 
-        <select
-          value={spaceKey}
-          onChange={(e) => { setSpaceKey(e.target.value); setPage(1); }}
-          className="rounded-md bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
-        >
-          <option value="">All Spaces</option>
-          {spaces?.map((s) => (
-            <option key={s.key} value={s.key}>{s.name}</option>
-          ))}
-        </select>
+        {/* Advanced filters panel */}
+        {showAdvancedFilters && (
+          <div className="flex flex-wrap items-end gap-3 border-t border-white/10 pt-3" data-testid="advanced-filters-panel">
+            {/* Author filter */}
+            <div className="min-w-40">
+              <label className="mb-1 block text-xs text-muted-foreground">Author</label>
+              <select
+                value={author}
+                onChange={(e) => { setAuthor(e.target.value); setPage(1); }}
+                className="w-full rounded-md bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                data-testid="filter-author"
+              >
+                <option value="">All Authors</option>
+                {filterOptions?.authors.map((a) => (
+                  <option key={a} value={a}>{a}</option>
+                ))}
+              </select>
+            </div>
 
-        <select
-          value={sort}
-          onChange={(e) => setSort(e.target.value as typeof sort)}
-          className="rounded-md bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
-        >
-          <option value="modified">Last Modified</option>
-          <option value="title">Title</option>
-          <option value="author">Author</option>
-        </select>
+            {/* Labels filter */}
+            <div className="min-w-40">
+              <label className="mb-1 block text-xs text-muted-foreground">Labels</label>
+              <select
+                value={labels}
+                onChange={(e) => { setLabels(e.target.value); setPage(1); }}
+                className="w-full rounded-md bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                data-testid="filter-labels"
+              >
+                <option value="">All Labels</option>
+                {filterOptions?.labels.map((l) => (
+                  <option key={l} value={l}>{l}</option>
+                ))}
+              </select>
+            </div>
 
-        {/* View toggle */}
-        <div className="flex rounded-md border border-white/10">
-          <button
-            onClick={() => setViewMode('list')}
-            className={cn(
-              'flex items-center gap-1 rounded-l-md px-2.5 py-2 text-sm transition-colors',
-              viewMode === 'list'
-                ? 'bg-primary/15 text-primary'
-                : 'text-muted-foreground hover:bg-white/5',
+            {/* Freshness filter */}
+            <div className="min-w-32">
+              <label className="mb-1 block text-xs text-muted-foreground">Freshness</label>
+              <select
+                value={freshness}
+                onChange={(e) => { setFreshness(e.target.value); setPage(1); }}
+                className="w-full rounded-md bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                data-testid="filter-freshness"
+              >
+                <option value="">Any</option>
+                <option value="fresh">Fresh (&lt;7 days)</option>
+                <option value="recent">Recent (7-30 days)</option>
+                <option value="aging">Aging (30-90 days)</option>
+                <option value="stale">Stale (&gt;90 days)</option>
+              </select>
+            </div>
+
+            {/* Embedding status filter */}
+            <div className="min-w-36">
+              <label className="mb-1 block text-xs text-muted-foreground">Embedding</label>
+              <select
+                value={embeddingStatus}
+                onChange={(e) => { setEmbeddingStatus(e.target.value); setPage(1); }}
+                className="w-full rounded-md bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                data-testid="filter-embedding"
+              >
+                <option value="">Any</option>
+                <option value="pending">Needs Embedding</option>
+                <option value="done">Embedded</option>
+              </select>
+            </div>
+
+            {/* Date range */}
+            <div className="min-w-36">
+              <label className="mb-1 block text-xs text-muted-foreground">Modified From</label>
+              <input
+                type="date"
+                value={dateFrom}
+                onChange={(e) => { setDateFrom(e.target.value); setPage(1); }}
+                className="w-full rounded-md bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                data-testid="filter-date-from"
+              />
+            </div>
+            <div className="min-w-36">
+              <label className="mb-1 block text-xs text-muted-foreground">Modified To</label>
+              <input
+                type="date"
+                value={dateTo}
+                onChange={(e) => { setDateTo(e.target.value); setPage(1); }}
+                className="w-full rounded-md bg-white/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                data-testid="filter-date-to"
+              />
+            </div>
+
+            {/* Clear all filters */}
+            {activeFilterCount > 0 && (
+              <button
+                onClick={clearAllFilters}
+                className="flex items-center gap-1 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive hover:bg-destructive/20"
+                data-testid="clear-filters"
+              >
+                <X size={14} />
+                Clear filters
+              </button>
             )}
-            title="List view"
-          >
-            <List size={14} />
-          </button>
-          <button
-            onClick={() => setViewMode('tree')}
-            className={cn(
-              'flex items-center gap-1 rounded-r-md px-2.5 py-2 text-sm transition-colors',
-              viewMode === 'tree'
-                ? 'bg-primary/15 text-primary'
-                : 'text-muted-foreground hover:bg-white/5',
-            )}
-            title="Tree view"
-          >
-            <GitBranch size={14} />
-          </button>
-        </div>
+          </div>
+        )}
       </div>
 
+      {/* Space home content (when enabled and a space is selected) */}
+      {showHomeContent && !forcePageList ? (
+        homePageLoading ? (
+          <div className="glass-card h-96 animate-pulse" />
+        ) : homePage ? (
+          <m.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold">{homePage.title}</h2>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => navigate(`/pages/${homePage.id}`)}
+                  className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-white/5"
+                >
+                  <FileText size={14} /> View Full Page
+                </button>
+                <button
+                  onClick={() => setForcePageList(true)}
+                  className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-white/5"
+                  data-testid="show-page-list"
+                >
+                  <List size={14} /> Show All Pages
+                </button>
+              </div>
+            </div>
+            <div
+              className="glass-card prose prose-invert max-w-none p-6"
+              dangerouslySetInnerHTML={{ __html: sanitizedHomeHtml }}
+            />
+          </m.div>
+        ) : null
+      ) : (
+      <>
       {/* Page list */}
       {isLoading ? (
         <div className="space-y-3">
@@ -174,8 +348,6 @@ export function PagesPage() {
             {search ? 'Try a different search term' : 'Sync your Confluence spaces to see pages here'}
           </p>
         </div>
-      ) : viewMode === 'tree' ? (
-        <PageTreeView pages={pagesData.items} />
       ) : (
         <div className="space-y-2">
           {pagesData.items.map((pageItem, i) => (
@@ -207,8 +379,7 @@ export function PagesPage() {
                   onClick={() => navigate(`/pages/${pageItem.id}`)}
                   className="flex min-w-0 flex-1 items-center gap-4"
                 >
-                  <FileText size={20} className="shrink-0 text-primary" />
-                  <div className="min-w-0 flex-1">
+                  <div className="min-w-0 flex-1 text-left">
                     <p className="truncate font-medium">{pageItem.title}</p>
                     <div className="flex items-center gap-3 text-xs text-muted-foreground">
                       <span>{pageItem.spaceKey}</span>
@@ -268,6 +439,8 @@ export function PagesPage() {
         onDeselectAll={deselectAll}
         onClose={deselectAll}
       />
+      </>
+      )}
     </div>
   );
 }
