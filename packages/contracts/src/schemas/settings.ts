@@ -7,6 +7,10 @@ export const UserSettingsSchema = z.object({
   ollamaModel: z.string(),
   theme: z.string(),
   syncIntervalMin: z.number().int().min(1).max(1440),
+  llmProvider: z.enum(['ollama', 'openai']).default('ollama'),
+  openaiBaseUrl: z.string().url().nullable().optional(),
+  openaiApiKey: z.string().nullable().optional(),   // Only sent on update, never returned
+  openaiModel: z.string().optional(),
 });
 
 export const UpdateSettingsSchema = UserSettingsSchema.partial();
@@ -20,6 +24,10 @@ export const SettingsResponseSchema = z.object({
   theme: z.string(),
   syncIntervalMin: z.number(),
   confluenceConnected: z.boolean(),
+  llmProvider: z.enum(['ollama', 'openai']),
+  openaiBaseUrl: z.string().url().nullable(),
+  hasOpenaiApiKey: z.boolean(),    // Never expose the actual key
+  openaiModel: z.string(),
 });
 
 export const TestConfluenceSchema = z.object({

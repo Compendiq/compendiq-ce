@@ -1,5 +1,5 @@
 import { query } from '../db/postgres.js';
-import { generateEmbedding } from './ollama-service.js';
+import { providerGenerateEmbedding } from './llm-provider.js';
 import { htmlToText } from './content-converter.js';
 import { logger } from '../utils/logger.js';
 import pgvector from 'pgvector';
@@ -130,7 +130,7 @@ export async function embedPage(
     const texts = batch.map((c) => c.text);
 
     try {
-      const embeddings = await generateEmbedding(texts);
+      const embeddings = await providerGenerateEmbedding(userId, texts);
 
       for (let j = 0; j < batch.length; j++) {
         await query(

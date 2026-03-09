@@ -20,8 +20,12 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       ollama_model: string;
       theme: string;
       sync_interval_min: number;
+      llm_provider: string;
+      openai_base_url: string | null;
+      openai_api_key: string | null;
+      openai_model: string | null;
     }>(
-      'SELECT confluence_url, confluence_pat, selected_spaces, ollama_model, theme, sync_interval_min FROM user_settings WHERE user_id = $1',
+      'SELECT confluence_url, confluence_pat, selected_spaces, ollama_model, theme, sync_interval_min, llm_provider, openai_base_url, openai_api_key, openai_model FROM user_settings WHERE user_id = $1',
       [request.userId],
     );
 
@@ -37,6 +41,10 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         theme: 'glass-dark',
         syncIntervalMin: 15,
         confluenceConnected: false,
+        llmProvider: 'ollama' as const,
+        openaiBaseUrl: null,
+        hasOpenaiApiKey: false,
+        openaiModel: 'gpt-4o-mini',
       };
     }
 
@@ -50,6 +58,10 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       theme: row.theme,
       syncIntervalMin: row.sync_interval_min,
       confluenceConnected: !!(row.confluence_url && row.confluence_pat),
+      llmProvider: row.llm_provider as 'ollama' | 'openai',
+      openaiBaseUrl: row.openai_base_url,
+      hasOpenaiApiKey: !!row.openai_api_key,
+      openaiModel: row.openai_model ?? 'gpt-4o-mini',
     };
   });
 
@@ -88,6 +100,26 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     if (body.syncIntervalMin !== undefined) {
       updates.push(`sync_interval_min = $${paramIdx++}`);
       values.push(body.syncIntervalMin);
+    }
+
+    if (body.llmProvider !== undefined) {
+      updates.push(`llm_provider = $${paramIdx++}`);
+      values.push(body.llmProvider);
+    }
+
+    if (body.openaiBaseUrl !== undefined) {
+      updates.push(`openai_base_url = $${paramIdx++}`);
+      values.push(body.openaiBaseUrl);
+    }
+
+    if (body.openaiApiKey !== undefined && body.openaiApiKey !== null) {
+      updates.push(`openai_api_key = $${paramIdx++}`);
+      values.push(encryptPat(body.openaiApiKey));
+    }
+
+    if (body.openaiModel !== undefined) {
+      updates.push(`openai_model = $${paramIdx++}`);
+      values.push(body.openaiModel);
     }
 
     if (updates.length === 0) {

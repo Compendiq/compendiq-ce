@@ -155,6 +155,14 @@ export const ollamaBreakers = {
   list: new CircuitBreaker('ollama-list'),
 } as const;
 
+// Separate per-method circuit breakers for OpenAI-compatible providers.
+// These are independent from Ollama breakers so that an OpenAI outage
+// does not block Ollama requests and vice versa.
+export const openaiBreakers = {
+  chat: new CircuitBreaker('openai-chat'),
+  embed: new CircuitBreaker('openai-embed'),
+} as const;
+
 /**
  * Get aggregated status of all Ollama circuit breakers.
  */
@@ -163,5 +171,15 @@ export function getOllamaCircuitBreakerStatus(): Record<string, CircuitBreakerSt
     chat: ollamaBreakers.chat.getStatus(),
     embed: ollamaBreakers.embed.getStatus(),
     list: ollamaBreakers.list.getStatus(),
+  };
+}
+
+/**
+ * Get aggregated status of all OpenAI circuit breakers.
+ */
+export function getOpenaiCircuitBreakerStatus(): Record<string, CircuitBreakerStatus> {
+  return {
+    chat: openaiBreakers.chat.getStatus(),
+    embed: openaiBreakers.embed.getStatus(),
   };
 }
