@@ -1,5 +1,5 @@
 import { query } from '../db/postgres.js';
-import { ConfluenceClient, ConfluencePage } from './confluence-client.js';
+import { ConfluenceClient, ConfluencePage, ConfluenceSpace } from './confluence-client.js';
 import { confluenceToHtml, htmlToText } from './content-converter.js';
 import { syncDrawioAttachments, syncImageAttachments, cleanPageAttachments } from './attachment-handler.js';
 import { saveVersionSnapshot } from './version-tracker.js';
@@ -59,8 +59,12 @@ export async function syncUser(userId: string): Promise<void> {
   syncStatuses.set(userId, { userId, status: 'syncing' });
 
   try {
+    // Fetch all spaces once to avoid redundant API calls per space
+    const allSpaces = await client.getAllSpaces();
+    const spacesByKey = new Map(allSpaces.map((s) => [s.key, s]));
+
     for (const spaceKey of spaces) {
-      await syncSpace(client, userId, spaceKey);
+      await syncSpace(client, userId, spaceKey, spacesByKey.get(spaceKey));
     }
 
     syncStatuses.set(userId, {
@@ -76,12 +80,10 @@ export async function syncUser(userId: string): Promise<void> {
   }
 }
 
-async function syncSpace(client: ConfluenceClient, userId: string, spaceKey: string): Promise<void> {
+async function syncSpace(client: ConfluenceClient, userId: string, spaceKey: string, space?: ConfluenceSpace): Promise<void> {
   logger.info({ userId, spaceKey }, 'Syncing space');
 
-  // Upsert space metadata
-  const spaces = await client.getSpaces();
-  const space = spaces.results.find((s) => s.key === spaceKey);
+  // Upsert space metadata (uses pre-fetched space data to avoid redundant API calls)
   if (space) {
     const homepageId = space.homepage?.id ?? null;
     await query(
@@ -150,9 +152,10 @@ async function syncPage(
   const bodyHtml = confluenceToHtml(bodyStorage, page.id);
   const bodyText = htmlToText(bodyHtml);
 
-  // Sync draw.io and image attachments
-  await syncDrawioAttachments(client, userId, page.id, bodyStorage);
-  await syncImageAttachments(client, userId, page.id, bodyStorage);
+  // Fetch attachments once, pass to both sync functions to avoid duplicate API calls
+  const { results: attachments } = await client.getPageAttachments(page.id);
+  await syncDrawioAttachments(client, userId, page.id, bodyStorage, attachments);
+  await syncImageAttachments(client, userId, page.id, bodyStorage, attachments);
 
   // Extract metadata
   const labels = page.metadata?.labels?.results?.map((l) => l.name) ?? [];

@@ -40,7 +40,9 @@ export function PagesPage() {
     showHomeContent && !forcePageList ? selectedSpace?.homepageId ?? undefined : undefined,
   );
   const sanitizedHomeHtml = useMemo(
-    () => (homePage ? DOMPurify.sanitize(homePage.bodyHtml) : ''),
+    () => (homePage ? DOMPurify.sanitize(homePage.bodyHtml, {
+      ADD_ATTR: ['data-diagram-name', 'data-drawio'],
+    }) : ''),
     [homePage],
   );
 

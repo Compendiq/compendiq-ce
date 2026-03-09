@@ -20,14 +20,6 @@ import { VersionHistory } from './VersionHistory';
 import { FlowchartGenerator } from './FlowchartGenerator';
 import { toast } from 'sonner';
 
-// Configure DOMPurify to preserve attributes needed for draw.io and images
-DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
-  // Allow data-diagram-name and data-drawio attributes
-  if (data.attrName === 'data-diagram-name' || data.attrName === 'data-drawio') {
-    data.forceKeepAttr = true;
-  }
-});
-
 function ImageLightbox({ src, alt, onClose }: { src: string; alt: string; onClose: () => void }) {
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
