@@ -33,6 +33,18 @@ const mockPageWithCode = {
   bodyText: 'Use console.log() for debugging. const x = 42; console.log(x);',
 };
 
+const mockPageWithHeadings = {
+  ...mockPage,
+  bodyHtml: '<h1>Main Title</h1><p>Intro paragraph.</p><h2>Section One</h2><p>Content for section one.</p><h3>Subsection</h3><p>Deeper content.</p><h2>Section Two</h2><ul><li>Item A</li><li>Item B</li></ul>',
+  bodyText: 'Main Title Intro paragraph. Section One Content for section one. Subsection Deeper content. Section Two Item A Item B',
+};
+
+const mockPageWithPanelsAndTasks = {
+  ...mockPage,
+  bodyHtml: '<div class="panel-info"><p>This is an info panel.</p></div><div class="panel-warning"><p>Watch out!</p></div><ul data-type="taskList"><li data-type="taskItem" data-checked="true">Done task</li><li data-type="taskItem" data-checked="false">Open task</li></ul><blockquote><p>A wise quote.</p></blockquote><hr><details><summary>Expand me</summary><p>Hidden content.</p></details>',
+  bodyText: 'This is an info panel. Watch out! Done task Open task A wise quote. Hidden content.',
+};
+
 let currentMockPage = mockPage;
 
 vi.mock('../../shared/hooks/use-pages', () => ({
@@ -123,5 +135,76 @@ describe('PageViewPage', () => {
     const codeBlock = container.querySelector('pre code.language-javascript');
     expect(codeBlock).toBeInTheDocument();
     expect(codeBlock!.textContent).toContain('const x = 42');
+  });
+
+  it('renders headings with proper hierarchy in the content area', () => {
+    currentMockPage = mockPageWithHeadings;
+    const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
+
+    const contentArea = container.querySelector('.prose.prose-invert');
+    expect(contentArea).toBeInTheDocument();
+
+    // All heading levels should render
+    const h1 = contentArea!.querySelector('h1');
+    expect(h1).toBeInTheDocument();
+    expect(h1!.textContent).toBe('Main Title');
+
+    const h2s = contentArea!.querySelectorAll('h2');
+    expect(h2s).toHaveLength(2);
+    expect(h2s[0].textContent).toBe('Section One');
+    expect(h2s[1].textContent).toBe('Section Two');
+
+    const h3 = contentArea!.querySelector('h3');
+    expect(h3).toBeInTheDocument();
+    expect(h3!.textContent).toBe('Subsection');
+
+    // Lists should render
+    const listItems = contentArea!.querySelectorAll('li');
+    expect(listItems.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('renders panels, task lists, blockquotes, and expand sections', () => {
+    currentMockPage = mockPageWithPanelsAndTasks;
+    const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
+
+    const contentArea = container.querySelector('.prose.prose-invert');
+    expect(contentArea).toBeInTheDocument();
+
+    // Info and warning panels
+    const infoPanel = contentArea!.querySelector('.panel-info');
+    expect(infoPanel).toBeInTheDocument();
+    expect(infoPanel!.textContent).toContain('info panel');
+
+    const warningPanel = contentArea!.querySelector('.panel-warning');
+    expect(warningPanel).toBeInTheDocument();
+    expect(warningPanel!.textContent).toContain('Watch out');
+
+    // Task list with checked/unchecked items
+    const taskList = contentArea!.querySelector('ul[data-type="taskList"]');
+    expect(taskList).toBeInTheDocument();
+
+    const checkedTask = contentArea!.querySelector('li[data-checked="true"]');
+    expect(checkedTask).toBeInTheDocument();
+    expect(checkedTask!.textContent).toContain('Done task');
+
+    const uncheckedTask = contentArea!.querySelector('li[data-checked="false"]');
+    expect(uncheckedTask).toBeInTheDocument();
+    expect(uncheckedTask!.textContent).toContain('Open task');
+
+    // Blockquote
+    const blockquote = contentArea!.querySelector('blockquote');
+    expect(blockquote).toBeInTheDocument();
+    expect(blockquote!.textContent).toContain('wise quote');
+
+    // Horizontal rule
+    const hr = contentArea!.querySelector('hr');
+    expect(hr).toBeInTheDocument();
+
+    // Expand section (details/summary)
+    const details = contentArea!.querySelector('details');
+    expect(details).toBeInTheDocument();
+    const summary = details!.querySelector('summary');
+    expect(summary).toBeInTheDocument();
+    expect(summary!.textContent).toBe('Expand me');
   });
 });
