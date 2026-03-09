@@ -6,9 +6,10 @@ import { useUpdatePageLabels } from '../../shared/hooks/use-pages';
 interface TagEditorProps {
   pageId: string;
   labels: string[];
+  editing?: boolean;
 }
 
-export function TagEditor({ pageId, labels }: TagEditorProps) {
+export function TagEditor({ pageId, labels, editing = false }: TagEditorProps) {
   const [isAdding, setIsAdding] = useState(false);
   const [inputValue, setInputValue] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -88,7 +89,7 @@ export function TagEditor({ pageId, labels }: TagEditorProps) {
           <button
             onClick={() => handleRemove(label)}
             disabled={updateLabelsMutation.isPending}
-            className="ml-0.5 hidden rounded-sm p-0.5 text-muted-foreground hover:bg-white/10 hover:text-foreground group-hover:inline-flex"
+            className={`ml-0.5 rounded-sm p-0.5 text-muted-foreground hover:bg-white/10 hover:text-foreground ${editing ? 'inline-flex' : 'hidden group-hover:inline-flex'}`}
             aria-label={`Remove tag ${label}`}
           >
             <X size={10} />
