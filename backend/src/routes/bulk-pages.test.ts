@@ -24,6 +24,8 @@ vi.mock('../services/sync-service.js', () => ({
       body: { storage: { value: '<p>new content</p>' } },
       version: { number: 2 },
     }),
+    addLabels: vi.fn().mockResolvedValue(undefined),
+    removeLabel: vi.fn().mockResolvedValue(undefined),
   }),
 }));
 
@@ -281,6 +283,36 @@ describe('Bulk Pages Routes', () => {
       });
 
       expect(response.statusCode).toBe(400);
+    });
+
+    it('should sync added tags to Confluence', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/tag',
+        payload: {
+          ids: ['page-1'],
+          addTags: ['new-tag'],
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const client = await vi.mocked(getClientForUser).mock.results[0].value;
+      expect(client.addLabels).toHaveBeenCalledWith('page-1', ['new-tag']);
+    });
+
+    it('should sync removed tags to Confluence', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/tag',
+        payload: {
+          ids: ['page-1'],
+          removeTags: ['existing-tag'],
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const client = await vi.mocked(getClientForUser).mock.results[0].value;
+      expect(client.removeLabel).toHaveBeenCalledWith('page-1', 'existing-tag');
     });
   });
 });

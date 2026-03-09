@@ -425,6 +425,8 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.badRequest('At least one of addTags or removeTags must be provided');
     }
 
+    const client = await getClientForUser(userId);
+
     let succeeded = 0;
     let failed = 0;
     const errors: string[] = [];
@@ -463,6 +465,23 @@ export async function pagesRoutes(fastify: FastifyInstance) {
           'UPDATE cached_pages SET labels = $3 WHERE user_id = $1 AND confluence_id = $2',
           [userId, id, labels],
         );
+
+        // Sync label changes to Confluence
+        if (client) {
+          try {
+            if (addTags && addTags.length > 0) {
+              await client.addLabels(id, addTags);
+            }
+            if (removeTags && removeTags.length > 0) {
+              for (const label of removeTags) {
+                await client.removeLabel(id, label);
+              }
+            }
+          } catch (err) {
+            logger.error({ err, confluenceId: id, userId }, 'Failed to sync labels to Confluence');
+          }
+        }
+
         succeeded++;
       } catch (err) {
         failed++;
