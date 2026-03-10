@@ -12,9 +12,9 @@ function renderAt(path: string) {
 }
 
 describe('Breadcrumb', () => {
-  it('shows Dashboard on root path with nav wrapper', () => {
+  it('shows Pages on root path with nav wrapper', () => {
     renderAt('/');
-    expect(screen.getByText('Dashboard')).toBeInTheDocument();
+    expect(screen.getByText('Pages')).toBeInTheDocument();
     expect(screen.getByLabelText('Breadcrumb')).toBeInTheDocument();
   });
 

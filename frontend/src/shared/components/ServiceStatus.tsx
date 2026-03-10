@@ -5,10 +5,11 @@ import { cn } from '../lib/cn';
 
 interface HealthStatus {
   status: string;
+  llmProvider?: string;
   services?: {
     postgres?: boolean;
     redis?: boolean;
-    ollama?: boolean;
+    llm?: boolean;
   };
 }
 
@@ -46,11 +47,14 @@ export function ServiceStatus() {
       const data: HealthStatus = await res.json();
       const newAlerts: ServiceAlert[] = [];
 
-      if (data.services?.ollama === false) {
+      if (data.services?.llm === false) {
+        const label = data.llmProvider === 'openai'
+          ? 'LLM server is unreachable'
+          : 'Ollama server is down';
         newAlerts.push({
           id: 'ollama',
           service: 'ollama',
-          label: 'Ollama server is down',
+          label,
           icon: Server,
           colorClass: 'text-warning',
           bgClass: 'bg-warning/15 border-warning/30',

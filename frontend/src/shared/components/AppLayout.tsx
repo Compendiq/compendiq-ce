@@ -1,7 +1,7 @@
 import { type ReactNode, useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { m, AnimatePresence } from 'framer-motion';
-import { Home, Settings, Search, BookOpen, Bot, Menu, X } from 'lucide-react';
+import { Search, BookOpen, Bot, Menu, X } from 'lucide-react';
 import { useCommandPaletteStore } from '../../stores/command-palette-store';
 import { CommandPalette } from './CommandPalette';
 import { ServiceStatus } from './ServiceStatus';
@@ -11,10 +11,8 @@ import { SidebarTreeView } from './SidebarTreeView';
 import { cn } from '../lib/cn';
 
 const navItems = [
-  { icon: Home, label: 'Dashboard', path: '/' },
-  { icon: BookOpen, label: 'Pages', path: '/pages' },
+  { icon: BookOpen, label: 'Pages', path: '/' },
   { icon: Bot, label: 'AI Assistant', path: '/ai' },
-  { icon: Settings, label: 'Settings', path: '/settings' },
 ];
 
 export function AppLayout({ children }: { children: ReactNode }) {
@@ -22,8 +20,8 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const openCommandPalette = useCommandPaletteStore((s) => s.open);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  // Show tree sidebar on page-related routes
-  const showTreeSidebar = location.pathname.startsWith('/pages');
+  // Show tree sidebar on page-related routes (/ is now the pages view)
+  const showTreeSidebar = location.pathname === '/' || location.pathname.startsWith('/pages');
 
   // Close mobile menu on navigation
   useEffect(() => {
@@ -67,7 +65,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
           {navItems.map(({ icon: Icon, label, path }) => {
             const active =
               path === '/'
-                ? location.pathname === '/'
+                ? location.pathname === '/' || location.pathname.startsWith('/pages')
                 : location.pathname.startsWith(path);
             return (
               <Link

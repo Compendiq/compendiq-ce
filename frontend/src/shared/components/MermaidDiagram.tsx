@@ -48,7 +48,7 @@ export function sanitizeMermaidCode(code: string): string {
 mermaid.initialize({
   startOnLoad: false,
   theme: 'dark',
-  securityLevel: 'strict',
+  securityLevel: 'antiscript',
   fontFamily: 'inherit',
 });
 

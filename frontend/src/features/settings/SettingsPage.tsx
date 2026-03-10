@@ -184,6 +184,8 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
   const [openaiBaseUrl, setOpenaiBaseUrl] = useState(settings.openaiBaseUrl ?? '');
   const [openaiApiKey, setOpenaiApiKey] = useState('');
   const [openaiModel, setOpenaiModel] = useState(settings.openaiModel ?? '');
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
 
   const { data: ollamaStatus } = useQuery({
     queryKey: ['ollama-status', 'ollama'],
@@ -217,6 +219,23 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
   const currentModel = provider === 'ollama' ? ollamaModel : openaiModel;
   const setCurrentModel = provider === 'ollama' ? setOllamaModel : setOpenaiModel;
 
+  async function testConnection() {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const result = await apiFetch<LlmStatusResponse>(`/ollama/status?provider=${provider}`);
+      if (result.connected) {
+        setTestResult({ success: true, message: `Connected to ${provider === 'openai' ? 'OpenAI-compatible' : 'Ollama'} server` });
+      } else {
+        setTestResult({ success: false, message: result.error ?? 'Connection failed' });
+      }
+    } catch (err) {
+      setTestResult({ success: false, message: err instanceof Error ? err.message : 'Connection test failed' });
+    } finally {
+      setTesting(false);
+    }
+  }
+
   function handleSave() {
     const updates: Record<string, unknown> = { llmProvider: provider };
     if (provider === 'ollama') {
@@ -236,7 +255,7 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
         <label className="mb-1.5 block text-sm font-medium">LLM Provider</label>
         <div className="flex gap-2">
           <button
-            onClick={() => setProvider('ollama')}
+            onClick={() => { setProvider('ollama'); setTestResult(null); }}
             className={`rounded-md px-4 py-2 text-sm font-medium transition-colors ${
               provider === 'ollama'
                 ? 'bg-primary/15 text-primary border border-primary/30'
@@ -247,7 +266,7 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
             Ollama
           </button>
           <button
-            onClick={() => setProvider('openai')}
+            onClick={() => { setProvider('openai'); setTestResult(null); }}
             className={`rounded-md px-4 py-2 text-sm font-medium transition-colors ${
               provider === 'openai'
                 ? 'bg-primary/15 text-primary border border-primary/30'
@@ -367,12 +386,28 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
         </div>
       </div>
 
-      <button
-        onClick={handleSave}
-        className="glass-button-primary"
-      >
-        Save
-      </button>
+      {testResult && (
+        <div className={`rounded-md p-3 text-sm ${testResult.success ? 'bg-success/10 text-success' : 'bg-destructive/10 text-destructive'}`} data-testid="llm-test-result">
+          {testResult.message}
+        </div>
+      )}
+
+      <div className="flex gap-3">
+        <button
+          onClick={testConnection}
+          disabled={testing}
+          className="glass-button-secondary"
+          data-testid="llm-test-btn"
+        >
+          {testing ? 'Testing...' : 'Test Connection'}
+        </button>
+        <button
+          onClick={handleSave}
+          className="glass-button-primary"
+        >
+          Save
+        </button>
+      </div>
     </div>
   );
 }

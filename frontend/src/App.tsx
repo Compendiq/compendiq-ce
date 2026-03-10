@@ -6,7 +6,7 @@ import { useThemeEffect } from './shared/hooks/useThemeEffect';
 import { AppLayout } from './shared/components/AppLayout';
 import { ErrorBoundary } from './shared/components/ErrorBoundary';
 import { LoginPage } from './features/settings/LoginPage';
-import { DashboardPage } from './features/dashboard/DashboardPage';
+// DashboardPage removed — merged into PagesPage (issue #109)
 import { SettingsPage } from './features/settings/SettingsPage';
 import { PagesPage } from './features/pages/PagesPage';
 import { PageViewPage } from './features/pages/PageViewPage';
@@ -39,8 +39,8 @@ export function App() {
                 <AppLayout>
                   <ErrorBoundary>
                     <Routes>
-                      <Route path="/" element={<DashboardPage />} />
-                      <Route path="/pages" element={<PagesPage />} />
+                      <Route path="/" element={<PagesPage />} />
+                      <Route path="/pages" element={<Navigate to="/" replace />} />
                       <Route path="/pages/new" element={<NewPagePage />} />
                       <Route path="/pages/:id" element={<PageViewPage />} />
                       <Route path="/ai" element={<AiAssistantPage />} />
