@@ -5,10 +5,14 @@ const API_BASE = '/api';
 
 /**
  * On app load, if the user appears authenticated (from persisted localStorage)
- * but has no in-memory access token (it's not persisted for security), attempt
- * a silent token refresh using the httpOnly refresh cookie. If the refresh fails
- * (expired session, revoked token, etc.), clear auth so the user is redirected
- * to login immediately instead of seeing broken API errors.
+ * but has no access token (e.g. token was cleared or corrupted in storage),
+ * attempt a silent token refresh using the httpOnly refresh cookie. If the
+ * refresh fails (expired session, revoked token, etc.), clear auth so the user
+ * is redirected to login immediately instead of seeing broken API errors.
+ *
+ * Note: The access token IS persisted in localStorage for cross-tab session
+ * sharing (see auth-store). Short token expiry and refresh token rotation
+ * mitigate the localStorage exposure risk.
  */
 export function useSessionInit() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);

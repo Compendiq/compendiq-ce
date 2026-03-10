@@ -72,4 +72,11 @@ describe('generateAccessToken expiry', () => {
     expect(diff).toBeGreaterThanOrEqual(7195);
     expect(diff).toBeLessThanOrEqual(7205);
   });
+
+  it('should throw at import time when ACCESS_TOKEN_EXPIRY has an invalid format', async () => {
+    process.env.ACCESS_TOKEN_EXPIRY = 'banana';
+    await expect(() => import('./auth.js')).rejects.toThrow(
+      'Invalid ACCESS_TOKEN_EXPIRY format: "banana"',
+    );
+  });
 });
