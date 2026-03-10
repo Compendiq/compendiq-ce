@@ -1,6 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import fs from 'fs/promises';
-import { syncImageAttachments, syncDrawioAttachments, fetchAndCacheAttachment, getMimeType } from './attachment-handler.js';
+import {
+  syncImageAttachments,
+  syncDrawioAttachments,
+  fetchAndCacheAttachment,
+  getMimeType,
+  cacheAttachment,
+  STREAM_THRESHOLD_BYTES,
+  MAX_ATTACHMENT_BYTES,
+} from './attachment-handler.js';
 import type { ConfluenceClient, ConfluenceAttachment } from './confluence-client.js';
 
 // Mock fs to avoid real filesystem operations
@@ -23,15 +31,17 @@ function createMockClient(): ConfluenceClient {
   return {
     getPageAttachments: vi.fn(),
     downloadAttachment: vi.fn().mockResolvedValue(Buffer.from('fake-image-data')),
+    downloadAttachmentToFile: vi.fn().mockResolvedValue(undefined),
   } as unknown as ConfluenceClient;
 }
 
-function makeAttachments(items: Array<{ title: string; download: string }>): ConfluenceAttachment[] {
+function makeAttachments(items: Array<{ title: string; download: string; fileSize?: number }>): ConfluenceAttachment[] {
   return items.map((a) => ({
     id: `att-${a.title}`,
     title: a.title,
     mediaType: 'image/png',
     _links: { download: a.download },
+    ...(a.fileSize !== undefined ? { extensions: { mediaType: 'image/png', fileSize: a.fileSize } } : {}),
   }));
 }
 
@@ -345,6 +355,190 @@ describe('attachment-handler', () => {
       const result = await syncDrawioAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
 
       expect(result).toEqual([]);
+    });
+  });
+
+  describe('streaming large attachments', () => {
+    describe('cacheAttachment', () => {
+      it('uses in-memory download for small files (no fileSizeHint)', async () => {
+        const client = createMockClient();
+
+        await cacheAttachment(client, 'user-1', 'page-1', '/download/small.png', 'small.png');
+
+        expect(client.downloadAttachment).toHaveBeenCalledWith('/download/small.png');
+        expect(client.downloadAttachmentToFile).not.toHaveBeenCalled();
+        expect(fs.writeFile).toHaveBeenCalled();
+      });
+
+      it('uses in-memory download when fileSizeHint is below threshold', async () => {
+        const client = createMockClient();
+        const smallSize = STREAM_THRESHOLD_BYTES - 1;
+
+        await cacheAttachment(client, 'user-1', 'page-1', '/download/small.png', 'small.png', smallSize);
+
+        expect(client.downloadAttachment).toHaveBeenCalledWith('/download/small.png');
+        expect(client.downloadAttachmentToFile).not.toHaveBeenCalled();
+      });
+
+      it('uses streaming download when fileSizeHint exceeds threshold', async () => {
+        const client = createMockClient();
+        const largeSize = STREAM_THRESHOLD_BYTES + 1;
+
+        await cacheAttachment(client, 'user-1', 'page-1', '/download/large.pdf', 'large.pdf', largeSize);
+
+        expect(client.downloadAttachmentToFile).toHaveBeenCalledTimes(1);
+        expect(client.downloadAttachmentToFile).toHaveBeenCalledWith(
+          '/download/large.pdf',
+          expect.stringContaining('large.pdf'),
+          MAX_ATTACHMENT_BYTES,
+        );
+        // Should NOT use the in-memory path
+        expect(client.downloadAttachment).not.toHaveBeenCalled();
+        expect(fs.writeFile).not.toHaveBeenCalled();
+      });
+
+      it('uses in-memory download when fileSizeHint is exactly at threshold', async () => {
+        const client = createMockClient();
+
+        await cacheAttachment(client, 'user-1', 'page-1', '/download/exact.png', 'exact.png', STREAM_THRESHOLD_BYTES);
+
+        // At threshold = not above threshold, so in-memory
+        expect(client.downloadAttachment).toHaveBeenCalled();
+        expect(client.downloadAttachmentToFile).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('syncImageAttachments with large files', () => {
+      it('uses streaming for large image attachments', async () => {
+        const bodyStorage = `<ac:image><ri:attachment ri:filename="huge-photo.png" /></ac:image>`;
+        const client = createMockClient();
+        const largeSize = STREAM_THRESHOLD_BYTES + 1000;
+        const attachments = makeAttachments([
+          { title: 'huge-photo.png', download: '/download/huge-photo.png', fileSize: largeSize },
+        ]);
+
+        const result = await syncImageAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
+
+        expect(result).toEqual(['huge-photo.png']);
+        expect(client.downloadAttachmentToFile).toHaveBeenCalledTimes(1);
+        expect(client.downloadAttachment).not.toHaveBeenCalled();
+      });
+
+      it('uses in-memory download for small image attachments', async () => {
+        const bodyStorage = `<ac:image><ri:attachment ri:filename="small-icon.png" /></ac:image>`;
+        const client = createMockClient();
+        const smallSize = 1024;
+        const attachments = makeAttachments([
+          { title: 'small-icon.png', download: '/download/small-icon.png', fileSize: smallSize },
+        ]);
+
+        const result = await syncImageAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
+
+        expect(result).toEqual(['small-icon.png']);
+        expect(client.downloadAttachment).toHaveBeenCalledTimes(1);
+        expect(client.downloadAttachmentToFile).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('syncDrawioAttachments with large files', () => {
+      it('uses streaming for large draw.io attachments', async () => {
+        const bodyStorage = `<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">big-diagram</ac:parameter></ac:structured-macro>`;
+        const client = createMockClient();
+        const largeSize = STREAM_THRESHOLD_BYTES * 2;
+        const attachments = makeAttachments([
+          { title: 'big-diagram.png', download: '/download/big-diagram.png', fileSize: largeSize },
+        ]);
+
+        const result = await syncDrawioAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
+
+        expect(result).toEqual(['big-diagram.png']);
+        expect(client.downloadAttachmentToFile).toHaveBeenCalledTimes(1);
+        expect(client.downloadAttachment).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('fetchAndCacheAttachment with large files', () => {
+      it('uses streaming for large on-demand attachments', async () => {
+        const largeSize = STREAM_THRESHOLD_BYTES + 5000;
+        const client = createMockClient();
+        (client.getPageAttachments as ReturnType<typeof vi.fn>).mockResolvedValue({
+          results: [{
+            id: 'att-1',
+            title: 'large-report.pdf',
+            mediaType: 'application/pdf',
+            extensions: { mediaType: 'application/pdf', fileSize: largeSize },
+            _links: { download: '/download/large-report.pdf' },
+          }],
+        });
+
+        // Mock readFile for reading back after streaming
+        (fs.readFile as ReturnType<typeof vi.fn>).mockResolvedValue(Buffer.from('streamed-data'));
+
+        const result = await fetchAndCacheAttachment(client, 'user-1', 'page-1', 'large-report.pdf');
+
+        expect(result).toEqual(Buffer.from('streamed-data'));
+        expect(client.downloadAttachmentToFile).toHaveBeenCalledWith(
+          '/download/large-report.pdf',
+          expect.stringContaining('large-report.pdf'),
+          MAX_ATTACHMENT_BYTES,
+        );
+        // Should NOT use the in-memory download
+        expect(client.downloadAttachment).not.toHaveBeenCalled();
+        // Should read back from the cached file
+        expect(fs.readFile).toHaveBeenCalled();
+      });
+
+      it('uses in-memory download for small on-demand attachments', async () => {
+        const smallData = Buffer.from('small-content');
+        const client = createMockClient();
+        (client.getPageAttachments as ReturnType<typeof vi.fn>).mockResolvedValue({
+          results: [{
+            id: 'att-1',
+            title: 'tiny.png',
+            mediaType: 'image/png',
+            extensions: { mediaType: 'image/png', fileSize: 256 },
+            _links: { download: '/download/tiny.png' },
+          }],
+        });
+        (client.downloadAttachment as ReturnType<typeof vi.fn>).mockResolvedValue(smallData);
+
+        const result = await fetchAndCacheAttachment(client, 'user-1', 'page-1', 'tiny.png');
+
+        expect(result).toEqual(smallData);
+        expect(client.downloadAttachment).toHaveBeenCalledWith('/download/tiny.png');
+        expect(client.downloadAttachmentToFile).not.toHaveBeenCalled();
+      });
+
+      it('uses in-memory download when attachment has no fileSize metadata', async () => {
+        const data = Buffer.from('no-size-info');
+        const client = createMockClient();
+        (client.getPageAttachments as ReturnType<typeof vi.fn>).mockResolvedValue({
+          results: [{
+            id: 'att-1',
+            title: 'unknown-size.png',
+            mediaType: 'image/png',
+            // No extensions field
+            _links: { download: '/download/unknown-size.png' },
+          }],
+        });
+        (client.downloadAttachment as ReturnType<typeof vi.fn>).mockResolvedValue(data);
+
+        const result = await fetchAndCacheAttachment(client, 'user-1', 'page-1', 'unknown-size.png');
+
+        expect(result).toEqual(data);
+        expect(client.downloadAttachment).toHaveBeenCalled();
+        expect(client.downloadAttachmentToFile).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('constants', () => {
+      it('STREAM_THRESHOLD_BYTES should be 5 MB', () => {
+        expect(STREAM_THRESHOLD_BYTES).toBe(5 * 1024 * 1024);
+      });
+
+      it('MAX_ATTACHMENT_BYTES should be 50 MB', () => {
+        expect(MAX_ATTACHMENT_BYTES).toBe(50 * 1024 * 1024);
+      });
     });
   });
 });

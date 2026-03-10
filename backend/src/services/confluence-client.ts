@@ -1,4 +1,7 @@
 import { request } from 'undici';
+import { createWriteStream } from 'fs';
+import { pipeline } from 'stream/promises';
+import { unlink } from 'fs/promises';
 import { validateUrl } from '../utils/ssrf-guard.js';
 import { logger } from '../utils/logger.js';
 import { confluenceDispatcher } from '../utils/tls-config.js';
@@ -178,6 +181,93 @@ export class ConfluenceClient {
     return Buffer.concat(chunks);
   }
 
+  /**
+   * Stream an attachment directly to a file on disk instead of buffering in memory.
+   * Enforces a maximum file size to prevent disk exhaustion.
+   * Cleans up partial files on error.
+   *
+   * @param downloadPath - The Confluence download path (e.g. /download/attachments/123/file.pdf)
+   * @param outputPath - Local filesystem path to write the file to
+   * @param maxSizeBytes - Maximum allowed file size in bytes (default 50 MB)
+   */
+  async downloadAttachmentToFile(
+    downloadPath: string,
+    outputPath: string,
+    maxSizeBytes = 50 * 1024 * 1024,
+  ): Promise<void> {
+    const url = `${this.baseUrl}${downloadPath}`;
+
+    // SSRF protection: validate URL before download
+    validateUrl(url);
+
+    const opts: Record<string, unknown> = {
+      headers: { 'Authorization': `Bearer ${this.pat}` },
+      signal: AbortSignal.timeout(120_000),
+    };
+    if (confluenceDispatcher) {
+      opts.dispatcher = confluenceDispatcher;
+    }
+
+    const { statusCode, headers, body } = await request(url, opts as Parameters<typeof request>[1]);
+
+    if (statusCode !== 200) {
+      // Drain the body to release the socket
+      body.destroy();
+      throw new ConfluenceError(`Failed to download attachment: HTTP ${statusCode}`, statusCode);
+    }
+
+    // Check Content-Length header upfront if available
+    const contentLengthHeader = headers['content-length'];
+    const contentLength = typeof contentLengthHeader === 'string'
+      ? parseInt(contentLengthHeader, 10)
+      : 0;
+    if (contentLength > maxSizeBytes) {
+      body.destroy();
+      throw new AttachmentTooLargeError(
+        `Attachment too large: ${contentLength} bytes exceeds limit of ${maxSizeBytes} bytes`,
+        contentLength,
+        maxSizeBytes,
+      );
+    }
+
+    // Stream to disk with size tracking
+    let bytesWritten = 0;
+    const writeStream = createWriteStream(outputPath);
+
+    try {
+      await pipeline(
+        body,
+        async function* (source) {
+          for await (const chunk of source) {
+            bytesWritten += chunk.length;
+            if (bytesWritten > maxSizeBytes) {
+              throw new AttachmentTooLargeError(
+                `Attachment too large: exceeded limit of ${maxSizeBytes} bytes during download`,
+                bytesWritten,
+                maxSizeBytes,
+              );
+            }
+            yield chunk;
+          }
+        },
+        writeStream,
+      );
+    } catch (err) {
+      // Clean up partial file on any error
+      try {
+        await unlink(outputPath);
+      } catch {
+        // File may not exist if write never started
+      }
+      throw err;
+    }
+
+    logger.debug(
+      { downloadPath, outputPath, bytesWritten },
+      'Streamed attachment to file',
+    );
+  }
+
   async searchPages(cql: string, start = 0, limit = 50): Promise<PaginatedResponse<ConfluencePage>> {
     return this.fetch(
       `/rest/api/content/search?cql=${encodeURIComponent(cql)}&start=${start}&limit=${limit}&expand=version,ancestors`,
@@ -352,6 +442,17 @@ export class ConfluenceError extends Error {
   ) {
     super(message);
     this.name = 'ConfluenceError';
+  }
+}
+
+export class AttachmentTooLargeError extends Error {
+  constructor(
+    message: string,
+    public actualSize: number,
+    public maxSize: number,
+  ) {
+    super(message);
+    this.name = 'AttachmentTooLargeError';
   }
 }
 

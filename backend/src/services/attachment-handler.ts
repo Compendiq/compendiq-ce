@@ -5,6 +5,17 @@ import { logger } from '../utils/logger.js';
 
 const ATTACHMENTS_BASE = process.env.ATTACHMENTS_DIR ?? 'data/attachments';
 
+/**
+ * Files larger than this threshold are streamed directly to disk
+ * instead of buffering in memory. Default: 5 MB.
+ */
+export const STREAM_THRESHOLD_BYTES = 5 * 1024 * 1024;
+
+/**
+ * Maximum allowed attachment size for streaming downloads. Default: 50 MB.
+ */
+export const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
+
 function attachmentDir(userId: string, pageId: string): string {
   return path.join(ATTACHMENTS_BASE, userId, pageId);
 }
@@ -16,7 +27,12 @@ function attachmentPath(userId: string, pageId: string, filename: string): strin
 }
 
 /**
- * Download and cache a draw.io attachment locally.
+ * Download and cache an attachment locally.
+ * Uses streaming for files above STREAM_THRESHOLD_BYTES to avoid
+ * buffering large attachments in memory.
+ *
+ * @param fileSizeHint - Optional known file size in bytes. When provided and above
+ *   the streaming threshold, the download is streamed directly to disk.
  */
 export async function cacheAttachment(
   client: ConfluenceClient,
@@ -24,13 +40,22 @@ export async function cacheAttachment(
   pageId: string,
   downloadPath: string,
   filename: string,
+  fileSizeHint?: number,
 ): Promise<string> {
   const dir = attachmentDir(userId, pageId);
   await fs.mkdir(dir, { recursive: true });
 
   const filePath = attachmentPath(userId, pageId, filename);
-  const data = await client.downloadAttachment(downloadPath);
-  await fs.writeFile(filePath, data);
+
+  const useStreaming = fileSizeHint !== undefined && fileSizeHint > STREAM_THRESHOLD_BYTES;
+
+  if (useStreaming) {
+    logger.debug({ userId, pageId, filename, fileSizeHint }, 'Streaming large attachment to disk');
+    await client.downloadAttachmentToFile(downloadPath, filePath, MAX_ATTACHMENT_BYTES);
+  } else {
+    const data = await client.downloadAttachment(downloadPath);
+    await fs.writeFile(filePath, data);
+  }
 
   logger.debug({ userId, pageId, filename }, 'Cached attachment');
   return filePath;
@@ -109,7 +134,8 @@ export async function syncDrawioAttachments(
 
     if (attachment?._links?.download) {
       try {
-        await cacheAttachment(client, userId, pageId, attachment._links.download, pngName);
+        const fileSize = attachment.extensions?.fileSize;
+        await cacheAttachment(client, userId, pageId, attachment._links.download, pngName, fileSize);
         cachedFiles.push(pngName);
       } catch (err) {
         logger.error({ err, pageId, name }, 'Failed to cache draw.io attachment');
@@ -156,7 +182,8 @@ export async function syncImageAttachments(
 
     if (attachment?._links?.download) {
       try {
-        await cacheAttachment(client, userId, pageId, attachment._links.download, filename);
+        const fileSize = attachment.extensions?.fileSize;
+        await cacheAttachment(client, userId, pageId, attachment._links.download, filename, fileSize);
         cachedFiles.push(filename);
       } catch (err) {
         logger.error({ err, pageId, filename }, 'Failed to cache image attachment');
@@ -170,6 +197,10 @@ export async function syncImageAttachments(
 /**
  * Fetch a single attachment from Confluence on-demand, cache it locally,
  * and return the file contents. Used as a fallback when the local cache misses.
+ *
+ * For large attachments (above STREAM_THRESHOLD_BYTES), streams directly to disk
+ * and then reads back from the cached file, avoiding holding the full content in memory
+ * during the download phase.
  *
  * Returns null if the attachment cannot be found or downloaded.
  */
@@ -190,12 +221,25 @@ export async function fetchAndCacheAttachment(
     return null;
   }
 
-  const data = await client.downloadAttachment(attachment._links.download);
+  const fileSize = attachment.extensions?.fileSize;
+  const useStreaming = fileSize !== undefined && fileSize > STREAM_THRESHOLD_BYTES;
 
-  // Cache to local filesystem for future requests
   const dir = attachmentDir(userId, pageId);
   await fs.mkdir(dir, { recursive: true });
   const filePath = attachmentPath(userId, pageId, safe);
+
+  if (useStreaming) {
+    // Stream large files directly to disk
+    logger.debug({ userId, pageId, filename: safe, fileSize }, 'Streaming large on-demand attachment to disk');
+    await client.downloadAttachmentToFile(attachment._links.download, filePath, MAX_ATTACHMENT_BYTES);
+    // Read back from cache
+    const data = await fs.readFile(filePath);
+    logger.info({ userId, pageId, filename: safe, fileSize }, 'On-demand streamed and cached attachment');
+    return data;
+  }
+
+  // Small files: buffer in memory (original behavior)
+  const data = await client.downloadAttachment(attachment._links.download);
   await fs.writeFile(filePath, data);
 
   logger.info({ userId, pageId, filename: safe }, 'On-demand fetched and cached attachment');
