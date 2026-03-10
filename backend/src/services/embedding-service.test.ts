@@ -228,7 +228,7 @@ describe('embedding-service', () => {
         }],
       });
 
-      // Mark page as embedding
+      // Mark page as 'embedding' + clear error
       mocks.query.mockResolvedValueOnce({ rows: [] });
 
       // embedPage calls: delete old embeddings
@@ -240,7 +240,7 @@ describe('embedding-service', () => {
       // embedPage calls: insert embedding
       mocks.query.mockResolvedValueOnce({ rows: [] });
 
-      // embedPage calls: mark page as not dirty
+      // embedPage calls: mark page as embedded + clear error
       mocks.query.mockResolvedValueOnce({ rows: [] });
 
       // computePageRelationships calls (post-embed hook):
@@ -255,6 +255,117 @@ describe('embedding-service', () => {
       expect(result.processed).toBe(1);
       expect(result.errors).toBe(0);
       expect(result.alreadyProcessing).toBeUndefined();
+    });
+
+    it('should store error message when embedding fails', async () => {
+      const embeddingError = new Error('Model nomic-embed-text not found');
+
+      // Query to get dirty pages
+      mocks.query.mockResolvedValueOnce({
+        rows: [{
+          confluence_id: 'page-fail',
+          title: 'Failing Page',
+          space_key: 'DEV',
+          body_html: '<p>Content that will fail</p>',
+        }],
+      });
+
+      // Mark page as 'embedding' + clear error
+      mocks.query.mockResolvedValueOnce({ rows: [] });
+
+      // embedPage calls: delete old embeddings
+      mocks.query.mockResolvedValueOnce({ rows: [] });
+
+      // embedPage calls: providerGenerateEmbedding throws
+      mocks.providerGenerateEmbedding.mockRejectedValueOnce(embeddingError);
+
+      // Update embedding_status to 'failed' with error message
+      mocks.query.mockResolvedValueOnce({ rows: [] });
+
+      const result = await processDirtyPages('error-user');
+      expect(result.processed).toBe(0);
+      expect(result.errors).toBe(1);
+
+      // Verify the failed status update includes the error message
+      const failedUpdateCall = mocks.query.mock.calls.find(
+        (call) => typeof call[0] === 'string' && (call[0] as string).includes("embedding_status = 'failed'"),
+      );
+      expect(failedUpdateCall).toBeDefined();
+      expect(failedUpdateCall![0]).toContain('embedding_error');
+      expect(failedUpdateCall![1]).toContain('Model nomic-embed-text not found');
+    });
+
+    it('should truncate long error messages to 1000 characters', async () => {
+      const longMessage = 'x'.repeat(2000);
+      const longError = new Error(longMessage);
+
+      // Query to get dirty pages
+      mocks.query.mockResolvedValueOnce({
+        rows: [{
+          confluence_id: 'page-long-err',
+          title: 'Long Error Page',
+          space_key: 'DEV',
+          body_html: '<p>Content</p>',
+        }],
+      });
+
+      // Mark page as 'embedding' + clear error
+      mocks.query.mockResolvedValueOnce({ rows: [] });
+
+      // embedPage calls: delete old embeddings
+      mocks.query.mockResolvedValueOnce({ rows: [] });
+
+      // embedPage calls: providerGenerateEmbedding throws
+      mocks.providerGenerateEmbedding.mockRejectedValueOnce(longError);
+
+      // Update embedding_status to 'failed' with truncated error
+      mocks.query.mockResolvedValueOnce({ rows: [] });
+
+      await processDirtyPages('truncate-user');
+
+      const failedUpdateCall = mocks.query.mock.calls.find(
+        (call) => typeof call[0] === 'string' && (call[0] as string).includes("embedding_status = 'failed'"),
+      );
+      expect(failedUpdateCall).toBeDefined();
+      // The error message in params should be truncated to 1000 chars
+      const storedError = failedUpdateCall![1][2] as string;
+      expect(storedError).toHaveLength(1000);
+    });
+
+    it('should clear error when embedding succeeds after previous failure', async () => {
+      // Query to get dirty pages
+      mocks.query.mockResolvedValueOnce({
+        rows: [{
+          confluence_id: 'page-recover',
+          title: 'Recovering Page',
+          space_key: 'DEV',
+          body_html: '<p>Content that will succeed this time</p>',
+        }],
+      });
+
+      // Mark page as 'embedding' + clear error
+      mocks.query.mockResolvedValueOnce({ rows: [] });
+
+      // embedPage calls: delete old embeddings
+      mocks.query.mockResolvedValueOnce({ rows: [] });
+
+      // embedPage calls: providerGenerateEmbedding succeeds
+      mocks.providerGenerateEmbedding.mockResolvedValueOnce([new Array(768).fill(0)]);
+
+      // embedPage calls: insert embedding
+      mocks.query.mockResolvedValueOnce({ rows: [] });
+
+      // embedPage calls: mark page as embedded + clear error
+      mocks.query.mockResolvedValueOnce({ rows: [] });
+
+      await processDirtyPages('recover-user');
+
+      // Verify the success update clears embedding_error
+      const successUpdateCall = mocks.query.mock.calls.find(
+        (call) => typeof call[0] === 'string' && (call[0] as string).includes("embedding_status = 'embedded'"),
+      );
+      expect(successUpdateCall).toBeDefined();
+      expect(successUpdateCall![0]).toContain('embedding_error = NULL');
     });
   });
 });

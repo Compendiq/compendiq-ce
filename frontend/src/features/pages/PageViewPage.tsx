@@ -324,6 +324,7 @@ export function PageViewPage() {
           embeddingStatus={page.embeddingStatus}
           embeddingDirty={page.embeddingDirty}
           embeddedAt={page.embeddedAt}
+          embeddingError={page.embeddingError}
           onRetry={page.embeddingStatus === 'failed' ? () => {
             triggerEmbeddingMutation.mutate();
             toast.info('Re-embedding queued');

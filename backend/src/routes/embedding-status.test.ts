@@ -126,6 +126,7 @@ describe('Embedding Status in API responses', () => {
           embedding_dirty: false,
           embedding_status: 'embedded',
           embedded_at: embeddedAt,
+          embedding_error: null,
         }],
       });
       // Mock the children count query
@@ -161,6 +162,7 @@ describe('Embedding Status in API responses', () => {
           embedding_dirty: true,
           embedding_status: 'not_embedded',
           embedded_at: null,
+          embedding_error: null,
         }],
       });
       // Mock the children count query
@@ -178,7 +180,7 @@ describe('Embedding Status in API responses', () => {
       expect(body.embeddingDirty).toBe(true);
     });
 
-    it('should return embeddingStatus "failed" for a failed embedding', async () => {
+    it('should return embeddingStatus "failed" with null error when no error stored', async () => {
       mockQueryFn.mockResolvedValueOnce({
         rows: [{
           confluence_id: 'page-3',
@@ -196,6 +198,7 @@ describe('Embedding Status in API responses', () => {
           embedding_dirty: true,
           embedding_status: 'failed',
           embedded_at: null,
+          embedding_error: null,
         }],
       });
       // Mock the children count query
@@ -209,6 +212,42 @@ describe('Embedding Status in API responses', () => {
       expect(response.statusCode).toBe(200);
       const body = response.json();
       expect(body.embeddingStatus).toBe('failed');
+      expect(body.embeddingError).toBeNull();
+    });
+
+    it('should return embeddingError with the error message for a failed embedding', async () => {
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{
+          confluence_id: 'page-3b',
+          space_key: 'DEV',
+          title: 'Failed Page With Error',
+          body_storage: '<p>fail</p>',
+          body_html: '<p>fail</p>',
+          body_text: 'fail',
+          version: 2,
+          parent_id: null,
+          labels: [],
+          author: 'testuser',
+          last_modified_at: new Date('2026-03-05'),
+          last_synced: new Date('2026-03-05'),
+          embedding_dirty: true,
+          embedding_status: 'failed',
+          embedded_at: null,
+          embedding_error: 'Model nomic-embed-text not found',
+        }],
+      });
+      // Mock the children count query
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '0' }] });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/pages/page-3b',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.embeddingStatus).toBe('failed');
+      expect(body.embeddingError).toBe('Model nomic-embed-text not found');
     });
 
     it('should return embeddingStatus "embedding" for a page being processed', async () => {
@@ -229,6 +268,7 @@ describe('Embedding Status in API responses', () => {
           embedding_dirty: true,
           embedding_status: 'embedding',
           embedded_at: null,
+          embedding_error: null,
         }],
       });
       // Mock the children count query
@@ -268,6 +308,7 @@ describe('Embedding Status in API responses', () => {
               embedding_dirty: false,
               embedding_status: 'embedded',
               embedded_at: embeddedAt,
+              embedding_error: null,
             },
             {
               id: 2,
@@ -283,6 +324,7 @@ describe('Embedding Status in API responses', () => {
               embedding_dirty: true,
               embedding_status: 'not_embedded',
               embedded_at: null,
+              embedding_error: null,
             },
           ],
         };
@@ -320,6 +362,7 @@ describe('Embedding Status in API responses', () => {
             embedding_dirty: false,
             embedding_status: 'embedded',
             embedded_at: embeddedAt,
+            embedding_error: null,
           },
         ],
       });
