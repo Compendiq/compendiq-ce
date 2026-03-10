@@ -310,8 +310,8 @@ export function ArticleViewer({
             placeholder.title = `Image could not be loaded: ${filename}`;
             placeholder.setAttribute('aria-label', `Broken image: ${filename}`);
             placeholder.innerHTML =
-              '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><line x1="3" x2="21" y1="3" y2="21"/><path d="M10 10c0-1.1.9-2 2-2"/><circle cx="15" cy="9" r="1"/></svg>' +
-              document.createTextNode(filename).textContent;
+              '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><line x1="3" x2="21" y1="3" y2="21"/><path d="M10 10c0-1.1.9-2 2-2"/><circle cx="15" cy="9" r="1"/></svg>';
+            placeholder.appendChild(document.createTextNode(filename));
             img.replaceWith(placeholder);
           }
         });
