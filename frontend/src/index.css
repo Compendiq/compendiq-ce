@@ -1291,6 +1291,25 @@ html {
 }
 
 /* TOC placeholder */
+/* ToC collapsible section animations (Radix Collapsible) */
+.toc-collapsible-content {
+  overflow: hidden;
+}
+.toc-collapsible-content[data-state='open'] {
+  animation: toc-slide-down 200ms ease-out;
+}
+.toc-collapsible-content[data-state='closed'] {
+  animation: toc-slide-up 200ms ease-out;
+}
+@keyframes toc-slide-down {
+  from { height: 0; }
+  to   { height: var(--radix-collapsible-content-height); }
+}
+@keyframes toc-slide-up {
+  from { height: var(--radix-collapsible-content-height); }
+  to   { height: 0; }
+}
+
 .prose .confluence-toc {
   border: 1px dashed var(--glass-border);
   border-radius: var(--radius-md);

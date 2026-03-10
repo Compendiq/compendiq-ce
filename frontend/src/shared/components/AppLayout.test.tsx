@@ -46,6 +46,9 @@ function createWrapper(initialPath = '/') {
 describe('AppLayout', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // jsdom does not implement Element.scrollTo — stub it so the scroll-reset
+    // useEffect in AppLayout does not throw
+    Element.prototype.scrollTo = vi.fn();
   });
 
   it('renders top navigation with nav items (no Settings or Dashboard)', () => {

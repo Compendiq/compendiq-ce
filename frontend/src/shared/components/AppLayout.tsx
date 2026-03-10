@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useState } from 'react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { m, AnimatePresence } from 'framer-motion';
 import { Search, BookOpen, Bot, Menu, X, Share2 } from 'lucide-react';
@@ -23,6 +23,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const location = useLocation();
   const openCommandPalette = useCommandPaletteStore((s) => s.open);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   // Show tree sidebar on page-related routes (/ is now the pages view)
   const showTreeSidebar = location.pathname === '/' || location.pathname.startsWith('/pages');
@@ -30,6 +31,11 @@ export function AppLayout({ children }: { children: ReactNode }) {
   // Close mobile menu on navigation
   useEffect(() => {
     setMobileMenuOpen(false);
+  }, [location.pathname]);
+
+  // Reset scroll to top on every route change
+  useEffect(() => {
+    scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'instant' });
   }, [location.pathname]);
 
   // Register Cmd/Ctrl+K keyboard shortcut
@@ -161,7 +167,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
             <div className="shrink-0 px-4 pt-3 sm:px-6">
               <ServiceStatus />
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
+            <div ref={scrollContainerRef} data-scroll-container className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
               <PageTransition>
                 <div className="mx-auto max-w-7xl">
                   {children}

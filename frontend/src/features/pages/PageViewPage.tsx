@@ -384,7 +384,7 @@ export function PageViewPage() {
               </FeatureErrorBoundary>
             </div>
             <div className="hidden w-64 shrink-0 space-y-4 lg:block sticky top-4 self-start max-h-[calc(100vh-2rem)] overflow-y-auto">
-              <TableOfContents headings={tocHeadings} contentRef={contentRef} />
+              <TableOfContents headings={tocHeadings} contentRef={contentRef} pageId={id} />
             </div>
           </div>
           <FlowchartGenerator
