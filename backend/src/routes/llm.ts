@@ -9,7 +9,8 @@ import {
 import { providerStreamChat } from '../services/llm-provider.js';
 import { hybridSearch, buildRagContext } from '../services/rag-service.js';
 import { htmlToMarkdown, confluenceToHtml } from '../services/content-converter.js';
-import { getEmbeddingStatus, processDirtyPages, reEmbedAll, isProcessingUser, embedPage } from '../services/embedding-service.js';
+import { getEmbeddingStatus, processDirtyPages, reEmbedAll, isProcessingUser, embedPage, resetFailedEmbeddings } from '../services/embedding-service.js';
+import type { EmbeddingProgressEvent } from '../services/embedding-service.js';
 import { getClientForUser } from '../services/sync-service.js';
 import { getOllamaCircuitBreakerStatus, getOpenaiCircuitBreakerStatus } from '../services/circuit-breaker.js';
 import { LlmCache, buildLlmCacheKey, buildRagCacheKey, type CachedLlmResponse } from '../services/llm-cache.js';
@@ -727,8 +728,8 @@ export async function llmRoutes(fastify: FastifyInstance) {
     return getEmbeddingStatus(request.userId);
   });
 
-  // POST /api/embeddings/process - trigger embedding processing
-  fastify.post('/embeddings/process', EMBEDDING_RATE_LIMIT, async (request, _reply) => {
+  // POST /api/embeddings/process - trigger embedding processing with SSE progress
+  fastify.post('/embeddings/process', EMBEDDING_RATE_LIMIT, async (request, reply) => {
     const userId = request.userId;
 
     // Return 409 if embedding is already in progress for this user
@@ -736,12 +737,91 @@ export async function llmRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.conflict('Embedding processing is already in progress for this user');
     }
 
-    // Run in background
-    processDirtyPages(userId).catch((err) => {
-      logger.error({ err, userId }, 'Embedding processing failed');
+    // Set up SSE response
+    const controller = new AbortController();
+    const onClose = () => controller.abort();
+    request.raw.on('close', onClose);
+
+    reply.raw.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
     });
 
-    return { message: 'Embedding processing started' };
+    // Send initial event
+    reply.raw.write(`data: ${JSON.stringify({ type: 'started', message: 'Embedding processing started' })}\n\n`);
+
+    try {
+      const onProgress = (event: EmbeddingProgressEvent) => {
+        if (!controller.signal.aborted) {
+          reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
+        }
+      };
+
+      await processDirtyPages(userId, onProgress);
+    } catch (err) {
+      if (controller.signal.aborted || (err instanceof Error && err.name === 'AbortError')) {
+        logger.debug('Embedding process SSE aborted by client disconnect');
+      } else {
+        logger.error({ err, userId }, 'Embedding processing failed');
+        reply.raw.write(`data: ${JSON.stringify({ type: 'error', error: 'Embedding processing failed', done: true })}\n\n`);
+      }
+    } finally {
+      request.raw.removeListener('close', onClose);
+      reply.raw.end();
+    }
+  });
+
+  // POST /api/embeddings/retry-failed - reset failed embeddings and reprocess
+  fastify.post('/embeddings/retry-failed', EMBEDDING_RATE_LIMIT, async (request, reply) => {
+    const userId = request.userId;
+
+    // Return 409 if embedding is already in progress for this user
+    if (isProcessingUser(userId)) {
+      throw fastify.httpErrors.conflict('Embedding processing is already in progress for this user');
+    }
+
+    // Reset all failed pages back to 'not_embedded'
+    const resetCount = await resetFailedEmbeddings(userId);
+
+    if (resetCount === 0) {
+      return { message: 'No failed embeddings to retry', reset: 0 };
+    }
+
+    // Set up SSE response for reprocessing
+    const controller = new AbortController();
+    const onClose = () => controller.abort();
+    request.raw.on('close', onClose);
+
+    reply.raw.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+
+    reply.raw.write(`data: ${JSON.stringify({ type: 'started', message: `Reset ${resetCount} failed pages, reprocessing...`, reset: resetCount })}\n\n`);
+
+    try {
+      const onProgress = (event: EmbeddingProgressEvent) => {
+        if (!controller.signal.aborted) {
+          reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
+        }
+      };
+
+      await processDirtyPages(userId, onProgress);
+    } catch (err) {
+      if (controller.signal.aborted || (err instanceof Error && err.name === 'AbortError')) {
+        logger.debug('Retry-failed SSE aborted by client disconnect');
+      } else {
+        logger.error({ err, userId }, 'Retry-failed embedding processing failed');
+        reply.raw.write(`data: ${JSON.stringify({ type: 'error', error: 'Retry processing failed', done: true })}\n\n`);
+      }
+    } finally {
+      request.raw.removeListener('close', onClose);
+      reply.raw.end();
+    }
   });
 
   // POST /api/embeddings/force-embed-tree - force-embed a page and all its sub-pages via SSE

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { CircuitBreakerOpenError } from './circuit-breaker.js';
 
 const FAKE_LOCK_ID = 'fake-lock-id-for-tests';
 
@@ -41,7 +42,18 @@ vi.mock('./redis-cache.js', () => ({
   invalidateGraphCache: (...args: unknown[]) => mocks.invalidateGraphCache(...args),
 }));
 
-import { getEmbeddingStatus, chunkText, embedPage, processDirtyPages, isProcessingUser, computePageRelationships, DIRTY_PAGE_BATCH_SIZE } from './embedding-service.js';
+import {
+  getEmbeddingStatus,
+  chunkText,
+  embedPage,
+  processDirtyPages,
+  isProcessingUser,
+  computePageRelationships,
+  resetFailedEmbeddings,
+  isCircuitBreakerError,
+  DIRTY_PAGE_BATCH_SIZE,
+  type EmbeddingProgressEvent,
+} from './embedding-service.js';
 
 /** Helper to create a fake dirty page row */
 function makePage(id: string) {
@@ -472,6 +484,11 @@ describe('embedding-service', () => {
       // computePageRelationships
       mocks.query.mockResolvedValue({ rows: [], rowCount: 0 });
 
+      // computePageRelationships (post-embed hook)
+      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // DELETE
+      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // similarity
+      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // label overlap
+
       await processDirtyPages('recover-user');
 
       // Verify the success update clears embedding_error
@@ -547,6 +564,279 @@ describe('embedding-service', () => {
 
     it('should pass correct LIMIT value matching DIRTY_PAGE_BATCH_SIZE constant', () => {
       expect(DIRTY_PAGE_BATCH_SIZE).toBe(100);
+    });
+
+    it('should call onProgress callback with progress events', async () => {
+      const progressEvents: EmbeddingProgressEvent[] = [];
+
+      // Query to get dirty pages (2 pages)
+      mocks.query.mockResolvedValueOnce({
+        rows: [
+          { confluence_id: 'p1', title: 'Page One', space_key: 'DEV', body_html: '<p>Content 1</p>' },
+          { confluence_id: 'p2', title: 'Page Two', space_key: 'DEV', body_html: '<p>Content 2</p>' },
+        ],
+      });
+
+      // Page 1: mark embedding, delete old, generate, insert, mark embedded
+      mocks.query.mockResolvedValueOnce({ rows: [] }); // mark embedding
+      mocks.query.mockResolvedValueOnce({ rows: [] }); // delete old
+      mocks.providerGenerateEmbedding.mockResolvedValueOnce([new Array(768).fill(0)]);
+      mocks.query.mockResolvedValueOnce({ rows: [] }); // insert
+      mocks.query.mockResolvedValueOnce({ rows: [] }); // mark embedded
+
+      // Page 2: mark embedding, delete old, generate, insert, mark embedded
+      mocks.query.mockResolvedValueOnce({ rows: [] }); // mark embedding
+      mocks.query.mockResolvedValueOnce({ rows: [] }); // delete old
+      mocks.providerGenerateEmbedding.mockResolvedValueOnce([new Array(768).fill(0)]);
+      mocks.query.mockResolvedValueOnce({ rows: [] }); // insert
+      mocks.query.mockResolvedValueOnce({ rows: [] }); // mark embedded
+
+      // computePageRelationships
+      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+      const result = await processDirtyPages('progress-user', (event) => {
+        progressEvents.push(event);
+      });
+
+      expect(result.processed).toBe(2);
+      expect(result.errors).toBe(0);
+
+      // Should have progress events for each page + completion
+      expect(progressEvents.length).toBe(3);
+      expect(progressEvents[0].type).toBe('progress');
+      expect(progressEvents[0].total).toBe(2);
+      expect(progressEvents[0].completed).toBe(1);
+      expect(progressEvents[0].currentPage).toBe('Page One');
+      expect(progressEvents[1].type).toBe('progress');
+      expect(progressEvents[1].completed).toBe(2);
+      expect(progressEvents[2].type).toBe('complete');
+      expect(progressEvents[2].completed).toBe(2);
+      expect(progressEvents[2].failed).toBe(0);
+    });
+
+    it('should send complete event with error list on failures', async () => {
+      const progressEvents: EmbeddingProgressEvent[] = [];
+
+      mocks.query.mockResolvedValueOnce({
+        rows: [
+          { confluence_id: 'p-fail', title: 'Failing', space_key: 'DEV', body_html: '<p>Content</p>' },
+        ],
+      });
+
+      // mark embedding
+      mocks.query.mockResolvedValueOnce({ rows: [] });
+      // delete old
+      mocks.query.mockResolvedValueOnce({ rows: [] });
+      // generate fails
+      mocks.providerGenerateEmbedding.mockRejectedValueOnce(new Error('Network timeout'));
+      // mark failed
+      mocks.query.mockResolvedValueOnce({ rows: [] });
+
+      await processDirtyPages('fail-progress-user', (event) => {
+        progressEvents.push(event);
+      });
+
+      const completeEvent = progressEvents.find(e => e.type === 'complete');
+      expect(completeEvent).toBeDefined();
+      expect(completeEvent!.failed).toBe(1);
+      expect(completeEvent!.errors).toBeDefined();
+      expect(completeEvent!.errors!.length).toBe(1);
+      expect(completeEvent!.errors![0]).toContain('Failing');
+      expect(completeEvent!.errors![0]).toContain('Network timeout');
+    });
+
+    it('should wait and retry on CircuitBreakerOpenError instead of marking page as failed', async () => {
+      vi.useFakeTimers();
+
+      const cbError = new CircuitBreakerOpenError('ollama-embed: LLM server temporarily unavailable');
+
+      mocks.query.mockResolvedValueOnce({
+        rows: [
+          { confluence_id: 'cb-page', title: 'CB Page', space_key: 'DEV', body_html: '<p>Content</p>' },
+        ],
+      });
+
+      // mark embedding
+      mocks.query.mockResolvedValueOnce({ rows: [] });
+      // delete old (first attempt)
+      mocks.query.mockResolvedValueOnce({ rows: [] });
+      // First embed attempt: circuit breaker open
+      mocks.providerGenerateEmbedding.mockRejectedValueOnce(cbError);
+
+      // Second attempt after wait: succeeds
+      // delete old (retry)
+      mocks.query.mockResolvedValueOnce({ rows: [] });
+      mocks.providerGenerateEmbedding.mockResolvedValueOnce([new Array(768).fill(0)]);
+      mocks.query.mockResolvedValueOnce({ rows: [] }); // insert
+      mocks.query.mockResolvedValueOnce({ rows: [] }); // mark embedded
+
+      // computePageRelationships
+      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+      const promise = processDirtyPages('cb-user');
+
+      // Advance timers to let the sleep resolve
+      await vi.advanceTimersByTimeAsync(5000);
+
+      const result = await promise;
+
+      vi.useRealTimers();
+
+      expect(result.processed).toBe(1);
+      expect(result.errors).toBe(0);
+
+      // Should NOT have any 'failed' status updates
+      const failedCalls = mocks.query.mock.calls.filter(
+        (call) => typeof call[0] === 'string' && (call[0] as string).includes("embedding_status = 'failed'"),
+      );
+      expect(failedCalls).toHaveLength(0);
+    });
+
+    it('should stop batch after max circuit breaker retries without marking remaining pages as failed', async () => {
+      vi.useFakeTimers();
+
+      const cbError = new CircuitBreakerOpenError('ollama-embed: LLM server temporarily unavailable');
+
+      mocks.query.mockResolvedValueOnce({
+        rows: [
+          { confluence_id: 'cb-p1', title: 'CB Page 1', space_key: 'DEV', body_html: '<p>Content 1</p>' },
+          { confluence_id: 'cb-p2', title: 'CB Page 2', space_key: 'DEV', body_html: '<p>Content 2</p>' },
+        ],
+      });
+
+      // mark embedding for page 1
+      mocks.query.mockResolvedValueOnce({ rows: [] });
+      // delete old for page 1
+      mocks.query.mockResolvedValueOnce({ rows: [] });
+
+      // All embed attempts fail with circuit breaker (first attempt + 3 retries = 4 total)
+      mocks.providerGenerateEmbedding.mockRejectedValue(cbError);
+
+      // Reset status for remaining pages (page 1 and page 2)
+      mocks.query.mockResolvedValue({ rows: [], rowCount: 0 });
+
+      const promise = processDirtyPages('cb-stop-user');
+
+      // Advance timers enough for all retries
+      await vi.advanceTimersByTimeAsync(60000);
+
+      const result = await promise;
+
+      vi.useRealTimers();
+
+      expect(result.processed).toBe(0);
+      // Should NOT mark pages as 'failed' — only reset to 'not_embedded'
+      const failedCalls = mocks.query.mock.calls.filter(
+        (call) => typeof call[0] === 'string' && (call[0] as string).includes("embedding_status = 'failed'"),
+      );
+      expect(failedCalls).toHaveLength(0);
+
+      // Should reset remaining pages to 'not_embedded'
+      const resetCalls = mocks.query.mock.calls.filter(
+        (call) => typeof call[0] === 'string' && (call[0] as string).includes("embedding_status = 'not_embedded'"),
+      );
+      expect(resetCalls.length).toBeGreaterThan(0);
+    });
+
+    it('should emit waiting event when circuit breaker is open', async () => {
+      vi.useFakeTimers();
+
+      const cbError = new CircuitBreakerOpenError('ollama-embed: LLM server temporarily unavailable');
+      const progressEvents: EmbeddingProgressEvent[] = [];
+
+      mocks.query.mockResolvedValueOnce({
+        rows: [
+          { confluence_id: 'cb-wait-page', title: 'Wait Page', space_key: 'DEV', body_html: '<p>Content</p>' },
+        ],
+      });
+
+      // mark embedding
+      mocks.query.mockResolvedValueOnce({ rows: [] });
+      // delete old
+      mocks.query.mockResolvedValueOnce({ rows: [] });
+      // First attempt: CB open
+      mocks.providerGenerateEmbedding.mockRejectedValueOnce(cbError);
+
+      // Retry succeeds
+      mocks.query.mockResolvedValueOnce({ rows: [] }); // delete old on retry
+      mocks.providerGenerateEmbedding.mockResolvedValueOnce([new Array(768).fill(0)]);
+      mocks.query.mockResolvedValueOnce({ rows: [] }); // insert
+      mocks.query.mockResolvedValueOnce({ rows: [] }); // mark embedded
+
+      // computePageRelationships
+      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+      const promise = processDirtyPages('cb-wait-user', (event) => {
+        progressEvents.push(event);
+      });
+
+      await vi.advanceTimersByTimeAsync(5000);
+      const result = await promise;
+
+      vi.useRealTimers();
+
+      expect(result.processed).toBe(1);
+
+      // Should have a 'waiting' event
+      const waitingEvents = progressEvents.filter(e => e.type === 'waiting');
+      expect(waitingEvents.length).toBeGreaterThan(0);
+      expect(waitingEvents[0].reason).toContain('Circuit breaker open');
+    });
+  });
+
+  describe('isCircuitBreakerError', () => {
+    it('should return true for CircuitBreakerOpenError', () => {
+      const err = new CircuitBreakerOpenError('test');
+      expect(isCircuitBreakerError(err)).toBe(true);
+    });
+
+    it('should return false for generic Error', () => {
+      expect(isCircuitBreakerError(new Error('generic'))).toBe(false);
+    });
+
+    it('should return false for non-Error values', () => {
+      expect(isCircuitBreakerError('string')).toBe(false);
+      expect(isCircuitBreakerError(null)).toBe(false);
+      expect(isCircuitBreakerError(undefined)).toBe(false);
+    });
+  });
+
+  describe('resetFailedEmbeddings', () => {
+    it('should update failed pages to not_embedded and return count', async () => {
+      mocks.query.mockResolvedValueOnce({ rowCount: 5 });
+
+      const count = await resetFailedEmbeddings('reset-user');
+
+      expect(count).toBe(5);
+      expect(mocks.query).toHaveBeenCalledTimes(1);
+      const sql = mocks.query.mock.calls[0][0] as string;
+      expect(sql).toContain("embedding_status = 'not_embedded'");
+      expect(sql).toContain('embedding_dirty = TRUE');
+      expect(sql).toContain('embedding_error = NULL');
+      expect(sql).toContain("embedding_status = 'failed'");
+      expect(mocks.query.mock.calls[0][1]).toEqual(['reset-user']);
+    });
+
+    it('should return 0 when no failed pages exist', async () => {
+      mocks.query.mockResolvedValueOnce({ rowCount: 0 });
+
+      const count = await resetFailedEmbeddings('no-fail-user');
+
+      expect(count).toBe(0);
+    });
+
+    it('should return 0 when rowCount is null', async () => {
+      mocks.query.mockResolvedValueOnce({ rowCount: null });
+
+      const count = await resetFailedEmbeddings('null-user');
+
+      expect(count).toBe(0);
     });
   });
 

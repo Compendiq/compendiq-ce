@@ -148,10 +148,17 @@ export class CircuitBreakerOpenError extends Error {
   }
 }
 
+// Embedding operations use a higher failure threshold (5 instead of 3)
+// because transient network issues during bulk embedding should not
+// trip the breaker as aggressively as interactive chat requests.
+const EMBED_BREAKER_CONFIG: Partial<CircuitBreakerConfig> = {
+  failureThreshold: 5,
+};
+
 // Per-method circuit breakers for Ollama
 export const ollamaBreakers = {
   chat: new CircuitBreaker('ollama-chat'),
-  embed: new CircuitBreaker('ollama-embed'),
+  embed: new CircuitBreaker('ollama-embed', EMBED_BREAKER_CONFIG),
   list: new CircuitBreaker('ollama-list'),
 } as const;
 
@@ -160,7 +167,7 @@ export const ollamaBreakers = {
 // does not block Ollama requests and vice versa.
 export const openaiBreakers = {
   chat: new CircuitBreaker('openai-chat'),
-  embed: new CircuitBreaker('openai-embed'),
+  embed: new CircuitBreaker('openai-embed', EMBED_BREAKER_CONFIG),
   list: new CircuitBreaker('openai-list'),
 } as const;
 

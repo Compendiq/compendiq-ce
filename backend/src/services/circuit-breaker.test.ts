@@ -231,8 +231,8 @@ describe('openaiBreakers (separate from ollamaBreakers)', () => {
   });
 
   it('should be independent from ollama breakers -- tripping ollama does not trip openai', async () => {
-    // Trip the ollama embed breaker
-    for (let i = 0; i < 3; i++) {
+    // Trip the ollama embed breaker (embed breakers have threshold of 5)
+    for (let i = 0; i < 5; i++) {
       ollamaBreakers.embed.recordFailure();
     }
 
@@ -247,5 +247,42 @@ describe('openaiBreakers (separate from ollamaBreakers)', () => {
     expect(openaiBreakers.embed.name).toBe('openai-embed');
     expect(ollamaBreakers.chat.name).toBe('ollama-chat');
     expect(ollamaBreakers.embed.name).toBe('ollama-embed');
+  });
+});
+
+describe('embed breakers have higher failure threshold', () => {
+  beforeEach(() => {
+    ollamaBreakers.embed.reset();
+    openaiBreakers.embed.reset();
+    ollamaBreakers.chat.reset();
+  });
+
+  it('ollama embed breaker should stay CLOSED after 3 failures (threshold is 5)', () => {
+    for (let i = 0; i < 3; i++) {
+      ollamaBreakers.embed.recordFailure();
+    }
+    expect(ollamaBreakers.embed.getStatus().state).toBe('CLOSED');
+    expect(ollamaBreakers.embed.getStatus().failureCount).toBe(3);
+  });
+
+  it('ollama embed breaker should trip to OPEN after 5 failures', () => {
+    for (let i = 0; i < 5; i++) {
+      ollamaBreakers.embed.recordFailure();
+    }
+    expect(ollamaBreakers.embed.getStatus().state).toBe('OPEN');
+  });
+
+  it('openai embed breaker should trip to OPEN after 5 failures', () => {
+    for (let i = 0; i < 5; i++) {
+      openaiBreakers.embed.recordFailure();
+    }
+    expect(openaiBreakers.embed.getStatus().state).toBe('OPEN');
+  });
+
+  it('chat breakers still use default threshold of 3', () => {
+    for (let i = 0; i < 3; i++) {
+      ollamaBreakers.chat.recordFailure();
+    }
+    expect(ollamaBreakers.chat.getStatus().state).toBe('OPEN');
   });
 });
