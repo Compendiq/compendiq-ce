@@ -21,6 +21,7 @@ export const PageSummarySchema = z.object({
 export const PageDetailSchema = PageSummarySchema.extend({
   bodyHtml: z.string(),
   bodyText: z.string(),
+  hasChildren: z.boolean().default(false),
 });
 
 export const CreatePageSchema = z.object({

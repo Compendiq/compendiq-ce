@@ -1,8 +1,8 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { renderHook, waitFor, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createElement } from 'react';
-import { usePages, usePageTree } from './use-pages';
+import { usePages, usePageTree, usePinPage, useUnpinPage, type PinnedPage } from './use-pages';
 import type { PageFilters } from './use-pages';
 
 // Mock auth store
@@ -13,6 +13,12 @@ vi.mock('../../stores/auth-store', () => ({
       getState: () => ({ accessToken: 'test-token', setAuth: vi.fn(), clearAuth: vi.fn() }),
     },
   ),
+}));
+
+// Mock apiFetch (used by pin/unpin mutations)
+const apiFetchMock = vi.fn();
+vi.mock('../lib/api', () => ({
+  apiFetch: (...args: unknown[]) => apiFetchMock(...args),
 }));
 
 const MOCK_PAGINATED = {
@@ -39,12 +45,23 @@ function createWrapper() {
 
 function createQueryClientAndWrapper() {
   const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   const wrapper = ({ children }: { children: React.ReactNode }) =>
     createElement(QueryClientProvider, { client: queryClient }, children);
   return { queryClient, wrapper };
 }
+
+const mockPinnedPage: PinnedPage = {
+  id: 'page-1',
+  spaceKey: 'DEV',
+  title: 'Test Page',
+  author: 'admin',
+  lastModifiedAt: '2025-01-01T00:00:00Z',
+  excerpt: 'Test excerpt',
+  pinnedAt: '2025-06-01T00:00:00Z',
+  pinOrder: 1,
+};
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -205,5 +222,179 @@ describe('usePageTree', () => {
     const treeQueries = queryClient.getQueryCache().findAll({ queryKey: ['pages', 'tree'] });
     expect(treeQueries).toHaveLength(1);
     expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('usePinPage', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('optimistically adds a page to pinned list on mutate', async () => {
+    // apiFetch resolves after a delay to allow us to check optimistic state
+    apiFetchMock.mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve({ message: 'Page pinned', pageId: 'page-2' }), 100)),
+    );
+
+    const { wrapper, queryClient } = createWrapper();
+
+    // Seed the pinned pages cache
+    queryClient.setQueryData(['pages', 'pinned'], {
+      items: [mockPinnedPage],
+      total: 1,
+    });
+
+    const { result } = renderHook(() => usePinPage(), { wrapper });
+
+    // Trigger the mutation
+    act(() => {
+      result.current.mutate('page-2');
+    });
+
+    // Check optimistic state: the new page should appear immediately
+    await waitFor(() => {
+      const data = queryClient.getQueryData<{ items: PinnedPage[]; total: number }>(['pages', 'pinned']);
+      expect(data).toBeDefined();
+      expect(data!.items).toHaveLength(2);
+      expect(data!.items[1].id).toBe('page-2');
+      expect(data!.total).toBe(2);
+    });
+  });
+
+  it('rolls back on error', async () => {
+    apiFetchMock.mockRejectedValue(new Error('Server error'));
+
+    const { wrapper, queryClient } = createWrapper();
+
+    // Seed the pinned pages cache
+    queryClient.setQueryData(['pages', 'pinned'], {
+      items: [mockPinnedPage],
+      total: 1,
+    });
+
+    const { result } = renderHook(() => usePinPage(), { wrapper });
+
+    act(() => {
+      result.current.mutate('page-2');
+    });
+
+    // Wait for the error to propagate and rollback
+    await waitFor(() => {
+      expect(result.current.isError).toBe(true);
+    });
+
+    const data = queryClient.getQueryData<{ items: PinnedPage[]; total: number }>(['pages', 'pinned']);
+    expect(data!.items).toHaveLength(1);
+    expect(data!.items[0].id).toBe('page-1');
+    expect(data!.total).toBe(1);
+  });
+
+  it('creates pinned list from empty when no cache exists', async () => {
+    apiFetchMock.mockResolvedValue({ message: 'Page pinned', pageId: 'page-1' });
+
+    const { wrapper, queryClient } = createWrapper();
+    // No seeded cache
+
+    const { result } = renderHook(() => usePinPage(), { wrapper });
+
+    act(() => {
+      result.current.mutate('page-1');
+    });
+
+    // Check optimistic state
+    await waitFor(() => {
+      const data = queryClient.getQueryData<{ items: PinnedPage[]; total: number }>(['pages', 'pinned']);
+      expect(data).toBeDefined();
+      expect(data!.items).toHaveLength(1);
+      expect(data!.items[0].id).toBe('page-1');
+    });
+  });
+});
+
+describe('useUnpinPage', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('optimistically removes a page from pinned list on mutate', async () => {
+    apiFetchMock.mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve({ message: 'Page unpinned', pageId: 'page-1' }), 100)),
+    );
+
+    const { wrapper, queryClient } = createWrapper();
+
+    queryClient.setQueryData(['pages', 'pinned'], {
+      items: [mockPinnedPage],
+      total: 1,
+    });
+
+    const { result } = renderHook(() => useUnpinPage(), { wrapper });
+
+    act(() => {
+      result.current.mutate('page-1');
+    });
+
+    // Check optimistic state: the page should be removed immediately
+    await waitFor(() => {
+      const data = queryClient.getQueryData<{ items: PinnedPage[]; total: number }>(['pages', 'pinned']);
+      expect(data).toBeDefined();
+      expect(data!.items).toHaveLength(0);
+      expect(data!.total).toBe(0);
+    });
+  });
+
+  it('rolls back on error', async () => {
+    apiFetchMock.mockRejectedValue(new Error('Server error'));
+
+    const { wrapper, queryClient } = createWrapper();
+
+    queryClient.setQueryData(['pages', 'pinned'], {
+      items: [mockPinnedPage],
+      total: 1,
+    });
+
+    const { result } = renderHook(() => useUnpinPage(), { wrapper });
+
+    act(() => {
+      result.current.mutate('page-1');
+    });
+
+    // Wait for the error to propagate and rollback
+    await waitFor(() => {
+      expect(result.current.isError).toBe(true);
+    });
+
+    const data = queryClient.getQueryData<{ items: PinnedPage[]; total: number }>(['pages', 'pinned']);
+    expect(data!.items).toHaveLength(1);
+    expect(data!.items[0].id).toBe('page-1');
+    expect(data!.total).toBe(1);
+  });
+
+  it('handles empty cache gracefully', async () => {
+    apiFetchMock.mockResolvedValue({ message: 'Page unpinned', pageId: 'page-1' });
+
+    const { wrapper, queryClient } = createWrapper();
+    // No seeded cache
+
+    const { result } = renderHook(() => useUnpinPage(), { wrapper });
+
+    act(() => {
+      result.current.mutate('page-1');
+    });
+
+    await waitFor(() => {
+      const data = queryClient.getQueryData<{ items: PinnedPage[]; total: number }>(['pages', 'pinned']);
+      expect(data).toBeDefined();
+      expect(data!.items).toHaveLength(0);
+      expect(data!.total).toBe(0);
+    });
   });
 });

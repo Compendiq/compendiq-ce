@@ -23,11 +23,9 @@ vi.mock('../../shared/lib/sse', () => ({
 
 // Default: no page selected
 let mockPageData: { data: unknown } = { data: undefined };
-let mockHasChildrenData: { data: unknown } = { data: undefined };
 vi.mock('../../shared/hooks/use-pages', () => ({
   usePage: () => mockPageData,
   useEmbeddingStatus: () => ({ data: undefined }),
-  usePageHasChildren: () => mockHasChildrenData,
 }));
 
 // Mock sonner toast so we can verify error messages
@@ -61,7 +59,6 @@ describe('AiAssistantPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockPageData = { data: undefined };
-    mockHasChildrenData = { data: undefined };
     useAuthStore.getState().setAuth('test-token', {
       id: '1',
       username: 'testuser',
@@ -604,9 +601,8 @@ describe('AiAssistantPage', () => {
 
     it('does not show toggle when page has no children', () => {
       mockPageData = {
-        data: { id: 'p1', title: 'Test Page', bodyHtml: '<p>Content</p>', bodyText: 'Content' },
+        data: { id: 'p1', title: 'Test Page', bodyHtml: '<p>Content</p>', bodyText: 'Content', hasChildren: false },
       };
-      mockHasChildrenData = { data: { hasChildren: false } };
 
       render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
 
@@ -616,9 +612,8 @@ describe('AiAssistantPage', () => {
 
     it('shows toggle when page has children', () => {
       mockPageData = {
-        data: { id: 'p1', title: 'Parent Page', bodyHtml: '<p>Content</p>', bodyText: 'Content' },
+        data: { id: 'p1', title: 'Parent Page', bodyHtml: '<p>Content</p>', bodyText: 'Content', hasChildren: true },
       };
-      mockHasChildrenData = { data: { hasChildren: true } };
 
       render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
 
@@ -627,9 +622,8 @@ describe('AiAssistantPage', () => {
 
     it('toggles the checkbox when clicked', () => {
       mockPageData = {
-        data: { id: 'p1', title: 'Parent Page', bodyHtml: '<p>Content</p>', bodyText: 'Content' },
+        data: { id: 'p1', title: 'Parent Page', bodyHtml: '<p>Content</p>', bodyText: 'Content', hasChildren: true },
       };
-      mockHasChildrenData = { data: { hasChildren: true } };
 
       render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
 
@@ -645,9 +639,8 @@ describe('AiAssistantPage', () => {
 
     it('passes includeSubPages to improve SSE when toggle is on', async () => {
       mockPageData = {
-        data: { id: 'p1', title: 'Parent Page', bodyHtml: '<p>Content</p>', bodyText: 'Content' },
+        data: { id: 'p1', title: 'Parent Page', bodyHtml: '<p>Content</p>', bodyText: 'Content', hasChildren: true },
       };
-      mockHasChildrenData = { data: { hasChildren: true } };
 
       apiFetchMock.mockImplementation((path: string) => {
         if (path === '/settings') {
@@ -699,9 +692,8 @@ describe('AiAssistantPage', () => {
 
     it('passes includeSubPages=false when toggle is off', async () => {
       mockPageData = {
-        data: { id: 'p1', title: 'Parent Page', bodyHtml: '<p>Content</p>', bodyText: 'Content' },
+        data: { id: 'p1', title: 'Parent Page', bodyHtml: '<p>Content</p>', bodyText: 'Content', hasChildren: true },
       };
-      mockHasChildrenData = { data: { hasChildren: true } };
 
       apiFetchMock.mockImplementation((path: string) => {
         if (path === '/settings') {

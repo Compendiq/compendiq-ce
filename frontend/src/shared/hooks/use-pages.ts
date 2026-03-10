@@ -203,15 +203,6 @@ export interface EmbeddingStatusData {
   isProcessing: boolean;
 }
 
-export function usePageHasChildren(id: string | undefined) {
-  return useQuery<{ hasChildren: boolean }>({
-    queryKey: ['pages', id, 'has-children'],
-    queryFn: () => apiFetch(`/pages/${id}/has-children`),
-    enabled: !!id,
-    staleTime: 60_000, // refresh once per minute
-  });
-}
-
 export function useEmbeddingStatus() {
   return useQuery<EmbeddingStatusData>({
     queryKey: ['embeddings', 'status'],
@@ -264,7 +255,26 @@ export function usePinPage() {
       apiFetch<{ message: string; pageId: string }>(`/pages/${pageId}/pin`, {
         method: 'POST',
       }),
-    onSuccess: () => {
+    onMutate: async (pageId) => {
+      await queryClient.cancelQueries({ queryKey: ['pages', 'pinned'] });
+      const previous = queryClient.getQueryData<PinnedPagesResponse>(['pages', 'pinned']);
+      queryClient.setQueryData<PinnedPagesResponse>(['pages', 'pinned'], (old) =>
+        old
+          ? {
+              ...old,
+              items: [...old.items, { id: pageId, spaceKey: '', title: '', author: null, lastModifiedAt: null, excerpt: '', pinnedAt: new Date().toISOString(), pinOrder: old.items.length + 1 }],
+              total: old.total + 1,
+            }
+          : { items: [{ id: pageId, spaceKey: '', title: '', author: null, lastModifiedAt: null, excerpt: '', pinnedAt: new Date().toISOString(), pinOrder: 1 }], total: 1 },
+      );
+      return { previous };
+    },
+    onError: (_err, _pageId, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(['pages', 'pinned'], context.previous);
+      }
+    },
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['pages', 'pinned'] });
     },
   });
@@ -277,7 +287,26 @@ export function useUnpinPage() {
       apiFetch<{ message: string; pageId: string }>(`/pages/${pageId}/pin`, {
         method: 'DELETE',
       }),
-    onSuccess: () => {
+    onMutate: async (pageId) => {
+      await queryClient.cancelQueries({ queryKey: ['pages', 'pinned'] });
+      const previous = queryClient.getQueryData<PinnedPagesResponse>(['pages', 'pinned']);
+      queryClient.setQueryData<PinnedPagesResponse>(['pages', 'pinned'], (old) =>
+        old
+          ? {
+              ...old,
+              items: old.items.filter((item) => item.id !== pageId),
+              total: Math.max(0, old.total - 1),
+            }
+          : { items: [], total: 0 },
+      );
+      return { previous };
+    },
+    onError: (_err, _pageId, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(['pages', 'pinned'], context.previous);
+      }
+    },
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['pages', 'pinned'] });
     },
   });

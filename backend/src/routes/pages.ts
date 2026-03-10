@@ -286,11 +286,13 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       embedding_status: string;
       embedded_at: Date | null;
       embedding_error: string | null;
+      has_children: boolean;
     }>(
-      `SELECT confluence_id, space_key, title, body_storage, body_html, body_text,
-              version, parent_id, labels, author, last_modified_at, last_synced,
-              embedding_dirty, embedding_status, embedded_at, embedding_error
-       FROM cached_pages WHERE user_id = $1 AND confluence_id = $2`,
+      `SELECT cp.confluence_id, cp.space_key, cp.title, cp.body_storage, cp.body_html, cp.body_text,
+              cp.version, cp.parent_id, cp.labels, cp.author, cp.last_modified_at, cp.last_synced,
+              cp.embedding_dirty, cp.embedding_status, cp.embedded_at, cp.embedding_error,
+              EXISTS(SELECT 1 FROM cached_pages c2 WHERE c2.user_id = $1 AND c2.parent_id = cp.confluence_id) as has_children
+       FROM cached_pages cp WHERE cp.user_id = $1 AND cp.confluence_id = $2`,
       [userId, id],
     );
 
@@ -299,13 +301,6 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     }
 
     const row = result.rows[0];
-
-    // Check if this page has children (for "embed tree" feature)
-    const childrenResult = await query<{ count: string }>(
-      'SELECT COUNT(*) as count FROM cached_pages WHERE user_id = $1 AND parent_id = $2',
-      [userId, id],
-    );
-    const hasChildren = parseInt(childrenResult.rows[0].count, 10) > 0;
 
     return {
       id: row.confluence_id,
@@ -319,7 +314,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       author: row.author,
       lastModifiedAt: row.last_modified_at,
       lastSynced: row.last_synced,
-      hasChildren,
+      hasChildren: row.has_children,
       embeddingDirty: row.embedding_dirty,
       embeddingStatus: row.embedding_status,
       embeddedAt: row.embedded_at,
@@ -327,6 +322,11 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     };
   });
 
+  /**
+   * @deprecated Use the `hasChildren` field from GET /api/pages/:id instead.
+   * This dedicated endpoint is kept for backwards compatibility and will be
+   * removed in a future release.
+   */
   // GET /api/pages/:id/has-children - check if a page has sub-pages
   fastify.get('/pages/:id/has-children', async (request) => {
     const { id } = IdParamSchema.parse(request.params);
