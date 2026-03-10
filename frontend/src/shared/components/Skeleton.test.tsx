@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { Skeleton, SkeletonStatCard, SkeletonPageItem, SkeletonFormFields } from './Skeleton';
+import {
+  Skeleton, SkeletonStatCard, SkeletonPageItem, SkeletonFormFields,
+  SkeletonArticleCard, SkeletonKPICard, SkeletonChatMessage,
+} from './Skeleton';
 
 describe('Skeleton', () => {
   it('renders a single skeleton element by default', () => {
@@ -72,5 +75,59 @@ describe('SkeletonFormFields', () => {
   it('renders multiple skeleton form field groups', () => {
     const { container } = render(<SkeletonFormFields />);
     expect(container.querySelectorAll('.skeleton').length).toBeGreaterThanOrEqual(4);
+  });
+});
+
+describe('SkeletonArticleCard', () => {
+  it('renders with correct test id', () => {
+    render(<SkeletonArticleCard />);
+    expect(screen.getByTestId('skeleton-article-card')).toBeInTheDocument();
+  });
+
+  it('renders inside a glass-card', () => {
+    const { container } = render(<SkeletonArticleCard />);
+    expect(container.querySelector('.glass-card')).toBeInTheDocument();
+  });
+
+  it('renders title, meta chips, and excerpt line skeletons', () => {
+    const { container } = render(<SkeletonArticleCard />);
+    // Title (1) + 2 meta chips + 3 excerpt lines = 6 skeleton elements
+    expect(container.querySelectorAll('.skeleton').length).toBe(6);
+  });
+});
+
+describe('SkeletonKPICard', () => {
+  it('renders with correct test id', () => {
+    render(<SkeletonKPICard />);
+    expect(screen.getByTestId('skeleton-kpi-card')).toBeInTheDocument();
+  });
+
+  it('renders inside a glass-card', () => {
+    const { container } = render(<SkeletonKPICard />);
+    expect(container.querySelector('.glass-card')).toBeInTheDocument();
+  });
+
+  it('renders icon, label, and number skeletons', () => {
+    const { container } = render(<SkeletonKPICard />);
+    // Icon (1) + label (1) + number (1) = 3 skeleton elements
+    expect(container.querySelectorAll('.skeleton').length).toBe(3);
+  });
+});
+
+describe('SkeletonChatMessage', () => {
+  it('renders with correct test id', () => {
+    render(<SkeletonChatMessage />);
+    expect(screen.getByTestId('skeleton-chat-message')).toBeInTheDocument();
+  });
+
+  it('renders avatar and text line skeletons', () => {
+    const { container } = render(<SkeletonChatMessage />);
+    // Avatar (1) + 3 text lines = 4 skeleton elements
+    expect(container.querySelectorAll('.skeleton').length).toBe(4);
+  });
+
+  it('has a rounded-full avatar skeleton', () => {
+    const { container } = render(<SkeletonChatMessage />);
+    expect(container.querySelector('.rounded-full.skeleton')).toBeInTheDocument();
   });
 });

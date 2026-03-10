@@ -1,6 +1,7 @@
 import { m } from 'framer-motion';
 import { FileText, Layers, Database, Percent, Clock } from 'lucide-react';
 import { formatRelativeTime } from '../../shared/lib/format-relative-time';
+import { AnimatedCounter } from '../../shared/components/AnimatedCounter';
 
 interface KPICardsProps {
   embeddingStatus?: {
@@ -17,6 +18,10 @@ interface KPICard {
   icon: typeof FileText;
   label: string;
   value: string;
+  /** If set, AnimatedCounter counts up to this number */
+  numericValue?: number;
+  /** Suffix for animated counter (e.g. '%') */
+  suffix?: string;
   color: string;
   testId: string;
 }
@@ -42,6 +47,7 @@ export function KPICards({ embeddingStatus, spacesCount, lastSynced }: KPICardsP
       icon: FileText,
       label: 'Total Articles',
       value: embeddingStatus ? String(totalPages) : '--',
+      numericValue: embeddingStatus ? totalPages : undefined,
       color: 'text-success',
       testId: 'kpi-total-articles',
     },
@@ -49,6 +55,7 @@ export function KPICards({ embeddingStatus, spacesCount, lastSynced }: KPICardsP
       icon: Database,
       label: 'Embedded Pages',
       value: embeddingStatus ? String(embeddedPages) : '--',
+      numericValue: embeddingStatus ? embeddedPages : undefined,
       color: 'text-info',
       testId: 'kpi-embedded-pages',
     },
@@ -56,6 +63,7 @@ export function KPICards({ embeddingStatus, spacesCount, lastSynced }: KPICardsP
       icon: Layers,
       label: 'Spaces Synced',
       value: String(spacesCount),
+      numericValue: spacesCount,
       color: 'text-primary',
       testId: 'kpi-spaces-synced',
     },
@@ -63,6 +71,8 @@ export function KPICards({ embeddingStatus, spacesCount, lastSynced }: KPICardsP
       icon: Percent,
       label: 'Embedding Coverage',
       value: embeddingStatus ? `${coveragePercent}%` : '--',
+      numericValue: embeddingStatus ? coveragePercent : undefined,
+      suffix: '%',
       color: coveragePercent === 100
         ? 'text-success'
         : coveragePercent >= 75
@@ -87,7 +97,7 @@ export function KPICards({ embeddingStatus, spacesCount, lastSynced }: KPICardsP
       className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5"
       data-testid="kpi-cards"
     >
-      {cards.map(({ icon: Icon, label, value, color, testId }) => (
+      {cards.map(({ icon: Icon, label, value, numericValue, suffix, color, testId }) => (
         <m.div
           key={label}
           variants={fadeUp}
@@ -100,7 +110,13 @@ export function KPICards({ embeddingStatus, spacesCount, lastSynced }: KPICardsP
             </div>
             <div className="min-w-0">
               <p className="truncate text-xs text-muted-foreground">{label}</p>
-              <p className="text-base font-semibold">{value}</p>
+              <p className="text-base font-semibold">
+                {numericValue != null ? (
+                  <AnimatedCounter value={numericValue} suffix={suffix} />
+                ) : (
+                  value
+                )}
+              </p>
             </div>
           </div>
         </m.div>

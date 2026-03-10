@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
-import { m } from 'framer-motion';
+import { m, useReducedMotion } from 'framer-motion';
 import {
   Send, Bot, User, Loader2, MessageSquare, Plus, Trash2,
   Wand2, FileText, ListCollapse, Sparkles, GitBranch, FileInput, ShieldCheck, Network,
@@ -16,9 +16,29 @@ import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { DiffView } from '../../shared/components/DiffView';
 import { MermaidDiagram } from '../../shared/components/MermaidDiagram';
 import { ConfidenceBadge } from '../../shared/components/ConfidenceBadge';
+import { StreamingCursor } from '../../shared/components/StreamingCursor';
+import { AIThinkingBlob } from '../../shared/components/AIThinkingBlob';
 import { SourceCitations, type Source } from './SourceCitations';
 import { CitationChips } from './CitationChips';
 import { toast } from 'sonner';
+
+/** Typing indicator: 3 dots with staggered bounce */
+function TypingIndicator() {
+  return (
+    <div className="flex items-center gap-1" data-testid="typing-indicator" aria-label="AI is typing">
+      {[0, 1, 2].map((i) => (
+        <span
+          key={i}
+          className="h-1.5 w-1.5 rounded-full bg-primary/60"
+          style={{
+            animation: 'typing-bounce 1.2s ease-in-out infinite',
+            animationDelay: `${i * 0.15}s`,
+          }}
+        />
+      ))}
+    </div>
+  );
+}
 
 /** HTML-encode a string so it is safe to interpolate inside HTML elements. */
 function escapeHtml(str: string): string {
@@ -52,10 +72,13 @@ export function AiAssistantPage() {
   const pageId = searchParams.get('pageId');
   const isLight = useIsLightTheme();
 
+  const shouldReduceMotion = useReducedMotion();
+
   const [mode, setMode] = useState<Mode>(pageId ? 'improve' : 'ask');
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
+  const [isThinking, setIsThinking] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [model, setModel] = useState('');
@@ -141,6 +164,7 @@ export function AiAssistantPage() {
     setInput('');
     setMessages((prev) => [...prev, { role: 'user', content: question }]);
     setIsStreaming(true);
+    setIsThinking(true);
 
     let assistantContent = '';
     let finalSources: Source[] = [];
@@ -157,6 +181,7 @@ export function AiAssistantPage() {
           break;
         }
         if (chunk.content) {
+          setIsThinking(false);
           assistantContent += chunk.content;
           setMessages((prev) => {
             const updated = [...prev];
@@ -185,6 +210,7 @@ export function AiAssistantPage() {
       setMessages((prev) => prev.slice(0, -1));
     } finally {
       setIsStreaming(false);
+      setIsThinking(false);
     }
   }, [input, model, isStreaming, conversationId, pageId, includeSubPages]);
 
@@ -203,6 +229,7 @@ export function AiAssistantPage() {
     abortRef.current = controller;
 
     setIsStreaming(true);
+    setIsThinking(true);
     setShowDiffView(false);
     setImprovedContent('');
     setMessages([{ role: 'user', content: `Improve (${improvementType}): ${page.title}` }]);
@@ -223,6 +250,7 @@ export function AiAssistantPage() {
           break;
         }
         if (chunk.content) {
+          setIsThinking(false);
           result += chunk.content;
           setMessages((prev) => {
             const updated = [...prev];
@@ -239,6 +267,7 @@ export function AiAssistantPage() {
       toast.error(err instanceof Error ? err.message : 'Improvement failed');
     } finally {
       setIsStreaming(false);
+      setIsThinking(false);
     }
   }, [page, model, improvementType, pageId, isStreaming, includeSubPages]);
 
@@ -256,6 +285,7 @@ export function AiAssistantPage() {
     setInput('');
     setMessages([{ role: 'user', content: `Generate: ${prompt}` }]);
     setIsStreaming(true);
+    setIsThinking(true);
 
     let result = '';
     setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
@@ -267,6 +297,7 @@ export function AiAssistantPage() {
           break;
         }
         if (chunk.content) {
+          setIsThinking(false);
           result += chunk.content;
           setMessages((prev) => {
             const updated = [...prev];
@@ -280,6 +311,7 @@ export function AiAssistantPage() {
       toast.error(err instanceof Error ? err.message : 'Generation failed');
     } finally {
       setIsStreaming(false);
+      setIsThinking(false);
     }
   }, [input, model, isStreaming]);
 
@@ -298,6 +330,7 @@ export function AiAssistantPage() {
     abortRef.current = controller;
 
     setIsStreaming(true);
+    setIsThinking(true);
     setMessages([{ role: 'user', content: `Summarize: ${page.title}` }]);
 
     let result = '';
@@ -315,6 +348,7 @@ export function AiAssistantPage() {
           break;
         }
         if (chunk.content) {
+          setIsThinking(false);
           result += chunk.content;
           setMessages((prev) => {
             const updated = [...prev];
@@ -328,6 +362,7 @@ export function AiAssistantPage() {
       toast.error(err instanceof Error ? err.message : 'Summarization failed');
     } finally {
       setIsStreaming(false);
+      setIsThinking(false);
     }
   }, [page, model, isStreaming, pageId, includeSubPages]);
 
@@ -346,6 +381,7 @@ export function AiAssistantPage() {
     abortRef.current = controller;
 
     setIsStreaming(true);
+    setIsThinking(true);
     setMessages([{ role: 'user', content: `Analyze Quality: ${page.title}` }]);
 
     let result = '';
@@ -363,6 +399,7 @@ export function AiAssistantPage() {
           break;
         }
         if (chunk.content) {
+          setIsThinking(false);
           result += chunk.content;
           setMessages((prev) => {
             const updated = [...prev];
@@ -376,6 +413,7 @@ export function AiAssistantPage() {
       toast.error(err instanceof Error ? err.message : 'Quality analysis failed');
     } finally {
       setIsStreaming(false);
+      setIsThinking(false);
     }
   }, [page, model, pageId, isStreaming, includeSubPages]);
 
@@ -394,6 +432,7 @@ export function AiAssistantPage() {
     abortRef.current = controller;
 
     setIsStreaming(true);
+    setIsThinking(true);
     setDiagramCode('');
     setMessages([{ role: 'user', content: `Generate ${diagramType} diagram: ${page.title}` }]);
 
@@ -412,6 +451,7 @@ export function AiAssistantPage() {
           break;
         }
         if (chunk.content) {
+          setIsThinking(false);
           result += chunk.content;
           setMessages((prev) => {
             const updated = [...prev];
@@ -426,6 +466,7 @@ export function AiAssistantPage() {
       toast.error(err instanceof Error ? err.message : 'Diagram generation failed');
     } finally {
       setIsStreaming(false);
+      setIsThinking(false);
     }
   }, [page, model, diagramType, pageId, isStreaming]);
 
@@ -665,56 +706,82 @@ export function AiAssistantPage() {
             </div>
           )}
 
-          {messages.map((msg, i) => (
-            <m.div
-              key={i}
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              className={cn('flex gap-3', msg.role === 'user' && 'justify-end')}
-            >
-              {msg.role === 'assistant' && (
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/20">
-                  <Bot size={16} className="text-primary" />
-                </div>
-              )}
-              <div
-                className={cn(
-                  'max-w-[80%] rounded-lg px-4 py-3 text-sm',
-                  msg.role === 'user'
-                    ? 'bg-primary/15 text-foreground'
-                    : 'bg-foreground/5',
-                )}
+          {messages.map((msg, i) => {
+            const isLastAssistant = msg.role === 'assistant' && i === messages.length - 1;
+            const isStreamingThis = isStreaming && isLastAssistant;
+            const showThinkingBlob = isThinking && isLastAssistant && !msg.content;
+            const showTypingIndicator = isThinking && isLastAssistant && !msg.content;
+            const showStreamingCursor = isStreamingThis && msg.content && !isThinking;
+
+            return (
+              <m.div
+                key={i}
+                initial={shouldReduceMotion ? false : { opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{
+                  delay: shouldReduceMotion ? 0 : Math.min(i * 0.05, 0.3),
+                  type: 'spring',
+                  stiffness: 300,
+                  damping: 25,
+                }}
+                className={cn('flex gap-3', msg.role === 'user' && 'justify-end')}
               >
-                <div className={cn('prose prose-sm max-w-none', !isLight && 'prose-invert')}>
-                  {msg.content ? (
-                    <Markdown remarkPlugins={[remarkGfm]}>{msg.content}</Markdown>
-                  ) : (isStreaming && i === messages.length - 1 ? (
-                    <Loader2 size={16} className="animate-spin" />
-                  ) : null)}
-                </div>
-                {/* Confidence badge + citation chips + source citations for Q&A responses */}
-                {msg.role === 'assistant' && msg.sources && msg.sources.length > 0 && (
-                  <div className="mt-3 space-y-2">
-                    <div className="flex items-center gap-2">
-                      {(() => {
-                        const scores = msg.sources!.filter((s) => s.score != null).map((s) => s.score!);
-                        if (scores.length === 0) return null;
-                        const avgScore = scores.reduce((a, b) => a + b, 0) / scores.length;
-                        return <ConfidenceBadge score={avgScore} />;
-                      })()}
-                      <CitationChips sources={msg.sources!} />
-                    </div>
-                    <SourceCitations sources={msg.sources} />
+                {msg.role === 'assistant' && (
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/20">
+                    <Bot size={16} className="text-primary" />
                   </div>
                 )}
-              </div>
-              {msg.role === 'user' && (
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-secondary">
-                  <User size={16} />
+                <div
+                  className={cn(
+                    'max-w-[80%] rounded-lg px-4 py-3 text-sm',
+                    msg.role === 'user'
+                      ? 'bg-primary/15 text-foreground'
+                      : 'bg-foreground/5',
+                  )}
+                >
+                  {/* AI Thinking Blob - shown while waiting for first token */}
+                  {showThinkingBlob && (
+                    <AIThinkingBlob active />
+                  )}
+                  {/* Typing indicator - shown before streaming starts */}
+                  {showTypingIndicator && !showThinkingBlob && (
+                    <TypingIndicator />
+                  )}
+                  <div className={cn('prose prose-sm max-w-none', !isLight && 'prose-invert')}>
+                    {msg.content ? (
+                      <>
+                        <Markdown remarkPlugins={[remarkGfm]}>{msg.content}</Markdown>
+                        {/* Streaming cursor at end of text */}
+                        {showStreamingCursor && <StreamingCursor />}
+                      </>
+                    ) : (!showThinkingBlob && !showTypingIndicator && isStreamingThis ? (
+                      <TypingIndicator />
+                    ) : null)}
+                  </div>
+                  {/* Confidence badge + citation chips + source citations for Q&A responses */}
+                  {msg.role === 'assistant' && msg.sources && msg.sources.length > 0 && (
+                    <div className="mt-3 space-y-2">
+                      <div className="flex items-center gap-2">
+                        {(() => {
+                          const scores = msg.sources!.filter((s) => s.score != null).map((s) => s.score!);
+                          if (scores.length === 0) return null;
+                          const avgScore = scores.reduce((a, b) => a + b, 0) / scores.length;
+                          return <ConfidenceBadge score={avgScore} />;
+                        })()}
+                        <CitationChips sources={msg.sources!} />
+                      </div>
+                      <SourceCitations sources={msg.sources} />
+                    </div>
+                  )}
                 </div>
-              )}
-            </m.div>
-          ))}
+                {msg.role === 'user' && (
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-secondary">
+                    <User size={16} />
+                  </div>
+                )}
+              </m.div>
+            );
+          })}
           <div ref={messagesEndRef} />
 
           {/* Diff view for improve mode */}

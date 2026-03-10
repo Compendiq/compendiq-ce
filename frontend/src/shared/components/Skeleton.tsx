@@ -89,3 +89,48 @@ export function SkeletonFormFields() {
     </div>
   );
 }
+
+/** Content-aware skeleton: article card (title bar + 2 meta chips + 3 excerpt lines) */
+export function SkeletonArticleCard() {
+  return (
+    <div className="glass-card p-4 skeleton-article-card" data-testid="skeleton-article-card">
+      <div className="skeleton skeleton-title h-4 w-[70%] mb-3" />
+      <div className="flex gap-2 mb-3">
+        <div className="skeleton h-3 w-14 rounded-full" />
+        <div className="skeleton h-3 w-14 rounded-full" />
+      </div>
+      <div className="space-y-1.5">
+        <div className="skeleton h-2.5 w-full" />
+        <div className="skeleton h-2.5 w-[92%]" />
+        <div className="skeleton h-2.5 w-[60%]" />
+      </div>
+    </div>
+  );
+}
+
+/** Content-aware skeleton: KPI card (label + number + icon) */
+export function SkeletonKPICard() {
+  return (
+    <div className="glass-card p-4 skeleton-kpi-card" data-testid="skeleton-kpi-card">
+      <div className="skeleton h-8 w-8 rounded-lg shrink-0" />
+      <div className="min-w-0">
+        <div className="skeleton h-2.5 w-16 mb-1.5" />
+        <div className="skeleton h-[1.125rem] w-10" />
+      </div>
+    </div>
+  );
+}
+
+/** Content-aware skeleton: chat message (avatar circle + bubble with text lines) */
+export function SkeletonChatMessage() {
+  return (
+    <div className="flex gap-3 skeleton-chat-message" data-testid="skeleton-chat-message">
+      <div className="skeleton h-8 w-8 rounded-full shrink-0" />
+      <div className="flex-1 rounded-lg bg-foreground/5 p-3 space-y-1.5">
+        <div className="skeleton h-2.5 w-[85%]" />
+        <div className="skeleton h-2.5 w-[65%]" />
+        <div className="skeleton h-2.5 w-[40%]" />
+      </div>
+    </div>
+  );
+}
