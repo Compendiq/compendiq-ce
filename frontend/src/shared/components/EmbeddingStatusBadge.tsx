@@ -9,6 +9,8 @@ interface EmbeddingStatusBadgeProps {
   embeddingStatus?: EmbeddingStatus;
   /** Timestamp of the last successful embedding */
   embeddedAt?: string | null;
+  /** Error message from the last failed embedding attempt */
+  embeddingError?: string | null;
   /** Callback when user clicks retry on a failed embedding */
   onRetry?: () => void;
   className?: string;
@@ -21,7 +23,11 @@ interface StatusConfig {
   animate: boolean;
 }
 
-function getStatusConfig(status: EmbeddingStatus, embeddedAt?: string | null): StatusConfig {
+function getStatusConfig(
+  status: EmbeddingStatus,
+  embeddedAt?: string | null,
+  embeddingError?: string | null,
+): StatusConfig {
   switch (status) {
     case 'not_embedded':
       return {
@@ -49,7 +55,9 @@ function getStatusConfig(status: EmbeddingStatus, embeddedAt?: string | null): S
     case 'failed':
       return {
         label: 'Embedding Failed',
-        title: 'Last embedding attempt failed — click retry to try again',
+        title: embeddingError
+          ? `Embedding failed: ${embeddingError}`
+          : 'Last embedding attempt failed — click retry to try again',
         badgeClass: 'bg-red-500/20 text-red-400 border border-red-500/30',
         animate: false,
       };
@@ -67,9 +75,9 @@ function resolveStatus(props: EmbeddingStatusBadgeProps): EmbeddingStatus {
 }
 
 export function EmbeddingStatusBadge(props: EmbeddingStatusBadgeProps) {
-  const { embeddedAt, onRetry, className } = props;
+  const { embeddedAt, embeddingError, onRetry, className } = props;
   const status = resolveStatus(props);
-  const config = getStatusConfig(status, embeddedAt);
+  const config = getStatusConfig(status, embeddedAt, embeddingError);
 
   return (
     <span

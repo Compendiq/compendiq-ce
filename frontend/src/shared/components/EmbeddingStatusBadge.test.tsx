@@ -122,6 +122,35 @@ describe('EmbeddingStatusBadge', () => {
     expect(badge.getAttribute('title')).toContain('failed');
   });
 
+  it('shows error message in tooltip when embeddingError is provided', () => {
+    render(
+      <EmbeddingStatusBadge
+        embeddingStatus="failed"
+        embeddingError="Connection refused: Ollama server not reachable"
+      />,
+    );
+    const badge = screen.getByTestId('embedding-status-badge');
+    expect(badge.getAttribute('title')).toContain('Connection refused: Ollama server not reachable');
+    expect(badge.getAttribute('title')).toContain('Embedding failed:');
+  });
+
+  it('shows generic tooltip when failed with no embeddingError', () => {
+    render(<EmbeddingStatusBadge embeddingStatus="failed" embeddingError={null} />);
+    const badge = screen.getByTestId('embedding-status-badge');
+    expect(badge.getAttribute('title')).toContain('click retry to try again');
+  });
+
+  it('does not show error in tooltip for non-failed states', () => {
+    render(
+      <EmbeddingStatusBadge
+        embeddingStatus="embedded"
+        embeddingError="some stale error"
+      />,
+    );
+    const badge = screen.getByTestId('embedding-status-badge');
+    expect(badge.getAttribute('title')).not.toContain('some stale error');
+  });
+
   // ---- Priority: embeddingStatus takes precedence over embeddingDirty ----
 
   it('prefers embeddingStatus over embeddingDirty when both are provided', () => {

@@ -131,7 +131,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     const sql = `
       SELECT cp.id, cp.confluence_id, cp.space_key, cp.title, cp.version,
              cp.parent_id, cp.labels, cp.author, cp.last_modified_at, cp.last_synced,
-             cp.embedding_dirty, cp.embedding_status, cp.embedded_at
+             cp.embedding_dirty, cp.embedding_status, cp.embedded_at, cp.embedding_error
       FROM cached_pages cp
       ${whereClause}
       ORDER BY ${orderBy}
@@ -153,6 +153,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       embedding_dirty: boolean;
       embedding_status: string;
       embedded_at: Date | null;
+      embedding_error: string | null;
     }>(sql, values);
 
     const response = {
@@ -169,6 +170,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
         embeddingDirty: row.embedding_dirty,
         embeddingStatus: row.embedding_status,
         embeddedAt: row.embedded_at,
+        embeddingError: row.embedding_error,
       })),
       total,
       page,
@@ -211,9 +213,10 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       embedding_dirty: boolean;
       embedding_status: string;
       embedded_at: Date | null;
+      embedding_error: string | null;
     }>(
       `SELECT confluence_id, space_key, title, parent_id, labels, last_modified_at,
-              embedding_dirty, embedding_status, embedded_at
+              embedding_dirty, embedding_status, embedded_at, embedding_error
        FROM cached_pages ${whereClause}
        ORDER BY title ASC`,
       values,
@@ -230,6 +233,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
         embeddingDirty: row.embedding_dirty,
         embeddingStatus: row.embedding_status,
         embeddedAt: row.embedded_at,
+        embeddingError: row.embedding_error,
       })),
       total: result.rows.length,
     };
@@ -280,10 +284,11 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       embedding_dirty: boolean;
       embedding_status: string;
       embedded_at: Date | null;
+      embedding_error: string | null;
     }>(
       `SELECT confluence_id, space_key, title, body_storage, body_html, body_text,
               version, parent_id, labels, author, last_modified_at, last_synced,
-              embedding_dirty, embedding_status, embedded_at
+              embedding_dirty, embedding_status, embedded_at, embedding_error
        FROM cached_pages WHERE user_id = $1 AND confluence_id = $2`,
       [userId, id],
     );
@@ -317,6 +322,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       embeddingDirty: row.embedding_dirty,
       embeddingStatus: row.embedding_status,
       embeddedAt: row.embedded_at,
+      embeddingError: row.embedding_error,
     };
   });
 

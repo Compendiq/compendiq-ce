@@ -16,6 +16,7 @@ interface PageSummary {
   embeddingDirty: boolean;
   embeddingStatus: EmbeddingStatus;
   embeddedAt: string | null;
+  embeddingError: string | null;
 }
 
 interface PageDetail extends PageSummary {

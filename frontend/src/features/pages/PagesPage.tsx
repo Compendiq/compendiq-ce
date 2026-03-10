@@ -534,6 +534,7 @@ export function PagesPage() {
                     embeddingStatus={pageItem.embeddingStatus}
                     embeddingDirty={pageItem.embeddingDirty}
                     embeddedAt={pageItem.embeddedAt}
+                    embeddingError={pageItem.embeddingError}
                   />
                   {pageItem.lastModifiedAt && (
                     <FreshnessBadge lastModified={pageItem.lastModifiedAt} />
