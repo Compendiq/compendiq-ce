@@ -1644,6 +1644,101 @@ pre:hover .code-copy-btn {
 .tiptap .panel-note { border-color: var(--color-primary); background: oklch(from var(--color-primary) l c h / 0.1); }
 .tiptap .panel-tip { border-color: var(--color-success); background: oklch(from var(--color-success) l c h / 0.1); }
 
+/* ===========================
+   CLICK RIPPLE EFFECT
+   =========================== */
+
+@keyframes ripple-expand {
+  0% {
+    transform: scale(0);
+    opacity: 0.4;
+  }
+  100% {
+    transform: scale(4);
+    opacity: 0;
+  }
+}
+
+.ripple-container {
+  position: relative;
+  overflow: hidden;
+}
+
+.ripple-effect {
+  position: absolute;
+  border-radius: 50%;
+  width: 50px;
+  height: 50px;
+  margin-top: -25px;
+  margin-left: -25px;
+  background: radial-gradient(circle, oklch(1 0 0 / 0.35) 0%, oklch(1 0 0 / 0) 70%);
+  pointer-events: none;
+  animation: ripple-expand 0.6s ease-out forwards;
+}
+
+/* ===========================
+   DIRECTION-AWARE HOVER
+   =========================== */
+
+.direction-aware-hover {
+  position: relative;
+  overflow: hidden;
+}
+
+.direction-aware-hover .hover-bloom {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  z-index: 0;
+}
+
+.direction-aware-hover:hover .hover-bloom {
+  opacity: 1;
+}
+
+/* ===========================
+   CARD STACK EFFECT
+   =========================== */
+
+.card-stack {
+  position: relative;
+}
+
+.card-stack::before,
+.card-stack::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--glass-border);
+  background: oklch(from var(--color-card) l c h / 0.4);
+  transition: transform 0.3s ease, opacity 0.3s ease;
+  z-index: -1;
+  pointer-events: none;
+}
+
+.card-stack::before {
+  transform: translate(2px, 2px);
+  opacity: 0.5;
+}
+
+.card-stack::after {
+  transform: translate(4px, 4px);
+  opacity: 0.3;
+}
+
+.card-stack:hover::before {
+  transform: translate(3px, 3px) rotate(0.5deg);
+  opacity: 0.6;
+}
+
+.card-stack:hover::after {
+  transform: translate(6px, 6px) rotate(-0.5deg);
+  opacity: 0.4;
+}
+
 /* Reduced motion */
 @media (prefers-reduced-motion: reduce) {
   * {

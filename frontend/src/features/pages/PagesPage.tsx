@@ -10,12 +10,15 @@ import { useSpaces, useSync, useSyncStatus } from '../../shared/hooks/use-spaces
 import { useSettings } from '../../shared/hooks/use-settings';
 import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../../shared/components/EmbeddingStatusBadge';
+import { DirectionAwareHover } from '../../shared/components/DirectionAwareHover';
+import { MagneticButton } from '../../shared/components/MagneticButton';
 import { BulkOperations } from './BulkOperations';
 import { KPICards } from './KPICards';
 import { PinnedArticlesSection } from './PinnedArticlesSection';
 import { SkeletonPageItem } from '../../shared/components/Skeleton';
 import { cn } from '../../shared/lib/cn';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
+import { useClickRipple } from '../../shared/hooks/use-click-ripple';
 
 export function PagesPage() {
   const navigate = useNavigate();
@@ -106,6 +109,8 @@ export function PagesPage() {
     }
   }, [embeddingStatusData, queryClient]);
 
+  const ripple = useClickRipple();
+
   const activeFilterCount = [author, labels, freshness, embeddingStatus, dateFrom, dateTo].filter(Boolean).length;
 
   const clearAllFilters = useCallback(() => {
@@ -152,21 +157,23 @@ export function PagesPage() {
           </p>
         </div>
         <div className="flex gap-2">
-          <button
-            onClick={() => syncMutation.mutate()}
+          <MagneticButton
+            onClick={(e) => { ripple(e); syncMutation.mutate(); }}
             disabled={syncStatus?.status === 'syncing'}
-            className="glass-card flex items-center gap-2 px-4 py-2 text-sm hover:bg-foreground/5 disabled:opacity-50"
+            className="ripple-container glass-card flex items-center gap-2 px-4 py-2 text-sm hover:bg-foreground/5 disabled:opacity-50"
+            data-testid="sync-btn"
           >
             <RefreshCw size={16} className={cn(syncStatus?.status === 'syncing' && 'animate-spin')} />
             {syncStatus?.status === 'syncing' ? 'Syncing...' : 'Sync'}
-          </button>
-          <button
-            onClick={() => navigate('/pages/new')}
-            className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          </MagneticButton>
+          <MagneticButton
+            onClick={(e) => { ripple(e); navigate('/pages/new'); }}
+            className="ripple-container flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            data-testid="new-page-btn"
           >
             <Plus size={16} />
             New Page
-          </button>
+          </MagneticButton>
         </div>
       </div>
 
@@ -475,11 +482,12 @@ export function PagesPage() {
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: i * 0.03, layout: { duration: 0.25, ease: [0.25, 0.1, 0.25, 1] } }}
             >
-              <div
+              <DirectionAwareHover
                 className={cn(
                   'glass-card-hover flex w-full items-center gap-4 p-4 text-left',
                   selectedIds.has(pageItem.id) && 'border-primary/40 bg-primary/5',
                 )}
+                data-testid={`article-hover-${pageItem.id}`}
               >
                 {/* Checkbox for bulk selection */}
                 <button
@@ -540,7 +548,7 @@ export function PagesPage() {
                     </div>
                   )}
                 </button>
-              </div>
+              </DirectionAwareHover>
             </m.div>
           ))}
         </m.div>

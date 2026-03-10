@@ -3,6 +3,7 @@ import { m } from 'framer-motion';
 import { Pin, PinOff, Clock, User } from 'lucide-react';
 import { toast } from 'sonner';
 import { usePinnedPages, useUnpinPage } from '../../shared/hooks/use-pages';
+import { TiltCard } from '../../shared/components/TiltCard';
 
 export function PinnedArticlesSection() {
   const navigate = useNavigate();
@@ -37,14 +38,15 @@ export function PinnedArticlesSection() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: i * 0.05 }}
           >
-            <div
-              role="button"
-              tabIndex={0}
-              onClick={() => navigate(`/pages/${item.id}`)}
-              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') navigate(`/pages/${item.id}`); }}
-              className="glass-card-hover group relative flex w-full cursor-pointer flex-col gap-2 p-4 text-left"
-              data-testid={`pinned-card-${item.id}`}
-            >
+            <TiltCard className="card-stack" maxTilt={8} data-testid={`pinned-tilt-${item.id}`}>
+              <div
+                role="button"
+                tabIndex={0}
+                onClick={() => navigate(`/pages/${item.id}`)}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') navigate(`/pages/${item.id}`); }}
+                className="glass-card-hover group relative flex w-full cursor-pointer flex-col gap-2 p-4 text-left"
+                data-testid={`pinned-card-${item.id}`}
+              >
               {/* Unpin button */}
               <button
                 onClick={(e) => handleUnpin(e, item.id, item.title)}
@@ -81,7 +83,8 @@ export function PinnedArticlesSection() {
                   {item.excerpt}
                 </p>
               )}
-            </div>
+              </div>
+            </TiltCard>
           </m.div>
         ))}
       </div>

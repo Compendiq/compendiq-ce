@@ -2,6 +2,7 @@ import { m } from 'framer-motion';
 import { FileText, Layers, Database, Percent, Clock } from 'lucide-react';
 import { formatRelativeTime } from '../../shared/lib/format-relative-time';
 import { AnimatedCounter } from '../../shared/components/AnimatedCounter';
+import { TiltCard } from '../../shared/components/TiltCard';
 
 interface KPICardsProps {
   embeddingStatus?: {
@@ -101,24 +102,24 @@ export function KPICards({ embeddingStatus, spacesCount, lastSynced }: KPICardsP
         <m.div
           key={label}
           variants={fadeUp}
-          className="glass-card p-4"
-          data-testid={testId}
         >
-          <div className="flex items-center gap-3">
-            <div className={`rounded-lg bg-foreground/5 p-2 ${color}`}>
-              <Icon size={16} />
+          <TiltCard className="glass-card p-4" maxTilt={10} data-testid={testId}>
+            <div className="flex items-center gap-3">
+              <div className={`rounded-lg bg-foreground/5 p-2 ${color}`}>
+                <Icon size={16} />
+              </div>
+              <div className="min-w-0">
+                <p className="truncate text-xs text-muted-foreground">{label}</p>
+                <p className="text-base font-semibold">
+                  {numericValue != null ? (
+                    <AnimatedCounter value={numericValue} suffix={suffix} />
+                  ) : (
+                    value
+                  )}
+                </p>
+              </div>
             </div>
-            <div className="min-w-0">
-              <p className="truncate text-xs text-muted-foreground">{label}</p>
-              <p className="text-base font-semibold">
-                {numericValue != null ? (
-                  <AnimatedCounter value={numericValue} suffix={suffix} />
-                ) : (
-                  value
-                )}
-              </p>
-            </div>
-          </div>
+          </TiltCard>
         </m.div>
       ))}
     </m.div>
