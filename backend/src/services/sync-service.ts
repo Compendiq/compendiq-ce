@@ -173,11 +173,6 @@ async function syncPage(
   const bodyHtml = confluenceToHtml(bodyStorage, page.id);
   const bodyText = htmlToText(bodyHtml);
 
-  // Fetch attachments once, pass to both sync functions to avoid duplicate API calls
-  const { results: attachments } = await client.getPageAttachments(page.id);
-  await syncDrawioAttachments(client, userId, page.id, bodyStorage, attachments);
-  await syncImageAttachments(client, userId, page.id, bodyStorage, attachments);
-
   // Extract metadata
   const labels = page.metadata?.labels?.results?.map((l) => l.name) ?? [];
   const parentId = page.ancestors?.length ? page.ancestors[page.ancestors.length - 1].id : null;
@@ -191,9 +186,20 @@ async function syncPage(
   );
 
   if (existing.rows.length > 0 && existing.rows[0].version >= page.version.number) {
-    // Page hasn't changed
+    // Page hasn't changed — skip attachment sync to avoid unnecessary API calls
     return;
   }
+
+  // Clear stale attachment cache when an existing page has a new version,
+  // so updated diagrams/images are re-downloaded rather than served from cache.
+  if (existing.rows.length > 0) {
+    await cleanPageAttachments(userId, page.id);
+  }
+
+  // Fetch attachments once and sync after version guard to avoid API calls for unchanged pages
+  const { results: attachments } = await client.getPageAttachments(page.id);
+  await syncDrawioAttachments(client, userId, page.id, bodyStorage, attachments);
+  await syncImageAttachments(client, userId, page.id, bodyStorage, attachments);
 
   // Save current version snapshot before updating (for version history / semantic diff)
   if (existing.rows.length > 0) {

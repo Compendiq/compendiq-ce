@@ -169,6 +169,8 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string): string 
     const img = doc.createElement('img');
     if (pageId) {
       img.src = `/api/attachments/${pageId}/${encodeURIComponent(diagramName)}.png`;
+      // XML fallback URL: used by ArticleViewer when the PNG has not been exported yet
+      img.setAttribute('data-src-xml', `/api/attachments/${pageId}/${encodeURIComponent(diagramName)}.xml`);
     } else {
       img.src = `#drawio:${diagramName}`;
     }

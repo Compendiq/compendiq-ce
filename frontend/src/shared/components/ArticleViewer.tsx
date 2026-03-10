@@ -37,6 +37,7 @@ const CONFLUENCE_DATA_ATTRS = new Set([
   'data-sort',
   'data-reverse',
   'data-title',
+  'data-src-xml',
 ]);
 
 if (typeof DOMPurify.addHook === 'function') {
@@ -58,6 +59,8 @@ interface ArticleViewerProps {
   pageId?: string | null;
   /** Callback with parsed headings for Table of Contents */
   onHeadingsReady?: (headings: TocHeading[]) => void;
+  /** Callback to trigger a Confluence sync (e.g. when a diagram fails to load) */
+  onRequestSync?: () => void;
   /** Additional CSS classes */
   className?: string;
 }
@@ -68,6 +71,7 @@ export function ArticleViewer({
   confluenceUrl,
   pageId,
   onHeadingsReady,
+  onRequestSync,
   className,
 }: ArticleViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -229,6 +233,7 @@ export function ArticleViewer({
         const diagramName = htmlEl.getAttribute('data-diagram-name');
         const img = htmlEl.querySelector('img');
         const src = img?.getAttribute('src') || null;
+        const srcXmlFallback = img?.getAttribute('data-src-xml') || null;
         const alt = img?.getAttribute('alt') || 'Diagram';
         const link = htmlEl.querySelector('a.drawio-edit-link') as HTMLAnchorElement | null;
 
@@ -251,9 +256,11 @@ export function ArticleViewer({
           <FeatureErrorBoundary featureName="Draw.io Diagram">
             <DrawioDiagramPreview
               src={src}
+              srcXmlFallback={srcXmlFallback}
               diagramName={diagramName}
               alt={alt}
               editHref={editHref}
+              onRequestSync={onRequestSync}
             />
           </FeatureErrorBoundary>,
         );
@@ -268,7 +275,7 @@ export function ArticleViewer({
       }
       drawioRootsRef.current = [];
     };
-  }, [isReady, sanitizedContent, confluenceUrl, pageId]);
+  }, [isReady, sanitizedContent, confluenceUrl, pageId, onRequestSync]);
 
   // Rewrite regular <img> tags that point to /api/attachments/ so they are
   // fetched with the Bearer token.  Without this, browser-native <img> requests
