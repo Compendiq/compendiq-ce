@@ -19,6 +19,7 @@ import { AutoTagger } from './AutoTagger';
 import { TagEditor } from './TagEditor';
 import { VersionHistory } from './VersionHistory';
 import { FlowchartGenerator } from './FlowchartGenerator';
+import { QualityAnalysisPanel } from './QualityAnalysisPanel';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { toast } from 'sonner';
 
@@ -286,6 +287,7 @@ export function PageViewPage() {
             </div>
           </div>
           <FlowchartGenerator pageId={id!} bodyHtml={page.bodyHtml} pageTitle={page.title} pageVersion={page.version} />
+          <QualityAnalysisPanel pageId={id!} bodyHtml={page.bodyHtml} pageTitle={page.title} />
         </>
       )}
 

@@ -129,6 +129,40 @@ const SYSTEM_PROMPTS = {
   generate_diagram_state: `You are a diagram generation assistant. Analyze the provided article text and generate a Mermaid state diagram that captures the states and transitions described in the content. Use the Mermaid stateDiagram-v2 syntax. Output ONLY the raw Mermaid diagram code with no markdown fences, no explanations, and no surrounding text. Start directly with "stateDiagram-v2". IMPORTANT: If any node label contains special characters like parentheses (), brackets [], or braces {}, you MUST wrap the entire label text in double quotes. Example: A["Deploy (30min downtime)"] instead of A[Deploy (30min downtime)].`,
 
   generate_diagram_mindmap: `You are a diagram generation assistant. Analyze the provided article text and generate a Mermaid mindmap diagram that captures the key concepts and their relationships described in the content. Use the Mermaid mindmap syntax. Output ONLY the raw Mermaid diagram code with no markdown fences, no explanations, and no surrounding text. Start directly with "mindmap". IMPORTANT: If any node label contains special characters like parentheses (), brackets [], or braces {}, you MUST wrap the entire label text in double quotes. Example: A["Deploy (30min downtime)"] instead of A[Deploy (30min downtime)].`,
+
+  analyze_quality: `You are an expert technical documentation quality analyst. Evaluate the provided article across five dimensions and produce a structured quality report.
+
+For each dimension, provide a score from 0 to 100 and 1-3 specific, actionable suggestions for improvement:
+
+1. **Completeness** — Does the article cover all necessary topics? Are there gaps, missing sections, or unexplained concepts?
+2. **Clarity** — Is the writing clear and unambiguous? Are complex concepts explained well? Is jargon defined?
+3. **Structure** — Is the article well-organized with logical headings, sections, and flow? Is information easy to find?
+4. **Accuracy** — Does the content appear technically correct? Are there outdated references, contradictions, or unsupported claims?
+5. **Readability** — Is the text easy to read? Are sentences concise? Is formatting (lists, code blocks, tables) used effectively?
+
+Format your response as follows:
+
+## Overall Quality Score: [SCORE]/100
+
+## Completeness: [SCORE]/100
+[1-3 bullet points with specific suggestions]
+
+## Clarity: [SCORE]/100
+[1-3 bullet points with specific suggestions]
+
+## Structure: [SCORE]/100
+[1-3 bullet points with specific suggestions]
+
+## Accuracy: [SCORE]/100
+[1-3 bullet points with specific suggestions]
+
+## Readability: [SCORE]/100
+[1-3 bullet points with specific suggestions]
+
+## Summary
+[2-3 sentences summarizing the overall quality and the highest-priority improvements]
+
+Be constructive and specific. Reference actual content from the article in your suggestions. ${LANGUAGE_PRESERVATION_INSTRUCTION}`,
 } as const;
 
 export type SystemPromptKey = keyof typeof SYSTEM_PROMPTS;
@@ -222,6 +256,19 @@ export function generateDiagram(
 ): AsyncGenerator<StreamChunk> {
   const { sanitized } = sanitizeLlmInput(content);
   const systemPrompt = getSystemPrompt(`generate_diagram_${diagramType}` as SystemPromptKey);
+  return streamChat(model, [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: sanitized },
+  ], signal);
+}
+
+export function analyzeQualityContent(
+  model: string,
+  content: string,
+  signal?: AbortSignal,
+): AsyncGenerator<StreamChunk> {
+  const { sanitized } = sanitizeLlmInput(content);
+  const systemPrompt = getSystemPrompt('analyze_quality');
   return streamChat(model, [
     { role: 'system', content: systemPrompt },
     { role: 'user', content: sanitized },

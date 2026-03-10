@@ -18,6 +18,7 @@ import {
   SummarizeRequestSchema,
   AskRequestSchema,
   GenerateDiagramRequestSchema,
+  AnalyzeQualityRequestSchema,
 } from '@kb-creator/contracts';
 import { z } from 'zod';
 import { sanitizeLlmInput } from '../utils/sanitize-llm-input.js';
@@ -332,6 +333,50 @@ export async function llmRoutes(fastify: FastifyInstance) {
     }
 
     const generator = providerStreamChat(request.userId, model, [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: sanitized },
+    ]);
+
+    await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
+  });
+
+  // POST /api/llm/analyze-quality - stream article quality analysis
+  fastify.post('/llm/analyze-quality', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
+    const body = AnalyzeQualityRequestSchema.parse(request.body);
+    const { content, model } = body;
+    const userId = request.userId;
+
+    if (content.length > MAX_INPUT_LENGTH) {
+      throw fastify.httpErrors.badRequest(`Content too large (max ${MAX_INPUT_LENGTH} characters)`);
+    }
+
+    const markdown = htmlToMarkdown(content);
+
+    // Sanitize before sending to LLM
+    const { sanitized, warnings } = sanitizeLlmInput(markdown);
+    if (warnings.length > 0) {
+      await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/analyze-quality' }, request);
+    }
+
+    const systemPrompt = getSystemPrompt('analyze_quality');
+
+    // Check LLM cache
+    const cacheKey = buildLlmCacheKey(model, systemPrompt, sanitized);
+    const cached = await llmCache.getCachedResponse(cacheKey);
+    if (cached) {
+      reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      reply.raw.write(`data: ${JSON.stringify({ content: cached.content, done: true, cached: true })}\n\n`);
+      reply.raw.end();
+      return;
+    }
+
+    // Resolve per-user LLM provider and stream
+    const generator = providerStreamChat(userId, model, [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: sanitized },
     ]);
