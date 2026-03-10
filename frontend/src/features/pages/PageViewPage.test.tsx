@@ -145,11 +145,32 @@ describe('PageViewPage', () => {
     expect(sidebar).toHaveClass('sticky', 'top-4', 'self-start');
   });
 
-  it('toolbar contains History and Duplicates buttons', () => {
+  it('toolbar contains Diagram, Quality, History and Duplicates buttons', () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
 
+    expect(screen.getByTitle('Generate diagram from article')).toBeInTheDocument();
+    expect(screen.getByTitle('Analyze article quality')).toBeInTheDocument();
     expect(screen.getByText('History')).toBeInTheDocument();
     expect(screen.getByText('Duplicates')).toBeInTheDocument();
+  });
+
+  it('Diagram and Quality buttons appear left of History in the toolbar', () => {
+    const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
+
+    // All buttons are siblings inside the toolbar flex container
+    const toolbar = container.querySelector('.flex.shrink-0.gap-2');
+    expect(toolbar).toBeInTheDocument();
+
+    const buttons = Array.from(toolbar!.children);
+    const diagramIdx = buttons.findIndex((el) => el.getAttribute('title') === 'Generate diagram from article');
+    const qualityIdx = buttons.findIndex((el) => el.getAttribute('title') === 'Analyze article quality');
+    const historyIdx = buttons.findIndex((el) => el.textContent?.includes('History'));
+
+    expect(diagramIdx).toBeGreaterThanOrEqual(0);
+    expect(qualityIdx).toBeGreaterThanOrEqual(0);
+    expect(historyIdx).toBeGreaterThanOrEqual(0);
+    expect(diagramIdx).toBeLessThan(historyIdx);
+    expect(qualityIdx).toBeLessThan(historyIdx);
   });
 
   it('renders embedding status badge in the metadata bar', () => {

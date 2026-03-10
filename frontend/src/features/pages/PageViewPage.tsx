@@ -81,6 +81,8 @@ export function PageViewPage() {
   const [editHtml, setEditHtml] = useState('');
   const [lightboxSrc, setLightboxSrc] = useState<{ src: string; alt: string } | null>(null);
   const [tocHeadings, setTocHeadings] = useState<TocHeading[]>([]);
+  const [diagramOpen, setDiagramOpen] = useState(false);
+  const [qualityOpen, setQualityOpen] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
 
   const { data: settings } = useSettings();
@@ -217,6 +219,23 @@ export function PageViewPage() {
             </>
           ) : (
             <>
+              <FlowchartGenerator
+                pageId={id!}
+                bodyHtml={page.bodyHtml}
+                pageTitle={page.title}
+                pageVersion={page.version}
+                open={diagramOpen}
+                onToggle={() => setDiagramOpen((v) => !v)}
+                renderTriggerOnly
+              />
+              <QualityAnalysisPanel
+                pageId={id!}
+                bodyHtml={page.bodyHtml}
+                pageTitle={page.title}
+                open={qualityOpen}
+                onToggle={() => setQualityOpen((v) => !v)}
+                renderTriggerOnly
+              />
               <VersionHistory
                 pageId={id!}
                 currentBodyText={page.bodyText}
@@ -339,8 +358,23 @@ export function PageViewPage() {
               <TableOfContents headings={tocHeadings} contentRef={contentRef} />
             </div>
           </div>
-          <FlowchartGenerator pageId={id!} bodyHtml={page.bodyHtml} pageTitle={page.title} pageVersion={page.version} />
-          <QualityAnalysisPanel pageId={id!} bodyHtml={page.bodyHtml} pageTitle={page.title} />
+          <FlowchartGenerator
+            pageId={id!}
+            bodyHtml={page.bodyHtml}
+            pageTitle={page.title}
+            pageVersion={page.version}
+            open={diagramOpen}
+            onToggle={() => setDiagramOpen((v) => !v)}
+            renderPanelOnly
+          />
+          <QualityAnalysisPanel
+            pageId={id!}
+            bodyHtml={page.bodyHtml}
+            pageTitle={page.title}
+            open={qualityOpen}
+            onToggle={() => setQualityOpen((v) => !v)}
+            renderPanelOnly
+          />
         </>
       )}
 
