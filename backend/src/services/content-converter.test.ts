@@ -21,6 +21,7 @@ import {
   COMPLEX_PAGE,
   USER_MENTIONS_PAGE,
   DATA_MACRO_VARIANT_PAGE,
+  STATUS_MACRO_PAGE,
 } from './__fixtures__/confluence-xhtml.js';
 
 describe('content-converter', () => {
@@ -109,6 +110,22 @@ describe('content-converter', () => {
       expect(html).toContain('src="/api/attachments/99/system-topology.png"');
       expect(html).toContain('Edit in Confluence');
       expect(html).toContain('data-diagram-name="data-flow"');
+    });
+
+    it('converts status macros to colored inline badges', () => {
+      const html = confluenceToHtml(STATUS_MACRO_PAGE);
+      expect(html).toContain('class="confluence-status"');
+      expect(html).toContain('data-color="green"');
+      expect(html).toContain('>DONE</span>');
+      expect(html).toContain('data-color="yellow"');
+      expect(html).toContain('>IN PROGRESS</span>');
+      expect(html).toContain('data-color="red"');
+      expect(html).toContain('>BLOCKED</span>');
+      expect(html).toContain('data-color="blue"');
+      expect(html).toContain('>IN REVIEW</span>');
+      expect(html).toContain('data-color="grey"');
+      expect(html).toContain('>TODO</span>');
+      expect(html).not.toContain('ac:structured-macro');
     });
 
     it('converts table of contents to placeholder', () => {
@@ -240,6 +257,22 @@ describe('content-converter', () => {
       expect(xhtml).toContain('ac:rich-text-body');
     });
 
+    it('round-trips status macros', () => {
+      const html = confluenceToHtml(STATUS_MACRO_PAGE);
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toContain('ac:name="status"');
+      expect(xhtml).toContain('ac:name="colour"');
+      expect(xhtml).toContain('>Green<');
+      expect(xhtml).toContain('>Yellow<');
+      expect(xhtml).toContain('>Red<');
+      expect(xhtml).toContain('>Blue<');
+      expect(xhtml).toContain('>Grey<');
+      expect(xhtml).toContain('ac:name="title"');
+      expect(xhtml).toContain('>DONE<');
+      expect(xhtml).toContain('>IN PROGRESS<');
+      expect(xhtml).not.toContain('confluence-status');
+    });
+
     it('round-trips draw.io macros', () => {
       const html = confluenceToHtml(DRAWIO_PAGE, '99');
       const xhtml = htmlToConfluence(html);
@@ -360,6 +393,18 @@ describe('content-converter', () => {
       expect(md).toContain('**WARNING**');
       expect(md).toContain('**NOTE**');
       expect(md).toContain('**TIP**');
+    });
+
+    it('converts status macros to text badges', () => {
+      const html = confluenceToHtml(STATUS_MACRO_PAGE);
+      const md = htmlToMarkdown(html);
+      expect(md).toContain('[STATUS: DONE]');
+      expect(md).toContain('[STATUS: IN PROGRESS]');
+      expect(md).toContain('[STATUS: BLOCKED]');
+      expect(md).toContain('[STATUS: IN REVIEW]');
+      expect(md).toContain('[STATUS: TODO]');
+      expect(md).not.toMatch(/<span[^>]*>/);
+      expect(md).not.toContain('confluence-status');
     });
 
     it('produces clean markdown for LLM consumption from complex page', () => {

@@ -62,7 +62,7 @@ export function ArticleViewer({
   const sanitizedContent = useMemo(
     () =>
       DOMPurify.sanitize(content, {
-        ADD_ATTR: ['data-diagram-name', 'data-drawio', 'data-confluence-link', 'data-type', 'data-checked'],
+        ADD_ATTR: ['data-diagram-name', 'data-drawio', 'data-confluence-link', 'data-type', 'data-checked', 'data-color'],
       }),
     [content],
   );
