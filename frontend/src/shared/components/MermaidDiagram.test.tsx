@@ -1,13 +1,26 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 
-// Mock mermaid
-const mockRender = vi.fn();
+// Mock mermaid - use vi.hoisted to ensure the mock fns are available before vi.mock runs
+const { mockRender, mockInitialize } = vi.hoisted(() => ({
+  mockRender: vi.fn(),
+  mockInitialize: vi.fn(),
+}));
+
 vi.mock('mermaid', () => ({
   default: {
-    initialize: vi.fn(),
+    initialize: (...args: unknown[]) => mockInitialize(...args),
     render: (...args: unknown[]) => mockRender(...args),
   },
+}));
+
+// Mock useIsLightTheme hook
+const { mockIsLight } = vi.hoisted(() => ({
+  mockIsLight: vi.fn().mockReturnValue(false),
+}));
+
+vi.mock('../hooks/use-is-light-theme', () => ({
+  useIsLightTheme: () => mockIsLight(),
 }));
 
 // Mock clipboard API
@@ -16,7 +29,7 @@ Object.assign(navigator, {
   clipboard: { writeText: mockWriteText },
 });
 
-import { MermaidDiagram, sanitizeMermaidCode } from './MermaidDiagram';
+import { MermaidDiagram, sanitizeMermaidCode, initializeMermaid } from './MermaidDiagram';
 
 describe('MermaidDiagram', () => {
   beforeEach(() => {
@@ -108,6 +121,66 @@ describe('MermaidDiagram', () => {
       const [, renderedCode] = mockRender.mock.calls[0];
       expect(renderedCode).toContain('A["Deploy (30min downtime)"]');
     });
+  });
+
+  it('re-renders when theme changes from dark to light', async () => {
+    mockIsLight.mockReturnValue(false);
+    const code = 'graph TD\n  A --> B';
+    const { rerender } = render(<MermaidDiagram code={code} />);
+
+    await waitFor(() => {
+      expect(mockRender).toHaveBeenCalledTimes(1);
+    });
+
+    // Switch to light theme
+    mockIsLight.mockReturnValue(true);
+    rerender(<MermaidDiagram code={code} />);
+
+    await waitFor(() => {
+      expect(mockRender).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it('uses forceDark prop to override theme detection', async () => {
+    mockIsLight.mockReturnValue(true); // Light theme active
+    const code = 'graph TD\n  A --> B';
+    render(<MermaidDiagram code={code} forceDark={true} />);
+
+    await waitFor(() => {
+      expect(mockRender).toHaveBeenCalled();
+      // initializeMermaid should have been called with isDark=true
+      expect(mockInitialize).toHaveBeenCalledWith(
+        expect.objectContaining({ theme: 'dark' }),
+      );
+    });
+  });
+});
+
+describe('initializeMermaid', () => {
+  beforeEach(() => {
+    mockInitialize.mockClear();
+  });
+
+  it('initializes with dark theme when isDark is true', () => {
+    initializeMermaid(true);
+    expect(mockInitialize).toHaveBeenCalledWith(
+      expect.objectContaining({
+        startOnLoad: false,
+        theme: 'dark',
+        securityLevel: 'strict',
+      }),
+    );
+  });
+
+  it('initializes with default theme when isDark is false', () => {
+    initializeMermaid(false);
+    expect(mockInitialize).toHaveBeenCalledWith(
+      expect.objectContaining({
+        startOnLoad: false,
+        theme: 'default',
+        securityLevel: 'strict',
+      }),
+    );
   });
 });
 

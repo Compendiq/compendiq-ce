@@ -1,5 +1,20 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, waitFor } from '@testing-library/react';
+
+// Mock mermaid (must be before component import)
+const mockMermaidRender = vi.fn().mockResolvedValue({ svg: '<svg data-testid="mermaid-svg">diagram</svg>' });
+vi.mock('mermaid', () => ({
+  default: {
+    initialize: vi.fn(),
+    render: (...args: unknown[]) => mockMermaidRender(...args),
+  },
+}));
+
+// Mock useIsLightTheme hook
+vi.mock('../hooks/use-is-light-theme', () => ({
+  useIsLightTheme: () => false,
+}));
+
 import { ArticleViewer } from './ArticleViewer';
 
 describe('ArticleViewer', () => {
@@ -272,5 +287,56 @@ describe('ArticleViewer', () => {
       expect(img).toBeTruthy();
       expect(img?.style.cursor).toBe('zoom-in');
     });
+  });
+
+  it('renders mermaid code blocks as MermaidDiagram components', async () => {
+    const html = '<pre><code class="language-mermaid">graph TD\n  A --> B</code></pre>';
+
+    const { container } = render(<ArticleViewer content={html} />);
+
+    // The mermaid code block should be replaced with a MermaidDiagram wrapper
+    await waitFor(() => {
+      const wrapper = container.querySelector('.mermaid-diagram-wrapper');
+      expect(wrapper).toBeTruthy();
+    });
+
+    // The original <pre> element should no longer exist (replaced by the wrapper)
+    const pre = container.querySelector('pre > code.language-mermaid');
+    expect(pre).toBeNull();
+  });
+
+  it('renders regular code blocks normally alongside mermaid diagrams', async () => {
+    const html = '<pre><code class="language-javascript">const x = 1;</code></pre><pre><code class="language-mermaid">graph TD\n  A --> B</code></pre>';
+
+    const { container } = render(<ArticleViewer content={html} />);
+
+    // Wait for rendering
+    await waitFor(() => {
+      // Mermaid block should be replaced
+      const wrapper = container.querySelector('.mermaid-diagram-wrapper');
+      expect(wrapper).toBeTruthy();
+    });
+
+    // Regular code block should still exist with copy button
+    await waitFor(() => {
+      const copyBtn = container.querySelector('.code-copy-btn');
+      expect(copyBtn).toBeTruthy();
+    });
+  });
+
+  it('does not render empty mermaid code blocks', async () => {
+    const html = '<pre><code class="language-mermaid">   </code></pre>';
+
+    const { container } = render(<ArticleViewer content={html} />);
+
+    // Wait for rendering to settle
+    await waitFor(() => {
+      expect(container.querySelector('.tiptap')).toBeTruthy();
+    });
+
+    // Empty mermaid blocks should not create diagram wrappers
+    // (the trimmed code is empty, so MermaidDiagram won't render)
+    const wrapper = container.querySelector('.mermaid-diagram-wrapper');
+    expect(wrapper).toBeNull();
   });
 });

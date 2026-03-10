@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback, useMemo, useState } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
@@ -15,6 +16,7 @@ import {
   ConfluenceToc,
   UnknownMacro,
 } from './article-extensions';
+import { MermaidDiagram } from './MermaidDiagram';
 import { cn } from '../lib/cn';
 import type { TocHeading } from './TableOfContents';
 
@@ -145,7 +147,50 @@ export function ArticleViewer({
     return () => cancelAnimationFrame(raf);
   }, [isReady, sanitizedContent, onHeadingsReady]);
 
-  // Add copy buttons to code blocks
+  // Render Mermaid diagrams: replace pre>code.language-mermaid with MermaidDiagram React components
+  const mermaidRootsRef = useRef<Root[]>([]);
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || !isReady) return;
+
+    // Cleanup any previously mounted mermaid roots
+    for (const root of mermaidRootsRef.current) {
+      root.unmount();
+    }
+    mermaidRootsRef.current = [];
+
+    const raf = requestAnimationFrame(() => {
+      const mermaidCodes = container.querySelectorAll('pre > code.language-mermaid');
+      mermaidCodes.forEach((codeEl) => {
+        const pre = codeEl.parentElement;
+        if (!pre) return;
+
+        const mermaidCode = codeEl.textContent ?? '';
+        if (!mermaidCode.trim()) return;
+
+        // Create a container div that will replace the <pre> block
+        const wrapper = document.createElement('div');
+        wrapper.className = 'mermaid-diagram-wrapper';
+        wrapper.setAttribute('data-testid', 'mermaid-diagram-wrapper');
+        pre.replaceWith(wrapper);
+
+        // Mount a MermaidDiagram React component into the wrapper
+        const root = createRoot(wrapper);
+        root.render(<MermaidDiagram code={mermaidCode} />);
+        mermaidRootsRef.current.push(root);
+      });
+    });
+
+    return () => {
+      cancelAnimationFrame(raf);
+      for (const root of mermaidRootsRef.current) {
+        root.unmount();
+      }
+      mermaidRootsRef.current = [];
+    };
+  }, [isReady, sanitizedContent]);
+
+  // Add copy buttons to code blocks (skip mermaid blocks which are already replaced)
   useEffect(() => {
     const container = containerRef.current;
     if (!container || !isReady) return;
@@ -153,6 +198,10 @@ export function ArticleViewer({
     const raf = requestAnimationFrame(() => {
       const codeBlocks = container.querySelectorAll('pre');
       codeBlocks.forEach((pre) => {
+        // Skip mermaid code blocks (they are replaced by MermaidDiagram)
+        const codeEl = pre.querySelector('code');
+        if (codeEl?.classList.contains('language-mermaid')) return;
+
         if (pre.querySelector('.code-copy-btn')) return;
 
         pre.style.position = 'relative';

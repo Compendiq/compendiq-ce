@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { useIsLightTheme } from '../hooks/use-is-light-theme';
+import { MermaidBlock } from './MermaidBlockExtension';
 import type { Editor as EditorType } from '@tiptap/react';
 
 const lowlight = createLowlight(common);
@@ -304,6 +305,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       TableHeader,
       TaskList,
       TaskItem.configure({ nested: true }),
+      MermaidBlock,
       CodeBlockLowlight.configure({ lowlight }),
       Image.configure({ inline: false }),
       Placeholder.configure({ placeholder: placeholder ?? 'Start writing...' }),
