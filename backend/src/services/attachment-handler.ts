@@ -152,6 +152,8 @@ export async function syncDrawioAttachments(
   if (diagramNames.length === 0) return [];
 
   const cachedFiles: string[] = [];
+  let skipped = 0;
+  let downloaded = 0;
 
   for (const name of diagramNames) {
     // Prefer the PNG export; fall back to the raw XML source file.
@@ -179,6 +181,7 @@ export async function syncDrawioAttachments(
         try {
           await fs.access(filePath);
           cachedFiles.push(cacheAs);
+          skipped++;
           continue;
         } catch {
           // File does not exist — proceed with download
@@ -187,6 +190,7 @@ export async function syncDrawioAttachments(
         const fileSize = attachment.extensions?.fileSize;
         await cacheAttachment(client, userId, pageId, attachment._links.download, cacheAs, fileSize);
         cachedFiles.push(cacheAs);
+        downloaded++;
       } catch (err) {
         logger.error({ err, pageId, name }, 'Failed to cache draw.io attachment');
       }
@@ -194,7 +198,7 @@ export async function syncDrawioAttachments(
   }
 
   logger.debug(
-    { pageId, found: diagramNames.length, skipped: diagramNames.length - cachedFiles.length, downloaded: cachedFiles.length },
+    { pageId, found: diagramNames.length, skipped, downloaded },
     'syncDrawioAttachments complete',
   );
 
@@ -228,6 +232,8 @@ export async function syncImageAttachments(
   if (filenames.length === 0) return [];
 
   const cachedFiles: string[] = [];
+  let skipped = 0;
+  let downloaded = 0;
 
   for (const filename of filenames) {
     // Only sync known image types
@@ -244,6 +250,7 @@ export async function syncImageAttachments(
         try {
           await fs.access(filePath);
           cachedFiles.push(filename);
+          skipped++;
           continue;
         } catch {
           // File does not exist — proceed with download
@@ -252,6 +259,7 @@ export async function syncImageAttachments(
         const fileSize = attachment.extensions?.fileSize;
         await cacheAttachment(client, userId, pageId, attachment._links.download, filename, fileSize);
         cachedFiles.push(filename);
+        downloaded++;
       } catch (err) {
         logger.error({ err, pageId, filename }, 'Failed to cache image attachment');
       }
@@ -259,7 +267,7 @@ export async function syncImageAttachments(
   }
 
   logger.debug(
-    { pageId, found: filenames.length, skipped: filenames.length - cachedFiles.length, downloaded: cachedFiles.length },
+    { pageId, found: filenames.length, skipped, downloaded },
     'syncImageAttachments complete',
   );
 
