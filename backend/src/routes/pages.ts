@@ -393,6 +393,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     await client.deletePage(id);
 
     // Clean up local data
+    await query('DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = $2', [userId, id]);
     await query('DELETE FROM page_embeddings WHERE user_id = $1 AND confluence_id = $2', [userId, id]);
     await query('DELETE FROM cached_pages WHERE user_id = $1 AND confluence_id = $2', [userId, id]);
     await cleanPageAttachments(userId, id);
@@ -436,6 +437,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
         }
 
         await client.deletePage(id);
+        await query('DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = $2', [userId, id]);
         await query('DELETE FROM page_embeddings WHERE user_id = $1 AND confluence_id = $2', [userId, id]);
         await query('DELETE FROM cached_pages WHERE user_id = $1 AND confluence_id = $2', [userId, id]);
         await cleanPageAttachments(userId, id);
@@ -934,23 +936,27 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.notFound('Page not found');
     }
 
-    // Check pin limit
-    const countResult = await query<{ count: string }>(
-      'SELECT COUNT(*) as count FROM pinned_pages WHERE user_id = $1',
-      [userId],
+    // If already pinned, return 200 immediately (idempotent)
+    const alreadyPinned = await query<{ page_id: string }>(
+      'SELECT page_id FROM pinned_pages WHERE user_id = $1 AND page_id = $2',
+      [userId, id],
     );
-    const currentCount = parseInt(countResult.rows[0].count, 10);
-    if (currentCount >= MAX_PINS) {
-      throw fastify.httpErrors.badRequest(`Maximum of ${MAX_PINS} pinned articles allowed`);
+    if (alreadyPinned.rows.length > 0) {
+      return { message: 'Page pinned', pageId: id };
     }
 
-    // Upsert pin (idempotent — pinning an already-pinned page is a no-op)
-    await query(
-      `INSERT INTO pinned_pages (user_id, page_id, pin_order)
-       VALUES ($1, $2, $3)
+    // Atomic insert with count check to prevent race conditions
+    const insertResult = await query(
+      `INSERT INTO pinned_pages (user_id, page_id, pin_order, pinned_at)
+       SELECT $1, $2, COALESCE((SELECT MAX(pin_order) FROM pinned_pages WHERE user_id = $1), 0) + 1, NOW()
+       WHERE (SELECT COUNT(*) FROM pinned_pages WHERE user_id = $1) < $3
        ON CONFLICT (user_id, page_id) DO NOTHING`,
-      [userId, id, currentCount],
+      [userId, id, MAX_PINS],
     );
+
+    if ((insertResult.rowCount ?? 0) === 0) {
+      throw fastify.httpErrors.badRequest(`Maximum of ${MAX_PINS} pinned articles allowed`);
+    }
 
     return { message: 'Page pinned', pageId: id };
   });
