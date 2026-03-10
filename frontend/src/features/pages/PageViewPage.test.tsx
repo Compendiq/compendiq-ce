@@ -64,6 +64,9 @@ vi.mock('../../shared/hooks/use-pages', () => ({
   useUpdatePage: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useUpdatePageLabels: () => ({ mutate: vi.fn(), isPending: false }),
   useDeletePage: () => ({ mutateAsync: vi.fn() }),
+  usePinnedPages: () => ({ data: { items: [] }, isLoading: false }),
+  usePinPage: () => ({ mutate: vi.fn(), isPending: false }),
+  useUnpinPage: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
 function createWrapper() {

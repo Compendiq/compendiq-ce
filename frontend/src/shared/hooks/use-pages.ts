@@ -195,4 +195,55 @@ export function useTriggerEmbedding() {
   });
 }
 
+// ======== Pinned Pages (Issue #144) ========
+
+export interface PinnedPage {
+  id: string;
+  spaceKey: string;
+  title: string;
+  author: string | null;
+  lastModifiedAt: string | null;
+  excerpt: string;
+  pinnedAt: string;
+  pinOrder: number;
+}
+
+interface PinnedPagesResponse {
+  items: PinnedPage[];
+  total: number;
+}
+
+export function usePinnedPages() {
+  return useQuery<PinnedPagesResponse>({
+    queryKey: ['pages', 'pinned'],
+    queryFn: () => apiFetch('/pages/pinned'),
+  });
+}
+
+export function usePinPage() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (pageId: string) =>
+      apiFetch<{ message: string; pageId: string }>(`/pages/${pageId}/pin`, {
+        method: 'POST',
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['pages', 'pinned'] });
+    },
+  });
+}
+
+export function useUnpinPage() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (pageId: string) =>
+      apiFetch<{ message: string; pageId: string }>(`/pages/${pageId}/pin`, {
+        method: 'DELETE',
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['pages', 'pinned'] });
+    },
+  });
+}
+
 export type { PageSummary, PageDetail, PaginatedPages, PageTreeItem, PageTreeResponse, FilterOptions };
