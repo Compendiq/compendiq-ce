@@ -1,9 +1,12 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { SidebarTreeView } from './SidebarTreeView';
+import { SidebarTreeView, SidebarTreeNode } from './SidebarTreeView';
+import type { TreeNode, SidebarTreeNodeProps } from './SidebarTreeView';
 import { useUiStore } from '../../stores/ui-store';
+/* eslint-enable @typescript-eslint/no-unused-vars */
 
 const mockNavigate = vi.fn();
 vi.mock('react-router-dom', async () => {
@@ -170,19 +173,112 @@ describe('SidebarTreeView', () => {
   });
 
   it('roots tree at homepage children when space with homepageId is selected', () => {
-    // Set the space to DEV which has homepageId='root-1'
     useUiStore.setState({
       treeSidebarCollapsed: false,
       treeSidebarSpaceKey: 'DEV',
     });
     render(<SidebarTreeView />, { wrapper: createWrapper() });
-    // root-1 (Getting Started) has homepageId set, so its children should be roots
-    // Children of root-1 are: Installation, Configuration
     expect(screen.getByText('Installation')).toBeInTheDocument();
     expect(screen.getByText('Configuration')).toBeInTheDocument();
-    // root-1 itself (Getting Started) should NOT appear as a root node
-    // (it might still be in the DOM as part of the header, but not as a tree node)
-    // API Reference (root-2) should not appear since it's not a child of root-1
     expect(screen.queryByText('API Reference')).not.toBeInTheDocument();
+  });
+});
+
+describe('SidebarTreeNode memoization', () => {
+  const makeNode = (id: string, title: string, children: TreeNode[] = []): TreeNode => ({
+    page: {
+      id,
+      spaceKey: 'DEV',
+      title,
+      parentId: null,
+      labels: [],
+      lastModifiedAt: '2026-03-01T00:00:00Z',
+    },
+    children,
+  });
+
+  it('is wrapped with React.memo and has a custom comparator', () => {
+    // React.memo components have $$typeof = Symbol.for('react.memo')
+    const memoSymbol = Symbol.for('react.memo');
+    const component = SidebarTreeNode as unknown as { $$typeof: symbol; compare: unknown };
+    expect(component.$$typeof).toBe(memoSymbol);
+    expect(typeof component.compare).toBe('function');
+  });
+
+  it('custom comparator returns true (skip re-render) when tracked props are identical by reference', () => {
+    const component = SidebarTreeNode as unknown as {
+      compare: (prev: SidebarTreeNodeProps, next: SidebarTreeNodeProps) => boolean;
+    };
+    const node = makeNode('page-1', 'Test');
+    const expandedSet = new Set<string>();
+    const props: SidebarTreeNodeProps = {
+      node,
+      level: 0,
+      expandedSet,
+      toggleExpand: vi.fn(),
+      activePageId: 'page-1',
+    };
+
+    // Same references for all compared props, different toggleExpand => should skip
+    expect(component.compare(props, { ...props, toggleExpand: vi.fn() })).toBe(true);
+  });
+
+  it('custom comparator returns false (re-render) when activePageId changes', () => {
+    const component = SidebarTreeNode as unknown as {
+      compare: (prev: SidebarTreeNodeProps, next: SidebarTreeNodeProps) => boolean;
+    };
+    const node = makeNode('page-1', 'Test');
+    const expandedSet = new Set<string>();
+    const toggleExpand = vi.fn();
+    const prev: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: undefined };
+    const next: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: 'page-1' };
+
+    expect(component.compare(prev, next)).toBe(false);
+  });
+
+  it('custom comparator returns false (re-render) when expandedSet reference changes', () => {
+    const component = SidebarTreeNode as unknown as {
+      compare: (prev: SidebarTreeNodeProps, next: SidebarTreeNodeProps) => boolean;
+    };
+    const node = makeNode('page-1', 'Test');
+    const toggleExpand = vi.fn();
+    const prev: SidebarTreeNodeProps = { node, level: 0, expandedSet: new Set<string>(), toggleExpand, activePageId: undefined };
+    const next: SidebarTreeNodeProps = { node, level: 0, expandedSet: new Set<string>(), toggleExpand, activePageId: undefined };
+
+    expect(component.compare(prev, next)).toBe(false);
+  });
+
+  it('custom comparator returns false (re-render) when node reference changes', () => {
+    const component = SidebarTreeNode as unknown as {
+      compare: (prev: SidebarTreeNodeProps, next: SidebarTreeNodeProps) => boolean;
+    };
+    const expandedSet = new Set<string>();
+    const toggleExpand = vi.fn();
+    const node1 = makeNode('page-1', 'Test');
+    const node2 = makeNode('page-1', 'Test Changed');
+    const prev: SidebarTreeNodeProps = { node: node1, level: 0, expandedSet, toggleExpand, activePageId: undefined };
+    const next: SidebarTreeNodeProps = { node: node2, level: 0, expandedSet, toggleExpand, activePageId: undefined };
+
+    expect(component.compare(prev, next)).toBe(false);
+  });
+
+  it('renders correctly and shows content after memoization', () => {
+    const node = makeNode('page-1', 'Memoized Page');
+    const expandedSet = new Set<string>();
+    const toggleExpand = vi.fn();
+
+    render(
+      <MemoryRouter>
+        <SidebarTreeNode
+          node={node}
+          level={0}
+          expandedSet={expandedSet}
+          toggleExpand={toggleExpand}
+          activePageId={undefined}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText('Memoized Page')).toBeInTheDocument();
   });
 });
