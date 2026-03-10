@@ -2,6 +2,7 @@ import { query } from '../db/postgres.js';
 import { providerGenerateEmbedding } from './llm-provider.js';
 import { htmlToText } from './content-converter.js';
 import { logger } from '../utils/logger.js';
+import { invalidateGraphCache } from './redis-cache.js';
 import pgvector from 'pgvector';
 
 const CHUNK_SIZE = 500;     // ~500 tokens target
@@ -230,6 +231,8 @@ export async function processDirtyPages(userId: string): Promise<{ processed: nu
   if (processed > 0) {
     try {
       await computePageRelationships(userId);
+      // Invalidate cached graph data so the next request reflects new relationships
+      await invalidateGraphCache(userId);
     } catch (err) {
       logger.error({ err, userId }, 'Failed to compute page relationships after embedding');
     }

@@ -1,6 +1,31 @@
 import type { RedisClientType } from 'redis';
 import { logger } from '../utils/logger.js';
 
+// Module-level reference for services that need cache invalidation without Fastify context
+let _redisClient: RedisClientType | null = null;
+
+/**
+ * Store a reference to the Redis client so standalone services (e.g. embedding-service)
+ * can invalidate cache entries without access to the Fastify instance.
+ */
+export function setRedisClient(client: RedisClientType): void {
+  _redisClient = client;
+}
+
+/**
+ * Invalidate the graph cache for a specific user.
+ * Safe to call even if Redis is not initialised (no-op).
+ */
+export async function invalidateGraphCache(userId: string): Promise<void> {
+  if (!_redisClient) return;
+  try {
+    await _redisClient.del(key(userId, 'pages', 'graph'));
+    logger.debug({ userId }, 'Invalidated graph cache');
+  } catch (err) {
+    logger.error({ err, userId }, 'Failed to invalidate graph cache');
+  }
+}
+
 const TTL = {
   pages: 900,      // 15 minutes
   spaces: 900,     // 15 minutes

@@ -2,6 +2,7 @@ import fp from 'fastify-plugin';
 import { FastifyInstance } from 'fastify';
 import { createClient, RedisClientType } from 'redis';
 import { logger } from '../utils/logger.js';
+import { setRedisClient } from '../services/redis-cache.js';
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -23,6 +24,9 @@ export default fp(async (fastify: FastifyInstance) => {
   });
 
   await client.connect();
+
+  // Store reference for standalone services that need cache invalidation
+  setRedisClient(client);
 
   fastify.decorate('redis', client);
 

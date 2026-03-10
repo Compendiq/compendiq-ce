@@ -142,6 +142,13 @@ export function GraphPage() {
     [],
   );
 
+  // Reset cursor on unmount to avoid stale pointer cursor leaking to other pages
+  useEffect(() => {
+    return () => {
+      document.body.style.cursor = 'default';
+    };
+  }, []);
+
   // Track mouse position for tooltip
   useEffect(() => {
     function handleMouseMove(e: MouseEvent) {
