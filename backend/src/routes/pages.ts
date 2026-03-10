@@ -12,6 +12,7 @@ import { processDirtyPages, isProcessingUser, computePageRelationships } from '.
 import { PageListQuerySchema, PageTreeQuerySchema, CreatePageSchema, UpdatePageSchema } from '@kb-creator/contracts';
 import { z } from 'zod';
 import { logger } from '../utils/logger.js';
+import pLimit from 'p-limit';
 
 const BulkIdsSchema = z.object({ ids: z.array(z.string().min(1)).min(1).max(100) });
 const BulkTagSchema = z.object({
@@ -453,7 +454,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     return { message: 'Page deleted' };
   });
 
-  // ======== Bulk Operations (Issue #28) ========
+  // ======== Bulk Operations (Issue #28, parallelized #192) ========
 
   // POST /api/pages/bulk/delete - delete multiple pages by IDs
   fastify.post('/pages/bulk/delete', async (request) => {
@@ -465,34 +466,46 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.badRequest('Confluence not configured');
     }
 
-    let succeeded = 0;
-    let failed = 0;
-    const errors: string[] = [];
+    // Batch verify ownership: single query instead of N queries
+    const existing = await query<{ confluence_id: string }>(
+      'SELECT confluence_id FROM cached_pages WHERE user_id = $1 AND confluence_id = ANY($2)',
+      [userId, ids],
+    );
+    const ownedIds = new Set(existing.rows.map((r) => r.confluence_id));
+    const notFoundIds = ids.filter((id) => !ownedIds.has(id));
+    const errors: string[] = notFoundIds.map((id) => `Page ${id} not found`);
+    let failed = notFoundIds.length;
 
-    for (const id of ids) {
-      try {
-        // Verify ownership
-        const existing = await query<{ confluence_id: string }>(
-          'SELECT confluence_id FROM cached_pages WHERE user_id = $1 AND confluence_id = $2',
-          [userId, id],
-        );
-        if (existing.rows.length === 0) {
-          errors.push(`Page ${id} not found`);
-          failed++;
-          continue;
-        }
+    // Delete from Confluence in parallel with concurrency control
+    const bulkLimit = pLimit(5);
+    const deleteResults = await Promise.allSettled(
+      [...ownedIds].map((id) => bulkLimit(() => client.deletePage(id))),
+    );
 
-        await client.deletePage(id);
-        await query('DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = $2', [userId, id]);
-        await query('DELETE FROM page_embeddings WHERE user_id = $1 AND confluence_id = $2', [userId, id]);
-        await query('DELETE FROM cached_pages WHERE user_id = $1 AND confluence_id = $2', [userId, id]);
-        await cleanPageAttachments(userId, id);
-        succeeded++;
-      } catch (err) {
+    const ownedIdArray = [...ownedIds];
+    const deletedIds: string[] = [];
+    for (let i = 0; i < deleteResults.length; i++) {
+      const result = deleteResults[i];
+      if (result.status === 'fulfilled') {
+        deletedIds.push(ownedIdArray[i]);
+      } else {
         failed++;
-        errors.push(`Page ${id}: ${err instanceof Error ? err.message : 'Unknown error'}`);
+        errors.push(
+          `Page ${ownedIdArray[i]}: ${result.reason instanceof Error ? result.reason.message : 'Unknown error'}`,
+        );
       }
     }
+
+    // Batch cleanup: parallel DB deletes + attachment cleanup
+    if (deletedIds.length > 0) {
+      await Promise.all([
+        query('DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = ANY($2)', [userId, deletedIds]),
+        query('DELETE FROM page_embeddings WHERE user_id = $1 AND confluence_id = ANY($2)', [userId, deletedIds]),
+        query('DELETE FROM cached_pages WHERE user_id = $1 AND confluence_id = ANY($2)', [userId, deletedIds]),
+      ]);
+      await Promise.allSettled(deletedIds.map((id) => bulkLimit(() => cleanPageAttachments(userId, id))));
+    }
+    const succeeded = deletedIds.length;
 
     await cache.invalidate(userId, 'pages');
     await cache.invalidate(userId, 'spaces');
@@ -511,41 +524,52 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.badRequest('Confluence not configured');
     }
 
+    // Batch verify ownership: single query instead of N queries
+    const existing = await query<{ confluence_id: string }>(
+      'SELECT confluence_id FROM cached_pages WHERE user_id = $1 AND confluence_id = ANY($2)',
+      [userId, ids],
+    );
+    const ownedIds = new Set(existing.rows.map((r) => r.confluence_id));
+    const notFoundIds = ids.filter((id) => !ownedIds.has(id));
+    const errors: string[] = notFoundIds.map((id) => `Page ${id} not found`);
+    let failed = notFoundIds.length;
+
+    // Eager-load htmlToText once (avoid repeated dynamic import)
+    const { htmlToText } = await import('../services/content-converter.js');
+
+    // Fetch latest from Confluence in parallel with concurrency control
+    const bulkLimit = pLimit(5);
+    const syncResults = await Promise.allSettled(
+      [...ownedIds].map((id) =>
+        bulkLimit(async () => {
+          const page = await client.getPage(id);
+          const bodyHtml = confluenceToHtml(page.body?.storage?.value ?? '', id);
+          const bodyText = htmlToText(bodyHtml);
+
+          await query(
+            `UPDATE cached_pages SET
+               title = $3, body_storage = $4, body_html = $5, body_text = $6,
+               version = $7, last_synced = NOW(), embedding_dirty = TRUE,
+               embedding_status = 'not_embedded', embedded_at = NULL
+             WHERE user_id = $1 AND confluence_id = $2`,
+            [userId, id, page.title, page.body?.storage?.value ?? '', bodyHtml, bodyText, page.version.number],
+          );
+          return id;
+        }),
+      ),
+    );
+
     let succeeded = 0;
-    let failed = 0;
-    const errors: string[] = [];
-
-    for (const id of ids) {
-      try {
-        // Verify ownership
-        const existing = await query<{ confluence_id: string }>(
-          'SELECT confluence_id FROM cached_pages WHERE user_id = $1 AND confluence_id = $2',
-          [userId, id],
-        );
-        if (existing.rows.length === 0) {
-          errors.push(`Page ${id} not found`);
-          failed++;
-          continue;
-        }
-
-        // Fetch latest from Confluence
-        const page = await client.getPage(id);
-        const bodyHtml = confluenceToHtml(page.body?.storage?.value ?? '', id);
-        const { htmlToText } = await import('../services/content-converter.js');
-        const bodyText = htmlToText(bodyHtml);
-
-        await query(
-          `UPDATE cached_pages SET
-             title = $3, body_storage = $4, body_html = $5, body_text = $6,
-             version = $7, last_synced = NOW(), embedding_dirty = TRUE,
-             embedding_status = 'not_embedded', embedded_at = NULL
-           WHERE user_id = $1 AND confluence_id = $2`,
-          [userId, id, page.title, page.body?.storage?.value ?? '', bodyHtml, bodyText, page.version.number],
-        );
+    const ownedIdArray = [...ownedIds];
+    for (let i = 0; i < syncResults.length; i++) {
+      const result = syncResults[i];
+      if (result.status === 'fulfilled') {
         succeeded++;
-      } catch (err) {
+      } else {
         failed++;
-        errors.push(`Page ${id}: ${err instanceof Error ? err.message : 'Unknown error'}`);
+        errors.push(
+          `Page ${ownedIdArray[i]}: ${result.reason instanceof Error ? result.reason.message : 'Unknown error'}`,
+        );
       }
     }
 
@@ -564,29 +588,19 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.conflict('Embedding processing is already in progress for this user');
     }
 
-    let succeeded = 0;
-    let failed = 0;
-    const errors: string[] = [];
+    // Batch update: single query with ANY() and RETURNING instead of N updates
+    const result = await query<{ confluence_id: string }>(
+      `UPDATE cached_pages SET embedding_dirty = TRUE
+       WHERE user_id = $1 AND confluence_id = ANY($2)
+       RETURNING confluence_id`,
+      [userId, ids],
+    );
 
-    for (const id of ids) {
-      try {
-        // Verify ownership and mark as dirty
-        const result = await query(
-          `UPDATE cached_pages SET embedding_dirty = TRUE
-           WHERE user_id = $1 AND confluence_id = $2`,
-          [userId, id],
-        );
-        if ((result.rowCount ?? 0) === 0) {
-          errors.push(`Page ${id} not found`);
-          failed++;
-          continue;
-        }
-        succeeded++;
-      } catch (err) {
-        failed++;
-        errors.push(`Page ${id}: ${err instanceof Error ? err.message : 'Unknown error'}`);
-      }
-    }
+    const updatedIds = new Set(result.rows.map((r) => r.confluence_id));
+    const succeeded = updatedIds.size;
+    const notFoundIds = ids.filter((id) => !updatedIds.has(id));
+    const failed = notFoundIds.length;
+    const errors: string[] = notFoundIds.map((id) => `Page ${id} not found`);
 
     // Fire-and-forget: trigger processing of dirty pages (same pattern as POST /embeddings/process)
     if (succeeded > 0) {
@@ -609,65 +623,76 @@ export async function pagesRoutes(fastify: FastifyInstance) {
 
     const client = await getClientForUser(userId);
 
-    let succeeded = 0;
-    let failed = 0;
-    const errors: string[] = [];
+    // Batch fetch labels: single query instead of N queries
+    const existing = await query<{ confluence_id: string; labels: string[] }>(
+      'SELECT confluence_id, labels FROM cached_pages WHERE user_id = $1 AND confluence_id = ANY($2)',
+      [userId, ids],
+    );
+    const pageLabelsMap = new Map(existing.rows.map((r) => [r.confluence_id, r.labels || []]));
+    const notFoundIds = ids.filter((id) => !pageLabelsMap.has(id));
+    const errors: string[] = notFoundIds.map((id) => `Page ${id} not found`);
+    let failed = notFoundIds.length;
 
-    for (const id of ids) {
-      try {
-        // Verify ownership
-        const existing = await query<{ labels: string[] }>(
-          'SELECT labels FROM cached_pages WHERE user_id = $1 AND confluence_id = $2',
-          [userId, id],
-        );
-        if (existing.rows.length === 0) {
-          errors.push(`Page ${id} not found`);
-          failed++;
-          continue;
-        }
+    // Process each owned page: compute new labels, update DB, sync to Confluence
+    const bulkLimit = pLimit(5);
+    const tagResults = await Promise.allSettled(
+      [...pageLabelsMap.entries()].map(([id, currentLabels]) =>
+        bulkLimit(async () => {
+          let labels = [...currentLabels];
 
-        let labels = existing.rows[0].labels || [];
-
-        // Remove tags
-        if (removeTags && removeTags.length > 0) {
-          const removeSet = new Set(removeTags);
-          labels = labels.filter((l) => !removeSet.has(l));
-        }
-
-        // Add tags (deduplicating)
-        if (addTags && addTags.length > 0) {
-          const labelSet = new Set(labels);
-          for (const tag of addTags) {
-            labelSet.add(tag);
+          // Remove tags
+          if (removeTags && removeTags.length > 0) {
+            const removeSet = new Set(removeTags);
+            labels = labels.filter((l) => !removeSet.has(l));
           }
-          labels = [...labelSet];
-        }
 
-        await query(
-          'UPDATE cached_pages SET labels = $3 WHERE user_id = $1 AND confluence_id = $2',
-          [userId, id, labels],
-        );
-
-        // Sync label changes to Confluence
-        if (client) {
-          try {
-            if (addTags && addTags.length > 0) {
-              await client.addLabels(id, addTags);
+          // Add tags (deduplicating)
+          if (addTags && addTags.length > 0) {
+            const labelSet = new Set(labels);
+            for (const tag of addTags) {
+              labelSet.add(tag);
             }
-            if (removeTags && removeTags.length > 0) {
-              for (const label of removeTags) {
-                await client.removeLabel(id, label);
+            labels = [...labelSet];
+          }
+
+          await query('UPDATE cached_pages SET labels = $3 WHERE user_id = $1 AND confluence_id = $2', [
+            userId,
+            id,
+            labels,
+          ]);
+
+          // Sync label changes to Confluence
+          if (client) {
+            try {
+              if (addTags && addTags.length > 0) {
+                await client.addLabels(id, addTags);
               }
+              if (removeTags && removeTags.length > 0) {
+                for (const label of removeTags) {
+                  await client.removeLabel(id, label);
+                }
+              }
+            } catch (err) {
+              logger.error({ err, confluenceId: id, userId }, 'Failed to sync labels to Confluence');
             }
-          } catch (err) {
-            logger.error({ err, confluenceId: id, userId }, 'Failed to sync labels to Confluence');
           }
-        }
 
+          return id;
+        }),
+      ),
+    );
+
+    let succeeded = 0;
+    const ownedIdArray = [...pageLabelsMap.keys()];
+    for (let i = 0; i < tagResults.length; i++) {
+      const result = tagResults[i];
+      if (result.status === 'fulfilled') {
         succeeded++;
-      } catch (err) {
+      } else {
         failed++;
-        errors.push(`Page ${id}: ${err instanceof Error ? err.message : 'Unknown error'}`);
+        errors.push(
+          `Page ${ownedIdArray[i]}: ${result.reason instanceof Error ? result.reason.message : 'Unknown error'}`,
+        );
       }
     }
 
