@@ -2,9 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const FAKE_LOCK_ID = 'fake-lock-id-for-tests';
 
+// Hoisted mocks must be declared before any vi.mock() calls
 const mocks = vi.hoisted(() => ({
   query: vi.fn(),
   providerGenerateEmbedding: vi.fn(),
+  htmlToText: vi.fn(),
+  toSql: vi.fn().mockReturnValue('[0.1,0.2]'),
   acquireEmbeddingLock: vi.fn().mockResolvedValue('fake-lock-id-for-tests'),
   releaseEmbeddingLock: vi.fn().mockResolvedValue(undefined),
   isEmbeddingLocked: vi.fn().mockResolvedValue(false),
@@ -20,7 +23,11 @@ vi.mock('./llm-provider.js', () => ({
 }));
 
 vi.mock('./content-converter.js', () => ({
-  htmlToText: vi.fn().mockReturnValue('plain text content for embedding'),
+  htmlToText: mocks.htmlToText,
+}));
+
+vi.mock('pgvector', () => ({
+  default: { toSql: mocks.toSql },
 }));
 
 vi.mock('../utils/logger.js', () => ({
@@ -34,7 +41,17 @@ vi.mock('./redis-cache.js', () => ({
   invalidateGraphCache: (...args: unknown[]) => mocks.invalidateGraphCache(...args),
 }));
 
-import { getEmbeddingStatus, chunkText, processDirtyPages, isProcessingUser, computePageRelationships } from './embedding-service.js';
+import { getEmbeddingStatus, chunkText, processDirtyPages, isProcessingUser, computePageRelationships, DIRTY_PAGE_BATCH_SIZE } from './embedding-service.js';
+
+/** Helper to create a fake dirty page row */
+function makePage(id: string) {
+  return {
+    confluence_id: id,
+    title: `Page ${id}`,
+    space_key: 'DEV',
+    body_html: `<p>Content for ${id}</p>`,
+  };
+}
 
 describe('embedding-service', () => {
   beforeEach(() => {
@@ -43,6 +60,12 @@ describe('embedding-service', () => {
     mocks.acquireEmbeddingLock.mockResolvedValue(FAKE_LOCK_ID);
     mocks.releaseEmbeddingLock.mockResolvedValue(undefined);
     mocks.isEmbeddingLocked.mockResolvedValue(false);
+    // Default: htmlToText returns non-trivial text so embedPage proceeds
+    mocks.htmlToText.mockReturnValue('Some substantial page content for embedding that is long enough');
+    // Default: providerGenerateEmbedding returns one embedding vector per text
+    mocks.providerGenerateEmbedding.mockImplementation((_userId: string, texts: string[]) =>
+      Promise.resolve(texts.map(() => new Array(768).fill(0.1))),
+    );
   });
 
   describe('getEmbeddingStatus', () => {
@@ -248,8 +271,8 @@ describe('embedding-service', () => {
     });
 
     it('should acquire lock before processing and release with lock ID in finally', async () => {
-      // Query to get dirty pages (no pages)
-      mocks.query.mockResolvedValueOnce({ rows: [] });
+      // COUNT query (no dirty pages)
+      mocks.query.mockResolvedValueOnce({ rows: [{ count: '0' }] });
 
       await processDirtyPages('lock-user');
 
@@ -258,7 +281,7 @@ describe('embedding-service', () => {
     });
 
     it('should release lock with lock ID even when processing throws', async () => {
-      // Query to get dirty pages throws
+      // COUNT query throws
       mocks.query.mockRejectedValueOnce(new Error('DB connection lost'));
 
       await expect(processDirtyPages('crash-user')).rejects.toThrow('DB connection lost');
@@ -267,8 +290,63 @@ describe('embedding-service', () => {
       expect(mocks.releaseEmbeddingLock).toHaveBeenCalledWith('crash-user', FAKE_LOCK_ID);
     });
 
+    it('should return early with {0,0} when no dirty pages exist', async () => {
+      mocks.query
+        .mockResolvedValueOnce({ rows: [{ count: '0' }] }); // COUNT query
+
+      const result = await processDirtyPages('user-1');
+
+      expect(result).toEqual({ processed: 0, errors: 0 });
+      // Should only have called the COUNT query, no batch SELECT
+      expect(mocks.query).toHaveBeenCalledTimes(1);
+    });
+
+    it('should process a small batch of pages (fewer than batch size)', async () => {
+      // COUNT query
+      mocks.query.mockResolvedValueOnce({ rows: [{ count: '3' }] });
+      // Batch SELECT returns 3 pages
+      const pages = [makePage('p1'), makePage('p2'), makePage('p3')];
+      mocks.query.mockResolvedValueOnce({ rows: pages });
+      // For each page: mark embedding, DELETE old, INSERT, UPDATE dirty=false
+      for (let i = 0; i < 3; i++) {
+        mocks.query.mockResolvedValueOnce({ rows: [] }); // UPDATE embedding_status='embedding'
+        mocks.query.mockResolvedValueOnce({ rows: [] }); // DELETE old embeddings
+        mocks.query.mockResolvedValueOnce({ rows: [] }); // INSERT embedding chunk
+        mocks.query.mockResolvedValueOnce({ rows: [] }); // UPDATE embedding_dirty=FALSE
+      }
+      // Empty batch -> break (batch was < DIRTY_PAGE_BATCH_SIZE so no more needed)
+      // computePageRelationships (post-embed hook)
+      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // DELETE relationships
+      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // embedding similarity
+      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // label overlap
+
+      const result = await processDirtyPages('user-1');
+
+      expect(result).toEqual({ processed: 3, errors: 0 });
+    });
+
+    it('should use LIMIT and OFFSET in the batch query', async () => {
+      // COUNT query
+      mocks.query.mockResolvedValueOnce({ rows: [{ count: '1' }] });
+      // Batch SELECT returns 1 page
+      mocks.query.mockResolvedValueOnce({ rows: [makePage('p1')] });
+      // embedPage calls and everything else
+      mocks.query.mockResolvedValue({ rows: [] });
+
+      await processDirtyPages('user-1');
+
+      // Second query call (index 1) is the batch SELECT after COUNT
+      const calls = mocks.query.mock.calls;
+      const batchSelectCall = calls[1];
+      expect(batchSelectCall[0]).toContain('LIMIT');
+      expect(batchSelectCall[0]).toContain('OFFSET');
+      expect(batchSelectCall[1]).toEqual(['user-1', DIRTY_PAGE_BATCH_SIZE, 0]);
+    });
+
     it('should process dirty pages and return counts', async () => {
-      // Query to get dirty pages
+      // COUNT query
+      mocks.query.mockResolvedValueOnce({ rows: [{ count: '1' }] });
+      // Batch SELECT with 1 page
       mocks.query.mockResolvedValueOnce({
         rows: [{
           confluence_id: 'page-1',
@@ -277,29 +355,18 @@ describe('embedding-service', () => {
           body_html: '<p>Some content for embedding</p>',
         }],
       });
-
       // Mark page as 'embedding' + clear error
       mocks.query.mockResolvedValueOnce({ rows: [] });
-
       // embedPage calls: delete old embeddings
       mocks.query.mockResolvedValueOnce({ rows: [] });
-
-      // embedPage calls: providerGenerateEmbedding (mocked)
-      mocks.providerGenerateEmbedding.mockResolvedValueOnce([new Array(768).fill(0)]);
-
       // embedPage calls: insert embedding
       mocks.query.mockResolvedValueOnce({ rows: [] });
-
       // embedPage calls: mark page as embedded + clear error
       mocks.query.mockResolvedValueOnce({ rows: [] });
-
       // computePageRelationships calls (post-embed hook):
-      // DELETE existing relationships
-      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-      // INSERT embedding_similarity edges
-      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-      // INSERT label_overlap edges
-      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // DELETE existing relationships
+      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // INSERT embedding_similarity edges
+      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // INSERT label_overlap edges
 
       const result = await processDirtyPages('process-user');
       expect(result.processed).toBe(1);
@@ -310,7 +377,9 @@ describe('embedding-service', () => {
     it('should store error message when embedding fails', async () => {
       const embeddingError = new Error('Model nomic-embed-text not found');
 
-      // Query to get dirty pages
+      // COUNT query
+      mocks.query.mockResolvedValueOnce({ rows: [{ count: '1' }] });
+      // Batch SELECT with 1 page
       mocks.query.mockResolvedValueOnce({
         rows: [{
           confluence_id: 'page-fail',
@@ -319,17 +388,15 @@ describe('embedding-service', () => {
           body_html: '<p>Content that will fail</p>',
         }],
       });
-
       // Mark page as 'embedding' + clear error
       mocks.query.mockResolvedValueOnce({ rows: [] });
-
       // embedPage calls: delete old embeddings
       mocks.query.mockResolvedValueOnce({ rows: [] });
-
       // embedPage calls: providerGenerateEmbedding throws
       mocks.providerGenerateEmbedding.mockRejectedValueOnce(embeddingError);
-
       // Update embedding_status to 'failed' with error message
+      mocks.query.mockResolvedValueOnce({ rows: [] });
+      // Next batch: offset advanced by 1 (batchErrors), returns empty -> break
       mocks.query.mockResolvedValueOnce({ rows: [] });
 
       const result = await processDirtyPages('error-user');
@@ -349,7 +416,9 @@ describe('embedding-service', () => {
       const longMessage = 'x'.repeat(2000);
       const longError = new Error(longMessage);
 
-      // Query to get dirty pages
+      // COUNT query
+      mocks.query.mockResolvedValueOnce({ rows: [{ count: '1' }] });
+      // Batch SELECT with 1 page
       mocks.query.mockResolvedValueOnce({
         rows: [{
           confluence_id: 'page-long-err',
@@ -358,17 +427,15 @@ describe('embedding-service', () => {
           body_html: '<p>Content</p>',
         }],
       });
-
       // Mark page as 'embedding' + clear error
       mocks.query.mockResolvedValueOnce({ rows: [] });
-
       // embedPage calls: delete old embeddings
       mocks.query.mockResolvedValueOnce({ rows: [] });
-
       // embedPage calls: providerGenerateEmbedding throws
       mocks.providerGenerateEmbedding.mockRejectedValueOnce(longError);
-
       // Update embedding_status to 'failed' with truncated error
+      mocks.query.mockResolvedValueOnce({ rows: [] });
+      // Empty batch -> break (offset advanced past this page)
       mocks.query.mockResolvedValueOnce({ rows: [] });
 
       await processDirtyPages('truncate-user');
@@ -383,7 +450,9 @@ describe('embedding-service', () => {
     });
 
     it('should clear error when embedding succeeds after previous failure', async () => {
-      // Query to get dirty pages
+      // COUNT query
+      mocks.query.mockResolvedValueOnce({ rows: [{ count: '1' }] });
+      // Batch SELECT with 1 page
       mocks.query.mockResolvedValueOnce({
         rows: [{
           confluence_id: 'page-recover',
@@ -392,21 +461,16 @@ describe('embedding-service', () => {
           body_html: '<p>Content that will succeed this time</p>',
         }],
       });
-
       // Mark page as 'embedding' + clear error
       mocks.query.mockResolvedValueOnce({ rows: [] });
-
       // embedPage calls: delete old embeddings
       mocks.query.mockResolvedValueOnce({ rows: [] });
-
-      // embedPage calls: providerGenerateEmbedding succeeds
-      mocks.providerGenerateEmbedding.mockResolvedValueOnce([new Array(768).fill(0)]);
-
       // embedPage calls: insert embedding
       mocks.query.mockResolvedValueOnce({ rows: [] });
-
       // embedPage calls: mark page as embedded + clear error
       mocks.query.mockResolvedValueOnce({ rows: [] });
+      // computePageRelationships
+      mocks.query.mockResolvedValue({ rows: [], rowCount: 0 });
 
       await processDirtyPages('recover-user');
 
@@ -417,5 +481,98 @@ describe('embedding-service', () => {
       expect(successUpdateCall).toBeDefined();
       expect(successUpdateCall![0]).toContain('embedding_error = NULL');
     });
+
+    it('should count errors and advance offset only by error count', async () => {
+      const pages = [makePage('p1'), makePage('fail-1'), makePage('p3')];
+
+      // COUNT query
+      mocks.query.mockResolvedValueOnce({ rows: [{ count: '3' }] });
+      // Batch SELECT (all 3 pages, < batch size so only one batch)
+      mocks.query.mockResolvedValueOnce({ rows: pages });
+      // embedPage for p1: mark embedding + DELETE + INSERT + UPDATE
+      mocks.query.mockResolvedValueOnce({ rows: [] }); // mark embedding
+      mocks.query.mockResolvedValueOnce({ rows: [] }); // DELETE
+      mocks.query.mockResolvedValueOnce({ rows: [] }); // INSERT
+      mocks.query.mockResolvedValueOnce({ rows: [] }); // UPDATE
+      // embedPage for fail-1: mark embedding + DELETE, then throw; failed update
+      mocks.query.mockResolvedValueOnce({ rows: [] }); // mark embedding
+      mocks.query.mockResolvedValueOnce({ rows: [] }); // DELETE
+      mocks.query.mockResolvedValueOnce({ rows: [] }); // failed update
+      // embedPage for p3: mark embedding + DELETE + INSERT + UPDATE
+      mocks.query.mockResolvedValueOnce({ rows: [] }); // mark embedding
+      mocks.query.mockResolvedValueOnce({ rows: [] }); // DELETE
+      mocks.query.mockResolvedValueOnce({ rows: [] }); // INSERT
+      mocks.query.mockResolvedValueOnce({ rows: [] }); // UPDATE
+      // computePageRelationships (post-embed hook)
+      mocks.query.mockResolvedValue({ rows: [], rowCount: 0 });
+
+      // Make embedPage fail for fail-1 by failing the embedding generation
+      let embedCallCount = 0;
+      mocks.providerGenerateEmbedding.mockImplementation(() => {
+        embedCallCount++;
+        if (embedCallCount === 2) {
+          return Promise.reject(new Error('Ollama timeout'));
+        }
+        return Promise.resolve([new Array(768).fill(0.1)]);
+      });
+
+      const result = await processDirtyPages('user-1');
+
+      expect(result).toEqual({ processed: 2, errors: 1 });
+    });
+
+    it('should terminate when all pages in a batch error (no infinite loop)', async () => {
+      // All pages fail
+      mocks.providerGenerateEmbedding.mockRejectedValue(new Error('Ollama down'));
+
+      // COUNT query
+      mocks.query.mockResolvedValueOnce({ rows: [{ count: '2' }] });
+      // Batch 1: 2 pages
+      mocks.query.mockResolvedValueOnce({ rows: [makePage('f1'), makePage('f2')] });
+      // embedPage for f1: mark embedding + DELETE then throw; failed update
+      mocks.query.mockResolvedValueOnce({ rows: [] }); // mark embedding
+      mocks.query.mockResolvedValueOnce({ rows: [] }); // DELETE
+      mocks.query.mockResolvedValueOnce({ rows: [] }); // failed update
+      // embedPage for f2: mark embedding + DELETE then throw; failed update
+      mocks.query.mockResolvedValueOnce({ rows: [] }); // mark embedding
+      mocks.query.mockResolvedValueOnce({ rows: [] }); // DELETE
+      mocks.query.mockResolvedValueOnce({ rows: [] }); // failed update
+      // Next batch query: offset=2 (both errored), returns empty -> done
+      mocks.query.mockResolvedValueOnce({ rows: [] });
+
+      const result = await processDirtyPages('user-1');
+
+      expect(result).toEqual({ processed: 0, errors: 2 });
+    });
+
+    it('should pass correct LIMIT value matching DIRTY_PAGE_BATCH_SIZE constant', () => {
+      expect(DIRTY_PAGE_BATCH_SIZE).toBe(100);
+    });
+  });
+});
+
+describe('chunkText', () => {
+  it('should produce a single chunk for short text', () => {
+    const chunks = chunkText('Hello world, this is a test.', 'Test Page', 'DEV', 'page-1');
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0].metadata).toEqual({
+      page_title: 'Test Page',
+      section_title: 'Test Page',
+      space_key: 'DEV',
+      confluence_id: 'page-1',
+    });
+  });
+
+  it('should split on heading boundaries', () => {
+    const text = '# Introduction\nSome intro text.\n\n# Details\nMore details here.';
+    const chunks = chunkText(text, 'My Doc', 'SPACE', 'doc-1');
+    expect(chunks.length).toBeGreaterThanOrEqual(2);
+    expect(chunks[0].metadata.section_title).toBe('Introduction');
+    expect(chunks[1].metadata.section_title).toBe('Details');
+  });
+
+  it('should return empty array for empty text', () => {
+    const chunks = chunkText('', 'Empty', 'DEV', 'empty-1');
+    expect(chunks).toHaveLength(0);
   });
 });

@@ -164,6 +164,8 @@ export async function embedPage(
   return embeddedCount;
 }
 
+export const DIRTY_PAGE_BATCH_SIZE = 100;
+
 /**
  * Check if embedding processing is already running for a user.
  * Uses Redis distributed lock instead of in-memory Set.
@@ -173,8 +175,13 @@ export async function isProcessingUser(userId: string): Promise<boolean> {
 }
 
 /**
- * Process all dirty pages for a user.
+ * Process all dirty pages for a user in batches to limit memory usage.
  * Returns `alreadyProcessing: true` if skipped because processing was in progress.
+ *
+ * Pages are fetched in batches of DIRTY_PAGE_BATCH_SIZE using LIMIT/OFFSET.
+ * Successfully embedded pages are marked embedding_dirty=FALSE by embedPage(),
+ * so they drop out of the result set. The offset only advances by the number
+ * of errors in each batch (errored pages remain dirty and stay in the result set).
  */
 export async function processDirtyPages(userId: string): Promise<{ processed: number; errors: number; alreadyProcessing?: boolean }> {
   const lockId = await acquireEmbeddingLock(userId);
@@ -183,52 +190,82 @@ export async function processDirtyPages(userId: string): Promise<{ processed: nu
     return { processed: 0, errors: 0, alreadyProcessing: true };
   }
 
-  let processed = 0;
-  let errors = 0;
+  let totalProcessed = 0;
+  let totalErrors = 0;
 
   try {
-    const result = await query<{
-      confluence_id: string;
-      title: string;
-      space_key: string;
-      body_html: string;
-    }>(
-      `SELECT confluence_id, title, space_key, body_html
-       FROM cached_pages
-       WHERE user_id = $1 AND embedding_dirty = TRUE AND body_html IS NOT NULL
-       ORDER BY last_modified_at DESC`,
+    // Get total count for logging purposes
+    const countResult = await query<{ count: string }>(
+      'SELECT COUNT(*) as count FROM cached_pages WHERE user_id = $1 AND embedding_dirty = TRUE AND body_html IS NOT NULL',
       [userId],
     );
+    const totalDirty = parseInt(countResult.rows[0].count, 10);
+    logger.info({ userId, dirtyPages: totalDirty }, 'Processing dirty pages for embedding');
 
-    logger.info({ userId, dirtyPages: result.rows.length }, 'Processing dirty pages for embedding');
+    if (totalDirty === 0) {
+      return { processed: 0, errors: 0 };
+    }
 
-    for (const page of result.rows) {
-      try {
-        // Mark page as currently embedding and clear any previous error
-        await query(
-          `UPDATE cached_pages SET embedding_status = 'embedding', embedding_error = NULL WHERE user_id = $1 AND confluence_id = $2`,
-          [userId, page.confluence_id],
-        );
+    // Offset only advances by the number of errors per batch, because
+    // successfully processed pages drop out of the WHERE filter
+    let offset = 0;
 
-        await embedPage(userId, page.confluence_id, page.title, page.space_key, page.body_html);
-        processed++;
-      } catch (err) {
-        logger.error({ err, confluenceId: page.confluence_id }, 'Failed to embed page');
-        // Mark page as failed and store the error reason for UI display
-        const errorMessage = err instanceof Error ? err.message : String(err);
-        await query(
-          `UPDATE cached_pages SET embedding_status = 'failed', embedding_error = $3 WHERE user_id = $1 AND confluence_id = $2`,
-          [userId, page.confluence_id, errorMessage.slice(0, 1000)],
-        ).catch((updateErr) => logger.error({ err: updateErr }, 'Failed to update embedding_status to failed'));
-        errors++;
+    for (;;) {
+      const batch = await query<{
+        confluence_id: string;
+        title: string;
+        space_key: string;
+        body_html: string;
+      }>(
+        `SELECT confluence_id, title, space_key, body_html
+         FROM cached_pages
+         WHERE user_id = $1 AND embedding_dirty = TRUE AND body_html IS NOT NULL
+         ORDER BY last_modified_at DESC
+         LIMIT $2 OFFSET $3`,
+        [userId, DIRTY_PAGE_BATCH_SIZE, offset],
+      );
+
+      if (batch.rows.length === 0) break;
+
+      let batchErrors = 0;
+
+      for (const page of batch.rows) {
+        try {
+          // Mark page as currently embedding and clear any previous error
+          await query(
+            `UPDATE cached_pages SET embedding_status = 'embedding', embedding_error = NULL WHERE user_id = $1 AND confluence_id = $2`,
+            [userId, page.confluence_id],
+          );
+
+          await embedPage(userId, page.confluence_id, page.title, page.space_key, page.body_html);
+          totalProcessed++;
+        } catch (err) {
+          logger.error({ err, confluenceId: page.confluence_id }, 'Failed to embed page');
+          // Mark page as failed and store the error reason for UI display
+          const errorMessage = err instanceof Error ? err.message : String(err);
+          await query(
+            `UPDATE cached_pages SET embedding_status = 'failed', embedding_error = $3 WHERE user_id = $1 AND confluence_id = $2`,
+            [userId, page.confluence_id, errorMessage.slice(0, 1000)],
+          ).catch((updateErr) => logger.error({ err: updateErr }, 'Failed to update embedding_status to failed'));
+          totalErrors++;
+          batchErrors++;
+        }
       }
+
+      // If every page in the batch errored, we need to advance past them
+      // to avoid an infinite loop. If some succeeded, those dropped from
+      // the result set so offset only needs to skip the errored ones.
+      offset += batchErrors;
+
+      // If the batch was smaller than the batch size, we've reached the end
+      if (batch.rows.length < DIRTY_PAGE_BATCH_SIZE) break;
     }
   } finally {
     await releaseEmbeddingLock(userId, lockId);
   }
 
   // Post-embed hook: recompute nearest-neighbor relationships
-  if (processed > 0) {
+  if (totalProcessed > 0) {
     try {
       await computePageRelationships(userId);
       // Invalidate cached graph data so the next request reflects new relationships
@@ -238,7 +275,7 @@ export async function processDirtyPages(userId: string): Promise<{ processed: nu
     }
   }
 
-  return { processed, errors };
+  return { processed: totalProcessed, errors: totalErrors };
 }
 
 /**
