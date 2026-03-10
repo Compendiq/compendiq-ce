@@ -14,6 +14,8 @@ import {
   Panel,
   DrawioDiagram,
   ConfluenceToc,
+  ConfluenceStatus,
+  ConfluenceChildren,
   UnknownMacro,
 } from './article-extensions';
 import { MermaidDiagram } from './MermaidDiagram';
@@ -27,7 +29,10 @@ DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
     data.attrName === 'data-drawio' ||
     data.attrName === 'data-confluence-link' ||
     data.attrName === 'data-type' ||
-    data.attrName === 'data-checked'
+    data.attrName === 'data-checked' ||
+    data.attrName === 'data-color' ||
+    data.attrName === 'data-sort' ||
+    data.attrName === 'data-reverse'
   ) {
     data.forceKeepAttr = true;
   }
@@ -64,7 +69,7 @@ export function ArticleViewer({
   const sanitizedContent = useMemo(
     () =>
       DOMPurify.sanitize(content, {
-        ADD_ATTR: ['data-diagram-name', 'data-drawio', 'data-confluence-link', 'data-type', 'data-checked'],
+        ADD_ATTR: ['data-diagram-name', 'data-drawio', 'data-confluence-link', 'data-type', 'data-checked', 'data-color', 'data-sort', 'data-reverse'],
       }),
     [content],
   );
@@ -92,6 +97,8 @@ export function ArticleViewer({
       Panel,
       DrawioDiagram,
       ConfluenceToc,
+      ConfluenceStatus,
+      ConfluenceChildren,
       UnknownMacro,
     ],
     content: sanitizedContent,

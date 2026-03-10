@@ -162,6 +162,79 @@ export const ConfluenceToc = Node.create({
 });
 
 /**
+ * ConfluenceStatus node — renders Confluence status macros as colored inline badges.
+ * Inline atom node (non-editable).
+ */
+export const ConfluenceStatus = Node.create({
+  name: 'confluenceStatus',
+  group: 'inline',
+  inline: true,
+  atom: true,
+
+  addAttributes() {
+    return {
+      color: {
+        default: 'grey',
+        parseHTML: (element) => element.getAttribute('data-color') ?? 'grey',
+      },
+      label: {
+        default: '',
+        parseHTML: (element) => element.textContent ?? '',
+      },
+    };
+  },
+
+  parseHTML() {
+    return [{ tag: 'span.confluence-status' }];
+  },
+
+  renderHTML({ node }) {
+    return [
+      'span',
+      {
+        class: 'confluence-status',
+        'data-color': node.attrs.color,
+      },
+      node.attrs.label,
+    ];
+  },
+});
+
+/**
+ * ConfluenceChildren node — placeholder for Confluence children display macros.
+ * Block-level atom node (non-editable).
+ */
+export const ConfluenceChildren = Node.create({
+  name: 'confluenceChildren',
+  group: 'block',
+  atom: true,
+
+  addAttributes() {
+    return {
+      sort: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-sort'),
+      },
+      reverse: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-reverse'),
+      },
+    };
+  },
+
+  parseHTML() {
+    return [{ tag: 'div.confluence-children-macro' }];
+  },
+
+  renderHTML({ node }) {
+    const attrs: Record<string, string> = { class: 'confluence-children-macro' };
+    if (node.attrs.sort) attrs['data-sort'] = node.attrs.sort;
+    if (node.attrs.reverse) attrs['data-reverse'] = node.attrs.reverse;
+    return ['div', attrs, '[Children pages listed here]'];
+  },
+});
+
+/**
  * UnknownMacro node — catch-all for unsupported Confluence macros.
  */
 export const UnknownMacro = Node.create({
