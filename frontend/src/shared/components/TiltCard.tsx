@@ -1,5 +1,5 @@
 import { useRef, useCallback } from 'react';
-import { m, useMotionValue, useSpring } from 'framer-motion';
+import { m, useMotionValue, useMotionTemplate, useSpring } from 'framer-motion';
 import { useGesture } from '@use-gesture/react';
 import { cn } from '../lib/cn';
 import { useCanHover } from '../hooks/use-can-hover';
@@ -47,6 +47,8 @@ export function TiltCard({
   const springRotateY = useSpring(rotateY, SPRING_CONFIG);
   const springShadowX = useSpring(shadowX, SPRING_CONFIG);
   const springShadowY = useSpring(shadowY, SPRING_CONFIG);
+
+  const dropShadowFilter = useMotionTemplate`drop-shadow(${springShadowX}px ${springShadowY}px 16px var(--glass-shadow))`;
 
   const resetValues = useCallback(() => {
     rotateX.set(0);
@@ -110,7 +112,7 @@ export function TiltCard({
         transformStyle: 'preserve-3d',
         ...(dynamicShadow
           ? {
-              filter: `drop-shadow(${springShadowX}px ${springShadowY}px 16px var(--glass-shadow))`,
+              filter: dropShadowFilter,
             }
           : {}),
       }}
