@@ -320,7 +320,7 @@ describe('ConfluenceClient', () => {
       expect(result.results[0].id).toBe('child-1');
       const callUrl = mockRequest.mock.calls[0][0] as string;
       expect(callUrl).toContain('/rest/api/content/parent-123/child/page');
-      expect(callUrl).toContain('expand=version,ancestors,metadata.labels');
+      expect(callUrl).toContain('expand=version,ancestors,metadata.labels,body.storage');
     });
 
     it('should fetch all child pages with pagination', async () => {
@@ -416,6 +416,52 @@ describe('ConfluenceClient', () => {
 
       expect(descendants).toHaveLength(3);
       expect(descendants.map(d => d.id)).toEqual(['child-1', 'child-2', 'grandchild-1']);
+    });
+
+    it('should stop traversal when maxPages limit is reached', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+
+      // Root has 3 children
+      mockRequest.mockResolvedValueOnce({
+        statusCode: 200,
+        body: {
+          text: async () => JSON.stringify({
+            results: [
+              { id: 'child-1', title: 'Child 1', status: 'current', type: 'page', version: { number: 1, when: '2025-01-01' } },
+              { id: 'child-2', title: 'Child 2', status: 'current', type: 'page', version: { number: 1, when: '2025-01-01' } },
+              { id: 'child-3', title: 'Child 3', status: 'current', type: 'page', version: { number: 1, when: '2025-01-01' } },
+            ],
+            start: 0, limit: 50, size: 3,
+          }),
+        },
+      } as never);
+
+      // Set maxPages to 2 — should stop after collecting 2 descendants
+      const descendants = await client.getDescendantPages('root-page', 2);
+
+      expect(descendants).toHaveLength(2);
+      // Should NOT recurse into children since limit was hit
+      expect(mockRequest).toHaveBeenCalledTimes(1);
+    });
+
+    it('should use default maxPages of 200', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+
+      // Return no children so it finishes immediately
+      mockRequest.mockResolvedValue({
+        statusCode: 200,
+        body: {
+          text: async () => JSON.stringify({
+            results: [],
+            start: 0, limit: 50, size: 0,
+          }),
+        },
+      } as never);
+
+      // Call without maxPages parameter — should work with default
+      const descendants = await client.getDescendantPages('root-page');
+
+      expect(descendants).toHaveLength(0);
     });
 
     it('should return empty array for page with no children', async () => {

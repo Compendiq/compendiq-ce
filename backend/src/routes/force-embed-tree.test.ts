@@ -209,6 +209,11 @@ describe('POST /api/embeddings/force-embed-tree', () => {
     expect(lastEvent.done).toBe(true);
     expect(lastEvent.total).toBe(2);
     expect(lastEvent.completed).toBe(2);
+
+    // getPage should only be called once (for the root page), not for descendants
+    // that already have body.storage.value from the getChildPages expand
+    expect(mockClient.getPage).toHaveBeenCalledTimes(1);
+    expect(mockClient.getPage).toHaveBeenCalledWith('root-1');
   });
 
   it('should handle per-page embedding errors gracefully', async () => {
