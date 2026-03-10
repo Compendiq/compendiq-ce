@@ -154,9 +154,10 @@ export async function embedPage(
     }
   }
 
-  // Mark page as no longer dirty
+  // Mark page as no longer dirty + update embedding status
   await query(
-    'UPDATE cached_pages SET embedding_dirty = FALSE WHERE user_id = $1 AND confluence_id = $2',
+    `UPDATE cached_pages SET embedding_dirty = FALSE, embedding_status = 'embedded', embedded_at = NOW()
+     WHERE user_id = $1 AND confluence_id = $2`,
     [userId, confluenceId],
   );
 
@@ -195,10 +196,21 @@ export async function processDirtyPages(userId: string): Promise<{ processed: nu
 
     for (const page of result.rows) {
       try {
+        // Mark page as currently embedding
+        await query(
+          `UPDATE cached_pages SET embedding_status = 'embedding' WHERE user_id = $1 AND confluence_id = $2`,
+          [userId, page.confluence_id],
+        );
+
         await embedPage(userId, page.confluence_id, page.title, page.space_key, page.body_html);
         processed++;
       } catch (err) {
         logger.error({ err, confluenceId: page.confluence_id }, 'Failed to embed page');
+        // Mark page as failed
+        await query(
+          `UPDATE cached_pages SET embedding_status = 'failed' WHERE user_id = $1 AND confluence_id = $2`,
+          [userId, page.confluence_id],
+        ).catch((updateErr) => logger.error({ err: updateErr }, 'Failed to update embedding_status to failed'));
         errors++;
       }
     }
@@ -234,7 +246,7 @@ export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatu
  */
 export async function reEmbedAll(): Promise<void> {
   await query('DELETE FROM page_embeddings');
-  await query('UPDATE cached_pages SET embedding_dirty = TRUE');
+  await query(`UPDATE cached_pages SET embedding_dirty = TRUE, embedding_status = 'not_embedded', embedded_at = NULL`);
   logger.info('All embeddings cleared, pages marked dirty for re-embedding');
 
   // Get all users with pages
