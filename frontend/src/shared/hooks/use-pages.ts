@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '../lib/api';
 
@@ -48,22 +49,34 @@ export interface PageFilters {
 }
 
 export function usePages(params: PageFilters = {}) {
-  const searchParams = new URLSearchParams();
-  if (params.spaceKey) searchParams.set('spaceKey', params.spaceKey);
-  if (params.search) searchParams.set('search', params.search);
-  if (params.author) searchParams.set('author', params.author);
-  if (params.labels) searchParams.set('labels', params.labels);
-  if (params.freshness) searchParams.set('freshness', params.freshness);
-  if (params.embeddingStatus) searchParams.set('embeddingStatus', params.embeddingStatus);
-  if (params.dateFrom) searchParams.set('dateFrom', params.dateFrom);
-  if (params.dateTo) searchParams.set('dateTo', params.dateTo);
-  if (params.page) searchParams.set('page', String(params.page));
-  if (params.limit) searchParams.set('limit', String(params.limit));
-  if (params.sort) searchParams.set('sort', params.sort);
+  const {
+    spaceKey, search, author, labels, freshness,
+    embeddingStatus, dateFrom, dateTo, page, limit, sort,
+  } = params;
 
-  const qs = searchParams.toString();
+  const queryKey = useMemo(
+    () => ['pages', { spaceKey, search, author, labels, freshness, embeddingStatus, dateFrom, dateTo, page, limit, sort }] as const,
+    [spaceKey, search, author, labels, freshness, embeddingStatus, dateFrom, dateTo, page, limit, sort],
+  );
+
+  const qs = useMemo(() => {
+    const sp = new URLSearchParams();
+    if (spaceKey) sp.set('spaceKey', spaceKey);
+    if (search) sp.set('search', search);
+    if (author) sp.set('author', author);
+    if (labels) sp.set('labels', labels);
+    if (freshness) sp.set('freshness', freshness);
+    if (embeddingStatus) sp.set('embeddingStatus', embeddingStatus);
+    if (dateFrom) sp.set('dateFrom', dateFrom);
+    if (dateTo) sp.set('dateTo', dateTo);
+    if (page) sp.set('page', String(page));
+    if (limit) sp.set('limit', String(limit));
+    if (sort) sp.set('sort', sort);
+    return sp.toString();
+  }, [spaceKey, search, author, labels, freshness, embeddingStatus, dateFrom, dateTo, page, limit, sort]);
+
   return useQuery<PaginatedPages>({
-    queryKey: ['pages', params],
+    queryKey,
     queryFn: () => apiFetch(`/pages${qs ? `?${qs}` : ''}`),
   });
 }
@@ -84,12 +97,21 @@ interface PageTreeResponse {
 }
 
 export function usePageTree(params: { spaceKey?: string } = {}) {
-  const searchParams = new URLSearchParams();
-  if (params.spaceKey) searchParams.set('spaceKey', params.spaceKey);
-  const qs = searchParams.toString();
+  const { spaceKey } = params;
+
+  const queryKey = useMemo(
+    () => ['pages', 'tree', { spaceKey }] as const,
+    [spaceKey],
+  );
+
+  const qs = useMemo(() => {
+    const sp = new URLSearchParams();
+    if (spaceKey) sp.set('spaceKey', spaceKey);
+    return sp.toString();
+  }, [spaceKey]);
 
   return useQuery<PageTreeResponse>({
-    queryKey: ['pages', 'tree', params],
+    queryKey,
     queryFn: () => apiFetch(`/pages/tree${qs ? `?${qs}` : ''}`),
   });
 }
