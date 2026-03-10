@@ -15,6 +15,7 @@ import { cn } from '../../shared/lib/cn';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { DiffView } from '../../shared/components/DiffView';
 import { MermaidDiagram } from '../../shared/components/MermaidDiagram';
+import { FeatureErrorBoundary } from '../../shared/components/FeatureErrorBoundary';
 import { ConfidenceBadge } from '../../shared/components/ConfidenceBadge';
 import { StreamingCursor } from '../../shared/components/StreamingCursor';
 import { AIThinkingBlob } from '../../shared/components/AIThinkingBlob';
@@ -823,7 +824,9 @@ export function AiAssistantPage() {
           {/* Mermaid diagram for diagram mode */}
           {mode === 'diagram' && diagramCode && !isStreaming && (
             <>
-              <MermaidDiagram code={diagramCode} className="mt-4" />
+              <FeatureErrorBoundary featureName="Mermaid Diagram">
+                <MermaidDiagram code={diagramCode} className="mt-4" />
+              </FeatureErrorBoundary>
               {page && pageId && (
                 <button
                   onClick={handleInsertDiagram}

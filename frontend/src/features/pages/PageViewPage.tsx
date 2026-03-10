@@ -12,6 +12,7 @@ import { cn } from '../../shared/lib/cn';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { Editor, getDraft, clearDraft } from '../../shared/components/Editor';
 import { ArticleViewer } from '../../shared/components/ArticleViewer';
+import { FeatureErrorBoundary } from '../../shared/components/FeatureErrorBoundary';
 import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../../shared/components/EmbeddingStatusBadge';
 import { TableOfContents } from '../../shared/components/TableOfContents';
@@ -354,18 +355,22 @@ export function PageViewPage() {
 
       {/* Content with optional Table of Contents */}
       {editing ? (
-        <Editor content={editHtml} onChange={setEditHtml} draftKey={draftKey} />
+        <FeatureErrorBoundary featureName="Editor">
+          <Editor content={editHtml} onChange={setEditHtml} draftKey={draftKey} />
+        </FeatureErrorBoundary>
       ) : (
         <>
           <div className="flex gap-4">
             <div className="glass-card flex-1 overflow-hidden" ref={contentRef}>
-              <ArticleViewer
-                content={page.bodyHtml}
-                onImageClick={handleImageClick}
-                confluenceUrl={settings?.confluenceUrl}
-                pageId={id}
-                onHeadingsReady={setTocHeadings}
-              />
+              <FeatureErrorBoundary featureName="Article Viewer">
+                <ArticleViewer
+                  content={page.bodyHtml}
+                  onImageClick={handleImageClick}
+                  confluenceUrl={settings?.confluenceUrl}
+                  pageId={id}
+                  onHeadingsReady={setTocHeadings}
+                />
+              </FeatureErrorBoundary>
             </div>
             <div className="hidden w-64 shrink-0 space-y-4 lg:block sticky top-4 self-start max-h-[calc(100vh-2rem)] overflow-y-auto">
               <TableOfContents headings={tocHeadings} contentRef={contentRef} />
