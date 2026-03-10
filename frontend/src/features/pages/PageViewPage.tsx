@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import type { SettingsResponse } from '@kb-creator/contracts';
 import { usePage, useUpdatePage, useDeletePage, usePinnedPages, usePinPage, useUnpinPage, useEmbeddingProcess } from '../../shared/hooks/use-pages';
+import { useSync } from '../../shared/hooks/use-spaces';
 import { cn } from '../../shared/lib/cn';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { Editor, getDraft, clearDraft } from '../../shared/components/Editor';
@@ -75,6 +76,7 @@ export function PageViewPage() {
   const unpinMutation = useUnpinPage();
   const isPinned = pinnedData?.items.some((p) => p.id === id) ?? false;
   const embeddingProcess = useEmbeddingProcess();
+  const syncMutation = useSync();
   const isLight = useIsLightTheme();
 
   const queryClient = useQueryClient();
@@ -109,6 +111,13 @@ export function PageViewPage() {
   }, [page, id]);
 
   const closeLightbox = useCallback(() => setLightboxSrc(null), []);
+
+  const handleRequestSync = useCallback(() => {
+    syncMutation.mutate(undefined, {
+      onSuccess: () => toast.info('Sync started — diagrams will reload shortly'),
+      onError: (err) => toast.error(err instanceof Error ? err.message : 'Sync failed'),
+    });
+  }, [syncMutation]);
 
   const cancelEditing = useCallback(() => {
     if (draftKey) clearDraft(draftKey);
@@ -370,6 +379,7 @@ export function PageViewPage() {
                   confluenceUrl={settings?.confluenceUrl}
                   pageId={id}
                   onHeadingsReady={setTocHeadings}
+                  onRequestSync={handleRequestSync}
                 />
               </FeatureErrorBoundary>
             </div>

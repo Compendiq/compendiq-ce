@@ -230,4 +230,92 @@ describe('DrawioDiagramPreview', () => {
 
     expect(screen.getByTestId('drawio-preview')).toHaveClass('mt-8');
   });
+
+  describe('srcXmlFallback', () => {
+    it('uses XML fallback blob URL when primary PNG auth fails', async () => {
+      // Primary PNG fails; XML fallback succeeds
+      mockUseAuthenticatedSrc
+        .mockImplementationOnce(() => ({ blobSrc: null, loading: false, error: true }))
+        .mockImplementationOnce((src: string | null) => ({
+          blobSrc: src ? `blob:${src}` : null,
+          loading: false,
+          error: false,
+        }));
+
+      render(
+        <DrawioDiagramPreview
+          {...defaultProps}
+          srcXmlFallback="/api/attachments/page-1/topology.xml"
+        />,
+      );
+
+      const img = await screen.findByRole('img');
+      expect(img).toHaveAttribute('src', 'blob:/api/attachments/page-1/topology.xml');
+    });
+
+    it('passes XML fallback URL to useAuthenticatedSrc when primary fails', () => {
+      mockUseAuthenticatedSrc
+        .mockImplementationOnce(() => ({ blobSrc: null, loading: false, error: true }))
+        .mockImplementationOnce(() => ({ blobSrc: 'blob:xml', loading: false, error: false }));
+
+      render(
+        <DrawioDiagramPreview
+          {...defaultProps}
+          srcXmlFallback="/api/attachments/page-1/topology.xml"
+        />,
+      );
+
+      // Second call to useAuthenticatedSrc should receive the XML fallback URL
+      expect(mockUseAuthenticatedSrc).toHaveBeenCalledWith('/api/attachments/page-1/topology.xml');
+    });
+
+    it('does not attempt XML fallback when primary PNG succeeds (passes null)', () => {
+      // Primary succeeds — default mock returns blob URL
+      mockUseAuthenticatedSrc.mockImplementation((src: string | null) => ({
+        blobSrc: src ? `blob:${src}` : null,
+        loading: false,
+        error: false,
+      }));
+
+      render(
+        <DrawioDiagramPreview
+          {...defaultProps}
+          srcXmlFallback="/api/attachments/page-1/topology.xml"
+        />,
+      );
+
+      // Second call to useAuthenticatedSrc should receive null (no fallback needed)
+      expect(mockUseAuthenticatedSrc).toHaveBeenCalledWith(null);
+    });
+
+    it('shows error state when both primary and XML fallback fail', () => {
+      mockUseAuthenticatedSrc
+        .mockImplementationOnce(() => ({ blobSrc: null, loading: false, error: true }))
+        .mockImplementationOnce(() => ({ blobSrc: null, loading: false, error: true }));
+
+      render(
+        <DrawioDiagramPreview
+          {...defaultProps}
+          srcXmlFallback="/api/attachments/page-1/topology.xml"
+        />,
+      );
+
+      expect(screen.getByTestId('drawio-error')).toBeInTheDocument();
+    });
+
+    it('shows loading state while XML fallback is being fetched', () => {
+      mockUseAuthenticatedSrc
+        .mockImplementationOnce(() => ({ blobSrc: null, loading: false, error: true }))
+        .mockImplementationOnce(() => ({ blobSrc: null, loading: true, error: false }));
+
+      render(
+        <DrawioDiagramPreview
+          {...defaultProps}
+          srcXmlFallback="/api/attachments/page-1/topology.xml"
+        />,
+      );
+
+      expect(screen.getByTestId('drawio-skeleton')).toBeInTheDocument();
+    });
+  });
 });

@@ -11,13 +11,16 @@ import {
 } from './attachment-handler.js';
 import type { ConfluenceClient, ConfluenceAttachment } from './confluence-client.js';
 
-// Mock fs to avoid real filesystem operations
+// Mock fs to avoid real filesystem operations.
+// fs.access defaults to REJECT (ENOENT) so tests see a cold cache by default.
+// Use (fs.access as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined)
+// in individual tests that need to simulate an already-cached file.
 vi.mock('fs/promises', () => ({
   default: {
     mkdir: vi.fn().mockResolvedValue(undefined),
     writeFile: vi.fn().mockResolvedValue(undefined),
     readFile: vi.fn().mockResolvedValue(Buffer.from('test')),
-    access: vi.fn().mockResolvedValue(undefined),
+    access: vi.fn().mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' })),
     rm: vi.fn().mockResolvedValue(undefined),
   },
 }));
@@ -57,6 +60,10 @@ describe('attachment-handler', () => {
 
     it('returns correct MIME type for PNG', () => {
       expect(getMimeType('image.png')).toBe('image/png');
+    });
+
+    it('returns correct MIME type for XML', () => {
+      expect(getMimeType('diagram.xml')).toBe('application/xml');
     });
 
     it('returns octet-stream for unknown extensions', () => {
@@ -169,6 +176,24 @@ describe('attachment-handler', () => {
 
       expect(result).toEqual([]);
       expect(client.getPageAttachments).not.toHaveBeenCalled();
+    });
+
+    it('skips download when image is already cached (idempotent)', async () => {
+      const bodyStorage = `<ac:image><ri:attachment ri:filename="logo.png" /></ac:image>`;
+      const client = createMockClient();
+      const attachments = makeAttachments([
+        { title: 'logo.png', download: '/download/logo.png' },
+      ]);
+
+      // Simulate file already cached: fs.access resolves for this test
+      (fs.access as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined);
+
+      const result = await syncImageAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
+
+      expect(result).toEqual(['logo.png']);
+      // No download should have occurred
+      expect(client.downloadAttachment).not.toHaveBeenCalled();
+      expect(fs.writeFile).not.toHaveBeenCalled();
     });
   });
 
@@ -306,7 +331,8 @@ describe('attachment-handler', () => {
 
       const result = await syncDrawioAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
 
-      expect(result).toEqual(['arch-diagram.png']);
+      // The actual attachment title is preserved to avoid saving with the wrong extension
+      expect(result).toEqual(['arch-diagram']);
       expect(client.downloadAttachment).toHaveBeenCalledWith('/download/arch-diagram');
     });
 
@@ -355,6 +381,58 @@ describe('attachment-handler', () => {
       const result = await syncDrawioAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
 
       expect(result).toEqual([]);
+    });
+
+    it('falls back to .xml attachment when no PNG export exists', async () => {
+      const bodyStorage = `<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">network</ac:parameter></ac:structured-macro>`;
+
+      const client = createMockClient();
+      // Only the XML source file is available — no PNG export
+      const attachments = makeAttachments([
+        { title: 'network.xml', download: '/download/network.xml' },
+      ]);
+
+      const result = await syncDrawioAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
+
+      // Should cache using the actual attachment title (network.xml), not network.png
+      expect(result).toEqual(['network.xml']);
+      expect(client.downloadAttachment).toHaveBeenCalledWith('/download/network.xml');
+    });
+
+    it('prefers PNG attachment over XML when both exist', async () => {
+      const bodyStorage = `<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">flow</ac:parameter></ac:structured-macro>`;
+
+      const client = createMockClient();
+      // Both PNG and XML exist — PNG should win
+      const attachments = makeAttachments([
+        { title: 'flow.png', download: '/download/flow.png' },
+        { title: 'flow.xml', download: '/download/flow.xml' },
+      ]);
+
+      const result = await syncDrawioAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
+
+      expect(result).toEqual(['flow.png']);
+      expect(client.downloadAttachment).toHaveBeenCalledWith('/download/flow.png');
+      expect(client.downloadAttachment).toHaveBeenCalledTimes(1);
+    });
+
+    it('skips download when draw.io diagram is already cached (idempotent)', async () => {
+      const bodyStorage = `<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">cached-diagram</ac:parameter></ac:structured-macro>`;
+
+      const client = createMockClient();
+      const attachments = makeAttachments([
+        { title: 'cached-diagram.png', download: '/download/cached-diagram.png' },
+      ]);
+
+      // Simulate file already cached: fs.access resolves for this test
+      (fs.access as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined);
+
+      const result = await syncDrawioAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
+
+      expect(result).toEqual(['cached-diagram.png']);
+      // No download should have occurred
+      expect(client.downloadAttachment).not.toHaveBeenCalled();
+      expect(fs.writeFile).not.toHaveBeenCalled();
     });
   });
 

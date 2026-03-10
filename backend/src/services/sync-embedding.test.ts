@@ -4,6 +4,8 @@ const mocks = vi.hoisted(() => ({
   processDirtyPages: vi.fn().mockResolvedValue({ processed: 3, errors: 0 }),
   getSpaces: vi.fn().mockResolvedValue({ results: [] }),
   getAllPagesInSpace: vi.fn().mockResolvedValue([]),
+  getPage: vi.fn().mockResolvedValue(undefined),
+  getPageAttachments: vi.fn().mockResolvedValue({ results: [] }),
   query: vi.fn(),
 }));
 
@@ -17,6 +19,8 @@ vi.mock('./confluence-client.js', () => ({
     getAllSpaces = vi.fn().mockResolvedValue([]);
     getAllPagesInSpace = mocks.getAllPagesInSpace;
     getModifiedPages = vi.fn().mockResolvedValue([]);
+    getPage = mocks.getPage;
+    getPageAttachments = mocks.getPageAttachments;
   },
 }));
 
@@ -149,5 +153,65 @@ describe('syncUser auto-embedding', () => {
     setupSuccessfulSync();
 
     await expect(syncUser('user-4')).resolves.toBeUndefined();
+  });
+});
+
+describe('syncPage attachment cache invalidation', () => {
+  const mockPage = {
+    id: 'page-1',
+    title: 'Test Page',
+    version: { number: 2, when: '2024-01-02T00:00:00Z', by: { displayName: 'Alice' } },
+    space: { key: 'DEV' },
+    ancestors: [],
+    metadata: { labels: { results: [] } },
+    body: { storage: { value: '<p>content</p>' } },
+  };
+
+  function setupSyncWithPage(existingVersion: number | null) {
+    mocks.query
+      // 1. getClientForUser: user_settings
+      .mockResolvedValueOnce({ rows: [{ confluence_url: 'https://conf.example.com', confluence_pat: 'enc' }] })
+      // 2. selected_spaces
+      .mockResolvedValueOnce({ rows: [{ selected_spaces: ['DEV'] }] })
+      // 3. last_synced (no previous sync → full sync; space=undefined so no upsert)
+      .mockResolvedValueOnce({ rows: [] })
+      // 4. syncPage: existing page version check
+      .mockResolvedValueOnce(
+        existingVersion !== null
+          ? { rows: [{ version: existingVersion, title: 'Old', body_html: '<p>old</p>', body_text: 'old' }] }
+          : { rows: [] },
+      )
+      // 5. syncPage: upsert page
+      .mockResolvedValueOnce({ rows: [] })
+      // 6. detectDeletedPages: existing page ids
+      .mockResolvedValueOnce({ rows: [] })
+      // 7. update space last_synced
+      .mockResolvedValueOnce({ rows: [] });
+
+    mocks.getAllPagesInSpace.mockResolvedValueOnce([mockPage]);
+    mocks.getPage.mockResolvedValueOnce(mockPage);
+    mocks.getPageAttachments.mockResolvedValueOnce({ results: [] });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('clears attachment cache when an existing page has a new version', async () => {
+    setupSyncWithPage(1); // existing version 1, new version 2
+
+    await syncUser('user-cache-clear');
+
+    const { cleanPageAttachments } = await import('./attachment-handler.js');
+    expect(cleanPageAttachments).toHaveBeenCalledWith('user-cache-clear', 'page-1');
+  });
+
+  it('does not clear attachment cache for brand-new pages', async () => {
+    setupSyncWithPage(null); // no existing row
+
+    await syncUser('user-cache-new');
+
+    const { cleanPageAttachments } = await import('./attachment-handler.js');
+    expect(cleanPageAttachments).not.toHaveBeenCalled();
   });
 });

@@ -9,6 +9,9 @@ type LoadState = 'loading' | 'loaded' | 'error';
 interface DrawioDiagramPreviewProps {
   /** Image source URL for the diagram PNG (raw API path or pre-fetched blob URL) */
   src: string | null;
+  /** Fallback XML source URL — used when the PNG is not yet available (e.g. diagrams
+   *  stored as raw XML without a rendered PNG export). */
+  srcXmlFallback?: string | null;
   /** Diagram name (used for caption and lightbox title) */
   diagramName: string | null;
   /** Alt text */
@@ -23,6 +26,7 @@ interface DrawioDiagramPreviewProps {
 
 export function DrawioDiagramPreview({
   src,
+  srcXmlFallback,
   diagramName,
   alt,
   editHref,
@@ -35,13 +39,22 @@ export function DrawioDiagramPreview({
   // create a blob URL for the <img> to use.
   const { blobSrc, loading: authLoading, error: authError } = useAuthenticatedSrc(src);
 
-  const effectiveSrc = blobSrc;
+  // When the primary PNG fails, attempt the XML fallback URL.
+  // We always call the hook (Rules of Hooks) but pass null when the primary succeeds.
+  const { blobSrc: blobSrcXml, loading: authLoadingXml, error: authErrorXml } = useAuthenticatedSrc(
+    authError && srcXmlFallback ? srcXmlFallback : null,
+  );
+
+  // Resolve which source to display: prefer PNG, fall back to XML blob when PNG fails
+  const effectiveSrc = authError && !authErrorXml && blobSrcXml ? blobSrcXml : blobSrc;
+  const resolvedLoading = authError ? authLoadingXml : authLoading;
+  const resolvedError = authError ? authErrorXml : false;
 
   const [imgLoadState, setImgLoadState] = useState<LoadState>('loading');
   const [lightboxOpen, setLightboxOpen] = useState(false);
 
   // Combine auth fetch state with <img> element load state
-  const loadState: LoadState = authError ? 'error' : authLoading ? 'loading' : imgLoadState;
+  const loadState: LoadState = resolvedError ? 'error' : resolvedLoading ? 'loading' : imgLoadState;
 
   const handleLoad = useCallback(() => {
     setImgLoadState('loaded');
