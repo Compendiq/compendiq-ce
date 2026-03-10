@@ -68,6 +68,73 @@ describe('ArticleViewer', () => {
     expect(container.querySelectorAll('td')).toHaveLength(2);
   });
 
+  it('renders multi-row tables with header and multiple data rows', async () => {
+    const html = [
+      '<table>',
+      '<thead><tr><th>Name</th><th>Role</th><th>Status</th></tr></thead>',
+      '<tbody>',
+      '<tr><td>Alice</td><td>Engineer</td><td>Active</td></tr>',
+      '<tr><td>Bob</td><td>Designer</td><td>Active</td></tr>',
+      '<tr><td>Carol</td><td>Manager</td><td>On Leave</td></tr>',
+      '<tr><td>Dave</td><td>DevOps</td><td>Active</td></tr>',
+      '</tbody>',
+      '</table>',
+    ].join('');
+
+    const { container } = render(<ArticleViewer content={html} />);
+
+    await waitFor(() => {
+      expect(container.querySelector('table')).toBeTruthy();
+    });
+
+    // Header row
+    const headers = container.querySelectorAll('th');
+    expect(headers).toHaveLength(3);
+    expect(headers[0].textContent).toBe('Name');
+    expect(headers[1].textContent).toBe('Role');
+    expect(headers[2].textContent).toBe('Status');
+
+    // Data rows (4 rows x 3 cells = 12 td elements)
+    const cells = container.querySelectorAll('td');
+    expect(cells).toHaveLength(12);
+    expect(cells[0].textContent).toBe('Alice');
+    expect(cells[3].textContent).toBe('Bob');
+    expect(cells[6].textContent).toBe('Carol');
+    expect(cells[9].textContent).toBe('Dave');
+
+    // Verify all rows rendered
+    const rows = container.querySelectorAll('tr');
+    expect(rows).toHaveLength(5); // 1 header + 4 data rows
+  });
+
+  it('renders tables with colspan and rowspan attributes', async () => {
+    const html = [
+      '<table>',
+      '<thead><tr><th colspan="2">Full Name</th><th>Age</th></tr></thead>',
+      '<tbody>',
+      '<tr><td>First</td><td>Last</td><td rowspan="2">30</td></tr>',
+      '<tr><td>John</td><td>Doe</td></tr>',
+      '</tbody>',
+      '</table>',
+    ].join('');
+
+    const { container } = render(<ArticleViewer content={html} />);
+
+    await waitFor(() => {
+      expect(container.querySelector('table')).toBeTruthy();
+    });
+
+    // Check colspan header
+    const headerWithColspan = container.querySelector('th[colspan="2"]');
+    expect(headerWithColspan).toBeTruthy();
+    expect(headerWithColspan?.textContent).toBe('Full Name');
+
+    // Check rowspan cell
+    const cellWithRowspan = container.querySelector('td[rowspan="2"]');
+    expect(cellWithRowspan).toBeTruthy();
+    expect(cellWithRowspan?.textContent).toBe('30');
+  });
+
   it('renders blockquotes', async () => {
     const html = '<blockquote><p>A wise quote</p></blockquote>';
 

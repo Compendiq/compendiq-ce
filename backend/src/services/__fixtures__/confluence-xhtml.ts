@@ -95,6 +95,33 @@ export const TABLE_PAGE = `<h2>Environment Variables</h2>
 </tbody>
 </table>`;
 
+/** Table with colspan and rowspan (common in Confluence) */
+export const TABLE_COLSPAN_ROWSPAN_PAGE = `<h2>Team Schedule</h2>
+<table>
+<tbody>
+<tr><th colspan="3">Q1 2025 Sprint Assignments</th></tr>
+<tr><th>Name</th><th>Sprint 1</th><th>Sprint 2</th></tr>
+<tr><td rowspan="2">Backend Team</td><td>Auth Service</td><td>API Gateway</td></tr>
+<tr><td>Database Migration</td><td>Cache Layer</td></tr>
+<tr><td colspan="2">Frontend Team</td><td>Dashboard UI</td></tr>
+</tbody>
+</table>`;
+
+/** Multi-row table with many rows */
+export const TABLE_MULTI_ROW_PAGE = `<h2>API Endpoints</h2>
+<table>
+<tbody>
+<tr><th>Method</th><th>Path</th><th>Description</th><th>Auth</th></tr>
+<tr><td>GET</td><td>/api/health</td><td>Health check</td><td>No</td></tr>
+<tr><td>POST</td><td>/api/auth/login</td><td>User login</td><td>No</td></tr>
+<tr><td>GET</td><td>/api/pages</td><td>List pages</td><td>Yes</td></tr>
+<tr><td>GET</td><td>/api/pages/:id</td><td>Get page</td><td>Yes</td></tr>
+<tr><td>PUT</td><td>/api/pages/:id</td><td>Update page</td><td>Yes</td></tr>
+<tr><td>DELETE</td><td>/api/pages/:id</td><td>Delete page</td><td>Yes</td></tr>
+<tr><td>POST</td><td>/api/llm/ask</td><td>Ask AI</td><td>Yes</td></tr>
+</tbody>
+</table>`;
+
 /** Page with unknown/unsupported macros (should be preserved as data attributes) */
 export const UNKNOWN_MACRO_PAGE = `<h2>Jira Integration</h2>
 <ac:structured-macro ac:name="jira"><ac:parameter ac:name="key">PROJ-123</ac:parameter><ac:rich-text-body><p>Related issue</p></ac:rich-text-body></ac:structured-macro>`;
