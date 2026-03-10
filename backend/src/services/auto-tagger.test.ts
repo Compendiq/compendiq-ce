@@ -119,21 +119,50 @@ describe('AutoTagger', () => {
       mockChat.mockRejectedValueOnce(new Error('connect ECONNREFUSED 127.0.0.1:11434'));
 
       await expect(autoTagContent('qwen3:32b', 'some content'))
-        .rejects.toThrow('Auto-tag LLM call failed: connect ECONNREFUSED 127.0.0.1:11434');
+        .rejects.toThrow('Auto-tag failed: connect ECONNREFUSED 127.0.0.1:11434');
     });
 
     it('should wrap non-Error LLM failures with descriptive message', async () => {
       mockChat.mockRejectedValueOnce('string error');
 
       await expect(autoTagContent('qwen3:32b', 'some content'))
-        .rejects.toThrow('Auto-tag LLM call failed: string error');
+        .rejects.toThrow('Auto-tag failed: string error');
     });
 
     it('should wrap fetch failed errors', async () => {
       mockChat.mockRejectedValueOnce(new TypeError('fetch failed'));
 
       await expect(autoTagContent('qwen3:32b', 'some content'))
-        .rejects.toThrow('Auto-tag LLM call failed: fetch failed');
+        .rejects.toThrow('Auto-tag failed: fetch failed');
+    });
+
+    it('should preserve original error as cause', async () => {
+      const original = new Error('connect ECONNREFUSED 127.0.0.1:11434');
+      mockChat.mockRejectedValueOnce(original);
+
+      try {
+        await autoTagContent('qwen3:32b', 'some content');
+        expect.fail('should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(Error);
+        expect((err as Error).cause).toBe(original);
+      }
+    });
+
+    it('should preserve CircuitBreakerOpenError as cause', async () => {
+      const cbError = new Error('ollama-chat: LLM server temporarily unavailable');
+      cbError.name = 'CircuitBreakerOpenError';
+      mockChat.mockRejectedValueOnce(cbError);
+
+      try {
+        await autoTagContent('qwen3:32b', 'some content');
+        expect.fail('should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(Error);
+        const cause = (err as Error).cause as Error;
+        expect(cause).toBe(cbError);
+        expect(cause.name).toBe('CircuitBreakerOpenError');
+      }
     });
   });
 });
