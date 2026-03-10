@@ -65,7 +65,7 @@ vi.mock('../services/version-tracker.js', () => ({
 const mockComputePageRelationships = vi.fn().mockResolvedValue(10);
 vi.mock('../services/embedding-service.js', () => ({
   processDirtyPages: vi.fn().mockResolvedValue({ processed: 0, errors: 0 }),
-  isProcessingUser: vi.fn().mockReturnValue(false),
+  isProcessingUser: vi.fn().mockResolvedValue(false),
   computePageRelationships: (...args: unknown[]) => mockComputePageRelationships(...args),
 }));
 

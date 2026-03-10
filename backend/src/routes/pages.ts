@@ -560,7 +560,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     const userId = request.userId;
 
     // Return 409 if embedding is already in progress for this user
-    if (isProcessingUser(userId)) {
+    if (await isProcessingUser(userId)) {
       throw fastify.httpErrors.conflict('Embedding processing is already in progress for this user');
     }
 

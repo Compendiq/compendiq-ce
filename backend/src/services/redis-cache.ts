@@ -13,6 +13,14 @@ export function setRedisClient(client: RedisClientType): void {
 }
 
 /**
+ * Get the module-level Redis client (for use by other services).
+ * Returns null if Redis is not initialised.
+ */
+export function getRedisClient(): RedisClientType | null {
+  return _redisClient;
+}
+
+/**
  * Invalidate the graph cache for a specific user.
  * Safe to call even if Redis is not initialised (no-op).
  */
@@ -23,6 +31,67 @@ export async function invalidateGraphCache(userId: string): Promise<void> {
     logger.debug({ userId }, 'Invalidated graph cache');
   } catch (err) {
     logger.error({ err, userId }, 'Failed to invalidate graph cache');
+  }
+}
+
+// ── Embedding processing lock (distributed via Redis) ──────────────────
+// Replaces in-memory Set<string> to work correctly in multi-process deployments.
+// Uses SET NX EX for atomic lock acquisition with a safety TTL.
+
+const EMBEDDING_LOCK_TTL = 3600; // 1 hour safety TTL prevents permanent lock on crash
+
+function embeddingLockKey(userId: string): string {
+  return `embedding:lock:${userId}`;
+}
+
+/**
+ * Attempt to acquire the embedding processing lock for a user.
+ * Uses Redis SET NX EX for atomic acquisition.
+ * Returns true if the lock was acquired, false if already held.
+ * Falls back to always-acquire if Redis is not available.
+ */
+export async function acquireEmbeddingLock(userId: string): Promise<boolean> {
+  if (!_redisClient) {
+    logger.warn({ userId }, 'Redis not available for embedding lock, proceeding without lock');
+    return true;
+  }
+  try {
+    const result = await _redisClient.set(embeddingLockKey(userId), process.pid.toString(), {
+      NX: true,
+      EX: EMBEDDING_LOCK_TTL,
+    });
+    return result !== null;
+  } catch (err) {
+    logger.error({ err, userId }, 'Failed to acquire embedding lock');
+    return false;
+  }
+}
+
+/**
+ * Release the embedding processing lock for a user.
+ * Safe to call even if Redis is not available (no-op).
+ */
+export async function releaseEmbeddingLock(userId: string): Promise<void> {
+  if (!_redisClient) return;
+  try {
+    await _redisClient.del(embeddingLockKey(userId));
+  } catch (err) {
+    logger.error({ err, userId }, 'Failed to release embedding lock');
+  }
+}
+
+/**
+ * Check if the embedding processing lock is held for a user.
+ * Returns false if Redis is not available.
+ */
+export async function isEmbeddingLocked(userId: string): Promise<boolean> {
+  if (!_redisClient) return false;
+  try {
+    const result = await _redisClient.exists(embeddingLockKey(userId));
+    return result === 1;
+  } catch (err) {
+    logger.error({ err, userId }, 'Failed to check embedding lock');
+    return false;
   }
 }
 

@@ -2,7 +2,7 @@ import { query } from '../db/postgres.js';
 import { providerGenerateEmbedding } from './llm-provider.js';
 import { htmlToText } from './content-converter.js';
 import { logger } from '../utils/logger.js';
-import { invalidateGraphCache } from './redis-cache.js';
+import { invalidateGraphCache, acquireEmbeddingLock, releaseEmbeddingLock, isEmbeddingLocked } from './redis-cache.js';
 import pgvector from 'pgvector';
 
 const CHUNK_SIZE = 500;     // ~500 tokens target
@@ -23,8 +23,6 @@ interface EmbeddingStatus {
   totalEmbeddings: number;
   isProcessing: boolean;
 }
-
-const processingUsers = new Set<string>();
 
 /**
  * Split text into chunks, preferring heading/paragraph boundaries.
@@ -168,9 +166,10 @@ export async function embedPage(
 
 /**
  * Check if embedding processing is already running for a user.
+ * Uses Redis distributed lock instead of in-memory Set.
  */
-export function isProcessingUser(userId: string): boolean {
-  return processingUsers.has(userId);
+export async function isProcessingUser(userId: string): Promise<boolean> {
+  return isEmbeddingLocked(userId);
 }
 
 /**
@@ -178,12 +177,12 @@ export function isProcessingUser(userId: string): boolean {
  * Returns `alreadyProcessing: true` if skipped because processing was in progress.
  */
 export async function processDirtyPages(userId: string): Promise<{ processed: number; errors: number; alreadyProcessing?: boolean }> {
-  if (processingUsers.has(userId)) {
+  const lockAcquired = await acquireEmbeddingLock(userId);
+  if (!lockAcquired) {
     logger.warn({ userId }, 'Embedding processing already in progress for user');
     return { processed: 0, errors: 0, alreadyProcessing: true };
   }
 
-  processingUsers.add(userId);
   let processed = 0;
   let errors = 0;
 
@@ -225,7 +224,7 @@ export async function processDirtyPages(userId: string): Promise<{ processed: nu
       }
     }
   } finally {
-    processingUsers.delete(userId);
+    await releaseEmbeddingLock(userId);
   }
 
   // Post-embed hook: recompute nearest-neighbor relationships
@@ -333,11 +332,12 @@ export async function computePageRelationships(userId: string): Promise<number> 
  * Get embedding status for a user.
  */
 export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatus> {
-  const [totalResult, dirtyResult, embeddingResult, embeddedPagesResult] = await Promise.all([
+  const [totalResult, dirtyResult, embeddingResult, embeddedPagesResult, isProcessing] = await Promise.all([
     query<{ count: string }>('SELECT COUNT(*) as count FROM cached_pages WHERE user_id = $1', [userId]),
     query<{ count: string }>('SELECT COUNT(*) as count FROM cached_pages WHERE user_id = $1 AND embedding_dirty = TRUE', [userId]),
     query<{ count: string }>('SELECT COUNT(*) as count FROM page_embeddings WHERE user_id = $1', [userId]),
     query<{ count: string }>('SELECT COUNT(DISTINCT confluence_id) as count FROM page_embeddings WHERE user_id = $1', [userId]),
+    isEmbeddingLocked(userId),
   ]);
 
   return {
@@ -345,7 +345,7 @@ export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatu
     embeddedPages: parseInt(embeddedPagesResult.rows[0].count, 10),
     dirtyPages: parseInt(dirtyResult.rows[0].count, 10),
     totalEmbeddings: parseInt(embeddingResult.rows[0].count, 10),
-    isProcessing: processingUsers.has(userId),
+    isProcessing,
   };
 }
 

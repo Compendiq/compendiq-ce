@@ -67,7 +67,7 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 const mockProcessDirtyPages = vi.fn().mockResolvedValue({ processed: 2, errors: 0 });
-const mockIsProcessingUser = vi.fn().mockReturnValue(false);
+const mockIsProcessingUser = vi.fn().mockResolvedValue(false);
 vi.mock('../services/embedding-service.js', () => ({
   processDirtyPages: (...args: unknown[]) => mockProcessDirtyPages(...args),
   isProcessingUser: (...args: unknown[]) => mockIsProcessingUser(...args),
@@ -260,7 +260,7 @@ describe('Bulk Pages Routes', () => {
     });
 
     it('should return 409 when embedding is already in progress', async () => {
-      mockIsProcessingUser.mockReturnValueOnce(true);
+      mockIsProcessingUser.mockResolvedValueOnce(true);
 
       const response = await app.inject({
         method: 'POST',
