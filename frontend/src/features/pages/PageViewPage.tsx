@@ -23,6 +23,7 @@ import { VersionHistory } from './VersionHistory';
 import { FlowchartGenerator } from './FlowchartGenerator';
 import { QualityAnalysisPanel } from './QualityAnalysisPanel';
 import { ForceEmbedTree } from './ForceEmbedTree';
+import { PageViewSkeleton } from '../../shared/components/Skeleton';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { toast } from 'sonner';
 
@@ -162,10 +163,8 @@ export function PageViewPage() {
         initial={{ opacity: 1 }}
         exit={{ opacity: 0, y: -4 }}
         transition={{ duration: 0.2 }}
-        className="space-y-4"
       >
-        <div className="glass-card h-12 animate-pulse" />
-        <div className="glass-card h-96 animate-pulse" />
+        <PageViewSkeleton />
       </m.div>
     );
   }

@@ -3,6 +3,7 @@ import { render, screen } from '@testing-library/react';
 import {
   Skeleton, SkeletonStatCard, SkeletonPageItem, SkeletonFormFields,
   SkeletonArticleCard, SkeletonKPICard, SkeletonChatMessage,
+  PageViewSkeleton, SettingsSkeleton,
 } from './Skeleton';
 
 describe('Skeleton', () => {
@@ -129,5 +130,74 @@ describe('SkeletonChatMessage', () => {
   it('has a rounded-full avatar skeleton', () => {
     const { container } = render(<SkeletonChatMessage />);
     expect(container.querySelector('.rounded-full.skeleton')).toBeInTheDocument();
+  });
+});
+
+describe('PageViewSkeleton', () => {
+  it('renders with correct test id', () => {
+    render(<PageViewSkeleton />);
+    expect(screen.getByTestId('page-view-skeleton')).toBeInTheDocument();
+  });
+
+  it('renders toolbar skeleton with back button and title placeholders', () => {
+    const { container } = render(<PageViewSkeleton />);
+    // Toolbar row: back button (1) + title (1) + 4 action buttons = 6
+    const toolbarSkeletons = container.querySelectorAll('[data-testid="page-view-skeleton"] > div:first-child .skeleton');
+    expect(toolbarSkeletons.length).toBe(6);
+  });
+
+  it('renders metadata bar inside a glass-card', () => {
+    const { container } = render(<PageViewSkeleton />);
+    const glassCards = container.querySelectorAll('.glass-card');
+    // Metadata bar (1) + content area (1) = at least 2 glass-cards
+    expect(glassCards.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('renders content area with heading and paragraph skeleton lines', () => {
+    const { container } = render(<PageViewSkeleton />);
+    // Total skeleton elements should be substantial (toolbar + metadata + content + sidebar)
+    const allSkeletons = container.querySelectorAll('.skeleton');
+    expect(allSkeletons.length).toBeGreaterThanOrEqual(20);
+  });
+
+  it('renders sidebar skeleton for table of contents', () => {
+    const { container } = render(<PageViewSkeleton />);
+    // Sidebar has lg:block class (hidden on small screens)
+    const sidebar = container.querySelector('.lg\\:block');
+    expect(sidebar).toBeInTheDocument();
+    const sidebarSkeletons = sidebar!.querySelectorAll('.skeleton');
+    expect(sidebarSkeletons.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe('SettingsSkeleton', () => {
+  it('renders with correct test id', () => {
+    render(<SettingsSkeleton />);
+    expect(screen.getByTestId('settings-skeleton')).toBeInTheDocument();
+  });
+
+  it('renders tab bar skeletons', () => {
+    const { container } = render(<SettingsSkeleton />);
+    // Tab bar: 5 tab skeletons
+    const tabBar = container.querySelector('.border-b');
+    expect(tabBar).toBeInTheDocument();
+    const tabSkeletons = tabBar!.querySelectorAll('.skeleton');
+    expect(tabSkeletons.length).toBe(5);
+  });
+
+  it('renders form fields inside a glass-card', () => {
+    const { container } = render(<SettingsSkeleton />);
+    const glassCard = container.querySelector('.glass-card');
+    expect(glassCard).toBeInTheDocument();
+    // Form fields: 3 label+input pairs (6) + 1 submit button = 7
+    const formSkeletons = glassCard!.querySelector('.p-6')!.querySelectorAll('.skeleton');
+    expect(formSkeletons.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('renders a page title skeleton', () => {
+    const { container } = render(<SettingsSkeleton />);
+    // First child should be the title skeleton (h-7 w-32)
+    const titleSkeleton = container.querySelector('[data-testid="settings-skeleton"] > .skeleton');
+    expect(titleSkeleton).toBeInTheDocument();
   });
 });
