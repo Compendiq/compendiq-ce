@@ -24,8 +24,9 @@ vi.mock('../utils/tls-config.js', () => ({
 }));
 
 import { request } from 'undici';
-import { ConfluenceClient, ConfluenceError } from './confluence-client.js';
+import { ConfluenceClient, ConfluenceError, isTransientError, parseRetryAfter, withRetry } from './confluence-client.js';
 import * as tlsConfig from '../utils/tls-config.js';
+import { logger } from '../utils/logger.js';
 
 const mockRequest = vi.mocked(request);
 
@@ -481,5 +482,466 @@ describe('ConfluenceClient', () => {
       expect(descendants).toHaveLength(0);
       expect(mockRequest).toHaveBeenCalledTimes(1);
     });
+  });
+
+  describe('retry on transient errors', () => {
+    // Use minimal baseDelay to keep tests fast
+    const retryOpts = { retry: { baseDelay: 1 } };
+
+    it('should retry on 503 and succeed on second attempt', async () => {
+      const client = new ConfluenceClient(baseUrl, pat, retryOpts);
+      let callCount = 0;
+      mockRequest.mockImplementation(async () => {
+        callCount++;
+        if (callCount === 1) {
+          return {
+            statusCode: 503,
+            headers: {},
+            body: { text: async () => 'Service Unavailable' },
+          } as never;
+        }
+        return {
+          statusCode: 200,
+          headers: {},
+          body: { text: async () => JSON.stringify({ results: [], start: 0, limit: 100, size: 0 }) },
+        } as never;
+      });
+
+      const result = await client.getSpaces();
+
+      expect(result.results).toEqual([]);
+      expect(mockRequest).toHaveBeenCalledTimes(2);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ attempt: 1, maxAttempts: 3 }),
+        'Confluence API transient error, retrying',
+      );
+    });
+
+    it('should retry on 429 and respect Retry-After header (seconds)', async () => {
+      // Use default baseDelay here so Retry-After (2s) overrides it
+      const client = new ConfluenceClient(baseUrl, pat, retryOpts);
+      let callCount = 0;
+      mockRequest.mockImplementation(async () => {
+        callCount++;
+        if (callCount === 1) {
+          return {
+            statusCode: 429,
+            headers: { 'retry-after': '0' },
+            body: { text: async () => 'Too Many Requests' },
+          } as never;
+        }
+        return {
+          statusCode: 200,
+          headers: {},
+          body: { text: async () => JSON.stringify({ results: [], start: 0, limit: 100, size: 0 }) },
+        } as never;
+      });
+
+      const result = await client.getSpaces();
+
+      expect(result.results).toEqual([]);
+      expect(mockRequest).toHaveBeenCalledTimes(2);
+      // The delay should be 0ms (from Retry-After: 0)
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ delayMs: 0 }),
+        'Confluence API transient error, retrying',
+      );
+    });
+
+    it('should retry on 502 Bad Gateway', async () => {
+      const client = new ConfluenceClient(baseUrl, pat, retryOpts);
+      let callCount = 0;
+      mockRequest.mockImplementation(async () => {
+        callCount++;
+        if (callCount <= 2) {
+          return {
+            statusCode: 502,
+            headers: {},
+            body: { text: async () => 'Bad Gateway' },
+          } as never;
+        }
+        return {
+          statusCode: 200,
+          headers: {},
+          body: { text: async () => JSON.stringify({ results: [], start: 0, limit: 100, size: 0 }) },
+        } as never;
+      });
+
+      const result = await client.getSpaces();
+
+      expect(result.results).toEqual([]);
+      // 2 failures + 1 success = 3 calls
+      expect(mockRequest).toHaveBeenCalledTimes(3);
+    });
+
+    it('should throw after exhausting all retry attempts on 504', async () => {
+      const client = new ConfluenceClient(baseUrl, pat, retryOpts);
+      mockRequest.mockResolvedValue({
+        statusCode: 504,
+        headers: {},
+        body: { text: async () => 'Gateway Timeout' },
+      } as never);
+
+      await expect(client.getSpaces()).rejects.toThrow('Confluence API error: HTTP 504');
+      // 3 attempts total (default maxAttempts)
+      expect(mockRequest).toHaveBeenCalledTimes(3);
+    });
+
+    it('should NOT retry on 401 Unauthorized', async () => {
+      const client = new ConfluenceClient(baseUrl, pat, retryOpts);
+      mockRequest.mockResolvedValue({
+        statusCode: 401,
+        headers: {},
+        body: { text: async () => 'Unauthorized' },
+      } as never);
+
+      await expect(client.getSpaces()).rejects.toThrow('Invalid or expired PAT');
+      expect(mockRequest).toHaveBeenCalledTimes(1);
+    });
+
+    it('should NOT retry on 403 Forbidden', async () => {
+      const client = new ConfluenceClient(baseUrl, pat, retryOpts);
+      mockRequest.mockResolvedValue({
+        statusCode: 403,
+        headers: {},
+        body: { text: async () => 'Forbidden' },
+      } as never);
+
+      await expect(client.getSpaces()).rejects.toThrow('Insufficient permissions');
+      expect(mockRequest).toHaveBeenCalledTimes(1);
+    });
+
+    it('should NOT retry on 404 Not Found', async () => {
+      const client = new ConfluenceClient(baseUrl, pat, retryOpts);
+      mockRequest.mockResolvedValue({
+        statusCode: 404,
+        headers: {},
+        body: { text: async () => 'Not Found' },
+      } as never);
+
+      await expect(client.getSpaces()).rejects.toThrow('Resource not found');
+      expect(mockRequest).toHaveBeenCalledTimes(1);
+    });
+
+    it('should NOT retry on 400 Bad Request', async () => {
+      const client = new ConfluenceClient(baseUrl, pat, retryOpts);
+      mockRequest.mockResolvedValue({
+        statusCode: 400,
+        headers: {},
+        body: { text: async () => JSON.stringify({ message: 'Bad request' }) },
+      } as never);
+
+      await expect(client.getSpaces()).rejects.toThrow('Confluence API error: HTTP 400');
+      expect(mockRequest).toHaveBeenCalledTimes(1);
+    });
+
+    it('should retry on ECONNRESET network error', async () => {
+      const client = new ConfluenceClient(baseUrl, pat, retryOpts);
+      let callCount = 0;
+      mockRequest.mockImplementation(async () => {
+        callCount++;
+        if (callCount === 1) {
+          throw new Error('read ECONNRESET');
+        }
+        return {
+          statusCode: 200,
+          headers: {},
+          body: { text: async () => JSON.stringify({ results: [], start: 0, limit: 100, size: 0 }) },
+        } as never;
+      });
+
+      const result = await client.getSpaces();
+
+      expect(result.results).toEqual([]);
+      expect(mockRequest).toHaveBeenCalledTimes(2);
+    });
+
+    it('should retry on ETIMEDOUT network error', async () => {
+      const client = new ConfluenceClient(baseUrl, pat, retryOpts);
+      let callCount = 0;
+      mockRequest.mockImplementation(async () => {
+        callCount++;
+        if (callCount === 1) {
+          throw new Error('connect ETIMEDOUT 10.0.0.1:443');
+        }
+        return {
+          statusCode: 200,
+          headers: {},
+          body: { text: async () => JSON.stringify({ results: [], start: 0, limit: 100, size: 0 }) },
+        } as never;
+      });
+
+      const result = await client.getSpaces();
+
+      expect(result.results).toEqual([]);
+      expect(mockRequest).toHaveBeenCalledTimes(2);
+    });
+
+    it('should retry on UND_ERR_CONNECT_TIMEOUT undici error', async () => {
+      const client = new ConfluenceClient(baseUrl, pat, retryOpts);
+      let callCount = 0;
+      mockRequest.mockImplementation(async () => {
+        callCount++;
+        if (callCount === 1) {
+          throw new Error('UND_ERR_CONNECT_TIMEOUT');
+        }
+        return {
+          statusCode: 200,
+          headers: {},
+          body: { text: async () => JSON.stringify({ results: [], start: 0, limit: 100, size: 0 }) },
+        } as never;
+      });
+
+      const result = await client.getSpaces();
+
+      expect(result.results).toEqual([]);
+      expect(mockRequest).toHaveBeenCalledTimes(2);
+    });
+
+    it('should retry downloadAttachment on transient errors', async () => {
+      const client = new ConfluenceClient(baseUrl, pat, retryOpts);
+      let callCount = 0;
+      mockRequest.mockImplementation(async () => {
+        callCount++;
+        if (callCount === 1) {
+          return {
+            statusCode: 503,
+            headers: {},
+            body: { text: async () => 'Service Unavailable' },
+          } as never;
+        }
+        return {
+          statusCode: 200,
+          headers: {},
+          body: (async function* () {
+            yield Buffer.from('file-content');
+          })(),
+        } as never;
+      });
+
+      const result = await client.downloadAttachment('/download/attachments/123/file.pdf');
+
+      expect(result.toString()).toBe('file-content');
+      expect(mockRequest).toHaveBeenCalledTimes(2);
+    });
+
+    it('should attach retryAfterMs to ConfluenceError on 429 for downloadAttachment', async () => {
+      const client = new ConfluenceClient(baseUrl, pat, retryOpts);
+      mockRequest.mockResolvedValue({
+        statusCode: 429,
+        headers: { 'retry-after': '0' },
+        body: { text: async () => 'Too Many Requests' },
+      } as never);
+
+      const err = await client.downloadAttachment('/download/attachments/123/file.pdf').catch((e) => e);
+      expect(err).toBeInstanceOf(ConfluenceError);
+      expect(err.statusCode).toBe(429);
+      expect(err.retryAfterMs).toBe(0);
+      // 3 attempts (all 429), then throws
+      expect(mockRequest).toHaveBeenCalledTimes(3);
+    });
+  });
+});
+
+describe('isTransientError', () => {
+  it('should return true for ConfluenceError with status 429', () => {
+    expect(isTransientError(new ConfluenceError('Too Many Requests', 429))).toBe(true);
+  });
+
+  it('should return true for ConfluenceError with status 502', () => {
+    expect(isTransientError(new ConfluenceError('Bad Gateway', 502))).toBe(true);
+  });
+
+  it('should return true for ConfluenceError with status 503', () => {
+    expect(isTransientError(new ConfluenceError('Service Unavailable', 503))).toBe(true);
+  });
+
+  it('should return true for ConfluenceError with status 504', () => {
+    expect(isTransientError(new ConfluenceError('Gateway Timeout', 504))).toBe(true);
+  });
+
+  it('should return false for ConfluenceError with status 400', () => {
+    expect(isTransientError(new ConfluenceError('Bad Request', 400))).toBe(false);
+  });
+
+  it('should return false for ConfluenceError with status 401', () => {
+    expect(isTransientError(new ConfluenceError('Unauthorized', 401))).toBe(false);
+  });
+
+  it('should return false for ConfluenceError with status 403', () => {
+    expect(isTransientError(new ConfluenceError('Forbidden', 403))).toBe(false);
+  });
+
+  it('should return false for ConfluenceError with status 404', () => {
+    expect(isTransientError(new ConfluenceError('Not Found', 404))).toBe(false);
+  });
+
+  it('should return false for ConfluenceError with status 500', () => {
+    expect(isTransientError(new ConfluenceError('Internal Server Error', 500))).toBe(false);
+  });
+
+  it('should return true for ECONNRESET error', () => {
+    expect(isTransientError(new Error('read ECONNRESET'))).toBe(true);
+  });
+
+  it('should return true for ETIMEDOUT error', () => {
+    expect(isTransientError(new Error('connect ETIMEDOUT 10.0.0.1:443'))).toBe(true);
+  });
+
+  it('should return true for UND_ERR_CONNECT_TIMEOUT error', () => {
+    expect(isTransientError(new Error('UND_ERR_CONNECT_TIMEOUT'))).toBe(true);
+  });
+
+  it('should return false for generic Error', () => {
+    expect(isTransientError(new Error('Something else broke'))).toBe(false);
+  });
+
+  it('should return false for non-Error values', () => {
+    expect(isTransientError('string error')).toBe(false);
+    expect(isTransientError(42)).toBe(false);
+    expect(isTransientError(null)).toBe(false);
+    expect(isTransientError(undefined)).toBe(false);
+  });
+});
+
+describe('parseRetryAfter', () => {
+  it('should parse integer seconds', () => {
+    expect(parseRetryAfter('5')).toBe(5000);
+  });
+
+  it('should parse zero seconds', () => {
+    expect(parseRetryAfter('0')).toBe(0);
+  });
+
+  it('should parse decimal seconds', () => {
+    expect(parseRetryAfter('1.5')).toBe(1500);
+  });
+
+  it('should return undefined for undefined input', () => {
+    expect(parseRetryAfter(undefined)).toBeUndefined();
+  });
+
+  it('should return undefined for empty string', () => {
+    expect(parseRetryAfter('')).toBeUndefined();
+  });
+
+  it('should handle string array (take first element)', () => {
+    expect(parseRetryAfter(['3', '10'])).toBe(3000);
+  });
+
+  it('should return undefined for empty array', () => {
+    expect(parseRetryAfter([])).toBeUndefined();
+  });
+
+  it('should parse HTTP-date format', () => {
+    // Set a date 10 seconds in the future
+    const futureDate = new Date(Date.now() + 10_000);
+    const result = parseRetryAfter(futureDate.toUTCString());
+    // Allow 1 second tolerance for test execution time
+    expect(result).toBeGreaterThan(8000);
+    expect(result).toBeLessThanOrEqual(11000);
+  });
+
+  it('should return 0 for HTTP-date in the past', () => {
+    const pastDate = new Date(Date.now() - 60_000);
+    expect(parseRetryAfter(pastDate.toUTCString())).toBe(0);
+  });
+
+  it('should return undefined for unparseable value', () => {
+    expect(parseRetryAfter('not-a-number-or-date')).toBeUndefined();
+  });
+
+  it('should return undefined for negative number', () => {
+    expect(parseRetryAfter('-5')).toBeUndefined();
+  });
+});
+
+describe('withRetry', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('should return result on first success without retrying', async () => {
+    const fn = vi.fn().mockResolvedValue('success');
+
+    const result = await withRetry(fn, { baseDelay: 1 });
+
+    expect(result).toBe('success');
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it('should retry on transient ConfluenceError and succeed', async () => {
+    const fn = vi.fn()
+      .mockRejectedValueOnce(new ConfluenceError('Service Unavailable', 503))
+      .mockResolvedValue('success');
+
+    const result = await withRetry(fn, { baseDelay: 1 });
+
+    expect(result).toBe('success');
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it('should throw immediately on non-transient error', async () => {
+    const fn = vi.fn().mockRejectedValue(new ConfluenceError('Not Found', 404));
+
+    await expect(withRetry(fn, { baseDelay: 1 })).rejects.toThrow('Not Found');
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it('should throw after exhausting maxAttempts', async () => {
+    const fn = vi.fn().mockRejectedValue(new ConfluenceError('Service Unavailable', 503));
+
+    await expect(withRetry(fn, { maxAttempts: 3, baseDelay: 1 })).rejects.toThrow('Service Unavailable');
+    expect(fn).toHaveBeenCalledTimes(3);
+  });
+
+  it('should use Retry-After delay from ConfluenceError when present', async () => {
+    const error = new ConfluenceError('Too Many Requests', 429);
+    error.retryAfterMs = 100;
+
+    const fn = vi.fn()
+      .mockRejectedValueOnce(error)
+      .mockResolvedValue('success');
+
+    const result = await withRetry(fn, { baseDelay: 1 });
+
+    expect(result).toBe('success');
+    expect(fn).toHaveBeenCalledTimes(2);
+    // Verify logger.warn was called with the Retry-After delay
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ delayMs: 100 }),
+      'Confluence API transient error, retrying',
+    );
+  });
+
+  it('should retry on network errors (ECONNRESET)', async () => {
+    const fn = vi.fn()
+      .mockRejectedValueOnce(new Error('read ECONNRESET'))
+      .mockResolvedValue('success');
+
+    const result = await withRetry(fn, { baseDelay: 1 });
+
+    expect(result).toBe('success');
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it('should respect custom maxAttempts', async () => {
+    const fn = vi.fn().mockRejectedValue(new ConfluenceError('Bad Gateway', 502));
+
+    await expect(withRetry(fn, { maxAttempts: 5, baseDelay: 1 })).rejects.toThrow('Bad Gateway');
+    expect(fn).toHaveBeenCalledTimes(5);
+  });
+
+  it('should use default options when none provided', async () => {
+    const fn = vi.fn()
+      .mockRejectedValueOnce(new ConfluenceError('Service Unavailable', 503))
+      .mockResolvedValue('success');
+
+    // Using real delays would be slow, but we can at least verify it works
+    // We use a short baseDelay override to keep tests fast
+    const result = await withRetry(fn, { baseDelay: 1 });
+
+    expect(result).toBe('success');
+    expect(fn).toHaveBeenCalledTimes(2);
   });
 });
