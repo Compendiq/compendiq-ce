@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { LazyMotion, domMax } from 'framer-motion';
 import { KPICards } from './KPICards';
 import { formatRelativeTime } from '../../shared/lib/format-relative-time';
@@ -42,7 +42,7 @@ describe('KPICards', () => {
     expect(screen.getByTestId('kpi-last-sync')).toBeInTheDocument();
   });
 
-  it('displays correct total articles count', () => {
+  it('displays correct total articles count', async () => {
     render(
       <KPICards
         embeddingStatus={mockEmbeddingStatus}
@@ -53,10 +53,13 @@ describe('KPICards', () => {
 
     const card = screen.getByTestId('kpi-total-articles');
     expect(card).toHaveTextContent('Total Articles');
-    expect(card).toHaveTextContent('100');
+    // AnimatedCounter animates from 0 to target via spring physics
+    await waitFor(() => {
+      expect(card).toHaveTextContent('100');
+    }, { timeout: 3000 });
   });
 
-  it('displays correct embedded pages count (totalPages - dirtyPages)', () => {
+  it('displays correct embedded pages count (totalPages - dirtyPages)', async () => {
     render(
       <KPICards
         embeddingStatus={mockEmbeddingStatus}
@@ -67,10 +70,12 @@ describe('KPICards', () => {
 
     const card = screen.getByTestId('kpi-embedded-pages');
     expect(card).toHaveTextContent('Embedded Pages');
-    expect(card).toHaveTextContent('75');
+    await waitFor(() => {
+      expect(card).toHaveTextContent('75');
+    }, { timeout: 3000 });
   });
 
-  it('displays correct spaces count', () => {
+  it('displays correct spaces count', async () => {
     render(
       <KPICards
         embeddingStatus={mockEmbeddingStatus}
@@ -81,10 +86,12 @@ describe('KPICards', () => {
 
     const card = screen.getByTestId('kpi-spaces-synced');
     expect(card).toHaveTextContent('Spaces Synced');
-    expect(card).toHaveTextContent('7');
+    await waitFor(() => {
+      expect(card).toHaveTextContent('7');
+    }, { timeout: 3000 });
   });
 
-  it('displays correct embedding coverage percentage', () => {
+  it('displays correct embedding coverage percentage', async () => {
     render(
       <KPICards
         embeddingStatus={mockEmbeddingStatus}
@@ -95,10 +102,12 @@ describe('KPICards', () => {
 
     const card = screen.getByTestId('kpi-embedding-coverage');
     expect(card).toHaveTextContent('Embedding Coverage');
-    expect(card).toHaveTextContent('75%');
+    await waitFor(() => {
+      expect(card).toHaveTextContent('75%');
+    }, { timeout: 3000 });
   });
 
-  it('displays 100% coverage when no dirty pages', () => {
+  it('displays 100% coverage when no dirty pages', async () => {
     render(
       <KPICards
         embeddingStatus={{ ...mockEmbeddingStatus, dirtyPages: 0 }}
@@ -108,7 +117,9 @@ describe('KPICards', () => {
     );
 
     const card = screen.getByTestId('kpi-embedding-coverage');
-    expect(card).toHaveTextContent('100%');
+    await waitFor(() => {
+      expect(card).toHaveTextContent('100%');
+    }, { timeout: 3000 });
   });
 
   it('displays 0% coverage when all pages are dirty', () => {
@@ -121,6 +132,7 @@ describe('KPICards', () => {
     );
 
     const card = screen.getByTestId('kpi-embedding-coverage');
+    // 0% is the initial value too, so no animation needed
     expect(card).toHaveTextContent('0%');
   });
 
@@ -137,6 +149,7 @@ describe('KPICards', () => {
     expect(coverage).toHaveTextContent('0%');
 
     const total = screen.getByTestId('kpi-total-articles');
+    // 0 is also the starting value, so it should be there immediately
     expect(total).toHaveTextContent('0');
   });
 
