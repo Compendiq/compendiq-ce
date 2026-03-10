@@ -8,6 +8,7 @@ import { logAuditEvent } from '../services/audit-service.js';
 import { findDuplicates, scanAllDuplicates } from '../services/duplicate-detector.js';
 import { autoTagPage, applyTags, autoTagAllPages, ALLOWED_TAGS, AllowedTag } from '../services/auto-tagger.js';
 import { getVersionHistory, getVersion, getSemanticDiff, saveVersionSnapshot } from '../services/version-tracker.js';
+import { processDirtyPages, isProcessingUser } from '../services/embedding-service.js';
 import { PageListQuerySchema, PageTreeQuerySchema, CreatePageSchema, UpdatePageSchema } from '@kb-creator/contracts';
 import { z } from 'zod';
 import { logger } from '../utils/logger.js';
@@ -510,6 +511,11 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     const { ids } = BulkIdsSchema.parse(request.body);
     const userId = request.userId;
 
+    // Return 409 if embedding is already in progress for this user
+    if (isProcessingUser(userId)) {
+      throw fastify.httpErrors.conflict('Embedding processing is already in progress for this user');
+    }
+
     let succeeded = 0;
     let failed = 0;
     const errors: string[] = [];
@@ -532,6 +538,13 @@ export async function pagesRoutes(fastify: FastifyInstance) {
         failed++;
         errors.push(`Page ${id}: ${err instanceof Error ? err.message : 'Unknown error'}`);
       }
+    }
+
+    // Fire-and-forget: trigger processing of dirty pages (same pattern as POST /embeddings/process)
+    if (succeeded > 0) {
+      processDirtyPages(userId).catch((err) => {
+        logger.error({ err, userId }, 'Bulk embed: embedding processing failed');
+      });
     }
 
     return { succeeded, failed, errors };

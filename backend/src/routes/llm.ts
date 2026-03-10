@@ -9,7 +9,7 @@ import {
 import { providerStreamChat } from '../services/llm-provider.js';
 import { hybridSearch, buildRagContext } from '../services/rag-service.js';
 import { htmlToMarkdown } from '../services/content-converter.js';
-import { getEmbeddingStatus, processDirtyPages, reEmbedAll } from '../services/embedding-service.js';
+import { getEmbeddingStatus, processDirtyPages, reEmbedAll, isProcessingUser } from '../services/embedding-service.js';
 import { getOllamaCircuitBreakerStatus, getOpenaiCircuitBreakerStatus } from '../services/circuit-breaker.js';
 import { LlmCache, buildLlmCacheKey, buildRagCacheKey } from '../services/llm-cache.js';
 import {
@@ -659,6 +659,11 @@ export async function llmRoutes(fastify: FastifyInstance) {
   // POST /api/embeddings/process - trigger embedding processing
   fastify.post('/embeddings/process', EMBEDDING_RATE_LIMIT, async (request, _reply) => {
     const userId = request.userId;
+
+    // Return 409 if embedding is already in progress for this user
+    if (isProcessingUser(userId)) {
+      throw fastify.httpErrors.conflict('Embedding processing is already in progress for this user');
+    }
 
     // Run in background
     processDirtyPages(userId).catch((err) => {

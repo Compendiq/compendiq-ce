@@ -165,12 +165,20 @@ export async function embedPage(
 }
 
 /**
- * Process all dirty pages for a user.
+ * Check if embedding processing is already running for a user.
  */
-export async function processDirtyPages(userId: string): Promise<{ processed: number; errors: number }> {
+export function isProcessingUser(userId: string): boolean {
+  return processingUsers.has(userId);
+}
+
+/**
+ * Process all dirty pages for a user.
+ * Returns `alreadyProcessing: true` if skipped because processing was in progress.
+ */
+export async function processDirtyPages(userId: string): Promise<{ processed: number; errors: number; alreadyProcessing?: boolean }> {
   if (processingUsers.has(userId)) {
     logger.warn({ userId }, 'Embedding processing already in progress for user');
-    return { processed: 0, errors: 0 };
+    return { processed: 0, errors: 0, alreadyProcessing: true };
   }
 
   processingUsers.add(userId);
