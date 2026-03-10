@@ -15,7 +15,9 @@ import { cn } from '../../shared/lib/cn';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { DiffView } from '../../shared/components/DiffView';
 import { MermaidDiagram } from '../../shared/components/MermaidDiagram';
+import { ConfidenceBadge } from '../../shared/components/ConfidenceBadge';
 import { SourceCitations, type Source } from './SourceCitations';
+import { CitationChips } from './CitationChips';
 import { toast } from 'sonner';
 
 /** HTML-encode a string so it is safe to interpolate inside HTML elements. */
@@ -690,9 +692,20 @@ export function AiAssistantPage() {
                     <Loader2 size={16} className="animate-spin" />
                   ) : null)}
                 </div>
-                {/* Source citations for Q&A responses */}
+                {/* Confidence badge + citation chips + source citations for Q&A responses */}
                 {msg.role === 'assistant' && msg.sources && msg.sources.length > 0 && (
-                  <SourceCitations sources={msg.sources} />
+                  <div className="mt-3 space-y-2">
+                    <div className="flex items-center gap-2">
+                      {(() => {
+                        const scores = msg.sources!.filter((s) => s.score != null).map((s) => s.score!);
+                        if (scores.length === 0) return null;
+                        const avgScore = scores.reduce((a, b) => a + b, 0) / scores.length;
+                        return <ConfidenceBadge score={avgScore} />;
+                      })()}
+                      <CitationChips sources={msg.sources!} />
+                    </div>
+                    <SourceCitations sources={msg.sources} />
+                  </div>
                 )}
               </div>
               {msg.role === 'user' && (

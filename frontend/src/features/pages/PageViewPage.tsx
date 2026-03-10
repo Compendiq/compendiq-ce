@@ -158,10 +158,15 @@ export function PageViewPage() {
 
   if (isLoading) {
     return (
-      <div className="space-y-4">
+      <m.div
+        initial={{ opacity: 1 }}
+        exit={{ opacity: 0, y: -4 }}
+        transition={{ duration: 0.2 }}
+        className="space-y-4"
+      >
         <div className="glass-card h-12 animate-pulse" />
         <div className="glass-card h-96 animate-pulse" />
-      </div>
+      </m.div>
     );
   }
 
@@ -181,6 +186,7 @@ export function PageViewPage() {
     <m.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
+      transition={{ duration: 0.2 }}
       className="space-y-4"
     >
       {/* Top bar */}
@@ -196,7 +202,13 @@ export function PageViewPage() {
               className="flex-1 rounded-md bg-foreground/5 px-3 py-1.5 text-lg font-bold outline-none focus:ring-1 focus:ring-primary"
             />
           ) : (
-            <h1 className="truncate text-xl font-bold">{page.title}</h1>
+            <m.h1
+              layoutId={id ? `page-card-${id}` : undefined}
+              transition={{ duration: 0.25, ease: [0.25, 0.1, 0.25, 1] }}
+              className="truncate text-xl font-bold"
+            >
+              {page.title}
+            </m.h1>
           )}
         </div>
 

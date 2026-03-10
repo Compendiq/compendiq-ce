@@ -1,7 +1,7 @@
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { m } from 'framer-motion';
+import { m, AnimatePresence } from 'framer-motion';
 import { Search, FileText, Plus, RefreshCw, ChevronLeft, ChevronRight, FolderOpen, Filter, X, List, Loader2, Cpu, Pin } from 'lucide-react';
 import DOMPurify from 'dompurify';
 import { toast } from 'sonner';
@@ -13,6 +13,7 @@ import { EmbeddingStatusBadge } from '../../shared/components/EmbeddingStatusBad
 import { BulkOperations } from './BulkOperations';
 import { KPICards } from './KPICards';
 import { PinnedArticlesSection } from './PinnedArticlesSection';
+import { SkeletonPageItem } from '../../shared/components/Skeleton';
 import { cn } from '../../shared/lib/cn';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 
@@ -429,28 +430,50 @@ export function PagesPage() {
       ) : (
       <>
       {/* Page list */}
+      <AnimatePresence mode="wait">
       {isLoading ? (
-        <div className="space-y-3">
+        <m.div
+          key="skeleton"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0, y: -4 }}
+          transition={{ duration: 0.2 }}
+          className="space-y-3"
+        >
           {Array.from({ length: 5 }).map((_, i) => (
-            <div key={i} className="glass-card h-16 animate-pulse" />
+            <SkeletonPageItem key={i} />
           ))}
-        </div>
+        </m.div>
       ) : !pagesData?.items.length ? (
-        <div className="glass-card flex flex-col items-center justify-center py-16 text-center">
+        <m.div
+          key="empty"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="glass-card flex flex-col items-center justify-center py-16 text-center"
+        >
           <FolderOpen size={48} className="mb-4 text-muted-foreground" />
           <p className="text-lg font-medium">No pages found</p>
           <p className="text-sm text-muted-foreground">
             {search ? 'Try a different search term' : 'Sync your Confluence spaces to see pages here'}
           </p>
-        </div>
+        </m.div>
       ) : (
-        <div className="space-y-2">
+        <m.div
+          key="list"
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.2 }}
+          className="space-y-2"
+        >
           {pagesData.items.map((pageItem, i) => (
             <m.div
               key={pageItem.id}
+              layoutId={`page-card-${pageItem.id}`}
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: i * 0.03 }}
+              transition={{ delay: i * 0.03, layout: { duration: 0.25, ease: [0.25, 0.1, 0.25, 1] } }}
             >
               <div
                 className={cn(
@@ -520,8 +543,9 @@ export function PagesPage() {
               </div>
             </m.div>
           ))}
-        </div>
+        </m.div>
       )}
+      </AnimatePresence>
 
       {/* Pagination */}
       {pagesData && pagesData.totalPages > 1 && (
