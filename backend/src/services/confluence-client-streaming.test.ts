@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Readable, Writable } from 'stream';
 
 // Mock undici request
@@ -186,9 +186,9 @@ describe('ConfluenceClient.downloadAttachmentToFile', () => {
       }
       // Iterate the transform to trigger the size check
       const iter = transform(bigSource());
-      for await (const _chunk of iter) {
-        // This should throw AttachmentTooLargeError
-      }
+      // Consume the iterator to trigger the size check
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      for await (const _ of iter) { /* triggers AttachmentTooLargeError */ }
     });
 
     const err = await client.downloadAttachmentToFile(
