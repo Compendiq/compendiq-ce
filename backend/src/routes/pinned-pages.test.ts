@@ -383,14 +383,14 @@ describe('Pinned Pages API', () => {
     });
 
     it('should delete pinned_pages row when bulk-deleting pages', async () => {
-      // For bulk delete, each page goes through: ownership check, deletePage, pinned_pages, embeddings, cached_pages
-      // ownership check for page-1
+      // Bulk delete uses batched queries: ownership check, then parallel cleanup (pinned_pages, embeddings, cached_pages)
+      // batch ownership check via ANY($2)
       mockQueryFn.mockResolvedValueOnce({ rows: [{ confluence_id: 'page-1' }], rowCount: 1 });
-      // pinned_pages delete for page-1
+      // batched pinned_pages delete via ANY($2)
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
-      // page_embeddings delete for page-1
+      // batched page_embeddings delete via ANY($2)
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-      // cached_pages delete for page-1
+      // batched cached_pages delete via ANY($2)
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
       const response = await app.inject({
@@ -403,9 +403,9 @@ describe('Pinned Pages API', () => {
       const body = JSON.parse(response.body);
       expect(body.succeeded).toBe(1);
 
-      // Second query (index 1) should be pinned_pages cleanup (after ownership check at index 0)
+      // Second query (index 1) should be batched pinned_pages cleanup (after ownership check at index 0)
       expect(mockQueryFn.mock.calls[1][0]).toContain('DELETE FROM pinned_pages');
-      expect(mockQueryFn.mock.calls[1][1]).toEqual(['test-user-id', 'page-1']);
+      expect(mockQueryFn.mock.calls[1][1]).toEqual(['test-user-id', ['page-1']]);
     });
   });
 });
