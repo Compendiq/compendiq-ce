@@ -186,7 +186,7 @@ describe('App – route-based code splitting (#186)', () => {
     );
   }
 
-  it('shows loading fallback then resolves lazy login page', async () => {
+  it('renders login page immediately without loading flash (static import)', () => {
     useAuthStore.setState({
       accessToken: null,
       user: null,
@@ -195,12 +195,10 @@ describe('App – route-based code splitting (#186)', () => {
 
     renderApp('/login');
 
-    // The lazy component should resolve (Vitest bundles imports synchronously
-    // via Vite SSR, so it resolves within the same tick or the next microtask)
-    await waitFor(() => {
-      // Login page should eventually render (it has a form or heading)
-      expect(document.querySelector('form, [data-testid], h1, h2, button')).toBeTruthy();
-    });
+    // LoginPage is statically imported so it renders synchronously —
+    // no "Loading..." flash should appear.
+    expect(screen.queryByText('Loading...')).not.toBeInTheDocument();
+    expect(document.querySelector('form, [data-testid], h1, h2, button')).toBeTruthy();
   });
 
   it('lazy-loads protected page components for authenticated users', async () => {

@@ -7,12 +7,11 @@ import { useThemeEffect } from './shared/hooks/useThemeEffect';
 import { AppLayout } from './shared/components/AppLayout';
 import { ErrorBoundary } from './shared/components/ErrorBoundary';
 
+import { LoginPage } from './features/settings/LoginPage';
+
 // Route-based code splitting: lazy-load all page components (#186)
-const LoginPage = lazy(() =>
-  import('./features/settings/LoginPage').then((m) => ({
-    default: m.LoginPage,
-  })),
-);
+// LoginPage is statically imported — it's the first screen for
+// unauthenticated users and lazy-loading it causes a "Loading..." flash.
 // DashboardPage removed — merged into PagesPage (issue #109)
 const SettingsPage = lazy(() =>
   import('./features/settings/SettingsPage').then((m) => ({
