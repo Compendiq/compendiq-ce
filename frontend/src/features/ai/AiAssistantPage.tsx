@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '../../shared/lib/api';
 import { streamSSE } from '../../shared/lib/sse';
 import { usePage, useEmbeddingStatus } from '../../shared/hooks/use-pages';
@@ -16,6 +17,16 @@ import { DiffView } from '../../shared/components/DiffView';
 import { MermaidDiagram } from '../../shared/components/MermaidDiagram';
 import { SourceCitations, type Source } from './SourceCitations';
 import { toast } from 'sonner';
+
+/** HTML-encode a string so it is safe to interpolate inside HTML elements. */
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 interface Message {
   role: 'user' | 'assistant';
@@ -35,6 +46,7 @@ type Mode = 'ask' | 'improve' | 'generate' | 'summarize' | 'diagram';
 export function AiAssistantPage() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const pageId = searchParams.get('pageId');
   const isLight = useIsLightTheme();
 
@@ -130,11 +142,15 @@ export function AiAssistantPage() {
     setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
 
     try {
-      for await (const chunk of streamSSE<{ content?: string; done?: boolean; final?: boolean; conversationId?: string; sources?: Source[] }>(
+      for await (const chunk of streamSSE<{ content?: string; error?: string; done?: boolean; final?: boolean; conversationId?: string; sources?: Source[] }>(
         '/llm/ask',
         { question, model, conversationId },
         controller.signal,
       )) {
+        if (chunk.error) {
+          toast.error(chunk.error);
+          break;
+        }
         if (chunk.content) {
           assistantContent += chunk.content;
           setMessages((prev) => {
@@ -190,12 +206,16 @@ export function AiAssistantPage() {
     setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
 
     try {
-      for await (const chunk of streamSSE('/llm/improve', {
+      for await (const chunk of streamSSE<{ content?: string; error?: string; done?: boolean }>('/llm/improve', {
         content: page.bodyHtml,
         type: improvementType,
         model,
         pageId,
       }, controller.signal)) {
+        if (chunk.error) {
+          toast.error(chunk.error);
+          break;
+        }
         if (chunk.content) {
           result += chunk.content;
           setMessages((prev) => {
@@ -235,7 +255,11 @@ export function AiAssistantPage() {
     setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
 
     try {
-      for await (const chunk of streamSSE('/llm/generate', { prompt, model }, controller.signal)) {
+      for await (const chunk of streamSSE<{ content?: string; error?: string; done?: boolean }>('/llm/generate', { prompt, model }, controller.signal)) {
+        if (chunk.error) {
+          toast.error(chunk.error);
+          break;
+        }
         if (chunk.content) {
           result += chunk.content;
           setMessages((prev) => {
@@ -256,7 +280,7 @@ export function AiAssistantPage() {
   const handleSummarize = useCallback(async () => {
     if (isStreaming) return;
     if (!page) {
-      toast.error('No page selected. Open a page first, then click "AI Improve".');
+      toast.error('No page selected. Open a page first, then click "Summarize".');
       return;
     }
     if (!model) {
@@ -274,10 +298,14 @@ export function AiAssistantPage() {
     setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
 
     try {
-      for await (const chunk of streamSSE('/llm/summarize', {
+      for await (const chunk of streamSSE<{ content?: string; error?: string; done?: boolean }>('/llm/summarize', {
         content: page.bodyHtml,
         model,
       }, controller.signal)) {
+        if (chunk.error) {
+          toast.error(chunk.error);
+          break;
+        }
         if (chunk.content) {
           result += chunk.content;
           setMessages((prev) => {
@@ -317,12 +345,16 @@ export function AiAssistantPage() {
     setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
 
     try {
-      for await (const chunk of streamSSE('/llm/generate-diagram', {
+      for await (const chunk of streamSSE<{ content?: string; error?: string; done?: boolean }>('/llm/generate-diagram', {
         content: page.bodyHtml,
         model,
         diagramType,
         pageId,
       }, controller.signal)) {
+        if (chunk.error) {
+          toast.error(chunk.error);
+          break;
+        }
         if (chunk.content) {
           result += chunk.content;
           setMessages((prev) => {
@@ -345,7 +377,7 @@ export function AiAssistantPage() {
     if (!diagramCode || !page || !pageId || isInsertingDiagram) return;
     setIsInsertingDiagram(true);
     try {
-      const diagramHtml = `\n<pre><code class="language-mermaid">${diagramCode}</code></pre>\n`;
+      const diagramHtml = `\n<pre><code class="language-mermaid">${escapeHtml(diagramCode)}</code></pre>\n`;
       const updatedHtml = page.bodyHtml + diagramHtml;
       await apiFetch(`/pages/${pageId}`, {
         method: 'PUT',
@@ -356,12 +388,13 @@ export function AiAssistantPage() {
         }),
       });
       toast.success('Diagram inserted into article');
+      queryClient.invalidateQueries({ queryKey: ['pages', pageId] });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to insert diagram');
     } finally {
       setIsInsertingDiagram(false);
     }
-  }, [diagramCode, page, pageId, isInsertingDiagram]);
+  }, [diagramCode, page, pageId, isInsertingDiagram, queryClient]);
 
   const startNewConversation = () => {
     setMessages([]);
@@ -546,8 +579,8 @@ export function AiAssistantPage() {
                 {mode === 'ask' && 'Your questions will be answered using RAG over your Confluence pages'}
                 {mode === 'improve' && (page ? `Ready to improve: ${page.title}` : 'Navigate to a page and click "AI Improve" to get started')}
                 {mode === 'generate' && 'AI will create a full article based on your prompt'}
-                {mode === 'summarize' && (page ? `Ready to summarize: ${page.title}` : 'Navigate to a page and click "AI Improve" to get started')}
-                {mode === 'diagram' && (page ? `Ready to diagram: ${page.title}` : 'Navigate to a page and click "AI Improve" to get started')}
+                {mode === 'summarize' && (page ? `Ready to summarize: ${page.title}` : 'Navigate to a page and click "Summarize" to get started')}
+                {mode === 'diagram' && (page ? `Ready to diagram: ${page.title}` : 'Navigate to a page and click "Diagram" to get started')}
               </p>
             </div>
           )}

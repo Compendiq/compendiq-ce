@@ -1,11 +1,22 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { GitBranch, Loader2, X, FileInput } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
 import { streamSSE } from '../../shared/lib/sse';
 import { MermaidDiagram } from '../../shared/components/MermaidDiagram';
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
 import { toast } from 'sonner';
 import type { DiagramType } from '@kb-creator/contracts';
+
+/** HTML-encode a string so it is safe to interpolate inside HTML elements. */
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 interface FlowchartGeneratorProps {
   pageId: string;
@@ -17,6 +28,7 @@ interface FlowchartGeneratorProps {
 const DIAGRAM_TYPES: DiagramType[] = ['flowchart', 'sequence', 'state', 'mindmap'];
 
 export function FlowchartGenerator({ pageId, bodyHtml, pageTitle, pageVersion }: FlowchartGeneratorProps) {
+  const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [diagramType, setDiagramType] = useState<DiagramType>('flowchart');
   const [diagramCode, setDiagramCode] = useState('');
@@ -57,12 +69,16 @@ export function FlowchartGenerator({ pageId, bodyHtml, pageTitle, pageVersion }:
 
     let result = '';
     try {
-      for await (const chunk of streamSSE<{ content?: string; done?: boolean }>('/llm/generate-diagram', {
+      for await (const chunk of streamSSE<{ content?: string; error?: string; done?: boolean }>('/llm/generate-diagram', {
         content: bodyHtml,
         model,
         diagramType,
         pageId,
       }, controller.signal)) {
+        if (chunk.error) {
+          toast.error(chunk.error);
+          break;
+        }
         if (chunk.content) {
           result += chunk.content;
           setDiagramCode(result);
@@ -80,7 +96,7 @@ export function FlowchartGenerator({ pageId, bodyHtml, pageTitle, pageVersion }:
     if (!diagramCode || isInserting) return;
     setIsInserting(true);
     try {
-      const diagramHtml = `\n<pre><code class="language-mermaid">${diagramCode}</code></pre>\n`;
+      const diagramHtml = `\n<pre><code class="language-mermaid">${escapeHtml(diagramCode)}</code></pre>\n`;
       const updatedHtml = bodyHtml + diagramHtml;
       await apiFetch(`/pages/${pageId}`, {
         method: 'PUT',
@@ -91,12 +107,13 @@ export function FlowchartGenerator({ pageId, bodyHtml, pageTitle, pageVersion }:
         }),
       });
       toast.success('Diagram inserted into article');
+      queryClient.invalidateQueries({ queryKey: ['pages', pageId] });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to insert diagram');
     } finally {
       setIsInserting(false);
     }
-  }, [diagramCode, isInserting, bodyHtml, pageId, pageTitle, pageVersion]);
+  }, [diagramCode, isInserting, bodyHtml, pageId, pageTitle, pageVersion, queryClient]);
 
   if (!open) {
     return (

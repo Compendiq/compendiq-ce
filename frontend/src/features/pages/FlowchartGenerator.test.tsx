@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { FlowchartGenerator } from './FlowchartGenerator';
 import { useAuthStore } from '../../stores/auth-store';
 
@@ -33,6 +34,19 @@ vi.mock('sonner', () => ({
   },
 }));
 
+function createWrapper() {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return function Wrapper({ children }: { children: React.ReactNode }) {
+    return (
+      <QueryClientProvider client={queryClient}>
+        {children}
+      </QueryClientProvider>
+    );
+  };
+}
+
 describe('FlowchartGenerator', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -57,12 +71,12 @@ describe('FlowchartGenerator', () => {
   });
 
   it('renders the Diagram button when closed', () => {
-    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} />);
+    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} />, { wrapper: createWrapper() });
     expect(screen.getByText('Diagram')).toBeInTheDocument();
   });
 
   it('expands panel when button is clicked', async () => {
-    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} />);
+    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} />, { wrapper: createWrapper() });
 
     fireEvent.click(screen.getByText('Diagram'));
 
@@ -72,7 +86,7 @@ describe('FlowchartGenerator', () => {
   });
 
   it('loads models when panel opens', async () => {
-    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} />);
+    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} />, { wrapper: createWrapper() });
 
     fireEvent.click(screen.getByText('Diagram'));
 
@@ -82,7 +96,7 @@ describe('FlowchartGenerator', () => {
   });
 
   it('renders diagram type selector with all types', async () => {
-    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} />);
+    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} />, { wrapper: createWrapper() });
 
     fireEvent.click(screen.getByText('Diagram'));
 
@@ -95,7 +109,7 @@ describe('FlowchartGenerator', () => {
   });
 
   it('defaults to flowchart type with active styling', async () => {
-    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} />);
+    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} />, { wrapper: createWrapper() });
 
     fireEvent.click(screen.getByText('Diagram'));
 
@@ -106,7 +120,7 @@ describe('FlowchartGenerator', () => {
   });
 
   it('closes panel when X button is clicked', async () => {
-    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} />);
+    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} />, { wrapper: createWrapper() });
 
     fireEvent.click(screen.getByText('Diagram'));
     await waitFor(() => {
@@ -127,7 +141,7 @@ describe('FlowchartGenerator', () => {
     }
     streamSSEMock.mockReturnValue(fakeStream());
 
-    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Step 1 then Step 2</p>" pageTitle="Test Page" pageVersion={1} />);
+    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Step 1 then Step 2</p>" pageTitle="Test Page" pageVersion={1} />, { wrapper: createWrapper() });
 
     fireEvent.click(screen.getByText('Diagram'));
 
@@ -151,7 +165,7 @@ describe('FlowchartGenerator', () => {
   });
 
   it('allows switching diagram type before generating', async () => {
-    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} />);
+    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} />, { wrapper: createWrapper() });
 
     fireEvent.click(screen.getByText('Diagram'));
 
@@ -168,7 +182,7 @@ describe('FlowchartGenerator', () => {
   });
 
   it('shows generate button with title tooltip', () => {
-    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} />);
+    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} />, { wrapper: createWrapper() });
 
     const btn = screen.getByTitle('Generate diagram from article');
     expect(btn).toBeInTheDocument();
@@ -180,7 +194,7 @@ describe('FlowchartGenerator', () => {
     }
     streamSSEMock.mockReturnValue(fakeStream());
 
-    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Content</p>" pageTitle="Test Page" pageVersion={1} />);
+    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Content</p>" pageTitle="Test Page" pageVersion={1} />, { wrapper: createWrapper() });
 
     fireEvent.click(screen.getByText('Diagram'));
 
@@ -206,7 +220,7 @@ describe('FlowchartGenerator', () => {
     }
     streamSSEMock.mockReturnValue(fakeStream());
 
-    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Content</p>" pageTitle="Test Page" pageVersion={1} />);
+    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Content</p>" pageTitle="Test Page" pageVersion={1} />, { wrapper: createWrapper() });
 
     fireEvent.click(screen.getByText('Diagram'));
 
@@ -243,7 +257,7 @@ describe('FlowchartGenerator', () => {
       return Promise.resolve({});
     });
 
-    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Content</p>" pageTitle="Test Page" pageVersion={1} />);
+    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Content</p>" pageTitle="Test Page" pageVersion={1} />, { wrapper: createWrapper() });
 
     fireEvent.click(screen.getByText('Diagram'));
 
@@ -295,7 +309,7 @@ describe('FlowchartGenerator', () => {
       return Promise.resolve({});
     });
 
-    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Content</p>" pageTitle="Test Page" pageVersion={1} />);
+    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Content</p>" pageTitle="Test Page" pageVersion={1} />, { wrapper: createWrapper() });
 
     fireEvent.click(screen.getByText('Diagram'));
 
