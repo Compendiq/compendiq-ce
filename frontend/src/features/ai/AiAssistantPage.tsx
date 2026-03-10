@@ -11,6 +11,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '../../shared/lib/api';
 import { streamSSE } from '../../shared/lib/sse';
 import { usePage, useEmbeddingStatus, usePageHasChildren } from '../../shared/hooks/use-pages';
+import { useStreamingContent } from '../../shared/hooks/use-streaming-content';
 import { cn } from '../../shared/lib/cn';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { DiffView } from '../../shared/components/DiffView';
@@ -18,6 +19,7 @@ import { MermaidDiagram } from '../../shared/components/MermaidDiagram';
 import { ConfidenceBadge } from '../../shared/components/ConfidenceBadge';
 import { StreamingCursor } from '../../shared/components/StreamingCursor';
 import { AIThinkingBlob } from '../../shared/components/AIThinkingBlob';
+import { StreamingMessage } from './StreamingMessage';
 import { SourceCitations, type Source } from './SourceCitations';
 import { CitationChips } from './CitationChips';
 import { toast } from 'sonner';
@@ -92,6 +94,8 @@ export function AiAssistantPage() {
   const [diagramCode, setDiagramCode] = useState<string>('');
   const [isInsertingDiagram, setIsInsertingDiagram] = useState(false);
   const [includeSubPages, setIncludeSubPages] = useState(false);
+
+  const streaming = useStreamingContent();
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -172,7 +176,7 @@ export function AiAssistantPage() {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, streaming.displayContent]);
 
   const handleAsk = useCallback(async () => {
     if (!input.trim() || isStreaming) return;
@@ -189,8 +193,8 @@ export function AiAssistantPage() {
     setMessages((prev) => [...prev, { role: 'user', content: question }]);
     setIsStreaming(true);
     setIsThinking(true);
+    streaming.start();
 
-    let assistantContent = '';
     let finalSources: Source[] = [];
     setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
 
@@ -206,12 +210,7 @@ export function AiAssistantPage() {
         }
         if (chunk.content) {
           setIsThinking(false);
-          assistantContent += chunk.content;
-          setMessages((prev) => {
-            const updated = [...prev];
-            updated[updated.length - 1] = { role: 'assistant', content: assistantContent };
-            return updated;
-          });
+          streaming.append(chunk.content);
         }
         if (chunk.conversationId) {
           setConversationId(chunk.conversationId);
@@ -220,15 +219,20 @@ export function AiAssistantPage() {
           finalSources = chunk.sources;
         }
       }
-      // Attach sources to the last assistant message
-      if (finalSources.length > 0) {
-        setMessages((prev) => {
-          const updated = [...prev];
-          updated[updated.length - 1] = { ...updated[updated.length - 1], sources: finalSources };
-          return updated;
-        });
-      }
+      // Flush remaining content and commit to messages array
+      streaming.finish();
+      const finalContent = streaming.getContent();
+      setMessages((prev) => {
+        const updated = [...prev];
+        updated[updated.length - 1] = {
+          role: 'assistant',
+          content: finalContent,
+          ...(finalSources.length > 0 ? { sources: finalSources } : {}),
+        };
+        return updated;
+      });
     } catch (err) {
+      streaming.finish();
       if (err instanceof DOMException && err.name === 'AbortError') return;
       toast.error(err instanceof Error ? err.message : 'Failed to get response');
       setMessages((prev) => prev.slice(0, -1));
@@ -236,7 +240,7 @@ export function AiAssistantPage() {
       setIsStreaming(false);
       setIsThinking(false);
     }
-  }, [input, model, isStreaming, conversationId, pageId, includeSubPages]);
+  }, [input, model, isStreaming, conversationId, pageId, includeSubPages, streaming]);
 
   const handleImprove = useCallback(async () => {
     if (isStreaming) return;
@@ -256,9 +260,8 @@ export function AiAssistantPage() {
     setIsThinking(true);
     setShowDiffView(false);
     setImprovedContent('');
+    streaming.start();
     setMessages([{ role: 'user', content: `Improve (${improvementType}): ${page.title}` }]);
-
-    let result = '';
     setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
 
     try {
@@ -275,25 +278,28 @@ export function AiAssistantPage() {
         }
         if (chunk.content) {
           setIsThinking(false);
-          result += chunk.content;
-          setMessages((prev) => {
-            const updated = [...prev];
-            updated[updated.length - 1] = { role: 'assistant', content: result };
-            return updated;
-          });
+          streaming.append(chunk.content);
         }
       }
+      streaming.finish();
+      const finalContent = streaming.getContent();
+      setMessages((prev) => {
+        const updated = [...prev];
+        updated[updated.length - 1] = { role: 'assistant', content: finalContent };
+        return updated;
+      });
       // Show diff view after improve completes
-      setImprovedContent(result);
+      setImprovedContent(finalContent);
       setShowDiffView(true);
     } catch (err) {
+      streaming.finish();
       if (err instanceof DOMException && err.name === 'AbortError') return;
       toast.error(err instanceof Error ? err.message : 'Improvement failed');
     } finally {
       setIsStreaming(false);
       setIsThinking(false);
     }
-  }, [page, model, improvementType, pageId, isStreaming, includeSubPages]);
+  }, [page, model, improvementType, pageId, isStreaming, includeSubPages, streaming]);
 
   const handleGenerate = useCallback(async () => {
     if (!input.trim() || isStreaming) return;
@@ -310,8 +316,8 @@ export function AiAssistantPage() {
     setMessages([{ role: 'user', content: `Generate: ${prompt}` }]);
     setIsStreaming(true);
     setIsThinking(true);
+    streaming.start();
 
-    let result = '';
     setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
 
     try {
@@ -322,22 +328,25 @@ export function AiAssistantPage() {
         }
         if (chunk.content) {
           setIsThinking(false);
-          result += chunk.content;
-          setMessages((prev) => {
-            const updated = [...prev];
-            updated[updated.length - 1] = { role: 'assistant', content: result };
-            return updated;
-          });
+          streaming.append(chunk.content);
         }
       }
+      streaming.finish();
+      const finalContent = streaming.getContent();
+      setMessages((prev) => {
+        const updated = [...prev];
+        updated[updated.length - 1] = { role: 'assistant', content: finalContent };
+        return updated;
+      });
     } catch (err) {
+      streaming.finish();
       if (err instanceof DOMException && err.name === 'AbortError') return;
       toast.error(err instanceof Error ? err.message : 'Generation failed');
     } finally {
       setIsStreaming(false);
       setIsThinking(false);
     }
-  }, [input, model, isStreaming]);
+  }, [input, model, isStreaming, streaming]);
 
   const handleSummarize = useCallback(async () => {
     if (isStreaming) return;
@@ -355,9 +364,8 @@ export function AiAssistantPage() {
 
     setIsStreaming(true);
     setIsThinking(true);
+    streaming.start();
     setMessages([{ role: 'user', content: `Summarize: ${page.title}` }]);
-
-    let result = '';
     setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
 
     try {
@@ -373,22 +381,25 @@ export function AiAssistantPage() {
         }
         if (chunk.content) {
           setIsThinking(false);
-          result += chunk.content;
-          setMessages((prev) => {
-            const updated = [...prev];
-            updated[updated.length - 1] = { role: 'assistant', content: result };
-            return updated;
-          });
+          streaming.append(chunk.content);
         }
       }
+      streaming.finish();
+      const finalContent = streaming.getContent();
+      setMessages((prev) => {
+        const updated = [...prev];
+        updated[updated.length - 1] = { role: 'assistant', content: finalContent };
+        return updated;
+      });
     } catch (err) {
+      streaming.finish();
       if (err instanceof DOMException && err.name === 'AbortError') return;
       toast.error(err instanceof Error ? err.message : 'Summarization failed');
     } finally {
       setIsStreaming(false);
       setIsThinking(false);
     }
-  }, [page, model, isStreaming, pageId, includeSubPages]);
+  }, [page, model, isStreaming, pageId, includeSubPages, streaming]);
 
   const handleQuality = useCallback(async () => {
     if (isStreaming) return;
@@ -406,9 +417,8 @@ export function AiAssistantPage() {
 
     setIsStreaming(true);
     setIsThinking(true);
+    streaming.start();
     setMessages([{ role: 'user', content: `Analyze Quality: ${page.title}` }]);
-
-    let result = '';
     setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
 
     try {
@@ -424,22 +434,25 @@ export function AiAssistantPage() {
         }
         if (chunk.content) {
           setIsThinking(false);
-          result += chunk.content;
-          setMessages((prev) => {
-            const updated = [...prev];
-            updated[updated.length - 1] = { role: 'assistant', content: result };
-            return updated;
-          });
+          streaming.append(chunk.content);
         }
       }
+      streaming.finish();
+      const finalContent = streaming.getContent();
+      setMessages((prev) => {
+        const updated = [...prev];
+        updated[updated.length - 1] = { role: 'assistant', content: finalContent };
+        return updated;
+      });
     } catch (err) {
+      streaming.finish();
       if (err instanceof DOMException && err.name === 'AbortError') return;
       toast.error(err instanceof Error ? err.message : 'Quality analysis failed');
     } finally {
       setIsStreaming(false);
       setIsThinking(false);
     }
-  }, [page, model, pageId, isStreaming, includeSubPages]);
+  }, [page, model, pageId, isStreaming, includeSubPages, streaming]);
 
   const handleDiagram = useCallback(async () => {
     if (isStreaming) return;
@@ -458,9 +471,8 @@ export function AiAssistantPage() {
     setIsStreaming(true);
     setIsThinking(true);
     setDiagramCode('');
+    streaming.start();
     setMessages([{ role: 'user', content: `Generate ${diagramType} diagram: ${page.title}` }]);
-
-    let result = '';
     setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
 
     try {
@@ -476,23 +488,26 @@ export function AiAssistantPage() {
         }
         if (chunk.content) {
           setIsThinking(false);
-          result += chunk.content;
-          setMessages((prev) => {
-            const updated = [...prev];
-            updated[updated.length - 1] = { role: 'assistant', content: result };
-            return updated;
-          });
+          streaming.append(chunk.content);
         }
       }
-      setDiagramCode(result);
+      streaming.finish();
+      const finalContent = streaming.getContent();
+      setMessages((prev) => {
+        const updated = [...prev];
+        updated[updated.length - 1] = { role: 'assistant', content: finalContent };
+        return updated;
+      });
+      setDiagramCode(finalContent);
     } catch (err) {
+      streaming.finish();
       if (err instanceof DOMException && err.name === 'AbortError') return;
       toast.error(err instanceof Error ? err.message : 'Diagram generation failed');
     } finally {
       setIsStreaming(false);
       setIsThinking(false);
     }
-  }, [page, model, diagramType, pageId, isStreaming]);
+  }, [page, model, diagramType, pageId, isStreaming, streaming]);
 
   const handleInsertDiagram = useCallback(async () => {
     if (!diagramCode || !page || !pageId || isInsertingDiagram) return;
@@ -733,9 +748,10 @@ export function AiAssistantPage() {
           {messages.map((msg, i) => {
             const isLastAssistant = msg.role === 'assistant' && i === messages.length - 1;
             const isStreamingThis = isStreaming && isLastAssistant;
-            const showThinkingBlob = isThinking && isLastAssistant && !msg.content && thinkingElapsed;
-            const showTypingIndicator = isThinking && isLastAssistant && !msg.content && !thinkingElapsed;
-            const showStreamingCursor = isStreamingThis && msg.content && !isThinking;
+            // During streaming, content lives in streaming.displayContent, not msg.content
+            const effectiveContent = isStreamingThis ? streaming.displayContent : msg.content;
+            const showThinkingBlob = isThinking && isLastAssistant && !effectiveContent && thinkingElapsed;
+            const showTypingIndicator = isThinking && isLastAssistant && !effectiveContent && !thinkingElapsed;
 
             return (
               <m.div
@@ -771,17 +787,21 @@ export function AiAssistantPage() {
                   {showTypingIndicator && (
                     <TypingIndicator />
                   )}
-                  <div className={cn('prose prose-sm max-w-none', !isLight && 'prose-invert')}>
-                    {msg.content ? (
-                      <>
+                  {/* Batched streaming content (reads from useStreamingContent hook) */}
+                  {isStreamingThis && effectiveContent && !isThinking ? (
+                    <StreamingMessage
+                      content={effectiveContent}
+                      isStreaming
+                    />
+                  ) : (
+                    <div className={cn('prose prose-sm max-w-none', !isLight && 'prose-invert')}>
+                      {msg.content ? (
                         <Markdown remarkPlugins={[remarkGfm]}>{msg.content}</Markdown>
-                        {/* Streaming cursor at end of text */}
-                        {showStreamingCursor && <StreamingCursor />}
-                      </>
-                    ) : (!showThinkingBlob && !showTypingIndicator && isStreamingThis ? (
-                      <TypingIndicator />
-                    ) : null)}
-                  </div>
+                      ) : (!showThinkingBlob && !showTypingIndicator && isStreamingThis ? (
+                        <TypingIndicator />
+                      ) : null)}
+                    </div>
+                  )}
                   {/* Confidence badge + citation chips + source citations for Q&A responses */}
                   {msg.role === 'assistant' && msg.sources && msg.sources.length > 0 && (
                     <div className="mt-3 space-y-2">
