@@ -48,7 +48,8 @@ function addRecentSearch(term: string) {
 }
 
 export function CommandPalette() {
-  const { isOpen, close } = useCommandPaletteStore();
+  const isOpen = useCommandPaletteStore((s) => s.isOpen);
+  const close = useCommandPaletteStore((s) => s.close);
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
 

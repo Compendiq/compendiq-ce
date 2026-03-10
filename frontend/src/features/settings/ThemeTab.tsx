@@ -6,7 +6,8 @@ interface ThemeTabProps {
 }
 
 export function ThemeTab({ onSave }: ThemeTabProps) {
-  const { theme: currentTheme, setTheme } = useThemeStore();
+  const currentTheme = useThemeStore((s) => s.theme);
+  const setTheme = useThemeStore((s) => s.setTheme);
   const reduceEffects = useUiStore((s) => s.reduceEffects);
   const setReduceEffects = useUiStore((s) => s.setReduceEffects);
 

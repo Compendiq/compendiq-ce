@@ -144,14 +144,12 @@ function SidebarTreeNode({
 export function SidebarTreeView() {
   const location = useLocation();
   const { id: routePageId } = useParams<{ id: string }>();
-  const {
-    treeSidebarCollapsed,
-    toggleTreeSidebar,
-    treeSidebarSpaceKey,
-    setTreeSidebarSpaceKey,
-    treeSidebarWidth,
-    setTreeSidebarWidth,
-  } = useUiStore();
+  const treeSidebarCollapsed = useUiStore((s) => s.treeSidebarCollapsed);
+  const toggleTreeSidebar = useUiStore((s) => s.toggleTreeSidebar);
+  const treeSidebarSpaceKey = useUiStore((s) => s.treeSidebarSpaceKey);
+  const setTreeSidebarSpaceKey = useUiStore((s) => s.setTreeSidebarSpaceKey);
+  const treeSidebarWidth = useUiStore((s) => s.treeSidebarWidth);
+  const setTreeSidebarWidth = useUiStore((s) => s.setTreeSidebarWidth);
 
   // Determine active page ID from URL
   const activePageId = useMemo(() => {
