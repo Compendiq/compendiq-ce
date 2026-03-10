@@ -1,7 +1,6 @@
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { useVirtualizer } from '@tanstack/react-virtual';
 import { m, AnimatePresence } from 'framer-motion';
 import { Search, FileText, Plus, RefreshCw, ChevronLeft, ChevronRight, FolderOpen, Filter, X, List, Loader2, Cpu, Pin } from 'lucide-react';
 import DOMPurify from 'dompurify';
@@ -120,7 +119,6 @@ export function PagesPage() {
   const [sort, setSort] = useState<'title' | 'modified' | 'author'>('modified');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const reduceEffects = useUiStore((s) => s.reduceEffects);
-  const virtualScrollRef = useRef<HTMLDivElement>(null);
 
   const { data: settings } = useSettings();
   const { data: spaces } = useSpaces();
@@ -206,17 +204,6 @@ export function PagesPage() {
    * Virtual scrolling threshold: only virtualize when the list exceeds this
    * count. Small lists render without virtualization to avoid layout overhead.
    */
-  const VIRTUAL_THRESHOLD = 20;
-  const useVirtual = pageItems.length > VIRTUAL_THRESHOLD;
-
-  const rowVirtualizer = useVirtualizer({
-    count: pageItems.length,
-    getScrollElement: () => virtualScrollRef.current,
-    estimateSize: () => 80,
-    overscan: 5,
-    enabled: useVirtual,
-  });
-
   /** Max number of items that receive a stagger entrance animation */
   const STAGGER_LIMIT = 20;
 
@@ -610,72 +597,7 @@ export function PagesPage() {
           exit={{ opacity: 0 }}
           transition={{ duration: 0.2 }}
         >
-          {useVirtual ? (
-            /* Virtualized list for 20+ items: only renders visible rows */
-            <div
-              ref={virtualScrollRef}
-              data-testid="virtual-scroll-container"
-              className="overflow-auto"
-              style={{ maxHeight: 'calc(100vh - 320px)', minHeight: 200 }}
-            >
-              <div
-                style={{
-                  height: `${rowVirtualizer.getTotalSize()}px`,
-                  width: '100%',
-                  position: 'relative',
-                }}
-              >
-                {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-                  const pageItem = pageItems[virtualRow.index];
-                  const shouldAnimate = !reduceEffects && virtualRow.index < STAGGER_LIMIT;
-
-                  return (
-                    <div
-                      key={pageItem.id}
-                      data-index={virtualRow.index}
-                      ref={rowVirtualizer.measureElement}
-                      style={{
-                        position: 'absolute',
-                        top: 0,
-                        left: 0,
-                        width: '100%',
-                        transform: `translateY(${virtualRow.start}px)`,
-                      }}
-                      className="pb-2"
-                    >
-                      {shouldAnimate ? (
-                        <m.div
-                          initial={{ opacity: 0, y: 8 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          transition={{ delay: virtualRow.index * 0.03 }}
-                        >
-                          <PageItemCard
-                            pageItem={pageItem}
-                            selectedIds={selectedIds}
-                            pinnedIds={pinnedIds}
-                            onToggleSelection={toggleSelection}
-                            onTogglePin={handleTogglePin}
-                            onNavigate={navigate}
-                          />
-                        </m.div>
-                      ) : (
-                        <PageItemCard
-                          pageItem={pageItem}
-                          selectedIds={selectedIds}
-                          pinnedIds={pinnedIds}
-                          onToggleSelection={toggleSelection}
-                          onTogglePin={handleTogglePin}
-                          onNavigate={navigate}
-                        />
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          ) : (
-            /* Plain list for small item counts (<=20) */
-            <div className="space-y-2">
+          <div className="space-y-2">
               {pageItems.map((pageItem, i) => {
                 const shouldAnimate = !reduceEffects && i < STAGGER_LIMIT;
 
@@ -709,7 +631,6 @@ export function PagesPage() {
                 );
               })}
             </div>
-          )}
         </m.div>
       )}
       </AnimatePresence>

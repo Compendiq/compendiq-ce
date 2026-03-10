@@ -300,29 +300,24 @@ describe('PagesPage', () => {
     expect(screen.queryByTestId('embedding-progress-banner')).not.toBeInTheDocument();
   });
 
-  // --- Virtual scrolling tests ---
+  // --- Scroll behaviour tests ---
 
-  it('uses plain rendering for small lists (<=20 items)', async () => {
+  it('never renders a nested scroll container — single page scroll for all list sizes', async () => {
     render(<PagesPage />, { wrapper: createWrapper() });
-    // Small list (1 item) should NOT use virtual scroll container
     await screen.findByText('Test Page');
+    // No element with overflow-auto should exist for the page list
     expect(screen.queryByTestId('virtual-scroll-container')).not.toBeInTheDocument();
   });
 
-  it('renders virtual scroll container for large lists (>20 items)', async () => {
+  it('renders all items in a plain list for large page counts (>20)', async () => {
     vi.restoreAllMocks();
     mockFetchWithPages(makeManyPages(50));
     render(<PagesPage />, { wrapper: createWrapper() });
 
-    // Large list (>20 items) should use the virtual scroll container
-    const container = await screen.findByTestId('virtual-scroll-container');
-    expect(container).toBeInTheDocument();
-    expect(container.className).toContain('overflow-auto');
-
-    // The inner sizing div should reflect all 50 items (50 * 80px estimated height)
-    const sizingDiv = container.firstElementChild as HTMLElement;
-    expect(sizingDiv).toBeTruthy();
-    expect(sizingDiv.style.height).toBe('4000px'); // 50 * 80px
-    expect(sizingDiv.style.position).toBe('relative');
+    // All 50 items should render in a simple div, no separate scroll container
+    expect(screen.queryByTestId('virtual-scroll-container')).not.toBeInTheDocument();
+    // Each item renders an article-hover wrapper with its id
+    const items = await screen.findAllByTestId(/^article-hover-/);
+    expect(items.length).toBeGreaterThanOrEqual(50);
   });
 });
