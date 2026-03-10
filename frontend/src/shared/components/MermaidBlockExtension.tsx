@@ -38,7 +38,7 @@ function MermaidBlockView({ node, updateAttributes, editor }: NodeViewProps) {
   }, []);
 
   return (
-    <NodeViewWrapper className="mermaid-block-wrapper" data-testid="mermaid-block">
+    <NodeViewWrapper className="mermaid-diagram-wrapper" data-testid="mermaid-block">
       <div className="rounded-lg border border-border/50 bg-foreground/5 overflow-hidden">
         {/* Toolbar */}
         <div className="flex items-center justify-between border-b border-border/50 px-3 py-1.5">

@@ -15,7 +15,7 @@ vi.mock('../../stores/auth-store', () => ({
   ),
 }));
 
-// Mock apiFetch (used by pin/unpin mutations)
+// Mock apiFetch for all tests
 const apiFetchMock = vi.fn();
 vi.mock('../lib/api', () => ({
   apiFetch: (...args: unknown[]) => apiFetchMock(...args),
@@ -65,15 +65,12 @@ const mockPinnedPage: PinnedPage = {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  apiFetchMock.mockReset();
 });
 
 describe('usePages', () => {
   it('should fetch pages with query params', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify(MOCK_PAGINATED), {
-        headers: { 'Content-Type': 'application/json' },
-      }),
-    );
+    apiFetchMock.mockResolvedValue(MOCK_PAGINATED);
 
     const { result } = renderHook(
       () => usePages({ spaceKey: 'DEV', search: 'test', page: 1, limit: 20 }),
@@ -82,13 +79,12 @@ describe('usePages', () => {
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      expect.stringContaining('/api/pages?'),
-      expect.objectContaining({}),
+    expect(apiFetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/pages?'),
     );
 
     // Verify all query params are included
-    const callUrl = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    const callUrl = apiFetchMock.mock.calls[0][0] as string;
     expect(callUrl).toContain('spaceKey=DEV');
     expect(callUrl).toContain('search=test');
     expect(callUrl).toContain('page=1');
@@ -96,11 +92,7 @@ describe('usePages', () => {
   });
 
   it('should produce a stable query key for identical params across re-renders', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify(MOCK_PAGINATED), {
-        headers: { 'Content-Type': 'application/json' },
-      }),
-    );
+    apiFetchMock.mockResolvedValue(MOCK_PAGINATED);
 
     const { queryClient, wrapper } = createQueryClientAndWrapper();
 
@@ -127,18 +119,12 @@ describe('usePages', () => {
     );
     expect(pagesListQueries).toHaveLength(1);
 
-    // fetch should have been called only once (no duplicate due to key change)
-    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    // apiFetch should have been called only once (no duplicate due to key change)
+    expect(apiFetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('should create a new cache entry when params actually change', async () => {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(() =>
-      Promise.resolve(
-        new Response(JSON.stringify(MOCK_PAGINATED), {
-          headers: { 'Content-Type': 'application/json' },
-        }),
-      ),
-    );
+    apiFetchMock.mockResolvedValue(MOCK_PAGINATED);
 
     const { queryClient, wrapper } = createQueryClientAndWrapper();
 
@@ -160,32 +146,24 @@ describe('usePages', () => {
       expect(pagesListQueries).toHaveLength(2);
     });
 
-    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+    expect(apiFetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('should handle empty params without errors', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify(MOCK_PAGINATED), {
-        headers: { 'Content-Type': 'application/json' },
-      }),
-    );
+    apiFetchMock.mockResolvedValue(MOCK_PAGINATED);
 
     const { result } = renderHook(() => usePages(), { wrapper: createWrapper() });
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
-    const callUrl = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
-    expect(callUrl).toBe('/api/pages');
+    const callUrl = apiFetchMock.mock.calls[0][0] as string;
+    expect(callUrl).toBe('/pages');
   });
 });
 
 describe('usePageTree', () => {
   it('should fetch page tree with spaceKey', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify(MOCK_TREE), {
-        headers: { 'Content-Type': 'application/json' },
-      }),
-    );
+    apiFetchMock.mockResolvedValue(MOCK_TREE);
 
     const { result } = renderHook(
       () => usePageTree({ spaceKey: 'DEV' }),
@@ -194,16 +172,12 @@ describe('usePageTree', () => {
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
-    const callUrl = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
-    expect(callUrl).toContain('/api/pages/tree?spaceKey=DEV');
+    const callUrl = apiFetchMock.mock.calls[0][0] as string;
+    expect(callUrl).toContain('/pages/tree?spaceKey=DEV');
   });
 
   it('should produce a stable query key for identical spaceKey across re-renders', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify(MOCK_TREE), {
-        headers: { 'Content-Type': 'application/json' },
-      }),
-    );
+    apiFetchMock.mockResolvedValue(MOCK_TREE);
 
     const { queryClient, wrapper } = createQueryClientAndWrapper();
 
@@ -221,7 +195,7 @@ describe('usePageTree', () => {
 
     const treeQueries = queryClient.getQueryCache().findAll({ queryKey: ['pages', 'tree'] });
     expect(treeQueries).toHaveLength(1);
-    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    expect(apiFetchMock).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -240,7 +214,7 @@ describe('usePinPage', () => {
       () => new Promise((resolve) => setTimeout(() => resolve({ message: 'Page pinned', pageId: 'page-2' }), 100)),
     );
 
-    const { wrapper, queryClient } = createWrapper();
+    const { wrapper, queryClient } = createQueryClientAndWrapper();
 
     // Seed the pinned pages cache
     queryClient.setQueryData(['pages', 'pinned'], {
@@ -268,7 +242,7 @@ describe('usePinPage', () => {
   it('rolls back on error', async () => {
     apiFetchMock.mockRejectedValue(new Error('Server error'));
 
-    const { wrapper, queryClient } = createWrapper();
+    const { wrapper, queryClient } = createQueryClientAndWrapper();
 
     // Seed the pinned pages cache
     queryClient.setQueryData(['pages', 'pinned'], {
@@ -296,7 +270,7 @@ describe('usePinPage', () => {
   it('creates pinned list from empty when no cache exists', async () => {
     apiFetchMock.mockResolvedValue({ message: 'Page pinned', pageId: 'page-1' });
 
-    const { wrapper, queryClient } = createWrapper();
+    const { wrapper, queryClient } = createQueryClientAndWrapper();
     // No seeded cache
 
     const { result } = renderHook(() => usePinPage(), { wrapper });
@@ -329,7 +303,7 @@ describe('useUnpinPage', () => {
       () => new Promise((resolve) => setTimeout(() => resolve({ message: 'Page unpinned', pageId: 'page-1' }), 100)),
     );
 
-    const { wrapper, queryClient } = createWrapper();
+    const { wrapper, queryClient } = createQueryClientAndWrapper();
 
     queryClient.setQueryData(['pages', 'pinned'], {
       items: [mockPinnedPage],
@@ -354,7 +328,7 @@ describe('useUnpinPage', () => {
   it('rolls back on error', async () => {
     apiFetchMock.mockRejectedValue(new Error('Server error'));
 
-    const { wrapper, queryClient } = createWrapper();
+    const { wrapper, queryClient } = createQueryClientAndWrapper();
 
     queryClient.setQueryData(['pages', 'pinned'], {
       items: [mockPinnedPage],
@@ -381,7 +355,7 @@ describe('useUnpinPage', () => {
   it('handles empty cache gracefully', async () => {
     apiFetchMock.mockResolvedValue({ message: 'Page unpinned', pageId: 'page-1' });
 
-    const { wrapper, queryClient } = createWrapper();
+    const { wrapper, queryClient } = createQueryClientAndWrapper();
     // No seeded cache
 
     const { result } = renderHook(() => useUnpinPage(), { wrapper });

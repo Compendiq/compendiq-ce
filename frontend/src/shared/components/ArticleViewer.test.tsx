@@ -377,19 +377,17 @@ describe('ArticleViewer', () => {
     expect(pre.getAttribute('data-title')).toBeNull();
   });
 
-  it('does not render empty mermaid code blocks', async () => {
+  it('renders empty mermaid code blocks with empty state placeholder', async () => {
     const html = '<pre><code class="language-mermaid">   </code></pre>';
 
     const { container } = render(<ArticleViewer content={html} />);
 
-    // Wait for rendering to settle
+    // The wrapper renders but shows an empty-state message instead of a diagram
     await waitFor(() => {
-      expect(container.querySelector('.tiptap')).toBeTruthy();
+      expect(container.querySelector('.mermaid-diagram-wrapper')).toBeTruthy();
     });
 
-    // Empty mermaid blocks should not create diagram wrappers
-    // (the trimmed code is empty, so MermaidDiagram won't render)
-    const wrapper = container.querySelector('.mermaid-diagram-wrapper');
-    expect(wrapper).toBeNull();
+    // MermaidDiagram should NOT be invoked for empty code (no mermaid-container)
+    expect(container.querySelector('.mermaid-container')).toBeNull();
   });
 });

@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { m } from 'framer-motion';
-import { FileText, Layers, Database, Clock, Percent } from 'lucide-react';
+import { FileText, Layers, Database, Clock } from 'lucide-react';
 import { formatRelativeTime } from '../../shared/lib/format-relative-time';
 import { AnimatedCounter } from '../../shared/components/AnimatedCounter';
 import { TiltCard } from '../../shared/components/TiltCard';
@@ -140,19 +140,6 @@ export function KPICards({ embeddingStatus, spacesCount, lastSynced }: KPICardsP
       numericValue: spacesCount,
       color: 'text-primary',
       testId: 'kpi-spaces-synced',
-    },
-    {
-      icon: Percent,
-      label: 'Embedding Coverage',
-      value: embeddingStatus ? `${coveragePercent}%` : '--',
-      numericValue: embeddingStatus ? coveragePercent : undefined,
-      suffix: '%',
-      color: coveragePercent === 100
-        ? 'text-success'
-        : coveragePercent >= 75
-          ? 'text-info'
-          : 'text-warning',
-      testId: 'kpi-embedding-coverage',
     },
     {
       icon: Clock,

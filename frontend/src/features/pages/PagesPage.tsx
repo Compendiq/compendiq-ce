@@ -403,6 +403,7 @@ export function PagesPage() {
                   'glass-card-hover flex w-full items-center gap-4 p-4 text-left',
                   selectedIds.has(pageItem.id) && 'border-primary/40 bg-primary/5',
                 )}
+                data-testid={`article-hover-${pageItem.id}`}
               >
                 {/* Checkbox for bulk selection */}
                 <button

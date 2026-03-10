@@ -13,8 +13,11 @@ import {
   Panel,
   DrawioDiagram,
   ConfluenceToc,
+  ConfluenceStatus,
+  ConfluenceChildren,
   UnknownMacro,
 } from './article-extensions';
+import { MermaidBlock } from './MermaidBlockExtension';
 import { cn } from '../lib/cn';
 import type { TocHeading } from './TableOfContents';
 
@@ -65,7 +68,7 @@ export function ArticleViewer({
   const sanitizedContent = useMemo(
     () =>
       DOMPurify.sanitize(content, {
-        ADD_ATTR: ['data-diagram-name', 'data-drawio', 'data-confluence-link', 'data-type', 'data-checked', 'data-color'],
+        ADD_ATTR: ['data-diagram-name', 'data-drawio', 'data-confluence-link', 'data-type', 'data-checked', 'data-color', 'data-title'],
       }),
     [content],
   );
@@ -86,13 +89,28 @@ export function ArticleViewer({
       TableHeader,
       TaskList,
       TaskItem.configure({ nested: true }),
-      CodeBlockLowlight.configure({ lowlight }),
+      CodeBlockLowlight.extend({
+        addAttributes() {
+          return {
+            ...this.parent?.(),
+            title: {
+              default: null,
+              parseHTML: (element) => element.getAttribute('data-title'),
+              renderHTML: (attributes) =>
+                attributes.title ? { 'data-title': attributes.title } : {},
+            },
+          };
+        },
+      }).configure({ lowlight }),
       Image.configure({ inline: false }),
       Details,
       DetailsSummary,
       Panel,
       DrawioDiagram,
       ConfluenceToc,
+      ConfluenceStatus,
+      ConfluenceChildren,
+      MermaidBlock,
       UnknownMacro,
     ],
     content: sanitizedContent,
