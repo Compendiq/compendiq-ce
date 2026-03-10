@@ -137,7 +137,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     const offset = (page - 1) * limit;
     const sql = `
       SELECT cp.confluence_id, cp.space_key, cp.title, cp.version,
-             cp.parent_id, cp.labels, cp.author, cp.last_modified_at, cp.updated_at as last_synced,
+             cp.parent_id, cp.labels, cp.author, cp.last_modified_at, cp.last_synced,
              cp.embedding_dirty, cp.embedding_status, cp.embedded_at, cp.embedding_error
       FROM cached_pages cp
       ${whereClause}
@@ -297,7 +297,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       has_children: boolean;
     }>(
       `SELECT cp.confluence_id, cp.space_key, cp.title, cp.body_storage, cp.body_html, cp.body_text,
-              cp.version, cp.parent_id, cp.labels, cp.author, cp.last_modified_at, cp.updated_at as last_synced,
+              cp.version, cp.parent_id, cp.labels, cp.author, cp.last_modified_at, cp.last_synced,
               cp.embedding_dirty, cp.embedding_status, cp.embedded_at, cp.embedding_error,
               EXISTS(SELECT 1 FROM cached_pages c2 WHERE c2.parent_id = cp.confluence_id) as has_children
        FROM cached_pages cp
@@ -377,7 +377,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE, 'not_embedded')
        ON CONFLICT (confluence_id) DO UPDATE SET
          title = EXCLUDED.title, body_storage = EXCLUDED.body_storage, body_html = EXCLUDED.body_html,
-         body_text = EXCLUDED.body_text, version = EXCLUDED.version, updated_at = NOW()`,
+         body_text = EXCLUDED.body_text, version = EXCLUDED.version, last_synced = NOW()`,
       [page.id, body.spaceKey, body.title, page.body?.storage?.value ?? storageBody,
        bodyHtml, bodyText, page.version.number, body.parentId ?? null],
     );
@@ -424,7 +424,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     await query(
       `UPDATE cached_pages SET
          title = $2, body_storage = $3, body_html = $4, body_text = $5,
-         version = $6, updated_at = NOW(), embedding_dirty = TRUE,
+         version = $6, last_synced = NOW(), embedding_dirty = TRUE,
          embedding_status = 'not_embedded', embedded_at = NULL
        WHERE confluence_id = $1`,
       [id, body.title, page.body?.storage?.value ?? storageBody,
@@ -563,7 +563,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
           await query(
             `UPDATE cached_pages SET
                title = $2, body_storage = $3, body_html = $4, body_text = $5,
-               version = $6, updated_at = NOW(), embedding_dirty = TRUE,
+               version = $6, last_synced = NOW(), embedding_dirty = TRUE,
                embedding_status = 'not_embedded', embedded_at = NULL
              WHERE confluence_id = $1`,
             [id, page.title, page.body?.storage?.value ?? '', bodyHtml, bodyText, page.version.number],

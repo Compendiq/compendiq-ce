@@ -177,6 +177,16 @@ describe('PagesPage', () => {
     vi.restoreAllMocks();
   });
 
+  it('renders KPI cards at the top of the page', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    expect(screen.getByTestId('kpi-cards')).toBeInTheDocument();
+    expect(screen.getByTestId('kpi-total-articles')).toBeInTheDocument();
+    expect(screen.getByTestId('kpi-embedded-pages')).toBeInTheDocument();
+    expect(screen.getByTestId('kpi-spaces-synced')).toBeInTheDocument();
+    expect(screen.getByTestId('kpi-last-sync')).toBeInTheDocument();
+    expect(screen.getByTestId('kpi-embedding-coverage')).toBeInTheDocument();
+  });
+
   it('renders the page title, search input, and filter controls', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     expect(screen.getByText('Pages')).toBeInTheDocument();
