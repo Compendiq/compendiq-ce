@@ -193,6 +193,11 @@ export async function syncDrawioAttachments(
     }
   }
 
+  logger.debug(
+    { pageId, found: diagramNames.length, skipped: diagramNames.length - cachedFiles.length, downloaded: cachedFiles.length },
+    'syncDrawioAttachments complete',
+  );
+
   return cachedFiles;
 }
 
@@ -252,6 +257,11 @@ export async function syncImageAttachments(
       }
     }
   }
+
+  logger.debug(
+    { pageId, found: filenames.length, skipped: filenames.length - cachedFiles.length, downloaded: cachedFiles.length },
+    'syncImageAttachments complete',
+  );
 
   return cachedFiles;
 }

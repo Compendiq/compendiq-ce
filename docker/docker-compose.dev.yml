@@ -1,3 +1,8 @@
+# Note: when running the backend locally (npm run dev), Confluence attachment
+# files are cached in ./data/attachments/ on the host filesystem.
+# This directory is gitignored and persists across restarts automatically.
+# In production (docker-compose.yml), a named Docker volume is used instead.
+
 services:
   postgres:
     image: pgvector/pgvector:pg17
