@@ -562,7 +562,9 @@
   border: 1px solid var(--glass-border);
   background: oklch(from var(--color-card) l c h / 0.8);
   backdrop-filter: blur(12px);
-  box-shadow: 0 8px 32px var(--glass-shadow);
+  box-shadow:
+    inset 0 1px 0 oklch(1 0 0 / 0.08),
+    0 8px 32px var(--glass-shadow);
 }
 
 @utility glass-card-hover {
@@ -570,11 +572,17 @@
   border: 1px solid var(--glass-border);
   background: oklch(from var(--color-card) l c h / 0.8);
   backdrop-filter: blur(12px);
-  box-shadow: 0 8px 32px var(--glass-shadow);
-  transition: all 0.2s ease;
+  box-shadow:
+    inset 0 1px 0 oklch(1 0 0 / 0.08),
+    0 8px 32px var(--glass-shadow);
+  transition: box-shadow 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
   &:hover {
     border-color: var(--glass-border-hover);
-    box-shadow: 0 12px 40px var(--glass-shadow-hover);
+    box-shadow:
+      inset 0 1px 0 oklch(1 0 0 / 0.08),
+      0 0 0 1px oklch(from var(--color-primary) l c h / 0.5),
+      0 0 20px oklch(from var(--color-primary) l c h / 0.15),
+      0 12px 40px var(--glass-shadow-hover);
     transform: translateY(-1px);
   }
 }
@@ -693,13 +701,102 @@
   100% { background-position: -200% 0; }
 }
 
-/* Gradient mesh background */
+/* Gradient mesh background (static fallback for reduced effects) */
 @utility mesh-gradient {
   background:
     radial-gradient(ellipse at 20% 50%, var(--mesh-1) 0%, transparent 50%),
     radial-gradient(ellipse at 80% 20%, var(--mesh-2) 0%, transparent 50%),
     radial-gradient(ellipse at 50% 80%, var(--mesh-3) 0%, transparent 50%),
     var(--color-background);
+}
+
+/* ===========================
+   AURORA BACKGROUND
+   Three drifting radial gradient blobs.
+   GPU-composited: uses transform/opacity only.
+   =========================== */
+
+.aurora-blob {
+  position: absolute;
+  width: 60%;
+  height: 60%;
+  border-radius: 50%;
+  filter: blur(120px);
+  mix-blend-mode: screen;
+  will-change: transform;
+  opacity: 0.7;
+}
+
+.aurora-blob-indigo {
+  background: var(--mesh-1);
+  top: -10%;
+  left: 10%;
+  animation: aurora-drift-1 25s ease-in-out infinite;
+}
+
+.aurora-blob-cyan {
+  background: var(--mesh-2);
+  top: 30%;
+  right: -5%;
+  animation: aurora-drift-2 30s ease-in-out infinite;
+}
+
+.aurora-blob-rose {
+  background: var(--mesh-3);
+  bottom: -10%;
+  left: 30%;
+  animation: aurora-drift-3 20s ease-in-out infinite;
+}
+
+@keyframes aurora-drift-1 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(8%, 12%) scale(1.05); }
+  66% { transform: translate(-5%, -8%) scale(0.95); }
+}
+
+@keyframes aurora-drift-2 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(-10%, 6%) scale(1.08); }
+  66% { transform: translate(6%, -10%) scale(0.92); }
+}
+
+@keyframes aurora-drift-3 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(12%, -6%) scale(0.95); }
+  66% { transform: translate(-8%, 8%) scale(1.06); }
+}
+
+/* ===========================
+   GLOW ON INTERACTIVE ELEMENTS
+   =========================== */
+
+@utility glow-interactive {
+  transition: box-shadow 0.2s ease;
+  &:hover {
+    box-shadow:
+      0 0 0 1px oklch(from var(--color-primary) l c h / 0.5),
+      0 0 20px oklch(from var(--color-primary) l c h / 0.15);
+  }
+}
+
+/* ===========================
+   GRADIENT BORDERS (Dark Mode)
+   Subtle inset top highlight on glass cards.
+   =========================== */
+
+@utility glass-gradient-border {
+  box-shadow:
+    inset 0 1px 0 oklch(1 0 0 / 0.08),
+    0 8px 32px var(--glass-shadow);
+}
+
+/* ===========================
+   TABULAR NUMERALS
+   For stat numbers, KPI cards, counters.
+   =========================== */
+
+@utility tabular-nums {
+  font-variant-numeric: tabular-nums;
 }
 
 /* ============================================
@@ -1470,6 +1567,10 @@ pre:hover .code-copy-btn {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+
+  .aurora-blob {
+    animation: none !important;
   }
 }
 

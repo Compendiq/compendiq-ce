@@ -1,4 +1,5 @@
 import { useThemeStore, THEMES, THEME_CATEGORIES, type ThemeId } from '../../stores/theme-store';
+import { useUiStore } from '../../stores/ui-store';
 
 interface ThemeTabProps {
   onSave: (v: Record<string, unknown>) => void;
@@ -6,6 +7,8 @@ interface ThemeTabProps {
 
 export function ThemeTab({ onSave }: ThemeTabProps) {
   const { theme: currentTheme, setTheme } = useThemeStore();
+  const reduceEffects = useUiStore((s) => s.reduceEffects);
+  const setReduceEffects = useUiStore((s) => s.setReduceEffects);
 
   function handleSelect(id: ThemeId) {
     setTheme(id);
@@ -17,6 +20,33 @@ export function ThemeTab({ onSave }: ThemeTabProps) {
       <p className="text-sm text-muted-foreground">
         Choose a color theme for the interface. Changes apply immediately.
       </p>
+
+      {/* Reduce Effects toggle */}
+      <div className="flex items-center justify-between rounded-lg border border-border/50 p-4">
+        <div>
+          <p className="text-sm font-medium">Reduce Effects</p>
+          <p className="text-xs text-muted-foreground">
+            Disables aurora animation, noise overlay, and hover glow effects.
+            Auto-enabled when your OS prefers reduced motion.
+          </p>
+        </div>
+        <button
+          role="switch"
+          aria-checked={reduceEffects}
+          data-testid="reduce-effects-toggle"
+          onClick={() => setReduceEffects(!reduceEffects)}
+          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+            reduceEffects ? 'bg-primary' : 'bg-muted'
+          }`}
+        >
+          <span
+            className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${
+              reduceEffects ? 'translate-x-5' : 'translate-x-0'
+            }`}
+          />
+        </button>
+      </div>
+
       {THEME_CATEGORIES.map((cat) => {
         const categoryThemes = THEMES.filter((t) => t.category === cat.key);
         return (

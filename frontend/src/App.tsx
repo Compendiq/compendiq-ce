@@ -1,5 +1,5 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
-import { LazyMotion, domAnimation } from 'framer-motion';
+import { LazyMotion, domMax } from 'framer-motion';
 import { useAuthStore } from './stores/auth-store';
 import { useSessionInit } from './shared/hooks/useSessionInit';
 import { useThemeEffect } from './shared/hooks/useThemeEffect';
@@ -28,7 +28,7 @@ export function App() {
   useThemeEffect();
 
   return (
-    <LazyMotion features={domAnimation}>
+    <LazyMotion features={domMax}>
       <ErrorBoundary>
         <Routes>
           <Route path="/login" element={<LoginPage />} />

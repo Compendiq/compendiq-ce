@@ -8,6 +8,8 @@ import { ServiceStatus } from './ServiceStatus';
 import { Breadcrumb } from './Breadcrumb';
 import { UserMenu } from './UserMenu';
 import { SidebarTreeView } from './SidebarTreeView';
+import { AuroraBackground } from './AuroraBackground';
+import { NoiseOverlay } from './NoiseOverlay';
 import { cn } from '../lib/cn';
 
 const navItems = [
@@ -41,7 +43,9 @@ export function AppLayout({ children }: { children: ReactNode }) {
   }, [openCommandPalette]);
 
   return (
-    <div className="mesh-gradient flex h-screen flex-col overflow-hidden">
+    <div className="flex h-screen flex-col overflow-hidden bg-background">
+      <AuroraBackground />
+      <NoiseOverlay />
       <CommandPalette />
 
       {/* Top navigation bar */}
