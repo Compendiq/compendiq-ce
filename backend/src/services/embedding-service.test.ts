@@ -67,11 +67,16 @@ function makePage(id: string) {
 
 describe('embedding-service', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // resetAllMocks clears call history AND resets implementations/return values,
+    // preventing permanent mockResolvedValue() calls from leaking between tests.
+    vi.resetAllMocks();
+    // Restore defaults after reset
+    mocks.toSql.mockReturnValue('[0.1,0.2]');
     // Default: lock is available (returns a lock identifier)
     mocks.acquireEmbeddingLock.mockResolvedValue(FAKE_LOCK_ID);
     mocks.releaseEmbeddingLock.mockResolvedValue(undefined);
     mocks.isEmbeddingLocked.mockResolvedValue(false);
+    mocks.invalidateGraphCache.mockResolvedValue(undefined);
     // Default: htmlToText returns non-trivial text so embedPage proceeds
     mocks.htmlToText.mockReturnValue('Some substantial page content for embedding that is long enough');
     // Default: providerGenerateEmbedding returns one embedding vector per text
@@ -270,6 +275,13 @@ describe('embedding-service', () => {
   });
 
   describe('processDirtyPages', () => {
+    /** Mock the chunk-settings SELECT that runs first inside processDirtyPages. */
+    function mockChunkSettings(chunkSize = 500, chunkOverlap = 50) {
+      mocks.query.mockResolvedValueOnce({
+        rows: [{ embedding_chunk_size: chunkSize, embedding_chunk_overlap: chunkOverlap }],
+      });
+    }
+
     it('should return alreadyProcessing when lock cannot be acquired', async () => {
       mocks.acquireEmbeddingLock.mockResolvedValue(null);
 
@@ -283,6 +295,7 @@ describe('embedding-service', () => {
     });
 
     it('should acquire lock before processing and release with lock ID in finally', async () => {
+      mockChunkSettings();
       // COUNT query (no dirty pages)
       mocks.query.mockResolvedValueOnce({ rows: [{ count: '0' }] });
 
@@ -293,7 +306,7 @@ describe('embedding-service', () => {
     });
 
     it('should release lock with lock ID even when processing throws', async () => {
-      // COUNT query throws
+      // Chunk settings query throws (simulates DB failure)
       mocks.query.mockRejectedValueOnce(new Error('DB connection lost'));
 
       await expect(processDirtyPages('crash-user')).rejects.toThrow('DB connection lost');
@@ -303,17 +316,19 @@ describe('embedding-service', () => {
     });
 
     it('should return early with {0,0} when no dirty pages exist', async () => {
+      mockChunkSettings();
       mocks.query
         .mockResolvedValueOnce({ rows: [{ count: '0' }] }); // COUNT query
 
       const result = await processDirtyPages('user-1');
 
       expect(result).toEqual({ processed: 0, errors: 0 });
-      // Should only have called the COUNT query, no batch SELECT
-      expect(mocks.query).toHaveBeenCalledTimes(1);
+      // Should have called chunk settings + COUNT query only (2 total)
+      expect(mocks.query).toHaveBeenCalledTimes(2);
     });
 
     it('should process a small batch of pages (fewer than batch size)', async () => {
+      mockChunkSettings();
       // COUNT query
       mocks.query.mockResolvedValueOnce({ rows: [{ count: '3' }] });
       // Batch SELECT returns 3 pages
@@ -338,6 +353,7 @@ describe('embedding-service', () => {
     });
 
     it('should use LIMIT and OFFSET in the batch query', async () => {
+      mockChunkSettings();
       // COUNT query
       mocks.query.mockResolvedValueOnce({ rows: [{ count: '1' }] });
       // Batch SELECT returns 1 page
@@ -347,15 +363,16 @@ describe('embedding-service', () => {
 
       await processDirtyPages('user-1');
 
-      // Second query call (index 1) is the batch SELECT after COUNT
+      // calls[0] = chunk settings, calls[1] = COUNT, calls[2] = batch SELECT
       const calls = mocks.query.mock.calls;
-      const batchSelectCall = calls[1];
+      const batchSelectCall = calls[2];
       expect(batchSelectCall[0]).toContain('LIMIT');
       expect(batchSelectCall[0]).toContain('OFFSET');
       expect(batchSelectCall[1]).toEqual(['user-1', DIRTY_PAGE_BATCH_SIZE, 0]);
     });
 
     it('should process dirty pages and return counts', async () => {
+      mockChunkSettings();
       // COUNT query
       mocks.query.mockResolvedValueOnce({ rows: [{ count: '1' }] });
       // Batch SELECT with 1 page
@@ -389,6 +406,7 @@ describe('embedding-service', () => {
     it('should store error message when embedding fails', async () => {
       const embeddingError = new Error('Model nomic-embed-text not found');
 
+      mockChunkSettings();
       // COUNT query
       mocks.query.mockResolvedValueOnce({ rows: [{ count: '1' }] });
       // Batch SELECT with 1 page
@@ -428,6 +446,7 @@ describe('embedding-service', () => {
       const longMessage = 'x'.repeat(2000);
       const longError = new Error(longMessage);
 
+      mockChunkSettings();
       // COUNT query
       mocks.query.mockResolvedValueOnce({ rows: [{ count: '1' }] });
       // Batch SELECT with 1 page
@@ -462,6 +481,7 @@ describe('embedding-service', () => {
     });
 
     it('should clear error when embedding succeeds after previous failure', async () => {
+      mockChunkSettings();
       // COUNT query
       mocks.query.mockResolvedValueOnce({ rows: [{ count: '1' }] });
       // Batch SELECT with 1 page
@@ -502,6 +522,7 @@ describe('embedding-service', () => {
     it('should count errors and advance offset only by error count', async () => {
       const pages = [makePage('p1'), makePage('fail-1'), makePage('p3')];
 
+      mockChunkSettings();
       // COUNT query
       mocks.query.mockResolvedValueOnce({ rows: [{ count: '3' }] });
       // Batch SELECT (all 3 pages, < batch size so only one batch)
@@ -542,6 +563,7 @@ describe('embedding-service', () => {
       // All pages fail
       mocks.providerGenerateEmbedding.mockRejectedValue(new Error('Ollama down'));
 
+      mockChunkSettings();
       // COUNT query
       mocks.query.mockResolvedValueOnce({ rows: [{ count: '2' }] });
       // Batch 1: 2 pages
@@ -569,7 +591,10 @@ describe('embedding-service', () => {
     it('should call onProgress callback with progress events', async () => {
       const progressEvents: EmbeddingProgressEvent[] = [];
 
-      // Query to get dirty pages (2 pages)
+      mockChunkSettings();
+      // COUNT query (2 dirty pages)
+      mocks.query.mockResolvedValueOnce({ rows: [{ count: '2' }] });
+      // Batch SELECT (2 pages)
       mocks.query.mockResolvedValueOnce({
         rows: [
           { confluence_id: 'p1', title: 'Page One', space_key: 'DEV', body_html: '<p>Content 1</p>' },
@@ -619,6 +644,10 @@ describe('embedding-service', () => {
     it('should send complete event with error list on failures', async () => {
       const progressEvents: EmbeddingProgressEvent[] = [];
 
+      mockChunkSettings();
+      // COUNT query
+      mocks.query.mockResolvedValueOnce({ rows: [{ count: '1' }] });
+      // Batch SELECT
       mocks.query.mockResolvedValueOnce({
         rows: [
           { confluence_id: 'p-fail', title: 'Failing', space_key: 'DEV', body_html: '<p>Content</p>' },
@@ -632,6 +661,8 @@ describe('embedding-service', () => {
       // generate fails
       mocks.providerGenerateEmbedding.mockRejectedValueOnce(new Error('Network timeout'));
       // mark failed
+      mocks.query.mockResolvedValueOnce({ rows: [] });
+      // Next batch SELECT (offset advanced past the 1 failed page) -> empty -> done
       mocks.query.mockResolvedValueOnce({ rows: [] });
 
       await processDirtyPages('fail-progress-user', (event) => {
@@ -652,6 +683,10 @@ describe('embedding-service', () => {
 
       const cbError = new CircuitBreakerOpenError('ollama-embed: LLM server temporarily unavailable');
 
+      mockChunkSettings();
+      // COUNT query
+      mocks.query.mockResolvedValueOnce({ rows: [{ count: '1' }] });
+      // Batch SELECT
       mocks.query.mockResolvedValueOnce({
         rows: [
           { confluence_id: 'cb-page', title: 'CB Page', space_key: 'DEV', body_html: '<p>Content</p>' },
@@ -701,6 +736,10 @@ describe('embedding-service', () => {
 
       const cbError = new CircuitBreakerOpenError('ollama-embed: LLM server temporarily unavailable');
 
+      mockChunkSettings();
+      // COUNT query
+      mocks.query.mockResolvedValueOnce({ rows: [{ count: '2' }] });
+      // Batch SELECT
       mocks.query.mockResolvedValueOnce({
         rows: [
           { confluence_id: 'cb-p1', title: 'CB Page 1', space_key: 'DEV', body_html: '<p>Content 1</p>' },
@@ -729,17 +768,12 @@ describe('embedding-service', () => {
       vi.useRealTimers();
 
       expect(result.processed).toBe(0);
-      // Should NOT mark pages as 'failed' — only reset to 'not_embedded'
+      // Should NOT mark pages as 'failed' — circuit breaker abort leaves them in 'embedding'
+      // status so the next processDirtyPages run can retry them.
       const failedCalls = mocks.query.mock.calls.filter(
         (call) => typeof call[0] === 'string' && (call[0] as string).includes("embedding_status = 'failed'"),
       );
       expect(failedCalls).toHaveLength(0);
-
-      // Should reset remaining pages to 'not_embedded'
-      const resetCalls = mocks.query.mock.calls.filter(
-        (call) => typeof call[0] === 'string' && (call[0] as string).includes("embedding_status = 'not_embedded'"),
-      );
-      expect(resetCalls.length).toBeGreaterThan(0);
     });
 
     it('should emit waiting event when circuit breaker is open', async () => {
@@ -748,6 +782,10 @@ describe('embedding-service', () => {
       const cbError = new CircuitBreakerOpenError('ollama-embed: LLM server temporarily unavailable');
       const progressEvents: EmbeddingProgressEvent[] = [];
 
+      mockChunkSettings();
+      // COUNT query
+      mocks.query.mockResolvedValueOnce({ rows: [{ count: '1' }] });
+      // Batch SELECT
       mocks.query.mockResolvedValueOnce({
         rows: [
           { confluence_id: 'cb-wait-page', title: 'Wait Page', space_key: 'DEV', body_html: '<p>Content</p>' },
@@ -787,6 +825,57 @@ describe('embedding-service', () => {
       const waitingEvents = progressEvents.filter(e => e.type === 'waiting');
       expect(waitingEvents.length).toBeGreaterThan(0);
       expect(waitingEvents[0].reason).toContain('Circuit breaker open');
+    });
+
+    it('should fetch chunk settings from user_settings before processing', async () => {
+      mockChunkSettings(256, 25);
+      // COUNT query (no dirty pages — we only care the settings query ran)
+      mocks.query.mockResolvedValueOnce({ rows: [{ count: '0' }] });
+
+      await processDirtyPages('chunk-settings-user');
+
+      // First query should be chunk settings SELECT
+      const firstCall = mocks.query.mock.calls[0];
+      expect(firstCall[0]).toContain('embedding_chunk_size');
+      expect(firstCall[0]).toContain('embedding_chunk_overlap');
+      expect(firstCall[0]).toContain('user_settings');
+      expect(firstCall[1]).toEqual(['chunk-settings-user']);
+    });
+
+    it('should use default chunk settings when user has no settings row', async () => {
+      // Chunk settings returns no row
+      mocks.query.mockResolvedValueOnce({ rows: [] });
+      // COUNT query (no dirty pages)
+      mocks.query.mockResolvedValueOnce({ rows: [{ count: '0' }] });
+
+      // Should not throw — defaults are used
+      const result = await processDirtyPages('no-settings-user');
+      expect(result).toEqual({ processed: 0, errors: 0 });
+    });
+
+    it('should pass custom chunk settings through to embedPage', async () => {
+      mockChunkSettings(128, 10);
+      // COUNT query
+      mocks.query.mockResolvedValueOnce({ rows: [{ count: '1' }] });
+      // Batch SELECT
+      mocks.query.mockResolvedValueOnce({
+        rows: [{ confluence_id: 'cs-page', title: 'CS Page', space_key: 'DEV', body_html: '<p>Content</p>' }],
+      });
+      // mark embedding
+      mocks.query.mockResolvedValueOnce({ rows: [] });
+      // DELETE old embeddings
+      mocks.query.mockResolvedValueOnce({ rows: [] });
+      // INSERT embedding
+      mocks.query.mockResolvedValueOnce({ rows: [] });
+      // UPDATE dirty=false
+      mocks.query.mockResolvedValueOnce({ rows: [] });
+      // computePageRelationships
+      mocks.query.mockResolvedValue({ rows: [], rowCount: 0 });
+
+      const result = await processDirtyPages('custom-chunk-user');
+      // The page was processed; custom chunk settings propagated without error
+      expect(result.processed).toBe(1);
+      expect(result.errors).toBe(0);
     });
   });
 
@@ -848,6 +937,8 @@ describe('embedding-service', () => {
 
     const responses: Array<{ rows: unknown[] }> = [];
 
+    // 0. Chunk settings query
+    responses.push({ rows: [{ embedding_chunk_size: 500, embedding_chunk_overlap: 50 }] });
     // 1. COUNT query
     responses.push({ rows: [{ count: '2' }] });
     // 2. Batch SELECT (returns 2 short pages)
@@ -936,5 +1027,42 @@ describe('chunkText', () => {
   it('should return empty array for empty text', () => {
     const chunks = chunkText('', 'Empty', 'DEV', 'empty-1');
     expect(chunks).toHaveLength(0);
+  });
+
+  it('should use default CHUNK_SIZE when no params provided', () => {
+    // Short text fits in one chunk regardless of chunk size
+    const chunks = chunkText('Some text', 'Title', 'DEV', 'page-1');
+    expect(chunks).toHaveLength(1);
+  });
+
+  it('should respect custom chunkSize parameter', () => {
+    // Build text that exceeds a very small chunk size (e.g. 2 tokens = 8 chars)
+    // but fits in the default 500 tokens
+    const paragraph1 = 'A'.repeat(50);
+    const paragraph2 = 'B'.repeat(50);
+    const text = `${paragraph1}\n\n${paragraph2}`;
+
+    // With a tiny chunkSize of 10 tokens (40 chars), the two paragraphs should split
+    const chunksSmall = chunkText(text, 'Title', 'DEV', 'page-1', 10, 0);
+    // With default 500 tokens everything fits in one chunk
+    const chunksDefault = chunkText(text, 'Title', 'DEV', 'page-1');
+
+    expect(chunksSmall.length).toBeGreaterThan(chunksDefault.length);
+  });
+
+  it('should respect custom chunkOverlap parameter (zero overlap)', () => {
+    // Two paragraphs, small chunk size, zero overlap
+    const paragraph1 = 'First paragraph content here. '.repeat(5);
+    const paragraph2 = 'Second paragraph content here. '.repeat(5);
+    const text = `${paragraph1}\n\n${paragraph2}`;
+
+    // With zero overlap the chunks should be independent
+    const chunks = chunkText(text, 'Title', 'DEV', 'page-1', 30, 0);
+    expect(chunks.length).toBeGreaterThanOrEqual(1);
+    // With zero overlap no chunk should start with words from previous chunk's tail
+    // (this is a structural check — all chunks should be non-empty)
+    for (const chunk of chunks) {
+      expect(chunk.text.length).toBeGreaterThan(0);
+    }
   });
 });

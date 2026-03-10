@@ -88,9 +88,16 @@ function sleep(ms: number): Promise<void> {
 /**
  * Split text into chunks, preferring heading/paragraph boundaries.
  */
-export function chunkText(text: string, pageTitle: string, spaceKey: string, confluenceId: string): Array<{ text: string; metadata: ChunkMetadata }> {
-  const maxChars = CHUNK_SIZE * CHARS_PER_TOKEN;
-  const overlapChars = CHUNK_OVERLAP * CHARS_PER_TOKEN;
+export function chunkText(
+  text: string,
+  pageTitle: string,
+  spaceKey: string,
+  confluenceId: string,
+  chunkSize = CHUNK_SIZE,
+  chunkOverlap = CHUNK_OVERLAP,
+): Array<{ text: string; metadata: ChunkMetadata }> {
+  const maxChars = chunkSize * CHARS_PER_TOKEN;
+  const overlapChars = chunkOverlap * CHARS_PER_TOKEN;
 
   // Split on headings first (lines starting with # or lines with === or ---)
   const sections = text.split(/(?=^#{1,6}\s)/m);
@@ -169,6 +176,7 @@ export async function embedPage(
   pageTitle: string,
   spaceKey: string,
   bodyHtml: string,
+  opts?: { chunkSize?: number; chunkOverlap?: number },
 ): Promise<number> {
   const plainText = htmlToText(bodyHtml);
   if (!plainText || plainText.length < 20) {
@@ -180,7 +188,7 @@ export async function embedPage(
     return 0;
   }
 
-  const chunks = chunkText(plainText, pageTitle, spaceKey, confluenceId);
+  const chunks = chunkText(plainText, pageTitle, spaceKey, confluenceId, opts?.chunkSize, opts?.chunkOverlap);
   if (chunks.length === 0) return 0;
 
   // Delete old embeddings for this page
@@ -264,6 +272,19 @@ export async function processDirtyPages(
   const errorList: string[] = [];
 
   try {
+    // Fetch user's chunk settings (fall back to module-level defaults)
+    const chunkSettingsResult = await query<{ embedding_chunk_size: number; embedding_chunk_overlap: number }>(
+      'SELECT embedding_chunk_size, embedding_chunk_overlap FROM user_settings WHERE user_id = $1',
+      [userId],
+    );
+    const chunkOpts =
+      chunkSettingsResult.rows.length > 0
+        ? {
+            chunkSize: chunkSettingsResult.rows[0].embedding_chunk_size ?? CHUNK_SIZE,
+            chunkOverlap: chunkSettingsResult.rows[0].embedding_chunk_overlap ?? CHUNK_OVERLAP,
+          }
+        : { chunkSize: CHUNK_SIZE, chunkOverlap: CHUNK_OVERLAP };
+
     // Get total count for logging purposes
     const countResult = await query<{ count: string }>(
       'SELECT COUNT(*) as count FROM cached_pages WHERE user_id = $1 AND embedding_dirty = TRUE AND body_html IS NOT NULL',
@@ -311,7 +332,7 @@ export async function processDirtyPages(
             [userId, page.confluence_id],
           );
 
-          await embedPage(userId, page.confluence_id, page.title, page.space_key, page.body_html);
+          await embedPage(userId, page.confluence_id, page.title, page.space_key, page.body_html, chunkOpts);
           totalProcessed++;
           consecutiveFailures = 0; // Reset on success
 
@@ -363,7 +384,7 @@ export async function processDirtyPages(
 
               // Try embedding again
               try {
-                await embedPage(userId, page.confluence_id, page.title, page.space_key, page.body_html);
+                await embedPage(userId, page.confluence_id, page.title, page.space_key, page.body_html, chunkOpts);
                 totalProcessed++;
                 consecutiveFailures = 0;
                 cbSuccess = true;
