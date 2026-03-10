@@ -12,7 +12,7 @@ import { htmlToMarkdown, confluenceToHtml } from '../services/content-converter.
 import { getEmbeddingStatus, processDirtyPages, reEmbedAll, isProcessingUser, embedPage } from '../services/embedding-service.js';
 import { getClientForUser } from '../services/sync-service.js';
 import { getOllamaCircuitBreakerStatus, getOpenaiCircuitBreakerStatus } from '../services/circuit-breaker.js';
-import { LlmCache, buildLlmCacheKey, buildRagCacheKey } from '../services/llm-cache.js';
+import { LlmCache, buildLlmCacheKey, buildRagCacheKey, type CachedLlmResponse } from '../services/llm-cache.js';
 import {
   ImproveRequestSchema,
   GenerateRequestSchema,
@@ -70,6 +70,58 @@ async function assembleContextIfNeeded(
 // Rate limit configs for LLM endpoints
 const LLM_STREAM_RATE_LIMIT = { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } };
 const EMBEDDING_RATE_LIMIT = { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } };
+
+/**
+ * Send a cached SSE response as a single chunk and end the stream.
+ */
+function sendCachedSSE(
+  reply: FastifyReply,
+  content: string,
+  extras?: Record<string, unknown>,
+): void {
+  reply.raw.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  reply.raw.write(`data: ${JSON.stringify({ content, done: true, cached: true })}\n\n`);
+  if (extras) {
+    reply.raw.write(`data: ${JSON.stringify({ ...extras, done: true, final: true })}\n\n`);
+  }
+  reply.raw.end();
+}
+
+/**
+ * Check the LLM cache with stampede protection.
+ *
+ * 1. Return cached response immediately if present.
+ * 2. Try to acquire a Redis lock so only one request generates.
+ * 3. If the lock is already held by another request, poll until the cached
+ *    result appears (or timeout, in which case we return null so the caller
+ *    can generate anyway).
+ *
+ * The caller MUST call `releaseLock()` in a finally block when `lockAcquired`
+ * is true, after writing the generated result to the cache.
+ */
+async function checkCacheWithLock(
+  llmCache: LlmCache,
+  cacheKey: string,
+): Promise<{ cached: CachedLlmResponse | null; lockAcquired: boolean }> {
+  // Fast path — already in cache
+  const cached = await llmCache.getCachedResponse(cacheKey);
+  if (cached) return { cached, lockAcquired: false };
+
+  // Try to become the single generator for this key
+  const lockAcquired = await llmCache.acquireLock(cacheKey);
+  if (lockAcquired) {
+    return { cached: null, lockAcquired: true };
+  }
+
+  // Another request holds the lock — wait for it to populate the cache
+  const waited = await llmCache.waitForCachedResponse(cacheKey);
+  return { cached: waited, lockAcquired: false };
+}
 
 /**
  * Helper to stream SSE response from an async generator with abort support.
@@ -208,37 +260,34 @@ export async function llmRoutes(fastify: FastifyInstance) {
 
     const systemPrompt = getSystemPrompt(`improve_${type}` as SystemPromptKey) + multiPageSuffix;
 
-    // Check LLM cache
+    // Check LLM cache with stampede protection
     const cacheKey = buildLlmCacheKey(model, systemPrompt, sanitized);
-    const cached = await llmCache.getCachedResponse(cacheKey);
+    const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
-      reply.raw.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'X-Accel-Buffering': 'no',
-      });
-      reply.raw.write(`data: ${JSON.stringify({ content: cached.content, done: true, cached: true })}\n\n`);
-      reply.raw.end();
+      sendCachedSSE(reply, cached.content);
       return;
     }
 
-    // Resolve per-user LLM provider and stream
-    const generator = providerStreamChat(userId, model, [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: sanitized },
-    ]);
+    try {
+      // Resolve per-user LLM provider and stream
+      const generator = providerStreamChat(userId, model, [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: sanitized },
+      ]);
 
-    // Store improvement record
-    if (body.pageId) {
-      await query(
-        `INSERT INTO llm_improvements (user_id, confluence_id, improvement_type, model, original_content, improved_content, status)
-         VALUES ($1, $2, $3, $4, $5, '', 'streaming')`,
-        [userId, body.pageId, type, model, content.slice(0, 10000)],
-      );
+      // Store improvement record
+      if (body.pageId) {
+        await query(
+          `INSERT INTO llm_improvements (user_id, confluence_id, improvement_type, model, original_content, improved_content, status)
+           VALUES ($1, $2, $3, $4, $5, '', 'streaming')`,
+          [userId, body.pageId, type, model, content.slice(0, 10000)],
+        );
+      }
+
+      await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
+    } finally {
+      if (lockAcquired) await llmCache.releaseLock(cacheKey);
     }
-
-    await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
   });
 
   // POST /api/llm/generate - stream generated article
@@ -261,28 +310,25 @@ export async function llmRoutes(fastify: FastifyInstance) {
       ? getSystemPrompt(`generate_${template}` as SystemPromptKey)
       : getSystemPrompt('generate');
 
-    // Check LLM cache
+    // Check LLM cache with stampede protection
     const cacheKey = buildLlmCacheKey(model, systemPrompt, sanitized);
-    const cached = await llmCache.getCachedResponse(cacheKey);
+    const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
-      reply.raw.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'X-Accel-Buffering': 'no',
-      });
-      reply.raw.write(`data: ${JSON.stringify({ content: cached.content, done: true, cached: true })}\n\n`);
-      reply.raw.end();
+      sendCachedSSE(reply, cached.content);
       return;
     }
 
-    // Resolve per-user LLM provider and stream
-    const generator = providerStreamChat(userId, model, [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: sanitized },
-    ]);
+    try {
+      // Resolve per-user LLM provider and stream
+      const generator = providerStreamChat(userId, model, [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: sanitized },
+      ]);
 
-    await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
+      await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
+    } finally {
+      if (lockAcquired) await llmCache.releaseLock(cacheKey);
+    }
   });
 
   // POST /api/llm/summarize - stream summary
@@ -311,28 +357,25 @@ export async function llmRoutes(fastify: FastifyInstance) {
 
     const systemPrompt = `${getSystemPrompt('summarize')} ${lengthInstructions[length]}${multiPageSuffix}`;
 
-    // Check LLM cache
+    // Check LLM cache with stampede protection
     const cacheKey = buildLlmCacheKey(model, systemPrompt, sanitizedMarkdown);
-    const cached = await llmCache.getCachedResponse(cacheKey);
+    const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
-      reply.raw.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'X-Accel-Buffering': 'no',
-      });
-      reply.raw.write(`data: ${JSON.stringify({ content: cached.content, done: true, cached: true })}\n\n`);
-      reply.raw.end();
+      sendCachedSSE(reply, cached.content);
       return;
     }
 
-    // Resolve per-user LLM provider and stream
-    const generator = providerStreamChat(userId, model, [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: sanitizedMarkdown },
-    ]);
+    try {
+      // Resolve per-user LLM provider and stream
+      const generator = providerStreamChat(userId, model, [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: sanitizedMarkdown },
+      ]);
 
-    await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
+      await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
+    } finally {
+      if (lockAcquired) await llmCache.releaseLock(cacheKey);
+    }
   });
 
   // POST /api/llm/generate-diagram - stream Mermaid diagram from article content
@@ -354,27 +397,24 @@ export async function llmRoutes(fastify: FastifyInstance) {
 
     const systemPrompt = getSystemPrompt(`generate_diagram_${diagramType}` as SystemPromptKey);
 
-    // Check LLM cache
+    // Check LLM cache with stampede protection
     const cacheKey = buildLlmCacheKey(model, systemPrompt, sanitized);
-    const cached = await llmCache.getCachedResponse(cacheKey);
+    const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
-      reply.raw.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'X-Accel-Buffering': 'no',
-      });
-      reply.raw.write(`data: ${JSON.stringify({ content: cached.content, done: true, cached: true })}\n\n`);
-      reply.raw.end();
+      sendCachedSSE(reply, cached.content);
       return;
     }
 
-    const generator = providerStreamChat(request.userId, model, [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: sanitized },
-    ]);
+    try {
+      const generator = providerStreamChat(request.userId, model, [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: sanitized },
+      ]);
 
-    await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
+      await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
+    } finally {
+      if (lockAcquired) await llmCache.releaseLock(cacheKey);
+    }
   });
 
   // POST /api/llm/analyze-quality - stream article quality analysis
@@ -397,28 +437,25 @@ export async function llmRoutes(fastify: FastifyInstance) {
 
     const systemPrompt = getSystemPrompt('analyze_quality') + multiPageSuffix;
 
-    // Check LLM cache
+    // Check LLM cache with stampede protection
     const cacheKey = buildLlmCacheKey(model, systemPrompt, sanitized);
-    const cached = await llmCache.getCachedResponse(cacheKey);
+    const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
-      reply.raw.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'X-Accel-Buffering': 'no',
-      });
-      reply.raw.write(`data: ${JSON.stringify({ content: cached.content, done: true, cached: true })}\n\n`);
-      reply.raw.end();
+      sendCachedSSE(reply, cached.content);
       return;
     }
 
-    // Resolve per-user LLM provider and stream
-    const generator = providerStreamChat(userId, model, [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: sanitized },
-    ]);
+    try {
+      // Resolve per-user LLM provider and stream
+      const generator = providerStreamChat(userId, model, [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: sanitized },
+      ]);
 
-    await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
+      await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
+    } finally {
+      if (lockAcquired) await llmCache.releaseLock(cacheKey);
+    }
   });
 
   // POST /api/llm/ask - RAG-powered Q&A with streaming
@@ -472,151 +509,126 @@ export async function llmRoutes(fastify: FastifyInstance) {
       }
     }
 
-    // Check RAG cache (only for new conversations without history)
+    // Check RAG cache with stampede protection (only for new conversations without history)
     const docIds = searchResults.map((r) => r.confluenceId);
     const ragCacheKey = buildRagCacheKey(model, question, docIds, {
       includeSubPages,
       pageId: body.pageId,
     });
 
+    const sources = searchResults.map((r) => ({
+      pageTitle: r.pageTitle,
+      spaceKey: r.spaceKey,
+      confluenceId: r.confluenceId,
+      sectionTitle: r.sectionTitle,
+      score: r.score,
+    }));
+
+    // Helper to save/create conversation from a cached answer
+    const saveConversation = async (answer: string) => {
+      const newMessages: ChatMessage[] = [
+        ...conversationHistory,
+        { role: 'user', content: question },
+        { role: 'assistant', content: answer },
+      ];
+
+      if (convId) {
+        await query(
+          'UPDATE llm_conversations SET messages = $3, updated_at = NOW() WHERE id = $1 AND user_id = $2',
+          [convId, userId, JSON.stringify(newMessages)],
+        );
+      } else {
+        const insertResult = await query<{ id: string }>(
+          `INSERT INTO llm_conversations (user_id, model, title, messages)
+           VALUES ($1, $2, $3, $4) RETURNING id`,
+          [userId, model, question.slice(0, 100), JSON.stringify(newMessages)],
+        );
+        convId = insertResult.rows[0].id;
+      }
+    };
+
+    let ragLockAcquired = false;
+
     if (conversationHistory.length === 0) {
-      const cached = await llmCache.getCachedResponse(ragCacheKey);
+      const { cached, lockAcquired } = await checkCacheWithLock(llmCache, ragCacheKey);
+      ragLockAcquired = lockAcquired;
+
       if (cached) {
-        // Save/create conversation even for cached responses
-        const newMessages: ChatMessage[] = [
-          { role: 'user', content: question },
-          { role: 'assistant', content: cached.content },
-        ];
+        await saveConversation(cached.content);
 
-        if (convId) {
-          await query(
-            'UPDATE llm_conversations SET messages = $3, updated_at = NOW() WHERE id = $1 AND user_id = $2',
-            [convId, userId, JSON.stringify(newMessages)],
-          );
-        } else {
-          const insertResult = await query<{ id: string }>(
-            `INSERT INTO llm_conversations (user_id, model, title, messages)
-             VALUES ($1, $2, $3, $4) RETURNING id`,
-            [userId, model, question.slice(0, 100), JSON.stringify(newMessages)],
-          );
-          convId = insertResult.rows[0].id;
-        }
-
-        const sources = searchResults.map((r) => ({
-          pageTitle: r.pageTitle,
-          spaceKey: r.spaceKey,
-          confluenceId: r.confluenceId,
-          sectionTitle: r.sectionTitle,
-          score: r.score,
-        }));
-
-        reply.raw.writeHead(200, {
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          'Connection': 'keep-alive',
-          'X-Accel-Buffering': 'no',
-        });
-        reply.raw.write(`data: ${JSON.stringify({ content: cached.content, done: true, cached: true })}\n\n`);
-        reply.raw.write(`data: ${JSON.stringify({
-          done: true,
-          final: true,
+        sendCachedSSE(reply, cached.content, {
           conversationId: convId,
           sources,
-        })}\n\n`);
-        reply.raw.end();
+        });
         return;
       }
     }
 
-    // Build messages
-    const messages: ChatMessage[] = [
-      { role: 'system', content: getSystemPrompt('ask') + multiPageSuffix },
-      ...conversationHistory,
-      {
-        role: 'user',
-        content: `Context from knowledge base:\n\n${ragContext}\n\n---\n\nQuestion: ${sanitizedQuestion}`,
-      },
-    ];
-
-    // Stream the response and collect full answer
-    const controller = new AbortController();
-    const onClose = () => controller.abort();
-    request.raw.on('close', onClose);
-
-    // Resolve per-user LLM provider and stream
-    const generator = providerStreamChat(userId, model, messages, controller.signal);
-    let fullAnswer = '';
-
-    reply.raw.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-      'X-Accel-Buffering': 'no',
-    });
-
     try {
-      for await (const chunk of generator) {
-        if (controller.signal.aborted) {
-          logger.debug('RAG SSE stream aborted by client disconnect');
-          break;
+      // Build messages
+      const messages: ChatMessage[] = [
+        { role: 'system', content: getSystemPrompt('ask') + multiPageSuffix },
+        ...conversationHistory,
+        {
+          role: 'user',
+          content: `Context from knowledge base:\n\n${ragContext}\n\n---\n\nQuestion: ${sanitizedQuestion}`,
+        },
+      ];
+
+      // Stream the response and collect full answer
+      const controller = new AbortController();
+      const onClose = () => controller.abort();
+      request.raw.on('close', onClose);
+
+      // Resolve per-user LLM provider and stream
+      const generator = providerStreamChat(userId, model, messages, controller.signal);
+      let fullAnswer = '';
+
+      reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+
+      try {
+        for await (const chunk of generator) {
+          if (controller.signal.aborted) {
+            logger.debug('RAG SSE stream aborted by client disconnect');
+            break;
+          }
+          fullAnswer += chunk.content;
+          reply.raw.write(`data: ${JSON.stringify({ content: chunk.content, done: chunk.done })}\n\n`);
         }
-        fullAnswer += chunk.content;
-        reply.raw.write(`data: ${JSON.stringify({ content: chunk.content, done: chunk.done })}\n\n`);
-      }
 
-      if (!controller.signal.aborted) {
-        // Cache the response
-        if (fullAnswer) {
-          await llmCache.setCachedResponse(ragCacheKey, fullAnswer);
+        if (!controller.signal.aborted) {
+          // Cache the response
+          if (fullAnswer) {
+            await llmCache.setCachedResponse(ragCacheKey, fullAnswer);
+          }
+
+          await saveConversation(fullAnswer);
+
+          reply.raw.write(`data: ${JSON.stringify({
+            done: true,
+            final: true,
+            conversationId: convId,
+            sources,
+          })}\n\n`);
         }
-
-        // Save/update conversation
-        const newMessages: ChatMessage[] = [
-          ...conversationHistory,
-          { role: 'user', content: question },
-          { role: 'assistant', content: fullAnswer },
-        ];
-
-        if (convId) {
-          await query(
-            'UPDATE llm_conversations SET messages = $3, updated_at = NOW() WHERE id = $1 AND user_id = $2',
-            [convId, userId, JSON.stringify(newMessages)],
-          );
+      } catch (err) {
+        if (controller.signal.aborted || (err instanceof Error && err.name === 'AbortError')) {
+          logger.debug('RAG stream aborted by client disconnect');
         } else {
-          const insertResult = await query<{ id: string }>(
-            `INSERT INTO llm_conversations (user_id, model, title, messages)
-             VALUES ($1, $2, $3, $4) RETURNING id`,
-            [userId, model, question.slice(0, 100), JSON.stringify(newMessages)],
-          );
-          convId = insertResult.rows[0].id;
+          logger.error({ err }, 'RAG stream error');
+          reply.raw.write(`data: ${JSON.stringify({ error: 'Stream error', done: true })}\n\n`);
         }
-
-        // Send final event with metadata
-        const sources = searchResults.map((r) => ({
-          pageTitle: r.pageTitle,
-          spaceKey: r.spaceKey,
-          confluenceId: r.confluenceId,
-          sectionTitle: r.sectionTitle,
-          score: r.score,
-        }));
-
-        reply.raw.write(`data: ${JSON.stringify({
-          done: true,
-          final: true,
-          conversationId: convId,
-          sources,
-        })}\n\n`);
-      }
-    } catch (err) {
-      if (controller.signal.aborted || (err instanceof Error && err.name === 'AbortError')) {
-        logger.debug('RAG stream aborted by client disconnect');
-      } else {
-        logger.error({ err }, 'RAG stream error');
-        reply.raw.write(`data: ${JSON.stringify({ error: 'Stream error', done: true })}\n\n`);
+      } finally {
+        request.raw.removeListener('close', onClose);
+        reply.raw.end();
       }
     } finally {
-      request.raw.removeListener('close', onClose);
-      reply.raw.end();
+      if (ragLockAcquired) await llmCache.releaseLock(ragCacheKey);
     }
   });
 
