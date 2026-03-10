@@ -334,8 +334,8 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     await query(
       `INSERT INTO cached_pages
          (user_id, confluence_id, space_key, title, body_storage, body_html, body_text,
-          version, parent_id, embedding_dirty)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE)`,
+          version, parent_id, embedding_dirty, embedding_status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, 'not_embedded')`,
       [userId, page.id, body.spaceKey, body.title, page.body?.storage?.value ?? storageBody,
        bodyHtml, bodyText, page.version.number, body.parentId ?? null],
     );
@@ -382,7 +382,8 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     await query(
       `UPDATE cached_pages SET
          title = $3, body_storage = $4, body_html = $5, body_text = $6,
-         version = $7, last_synced = NOW(), embedding_dirty = TRUE
+         version = $7, last_synced = NOW(), embedding_dirty = TRUE,
+         embedding_status = 'not_embedded', embedded_at = NULL
        WHERE user_id = $1 AND confluence_id = $2`,
       [userId, id, body.title, page.body?.storage?.value ?? storageBody,
        bodyHtml, bodyText, page.version.number],
@@ -505,7 +506,8 @@ export async function pagesRoutes(fastify: FastifyInstance) {
         await query(
           `UPDATE cached_pages SET
              title = $3, body_storage = $4, body_html = $5, body_text = $6,
-             version = $7, last_synced = NOW(), embedding_dirty = TRUE
+             version = $7, last_synced = NOW(), embedding_dirty = TRUE,
+             embedding_status = 'not_embedded', embedded_at = NULL
            WHERE user_id = $1 AND confluence_id = $2`,
           [userId, id, page.title, page.body?.storage?.value ?? '', bodyHtml, bodyText, page.version.number],
         );
