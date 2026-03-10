@@ -23,6 +23,9 @@ import {
   COMPLEX_PAGE,
   USER_MENTIONS_PAGE,
   DATA_MACRO_VARIANT_PAGE,
+  STATUS_MACRO_PAGE,
+  CHILDREN_MACRO_PAGE,
+  CHILDREN_MACRO_NO_PARAMS_PAGE,
 } from './__fixtures__/confluence-xhtml.js';
 
 describe('content-converter', () => {
@@ -151,6 +154,40 @@ describe('content-converter', () => {
       expect(html).toContain('DELETE');
       expect(html).toContain('/api/health');
       expect(html).toContain('/api/llm/ask');
+    });
+
+    it('converts status macros to colored inline badges', () => {
+      const html = confluenceToHtml(STATUS_MACRO_PAGE);
+      expect(html).toContain('class="confluence-status"');
+      expect(html).toContain('data-color="green"');
+      expect(html).toContain('>DONE</span>');
+      expect(html).toContain('data-color="yellow"');
+      expect(html).toContain('>IN PROGRESS</span>');
+      expect(html).toContain('data-color="red"');
+      expect(html).toContain('>BLOCKED</span>');
+      expect(html).toContain('data-color="blue"');
+      expect(html).toContain('>IN REVIEW</span>');
+      expect(html).toContain('data-color="grey"');
+      expect(html).toContain('>TODO</span>');
+      expect(html).not.toContain('ac:structured-macro');
+    });
+
+    it('converts children display macro to placeholder', () => {
+      const html = confluenceToHtml(CHILDREN_MACRO_PAGE);
+      expect(html).toContain('class="confluence-children-macro"');
+      expect(html).toContain('data-sort="title"');
+      expect(html).toContain('data-reverse="false"');
+      expect(html).toContain('[Children pages listed here]');
+      expect(html).not.toContain('ac:structured-macro');
+    });
+
+    it('converts children display macro with no parameters', () => {
+      const html = confluenceToHtml(CHILDREN_MACRO_NO_PARAMS_PAGE);
+      expect(html).toContain('class="confluence-children-macro"');
+      expect(html).toContain('[Children pages listed here]');
+      // No data-sort or data-reverse when params are absent
+      expect(html).not.toContain('data-sort');
+      expect(html).not.toContain('data-reverse');
     });
 
     it('wraps unknown macros with data attributes', () => {
@@ -308,6 +345,41 @@ describe('content-converter', () => {
       expect(xhtml).toContain('/api/llm/ask');
     });
 
+    it('round-trips status macros', () => {
+      const html = confluenceToHtml(STATUS_MACRO_PAGE);
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toContain('ac:name="status"');
+      expect(xhtml).toContain('ac:name="colour"');
+      expect(xhtml).toContain('>Green<');
+      expect(xhtml).toContain('>Yellow<');
+      expect(xhtml).toContain('>Red<');
+      expect(xhtml).toContain('>Blue<');
+      expect(xhtml).toContain('>Grey<');
+      expect(xhtml).toContain('ac:name="title"');
+      expect(xhtml).toContain('>DONE<');
+      expect(xhtml).toContain('>IN PROGRESS<');
+      expect(xhtml).toContain('>BLOCKED<');
+    });
+
+    it('round-trips children display macro with parameters', () => {
+      const html = confluenceToHtml(CHILDREN_MACRO_PAGE);
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toContain('ac:name="children"');
+      expect(xhtml).toContain('ac:name="sort"');
+      expect(xhtml).toContain('>title<');
+      expect(xhtml).toContain('ac:name="reverse"');
+      expect(xhtml).toContain('>false<');
+    });
+
+    it('round-trips children display macro without parameters', () => {
+      const html = confluenceToHtml(CHILDREN_MACRO_NO_PARAMS_PAGE);
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toContain('ac:name="children"');
+      // No sort/reverse params when they were absent in the original
+      expect(xhtml).not.toContain('ac:name="sort"');
+      expect(xhtml).not.toContain('ac:name="reverse"');
+    });
+
     it('round-trips complex page preserving structure', () => {
       const html = confluenceToHtml(COMPLEX_PAGE, '42');
       const xhtml = htmlToConfluence(html);
@@ -341,6 +413,9 @@ describe('content-converter', () => {
       { name: 'tables', xhtml: TABLE_PAGE },
       { name: 'tables with colspan/rowspan', xhtml: TABLE_COLSPAN_ROWSPAN_PAGE },
       { name: 'multi-row tables', xhtml: TABLE_MULTI_ROW_PAGE },
+      { name: 'status macros', xhtml: STATUS_MACRO_PAGE },
+      { name: 'children macro', xhtml: CHILDREN_MACRO_PAGE },
+      { name: 'children macro (no params)', xhtml: CHILDREN_MACRO_NO_PARAMS_PAGE },
     ];
 
     for (const { name, xhtml } of stableFixtures) {
@@ -415,6 +490,22 @@ describe('content-converter', () => {
       expect(md).toContain('**WARNING**');
       expect(md).toContain('**NOTE**');
       expect(md).toContain('**TIP**');
+    });
+
+    it('converts status macros to text badges', () => {
+      const html = confluenceToHtml(STATUS_MACRO_PAGE);
+      const md = htmlToMarkdown(html);
+      expect(md).toContain('[STATUS: DONE]');
+      expect(md).toContain('[STATUS: IN PROGRESS]');
+      expect(md).toContain('[STATUS: BLOCKED]');
+      expect(md).toContain('[STATUS: IN REVIEW]');
+      expect(md).toContain('[STATUS: TODO]');
+    });
+
+    it('converts children macro to note', () => {
+      const html = confluenceToHtml(CHILDREN_MACRO_PAGE);
+      const md = htmlToMarkdown(html);
+      expect(md).toContain('[Children pages]');
     });
 
     it('produces clean markdown for LLM consumption from complex page', () => {

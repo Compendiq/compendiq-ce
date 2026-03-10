@@ -247,6 +247,33 @@ describe('ArticleViewer', () => {
     expect(container.querySelector('.panel-info')?.textContent).toContain('Info panel content');
   });
 
+  it('renders Confluence status badges', async () => {
+    const html = '<p>Status: <span class="confluence-status" data-color="green">DONE</span></p>';
+
+    const { container } = render(<ArticleViewer content={html} />);
+
+    await waitFor(() => {
+      expect(container.querySelector('.confluence-status')).toBeTruthy();
+    });
+
+    const badge = container.querySelector('.confluence-status')!;
+    expect(badge.textContent).toBe('DONE');
+    expect(badge.getAttribute('data-color')).toBe('green');
+  });
+
+  it('renders Confluence children macro placeholder', async () => {
+    const html = '<div class="confluence-children-macro" data-sort="title">[Children pages listed here]</div>';
+
+    const { container } = render(<ArticleViewer content={html} />);
+
+    await waitFor(() => {
+      expect(container.querySelector('.confluence-children-macro')).toBeTruthy();
+    });
+
+    const placeholder = container.querySelector('.confluence-children-macro')!;
+    expect(placeholder.textContent).toContain('Children pages listed here');
+  });
+
   it('renders collapsible details/summary sections', async () => {
     const html = '<details><summary>Click to expand</summary><p>Hidden content</p></details>';
 
