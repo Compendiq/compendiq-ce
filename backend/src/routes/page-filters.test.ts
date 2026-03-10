@@ -76,6 +76,8 @@ const defaultPageRow = {
   last_modified_at: new Date('2025-01-15'),
   last_synced: new Date('2025-01-16'),
   embedding_dirty: false,
+  embedding_status: 'embedded',
+  embedded_at: new Date('2025-01-16'),
 };
 
 describe('Page Filters', () => {

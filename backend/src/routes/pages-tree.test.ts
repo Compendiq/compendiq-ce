@@ -116,6 +116,9 @@ describe('GET /api/pages/tree', () => {
           parent_id: null,
           labels: ['architecture'],
           last_modified_at: new Date('2026-03-01'),
+          embedding_dirty: false,
+          embedding_status: 'embedded',
+          embedded_at: new Date('2026-03-01'),
         },
         {
           confluence_id: 'child-1',
@@ -124,6 +127,9 @@ describe('GET /api/pages/tree', () => {
           parent_id: 'root-1',
           labels: [],
           last_modified_at: new Date('2026-03-02'),
+          embedding_dirty: true,
+          embedding_status: 'not_embedded',
+          embedded_at: null,
         },
       ],
     });
@@ -144,6 +150,9 @@ describe('GET /api/pages/tree', () => {
       parentId: null,
       labels: ['architecture'],
       lastModifiedAt: '2026-03-01T00:00:00.000Z',
+      embeddingDirty: false,
+      embeddingStatus: 'embedded',
+      embeddedAt: '2026-03-01T00:00:00.000Z',
     });
     expect(body.items[1].parentId).toBe('root-1');
   });
@@ -180,10 +189,10 @@ describe('GET /api/pages/tree', () => {
   it('should return pages with parent-child relationships', async () => {
     mockQueryFn.mockResolvedValueOnce({
       rows: [
-        { confluence_id: 'root', space_key: 'DEV', title: 'Root', parent_id: null, labels: [], last_modified_at: null },
-        { confluence_id: 'child-a', space_key: 'DEV', title: 'Child A', parent_id: 'root', labels: [], last_modified_at: null },
-        { confluence_id: 'child-b', space_key: 'DEV', title: 'Child B', parent_id: 'root', labels: [], last_modified_at: null },
-        { confluence_id: 'grandchild', space_key: 'DEV', title: 'Grandchild', parent_id: 'child-a', labels: [], last_modified_at: null },
+        { confluence_id: 'root', space_key: 'DEV', title: 'Root', parent_id: null, labels: [], last_modified_at: null, embedding_dirty: true, embedding_status: 'not_embedded', embedded_at: null },
+        { confluence_id: 'child-a', space_key: 'DEV', title: 'Child A', parent_id: 'root', labels: [], last_modified_at: null, embedding_dirty: true, embedding_status: 'not_embedded', embedded_at: null },
+        { confluence_id: 'child-b', space_key: 'DEV', title: 'Child B', parent_id: 'root', labels: [], last_modified_at: null, embedding_dirty: true, embedding_status: 'not_embedded', embedded_at: null },
+        { confluence_id: 'grandchild', space_key: 'DEV', title: 'Grandchild', parent_id: 'child-a', labels: [], last_modified_at: null, embedding_dirty: true, embedding_status: 'not_embedded', embedded_at: null },
       ],
     });
 

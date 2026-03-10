@@ -7,11 +7,12 @@ import {
   ExternalLink, Clock, User,
 } from 'lucide-react';
 import type { SettingsResponse } from '@kb-creator/contracts';
-import { usePage, useUpdatePage, useDeletePage } from '../../shared/hooks/use-pages';
+import { usePage, useUpdatePage, useDeletePage, useTriggerEmbedding } from '../../shared/hooks/use-pages';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { Editor, getDraft, clearDraft } from '../../shared/components/Editor';
 import { ArticleViewer } from '../../shared/components/ArticleViewer';
 import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
+import { EmbeddingStatusBadge } from '../../shared/components/EmbeddingStatusBadge';
 import { TableOfContents } from '../../shared/components/TableOfContents';
 import type { TocHeading } from '../../shared/components/TableOfContents';
 import { DuplicateDetector } from './DuplicateDetector';
@@ -66,6 +67,7 @@ export function PageViewPage() {
   const { data: page, isLoading } = usePage(id);
   const updateMutation = useUpdatePage();
   const deleteMutation = useDeletePage();
+  const triggerEmbeddingMutation = useTriggerEmbedding();
   const isLight = useIsLightTheme();
 
   const queryClient = useQueryClient();
@@ -257,6 +259,15 @@ export function PageViewPage() {
         {page.lastModifiedAt && (
           <FreshnessBadge lastModified={page.lastModifiedAt} />
         )}
+        <EmbeddingStatusBadge
+          embeddingStatus={page.embeddingStatus}
+          embeddingDirty={page.embeddingDirty}
+          embeddedAt={page.embeddedAt}
+          onRetry={page.embeddingStatus === 'failed' ? () => {
+            triggerEmbeddingMutation.mutate();
+            toast.info('Re-embedding queued');
+          } : undefined}
+        />
         {page.author && (
           <span className="flex items-center gap-1"><User size={12} /> {page.author}</span>
         )}

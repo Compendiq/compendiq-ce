@@ -438,7 +438,11 @@ export function PagesPage() {
                       )}
                     </div>
                   </div>
-                  <EmbeddingStatusBadge embeddingDirty={pageItem.embeddingDirty} />
+                  <EmbeddingStatusBadge
+                    embeddingStatus={pageItem.embeddingStatus}
+                    embeddingDirty={pageItem.embeddingDirty}
+                    embeddedAt={pageItem.embeddedAt}
+                  />
                   {pageItem.lastModifiedAt && (
                     <FreshnessBadge lastModified={pageItem.lastModifiedAt} />
                   )}

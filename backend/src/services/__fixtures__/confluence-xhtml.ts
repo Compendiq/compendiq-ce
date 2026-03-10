@@ -169,6 +169,23 @@ export const USER_MENTIONS_PAGE = `<h2>Team</h2>
 <p>Contact <ri:user ri:userkey="user123" /> or <ri:user ri:userkey="user456" /> for questions.</p>
 <p>Great job! <ac:emoticon ac:name="smile" /></p>`;
 
+/** Page with status macros (ac:structured-macro[name=status]) */
+export const STATUS_MACRO_PAGE = `<h2>Project Status</h2>
+<p>Backend: <ac:structured-macro ac:name="status"><ac:parameter ac:name="colour">Green</ac:parameter><ac:parameter ac:name="title">DONE</ac:parameter></ac:structured-macro></p>
+<p>Frontend: <ac:structured-macro ac:name="status"><ac:parameter ac:name="colour">Yellow</ac:parameter><ac:parameter ac:name="title">IN PROGRESS</ac:parameter></ac:structured-macro></p>
+<p>QA: <ac:structured-macro ac:name="status"><ac:parameter ac:name="colour">Red</ac:parameter><ac:parameter ac:name="title">BLOCKED</ac:parameter></ac:structured-macro></p>
+<p>Design: <ac:structured-macro ac:name="status"><ac:parameter ac:name="colour">Blue</ac:parameter><ac:parameter ac:name="title">IN REVIEW</ac:parameter></ac:structured-macro></p>
+<p>Docs: <ac:structured-macro ac:name="status"><ac:parameter ac:name="colour">Grey</ac:parameter><ac:parameter ac:name="title">TODO</ac:parameter></ac:structured-macro></p>`;
+
+/** Page with children display macro (ac:structured-macro[name=children]) */
+export const CHILDREN_MACRO_PAGE = `<h2>Sub-pages</h2>
+<p>The following child pages are available:</p>
+<ac:structured-macro ac:name="children"><ac:parameter ac:name="sort">title</ac:parameter><ac:parameter ac:name="reverse">false</ac:parameter></ac:structured-macro>`;
+
+/** Page with children display macro with no parameters */
+export const CHILDREN_MACRO_NO_PARAMS_PAGE = `<h2>Sub-pages</h2>
+<ac:structured-macro ac:name="children"></ac:structured-macro>`;
+
 /** Page with data-macro-name attribute variant (some Confluence versions use this) */
 export const DATA_MACRO_VARIANT_PAGE = `<h2>Code Example</h2>
 <ac:structured-macro data-macro-name="code"><ac:parameter ac:name="language">python</ac:parameter><ac:plain-text-body><![CDATA[print("hello world")]]></ac:plain-text-body></ac:structured-macro>
