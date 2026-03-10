@@ -351,6 +351,32 @@ describe('ArticleViewer', () => {
     });
   });
 
+  it('renders code blocks with data-title attribute', async () => {
+    const html = '<pre data-title="docker-compose.yml"><code class="language-yaml">version: "3.8"</code></pre>';
+
+    const { container } = render(<ArticleViewer content={html} />);
+
+    await waitFor(() => {
+      expect(container.querySelector('pre')).toBeTruthy();
+    });
+
+    const pre = container.querySelector('pre')!;
+    expect(pre.getAttribute('data-title')).toBe('docker-compose.yml');
+  });
+
+  it('renders code blocks without data-title normally', async () => {
+    const html = '<pre><code class="language-bash">echo "hello"</code></pre>';
+
+    const { container } = render(<ArticleViewer content={html} />);
+
+    await waitFor(() => {
+      expect(container.querySelector('pre')).toBeTruthy();
+    });
+
+    const pre = container.querySelector('pre')!;
+    expect(pre.getAttribute('data-title')).toBeNull();
+  });
+
   it('does not render empty mermaid code blocks', async () => {
     const html = '<pre><code class="language-mermaid">   </code></pre>';
 

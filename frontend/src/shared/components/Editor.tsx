@@ -3,8 +3,8 @@ import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
 import { TaskList, TaskItem } from '@tiptap/extension-list';
-import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight';
 import { Image } from '@tiptap/extension-image';
+import { TitledCodeBlock } from './TitledCodeBlock';
 import { Placeholder } from '@tiptap/extensions';
 import { common, createLowlight } from 'lowlight';
 import {
@@ -306,7 +306,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       TaskList,
       TaskItem.configure({ nested: true }),
       MermaidBlock,
-      CodeBlockLowlight.configure({ lowlight }),
+      TitledCodeBlock.configure({ lowlight }),
       Image.configure({ inline: false }),
       Placeholder.configure({ placeholder: placeholder ?? 'Start writing...' }),
     ],

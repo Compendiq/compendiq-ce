@@ -1343,6 +1343,40 @@ pre:hover .code-copy-btn {
 }
 
 /* ============================================
+   Code block title header
+   Renders the data-title attribute as a label
+   above the code block, matching Confluence UI.
+   ============================================ */
+
+.prose :where(pre[data-title]) {
+  position: relative;
+  padding-top: 2.25rem;
+}
+
+.prose :where(pre[data-title])::before {
+  content: attr(data-title);
+  display: block;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 0.3rem 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-family: inherit;
+  color: var(--color-muted-foreground);
+  background: oklch(1 0 0 / 0.05);
+  border-bottom: 1px solid oklch(1 0 0 / 0.08);
+  border-radius: 0.5rem 0.5rem 0 0;
+  letter-spacing: 0.01em;
+}
+
+[data-theme-type="light"] .prose :where(pre[data-title])::before {
+  background: oklch(0 0 0 / 0.04);
+  border-bottom-color: oklch(0 0 0 / 0.08);
+}
+
+/* ============================================
    Article viewer — TipTap read-only overrides
    ============================================ */
 

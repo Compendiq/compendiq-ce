@@ -46,10 +46,12 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string): string 
   for (const macro of byTag(doc, 'ac:structured-macro')) {
     if (getMacroName(macro) !== 'code') continue;
     const language = getParamValue(macro, 'language') ?? '';
+    const title = getParamValue(macro, 'title');
     const bodyEl = byTag(macro, 'ac:plain-text-body')[0];
     const code = bodyEl?.textContent ?? '';
 
     const pre = doc.createElement('pre');
+    if (title) pre.setAttribute('data-title', title);
     const codeEl = doc.createElement('code');
     if (language) codeEl.className = `language-${language}`;
     codeEl.textContent = code;
@@ -253,6 +255,7 @@ export function htmlToConfluence(html: string): string {
     if (!codeEl) continue;
 
     const language = (codeEl.className.match(/language-(\w+)/) ?? [])[1] ?? '';
+    const title = pre.getAttribute('data-title');
     const code = codeEl.textContent ?? '';
 
     const macro = doc.createElement('ac:structured-macro');
@@ -263,6 +266,13 @@ export function htmlToConfluence(html: string): string {
       param.setAttribute('ac:name', 'language');
       param.textContent = language;
       macro.appendChild(param);
+    }
+
+    if (title) {
+      const titleParam = doc.createElement('ac:parameter');
+      titleParam.setAttribute('ac:name', 'title');
+      titleParam.textContent = title;
+      macro.appendChild(titleParam);
     }
 
     const body = doc.createElement('ac:plain-text-body');
