@@ -20,6 +20,7 @@ import {
 } from './article-extensions';
 import { MermaidDiagram } from './MermaidDiagram';
 import { DrawioDiagramPreview } from './DrawioDiagramPreview';
+import { FeatureErrorBoundary } from './FeatureErrorBoundary';
 import { fetchAuthenticatedBlob } from '../hooks/use-authenticated-src';
 import { cn } from '../lib/cn';
 import type { TocHeading } from './TableOfContents';
@@ -193,7 +194,11 @@ export function ArticleViewer({
 
         // Mount a MermaidDiagram React component into the wrapper
         const root = createRoot(wrapper);
-        root.render(<MermaidDiagram code={mermaidCode} />);
+        root.render(
+          <FeatureErrorBoundary featureName="Mermaid Diagram">
+            <MermaidDiagram code={mermaidCode} />
+          </FeatureErrorBoundary>,
+        );
         mermaidRootsRef.current.push(root);
       });
     });
@@ -245,12 +250,14 @@ export function ArticleViewer({
         // Mount a DrawioDiagramPreview React component into the wrapper
         const root = createRoot(wrapper);
         root.render(
-          <DrawioDiagramPreview
-            src={src}
-            diagramName={diagramName}
-            alt={alt}
-            editHref={editHref}
-          />,
+          <FeatureErrorBoundary featureName="Draw.io Diagram">
+            <DrawioDiagramPreview
+              src={src}
+              diagramName={diagramName}
+              alt={alt}
+              editHref={editHref}
+            />
+          </FeatureErrorBoundary>,
         );
         drawioRootsRef.current.push(root);
       });

@@ -3,6 +3,7 @@ import { Node, mergeAttributes } from '@tiptap/core';
 import { ReactNodeViewRenderer, NodeViewWrapper } from '@tiptap/react';
 import { Eye, Code2, AlertTriangle } from 'lucide-react';
 import { MermaidDiagram } from './MermaidDiagram';
+import { FeatureErrorBoundary } from './FeatureErrorBoundary';
 import { cn } from '../lib/cn';
 import type { NodeViewProps } from '@tiptap/react';
 
@@ -68,7 +69,9 @@ function MermaidBlockView({ node, updateAttributes, editor }: NodeViewProps) {
         {/* Content area */}
         {showPreview ? (
           code.trim() ? (
-            <MermaidDiagram code={code} />
+            <FeatureErrorBoundary featureName="Mermaid Diagram">
+              <MermaidDiagram code={code} />
+            </FeatureErrorBoundary>
           ) : (
             <div className="flex items-center justify-center gap-2 p-8 text-muted-foreground">
               <AlertTriangle size={16} />
