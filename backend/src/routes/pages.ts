@@ -130,7 +130,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     const sql = `
       SELECT cp.id, cp.confluence_id, cp.space_key, cp.title, cp.version,
              cp.parent_id, cp.labels, cp.author, cp.last_modified_at, cp.last_synced,
-             cp.embedding_dirty
+             cp.embedding_dirty, cp.embedding_status, cp.embedded_at
       FROM cached_pages cp
       ${whereClause}
       ORDER BY ${orderBy}
@@ -150,6 +150,8 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       last_modified_at: Date | null;
       last_synced: Date;
       embedding_dirty: boolean;
+      embedding_status: string;
+      embedded_at: Date | null;
     }>(sql, values);
 
     const response = {
@@ -164,6 +166,8 @@ export async function pagesRoutes(fastify: FastifyInstance) {
         lastModifiedAt: row.last_modified_at,
         lastSynced: row.last_synced,
         embeddingDirty: row.embedding_dirty,
+        embeddingStatus: row.embedding_status,
+        embeddedAt: row.embedded_at,
       })),
       total,
       page,
@@ -204,8 +208,11 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       labels: string[];
       last_modified_at: Date | null;
       embedding_dirty: boolean;
+      embedding_status: string;
+      embedded_at: Date | null;
     }>(
-      `SELECT confluence_id, space_key, title, parent_id, labels, last_modified_at, embedding_dirty
+      `SELECT confluence_id, space_key, title, parent_id, labels, last_modified_at,
+              embedding_dirty, embedding_status, embedded_at
        FROM cached_pages ${whereClause}
        ORDER BY title ASC`,
       values,
@@ -220,6 +227,8 @@ export async function pagesRoutes(fastify: FastifyInstance) {
         labels: row.labels,
         lastModifiedAt: row.last_modified_at,
         embeddingDirty: row.embedding_dirty,
+        embeddingStatus: row.embedding_status,
+        embeddedAt: row.embedded_at,
       })),
       total: result.rows.length,
     };
@@ -267,9 +276,13 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       author: string | null;
       last_modified_at: Date | null;
       last_synced: Date;
+      embedding_dirty: boolean;
+      embedding_status: string;
+      embedded_at: Date | null;
     }>(
       `SELECT confluence_id, space_key, title, body_storage, body_html, body_text,
-              version, parent_id, labels, author, last_modified_at, last_synced
+              version, parent_id, labels, author, last_modified_at, last_synced,
+              embedding_dirty, embedding_status, embedded_at
        FROM cached_pages WHERE user_id = $1 AND confluence_id = $2`,
       [userId, id],
     );
@@ -291,6 +304,9 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       author: row.author,
       lastModifiedAt: row.last_modified_at,
       lastSynced: row.last_synced,
+      embeddingDirty: row.embedding_dirty,
+      embeddingStatus: row.embedding_status,
+      embeddedAt: row.embedded_at,
     };
   });
 

@@ -14,7 +14,21 @@ vi.mock('react-router-dom', async () => {
   };
 });
 
-const mockPage = {
+const mockPage: {
+  confluenceId: string;
+  title: string;
+  spaceKey: string;
+  bodyHtml: string;
+  bodyText: string;
+  version: number;
+  author: string;
+  labels: string[];
+  lastModifiedAt: string;
+  status: string;
+  embeddingDirty: boolean;
+  embeddingStatus: string;
+  embeddedAt: string | null;
+} = {
   confluenceId: 'page-1',
   title: 'Test Page',
   spaceKey: 'DEV',
@@ -25,6 +39,9 @@ const mockPage = {
   labels: ['docs'],
   lastModifiedAt: '2025-01-01T00:00:00Z',
   status: 'current',
+  embeddingDirty: false,
+  embeddingStatus: 'embedded',
+  embeddedAt: '2025-01-01T00:00:00Z',
 };
 
 const mockPageWithCode = {
@@ -64,6 +81,7 @@ vi.mock('../../shared/hooks/use-pages', () => ({
   useUpdatePage: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useUpdatePageLabels: () => ({ mutate: vi.fn(), isPending: false }),
   useDeletePage: () => ({ mutateAsync: vi.fn() }),
+  useTriggerEmbedding: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
 function createWrapper() {
@@ -129,6 +147,23 @@ describe('PageViewPage', () => {
 
     expect(screen.getByText('History')).toBeInTheDocument();
     expect(screen.getByText('Duplicates')).toBeInTheDocument();
+  });
+
+  it('renders embedding status badge in the metadata bar', () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+
+    const badge = screen.getByTestId('embedding-status-badge');
+    expect(badge).toBeInTheDocument();
+    expect(badge).toHaveAttribute('data-status', 'embedded');
+  });
+
+  it('renders embedding status badge with failed state and retry button', () => {
+    currentMockPage = { ...mockPage, embeddingStatus: 'failed', embeddingDirty: true, embeddedAt: null };
+    render(<PageViewPage />, { wrapper: createWrapper() });
+
+    const badge = screen.getByTestId('embedding-status-badge');
+    expect(badge).toHaveAttribute('data-status', 'failed');
+    expect(screen.getByTestId('embedding-retry-button')).toBeInTheDocument();
   });
 
   it('renders inline code and code blocks visually', () => {

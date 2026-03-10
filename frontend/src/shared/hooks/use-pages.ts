@@ -1,6 +1,8 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '../lib/api';
 
+export type EmbeddingStatus = 'not_embedded' | 'embedding' | 'embedded' | 'failed';
+
 interface PageSummary {
   id: string;
   spaceKey: string;
@@ -12,6 +14,8 @@ interface PageSummary {
   lastModifiedAt: string | null;
   lastSynced: string;
   embeddingDirty: boolean;
+  embeddingStatus: EmbeddingStatus;
+  embeddedAt: string | null;
 }
 
 interface PageDetail extends PageSummary {
