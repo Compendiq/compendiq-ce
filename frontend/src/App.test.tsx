@@ -41,27 +41,54 @@ describe('App – ProtectedRoute token restoration', () => {
     expect(screen.queryByText(/settings/i)).not.toBeInTheDocument();
   });
 
-  it('calls refresh endpoint on page reload when accessToken is null but isAuthenticated', async () => {
+  it('renders protected content immediately when accessToken is persisted', async () => {
+    useAuthStore.setState({
+      accessToken: 'persisted-token',
+      user: { id: '1', username: 'test', role: 'user' },
+      isAuthenticated: true,
+    });
+
+    // Mock dashboard API calls so rendered pages don't fail
+    fetchSpy.mockResolvedValue(new Response(JSON.stringify({}), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+
+    renderApp('/');
+
+    // Should NOT call refresh — token already available
+    await waitFor(() => {
+      const refreshCalls = fetchSpy.mock.calls.filter(
+        ([url]) => url === '/api/auth/refresh',
+      );
+      expect(refreshCalls).toHaveLength(0);
+    });
+  });
+
+  it('uses useSessionInit refresh fallback when accessToken is null but isAuthenticated', async () => {
     useAuthStore.setState({
       accessToken: null,
       user: { id: '1', username: 'test', role: 'user' },
       isAuthenticated: true,
     });
 
-    // Refresh call succeeds
-    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({
-      accessToken: 'restored-token',
-      user: { id: '1', username: 'test', role: 'user' },
-    }), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    }));
-
-    // Mock any subsequent API calls from rendered pages
-    fetchSpy.mockResolvedValue(new Response(JSON.stringify({}), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    }));
+    // Mock all fetch calls: refresh returns token, everything else returns 200
+    fetchSpy.mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      if (url.includes('/auth/refresh')) {
+        return new Response(JSON.stringify({
+          accessToken: 'restored-token',
+          user: { id: '1', username: 'test', role: 'user' },
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
 
     renderApp('/');
 
@@ -85,8 +112,17 @@ describe('App – ProtectedRoute token restoration', () => {
       isAuthenticated: true,
     });
 
-    // Refresh fails
-    fetchSpy.mockResolvedValueOnce(new Response('Forbidden', { status: 403 }));
+    // Mock all fetch calls: refresh fails, everything else returns 200
+    fetchSpy.mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      if (url.includes('/auth/refresh')) {
+        return new Response('Forbidden', { status: 403 });
+      }
+      return new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
 
     renderApp('/');
 
