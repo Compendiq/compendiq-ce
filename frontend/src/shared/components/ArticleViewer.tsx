@@ -300,8 +300,20 @@ export function ArticleViewer({
           if (blobUrl) {
             img.src = blobUrl;
             blobUrlsRef.current.push(blobUrl);
+            img.style.opacity = '1';
+          } else {
+            // Replace broken image with an inline styled placeholder
+            const filename = img.alt || src.split('/').pop() || 'image';
+            const placeholder = document.createElement('span');
+            placeholder.className =
+              'inline-flex items-center gap-1 rounded border border-dashed border-muted-foreground/30 bg-muted/20 px-2 py-1 text-xs text-muted-foreground';
+            placeholder.title = `Image could not be loaded: ${filename}`;
+            placeholder.setAttribute('aria-label', `Broken image: ${filename}`);
+            placeholder.innerHTML =
+              '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><line x1="3" x2="21" y1="3" y2="21"/><path d="M10 10c0-1.1.9-2 2-2"/><circle cx="15" cy="9" r="1"/></svg>' +
+              document.createTextNode(filename).textContent;
+            img.replaceWith(placeholder);
           }
-          img.style.opacity = '1';
         });
       });
     });

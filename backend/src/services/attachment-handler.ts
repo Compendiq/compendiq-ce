@@ -134,6 +134,10 @@ export async function syncDrawioAttachments(
 
     if (attachment?._links?.download) {
       try {
+        if (await attachmentExists(userId, pageId, pngName)) {
+          cachedFiles.push(pngName);
+          continue;
+        }
         const fileSize = attachment.extensions?.fileSize;
         await cacheAttachment(client, userId, pageId, attachment._links.download, pngName, fileSize);
         cachedFiles.push(pngName);
@@ -182,6 +186,10 @@ export async function syncImageAttachments(
 
     if (attachment?._links?.download) {
       try {
+        if (await attachmentExists(userId, pageId, filename)) {
+          cachedFiles.push(filename);
+          continue;
+        }
         const fileSize = attachment.extensions?.fileSize;
         await cacheAttachment(client, userId, pageId, attachment._links.download, filename, fileSize);
         cachedFiles.push(filename);

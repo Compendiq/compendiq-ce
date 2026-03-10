@@ -187,9 +187,25 @@ export class ConfluenceClient {
   }
 
   async getPageAttachments(pageId: string): Promise<PaginatedResponse<ConfluenceAttachment>> {
-    return this.fetch(
-      `/rest/api/content/${encodeURIComponent(pageId)}/child/attachment?limit=100`,
-    );
+    const limit = 100;
+    const allResults: ConfluenceAttachment[] = [];
+    let start = 0;
+
+    while (true) {
+      const page = await this.fetch<PaginatedResponse<ConfluenceAttachment>>(
+        `/rest/api/content/${encodeURIComponent(pageId)}/child/attachment?limit=${limit}&start=${start}`,
+      );
+      allResults.push(...page.results);
+      if (page.results.length < limit) break;
+      start += limit;
+    }
+
+    return {
+      results: allResults,
+      start: 0,
+      limit,
+      size: allResults.length,
+    };
   }
 
   async downloadAttachment(downloadPath: string): Promise<Buffer> {
