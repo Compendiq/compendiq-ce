@@ -28,7 +28,7 @@ describe('Vite build configuration', () => {
       // Ensure there is no standalone `sourcemap: true` (the old config)
       // The new config has `sourcemap: process.env.NODE_ENV !== 'production'`
       const lines = viteConfigSource.split('\n');
-      const sourcemapLines = lines.filter((l) =>
+      const sourcemapLines = lines.filter((l: string) =>
         l.trim().startsWith('sourcemap:'),
       );
       for (const line of sourcemapLines) {
