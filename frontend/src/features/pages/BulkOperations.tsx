@@ -39,8 +39,10 @@ export function BulkOperations({
         body: JSON.stringify({ ids: selectedIds }),
       }),
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['pages'] });
-      queryClient.invalidateQueries({ queryKey: ['spaces'] });
+      queryClient.invalidateQueries({ queryKey: ['pages'], refetchType: 'none' });
+      queryClient.invalidateQueries({ queryKey: ['spaces'], refetchType: 'none' });
+      queryClient.refetchQueries({ queryKey: ['pages'] });
+      queryClient.refetchQueries({ queryKey: ['spaces'] });
       toast.success(`Deleted ${data.succeeded} pages${data.failed > 0 ? `, ${data.failed} failed` : ''}`);
       onDeselectAll();
     },
@@ -54,7 +56,8 @@ export function BulkOperations({
         body: JSON.stringify({ ids: selectedIds }),
       }),
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['pages'] });
+      queryClient.invalidateQueries({ queryKey: ['pages'], refetchType: 'none' });
+      queryClient.refetchQueries({ queryKey: ['pages'] });
       toast.success(`Re-synced ${data.succeeded} pages${data.failed > 0 ? `, ${data.failed} failed` : ''}`);
     },
     onError: (err) => toast.error(err.message),
@@ -67,8 +70,10 @@ export function BulkOperations({
         body: JSON.stringify({ ids: selectedIds }),
       }),
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['embeddings'] });
-      queryClient.invalidateQueries({ queryKey: ['pages'] });
+      queryClient.invalidateQueries({ queryKey: ['embeddings'], refetchType: 'none' });
+      queryClient.invalidateQueries({ queryKey: ['pages'], refetchType: 'none' });
+      queryClient.refetchQueries({ queryKey: ['embeddings'] });
+      queryClient.refetchQueries({ queryKey: ['pages'] });
       toast.success(`Queued ${data.succeeded} pages for re-embedding${data.failed > 0 ? `, ${data.failed} failed` : ''}`);
     },
     onError: (err) => {
@@ -87,7 +92,8 @@ export function BulkOperations({
         body: JSON.stringify({ ids: selectedIds, ...params }),
       }),
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['pages'] });
+      queryClient.invalidateQueries({ queryKey: ['pages'], refetchType: 'none' });
+      queryClient.refetchQueries({ queryKey: ['pages'] });
       toast.success(`Updated tags on ${data.succeeded} pages${data.failed > 0 ? `, ${data.failed} failed` : ''}`);
       setShowTagPopover(false);
       setTagInput('');

@@ -3,7 +3,7 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '../../shared/lib/api';
 import { streamSSE } from '../../shared/lib/sse';
-import { usePage, useEmbeddingStatus, usePageHasChildren, type EmbeddingStatusData } from '../../shared/hooks/use-pages';
+import { usePage, useEmbeddingStatus, type EmbeddingStatusData } from '../../shared/hooks/use-pages';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { type Source } from './SourceCitations';
 import { toast } from 'sonner';
@@ -156,8 +156,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
   const abortRef = useRef<AbortController | null>(null);
   const { data: page } = usePage(pageId ?? undefined);
   const { data: embeddingStatus } = useEmbeddingStatus();
-  const { data: hasChildrenData } = usePageHasChildren(pageId ?? undefined);
-  const pageHasChildren = hasChildrenData?.hasChildren ?? false;
+  const pageHasChildren = page?.hasChildren ?? false;
 
   // Abort any in-flight stream on unmount
   useEffect(() => {

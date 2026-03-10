@@ -127,10 +127,9 @@ describe('Embedding Status in API responses', () => {
           embedding_status: 'embedded',
           embedded_at: embeddedAt,
           embedding_error: null,
+          has_children: false,
         }],
       });
-      // Mock the children count query
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '0' }] });
 
       const response = await app.inject({
         method: 'GET',
@@ -163,10 +162,9 @@ describe('Embedding Status in API responses', () => {
           embedding_status: 'not_embedded',
           embedded_at: null,
           embedding_error: null,
+          has_children: false,
         }],
       });
-      // Mock the children count query
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '0' }] });
 
       const response = await app.inject({
         method: 'GET',
@@ -199,10 +197,9 @@ describe('Embedding Status in API responses', () => {
           embedding_status: 'failed',
           embedded_at: null,
           embedding_error: null,
+          has_children: false,
         }],
       });
-      // Mock the children count query
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '0' }] });
 
       const response = await app.inject({
         method: 'GET',
@@ -234,10 +231,9 @@ describe('Embedding Status in API responses', () => {
           embedding_status: 'failed',
           embedded_at: null,
           embedding_error: 'Model nomic-embed-text not found',
+          has_children: false,
         }],
       });
-      // Mock the children count query
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '0' }] });
 
       const response = await app.inject({
         method: 'GET',
@@ -269,10 +265,9 @@ describe('Embedding Status in API responses', () => {
           embedding_status: 'embedding',
           embedded_at: null,
           embedding_error: null,
+          has_children: false,
         }],
       });
-      // Mock the children count query
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '0' }] });
 
       const response = await app.inject({
         method: 'GET',
@@ -282,6 +277,39 @@ describe('Embedding Status in API responses', () => {
       expect(response.statusCode).toBe(200);
       const body = response.json();
       expect(body.embeddingStatus).toBe('embedding');
+    });
+
+    it('should return hasChildren true when page has child pages', async () => {
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{
+          confluence_id: 'page-5',
+          space_key: 'DEV',
+          title: 'Parent Page',
+          body_storage: '<p>parent</p>',
+          body_html: '<p>parent</p>',
+          body_text: 'parent',
+          version: 1,
+          parent_id: null,
+          labels: [],
+          author: 'testuser',
+          last_modified_at: new Date('2026-03-10'),
+          last_synced: new Date('2026-03-10'),
+          embedding_dirty: false,
+          embedding_status: 'embedded',
+          embedded_at: new Date('2026-03-10'),
+          embedding_error: null,
+          has_children: true,
+        }],
+      });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/pages/page-5',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.hasChildren).toBe(true);
     });
   });
 
