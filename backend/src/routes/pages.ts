@@ -44,13 +44,16 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     const params = PageListQuerySchema.parse(request.query);
     const { spaceKey, search, author, labels, freshness, embeddingStatus, dateFrom, dateTo, page = 1, limit = 50, sort = 'title' } = params;
 
-    // Try cache for simple requests (no filters active)
-    const hasFilters = search || author || labels || freshness || embeddingStatus || dateFrom || dateTo;
-    if (!hasFilters) {
-      const cacheKey = `space:${spaceKey ?? 'none'}:page:${page}:limit:${limit}:sort:${sort}`;
-      const cached = await cache.get(userId, 'pages', cacheKey);
-      if (cached) return cached;
-    }
+    // Cache all page list queries. Filtered queries use a shorter TTL (2 min) vs
+    // unfiltered (15 min) since filter results change more frequently (e.g. search
+    // results after edits, embedding status during processing).
+    const hasFilters = !!(search || author || labels || freshness || embeddingStatus || dateFrom || dateTo);
+    const filterParts = [spaceKey ?? '', search ?? '', author ?? '', labels ?? '', freshness ?? '', embeddingStatus ?? '', dateFrom ?? '', dateTo ?? '', page, limit, sort].join(':');
+    const cacheKey = `list:${filterParts}`;
+    const cacheTtl = hasFilters ? 120 : 900; // 2 min for filtered, 15 min for unfiltered
+
+    const cached = await cache.get(userId, 'pages', cacheKey);
+    if (cached) return cached;
 
     // Build WHERE clause separately for reuse in count query
     let whereClause = 'WHERE cp.user_id = $1';
@@ -179,10 +182,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       totalPages: Math.ceil(total / limit),
     };
 
-    if (!hasFilters) {
-      const cacheKey = `space:${spaceKey ?? 'none'}:page:${page}:limit:${limit}:sort:${sort}`;
-      await cache.set(userId, 'pages', cacheKey, response);
-    }
+    await cache.set(userId, 'pages', cacheKey, response, cacheTtl);
 
     return response;
   });

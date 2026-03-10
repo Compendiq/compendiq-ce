@@ -137,11 +137,11 @@ export class RedisCache {
     }
   }
 
-  async set(userId: string, type: CacheType, identifier: string, data: unknown): Promise<void> {
+  async set(userId: string, type: CacheType, identifier: string, data: unknown, ttlOverride?: number): Promise<void> {
     try {
       await this.redis.setEx(
         key(userId, type, identifier),
-        TTL[type],
+        ttlOverride ?? TTL[type],
         JSON.stringify(data),
       );
     } catch (err) {
