@@ -41,7 +41,7 @@ vi.mock('./redis-cache.js', () => ({
   invalidateGraphCache: (...args: unknown[]) => mocks.invalidateGraphCache(...args),
 }));
 
-import { getEmbeddingStatus, chunkText, processDirtyPages, isProcessingUser, computePageRelationships, DIRTY_PAGE_BATCH_SIZE } from './embedding-service.js';
+import { getEmbeddingStatus, chunkText, embedPage, processDirtyPages, isProcessingUser, computePageRelationships, DIRTY_PAGE_BATCH_SIZE } from './embedding-service.js';
 
 /** Helper to create a fake dirty page row */
 function makePage(id: string) {
@@ -548,6 +548,78 @@ describe('embedding-service', () => {
     it('should pass correct LIMIT value matching DIRTY_PAGE_BATCH_SIZE constant', () => {
       expect(DIRTY_PAGE_BATCH_SIZE).toBe(100);
     });
+  });
+
+  it('should not infinite-loop when all pages are too short to embed', async () => {
+    // htmlToText returns text shorter than 20 chars -> embedPage skips
+    mocks.htmlToText.mockReturnValue('short');
+
+    const pages = [makePage('short-1'), makePage('short-2')];
+
+    const responses: Array<{ rows: unknown[] }> = [];
+
+    // 1. COUNT query
+    responses.push({ rows: [{ count: '2' }] });
+    // 2. Batch SELECT (returns 2 short pages)
+    responses.push({ rows: pages });
+    // 3. embedPage for short-1: UPDATE embedding_dirty = FALSE (skipped page)
+    responses.push({ rows: [] });
+    // 4. embedPage for short-2: UPDATE embedding_dirty = FALSE (skipped page)
+    responses.push({ rows: [] });
+    // No more batches needed: batch.rows.length (2) < DIRTY_PAGE_BATCH_SIZE -> breaks
+
+    let callIndex = 0;
+    mocks.query.mockImplementation(() => {
+      const response = responses[callIndex] ?? { rows: [] };
+      callIndex++;
+      return Promise.resolve(response);
+    });
+
+    const result = await processDirtyPages('user-1');
+
+    // Short pages are "processed" (embedPage returns 0 but doesn't throw)
+    expect(result).toEqual({ processed: 2, errors: 0 });
+
+    // Verify the UPDATE queries were called to mark pages as not dirty
+    const updateCalls = mocks.query.mock.calls.filter(
+      (call: unknown[]) => typeof call[0] === 'string' && call[0].includes('UPDATE cached_pages SET embedding_dirty = FALSE'),
+    );
+    expect(updateCalls).toHaveLength(2);
+  });
+});
+
+describe('embedPage', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('should mark page as not dirty when text is too short', async () => {
+    mocks.htmlToText.mockReturnValue('tiny');
+    mocks.query.mockResolvedValue({ rows: [] });
+
+    const result = await embedPage('user-1', 'page-short', 'Short Page', 'DEV', '<p>tiny</p>');
+
+    expect(result).toBe(0);
+    // Should have called UPDATE to clear embedding_dirty
+    expect(mocks.query).toHaveBeenCalledTimes(1);
+    expect(mocks.query).toHaveBeenCalledWith(
+      'UPDATE cached_pages SET embedding_dirty = FALSE WHERE user_id = $1 AND confluence_id = $2',
+      ['user-1', 'page-short'],
+    );
+  });
+
+  it('should mark page as not dirty when htmlToText returns empty string', async () => {
+    mocks.htmlToText.mockReturnValue('');
+    mocks.query.mockResolvedValue({ rows: [] });
+
+    const result = await embedPage('user-1', 'page-empty', 'Empty Page', 'DEV', '<p></p>');
+
+    expect(result).toBe(0);
+    expect(mocks.query).toHaveBeenCalledTimes(1);
+    expect(mocks.query).toHaveBeenCalledWith(
+      'UPDATE cached_pages SET embedding_dirty = FALSE WHERE user_id = $1 AND confluence_id = $2',
+      ['user-1', 'page-empty'],
+    );
   });
 });
 

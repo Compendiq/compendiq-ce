@@ -112,6 +112,10 @@ export async function embedPage(
   const plainText = htmlToText(bodyHtml);
   if (!plainText || plainText.length < 20) {
     logger.debug({ confluenceId, pageTitle }, 'Skipping empty/short page for embedding');
+    await query(
+      'UPDATE cached_pages SET embedding_dirty = FALSE WHERE user_id = $1 AND confluence_id = $2',
+      [userId, confluenceId],
+    );
     return 0;
   }
 
