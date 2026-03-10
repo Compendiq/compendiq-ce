@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 
 // Mock mermaid - use vi.hoisted to ensure the mock fns are available before vi.mock runs
@@ -29,12 +29,27 @@ Object.assign(navigator, {
   clipboard: { writeText: mockWriteText },
 });
 
-import { MermaidDiagram, sanitizeMermaidCode, initializeMermaid } from './MermaidDiagram';
+import {
+  MermaidDiagram,
+  sanitizeMermaidCode,
+  initializeMermaid,
+  loadMermaid,
+  _resetMermaidCache,
+} from './MermaidDiagram';
 
 describe('MermaidDiagram', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
+    _resetMermaidCache();
     mockRender.mockResolvedValue({ svg: '<svg>diagram</svg>' });
+    // Pre-warm the mermaid cache so the lazy import resolves instantly
+    // in component effects. Without this, the dynamic import microtask
+    // may not flush within the React test scheduler.
+    await loadMermaid();
+  });
+
+  afterEach(() => {
+    _resetMermaidCache();
   });
 
   it('renders the toolbar with Mermaid Diagram label', () => {
@@ -42,7 +57,7 @@ describe('MermaidDiagram', () => {
     expect(screen.getByText('Mermaid Diagram')).toBeInTheDocument();
   });
 
-  it('calls mermaid.render with the code', async () => {
+  it('calls mermaid.render with the code after lazy-loading', async () => {
     const code = 'graph TD\n  A --> B';
     render(<MermaidDiagram code={code} />);
 
@@ -51,6 +66,16 @@ describe('MermaidDiagram', () => {
       const [, renderedCode] = mockRender.mock.calls[0];
       expect(renderedCode).toBe(code);
     });
+  });
+
+  it('hides loading skeleton after mermaid loads and renders', async () => {
+    render(<MermaidDiagram code="graph TD\n  A --> B" />);
+
+    await waitFor(() => {
+      expect(mockRender).toHaveBeenCalled();
+    });
+
+    expect(screen.queryByTestId('mermaid-loading')).not.toBeInTheDocument();
   });
 
   it('strips markdown fences from code before rendering', async () => {
@@ -108,7 +133,9 @@ describe('MermaidDiagram', () => {
   });
 
   it('applies custom className', () => {
-    const { container } = render(<MermaidDiagram code="graph TD\n  A --> B" className="mt-4" />);
+    const { container } = render(
+      <MermaidDiagram code="graph TD\n  A --> B" className="mt-4" />,
+    );
     expect(container.firstChild).toHaveClass('mt-4');
   });
 
@@ -156,13 +183,51 @@ describe('MermaidDiagram', () => {
   });
 });
 
+describe('MermaidDiagram - loading state', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    _resetMermaidCache();
+    mockRender.mockResolvedValue({ svg: '<svg>diagram</svg>' });
+  });
+
+  afterEach(() => {
+    _resetMermaidCache();
+  });
+
+  it('shows a loading skeleton while mermaid loads', () => {
+    // With a cold cache, the loading skeleton should appear immediately
+    render(<MermaidDiagram code="graph TD\n  A --> B" />);
+    expect(screen.getByTestId('mermaid-loading')).toBeInTheDocument();
+    expect(screen.getByText('Loading diagram...')).toBeInTheDocument();
+  });
+
+  it('resolves loading after mermaid loads', async () => {
+    render(<MermaidDiagram code="graph TD\n  A --> B" />);
+
+    // Initially shows loading
+    expect(screen.getByTestId('mermaid-loading')).toBeInTheDocument();
+
+    // After the dynamic import resolves, loading should disappear
+    await waitFor(() => {
+      expect(screen.queryByTestId('mermaid-loading')).not.toBeInTheDocument();
+    });
+  });
+});
+
 describe('initializeMermaid', () => {
   beforeEach(() => {
     mockInitialize.mockClear();
+    _resetMermaidCache();
   });
 
-  it('initializes with dark theme when isDark is true', () => {
-    initializeMermaid(true);
+  afterEach(() => {
+    _resetMermaidCache();
+  });
+
+  it('initializes with dark theme when isDark is true and mermaid API is provided', () => {
+    const mockApi = { initialize: mockInitialize } as unknown as
+      (typeof import('mermaid'))['default'];
+    initializeMermaid(true, mockApi);
     expect(mockInitialize).toHaveBeenCalledWith(
       expect.objectContaining({
         startOnLoad: false,
@@ -172,8 +237,10 @@ describe('initializeMermaid', () => {
     );
   });
 
-  it('initializes with default theme when isDark is false', () => {
-    initializeMermaid(false);
+  it('initializes with default theme when isDark is false and mermaid API is provided', () => {
+    const mockApi = { initialize: mockInitialize } as unknown as
+      (typeof import('mermaid'))['default'];
+    initializeMermaid(false, mockApi);
     expect(mockInitialize).toHaveBeenCalledWith(
       expect.objectContaining({
         startOnLoad: false,
@@ -181,6 +248,11 @@ describe('initializeMermaid', () => {
         securityLevel: 'strict',
       }),
     );
+  });
+
+  it('is a no-op when no mermaid API provided and cache is empty', () => {
+    initializeMermaid(true);
+    expect(mockInitialize).not.toHaveBeenCalled();
   });
 });
 
