@@ -7,7 +7,7 @@ import {
   ExternalLink, Clock, User, Pin,
 } from 'lucide-react';
 import type { SettingsResponse } from '@kb-creator/contracts';
-import { usePage, useUpdatePage, useDeletePage, usePinnedPages, usePinPage, useUnpinPage, useTriggerEmbedding } from '../../shared/hooks/use-pages';
+import { usePage, useUpdatePage, useDeletePage, usePinnedPages, usePinPage, useUnpinPage, useEmbeddingProcess } from '../../shared/hooks/use-pages';
 import { cn } from '../../shared/lib/cn';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { Editor, getDraft, clearDraft } from '../../shared/components/Editor';
@@ -74,7 +74,7 @@ export function PageViewPage() {
   const pinMutation = usePinPage();
   const unpinMutation = useUnpinPage();
   const isPinned = pinnedData?.items.some((p) => p.id === id) ?? false;
-  const triggerEmbeddingMutation = useTriggerEmbedding();
+  const embeddingProcess = useEmbeddingProcess();
   const isLight = useIsLightTheme();
 
   const queryClient = useQueryClient();
@@ -326,8 +326,10 @@ export function PageViewPage() {
           embeddedAt={page.embeddedAt}
           embeddingError={page.embeddingError}
           onRetry={page.embeddingStatus === 'failed' ? () => {
-            triggerEmbeddingMutation.mutate();
-            toast.info('Re-embedding queued');
+            embeddingProcess.start('/embeddings/retry-failed').catch((err) =>
+              toast.error(err instanceof Error ? err.message : 'Re-embedding failed'),
+            );
+            toast.info('Re-embedding started');
           } : undefined}
         />
         {page.author && (

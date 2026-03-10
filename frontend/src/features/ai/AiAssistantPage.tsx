@@ -220,8 +220,8 @@ function AiAssistantInner() {
           {messages.map((msg, i) => {
             const isLastAssistant = msg.role === 'assistant' && i === messages.length - 1;
             const isStreamingThis = isStreaming && isLastAssistant;
-            // During streaming, content lives in streaming.displayContent, not msg.content
-            const effectiveContent = isStreamingThis ? streaming.displayContent : msg.content;
+            const effectiveContent = msg.content;
+            const showStreamingCursor = isStreamingThis && !!effectiveContent;
             const showThinkingBlob = isThinking && isLastAssistant && !effectiveContent && thinkingElapsed;
             const showTypingIndicator = isThinking && isLastAssistant && !effectiveContent && !thinkingElapsed;
 

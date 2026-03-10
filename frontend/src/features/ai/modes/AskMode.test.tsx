@@ -22,7 +22,6 @@ vi.mock('../../../shared/lib/sse', () => ({
 vi.mock('../../../shared/hooks/use-pages', () => ({
   usePage: () => ({ data: undefined }),
   useEmbeddingStatus: () => ({ data: undefined }),
-  usePageHasChildren: () => ({ data: undefined }),
 }));
 
 const toastErrorMock = vi.fn();
