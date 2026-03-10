@@ -2,11 +2,12 @@ import { useState, useCallback } from 'react';
 import { ExternalLink, AlertTriangle, RefreshCw, Image as ImageIcon } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { DiagramLightbox } from './DiagramLightbox';
+import { useAuthenticatedSrc } from '../hooks/use-authenticated-src';
 
 type LoadState = 'loading' | 'loaded' | 'error';
 
 interface DrawioDiagramPreviewProps {
-  /** Image source URL for the diagram PNG */
+  /** Image source URL for the diagram PNG (raw API path or pre-fetched blob URL) */
   src: string | null;
   /** Diagram name (used for caption and lightbox title) */
   diagramName: string | null;
@@ -28,22 +29,33 @@ export function DrawioDiagramPreview({
   className,
   onRequestSync,
 }: DrawioDiagramPreviewProps) {
-  const [loadState, setLoadState] = useState<LoadState>(src ? 'loading' : 'error');
+  // Fetch the image through an authenticated request so that the
+  // backend's Bearer-token auth is satisfied.  Browser <img> tags
+  // cannot send custom headers, so we fetch the resource via JS and
+  // create a blob URL for the <img> to use.
+  const { blobSrc, loading: authLoading, error: authError } = useAuthenticatedSrc(src);
+
+  const effectiveSrc = blobSrc;
+
+  const [imgLoadState, setImgLoadState] = useState<LoadState>('loading');
   const [lightboxOpen, setLightboxOpen] = useState(false);
 
+  // Combine auth fetch state with <img> element load state
+  const loadState: LoadState = authError ? 'error' : authLoading ? 'loading' : imgLoadState;
+
   const handleLoad = useCallback(() => {
-    setLoadState('loaded');
+    setImgLoadState('loaded');
   }, []);
 
   const handleError = useCallback(() => {
-    setLoadState('error');
+    setImgLoadState('error');
   }, []);
 
   const handleImageClick = useCallback(() => {
-    if (loadState === 'loaded' && src) {
+    if (loadState === 'loaded' && effectiveSrc) {
       setLightboxOpen(true);
     }
-  }, [loadState, src]);
+  }, [loadState, effectiveSrc]);
 
   return (
     <div
@@ -114,7 +126,7 @@ export function DrawioDiagramPreview({
         )}
 
         {/* Diagram image -- light background panel for dark mode compatibility */}
-        {src && (
+        {effectiveSrc && (
           <div
             className={cn(
               'flex items-center justify-center p-4',
@@ -125,9 +137,8 @@ export function DrawioDiagramPreview({
             data-testid="drawio-image-panel"
           >
             <img
-              src={src}
+              src={effectiveSrc}
               alt={alt}
-              loading="lazy"
               onLoad={handleLoad}
               onError={handleError}
               onClick={handleImageClick}
@@ -163,9 +174,9 @@ export function DrawioDiagramPreview({
       </div>
 
       {/* Lightbox for fullscreen view */}
-      {src && loadState === 'loaded' && (
+      {effectiveSrc && loadState === 'loaded' && (
         <DiagramLightbox
-          src={src}
+          src={effectiveSrc}
           alt={alt}
           diagramName={diagramName || undefined}
           open={lightboxOpen}

@@ -20,6 +20,7 @@ import {
 } from './article-extensions';
 import { MermaidDiagram } from './MermaidDiagram';
 import { DrawioDiagramPreview } from './DrawioDiagramPreview';
+import { fetchAuthenticatedBlob } from '../hooks/use-authenticated-src';
 import { cn } from '../lib/cn';
 import type { TocHeading } from './TableOfContents';
 
@@ -255,6 +256,51 @@ export function ArticleViewer({
       drawioRootsRef.current = [];
     };
   }, [isReady, sanitizedContent, confluenceUrl, pageId]);
+
+  // Rewrite regular <img> tags that point to /api/attachments/ so they are
+  // fetched with the Bearer token.  Without this, browser-native <img> requests
+  // get a 401 because they cannot send Authorization headers.
+  const blobUrlsRef = useRef<string[]>([]);
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || !isReady) return;
+
+    // Revoke any previously created blob URLs
+    for (const url of blobUrlsRef.current) {
+      URL.revokeObjectURL(url);
+    }
+    blobUrlsRef.current = [];
+
+    const raf = requestAnimationFrame(() => {
+      const images = container.querySelectorAll('img');
+      images.forEach((img) => {
+        const src = img.getAttribute('src') ?? '';
+        // Only rewrite internal attachment URLs; skip drawio wrappers (handled by DrawioDiagramPreview)
+        if (!src.startsWith('/api/attachments/')) return;
+        if (img.closest('.drawio-diagram-wrapper') || img.closest('.drawio-preview-container')) return;
+
+        // Hide the image until the blob is ready to avoid a flash of broken image
+        img.style.opacity = '0';
+        img.style.transition = 'opacity 0.2s';
+
+        fetchAuthenticatedBlob(src).then((blobUrl) => {
+          if (blobUrl) {
+            img.src = blobUrl;
+            blobUrlsRef.current.push(blobUrl);
+          }
+          img.style.opacity = '1';
+        });
+      });
+    });
+
+    return () => {
+      cancelAnimationFrame(raf);
+      for (const url of blobUrlsRef.current) {
+        URL.revokeObjectURL(url);
+      }
+      blobUrlsRef.current = [];
+    };
+  }, [isReady, sanitizedContent]);
 
   // Add copy buttons to code blocks (skip mermaid blocks which are already replaced)
   useEffect(() => {
