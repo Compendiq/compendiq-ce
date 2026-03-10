@@ -658,15 +658,24 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      const errorName = err instanceof Error ? err.name : '';
       request.log.error({ err, confluenceId: id, userId, model }, 'Auto-tag failed');
 
       if (message.startsWith('Page not found')) {
         throw fastify.httpErrors.notFound(message);
       }
+      // Connection-level failures: server is genuinely unreachable
       if (message.includes('ECONNREFUSED') || message.includes('fetch failed')) {
         throw fastify.httpErrors.serviceUnavailable('LLM server is not reachable');
       }
-      throw fastify.httpErrors.badGateway('Auto-tagging failed — check LLM server connection');
+      // Circuit breaker is open: server was recently failing
+      if (errorName === 'CircuitBreakerOpenError') {
+        throw fastify.httpErrors.serviceUnavailable(message);
+      }
+      // All other LLM errors: surface the actual error message so the user
+      // (and logs) can see what really went wrong instead of a generic
+      // "check LLM server connection" message (fixes #151).
+      throw fastify.httpErrors.badGateway(`Auto-tagging failed: ${message}`);
     }
   });
 

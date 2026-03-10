@@ -183,7 +183,7 @@ describe('POST /api/pages/:id/auto-tag', () => {
     expect(body.error).toBe('LLM server is not reachable');
   });
 
-  it('should return 502 for other LLM errors', async () => {
+  it('should return 502 with actual error message for LLM errors (#151)', async () => {
     mockAutoTagPage.mockRejectedValueOnce(
       new Error('Auto-tag LLM call failed: model "bad-model" not found'),
     );
@@ -196,7 +196,42 @@ describe('POST /api/pages/:id/auto-tag', () => {
 
     expect(response.statusCode).toBe(502);
     const body = JSON.parse(response.body);
-    expect(body.error).toBe('Auto-tagging failed — check LLM server connection');
+    // The real error should be surfaced, not a generic "check LLM server connection"
+    expect(body.error).toBe('Auto-tagging failed: Auto-tag LLM call failed: model "bad-model" not found');
+    expect(body.error).not.toContain('check LLM server connection');
+  });
+
+  it('should return 502 with actual message for timeout errors (#151)', async () => {
+    mockAutoTagPage.mockRejectedValueOnce(
+      new Error('Auto-tag LLM call failed: The operation was aborted due to timeout'),
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/page-1/auto-tag',
+      payload: { model: 'qwen3:32b' },
+    });
+
+    expect(response.statusCode).toBe(502);
+    const body = JSON.parse(response.body);
+    expect(body.error).toContain('aborted due to timeout');
+    expect(body.error).not.toContain('check LLM server connection');
+  });
+
+  it('should return 503 when circuit breaker is open', async () => {
+    const cbError = new Error('ollama-chat: LLM server temporarily unavailable');
+    cbError.name = 'CircuitBreakerOpenError';
+    mockAutoTagPage.mockRejectedValueOnce(cbError);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/page-1/auto-tag',
+      payload: { model: 'qwen3:32b' },
+    });
+
+    expect(response.statusCode).toBe(503);
+    const body = JSON.parse(response.body);
+    expect(body.error).toContain('temporarily unavailable');
   });
 
   it('should return 400 when model is missing from body', async () => {
