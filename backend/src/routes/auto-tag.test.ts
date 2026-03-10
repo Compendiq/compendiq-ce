@@ -153,7 +153,7 @@ describe('POST /api/pages/:id/auto-tag', () => {
 
   it('should return 503 when LLM server is unreachable (ECONNREFUSED)', async () => {
     mockAutoTagPage.mockRejectedValueOnce(
-      new Error('Auto-tag LLM call failed: connect ECONNREFUSED 127.0.0.1:11434'),
+      new Error('Auto-tag failed: connect ECONNREFUSED 127.0.0.1:11434'),
     );
 
     const response = await app.inject({
@@ -169,7 +169,7 @@ describe('POST /api/pages/:id/auto-tag', () => {
 
   it('should return 503 when LLM fetch fails', async () => {
     mockAutoTagPage.mockRejectedValueOnce(
-      new Error('Auto-tag LLM call failed: fetch failed'),
+      new Error('Auto-tag failed: fetch failed'),
     );
 
     const response = await app.inject({
@@ -183,9 +183,9 @@ describe('POST /api/pages/:id/auto-tag', () => {
     expect(body.error).toBe('LLM server is not reachable');
   });
 
-  it('should return 502 for other LLM errors', async () => {
+  it('should return 502 with actual error message for LLM errors (#151)', async () => {
     mockAutoTagPage.mockRejectedValueOnce(
-      new Error('Auto-tag LLM call failed: model "bad-model" not found'),
+      new Error('Auto-tag failed: model "bad-model" not found'),
     );
 
     const response = await app.inject({
@@ -196,7 +196,48 @@ describe('POST /api/pages/:id/auto-tag', () => {
 
     expect(response.statusCode).toBe(502);
     const body = JSON.parse(response.body);
-    expect(body.error).toBe('Auto-tagging failed — check LLM server connection');
+    // The real error should be surfaced, not a generic "check LLM server connection"
+    expect(body.error).toBe('Auto-tagging failed: Auto-tag failed: model "bad-model" not found');
+    expect(body.error).not.toContain('check LLM server connection');
+  });
+
+  it('should return 502 with actual message for timeout errors (#151)', async () => {
+    mockAutoTagPage.mockRejectedValueOnce(
+      new Error('Auto-tag failed: The operation was aborted due to timeout'),
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/page-1/auto-tag',
+      payload: { model: 'qwen3:32b' },
+    });
+
+    expect(response.statusCode).toBe(502);
+    const body = JSON.parse(response.body);
+    expect(body.error).toContain('aborted due to timeout');
+    expect(body.error).not.toContain('check LLM server connection');
+  });
+
+  it('should return 503 when circuit breaker is open (via error cause chain)', async () => {
+    // autoTagContent wraps the original error with { cause: err },
+    // so the CircuitBreakerOpenError is on err.cause, not err itself
+    const cbError = new Error('ollama-chat: LLM server temporarily unavailable');
+    cbError.name = 'CircuitBreakerOpenError';
+    const wrappedError = new Error(
+      'Auto-tag failed: ollama-chat: LLM server temporarily unavailable',
+      { cause: cbError },
+    );
+    mockAutoTagPage.mockRejectedValueOnce(wrappedError);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/page-1/auto-tag',
+      payload: { model: 'qwen3:32b' },
+    });
+
+    expect(response.statusCode).toBe(503);
+    const body = JSON.parse(response.body);
+    expect(body.error).toContain('temporarily unavailable');
   });
 
   it('should return 400 when model is missing from body', async () => {
