@@ -74,10 +74,11 @@ const mockPageWithPanelsAndTasks = {
   bodyText: 'This is an info panel. Watch out! Done task Open task A wise quote. Hidden content.',
 };
 
-let currentMockPage = mockPage;
+let currentMockPage: typeof mockPage | undefined = mockPage;
+let mockIsLoading = false;
 
 vi.mock('../../shared/hooks/use-pages', () => ({
-  usePage: () => ({ data: currentMockPage, isLoading: false }),
+  usePage: () => ({ data: mockIsLoading ? undefined : currentMockPage, isLoading: mockIsLoading }),
   useUpdatePage: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useUpdatePageLabels: () => ({ mutate: vi.fn(), isPending: false }),
   useDeletePage: () => ({ mutateAsync: vi.fn() }),
@@ -109,6 +110,7 @@ function createWrapper() {
 describe('PageViewPage', () => {
   beforeEach(() => {
     currentMockPage = mockPage;
+    mockIsLoading = false;
     useAuthStore.getState().setAuth('test-token', {
       id: '1',
       username: 'testuser',
@@ -125,6 +127,14 @@ describe('PageViewPage', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     useAuthStore.getState().clearAuth();
+  });
+
+  it('renders PageViewSkeleton while loading', () => {
+    mockIsLoading = true;
+    render(<PageViewPage />, { wrapper: createWrapper() });
+
+    expect(screen.getByTestId('page-view-skeleton')).toBeInTheDocument();
+    expect(screen.queryByText('Test Page')).not.toBeInTheDocument();
   });
 
   it('renders page title and metadata', () => {
