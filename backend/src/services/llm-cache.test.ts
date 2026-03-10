@@ -100,17 +100,21 @@ describe('LlmCache', () => {
   let cache: LlmCache;
   let mockRedis: {
     get: ReturnType<typeof vi.fn>;
+    set: ReturnType<typeof vi.fn>;
     setEx: ReturnType<typeof vi.fn>;
     scan: ReturnType<typeof vi.fn>;
     del: ReturnType<typeof vi.fn>;
+    exists: ReturnType<typeof vi.fn>;
   };
 
   beforeEach(() => {
     mockRedis = {
       get: vi.fn(),
+      set: vi.fn(),
       setEx: vi.fn(),
       scan: vi.fn(),
       del: vi.fn(),
+      exists: vi.fn(),
     };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     cache = new LlmCache(mockRedis as any);
@@ -169,6 +173,104 @@ describe('LlmCache', () => {
       mockRedis.setEx.mockRejectedValue(new Error('Redis down'));
       // Should not throw
       await cache.setCachedResponse('kb:llm:abc123', 'response');
+    });
+  });
+
+  describe('acquireLock', () => {
+    it('should return true when lock is acquired (SET NX succeeds)', async () => {
+      mockRedis.set.mockResolvedValue('OK');
+      const acquired = await cache.acquireLock('kb:llm:abc123');
+      expect(acquired).toBe(true);
+      expect(mockRedis.set).toHaveBeenCalledWith('llm:lock:kb:llm:abc123', '1', { NX: true, EX: 120 });
+    });
+
+    it('should return false when lock is already held (SET NX returns null)', async () => {
+      mockRedis.set.mockResolvedValue(null);
+      const acquired = await cache.acquireLock('kb:llm:abc123');
+      expect(acquired).toBe(false);
+    });
+
+    it('should accept a custom TTL', async () => {
+      mockRedis.set.mockResolvedValue('OK');
+      await cache.acquireLock('kb:llm:abc123', 30);
+      expect(mockRedis.set).toHaveBeenCalledWith('llm:lock:kb:llm:abc123', '1', { NX: true, EX: 30 });
+    });
+
+    it('should return true on Redis error (graceful degradation)', async () => {
+      mockRedis.set.mockRejectedValue(new Error('Redis down'));
+      const acquired = await cache.acquireLock('kb:llm:abc123');
+      // On failure, allow caller to proceed rather than blocking
+      expect(acquired).toBe(true);
+    });
+  });
+
+  describe('releaseLock', () => {
+    it('should delete the lock key', async () => {
+      mockRedis.del.mockResolvedValue(1);
+      await cache.releaseLock('kb:llm:abc123');
+      expect(mockRedis.del).toHaveBeenCalledWith('llm:lock:kb:llm:abc123');
+    });
+
+    it('should not throw on Redis error', async () => {
+      mockRedis.del.mockRejectedValue(new Error('Redis down'));
+      // Should not throw
+      await cache.releaseLock('kb:llm:abc123');
+    });
+  });
+
+  describe('waitForCachedResponse', () => {
+    it('should return cached response on first poll if available', async () => {
+      const cached = { content: 'Generated answer', cachedAt: Date.now() };
+      mockRedis.get.mockResolvedValue(JSON.stringify(cached));
+
+      const result = await cache.waitForCachedResponse('kb:llm:abc123', 50, 5000);
+      expect(result).toEqual(cached);
+      // Should only poll once since it found the result immediately
+      expect(mockRedis.get).toHaveBeenCalledTimes(1);
+    });
+
+    it('should poll until cached response appears', async () => {
+      const cached = { content: 'Delayed result', cachedAt: Date.now() };
+      mockRedis.get
+        .mockResolvedValueOnce(null)  // 1st poll: miss
+        .mockResolvedValueOnce(null)  // 2nd poll: miss
+        .mockResolvedValue(JSON.stringify(cached));  // 3rd poll: hit
+
+      // Lock exists for the first two polls
+      mockRedis.exists.mockResolvedValue(1);
+
+      const result = await cache.waitForCachedResponse('kb:llm:abc123', 10, 5000);
+      expect(result).toEqual(cached);
+      expect(mockRedis.get).toHaveBeenCalledTimes(3);
+    });
+
+    it('should return null when lock disappears without cached result', async () => {
+      mockRedis.get.mockResolvedValue(null);
+      // Lock was released (holder failed without caching)
+      mockRedis.exists.mockResolvedValue(0);
+
+      const result = await cache.waitForCachedResponse('kb:llm:abc123', 10, 5000);
+      expect(result).toBeNull();
+    });
+
+    it('should return null on timeout', async () => {
+      mockRedis.get.mockResolvedValue(null);
+      mockRedis.exists.mockResolvedValue(1); // Lock always held
+
+      const result = await cache.waitForCachedResponse('kb:llm:abc123', 10, 30);
+      expect(result).toBeNull();
+    });
+
+    it('should keep polling if exists check fails', async () => {
+      const cached = { content: 'Eventually found', cachedAt: Date.now() };
+      mockRedis.get
+        .mockResolvedValueOnce(null)
+        .mockResolvedValue(JSON.stringify(cached));
+      // exists throws on first call
+      mockRedis.exists.mockRejectedValueOnce(new Error('Redis intermittent'));
+
+      const result = await cache.waitForCachedResponse('kb:llm:abc123', 10, 5000);
+      expect(result).toEqual(cached);
     });
   });
 
