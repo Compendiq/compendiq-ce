@@ -3,7 +3,7 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import { m } from 'framer-motion';
 import {
   Send, Bot, User, Loader2, MessageSquare, Plus, Trash2,
-  Wand2, FileText, ListCollapse, Sparkles, GitBranch, FileInput,
+  Wand2, FileText, ListCollapse, Sparkles, GitBranch, FileInput, ShieldCheck,
 } from 'lucide-react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -41,7 +41,7 @@ interface Conversation {
   createdAt: string;
 }
 
-type Mode = 'ask' | 'improve' | 'generate' | 'summarize' | 'diagram';
+type Mode = 'ask' | 'improve' | 'generate' | 'summarize' | 'diagram' | 'quality';
 
 export function AiAssistantPage() {
   const [searchParams] = useSearchParams();
@@ -323,6 +323,53 @@ export function AiAssistantPage() {
     }
   }, [page, model, isStreaming]);
 
+  const handleQuality = useCallback(async () => {
+    if (isStreaming) return;
+    if (!page) {
+      toast.error('No page selected. Open a page first, then click "Analyze Quality".');
+      return;
+    }
+    if (!model) {
+      toast.error('No model available. Check your LLM provider settings.');
+      return;
+    }
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    setIsStreaming(true);
+    setMessages([{ role: 'user', content: `Analyze Quality: ${page.title}` }]);
+
+    let result = '';
+    setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
+
+    try {
+      for await (const chunk of streamSSE<{ content?: string; error?: string; done?: boolean }>('/llm/analyze-quality', {
+        content: page.bodyHtml,
+        model,
+        pageId,
+      }, controller.signal)) {
+        if (chunk.error) {
+          toast.error(chunk.error);
+          break;
+        }
+        if (chunk.content) {
+          result += chunk.content;
+          setMessages((prev) => {
+            const updated = [...prev];
+            updated[updated.length - 1] = { role: 'assistant', content: result };
+            return updated;
+          });
+        }
+      }
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      toast.error(err instanceof Error ? err.message : 'Quality analysis failed');
+    } finally {
+      setIsStreaming(false);
+    }
+  }, [page, model, pageId, isStreaming]);
+
   const handleDiagram = useCallback(async () => {
     if (isStreaming) return;
     if (!page) {
@@ -430,6 +477,7 @@ export function AiAssistantPage() {
     else if (mode === 'generate') handleGenerate();
     else if (mode === 'summarize') handleSummarize();
     else if (mode === 'diagram') handleDiagram();
+    else if (mode === 'quality') handleQuality();
   };
 
   return (
@@ -487,6 +535,7 @@ export function AiAssistantPage() {
             { key: 'generate', icon: Sparkles, label: 'Generate' },
             { key: 'summarize', icon: ListCollapse, label: 'Summarize' },
             { key: 'diagram', icon: GitBranch, label: 'Diagram' },
+            { key: 'quality', icon: ShieldCheck, label: 'Quality' },
           ] as const).map(({ key, icon: Icon, label }) => (
             <button
               key={key}
@@ -574,6 +623,7 @@ export function AiAssistantPage() {
                 {mode === 'generate' && 'Describe the article you want to generate'}
                 {mode === 'summarize' && 'Select a page to summarize'}
                 {mode === 'diagram' && 'Generate a diagram from a page'}
+                {mode === 'quality' && 'Analyze article quality across multiple dimensions'}
               </p>
               <p className="text-sm text-muted-foreground">
                 {mode === 'ask' && 'Your questions will be answered using RAG over your Confluence pages'}
@@ -581,6 +631,7 @@ export function AiAssistantPage() {
                 {mode === 'generate' && 'AI will create a full article based on your prompt'}
                 {mode === 'summarize' && (page ? `Ready to summarize: ${page.title}` : 'Navigate to a page and click "Summarize" to get started')}
                 {mode === 'diagram' && (page ? `Ready to diagram: ${page.title}` : 'Navigate to a page and click "Diagram" to get started')}
+                {mode === 'quality' && (page ? `Ready to analyze: ${page.title}` : 'Navigate to a page to analyze its quality')}
               </p>
             </div>
           )}
@@ -694,6 +745,7 @@ export function AiAssistantPage() {
                   {mode === 'improve' && <><Wand2 size={14} /> Improve Page</>}
                   {mode === 'summarize' && <><ListCollapse size={14} /> Summarize Page</>}
                   {mode === 'diagram' && <><GitBranch size={14} /> Generate Diagram</>}
+                  {mode === 'quality' && <><ShieldCheck size={14} /> Analyze Quality</>}
                 </>
               )}
             </button>
