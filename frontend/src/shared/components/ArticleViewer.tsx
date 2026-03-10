@@ -1,12 +1,11 @@
 import { useEffect, useRef, useCallback, useMemo, useState } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
 import { TaskList, TaskItem } from '@tiptap/extension-list';
+import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight';
 import { Image } from '@tiptap/extension-image';
-import { lowlight } from '../lib/lowlight';
-import { TitledCodeBlock } from './TitledCodeBlock';
+import { common, createLowlight } from 'lowlight';
 import DOMPurify from 'dompurify';
 import {
   Details,
@@ -14,39 +13,25 @@ import {
   Panel,
   DrawioDiagram,
   ConfluenceToc,
-  ConfluenceStatus,
-  ConfluenceChildren,
   UnknownMacro,
 } from './article-extensions';
-import { MermaidDiagram } from './MermaidDiagram';
-import { DrawioDiagramPreview } from './DrawioDiagramPreview';
-import { FeatureErrorBoundary } from './FeatureErrorBoundary';
-import { fetchAuthenticatedBlob } from '../hooks/use-authenticated-src';
 import { cn } from '../lib/cn';
 import type { TocHeading } from './TableOfContents';
 
-// Configure DOMPurify to preserve Confluence-specific attributes.
-// Guard against SSR/test environments where DOMPurify may export a factory.
-const CONFLUENCE_DATA_ATTRS = new Set([
-  'data-diagram-name',
-  'data-drawio',
-  'data-confluence-link',
-  'data-type',
-  'data-checked',
-  'data-color',
-  'data-sort',
-  'data-reverse',
-  'data-title',
-  'data-src-xml',
-]);
+// Configure DOMPurify to preserve Confluence-specific attributes
+DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
+  if (
+    data.attrName === 'data-diagram-name' ||
+    data.attrName === 'data-drawio' ||
+    data.attrName === 'data-confluence-link' ||
+    data.attrName === 'data-type' ||
+    data.attrName === 'data-checked'
+  ) {
+    data.forceKeepAttr = true;
+  }
+});
 
-if (typeof DOMPurify.addHook === 'function') {
-  DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
-    if (CONFLUENCE_DATA_ATTRS.has(data.attrName)) {
-      data.forceKeepAttr = true;
-    }
-  });
-}
+const lowlight = createLowlight(common);
 
 interface ArticleViewerProps {
   /** HTML content to render (typically page.bodyHtml) */
@@ -59,8 +44,6 @@ interface ArticleViewerProps {
   pageId?: string | null;
   /** Callback with parsed headings for Table of Contents */
   onHeadingsReady?: (headings: TocHeading[]) => void;
-  /** Callback to trigger a Confluence sync (e.g. when a diagram fails to load) */
-  onRequestSync?: () => void;
   /** Additional CSS classes */
   className?: string;
 }
@@ -71,7 +54,6 @@ export function ArticleViewer({
   confluenceUrl,
   pageId,
   onHeadingsReady,
-  onRequestSync,
   className,
 }: ArticleViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -79,11 +61,9 @@ export function ArticleViewer({
 
   const sanitizedContent = useMemo(
     () =>
-      typeof DOMPurify.sanitize === 'function'
-        ? DOMPurify.sanitize(content, {
-            ADD_ATTR: [...CONFLUENCE_DATA_ATTRS],
-          })
-        : content,
+      DOMPurify.sanitize(content, {
+        ADD_ATTR: ['data-diagram-name', 'data-drawio', 'data-confluence-link', 'data-type', 'data-checked', 'data-color'],
+      }),
     [content],
   );
 
@@ -103,15 +83,13 @@ export function ArticleViewer({
       TableHeader,
       TaskList,
       TaskItem.configure({ nested: true }),
-      TitledCodeBlock.configure({ lowlight }),
+      CodeBlockLowlight.configure({ lowlight }),
       Image.configure({ inline: false }),
       Details,
       DetailsSummary,
       Panel,
       DrawioDiagram,
       ConfluenceToc,
-      ConfluenceStatus,
-      ConfluenceChildren,
       UnknownMacro,
     ],
     content: sanitizedContent,
@@ -167,174 +145,7 @@ export function ArticleViewer({
     return () => cancelAnimationFrame(raf);
   }, [isReady, sanitizedContent, onHeadingsReady]);
 
-  // Render Mermaid diagrams: replace pre>code.language-mermaid with MermaidDiagram React components
-  const mermaidRootsRef = useRef<Root[]>([]);
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container || !isReady) return;
-
-    // Cleanup any previously mounted mermaid roots
-    for (const root of mermaidRootsRef.current) {
-      root.unmount();
-    }
-    mermaidRootsRef.current = [];
-
-    const raf = requestAnimationFrame(() => {
-      const mermaidCodes = container.querySelectorAll('pre > code.language-mermaid');
-      mermaidCodes.forEach((codeEl) => {
-        const pre = codeEl.parentElement;
-        if (!pre) return;
-
-        const mermaidCode = codeEl.textContent ?? '';
-        if (!mermaidCode.trim()) return;
-
-        // Create a container div that will replace the <pre> block
-        const wrapper = document.createElement('div');
-        wrapper.className = 'mermaid-diagram-wrapper';
-        wrapper.setAttribute('data-testid', 'mermaid-diagram-wrapper');
-        pre.replaceWith(wrapper);
-
-        // Mount a MermaidDiagram React component into the wrapper
-        const root = createRoot(wrapper);
-        root.render(
-          <FeatureErrorBoundary featureName="Mermaid Diagram">
-            <MermaidDiagram code={mermaidCode} />
-          </FeatureErrorBoundary>,
-        );
-        mermaidRootsRef.current.push(root);
-      });
-    });
-
-    return () => {
-      cancelAnimationFrame(raf);
-      for (const root of mermaidRootsRef.current) {
-        root.unmount();
-      }
-      mermaidRootsRef.current = [];
-    };
-  }, [isReady, sanitizedContent]);
-
-  // Render Draw.io diagrams: replace .confluence-drawio with DrawioDiagramPreview React components
-  const drawioRootsRef = useRef<Root[]>([]);
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container || !isReady) return;
-
-    // Cleanup any previously mounted drawio roots
-    for (const root of drawioRootsRef.current) {
-      root.unmount();
-    }
-    drawioRootsRef.current = [];
-
-    const raf = requestAnimationFrame(() => {
-      const drawioElements = container.querySelectorAll('div.confluence-drawio');
-      drawioElements.forEach((el) => {
-        const htmlEl = el as HTMLElement;
-        const diagramName = htmlEl.getAttribute('data-diagram-name');
-        const img = htmlEl.querySelector('img');
-        const src = img?.getAttribute('src') || null;
-        const srcXmlFallback = img?.getAttribute('data-src-xml') || null;
-        const alt = img?.getAttribute('alt') || 'Diagram';
-        const link = htmlEl.querySelector('a.drawio-edit-link') as HTMLAnchorElement | null;
-
-        // Build the edit href — use the existing link if already rewritten,
-        // otherwise construct from confluenceUrl + pageId
-        let editHref = link?.getAttribute('href') || '#';
-        if (confluenceUrl && pageId && (editHref === '#' || !editHref.startsWith('http'))) {
-          editHref = `${confluenceUrl}/pages/viewpage.action?pageId=${encodeURIComponent(pageId)}`;
-        }
-
-        // Create a wrapper div that will replace the original .confluence-drawio element
-        const wrapper = document.createElement('div');
-        wrapper.className = 'drawio-diagram-wrapper';
-        wrapper.setAttribute('data-testid', 'drawio-diagram-wrapper');
-        htmlEl.replaceWith(wrapper);
-
-        // Mount a DrawioDiagramPreview React component into the wrapper
-        const root = createRoot(wrapper);
-        root.render(
-          <FeatureErrorBoundary featureName="Draw.io Diagram">
-            <DrawioDiagramPreview
-              src={src}
-              srcXmlFallback={srcXmlFallback}
-              diagramName={diagramName}
-              alt={alt}
-              editHref={editHref}
-              onRequestSync={onRequestSync}
-            />
-          </FeatureErrorBoundary>,
-        );
-        drawioRootsRef.current.push(root);
-      });
-    });
-
-    return () => {
-      cancelAnimationFrame(raf);
-      for (const root of drawioRootsRef.current) {
-        root.unmount();
-      }
-      drawioRootsRef.current = [];
-    };
-  }, [isReady, sanitizedContent, confluenceUrl, pageId, onRequestSync]);
-
-  // Rewrite regular <img> tags that point to /api/attachments/ so they are
-  // fetched with the Bearer token.  Without this, browser-native <img> requests
-  // get a 401 because they cannot send Authorization headers.
-  const blobUrlsRef = useRef<string[]>([]);
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container || !isReady) return;
-
-    // Revoke any previously created blob URLs
-    for (const url of blobUrlsRef.current) {
-      URL.revokeObjectURL(url);
-    }
-    blobUrlsRef.current = [];
-
-    const raf = requestAnimationFrame(() => {
-      const images = container.querySelectorAll('img');
-      images.forEach((img) => {
-        const src = img.getAttribute('src') ?? '';
-        // Only rewrite internal attachment URLs; skip drawio wrappers (handled by DrawioDiagramPreview)
-        if (!src.startsWith('/api/attachments/')) return;
-        if (img.closest('.drawio-diagram-wrapper') || img.closest('.drawio-preview-container')) return;
-
-        // Hide the image until the blob is ready to avoid a flash of broken image
-        img.style.opacity = '0';
-        img.style.transition = 'opacity 0.2s';
-
-        fetchAuthenticatedBlob(src).then((blobUrl) => {
-          if (blobUrl) {
-            img.src = blobUrl;
-            blobUrlsRef.current.push(blobUrl);
-            img.style.opacity = '1';
-          } else {
-            // Replace broken image with an inline styled placeholder
-            const filename = img.alt || src.split('/').pop() || 'image';
-            const placeholder = document.createElement('span');
-            placeholder.className =
-              'inline-flex items-center gap-1 rounded border border-dashed border-muted-foreground/30 bg-muted/20 px-2 py-1 text-xs text-muted-foreground';
-            placeholder.title = `Image could not be loaded: ${filename}`;
-            placeholder.setAttribute('aria-label', `Broken image: ${filename}`);
-            placeholder.innerHTML =
-              '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><line x1="3" x2="21" y1="3" y2="21"/><path d="M10 10c0-1.1.9-2 2-2"/><circle cx="15" cy="9" r="1"/></svg>';
-            placeholder.appendChild(document.createTextNode(filename));
-            img.replaceWith(placeholder);
-          }
-        });
-      });
-    });
-
-    return () => {
-      cancelAnimationFrame(raf);
-      for (const url of blobUrlsRef.current) {
-        URL.revokeObjectURL(url);
-      }
-      blobUrlsRef.current = [];
-    };
-  }, [isReady, sanitizedContent]);
-
-  // Add copy buttons to code blocks (skip mermaid blocks which are already replaced)
+  // Add copy buttons to code blocks
   useEffect(() => {
     const container = containerRef.current;
     if (!container || !isReady) return;
@@ -342,10 +153,6 @@ export function ArticleViewer({
     const raf = requestAnimationFrame(() => {
       const codeBlocks = container.querySelectorAll('pre');
       codeBlocks.forEach((pre) => {
-        // Skip mermaid code blocks (they are replaced by MermaidDiagram)
-        const codeEl = pre.querySelector('code');
-        if (codeEl?.classList.contains('language-mermaid')) return;
-
         if (pre.querySelector('.code-copy-btn')) return;
 
         pre.style.position = 'relative';
@@ -396,8 +203,6 @@ export function ArticleViewer({
     const raf = requestAnimationFrame(() => {
       const images = container.querySelectorAll('img');
       images.forEach((img) => {
-        // Skip images inside draw.io diagram wrappers (they have their own lightbox)
-        if (img.closest('.drawio-diagram-wrapper') || img.closest('.drawio-preview-container')) return;
         img.style.cursor = 'zoom-in';
         img.addEventListener('click', handleImageClick);
       });
@@ -411,6 +216,24 @@ export function ArticleViewer({
       });
     };
   }, [isReady, sanitizedContent, handleImageClick, onImageClick]);
+
+  // Update draw.io edit links with real Confluence URL
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || !isReady || !confluenceUrl || !pageId) return;
+
+    const raf = requestAnimationFrame(() => {
+      const links = container.querySelectorAll('a.drawio-edit-link');
+      links.forEach((link) => {
+        const anchor = link as HTMLAnchorElement;
+        anchor.href = `${confluenceUrl}/pages/viewpage.action?pageId=${encodeURIComponent(pageId)}`;
+        anchor.target = '_blank';
+        anchor.rel = 'noreferrer';
+      });
+    });
+
+    return () => cancelAnimationFrame(raf);
+  }, [isReady, confluenceUrl, pageId]);
 
   return (
     <div ref={containerRef} className="article-viewer-container">

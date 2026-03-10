@@ -1,107 +1,18 @@
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { m, AnimatePresence } from 'framer-motion';
-import { Search, FileText, Plus, RefreshCw, ChevronLeft, ChevronRight, FolderOpen, Filter, X, List, Loader2, Cpu, Pin } from 'lucide-react';
+import { m } from 'framer-motion';
+import { Search, FileText, Plus, RefreshCw, ChevronLeft, ChevronRight, FolderOpen, Filter, X, List, Loader2 } from 'lucide-react';
 import DOMPurify from 'dompurify';
 import { toast } from 'sonner';
-import { usePages, usePageFilterOptions, usePage, useEmbeddingStatus, useEmbeddingProcess, usePinnedPages, usePinPage, useUnpinPage, type PageSummary } from '../../shared/hooks/use-pages';
+import { usePages, usePageFilterOptions, usePage, useEmbeddingStatus } from '../../shared/hooks/use-pages';
 import { useSpaces, useSync, useSyncStatus } from '../../shared/hooks/use-spaces';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../../shared/components/EmbeddingStatusBadge';
-import { DirectionAwareHover } from '../../shared/components/DirectionAwareHover';
-import { MagneticButton } from '../../shared/components/MagneticButton';
 import { BulkOperations } from './BulkOperations';
-import { KPICards } from './KPICards';
-import { PinnedArticlesSection } from './PinnedArticlesSection';
-import { SkeletonPageItem } from '../../shared/components/Skeleton';
 import { cn } from '../../shared/lib/cn';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
-import { useClickRipple } from '../../shared/hooks/use-click-ripple';
-import { useUiStore } from '../../stores/ui-store';
-
-interface PageItemCardProps {
-  pageItem: PageSummary;
-  selectedIds: Set<string>;
-  pinnedIds: Set<string>;
-  onToggleSelection: (id: string, e: React.MouseEvent) => void;
-  onTogglePin: (e: React.MouseEvent, id: string, title: string) => void;
-  onNavigate: (path: string) => void;
-}
-
-function PageItemCard({ pageItem, selectedIds, pinnedIds, onToggleSelection, onTogglePin, onNavigate }: PageItemCardProps) {
-  return (
-    <DirectionAwareHover
-      className={cn(
-        'glass-card-hover flex w-full items-center gap-4 p-4 text-left',
-        selectedIds.has(pageItem.id) && 'border-primary/40 bg-primary/5',
-      )}
-      data-testid={`article-hover-${pageItem.id}`}
-    >
-      {/* Checkbox for bulk selection */}
-      <button
-        onClick={(e) => onToggleSelection(pageItem.id, e)}
-        className="shrink-0 flex h-5 w-5 items-center justify-center rounded border border-border hover:border-primary/50"
-        data-testid={`checkbox-${pageItem.id}`}
-        aria-label={`Select ${pageItem.title}`}
-      >
-        {selectedIds.has(pageItem.id) && (
-          <div className="h-3 w-3 rounded-sm bg-primary" />
-        )}
-      </button>
-
-      {/* Pin toggle */}
-      <button
-        onClick={(e) => onTogglePin(e, pageItem.id, pageItem.title)}
-        className={cn(
-          'shrink-0 rounded p-1 transition-colors',
-          pinnedIds.has(pageItem.id)
-            ? 'text-primary hover:text-primary/70'
-            : 'text-muted-foreground/40 hover:text-primary',
-        )}
-        aria-label={pinnedIds.has(pageItem.id) ? `Unpin ${pageItem.title}` : `Pin ${pageItem.title}`}
-        data-testid={`pin-toggle-${pageItem.id}`}
-      >
-        <Pin size={14} className={pinnedIds.has(pageItem.id) ? 'fill-current' : ''} />
-      </button>
-
-      <button
-        onClick={() => onNavigate(`/pages/${pageItem.id}`)}
-        className="flex min-w-0 flex-1 items-center gap-4"
-      >
-        <div className="min-w-0 flex-1 text-left">
-          <p className="truncate font-medium">{pageItem.title}</p>
-          <div className="flex items-center gap-3 text-xs text-muted-foreground">
-            <span>{pageItem.spaceKey}</span>
-            {pageItem.author && <span>{pageItem.author}</span>}
-            {pageItem.lastModifiedAt && (
-              <span>{new Date(pageItem.lastModifiedAt).toLocaleDateString()}</span>
-            )}
-          </div>
-        </div>
-        <EmbeddingStatusBadge
-          embeddingStatus={pageItem.embeddingStatus}
-          embeddingDirty={pageItem.embeddingDirty}
-          embeddedAt={pageItem.embeddedAt}
-          embeddingError={pageItem.embeddingError}
-        />
-        {pageItem.lastModifiedAt && (
-          <FreshnessBadge lastModified={pageItem.lastModifiedAt} />
-        )}
-        {pageItem.labels.length > 0 && (
-          <div className="flex gap-1">
-            {pageItem.labels.slice(0, 3).map((label) => (
-              <span key={label} className="rounded bg-primary/10 px-2 py-0.5 text-xs text-primary">
-                {label}
-              </span>
-            ))}
-          </div>
-        )}
-      </button>
-    </DirectionAwareHover>
-  );
-}
 
 export function PagesPage() {
   const navigate = useNavigate();
@@ -118,7 +29,6 @@ export function PagesPage() {
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState<'title' | 'modified' | 'author'>('modified');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const reduceEffects = useUiStore((s) => s.reduceEffects);
 
   const { data: settings } = useSettings();
   const { data: spaces } = useSpaces();
@@ -136,7 +46,7 @@ export function PagesPage() {
   );
   const sanitizedHomeHtml = useMemo(
     () => (homePage ? DOMPurify.sanitize(homePage.bodyHtml, {
-      ADD_ATTR: ['data-diagram-name', 'data-drawio', 'data-title'],
+      ADD_ATTR: ['data-diagram-name', 'data-drawio', 'data-color'],
     }) : ''),
     [homePage],
   );
@@ -156,56 +66,18 @@ export function PagesPage() {
   const syncMutation = useSync();
   const { data: syncStatus } = useSyncStatus();
   const { data: embeddingStatusData } = useEmbeddingStatus();
-  const embeddingProcess = useEmbeddingProcess();
-  const { data: pinnedData } = usePinnedPages();
-  const pinMutation = usePinPage();
-  const unpinMutation = useUnpinPage();
   const queryClient = useQueryClient();
+  const wasProcessingRef = useRef(false);
 
-  const pinnedIds = useMemo(
-    () => new Set(pinnedData?.items.map((p) => p.id) ?? []),
-    [pinnedData],
-  );
-
-  const handleTogglePin = useCallback((e: React.MouseEvent, pageId: string, title: string) => {
-    e.stopPropagation();
-    if (pinnedIds.has(pageId)) {
-      unpinMutation.mutate(pageId, {
-        onSuccess: () => toast.success(`Unpinned "${title}"`),
-        onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to unpin'),
-      });
-    } else {
-      pinMutation.mutate(pageId, {
-        onSuccess: () => toast.success(`Pinned "${title}"`),
-        onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to pin'),
-      });
-    }
-  }, [pinnedIds, pinMutation, unpinMutation]);
-
-  // Show completion toast when SSE-based processing finishes
   useEffect(() => {
-    if (!embeddingProcess.isProcessing && embeddingProcess.progress.total > 0 && embeddingProcess.progress.percentage === 100) {
-      const { completed, failed } = embeddingProcess.progress;
-      if (failed > 0) {
-        toast.warning(`Embedding done — ${completed} succeeded, ${failed} failed`);
-      } else {
-        toast.success(`Embedding complete — ${completed} pages embedded`);
-      }
+    if (embeddingStatusData?.isProcessing) {
+      wasProcessingRef.current = true;
+    } else if (wasProcessingRef.current && embeddingStatusData && !embeddingStatusData.isProcessing) {
+      wasProcessingRef.current = false;
+      toast.success('Embedding complete — all pages are up to date');
       queryClient.invalidateQueries({ queryKey: ['pages'] });
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [embeddingProcess.isProcessing]);
-
-  const ripple = useClickRipple();
-
-  const pageItems = pagesData?.items ?? [];
-
-  /**
-   * Virtual scrolling threshold: only virtualize when the list exceeds this
-   * count. Small lists render without virtualization to avoid layout overhead.
-   */
-  /** Max number of items that receive a stagger entrance animation */
-  const STAGGER_LIMIT = 20;
+  }, [embeddingStatusData, queryClient]);
 
   const activeFilterCount = [author, labels, freshness, embeddingStatus, dateFrom, dateTo].filter(Boolean).length;
 
@@ -253,32 +125,23 @@ export function PagesPage() {
           </p>
         </div>
         <div className="flex gap-2">
-          <MagneticButton
-            onClick={(e) => { ripple(e); syncMutation.mutate(); }}
+          <button
+            onClick={() => syncMutation.mutate()}
             disabled={syncStatus?.status === 'syncing'}
-            className="ripple-container glass-card flex items-center gap-2 px-4 py-2 text-sm hover:bg-foreground/5 disabled:opacity-50"
-            data-testid="sync-btn"
+            className="glass-card flex items-center gap-2 px-4 py-2 text-sm hover:bg-foreground/5 disabled:opacity-50"
           >
             <RefreshCw size={16} className={cn(syncStatus?.status === 'syncing' && 'animate-spin')} />
             {syncStatus?.status === 'syncing' ? 'Syncing...' : 'Sync'}
-          </MagneticButton>
-          <MagneticButton
-            onClick={(e) => { ripple(e); navigate('/pages/new'); }}
-            className="ripple-container flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-            data-testid="new-page-btn"
+          </button>
+          <button
+            onClick={() => navigate('/pages/new')}
+            className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
           >
             <Plus size={16} />
             New Page
-          </MagneticButton>
+          </button>
         </div>
       </div>
-
-      {/* KPI cards */}
-      <KPICards
-        embeddingStatus={embeddingStatusData}
-        spacesCount={spaces?.length ?? 0}
-        lastSynced={syncStatus?.lastSynced}
-      />
 
       {/* Sync progress */}
       {syncStatus?.status === 'syncing' && syncStatus.progress && (
@@ -296,75 +159,26 @@ export function PagesPage() {
         </div>
       )}
 
-      {/* Embedding: real-time SSE progress (user-initiated) or polling fallback (background/other-tab) */}
-      {(embeddingProcess.isProcessing || embeddingStatusData?.isProcessing) && (
-        <div className="glass-card space-y-2 p-3 border border-primary/30" data-testid="embedding-progress-banner">
-          <div className="flex items-center gap-3">
-            <Loader2 size={16} className="animate-spin text-primary shrink-0" />
-            <span className="text-sm flex-1 truncate">
-              {embeddingProcess.isProcessing
-                ? (embeddingProcess.progress.isWaiting
-                    ? `Waiting for LLM server — ${embeddingProcess.progress.waitReason ?? 'circuit breaker open'}`
-                    : embeddingProcess.progress.currentPage
-                      ? `Embedding: ${embeddingProcess.progress.currentPage}`
-                      : 'Embedding in progress')
-                : `Embedding in progress — ${embeddingStatusData!.dirtyPages} pages remaining`}
-            </span>
-            <div className="flex items-center gap-2 shrink-0">
-              <div className="h-1.5 w-32 overflow-hidden rounded-full bg-foreground/10">
-                <div
-                  className="h-full rounded-full bg-primary transition-all duration-300"
-                  style={{ width: embeddingProcess.isProcessing
-                    ? `${embeddingProcess.progress.percentage}%`
-                    : `${((embeddingStatusData!.totalPages - embeddingStatusData!.dirtyPages) / Math.max(embeddingStatusData!.totalPages, 1)) * 100}%` }}
-                />
-              </div>
-              <span className="text-xs text-muted-foreground">
-                {embeddingProcess.isProcessing
-                  ? `${embeddingProcess.progress.completed}/${embeddingProcess.progress.total}`
-                  : `${embeddingStatusData!.totalPages - embeddingStatusData!.dirtyPages}/${embeddingStatusData!.totalPages}`}
-              </span>
-              {embeddingProcess.progress.failed > 0 && (
-                <span className="text-xs text-destructive">
-                  {embeddingProcess.progress.failed} failed
-                </span>
-              )}
-            </div>
-            {embeddingProcess.isProcessing && (
-              <button
-                onClick={embeddingProcess.cancel}
-                className="rounded p-1 text-muted-foreground hover:text-foreground"
-                title="Cancel"
-                data-testid="embedding-cancel-btn"
-              >
-                <X size={14} />
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Embed Now / Retry Failed: shown when not actively processing */}
-      {!embeddingProcess.isProcessing && embeddingStatusData && (embeddingStatusData.dirtyPages > 0 || (embeddingStatusData.totalPages - embeddingStatusData.embeddedPages - embeddingStatusData.dirtyPages > 0)) && (
-        <div className="glass-card flex items-center gap-3 p-3 border border-yellow-500/30" data-testid="embed-now-banner">
+      {/* Embedding progress */}
+      {embeddingStatusData?.isProcessing && (
+        <div className="glass-card flex items-center gap-3 p-3 border border-primary/30" data-testid="embedding-progress-banner">
+          <Loader2 size={16} className="animate-spin text-primary" />
           <span className="text-sm">
-            {embeddingStatusData.dirtyPages} page{embeddingStatusData.dirtyPages !== 1 ? 's' : ''} pending embedding
+            Embedding in progress — {embeddingStatusData.dirtyPages} pages remaining
           </span>
-          <div className="ml-auto flex gap-2">
-            <button
-              onClick={() => embeddingProcess.start('/embeddings/process').catch((err) => toast.error(err instanceof Error ? err.message : 'Embedding failed'))}
-              className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-              data-testid="embed-now-btn"
-            >
-              <Cpu size={14} />
-              Embed Now
-            </button>
+          <div className="ml-auto flex items-center gap-2">
+            <div className="h-1.5 w-32 overflow-hidden rounded-full bg-foreground/10">
+              <div
+                className="h-full rounded-full bg-primary transition-all"
+                style={{ width: `${((embeddingStatusData.totalPages - embeddingStatusData.dirtyPages) / Math.max(embeddingStatusData.totalPages, 1)) * 100}%` }}
+              />
+            </div>
+            <span className="text-xs text-muted-foreground">
+              {embeddingStatusData.totalPages - embeddingStatusData.dirtyPages}/{embeddingStatusData.totalPages}
+            </span>
           </div>
         </div>
       )}
-
-      {/* Pinned Articles */}
-      <PinnedArticlesSection />
 
       {/* Filters */}
       <div className="glass-card space-y-3 p-4">
@@ -561,79 +375,80 @@ export function PagesPage() {
       ) : (
       <>
       {/* Page list */}
-      <AnimatePresence mode="wait">
       {isLoading ? (
-        <m.div
-          key="skeleton"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0, y: -4 }}
-          transition={{ duration: 0.2 }}
-          className="space-y-3"
-        >
+        <div className="space-y-3">
           {Array.from({ length: 5 }).map((_, i) => (
-            <SkeletonPageItem key={i} />
+            <div key={i} className="glass-card h-16 animate-pulse" />
           ))}
-        </m.div>
+        </div>
       ) : !pagesData?.items.length ? (
-        <m.div
-          key="empty"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          className="glass-card flex flex-col items-center justify-center py-16 text-center"
-        >
+        <div className="glass-card flex flex-col items-center justify-center py-16 text-center">
           <FolderOpen size={48} className="mb-4 text-muted-foreground" />
           <p className="text-lg font-medium">No pages found</p>
           <p className="text-sm text-muted-foreground">
             {search ? 'Try a different search term' : 'Sync your Confluence spaces to see pages here'}
           </p>
-        </m.div>
+        </div>
       ) : (
-        <m.div
-          key="list"
-          initial={{ opacity: 0, y: 6 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.2 }}
-        >
-          <div className="space-y-2">
-              {pageItems.map((pageItem, i) => {
-                const shouldAnimate = !reduceEffects && i < STAGGER_LIMIT;
+        <div className="space-y-2">
+          {pagesData.items.map((pageItem, i) => (
+            <m.div
+              key={pageItem.id}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: i * 0.03 }}
+            >
+              <div
+                className={cn(
+                  'glass-card-hover flex w-full items-center gap-4 p-4 text-left',
+                  selectedIds.has(pageItem.id) && 'border-primary/40 bg-primary/5',
+                )}
+              >
+                {/* Checkbox for bulk selection */}
+                <button
+                  onClick={(e) => toggleSelection(pageItem.id, e)}
+                  className="shrink-0 flex h-5 w-5 items-center justify-center rounded border border-border hover:border-primary/50"
+                  data-testid={`checkbox-${pageItem.id}`}
+                  aria-label={`Select ${pageItem.title}`}
+                >
+                  {selectedIds.has(pageItem.id) && (
+                    <div className="h-3 w-3 rounded-sm bg-primary" />
+                  )}
+                </button>
 
-                return shouldAnimate ? (
-                  <m.div
-                    key={pageItem.id}
-                    initial={{ opacity: 0, y: 8 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: i * 0.03 }}
-                  >
-                    <PageItemCard
-                      pageItem={pageItem}
-                      selectedIds={selectedIds}
-                      pinnedIds={pinnedIds}
-                      onToggleSelection={toggleSelection}
-                      onTogglePin={handleTogglePin}
-                      onNavigate={navigate}
-                    />
-                  </m.div>
-                ) : (
-                  <div key={pageItem.id}>
-                    <PageItemCard
-                      pageItem={pageItem}
-                      selectedIds={selectedIds}
-                      pinnedIds={pinnedIds}
-                      onToggleSelection={toggleSelection}
-                      onTogglePin={handleTogglePin}
-                      onNavigate={navigate}
-                    />
+                <button
+                  onClick={() => navigate(`/pages/${pageItem.id}`)}
+                  className="flex min-w-0 flex-1 items-center gap-4"
+                >
+                  <div className="min-w-0 flex-1 text-left">
+                    <p className="truncate font-medium">{pageItem.title}</p>
+                    <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                      <span>{pageItem.spaceKey}</span>
+                      {pageItem.author && <span>{pageItem.author}</span>}
+                      {pageItem.lastModifiedAt && (
+                        <span>{new Date(pageItem.lastModifiedAt).toLocaleDateString()}</span>
+                      )}
+                    </div>
                   </div>
-                );
-              })}
-            </div>
-        </m.div>
+                  <EmbeddingStatusBadge embeddingDirty={pageItem.embeddingDirty} />
+                  {pageItem.lastModifiedAt && (
+                    <FreshnessBadge lastModified={pageItem.lastModifiedAt} />
+                  )}
+                  {pageItem.labels.length > 0 && (
+                    <div className="flex gap-1">
+                      {pageItem.labels.slice(0, 3).map((label) => (
+                        <span key={label} className="rounded bg-primary/10 px-2 py-0.5 text-xs text-primary">
+                          {label}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </button>
+              </div>
+            </m.div>
+          ))}
+        </div>
       )}
-      </AnimatePresence>
 
       {/* Pagination */}
       {pagesData && pagesData.totalPages > 1 && (

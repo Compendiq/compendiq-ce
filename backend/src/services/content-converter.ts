@@ -46,12 +46,10 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string): string 
   for (const macro of byTag(doc, 'ac:structured-macro')) {
     if (getMacroName(macro) !== 'code') continue;
     const language = getParamValue(macro, 'language') ?? '';
-    const title = getParamValue(macro, 'title');
     const bodyEl = byTag(macro, 'ac:plain-text-body')[0];
     const code = bodyEl?.textContent ?? '';
 
     const pre = doc.createElement('pre');
-    if (title) pre.setAttribute('data-title', title);
     const codeEl = doc.createElement('code');
     if (language) codeEl.className = `language-${language}`;
     codeEl.textContent = code;
@@ -169,8 +167,6 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string): string 
     const img = doc.createElement('img');
     if (pageId) {
       img.src = `/api/attachments/${pageId}/${encodeURIComponent(diagramName)}.png`;
-      // XML fallback URL: used by ArticleViewer when the PNG has not been exported yet
-      img.setAttribute('data-src-xml', `/api/attachments/${pageId}/${encodeURIComponent(diagramName)}.xml`);
     } else {
       img.src = `#drawio:${diagramName}`;
     }
@@ -192,26 +188,11 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string): string 
     if (getMacroName(macro) !== 'status') continue;
     const colour = (getParamValue(macro, 'colour') ?? 'Grey').toLowerCase();
     const title = getParamValue(macro, 'title') ?? '';
-
     const span = doc.createElement('span');
     span.className = 'confluence-status';
     span.setAttribute('data-color', colour);
     span.textContent = title;
     macro.replaceWith(span);
-  }
-
-  // Process children display macros: ac:structured-macro[name=children] -> <div class="confluence-children-macro">
-  for (const macro of byTag(doc, 'ac:structured-macro')) {
-    if (getMacroName(macro) !== 'children') continue;
-    const sort = getParamValue(macro, 'sort') ?? '';
-    const reverse = getParamValue(macro, 'reverse') ?? '';
-
-    const div = doc.createElement('div');
-    div.className = 'confluence-children-macro';
-    if (sort) div.setAttribute('data-sort', sort);
-    if (reverse) div.setAttribute('data-reverse', reverse);
-    div.textContent = '[Children pages listed here]';
-    macro.replaceWith(div);
   }
 
   // Process table of contents macro -> placeholder
@@ -220,6 +201,19 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string): string 
     const div = doc.createElement('div');
     div.className = 'confluence-toc';
     div.textContent = '[Table of Contents]';
+    macro.replaceWith(div);
+  }
+
+  // Process children display macro -> placeholder div with optional sort/reverse params
+  for (const macro of byTag(doc, 'ac:structured-macro')) {
+    if (getMacroName(macro) !== 'children') continue;
+    const div = doc.createElement('div');
+    div.className = 'confluence-children-macro';
+    div.textContent = '[Children pages listed here]';
+    const sort = getParamValue(macro, 'sort');
+    const reverse = getParamValue(macro, 'reverse');
+    if (sort !== null && sort !== undefined) div.setAttribute('data-sort', sort);
+    if (reverse !== null && reverse !== undefined) div.setAttribute('data-reverse', reverse);
     macro.replaceWith(div);
   }
 
@@ -257,7 +251,6 @@ export function htmlToConfluence(html: string): string {
     if (!codeEl) continue;
 
     const language = (codeEl.className.match(/language-(\w+)/) ?? [])[1] ?? '';
-    const title = pre.getAttribute('data-title');
     const code = codeEl.textContent ?? '';
 
     const macro = doc.createElement('ac:structured-macro');
@@ -268,13 +261,6 @@ export function htmlToConfluence(html: string): string {
       param.setAttribute('ac:name', 'language');
       param.textContent = language;
       macro.appendChild(param);
-    }
-
-    if (title) {
-      const titleParam = doc.createElement('ac:parameter');
-      titleParam.setAttribute('ac:name', 'title');
-      titleParam.textContent = title;
-      macro.appendChild(titleParam);
     }
 
     const body = doc.createElement('ac:plain-text-body');
@@ -338,51 +324,42 @@ export function htmlToConfluence(html: string): string {
     details.replaceWith(macro);
   }
 
+  // Convert children macro placeholders back to ac:structured-macro[name=children]
+  for (const div of doc.querySelectorAll('div.confluence-children-macro')) {
+    const macro = doc.createElement('ac:structured-macro');
+    macro.setAttribute('ac:name', 'children');
+    const sort = div.getAttribute('data-sort');
+    const reverse = div.getAttribute('data-reverse');
+    if (sort !== null) {
+      const p = doc.createElement('ac:parameter');
+      p.setAttribute('ac:name', 'sort');
+      p.textContent = sort;
+      macro.appendChild(p);
+    }
+    if (reverse !== null) {
+      const p = doc.createElement('ac:parameter');
+      p.setAttribute('ac:name', 'reverse');
+      p.textContent = reverse;
+      macro.appendChild(p);
+    }
+    div.replaceWith(macro);
+  }
+
   // Convert status badges back to ac:structured-macro[name=status]
   for (const span of doc.querySelectorAll('span.confluence-status')) {
-    const colour = span.getAttribute('data-color') ?? 'Grey';
+    const colour = span.getAttribute('data-color') ?? 'grey';
     const title = span.textContent ?? '';
-
     const macro = doc.createElement('ac:structured-macro');
     macro.setAttribute('ac:name', 'status');
-
     const colourParam = doc.createElement('ac:parameter');
     colourParam.setAttribute('ac:name', 'colour');
-    // Capitalize first letter to match Confluence convention
     colourParam.textContent = colour.charAt(0).toUpperCase() + colour.slice(1);
-    macro.appendChild(colourParam);
-
     const titleParam = doc.createElement('ac:parameter');
     titleParam.setAttribute('ac:name', 'title');
     titleParam.textContent = title;
+    macro.appendChild(colourParam);
     macro.appendChild(titleParam);
-
     span.replaceWith(macro);
-  }
-
-  // Convert children macro placeholders back to ac:structured-macro[name=children]
-  for (const div of doc.querySelectorAll('.confluence-children-macro')) {
-    const sort = div.getAttribute('data-sort') ?? '';
-    const reverse = div.getAttribute('data-reverse') ?? '';
-
-    const macro = doc.createElement('ac:structured-macro');
-    macro.setAttribute('ac:name', 'children');
-
-    if (sort) {
-      const sortParam = doc.createElement('ac:parameter');
-      sortParam.setAttribute('ac:name', 'sort');
-      sortParam.textContent = sort;
-      macro.appendChild(sortParam);
-    }
-
-    if (reverse) {
-      const reverseParam = doc.createElement('ac:parameter');
-      reverseParam.setAttribute('ac:name', 'reverse');
-      reverseParam.textContent = reverse;
-      macro.appendChild(reverseParam);
-    }
-
-    div.replaceWith(macro);
   }
 
   // Convert draw.io divs back to macro placeholders
@@ -459,12 +436,16 @@ export function htmlToMarkdown(html: string): string {
   // Custom rule for status badges
   turndownService.addRule('confluenceStatus', {
     filter: (node) => node.nodeName === 'SPAN' && node.classList.contains('confluence-status'),
-    replacement: (content) => `[STATUS: ${content.trim()}]`,
+    replacement: (_content, node) => {
+      const title = (node as HTMLElement).textContent?.trim() ?? '';
+      return title ? `[STATUS: ${title}]` : '';
+    },
   });
 
   // Custom rule for children macro placeholder
   turndownService.addRule('confluenceChildren', {
-    filter: (node) => node.nodeName === 'DIV' && node.classList.contains('confluence-children-macro'),
+    filter: (node) =>
+      node.nodeName === 'DIV' && node.classList.contains('confluence-children-macro'),
     replacement: () => '\n[Children pages]\n\n',
   });
 

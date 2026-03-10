@@ -95,33 +95,6 @@ export const TABLE_PAGE = `<h2>Environment Variables</h2>
 </tbody>
 </table>`;
 
-/** Table with colspan and rowspan (common in Confluence) */
-export const TABLE_COLSPAN_ROWSPAN_PAGE = `<h2>Team Schedule</h2>
-<table>
-<tbody>
-<tr><th colspan="3">Q1 2025 Sprint Assignments</th></tr>
-<tr><th>Name</th><th>Sprint 1</th><th>Sprint 2</th></tr>
-<tr><td rowspan="2">Backend Team</td><td>Auth Service</td><td>API Gateway</td></tr>
-<tr><td>Database Migration</td><td>Cache Layer</td></tr>
-<tr><td colspan="2">Frontend Team</td><td>Dashboard UI</td></tr>
-</tbody>
-</table>`;
-
-/** Multi-row table with many rows */
-export const TABLE_MULTI_ROW_PAGE = `<h2>API Endpoints</h2>
-<table>
-<tbody>
-<tr><th>Method</th><th>Path</th><th>Description</th><th>Auth</th></tr>
-<tr><td>GET</td><td>/api/health</td><td>Health check</td><td>No</td></tr>
-<tr><td>POST</td><td>/api/auth/login</td><td>User login</td><td>No</td></tr>
-<tr><td>GET</td><td>/api/pages</td><td>List pages</td><td>Yes</td></tr>
-<tr><td>GET</td><td>/api/pages/:id</td><td>Get page</td><td>Yes</td></tr>
-<tr><td>PUT</td><td>/api/pages/:id</td><td>Update page</td><td>Yes</td></tr>
-<tr><td>DELETE</td><td>/api/pages/:id</td><td>Delete page</td><td>Yes</td></tr>
-<tr><td>POST</td><td>/api/llm/ask</td><td>Ask AI</td><td>Yes</td></tr>
-</tbody>
-</table>`;
-
 /** Page with unknown/unsupported macros (should be preserved as data attributes) */
 export const UNKNOWN_MACRO_PAGE = `<h2>Jira Integration</h2>
 <ac:structured-macro ac:name="jira"><ac:parameter ac:name="key">PROJ-123</ac:parameter><ac:rich-text-body><p>Related issue</p></ac:rich-text-body></ac:structured-macro>`;
@@ -169,22 +142,40 @@ export const USER_MENTIONS_PAGE = `<h2>Team</h2>
 <p>Contact <ri:user ri:userkey="user123" /> or <ri:user ri:userkey="user456" /> for questions.</p>
 <p>Great job! <ac:emoticon ac:name="smile" /></p>`;
 
-/** Page with status macros (ac:structured-macro[name=status]) */
+/** Page with Confluence status macro badges (all six colours) */
 export const STATUS_MACRO_PAGE = `<h2>Project Status</h2>
 <p>Backend: <ac:structured-macro ac:name="status"><ac:parameter ac:name="colour">Green</ac:parameter><ac:parameter ac:name="title">DONE</ac:parameter></ac:structured-macro></p>
 <p>Frontend: <ac:structured-macro ac:name="status"><ac:parameter ac:name="colour">Yellow</ac:parameter><ac:parameter ac:name="title">IN PROGRESS</ac:parameter></ac:structured-macro></p>
-<p>QA: <ac:structured-macro ac:name="status"><ac:parameter ac:name="colour">Red</ac:parameter><ac:parameter ac:name="title">BLOCKED</ac:parameter></ac:structured-macro></p>
-<p>Design: <ac:structured-macro ac:name="status"><ac:parameter ac:name="colour">Blue</ac:parameter><ac:parameter ac:name="title">IN REVIEW</ac:parameter></ac:structured-macro></p>
-<p>Docs: <ac:structured-macro ac:name="status"><ac:parameter ac:name="colour">Grey</ac:parameter><ac:parameter ac:name="title">TODO</ac:parameter></ac:structured-macro></p>`;
+<p>Docs: <ac:structured-macro ac:name="status"><ac:parameter ac:name="colour">Red</ac:parameter><ac:parameter ac:name="title">BLOCKED</ac:parameter></ac:structured-macro></p>
+<p>QA: <ac:structured-macro ac:name="status"><ac:parameter ac:name="colour">Blue</ac:parameter><ac:parameter ac:name="title">IN REVIEW</ac:parameter></ac:structured-macro></p>
+<p>Deploy: <ac:structured-macro ac:name="status"><ac:parameter ac:name="colour">Grey</ac:parameter><ac:parameter ac:name="title">TODO</ac:parameter></ac:structured-macro></p>`;
 
-/** Page with children display macro (ac:structured-macro[name=children]) */
-export const CHILDREN_MACRO_PAGE = `<h2>Sub-pages</h2>
-<p>The following child pages are available:</p>
-<ac:structured-macro ac:name="children"><ac:parameter ac:name="sort">title</ac:parameter><ac:parameter ac:name="reverse">false</ac:parameter></ac:structured-macro>`;
+/** Table with colspan and rowspan (common in Confluence) */
+export const TABLE_COLSPAN_ROWSPAN_PAGE = `<h2>Team Schedule</h2>
+<table>
+<tbody>
+<tr><th colspan="3">Q1 2025 Sprint Assignments</th></tr>
+<tr><th>Name</th><th>Sprint 1</th><th>Sprint 2</th></tr>
+<tr><td rowspan="2">Backend Team</td><td>Auth Service</td><td>API Gateway</td></tr>
+<tr><td>Database Migration</td><td>Cache Layer</td></tr>
+<tr><td colspan="2">Frontend Team</td><td>Dashboard UI</td></tr>
+</tbody>
+</table>`;
 
-/** Page with children display macro with no parameters */
-export const CHILDREN_MACRO_NO_PARAMS_PAGE = `<h2>Sub-pages</h2>
-<ac:structured-macro ac:name="children"></ac:structured-macro>`;
+/** Multi-row table with many rows */
+export const TABLE_MULTI_ROW_PAGE = `<h2>API Endpoints</h2>
+<table>
+<tbody>
+<tr><th>Method</th><th>Path</th><th>Description</th><th>Auth</th></tr>
+<tr><td>GET</td><td>/api/health</td><td>Health check</td><td>No</td></tr>
+<tr><td>POST</td><td>/api/auth/login</td><td>User login</td><td>No</td></tr>
+<tr><td>GET</td><td>/api/pages</td><td>List pages</td><td>Yes</td></tr>
+<tr><td>GET</td><td>/api/pages/:id</td><td>Get page</td><td>Yes</td></tr>
+<tr><td>PUT</td><td>/api/pages/:id</td><td>Update page</td><td>Yes</td></tr>
+<tr><td>DELETE</td><td>/api/pages/:id</td><td>Delete page</td><td>Yes</td></tr>
+<tr><td>POST</td><td>/api/llm/ask</td><td>Ask AI</td><td>Yes</td></tr>
+</tbody>
+</table>`;
 
 /** Page with code blocks that have titles (ac:parameter ac:name="title") */
 export const CODE_BLOCK_TITLED_PAGE = `<h2>Configuration Files</h2>
@@ -203,6 +194,15 @@ services:
 }]]></ac:plain-text-body></ac:structured-macro>
 <p>Code block without a title:</p>
 <ac:structured-macro ac:name="code"><ac:parameter ac:name="language">bash</ac:parameter><ac:plain-text-body><![CDATA[echo "no title"]]></ac:plain-text-body></ac:structured-macro>`;
+
+/** Page with children display macro (ac:structured-macro[name=children]) */
+export const CHILDREN_MACRO_PAGE = `<h2>Sub-pages</h2>
+<p>The following child pages are available:</p>
+<ac:structured-macro ac:name="children"><ac:parameter ac:name="sort">title</ac:parameter><ac:parameter ac:name="reverse">false</ac:parameter></ac:structured-macro>`;
+
+/** Page with children display macro with no parameters */
+export const CHILDREN_MACRO_NO_PARAMS_PAGE = `<h2>Sub-pages</h2>
+<ac:structured-macro ac:name="children"></ac:structured-macro>`;
 
 /** Page with data-macro-name attribute variant (some Confluence versions use this) */
 export const DATA_MACRO_VARIANT_PAGE = `<h2>Code Example</h2>

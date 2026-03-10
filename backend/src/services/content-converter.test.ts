@@ -17,16 +17,11 @@ import {
   DRAWIO_PAGE,
   TOC_PAGE,
   TABLE_PAGE,
-  TABLE_COLSPAN_ROWSPAN_PAGE,
-  TABLE_MULTI_ROW_PAGE,
   UNKNOWN_MACRO_PAGE,
   COMPLEX_PAGE,
   USER_MENTIONS_PAGE,
   DATA_MACRO_VARIANT_PAGE,
   STATUS_MACRO_PAGE,
-  CHILDREN_MACRO_PAGE,
-  CHILDREN_MACRO_NO_PARAMS_PAGE,
-  CODE_BLOCK_TITLED_PAGE,
 } from './__fixtures__/confluence-xhtml.js';
 
 describe('content-converter', () => {
@@ -50,17 +45,6 @@ describe('content-converter', () => {
       expect(html).toContain('interface Config');
       expect(html).not.toContain('ac:structured-macro');
       expect(html).not.toContain('ac:plain-text-body');
-    });
-
-    it('extracts title parameter from code blocks as data-title attribute', () => {
-      const html = confluenceToHtml(CODE_BLOCK_TITLED_PAGE);
-      expect(html).toContain('data-title="docker-compose.yml"');
-      expect(html).toContain('data-title="tsconfig.json"');
-      // Code block without title should not have data-title
-      const preBlocks = html.match(/<pre[^>]*>/g) ?? [];
-      expect(preBlocks).toHaveLength(3);
-      // Third pre block (bash, no title) should not have data-title
-      expect(preBlocks[2]).not.toContain('data-title');
     });
 
     it('converts task lists with status', () => {
@@ -128,46 +112,6 @@ describe('content-converter', () => {
       expect(html).toContain('data-diagram-name="data-flow"');
     });
 
-    it('converts table of contents to placeholder', () => {
-      const html = confluenceToHtml(TOC_PAGE);
-      expect(html).toContain('class="confluence-toc"');
-      expect(html).toContain('[Table of Contents]');
-    });
-
-    it('preserves tables as-is', () => {
-      const html = confluenceToHtml(TABLE_PAGE);
-      expect(html).toContain('<table>');
-      expect(html).toContain('JWT_SECRET');
-      expect(html).toContain('POSTGRES_URL');
-    });
-
-    it('preserves tables with colspan attributes', () => {
-      const html = confluenceToHtml(TABLE_COLSPAN_ROWSPAN_PAGE);
-      expect(html).toContain('<table>');
-      expect(html).toContain('colspan="3"');
-      expect(html).toContain('colspan="2"');
-      expect(html).toContain('Q1 2025 Sprint Assignments');
-      expect(html).toContain('Frontend Team');
-    });
-
-    it('preserves tables with rowspan attributes', () => {
-      const html = confluenceToHtml(TABLE_COLSPAN_ROWSPAN_PAGE);
-      expect(html).toContain('rowspan="2"');
-      expect(html).toContain('Backend Team');
-    });
-
-    it('preserves multi-row tables with all rows intact', () => {
-      const html = confluenceToHtml(TABLE_MULTI_ROW_PAGE);
-      expect(html).toContain('<table>');
-      // All 7 data rows + 1 header row content
-      expect(html).toContain('GET');
-      expect(html).toContain('POST');
-      expect(html).toContain('PUT');
-      expect(html).toContain('DELETE');
-      expect(html).toContain('/api/health');
-      expect(html).toContain('/api/llm/ask');
-    });
-
     it('converts status macros to colored inline badges', () => {
       const html = confluenceToHtml(STATUS_MACRO_PAGE);
       expect(html).toContain('class="confluence-status"');
@@ -184,22 +128,17 @@ describe('content-converter', () => {
       expect(html).not.toContain('ac:structured-macro');
     });
 
-    it('converts children display macro to placeholder', () => {
-      const html = confluenceToHtml(CHILDREN_MACRO_PAGE);
-      expect(html).toContain('class="confluence-children-macro"');
-      expect(html).toContain('data-sort="title"');
-      expect(html).toContain('data-reverse="false"');
-      expect(html).toContain('[Children pages listed here]');
-      expect(html).not.toContain('ac:structured-macro');
+    it('converts table of contents to placeholder', () => {
+      const html = confluenceToHtml(TOC_PAGE);
+      expect(html).toContain('class="confluence-toc"');
+      expect(html).toContain('[Table of Contents]');
     });
 
-    it('converts children display macro with no parameters', () => {
-      const html = confluenceToHtml(CHILDREN_MACRO_NO_PARAMS_PAGE);
-      expect(html).toContain('class="confluence-children-macro"');
-      expect(html).toContain('[Children pages listed here]');
-      // No data-sort or data-reverse when params are absent
-      expect(html).not.toContain('data-sort');
-      expect(html).not.toContain('data-reverse');
+    it('preserves tables as-is', () => {
+      const html = confluenceToHtml(TABLE_PAGE);
+      expect(html).toContain('<table>');
+      expect(html).toContain('JWT_SECRET');
+      expect(html).toContain('POSTGRES_URL');
     });
 
     it('wraps unknown macros with data attributes', () => {
@@ -291,19 +230,6 @@ describe('content-converter', () => {
       expect(xhtml).toContain('npm install');
     });
 
-    it('round-trips code block titles', () => {
-      const html = confluenceToHtml(CODE_BLOCK_TITLED_PAGE);
-      const xhtml = htmlToConfluence(html);
-      expect(xhtml).toContain('ac:name="code"');
-      expect(xhtml).toContain('ac:name="title"');
-      expect(xhtml).toContain('>docker-compose.yml<');
-      expect(xhtml).toContain('>tsconfig.json<');
-      // Code block without title should not have title param
-      // Count title params - should be exactly 2 (docker-compose.yml and tsconfig.json)
-      const titleMatches = xhtml.match(/ac:name="title"/g) ?? [];
-      expect(titleMatches).toHaveLength(2);
-    });
-
     it('round-trips task lists', () => {
       const html = confluenceToHtml(TASK_LIST_PAGE);
       const xhtml = htmlToConfluence(html);
@@ -331,45 +257,6 @@ describe('content-converter', () => {
       expect(xhtml).toContain('ac:rich-text-body');
     });
 
-    it('round-trips draw.io macros', () => {
-      const html = confluenceToHtml(DRAWIO_PAGE, '99');
-      const xhtml = htmlToConfluence(html);
-      expect(xhtml).toContain('ac:name="drawio"');
-      expect(xhtml).toContain('system-topology');
-      expect(xhtml).toContain('data-flow');
-    });
-
-    it('round-trips image attachments', () => {
-      const html = confluenceToHtml(IMAGES_PAGE, '12345');
-      const xhtml = htmlToConfluence(html);
-      expect(xhtml).toContain('ri:filename');
-      expect(xhtml).toContain('dashboard.png');
-    });
-
-    it('round-trips table colspan and rowspan attributes', () => {
-      const html = confluenceToHtml(TABLE_COLSPAN_ROWSPAN_PAGE);
-      const xhtml = htmlToConfluence(html);
-      // colspan and rowspan must survive round-trip
-      expect(xhtml).toContain('colspan="3"');
-      expect(xhtml).toContain('colspan="2"');
-      expect(xhtml).toContain('rowspan="2"');
-      // Content must survive
-      expect(xhtml).toContain('Q1 2025 Sprint Assignments');
-      expect(xhtml).toContain('Backend Team');
-      expect(xhtml).toContain('Frontend Team');
-    });
-
-    it('round-trips multi-row tables preserving all rows', () => {
-      const html = confluenceToHtml(TABLE_MULTI_ROW_PAGE);
-      const xhtml = htmlToConfluence(html);
-      expect(xhtml).toContain('<table>');
-      // All rows must survive
-      expect(xhtml).toContain('/api/health');
-      expect(xhtml).toContain('/api/auth/login');
-      expect(xhtml).toContain('/api/pages/:id');
-      expect(xhtml).toContain('/api/llm/ask');
-    });
-
     it('round-trips status macros', () => {
       const html = confluenceToHtml(STATUS_MACRO_PAGE);
       const xhtml = htmlToConfluence(html);
@@ -383,26 +270,22 @@ describe('content-converter', () => {
       expect(xhtml).toContain('ac:name="title"');
       expect(xhtml).toContain('>DONE<');
       expect(xhtml).toContain('>IN PROGRESS<');
-      expect(xhtml).toContain('>BLOCKED<');
+      expect(xhtml).not.toContain('confluence-status');
     });
 
-    it('round-trips children display macro with parameters', () => {
-      const html = confluenceToHtml(CHILDREN_MACRO_PAGE);
+    it('round-trips draw.io macros', () => {
+      const html = confluenceToHtml(DRAWIO_PAGE, '99');
       const xhtml = htmlToConfluence(html);
-      expect(xhtml).toContain('ac:name="children"');
-      expect(xhtml).toContain('ac:name="sort"');
-      expect(xhtml).toContain('>title<');
-      expect(xhtml).toContain('ac:name="reverse"');
-      expect(xhtml).toContain('>false<');
+      expect(xhtml).toContain('ac:name="drawio"');
+      expect(xhtml).toContain('system-topology');
+      expect(xhtml).toContain('data-flow');
     });
 
-    it('round-trips children display macro without parameters', () => {
-      const html = confluenceToHtml(CHILDREN_MACRO_NO_PARAMS_PAGE);
+    it('round-trips image attachments', () => {
+      const html = confluenceToHtml(IMAGES_PAGE, '12345');
       const xhtml = htmlToConfluence(html);
-      expect(xhtml).toContain('ac:name="children"');
-      // No sort/reverse params when they were absent in the original
-      expect(xhtml).not.toContain('ac:name="sort"');
-      expect(xhtml).not.toContain('ac:name="reverse"');
+      expect(xhtml).toContain('ri:filename');
+      expect(xhtml).toContain('dashboard.png');
     });
 
     it('round-trips complex page preserving structure', () => {
@@ -436,11 +319,6 @@ describe('content-converter', () => {
       { name: 'panels', xhtml: PANELS_PAGE },
       { name: 'draw.io', xhtml: DRAWIO_PAGE },
       { name: 'tables', xhtml: TABLE_PAGE },
-      { name: 'tables with colspan/rowspan', xhtml: TABLE_COLSPAN_ROWSPAN_PAGE },
-      { name: 'multi-row tables', xhtml: TABLE_MULTI_ROW_PAGE },
-      { name: 'status macros', xhtml: STATUS_MACRO_PAGE },
-      { name: 'children macro', xhtml: CHILDREN_MACRO_PAGE },
-      { name: 'children macro (no params)', xhtml: CHILDREN_MACRO_NO_PARAMS_PAGE },
     ];
 
     for (const { name, xhtml } of stableFixtures) {
@@ -460,17 +338,6 @@ describe('content-converter', () => {
       const html2 = confluenceToHtml(xhtml1, '1');
       // HTML output stabilizes (the readable form)
       expect(html2).toBe(html1);
-    });
-
-    it('stabilizes titled code blocks after one round-trip', () => {
-      const html1 = confluenceToHtml(CODE_BLOCK_TITLED_PAGE, '1');
-      const xhtml1 = htmlToConfluence(html1);
-      const html2 = confluenceToHtml(xhtml1, '1');
-      // HTML output stabilizes (titles preserved across round-trips)
-      expect(html2).toBe(html1);
-      // Verify titles survive
-      expect(html2).toContain('data-title="docker-compose.yml"');
-      expect(html2).toContain('data-title="tsconfig.json"');
     });
 
     it('preserves task list content across round-trips', () => {
@@ -536,12 +403,8 @@ describe('content-converter', () => {
       expect(md).toContain('[STATUS: BLOCKED]');
       expect(md).toContain('[STATUS: IN REVIEW]');
       expect(md).toContain('[STATUS: TODO]');
-    });
-
-    it('converts children macro to note', () => {
-      const html = confluenceToHtml(CHILDREN_MACRO_PAGE);
-      const md = htmlToMarkdown(html);
-      expect(md).toContain('[Children pages]');
+      expect(md).not.toMatch(/<span[^>]*>/);
+      expect(md).not.toContain('confluence-status');
     });
 
     it('produces clean markdown for LLM consumption from complex page', () => {
