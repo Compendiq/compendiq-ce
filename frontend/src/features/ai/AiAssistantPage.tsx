@@ -79,6 +79,8 @@ export function AiAssistantPage() {
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
+  const [thinkingElapsed, setThinkingElapsed] = useState(false);
+  const thinkingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [model, setModel] = useState('');
@@ -104,6 +106,28 @@ export function AiAssistantPage() {
       abortRef.current?.abort();
     };
   }, []);
+
+  // After 2 seconds of thinking, promote from TypingIndicator to ThinkingBlob
+  useEffect(() => {
+    if (isThinking) {
+      setThinkingElapsed(false);
+      thinkingTimerRef.current = setTimeout(() => {
+        setThinkingElapsed(true);
+      }, 2000);
+    } else {
+      setThinkingElapsed(false);
+      if (thinkingTimerRef.current) {
+        clearTimeout(thinkingTimerRef.current);
+        thinkingTimerRef.current = null;
+      }
+    }
+    return () => {
+      if (thinkingTimerRef.current) {
+        clearTimeout(thinkingTimerRef.current);
+        thinkingTimerRef.current = null;
+      }
+    };
+  }, [isThinking]);
 
   // Load settings, models and conversations on mount
   useEffect(() => {
@@ -709,8 +733,8 @@ export function AiAssistantPage() {
           {messages.map((msg, i) => {
             const isLastAssistant = msg.role === 'assistant' && i === messages.length - 1;
             const isStreamingThis = isStreaming && isLastAssistant;
-            const showThinkingBlob = isThinking && isLastAssistant && !msg.content;
-            const showTypingIndicator = isThinking && isLastAssistant && !msg.content;
+            const showThinkingBlob = isThinking && isLastAssistant && !msg.content && thinkingElapsed;
+            const showTypingIndicator = isThinking && isLastAssistant && !msg.content && !thinkingElapsed;
             const showStreamingCursor = isStreamingThis && msg.content && !isThinking;
 
             return (
@@ -744,7 +768,7 @@ export function AiAssistantPage() {
                     <AIThinkingBlob active />
                   )}
                   {/* Typing indicator - shown before streaming starts */}
-                  {showTypingIndicator && !showThinkingBlob && (
+                  {showTypingIndicator && (
                     <TypingIndicator />
                   )}
                   <div className={cn('prose prose-sm max-w-none', !isLight && 'prose-invert')}>

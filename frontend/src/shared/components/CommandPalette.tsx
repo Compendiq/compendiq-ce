@@ -77,9 +77,9 @@ export function CommandPalette() {
     }
   }, [isOpen]);
 
-  // Search pages with debounce
+  // Search pages with debounce (skip in AI mode)
   useEffect(() => {
-    if (!query.trim()) {
+    if (!query.trim() || isAiMode) {
       setResults([]);
       setSelectedIndex(0);
       return;
@@ -103,7 +103,7 @@ export function CommandPalette() {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [query]);
+  }, [query, isAiMode]);
 
   // Build combined items list for keyboard navigation
   const allItems = useMemo(() => {
@@ -221,7 +221,7 @@ export function CommandPalette() {
                   placeholder={isAiMode ? 'Ask AI anything...' : 'Search pages or type a command...'}
                   className={cn(
                     'flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground',
-                    isAiMode && 'text-purple-100 placeholder:text-purple-300/50',
+                    isAiMode && 'text-purple-700 dark:text-purple-100 placeholder:text-purple-300/50',
                   )}
                   aria-label="Search"
                 />
