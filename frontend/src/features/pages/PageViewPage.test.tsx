@@ -85,7 +85,7 @@ vi.mock('../../shared/hooks/use-pages', () => ({
   usePinnedPages: () => ({ data: { items: [] }, isLoading: false }),
   usePinPage: () => ({ mutate: vi.fn(), isPending: false }),
   useUnpinPage: () => ({ mutate: vi.fn(), isPending: false }),
-  useTriggerEmbedding: () => ({ mutate: vi.fn(), isPending: false }),
+  useEmbeddingProcess: () => ({ start: vi.fn(), cancel: vi.fn(), isProcessing: false, progress: { total: 0, completed: 0, failed: 0, percentage: 0, errors: [], isWaiting: false } }),
 }));
 
 function createWrapper() {

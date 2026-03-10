@@ -23,7 +23,6 @@ let mockPageData: { data: unknown } = { data: undefined };
 vi.mock('../../../shared/hooks/use-pages', () => ({
   usePage: () => mockPageData,
   useEmbeddingStatus: () => ({ data: undefined }),
-  usePageHasChildren: () => ({ data: undefined }),
 }));
 
 const toastErrorMock = vi.fn();

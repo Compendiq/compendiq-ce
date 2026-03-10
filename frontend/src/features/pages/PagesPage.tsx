@@ -6,7 +6,7 @@ import { m, AnimatePresence } from 'framer-motion';
 import { Search, FileText, Plus, RefreshCw, ChevronLeft, ChevronRight, FolderOpen, Filter, X, List, Loader2, Cpu, Pin } from 'lucide-react';
 import DOMPurify from 'dompurify';
 import { toast } from 'sonner';
-import { usePages, usePageFilterOptions, usePage, useEmbeddingStatus, useTriggerEmbedding, usePinnedPages, usePinPage, useUnpinPage, type PageSummary } from '../../shared/hooks/use-pages';
+import { usePages, usePageFilterOptions, usePage, useEmbeddingStatus, useEmbeddingProcess, usePinnedPages, usePinPage, useUnpinPage, type PageSummary } from '../../shared/hooks/use-pages';
 import { useSpaces, useSync, useSyncStatus } from '../../shared/hooks/use-spaces';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
@@ -158,12 +158,11 @@ export function PagesPage() {
   const syncMutation = useSync();
   const { data: syncStatus } = useSyncStatus();
   const { data: embeddingStatusData } = useEmbeddingStatus();
-  const triggerEmbedding = useTriggerEmbedding();
+  const embeddingProcess = useEmbeddingProcess();
   const { data: pinnedData } = usePinnedPages();
   const pinMutation = usePinPage();
   const unpinMutation = useUnpinPage();
   const queryClient = useQueryClient();
-  const wasProcessingRef = useRef(false);
 
   const pinnedIds = useMemo(
     () => new Set(pinnedData?.items.map((p) => p.id) ?? []),
@@ -185,15 +184,19 @@ export function PagesPage() {
     }
   }, [pinnedIds, pinMutation, unpinMutation]);
 
+  // Show completion toast when SSE-based processing finishes
   useEffect(() => {
-    if (embeddingStatusData?.isProcessing) {
-      wasProcessingRef.current = true;
-    } else if (wasProcessingRef.current && embeddingStatusData && !embeddingStatusData.isProcessing) {
-      wasProcessingRef.current = false;
-      toast.success('Embedding complete — all pages are up to date');
+    if (!embeddingProcess.isProcessing && embeddingProcess.progress.total > 0 && embeddingProcess.progress.percentage === 100) {
+      const { completed, failed } = embeddingProcess.progress;
+      if (failed > 0) {
+        toast.warning(`Embedding done — ${completed} succeeded, ${failed} failed`);
+      } else {
+        toast.success(`Embedding complete — ${completed} pages embedded`);
+      }
       queryClient.invalidateQueries({ queryKey: ['pages'] });
     }
-  }, [embeddingStatusData, queryClient]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [embeddingProcess.isProcessing]);
 
   const ripple = useClickRipple();
 
@@ -306,42 +309,70 @@ export function PagesPage() {
         </div>
       )}
 
-      {/* Embedding progress */}
-      {embeddingStatusData?.isProcessing && (
-        <div className="glass-card flex items-center gap-3 p-3 border border-primary/30" data-testid="embedding-progress-banner">
-          <Loader2 size={16} className="animate-spin text-primary" />
-          <span className="text-sm">
-            Embedding in progress — {embeddingStatusData.dirtyPages} pages remaining
-          </span>
-          <div className="ml-auto flex items-center gap-2">
-            <div className="h-1.5 w-32 overflow-hidden rounded-full bg-foreground/10">
-              <div
-                className="h-full rounded-full bg-primary transition-all"
-                style={{ width: `${((embeddingStatusData.totalPages - embeddingStatusData.dirtyPages) / Math.max(embeddingStatusData.totalPages, 1)) * 100}%` }}
-              />
-            </div>
-            <span className="text-xs text-muted-foreground">
-              {embeddingStatusData.totalPages - embeddingStatusData.dirtyPages}/{embeddingStatusData.totalPages}
+      {/* Embedding: real-time SSE progress (user-initiated) or polling fallback (background/other-tab) */}
+      {(embeddingProcess.isProcessing || embeddingStatusData?.isProcessing) && (
+        <div className="glass-card space-y-2 p-3 border border-primary/30" data-testid="embedding-progress-banner">
+          <div className="flex items-center gap-3">
+            <Loader2 size={16} className="animate-spin text-primary shrink-0" />
+            <span className="text-sm flex-1 truncate">
+              {embeddingProcess.isProcessing
+                ? (embeddingProcess.progress.isWaiting
+                    ? `Waiting for LLM server — ${embeddingProcess.progress.waitReason ?? 'circuit breaker open'}`
+                    : embeddingProcess.progress.currentPage
+                      ? `Embedding: ${embeddingProcess.progress.currentPage}`
+                      : 'Embedding in progress')
+                : `Embedding in progress — ${embeddingStatusData!.dirtyPages} pages remaining`}
             </span>
+            <div className="flex items-center gap-2 shrink-0">
+              <div className="h-1.5 w-32 overflow-hidden rounded-full bg-foreground/10">
+                <div
+                  className="h-full rounded-full bg-primary transition-all duration-300"
+                  style={{ width: embeddingProcess.isProcessing
+                    ? `${embeddingProcess.progress.percentage}%`
+                    : `${((embeddingStatusData!.totalPages - embeddingStatusData!.dirtyPages) / Math.max(embeddingStatusData!.totalPages, 1)) * 100}%` }}
+                />
+              </div>
+              <span className="text-xs text-muted-foreground">
+                {embeddingProcess.isProcessing
+                  ? `${embeddingProcess.progress.completed}/${embeddingProcess.progress.total}`
+                  : `${embeddingStatusData!.totalPages - embeddingStatusData!.dirtyPages}/${embeddingStatusData!.totalPages}`}
+              </span>
+              {embeddingProcess.progress.failed > 0 && (
+                <span className="text-xs text-destructive">
+                  {embeddingProcess.progress.failed} failed
+                </span>
+              )}
+            </div>
+            {embeddingProcess.isProcessing && (
+              <button
+                onClick={embeddingProcess.cancel}
+                className="rounded p-1 text-muted-foreground hover:text-foreground"
+                title="Cancel"
+                data-testid="embedding-cancel-btn"
+              >
+                <X size={14} />
+              </button>
+            )}
           </div>
         </div>
       )}
 
-      {/* Embed Now button: shown when dirty pages exist but no embedding in progress */}
-      {embeddingStatusData && embeddingStatusData.dirtyPages > 0 && !embeddingStatusData.isProcessing && (
+      {/* Embed Now / Retry Failed: shown when not actively processing */}
+      {!embeddingProcess.isProcessing && embeddingStatusData && (embeddingStatusData.dirtyPages > 0 || (embeddingStatusData.totalPages - embeddingStatusData.embeddedPages - embeddingStatusData.dirtyPages > 0)) && (
         <div className="glass-card flex items-center gap-3 p-3 border border-yellow-500/30" data-testid="embed-now-banner">
           <span className="text-sm">
             {embeddingStatusData.dirtyPages} page{embeddingStatusData.dirtyPages !== 1 ? 's' : ''} pending embedding
           </span>
-          <button
-            onClick={() => triggerEmbedding.mutate()}
-            disabled={triggerEmbedding.isPending}
-            className="ml-auto flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-            data-testid="embed-now-btn"
-          >
-            <Cpu size={14} />
-            {triggerEmbedding.isPending ? 'Starting...' : 'Embed Now'}
-          </button>
+          <div className="ml-auto flex gap-2">
+            <button
+              onClick={() => embeddingProcess.start('/embeddings/process').catch((err) => toast.error(err instanceof Error ? err.message : 'Embedding failed'))}
+              className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+              data-testid="embed-now-btn"
+            >
+              <Cpu size={14} />
+              Embed Now
+            </button>
+          </div>
         </div>
       )}
 
