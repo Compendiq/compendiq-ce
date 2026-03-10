@@ -5,6 +5,13 @@
    AI KB Creator - Glassmorphic Themes
    ============================================ */
 
+/* Reduce base font from browser default 16px → 15px (~-1px across the app).
+   rem-based values scale automatically. Elements already below 12px are
+   pinned with explicit font-size overrides further below. */
+html {
+  font-size: 15px;
+}
+
 @theme {
   /* Default theme: Midnight Blue */
   --color-background: oklch(0.145 0.015 285);
@@ -29,6 +36,10 @@
   --radius-lg: 0.75rem;
   --radius-md: 0.5rem;
   --radius-sm: 0.25rem;
+
+  /* Re-anchor text-xs so 0.75rem Tailwind classes stay at 12px with the 15px base.
+     Without this, text-xs (0.75rem × 15px = 11.25px) falls below the 12px minimum. */
+  --font-size-xs: 0.8rem;
 
   /* Mesh gradient colors (overridden per theme) */
   --mesh-1: oklch(0.3 0.1 280 / 0.4);
@@ -959,7 +970,7 @@
 .prose .confluence-drawio .drawio-edit-link {
   display: inline-block;
   margin-top: 0.5rem;
-  font-size: 0.8125rem;
+  font-size: 12px; /* pinned: higher specificity than .confluence-drawio .drawio-edit-link */
   color: var(--color-muted-foreground);
 }
 
@@ -1099,7 +1110,7 @@
   top: 0.5rem;
   right: 0.5rem;
   padding: 0.25rem 0.625rem;
-  font-size: 0.75rem;
+  font-size: 12px; /* pinned: 0.75rem would be 11.25px at 15px base */
   font-weight: 500;
   color: var(--color-muted-foreground);
   background: oklch(from var(--color-card) l c h / 0.8);
@@ -1208,7 +1219,7 @@ pre:hover .code-copy-btn {
   gap: 0.25rem;
   margin-top: 0.5rem;
   padding: 0.25rem 0.75rem;
-  font-size: 0.75rem;
+  font-size: 12px; /* pinned: 0.75rem would be 11.25px at 15px base */
   color: var(--color-primary);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-sm);
