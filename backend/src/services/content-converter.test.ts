@@ -26,6 +26,7 @@ import {
   STATUS_MACRO_PAGE,
   CHILDREN_MACRO_PAGE,
   CHILDREN_MACRO_NO_PARAMS_PAGE,
+  CODE_BLOCK_TITLED_PAGE,
 } from './__fixtures__/confluence-xhtml.js';
 
 describe('content-converter', () => {
@@ -49,6 +50,17 @@ describe('content-converter', () => {
       expect(html).toContain('interface Config');
       expect(html).not.toContain('ac:structured-macro');
       expect(html).not.toContain('ac:plain-text-body');
+    });
+
+    it('extracts title parameter from code blocks as data-title attribute', () => {
+      const html = confluenceToHtml(CODE_BLOCK_TITLED_PAGE);
+      expect(html).toContain('data-title="docker-compose.yml"');
+      expect(html).toContain('data-title="tsconfig.json"');
+      // Code block without title should not have data-title
+      const preBlocks = html.match(/<pre[^>]*>/g) ?? [];
+      expect(preBlocks).toHaveLength(3);
+      // Third pre block (bash, no title) should not have data-title
+      expect(preBlocks[2]).not.toContain('data-title');
     });
 
     it('converts task lists with status', () => {
@@ -279,6 +291,19 @@ describe('content-converter', () => {
       expect(xhtml).toContain('npm install');
     });
 
+    it('round-trips code block titles', () => {
+      const html = confluenceToHtml(CODE_BLOCK_TITLED_PAGE);
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toContain('ac:name="code"');
+      expect(xhtml).toContain('ac:name="title"');
+      expect(xhtml).toContain('>docker-compose.yml<');
+      expect(xhtml).toContain('>tsconfig.json<');
+      // Code block without title should not have title param
+      // Count title params - should be exactly 2 (docker-compose.yml and tsconfig.json)
+      const titleMatches = xhtml.match(/ac:name="title"/g) ?? [];
+      expect(titleMatches).toHaveLength(2);
+    });
+
     it('round-trips task lists', () => {
       const html = confluenceToHtml(TASK_LIST_PAGE);
       const xhtml = htmlToConfluence(html);
@@ -435,6 +460,17 @@ describe('content-converter', () => {
       const html2 = confluenceToHtml(xhtml1, '1');
       // HTML output stabilizes (the readable form)
       expect(html2).toBe(html1);
+    });
+
+    it('stabilizes titled code blocks after one round-trip', () => {
+      const html1 = confluenceToHtml(CODE_BLOCK_TITLED_PAGE, '1');
+      const xhtml1 = htmlToConfluence(html1);
+      const html2 = confluenceToHtml(xhtml1, '1');
+      // HTML output stabilizes (titles preserved across round-trips)
+      expect(html2).toBe(html1);
+      // Verify titles survive
+      expect(html2).toContain('data-title="docker-compose.yml"');
+      expect(html2).toContain('data-title="tsconfig.json"');
     });
 
     it('preserves task list content across round-trips', () => {

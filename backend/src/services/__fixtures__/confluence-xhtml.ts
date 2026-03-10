@@ -186,6 +186,24 @@ export const CHILDREN_MACRO_PAGE = `<h2>Sub-pages</h2>
 export const CHILDREN_MACRO_NO_PARAMS_PAGE = `<h2>Sub-pages</h2>
 <ac:structured-macro ac:name="children"></ac:structured-macro>`;
 
+/** Page with code blocks that have titles (ac:parameter ac:name="title") */
+export const CODE_BLOCK_TITLED_PAGE = `<h2>Configuration Files</h2>
+<p>Docker Compose configuration:</p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">yaml</ac:parameter><ac:parameter ac:name="title">docker-compose.yml</ac:parameter><ac:plain-text-body><![CDATA[version: "3.8"
+services:
+  backend:
+    build: .
+    ports:
+      - "3000:3000"]]></ac:plain-text-body></ac:structured-macro>
+<p>TypeScript config:</p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">json</ac:parameter><ac:parameter ac:name="title">tsconfig.json</ac:parameter><ac:plain-text-body><![CDATA[{
+  "compilerOptions": {
+    "strict": true
+  }
+}]]></ac:plain-text-body></ac:structured-macro>
+<p>Code block without a title:</p>
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">bash</ac:parameter><ac:plain-text-body><![CDATA[echo "no title"]]></ac:plain-text-body></ac:structured-macro>`;
+
 /** Page with data-macro-name attribute variant (some Confluence versions use this) */
 export const DATA_MACRO_VARIANT_PAGE = `<h2>Code Example</h2>
 <ac:structured-macro data-macro-name="code"><ac:parameter ac:name="language">python</ac:parameter><ac:plain-text-body><![CDATA[print("hello world")]]></ac:plain-text-body></ac:structured-macro>

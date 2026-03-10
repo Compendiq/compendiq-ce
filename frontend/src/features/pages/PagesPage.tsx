@@ -52,7 +52,7 @@ export function PagesPage() {
   );
   const sanitizedHomeHtml = useMemo(
     () => (homePage ? DOMPurify.sanitize(homePage.bodyHtml, {
-      ADD_ATTR: ['data-diagram-name', 'data-drawio'],
+      ADD_ATTR: ['data-diagram-name', 'data-drawio', 'data-title'],
     }) : ''),
     [homePage],
   );

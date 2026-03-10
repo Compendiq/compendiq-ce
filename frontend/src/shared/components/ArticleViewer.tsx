@@ -4,9 +4,9 @@ import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
 import { TaskList, TaskItem } from '@tiptap/extension-list';
-import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight';
 import { Image } from '@tiptap/extension-image';
 import { common, createLowlight } from 'lowlight';
+import { TitledCodeBlock } from './TitledCodeBlock';
 import DOMPurify from 'dompurify';
 import {
   Details,
@@ -24,21 +24,27 @@ import { fetchAuthenticatedBlob } from '../hooks/use-authenticated-src';
 import { cn } from '../lib/cn';
 import type { TocHeading } from './TableOfContents';
 
-// Configure DOMPurify to preserve Confluence-specific attributes
-DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
-  if (
-    data.attrName === 'data-diagram-name' ||
-    data.attrName === 'data-drawio' ||
-    data.attrName === 'data-confluence-link' ||
-    data.attrName === 'data-type' ||
-    data.attrName === 'data-checked' ||
-    data.attrName === 'data-color' ||
-    data.attrName === 'data-sort' ||
-    data.attrName === 'data-reverse'
-  ) {
-    data.forceKeepAttr = true;
-  }
-});
+// Configure DOMPurify to preserve Confluence-specific attributes.
+// Guard against SSR/test environments where DOMPurify may export a factory.
+const CONFLUENCE_DATA_ATTRS = new Set([
+  'data-diagram-name',
+  'data-drawio',
+  'data-confluence-link',
+  'data-type',
+  'data-checked',
+  'data-color',
+  'data-sort',
+  'data-reverse',
+  'data-title',
+]);
+
+if (typeof DOMPurify.addHook === 'function') {
+  DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
+    if (CONFLUENCE_DATA_ATTRS.has(data.attrName)) {
+      data.forceKeepAttr = true;
+    }
+  });
+}
 
 const lowlight = createLowlight(common);
 
@@ -70,9 +76,11 @@ export function ArticleViewer({
 
   const sanitizedContent = useMemo(
     () =>
-      DOMPurify.sanitize(content, {
-        ADD_ATTR: ['data-diagram-name', 'data-drawio', 'data-confluence-link', 'data-type', 'data-checked', 'data-color', 'data-sort', 'data-reverse'],
-      }),
+      typeof DOMPurify.sanitize === 'function'
+        ? DOMPurify.sanitize(content, {
+            ADD_ATTR: [...CONFLUENCE_DATA_ATTRS],
+          })
+        : content,
     [content],
   );
 
@@ -92,7 +100,7 @@ export function ArticleViewer({
       TableHeader,
       TaskList,
       TaskItem.configure({ nested: true }),
-      CodeBlockLowlight.configure({ lowlight }),
+      TitledCodeBlock.configure({ lowlight }),
       Image.configure({ inline: false }),
       Details,
       DetailsSummary,
