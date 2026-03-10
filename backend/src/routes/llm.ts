@@ -8,8 +8,9 @@ import {
 } from '../services/ollama-service.js';
 import { providerStreamChat } from '../services/llm-provider.js';
 import { hybridSearch, buildRagContext } from '../services/rag-service.js';
-import { htmlToMarkdown } from '../services/content-converter.js';
-import { getEmbeddingStatus, processDirtyPages, reEmbedAll, isProcessingUser } from '../services/embedding-service.js';
+import { htmlToMarkdown, confluenceToHtml } from '../services/content-converter.js';
+import { getEmbeddingStatus, processDirtyPages, reEmbedAll, isProcessingUser, embedPage } from '../services/embedding-service.js';
+import { getClientForUser } from '../services/sync-service.js';
 import { getOllamaCircuitBreakerStatus, getOpenaiCircuitBreakerStatus } from '../services/circuit-breaker.js';
 import { LlmCache, buildLlmCacheKey, buildRagCacheKey } from '../services/llm-cache.js';
 import {
@@ -19,15 +20,52 @@ import {
   AskRequestSchema,
   GenerateDiagramRequestSchema,
   AnalyzeQualityRequestSchema,
+  ForceEmbedTreeRequestSchema,
 } from '@kb-creator/contracts';
 import { z } from 'zod';
 import { sanitizeLlmInput } from '../utils/sanitize-llm-input.js';
 import { logAuditEvent } from '../services/audit-service.js';
 import { logger } from '../utils/logger.js';
 import type { LlmProviderType } from '../services/llm-provider.js';
+import { assembleSubPageContext, getMultiPagePromptSuffix } from '../services/subpage-context.js';
 
 const IdParamSchema = z.object({ id: z.string().min(1) });
 const ImprovementsQuerySchema = z.object({ pageId: z.string().optional() });
+
+/**
+ * Assemble page context for LLM consumption, optionally including sub-pages.
+ *
+ * When `includeSubPages` is true and a `pageId` is provided, fetches the parent
+ * page title and assembles it with its sub-page tree. Otherwise, converts the
+ * HTML content directly to markdown.
+ *
+ * Returns the markdown content and an optional multi-page prompt suffix.
+ */
+async function assembleContextIfNeeded(
+  userId: string,
+  pageId: string | undefined,
+  content: string,
+  includeSubPages?: boolean,
+): Promise<{ markdown: string; multiPageSuffix: string }> {
+  if (includeSubPages && pageId) {
+    const pageResult = await query<{ title: string }>(
+      'SELECT title FROM cached_pages WHERE user_id = $1 AND confluence_id = $2',
+      [userId, pageId],
+    );
+    const parentTitle = pageResult.rows[0]?.title ?? 'Untitled';
+
+    const assembled = await assembleSubPageContext(userId, pageId, content, parentTitle);
+    return {
+      markdown: assembled.markdown,
+      multiPageSuffix: getMultiPagePromptSuffix(assembled.pageCount),
+    };
+  }
+
+  return {
+    markdown: htmlToMarkdown(content),
+    multiPageSuffix: '',
+  };
+}
 
 // Rate limit configs for LLM endpoints
 const LLM_STREAM_RATE_LIMIT = { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } };
@@ -153,15 +191,14 @@ export async function llmRoutes(fastify: FastifyInstance) {
   // POST /api/llm/improve - stream improved content
   fastify.post('/llm/improve', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
     const body = ImproveRequestSchema.parse(request.body);
-    const { content, type, model } = body;
+    const { content, type, model, includeSubPages } = body;
     const userId = request.userId;
 
     if (content.length > MAX_INPUT_LENGTH) {
       throw fastify.httpErrors.badRequest(`Content too large (max ${MAX_INPUT_LENGTH} characters)`);
     }
 
-    // Convert HTML to markdown for LLM consumption
-    const markdown = htmlToMarkdown(content);
+    const { markdown, multiPageSuffix } = await assembleContextIfNeeded(userId, body.pageId, content, includeSubPages);
 
     // Sanitize before sending to LLM
     const { sanitized, warnings } = sanitizeLlmInput(markdown);
@@ -169,7 +206,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
       await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/improve' }, request);
     }
 
-    const systemPrompt = getSystemPrompt(`improve_${type}` as SystemPromptKey);
+    const systemPrompt = getSystemPrompt(`improve_${type}` as SystemPromptKey) + multiPageSuffix;
 
     // Check LLM cache
     const cacheKey = buildLlmCacheKey(model, systemPrompt, sanitized);
@@ -251,14 +288,14 @@ export async function llmRoutes(fastify: FastifyInstance) {
   // POST /api/llm/summarize - stream summary
   fastify.post('/llm/summarize', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
     const body = SummarizeRequestSchema.parse(request.body);
-    const { content, model, length = 'medium' } = body;
+    const { content, model, length = 'medium', includeSubPages } = body;
     const userId = request.userId;
 
     if (content.length > MAX_INPUT_LENGTH) {
       throw fastify.httpErrors.badRequest(`Content too large (max ${MAX_INPUT_LENGTH} characters)`);
     }
 
-    const markdown = htmlToMarkdown(content);
+    const { markdown, multiPageSuffix } = await assembleContextIfNeeded(userId, body.pageId, content, includeSubPages);
 
     // Sanitize before sending to LLM
     const { sanitized: sanitizedMarkdown, warnings } = sanitizeLlmInput(markdown);
@@ -272,7 +309,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
       detailed: 'Provide a detailed summary covering all important points, decisions, and action items.',
     };
 
-    const systemPrompt = `${getSystemPrompt('summarize')} ${lengthInstructions[length]}`;
+    const systemPrompt = `${getSystemPrompt('summarize')} ${lengthInstructions[length]}${multiPageSuffix}`;
 
     // Check LLM cache
     const cacheKey = buildLlmCacheKey(model, systemPrompt, sanitizedMarkdown);
@@ -343,14 +380,14 @@ export async function llmRoutes(fastify: FastifyInstance) {
   // POST /api/llm/analyze-quality - stream article quality analysis
   fastify.post('/llm/analyze-quality', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
     const body = AnalyzeQualityRequestSchema.parse(request.body);
-    const { content, model } = body;
+    const { content, model, includeSubPages } = body;
     const userId = request.userId;
 
     if (content.length > MAX_INPUT_LENGTH) {
       throw fastify.httpErrors.badRequest(`Content too large (max ${MAX_INPUT_LENGTH} characters)`);
     }
 
-    const markdown = htmlToMarkdown(content);
+    const { markdown, multiPageSuffix } = await assembleContextIfNeeded(userId, body.pageId, content, includeSubPages);
 
     // Sanitize before sending to LLM
     const { sanitized, warnings } = sanitizeLlmInput(markdown);
@@ -358,7 +395,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
       await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/analyze-quality' }, request);
     }
 
-    const systemPrompt = getSystemPrompt('analyze_quality');
+    const systemPrompt = getSystemPrompt('analyze_quality') + multiPageSuffix;
 
     // Check LLM cache
     const cacheKey = buildLlmCacheKey(model, systemPrompt, sanitized);
@@ -387,7 +424,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
   // POST /api/llm/ask - RAG-powered Q&A with streaming
   fastify.post('/llm/ask', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
     const body = AskRequestSchema.parse(request.body);
-    const { question, model, conversationId } = body;
+    const { question, model, conversationId, includeSubPages } = body;
     const userId = request.userId;
 
     if (question.length > MAX_INPUT_LENGTH) {
@@ -416,11 +453,31 @@ export async function llmRoutes(fastify: FastifyInstance) {
 
     // Perform hybrid RAG search
     const searchResults = await hybridSearch(userId, question);
-    const ragContext = buildRagContext(searchResults);
+    let ragContext = buildRagContext(searchResults);
+
+    // If includeSubPages is enabled and a pageId is provided, augment the RAG context
+    // with the sub-page tree content
+    let multiPageSuffix = '';
+    if (includeSubPages && body.pageId) {
+      const pageResult = await query<{ title: string; body_html: string }>(
+        'SELECT title, body_html FROM cached_pages WHERE user_id = $1 AND confluence_id = $2',
+        [userId, body.pageId],
+      );
+      if (pageResult.rows.length > 0) {
+        const { title, body_html } = pageResult.rows[0];
+        const assembled = await assembleSubPageContext(userId, body.pageId, body_html || '', title);
+        // Prepend the page tree context before the RAG context
+        ragContext = `Page tree context:\n\n${assembled.markdown}\n\n---\n\nAdditional knowledge base context:\n\n${ragContext}`;
+        multiPageSuffix = getMultiPagePromptSuffix(assembled.pageCount);
+      }
+    }
 
     // Check RAG cache (only for new conversations without history)
     const docIds = searchResults.map((r) => r.confluenceId);
-    const ragCacheKey = buildRagCacheKey(model, question, docIds);
+    const ragCacheKey = buildRagCacheKey(model, question, docIds, {
+      includeSubPages,
+      pageId: body.pageId,
+    });
 
     if (conversationHistory.length === 0) {
       const cached = await llmCache.getCachedResponse(ragCacheKey);
@@ -472,7 +529,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
 
     // Build messages
     const messages: ChatMessage[] = [
-      { role: 'system', content: getSystemPrompt('ask') },
+      { role: 'system', content: getSystemPrompt('ask') + multiPageSuffix },
       ...conversationHistory,
       {
         role: 'user',
@@ -671,6 +728,106 @@ export async function llmRoutes(fastify: FastifyInstance) {
     });
 
     return { message: 'Embedding processing started' };
+  });
+
+  // POST /api/embeddings/force-embed-tree - force-embed a page and all its sub-pages via SSE
+  fastify.post('/embeddings/force-embed-tree', EMBEDDING_RATE_LIMIT, async (request, reply) => {
+    const { pageId } = ForceEmbedTreeRequestSchema.parse(request.body);
+    const userId = request.userId;
+
+    const client = await getClientForUser(userId);
+    if (!client) {
+      throw fastify.httpErrors.badRequest('Confluence credentials not configured');
+    }
+
+    // Set up SSE response
+    const controller = new AbortController();
+    const onClose = () => controller.abort();
+    request.raw.on('close', onClose);
+
+    reply.raw.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+
+    try {
+      // Phase 1: Discover all pages in the tree
+      reply.raw.write(`data: ${JSON.stringify({ phase: 'discovering', total: 0, completed: 0, done: false })}\n\n`);
+
+      const rootPage = await client.getPage(pageId);
+      const descendants = await client.getDescendantPages(pageId);
+      const allPages = [rootPage, ...descendants];
+      const total = allPages.length;
+
+      reply.raw.write(`data: ${JSON.stringify({ phase: 'embedding', total, completed: 0, done: false })}\n\n`);
+
+      // Phase 2: Embed each page, reporting progress
+      let completed = 0;
+      let errors = 0;
+
+      for (const page of allPages) {
+        if (controller.signal.aborted) break;
+
+        try {
+          // Fetch full page content if not already expanded
+          const fullPage = page.body?.storage?.value ? page : await client.getPage(page.id);
+          const storageXhtml = fullPage.body?.storage?.value ?? '';
+
+          if (storageXhtml) {
+            const bodyHtml = confluenceToHtml(storageXhtml, page.id);
+
+            // Try to get space_key and cached HTML from local DB first
+            const cachedRow = await query<{ space_key: string; body_html: string }>(
+              'SELECT space_key, body_html FROM cached_pages WHERE user_id = $1 AND confluence_id = $2',
+              [userId, page.id],
+            );
+
+            const resolvedSpaceKey = cachedRow.rows[0]?.space_key ?? '';
+            const resolvedBodyHtml = cachedRow.rows[0]?.body_html ?? bodyHtml;
+
+            await embedPage(userId, page.id, page.title, resolvedSpaceKey, resolvedBodyHtml);
+          }
+
+          completed++;
+        } catch (err) {
+          errors++;
+          completed++;
+          logger.error({ err, pageId: page.id, title: page.title }, 'Failed to embed page in tree');
+        }
+
+        reply.raw.write(`data: ${JSON.stringify({
+          phase: 'embedding',
+          total,
+          completed,
+          errors,
+          currentPage: page.title,
+          done: false,
+        })}\n\n`);
+      }
+
+      // Final event
+      if (!controller.signal.aborted) {
+        reply.raw.write(`data: ${JSON.stringify({
+          phase: 'complete',
+          total,
+          completed,
+          errors,
+          done: true,
+        })}\n\n`);
+      }
+    } catch (err) {
+      if (controller.signal.aborted || (err instanceof Error && err.name === 'AbortError')) {
+        logger.debug('Force embed tree SSE aborted by client disconnect');
+      } else {
+        logger.error({ err, pageId }, 'Force embed tree failed');
+        reply.raw.write(`data: ${JSON.stringify({ error: 'Failed to embed page tree', done: true })}\n\n`);
+      }
+    } finally {
+      request.raw.removeListener('close', onClose);
+      reply.raw.end();
+    }
   });
 
   // POST /api/admin/re-embed - admin only: re-embed all pages

@@ -1,6 +1,8 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '../lib/api';
 
+export type EmbeddingStatus = 'not_embedded' | 'embedding' | 'embedded' | 'failed';
+
 interface PageSummary {
   id: string;
   spaceKey: string;
@@ -12,11 +14,14 @@ interface PageSummary {
   lastModifiedAt: string | null;
   lastSynced: string;
   embeddingDirty: boolean;
+  embeddingStatus: EmbeddingStatus;
+  embeddedAt: string | null;
 }
 
 interface PageDetail extends PageSummary {
   bodyHtml: string;
   bodyText: string;
+  hasChildren: boolean;
 }
 
 interface PaginatedPages {
@@ -175,6 +180,15 @@ export interface EmbeddingStatusData {
   isProcessing: boolean;
 }
 
+export function usePageHasChildren(id: string | undefined) {
+  return useQuery<{ hasChildren: boolean }>({
+    queryKey: ['pages', id, 'has-children'],
+    queryFn: () => apiFetch(`/pages/${id}/has-children`),
+    enabled: !!id,
+    staleTime: 60_000, // refresh once per minute
+  });
+}
+
 export function useEmbeddingStatus() {
   return useQuery<EmbeddingStatusData>({
     queryKey: ['embeddings', 'status'],
@@ -191,6 +205,57 @@ export function useTriggerEmbedding() {
     mutationFn: () => apiFetch('/embeddings/process', { method: 'POST' }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['embeddings', 'status'] });
+    },
+  });
+}
+
+// ======== Pinned Pages (Issue #144) ========
+
+export interface PinnedPage {
+  id: string;
+  spaceKey: string;
+  title: string;
+  author: string | null;
+  lastModifiedAt: string | null;
+  excerpt: string;
+  pinnedAt: string;
+  pinOrder: number;
+}
+
+interface PinnedPagesResponse {
+  items: PinnedPage[];
+  total: number;
+}
+
+export function usePinnedPages() {
+  return useQuery<PinnedPagesResponse>({
+    queryKey: ['pages', 'pinned'],
+    queryFn: () => apiFetch('/pages/pinned'),
+  });
+}
+
+export function usePinPage() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (pageId: string) =>
+      apiFetch<{ message: string; pageId: string }>(`/pages/${pageId}/pin`, {
+        method: 'POST',
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['pages', 'pinned'] });
+    },
+  });
+}
+
+export function useUnpinPage() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (pageId: string) =>
+      apiFetch<{ message: string; pageId: string }>(`/pages/${pageId}/pin`, {
+        method: 'DELETE',
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['pages', 'pinned'] });
     },
   });
 }

@@ -14,7 +14,21 @@ vi.mock('react-router-dom', async () => {
   };
 });
 
-const mockPage = {
+const mockPage: {
+  confluenceId: string;
+  title: string;
+  spaceKey: string;
+  bodyHtml: string;
+  bodyText: string;
+  version: number;
+  author: string;
+  labels: string[];
+  lastModifiedAt: string;
+  status: string;
+  embeddingDirty: boolean;
+  embeddingStatus: string;
+  embeddedAt: string | null;
+} = {
   confluenceId: 'page-1',
   title: 'Test Page',
   spaceKey: 'DEV',
@@ -25,6 +39,9 @@ const mockPage = {
   labels: ['docs'],
   lastModifiedAt: '2025-01-01T00:00:00Z',
   status: 'current',
+  embeddingDirty: false,
+  embeddingStatus: 'embedded',
+  embeddedAt: '2025-01-01T00:00:00Z',
 };
 
 const mockPageWithCode = {
@@ -64,6 +81,10 @@ vi.mock('../../shared/hooks/use-pages', () => ({
   useUpdatePage: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useUpdatePageLabels: () => ({ mutate: vi.fn(), isPending: false }),
   useDeletePage: () => ({ mutateAsync: vi.fn() }),
+  usePinnedPages: () => ({ data: { items: [] }, isLoading: false }),
+  usePinPage: () => ({ mutate: vi.fn(), isPending: false }),
+  useUnpinPage: () => ({ mutate: vi.fn(), isPending: false }),
+  useTriggerEmbedding: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
 function createWrapper() {
@@ -131,6 +152,23 @@ describe('PageViewPage', () => {
     expect(screen.getByText('Duplicates')).toBeInTheDocument();
   });
 
+  it('renders embedding status badge in the metadata bar', () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+
+    const badge = screen.getByTestId('embedding-status-badge');
+    expect(badge).toBeInTheDocument();
+    expect(badge).toHaveAttribute('data-status', 'embedded');
+  });
+
+  it('renders embedding status badge with failed state and retry button', () => {
+    currentMockPage = { ...mockPage, embeddingStatus: 'failed', embeddingDirty: true, embeddedAt: null };
+    render(<PageViewPage />, { wrapper: createWrapper() });
+
+    const badge = screen.getByTestId('embedding-status-badge');
+    expect(badge).toHaveAttribute('data-status', 'failed');
+    expect(screen.getByTestId('embedding-retry-button')).toBeInTheDocument();
+  });
+
   it('renders inline code and code blocks visually', () => {
     currentMockPage = mockPageWithCode;
     const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
@@ -165,20 +203,48 @@ describe('PageViewPage', () => {
     expect(images[1]).toHaveAttribute('src', 'https://example.com/diagram.svg');
   });
 
-  it('renders draw.io diagrams with data attributes preserved', () => {
+  it('renders draw.io diagrams with enhanced preview', async () => {
     currentMockPage = mockPageWithDrawio;
     const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
 
-    const drawioDiv = container.querySelector('.confluence-drawio');
-    expect(drawioDiv).toBeInTheDocument();
-    expect(drawioDiv).toHaveAttribute('data-diagram-name', 'system-topology');
+    // Wait for TipTap to render the draw.io content.
+    // The DrawioDiagramPreview React mount happens via rAF which may or may not
+    // flush in jsdom. Check for either the enhanced preview or the fallback TipTap HTML.
+    await waitFor(() => {
+      const enhanced = container.querySelector('[data-testid="drawio-preview"]');
+      const fallback = container.querySelector('.confluence-drawio');
+      expect(enhanced || fallback).toBeTruthy();
+    });
 
-    const drawioImg = drawioDiv!.querySelector('img');
-    expect(drawioImg).toHaveAttribute('src', '/api/attachments/page-1/system-topology.png');
+    // Check the enhanced preview if the rAF replacement fired
+    const preview = container.querySelector('[data-testid="drawio-preview"]');
+    if (preview) {
+      // Caption should show the diagram name
+      const caption = container.querySelector('[data-testid="drawio-caption"]');
+      expect(caption).toBeInTheDocument();
+      expect(caption!.textContent).toContain('system-topology');
 
-    const editLink = drawioDiv!.querySelector('a.drawio-edit-link');
-    expect(editLink).toBeInTheDocument();
-    expect(editLink!.textContent).toBe('Edit in Confluence');
+      // Image should be rendered with correct src
+      const img = preview.querySelector('img');
+      expect(img).toHaveAttribute('src', '/api/attachments/page-1/system-topology.png');
+
+      // Edit link should be present
+      const editLink = container.querySelector('[data-testid="drawio-edit-link"]');
+      expect(editLink).toBeInTheDocument();
+      expect(editLink!.textContent).toContain('Edit in Confluence');
+    } else {
+      // Fallback: TipTap rendered the raw node HTML before rAF replacement
+      const drawioDiv = container.querySelector('.confluence-drawio');
+      expect(drawioDiv).toBeInTheDocument();
+      expect(drawioDiv).toHaveAttribute('data-diagram-name', 'system-topology');
+
+      const drawioImg = drawioDiv!.querySelector('img');
+      expect(drawioImg).toHaveAttribute('src', '/api/attachments/page-1/system-topology.png');
+
+      const editLink = drawioDiv!.querySelector('a.drawio-edit-link');
+      expect(editLink).toBeInTheDocument();
+      expect(editLink!.textContent).toBe('Edit in Confluence');
+    }
   });
 
   it('opens lightbox when clicking an image', async () => {

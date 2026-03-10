@@ -51,7 +51,7 @@ export async function autoTagContent(
     ]);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    throw new Error(`Auto-tag LLM call failed: ${message}`);
+    throw new Error(`Auto-tag failed: ${message}`, { cause: err });
   }
 
   return parseTagResponse(response);

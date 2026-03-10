@@ -32,6 +32,8 @@ const mockPagesResponse = {
       lastModifiedAt: '2025-01-15T00:00:00Z',
       lastSynced: '2025-01-16T00:00:00Z',
       embeddingDirty: false,
+      embeddingStatus: 'embedded',
+      embeddedAt: '2025-01-16T00:00:00Z',
     },
   ],
   total: 1,
@@ -83,6 +85,16 @@ function mockFetchWithEmbeddingStatus(embeddingStatus: typeof mockEmbeddingStatu
     }
     if (url.includes('/sync/status')) {
       return new Response(JSON.stringify({ status: 'idle' }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.includes('/pages/pinned')) {
+      return new Response(JSON.stringify({ items: [], total: 0 }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.includes('/settings')) {
+      return new Response(JSON.stringify({}), {
         headers: { 'Content-Type': 'application/json' },
       });
     }
