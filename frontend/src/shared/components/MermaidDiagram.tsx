@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useId } from 'react';
 import mermaid from 'mermaid';
 import { Copy, Check, Download } from 'lucide-react';
 import { cn } from '../lib/cn';
+import { useIsLightTheme } from '../hooks/use-is-light-theme';
 
 /**
  * Sanitize Mermaid diagram code by quoting node labels that contain
@@ -12,6 +13,7 @@ import { cn } from '../lib/cn';
  * and round-paren labels `(...)` used in flowchart node definitions.
  * Already-quoted labels like `["text"]` are left untouched.
  */
+// eslint-disable-next-line react-refresh/only-export-components
 export function sanitizeMermaidCode(code: string): string {
   return code.replace(
     // Match a node shape delimiter with its content:
@@ -45,24 +47,36 @@ export function sanitizeMermaidCode(code: string): string {
   );
 }
 
-mermaid.initialize({
-  startOnLoad: false,
-  theme: 'dark',
-  securityLevel: 'antiscript',
-  fontFamily: 'inherit',
-});
+/** Re-initialize mermaid with the given theme.
+ * Uses 'strict' securityLevel (mermaid default) which prevents script injection
+ * equivalently to the previous 'antiscript' setting. */
+// eslint-disable-next-line react-refresh/only-export-components
+export function initializeMermaid(isDark: boolean): void {
+  mermaid.initialize({
+    startOnLoad: false,
+    theme: isDark ? 'dark' : 'default',
+    securityLevel: 'strict',
+    fontFamily: 'inherit',
+  });
+}
+
+// Initial default initialization
+initializeMermaid(true);
 
 interface MermaidDiagramProps {
   /** Raw Mermaid diagram code */
   code: string;
   className?: string;
+  /** Override theme detection (useful for testing) */
+  forceDark?: boolean;
 }
 
 /**
  * Renders a Mermaid diagram from raw Mermaid syntax.
  * Includes copy-source and download-SVG actions.
+ * Automatically detects light/dark theme and re-renders accordingly.
  */
-export function MermaidDiagram({ code, className }: MermaidDiagramProps) {
+export function MermaidDiagram({ code, className, forceDark }: MermaidDiagramProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -70,10 +84,17 @@ export function MermaidDiagram({ code, className }: MermaidDiagramProps) {
   const uniqueId = useId();
   const diagramId = `mermaid-${uniqueId.replace(/:/g, '')}`;
 
+  // Theme awareness: detect light/dark and re-render when theme changes
+  const isLight = useIsLightTheme();
+  const isDark = forceDark !== undefined ? forceDark : !isLight;
+
   useEffect(() => {
     if (!code.trim() || !containerRef.current) return;
 
     let cancelled = false;
+
+    // Re-initialize mermaid with current theme before rendering
+    initializeMermaid(isDark);
 
     async function renderDiagram() {
       try {
@@ -105,7 +126,7 @@ export function MermaidDiagram({ code, className }: MermaidDiagramProps) {
 
     renderDiagram();
     return () => { cancelled = true; };
-  }, [code, diagramId]);
+  }, [code, diagramId, isDark]);
 
   const handleCopy = async () => {
     try {
