@@ -49,6 +49,10 @@ export const AnalyzeQualityRequestSchema = z.object({
   pageId: z.string().optional(),
 });
 
+export const ForceEmbedTreeRequestSchema = z.object({
+  pageId: z.string().min(1),
+});
+
 export const ConversationSchema = z.object({
   id: z.string().uuid(),
   model: z.string(),
@@ -92,6 +96,7 @@ export type AskRequest = z.infer<typeof AskRequestSchema>;
 export type GenerateDiagramRequest = z.infer<typeof GenerateDiagramRequestSchema>;
 export type DiagramType = z.infer<typeof GenerateDiagramRequestSchema>['diagramType'];
 export type AnalyzeQualityRequest = z.infer<typeof AnalyzeQualityRequestSchema>;
+export type ForceEmbedTreeRequest = z.infer<typeof ForceEmbedTreeRequestSchema>;
 export type Conversation = z.infer<typeof ConversationSchema>;
 export type Improvement = z.infer<typeof ImprovementSchema>;
 export type OllamaModel = z.infer<typeof OllamaModelSchema>;

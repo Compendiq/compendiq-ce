@@ -8,8 +8,9 @@ import {
 } from '../services/ollama-service.js';
 import { providerStreamChat } from '../services/llm-provider.js';
 import { hybridSearch, buildRagContext } from '../services/rag-service.js';
-import { htmlToMarkdown } from '../services/content-converter.js';
-import { getEmbeddingStatus, processDirtyPages, reEmbedAll } from '../services/embedding-service.js';
+import { htmlToMarkdown, confluenceToHtml } from '../services/content-converter.js';
+import { getEmbeddingStatus, processDirtyPages, reEmbedAll, embedPage } from '../services/embedding-service.js';
+import { getClientForUser } from '../services/sync-service.js';
 import { getOllamaCircuitBreakerStatus, getOpenaiCircuitBreakerStatus } from '../services/circuit-breaker.js';
 import { LlmCache, buildLlmCacheKey, buildRagCacheKey } from '../services/llm-cache.js';
 import {
@@ -19,6 +20,7 @@ import {
   AskRequestSchema,
   GenerateDiagramRequestSchema,
   AnalyzeQualityRequestSchema,
+  ForceEmbedTreeRequestSchema,
 } from '@kb-creator/contracts';
 import { z } from 'zod';
 import { sanitizeLlmInput } from '../utils/sanitize-llm-input.js';
@@ -666,6 +668,106 @@ export async function llmRoutes(fastify: FastifyInstance) {
     });
 
     return { message: 'Embedding processing started' };
+  });
+
+  // POST /api/embeddings/force-embed-tree - force-embed a page and all its sub-pages via SSE
+  fastify.post('/embeddings/force-embed-tree', EMBEDDING_RATE_LIMIT, async (request, reply) => {
+    const { pageId } = ForceEmbedTreeRequestSchema.parse(request.body);
+    const userId = request.userId;
+
+    const client = await getClientForUser(userId);
+    if (!client) {
+      throw fastify.httpErrors.badRequest('Confluence credentials not configured');
+    }
+
+    // Set up SSE response
+    const controller = new AbortController();
+    const onClose = () => controller.abort();
+    request.raw.on('close', onClose);
+
+    reply.raw.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+
+    try {
+      // Phase 1: Discover all pages in the tree
+      reply.raw.write(`data: ${JSON.stringify({ phase: 'discovering', total: 0, completed: 0, done: false })}\n\n`);
+
+      const rootPage = await client.getPage(pageId);
+      const descendants = await client.getDescendantPages(pageId);
+      const allPages = [rootPage, ...descendants];
+      const total = allPages.length;
+
+      reply.raw.write(`data: ${JSON.stringify({ phase: 'embedding', total, completed: 0, done: false })}\n\n`);
+
+      // Phase 2: Embed each page, reporting progress
+      let completed = 0;
+      let errors = 0;
+
+      for (const page of allPages) {
+        if (controller.signal.aborted) break;
+
+        try {
+          // Fetch full page content if not already expanded
+          const fullPage = page.body?.storage?.value ? page : await client.getPage(page.id);
+          const storageXhtml = fullPage.body?.storage?.value ?? '';
+
+          if (storageXhtml) {
+            const bodyHtml = confluenceToHtml(storageXhtml, page.id);
+
+            // Try to get space_key and cached HTML from local DB first
+            const cachedRow = await query<{ space_key: string; body_html: string }>(
+              'SELECT space_key, body_html FROM cached_pages WHERE user_id = $1 AND confluence_id = $2',
+              [userId, page.id],
+            );
+
+            const resolvedSpaceKey = cachedRow.rows[0]?.space_key ?? '';
+            const resolvedBodyHtml = cachedRow.rows[0]?.body_html ?? bodyHtml;
+
+            await embedPage(userId, page.id, page.title, resolvedSpaceKey, resolvedBodyHtml);
+          }
+
+          completed++;
+        } catch (err) {
+          errors++;
+          completed++;
+          logger.error({ err, pageId: page.id, title: page.title }, 'Failed to embed page in tree');
+        }
+
+        reply.raw.write(`data: ${JSON.stringify({
+          phase: 'embedding',
+          total,
+          completed,
+          errors,
+          currentPage: page.title,
+          done: false,
+        })}\n\n`);
+      }
+
+      // Final event
+      if (!controller.signal.aborted) {
+        reply.raw.write(`data: ${JSON.stringify({
+          phase: 'complete',
+          total,
+          completed,
+          errors,
+          done: true,
+        })}\n\n`);
+      }
+    } catch (err) {
+      if (controller.signal.aborted || (err instanceof Error && err.name === 'AbortError')) {
+        logger.debug('Force embed tree SSE aborted by client disconnect');
+      } else {
+        logger.error({ err, pageId }, 'Force embed tree failed');
+        reply.raw.write(`data: ${JSON.stringify({ error: 'Failed to embed page tree', done: true })}\n\n`);
+      }
+    } finally {
+      request.raw.removeListener('close', onClose);
+      reply.raw.end();
+    }
   });
 
   // POST /api/admin/re-embed - admin only: re-embed all pages
