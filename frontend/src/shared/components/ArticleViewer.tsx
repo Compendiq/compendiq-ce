@@ -18,6 +18,7 @@ import {
   UnknownMacro,
 } from './article-extensions';
 import { MermaidBlock } from './MermaidBlockExtension';
+import { fetchAuthenticatedBlob } from '../hooks/use-authenticated-src';
 import { cn } from '../lib/cn';
 import type { TocHeading } from './TableOfContents';
 
@@ -205,6 +206,43 @@ export function ArticleViewer({
     });
 
     return () => cancelAnimationFrame(raf);
+  }, [isReady, sanitizedContent]);
+
+  // Rewrite /api/attachments/... image srcs to authenticated blob URLs.
+  // Browser <img> tags cannot send Authorization headers, so without this
+  // the backend returns 401 for every inline image.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || !isReady) return;
+
+    const blobUrls: string[] = [];
+    let cancelled = false;
+
+    const raf = requestAnimationFrame(() => {
+      const images = container.querySelectorAll<HTMLImageElement>('img[src^="/api/"]');
+      if (images.length === 0) return;
+
+      images.forEach(async (img) => {
+        const originalSrc = img.getAttribute('src');
+        if (!originalSrc) return;
+
+        const blobUrl = await fetchAuthenticatedBlob(originalSrc);
+        if (cancelled) {
+          if (blobUrl) URL.revokeObjectURL(blobUrl);
+          return;
+        }
+        if (blobUrl) {
+          blobUrls.push(blobUrl);
+          img.src = blobUrl;
+        }
+      });
+    });
+
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+      blobUrls.forEach((url) => URL.revokeObjectURL(url));
+    };
   }, [isReady, sanitizedContent]);
 
   // Image click-to-zoom

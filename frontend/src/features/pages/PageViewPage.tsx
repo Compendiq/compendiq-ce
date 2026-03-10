@@ -27,9 +27,15 @@ import { QualityAnalysisPanel } from './QualityAnalysisPanel';
 import { ForceEmbedTree } from './ForceEmbedTree';
 import { PageViewSkeleton } from '../../shared/components/Skeleton';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
+import { useAuthenticatedSrc } from '../../shared/hooks/use-authenticated-src';
 import { toast } from 'sonner';
 
 function ImageLightbox({ src, alt, onClose }: { src: string; alt: string; onClose: () => void }) {
+  // src may be a blob URL (already authenticated) or a raw /api/ URL.
+  // useAuthenticatedSrc handles both: passes blob/external URLs through,
+  // fetches /api/ URLs with the Bearer token.
+  const { blobSrc, loading } = useAuthenticatedSrc(src);
+
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
@@ -55,12 +61,18 @@ function ImageLightbox({ src, alt, onClose }: { src: string; alt: string; onClos
       >
         <X size={20} />
       </button>
-      <img
-        src={src}
-        alt={alt}
-        className="max-h-[90vh] max-w-[90vw] rounded-lg object-contain"
-        onClick={(e) => e.stopPropagation()}
-      />
+      {loading ? (
+        <div className="text-white/60 text-sm">Loading image...</div>
+      ) : blobSrc ? (
+        <img
+          src={blobSrc}
+          alt={alt}
+          className="max-h-[90vh] max-w-[90vw] rounded-lg object-contain"
+          onClick={(e) => e.stopPropagation()}
+        />
+      ) : (
+        <div className="text-white/60 text-sm">Failed to load image</div>
+      )}
     </m.div>
   );
 }
