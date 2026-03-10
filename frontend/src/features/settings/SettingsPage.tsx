@@ -251,8 +251,10 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
       if (openaiBaseUrl) updates.openaiBaseUrl = openaiBaseUrl;
       if (openaiApiKey) updates.openaiApiKey = openaiApiKey;
     }
-    updates.embeddingChunkSize = chunkSize;
-    updates.embeddingChunkOverlap = chunkOverlap;
+    if (hasChunkChanges) {
+      updates.embeddingChunkSize = chunkSize;
+      updates.embeddingChunkOverlap = chunkOverlap;
+    }
     onSave(updates);
   }
 
