@@ -19,6 +19,7 @@ import {
 } from './article-extensions';
 import { MermaidBlock } from './MermaidBlockExtension';
 import { cn } from '../lib/cn';
+import { fetchAuthenticatedBlob } from '../hooks/use-authenticated-src';
 import type { TocHeading } from './TableOfContents';
 
 // Configure DOMPurify to preserve Confluence-specific attributes
@@ -205,6 +206,35 @@ export function ArticleViewer({
     });
 
     return () => cancelAnimationFrame(raf);
+  }, [isReady, sanitizedContent]);
+
+  // Protected attachment images need an authenticated fetch before the browser can display them.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || !isReady) return;
+
+    let cancelled = false;
+    const blobUrls: string[] = [];
+
+    const raf = requestAnimationFrame(() => {
+      const images = container.querySelectorAll('img');
+      images.forEach((img) => {
+        const originalSrc = img.getAttribute('src');
+        if (!originalSrc || !originalSrc.startsWith('/api/attachments/')) return;
+
+        void fetchAuthenticatedBlob(originalSrc).then((blobUrl) => {
+          if (!blobUrl || cancelled) return;
+          blobUrls.push(blobUrl);
+          img.src = blobUrl;
+        });
+      });
+    });
+
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+      blobUrls.forEach((blobUrl) => URL.revokeObjectURL(blobUrl));
+    };
   }, [isReady, sanitizedContent]);
 
   // Image click-to-zoom

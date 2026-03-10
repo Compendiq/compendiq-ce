@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, waitFor } from '@testing-library/react';
 
 // Mock mermaid (must be before component import)
@@ -15,9 +15,44 @@ vi.mock('../hooks/use-is-light-theme', () => ({
   useIsLightTheme: () => false,
 }));
 
+const mockFetchAuthenticatedBlob = vi.fn();
+vi.mock('../hooks/use-authenticated-src', () => ({
+  fetchAuthenticatedBlob: (...args: unknown[]) => mockFetchAuthenticatedBlob(...args),
+}));
+
 import { ArticleViewer } from './ArticleViewer';
 
 describe('ArticleViewer', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('rewrites protected attachment images to authenticated blob URLs', async () => {
+    mockFetchAuthenticatedBlob.mockResolvedValueOnce('blob:dashboard');
+
+    const html = '<p><img src="/api/attachments/page-1/dashboard.png" alt="Dashboard" /></p>';
+    const { container } = render(<ArticleViewer content={html} />);
+
+    await waitFor(() => {
+      const img = container.querySelector('img');
+      expect(img).toHaveAttribute('src', 'blob:dashboard');
+    });
+
+    expect(mockFetchAuthenticatedBlob).toHaveBeenCalledWith('/api/attachments/page-1/dashboard.png');
+  });
+
+  it('does not rewrite external images through the authenticated attachment fetcher', async () => {
+    const html = '<p><img src="https://example.com/diagram.svg" alt="External" /></p>';
+    const { container } = render(<ArticleViewer content={html} />);
+
+    await waitFor(() => {
+      const img = container.querySelector('img');
+      expect(img).toHaveAttribute('src', 'https://example.com/diagram.svg');
+    });
+
+    expect(mockFetchAuthenticatedBlob).not.toHaveBeenCalled();
+  });
+
   it('renders HTML content with proper headings', async () => {
     const html = '<h1>Main Title</h1><p>Some content here</p><h2>Section Two</h2><p>More content</p>';
 
