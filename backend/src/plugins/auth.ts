@@ -6,6 +6,13 @@ import { query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
 
 const JWT_ISSUER = 'kb-creator';
+const ACCESS_TOKEN_EXPIRY = process.env.ACCESS_TOKEN_EXPIRY ?? '1h';
+// Validate expiry format at startup — jose accepts: Ns, Nm, Nh, Nd
+if (!/^\d+[smhd]$/.test(ACCESS_TOKEN_EXPIRY)) {
+  throw new Error(
+    `Invalid ACCESS_TOKEN_EXPIRY format: "${ACCESS_TOKEN_EXPIRY}". Expected format: <number><s|m|h|d> (e.g., "1h", "30m", "7d")`,
+  );
+}
 const REFRESH_TOKEN_EXPIRY_DAYS = 7;
 
 interface JwtPayload {
@@ -44,7 +51,7 @@ export async function generateAccessToken(payload: JwtPayload): Promise<string> 
     .setProtectedHeader({ alg: 'HS256' })
     .setSubject(payload.sub)
     .setIssuer(JWT_ISSUER)
-    .setExpirationTime('15m')
+    .setExpirationTime(ACCESS_TOKEN_EXPIRY)
     .sign(getJwtSecret());
 }
 
