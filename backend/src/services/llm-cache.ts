@@ -33,13 +33,24 @@ export function buildLlmCacheKey(model: string, systemPrompt: string, userConten
 
 /**
  * Build a cache key for a RAG Q&A call.
- * Based on: model + question + sorted top-K doc IDs.
+ * Based on: model + question + sorted top-K doc IDs + optional sub-page context.
  * This means the cache automatically invalidates when documents are re-embedded
  * (because the top-K results will change).
+ *
+ * The `includeSubPages` and `pageId` parameters ensure that identical questions
+ * produce different cache keys when sub-page context is toggled on/off.
  */
-export function buildRagCacheKey(model: string, question: string, docIds: string[]): string {
+export function buildRagCacheKey(
+  model: string,
+  question: string,
+  docIds: string[],
+  options?: { includeSubPages?: boolean; pageId?: string },
+): string {
   const sortedIds = [...docIds].sort().join(',');
-  return KEY_PREFIX + hashLlmInputs(model, question, sortedIds);
+  const subPageSuffix = options?.includeSubPages && options?.pageId
+    ? `subpages:${options.pageId}`
+    : '';
+  return KEY_PREFIX + hashLlmInputs(model, question, sortedIds, subPageSuffix);
 }
 
 export class LlmCache {

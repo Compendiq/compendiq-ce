@@ -72,7 +72,7 @@ export async function fetchSubPages(
       subPages.push({
         confluenceId: row.confluence_id,
         title: row.title,
-        bodyHtml: row.body_html,
+        bodyHtml: row.body_html || '',
         depth: current.depth,
       });
 

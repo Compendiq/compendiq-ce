@@ -104,6 +104,20 @@ describe('subpage-context', () => {
       expect(result).toHaveLength(0);
     });
 
+    it('should coalesce null body_html to empty string', async () => {
+      mockQuery.mockResolvedValueOnce({
+        rows: [
+          { confluence_id: 'child-1', title: 'Child 1', body_html: null },
+        ],
+      });
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+
+      const result = await fetchSubPages('user-1', 'parent-1');
+
+      expect(result).toHaveLength(1);
+      expect(result[0].bodyHtml).toBe('');
+    });
+
     it('should respect max depth limit', async () => {
       // Create a chain 6 levels deep (max is 5)
       for (let i = 1; i <= 5; i++) {

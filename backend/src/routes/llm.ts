@@ -30,6 +30,41 @@ import { assembleSubPageContext, getMultiPagePromptSuffix } from '../services/su
 const IdParamSchema = z.object({ id: z.string().min(1) });
 const ImprovementsQuerySchema = z.object({ pageId: z.string().optional() });
 
+/**
+ * Assemble page context for LLM consumption, optionally including sub-pages.
+ *
+ * When `includeSubPages` is true and a `pageId` is provided, fetches the parent
+ * page title and assembles it with its sub-page tree. Otherwise, converts the
+ * HTML content directly to markdown.
+ *
+ * Returns the markdown content and an optional multi-page prompt suffix.
+ */
+async function assembleContextIfNeeded(
+  userId: string,
+  pageId: string | undefined,
+  content: string,
+  includeSubPages?: boolean,
+): Promise<{ markdown: string; multiPageSuffix: string }> {
+  if (includeSubPages && pageId) {
+    const pageResult = await query<{ title: string }>(
+      'SELECT title FROM cached_pages WHERE user_id = $1 AND confluence_id = $2',
+      [userId, pageId],
+    );
+    const parentTitle = pageResult.rows[0]?.title ?? 'Untitled';
+
+    const assembled = await assembleSubPageContext(userId, pageId, content, parentTitle);
+    return {
+      markdown: assembled.markdown,
+      multiPageSuffix: getMultiPagePromptSuffix(assembled.pageCount),
+    };
+  }
+
+  return {
+    markdown: htmlToMarkdown(content),
+    multiPageSuffix: '',
+  };
+}
+
 // Rate limit configs for LLM endpoints
 const LLM_STREAM_RATE_LIMIT = { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } };
 const EMBEDDING_RATE_LIMIT = { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } };
@@ -161,24 +196,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.badRequest(`Content too large (max ${MAX_INPUT_LENGTH} characters)`);
     }
 
-    let markdown: string;
-    let multiPageSuffix = '';
-
-    if (includeSubPages && body.pageId) {
-      // Fetch parent page title from DB
-      const pageResult = await query<{ title: string }>(
-        'SELECT title FROM cached_pages WHERE user_id = $1 AND confluence_id = $2',
-        [userId, body.pageId],
-      );
-      const parentTitle = pageResult.rows[0]?.title ?? 'Untitled';
-
-      const assembled = await assembleSubPageContext(userId, body.pageId, content, parentTitle);
-      markdown = assembled.markdown;
-      multiPageSuffix = getMultiPagePromptSuffix(assembled.pageCount);
-    } else {
-      // Convert HTML to markdown for LLM consumption
-      markdown = htmlToMarkdown(content);
-    }
+    const { markdown, multiPageSuffix } = await assembleContextIfNeeded(userId, body.pageId, content, includeSubPages);
 
     // Sanitize before sending to LLM
     const { sanitized, warnings } = sanitizeLlmInput(markdown);
@@ -275,22 +293,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.badRequest(`Content too large (max ${MAX_INPUT_LENGTH} characters)`);
     }
 
-    let markdown: string;
-    let multiPageSuffix = '';
-
-    if (includeSubPages && body.pageId) {
-      const pageResult = await query<{ title: string }>(
-        'SELECT title FROM cached_pages WHERE user_id = $1 AND confluence_id = $2',
-        [userId, body.pageId],
-      );
-      const parentTitle = pageResult.rows[0]?.title ?? 'Untitled';
-
-      const assembled = await assembleSubPageContext(userId, body.pageId, content, parentTitle);
-      markdown = assembled.markdown;
-      multiPageSuffix = getMultiPagePromptSuffix(assembled.pageCount);
-    } else {
-      markdown = htmlToMarkdown(content);
-    }
+    const { markdown, multiPageSuffix } = await assembleContextIfNeeded(userId, body.pageId, content, includeSubPages);
 
     // Sanitize before sending to LLM
     const { sanitized: sanitizedMarkdown, warnings } = sanitizeLlmInput(markdown);
@@ -382,22 +385,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.badRequest(`Content too large (max ${MAX_INPUT_LENGTH} characters)`);
     }
 
-    let markdown: string;
-    let multiPageSuffix = '';
-
-    if (includeSubPages && body.pageId) {
-      const pageResult = await query<{ title: string }>(
-        'SELECT title FROM cached_pages WHERE user_id = $1 AND confluence_id = $2',
-        [userId, body.pageId],
-      );
-      const parentTitle = pageResult.rows[0]?.title ?? 'Untitled';
-
-      const assembled = await assembleSubPageContext(userId, body.pageId, content, parentTitle);
-      markdown = assembled.markdown;
-      multiPageSuffix = getMultiPagePromptSuffix(assembled.pageCount);
-    } else {
-      markdown = htmlToMarkdown(content);
-    }
+    const { markdown, multiPageSuffix } = await assembleContextIfNeeded(userId, body.pageId, content, includeSubPages);
 
     // Sanitize before sending to LLM
     const { sanitized, warnings } = sanitizeLlmInput(markdown);
@@ -475,7 +463,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
       );
       if (pageResult.rows.length > 0) {
         const { title, body_html } = pageResult.rows[0];
-        const assembled = await assembleSubPageContext(userId, body.pageId, body_html, title);
+        const assembled = await assembleSubPageContext(userId, body.pageId, body_html || '', title);
         // Prepend the page tree context before the RAG context
         ragContext = `Page tree context:\n\n${assembled.markdown}\n\n---\n\nAdditional knowledge base context:\n\n${ragContext}`;
         multiPageSuffix = getMultiPagePromptSuffix(assembled.pageCount);
@@ -484,7 +472,10 @@ export async function llmRoutes(fastify: FastifyInstance) {
 
     // Check RAG cache (only for new conversations without history)
     const docIds = searchResults.map((r) => r.confluenceId);
-    const ragCacheKey = buildRagCacheKey(model, question, docIds);
+    const ragCacheKey = buildRagCacheKey(model, question, docIds, {
+      includeSubPages,
+      pageId: body.pageId,
+    });
 
     if (conversationHistory.length === 0) {
       const cached = await llmCache.getCachedResponse(ragCacheKey);
