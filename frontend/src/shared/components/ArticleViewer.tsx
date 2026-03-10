@@ -18,8 +18,8 @@ import {
   UnknownMacro,
 } from './article-extensions';
 import { MermaidBlock } from './MermaidBlockExtension';
-import { cn } from '../lib/cn';
 import { fetchAuthenticatedBlob } from '../hooks/use-authenticated-src';
+import { cn } from '../lib/cn';
 import type { TocHeading } from './TableOfContents';
 
 // Configure DOMPurify to preserve Confluence-specific attributes
@@ -208,32 +208,40 @@ export function ArticleViewer({
     return () => cancelAnimationFrame(raf);
   }, [isReady, sanitizedContent]);
 
-  // Protected attachment images need an authenticated fetch before the browser can display them.
+  // Rewrite /api/attachments/... image srcs to authenticated blob URLs.
+  // Browser <img> tags cannot send Authorization headers, so without this
+  // the backend returns 401 for every inline image.
   useEffect(() => {
     const container = containerRef.current;
     if (!container || !isReady) return;
 
-    let cancelled = false;
     const blobUrls: string[] = [];
+    let cancelled = false;
 
     const raf = requestAnimationFrame(() => {
-      const images = container.querySelectorAll('img');
-      images.forEach((img) => {
-        const originalSrc = img.getAttribute('src');
-        if (!originalSrc || !originalSrc.startsWith('/api/attachments/')) return;
+      const images = container.querySelectorAll<HTMLImageElement>('img[src^="/api/attachments/"]');
+      if (images.length === 0) return;
 
-        void fetchAuthenticatedBlob(originalSrc).then((blobUrl) => {
-          if (!blobUrl || cancelled) return;
+      images.forEach(async (img) => {
+        const originalSrc = img.getAttribute('src');
+        if (!originalSrc) return;
+
+        const blobUrl = await fetchAuthenticatedBlob(originalSrc);
+        if (cancelled) {
+          if (blobUrl) URL.revokeObjectURL(blobUrl);
+          return;
+        }
+        if (blobUrl) {
           blobUrls.push(blobUrl);
           img.src = blobUrl;
-        });
+        }
       });
     });
 
     return () => {
       cancelled = true;
       cancelAnimationFrame(raf);
-      blobUrls.forEach((blobUrl) => URL.revokeObjectURL(blobUrl));
+      blobUrls.forEach((url) => URL.revokeObjectURL(url));
     };
   }, [isReady, sanitizedContent]);
 

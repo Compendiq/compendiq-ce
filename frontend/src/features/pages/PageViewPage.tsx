@@ -4,7 +4,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { m, AnimatePresence } from 'framer-motion';
 import {
   ArrowLeft, Edit3, Save, X, Trash2, Wand2, FileText,
-  ExternalLink, Clock, User, Pin,
+  ExternalLink, Clock, User, Pin, List,
 } from 'lucide-react';
 import type { SettingsResponse } from '@kb-creator/contracts';
 import { usePage, useUpdatePage, useDeletePage, usePinnedPages, usePinPage, useUnpinPage, useEmbeddingProcess } from '../../shared/hooks/use-pages';
@@ -27,9 +27,15 @@ import { QualityAnalysisPanel } from './QualityAnalysisPanel';
 import { ForceEmbedTree } from './ForceEmbedTree';
 import { PageViewSkeleton } from '../../shared/components/Skeleton';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
+import { useAuthenticatedSrc } from '../../shared/hooks/use-authenticated-src';
 import { toast } from 'sonner';
 
 function ImageLightbox({ src, alt, onClose }: { src: string; alt: string; onClose: () => void }) {
+  // src may be a blob URL (already authenticated) or a raw /api/ URL.
+  // useAuthenticatedSrc handles both: passes blob/external URLs through,
+  // fetches /api/ URLs with the Bearer token.
+  const { blobSrc, loading } = useAuthenticatedSrc(src);
+
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
@@ -55,12 +61,18 @@ function ImageLightbox({ src, alt, onClose }: { src: string; alt: string; onClos
       >
         <X size={20} />
       </button>
-      <img
-        src={src}
-        alt={alt}
-        className="max-h-[90vh] max-w-[90vw] rounded-lg object-contain"
-        onClick={(e) => e.stopPropagation()}
-      />
+      {loading ? (
+        <div className="text-white/60 text-sm">Loading image...</div>
+      ) : blobSrc ? (
+        <img
+          src={blobSrc}
+          alt={alt}
+          className="max-h-[90vh] max-w-[90vw] rounded-lg object-contain"
+          onClick={(e) => e.stopPropagation()}
+        />
+      ) : (
+        <div className="text-white/60 text-sm">Failed to load image</div>
+      )}
     </m.div>
   );
 }
@@ -85,6 +97,7 @@ export function PageViewPage() {
   const [editHtml, setEditHtml] = useState('');
   const [lightboxSrc, setLightboxSrc] = useState<{ src: string; alt: string } | null>(null);
   const [tocHeadings, setTocHeadings] = useState<TocHeading[]>([]);
+  const [tocVisible, setTocVisible] = useState(true);
   const [diagramOpen, setDiagramOpen] = useState(false);
   const [qualityOpen, setQualityOpen] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -111,6 +124,13 @@ export function PageViewPage() {
   }, [page, id]);
 
   const closeLightbox = useCallback(() => setLightboxSrc(null), []);
+
+  // Reset scroll to top when navigating between articles (belt-and-suspenders
+  // alongside the AppLayout reset, which may race with TipTap content updates)
+  useEffect(() => {
+    const el = document.querySelector('[data-scroll-container]') as HTMLElement | null;
+    if (el) el.scrollTop = 0;
+  }, [id]);
 
   const handleRequestSync = useCallback(() => {
     syncMutation.mutate(undefined, {

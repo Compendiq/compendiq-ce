@@ -33,10 +33,12 @@ export function AppLayout({ children }: { children: ReactNode }) {
     setMobileMenuOpen(false);
   }, [location.pathname]);
 
-  // Reset scroll to top on every route change
+  // Reset scroll to top on every route change (use location.key so it fires
+  // on every navigation, including between same-pathname routes like /pages/id1 → /pages/id2)
   useEffect(() => {
-    scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'instant' });
-  }, [location.pathname]);
+    const el = scrollContainerRef.current;
+    if (el) el.scrollTop = 0;
+  }, [location.key]);
 
   // Register Cmd/Ctrl+K keyboard shortcut
   useEffect(() => {
