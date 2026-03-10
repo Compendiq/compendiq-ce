@@ -18,7 +18,7 @@ export function NoiseOverlay() {
   return (
     <div
       data-testid="noise-overlay"
-      className="pointer-events-none fixed inset-0 z-50 opacity-15"
+      className="pointer-events-none fixed inset-0 z-10 opacity-15"
       aria-hidden="true"
     >
       <svg
