@@ -3,6 +3,48 @@ import mermaid from 'mermaid';
 import { Copy, Check, Download } from 'lucide-react';
 import { cn } from '../lib/cn';
 
+/**
+ * Sanitize Mermaid diagram code by quoting node labels that contain
+ * special characters (parentheses, brackets, braces) which would
+ * otherwise be misinterpreted as Mermaid syntax.
+ *
+ * Handles square-bracket labels `[...]`, curly-brace labels `{...}`,
+ * and round-paren labels `(...)` used in flowchart node definitions.
+ * Already-quoted labels like `["text"]` are left untouched.
+ */
+export function sanitizeMermaidCode(code: string): string {
+  return code.replace(
+    // Match a node shape delimiter with its content:
+    //   [content] or {content} or (content)
+    // but NOT already-quoted forms like ["content"] or {"content"} or ("content")
+    /(\w+)\[(?!")([^\]]*)\]|(\w+)\{(?!")([^}]*)\}|(\w+)\((?!")([^)]*)\)/g,
+    (_match, sqId?: string, sqContent?: string, brId?: string, brContent?: string, rnId?: string, rnContent?: string) => {
+      if (sqId !== undefined && sqContent !== undefined) {
+        // Square bracket label: A[label] — quote if it contains special chars
+        if (/[()[\]{}]/.test(sqContent)) {
+          return `${sqId}["${sqContent}"]`;
+        }
+        return `${sqId}[${sqContent}]`;
+      }
+      if (brId !== undefined && brContent !== undefined) {
+        // Curly brace label: A{label} — quote if it contains special chars
+        if (/[()[\]{}]/.test(brContent)) {
+          return `${brId}{"${brContent}"}`;
+        }
+        return `${brId}{${brContent}}`;
+      }
+      if (rnId !== undefined && rnContent !== undefined) {
+        // Round paren label: A(label) — quote if it contains special chars
+        if (/[()[\]{}]/.test(rnContent)) {
+          return `${rnId}("${rnContent}")`;
+        }
+        return `${rnId}(${rnContent})`;
+      }
+      return _match;
+    },
+  );
+}
+
 mermaid.initialize({
   startOnLoad: false,
   theme: 'dark',
@@ -40,6 +82,9 @@ export function MermaidDiagram({ code, className }: MermaidDiagramProps) {
         if (cleanCode.startsWith('```')) {
           cleanCode = cleanCode.replace(/^```(?:mermaid)?\n?/, '').replace(/\n?```$/, '');
         }
+
+        // Sanitize node labels that contain special characters
+        cleanCode = sanitizeMermaidCode(cleanCode);
 
         const { svg } = await mermaid.render(diagramId, cleanCode);
         if (!cancelled && containerRef.current) {

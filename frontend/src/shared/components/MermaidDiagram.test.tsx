@@ -16,7 +16,7 @@ Object.assign(navigator, {
   clipboard: { writeText: mockWriteText },
 });
 
-import { MermaidDiagram } from './MermaidDiagram';
+import { MermaidDiagram, sanitizeMermaidCode } from './MermaidDiagram';
 
 describe('MermaidDiagram', () => {
   beforeEach(() => {
@@ -97,5 +97,70 @@ describe('MermaidDiagram', () => {
   it('applies custom className', () => {
     const { container } = render(<MermaidDiagram code="graph TD\n  A --> B" className="mt-4" />);
     expect(container.firstChild).toHaveClass('mt-4');
+  });
+
+  it('sanitizes node labels with special characters before rendering', async () => {
+    const code = 'graph TD\n  A[Deploy (30min downtime)] --> B[Done]';
+    render(<MermaidDiagram code={code} />);
+
+    await waitFor(() => {
+      expect(mockRender).toHaveBeenCalled();
+      const [, renderedCode] = mockRender.mock.calls[0];
+      expect(renderedCode).toContain('A["Deploy (30min downtime)"]');
+    });
+  });
+});
+
+describe('sanitizeMermaidCode', () => {
+  it('quotes square-bracket labels containing parentheses', () => {
+    const input = 'graph TD\n  A[Deploy (30min downtime)] --> B[Done]';
+    const result = sanitizeMermaidCode(input);
+    expect(result).toContain('A["Deploy (30min downtime)"]');
+    // B[Done] has no special chars, should remain unquoted
+    expect(result).toContain('B[Done]');
+  });
+
+  it('quotes square-bracket labels containing braces', () => {
+    const input = 'graph TD\n  A[Config {key: value}] --> B[Next]';
+    const result = sanitizeMermaidCode(input);
+    expect(result).toContain('A["Config {key: value}"]');
+    expect(result).toContain('B[Next]');
+  });
+
+  it('quotes curly-brace labels containing parentheses', () => {
+    const input = 'graph TD\n  A{Check (status)} --> B[Done]';
+    const result = sanitizeMermaidCode(input);
+    expect(result).toContain('A{"Check (status)"}');
+  });
+
+  it('quotes round-paren labels containing brackets', () => {
+    const input = 'graph TD\n  A(Start [phase 1]) --> B[Done]';
+    const result = sanitizeMermaidCode(input);
+    expect(result).toContain('A("Start [phase 1]")');
+  });
+
+  it('does not modify already-quoted labels', () => {
+    const input = 'graph TD\n  A["Deploy (30min)"] --> B["Config {x}"]';
+    const result = sanitizeMermaidCode(input);
+    expect(result).toBe(input);
+  });
+
+  it('handles multiple nodes with special characters on one line', () => {
+    const input = 'graph TD\n  A[Step (1)] --> B[Step (2)]';
+    const result = sanitizeMermaidCode(input);
+    expect(result).toContain('A["Step (1)"]');
+    expect(result).toContain('B["Step (2)"]');
+  });
+
+  it('passes through clean code unchanged', () => {
+    const input = 'graph TD\n  A[Start] --> B[End]\n  B --> C[Done]';
+    const result = sanitizeMermaidCode(input);
+    expect(result).toBe(input);
+  });
+
+  it('passes through non-flowchart diagrams unchanged when no special chars', () => {
+    const input = 'sequenceDiagram\n  Alice->>Bob: Hello\n  Bob-->>Alice: Hi';
+    const result = sanitizeMermaidCode(input);
+    expect(result).toBe(input);
   });
 });

@@ -188,3 +188,88 @@ describe('ollama-service bearer token configuration', () => {
     expect(result.error).toBe('Connection refused');
   });
 });
+
+describe('ollama-service system prompts — diagram special character quoting', () => {
+  const originalEnv = { ...process.env };
+
+  beforeEach(() => {
+    capturedConfig = undefined;
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  const diagramTypes = ['flowchart', 'sequence', 'state', 'mindmap'] as const;
+
+  for (const type of diagramTypes) {
+    it(`generate_diagram_${type} system prompt should instruct quoting labels with special characters`, async () => {
+      delete process.env.LLM_BEARER_TOKEN;
+
+      const mod = await import('./ollama-service.js');
+      const prompt = mod.getSystemPrompt(`generate_diagram_${type}` as import('./ollama-service.js').SystemPromptKey);
+
+      expect(prompt).toContain('MUST wrap the entire label text in double quotes');
+      expect(prompt).toContain('parentheses ()');
+      expect(prompt).toContain('brackets []');
+      expect(prompt).toContain('braces {}');
+    });
+  }
+});
+
+describe('ollama-service system prompts — language preservation', () => {
+  const originalEnv = { ...process.env };
+
+  beforeEach(() => {
+    capturedConfig = undefined;
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  const improveTypes = ['grammar', 'structure', 'clarity', 'technical', 'completeness'] as const;
+
+  for (const type of improveTypes) {
+    it(`improve_${type} system prompt should contain language preservation instruction`, async () => {
+      delete process.env.LLM_BEARER_TOKEN;
+
+      const mod = await import('./ollama-service.js');
+      const prompt = mod.getSystemPrompt(`improve_${type}` as import('./ollama-service.js').SystemPromptKey);
+
+      expect(prompt).toContain('ORIGINAL language');
+      expect(prompt).toContain('Never translate');
+    });
+  }
+
+  it('summarize system prompt should contain language preservation instruction', async () => {
+    delete process.env.LLM_BEARER_TOKEN;
+
+    const mod = await import('./ollama-service.js');
+    const prompt = mod.getSystemPrompt('summarize');
+
+    expect(prompt).toContain('ORIGINAL language');
+    expect(prompt).toContain('Never translate');
+  });
+
+  it('ask system prompt should instruct responding in the same language as the question', async () => {
+    delete process.env.LLM_BEARER_TOKEN;
+
+    const mod = await import('./ollama-service.js');
+    const prompt = mod.getSystemPrompt('ask');
+
+    expect(prompt).toContain('same language as the user');
+  });
+
+  it('generate system prompt should NOT contain language preservation (user controls language)', async () => {
+    delete process.env.LLM_BEARER_TOKEN;
+
+    const mod = await import('./ollama-service.js');
+    const prompt = mod.getSystemPrompt('generate');
+
+    expect(prompt).not.toContain('ORIGINAL language');
+    expect(prompt).not.toContain('Never translate');
+  });
+});
