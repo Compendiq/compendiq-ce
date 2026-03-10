@@ -239,7 +239,7 @@ export function PageViewPage() {
               <VersionHistory
                 pageId={id!}
                 currentBodyText={page.bodyText}
-                model="qwen3:latest"
+                model={settings?.ollamaModel ?? 'qwen3:latest'}
               />
               <DuplicateDetector
                 pageId={id!}
@@ -248,7 +248,7 @@ export function PageViewPage() {
               <AutoTagger
                 pageId={id!}
                 currentLabels={page.labels}
-                model="qwen3:latest"
+                model={settings?.ollamaModel ?? 'qwen3:latest'}
               />
               <ForceEmbedTree
                 pageId={id!}

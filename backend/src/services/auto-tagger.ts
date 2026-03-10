@@ -1,4 +1,4 @@
-import { chat } from './ollama-service.js';
+import { providerChat } from './llm-provider.js';
 import { htmlToMarkdown } from './content-converter.js';
 import { sanitizeLlmInput } from '../utils/sanitize-llm-input.js';
 import { query } from '../db/postgres.js';
@@ -27,8 +27,10 @@ const SYSTEM_PROMPT = `You are a document classifier. Given the following articl
 /**
  * Auto-tag a page's content using LLM zero-shot classification.
  * Returns an array of suggested tags from the allowed set.
+ * Uses providerChat for provider-aware model resolution (Ollama or OpenAI).
  */
 export async function autoTagContent(
+  userId: string,
   model: string,
   content: string,
   options: { isHtml?: boolean } = {},
@@ -45,7 +47,7 @@ export async function autoTagContent(
 
   let response: string;
   try {
-    response = await chat(model, [
+    response = await providerChat(userId, model, [
       { role: 'system', content: SYSTEM_PROMPT },
       { role: 'user', content: sanitized },
     ]);
@@ -144,7 +146,7 @@ export async function autoTagPage(
     return { suggestedTags: [], existingLabels: labels ?? [] };
   }
 
-  const suggestedTags = await autoTagContent(model, body_html, { isHtml: true });
+  const suggestedTags = await autoTagContent(userId, model, body_html, { isHtml: true });
 
   return {
     suggestedTags,
@@ -218,7 +220,7 @@ export async function autoTagAllPages(
 
   for (const page of pages.rows) {
     try {
-      const suggestedTags = await autoTagContent(model, page.body_html, { isHtml: true });
+      const suggestedTags = await autoTagContent(userId, model, page.body_html, { isHtml: true });
       if (suggestedTags.length > 0) {
         await applyTags(userId, page.confluence_id, suggestedTags);
         tagged++;
