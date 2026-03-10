@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import fs from 'fs/promises';
-import { syncImageAttachments, syncDrawioAttachments, getMimeType } from './attachment-handler.js';
+import { syncImageAttachments, syncDrawioAttachments, fetchAndCacheAttachment, getMimeType } from './attachment-handler.js';
 import type { ConfluenceClient, ConfluenceAttachment } from './confluence-client.js';
 
 // Mock fs to avoid real filesystem operations
@@ -159,6 +159,83 @@ describe('attachment-handler', () => {
 
       expect(result).toEqual([]);
       expect(client.getPageAttachments).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('fetchAndCacheAttachment', () => {
+    it('fetches attachment from Confluence, caches it, and returns the buffer', async () => {
+      const imageData = Buffer.from('confluence-image-data');
+      const client = createMockClient();
+      (client.getPageAttachments as ReturnType<typeof vi.fn>).mockResolvedValue({
+        results: makeAttachments([
+          { title: 'logo.png', download: '/download/logo.png' },
+        ]),
+      });
+      (client.downloadAttachment as ReturnType<typeof vi.fn>).mockResolvedValue(imageData);
+
+      const result = await fetchAndCacheAttachment(client, 'user-1', 'page-1', 'logo.png');
+
+      expect(result).toEqual(imageData);
+      expect(client.getPageAttachments).toHaveBeenCalledWith('page-1');
+      expect(client.downloadAttachment).toHaveBeenCalledWith('/download/logo.png');
+      expect(fs.mkdir).toHaveBeenCalled();
+      expect(fs.writeFile).toHaveBeenCalled();
+    });
+
+    it('returns null when attachment is not found in Confluence', async () => {
+      const client = createMockClient();
+      (client.getPageAttachments as ReturnType<typeof vi.fn>).mockResolvedValue({
+        results: [],
+      });
+
+      const result = await fetchAndCacheAttachment(client, 'user-1', 'page-1', 'missing.png');
+
+      expect(result).toBeNull();
+      expect(client.downloadAttachment).not.toHaveBeenCalled();
+    });
+
+    it('returns null when attachment has no download link', async () => {
+      const client = createMockClient();
+      (client.getPageAttachments as ReturnType<typeof vi.fn>).mockResolvedValue({
+        results: [{
+          id: 'att-1',
+          title: 'nolink.png',
+          mediaType: 'image/png',
+          // No _links.download
+        }],
+      });
+
+      const result = await fetchAndCacheAttachment(client, 'user-1', 'page-1', 'nolink.png');
+
+      expect(result).toBeNull();
+      expect(client.downloadAttachment).not.toHaveBeenCalled();
+    });
+
+    it('sanitizes filename to prevent path traversal', async () => {
+      const imageData = Buffer.from('safe-data');
+      const client = createMockClient();
+      (client.getPageAttachments as ReturnType<typeof vi.fn>).mockResolvedValue({
+        results: makeAttachments([
+          { title: 'safe.png', download: '/download/safe.png' },
+        ]),
+      });
+      (client.downloadAttachment as ReturnType<typeof vi.fn>).mockResolvedValue(imageData);
+
+      // path.basename('../../etc/passwd') returns 'passwd', which won't match 'safe.png'
+      const result = await fetchAndCacheAttachment(client, 'user-1', 'page-1', '../../etc/passwd');
+
+      expect(result).toBeNull();
+    });
+
+    it('propagates errors from Confluence API', async () => {
+      const client = createMockClient();
+      (client.getPageAttachments as ReturnType<typeof vi.fn>).mockRejectedValue(
+        new Error('Confluence unreachable'),
+      );
+
+      await expect(
+        fetchAndCacheAttachment(client, 'user-1', 'page-1', 'logo.png'),
+      ).rejects.toThrow('Confluence unreachable');
     });
   });
 

@@ -168,6 +168,41 @@ export async function syncImageAttachments(
 }
 
 /**
+ * Fetch a single attachment from Confluence on-demand, cache it locally,
+ * and return the file contents. Used as a fallback when the local cache misses.
+ *
+ * Returns null if the attachment cannot be found or downloaded.
+ */
+export async function fetchAndCacheAttachment(
+  client: ConfluenceClient,
+  userId: string,
+  pageId: string,
+  filename: string,
+): Promise<Buffer | null> {
+  const safe = path.basename(filename);
+
+  // Fetch the page's attachment list from Confluence
+  const { results: attachments } = await client.getPageAttachments(pageId);
+  const attachment = attachments.find((a) => a.title === safe);
+
+  if (!attachment?._links?.download) {
+    logger.debug({ userId, pageId, filename: safe }, 'Attachment not found in Confluence');
+    return null;
+  }
+
+  const data = await client.downloadAttachment(attachment._links.download);
+
+  // Cache to local filesystem for future requests
+  const dir = attachmentDir(userId, pageId);
+  await fs.mkdir(dir, { recursive: true });
+  const filePath = attachmentPath(userId, pageId, safe);
+  await fs.writeFile(filePath, data);
+
+  logger.info({ userId, pageId, filename: safe }, 'On-demand fetched and cached attachment');
+  return data;
+}
+
+/**
  * Clean up all attachments for a page.
  */
 export async function cleanPageAttachments(userId: string, pageId: string): Promise<void> {
