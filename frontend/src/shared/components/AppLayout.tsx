@@ -10,6 +10,7 @@ import { UserMenu } from './UserMenu';
 import { SidebarTreeView } from './SidebarTreeView';
 import { AuroraBackground } from './AuroraBackground';
 import { NoiseOverlay } from './NoiseOverlay';
+import { PageTransition } from './PageTransition';
 import { cn } from '../lib/cn';
 
 const navItems = [
@@ -159,17 +160,13 @@ export function AppLayout({ children }: { children: ReactNode }) {
             <div className="shrink-0 px-4 pt-3 sm:px-6">
               <ServiceStatus />
             </div>
-            <m.div
-              key={location.pathname}
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.2 }}
-              className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6"
-            >
-              <div className="mx-auto max-w-7xl">
-                {children}
-              </div>
-            </m.div>
+            <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
+              <PageTransition>
+                <div className="mx-auto max-w-7xl">
+                  {children}
+                </div>
+              </PageTransition>
+            </div>
           </main>
         </div>
       </div>

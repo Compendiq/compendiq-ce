@@ -507,6 +507,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
           spaceKey: r.spaceKey,
           confluenceId: r.confluenceId,
           sectionTitle: r.sectionTitle,
+          score: r.score,
         }));
 
         reply.raw.writeHead(200, {
@@ -596,6 +597,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
           spaceKey: r.spaceKey,
           confluenceId: r.confluenceId,
           sectionTitle: r.sectionTitle,
+          score: r.score,
         }));
 
         reply.raw.write(`data: ${JSON.stringify({
