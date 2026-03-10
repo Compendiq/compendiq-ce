@@ -355,6 +355,64 @@ describe('AiAssistantPage', () => {
       }
     });
 
+    it('removes empty assistant message when ask stream throws an error', async () => {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'llama3' }]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([]);
+      });
+
+      async function* fakeErrorStream() {
+        throw new Error('Connection lost');
+      }
+      streamSSEMock.mockReturnValue(fakeErrorStream());
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      // Wait for model to load
+      await waitFor(() => {
+        expect(screen.queryByText('Loading models...')).not.toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Ask a question...');
+      fireEvent.change(input, { target: { value: 'What is Confluence?' } });
+
+      await waitFor(() => {
+        const sendBtnContainer = input.closest('.glass-card');
+        const sendBtn = sendBtnContainer?.querySelector('button');
+        expect(sendBtn).not.toBeDisabled();
+      });
+
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      // Wait for the error toast
+      await waitFor(() => {
+        expect(toastErrorMock).toHaveBeenCalledWith('Connection lost');
+      });
+
+      // The user message should still be visible
+      expect(screen.getByText('What is Confluence?')).toBeInTheDocument();
+
+      // The empty assistant message should have been removed.
+      // AskMode adds the user message directly via setMessages (not via runStream's
+      // userMessage option), so this test specifically verifies the fix: runStream
+      // must always remove the placeholder assistant message on error.
+      // If there were an assistant bubble, it would contain a Bot icon or typing indicator.
+      expect(screen.queryByTestId('typing-indicator')).not.toBeInTheDocument();
+
+      // Verify there is exactly 1 message bubble (the user message), not 2
+      // User messages have "justify-end" class on their container
+      const messageBubbles = document.querySelectorAll('.max-w-\\[80\\%\\]');
+      expect(messageBubbles.length).toBe(1);
+    });
+
     it('enables send button when model is loaded and input is provided', async () => {
       apiFetchMock.mockImplementation((path: string) => {
         if (path === '/settings') {

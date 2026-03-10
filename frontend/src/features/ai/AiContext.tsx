@@ -325,10 +325,9 @@ export function AiProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') return;
       toast.error(err instanceof Error ? err.message : 'Request failed');
-      // Remove the empty assistant message on error if userMessage was provided via setMessages
-      if (opts?.userMessage) {
-        setMessages((prev) => prev.slice(0, -1));
-      }
+      // Always remove the empty assistant message on error — runStream unconditionally
+      // adds a placeholder assistant message, regardless of whether userMessage was passed.
+      setMessages((prev) => prev.slice(0, -1));
     } finally {
       setIsStreaming(false);
       setIsThinking(false);
