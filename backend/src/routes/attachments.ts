@@ -17,17 +17,33 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
     // On cache miss, fetch from Confluence on-demand
     if (!data) {
       const client = await getClientForUser(userId);
-      if (client) {
-        try {
-          data = await fetchAndCacheAttachment(client, userId, pageId, filename);
-        } catch (err) {
-          logger.error({ err, userId, pageId, filename }, 'On-demand attachment fetch failed');
-        }
+      if (!client) {
+        // User has no Confluence PAT configured — can't fetch on-demand
+        return reply.status(404).send({
+          statusCode: 404,
+          error: 'Not Found',
+          message: 'Attachment not found',
+          reason: 'no_confluence_client',
+        });
       }
-    }
 
-    if (!data) {
-      throw fastify.httpErrors.notFound('Attachment not found');
+      try {
+        data = await fetchAndCacheAttachment(client, userId, pageId, filename);
+      } catch (err) {
+        logger.error({ err, userId, pageId, filename }, 'On-demand attachment fetch failed');
+        // Infrastructure error — don't expose as a "not found"
+        throw fastify.httpErrors.internalServerError('Failed to fetch attachment from Confluence');
+      }
+
+      if (!data) {
+        // fetchAndCacheAttachment returned null — attachment genuinely not in Confluence
+        return reply.status(404).send({
+          statusCode: 404,
+          error: 'Not Found',
+          message: 'Attachment not found',
+          reason: 'not_found_in_confluence',
+        });
+      }
     }
 
     const mimeType = getMimeType(filename);
