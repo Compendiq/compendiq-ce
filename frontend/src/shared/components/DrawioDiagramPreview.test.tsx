@@ -1,6 +1,13 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { DrawioDiagramPreview } from './DrawioDiagramPreview';
+
+// Mock the authenticated src hook — by default, return the src as a blob URL
+// immediately (simulating a successful authenticated fetch).
+const mockUseAuthenticatedSrc = vi.fn();
+vi.mock('../hooks/use-authenticated-src', () => ({
+  useAuthenticatedSrc: (...args: unknown[]) => mockUseAuthenticatedSrc(...args),
+}));
 
 describe('DrawioDiagramPreview', () => {
   const defaultProps = {
@@ -9,6 +16,15 @@ describe('DrawioDiagramPreview', () => {
     alt: 'Draw.io diagram: system-topology',
     editHref: 'https://confluence.example.com/pages/viewpage.action?pageId=12345',
   };
+
+  // Default mock: authenticated fetch succeeds, returns a blob URL
+  beforeEach(() => {
+    mockUseAuthenticatedSrc.mockImplementation((src: string | null) => ({
+      blobSrc: src ? `blob:${src}` : null,
+      loading: false,
+      error: !src,
+    }));
+  });
 
   it('renders the diagram container', () => {
     render(<DrawioDiagramPreview {...defaultProps} />);
@@ -29,16 +45,28 @@ describe('DrawioDiagramPreview', () => {
     expect(screen.queryByTestId('drawio-caption')).not.toBeInTheDocument();
   });
 
-  it('renders the diagram image with lazy loading', () => {
+  it('renders the diagram image with blob URL from authenticated fetch', () => {
     render(<DrawioDiagramPreview {...defaultProps} />);
 
     const img = screen.getByAltText('Draw.io diagram: system-topology');
     expect(img).toBeInTheDocument();
-    expect(img).toHaveAttribute('src', '/api/attachments/page-1/topology.png');
-    expect(img).toHaveAttribute('loading', 'lazy');
+    // The img src should be the blob URL, not the raw API URL
+    expect(img).toHaveAttribute('src', 'blob:/api/attachments/page-1/topology.png');
   });
 
-  it('shows loading skeleton initially', () => {
+  it('passes the raw src to useAuthenticatedSrc', () => {
+    render(<DrawioDiagramPreview {...defaultProps} />);
+
+    expect(mockUseAuthenticatedSrc).toHaveBeenCalledWith('/api/attachments/page-1/topology.png');
+  });
+
+  it('shows loading skeleton while auth fetch is in progress', () => {
+    mockUseAuthenticatedSrc.mockReturnValue({
+      blobSrc: null,
+      loading: true,
+      error: false,
+    });
+
     render(<DrawioDiagramPreview {...defaultProps} />);
 
     expect(screen.getByTestId('drawio-skeleton')).toBeInTheDocument();
@@ -55,7 +83,22 @@ describe('DrawioDiagramPreview', () => {
     });
   });
 
-  it('shows error state when image fails to load', async () => {
+  it('shows error state when authenticated fetch fails', async () => {
+    mockUseAuthenticatedSrc.mockReturnValue({
+      blobSrc: null,
+      loading: false,
+      error: true,
+    });
+
+    render(<DrawioDiagramPreview {...defaultProps} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('drawio-error')).toBeInTheDocument();
+      expect(screen.getByText(/could not be loaded/)).toBeInTheDocument();
+    });
+  });
+
+  it('shows error state when image element fails to load', async () => {
     render(<DrawioDiagramPreview {...defaultProps} />);
 
     const img = screen.getByAltText('Draw.io diagram: system-topology');
@@ -162,12 +205,15 @@ describe('DrawioDiagramPreview', () => {
   });
 
   it('does not open lightbox when clicking image in loading state', () => {
+    mockUseAuthenticatedSrc.mockReturnValue({
+      blobSrc: null,
+      loading: true,
+      error: false,
+    });
+
     render(<DrawioDiagramPreview {...defaultProps} />);
 
-    const img = screen.getByAltText('Draw.io diagram: system-topology');
-    // Don't fire load event, so it stays in loading state
-    fireEvent.click(img);
-
+    // In loading state, no image is rendered so nothing to click
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 

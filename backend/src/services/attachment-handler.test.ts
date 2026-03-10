@@ -264,5 +264,87 @@ describe('attachment-handler', () => {
 
       expect(result).toEqual([]);
     });
+
+    it('extracts diagramName when preceded by other parameters (real Confluence DC format)', async () => {
+      // Real Confluence DC 9.2 draw.io macros often include baseUrl, revision, and other params before diagramName
+      const bodyStorage = `<ac:structured-macro ac:name="drawio" ac:schema-version="1" ac:macro-id="abc123">
+  <ac:parameter ac:name="baseUrl">https://confluence.example.com</ac:parameter>
+  <ac:parameter ac:name="diagramName">network-topology</ac:parameter>
+  <ac:parameter ac:name="revision">3</ac:parameter>
+  <ac:parameter ac:name="simple">0</ac:parameter>
+</ac:structured-macro>`;
+
+      const client = createMockClient();
+      const attachments = makeAttachments([
+        { title: 'network-topology.png', download: '/download/network-topology.png' },
+      ]);
+
+      const result = await syncDrawioAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
+
+      expect(result).toEqual(['network-topology.png']);
+      expect(client.downloadAttachment).toHaveBeenCalledTimes(1);
+    });
+
+    it('matches attachment by name without .png extension as fallback', async () => {
+      const bodyStorage = `<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">arch-diagram</ac:parameter></ac:structured-macro>`;
+
+      const client = createMockClient();
+      // Some draw.io versions store the attachment without .png extension
+      const attachments = makeAttachments([
+        { title: 'arch-diagram', download: '/download/arch-diagram' },
+      ]);
+
+      const result = await syncDrawioAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
+
+      expect(result).toEqual(['arch-diagram.png']);
+      expect(client.downloadAttachment).toHaveBeenCalledWith('/download/arch-diagram');
+    });
+
+    it('handles multiple draw.io diagrams on one page', async () => {
+      const bodyStorage = `
+<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">diagram-a</ac:parameter></ac:structured-macro>
+<p>Some text between diagrams</p>
+<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">diagram-b</ac:parameter></ac:structured-macro>`;
+
+      const client = createMockClient();
+      const attachments = makeAttachments([
+        { title: 'diagram-a.png', download: '/download/diagram-a.png' },
+        { title: 'diagram-b.png', download: '/download/diagram-b.png' },
+      ]);
+
+      const result = await syncDrawioAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
+
+      expect(result).toEqual(['diagram-a.png', 'diagram-b.png']);
+      expect(client.downloadAttachment).toHaveBeenCalledTimes(2);
+    });
+
+    it('skips diagrams whose attachments are not found', async () => {
+      const bodyStorage = `<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">missing-diagram</ac:parameter></ac:structured-macro>`;
+
+      const client = createMockClient();
+      // No matching attachment in the list
+      const attachments = makeAttachments([
+        { title: 'unrelated.png', download: '/download/unrelated.png' },
+      ]);
+
+      const result = await syncDrawioAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
+
+      expect(result).toEqual([]);
+      expect(client.downloadAttachment).not.toHaveBeenCalled();
+    });
+
+    it('handles download errors gracefully', async () => {
+      const bodyStorage = `<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">broken</ac:parameter></ac:structured-macro>`;
+
+      const client = createMockClient();
+      (client.downloadAttachment as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Download failed'));
+      const attachments = makeAttachments([
+        { title: 'broken.png', download: '/download/broken.png' },
+      ]);
+
+      const result = await syncDrawioAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
+
+      expect(result).toEqual([]);
+    });
   });
 });
