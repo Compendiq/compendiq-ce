@@ -15,7 +15,7 @@ class MockIntersectionObserver {
 
 globalThis.IntersectionObserver = MockIntersectionObserver as unknown as typeof IntersectionObserver;
 
-// Mock matchMedia for jsdom (used by useCanHover and media query listeners)
+// Mock matchMedia for jsdom (used by useCanHover, prefers-reduced-motion checks, and media query listeners)
 // Default: hover-capable device, no reduced motion
 if (!window.matchMedia) {
   Object.defineProperty(window, 'matchMedia', {

@@ -8,7 +8,7 @@ import { logAuditEvent } from '../services/audit-service.js';
 import { findDuplicates, scanAllDuplicates } from '../services/duplicate-detector.js';
 import { autoTagPage, applyTags, autoTagAllPages, ALLOWED_TAGS, AllowedTag } from '../services/auto-tagger.js';
 import { getVersionHistory, getVersion, getSemanticDiff, saveVersionSnapshot } from '../services/version-tracker.js';
-import { processDirtyPages, isProcessingUser } from '../services/embedding-service.js';
+import { processDirtyPages, isProcessingUser, computePageRelationships } from '../services/embedding-service.js';
 import { PageListQuerySchema, PageTreeQuerySchema, CreatePageSchema, UpdatePageSchema } from '@kb-creator/contracts';
 import { z } from 'zod';
 import { logger } from '../utils/logger.js';
@@ -941,6 +941,97 @@ export async function pagesRoutes(fastify: FastifyInstance) {
 
     const diff = await getSemanticDiff(userId, id, v1, v2, model);
     return { diff, v1, v2, pageId: id };
+  });
+
+  // ======== Knowledge Graph (Issue #164) ========
+
+  // GET /api/pages/graph - nodes (pages) + edges (relationships) for knowledge graph
+  fastify.get('/pages/graph', async (request) => {
+    const userId = request.userId;
+
+    const cacheKey = 'graph';
+    const cached = await cache.get(userId, 'pages', cacheKey);
+    if (cached) return cached;
+
+    // Fetch all pages as nodes
+    const nodesResult = await query<{
+      confluence_id: string;
+      space_key: string;
+      title: string;
+      labels: string[];
+      embedding_status: string;
+      last_modified_at: Date | null;
+    }>(
+      `SELECT confluence_id, space_key, title, labels, embedding_status, last_modified_at
+       FROM cached_pages
+       WHERE user_id = $1
+       ORDER BY title ASC`,
+      [userId],
+    );
+
+    // Fetch embedding counts per page for node sizing
+    const embeddingCountResult = await query<{
+      confluence_id: string;
+      count: string;
+    }>(
+      `SELECT confluence_id, COUNT(*) as count
+       FROM page_embeddings
+       WHERE user_id = $1
+       GROUP BY confluence_id`,
+      [userId],
+    );
+
+    const embeddingCountMap = new Map<string, number>();
+    for (const row of embeddingCountResult.rows) {
+      embeddingCountMap.set(row.confluence_id, parseInt(row.count, 10));
+    }
+
+    // Fetch pre-computed relationships as edges
+    const edgesResult = await query<{
+      page_id_1: string;
+      page_id_2: string;
+      relationship_type: string;
+      score: number;
+    }>(
+      `SELECT page_id_1, page_id_2, relationship_type, score
+       FROM page_relationships
+       WHERE user_id = $1
+       ORDER BY score DESC`,
+      [userId],
+    );
+
+    const nodes = nodesResult.rows.map((row) => ({
+      id: row.confluence_id,
+      spaceKey: row.space_key,
+      title: row.title,
+      labels: row.labels ?? [],
+      embeddingStatus: row.embedding_status,
+      embeddingCount: embeddingCountMap.get(row.confluence_id) ?? 0,
+      lastModifiedAt: row.last_modified_at,
+    }));
+
+    const edges = edgesResult.rows.map((row) => ({
+      source: row.page_id_1,
+      target: row.page_id_2,
+      type: row.relationship_type,
+      score: row.score,
+    }));
+
+    const response = { nodes, edges };
+    await cache.set(userId, 'pages', cacheKey, response);
+    return response;
+  });
+
+  // POST /api/pages/graph/refresh - recompute page relationships (admin)
+  fastify.post('/pages/graph/refresh', {
+    preHandler: fastify.requireAdmin,
+  }, async (request) => {
+    const userId = request.userId;
+
+    const edgeCount = await computePageRelationships(userId);
+    await cache.invalidate(userId, 'pages');
+
+    return { message: 'Graph relationships refreshed', edges: edgeCount };
   });
 
   // ======== Pinned Articles (Issue #144) ========

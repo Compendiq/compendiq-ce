@@ -2,6 +2,7 @@ import { query } from '../db/postgres.js';
 import { providerGenerateEmbedding } from './llm-provider.js';
 import { htmlToText } from './content-converter.js';
 import { logger } from '../utils/logger.js';
+import { invalidateGraphCache } from './redis-cache.js';
 import pgvector from 'pgvector';
 
 const CHUNK_SIZE = 500;     // ~500 tokens target
@@ -226,7 +227,105 @@ export async function processDirtyPages(userId: string): Promise<{ processed: nu
     processingUsers.delete(userId);
   }
 
+  // Post-embed hook: recompute nearest-neighbor relationships
+  if (processed > 0) {
+    try {
+      await computePageRelationships(userId);
+      // Invalidate cached graph data so the next request reflects new relationships
+      await invalidateGraphCache(userId);
+    } catch (err) {
+      logger.error({ err, userId }, 'Failed to compute page relationships after embedding');
+    }
+  }
+
   return { processed, errors };
+}
+
+/**
+ * Compute nearest-neighbor page relationships using pgvector cosine similarity.
+ * Uses average embedding per page, then finds top-K neighbors for each page.
+ * Also computes label-overlap edges.
+ */
+export async function computePageRelationships(userId: string): Promise<number> {
+  const TOP_K = 5;
+  const SIMILARITY_THRESHOLD = 0.7; // cosine similarity (1 - cosine_distance)
+
+  // Clear existing relationships for this user
+  await query('DELETE FROM page_relationships WHERE user_id = $1', [userId]);
+
+  // Compute embedding similarity edges using pgvector <=> operator.
+  // We compute average embedding per page, then find top-K nearest neighbors.
+  // This is a materialized computation, not real-time.
+  const similarityResult = await query<{ page_id_1: string; page_id_2: string; score: number }>(
+    `WITH page_avg AS (
+       SELECT confluence_id, AVG(embedding) AS avg_embedding
+       FROM page_embeddings
+       WHERE user_id = $1
+       GROUP BY confluence_id
+     ),
+     neighbors AS (
+       SELECT
+         a.confluence_id AS page_id_1,
+         b.confluence_id AS page_id_2,
+         (1 - (a.avg_embedding <=> b.avg_embedding)) AS score
+       FROM page_avg a
+       CROSS JOIN LATERAL (
+         SELECT confluence_id, avg_embedding
+         FROM page_avg b
+         WHERE b.confluence_id != a.confluence_id
+         ORDER BY a.avg_embedding <=> b.avg_embedding
+         LIMIT $2
+       ) b
+       WHERE (1 - (a.avg_embedding <=> b.avg_embedding)) >= $3
+     )
+     INSERT INTO page_relationships (user_id, page_id_1, page_id_2, relationship_type, score)
+     SELECT $1, page_id_1, page_id_2, 'embedding_similarity', score
+     FROM neighbors
+     ON CONFLICT (user_id, page_id_1, page_id_2, relationship_type) DO UPDATE
+       SET score = EXCLUDED.score, created_at = NOW()
+     RETURNING page_id_1, page_id_2, score`,
+    [userId, TOP_K, SIMILARITY_THRESHOLD],
+  );
+
+  // Compute label-overlap edges: pages sharing at least one label
+  const labelResult = await query<{ page_id_1: string; page_id_2: string; score: number }>(
+    `WITH label_overlaps AS (
+       SELECT
+         a.confluence_id AS page_id_1,
+         b.confluence_id AS page_id_2,
+         CASE
+           WHEN array_length(a.labels, 1) IS NULL OR array_length(b.labels, 1) IS NULL THEN 0
+           ELSE (
+             SELECT COUNT(*)::real FROM (
+               SELECT unnest(a.labels) INTERSECT SELECT unnest(b.labels)
+             ) x
+           ) / GREATEST(
+             array_length(a.labels, 1)::real,
+             array_length(b.labels, 1)::real
+           )
+         END AS score
+       FROM cached_pages a
+       JOIN cached_pages b ON a.user_id = b.user_id
+         AND a.confluence_id < b.confluence_id
+       WHERE a.user_id = $1
+         AND a.labels IS NOT NULL AND array_length(a.labels, 1) > 0
+         AND b.labels IS NOT NULL AND array_length(b.labels, 1) > 0
+         AND a.labels && b.labels
+     )
+     INSERT INTO page_relationships (user_id, page_id_1, page_id_2, relationship_type, score)
+     SELECT $1, page_id_1, page_id_2, 'label_overlap', score
+     FROM label_overlaps
+     WHERE score > 0
+     ON CONFLICT (user_id, page_id_1, page_id_2, relationship_type) DO UPDATE
+       SET score = EXCLUDED.score, created_at = NOW()
+     RETURNING page_id_1, page_id_2, score`,
+    [userId],
+  );
+
+  const totalEdges = similarityResult.rows.length + labelResult.rows.length;
+  logger.info({ userId, embeddingSimilarity: similarityResult.rows.length, labelOverlap: labelResult.rows.length },
+    'Page relationships computed');
+  return totalEdges;
 }
 
 /**

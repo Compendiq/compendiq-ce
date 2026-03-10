@@ -21,7 +21,7 @@ vi.mock('../utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
-import { getEmbeddingStatus, chunkText, processDirtyPages, isProcessingUser } from './embedding-service.js';
+import { getEmbeddingStatus, chunkText, processDirtyPages, isProcessingUser, computePageRelationships } from './embedding-service.js';
 
 describe('embedding-service', () => {
   beforeEach(() => {
@@ -127,6 +127,75 @@ describe('embedding-service', () => {
     });
   });
 
+  describe('computePageRelationships', () => {
+    it('should delete existing relationships then compute new ones', async () => {
+      // DELETE existing relationships
+      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      // INSERT embedding_similarity edges (CTE query)
+      mocks.query.mockResolvedValueOnce({
+        rows: [
+          { page_id_1: 'page-1', page_id_2: 'page-2', score: 0.85 },
+        ],
+        rowCount: 1,
+      });
+      // INSERT label_overlap edges (CTE query)
+      mocks.query.mockResolvedValueOnce({
+        rows: [
+          { page_id_1: 'page-1', page_id_2: 'page-3', score: 0.5 },
+        ],
+        rowCount: 1,
+      });
+
+      const totalEdges = await computePageRelationships('user-1');
+
+      expect(totalEdges).toBe(2);
+      expect(mocks.query).toHaveBeenCalledTimes(3);
+
+      // First call should be DELETE
+      const deleteCall = mocks.query.mock.calls[0][0] as string;
+      expect(deleteCall).toContain('DELETE FROM page_relationships');
+      expect(mocks.query.mock.calls[0][1]).toEqual(['user-1']);
+    });
+
+    it('should pass userId to all queries', async () => {
+      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // DELETE
+      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // embedding similarity
+      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // label overlap
+
+      await computePageRelationships('test-user-99');
+
+      // First param of each call should include the userId
+      expect(mocks.query.mock.calls[0][1]).toEqual(['test-user-99']);
+      expect(mocks.query.mock.calls[1][1]).toContain('test-user-99');
+      expect(mocks.query.mock.calls[2][1]).toContain('test-user-99');
+    });
+
+    it('should return 0 when no relationships found', async () => {
+      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // DELETE
+      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // embedding similarity
+      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // label overlap
+
+      const totalEdges = await computePageRelationships('user-1');
+
+      expect(totalEdges).toBe(0);
+    });
+
+    it('should use parameterized SQL (no string concatenation)', async () => {
+      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+      await computePageRelationships('user-1');
+
+      // All queries should use parameterized placeholders ($1, $2, etc.)
+      for (const call of mocks.query.mock.calls) {
+        const sql = call[0] as string;
+        expect(sql).toContain('$1');
+        expect(call[1]).toBeDefined();
+      }
+    });
+  });
+
   describe('processDirtyPages', () => {
     it('should return alreadyProcessing when called concurrently for the same user', async () => {
       // First call: long-running processing (deferred)
@@ -159,6 +228,9 @@ describe('embedding-service', () => {
         }],
       });
 
+      // Mark page as embedding
+      mocks.query.mockResolvedValueOnce({ rows: [] });
+
       // embedPage calls: delete old embeddings
       mocks.query.mockResolvedValueOnce({ rows: [] });
 
@@ -170,6 +242,14 @@ describe('embedding-service', () => {
 
       // embedPage calls: mark page as not dirty
       mocks.query.mockResolvedValueOnce({ rows: [] });
+
+      // computePageRelationships calls (post-embed hook):
+      // DELETE existing relationships
+      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      // INSERT embedding_similarity edges
+      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      // INSERT label_overlap edges
+      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
 
       const result = await processDirtyPages('process-user');
       expect(result.processed).toBe(1);

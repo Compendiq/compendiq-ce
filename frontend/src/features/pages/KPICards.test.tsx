@@ -196,6 +196,37 @@ describe('KPICards', () => {
     const card = screen.getByTestId('kpi-last-sync');
     expect(card).toHaveTextContent('5m ago');
   });
+
+  it('renders the embedding coverage ring SVG', () => {
+    render(
+      <KPICards
+        embeddingStatus={mockEmbeddingStatus}
+        spacesCount={3}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    const ring = screen.getByTestId('embedding-coverage-ring');
+    expect(ring).toBeInTheDocument();
+    // Should contain an SVG with aria label
+    const svg = ring.querySelector('svg');
+    expect(svg).toBeInTheDocument();
+    expect(svg).toHaveAttribute('aria-label', 'Embedding coverage: 75%');
+  });
+
+  it('renders the coverage ring with correct aria-label at 100%', () => {
+    render(
+      <KPICards
+        embeddingStatus={{ ...mockEmbeddingStatus, dirtyPages: 0 }}
+        spacesCount={3}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    const ring = screen.getByTestId('embedding-coverage-ring');
+    const svg = ring.querySelector('svg');
+    expect(svg).toHaveAttribute('aria-label', 'Embedding coverage: 100%');
+  });
 });
 
 describe('formatRelativeTime', () => {
