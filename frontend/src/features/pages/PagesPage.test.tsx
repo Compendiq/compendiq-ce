@@ -88,6 +88,16 @@ function mockFetchWithEmbeddingStatus(embeddingStatus: typeof mockEmbeddingStatu
         headers: { 'Content-Type': 'application/json' },
       });
     }
+    if (url.includes('/pages/pinned')) {
+      return new Response(JSON.stringify({ items: [], total: 0 }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.includes('/settings')) {
+      return new Response(JSON.stringify({}), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
     // Default: pages list
     return new Response(JSON.stringify(mockPagesResponse), {
       headers: { 'Content-Type': 'application/json' },

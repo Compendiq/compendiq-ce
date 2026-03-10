@@ -4,10 +4,11 @@ import { useQueryClient } from '@tanstack/react-query';
 import { m, AnimatePresence } from 'framer-motion';
 import {
   ArrowLeft, Edit3, Save, X, Trash2, Wand2, FileText,
-  ExternalLink, Clock, User,
+  ExternalLink, Clock, User, Pin,
 } from 'lucide-react';
 import type { SettingsResponse } from '@kb-creator/contracts';
-import { usePage, useUpdatePage, useDeletePage, useTriggerEmbedding } from '../../shared/hooks/use-pages';
+import { usePage, useUpdatePage, useDeletePage, usePinnedPages, usePinPage, useUnpinPage, useTriggerEmbedding } from '../../shared/hooks/use-pages';
+import { cn } from '../../shared/lib/cn';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { Editor, getDraft, clearDraft } from '../../shared/components/Editor';
 import { ArticleViewer } from '../../shared/components/ArticleViewer';
@@ -67,6 +68,10 @@ export function PageViewPage() {
   const { data: page, isLoading } = usePage(id);
   const updateMutation = useUpdatePage();
   const deleteMutation = useDeletePage();
+  const { data: pinnedData } = usePinnedPages();
+  const pinMutation = usePinPage();
+  const unpinMutation = useUnpinPage();
+  const isPinned = pinnedData?.items.some((p) => p.id === id) ?? false;
   const triggerEmbeddingMutation = useTriggerEmbedding();
   const isLight = useIsLightTheme();
 
@@ -230,6 +235,31 @@ export function PageViewPage() {
                 pageId={id!}
                 hasChildren={page.hasChildren ?? false}
               />
+              <button
+                onClick={() => {
+                  if (!id || !page) return;
+                  if (isPinned) {
+                    unpinMutation.mutate(id, {
+                      onSuccess: () => toast.success(`Unpinned "${page.title}"`),
+                      onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to unpin'),
+                    });
+                  } else {
+                    pinMutation.mutate(id, {
+                      onSuccess: () => toast.success(`Pinned "${page.title}"`),
+                      onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to pin'),
+                    });
+                  }
+                }}
+                className={cn(
+                  'glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm',
+                  isPinned ? 'text-primary hover:bg-primary/10' : 'hover:bg-foreground/5',
+                )}
+                data-testid="pin-toggle"
+                aria-label={isPinned ? 'Unpin article' : 'Pin article'}
+              >
+                <Pin size={14} className={isPinned ? 'fill-current' : ''} />
+                {isPinned ? 'Unpin' : 'Pin'}
+              </button>
               <button
                 onClick={() => navigate(`/ai?pageId=${id}`)}
                 className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
