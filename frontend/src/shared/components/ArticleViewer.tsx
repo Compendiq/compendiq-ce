@@ -219,7 +219,7 @@ export function ArticleViewer({
     let cancelled = false;
 
     const raf = requestAnimationFrame(() => {
-      const images = container.querySelectorAll<HTMLImageElement>('img[src^="/api/"]');
+      const images = container.querySelectorAll<HTMLImageElement>('img[src^="/api/attachments/"]');
       if (images.length === 0) return;
 
       images.forEach(async (img) => {

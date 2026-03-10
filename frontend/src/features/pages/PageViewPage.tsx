@@ -4,7 +4,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { m, AnimatePresence } from 'framer-motion';
 import {
   ArrowLeft, Edit3, Save, X, Trash2, Wand2, FileText,
-  ExternalLink, Clock, User, Pin,
+  ExternalLink, Clock, User, Pin, List,
 } from 'lucide-react';
 import type { SettingsResponse } from '@kb-creator/contracts';
 import { usePage, useUpdatePage, useDeletePage, usePinnedPages, usePinPage, useUnpinPage, useEmbeddingProcess } from '../../shared/hooks/use-pages';
@@ -97,6 +97,7 @@ export function PageViewPage() {
   const [editHtml, setEditHtml] = useState('');
   const [lightboxSrc, setLightboxSrc] = useState<{ src: string; alt: string } | null>(null);
   const [tocHeadings, setTocHeadings] = useState<TocHeading[]>([]);
+  const [tocVisible, setTocVisible] = useState(true);
   const [diagramOpen, setDiagramOpen] = useState(false);
   const [qualityOpen, setQualityOpen] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -123,6 +124,13 @@ export function PageViewPage() {
   }, [page, id]);
 
   const closeLightbox = useCallback(() => setLightboxSrc(null), []);
+
+  // Reset scroll to top when navigating between articles (belt-and-suspenders
+  // alongside the AppLayout reset, which may race with TipTap content updates)
+  useEffect(() => {
+    const el = document.querySelector('[data-scroll-container]') as HTMLElement | null;
+    if (el) el.scrollTop = 0;
+  }, [id]);
 
   const handleRequestSync = useCallback(() => {
     syncMutation.mutate(undefined, {
