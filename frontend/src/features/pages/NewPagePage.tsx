@@ -4,6 +4,7 @@ import { ArrowLeft, Save } from 'lucide-react';
 import { useCreatePage } from '../../shared/hooks/use-pages';
 import { useSpaces } from '../../shared/hooks/use-spaces';
 import { Editor, clearDraft } from '../../shared/components/Editor';
+import { FeatureErrorBoundary } from '../../shared/components/FeatureErrorBoundary';
 import { toast } from 'sonner';
 
 const NEW_PAGE_DRAFT_KEY = 'new-page';
@@ -81,7 +82,9 @@ export function NewPagePage() {
         </div>
       </div>
 
-      <Editor content="" onChange={setBodyHtml} placeholder="Start writing your article..." draftKey={NEW_PAGE_DRAFT_KEY} />
+      <FeatureErrorBoundary featureName="Editor">
+        <Editor content="" onChange={setBodyHtml} placeholder="Start writing your article..." draftKey={NEW_PAGE_DRAFT_KEY} />
+      </FeatureErrorBoundary>
     </div>
   );
 }

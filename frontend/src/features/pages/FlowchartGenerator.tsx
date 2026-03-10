@@ -3,6 +3,7 @@ import { GitBranch, Loader2, X, FileInput } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { streamSSE } from '../../shared/lib/sse';
 import { MermaidDiagram } from '../../shared/components/MermaidDiagram';
+import { FeatureErrorBoundary } from '../../shared/components/FeatureErrorBoundary';
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
 import { toast } from 'sonner';
@@ -200,7 +201,9 @@ export function FlowchartGenerator({
       {/* Rendered diagram */}
       {diagramCode && !isStreaming && (
         <>
-          <MermaidDiagram code={diagramCode} />
+          <FeatureErrorBoundary featureName="Mermaid Diagram">
+            <MermaidDiagram code={diagramCode} />
+          </FeatureErrorBoundary>
           <button
             onClick={handleInsertInArticle}
             disabled={isInserting}
