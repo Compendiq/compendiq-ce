@@ -108,7 +108,7 @@ function ConfluenceTab({ settings, onSave }: { settings: SettingsResponse; onSav
     try {
       const result = await apiFetch<{ success: boolean; message: string }>(
         '/settings/test-confluence',
-        { method: 'POST', body: JSON.stringify({ url, pat: pat || 'existing' }) },
+        { method: 'POST', body: JSON.stringify({ url, pat: pat || undefined }) },
       );
       setTestResult(result);
     } catch (err) {

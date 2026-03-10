@@ -37,7 +37,8 @@ export const SettingsResponseSchema = z.object({
 
 export const TestConfluenceSchema = z.object({
   url: z.string().url(),
-  pat: z.string().min(1),
+  // Optional: if omitted the backend uses the stored encrypted PAT
+  pat: z.string().min(1).optional(),
 });
 
 export type UserSettings = z.infer<typeof UserSettingsSchema>;

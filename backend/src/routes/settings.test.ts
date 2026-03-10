@@ -28,6 +28,7 @@ vi.mock('../db/postgres.js', () => ({
 
 vi.mock('../utils/crypto.js', () => ({
   encryptPat: vi.fn().mockReturnValue('encrypted-pat'),
+  decryptPat: vi.fn().mockReturnValue('decrypted-stored-pat'),
 }));
 
 vi.mock('../services/audit-service.js', () => ({
@@ -182,6 +183,50 @@ describe('Settings routes – test-confluence', () => {
     });
 
     expect(response.statusCode).toBe(400);
+  });
+
+  it('should use stored PAT when pat is omitted', async () => {
+    // DB returns a stored encrypted PAT
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ confluence_pat: 'v0:aabbcc:ddeeff:112233' }],
+    });
+    mockUndiciRequest.mockResolvedValue({
+      statusCode: 200,
+      body: { dump: vi.fn().mockResolvedValue(undefined) },
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/settings/test-confluence',
+      payload: { url: 'https://confluence.example.com' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.success).toBe(true);
+    // Should have used the decrypted stored PAT
+    expect(mockUndiciRequest).toHaveBeenCalledWith(
+      'https://confluence.example.com/rest/api/space?limit=1',
+      expect.objectContaining({
+        headers: { Authorization: 'Bearer decrypted-stored-pat' },
+      }),
+    );
+  });
+
+  it('should return error when pat is omitted and none is stored', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ confluence_pat: null }] });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/settings/test-confluence',
+      payload: { url: 'https://confluence.example.com' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.success).toBe(false);
+    expect(body.message).toContain('No PAT saved');
+    expect(mockUndiciRequest).not.toHaveBeenCalled();
   });
 });
 

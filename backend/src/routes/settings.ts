@@ -2,7 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { request as undiciRequest } from 'undici';
 import { UpdateSettingsSchema, TestConfluenceSchema } from '@kb-creator/contracts';
 import { query } from '../db/postgres.js';
-import { encryptPat } from '../utils/crypto.js';
+import { encryptPat, decryptPat } from '../utils/crypto.js';
 import { validateUrl } from '../utils/ssrf-guard.js';
 import { logAuditEvent } from '../services/audit-service.js';
 import { setActiveProvider } from '../services/ollama-service.js';
@@ -183,7 +183,27 @@ export async function settingsRoutes(fastify: FastifyInstance) {
   });
 
   fastify.post('/settings/test-confluence', async (request) => {
-    const { url, pat } = TestConfluenceSchema.parse(request.body);
+    const { url, pat: patFromBody } = TestConfluenceSchema.parse(request.body);
+
+    // Resolve PAT: use body value if provided, otherwise fall back to stored encrypted PAT
+    let resolvedPat: string;
+    if (patFromBody) {
+      resolvedPat = patFromBody;
+    } else {
+      const stored = await query<{ confluence_pat: string | null }>(
+        'SELECT confluence_pat FROM user_settings WHERE user_id = $1',
+        [request.userId],
+      );
+      const encryptedPat = stored.rows[0]?.confluence_pat ?? null;
+      if (!encryptedPat) {
+        return { success: false, message: 'No PAT saved — save settings first' };
+      }
+      try {
+        resolvedPat = decryptPat(encryptedPat);
+      } catch {
+        return { success: false, message: 'Stored PAT could not be decrypted' };
+      }
+    }
 
     // SSRF protection: use centralized validator
     try {
@@ -195,7 +215,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     try {
       const opts: Record<string, unknown> = {
         method: 'GET',
-        headers: { Authorization: `Bearer ${pat}` },
+        headers: { Authorization: `Bearer ${resolvedPat}` },
         signal: AbortSignal.timeout(10_000),
       };
       if (confluenceDispatcher) {
