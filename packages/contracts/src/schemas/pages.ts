@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+export const PageEmbeddingStatusEnum = z.enum(['not_embedded', 'embedding', 'embedded', 'failed']);
+export type PageEmbeddingStatus = z.infer<typeof PageEmbeddingStatusEnum>;
+
 export const PageSummarySchema = z.object({
   id: z.string(),
   spaceKey: z.string(),
@@ -11,6 +14,8 @@ export const PageSummarySchema = z.object({
   parentId: z.string().nullable(),
   labels: z.array(z.string()),
   embeddingDirty: z.boolean(),
+  embeddingStatus: PageEmbeddingStatusEnum.default('not_embedded'),
+  embeddedAt: z.coerce.date().nullable().optional(),
 });
 
 export const PageDetailSchema = PageSummarySchema.extend({

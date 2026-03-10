@@ -7,12 +7,13 @@ import {
   ExternalLink, Clock, User, Pin,
 } from 'lucide-react';
 import type { SettingsResponse } from '@kb-creator/contracts';
-import { usePage, useUpdatePage, useDeletePage, usePinnedPages, usePinPage, useUnpinPage } from '../../shared/hooks/use-pages';
+import { usePage, useUpdatePage, useDeletePage, usePinnedPages, usePinPage, useUnpinPage, useTriggerEmbedding } from '../../shared/hooks/use-pages';
 import { cn } from '../../shared/lib/cn';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { Editor, getDraft, clearDraft } from '../../shared/components/Editor';
 import { ArticleViewer } from '../../shared/components/ArticleViewer';
 import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
+import { EmbeddingStatusBadge } from '../../shared/components/EmbeddingStatusBadge';
 import { TableOfContents } from '../../shared/components/TableOfContents';
 import type { TocHeading } from '../../shared/components/TableOfContents';
 import { DuplicateDetector } from './DuplicateDetector';
@@ -21,6 +22,7 @@ import { TagEditor } from './TagEditor';
 import { VersionHistory } from './VersionHistory';
 import { FlowchartGenerator } from './FlowchartGenerator';
 import { QualityAnalysisPanel } from './QualityAnalysisPanel';
+import { ForceEmbedTree } from './ForceEmbedTree';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { toast } from 'sonner';
 
@@ -70,6 +72,7 @@ export function PageViewPage() {
   const pinMutation = usePinPage();
   const unpinMutation = useUnpinPage();
   const isPinned = pinnedData?.items.some((p) => p.id === id) ?? false;
+  const triggerEmbeddingMutation = useTriggerEmbedding();
   const isLight = useIsLightTheme();
 
   const queryClient = useQueryClient();
@@ -228,6 +231,10 @@ export function PageViewPage() {
                 currentLabels={page.labels}
                 model="qwen3:latest"
               />
+              <ForceEmbedTree
+                pageId={id!}
+                hasChildren={page.hasChildren ?? false}
+              />
               <button
                 onClick={() => {
                   if (!id || !page) return;
@@ -282,6 +289,15 @@ export function PageViewPage() {
         {page.lastModifiedAt && (
           <FreshnessBadge lastModified={page.lastModifiedAt} />
         )}
+        <EmbeddingStatusBadge
+          embeddingStatus={page.embeddingStatus}
+          embeddingDirty={page.embeddingDirty}
+          embeddedAt={page.embeddedAt}
+          onRetry={page.embeddingStatus === 'failed' ? () => {
+            triggerEmbeddingMutation.mutate();
+            toast.info('Re-embedding queued');
+          } : undefined}
+        />
         {page.author && (
           <span className="flex items-center gap-1"><User size={12} /> {page.author}</span>
         )}

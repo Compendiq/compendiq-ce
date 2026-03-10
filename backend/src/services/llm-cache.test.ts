@@ -64,6 +64,36 @@ describe('buildRagCacheKey', () => {
     const key2 = buildRagCacheKey('model', 'question', ['doc1', 'doc3']);
     expect(key1).not.toBe(key2);
   });
+
+  it('should differ when includeSubPages is toggled', () => {
+    const keyWithout = buildRagCacheKey('model', 'question', ['doc1']);
+    const keyWith = buildRagCacheKey('model', 'question', ['doc1'], {
+      includeSubPages: true,
+      pageId: 'page-1',
+    });
+    expect(keyWithout).not.toBe(keyWith);
+  });
+
+  it('should differ when pageId changes with includeSubPages', () => {
+    const key1 = buildRagCacheKey('model', 'question', ['doc1'], {
+      includeSubPages: true,
+      pageId: 'page-1',
+    });
+    const key2 = buildRagCacheKey('model', 'question', ['doc1'], {
+      includeSubPages: true,
+      pageId: 'page-2',
+    });
+    expect(key1).not.toBe(key2);
+  });
+
+  it('should match key without options when includeSubPages is false', () => {
+    const keyNoOpts = buildRagCacheKey('model', 'question', ['doc1']);
+    const keyFalse = buildRagCacheKey('model', 'question', ['doc1'], {
+      includeSubPages: false,
+      pageId: 'page-1',
+    });
+    expect(keyNoOpts).toBe(keyFalse);
+  });
 });
 
 describe('LlmCache', () => {

@@ -32,6 +32,8 @@ const mockPagesResponse = {
       lastModifiedAt: '2025-01-15T00:00:00Z',
       lastSynced: '2025-01-16T00:00:00Z',
       embeddingDirty: false,
+      embeddingStatus: 'embedded',
+      embeddedAt: '2025-01-16T00:00:00Z',
     },
   ],
   total: 1,

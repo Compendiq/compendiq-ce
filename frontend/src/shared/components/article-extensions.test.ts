@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { Details, DetailsSummary, Panel, DrawioDiagram, ConfluenceToc, UnknownMacro } from './article-extensions';
+import { Details, DetailsSummary, Panel, DrawioDiagram, ConfluenceToc, ConfluenceStatus, ConfluenceChildren, UnknownMacro } from './article-extensions';
 
 // Helper to extract parseHTML rules from a TipTap extension config
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -72,6 +72,35 @@ describe('article-extensions', () => {
       const parseRules = getParseRules(ConfluenceToc);
       expect(parseRules).toBeDefined();
       expect(parseRules).toContainEqual(expect.objectContaining({ tag: 'div.confluence-toc' }));
+    });
+  });
+
+  describe('ConfluenceStatus', () => {
+    it('has correct name and is inline atom', () => {
+      expect(ConfluenceStatus.name).toBe('confluenceStatus');
+      expect(ConfluenceStatus.config.group).toBe('inline');
+      expect(ConfluenceStatus.config.inline).toBe(true);
+      expect(ConfluenceStatus.config.atom).toBe(true);
+    });
+
+    it('parses span.confluence-status', () => {
+      const parseRules = getParseRules(ConfluenceStatus);
+      expect(parseRules).toBeDefined();
+      expect(parseRules).toContainEqual(expect.objectContaining({ tag: 'span.confluence-status' }));
+    });
+  });
+
+  describe('ConfluenceChildren', () => {
+    it('has correct name and is block atom', () => {
+      expect(ConfluenceChildren.name).toBe('confluenceChildren');
+      expect(ConfluenceChildren.config.group).toBe('block');
+      expect(ConfluenceChildren.config.atom).toBe(true);
+    });
+
+    it('parses div.confluence-children-macro', () => {
+      const parseRules = getParseRules(ConfluenceChildren);
+      expect(parseRules).toBeDefined();
+      expect(parseRules).toContainEqual(expect.objectContaining({ tag: 'div.confluence-children-macro' }));
     });
   });
 

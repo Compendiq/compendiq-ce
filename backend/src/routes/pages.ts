@@ -130,7 +130,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     const sql = `
       SELECT cp.id, cp.confluence_id, cp.space_key, cp.title, cp.version,
              cp.parent_id, cp.labels, cp.author, cp.last_modified_at, cp.last_synced,
-             cp.embedding_dirty
+             cp.embedding_dirty, cp.embedding_status, cp.embedded_at
       FROM cached_pages cp
       ${whereClause}
       ORDER BY ${orderBy}
@@ -150,6 +150,8 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       last_modified_at: Date | null;
       last_synced: Date;
       embedding_dirty: boolean;
+      embedding_status: string;
+      embedded_at: Date | null;
     }>(sql, values);
 
     const response = {
@@ -164,6 +166,8 @@ export async function pagesRoutes(fastify: FastifyInstance) {
         lastModifiedAt: row.last_modified_at,
         lastSynced: row.last_synced,
         embeddingDirty: row.embedding_dirty,
+        embeddingStatus: row.embedding_status,
+        embeddedAt: row.embedded_at,
       })),
       total,
       page,
@@ -204,8 +208,11 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       labels: string[];
       last_modified_at: Date | null;
       embedding_dirty: boolean;
+      embedding_status: string;
+      embedded_at: Date | null;
     }>(
-      `SELECT confluence_id, space_key, title, parent_id, labels, last_modified_at, embedding_dirty
+      `SELECT confluence_id, space_key, title, parent_id, labels, last_modified_at,
+              embedding_dirty, embedding_status, embedded_at
        FROM cached_pages ${whereClause}
        ORDER BY title ASC`,
       values,
@@ -220,6 +227,8 @@ export async function pagesRoutes(fastify: FastifyInstance) {
         labels: row.labels,
         lastModifiedAt: row.last_modified_at,
         embeddingDirty: row.embedding_dirty,
+        embeddingStatus: row.embedding_status,
+        embeddedAt: row.embedded_at,
       })),
       total: result.rows.length,
     };
@@ -267,9 +276,13 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       author: string | null;
       last_modified_at: Date | null;
       last_synced: Date;
+      embedding_dirty: boolean;
+      embedding_status: string;
+      embedded_at: Date | null;
     }>(
       `SELECT confluence_id, space_key, title, body_storage, body_html, body_text,
-              version, parent_id, labels, author, last_modified_at, last_synced
+              version, parent_id, labels, author, last_modified_at, last_synced,
+              embedding_dirty, embedding_status, embedded_at
        FROM cached_pages WHERE user_id = $1 AND confluence_id = $2`,
       [userId, id],
     );
@@ -279,6 +292,14 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     }
 
     const row = result.rows[0];
+
+    // Check if this page has children (for "embed tree" feature)
+    const childrenResult = await query<{ count: string }>(
+      'SELECT COUNT(*) as count FROM cached_pages WHERE user_id = $1 AND parent_id = $2',
+      [userId, id],
+    );
+    const hasChildren = parseInt(childrenResult.rows[0].count, 10) > 0;
+
     return {
       id: row.confluence_id,
       spaceKey: row.space_key,
@@ -291,7 +312,24 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       author: row.author,
       lastModifiedAt: row.last_modified_at,
       lastSynced: row.last_synced,
+      hasChildren,
+      embeddingDirty: row.embedding_dirty,
+      embeddingStatus: row.embedding_status,
+      embeddedAt: row.embedded_at,
     };
+  });
+
+  // GET /api/pages/:id/has-children - check if a page has sub-pages
+  fastify.get('/pages/:id/has-children', async (request) => {
+    const { id } = IdParamSchema.parse(request.params);
+    const userId = request.userId;
+
+    const result = await query<{ count: string }>(
+      'SELECT COUNT(*) as count FROM cached_pages WHERE user_id = $1 AND parent_id = $2',
+      [userId, id],
+    );
+
+    return { hasChildren: parseInt(result.rows[0].count, 10) > 0 };
   });
 
   // POST /api/pages - create page in Confluence + local cache
@@ -318,8 +356,8 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     await query(
       `INSERT INTO cached_pages
          (user_id, confluence_id, space_key, title, body_storage, body_html, body_text,
-          version, parent_id, embedding_dirty)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE)`,
+          version, parent_id, embedding_dirty, embedding_status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, 'not_embedded')`,
       [userId, page.id, body.spaceKey, body.title, page.body?.storage?.value ?? storageBody,
        bodyHtml, bodyText, page.version.number, body.parentId ?? null],
     );
@@ -366,7 +404,8 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     await query(
       `UPDATE cached_pages SET
          title = $3, body_storage = $4, body_html = $5, body_text = $6,
-         version = $7, last_synced = NOW(), embedding_dirty = TRUE
+         version = $7, last_synced = NOW(), embedding_dirty = TRUE,
+         embedding_status = 'not_embedded', embedded_at = NULL
        WHERE user_id = $1 AND confluence_id = $2`,
       [userId, id, body.title, page.body?.storage?.value ?? storageBody,
        bodyHtml, bodyText, page.version.number],
@@ -491,7 +530,8 @@ export async function pagesRoutes(fastify: FastifyInstance) {
         await query(
           `UPDATE cached_pages SET
              title = $3, body_storage = $4, body_html = $5, body_text = $6,
-             version = $7, last_synced = NOW(), embedding_dirty = TRUE
+             version = $7, last_synced = NOW(), embedding_dirty = TRUE,
+             embedding_status = 'not_embedded', embedded_at = NULL
            WHERE user_id = $1 AND confluence_id = $2`,
           [userId, id, page.title, page.body?.storage?.value ?? '', bodyHtml, bodyText, page.version.number],
         );

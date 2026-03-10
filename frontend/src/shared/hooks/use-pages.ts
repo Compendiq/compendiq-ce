@@ -1,6 +1,8 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '../lib/api';
 
+export type EmbeddingStatus = 'not_embedded' | 'embedding' | 'embedded' | 'failed';
+
 interface PageSummary {
   id: string;
   spaceKey: string;
@@ -12,11 +14,14 @@ interface PageSummary {
   lastModifiedAt: string | null;
   lastSynced: string;
   embeddingDirty: boolean;
+  embeddingStatus: EmbeddingStatus;
+  embeddedAt: string | null;
 }
 
 interface PageDetail extends PageSummary {
   bodyHtml: string;
   bodyText: string;
+  hasChildren: boolean;
 }
 
 interface PaginatedPages {
@@ -173,6 +178,15 @@ export interface EmbeddingStatusData {
   dirtyPages: number;
   totalEmbeddings: number;
   isProcessing: boolean;
+}
+
+export function usePageHasChildren(id: string | undefined) {
+  return useQuery<{ hasChildren: boolean }>({
+    queryKey: ['pages', id, 'has-children'],
+    queryFn: () => apiFetch(`/pages/${id}/has-children`),
+    enabled: !!id,
+    staleTime: 60_000, // refresh once per minute
+  });
 }
 
 export function useEmbeddingStatus() {
