@@ -83,6 +83,29 @@ describe('PageTransition', () => {
     expect(motionDiv).not.toBeNull();
   });
 
+  it('mounts new content immediately on navigation (mode=sync)', () => {
+    // mode="sync" ensures the entering page mounts right away instead of
+    // waiting 220ms for the exiting page to finish its animation.
+    const { rerender } = render(
+      <Wrapper initialPath="/">
+        <PageTransition>
+          <div data-testid="page-a">Page A</div>
+        </PageTransition>
+      </Wrapper>,
+    );
+    expect(screen.getByTestId('page-a')).toBeInTheDocument();
+
+    rerender(
+      <Wrapper initialPath="/pages/123">
+        <PageTransition>
+          <div data-testid="page-b">Page B</div>
+        </PageTransition>
+      </Wrapper>,
+    );
+    // New content must be in the DOM immediately, without waiting for exit animation
+    expect(screen.getByTestId('page-b')).toBeInTheDocument();
+  });
+
   it('renders at different initial paths without error', () => {
     render(
       <Wrapper initialPath="/pages/123">
