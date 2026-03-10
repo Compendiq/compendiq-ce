@@ -5,7 +5,7 @@ import StarterKit from '@tiptap/starter-kit';
 import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
 import { TaskList, TaskItem } from '@tiptap/extension-list';
 import { Image } from '@tiptap/extension-image';
-import { common, createLowlight } from 'lowlight';
+import { lowlight } from '../lib/lowlight';
 import { TitledCodeBlock } from './TitledCodeBlock';
 import DOMPurify from 'dompurify';
 import {
@@ -46,8 +46,6 @@ if (typeof DOMPurify.addHook === 'function') {
     }
   });
 }
-
-const lowlight = createLowlight(common);
 
 interface ArticleViewerProps {
   /** HTML content to render (typically page.bodyHtml) */

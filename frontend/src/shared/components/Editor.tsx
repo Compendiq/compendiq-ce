@@ -6,7 +6,7 @@ import { TaskList, TaskItem } from '@tiptap/extension-list';
 import { Image } from '@tiptap/extension-image';
 import { TitledCodeBlock } from './TitledCodeBlock';
 import { Placeholder } from '@tiptap/extensions';
-import { common, createLowlight } from 'lowlight';
+import { lowlight } from '../lib/lowlight';
 import {
   Bold, Italic, Strikethrough, Code, Heading1, Heading2, Heading3,
   List, ListOrdered, CheckSquare, Quote, Minus, Undo2, Redo2,
@@ -19,8 +19,6 @@ import { cn } from '../lib/cn';
 import { useIsLightTheme } from '../hooks/use-is-light-theme';
 import { MermaidBlock } from './MermaidBlockExtension';
 import type { Editor as EditorType } from '@tiptap/react';
-
-const lowlight = createLowlight(common);
 
 interface EditorProps {
   content?: string;
