@@ -484,6 +484,106 @@ describe('ConfluenceClient', () => {
     });
   });
 
+  describe('getPageAttachments pagination', () => {
+    it('combines results across multiple pages and stops when last page is partial', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+
+      // First page: exactly 100 results (full page — must fetch next)
+      const firstPageResults = Array.from({ length: 100 }, (_, i) => ({
+        id: `att-${i}`,
+        title: `attachment-${i}.png`,
+        mediaType: 'image/png',
+        _links: { download: `/download/att-${i}.png` },
+      }));
+
+      // Second page: 30 results (partial — stop here)
+      const secondPageResults = Array.from({ length: 30 }, (_, i) => ({
+        id: `att-${100 + i}`,
+        title: `attachment-${100 + i}.png`,
+        mediaType: 'image/png',
+        _links: { download: `/download/att-${100 + i}.png` },
+      }));
+
+      mockRequest
+        .mockResolvedValueOnce({
+          statusCode: 200,
+          headers: {},
+          body: {
+            text: async () =>
+              JSON.stringify({ results: firstPageResults, start: 0, limit: 100, size: 100 }),
+          },
+        } as never)
+        .mockResolvedValueOnce({
+          statusCode: 200,
+          headers: {},
+          body: {
+            text: async () =>
+              JSON.stringify({ results: secondPageResults, start: 100, limit: 100, size: 30 }),
+          },
+        } as never);
+
+      const result = await client.getPageAttachments('page-42');
+
+      expect(result.results).toHaveLength(130);
+      expect(result.size).toBe(130);
+      expect(mockRequest).toHaveBeenCalledTimes(2);
+
+      // First request: start=0
+      const firstUrl = mockRequest.mock.calls[0][0] as string;
+      expect(firstUrl).toContain('start=0');
+      expect(firstUrl).toContain('limit=100');
+      expect(firstUrl).toContain('/child/attachment');
+
+      // Second request: start=100
+      const secondUrl = mockRequest.mock.calls[1][0] as string;
+      expect(secondUrl).toContain('start=100');
+    });
+
+    it('returns all results from a single page when fewer than 100 attachments', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+
+      const singlePageResults = Array.from({ length: 5 }, (_, i) => ({
+        id: `att-${i}`,
+        title: `file-${i}.png`,
+        mediaType: 'image/png',
+        _links: { download: `/download/file-${i}.png` },
+      }));
+
+      mockRequest.mockResolvedValueOnce({
+        statusCode: 200,
+        headers: {},
+        body: {
+          text: async () =>
+            JSON.stringify({ results: singlePageResults, start: 0, limit: 100, size: 5 }),
+        },
+      } as never);
+
+      const result = await client.getPageAttachments('page-1');
+
+      expect(result.results).toHaveLength(5);
+      expect(mockRequest).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns empty results when page has no attachments', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+
+      mockRequest.mockResolvedValueOnce({
+        statusCode: 200,
+        headers: {},
+        body: {
+          text: async () =>
+            JSON.stringify({ results: [], start: 0, limit: 100, size: 0 }),
+        },
+      } as never);
+
+      const result = await client.getPageAttachments('page-empty');
+
+      expect(result.results).toHaveLength(0);
+      expect(result.size).toBe(0);
+      expect(mockRequest).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('retry on transient errors', () => {
     // Use minimal baseDelay to keep tests fast
     const retryOpts = { retry: { baseDelay: 1 } };

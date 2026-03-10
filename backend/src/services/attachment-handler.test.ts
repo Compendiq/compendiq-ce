@@ -51,6 +51,14 @@ function makeAttachments(items: Array<{ title: string; download: string; fileSiz
 describe('attachment-handler', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Default: attachments are NOT cached (fs.access throws ENOENT).
+    // Tests that need the "already cached" path override this per-test.
+    vi.mocked(fs.access).mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+    // Restore other fs mocks to their working defaults after clearAllMocks
+    vi.mocked(fs.mkdir).mockResolvedValue(undefined);
+    vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+    vi.mocked(fs.readFile).mockResolvedValue(Buffer.from('test'));
+    vi.mocked(fs.rm).mockResolvedValue(undefined);
   });
 
   describe('getMimeType', () => {
@@ -194,6 +202,20 @@ describe('attachment-handler', () => {
       // No download should have occurred
       expect(client.downloadAttachment).not.toHaveBeenCalled();
       expect(fs.writeFile).not.toHaveBeenCalled();
+    });
+
+    it('downloads image when not yet cached', async () => {
+      const bodyStorage = `<ac:image><ri:attachment ri:filename="new.png" /></ac:image>`;
+      const client = createMockClient();
+      const attachments = makeAttachments([
+        { title: 'new.png', download: '/download/new.png' },
+      ]);
+
+      const result = await syncImageAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
+
+      expect(result).toEqual(['new.png']);
+      expect(client.downloadAttachment).toHaveBeenCalledOnce();
+      expect(fs.writeFile).toHaveBeenCalledOnce();
     });
   });
 
@@ -418,7 +440,6 @@ describe('attachment-handler', () => {
 
     it('skips download when draw.io diagram is already cached (idempotent)', async () => {
       const bodyStorage = `<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">cached-diagram</ac:parameter></ac:structured-macro>`;
-
       const client = createMockClient();
       const attachments = makeAttachments([
         { title: 'cached-diagram.png', download: '/download/cached-diagram.png' },
@@ -433,6 +454,20 @@ describe('attachment-handler', () => {
       // No download should have occurred
       expect(client.downloadAttachment).not.toHaveBeenCalled();
       expect(fs.writeFile).not.toHaveBeenCalled();
+    });
+
+    it('downloads draw.io PNG when not yet cached', async () => {
+      const bodyStorage = `<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">new-diagram</ac:parameter></ac:structured-macro>`;
+      const client = createMockClient();
+      const attachments = makeAttachments([
+        { title: 'new-diagram.png', download: '/download/new-diagram.png' },
+      ]);
+
+      const result = await syncDrawioAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
+
+      expect(result).toEqual(['new-diagram.png']);
+      expect(client.downloadAttachment).toHaveBeenCalledOnce();
+      expect(fs.writeFile).toHaveBeenCalledOnce();
     });
   });
 
