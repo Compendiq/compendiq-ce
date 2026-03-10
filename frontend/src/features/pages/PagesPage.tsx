@@ -1,11 +1,12 @@
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { m, AnimatePresence } from 'framer-motion';
 import { Search, FileText, Plus, RefreshCw, ChevronLeft, ChevronRight, FolderOpen, Filter, X, List, Loader2, Cpu, Pin } from 'lucide-react';
 import DOMPurify from 'dompurify';
 import { toast } from 'sonner';
-import { usePages, usePageFilterOptions, usePage, useEmbeddingStatus, useTriggerEmbedding, usePinnedPages, usePinPage, useUnpinPage } from '../../shared/hooks/use-pages';
+import { usePages, usePageFilterOptions, usePage, useEmbeddingStatus, useTriggerEmbedding, usePinnedPages, usePinPage, useUnpinPage, type PageSummary } from '../../shared/hooks/use-pages';
 import { useSpaces, useSync, useSyncStatus } from '../../shared/hooks/use-spaces';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
@@ -19,6 +20,89 @@ import { SkeletonPageItem } from '../../shared/components/Skeleton';
 import { cn } from '../../shared/lib/cn';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { useClickRipple } from '../../shared/hooks/use-click-ripple';
+import { useUiStore } from '../../stores/ui-store';
+
+interface PageItemCardProps {
+  pageItem: PageSummary;
+  selectedIds: Set<string>;
+  pinnedIds: Set<string>;
+  onToggleSelection: (id: string, e: React.MouseEvent) => void;
+  onTogglePin: (e: React.MouseEvent, id: string, title: string) => void;
+  onNavigate: (path: string) => void;
+}
+
+function PageItemCard({ pageItem, selectedIds, pinnedIds, onToggleSelection, onTogglePin, onNavigate }: PageItemCardProps) {
+  return (
+    <DirectionAwareHover
+      className={cn(
+        'glass-card-hover flex w-full items-center gap-4 p-4 text-left',
+        selectedIds.has(pageItem.id) && 'border-primary/40 bg-primary/5',
+      )}
+      data-testid={`article-hover-${pageItem.id}`}
+    >
+      {/* Checkbox for bulk selection */}
+      <button
+        onClick={(e) => onToggleSelection(pageItem.id, e)}
+        className="shrink-0 flex h-5 w-5 items-center justify-center rounded border border-border hover:border-primary/50"
+        data-testid={`checkbox-${pageItem.id}`}
+        aria-label={`Select ${pageItem.title}`}
+      >
+        {selectedIds.has(pageItem.id) && (
+          <div className="h-3 w-3 rounded-sm bg-primary" />
+        )}
+      </button>
+
+      {/* Pin toggle */}
+      <button
+        onClick={(e) => onTogglePin(e, pageItem.id, pageItem.title)}
+        className={cn(
+          'shrink-0 rounded p-1 transition-colors',
+          pinnedIds.has(pageItem.id)
+            ? 'text-primary hover:text-primary/70'
+            : 'text-muted-foreground/40 hover:text-primary',
+        )}
+        aria-label={pinnedIds.has(pageItem.id) ? `Unpin ${pageItem.title}` : `Pin ${pageItem.title}`}
+        data-testid={`pin-toggle-${pageItem.id}`}
+      >
+        <Pin size={14} className={pinnedIds.has(pageItem.id) ? 'fill-current' : ''} />
+      </button>
+
+      <button
+        onClick={() => onNavigate(`/pages/${pageItem.id}`)}
+        className="flex min-w-0 flex-1 items-center gap-4"
+      >
+        <div className="min-w-0 flex-1 text-left">
+          <p className="truncate font-medium">{pageItem.title}</p>
+          <div className="flex items-center gap-3 text-xs text-muted-foreground">
+            <span>{pageItem.spaceKey}</span>
+            {pageItem.author && <span>{pageItem.author}</span>}
+            {pageItem.lastModifiedAt && (
+              <span>{new Date(pageItem.lastModifiedAt).toLocaleDateString()}</span>
+            )}
+          </div>
+        </div>
+        <EmbeddingStatusBadge
+          embeddingStatus={pageItem.embeddingStatus}
+          embeddingDirty={pageItem.embeddingDirty}
+          embeddedAt={pageItem.embeddedAt}
+          embeddingError={pageItem.embeddingError}
+        />
+        {pageItem.lastModifiedAt && (
+          <FreshnessBadge lastModified={pageItem.lastModifiedAt} />
+        )}
+        {pageItem.labels.length > 0 && (
+          <div className="flex gap-1">
+            {pageItem.labels.slice(0, 3).map((label) => (
+              <span key={label} className="rounded bg-primary/10 px-2 py-0.5 text-xs text-primary">
+                {label}
+              </span>
+            ))}
+          </div>
+        )}
+      </button>
+    </DirectionAwareHover>
+  );
+}
 
 export function PagesPage() {
   const navigate = useNavigate();
@@ -35,6 +119,8 @@ export function PagesPage() {
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState<'title' | 'modified' | 'author'>('modified');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const reduceEffects = useUiStore((s) => s.reduceEffects);
+  const virtualScrollRef = useRef<HTMLDivElement>(null);
 
   const { data: settings } = useSettings();
   const { data: spaces } = useSpaces();
@@ -110,6 +196,26 @@ export function PagesPage() {
   }, [embeddingStatusData, queryClient]);
 
   const ripple = useClickRipple();
+
+  const pageItems = pagesData?.items ?? [];
+
+  /**
+   * Virtual scrolling threshold: only virtualize when the list exceeds this
+   * count. Small lists render without virtualization to avoid layout overhead.
+   */
+  const VIRTUAL_THRESHOLD = 20;
+  const useVirtual = pageItems.length > VIRTUAL_THRESHOLD;
+
+  const rowVirtualizer = useVirtualizer({
+    count: pageItems.length,
+    getScrollElement: () => virtualScrollRef.current,
+    estimateSize: () => 80,
+    overscan: 5,
+    enabled: useVirtual,
+  });
+
+  /** Max number of items that receive a stagger entrance animation */
+  const STAGGER_LIMIT = 20;
 
   const activeFilterCount = [author, labels, freshness, embeddingStatus, dateFrom, dateTo].filter(Boolean).length;
 
@@ -472,86 +578,107 @@ export function PagesPage() {
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.2 }}
-          className="space-y-2"
         >
-          {pagesData.items.map((pageItem, i) => (
-            <m.div
-              key={pageItem.id}
-              layoutId={`page-card-${pageItem.id}`}
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: i * 0.03, layout: { duration: 0.25, ease: [0.25, 0.1, 0.25, 1] } }}
+          {useVirtual ? (
+            /* Virtualized list for 20+ items: only renders visible rows */
+            <div
+              ref={virtualScrollRef}
+              data-testid="virtual-scroll-container"
+              className="overflow-auto"
+              style={{ maxHeight: 'calc(100vh - 320px)', minHeight: 200 }}
             >
-              <DirectionAwareHover
-                className={cn(
-                  'glass-card-hover flex w-full items-center gap-4 p-4 text-left',
-                  selectedIds.has(pageItem.id) && 'border-primary/40 bg-primary/5',
-                )}
-                data-testid={`article-hover-${pageItem.id}`}
+              <div
+                style={{
+                  height: `${rowVirtualizer.getTotalSize()}px`,
+                  width: '100%',
+                  position: 'relative',
+                }}
               >
-                {/* Checkbox for bulk selection */}
-                <button
-                  onClick={(e) => toggleSelection(pageItem.id, e)}
-                  className="shrink-0 flex h-5 w-5 items-center justify-center rounded border border-border hover:border-primary/50"
-                  data-testid={`checkbox-${pageItem.id}`}
-                  aria-label={`Select ${pageItem.title}`}
-                >
-                  {selectedIds.has(pageItem.id) && (
-                    <div className="h-3 w-3 rounded-sm bg-primary" />
-                  )}
-                </button>
+                {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                  const pageItem = pageItems[virtualRow.index];
+                  const shouldAnimate = !reduceEffects && virtualRow.index < STAGGER_LIMIT;
 
-                {/* Pin toggle */}
-                <button
-                  onClick={(e) => handleTogglePin(e, pageItem.id, pageItem.title)}
-                  className={cn(
-                    'shrink-0 rounded p-1 transition-colors',
-                    pinnedIds.has(pageItem.id)
-                      ? 'text-primary hover:text-primary/70'
-                      : 'text-muted-foreground/40 hover:text-primary',
-                  )}
-                  aria-label={pinnedIds.has(pageItem.id) ? `Unpin ${pageItem.title}` : `Pin ${pageItem.title}`}
-                  data-testid={`pin-toggle-${pageItem.id}`}
-                >
-                  <Pin size={14} className={pinnedIds.has(pageItem.id) ? 'fill-current' : ''} />
-                </button>
-
-                <button
-                  onClick={() => navigate(`/pages/${pageItem.id}`)}
-                  className="flex min-w-0 flex-1 items-center gap-4"
-                >
-                  <div className="min-w-0 flex-1 text-left">
-                    <p className="truncate font-medium">{pageItem.title}</p>
-                    <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                      <span>{pageItem.spaceKey}</span>
-                      {pageItem.author && <span>{pageItem.author}</span>}
-                      {pageItem.lastModifiedAt && (
-                        <span>{new Date(pageItem.lastModifiedAt).toLocaleDateString()}</span>
+                  return (
+                    <div
+                      key={pageItem.id}
+                      data-index={virtualRow.index}
+                      ref={rowVirtualizer.measureElement}
+                      style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        width: '100%',
+                        transform: `translateY(${virtualRow.start}px)`,
+                      }}
+                      className="pb-2"
+                    >
+                      {shouldAnimate ? (
+                        <m.div
+                          initial={{ opacity: 0, y: 8 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ delay: virtualRow.index * 0.03 }}
+                        >
+                          <PageItemCard
+                            pageItem={pageItem}
+                            selectedIds={selectedIds}
+                            pinnedIds={pinnedIds}
+                            onToggleSelection={toggleSelection}
+                            onTogglePin={handleTogglePin}
+                            onNavigate={navigate}
+                          />
+                        </m.div>
+                      ) : (
+                        <PageItemCard
+                          pageItem={pageItem}
+                          selectedIds={selectedIds}
+                          pinnedIds={pinnedIds}
+                          onToggleSelection={toggleSelection}
+                          onTogglePin={handleTogglePin}
+                          onNavigate={navigate}
+                        />
                       )}
                     </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : (
+            /* Plain list for small item counts (<=20) */
+            <div className="space-y-2">
+              {pageItems.map((pageItem, i) => {
+                const shouldAnimate = !reduceEffects && i < STAGGER_LIMIT;
+
+                return shouldAnimate ? (
+                  <m.div
+                    key={pageItem.id}
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: i * 0.03 }}
+                  >
+                    <PageItemCard
+                      pageItem={pageItem}
+                      selectedIds={selectedIds}
+                      pinnedIds={pinnedIds}
+                      onToggleSelection={toggleSelection}
+                      onTogglePin={handleTogglePin}
+                      onNavigate={navigate}
+                    />
+                  </m.div>
+                ) : (
+                  <div key={pageItem.id}>
+                    <PageItemCard
+                      pageItem={pageItem}
+                      selectedIds={selectedIds}
+                      pinnedIds={pinnedIds}
+                      onToggleSelection={toggleSelection}
+                      onTogglePin={handleTogglePin}
+                      onNavigate={navigate}
+                    />
                   </div>
-                  <EmbeddingStatusBadge
-                    embeddingStatus={pageItem.embeddingStatus}
-                    embeddingDirty={pageItem.embeddingDirty}
-                    embeddedAt={pageItem.embeddedAt}
-                    embeddingError={pageItem.embeddingError}
-                  />
-                  {pageItem.lastModifiedAt && (
-                    <FreshnessBadge lastModified={pageItem.lastModifiedAt} />
-                  )}
-                  {pageItem.labels.length > 0 && (
-                    <div className="flex gap-1">
-                      {pageItem.labels.slice(0, 3).map((label) => (
-                        <span key={label} className="rounded bg-primary/10 px-2 py-0.5 text-xs text-primary">
-                          {label}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </button>
-              </DirectionAwareHover>
-            </m.div>
-          ))}
+                );
+              })}
+            </div>
+          )}
         </m.div>
       )}
       </AnimatePresence>
