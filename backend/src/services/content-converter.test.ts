@@ -17,6 +17,8 @@ import {
   DRAWIO_PAGE,
   TOC_PAGE,
   TABLE_PAGE,
+  TABLE_COLSPAN_ROWSPAN_PAGE,
+  TABLE_MULTI_ROW_PAGE,
   UNKNOWN_MACRO_PAGE,
   COMPLEX_PAGE,
   USER_MENTIONS_PAGE,
@@ -122,6 +124,33 @@ describe('content-converter', () => {
       expect(html).toContain('<table>');
       expect(html).toContain('JWT_SECRET');
       expect(html).toContain('POSTGRES_URL');
+    });
+
+    it('preserves tables with colspan attributes', () => {
+      const html = confluenceToHtml(TABLE_COLSPAN_ROWSPAN_PAGE);
+      expect(html).toContain('<table>');
+      expect(html).toContain('colspan="3"');
+      expect(html).toContain('colspan="2"');
+      expect(html).toContain('Q1 2025 Sprint Assignments');
+      expect(html).toContain('Frontend Team');
+    });
+
+    it('preserves tables with rowspan attributes', () => {
+      const html = confluenceToHtml(TABLE_COLSPAN_ROWSPAN_PAGE);
+      expect(html).toContain('rowspan="2"');
+      expect(html).toContain('Backend Team');
+    });
+
+    it('preserves multi-row tables with all rows intact', () => {
+      const html = confluenceToHtml(TABLE_MULTI_ROW_PAGE);
+      expect(html).toContain('<table>');
+      // All 7 data rows + 1 header row content
+      expect(html).toContain('GET');
+      expect(html).toContain('POST');
+      expect(html).toContain('PUT');
+      expect(html).toContain('DELETE');
+      expect(html).toContain('/api/health');
+      expect(html).toContain('/api/llm/ask');
     });
 
     it('wraps unknown macros with data attributes', () => {
@@ -255,6 +284,30 @@ describe('content-converter', () => {
       expect(xhtml).toContain('dashboard.png');
     });
 
+    it('round-trips table colspan and rowspan attributes', () => {
+      const html = confluenceToHtml(TABLE_COLSPAN_ROWSPAN_PAGE);
+      const xhtml = htmlToConfluence(html);
+      // colspan and rowspan must survive round-trip
+      expect(xhtml).toContain('colspan="3"');
+      expect(xhtml).toContain('colspan="2"');
+      expect(xhtml).toContain('rowspan="2"');
+      // Content must survive
+      expect(xhtml).toContain('Q1 2025 Sprint Assignments');
+      expect(xhtml).toContain('Backend Team');
+      expect(xhtml).toContain('Frontend Team');
+    });
+
+    it('round-trips multi-row tables preserving all rows', () => {
+      const html = confluenceToHtml(TABLE_MULTI_ROW_PAGE);
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toContain('<table>');
+      // All rows must survive
+      expect(xhtml).toContain('/api/health');
+      expect(xhtml).toContain('/api/auth/login');
+      expect(xhtml).toContain('/api/pages/:id');
+      expect(xhtml).toContain('/api/llm/ask');
+    });
+
     it('round-trips complex page preserving structure', () => {
       const html = confluenceToHtml(COMPLEX_PAGE, '42');
       const xhtml = htmlToConfluence(html);
@@ -286,6 +339,8 @@ describe('content-converter', () => {
       { name: 'panels', xhtml: PANELS_PAGE },
       { name: 'draw.io', xhtml: DRAWIO_PAGE },
       { name: 'tables', xhtml: TABLE_PAGE },
+      { name: 'tables with colspan/rowspan', xhtml: TABLE_COLSPAN_ROWSPAN_PAGE },
+      { name: 'multi-row tables', xhtml: TABLE_MULTI_ROW_PAGE },
     ];
 
     for (const { name, xhtml } of stableFixtures) {
