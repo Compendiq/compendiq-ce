@@ -1,4 +1,4 @@
-import { type ReactNode, useRef, useEffect } from 'react';
+import { type ReactNode, useRef, useState, useMemo } from 'react';
 import { useLocation } from 'react-router-dom';
 import { AnimatePresence, m } from 'framer-motion';
 import { useReducedMotion } from 'framer-motion';
@@ -45,45 +45,51 @@ export function PageTransition({ children }: PageTransitionProps) {
   const location = useLocation();
   const reducedMotion = useReducedMotion();
   const prevDepthRef = useRef(routeDepth(location.pathname));
-  const directionRef = useRef<'forward' | 'backward' | 'neutral'>('neutral');
+  const [animating, setAnimating] = useState(false);
 
-  useEffect(() => {
+  // Compute direction synchronously during render so animation reads
+  // the correct value on the same frame the location changes.
+  const direction = useMemo(() => {
     const currentDepth = routeDepth(location.pathname);
     const prevDepth = prevDepthRef.current;
 
+    let dir: 'forward' | 'backward' | 'neutral';
     if (currentDepth > prevDepth) {
-      directionRef.current = 'forward';
+      dir = 'forward';
     } else if (currentDepth < prevDepth) {
-      directionRef.current = 'backward';
+      dir = 'backward';
     } else {
-      directionRef.current = 'neutral';
+      dir = 'neutral';
     }
 
     prevDepthRef.current = currentDepth;
+    return dir;
   }, [location.pathname]);
 
   // Slide offset based on direction (GPU-composited via translateX)
-  const getSlideX = () => {
-    if (reducedMotion) return 0;
-    const direction = directionRef.current;
-    if (direction === 'forward') return 40;
-    if (direction === 'backward') return -40;
-    return 0;
-  };
+  const slideX = reducedMotion
+    ? 0
+    : direction === 'forward'
+      ? 40
+      : direction === 'backward'
+        ? -40
+        : 0;
 
   return (
     <AnimatePresence mode="wait" initial={false}>
       <m.div
         key={location.pathname}
-        initial={{ opacity: 0, x: getSlideX() }}
+        initial={{ opacity: 0, x: slideX }}
         animate={{ opacity: 1, x: 0 }}
-        exit={{ opacity: 0, x: -getSlideX() }}
+        exit={{ opacity: 0, x: -slideX }}
         transition={{
           duration: reducedMotion ? 0.1 : DURATION,
           ease: [0.25, 0.1, 0.25, 1], // cubic-bezier for smooth deceleration
         }}
         className="min-h-0 flex-1"
-        style={{ willChange: 'opacity, transform' }}
+        style={animating ? { willChange: 'opacity, transform' } : undefined}
+        onAnimationStart={() => setAnimating(true)}
+        onAnimationComplete={() => setAnimating(false)}
       >
         {children}
       </m.div>
