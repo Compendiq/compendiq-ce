@@ -54,7 +54,7 @@ describe('Attachment routes', () => {
     vi.clearAllMocks();
   });
 
-  it('should return 404 when attachment not found in cache and no Confluence client', async () => {
+  it('should return 404 with reason no_confluence_client when user has no PAT configured', async () => {
     mockReadAttachment.mockResolvedValue(null);
     mockGetClientForUser.mockResolvedValue(null);
 
@@ -64,6 +64,7 @@ describe('Attachment routes', () => {
     });
 
     expect(response.statusCode).toBe(404);
+    expect(response.json()).toMatchObject({ reason: 'no_confluence_client' });
     // Should not attempt on-demand fetch without a client
     expect(mockFetchAndCacheAttachment).not.toHaveBeenCalled();
   });
@@ -140,7 +141,7 @@ describe('Attachment routes', () => {
       );
     });
 
-    it('should return 404 when on-demand fetch returns null (not found in Confluence)', async () => {
+    it('should return 404 with reason not_found_in_confluence when fetch returns null', async () => {
       mockReadAttachment.mockResolvedValue(null);
       mockGetClientForUser.mockResolvedValue({ /* mock client */ });
       mockFetchAndCacheAttachment.mockResolvedValue(null);
@@ -151,9 +152,10 @@ describe('Attachment routes', () => {
       });
 
       expect(response.statusCode).toBe(404);
+      expect(response.json()).toMatchObject({ reason: 'not_found_in_confluence' });
     });
 
-    it('should return 404 when on-demand fetch throws an error', async () => {
+    it('should return 500 when on-demand fetch throws an error', async () => {
       mockReadAttachment.mockResolvedValue(null);
       mockGetClientForUser.mockResolvedValue({ /* mock client */ });
       mockFetchAndCacheAttachment.mockRejectedValue(new Error('Confluence unreachable'));
@@ -163,10 +165,10 @@ describe('Attachment routes', () => {
         url: '/api/attachments/page-456/broken.png',
       });
 
-      expect(response.statusCode).toBe(404);
+      expect(response.statusCode).toBe(500);
     });
 
-    it('should skip on-demand fetch when user has no Confluence credentials', async () => {
+    it('should return 404 with reason no_confluence_client when user has no Confluence credentials', async () => {
       mockReadAttachment.mockResolvedValue(null);
       mockGetClientForUser.mockResolvedValue(null);
 
@@ -176,6 +178,7 @@ describe('Attachment routes', () => {
       });
 
       expect(response.statusCode).toBe(404);
+      expect(response.json()).toMatchObject({ reason: 'no_confluence_client' });
       expect(mockFetchAndCacheAttachment).not.toHaveBeenCalled();
     });
   });
