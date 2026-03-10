@@ -67,6 +67,8 @@ vi.mock('../services/embedding-service.js', () => ({
   processDirtyPages: vi.fn(),
   reEmbedAll: vi.fn(),
   embedPage: (...args: unknown[]) => mockEmbedPage(...args),
+  isProcessingUser: vi.fn().mockReturnValue(false),
+  resetFailedEmbeddings: vi.fn().mockResolvedValue(0),
 }));
 
 vi.mock('../services/sync-service.js', () => ({

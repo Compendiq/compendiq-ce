@@ -66,6 +66,9 @@ vi.mock('../services/embedding-service.js', () => ({
   getEmbeddingStatus: vi.fn(),
   processDirtyPages: vi.fn(),
   reEmbedAll: vi.fn(),
+  embedPage: vi.fn(),
+  isProcessingUser: vi.fn().mockReturnValue(false),
+  resetFailedEmbeddings: vi.fn().mockResolvedValue(0),
 }));
 
 vi.mock('../services/llm-cache.js', () => {

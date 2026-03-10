@@ -3,11 +3,27 @@ import { providerGenerateEmbedding } from './llm-provider.js';
 import { htmlToText } from './content-converter.js';
 import { logger } from '../utils/logger.js';
 import { invalidateGraphCache, acquireEmbeddingLock, releaseEmbeddingLock, isEmbeddingLocked } from './redis-cache.js';
+import { CircuitBreakerOpenError, ollamaBreakers, openaiBreakers } from './circuit-breaker.js';
 import pgvector from 'pgvector';
 
 const CHUNK_SIZE = 500;     // ~500 tokens target
 const CHUNK_OVERLAP = 50;   // ~50 token overlap
 const CHARS_PER_TOKEN = 4;  // rough estimate
+
+/** Delay between embedding pages to reduce LLM server pressure (ms). */
+export const INTER_PAGE_DELAY_MS = 200;
+
+/** Max retries when circuit breaker is open before stopping the batch. */
+export const MAX_CIRCUIT_BREAKER_RETRIES = 3;
+
+/** Consecutive non-circuit-breaker failures before pausing. */
+export const CONSECUTIVE_FAILURE_PAUSE_THRESHOLD = 10;
+
+/** Pause duration after consecutive failures (ms). */
+export const CONSECUTIVE_FAILURE_PAUSE_MS = 30_000;
+
+/** Extra wait time added after circuit breaker timeout to give server headroom (ms). */
+export const CIRCUIT_BREAKER_WAIT_BUFFER_MS = 1_000;
 
 interface ChunkMetadata {
   page_title: string;
@@ -22,6 +38,51 @@ interface EmbeddingStatus {
   dirtyPages: number;
   totalEmbeddings: number;
   isProcessing: boolean;
+}
+
+/** Progress event emitted during embedding processing. */
+export interface EmbeddingProgressEvent {
+  type: 'progress' | 'complete' | 'waiting' | 'paused';
+  total: number;
+  completed: number;
+  failed: number;
+  currentPage?: string;
+  percentage: number;
+  /** Only for 'waiting' type: reason for the wait */
+  reason?: string;
+  /** Only for 'complete' type: first N error descriptions */
+  errors?: string[];
+}
+
+
+/**
+ * Helper to detect if an error is a circuit breaker open error.
+ */
+export function isCircuitBreakerError(err: unknown): boolean {
+  return err instanceof CircuitBreakerOpenError;
+}
+
+/**
+ * Get the next retry time for the embedding circuit breaker.
+ * Checks both ollama and openai breakers and returns the soonest retry time,
+ * or null if neither is open.
+ */
+export function getEmbedBreakerNextRetryTime(): number | null {
+  const ollamaStatus = ollamaBreakers.embed.getStatus();
+  const openaiStatus = openaiBreakers.embed.getStatus();
+
+  const times: number[] = [];
+  if (ollamaStatus.nextRetryTime !== null) times.push(ollamaStatus.nextRetryTime);
+  if (openaiStatus.nextRetryTime !== null) times.push(openaiStatus.nextRetryTime);
+
+  return times.length > 0 ? Math.min(...times) : null;
+}
+
+/**
+ * Sleep helper.
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
@@ -179,15 +240,18 @@ export async function isProcessingUser(userId: string): Promise<boolean> {
 }
 
 /**
- * Process all dirty pages for a user in batches to limit memory usage.
- * Returns `alreadyProcessing: true` if skipped because processing was in progress.
+ * Process all dirty pages for a user in batches with circuit breaker resilience.
  *
  * Pages are fetched in batches of DIRTY_PAGE_BATCH_SIZE using LIMIT/OFFSET.
- * Successfully embedded pages are marked embedding_dirty=FALSE by embedPage(),
- * so they drop out of the result set. The offset only advances by the number
- * of errors in each batch (errored pages remain dirty and stay in the result set).
+ * When a CircuitBreakerOpenError is detected, instead of marking the page
+ * as failed, the loop waits for the breaker to recover and retries.
+ *
+ * An optional `onProgress` callback receives progress events for SSE streaming.
  */
-export async function processDirtyPages(userId: string): Promise<{ processed: number; errors: number; alreadyProcessing?: boolean }> {
+export async function processDirtyPages(
+  userId: string,
+  onProgress?: (event: EmbeddingProgressEvent) => void,
+): Promise<{ processed: number; errors: number; alreadyProcessing?: boolean }> {
   const lockId = await acquireEmbeddingLock(userId);
   if (!lockId) {
     logger.warn({ userId }, 'Embedding processing already in progress for user');
@@ -196,6 +260,8 @@ export async function processDirtyPages(userId: string): Promise<{ processed: nu
 
   let totalProcessed = 0;
   let totalErrors = 0;
+  let consecutiveFailures = 0;
+  const errorList: string[] = [];
 
   try {
     // Get total count for logging purposes
@@ -211,10 +277,13 @@ export async function processDirtyPages(userId: string): Promise<{ processed: nu
     }
 
     // Offset only advances by the number of errors per batch, because
-    // successfully processed pages drop out of the WHERE filter
+    // successfully processed pages drop out of the WHERE filter.
     let offset = 0;
+    let batchAborted = false;
 
     for (;;) {
+      if (batchAborted) break;
+
       const batch = await query<{
         confluence_id: string;
         title: string;
@@ -232,6 +301,7 @@ export async function processDirtyPages(userId: string): Promise<{ processed: nu
       if (batch.rows.length === 0) break;
 
       let batchErrors = 0;
+      const batchTotal = totalDirty; // Use totalDirty for progress percentage
 
       for (const page of batch.rows) {
         try {
@@ -243,9 +313,109 @@ export async function processDirtyPages(userId: string): Promise<{ processed: nu
 
           await embedPage(userId, page.confluence_id, page.title, page.space_key, page.body_html);
           totalProcessed++;
+          consecutiveFailures = 0; // Reset on success
+
+          // Report progress
+          if (onProgress) {
+            onProgress({
+              type: 'progress',
+              total: batchTotal,
+              completed: totalProcessed,
+              failed: totalErrors,
+              currentPage: page.title,
+              percentage: Math.round((totalProcessed + totalErrors) / batchTotal * 100),
+            });
+          }
+
+          // Inter-page delay to reduce server pressure
+          await sleep(INTER_PAGE_DELAY_MS);
         } catch (err) {
+          // Circuit breaker open: wait for recovery instead of marking page as failed
+          if (isCircuitBreakerError(err)) {
+            let cbRetries = 0;
+            let cbSuccess = false;
+
+            while (cbRetries < MAX_CIRCUIT_BREAKER_RETRIES) {
+              const nextRetry = getEmbedBreakerNextRetryTime();
+              const waitMs = nextRetry !== null
+                ? Math.max(nextRetry - Date.now() + CIRCUIT_BREAKER_WAIT_BUFFER_MS, CIRCUIT_BREAKER_WAIT_BUFFER_MS)
+                : CIRCUIT_BREAKER_WAIT_BUFFER_MS;
+
+              logger.warn(
+                { userId, confluenceId: page.confluence_id, waitMs, attempt: cbRetries + 1 },
+                'Circuit breaker open, waiting for recovery...',
+              );
+
+              if (onProgress) {
+                onProgress({
+                  type: 'waiting',
+                  total: batchTotal,
+                  completed: totalProcessed,
+                  failed: totalErrors,
+                  currentPage: page.title,
+                  percentage: Math.round((totalProcessed + totalErrors) / batchTotal * 100),
+                  reason: `Circuit breaker open, waiting ${Math.round(waitMs / 1000)}s for recovery (attempt ${cbRetries + 1}/${MAX_CIRCUIT_BREAKER_RETRIES})`,
+                });
+              }
+
+              await sleep(waitMs);
+              cbRetries++;
+
+              // Try embedding again
+              try {
+                await embedPage(userId, page.confluence_id, page.title, page.space_key, page.body_html);
+                totalProcessed++;
+                consecutiveFailures = 0;
+                cbSuccess = true;
+
+                if (onProgress) {
+                  onProgress({
+                    type: 'progress',
+                    total: batchTotal,
+                    completed: totalProcessed,
+                    failed: totalErrors,
+                    currentPage: page.title,
+                    percentage: Math.round((totalProcessed + totalErrors) / batchTotal * 100),
+                  });
+                }
+
+                await sleep(INTER_PAGE_DELAY_MS);
+                break; // Success, move to next page
+              } catch (retryErr) {
+                if (!isCircuitBreakerError(retryErr)) {
+                  // Different error, mark as failed and move on
+                  const errorMessage = retryErr instanceof Error ? retryErr.message : String(retryErr);
+                  logger.error({ err: retryErr, confluenceId: page.confluence_id }, 'Failed to embed page after circuit breaker recovery');
+                  await query(
+                    `UPDATE cached_pages SET embedding_status = 'failed', embedding_error = $3 WHERE user_id = $1 AND confluence_id = $2`,
+                    [userId, page.confluence_id, errorMessage.slice(0, 1000)],
+                  ).catch((updateErr) => logger.error({ err: updateErr }, 'Failed to update embedding_status to failed'));
+                  totalErrors++;
+                  batchErrors++;
+                  consecutiveFailures++;
+                  errorList.push(`${page.title}: ${errorMessage.slice(0, 200)}`);
+                  cbSuccess = true; // Mark as handled (failed, but handled)
+                  break;
+                }
+                // Still circuit breaker — will loop to wait again
+              }
+            }
+
+            // Exhausted circuit breaker retries — stop the entire embedding job
+            if (!cbSuccess) {
+              logger.error(
+                { userId, retriesExhausted: cbRetries },
+                'Circuit breaker not recovering after max retries, stopping embedding batch',
+              );
+              batchAborted = true;
+              break; // Exit the inner for loop
+            }
+
+            continue; // handled by circuit breaker path
+          }
+
+          // Non-circuit-breaker error: mark page as failed
           logger.error({ err, confluenceId: page.confluence_id }, 'Failed to embed page');
-          // Mark page as failed and store the error reason for UI display
           const errorMessage = err instanceof Error ? err.message : String(err);
           await query(
             `UPDATE cached_pages SET embedding_status = 'failed', embedding_error = $3 WHERE user_id = $1 AND confluence_id = $2`,
@@ -253,6 +423,42 @@ export async function processDirtyPages(userId: string): Promise<{ processed: nu
           ).catch((updateErr) => logger.error({ err: updateErr }, 'Failed to update embedding_status to failed'));
           totalErrors++;
           batchErrors++;
+          consecutiveFailures++;
+          errorList.push(`${page.title}: ${errorMessage.slice(0, 200)}`);
+
+          // Pause after too many consecutive failures to let the server recover
+          if (consecutiveFailures >= CONSECUTIVE_FAILURE_PAUSE_THRESHOLD) {
+            logger.warn(
+              { userId, consecutiveFailures },
+              `${consecutiveFailures} consecutive embedding failures, pausing for ${CONSECUTIVE_FAILURE_PAUSE_MS / 1000}s`,
+            );
+
+            if (onProgress) {
+              onProgress({
+                type: 'paused',
+                total: batchTotal,
+                completed: totalProcessed,
+                failed: totalErrors,
+                percentage: Math.round((totalProcessed + totalErrors) / batchTotal * 100),
+                reason: `${consecutiveFailures} consecutive failures, pausing ${CONSECUTIVE_FAILURE_PAUSE_MS / 1000}s`,
+              });
+            }
+
+            await sleep(CONSECUTIVE_FAILURE_PAUSE_MS);
+            consecutiveFailures = 0; // Reset after pause
+          }
+
+          // Report progress even on failure
+          if (onProgress) {
+            onProgress({
+              type: 'progress',
+              total: batchTotal,
+              completed: totalProcessed,
+              failed: totalErrors,
+              currentPage: page.title,
+              percentage: Math.round((totalProcessed + totalErrors) / batchTotal * 100),
+            });
+          }
         }
       }
 
@@ -263,6 +469,18 @@ export async function processDirtyPages(userId: string): Promise<{ processed: nu
 
       // If the batch was smaller than the batch size, we've reached the end
       if (batch.rows.length < DIRTY_PAGE_BATCH_SIZE) break;
+    }
+
+    // Send completion event
+    if (onProgress) {
+      onProgress({
+        type: 'complete',
+        total: totalDirty,
+        completed: totalProcessed,
+        failed: totalErrors,
+        percentage: totalDirty > 0 ? Math.round((totalProcessed + totalErrors) / totalDirty * 100) : 100,
+        errors: errorList.slice(0, 20),
+      });
     }
   } finally {
     await releaseEmbeddingLock(userId, lockId);
@@ -280,6 +498,23 @@ export async function processDirtyPages(userId: string): Promise<{ processed: nu
   }
 
   return { processed: totalProcessed, errors: totalErrors };
+}
+
+/**
+ * Reset all failed embeddings for a user back to 'not_embedded' so they can be retried.
+ * Returns the number of pages reset.
+ */
+export async function resetFailedEmbeddings(userId: string): Promise<number> {
+  const result = await query(
+    `UPDATE cached_pages
+     SET embedding_dirty = TRUE, embedding_status = 'not_embedded', embedding_error = NULL
+     WHERE user_id = $1 AND embedding_status = 'failed'`,
+    [userId],
+  );
+
+  const count = result.rowCount ?? 0;
+  logger.info({ userId, resetCount: count }, 'Reset failed embeddings for retry');
+  return count;
 }
 
 /**
