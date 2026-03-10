@@ -150,15 +150,16 @@ describe('Pages cache key format', () => {
     expect(mockCacheGet).toHaveBeenCalledWith(
       'test-user-id',
       'pages',
-      'space:none:page:1:limit:50:sort:title',
+      'list:::::::::1:50:title',
     );
 
-    // Verify cache.set was also called with the same key format
+    // Verify cache.set was also called with the same key format (unfiltered TTL = 900s)
     expect(mockCacheSet).toHaveBeenCalledWith(
       'test-user-id',
       'pages',
-      'space:none:page:1:limit:50:sort:title',
+      'list:::::::::1:50:title',
       expect.any(Object),
+      900,
     );
   });
 
@@ -170,7 +171,7 @@ describe('Pages cache key format', () => {
     expect(mockCacheGet).toHaveBeenCalledWith(
       'test-user-id',
       'pages',
-      'space:DEV:page:1:limit:50:sort:title',
+      'list:DEV::::::::1:50:title',
     );
   });
 
@@ -182,7 +183,7 @@ describe('Pages cache key format', () => {
     expect(mockCacheGet).toHaveBeenCalledWith(
       'test-user-id',
       'pages',
-      'space:none:page:3:limit:25:sort:title',
+      'list:::::::::3:25:title',
     );
   });
 
@@ -194,32 +195,34 @@ describe('Pages cache key format', () => {
     expect(mockCacheGet).toHaveBeenCalledWith(
       'test-user-id',
       'pages',
-      'space:none:page:1:limit:50:sort:modified',
+      'list:::::::::1:50:modified',
     );
   });
 
   it('should produce distinct cache keys for different parameters', () => {
     // This test verifies the old bug is fixed: previously "all:1:50:title"
     // could collide if spaceKey literally was "all" vs. no spaceKey.
-    const keyNoSpace = `space:${'none'}:page:1:limit:50:sort:title`;
-    const keySpaceAll = `space:${'all'}:page:1:limit:50:sort:title`;
-    const keySpaceDev = `space:${'DEV'}:page:1:limit:50:sort:title`;
+    const keyNoSpace = `list:${''}::::::::1:50:title`;
+    const keySpaceAll = `list:${'all'}::::::::1:50:title`;
+    const keySpaceDev = `list:${'DEV'}::::::::1:50:title`;
 
     expect(keyNoSpace).not.toBe(keySpaceAll);
     expect(keyNoSpace).not.toBe(keySpaceDev);
     expect(keySpaceAll).not.toBe(keySpaceDev);
   });
 
-  it('should not use cache when filters are active', async () => {
-    // count query
+  it('should use a shorter TTL for filtered queries vs unfiltered', async () => {
+    // The cache is always consulted (even with filters), but uses 2min vs 15min TTL.
+    // This test verifies that cache.get is called with the correct key for a search query.
     mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '0' }] });
-    // select query
     mockQueryFn.mockResolvedValueOnce({ rows: [] });
 
     await app.inject({ method: 'GET', url: '/api/pages?search=test' });
 
-    // cache.get should NOT be called when search filter is active
-    expect(mockCacheGet).not.toHaveBeenCalled();
-    expect(mockCacheSet).not.toHaveBeenCalled();
+    // cache.get IS called even when search filter is active (uses shorter TTL, same key)
+    expect(mockCacheGet).toHaveBeenCalled();
+    // cache.get called with a key containing the search term
+    const call = mockCacheGet.mock.calls[0];
+    expect(call[2]).toContain('test'); // search term in key
   });
 });

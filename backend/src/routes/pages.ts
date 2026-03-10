@@ -56,7 +56,9 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     if (cached) return cached;
 
     // Build WHERE clause separately for reuse in count query
-    let whereClause = 'WHERE cp.user_id = $1';
+    // Access control: JOIN user_space_selections so each user only sees pages from
+    // their selected spaces (shared tables access pattern).
+    let whereClause = 'JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1';
     const values: unknown[] = [userId];
     let paramIdx = 2;
 
@@ -126,6 +128,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     const orderBy = sortMap[sort] ?? sortMap.title;
 
     // Count total (uses same WHERE clause, no fragile regex replacement)
+    // When whereClause is a JOIN, it already scopes the count
     const countSql = `SELECT COUNT(*) as count FROM cached_pages cp ${whereClause}`;
     const countResult = await query<{ count: string }>(countSql, values);
     const total = parseInt(countResult.rows[0].count, 10);
@@ -133,8 +136,8 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     // Build full SELECT with pagination
     const offset = (page - 1) * limit;
     const sql = `
-      SELECT cp.id, cp.confluence_id, cp.space_key, cp.title, cp.version,
-             cp.parent_id, cp.labels, cp.author, cp.last_modified_at, cp.last_synced,
+      SELECT cp.confluence_id, cp.space_key, cp.title, cp.version,
+             cp.parent_id, cp.labels, cp.author, cp.last_modified_at, cp.updated_at as last_synced,
              cp.embedding_dirty, cp.embedding_status, cp.embedded_at, cp.embedding_error
       FROM cached_pages cp
       ${whereClause}
@@ -144,7 +147,6 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     values.push(limit, offset);
 
     const result = await query<{
-      id: number;
       confluence_id: string;
       space_key: string;
       title: string;
@@ -196,11 +198,13 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     const cached = await cache.get(userId, 'pages', cacheKey);
     if (cached) return cached;
 
-    let whereClause = 'WHERE user_id = $1';
+    // Access control via space selection join
+    const joinClause = 'JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1';
     const values: unknown[] = [userId];
+    let treeWhereClause = '';
 
     if (params.spaceKey) {
-      whereClause += ' AND space_key = $2';
+      treeWhereClause = 'WHERE cp.space_key = $2';
       values.push(params.spaceKey);
     }
 
@@ -216,10 +220,10 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       embedded_at: Date | null;
       embedding_error: string | null;
     }>(
-      `SELECT confluence_id, space_key, title, parent_id, labels, last_modified_at,
-              embedding_dirty, embedding_status, embedded_at, embedding_error
-       FROM cached_pages ${whereClause}
-       ORDER BY title ASC`,
+      `SELECT cp.confluence_id, cp.space_key, cp.title, cp.parent_id, cp.labels, cp.last_modified_at,
+              cp.embedding_dirty, cp.embedding_status, cp.embedded_at, cp.embedding_error
+       FROM cached_pages cp ${joinClause} ${treeWhereClause}
+       ORDER BY cp.title ASC`,
       values,
     );
 
@@ -249,11 +253,15 @@ export async function pagesRoutes(fastify: FastifyInstance) {
 
     const [authorsResult, labelsResult] = await Promise.all([
       query<{ author: string }>(
-        `SELECT DISTINCT author FROM cached_pages WHERE user_id = $1 AND author IS NOT NULL ORDER BY author ASC`,
+        `SELECT DISTINCT cp.author FROM cached_pages cp
+         JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
+         WHERE cp.author IS NOT NULL ORDER BY cp.author ASC`,
         [userId],
       ),
       query<{ label: string }>(
-        `SELECT DISTINCT unnest(labels) AS label FROM cached_pages WHERE user_id = $1 ORDER BY label ASC`,
+        `SELECT DISTINCT unnest(cp.labels) AS label FROM cached_pages cp
+         JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
+         ORDER BY label ASC`,
         [userId],
       ),
     ]);
@@ -289,10 +297,12 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       has_children: boolean;
     }>(
       `SELECT cp.confluence_id, cp.space_key, cp.title, cp.body_storage, cp.body_html, cp.body_text,
-              cp.version, cp.parent_id, cp.labels, cp.author, cp.last_modified_at, cp.last_synced,
+              cp.version, cp.parent_id, cp.labels, cp.author, cp.last_modified_at, cp.updated_at as last_synced,
               cp.embedding_dirty, cp.embedding_status, cp.embedded_at, cp.embedding_error,
-              EXISTS(SELECT 1 FROM cached_pages c2 WHERE c2.user_id = $1 AND c2.parent_id = cp.confluence_id) as has_children
-       FROM cached_pages cp WHERE cp.user_id = $1 AND cp.confluence_id = $2`,
+              EXISTS(SELECT 1 FROM cached_pages c2 WHERE c2.parent_id = cp.confluence_id) as has_children
+       FROM cached_pages cp
+       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
+       WHERE cp.confluence_id = $2`,
       [userId, id],
     );
 
@@ -330,11 +340,10 @@ export async function pagesRoutes(fastify: FastifyInstance) {
   // GET /api/pages/:id/has-children - check if a page has sub-pages
   fastify.get('/pages/:id/has-children', async (request) => {
     const { id } = IdParamSchema.parse(request.params);
-    const userId = request.userId;
 
     const result = await query<{ count: string }>(
-      'SELECT COUNT(*) as count FROM cached_pages WHERE user_id = $1 AND parent_id = $2',
-      [userId, id],
+      'SELECT COUNT(*) as count FROM cached_pages WHERE parent_id = $1',
+      [id],
     );
 
     return { hasChildren: parseInt(result.rows[0].count, 10) > 0 };
@@ -360,13 +369,16 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     const { htmlToText } = await import('../services/content-converter.js');
     const bodyText = htmlToText(bodyHtml);
 
-    // Store in local cache
+    // Store in local cache (shared table, no user_id)
     await query(
       `INSERT INTO cached_pages
-         (user_id, confluence_id, space_key, title, body_storage, body_html, body_text,
+         (confluence_id, space_key, title, body_storage, body_html, body_text,
           version, parent_id, embedding_dirty, embedding_status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, 'not_embedded')`,
-      [userId, page.id, body.spaceKey, body.title, page.body?.storage?.value ?? storageBody,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE, 'not_embedded')
+       ON CONFLICT (confluence_id) DO UPDATE SET
+         title = EXCLUDED.title, body_storage = EXCLUDED.body_storage, body_html = EXCLUDED.body_html,
+         body_text = EXCLUDED.body_text, version = EXCLUDED.version, updated_at = NOW()`,
+      [page.id, body.spaceKey, body.title, page.body?.storage?.value ?? storageBody,
        bodyHtml, bodyText, page.version.number, body.parentId ?? null],
     );
 
@@ -392,8 +404,8 @@ export async function pagesRoutes(fastify: FastifyInstance) {
 
     // Version conflict check
     const existing = await query<{ version: number }>(
-      'SELECT version FROM cached_pages WHERE user_id = $1 AND confluence_id = $2',
-      [userId, id],
+      'SELECT version FROM cached_pages WHERE confluence_id = $1',
+      [id],
     );
     if (existing.rows.length > 0 && body.version !== undefined && body.version < existing.rows[0].version) {
       throw fastify.httpErrors.conflict('Page has been modified since you loaded it. Please refresh and try again.');
@@ -411,11 +423,11 @@ export async function pagesRoutes(fastify: FastifyInstance) {
 
     await query(
       `UPDATE cached_pages SET
-         title = $3, body_storage = $4, body_html = $5, body_text = $6,
-         version = $7, last_synced = NOW(), embedding_dirty = TRUE,
+         title = $2, body_storage = $3, body_html = $4, body_text = $5,
+         version = $6, updated_at = NOW(), embedding_dirty = TRUE,
          embedding_status = 'not_embedded', embedded_at = NULL
-       WHERE user_id = $1 AND confluence_id = $2`,
-      [userId, id, body.title, page.body?.storage?.value ?? storageBody,
+       WHERE confluence_id = $1`,
+      [id, body.title, page.body?.storage?.value ?? storageBody,
        bodyHtml, bodyText, page.version.number],
     );
 
@@ -439,10 +451,9 @@ export async function pagesRoutes(fastify: FastifyInstance) {
 
     await client.deletePage(id);
 
-    // Clean up local data
+    // Clean up local data (page_embeddings cascade-deleted via FK)
     await query('DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = $2', [userId, id]);
-    await query('DELETE FROM page_embeddings WHERE user_id = $1 AND confluence_id = $2', [userId, id]);
-    await query('DELETE FROM cached_pages WHERE user_id = $1 AND confluence_id = $2', [userId, id]);
+    await query('DELETE FROM cached_pages WHERE confluence_id = $1', [id]);
     await cleanPageAttachments(userId, id);
 
     // Invalidate cache
@@ -466,9 +477,11 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.badRequest('Confluence not configured');
     }
 
-    // Batch verify ownership: single query instead of N queries
+    // Batch verify access: pages in user's selected spaces
     const existing = await query<{ confluence_id: string }>(
-      'SELECT confluence_id FROM cached_pages WHERE user_id = $1 AND confluence_id = ANY($2)',
+      `SELECT cp.confluence_id FROM cached_pages cp
+       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
+       WHERE cp.confluence_id = ANY($2)`,
       [userId, ids],
     );
     const ownedIds = new Set(existing.rows.map((r) => r.confluence_id));
@@ -496,12 +509,11 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       }
     }
 
-    // Batch cleanup: parallel DB deletes + attachment cleanup
+    // Batch cleanup: page_embeddings cascade-deleted via FK
     if (deletedIds.length > 0) {
       await Promise.all([
         query('DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = ANY($2)', [userId, deletedIds]),
-        query('DELETE FROM page_embeddings WHERE user_id = $1 AND confluence_id = ANY($2)', [userId, deletedIds]),
-        query('DELETE FROM cached_pages WHERE user_id = $1 AND confluence_id = ANY($2)', [userId, deletedIds]),
+        query('DELETE FROM cached_pages WHERE confluence_id = ANY($1)', [deletedIds]),
       ]);
       await Promise.allSettled(deletedIds.map((id) => bulkLimit(() => cleanPageAttachments(userId, id))));
     }
@@ -524,9 +536,11 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.badRequest('Confluence not configured');
     }
 
-    // Batch verify ownership: single query instead of N queries
+    // Batch verify access: pages in user's selected spaces
     const existing = await query<{ confluence_id: string }>(
-      'SELECT confluence_id FROM cached_pages WHERE user_id = $1 AND confluence_id = ANY($2)',
+      `SELECT cp.confluence_id FROM cached_pages cp
+       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
+       WHERE cp.confluence_id = ANY($2)`,
       [userId, ids],
     );
     const ownedIds = new Set(existing.rows.map((r) => r.confluence_id));
@@ -548,11 +562,11 @@ export async function pagesRoutes(fastify: FastifyInstance) {
 
           await query(
             `UPDATE cached_pages SET
-               title = $3, body_storage = $4, body_html = $5, body_text = $6,
-               version = $7, last_synced = NOW(), embedding_dirty = TRUE,
+               title = $2, body_storage = $3, body_html = $4, body_text = $5,
+               version = $6, updated_at = NOW(), embedding_dirty = TRUE,
                embedding_status = 'not_embedded', embedded_at = NULL
-             WHERE user_id = $1 AND confluence_id = $2`,
-            [userId, id, page.title, page.body?.storage?.value ?? '', bodyHtml, bodyText, page.version.number],
+             WHERE confluence_id = $1`,
+            [id, page.title, page.body?.storage?.value ?? '', bodyHtml, bodyText, page.version.number],
           );
           return id;
         }),
@@ -591,9 +605,10 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     // Batch update: single query with ANY() and RETURNING instead of N updates
     const result = await query<{ confluence_id: string }>(
       `UPDATE cached_pages SET embedding_dirty = TRUE
-       WHERE user_id = $1 AND confluence_id = ANY($2)
+       WHERE confluence_id = ANY($1)
+         AND space_key IN (SELECT space_key FROM user_space_selections WHERE user_id = $2)
        RETURNING confluence_id`,
-      [userId, ids],
+      [ids, userId],
     );
 
     const updatedIds = new Set(result.rows.map((r) => r.confluence_id));
@@ -623,9 +638,11 @@ export async function pagesRoutes(fastify: FastifyInstance) {
 
     const client = await getClientForUser(userId);
 
-    // Batch fetch labels: single query instead of N queries
+    // Batch fetch labels: single query with space-based access control
     const existing = await query<{ confluence_id: string; labels: string[] }>(
-      'SELECT confluence_id, labels FROM cached_pages WHERE user_id = $1 AND confluence_id = ANY($2)',
+      `SELECT cp.confluence_id, cp.labels FROM cached_pages cp
+       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
+       WHERE cp.confluence_id = ANY($2)`,
       [userId, ids],
     );
     const pageLabelsMap = new Map(existing.rows.map((r) => [r.confluence_id, r.labels || []]));
@@ -655,8 +672,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
             labels = [...labelSet];
           }
 
-          await query('UPDATE cached_pages SET labels = $3 WHERE user_id = $1 AND confluence_id = $2', [
-            userId,
+          await query('UPDATE cached_pages SET labels = $2 WHERE confluence_id = $1', [
             id,
             labels,
           ]);
@@ -800,8 +816,8 @@ export async function pagesRoutes(fastify: FastifyInstance) {
 
     // Fetch existing labels
     const existing = await query<{ labels: string[] }>(
-      'SELECT labels FROM cached_pages WHERE user_id = $1 AND confluence_id = $2',
-      [userId, id],
+      'SELECT labels FROM cached_pages WHERE confluence_id = $1',
+      [id],
     );
 
     if (existing.rows.length === 0) {
@@ -826,8 +842,8 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     }
 
     await query(
-      'UPDATE cached_pages SET labels = $3 WHERE user_id = $1 AND confluence_id = $2',
-      [userId, id, labels],
+      'UPDATE cached_pages SET labels = $2 WHERE confluence_id = $1',
+      [id, labels],
     );
 
     // Sync to Confluence
@@ -881,8 +897,8 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       title: string;
       last_modified_at: Date | null;
     }>(
-      'SELECT version, title, last_modified_at FROM cached_pages WHERE user_id = $1 AND confluence_id = $2',
-      [userId, id],
+      'SELECT version, title, last_modified_at FROM cached_pages WHERE confluence_id = $1',
+      [id],
     );
 
     const currentVersion = currentResult.rows[0]
@@ -915,8 +931,8 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       body_html: string;
       body_text: string;
     }>(
-      'SELECT version, title, body_html, body_text FROM cached_pages WHERE user_id = $1 AND confluence_id = $2',
-      [userId, id],
+      'SELECT version, title, body_html, body_text FROM cached_pages WHERE confluence_id = $1',
+      [id],
     );
 
     if (currentResult.rows.length > 0 && currentResult.rows[0].version === versionNum) {
@@ -960,14 +976,14 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       body_html: string;
       body_text: string;
     }>(
-      'SELECT version, title, body_html, body_text FROM cached_pages WHERE user_id = $1 AND confluence_id = $2',
-      [userId, id],
+      'SELECT version, title, body_html, body_text FROM cached_pages WHERE confluence_id = $1',
+      [id],
     );
 
     if (current.rows.length > 0) {
       const row = current.rows[0];
       // Ensure current version exists in page_versions for comparison
-      await saveVersionSnapshot(userId, id, row.version, row.title, row.body_html, row.body_text);
+      await saveVersionSnapshot(id, row.version, row.title, row.body_html, row.body_text);
     }
 
     const diff = await getSemanticDiff(userId, id, v1, v2, model);
@@ -993,10 +1009,10 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       embedding_status: string;
       last_modified_at: Date | null;
     }>(
-      `SELECT confluence_id, space_key, title, labels, embedding_status, last_modified_at
-       FROM cached_pages
-       WHERE user_id = $1
-       ORDER BY title ASC`,
+      `SELECT cp.confluence_id, cp.space_key, cp.title, cp.labels, cp.embedding_status, cp.last_modified_at
+       FROM cached_pages cp
+       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
+       ORDER BY cp.title ASC`,
       [userId],
     );
 
@@ -1005,10 +1021,11 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       confluence_id: string;
       count: string;
     }>(
-      `SELECT confluence_id, COUNT(*) as count
-       FROM page_embeddings
-       WHERE user_id = $1
-       GROUP BY confluence_id`,
+      `SELECT pe.confluence_id, COUNT(*) as count
+       FROM page_embeddings pe
+       JOIN cached_pages cp ON pe.confluence_id = cp.confluence_id
+       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
+       GROUP BY pe.confluence_id`,
       [userId],
     );
 
@@ -1026,9 +1043,8 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     }>(
       `SELECT page_id_1, page_id_2, relationship_type, score
        FROM page_relationships
-       WHERE user_id = $1
        ORDER BY score DESC`,
-      [userId],
+      [],
     );
 
     const nodes = nodesResult.rows.map((row) => ({
@@ -1059,7 +1075,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
   }, async (request) => {
     const userId = request.userId;
 
-    const edgeCount = await computePageRelationships(userId);
+    const edgeCount = await computePageRelationships();
     await cache.invalidate(userId, 'pages');
 
     return { message: 'Graph relationships refreshed', edges: edgeCount };
@@ -1087,7 +1103,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       `SELECT pp.page_id, pp.pin_order, pp.pinned_at,
               cp.confluence_id, cp.space_key, cp.title, cp.author, cp.last_modified_at, cp.body_text
        FROM pinned_pages pp
-       JOIN cached_pages cp ON cp.user_id = pp.user_id AND cp.confluence_id = pp.page_id
+       JOIN cached_pages cp ON cp.confluence_id = pp.page_id
        WHERE pp.user_id = $1
        ORDER BY pp.pinned_at DESC`,
       [userId],
@@ -1115,7 +1131,9 @@ export async function pagesRoutes(fastify: FastifyInstance) {
 
     // Verify the page exists for this user
     const pageResult = await query<{ confluence_id: string }>(
-      'SELECT confluence_id FROM cached_pages WHERE user_id = $1 AND confluence_id = $2',
+      `SELECT cp.confluence_id FROM cached_pages cp
+       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
+       WHERE cp.confluence_id = $2`,
       [userId, id],
     );
     if (pageResult.rows.length === 0) {

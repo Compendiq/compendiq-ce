@@ -62,8 +62,8 @@ export async function fetchSubPages(
     }>(
       `SELECT confluence_id, title, body_html
        FROM cached_pages
-       WHERE user_id = $1 AND parent_id = $2`,
-      [userId, current.id],
+       WHERE parent_id = $1`,
+      [current.id],
     );
 
     for (const row of result.rows) {
@@ -92,8 +92,8 @@ export async function hasSubPages(
   pageId: string,
 ): Promise<boolean> {
   const result = await query<{ count: string }>(
-    `SELECT COUNT(*) as count FROM cached_pages WHERE user_id = $1 AND parent_id = $2`,
-    [userId, pageId],
+    `SELECT COUNT(*) as count FROM cached_pages WHERE parent_id = $1`,
+    [pageId],
   );
   return parseInt(result.rows[0].count, 10) > 0;
 }

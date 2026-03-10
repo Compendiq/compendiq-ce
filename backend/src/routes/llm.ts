@@ -50,8 +50,8 @@ async function assembleContextIfNeeded(
 ): Promise<{ markdown: string; multiPageSuffix: string }> {
   if (includeSubPages && pageId) {
     const pageResult = await query<{ title: string }>(
-      'SELECT title FROM cached_pages WHERE user_id = $1 AND confluence_id = $2',
-      [userId, pageId],
+      'SELECT title FROM cached_pages WHERE confluence_id = $1',
+      [pageId],
     );
     const parentTitle = pageResult.rows[0]?.title ?? 'Untitled';
 
@@ -498,8 +498,8 @@ export async function llmRoutes(fastify: FastifyInstance) {
     let multiPageSuffix = '';
     if (includeSubPages && body.pageId) {
       const pageResult = await query<{ title: string; body_html: string }>(
-        'SELECT title, body_html FROM cached_pages WHERE user_id = $1 AND confluence_id = $2',
-        [userId, body.pageId],
+        'SELECT title, body_html FROM cached_pages WHERE confluence_id = $1',
+        [body.pageId],
       );
       if (pageResult.rows.length > 0) {
         const { title, body_html } = pageResult.rows[0];
@@ -783,7 +783,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
     }
 
     // Reset all failed pages back to 'not_embedded'
-    const resetCount = await resetFailedEmbeddings(userId);
+    const resetCount = await resetFailedEmbeddings();
 
     if (resetCount === 0) {
       return { message: 'No failed embeddings to retry', reset: 0 };
@@ -874,8 +874,8 @@ export async function llmRoutes(fastify: FastifyInstance) {
 
             // Try to get space_key and cached HTML from local DB first
             const cachedRow = await query<{ space_key: string; body_html: string }>(
-              'SELECT space_key, body_html FROM cached_pages WHERE user_id = $1 AND confluence_id = $2',
-              [userId, page.id],
+              'SELECT space_key, body_html FROM cached_pages WHERE confluence_id = $1',
+              [page.id],
             );
 
             const resolvedSpaceKey = cachedRow.rows[0]?.space_key ?? '';

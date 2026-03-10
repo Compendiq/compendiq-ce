@@ -65,8 +65,8 @@ describe('syncUser auto-embedding', () => {
       .mockResolvedValueOnce({
         rows: [{ confluence_url: 'https://confluence.example.com', confluence_pat: 'encrypted-pat' }],
       })
-      // 2. selected_spaces
-      .mockResolvedValueOnce({ rows: [{ selected_spaces: ['DEV'] }] })
+      // 2. selected_spaces from user_space_selections
+      .mockResolvedValueOnce({ rows: [{ space_key: 'DEV' }] })
       // 3. last_synced (no previous sync → full sync)
       .mockResolvedValueOnce({ rows: [{ last_synced: null }] })
       // 4. detectDeletedPages: existing pages
@@ -74,7 +74,6 @@ describe('syncUser auto-embedding', () => {
       // 5. update space sync timestamp
       .mockResolvedValueOnce({ rows: [] });
 
-    mocks.getSpaces.mockResolvedValueOnce({ results: [] });
     mocks.getAllPagesInSpace.mockResolvedValueOnce([]);
   }
 
@@ -141,7 +140,7 @@ describe('syncUser auto-embedding', () => {
       .mockResolvedValueOnce({
         rows: [{ confluence_url: 'https://confluence.example.com', confluence_pat: 'encrypted-pat' }],
       })
-      .mockResolvedValueOnce({ rows: [{ selected_spaces: [] }] });
+      .mockResolvedValueOnce({ rows: [] });
 
     await syncUser('user-3');
 
@@ -171,8 +170,8 @@ describe('syncPage attachment cache invalidation', () => {
     mocks.query
       // 1. getClientForUser: user_settings
       .mockResolvedValueOnce({ rows: [{ confluence_url: 'https://conf.example.com', confluence_pat: 'enc' }] })
-      // 2. selected_spaces
-      .mockResolvedValueOnce({ rows: [{ selected_spaces: ['DEV'] }] })
+      // 2. user_space_selections (shared table, PR #240)
+      .mockResolvedValueOnce({ rows: [{ space_key: 'DEV' }] })
       // 3. last_synced (no previous sync → full sync; space=undefined so no upsert)
       .mockResolvedValueOnce({ rows: [] })
       // 4. syncPage: existing page version check
@@ -195,6 +194,7 @@ describe('syncPage attachment cache invalidation', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.processDirtyPages.mockResolvedValue({ processed: 0, errors: 0 });
   });
 
   it('clears attachment cache when an existing page has a new version', async () => {

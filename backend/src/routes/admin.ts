@@ -5,6 +5,7 @@ import { reEncryptPat } from '../utils/crypto.js';
 import { getAuditLog, logAuditEvent } from '../services/audit-service.js';
 import { listErrors, resolveError, getErrorSummary } from '../services/error-tracker.js';
 import { logger } from '../utils/logger.js';
+import { UpdateAdminSettingsSchema } from '@kb-creator/contracts';
 
 const AuditLogQuerySchema = z.object({
   userId: z.string().optional(),
@@ -210,5 +211,92 @@ export async function adminRoutes(fastify: FastifyInstance) {
       message: `Label "${name}" removed from all pages`,
       affectedPages: result.rowCount ?? 0,
     };
+  });
+
+  // ========================
+  // Admin settings routes
+  // ========================
+
+  // GET /api/admin/settings - retrieve shared admin settings
+  fastify.get('/admin/settings', ADMIN_RATE_LIMIT, async () => {
+    const result = await query<{ setting_key: string; setting_value: string }>(
+      `SELECT setting_key, setting_value FROM admin_settings
+       WHERE setting_key IN ('embedding_chunk_size', 'embedding_chunk_overlap')`,
+    );
+
+    const map: Record<string, string> = {};
+    for (const row of result.rows) {
+      map[row.setting_key] = row.setting_value;
+    }
+
+    return {
+      embeddingChunkSize: parseInt(map['embedding_chunk_size'] ?? '500', 10),
+      embeddingChunkOverlap: parseInt(map['embedding_chunk_overlap'] ?? '50', 10),
+    };
+  });
+
+  // PUT /api/admin/settings - update shared admin settings (admin only)
+  fastify.put('/admin/settings', ADMIN_RATE_LIMIT, async (request) => {
+    const body = UpdateAdminSettingsSchema.parse(request.body);
+
+    if (Object.keys(body).length === 0) {
+      return { message: 'No changes' };
+    }
+
+    // Validate chunk overlap does not exceed 25% of chunk size
+    let effectiveChunkSize = body.embeddingChunkSize;
+    let effectiveChunkOverlap = body.embeddingChunkOverlap;
+
+    if (effectiveChunkSize === undefined || effectiveChunkOverlap === undefined) {
+      const current = await query<{ setting_key: string; setting_value: string }>(
+        `SELECT setting_key, setting_value FROM admin_settings
+         WHERE setting_key IN ('embedding_chunk_size', 'embedding_chunk_overlap')`,
+      );
+      const currentMap: Record<string, number> = {};
+      for (const row of current.rows) {
+        currentMap[row.setting_key] = parseInt(row.setting_value, 10);
+      }
+      effectiveChunkSize ??= currentMap['embedding_chunk_size'] ?? 500;
+      effectiveChunkOverlap ??= currentMap['embedding_chunk_overlap'] ?? 50;
+    }
+
+    if (effectiveChunkOverlap > effectiveChunkSize * 0.25) {
+      throw fastify.httpErrors.badRequest(
+        `Chunk overlap (${effectiveChunkOverlap}) must not exceed 25% of chunk size (${effectiveChunkSize}). Maximum allowed: ${Math.floor(effectiveChunkSize * 0.25)}.`,
+      );
+    }
+
+    // Upsert changed settings
+    const updates: Array<{ key: string; value: string }> = [];
+    if (body.embeddingChunkSize !== undefined) {
+      updates.push({ key: 'embedding_chunk_size', value: String(body.embeddingChunkSize) });
+    }
+    if (body.embeddingChunkOverlap !== undefined) {
+      updates.push({ key: 'embedding_chunk_overlap', value: String(body.embeddingChunkOverlap) });
+    }
+
+    for (const { key, value } of updates) {
+      await query(
+        `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
+         VALUES ($1, $2, NOW())
+         ON CONFLICT (setting_key) DO UPDATE SET setting_value = $2, updated_at = NOW()`,
+        [key, value],
+      );
+    }
+
+    // Mark all pages dirty for re-embedding since chunk settings changed globally
+    await query('UPDATE cached_pages SET embedding_dirty = TRUE');
+    logger.info({ userId: request.userId, updates }, 'Admin chunk settings changed, all pages marked dirty');
+
+    await logAuditEvent(
+      request.userId,
+      'ADMIN_ACTION',
+      'admin_settings',
+      undefined,
+      { action: 'update_chunk_settings', embeddingChunkSize: effectiveChunkSize, embeddingChunkOverlap: effectiveChunkOverlap },
+      request,
+    );
+
+    return { message: 'Admin settings updated, all pages queued for re-embedding' };
   });
 }

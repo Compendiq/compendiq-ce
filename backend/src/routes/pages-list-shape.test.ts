@@ -180,7 +180,7 @@ describe('Page list vs detail response shapes (#179)', () => {
 
       // Find the SELECT query (not the COUNT query)
       const selectCall = mockQueryFn.mock.calls.find(
-        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('SELECT cp.id'),
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('SELECT cp.confluence_id'),
       );
       expect(selectCall).toBeDefined();
 
@@ -207,7 +207,7 @@ describe('Page list vs detail response shapes (#179)', () => {
 
       // Find the SELECT query (not the COUNT query)
       const selectCall = mockQueryFn.mock.calls.find(
-        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('SELECT cp.id'),
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('SELECT cp.confluence_id'),
       );
       expect(selectCall).toBeDefined();
 

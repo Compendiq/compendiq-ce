@@ -51,8 +51,8 @@ export async function findDuplicates(
 
   // Get the source page title for title similarity comparison
   const sourcePageResult = await query<{ title: string }>(
-    'SELECT title FROM cached_pages WHERE user_id = $1 AND confluence_id = $2',
-    [userId, confluenceId],
+    'SELECT title FROM cached_pages WHERE confluence_id = $1',
+    [confluenceId],
   );
   if (sourcePageResult.rows.length === 0) {
     throw new Error(`Page not found: ${confluenceId}`);
@@ -75,7 +75,7 @@ export async function findDuplicates(
       `WITH source_avg AS (
          SELECT AVG(embedding) AS avg_embedding
          FROM page_embeddings
-         WHERE confluence_id = $1 AND user_id = $2
+         WHERE confluence_id = $1
        )
        SELECT DISTINCT ON (pe2.confluence_id)
          pe2.confluence_id,
@@ -83,12 +83,11 @@ export async function findDuplicates(
          pe2.metadata->>'space_key' AS space_key,
          pe2.embedding <=> source_avg.avg_embedding AS distance
        FROM page_embeddings pe2, source_avg
-       WHERE pe2.user_id = $2
-         AND pe2.confluence_id != $1
+       WHERE pe2.confluence_id != $1
          AND source_avg.avg_embedding IS NOT NULL
        ORDER BY pe2.confluence_id, pe2.embedding <=> source_avg.avg_embedding
-       LIMIT $3`,
-      [confluenceId, userId, limit * 3], // Over-fetch to filter later
+       LIMIT $2`,
+      [confluenceId, limit * 3], // Over-fetch to filter later
     );
 
     await client.query('COMMIT');
@@ -141,8 +140,8 @@ export async function scanAllDuplicates(
   const pages = await query<{ confluence_id: string; title: string }>(
     `SELECT DISTINCT cp.confluence_id, cp.title
      FROM cached_pages cp
-     JOIN page_embeddings pe ON cp.confluence_id = pe.confluence_id AND cp.user_id = pe.user_id
-     WHERE cp.user_id = $1`,
+     JOIN page_embeddings pe ON cp.confluence_id = pe.confluence_id
+     JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1`,
     [userId],
   );
 

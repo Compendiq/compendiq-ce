@@ -7,7 +7,7 @@ export async function spacesRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
   const cache = new RedisCache(fastify.redis);
 
-  // GET /api/spaces - list user's configured spaces
+  // GET /api/spaces - list the user's selected spaces (via user_space_selections)
   fastify.get('/spaces', async (request) => {
     const userId = request.userId;
 
@@ -15,20 +15,26 @@ export async function spacesRoutes(fastify: FastifyInstance) {
     const cached = await cache.get<unknown[]>(userId, 'spaces', 'list');
     if (cached) return cached;
 
-    // Fall back to PostgreSQL
+    // Fetch spaces the user has selected from shared cached_spaces
     const result = await query<{
       space_key: string;
       space_name: string;
       homepage_id: string | null;
       last_synced: Date;
     }>(
-      'SELECT space_key, space_name, homepage_id, last_synced FROM cached_spaces WHERE user_id = $1 ORDER BY space_name',
+      `SELECT cs.space_key, cs.space_name, cs.homepage_id, cs.last_synced
+       FROM cached_spaces cs
+       JOIN user_space_selections uss ON cs.space_key = uss.space_key AND uss.user_id = $1
+       ORDER BY cs.space_name`,
       [userId],
     );
 
-    // Get page counts per space
+    // Get page counts per space (scoped to user's selections)
     const countsResult = await query<{ space_key: string; count: string }>(
-      'SELECT space_key, COUNT(*) as count FROM cached_pages WHERE user_id = $1 GROUP BY space_key',
+      `SELECT cp.space_key, COUNT(*) as count
+       FROM cached_pages cp
+       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
+       GROUP BY cp.space_key`,
       [userId],
     );
     const counts = new Map(countsResult.rows.map((r) => [r.space_key, parseInt(r.count, 10)]));

@@ -116,7 +116,7 @@ describe('embedding-service', () => {
       // Fourth query should be the DISTINCT count
       expect(mocks.query).toHaveBeenCalledTimes(4);
       const fourthCallSql = mocks.query.mock.calls[3][0] as string;
-      expect(fourthCallSql).toContain('COUNT(DISTINCT confluence_id)');
+      expect(fourthCallSql).toContain('COUNT(DISTINCT');
       expect(fourthCallSql).toContain('page_embeddings');
     });
 
@@ -145,8 +145,9 @@ describe('embedding-service', () => {
 
       await getEmbeddingStatus('test-user-42');
 
+      // All 4 queries use user_id as first param (via JOIN on user_space_selections)
       for (const call of mocks.query.mock.calls) {
-        expect(call[1]).toEqual(['test-user-42']);
+        expect(call[1][0]).toEqual('test-user-42');
       }
     });
 
@@ -224,28 +225,30 @@ describe('embedding-service', () => {
         rowCount: 1,
       });
 
-      const totalEdges = await computePageRelationships('user-1');
+      const totalEdges = await computePageRelationships();
 
       expect(totalEdges).toBe(2);
       expect(mocks.query).toHaveBeenCalledTimes(3);
 
-      // First call should be DELETE
+      // First call should be DELETE (global, no userId)
       const deleteCall = mocks.query.mock.calls[0][0] as string;
       expect(deleteCall).toContain('DELETE FROM page_relationships');
-      expect(mocks.query.mock.calls[0][1]).toEqual(['user-1']);
+      expect(mocks.query.mock.calls[0][1]).toBeUndefined();
     });
 
-    it('should pass userId to all queries', async () => {
+    it('should not use userId (global shared tables)', async () => {
       mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // DELETE
       mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // embedding similarity
       mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // label overlap
 
-      await computePageRelationships('test-user-99');
+      await computePageRelationships();
 
-      // First param of each call should include the userId
-      expect(mocks.query.mock.calls[0][1]).toEqual(['test-user-99']);
-      expect(mocks.query.mock.calls[1][1]).toContain('test-user-99');
-      expect(mocks.query.mock.calls[2][1]).toContain('test-user-99');
+      // DELETE has no params (global clear)
+      expect(mocks.query.mock.calls[0][1]).toBeUndefined();
+      // Similarity INSERT uses $1 (TOP_K) and $2 (SIMILARITY_THRESHOLD)
+      expect(mocks.query.mock.calls[1][1]).toBeDefined();
+      // Label overlap has no user params
+      expect(mocks.query.mock.calls[2][1]).toBeUndefined();
     });
 
     it('should return 0 when no relationships found', async () => {
@@ -253,7 +256,7 @@ describe('embedding-service', () => {
       mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // embedding similarity
       mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // label overlap
 
-      const totalEdges = await computePageRelationships('user-1');
+      const totalEdges = await computePageRelationships();
 
       expect(totalEdges).toBe(0);
     });
@@ -263,22 +266,26 @@ describe('embedding-service', () => {
       mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
       mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
 
-      await computePageRelationships('user-1');
+      await computePageRelationships();
 
-      // All queries should use parameterized placeholders ($1, $2, etc.)
-      for (const call of mocks.query.mock.calls) {
-        const sql = call[0] as string;
-        expect(sql).toContain('$1');
-        expect(call[1]).toBeDefined();
-      }
+      // Embedding similarity INSERT uses $1 (TOP_K) and $2 (SIMILARITY_THRESHOLD)
+      const similarityCall = mocks.query.mock.calls.find(
+        (call) => typeof call[0] === 'string' && (call[0] as string).includes('embedding_similarity'),
+      );
+      expect(similarityCall).toBeDefined();
+      expect(similarityCall![0]).toContain('$1');
+      expect(similarityCall![1]).toBeDefined();
     });
   });
 
   describe('processDirtyPages', () => {
-    /** Mock the chunk-settings SELECT that runs first inside processDirtyPages. */
+    /** Mock the chunk-settings SELECT that runs first inside processDirtyPages (admin_settings table). */
     function mockChunkSettings(chunkSize = 500, chunkOverlap = 50) {
       mocks.query.mockResolvedValueOnce({
-        rows: [{ embedding_chunk_size: chunkSize, embedding_chunk_overlap: chunkOverlap }],
+        rows: [
+          { setting_key: 'embedding_chunk_size', setting_value: String(chunkSize) },
+          { setting_key: 'embedding_chunk_overlap', setting_value: String(chunkOverlap) },
+        ],
       });
     }
 
@@ -368,7 +375,7 @@ describe('embedding-service', () => {
       const batchSelectCall = calls[2];
       expect(batchSelectCall[0]).toContain('LIMIT');
       expect(batchSelectCall[0]).toContain('OFFSET');
-      expect(batchSelectCall[1]).toEqual(['user-1', DIRTY_PAGE_BATCH_SIZE, 0]);
+      expect(batchSelectCall[1]).toEqual([DIRTY_PAGE_BATCH_SIZE, 0]);
     });
 
     it('should process dirty pages and return counts', async () => {
@@ -476,7 +483,8 @@ describe('embedding-service', () => {
       );
       expect(failedUpdateCall).toBeDefined();
       // The error message in params should be truncated to 1000 chars
-      const storedError = failedUpdateCall![1][2] as string;
+      // Error message is at [1][1]: params are [confluenceId, errorMessage]
+      const storedError = failedUpdateCall![1][1] as string;
       expect(storedError).toHaveLength(1000);
     });
 
@@ -834,12 +842,13 @@ describe('embedding-service', () => {
 
       await processDirtyPages('chunk-settings-user');
 
-      // First query should be chunk settings SELECT
+      // First query should be chunk settings SELECT from admin_settings
       const firstCall = mocks.query.mock.calls[0];
       expect(firstCall[0]).toContain('embedding_chunk_size');
       expect(firstCall[0]).toContain('embedding_chunk_overlap');
-      expect(firstCall[0]).toContain('user_settings');
-      expect(firstCall[1]).toEqual(['chunk-settings-user']);
+      expect(firstCall[0]).toContain('admin_settings');
+      // admin_settings query has no params (global)
+      expect(firstCall[1]).toBeUndefined();
     });
 
     it('should use default chunk settings when user has no settings row', async () => {
@@ -900,7 +909,7 @@ describe('embedding-service', () => {
     it('should update failed pages to not_embedded and return count', async () => {
       mocks.query.mockResolvedValueOnce({ rowCount: 5 });
 
-      const count = await resetFailedEmbeddings('reset-user');
+      const count = await resetFailedEmbeddings();
 
       expect(count).toBe(5);
       expect(mocks.query).toHaveBeenCalledTimes(1);
@@ -909,13 +918,14 @@ describe('embedding-service', () => {
       expect(sql).toContain('embedding_dirty = TRUE');
       expect(sql).toContain('embedding_error = NULL');
       expect(sql).toContain("embedding_status = 'failed'");
-      expect(mocks.query.mock.calls[0][1]).toEqual(['reset-user']);
+      // resetFailedEmbeddings is global (no userId filter)
+      expect(mocks.query.mock.calls[0][1]).toBeUndefined();
     });
 
     it('should return 0 when no failed pages exist', async () => {
       mocks.query.mockResolvedValueOnce({ rowCount: 0 });
 
-      const count = await resetFailedEmbeddings('no-fail-user');
+      const count = await resetFailedEmbeddings();
 
       expect(count).toBe(0);
     });
@@ -923,7 +933,7 @@ describe('embedding-service', () => {
     it('should return 0 when rowCount is null', async () => {
       mocks.query.mockResolvedValueOnce({ rowCount: null });
 
-      const count = await resetFailedEmbeddings('null-user');
+      const count = await resetFailedEmbeddings();
 
       expect(count).toBe(0);
     });
@@ -937,8 +947,8 @@ describe('embedding-service', () => {
 
     const responses: Array<{ rows: unknown[] }> = [];
 
-    // 0. Chunk settings query
-    responses.push({ rows: [{ embedding_chunk_size: 500, embedding_chunk_overlap: 50 }] });
+    // 0. Chunk settings query (admin_settings format)
+    responses.push({ rows: [{ setting_key: 'embedding_chunk_size', setting_value: '500' }, { setting_key: 'embedding_chunk_overlap', setting_value: '50' }] });
     // 1. COUNT query
     responses.push({ rows: [{ count: '2' }] });
     // 2. Batch SELECT (returns 2 short pages)
@@ -984,8 +994,8 @@ describe('embedPage', () => {
     // Should have called UPDATE to clear embedding_dirty
     expect(mocks.query).toHaveBeenCalledTimes(1);
     expect(mocks.query).toHaveBeenCalledWith(
-      'UPDATE cached_pages SET embedding_dirty = FALSE WHERE user_id = $1 AND confluence_id = $2',
-      ['user-1', 'page-short'],
+      'UPDATE cached_pages SET embedding_dirty = FALSE WHERE confluence_id = $1',
+      ['page-short'],
     );
   });
 
@@ -998,8 +1008,8 @@ describe('embedPage', () => {
     expect(result).toBe(0);
     expect(mocks.query).toHaveBeenCalledTimes(1);
     expect(mocks.query).toHaveBeenCalledWith(
-      'UPDATE cached_pages SET embedding_dirty = FALSE WHERE user_id = $1 AND confluence_id = $2',
-      ['user-1', 'page-empty'],
+      'UPDATE cached_pages SET embedding_dirty = FALSE WHERE confluence_id = $1',
+      ['page-empty'],
     );
   });
 });

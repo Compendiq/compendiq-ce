@@ -211,13 +211,21 @@ describe('Bulk Pages Routes (Parallelized)', () => {
 
       expect(response.statusCode).toBe(200);
 
-      // Verify batch DELETE calls use ANY($2)
-      const deleteCalls = mockQueryFn.mock.calls.filter(
-        (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('DELETE'),
+      // Verify cached_pages DELETE uses ANY($1) (no user_id in shared table)
+      // and pinned_pages DELETE uses ANY($2) (user_id=$1, page_id=ANY($2))
+      const cachedPageDelete = mockQueryFn.mock.calls.find(
+        (call: unknown[]) => typeof call[0] === 'string' &&
+          (call[0] as string).includes('DELETE FROM cached_pages'),
       );
-      for (const call of deleteCalls) {
-        expect(call[0]).toContain('ANY($2)');
-      }
+      expect(cachedPageDelete).toBeDefined();
+      expect(cachedPageDelete![0]).toContain('ANY($1)');
+
+      const pinnedDelete = mockQueryFn.mock.calls.find(
+        (call: unknown[]) => typeof call[0] === 'string' &&
+          (call[0] as string).includes('DELETE FROM pinned_pages'),
+      );
+      expect(pinnedDelete).toBeDefined();
+      expect(pinnedDelete![0]).toContain('ANY($2)');
     });
 
     it('should call cleanPageAttachments for each deleted page', async () => {
@@ -413,8 +421,9 @@ describe('Bulk Pages Routes (Parallelized)', () => {
       });
 
       // The embed endpoint now issues a single UPDATE...RETURNING query
+      // ids are ANY($1), userId is $2 in subquery for space_key access control
       const embedCall = mockQueryFn.mock.calls[0];
-      expect(embedCall[0]).toContain('ANY($2)');
+      expect(embedCall[0]).toContain('ANY($1)');
       expect(embedCall[0]).toContain('RETURNING');
     });
   });

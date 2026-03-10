@@ -44,6 +44,8 @@ interface ArticleViewerProps {
   pageId?: string | null;
   /** Callback with parsed headings for Table of Contents */
   onHeadingsReady?: (headings: TocHeading[]) => void;
+  /** Callback to trigger a manual Confluence sync (e.g. refresh stale diagrams) */
+  onRequestSync?: () => void;
   /** Additional CSS classes */
   className?: string;
 }
@@ -54,6 +56,7 @@ export function ArticleViewer({
   confluenceUrl,
   pageId,
   onHeadingsReady,
+  onRequestSync,
   className,
 }: ArticleViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);

@@ -366,9 +366,7 @@ describe('Pinned Pages API', () => {
       // deletePage mock is handled by sync-service mock
       // pinned_pages delete
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
-      // page_embeddings delete
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-      // cached_pages delete
+      // cached_pages delete (page_embeddings cascade-deleted via FK)
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
       const response = await app.inject({
@@ -383,14 +381,13 @@ describe('Pinned Pages API', () => {
     });
 
     it('should delete pinned_pages row when bulk-deleting pages', async () => {
-      // Bulk delete uses batched queries: ownership check, then parallel cleanup (pinned_pages, embeddings, cached_pages)
-      // batch ownership check via ANY($2)
+      // Bulk delete uses batched queries: ownership check, then parallel cleanup (pinned_pages, cached_pages)
+      // page_embeddings are cascade-deleted via FK on cached_pages
+      // batch ownership check via JOIN user_space_selections
       mockQueryFn.mockResolvedValueOnce({ rows: [{ confluence_id: 'page-1' }], rowCount: 1 });
       // batched pinned_pages delete via ANY($2)
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
-      // batched page_embeddings delete via ANY($2)
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-      // batched cached_pages delete via ANY($2)
+      // batched cached_pages delete via ANY($1)
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
       const response = await app.inject({

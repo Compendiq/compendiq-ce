@@ -17,7 +17,6 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     const result = await query<{
       confluence_url: string | null;
       confluence_pat: string | null;
-      selected_spaces: string[];
       ollama_model: string;
       llm_provider: string;
       openai_base_url: string | null;
@@ -26,12 +25,17 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       theme: string;
       sync_interval_min: number;
       show_space_home_content: boolean;
-      embedding_chunk_size: number;
-      embedding_chunk_overlap: number;
     }>(
-      'SELECT confluence_url, confluence_pat, selected_spaces, ollama_model, llm_provider, openai_base_url, openai_api_key, openai_model, theme, sync_interval_min, show_space_home_content, embedding_chunk_size, embedding_chunk_overlap FROM user_settings WHERE user_id = $1',
+      'SELECT confluence_url, confluence_pat, ollama_model, llm_provider, openai_base_url, openai_api_key, openai_model, theme, sync_interval_min, show_space_home_content FROM user_settings WHERE user_id = $1',
       [request.userId],
     );
+
+    // Fetch selected spaces from user_space_selections
+    const spacesResult = await query<{ space_key: string }>(
+      'SELECT space_key FROM user_space_selections WHERE user_id = $1 ORDER BY space_key',
+      [request.userId],
+    );
+    const selectedSpaces = spacesResult.rows.map((r) => r.space_key);
 
     if (result.rows.length === 0) {
       // Create default settings if missing
@@ -39,7 +43,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       return {
         confluenceUrl: null,
         hasConfluencePat: false,
-        selectedSpaces: [],
+        selectedSpaces,
         ollamaModel: 'qwen3.5',
         llmProvider: 'ollama' as const,
         openaiBaseUrl: null,
@@ -50,8 +54,6 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         syncIntervalMin: 15,
         confluenceConnected: false,
         showSpaceHomeContent: true,
-        embeddingChunkSize: 500,
-        embeddingChunkOverlap: 50,
       };
     }
 
@@ -59,7 +61,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     return {
       confluenceUrl: row.confluence_url,
       hasConfluencePat: !!row.confluence_pat,
-      selectedSpaces: row.selected_spaces ?? [],
+      selectedSpaces,
       ollamaModel: row.ollama_model,
       llmProvider: (row.llm_provider ?? 'ollama') as 'ollama' | 'openai',
       openaiBaseUrl: row.openai_base_url,
@@ -70,8 +72,6 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       syncIntervalMin: row.sync_interval_min,
       confluenceConnected: !!(row.confluence_url && row.confluence_pat),
       showSpaceHomeContent: row.show_space_home_content,
-      embeddingChunkSize: row.embedding_chunk_size ?? 500,
-      embeddingChunkOverlap: row.embedding_chunk_overlap ?? 50,
     };
   });
 
@@ -90,11 +90,6 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     if (body.confluencePat !== undefined && body.confluencePat !== null) {
       updates.push(`confluence_pat = $${paramIdx++}`);
       values.push(encryptPat(body.confluencePat));
-    }
-
-    if (body.selectedSpaces !== undefined) {
-      updates.push(`selected_spaces = $${paramIdx++}`);
-      values.push(body.selectedSpaces);
     }
 
     if (body.ollamaModel !== undefined) {
@@ -137,62 +132,33 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       values.push(body.openaiModel);
     }
 
-    if (body.embeddingChunkSize !== undefined) {
-      updates.push(`embedding_chunk_size = $${paramIdx++}`);
-      values.push(body.embeddingChunkSize);
-    }
+    // Handle selectedSpaces via user_space_selections table
+    if (body.selectedSpaces !== undefined) {
+      const newSpaces = body.selectedSpaces;
 
-    if (body.embeddingChunkOverlap !== undefined) {
-      updates.push(`embedding_chunk_overlap = $${paramIdx++}`);
-      values.push(body.embeddingChunkOverlap);
-    }
-
-    // Validate chunk overlap does not exceed 25% of chunk size.
-    // Read current chunk size from DB if only overlap is being changed.
-    if (body.embeddingChunkSize !== undefined || body.embeddingChunkOverlap !== undefined) {
-      let effectiveChunkSize = body.embeddingChunkSize;
-      let effectiveChunkOverlap = body.embeddingChunkOverlap;
-
-      if (effectiveChunkSize === undefined || effectiveChunkOverlap === undefined) {
-        const current = await query<{ embedding_chunk_size: number; embedding_chunk_overlap: number }>(
-          'SELECT embedding_chunk_size, embedding_chunk_overlap FROM user_settings WHERE user_id = $1',
-          [request.userId],
-        );
-        if (current.rows.length > 0) {
-          effectiveChunkSize ??= current.rows[0].embedding_chunk_size ?? 500;
-          effectiveChunkOverlap ??= current.rows[0].embedding_chunk_overlap ?? 50;
-        } else {
-          effectiveChunkSize ??= 500;
-          effectiveChunkOverlap ??= 50;
-        }
-      }
-
-      if (effectiveChunkOverlap > effectiveChunkSize * 0.25) {
-        throw fastify.httpErrors.badRequest(
-          `Chunk overlap (${effectiveChunkOverlap}) must not exceed 25% of chunk size (${effectiveChunkSize}). Maximum allowed: ${Math.floor(effectiveChunkSize * 0.25)}.`,
-        );
-      }
-    }
-
-    if (updates.length === 0) {
-      return { message: 'No changes' };
-    }
-
-    updates.push(`updated_at = NOW()`);
-    values.push(request.userId);
-
-    await query(
-      `UPDATE user_settings SET ${updates.join(', ')} WHERE user_id = $${paramIdx}`,
-      values,
-    );
-
-    // If chunk settings changed, mark all user pages dirty for re-embedding
-    if (body.embeddingChunkSize !== undefined || body.embeddingChunkOverlap !== undefined) {
+      // Delete spaces no longer selected by this user
       await query(
-        'UPDATE cached_pages SET embedding_dirty = TRUE WHERE user_id = $1',
-        [request.userId],
+        'DELETE FROM user_space_selections WHERE user_id = $1 AND space_key <> ALL($2::text[])',
+        [request.userId, newSpaces],
       );
-      logger.info({ userId: request.userId }, 'Chunk settings changed, all pages marked dirty for re-embedding');
+
+      // Insert newly selected spaces (idempotent)
+      for (const spaceKey of newSpaces) {
+        await query(
+          'INSERT INTO user_space_selections (user_id, space_key) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+          [request.userId, spaceKey],
+        );
+      }
+    }
+
+    if (updates.length > 0) {
+      updates.push(`updated_at = NOW()`);
+      values.push(request.userId);
+
+      await query(
+        `UPDATE user_settings SET ${updates.join(', ')} WHERE user_id = $${paramIdx}`,
+        values,
+      );
     }
 
     // If LLM provider changed, update the active in-memory provider
@@ -200,7 +166,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       setActiveProvider(body.llmProvider as 'ollama' | 'openai');
     }
 
-    // If PAT or URL changed, invalidate all user data (ADR-017)
+    // If PAT or URL changed, invalidate user-specific cached data (ADR-017)
     if (body.confluencePat !== undefined || body.confluenceUrl !== undefined) {
       logger.info({ userId: request.userId }, 'PAT/URL changed, invalidating user cache');
       await invalidateUserData(request.userId, fastify);
@@ -258,10 +224,12 @@ export async function settingsRoutes(fastify: FastifyInstance) {
 }
 
 async function invalidateUserData(userId: string, fastify: FastifyInstance): Promise<void> {
-  // Delete cached data for user (ADR-017)
-  await query('DELETE FROM page_embeddings WHERE user_id = $1', [userId]);
-  await query('DELETE FROM cached_pages WHERE user_id = $1', [userId]);
-  await query('DELETE FROM cached_spaces WHERE user_id = $1', [userId]);
+  // When a user's PAT/URL changes, their space selections are no longer valid.
+  // Clear their space selections so they re-configure with the new credentials.
+  // Shared tables (cached_pages, cached_spaces, page_embeddings) are NOT deleted here
+  // because they are shared across users. Pages are only removed via sync when no
+  // user selects the space.
+  await query('DELETE FROM user_space_selections WHERE user_id = $1', [userId]);
 
   // Invalidate Redis keys using SCAN (avoids O(N) KEYS command)
   try {

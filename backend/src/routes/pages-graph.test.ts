@@ -242,7 +242,7 @@ describe('Knowledge Graph API', () => {
       expect(body.nodes[0].embeddingCount).toBe(0);
     });
 
-    it('should pass userId to all queries for per-user isolation', async () => {
+    it('should pass userId to per-user isolation queries', async () => {
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
@@ -252,11 +252,13 @@ describe('Knowledge Graph API', () => {
         url: '/api/pages/graph',
       });
 
-      // All three queries should include the userId
+      // Nodes and embedding counts queries use userId for access control
       expect(mockQueryFn).toHaveBeenCalledTimes(3);
-      for (const call of mockQueryFn.mock.calls) {
-        expect(call[1]).toContain('test-user-id');
-      }
+      // First two queries (nodes + embedding counts) should include userId
+      expect(mockQueryFn.mock.calls[0][1]).toContain('test-user-id');
+      expect(mockQueryFn.mock.calls[1][1]).toContain('test-user-id');
+      // Third query (edges/relationships) is global (no user_id needed - no PII)
+      expect(mockQueryFn.mock.calls[2][1]).toEqual([]);
     });
 
     it('should handle nodes with null labels gracefully', async () => {
@@ -295,7 +297,7 @@ describe('Knowledge Graph API', () => {
       const body = JSON.parse(response.body);
       expect(body.message).toBe('Graph relationships refreshed');
       expect(body.edges).toBe(10);
-      expect(mockComputePageRelationships).toHaveBeenCalledWith('test-user-id');
+      expect(mockComputePageRelationships).toHaveBeenCalledWith();
     });
   });
 });

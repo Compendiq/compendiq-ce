@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import type { SettingsResponse, LlmProviderType } from '@kb-creator/contracts';
+import type { SettingsResponse, LlmProviderType, AdminSettings } from '@kb-creator/contracts';
 import { apiFetch } from '../../shared/lib/api';
 import { useAuthStore } from '../../stores/auth-store';
 import { useSettings } from '../../shared/hooks/use-settings';
@@ -11,7 +11,7 @@ import { ErrorDashboard } from './ErrorDashboard';
 import { ThemeTab } from './ThemeTab';
 import { SkeletonFormFields } from '../../shared/components/Skeleton';
 
-type TabId = 'confluence' | 'ollama' | 'spaces' | 'theme' | 'account' | 'labels' | 'errors';
+type TabId = 'confluence' | 'ollama' | 'spaces' | 'theme' | 'account' | 'labels' | 'errors' | 'embedding';
 
 export function SettingsPage() {
   const queryClient = useQueryClient();
@@ -39,6 +39,7 @@ export function SettingsPage() {
     { id: 'account', label: 'Account' },
     { id: 'labels', label: 'Labels', adminOnly: true },
     { id: 'errors', label: 'Errors', adminOnly: true },
+    { id: 'embedding', label: 'Embedding', adminOnly: true },
   ];
 
   const visibleTabs = tabs.filter((t) => !t.adminOnly || isAdmin);
@@ -67,7 +68,7 @@ export function SettingsPage() {
         </div>
 
         <div className="p-6">
-          {(isLoading || !settings) && activeTab !== 'labels' && activeTab !== 'errors' && activeTab !== 'theme' ? (
+          {(isLoading || !settings) && activeTab !== 'labels' && activeTab !== 'errors' && activeTab !== 'theme' && activeTab !== 'embedding' ? (
             <SkeletonFormFields />
           ) : activeTab === 'confluence' ? (
             <ConfluenceTab settings={settings!} onSave={(v) => updateSettings.mutate(v)} />
@@ -85,6 +86,8 @@ export function SettingsPage() {
             <LabelManager />
           ) : activeTab === 'errors' && isAdmin ? (
             <ErrorDashboard />
+          ) : activeTab === 'embedding' && isAdmin ? (
+            <EmbeddingTab />
           ) : (
             <AccountTab />
           )}
@@ -184,14 +187,8 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
   const [openaiBaseUrl, setOpenaiBaseUrl] = useState(settings.openaiBaseUrl ?? '');
   const [openaiApiKey, setOpenaiApiKey] = useState('');
   const [openaiModel, setOpenaiModel] = useState(settings.openaiModel ?? '');
-  const [chunkSize, setChunkSize] = useState(settings.embeddingChunkSize ?? 500);
-  const [chunkOverlap, setChunkOverlap] = useState(settings.embeddingChunkOverlap ?? 50);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
-
-  const savedChunkSize = settings.embeddingChunkSize ?? 500;
-  const savedChunkOverlap = settings.embeddingChunkOverlap ?? 50;
-  const hasChunkChanges = chunkSize !== savedChunkSize || chunkOverlap !== savedChunkOverlap;
 
   const { data: ollamaStatus } = useQuery({
     queryKey: ['ollama-status', 'ollama'],
@@ -250,10 +247,6 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
       updates.openaiModel = openaiModel;
       if (openaiBaseUrl) updates.openaiBaseUrl = openaiBaseUrl;
       if (openaiApiKey) updates.openaiApiKey = openaiApiKey;
-    }
-    if (hasChunkChanges) {
-      updates.embeddingChunkSize = chunkSize;
-      updates.embeddingChunkOverlap = chunkOverlap;
     }
     onSave(updates);
   }
@@ -396,62 +389,6 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
         </div>
       </div>
 
-      {/* Chunk Size */}
-      <div>
-        <label className="mb-1.5 block text-sm font-medium" htmlFor="chunk-size-input">
-          Chunk Size (tokens)
-        </label>
-        <p className="mb-1.5 text-sm text-muted-foreground">
-          Controls how much text is grouped into each searchable unit for AI Q&A.
-          Smaller values (128–256) find precise facts but may miss context.
-          Larger values (512–1024) capture complete sections. Default: 500.
-        </p>
-        <input
-          id="chunk-size-input"
-          type="number"
-          min={128}
-          max={2048}
-          step={64}
-          value={chunkSize}
-          onChange={(e) => setChunkSize(Number(e.target.value))}
-          className="glass-input w-40"
-          data-testid="chunk-size-input"
-        />
-      </div>
-
-      {/* Chunk Overlap */}
-      <div>
-        <label className="mb-1.5 block text-sm font-medium" htmlFor="chunk-overlap-input">
-          Chunk Overlap (tokens)
-        </label>
-        <p className="mb-1.5 text-sm text-muted-foreground">
-          Tokens shared between adjacent chunks to prevent information loss at boundaries.
-          Recommended: 10% of chunk size. Default: 50.
-        </p>
-        <input
-          id="chunk-overlap-input"
-          type="number"
-          min={0}
-          max={512}
-          step={10}
-          value={chunkOverlap}
-          onChange={(e) => setChunkOverlap(Number(e.target.value))}
-          className="glass-input w-40"
-          data-testid="chunk-overlap-input"
-        />
-      </div>
-
-      {/* Warning banner when chunk settings have unsaved changes */}
-      {hasChunkChanges && (
-        <div
-          className="glass-card border-yellow-500/30 p-3 text-sm text-yellow-400"
-          data-testid="chunk-change-warning"
-        >
-          Changing chunk settings requires re-processing all embedded pages.
-          This may take several minutes and temporarily affects AI Q&A.
-        </div>
-      )}
-
       {testResult && (
         <div className={`rounded-md p-3 text-sm ${testResult.success ? 'bg-success/10 text-success' : 'bg-destructive/10 text-destructive'}`} data-testid="llm-test-result">
           {testResult.message}
@@ -480,6 +417,125 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
 
 // Keep backward-compatible export name for tests
 export { LlmTab as OllamaTab };
+
+function EmbeddingTab() {
+  const queryClient = useQueryClient();
+
+  const { data: adminSettings, isLoading } = useQuery({
+    queryKey: ['admin-settings'],
+    queryFn: () => apiFetch<AdminSettings>('/admin/settings'),
+  });
+
+  const [chunkSize, setChunkSize] = useState<number | undefined>(undefined);
+  const [chunkOverlap, setChunkOverlap] = useState<number | undefined>(undefined);
+
+  // Initialise local state once data loads
+  const effectiveChunkSize = chunkSize ?? adminSettings?.embeddingChunkSize ?? 500;
+  const effectiveChunkOverlap = chunkOverlap ?? adminSettings?.embeddingChunkOverlap ?? 50;
+
+  const savedChunkSize = adminSettings?.embeddingChunkSize ?? 500;
+  const savedChunkOverlap = adminSettings?.embeddingChunkOverlap ?? 50;
+  const hasChanges =
+    (chunkSize !== undefined && chunkSize !== savedChunkSize) ||
+    (chunkOverlap !== undefined && chunkOverlap !== savedChunkOverlap);
+
+  const updateAdminSettings = useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      apiFetch('/admin/settings', { method: 'PUT', body: JSON.stringify(body) }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
+      setChunkSize(undefined);
+      setChunkOverlap(undefined);
+      toast.success('Embedding settings saved. All pages queued for re-embedding.');
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  function handleSave() {
+    const updates: Record<string, unknown> = {};
+    if (chunkSize !== undefined) updates.embeddingChunkSize = chunkSize;
+    if (chunkOverlap !== undefined) updates.embeddingChunkOverlap = chunkOverlap;
+    if (Object.keys(updates).length > 0) {
+      updateAdminSettings.mutate(updates);
+    }
+  }
+
+  if (isLoading) {
+    return <SkeletonFormFields />;
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="glass-card border-yellow-500/30 p-3 text-sm text-yellow-400">
+        These settings are shared across all users. Changing them will trigger re-embedding of all pages, which may take several minutes.
+      </div>
+
+      <div>
+        <label className="mb-1.5 block text-sm font-medium" htmlFor="admin-chunk-size-input">
+          Chunk Size (tokens)
+        </label>
+        <p className="mb-1.5 text-sm text-muted-foreground">
+          Controls how much text is grouped into each searchable unit for AI Q&amp;A.
+          Smaller values (128-256) find precise facts but may miss context.
+          Larger values (512-1024) capture complete sections. Default: 500.
+        </p>
+        <input
+          id="admin-chunk-size-input"
+          type="number"
+          min={128}
+          max={2048}
+          step={64}
+          value={effectiveChunkSize}
+          onChange={(e) => setChunkSize(Number(e.target.value))}
+          className="glass-input w-40"
+          data-testid="admin-chunk-size-input"
+        />
+      </div>
+
+      <div>
+        <label className="mb-1.5 block text-sm font-medium" htmlFor="admin-chunk-overlap-input">
+          Chunk Overlap (tokens)
+        </label>
+        <p className="mb-1.5 text-sm text-muted-foreground">
+          Tokens shared between adjacent chunks to prevent information loss at boundaries.
+          Recommended: 10% of chunk size. Default: 50.
+        </p>
+        <input
+          id="admin-chunk-overlap-input"
+          type="number"
+          min={0}
+          max={512}
+          step={10}
+          value={effectiveChunkOverlap}
+          onChange={(e) => setChunkOverlap(Number(e.target.value))}
+          className="glass-input w-40"
+          data-testid="admin-chunk-overlap-input"
+        />
+      </div>
+
+      {hasChanges && (
+        <div
+          className="glass-card border-yellow-500/30 p-3 text-sm text-yellow-400"
+          data-testid="admin-chunk-change-warning"
+        >
+          Saving will mark all embedded pages dirty and trigger global re-embedding.
+          This may take several minutes and temporarily affects AI Q&amp;A for all users.
+        </div>
+      )}
+
+      <div>
+        <button
+          onClick={handleSave}
+          disabled={!hasChanges || updateAdminSettings.isPending}
+          className="glass-button-primary"
+          data-testid="admin-chunk-save-btn"
+        >
+          {updateAdminSettings.isPending ? 'Saving...' : 'Save'}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function AccountTab() {
   return (

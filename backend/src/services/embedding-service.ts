@@ -168,7 +168,29 @@ export function chunkText(
 }
 
 /**
+ * Read chunk settings from admin_settings table.
+ * Falls back to module-level defaults if not found.
+ */
+export async function getAdminChunkSettings(): Promise<{ chunkSize: number; chunkOverlap: number }> {
+  const result = await query<{ setting_key: string; setting_value: string }>(
+    `SELECT setting_key, setting_value FROM admin_settings
+     WHERE setting_key IN ('embedding_chunk_size', 'embedding_chunk_overlap')`,
+  );
+
+  const settings: Record<string, number> = {};
+  for (const row of result.rows) {
+    settings[row.setting_key] = parseInt(row.setting_value, 10);
+  }
+
+  return {
+    chunkSize: settings['embedding_chunk_size'] ?? CHUNK_SIZE,
+    chunkOverlap: settings['embedding_chunk_overlap'] ?? CHUNK_OVERLAP,
+  };
+}
+
+/**
  * Embed a single page's content.
+ * Tables are shared (no user_id); access control is at the query layer.
  */
 export async function embedPage(
   userId: string,
@@ -182,8 +204,8 @@ export async function embedPage(
   if (!plainText || plainText.length < 20) {
     logger.debug({ confluenceId, pageTitle }, 'Skipping empty/short page for embedding');
     await query(
-      'UPDATE cached_pages SET embedding_dirty = FALSE WHERE user_id = $1 AND confluence_id = $2',
-      [userId, confluenceId],
+      'UPDATE cached_pages SET embedding_dirty = FALSE WHERE confluence_id = $1',
+      [confluenceId],
     );
     return 0;
   }
@@ -192,7 +214,7 @@ export async function embedPage(
   if (chunks.length === 0) return 0;
 
   // Delete old embeddings for this page
-  await query('DELETE FROM page_embeddings WHERE user_id = $1 AND confluence_id = $2', [userId, confluenceId]);
+  await query('DELETE FROM page_embeddings WHERE confluence_id = $1', [confluenceId]);
 
   // Generate embeddings in batches of 10
   const batchSize = 10;
@@ -207,10 +229,9 @@ export async function embedPage(
 
       for (let j = 0; j < batch.length; j++) {
         await query(
-          `INSERT INTO page_embeddings (user_id, confluence_id, chunk_index, chunk_text, embedding, metadata)
-           VALUES ($1, $2, $3, $4, $5, $6)`,
+          `INSERT INTO page_embeddings (confluence_id, chunk_index, chunk_text, embedding, metadata)
+           VALUES ($1, $2, $3, $4, $5)`,
           [
-            userId,
             confluenceId,
             i + j,
             batch[j].text,
@@ -229,8 +250,8 @@ export async function embedPage(
   // Mark page as no longer dirty + update embedding status + clear any previous error
   await query(
     `UPDATE cached_pages SET embedding_dirty = FALSE, embedding_status = 'embedded', embedded_at = NOW(), embedding_error = NULL
-     WHERE user_id = $1 AND confluence_id = $2`,
-    [userId, confluenceId],
+     WHERE confluence_id = $1`,
+    [confluenceId],
   );
 
   logger.info({ confluenceId, pageTitle, chunks: embeddedCount }, 'Page embedded');
@@ -248,13 +269,15 @@ export async function isProcessingUser(userId: string): Promise<boolean> {
 }
 
 /**
- * Process all dirty pages for a user in batches with circuit breaker resilience.
+ * Process all dirty pages in batches with circuit breaker resilience.
  *
  * Pages are fetched in batches of DIRTY_PAGE_BATCH_SIZE using LIMIT/OFFSET.
  * When a CircuitBreakerOpenError is detected, instead of marking the page
  * as failed, the loop waits for the breaker to recover and retries.
  *
  * An optional `onProgress` callback receives progress events for SSE streaming.
+ *
+ * userId is used only for the Redis lock and providerGenerateEmbedding (LLM provider selection).
  */
 export async function processDirtyPages(
   userId: string,
@@ -272,23 +295,12 @@ export async function processDirtyPages(
   const errorList: string[] = [];
 
   try {
-    // Fetch user's chunk settings (fall back to module-level defaults)
-    const chunkSettingsResult = await query<{ embedding_chunk_size: number; embedding_chunk_overlap: number }>(
-      'SELECT embedding_chunk_size, embedding_chunk_overlap FROM user_settings WHERE user_id = $1',
-      [userId],
-    );
-    const chunkOpts =
-      chunkSettingsResult.rows.length > 0
-        ? {
-            chunkSize: chunkSettingsResult.rows[0].embedding_chunk_size ?? CHUNK_SIZE,
-            chunkOverlap: chunkSettingsResult.rows[0].embedding_chunk_overlap ?? CHUNK_OVERLAP,
-          }
-        : { chunkSize: CHUNK_SIZE, chunkOverlap: CHUNK_OVERLAP };
+    // Fetch global chunk settings from admin_settings
+    const chunkOpts = await getAdminChunkSettings();
 
-    // Get total count for logging purposes
+    // Get total count for logging purposes (global, not per-user)
     const countResult = await query<{ count: string }>(
-      'SELECT COUNT(*) as count FROM cached_pages WHERE user_id = $1 AND embedding_dirty = TRUE AND body_html IS NOT NULL',
-      [userId],
+      'SELECT COUNT(*) as count FROM cached_pages WHERE embedding_dirty = TRUE AND body_html IS NOT NULL',
     );
     const totalDirty = parseInt(countResult.rows[0].count, 10);
     logger.info({ userId, dirtyPages: totalDirty }, 'Processing dirty pages for embedding');
@@ -313,10 +325,10 @@ export async function processDirtyPages(
       }>(
         `SELECT confluence_id, title, space_key, body_html
          FROM cached_pages
-         WHERE user_id = $1 AND embedding_dirty = TRUE AND body_html IS NOT NULL
+         WHERE embedding_dirty = TRUE AND body_html IS NOT NULL
          ORDER BY last_modified_at DESC
-         LIMIT $2 OFFSET $3`,
-        [userId, DIRTY_PAGE_BATCH_SIZE, offset],
+         LIMIT $1 OFFSET $2`,
+        [DIRTY_PAGE_BATCH_SIZE, offset],
       );
 
       if (batch.rows.length === 0) break;
@@ -328,8 +340,8 @@ export async function processDirtyPages(
         try {
           // Mark page as currently embedding and clear any previous error
           await query(
-            `UPDATE cached_pages SET embedding_status = 'embedding', embedding_error = NULL WHERE user_id = $1 AND confluence_id = $2`,
-            [userId, page.confluence_id],
+            `UPDATE cached_pages SET embedding_status = 'embedding', embedding_error = NULL WHERE confluence_id = $1`,
+            [page.confluence_id],
           );
 
           await embedPage(userId, page.confluence_id, page.title, page.space_key, page.body_html, chunkOpts);
@@ -408,8 +420,8 @@ export async function processDirtyPages(
                   const errorMessage = retryErr instanceof Error ? retryErr.message : String(retryErr);
                   logger.error({ err: retryErr, confluenceId: page.confluence_id }, 'Failed to embed page after circuit breaker recovery');
                   await query(
-                    `UPDATE cached_pages SET embedding_status = 'failed', embedding_error = $3 WHERE user_id = $1 AND confluence_id = $2`,
-                    [userId, page.confluence_id, errorMessage.slice(0, 1000)],
+                    `UPDATE cached_pages SET embedding_status = 'failed', embedding_error = $2 WHERE confluence_id = $1`,
+                    [page.confluence_id, errorMessage.slice(0, 1000)],
                   ).catch((updateErr) => logger.error({ err: updateErr }, 'Failed to update embedding_status to failed'));
                   totalErrors++;
                   batchErrors++;
@@ -418,11 +430,11 @@ export async function processDirtyPages(
                   cbSuccess = true; // Mark as handled (failed, but handled)
                   break;
                 }
-                // Still circuit breaker — will loop to wait again
+                // Still circuit breaker -- will loop to wait again
               }
             }
 
-            // Exhausted circuit breaker retries — stop the entire embedding job
+            // Exhausted circuit breaker retries -- stop the entire embedding job
             if (!cbSuccess) {
               logger.error(
                 { userId, retriesExhausted: cbRetries },
@@ -439,8 +451,8 @@ export async function processDirtyPages(
           logger.error({ err, confluenceId: page.confluence_id }, 'Failed to embed page');
           const errorMessage = err instanceof Error ? err.message : String(err);
           await query(
-            `UPDATE cached_pages SET embedding_status = 'failed', embedding_error = $3 WHERE user_id = $1 AND confluence_id = $2`,
-            [userId, page.confluence_id, errorMessage.slice(0, 1000)],
+            `UPDATE cached_pages SET embedding_status = 'failed', embedding_error = $2 WHERE confluence_id = $1`,
+            [page.confluence_id, errorMessage.slice(0, 1000)],
           ).catch((updateErr) => logger.error({ err: updateErr }, 'Failed to update embedding_status to failed'));
           totalErrors++;
           batchErrors++;
@@ -510,7 +522,7 @@ export async function processDirtyPages(
   // Post-embed hook: recompute nearest-neighbor relationships
   if (totalProcessed > 0) {
     try {
-      await computePageRelationships(userId);
+      await computePageRelationships();
       // Invalidate cached graph data so the next request reflects new relationships
       await invalidateGraphCache(userId);
     } catch (err) {
@@ -522,19 +534,18 @@ export async function processDirtyPages(
 }
 
 /**
- * Reset all failed embeddings for a user back to 'not_embedded' so they can be retried.
+ * Reset all failed embeddings back to 'not_embedded' so they can be retried.
  * Returns the number of pages reset.
  */
-export async function resetFailedEmbeddings(userId: string): Promise<number> {
+export async function resetFailedEmbeddings(): Promise<number> {
   const result = await query(
     `UPDATE cached_pages
      SET embedding_dirty = TRUE, embedding_status = 'not_embedded', embedding_error = NULL
-     WHERE user_id = $1 AND embedding_status = 'failed'`,
-    [userId],
+     WHERE embedding_status = 'failed'`,
   );
 
   const count = result.rowCount ?? 0;
-  logger.info({ userId, resetCount: count }, 'Reset failed embeddings for retry');
+  logger.info({ resetCount: count }, 'Reset failed embeddings for retry');
   return count;
 }
 
@@ -542,13 +553,14 @@ export async function resetFailedEmbeddings(userId: string): Promise<number> {
  * Compute nearest-neighbor page relationships using pgvector cosine similarity.
  * Uses average embedding per page, then finds top-K neighbors for each page.
  * Also computes label-overlap edges.
+ * Tables are shared (no user_id).
  */
-export async function computePageRelationships(userId: string): Promise<number> {
+export async function computePageRelationships(): Promise<number> {
   const TOP_K = 5;
   const SIMILARITY_THRESHOLD = 0.7; // cosine similarity (1 - cosine_distance)
 
-  // Clear existing relationships for this user
-  await query('DELETE FROM page_relationships WHERE user_id = $1', [userId]);
+  // Clear all existing relationships
+  await query('DELETE FROM page_relationships');
 
   // Compute embedding similarity edges using pgvector <=> operator.
   // We compute average embedding per page, then find top-K nearest neighbors.
@@ -557,7 +569,6 @@ export async function computePageRelationships(userId: string): Promise<number> 
     `WITH page_avg AS (
        SELECT confluence_id, AVG(embedding) AS avg_embedding
        FROM page_embeddings
-       WHERE user_id = $1
        GROUP BY confluence_id
      ),
      neighbors AS (
@@ -571,17 +582,17 @@ export async function computePageRelationships(userId: string): Promise<number> 
          FROM page_avg b
          WHERE b.confluence_id != a.confluence_id
          ORDER BY a.avg_embedding <=> b.avg_embedding
-         LIMIT $2
+         LIMIT $1
        ) b
-       WHERE (1 - (a.avg_embedding <=> b.avg_embedding)) >= $3
+       WHERE (1 - (a.avg_embedding <=> b.avg_embedding)) >= $2
      )
-     INSERT INTO page_relationships (user_id, page_id_1, page_id_2, relationship_type, score)
-     SELECT $1, page_id_1, page_id_2, 'embedding_similarity', score
+     INSERT INTO page_relationships (page_id_1, page_id_2, relationship_type, score)
+     SELECT page_id_1, page_id_2, 'embedding_similarity', score
      FROM neighbors
-     ON CONFLICT (user_id, page_id_1, page_id_2, relationship_type) DO UPDATE
+     ON CONFLICT (page_id_1, page_id_2, relationship_type) DO UPDATE
        SET score = EXCLUDED.score, created_at = NOW()
      RETURNING page_id_1, page_id_2, score`,
-    [userId, TOP_K, SIMILARITY_THRESHOLD],
+    [TOP_K, SIMILARITY_THRESHOLD],
   );
 
   // Compute label-overlap edges: pages sharing at least one label
@@ -602,38 +613,54 @@ export async function computePageRelationships(userId: string): Promise<number> 
            )
          END AS score
        FROM cached_pages a
-       JOIN cached_pages b ON a.user_id = b.user_id
-         AND a.confluence_id < b.confluence_id
-       WHERE a.user_id = $1
-         AND a.labels IS NOT NULL AND array_length(a.labels, 1) > 0
+       JOIN cached_pages b ON a.confluence_id < b.confluence_id
+       WHERE a.labels IS NOT NULL AND array_length(a.labels, 1) > 0
          AND b.labels IS NOT NULL AND array_length(b.labels, 1) > 0
          AND a.labels && b.labels
      )
-     INSERT INTO page_relationships (user_id, page_id_1, page_id_2, relationship_type, score)
-     SELECT $1, page_id_1, page_id_2, 'label_overlap', score
+     INSERT INTO page_relationships (page_id_1, page_id_2, relationship_type, score)
+     SELECT page_id_1, page_id_2, 'label_overlap', score
      FROM label_overlaps
      WHERE score > 0
-     ON CONFLICT (user_id, page_id_1, page_id_2, relationship_type) DO UPDATE
+     ON CONFLICT (page_id_1, page_id_2, relationship_type) DO UPDATE
        SET score = EXCLUDED.score, created_at = NOW()
      RETURNING page_id_1, page_id_2, score`,
-    [userId],
   );
 
   const totalEdges = similarityResult.rows.length + labelResult.rows.length;
-  logger.info({ userId, embeddingSimilarity: similarityResult.rows.length, labelOverlap: labelResult.rows.length },
+  logger.info({ embeddingSimilarity: similarityResult.rows.length, labelOverlap: labelResult.rows.length },
     'Page relationships computed');
   return totalEdges;
 }
 
 /**
- * Get embedding status for a user.
+ * Get embedding status scoped to a user's selected spaces.
  */
 export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatus> {
   const [totalResult, dirtyResult, embeddingResult, embeddedPagesResult, isProcessing] = await Promise.all([
-    query<{ count: string }>('SELECT COUNT(*) as count FROM cached_pages WHERE user_id = $1', [userId]),
-    query<{ count: string }>('SELECT COUNT(*) as count FROM cached_pages WHERE user_id = $1 AND embedding_dirty = TRUE', [userId]),
-    query<{ count: string }>('SELECT COUNT(*) as count FROM page_embeddings WHERE user_id = $1', [userId]),
-    query<{ count: string }>('SELECT COUNT(DISTINCT confluence_id) as count FROM page_embeddings WHERE user_id = $1', [userId]),
+    query<{ count: string }>(
+      `SELECT COUNT(*) as count FROM cached_pages cp
+       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1`,
+      [userId],
+    ),
+    query<{ count: string }>(
+      `SELECT COUNT(*) as count FROM cached_pages cp
+       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
+       WHERE cp.embedding_dirty = TRUE`,
+      [userId],
+    ),
+    query<{ count: string }>(
+      `SELECT COUNT(*) as count FROM page_embeddings pe
+       JOIN cached_pages cp ON pe.confluence_id = cp.confluence_id
+       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1`,
+      [userId],
+    ),
+    query<{ count: string }>(
+      `SELECT COUNT(DISTINCT pe.confluence_id) as count FROM page_embeddings pe
+       JOIN cached_pages cp ON pe.confluence_id = cp.confluence_id
+       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1`,
+      [userId],
+    ),
     isEmbeddingLocked(userId),
   ]);
 
@@ -647,19 +674,18 @@ export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatu
 }
 
 /**
- * Re-embed all pages for all users (admin action).
+ * Re-embed all pages (admin action).
  */
 export async function reEmbedAll(): Promise<void> {
   await query('DELETE FROM page_embeddings');
   await query(`UPDATE cached_pages SET embedding_dirty = TRUE, embedding_status = 'not_embedded', embedded_at = NULL, embedding_error = NULL`);
   logger.info('All embeddings cleared, pages marked dirty for re-embedding');
 
-  // Get all users with pages
-  const users = await query<{ user_id: string }>(
-    'SELECT DISTINCT user_id FROM cached_pages',
+  // Use a system user ID for provider selection (pick any active user with settings)
+  const usersResult = await query<{ user_id: string }>(
+    'SELECT user_id FROM user_settings WHERE confluence_url IS NOT NULL LIMIT 1',
   );
+  const systemUserId = usersResult.rows[0]?.user_id ?? 'system';
 
-  for (const { user_id } of users.rows) {
-    await processDirtyPages(user_id);
-  }
+  await processDirtyPages(systemUserId);
 }

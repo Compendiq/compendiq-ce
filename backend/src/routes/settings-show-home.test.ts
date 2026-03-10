@@ -84,18 +84,24 @@ describe('Settings routes – showSpaceHomeContent', () => {
   });
 
   it('GET /settings returns showSpaceHomeContent from DB row', async () => {
+    // Query 1: user_settings
     mockQuery.mockResolvedValueOnce({
       rows: [{
         confluence_url: null,
         confluence_pat: null,
-        selected_spaces: [],
         ollama_model: 'qwen3.5',
+        llm_provider: 'ollama',
+        openai_base_url: null,
+        openai_api_key: null,
+        openai_model: null,
         theme: 'glass-dark',
         sync_interval_min: 15,
         show_space_home_content: false,
       }],
       rowCount: 1,
     });
+    // Query 2: user_space_selections
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
 
     const response = await app.inject({ method: 'GET', url: '/api/settings' });
     const body = JSON.parse(response.body);

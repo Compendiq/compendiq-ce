@@ -15,8 +15,6 @@ export const UserSettingsSchema = z.object({
   theme: z.string(),
   syncIntervalMin: z.number().int().min(1).max(1440),
   showSpaceHomeContent: z.boolean(),
-  embeddingChunkSize: z.number().int().min(128).max(2048),
-  embeddingChunkOverlap: z.number().int().min(0).max(512),
 });
 
 export const UpdateSettingsSchema = UserSettingsSchema.partial();
@@ -35,8 +33,6 @@ export const SettingsResponseSchema = z.object({
   syncIntervalMin: z.number(),
   confluenceConnected: z.boolean(),
   showSpaceHomeContent: z.boolean(),
-  embeddingChunkSize: z.number().int().min(128).max(2048),
-  embeddingChunkOverlap: z.number().int().min(0).max(512),
 });
 
 export const TestConfluenceSchema = z.object({

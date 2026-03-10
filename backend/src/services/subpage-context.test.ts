@@ -30,7 +30,7 @@ describe('subpage-context', () => {
       expect(result).toBe(true);
       expect(mockQuery).toHaveBeenCalledWith(
         expect.stringContaining('COUNT(*)'),
-        ['user-1', 'page-1'],
+        ['page-1'],
       );
     });
 
