@@ -327,9 +327,9 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       <EditorContent
         editor={editor}
         className={cn(
-          'prose max-w-none px-4 py-3',
+          'prose max-w-none',
           !isLight && 'prose-invert',
-          '[&_.tiptap]:min-h-[200px] [&_.tiptap]:outline-none',
+          '[&_.tiptap]:min-h-[200px] [&_.tiptap]:max-w-4xl [&_.tiptap]:mx-auto [&_.tiptap]:px-10 [&_.tiptap]:py-3 [&_.tiptap]:outline-none',
           '[&_table]:border-collapse [&_td]:border [&_td]:border-border/50 [&_td]:p-2 [&_th]:border [&_th]:border-border/50 [&_th]:bg-foreground/5 [&_th]:p-2',
           '[&_pre]:rounded-md [&_pre]:bg-foreground/5 [&_pre]:p-4',
           '[&_ul[data-type=taskList]]:list-none [&_ul[data-type=taskList]]:pl-0',
