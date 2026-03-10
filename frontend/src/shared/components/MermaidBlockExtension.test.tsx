@@ -1,8 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { MermaidBlock } from './MermaidBlockExtension';
+import { _resetMermaidCache, loadMermaid } from './MermaidDiagram';
 
 // Mock mermaid
 const mockMermaidRender = vi.fn().mockResolvedValue({ svg: '<svg>diagram</svg>' });
@@ -36,9 +37,16 @@ function TestEditor({ content, editable = true }: { content: string; editable?: 
 }
 
 describe('MermaidBlockExtension', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
+    _resetMermaidCache();
     mockMermaidRender.mockResolvedValue({ svg: '<svg>diagram</svg>' });
+    // Pre-warm the mermaid cache so the lazy import resolves instantly
+    await loadMermaid();
+  });
+
+  afterEach(() => {
+    _resetMermaidCache();
   });
 
   it('parses mermaid code blocks from HTML and renders the MermaidBlock node view', async () => {
