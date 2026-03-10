@@ -1,14 +1,18 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { m } from 'framer-motion';
 import { Search, FileText, Plus, RefreshCw, ChevronLeft, ChevronRight, FolderOpen, Filter, X, List, Layers, BookOpen, Bot, Cpu, Loader2, Sparkles } from 'lucide-react';
 import DOMPurify from 'dompurify';
+import { toast } from 'sonner';
 import { usePages, usePageFilterOptions, usePage, useEmbeddingStatus, useTriggerEmbedding } from '../../shared/hooks/use-pages';
 import { useSpaces, useSync, useSyncStatus } from '../../shared/hooks/use-spaces';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { useAuthStore } from '../../stores/auth-store';
 import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../../shared/components/EmbeddingStatusBadge';
+import { SkeletonPageItem } from '../../shared/components/Skeleton';
+import { EmptyState } from '../../shared/components/EmptyState';
 import { BulkOperations } from './BulkOperations';
 import { KnowledgeGaps } from '../dashboard/KnowledgeGaps';
 import { cn } from '../../shared/lib/cn';
@@ -68,6 +72,18 @@ export function PagesPage() {
   });
   const syncMutation = useSync();
   const { data: syncStatus } = useSyncStatus();
+  const queryClient = useQueryClient();
+  const wasProcessingRef = useRef(false);
+
+  useEffect(() => {
+    if (embeddingStatusData?.isProcessing) {
+      wasProcessingRef.current = true;
+    } else if (wasProcessingRef.current && embeddingStatusData && !embeddingStatusData.isProcessing) {
+      wasProcessingRef.current = false;
+      toast.success('Embedding complete — all pages are up to date');
+      queryClient.invalidateQueries({ queryKey: ['pages'] });
+    }
+  }, [embeddingStatusData, queryClient]);
 
   const activeFilterCount = [author, labels, freshness, embeddingStatus, dateFrom, dateTo].filter(Boolean).length;
 
@@ -125,7 +141,7 @@ export function PagesPage() {
           </button>
           <button
             onClick={() => navigate('/pages/new')}
-            className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            className="glass-button-primary"
           >
             <Plus size={16} />
             New Page
@@ -194,6 +210,27 @@ export function PagesPage() {
         </div>
       )}
 
+      {/* Embedding progress */}
+      {embeddingStatusData?.isProcessing && (
+        <div className="glass-card flex items-center gap-3 p-3 border border-primary/30" data-testid="embedding-progress-banner">
+          <Loader2 size={16} className="animate-spin text-primary" />
+          <span className="text-sm">
+            Embedding in progress — {embeddingStatusData.dirtyPages} pages remaining
+          </span>
+          <div className="ml-auto flex items-center gap-2">
+            <div className="h-1.5 w-32 overflow-hidden rounded-full bg-foreground/10">
+              <div
+                className="h-full rounded-full bg-primary transition-all"
+                style={{ width: `${((embeddingStatusData.totalPages - embeddingStatusData.dirtyPages) / Math.max(embeddingStatusData.totalPages, 1)) * 100}%` }}
+              />
+            </div>
+            <span className="text-xs text-muted-foreground">
+              {embeddingStatusData.totalPages - embeddingStatusData.dirtyPages}/{embeddingStatusData.totalPages}
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* Filters */}
       <div className="glass-card space-y-3 p-4">
         <div className="flex flex-wrap items-center gap-3">
@@ -205,14 +242,14 @@ export function PagesPage() {
               placeholder="Search pages..."
               value={search}
               onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-              className="w-full rounded-md bg-foreground/5 py-2 pl-10 pr-4 text-sm outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-primary"
+              className="glass-input border-transparent pl-10 pr-4"
             />
           </div>
 
           <select
             value={spaceKey}
             onChange={(e) => { setSpaceKey(e.target.value); setPage(1); setForcePageList(false); }}
-            className="rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+            className="glass-select"
           >
             <option value="">All Spaces</option>
             {spaces?.map((s) => (
@@ -223,7 +260,7 @@ export function PagesPage() {
           <select
             value={sort}
             onChange={(e) => setSort(e.target.value as typeof sort)}
-            className="rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+            className="glass-select"
           >
             <option value="modified">Last Modified</option>
             <option value="title">Title</option>
@@ -261,7 +298,7 @@ export function PagesPage() {
               <select
                 value={author}
                 onChange={(e) => { setAuthor(e.target.value); setPage(1); }}
-                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="glass-select w-full"
                 data-testid="filter-author"
               >
                 <option value="">All Authors</option>
@@ -277,7 +314,7 @@ export function PagesPage() {
               <select
                 value={labels}
                 onChange={(e) => { setLabels(e.target.value); setPage(1); }}
-                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="glass-select w-full"
                 data-testid="filter-labels"
               >
                 <option value="">All Labels</option>
@@ -293,7 +330,7 @@ export function PagesPage() {
               <select
                 value={freshness}
                 onChange={(e) => { setFreshness(e.target.value); setPage(1); }}
-                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="glass-select w-full"
                 data-testid="filter-freshness"
               >
                 <option value="">Any</option>
@@ -310,7 +347,7 @@ export function PagesPage() {
               <select
                 value={embeddingStatus}
                 onChange={(e) => { setEmbeddingStatus(e.target.value); setPage(1); }}
-                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="glass-select w-full"
                 data-testid="filter-embedding"
               >
                 <option value="">Any</option>
@@ -326,7 +363,7 @@ export function PagesPage() {
                 type="date"
                 value={dateFrom}
                 onChange={(e) => { setDateFrom(e.target.value); setPage(1); }}
-                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="glass-select w-full"
                 data-testid="filter-date-from"
               />
             </div>
@@ -336,7 +373,7 @@ export function PagesPage() {
                 type="date"
                 value={dateTo}
                 onChange={(e) => { setDateTo(e.target.value); setPage(1); }}
-                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="glass-select w-full"
                 data-testid="filter-date-to"
               />
             </div>
@@ -392,17 +429,15 @@ export function PagesPage() {
       {isLoading ? (
         <div className="space-y-3">
           {Array.from({ length: 5 }).map((_, i) => (
-            <div key={i} className="glass-card h-16 animate-pulse" />
+            <SkeletonPageItem key={i} />
           ))}
         </div>
       ) : !pagesData?.items.length ? (
-        <div className="glass-card flex flex-col items-center justify-center py-16 text-center">
-          <FolderOpen size={48} className="mb-4 text-muted-foreground" />
-          <p className="text-lg font-medium">No pages found</p>
-          <p className="text-sm text-muted-foreground">
-            {search ? 'Try a different search term' : 'Sync your Confluence spaces to see pages here'}
-          </p>
-        </div>
+        <EmptyState
+          icon={FolderOpen}
+          title="No pages found"
+          description={search ? 'Try a different search term' : 'Sync your Confluence spaces to see pages here'}
+        />
       ) : (
         <div className="space-y-2">
           {pagesData.items.map((pageItem, i) => (

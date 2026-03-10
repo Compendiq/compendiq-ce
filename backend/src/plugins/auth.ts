@@ -6,6 +6,7 @@ import { query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
 
 const JWT_ISSUER = 'kb-creator';
+const ACCESS_TOKEN_EXPIRY = process.env.ACCESS_TOKEN_EXPIRY ?? '1h';
 const REFRESH_TOKEN_EXPIRY_DAYS = 7;
 
 interface JwtPayload {
@@ -44,7 +45,7 @@ export async function generateAccessToken(payload: JwtPayload): Promise<string> 
     .setProtectedHeader({ alg: 'HS256' })
     .setSubject(payload.sub)
     .setIssuer(JWT_ISSUER)
-    .setExpirationTime('15m')
+    .setExpirationTime(ACCESS_TOKEN_EXPIRY)
     .sign(getJwtSecret());
 }
 

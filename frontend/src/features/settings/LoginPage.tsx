@@ -49,7 +49,7 @@ export function LoginPage() {
               onChange={(e) => setUsername(e.target.value)}
               required
               minLength={3}
-              className="w-full rounded-md border border-border/50 bg-foreground/5 px-3 py-2 text-sm outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+              className="glass-input"
               placeholder="Enter username"
             />
           </div>
@@ -62,7 +62,7 @@ export function LoginPage() {
               onChange={(e) => setPassword(e.target.value)}
               required
               minLength={8}
-              className="w-full rounded-md border border-border/50 bg-foreground/5 px-3 py-2 text-sm outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+              className="glass-input"
               placeholder="Enter password"
             />
           </div>
@@ -70,7 +70,7 @@ export function LoginPage() {
           <button
             type="submit"
             disabled={loading}
-            className="w-full rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+            className="glass-button-primary w-full py-2.5"
           >
             {loading ? 'Loading...' : isRegister ? 'Create Account' : 'Sign In'}
           </button>

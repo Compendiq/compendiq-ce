@@ -648,13 +648,26 @@ export async function pagesRoutes(fastify: FastifyInstance) {
   // ======== Auto-Tagging (Issue #35) ========
 
   // POST /api/pages/:id/auto-tag - auto-tag a single page
-  fastify.post('/pages/:id/auto-tag', async (request) => {
+  fastify.post('/pages/:id/auto-tag', async (request, reply) => {
     const { id } = IdParamSchema.parse(request.params);
     const userId = request.userId;
     const { model } = AutoTagBodySchema.parse(request.body);
 
-    const result = await autoTagPage(userId, id, model);
-    return result;
+    try {
+      const result = await autoTagPage(userId, id, model);
+      return result;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      request.log.error({ err, confluenceId: id, userId, model }, 'Auto-tag failed');
+
+      if (message.startsWith('Page not found')) {
+        return reply.code(404).send({ error: message });
+      }
+      if (message.includes('ECONNREFUSED') || message.includes('fetch failed')) {
+        return reply.code(503).send({ error: 'LLM server is not reachable' });
+      }
+      return reply.code(502).send({ error: 'Auto-tagging failed — check LLM server connection' });
+    }
   });
 
   // POST /api/pages/:id/apply-tags - apply specific tags to a page

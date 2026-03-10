@@ -52,40 +52,58 @@ const mockSpaces = [
   { key: 'DEV', name: 'Development', type: 'global' },
 ];
 
-describe('PagesPage', () => {
-  beforeEach(() => {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
-      const url = typeof input === 'string' ? input : (input as Request).url;
-      if (url.includes('/pages/filters')) {
-        return new Response(JSON.stringify(mockFilterOptions), {
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      if (url.includes('/spaces')) {
-        return new Response(JSON.stringify(mockSpaces), {
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      if (url.includes('/sync/status')) {
-        return new Response(JSON.stringify({ status: 'idle' }), {
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      if (url.includes('/embeddings/status')) {
-        return new Response(JSON.stringify({ totalPages: 10, embeddedPages: 8, dirtyPages: 2, totalEmbeddings: 50, isProcessing: false }), {
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      if (url.includes('/analytics/knowledge-gaps')) {
-        return new Response(JSON.stringify({ gaps: [], total: 0, periodDays: 30 }), {
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      // Default: pages list
-      return new Response(JSON.stringify(mockPagesResponse), {
+const mockEmbeddingStatusIdle = {
+  totalPages: 50,
+  dirtyPages: 0,
+  totalEmbeddings: 50,
+  isProcessing: false,
+};
+
+const mockEmbeddingStatusProcessing = {
+  totalPages: 50,
+  dirtyPages: 12,
+  totalEmbeddings: 38,
+  isProcessing: true,
+};
+
+function mockFetchWithEmbeddingStatus(embeddingStatus: typeof mockEmbeddingStatusIdle) {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+    const url = typeof input === 'string' ? input : (input as Request).url;
+    if (url.includes('/embeddings/status')) {
+      return new Response(JSON.stringify(embeddingStatus), {
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+    if (url.includes('/pages/filters')) {
+      return new Response(JSON.stringify(mockFilterOptions), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.includes('/spaces')) {
+      return new Response(JSON.stringify(mockSpaces), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.includes('/sync/status')) {
+      return new Response(JSON.stringify({ status: 'idle' }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.includes('/analytics/knowledge-gaps')) {
+      return new Response(JSON.stringify({ gaps: [], total: 0, periodDays: 30 }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    // Default: pages list
+    return new Response(JSON.stringify(mockPagesResponse), {
+      headers: { 'Content-Type': 'application/json' },
     });
+  });
+}
+
+describe('PagesPage', () => {
+  beforeEach(() => {
+    mockFetchWithEmbeddingStatus(mockEmbeddingStatusIdle);
   });
 
   afterEach(() => {
@@ -203,5 +221,23 @@ describe('PagesPage', () => {
     // Title container should have text-left alignment
     const container = title.parentElement!;
     expect(container.className).toContain('text-left');
+  });
+
+  it('shows embedding progress banner when embedding is processing', async () => {
+    vi.restoreAllMocks();
+    mockFetchWithEmbeddingStatus(mockEmbeddingStatusProcessing);
+    render(<PagesPage />, { wrapper: createWrapper() });
+    const banner = await screen.findByTestId('embedding-progress-banner');
+    expect(banner).toBeInTheDocument();
+    expect(banner).toHaveTextContent('Embedding in progress');
+    expect(banner).toHaveTextContent('12 pages remaining');
+    expect(banner).toHaveTextContent('38/50');
+  });
+
+  it('does not show embedding progress banner when embedding is idle', async () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    // Wait for pages to load to ensure all queries have resolved
+    await screen.findByText('Test Page');
+    expect(screen.queryByTestId('embedding-progress-banner')).not.toBeInTheDocument();
   });
 });

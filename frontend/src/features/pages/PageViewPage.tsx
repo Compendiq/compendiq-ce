@@ -292,7 +292,7 @@ export function PageViewPage() {
               <TableOfContents headings={tocHeadings} contentRef={contentRef} />
             </div>
           </div>
-          <FlowchartGenerator pageId={id!} bodyHtml={page.bodyHtml} />
+          <FlowchartGenerator pageId={id!} bodyHtml={page.bodyHtml} pageTitle={page.title} pageVersion={page.version} />
         </>
       )}
 
