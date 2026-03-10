@@ -72,17 +72,52 @@ describe('FlowchartGenerator', () => {
 
   it('renders the Diagram button when closed', () => {
     render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} />, { wrapper: createWrapper() });
-    expect(screen.getByText('Diagram')).toBeInTheDocument();
+    expect(screen.getByTitle('Generate diagram from article')).toBeInTheDocument();
   });
 
   it('expands panel when button is clicked', async () => {
     render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} />, { wrapper: createWrapper() });
 
-    fireEvent.click(screen.getByText('Diagram'));
+    fireEvent.click(screen.getByTitle('Generate diagram from article'));
 
     await waitFor(() => {
       expect(screen.getByText('Generate Diagram')).toBeInTheDocument();
     });
+  });
+
+  it('renders only trigger button in renderTriggerOnly mode', () => {
+    render(
+      <FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} renderTriggerOnly />,
+      { wrapper: createWrapper() },
+    );
+    expect(screen.getByTitle('Generate diagram from article')).toBeInTheDocument();
+    expect(screen.queryByText('Generate Diagram')).not.toBeInTheDocument();
+  });
+
+  it('renders nothing in renderPanelOnly mode when closed', () => {
+    const { container } = render(
+      <FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} open={false} renderPanelOnly />,
+      { wrapper: createWrapper() },
+    );
+    expect(container.innerHTML).toBe('');
+  });
+
+  it('renders panel in renderPanelOnly mode when open', () => {
+    render(
+      <FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} open={true} renderPanelOnly />,
+      { wrapper: createWrapper() },
+    );
+    expect(screen.getByText('Generate Diagram')).toBeInTheDocument();
+  });
+
+  it('button label has responsive hidden class for small screens', () => {
+    render(
+      <FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} renderTriggerOnly />,
+      { wrapper: createWrapper() },
+    );
+    const btn = screen.getByTitle('Generate diagram from article');
+    const label = btn.querySelector('span');
+    expect(label).toHaveClass('hidden', 'sm:inline');
   });
 
   it('loads models when panel opens', async () => {

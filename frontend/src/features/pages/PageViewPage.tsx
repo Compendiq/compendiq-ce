@@ -6,7 +6,6 @@ import {
   ArrowLeft, Edit3, Save, X, Trash2, Wand2, FileText,
   ExternalLink, Clock, User,
 } from 'lucide-react';
-import type { SettingsResponse } from '@kb-creator/contracts';
 import { usePage, useUpdatePage, useDeletePage } from '../../shared/hooks/use-pages';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { Editor, getDraft, clearDraft } from '../../shared/components/Editor';
@@ -20,7 +19,6 @@ import { TagEditor } from './TagEditor';
 import { VersionHistory } from './VersionHistory';
 import { FlowchartGenerator } from './FlowchartGenerator';
 import { QualityAnalysisPanel } from './QualityAnalysisPanel';
-import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { toast } from 'sonner';
 
 function ImageLightbox({ src, alt, onClose }: { src: string; alt: string; onClose: () => void }) {
@@ -65,14 +63,14 @@ export function PageViewPage() {
   const { data: page, isLoading } = usePage(id);
   const updateMutation = useUpdatePage();
   const deleteMutation = useDeletePage();
-  const isLight = useIsLightTheme();
-
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState(false);
   const [editTitle, setEditTitle] = useState('');
   const [editHtml, setEditHtml] = useState('');
   const [lightboxSrc, setLightboxSrc] = useState<{ src: string; alt: string } | null>(null);
   const [tocHeadings, setTocHeadings] = useState<TocHeading[]>([]);
+  const [diagramOpen, setDiagramOpen] = useState(false);
+  const [qualityOpen, setQualityOpen] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
 
   const { data: settings } = useSettings();
@@ -209,6 +207,23 @@ export function PageViewPage() {
             </>
           ) : (
             <>
+              <FlowchartGenerator
+                pageId={id!}
+                bodyHtml={page.bodyHtml}
+                pageTitle={page.title}
+                pageVersion={page.version}
+                open={diagramOpen}
+                onToggle={() => setDiagramOpen((v) => !v)}
+                renderTriggerOnly
+              />
+              <QualityAnalysisPanel
+                pageId={id!}
+                bodyHtml={page.bodyHtml}
+                pageTitle={page.title}
+                open={qualityOpen}
+                onToggle={() => setQualityOpen((v) => !v)}
+                renderTriggerOnly
+              />
               <VersionHistory
                 pageId={id!}
                 currentBodyText={page.bodyText}
@@ -293,8 +308,23 @@ export function PageViewPage() {
               <TableOfContents headings={tocHeadings} contentRef={contentRef} />
             </div>
           </div>
-          <FlowchartGenerator pageId={id!} bodyHtml={page.bodyHtml} pageTitle={page.title} pageVersion={page.version} />
-          <QualityAnalysisPanel pageId={id!} bodyHtml={page.bodyHtml} pageTitle={page.title} />
+          <FlowchartGenerator
+            pageId={id!}
+            bodyHtml={page.bodyHtml}
+            pageTitle={page.title}
+            pageVersion={page.version}
+            open={diagramOpen}
+            onToggle={() => setDiagramOpen((v) => !v)}
+            renderPanelOnly
+          />
+          <QualityAnalysisPanel
+            pageId={id!}
+            bodyHtml={page.bodyHtml}
+            pageTitle={page.title}
+            open={qualityOpen}
+            onToggle={() => setQualityOpen((v) => !v)}
+            renderPanelOnly
+          />
         </>
       )}
 

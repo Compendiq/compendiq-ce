@@ -12,11 +12,26 @@ interface QualityAnalysisPanelProps {
   pageId: string;
   bodyHtml: string;
   pageTitle: string;
+  /** When provided, the component is "controlled" — the parent owns the open state. */
+  open?: boolean;
+  /** Called when the user wants to toggle the panel open/closed. */
+  onToggle?: () => void;
+  /** When true, render only the trigger button (used for header placement). */
+  renderTriggerOnly?: boolean;
+  /** When true, render only the expanded panel (used for content-area placement). */
+  renderPanelOnly?: boolean;
 }
 
-export function QualityAnalysisPanel({ pageId, bodyHtml, pageTitle }: QualityAnalysisPanelProps) {
+export function QualityAnalysisPanel({
+  pageId, bodyHtml, pageTitle,
+  open: controlledOpen, onToggle, renderTriggerOnly, renderPanelOnly,
+}: QualityAnalysisPanelProps) {
   const isLight = useIsLightTheme();
-  const [open, setOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
+
+  // Support both controlled and uncontrolled modes
+  const open = controlledOpen !== undefined ? controlledOpen : internalOpen;
+  const toggleOpen = onToggle ?? (() => setInternalOpen((prev) => !prev));
   const [result, setResult] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [model, setModel] = useState('');
@@ -76,26 +91,24 @@ export function QualityAnalysisPanel({ pageId, bodyHtml, pageTitle }: QualityAna
     }
   }, [model, isStreaming, bodyHtml, pageId]);
 
-  if (!open) {
-    return (
-      <button
-        onClick={() => setOpen(true)}
-        className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
-        title="Analyze article quality"
-      >
-        <ShieldCheck size={14} /> Analyze Quality
-      </button>
-    );
-  }
+  const triggerButton = (
+    <button
+      onClick={toggleOpen}
+      className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
+      title="Analyze article quality"
+    >
+      <ShieldCheck size={14} /> <span className="hidden sm:inline">Quality</span>
+    </button>
+  );
 
-  return (
+  const panel = (
     <div className="glass-card space-y-3 p-4">
       <div className="flex items-center justify-between">
         <h3 className="flex items-center gap-2 text-sm font-medium">
           <ShieldCheck size={16} className="text-primary" /> Quality Analysis
         </h3>
         <button
-          onClick={() => setOpen(false)}
+          onClick={toggleOpen}
           className="rounded p-1 text-muted-foreground hover:bg-foreground/5"
         >
           <X size={14} />
@@ -149,4 +162,17 @@ export function QualityAnalysisPanel({ pageId, bodyHtml, pageTitle }: QualityAna
       )}
     </div>
   );
+
+  // Render trigger button only (for header placement)
+  if (renderTriggerOnly) {
+    return triggerButton;
+  }
+
+  // Render panel only (for content-area placement)
+  if (renderPanelOnly) {
+    return open ? panel : null;
+  }
+
+  // Default: self-contained toggle (backward compatible)
+  return open ? panel : triggerButton;
 }

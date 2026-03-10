@@ -62,12 +62,12 @@ describe('QualityAnalysisPanel', () => {
     useAuthStore.getState().clearAuth();
   });
 
-  it('renders the Analyze Quality button when closed', () => {
+  it('renders the Quality button when closed', () => {
     render(
       <QualityAnalysisPanel pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" />,
       { wrapper: createWrapper() },
     );
-    expect(screen.getByText('Analyze Quality')).toBeInTheDocument();
+    expect(screen.getByTitle('Analyze article quality')).toBeInTheDocument();
   });
 
   it('expands panel when button is clicked', async () => {
@@ -76,11 +76,46 @@ describe('QualityAnalysisPanel', () => {
       { wrapper: createWrapper() },
     );
 
-    fireEvent.click(screen.getByText('Analyze Quality'));
+    fireEvent.click(screen.getByTitle('Analyze article quality'));
 
     await waitFor(() => {
       expect(screen.getByText('Quality Analysis')).toBeInTheDocument();
     });
+  });
+
+  it('renders only trigger button in renderTriggerOnly mode', () => {
+    render(
+      <QualityAnalysisPanel pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" renderTriggerOnly />,
+      { wrapper: createWrapper() },
+    );
+    expect(screen.getByTitle('Analyze article quality')).toBeInTheDocument();
+    expect(screen.queryByText('Quality Analysis')).not.toBeInTheDocument();
+  });
+
+  it('renders nothing in renderPanelOnly mode when closed', () => {
+    const { container } = render(
+      <QualityAnalysisPanel pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" open={false} renderPanelOnly />,
+      { wrapper: createWrapper() },
+    );
+    expect(container.innerHTML).toBe('');
+  });
+
+  it('renders panel in renderPanelOnly mode when open', () => {
+    render(
+      <QualityAnalysisPanel pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" open={true} renderPanelOnly />,
+      { wrapper: createWrapper() },
+    );
+    expect(screen.getByText('Quality Analysis')).toBeInTheDocument();
+  });
+
+  it('button label has responsive hidden class for small screens', () => {
+    render(
+      <QualityAnalysisPanel pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" renderTriggerOnly />,
+      { wrapper: createWrapper() },
+    );
+    const btn = screen.getByTitle('Analyze article quality');
+    const label = btn.querySelector('span');
+    expect(label).toHaveClass('hidden', 'sm:inline');
   });
 
   it('shows page title in the panel', async () => {
@@ -89,7 +124,7 @@ describe('QualityAnalysisPanel', () => {
       { wrapper: createWrapper() },
     );
 
-    fireEvent.click(screen.getByText('Analyze Quality'));
+    fireEvent.click(screen.getByTitle('Analyze article quality'));
 
     await waitFor(() => {
       expect(screen.getByText('Analyzing: My Article')).toBeInTheDocument();
@@ -102,7 +137,7 @@ describe('QualityAnalysisPanel', () => {
       { wrapper: createWrapper() },
     );
 
-    fireEvent.click(screen.getByText('Analyze Quality'));
+    fireEvent.click(screen.getByTitle('Analyze article quality'));
 
     await waitFor(() => {
       expect(apiFetchMock).toHaveBeenCalledWith('/ollama/models');
@@ -115,7 +150,7 @@ describe('QualityAnalysisPanel', () => {
       { wrapper: createWrapper() },
     );
 
-    fireEvent.click(screen.getByText('Analyze Quality'));
+    fireEvent.click(screen.getByTitle('Analyze article quality'));
     await waitFor(() => {
       expect(screen.getByText('Quality Analysis')).toBeInTheDocument();
     });
@@ -125,7 +160,7 @@ describe('QualityAnalysisPanel', () => {
     fireEvent.click(closeBtn);
 
     expect(screen.queryByText('Quality Analysis')).not.toBeInTheDocument();
-    expect(screen.getByText('Analyze Quality')).toBeInTheDocument();
+    expect(screen.getByTitle('Analyze article quality')).toBeInTheDocument();
   });
 
   it('sends correct payload when analyzing', async () => {
@@ -139,7 +174,7 @@ describe('QualityAnalysisPanel', () => {
       { wrapper: createWrapper() },
     );
 
-    fireEvent.click(screen.getByText('Analyze Quality'));
+    fireEvent.click(screen.getByTitle('Analyze article quality'));
 
     await waitFor(() => {
       expect(screen.getByText('Analyze')).toBeInTheDocument();
@@ -170,7 +205,7 @@ describe('QualityAnalysisPanel', () => {
       { wrapper: createWrapper() },
     );
 
-    fireEvent.click(screen.getByText('Analyze Quality'));
+    fireEvent.click(screen.getByTitle('Analyze article quality'));
 
     await waitFor(() => {
       expect(screen.getByText('Analyze')).toBeInTheDocument();
@@ -194,7 +229,7 @@ describe('QualityAnalysisPanel', () => {
       { wrapper: createWrapper() },
     );
 
-    fireEvent.click(screen.getByText('Analyze Quality'));
+    fireEvent.click(screen.getByTitle('Analyze article quality'));
 
     await waitFor(() => {
       expect(screen.getByText('Analyze')).toBeInTheDocument();
@@ -222,7 +257,7 @@ describe('QualityAnalysisPanel', () => {
       { wrapper: createWrapper() },
     );
 
-    fireEvent.click(screen.getByText('Analyze Quality'));
+    fireEvent.click(screen.getByTitle('Analyze article quality'));
 
     await waitFor(() => {
       expect(screen.getByText('Analyze')).toBeInTheDocument();
