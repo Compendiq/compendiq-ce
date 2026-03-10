@@ -9,6 +9,22 @@ import { mergeAttributes } from '@tiptap/core';
  * Round-trip: Confluence XHTML -> HTML (data-title on <pre>) -> TipTap -> HTML (data-title on <pre>) -> Confluence XHTML
  */
 export const TitledCodeBlock = CodeBlockLowlight.extend({
+  parseHTML() {
+    return [
+      {
+        tag: 'pre',
+        preserveWhitespace: 'full' as const,
+        getAttrs: (node) => {
+          const el = node as HTMLElement;
+          return {
+            language: el.querySelector('code')?.className.match(/language-(\w+)/)?.[1] ?? null,
+            title: el.getAttribute('data-title'),
+          };
+        },
+      },
+    ];
+  },
+
   addAttributes() {
     return {
       ...this.parent?.(),

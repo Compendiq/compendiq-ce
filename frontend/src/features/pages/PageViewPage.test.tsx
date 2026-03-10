@@ -155,6 +155,19 @@ describe('PageViewPage', () => {
     expect(sidebar).toHaveClass('sticky', 'top-4', 'self-start');
   });
 
+  it('article viewer wrapper does not have overflow-hidden so code block titles are not clipped', () => {
+    const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
+
+    // The glass-card wrapping ArticleViewer must not have overflow-hidden
+    // so that position:absolute ::before pseudo-elements (code block titles) render
+    const glassCards = Array.from(container.querySelectorAll('.glass-card'));
+    const articleCard = glassCards.find(
+      (el) => el.querySelector('[class*="prose"]') !== null,
+    );
+    expect(articleCard).toBeInTheDocument();
+    expect(articleCard).not.toHaveClass('overflow-hidden');
+  });
+
   it('toolbar contains Diagram, Quality, History and Duplicates buttons', () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
 

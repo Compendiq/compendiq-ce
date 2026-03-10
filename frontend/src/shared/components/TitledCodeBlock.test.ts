@@ -29,6 +29,48 @@ describe('TitledCodeBlock', () => {
     expect(parseRules?.[0]).toEqual(expect.objectContaining({ tag: 'pre' }));
   });
 
+  it('top-level parseHTML getAttrs extracts data-title', () => {
+    const parseRules = getParseRules(TitledCodeBlock);
+    expect(parseRules).toBeDefined();
+    const rule = parseRules?.[0];
+    expect(typeof rule?.getAttrs).toBe('function');
+
+    const mockEl = {
+      getAttribute: (name: string) => (name === 'data-title' ? 'docker-compose.yml' : null),
+      querySelector: () => null,
+    } as unknown as HTMLElement;
+
+    const attrs = rule!.getAttrs(mockEl);
+    expect(attrs).toEqual(expect.objectContaining({ title: 'docker-compose.yml' }));
+  });
+
+  it('top-level parseHTML getAttrs returns null title when data-title absent', () => {
+    const parseRules = getParseRules(TitledCodeBlock);
+    const rule = parseRules?.[0];
+
+    const mockEl = {
+      getAttribute: () => null,
+      querySelector: () => null,
+    } as unknown as HTMLElement;
+
+    const attrs = rule!.getAttrs(mockEl);
+    expect(attrs).toEqual(expect.objectContaining({ title: null }));
+  });
+
+  it('top-level parseHTML getAttrs extracts language from code child class', () => {
+    const parseRules = getParseRules(TitledCodeBlock);
+    const rule = parseRules?.[0];
+
+    const mockCodeEl = { className: 'language-typescript' };
+    const mockEl = {
+      getAttribute: () => null,
+      querySelector: (sel: string) => (sel === 'code' ? mockCodeEl : null),
+    } as unknown as HTMLElement;
+
+    const attrs = rule!.getAttrs(mockEl);
+    expect(attrs).toEqual(expect.objectContaining({ language: 'typescript' }));
+  });
+
   it('defines a title attribute with data-title parseHTML', () => {
     const attrs = getAttrs(TitledCodeBlock);
     expect(attrs).toBeDefined();

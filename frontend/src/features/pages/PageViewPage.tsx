@@ -362,7 +362,7 @@ export function PageViewPage() {
       ) : (
         <>
           <div className="flex gap-4">
-            <div className="glass-card flex-1 overflow-hidden" ref={contentRef}>
+            <div className="glass-card flex-1" ref={contentRef}>
               <FeatureErrorBoundary featureName="Article Viewer">
                 <ArticleViewer
                   content={page.bodyHtml}
