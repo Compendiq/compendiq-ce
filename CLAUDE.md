@@ -139,7 +139,12 @@ Key conversion: `turndown` + `jsdom` with custom rules per Confluence macro type
 
 ## Git Workflow
 
-Branch from `main` as `feature/<desc>`. PRs: `feature/* -> main`. Commits: concise, describe "why" not "what". Never ignore CI failures. Never skip hooks.
+**CRITICAL — never violate:**
+- Branch from `dev` as `feature/<desc>`. PRs MUST target `dev`, never `main` directly.
+- Only `dev -> main` merges are allowed to target `main`. No exceptions.
+- If a PR accidentally targets `main`, retarget it to `dev` before merging.
+
+Commits: concise, describe "why" not "what". Never ignore CI failures. Never skip hooks.
 
 ## Environment
 
