@@ -3,10 +3,11 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import { m } from 'framer-motion';
 import {
   Send, Bot, User, Loader2, MessageSquare, Plus, Trash2,
-  Wand2, FileText, ListCollapse, Sparkles, GitBranch,
+  Wand2, FileText, ListCollapse, Sparkles, GitBranch, FileInput,
 } from 'lucide-react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '../../shared/lib/api';
 import { streamSSE } from '../../shared/lib/sse';
 import { usePage, useEmbeddingStatus } from '../../shared/hooks/use-pages';
@@ -16,6 +17,16 @@ import { DiffView } from '../../shared/components/DiffView';
 import { MermaidDiagram } from '../../shared/components/MermaidDiagram';
 import { SourceCitations, type Source } from './SourceCitations';
 import { toast } from 'sonner';
+
+/** HTML-encode a string so it is safe to interpolate inside HTML elements. */
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 interface Message {
   role: 'user' | 'assistant';
@@ -35,6 +46,7 @@ type Mode = 'ask' | 'improve' | 'generate' | 'summarize' | 'diagram';
 export function AiAssistantPage() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const pageId = searchParams.get('pageId');
   const isLight = useIsLightTheme();
 
@@ -51,6 +63,7 @@ export function AiAssistantPage() {
   const [improvedContent, setImprovedContent] = useState<string>('');
   const [diagramType, setDiagramType] = useState<string>('flowchart');
   const [diagramCode, setDiagramCode] = useState<string>('');
+  const [isInsertingDiagram, setIsInsertingDiagram] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -110,7 +123,11 @@ export function AiAssistantPage() {
   }, [messages]);
 
   const handleAsk = useCallback(async () => {
-    if (!input.trim() || !model || isStreaming) return;
+    if (!input.trim() || isStreaming) return;
+    if (!model) {
+      toast.error('No model available. Check your LLM provider settings.');
+      return;
+    }
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -125,11 +142,15 @@ export function AiAssistantPage() {
     setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
 
     try {
-      for await (const chunk of streamSSE<{ content?: string; done?: boolean; final?: boolean; conversationId?: string; sources?: Source[] }>(
+      for await (const chunk of streamSSE<{ content?: string; error?: string; done?: boolean; final?: boolean; conversationId?: string; sources?: Source[] }>(
         '/llm/ask',
         { question, model, conversationId },
         controller.signal,
       )) {
+        if (chunk.error) {
+          toast.error(chunk.error);
+          break;
+        }
         if (chunk.content) {
           assistantContent += chunk.content;
           setMessages((prev) => {
@@ -163,7 +184,15 @@ export function AiAssistantPage() {
   }, [input, model, isStreaming, conversationId]);
 
   const handleImprove = useCallback(async () => {
-    if (!page || !model || isStreaming) return;
+    if (isStreaming) return;
+    if (!page) {
+      toast.error('No page selected. Open a page first, then click "AI Improve".');
+      return;
+    }
+    if (!model) {
+      toast.error('No model available. Check your LLM provider settings.');
+      return;
+    }
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -177,12 +206,16 @@ export function AiAssistantPage() {
     setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
 
     try {
-      for await (const chunk of streamSSE('/llm/improve', {
+      for await (const chunk of streamSSE<{ content?: string; error?: string; done?: boolean }>('/llm/improve', {
         content: page.bodyHtml,
         type: improvementType,
         model,
         pageId,
       }, controller.signal)) {
+        if (chunk.error) {
+          toast.error(chunk.error);
+          break;
+        }
         if (chunk.content) {
           result += chunk.content;
           setMessages((prev) => {
@@ -204,7 +237,11 @@ export function AiAssistantPage() {
   }, [page, model, improvementType, pageId, isStreaming]);
 
   const handleGenerate = useCallback(async () => {
-    if (!input.trim() || !model || isStreaming) return;
+    if (!input.trim() || isStreaming) return;
+    if (!model) {
+      toast.error('No model available. Check your LLM provider settings.');
+      return;
+    }
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -218,7 +255,11 @@ export function AiAssistantPage() {
     setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
 
     try {
-      for await (const chunk of streamSSE('/llm/generate', { prompt, model }, controller.signal)) {
+      for await (const chunk of streamSSE<{ content?: string; error?: string; done?: boolean }>('/llm/generate', { prompt, model }, controller.signal)) {
+        if (chunk.error) {
+          toast.error(chunk.error);
+          break;
+        }
         if (chunk.content) {
           result += chunk.content;
           setMessages((prev) => {
@@ -237,7 +278,15 @@ export function AiAssistantPage() {
   }, [input, model, isStreaming]);
 
   const handleSummarize = useCallback(async () => {
-    if (!page || !model || isStreaming) return;
+    if (isStreaming) return;
+    if (!page) {
+      toast.error('No page selected. Open a page first, then click "Summarize".');
+      return;
+    }
+    if (!model) {
+      toast.error('No model available. Check your LLM provider settings.');
+      return;
+    }
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -249,10 +298,14 @@ export function AiAssistantPage() {
     setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
 
     try {
-      for await (const chunk of streamSSE('/llm/summarize', {
+      for await (const chunk of streamSSE<{ content?: string; error?: string; done?: boolean }>('/llm/summarize', {
         content: page.bodyHtml,
         model,
       }, controller.signal)) {
+        if (chunk.error) {
+          toast.error(chunk.error);
+          break;
+        }
         if (chunk.content) {
           result += chunk.content;
           setMessages((prev) => {
@@ -271,7 +324,15 @@ export function AiAssistantPage() {
   }, [page, model, isStreaming]);
 
   const handleDiagram = useCallback(async () => {
-    if (!page || !model || isStreaming) return;
+    if (isStreaming) return;
+    if (!page) {
+      toast.error('No page selected. Open a page first, then use "Diagram" mode.');
+      return;
+    }
+    if (!model) {
+      toast.error('No model available. Check your LLM provider settings.');
+      return;
+    }
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -284,12 +345,16 @@ export function AiAssistantPage() {
     setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
 
     try {
-      for await (const chunk of streamSSE('/llm/generate-diagram', {
+      for await (const chunk of streamSSE<{ content?: string; error?: string; done?: boolean }>('/llm/generate-diagram', {
         content: page.bodyHtml,
         model,
         diagramType,
         pageId,
       }, controller.signal)) {
+        if (chunk.error) {
+          toast.error(chunk.error);
+          break;
+        }
         if (chunk.content) {
           result += chunk.content;
           setMessages((prev) => {
@@ -307,6 +372,29 @@ export function AiAssistantPage() {
       setIsStreaming(false);
     }
   }, [page, model, diagramType, pageId, isStreaming]);
+
+  const handleInsertDiagram = useCallback(async () => {
+    if (!diagramCode || !page || !pageId || isInsertingDiagram) return;
+    setIsInsertingDiagram(true);
+    try {
+      const diagramHtml = `\n<pre><code class="language-mermaid">${escapeHtml(diagramCode)}</code></pre>\n`;
+      const updatedHtml = page.bodyHtml + diagramHtml;
+      await apiFetch(`/pages/${pageId}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          title: page.title,
+          bodyHtml: updatedHtml,
+          version: page.version,
+        }),
+      });
+      toast.success('Diagram inserted into article');
+      queryClient.invalidateQueries({ queryKey: ['pages', pageId] });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to insert diagram');
+    } finally {
+      setIsInsertingDiagram(false);
+    }
+  }, [diagramCode, page, pageId, isInsertingDiagram, queryClient]);
 
   const startNewConversation = () => {
     setMessages([]);
@@ -414,15 +502,21 @@ export function AiAssistantPage() {
 
           <div className="flex-1" />
 
-          <select
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            className="rounded-md bg-foreground/5 px-2 py-1 text-sm outline-none"
-          >
-            {models.map((m) => (
-              <option key={m.name} value={m.name}>{m.name}</option>
-            ))}
-          </select>
+          {models.length === 0 ? (
+            <span className="flex items-center gap-1.5 rounded-md bg-foreground/5 px-2 py-1 text-sm text-muted-foreground">
+              <Loader2 size={12} className="animate-spin" /> Loading models...
+            </span>
+          ) : (
+            <select
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              className="rounded-md bg-foreground/5 px-2 py-1 text-sm outline-none"
+            >
+              {models.map((m) => (
+                <option key={m.name} value={m.name}>{m.name}</option>
+              ))}
+            </select>
+          )}
 
           {page && (
             <span className="flex items-center gap-1 rounded bg-primary/10 px-2 py-0.5 text-xs text-primary">
@@ -483,10 +577,10 @@ export function AiAssistantPage() {
               </p>
               <p className="text-sm text-muted-foreground">
                 {mode === 'ask' && 'Your questions will be answered using RAG over your Confluence pages'}
-                {mode === 'improve' && page ? `Ready to improve: ${page.title}` : 'Open a page first'}
+                {mode === 'improve' && (page ? `Ready to improve: ${page.title}` : 'Navigate to a page and click "AI Improve" to get started')}
                 {mode === 'generate' && 'AI will create a full article based on your prompt'}
-                {mode === 'summarize' && page ? `Ready to summarize: ${page.title}` : 'Open a page first'}
-                {mode === 'diagram' && page ? `Ready to diagram: ${page.title}` : 'Open a page first'}
+                {mode === 'summarize' && (page ? `Ready to summarize: ${page.title}` : 'Navigate to a page and click "Summarize" to get started')}
+                {mode === 'diagram' && (page ? `Ready to diagram: ${page.title}` : 'Navigate to a page and click "Diagram" to get started')}
               </p>
             </div>
           )}
@@ -546,7 +640,22 @@ export function AiAssistantPage() {
 
           {/* Mermaid diagram for diagram mode */}
           {mode === 'diagram' && diagramCode && !isStreaming && (
-            <MermaidDiagram code={diagramCode} className="mt-4" />
+            <>
+              <MermaidDiagram code={diagramCode} className="mt-4" />
+              {page && pageId && (
+                <button
+                  onClick={handleInsertDiagram}
+                  disabled={isInsertingDiagram}
+                  className="mt-2 flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                >
+                  {isInsertingDiagram ? (
+                    <><Loader2 size={14} className="animate-spin" /> Inserting...</>
+                  ) : (
+                    <><FileInput size={14} /> Use in article</>
+                  )}
+                </button>
+              )}
+            </>
           )}
         </div>
 
@@ -564,7 +673,7 @@ export function AiAssistantPage() {
               />
               <button
                 onClick={handleSubmit}
-                disabled={isStreaming || !input.trim()}
+                disabled={isStreaming || !input.trim() || !model}
                 className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
               >
                 {isStreaming ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
@@ -573,11 +682,13 @@ export function AiAssistantPage() {
           ) : (
             <button
               onClick={handleSubmit}
-              disabled={isStreaming || !page}
+              disabled={isStreaming || !page || !model}
               className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
             >
               {isStreaming ? (
                 <><Loader2 size={14} className="animate-spin" /> Processing...</>
+              ) : !model ? (
+                <><Loader2 size={14} className="animate-spin" /> Loading models...</>
               ) : (
                 <>
                   {mode === 'improve' && <><Wand2 size={14} /> Improve Page</>}

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { FlowchartGenerator } from './FlowchartGenerator';
 import { useAuthStore } from '../../stores/auth-store';
 
@@ -11,33 +12,57 @@ vi.mock('mermaid', () => ({
   },
 }));
 
-// Track fetch calls
-let fetchSpy: ReturnType<typeof vi.spyOn>;
+// Mock SSE module so we can control streaming behavior for diagram generation
+const streamSSEMock = vi.fn();
+vi.mock('../../shared/lib/sse', () => ({
+  streamSSE: (...args: unknown[]) => streamSSEMock(...args),
+}));
 
-function mockModelsResponse() {
-  return new Response(JSON.stringify([{ name: 'llama3' }, { name: 'qwen3:latest' }]), {
-    headers: { 'Content-Type': 'application/json' },
+// Mock apiFetch so we can control API calls
+const apiFetchMock = vi.fn();
+vi.mock('../../shared/lib/api', () => ({
+  apiFetch: (...args: unknown[]) => apiFetchMock(...args),
+}));
+
+// Mock sonner toast so we can verify messages
+const toastErrorMock = vi.fn();
+const toastSuccessMock = vi.fn();
+vi.mock('sonner', () => ({
+  toast: {
+    error: (...args: unknown[]) => toastErrorMock(...args),
+    success: (...args: unknown[]) => toastSuccessMock(...args),
+  },
+}));
+
+function createWrapper() {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
   });
-}
-
-function mockSSEResponse(chunks: string[]) {
-  const body = chunks
-    .map((c, i) => `data: ${JSON.stringify({ content: c, done: i === chunks.length - 1 })}`)
-    .join('\n\n');
-
-  return new Response(body, {
-    headers: { 'Content-Type': 'text/event-stream' },
-  });
+  return function Wrapper({ children }: { children: React.ReactNode }) {
+    return (
+      <QueryClientProvider client={queryClient}>
+        {children}
+      </QueryClientProvider>
+    );
+  };
 }
 
 describe('FlowchartGenerator', () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     useAuthStore.getState().setAuth('test-token', {
       id: '1',
       username: 'testuser',
       role: 'user',
     });
-    fetchSpy = vi.spyOn(globalThis, 'fetch');
+
+    // Default: models API returns two models
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path === '/ollama/models') {
+        return Promise.resolve([{ name: 'llama3' }, { name: 'qwen3:latest' }]);
+      }
+      return Promise.resolve({});
+    });
   });
 
   afterEach(() => {
@@ -46,14 +71,12 @@ describe('FlowchartGenerator', () => {
   });
 
   it('renders the Diagram button when closed', () => {
-    fetchSpy.mockResolvedValue(mockModelsResponse());
-    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" />);
+    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} />, { wrapper: createWrapper() });
     expect(screen.getByText('Diagram')).toBeInTheDocument();
   });
 
   it('expands panel when button is clicked', async () => {
-    fetchSpy.mockResolvedValue(mockModelsResponse());
-    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" />);
+    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} />, { wrapper: createWrapper() });
 
     fireEvent.click(screen.getByText('Diagram'));
 
@@ -63,22 +86,17 @@ describe('FlowchartGenerator', () => {
   });
 
   it('loads models when panel opens', async () => {
-    fetchSpy.mockResolvedValue(mockModelsResponse());
-    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" />);
+    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} />, { wrapper: createWrapper() });
 
     fireEvent.click(screen.getByText('Diagram'));
 
     await waitFor(() => {
-      expect(fetchSpy).toHaveBeenCalledWith(
-        expect.stringContaining('/ollama/models'),
-        expect.any(Object),
-      );
+      expect(apiFetchMock).toHaveBeenCalledWith('/ollama/models');
     });
   });
 
   it('renders diagram type selector with all types', async () => {
-    fetchSpy.mockResolvedValue(mockModelsResponse());
-    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" />);
+    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} />, { wrapper: createWrapper() });
 
     fireEvent.click(screen.getByText('Diagram'));
 
@@ -91,8 +109,7 @@ describe('FlowchartGenerator', () => {
   });
 
   it('defaults to flowchart type with active styling', async () => {
-    fetchSpy.mockResolvedValue(mockModelsResponse());
-    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" />);
+    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} />, { wrapper: createWrapper() });
 
     fireEvent.click(screen.getByText('Diagram'));
 
@@ -103,8 +120,7 @@ describe('FlowchartGenerator', () => {
   });
 
   it('closes panel when X button is clicked', async () => {
-    fetchSpy.mockResolvedValue(mockModelsResponse());
-    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" />);
+    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} />, { wrapper: createWrapper() });
 
     fireEvent.click(screen.getByText('Diagram'));
     await waitFor(() => {
@@ -120,11 +136,12 @@ describe('FlowchartGenerator', () => {
   });
 
   it('sends correct payload when generating a diagram', async () => {
-    fetchSpy
-      .mockResolvedValueOnce(mockModelsResponse())
-      .mockResolvedValueOnce(mockSSEResponse(['graph TD\n  A --> B']));
+    async function* fakeStream() {
+      yield { content: 'graph TD\n  A --> B', done: true };
+    }
+    streamSSEMock.mockReturnValue(fakeStream());
 
-    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Step 1 then Step 2</p>" />);
+    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Step 1 then Step 2</p>" pageTitle="Test Page" pageVersion={1} />, { wrapper: createWrapper() });
 
     fireEvent.click(screen.getByText('Diagram'));
 
@@ -135,22 +152,20 @@ describe('FlowchartGenerator', () => {
     fireEvent.click(screen.getByText('Generate'));
 
     await waitFor(() => {
-      // Verify the generate-diagram API was called
-      const calls = fetchSpy.mock.calls;
-      const diagramCall = calls.find(([url]: [unknown]) =>
-        typeof url === 'string' && url.includes('/llm/generate-diagram'),
+      expect(streamSSEMock).toHaveBeenCalledWith(
+        '/llm/generate-diagram',
+        expect.objectContaining({
+          content: '<p>Step 1 then Step 2</p>',
+          diagramType: 'flowchart',
+          pageId: 'page-1',
+        }),
+        expect.any(Object), // AbortSignal
       );
-      expect(diagramCall).toBeDefined();
-      const body = JSON.parse(diagramCall![1]?.body as string);
-      expect(body.content).toBe('<p>Step 1 then Step 2</p>');
-      expect(body.diagramType).toBe('flowchart');
-      expect(body.pageId).toBe('page-1');
     });
   });
 
   it('allows switching diagram type before generating', async () => {
-    fetchSpy.mockResolvedValue(mockModelsResponse());
-    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" />);
+    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} />, { wrapper: createWrapper() });
 
     fireEvent.click(screen.getByText('Diagram'));
 
@@ -167,10 +182,151 @@ describe('FlowchartGenerator', () => {
   });
 
   it('shows generate button with title tooltip', () => {
-    fetchSpy.mockResolvedValue(mockModelsResponse());
-    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" />);
+    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Test</p>" pageTitle="Test Page" pageVersion={1} />, { wrapper: createWrapper() });
 
     const btn = screen.getByTitle('Generate diagram from article');
     expect(btn).toBeInTheDocument();
+  });
+
+  it('shows "Use in article" button after diagram generation completes', async () => {
+    async function* fakeStream() {
+      yield { content: 'graph TD\n  A --> B' };
+    }
+    streamSSEMock.mockReturnValue(fakeStream());
+
+    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Content</p>" pageTitle="Test Page" pageVersion={1} />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByText('Diagram'));
+
+    await waitFor(() => {
+      expect(screen.getByText('Generate')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText('Generate'));
+
+    await waitFor(() => {
+      expect(screen.getByText('Use in article')).toBeInTheDocument();
+    });
+  });
+
+  it('does not show "Use in article" button while streaming', async () => {
+    // Create a stream that never resolves
+    let resolveStream: () => void;
+    const streamPromise = new Promise<void>((resolve) => { resolveStream = resolve; });
+
+    async function* fakeStream() {
+      yield { content: 'graph TD' };
+      await streamPromise; // hang here
+    }
+    streamSSEMock.mockReturnValue(fakeStream());
+
+    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Content</p>" pageTitle="Test Page" pageVersion={1} />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByText('Diagram'));
+
+    await waitFor(() => {
+      expect(screen.getByText('Generate')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText('Generate'));
+
+    // Should show "Generating..." but not "Use in article"
+    await waitFor(() => {
+      expect(screen.getByText('Generating...')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('Use in article')).not.toBeInTheDocument();
+
+    // Clean up: resolve the promise so the generator finishes
+    resolveStream!();
+  });
+
+  it('calls PUT /api/pages/:id when "Use in article" is clicked', async () => {
+    async function* fakeStream() {
+      yield { content: 'graph TD\n  A --> B' };
+    }
+    streamSSEMock.mockReturnValue(fakeStream());
+
+    // Mock the PUT call for inserting diagram
+    apiFetchMock.mockImplementation((path: string, opts?: RequestInit) => {
+      if (path === '/ollama/models') {
+        return Promise.resolve([{ name: 'llama3' }]);
+      }
+      if (path === '/pages/page-1' && opts?.method === 'PUT') {
+        return Promise.resolve({ id: 'page-1', title: 'Test Page', version: 2 });
+      }
+      return Promise.resolve({});
+    });
+
+    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Content</p>" pageTitle="Test Page" pageVersion={1} />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByText('Diagram'));
+
+    await waitFor(() => {
+      expect(screen.getByText('Generate')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText('Generate'));
+
+    await waitFor(() => {
+      expect(screen.getByText('Use in article')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText('Use in article'));
+
+    await waitFor(() => {
+      const putCall = apiFetchMock.mock.calls.find(
+        (args: unknown[]) =>
+          args[0] === '/pages/page-1' && (args[1] as RequestInit | undefined)?.method === 'PUT',
+      );
+      expect(putCall).toBeDefined();
+      const body = JSON.parse((putCall![1] as RequestInit)?.body as string);
+      expect(body.title).toBe('Test Page');
+      expect(body.version).toBe(1);
+      expect(body.bodyHtml).toContain('<pre><code class="language-mermaid">');
+      expect(body.bodyHtml).toContain('graph TD');
+      expect(body.bodyHtml).toContain('<p>Content</p>');
+    });
+
+    // Verify success toast
+    await waitFor(() => {
+      expect(toastSuccessMock).toHaveBeenCalledWith('Diagram inserted into article');
+    });
+  });
+
+  it('shows error toast when insert fails', async () => {
+    async function* fakeStream() {
+      yield { content: 'graph TD\n  A --> B' };
+    }
+    streamSSEMock.mockReturnValue(fakeStream());
+
+    apiFetchMock.mockImplementation((path: string, opts?: RequestInit) => {
+      if (path === '/ollama/models') {
+        return Promise.resolve([{ name: 'llama3' }]);
+      }
+      if (path === '/pages/page-1' && opts?.method === 'PUT') {
+        return Promise.reject(new Error('Version conflict'));
+      }
+      return Promise.resolve({});
+    });
+
+    render(<FlowchartGenerator pageId="page-1" bodyHtml="<p>Content</p>" pageTitle="Test Page" pageVersion={1} />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByText('Diagram'));
+
+    await waitFor(() => {
+      expect(screen.getByText('Generate')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText('Generate'));
+
+    await waitFor(() => {
+      expect(screen.getByText('Use in article')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText('Use in article'));
+
+    await waitFor(() => {
+      expect(toastErrorMock).toHaveBeenCalledWith('Version conflict');
+    });
   });
 });

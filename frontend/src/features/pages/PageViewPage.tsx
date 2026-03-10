@@ -285,7 +285,7 @@ export function PageViewPage() {
               <DuplicateDetector pageId={id!} pageTitle={page.title} />
             </div>
           </div>
-          <FlowchartGenerator pageId={id!} bodyHtml={page.bodyHtml} />
+          <FlowchartGenerator pageId={id!} bodyHtml={page.bodyHtml} pageTitle={page.title} pageVersion={page.version} />
         </>
       )}
 

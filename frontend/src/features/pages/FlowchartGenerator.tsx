@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { GitBranch, Loader2, X } from 'lucide-react';
+import { GitBranch, Loader2, X, FileInput } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
 import { streamSSE } from '../../shared/lib/sse';
 import { MermaidDiagram } from '../../shared/components/MermaidDiagram';
 import { apiFetch } from '../../shared/lib/api';
@@ -7,18 +8,32 @@ import { cn } from '../../shared/lib/cn';
 import { toast } from 'sonner';
 import type { DiagramType } from '@kb-creator/contracts';
 
+/** HTML-encode a string so it is safe to interpolate inside HTML elements. */
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 interface FlowchartGeneratorProps {
   pageId: string;
   bodyHtml: string;
+  pageTitle: string;
+  pageVersion: number;
 }
 
 const DIAGRAM_TYPES: DiagramType[] = ['flowchart', 'sequence', 'state', 'mindmap'];
 
-export function FlowchartGenerator({ pageId, bodyHtml }: FlowchartGeneratorProps) {
+export function FlowchartGenerator({ pageId, bodyHtml, pageTitle, pageVersion }: FlowchartGeneratorProps) {
+  const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [diagramType, setDiagramType] = useState<DiagramType>('flowchart');
   const [diagramCode, setDiagramCode] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
+  const [isInserting, setIsInserting] = useState(false);
   const [model, setModel] = useState('');
   const [models, setModels] = useState<Array<{ name: string }>>([]);
 
@@ -54,12 +69,16 @@ export function FlowchartGenerator({ pageId, bodyHtml }: FlowchartGeneratorProps
 
     let result = '';
     try {
-      for await (const chunk of streamSSE<{ content?: string; done?: boolean }>('/llm/generate-diagram', {
+      for await (const chunk of streamSSE<{ content?: string; error?: string; done?: boolean }>('/llm/generate-diagram', {
         content: bodyHtml,
         model,
         diagramType,
         pageId,
       }, controller.signal)) {
+        if (chunk.error) {
+          toast.error(chunk.error);
+          break;
+        }
         if (chunk.content) {
           result += chunk.content;
           setDiagramCode(result);
@@ -72,6 +91,29 @@ export function FlowchartGenerator({ pageId, bodyHtml }: FlowchartGeneratorProps
       setIsStreaming(false);
     }
   }, [model, isStreaming, bodyHtml, diagramType, pageId]);
+
+  const handleInsertInArticle = useCallback(async () => {
+    if (!diagramCode || isInserting) return;
+    setIsInserting(true);
+    try {
+      const diagramHtml = `\n<pre><code class="language-mermaid">${escapeHtml(diagramCode)}</code></pre>\n`;
+      const updatedHtml = bodyHtml + diagramHtml;
+      await apiFetch(`/pages/${pageId}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          title: pageTitle,
+          bodyHtml: updatedHtml,
+          version: pageVersion,
+        }),
+      });
+      toast.success('Diagram inserted into article');
+      queryClient.invalidateQueries({ queryKey: ['pages', pageId] });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to insert diagram');
+    } finally {
+      setIsInserting(false);
+    }
+  }, [diagramCode, isInserting, bodyHtml, pageId, pageTitle, pageVersion, queryClient]);
 
   if (!open) {
     return (
@@ -144,7 +186,20 @@ export function FlowchartGenerator({ pageId, bodyHtml }: FlowchartGeneratorProps
 
       {/* Rendered diagram */}
       {diagramCode && !isStreaming && (
-        <MermaidDiagram code={diagramCode} />
+        <>
+          <MermaidDiagram code={diagramCode} />
+          <button
+            onClick={handleInsertInArticle}
+            disabled={isInserting}
+            className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          >
+            {isInserting ? (
+              <><Loader2 size={14} className="animate-spin" /> Inserting...</>
+            ) : (
+              <><FileInput size={14} /> Use in article</>
+            )}
+          </button>
+        </>
       )}
 
       {/* Streaming indicator */}
