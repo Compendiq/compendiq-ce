@@ -46,7 +46,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     // Try cache for simple requests (no filters active)
     const hasFilters = search || author || labels || freshness || embeddingStatus || dateFrom || dateTo;
     if (!hasFilters) {
-      const cacheKey = `${spaceKey ?? 'all'}:${page}:${limit}:${sort}`;
+      const cacheKey = `space:${spaceKey ?? 'none'}:page:${page}:limit:${limit}:sort:${sort}`;
       const cached = await cache.get(userId, 'pages', cacheKey);
       if (cached) return cached;
     }
@@ -179,7 +179,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     };
 
     if (!hasFilters) {
-      const cacheKey = `${spaceKey ?? 'all'}:${page}:${limit}:${sort}`;
+      const cacheKey = `space:${spaceKey ?? 'none'}:page:${page}:limit:${limit}:sort:${sort}`;
       await cache.set(userId, 'pages', cacheKey, response);
     }
 
