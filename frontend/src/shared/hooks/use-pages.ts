@@ -17,6 +17,7 @@ interface PageSummary {
 interface PageDetail extends PageSummary {
   bodyHtml: string;
   bodyText: string;
+  hasChildren: boolean;
 }
 
 interface PaginatedPages {

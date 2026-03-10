@@ -296,4 +296,144 @@ describe('ConfluenceClient', () => {
       expect(mockRequest).toHaveBeenCalledTimes(3);
     });
   });
+
+  describe('child page fetching', () => {
+    it('should fetch child pages for a parent', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+      const childResponse = {
+        results: [
+          { id: 'child-1', title: 'Child 1', status: 'current', type: 'page', version: { number: 1, when: '2025-01-01' } },
+          { id: 'child-2', title: 'Child 2', status: 'current', type: 'page', version: { number: 1, when: '2025-01-01' } },
+        ],
+        start: 0,
+        limit: 50,
+        size: 2,
+      };
+      mockRequest.mockResolvedValue({
+        statusCode: 200,
+        body: { text: async () => JSON.stringify(childResponse) },
+      } as never);
+
+      const result = await client.getChildPages('parent-123');
+
+      expect(result.results).toHaveLength(2);
+      expect(result.results[0].id).toBe('child-1');
+      const callUrl = mockRequest.mock.calls[0][0] as string;
+      expect(callUrl).toContain('/rest/api/content/parent-123/child/page');
+      expect(callUrl).toContain('expand=version,ancestors,metadata.labels');
+    });
+
+    it('should fetch all child pages with pagination', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+
+      // First page
+      mockRequest.mockResolvedValueOnce({
+        statusCode: 200,
+        body: {
+          text: async () => JSON.stringify({
+            results: Array.from({ length: 50 }, (_, i) => ({
+              id: `child-${i}`, title: `Child ${i}`, status: 'current', type: 'page',
+              version: { number: 1, when: '2025-01-01' },
+            })),
+            start: 0, limit: 50, size: 50,
+            _links: { next: '/rest/api/content/parent-123/child/page?start=50' },
+          }),
+        },
+      } as never);
+
+      // Second page (partial)
+      mockRequest.mockResolvedValueOnce({
+        statusCode: 200,
+        body: {
+          text: async () => JSON.stringify({
+            results: [
+              { id: 'child-50', title: 'Child 50', status: 'current', type: 'page', version: { number: 1, when: '2025-01-01' } },
+            ],
+            start: 50, limit: 50, size: 1,
+          }),
+        },
+      } as never);
+
+      const pages = await client.getAllChildPages('parent-123');
+
+      expect(pages).toHaveLength(51);
+      expect(mockRequest).toHaveBeenCalledTimes(2);
+    });
+
+    it('should recursively fetch all descendants', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+
+      // Root children: child-1 and child-2
+      mockRequest.mockResolvedValueOnce({
+        statusCode: 200,
+        body: {
+          text: async () => JSON.stringify({
+            results: [
+              { id: 'child-1', title: 'Child 1', status: 'current', type: 'page', version: { number: 1, when: '2025-01-01' } },
+              { id: 'child-2', title: 'Child 2', status: 'current', type: 'page', version: { number: 1, when: '2025-01-01' } },
+            ],
+            start: 0, limit: 50, size: 2,
+          }),
+        },
+      } as never);
+
+      // child-1 has one child: grandchild-1
+      mockRequest.mockResolvedValueOnce({
+        statusCode: 200,
+        body: {
+          text: async () => JSON.stringify({
+            results: [
+              { id: 'grandchild-1', title: 'Grandchild 1', status: 'current', type: 'page', version: { number: 1, when: '2025-01-01' } },
+            ],
+            start: 0, limit: 50, size: 1,
+          }),
+        },
+      } as never);
+
+      // child-2 has no children
+      mockRequest.mockResolvedValueOnce({
+        statusCode: 200,
+        body: {
+          text: async () => JSON.stringify({
+            results: [],
+            start: 0, limit: 50, size: 0,
+          }),
+        },
+      } as never);
+
+      // grandchild-1 has no children
+      mockRequest.mockResolvedValueOnce({
+        statusCode: 200,
+        body: {
+          text: async () => JSON.stringify({
+            results: [],
+            start: 0, limit: 50, size: 0,
+          }),
+        },
+      } as never);
+
+      const descendants = await client.getDescendantPages('root-page');
+
+      expect(descendants).toHaveLength(3);
+      expect(descendants.map(d => d.id)).toEqual(['child-1', 'child-2', 'grandchild-1']);
+    });
+
+    it('should return empty array for page with no children', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+      mockRequest.mockResolvedValue({
+        statusCode: 200,
+        body: {
+          text: async () => JSON.stringify({
+            results: [],
+            start: 0, limit: 50, size: 0,
+          }),
+        },
+      } as never);
+
+      const descendants = await client.getDescendantPages('leaf-page');
+
+      expect(descendants).toHaveLength(0);
+      expect(mockRequest).toHaveBeenCalledTimes(1);
+    });
+  });
 });

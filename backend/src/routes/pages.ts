@@ -279,6 +279,14 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     }
 
     const row = result.rows[0];
+
+    // Check if this page has children (for "embed tree" feature)
+    const childrenResult = await query<{ count: string }>(
+      'SELECT COUNT(*) as count FROM cached_pages WHERE user_id = $1 AND parent_id = $2',
+      [userId, id],
+    );
+    const hasChildren = parseInt(childrenResult.rows[0].count, 10) > 0;
+
     return {
       id: row.confluence_id,
       spaceKey: row.space_key,
@@ -291,6 +299,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       author: row.author,
       lastModifiedAt: row.last_modified_at,
       lastSynced: row.last_synced,
+      hasChildren,
     };
   });
 

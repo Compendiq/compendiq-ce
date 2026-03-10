@@ -20,6 +20,7 @@ import { TagEditor } from './TagEditor';
 import { VersionHistory } from './VersionHistory';
 import { FlowchartGenerator } from './FlowchartGenerator';
 import { QualityAnalysisPanel } from './QualityAnalysisPanel';
+import { ForceEmbedTree } from './ForceEmbedTree';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { toast } from 'sonner';
 
@@ -222,6 +223,10 @@ export function PageViewPage() {
                 pageId={id!}
                 currentLabels={page.labels}
                 model="qwen3:latest"
+              />
+              <ForceEmbedTree
+                pageId={id!}
+                hasChildren={page.hasChildren ?? false}
               />
               <button
                 onClick={() => navigate(`/ai?pageId=${id}`)}

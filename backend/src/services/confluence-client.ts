@@ -278,6 +278,47 @@ export class ConfluenceClient {
     }
   }
 
+  async getChildPages(parentId: string, start = 0, limit = 50): Promise<PaginatedResponse<ConfluencePage>> {
+    return this.fetch(
+      `/rest/api/content/${encodeURIComponent(parentId)}/child/page?start=${start}&limit=${limit}&expand=version,ancestors,metadata.labels`,
+    );
+  }
+
+  async getAllChildPages(parentId: string): Promise<ConfluencePage[]> {
+    const pages: ConfluencePage[] = [];
+    let start = 0;
+    const limit = 50;
+
+    while (true) {
+      const response = await this.getChildPages(parentId, start, limit);
+      pages.push(...response.results);
+      if (response.size < limit || !response._links?.next) break;
+      start += limit;
+    }
+
+    return pages;
+  }
+
+  /**
+   * Recursively fetch all descendant pages of a given parent page.
+   * Returns the flat list of all descendants (not including the parent itself).
+   */
+  async getDescendantPages(parentId: string): Promise<ConfluencePage[]> {
+    const allDescendants: ConfluencePage[] = [];
+    const queue: string[] = [parentId];
+
+    while (queue.length > 0) {
+      const currentId = queue.shift()!;
+      const children = await this.getAllChildPages(currentId);
+      for (const child of children) {
+        allDescendants.push(child);
+        queue.push(child.id);
+      }
+    }
+
+    return allDescendants;
+  }
+
   async getAllPagesInSpace(spaceKey: string): Promise<ConfluencePage[]> {
     const pages: ConfluencePage[] = [];
     let start = 0;
