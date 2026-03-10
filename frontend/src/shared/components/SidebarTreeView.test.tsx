@@ -193,6 +193,7 @@ describe('SidebarTreeNode memoization', () => {
       parentId: null,
       labels: [],
       lastModifiedAt: '2026-03-01T00:00:00Z',
+      embeddingDirty: false,
     },
     children,
   });
