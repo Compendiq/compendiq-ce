@@ -1057,6 +1057,27 @@
   color: var(--color-muted-foreground);
 }
 
+/* DrawioDiagramPreview React component — glassmorphic container */
+.drawio-preview-container {
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* Light background panel behind diagram images for dark mode readability */
+.drawio-preview-container [data-testid="drawio-image-panel"] {
+  border-radius: var(--radius-sm);
+  min-height: 6rem;
+}
+
+/* Prevent prose from adding unwanted margins to the preview wrapper */
+.prose .drawio-diagram-wrapper {
+  margin: 0;
+}
+
+.prose .drawio-diagram-wrapper img {
+  margin: 0;
+}
+
 /* TOC placeholder */
 .prose .confluence-toc {
   border: 1px dashed var(--glass-border);
