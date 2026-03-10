@@ -9,7 +9,7 @@ import { logger } from '../utils/logger.js';
 
 interface SyncStatus {
   userId: string;
-  status: 'idle' | 'syncing' | 'error';
+  status: 'idle' | 'syncing' | 'embedding' | 'error';
   progress?: { current: number; total: number; space?: string };
   lastSynced?: Date;
   error?: string;
@@ -68,19 +68,30 @@ export async function syncUser(userId: string): Promise<void> {
       await syncSpace(client, userId, spaceKey, spacesByKey.get(spaceKey));
     }
 
-    // Trigger embedding for dirty pages asynchronously after sync
+    // Set status to 'embedding' while processing dirty pages
+    syncStatuses.set(userId, {
+      userId,
+      status: 'embedding',
+      lastSynced: new Date(),
+    });
+
+    // Trigger embedding for dirty pages; update status when complete
     processDirtyPages(userId).then(({ processed, errors }) => {
       if (processed > 0 || errors > 0) {
         logger.info({ userId, processed, errors }, 'Post-sync embedding completed');
       }
+      syncStatuses.set(userId, {
+        userId,
+        status: 'idle',
+        lastSynced: new Date(),
+      });
     }).catch((err) => {
       logger.error({ err, userId }, 'Post-sync embedding failed');
-    });
-
-    syncStatuses.set(userId, {
-      userId,
-      status: 'idle',
-      lastSynced: new Date(),
+      syncStatuses.set(userId, {
+        userId,
+        status: 'idle',
+        lastSynced: new Date(),
+      });
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';

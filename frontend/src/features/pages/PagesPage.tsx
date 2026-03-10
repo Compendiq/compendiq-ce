@@ -2,16 +2,17 @@ import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { m } from 'framer-motion';
-import { Search, FileText, Plus, RefreshCw, ChevronLeft, ChevronRight, FolderOpen, Filter, X, List, Loader2 } from 'lucide-react';
+import { Search, FileText, Plus, RefreshCw, ChevronLeft, ChevronRight, FolderOpen, Filter, X, List, Loader2, Cpu, Pin } from 'lucide-react';
 import DOMPurify from 'dompurify';
 import { toast } from 'sonner';
-import { usePages, usePageFilterOptions, usePage, useEmbeddingStatus } from '../../shared/hooks/use-pages';
+import { usePages, usePageFilterOptions, usePage, useEmbeddingStatus, useTriggerEmbedding, usePinnedPages, usePinPage, useUnpinPage } from '../../shared/hooks/use-pages';
 import { useSpaces, useSync, useSyncStatus } from '../../shared/hooks/use-spaces';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../../shared/components/EmbeddingStatusBadge';
 import { BulkOperations } from './BulkOperations';
 import { KPICards } from './KPICards';
+import { PinnedArticlesSection } from './PinnedArticlesSection';
 import { cn } from '../../shared/lib/cn';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 
@@ -67,8 +68,32 @@ export function PagesPage() {
   const syncMutation = useSync();
   const { data: syncStatus } = useSyncStatus();
   const { data: embeddingStatusData } = useEmbeddingStatus();
+  const triggerEmbedding = useTriggerEmbedding();
+  const { data: pinnedData } = usePinnedPages();
+  const pinMutation = usePinPage();
+  const unpinMutation = useUnpinPage();
   const queryClient = useQueryClient();
   const wasProcessingRef = useRef(false);
+
+  const pinnedIds = useMemo(
+    () => new Set(pinnedData?.items.map((p) => p.id) ?? []),
+    [pinnedData],
+  );
+
+  const handleTogglePin = useCallback((e: React.MouseEvent, pageId: string, title: string) => {
+    e.stopPropagation();
+    if (pinnedIds.has(pageId)) {
+      unpinMutation.mutate(pageId, {
+        onSuccess: () => toast.success(`Unpinned "${title}"`),
+        onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to unpin'),
+      });
+    } else {
+      pinMutation.mutate(pageId, {
+        onSuccess: () => toast.success(`Pinned "${title}"`),
+        onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to pin'),
+      });
+    }
+  }, [pinnedIds, pinMutation, unpinMutation]);
 
   useEffect(() => {
     if (embeddingStatusData?.isProcessing) {
@@ -187,6 +212,27 @@ export function PagesPage() {
           </div>
         </div>
       )}
+
+      {/* Embed Now button: shown when dirty pages exist but no embedding in progress */}
+      {embeddingStatusData && embeddingStatusData.dirtyPages > 0 && !embeddingStatusData.isProcessing && (
+        <div className="glass-card flex items-center gap-3 p-3 border border-yellow-500/30" data-testid="embed-now-banner">
+          <span className="text-sm">
+            {embeddingStatusData.dirtyPages} page{embeddingStatusData.dirtyPages !== 1 ? 's' : ''} pending embedding
+          </span>
+          <button
+            onClick={() => triggerEmbedding.mutate()}
+            disabled={triggerEmbedding.isPending}
+            className="ml-auto flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            data-testid="embed-now-btn"
+          >
+            <Cpu size={14} />
+            {triggerEmbedding.isPending ? 'Starting...' : 'Embed Now'}
+          </button>
+        </div>
+      )}
+
+      {/* Pinned Articles */}
+      <PinnedArticlesSection />
 
       {/* Filters */}
       <div className="glass-card space-y-3 p-4">
@@ -424,6 +470,21 @@ export function PagesPage() {
                   )}
                 </button>
 
+                {/* Pin toggle */}
+                <button
+                  onClick={(e) => handleTogglePin(e, pageItem.id, pageItem.title)}
+                  className={cn(
+                    'shrink-0 rounded p-1 transition-colors',
+                    pinnedIds.has(pageItem.id)
+                      ? 'text-primary hover:text-primary/70'
+                      : 'text-muted-foreground/40 hover:text-primary',
+                  )}
+                  aria-label={pinnedIds.has(pageItem.id) ? `Unpin ${pageItem.title}` : `Pin ${pageItem.title}`}
+                  data-testid={`pin-toggle-${pageItem.id}`}
+                >
+                  <Pin size={14} className={pinnedIds.has(pageItem.id) ? 'fill-current' : ''} />
+                </button>
+
                 <button
                   onClick={() => navigate(`/pages/${pageItem.id}`)}
                   className="flex min-w-0 flex-1 items-center gap-4"
@@ -438,7 +499,11 @@ export function PagesPage() {
                       )}
                     </div>
                   </div>
-                  <EmbeddingStatusBadge embeddingDirty={pageItem.embeddingDirty} />
+                  <EmbeddingStatusBadge
+                    embeddingStatus={pageItem.embeddingStatus}
+                    embeddingDirty={pageItem.embeddingDirty}
+                    embeddedAt={pageItem.embeddedAt}
+                  />
                   {pageItem.lastModifiedAt && (
                     <FreshnessBadge lastModified={pageItem.lastModifiedAt} />
                   )}

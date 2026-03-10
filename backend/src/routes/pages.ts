@@ -8,6 +8,7 @@ import { logAuditEvent } from '../services/audit-service.js';
 import { findDuplicates, scanAllDuplicates } from '../services/duplicate-detector.js';
 import { autoTagPage, applyTags, autoTagAllPages, ALLOWED_TAGS, AllowedTag } from '../services/auto-tagger.js';
 import { getVersionHistory, getVersion, getSemanticDiff, saveVersionSnapshot } from '../services/version-tracker.js';
+import { processDirtyPages, isProcessingUser } from '../services/embedding-service.js';
 import { PageListQuerySchema, PageTreeQuerySchema, CreatePageSchema, UpdatePageSchema } from '@kb-creator/contracts';
 import { z } from 'zod';
 import { logger } from '../utils/logger.js';
@@ -130,7 +131,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     const sql = `
       SELECT cp.id, cp.confluence_id, cp.space_key, cp.title, cp.version,
              cp.parent_id, cp.labels, cp.author, cp.last_modified_at, cp.last_synced,
-             cp.embedding_dirty
+             cp.embedding_dirty, cp.embedding_status, cp.embedded_at
       FROM cached_pages cp
       ${whereClause}
       ORDER BY ${orderBy}
@@ -150,6 +151,8 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       last_modified_at: Date | null;
       last_synced: Date;
       embedding_dirty: boolean;
+      embedding_status: string;
+      embedded_at: Date | null;
     }>(sql, values);
 
     const response = {
@@ -164,6 +167,8 @@ export async function pagesRoutes(fastify: FastifyInstance) {
         lastModifiedAt: row.last_modified_at,
         lastSynced: row.last_synced,
         embeddingDirty: row.embedding_dirty,
+        embeddingStatus: row.embedding_status,
+        embeddedAt: row.embedded_at,
       })),
       total,
       page,
@@ -204,8 +209,11 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       labels: string[];
       last_modified_at: Date | null;
       embedding_dirty: boolean;
+      embedding_status: string;
+      embedded_at: Date | null;
     }>(
-      `SELECT confluence_id, space_key, title, parent_id, labels, last_modified_at, embedding_dirty
+      `SELECT confluence_id, space_key, title, parent_id, labels, last_modified_at,
+              embedding_dirty, embedding_status, embedded_at
        FROM cached_pages ${whereClause}
        ORDER BY title ASC`,
       values,
@@ -220,6 +228,8 @@ export async function pagesRoutes(fastify: FastifyInstance) {
         labels: row.labels,
         lastModifiedAt: row.last_modified_at,
         embeddingDirty: row.embedding_dirty,
+        embeddingStatus: row.embedding_status,
+        embeddedAt: row.embedded_at,
       })),
       total: result.rows.length,
     };
@@ -267,9 +277,13 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       author: string | null;
       last_modified_at: Date | null;
       last_synced: Date;
+      embedding_dirty: boolean;
+      embedding_status: string;
+      embedded_at: Date | null;
     }>(
       `SELECT confluence_id, space_key, title, body_storage, body_html, body_text,
-              version, parent_id, labels, author, last_modified_at, last_synced
+              version, parent_id, labels, author, last_modified_at, last_synced,
+              embedding_dirty, embedding_status, embedded_at
        FROM cached_pages WHERE user_id = $1 AND confluence_id = $2`,
       [userId, id],
     );
@@ -279,6 +293,14 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     }
 
     const row = result.rows[0];
+
+    // Check if this page has children (for "embed tree" feature)
+    const childrenResult = await query<{ count: string }>(
+      'SELECT COUNT(*) as count FROM cached_pages WHERE user_id = $1 AND parent_id = $2',
+      [userId, id],
+    );
+    const hasChildren = parseInt(childrenResult.rows[0].count, 10) > 0;
+
     return {
       id: row.confluence_id,
       spaceKey: row.space_key,
@@ -291,7 +313,24 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       author: row.author,
       lastModifiedAt: row.last_modified_at,
       lastSynced: row.last_synced,
+      hasChildren,
+      embeddingDirty: row.embedding_dirty,
+      embeddingStatus: row.embedding_status,
+      embeddedAt: row.embedded_at,
     };
+  });
+
+  // GET /api/pages/:id/has-children - check if a page has sub-pages
+  fastify.get('/pages/:id/has-children', async (request) => {
+    const { id } = IdParamSchema.parse(request.params);
+    const userId = request.userId;
+
+    const result = await query<{ count: string }>(
+      'SELECT COUNT(*) as count FROM cached_pages WHERE user_id = $1 AND parent_id = $2',
+      [userId, id],
+    );
+
+    return { hasChildren: parseInt(result.rows[0].count, 10) > 0 };
   });
 
   // POST /api/pages - create page in Confluence + local cache
@@ -318,8 +357,8 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     await query(
       `INSERT INTO cached_pages
          (user_id, confluence_id, space_key, title, body_storage, body_html, body_text,
-          version, parent_id, embedding_dirty)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE)`,
+          version, parent_id, embedding_dirty, embedding_status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, 'not_embedded')`,
       [userId, page.id, body.spaceKey, body.title, page.body?.storage?.value ?? storageBody,
        bodyHtml, bodyText, page.version.number, body.parentId ?? null],
     );
@@ -366,7 +405,8 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     await query(
       `UPDATE cached_pages SET
          title = $3, body_storage = $4, body_html = $5, body_text = $6,
-         version = $7, last_synced = NOW(), embedding_dirty = TRUE
+         version = $7, last_synced = NOW(), embedding_dirty = TRUE,
+         embedding_status = 'not_embedded', embedded_at = NULL
        WHERE user_id = $1 AND confluence_id = $2`,
       [userId, id, body.title, page.body?.storage?.value ?? storageBody,
        bodyHtml, bodyText, page.version.number],
@@ -393,6 +433,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     await client.deletePage(id);
 
     // Clean up local data
+    await query('DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = $2', [userId, id]);
     await query('DELETE FROM page_embeddings WHERE user_id = $1 AND confluence_id = $2', [userId, id]);
     await query('DELETE FROM cached_pages WHERE user_id = $1 AND confluence_id = $2', [userId, id]);
     await cleanPageAttachments(userId, id);
@@ -436,6 +477,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
         }
 
         await client.deletePage(id);
+        await query('DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = $2', [userId, id]);
         await query('DELETE FROM page_embeddings WHERE user_id = $1 AND confluence_id = $2', [userId, id]);
         await query('DELETE FROM cached_pages WHERE user_id = $1 AND confluence_id = $2', [userId, id]);
         await cleanPageAttachments(userId, id);
@@ -489,7 +531,8 @@ export async function pagesRoutes(fastify: FastifyInstance) {
         await query(
           `UPDATE cached_pages SET
              title = $3, body_storage = $4, body_html = $5, body_text = $6,
-             version = $7, last_synced = NOW(), embedding_dirty = TRUE
+             version = $7, last_synced = NOW(), embedding_dirty = TRUE,
+             embedding_status = 'not_embedded', embedded_at = NULL
            WHERE user_id = $1 AND confluence_id = $2`,
           [userId, id, page.title, page.body?.storage?.value ?? '', bodyHtml, bodyText, page.version.number],
         );
@@ -509,6 +552,11 @@ export async function pagesRoutes(fastify: FastifyInstance) {
   fastify.post('/pages/bulk/embed', async (request) => {
     const { ids } = BulkIdsSchema.parse(request.body);
     const userId = request.userId;
+
+    // Return 409 if embedding is already in progress for this user
+    if (isProcessingUser(userId)) {
+      throw fastify.httpErrors.conflict('Embedding processing is already in progress for this user');
+    }
 
     let succeeded = 0;
     let failed = 0;
@@ -532,6 +580,13 @@ export async function pagesRoutes(fastify: FastifyInstance) {
         failed++;
         errors.push(`Page ${id}: ${err instanceof Error ? err.message : 'Unknown error'}`);
       }
+    }
+
+    // Fire-and-forget: trigger processing of dirty pages (same pattern as POST /embeddings/process)
+    if (succeeded > 0) {
+      processDirtyPages(userId).catch((err) => {
+        logger.error({ err, userId }, 'Bulk embed: embedding processing failed');
+      });
     }
 
     return { succeeded, failed, errors };
@@ -658,15 +713,26 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      const cause = err instanceof Error ? err.cause : undefined;
+      const causeName = cause instanceof Error ? cause.name : '';
       request.log.error({ err, confluenceId: id, userId, model }, 'Auto-tag failed');
 
       if (message.startsWith('Page not found')) {
         throw fastify.httpErrors.notFound(message);
       }
+      // Connection-level failures: server is genuinely unreachable
       if (message.includes('ECONNREFUSED') || message.includes('fetch failed')) {
         throw fastify.httpErrors.serviceUnavailable('LLM server is not reachable');
       }
-      throw fastify.httpErrors.badGateway('Auto-tagging failed — check LLM server connection');
+      // Circuit breaker is open: server was recently failing (check cause
+      // chain since autoTagContent wraps the original error)
+      if (causeName === 'CircuitBreakerOpenError') {
+        throw fastify.httpErrors.serviceUnavailable(cause instanceof Error ? cause.message : message);
+      }
+      // All other LLM errors: surface the actual error message so the user
+      // (and logs) can see what really went wrong instead of a generic
+      // "check LLM server connection" message (fixes #151).
+      throw fastify.httpErrors.badGateway(`Auto-tagging failed: ${message}`);
     }
   });
 
@@ -875,5 +941,104 @@ export async function pagesRoutes(fastify: FastifyInstance) {
 
     const diff = await getSemanticDiff(userId, id, v1, v2, model);
     return { diff, v1, v2, pageId: id };
+  });
+
+  // ======== Pinned Articles (Issue #144) ========
+
+  const MAX_PINS = 8;
+
+  // GET /api/pages/pinned - list pinned articles for the current user
+  fastify.get('/pages/pinned', async (request) => {
+    const userId = request.userId;
+
+    const result = await query<{
+      page_id: string;
+      pin_order: number;
+      pinned_at: Date;
+      confluence_id: string;
+      space_key: string;
+      title: string;
+      author: string | null;
+      last_modified_at: Date | null;
+      body_text: string | null;
+    }>(
+      `SELECT pp.page_id, pp.pin_order, pp.pinned_at,
+              cp.confluence_id, cp.space_key, cp.title, cp.author, cp.last_modified_at, cp.body_text
+       FROM pinned_pages pp
+       JOIN cached_pages cp ON cp.user_id = pp.user_id AND cp.confluence_id = pp.page_id
+       WHERE pp.user_id = $1
+       ORDER BY pp.pinned_at DESC`,
+      [userId],
+    );
+
+    return {
+      items: result.rows.map((row) => ({
+        id: row.confluence_id,
+        spaceKey: row.space_key,
+        title: row.title,
+        author: row.author,
+        lastModifiedAt: row.last_modified_at,
+        excerpt: row.body_text ? row.body_text.slice(0, 200) : '',
+        pinnedAt: row.pinned_at,
+        pinOrder: row.pin_order,
+      })),
+      total: result.rows.length,
+    };
+  });
+
+  // POST /api/pages/:id/pin - pin an article
+  fastify.post('/pages/:id/pin', async (request) => {
+    const { id } = IdParamSchema.parse(request.params);
+    const userId = request.userId;
+
+    // Verify the page exists for this user
+    const pageResult = await query<{ confluence_id: string }>(
+      'SELECT confluence_id FROM cached_pages WHERE user_id = $1 AND confluence_id = $2',
+      [userId, id],
+    );
+    if (pageResult.rows.length === 0) {
+      throw fastify.httpErrors.notFound('Page not found');
+    }
+
+    // If already pinned, return 200 immediately (idempotent)
+    const alreadyPinned = await query<{ page_id: string }>(
+      'SELECT page_id FROM pinned_pages WHERE user_id = $1 AND page_id = $2',
+      [userId, id],
+    );
+    if (alreadyPinned.rows.length > 0) {
+      return { message: 'Page pinned', pageId: id };
+    }
+
+    // Atomic insert with count check to prevent race conditions
+    const insertResult = await query(
+      `INSERT INTO pinned_pages (user_id, page_id, pin_order, pinned_at)
+       SELECT $1, $2, COALESCE((SELECT MAX(pin_order) FROM pinned_pages WHERE user_id = $1), 0) + 1, NOW()
+       WHERE (SELECT COUNT(*) FROM pinned_pages WHERE user_id = $1) < $3
+       ON CONFLICT (user_id, page_id) DO NOTHING`,
+      [userId, id, MAX_PINS],
+    );
+
+    if ((insertResult.rowCount ?? 0) === 0) {
+      throw fastify.httpErrors.badRequest(`Maximum of ${MAX_PINS} pinned articles allowed`);
+    }
+
+    return { message: 'Page pinned', pageId: id };
+  });
+
+  // DELETE /api/pages/:id/pin - unpin an article
+  fastify.delete('/pages/:id/pin', async (request) => {
+    const { id } = IdParamSchema.parse(request.params);
+    const userId = request.userId;
+
+    const result = await query(
+      'DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = $2',
+      [userId, id],
+    );
+
+    if ((result.rowCount ?? 0) === 0) {
+      throw fastify.httpErrors.notFound('Pin not found');
+    }
+
+    return { message: 'Page unpinned', pageId: id };
   });
 }

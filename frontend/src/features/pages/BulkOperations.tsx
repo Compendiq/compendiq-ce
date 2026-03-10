@@ -68,9 +68,16 @@ export function BulkOperations({
       }),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['embeddings'] });
+      queryClient.invalidateQueries({ queryKey: ['pages'] });
       toast.success(`Queued ${data.succeeded} pages for re-embedding${data.failed > 0 ? `, ${data.failed} failed` : ''}`);
     },
-    onError: (err) => toast.error(err.message),
+    onError: (err) => {
+      if (err.message.includes('already in progress')) {
+        toast.info('Embedding is already in progress. Please wait for it to finish.');
+      } else {
+        toast.error(err.message);
+      }
+    },
   });
 
   const bulkTag = useMutation({
