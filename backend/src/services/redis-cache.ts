@@ -1,4 +1,5 @@
 import type { RedisClientType } from 'redis';
+import { randomUUID } from 'node:crypto';
 import { logger } from '../utils/logger.js';
 
 // Module-level reference for services that need cache invalidation without Fastify context
@@ -47,34 +48,47 @@ function embeddingLockKey(userId: string): string {
 /**
  * Attempt to acquire the embedding processing lock for a user.
  * Uses Redis SET NX EX for atomic acquisition.
- * Returns true if the lock was acquired, false if already held.
- * Falls back to always-acquire if Redis is not available.
+ * Returns a unique lock identifier if acquired, or null if already held.
+ * The identifier must be passed to releaseEmbeddingLock to prove ownership.
+ * Falls back to a generated identifier if Redis is not available.
  */
-export async function acquireEmbeddingLock(userId: string): Promise<boolean> {
+export async function acquireEmbeddingLock(userId: string): Promise<string | null> {
+  const lockId = randomUUID();
   if (!_redisClient) {
     logger.warn({ userId }, 'Redis not available for embedding lock, proceeding without lock');
-    return true;
+    return lockId;
   }
   try {
-    const result = await _redisClient.set(embeddingLockKey(userId), process.pid.toString(), {
+    const result = await _redisClient.set(embeddingLockKey(userId), lockId, {
       NX: true,
       EX: EMBEDDING_LOCK_TTL,
     });
-    return result !== null;
+    return result !== null ? lockId : null;
   } catch (err) {
     logger.error({ err, userId }, 'Failed to acquire embedding lock');
-    return false;
+    return null;
   }
 }
 
+// Lua script: only delete the lock if the caller owns it (value matches).
+// Prevents a process from deleting a lock that was re-acquired by another
+// process after the original lock's TTL expired.
+const RELEASE_LOCK_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`;
+
 /**
  * Release the embedding processing lock for a user.
+ * Uses a Lua script to verify lock ownership before deleting, preventing
+ * stale lock deletion when the TTL has expired and another process has
+ * re-acquired the lock.
  * Safe to call even if Redis is not available (no-op).
  */
-export async function releaseEmbeddingLock(userId: string): Promise<void> {
+export async function releaseEmbeddingLock(userId: string, lockId: string): Promise<void> {
   if (!_redisClient) return;
   try {
-    await _redisClient.del(embeddingLockKey(userId));
+    await _redisClient.eval(RELEASE_LOCK_SCRIPT, {
+      keys: [embeddingLockKey(userId)],
+      arguments: [lockId],
+    });
   } catch (err) {
     logger.error({ err, userId }, 'Failed to release embedding lock');
   }

@@ -19,6 +19,7 @@ function createMockRedisClient() {
   return {
     set: vi.fn(),
     del: vi.fn(),
+    eval: vi.fn(),
     exists: vi.fn(),
     get: vi.fn(),
     setEx: vi.fn(),
@@ -52,12 +53,13 @@ describe('redis-cache embedding lock', () => {
   });
 
   describe('acquireEmbeddingLock', () => {
-    it('should return true when lock is acquired (SET NX returns OK)', async () => {
+    it('should return a lock identifier when lock is acquired (SET NX returns OK)', async () => {
       mockRedis.set.mockResolvedValue('OK');
 
-      const acquired = await acquireEmbeddingLock('user-42');
+      const lockId = await acquireEmbeddingLock('user-42');
 
-      expect(acquired).toBe(true);
+      expect(lockId).toBeTypeOf('string');
+      expect(lockId).toBeTruthy();
       expect(mockRedis.set).toHaveBeenCalledWith(
         'embedding:lock:user-42',
         expect.any(String),
@@ -65,20 +67,20 @@ describe('redis-cache embedding lock', () => {
       );
     });
 
-    it('should return false when lock is already held (SET NX returns null)', async () => {
+    it('should return null when lock is already held (SET NX returns null)', async () => {
       mockRedis.set.mockResolvedValue(null);
 
-      const acquired = await acquireEmbeddingLock('user-42');
+      const lockId = await acquireEmbeddingLock('user-42');
 
-      expect(acquired).toBe(false);
+      expect(lockId).toBeNull();
     });
 
-    it('should return false when Redis throws', async () => {
+    it('should return null when Redis throws', async () => {
       mockRedis.set.mockRejectedValue(new Error('Redis connection refused'));
 
-      const acquired = await acquireEmbeddingLock('user-42');
+      const lockId = await acquireEmbeddingLock('user-42');
 
-      expect(acquired).toBe(false);
+      expect(lockId).toBeNull();
     });
 
     it('should use 1 hour TTL for safety', async () => {
@@ -90,45 +92,64 @@ describe('redis-cache embedding lock', () => {
       expect(setCall[2]).toEqual({ NX: true, EX: 3600 });
     });
 
-    it('should store process PID as lock value', async () => {
+    it('should store a UUID as lock value (not PID)', async () => {
       mockRedis.set.mockResolvedValue('OK');
 
-      await acquireEmbeddingLock('user-1');
+      const lockId = await acquireEmbeddingLock('user-1');
 
       const setCall = mockRedis.set.mock.calls[0];
-      expect(setCall[1]).toBe(process.pid.toString());
+      // Lock value stored in Redis should match the returned identifier
+      expect(setCall[1]).toBe(lockId);
+      // Should be a UUID format
+      expect(setCall[1]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
     });
 
-    it('should return true when Redis client is not available', async () => {
+    it('should return a lock identifier when Redis client is not available', async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       setRedisClient(null as any);
 
-      const acquired = await acquireEmbeddingLock('user-1');
+      const lockId = await acquireEmbeddingLock('user-1');
 
-      expect(acquired).toBe(true); // graceful fallback
+      expect(lockId).toBeTypeOf('string');
+      expect(lockId).toBeTruthy(); // graceful fallback
     });
   });
 
   describe('releaseEmbeddingLock', () => {
-    it('should delete the lock key from Redis', async () => {
-      mockRedis.del.mockResolvedValue(1);
+    it('should use Lua script to verify ownership before deleting', async () => {
+      mockRedis.eval.mockResolvedValue(1);
+      const lockId = 'test-lock-id-123';
 
-      await releaseEmbeddingLock('user-42');
+      await releaseEmbeddingLock('user-42', lockId);
 
-      expect(mockRedis.del).toHaveBeenCalledWith('embedding:lock:user-42');
+      expect(mockRedis.eval).toHaveBeenCalledWith(
+        expect.stringContaining('redis.call("get", KEYS[1]) == ARGV[1]'),
+        {
+          keys: ['embedding:lock:user-42'],
+          arguments: [lockId],
+        },
+      );
+    });
+
+    it('should not call del directly (uses Lua script instead)', async () => {
+      mockRedis.eval.mockResolvedValue(1);
+
+      await releaseEmbeddingLock('user-42', 'some-lock-id');
+
+      expect(mockRedis.del).not.toHaveBeenCalled();
     });
 
     it('should not throw when Redis throws', async () => {
-      mockRedis.del.mockRejectedValue(new Error('Redis timeout'));
+      mockRedis.eval.mockRejectedValue(new Error('Redis timeout'));
 
-      await expect(releaseEmbeddingLock('user-42')).resolves.toBeUndefined();
+      await expect(releaseEmbeddingLock('user-42', 'some-lock-id')).resolves.toBeUndefined();
     });
 
     it('should no-op when Redis client is not available', async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       setRedisClient(null as any);
 
-      await expect(releaseEmbeddingLock('user-1')).resolves.toBeUndefined();
+      await expect(releaseEmbeddingLock('user-1', 'some-lock-id')).resolves.toBeUndefined();
     });
   });
 
@@ -172,15 +193,17 @@ describe('redis-cache embedding lock', () => {
     it('should use embedding:lock:<userId> format', async () => {
       mockRedis.set.mockResolvedValue('OK');
       mockRedis.exists.mockResolvedValue(1);
-      mockRedis.del.mockResolvedValue(1);
+      mockRedis.eval.mockResolvedValue(1);
 
-      await acquireEmbeddingLock('test-user');
+      const lockId = await acquireEmbeddingLock('test-user');
       await isEmbeddingLocked('test-user');
-      await releaseEmbeddingLock('test-user');
+      await releaseEmbeddingLock('test-user', lockId!);
 
       expect(mockRedis.set.mock.calls[0][0]).toBe('embedding:lock:test-user');
       expect(mockRedis.exists.mock.calls[0][0]).toBe('embedding:lock:test-user');
-      expect(mockRedis.del.mock.calls[0][0]).toBe('embedding:lock:test-user');
+      expect(mockRedis.eval.mock.calls[0][1]).toEqual(
+        expect.objectContaining({ keys: ['embedding:lock:test-user'] }),
+      );
     });
   });
 });

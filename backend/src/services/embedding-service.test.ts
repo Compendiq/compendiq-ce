@@ -1,9 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+const FAKE_LOCK_ID = 'fake-lock-id-for-tests';
+
 const mocks = vi.hoisted(() => ({
   query: vi.fn(),
   providerGenerateEmbedding: vi.fn(),
-  acquireEmbeddingLock: vi.fn().mockResolvedValue(true),
+  acquireEmbeddingLock: vi.fn().mockResolvedValue('fake-lock-id-for-tests'),
   releaseEmbeddingLock: vi.fn().mockResolvedValue(undefined),
   isEmbeddingLocked: vi.fn().mockResolvedValue(false),
   invalidateGraphCache: vi.fn().mockResolvedValue(undefined),
@@ -37,8 +39,8 @@ import { getEmbeddingStatus, chunkText, processDirtyPages, isProcessingUser, com
 describe('embedding-service', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // Default: lock is available
-    mocks.acquireEmbeddingLock.mockResolvedValue(true);
+    // Default: lock is available (returns a lock identifier)
+    mocks.acquireEmbeddingLock.mockResolvedValue(FAKE_LOCK_ID);
     mocks.releaseEmbeddingLock.mockResolvedValue(undefined);
     mocks.isEmbeddingLocked.mockResolvedValue(false);
   });
@@ -234,7 +236,7 @@ describe('embedding-service', () => {
 
   describe('processDirtyPages', () => {
     it('should return alreadyProcessing when lock cannot be acquired', async () => {
-      mocks.acquireEmbeddingLock.mockResolvedValue(false);
+      mocks.acquireEmbeddingLock.mockResolvedValue(null);
 
       const result = await processDirtyPages('concurrent-user');
       expect(result.alreadyProcessing).toBe(true);
@@ -245,24 +247,24 @@ describe('embedding-service', () => {
       expect(mocks.releaseEmbeddingLock).not.toHaveBeenCalled();
     });
 
-    it('should acquire lock before processing and release in finally', async () => {
+    it('should acquire lock before processing and release with lock ID in finally', async () => {
       // Query to get dirty pages (no pages)
       mocks.query.mockResolvedValueOnce({ rows: [] });
 
       await processDirtyPages('lock-user');
 
       expect(mocks.acquireEmbeddingLock).toHaveBeenCalledWith('lock-user');
-      expect(mocks.releaseEmbeddingLock).toHaveBeenCalledWith('lock-user');
+      expect(mocks.releaseEmbeddingLock).toHaveBeenCalledWith('lock-user', FAKE_LOCK_ID);
     });
 
-    it('should release lock even when processing throws', async () => {
+    it('should release lock with lock ID even when processing throws', async () => {
       // Query to get dirty pages throws
       mocks.query.mockRejectedValueOnce(new Error('DB connection lost'));
 
       await expect(processDirtyPages('crash-user')).rejects.toThrow('DB connection lost');
 
       expect(mocks.acquireEmbeddingLock).toHaveBeenCalledWith('crash-user');
-      expect(mocks.releaseEmbeddingLock).toHaveBeenCalledWith('crash-user');
+      expect(mocks.releaseEmbeddingLock).toHaveBeenCalledWith('crash-user', FAKE_LOCK_ID);
     });
 
     it('should process dirty pages and return counts', async () => {

@@ -177,8 +177,8 @@ export async function isProcessingUser(userId: string): Promise<boolean> {
  * Returns `alreadyProcessing: true` if skipped because processing was in progress.
  */
 export async function processDirtyPages(userId: string): Promise<{ processed: number; errors: number; alreadyProcessing?: boolean }> {
-  const lockAcquired = await acquireEmbeddingLock(userId);
-  if (!lockAcquired) {
+  const lockId = await acquireEmbeddingLock(userId);
+  if (!lockId) {
     logger.warn({ userId }, 'Embedding processing already in progress for user');
     return { processed: 0, errors: 0, alreadyProcessing: true };
   }
@@ -224,7 +224,7 @@ export async function processDirtyPages(userId: string): Promise<{ processed: nu
       }
     }
   } finally {
-    await releaseEmbeddingLock(userId);
+    await releaseEmbeddingLock(userId, lockId);
   }
 
   // Post-embed hook: recompute nearest-neighbor relationships
