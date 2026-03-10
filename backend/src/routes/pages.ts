@@ -322,6 +322,11 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     };
   });
 
+  /**
+   * @deprecated Use the `hasChildren` field from GET /api/pages/:id instead.
+   * This dedicated endpoint is kept for backwards compatibility and will be
+   * removed in a future release.
+   */
   // GET /api/pages/:id/has-children - check if a page has sub-pages
   fastify.get('/pages/:id/has-children', async (request) => {
     const { id } = IdParamSchema.parse(request.params);

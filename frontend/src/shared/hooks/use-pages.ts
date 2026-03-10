@@ -203,15 +203,6 @@ export interface EmbeddingStatusData {
   isProcessing: boolean;
 }
 
-export function usePageHasChildren(id: string | undefined) {
-  return useQuery<{ hasChildren: boolean }>({
-    queryKey: ['pages', id, 'has-children'],
-    queryFn: () => apiFetch(`/pages/${id}/has-children`),
-    enabled: !!id,
-    staleTime: 60_000, // refresh once per minute
-  });
-}
-
 export function useEmbeddingStatus() {
   return useQuery<EmbeddingStatusData>({
     queryKey: ['embeddings', 'status'],
