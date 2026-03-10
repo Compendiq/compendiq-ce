@@ -294,6 +294,19 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     };
   });
 
+  // GET /api/pages/:id/has-children - check if a page has sub-pages
+  fastify.get('/pages/:id/has-children', async (request) => {
+    const { id } = IdParamSchema.parse(request.params);
+    const userId = request.userId;
+
+    const result = await query<{ count: string }>(
+      'SELECT COUNT(*) as count FROM cached_pages WHERE user_id = $1 AND parent_id = $2',
+      [userId, id],
+    );
+
+    return { hasChildren: parseInt(result.rows[0].count, 10) > 0 };
+  });
+
   // POST /api/pages - create page in Confluence + local cache
   fastify.post('/pages', async (request) => {
     const body = CreatePageSchema.parse(request.body);

@@ -13,6 +13,7 @@ export const ImproveRequestSchema = z.object({
   type: ImprovementTypeSchema,
   model: z.string().min(1),
   pageId: z.string().optional(),
+  includeSubPages: z.boolean().optional(),
 });
 
 export const GenerateRequestSchema = z.object({
@@ -28,12 +29,15 @@ export const SummarizeRequestSchema = z.object({
   model: z.string().min(1),
   length: z.enum(['short', 'medium', 'detailed']).default('medium'),
   pageId: z.string().optional(),
+  includeSubPages: z.boolean().optional(),
 });
 
 export const AskRequestSchema = z.object({
   question: z.string().min(1),
   model: z.string().min(1),
   conversationId: z.string().uuid().optional(),
+  pageId: z.string().optional(),
+  includeSubPages: z.boolean().optional(),
 });
 
 export const GenerateDiagramRequestSchema = z.object({
@@ -47,6 +51,7 @@ export const AnalyzeQualityRequestSchema = z.object({
   content: z.string().min(1),
   model: z.string().min(1),
   pageId: z.string().optional(),
+  includeSubPages: z.boolean().optional(),
 });
 
 export const ConversationSchema = z.object({
