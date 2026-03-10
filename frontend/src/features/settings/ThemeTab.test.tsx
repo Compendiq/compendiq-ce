@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { SettingsPage } from './SettingsPage';
 import { useThemeStore } from '../../stores/theme-store';
+import { useUiStore } from '../../stores/ui-store';
 
 // Mock auth store
 const authState = { user: { role: 'user' }, accessToken: 'test-token', setAuth: vi.fn(), clearAuth: vi.fn() };
@@ -200,5 +201,35 @@ describe('ThemeTab', () => {
     expect(screen.getByText('Dark')).toBeInTheDocument();
     expect(screen.getByText('Bright')).toBeInTheDocument();
     expect(screen.getByText('Catppuccin')).toBeInTheDocument();
+  });
+
+  it('renders the Reduce Effects toggle', async () => {
+    render(<SettingsPage />, { wrapper: createWrapper() });
+    await navigateToThemeTab();
+
+    expect(screen.getByTestId('reduce-effects-toggle')).toBeInTheDocument();
+    expect(screen.getByText('Reduce Effects')).toBeInTheDocument();
+  });
+
+  it('toggles reduceEffects state when switch is clicked', async () => {
+    useUiStore.setState({ reduceEffects: false });
+    render(<SettingsPage />, { wrapper: createWrapper() });
+    await navigateToThemeTab();
+
+    const toggle = screen.getByTestId('reduce-effects-toggle');
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+
+    fireEvent.click(toggle);
+    expect(useUiStore.getState().reduceEffects).toBe(true);
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('reflects reduceEffects=true initial state', async () => {
+    useUiStore.setState({ reduceEffects: true });
+    render(<SettingsPage />, { wrapper: createWrapper() });
+    await navigateToThemeTab();
+
+    const toggle = screen.getByTestId('reduce-effects-toggle');
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
   });
 });

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { LazyMotion, domAnimation } from 'framer-motion';
+import { LazyMotion, domMax } from 'framer-motion';
 import { AppLayout } from './AppLayout';
 
 // Mock SidebarTreeView to isolate AppLayout tests
@@ -18,6 +18,14 @@ vi.mock('./ServiceStatus', () => ({
   ServiceStatus: () => null,
 }));
 
+vi.mock('./AuroraBackground', () => ({
+  AuroraBackground: () => <div data-testid="aurora-background" />,
+}));
+
+vi.mock('./NoiseOverlay', () => ({
+  NoiseOverlay: () => null,
+}));
+
 function createWrapper(initialPath = '/') {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -26,7 +34,7 @@ function createWrapper(initialPath = '/') {
     return (
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={[initialPath]}>
-          <LazyMotion features={domAnimation}>
+          <LazyMotion features={domMax}>
             {children}
           </LazyMotion>
         </MemoryRouter>
