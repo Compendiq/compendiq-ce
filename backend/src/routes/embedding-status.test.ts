@@ -128,6 +128,8 @@ describe('Embedding Status in API responses', () => {
           embedded_at: embeddedAt,
         }],
       });
+      // Mock the children count query
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '0' }] });
 
       const response = await app.inject({
         method: 'GET',
@@ -161,6 +163,8 @@ describe('Embedding Status in API responses', () => {
           embedded_at: null,
         }],
       });
+      // Mock the children count query
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '0' }] });
 
       const response = await app.inject({
         method: 'GET',
@@ -194,6 +198,8 @@ describe('Embedding Status in API responses', () => {
           embedded_at: null,
         }],
       });
+      // Mock the children count query
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '0' }] });
 
       const response = await app.inject({
         method: 'GET',
@@ -225,6 +231,8 @@ describe('Embedding Status in API responses', () => {
           embedded_at: null,
         }],
       });
+      // Mock the children count query
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '0' }] });
 
       const response = await app.inject({
         method: 'GET',

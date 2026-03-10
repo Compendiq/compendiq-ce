@@ -47,7 +47,7 @@ vi.mock('../db/postgres.js', () => ({
   query: (...args: unknown[]) => mocks.query(...args),
 }));
 
-import { syncUser } from './sync-service.js';
+import { syncUser, getSyncStatus } from './sync-service.js';
 
 describe('syncUser auto-embedding', () => {
   beforeEach(() => {
@@ -81,6 +81,44 @@ describe('syncUser auto-embedding', () => {
 
     await vi.waitFor(() => {
       expect(mocks.processDirtyPages).toHaveBeenCalledWith('user-1');
+    });
+  });
+
+  it('should set status to embedding after sync completes', async () => {
+    // Use a deferred promise to control when processDirtyPages resolves
+    let resolveEmbedding!: (value: { processed: number; errors: number }) => void;
+    mocks.processDirtyPages.mockReturnValueOnce(
+      new Promise((resolve) => { resolveEmbedding = resolve; }),
+    );
+
+    setupSuccessfulSync();
+
+    await syncUser('user-5');
+
+    // Status should be 'embedding' while processDirtyPages is still running
+    const statusDuringEmbed = getSyncStatus('user-5');
+    expect(statusDuringEmbed.status).toBe('embedding');
+
+    // Resolve embedding
+    resolveEmbedding({ processed: 3, errors: 0 });
+
+    // After embedding completes, status should be 'idle'
+    await vi.waitFor(() => {
+      const statusAfter = getSyncStatus('user-5');
+      expect(statusAfter.status).toBe('idle');
+    });
+  });
+
+  it('should set status to idle even if embedding fails', async () => {
+    mocks.processDirtyPages.mockRejectedValueOnce(new Error('Ollama offline'));
+    setupSuccessfulSync();
+
+    await syncUser('user-6');
+
+    // Wait for the rejected promise to settle
+    await vi.waitFor(() => {
+      const status = getSyncStatus('user-6');
+      expect(status.status).toBe('idle');
     });
   });
 

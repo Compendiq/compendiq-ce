@@ -66,6 +66,13 @@ vi.mock('../utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
+const mockProcessDirtyPages = vi.fn().mockResolvedValue({ processed: 2, errors: 0 });
+const mockIsProcessingUser = vi.fn().mockReturnValue(false);
+vi.mock('../services/embedding-service.js', () => ({
+  processDirtyPages: (...args: unknown[]) => mockProcessDirtyPages(...args),
+  isProcessingUser: (...args: unknown[]) => mockIsProcessingUser(...args),
+}));
+
 // Mock the database with a function we can control per test
 const mockQueryFn = vi.fn();
 vi.mock('../db/postgres.js', () => ({
@@ -207,7 +214,7 @@ describe('Bulk Pages Routes', () => {
   });
 
   describe('POST /api/pages/bulk/embed', () => {
-    it('should mark pages as embedding dirty', async () => {
+    it('should mark pages as embedding dirty and trigger processing', async () => {
       const response = await app.inject({
         method: 'POST',
         url: '/api/pages/bulk/embed',
@@ -217,6 +224,25 @@ describe('Bulk Pages Routes', () => {
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
       expect(body.succeeded).toBe(2);
+
+      // Verify processDirtyPages was called fire-and-forget
+      await vi.waitFor(() => {
+        expect(mockProcessDirtyPages).toHaveBeenCalledWith('test-user-id');
+      });
+    });
+
+    it('should not trigger processing when no pages succeeded', async () => {
+      mockQueryFn.mockResolvedValue({ rowCount: 0 });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/embed',
+        payload: { ids: ['nonexistent'] },
+      });
+
+      const body = JSON.parse(response.body);
+      expect(body.failed).toBe(1);
+      expect(mockProcessDirtyPages).not.toHaveBeenCalled();
     });
 
     it('should report failure for non-existent page', async () => {
@@ -231,6 +257,20 @@ describe('Bulk Pages Routes', () => {
       const body = JSON.parse(response.body);
       expect(body.failed).toBe(1);
       expect(body.errors[0]).toContain('not found');
+    });
+
+    it('should return 409 when embedding is already in progress', async () => {
+      mockIsProcessingUser.mockReturnValueOnce(true);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/embed',
+        payload: { ids: ['page-1'] },
+      });
+
+      expect(response.statusCode).toBe(409);
+      const body = JSON.parse(response.body);
+      expect(body.error).toContain('already in progress');
     });
   });
 

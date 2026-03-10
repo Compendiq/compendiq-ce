@@ -21,7 +21,7 @@ vi.mock('../utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
-import { getEmbeddingStatus, chunkText } from './embedding-service.js';
+import { getEmbeddingStatus, chunkText, processDirtyPages, isProcessingUser } from './embedding-service.js';
 
 describe('embedding-service', () => {
   beforeEach(() => {
@@ -118,6 +118,63 @@ describe('embedding-service', () => {
       expect(chunks.length).toBeGreaterThanOrEqual(2);
       expect(chunks[0].metadata.section_title).toBe('Section One');
       expect(chunks[1].metadata.section_title).toBe('Section Two');
+    });
+  });
+
+  describe('isProcessingUser', () => {
+    it('should return false when no processing is active', () => {
+      expect(isProcessingUser('nobody')).toBe(false);
+    });
+  });
+
+  describe('processDirtyPages', () => {
+    it('should return alreadyProcessing when called concurrently for the same user', async () => {
+      // First call: long-running processing (deferred)
+      let resolveQuery!: (value: { rows: never[] }) => void;
+      mocks.query.mockReturnValueOnce(
+        new Promise((resolve) => { resolveQuery = resolve; }),
+      );
+
+      const firstCall = processDirtyPages('concurrent-user');
+
+      // Second call while first is still running
+      const result = await processDirtyPages('concurrent-user');
+      expect(result.alreadyProcessing).toBe(true);
+      expect(result.processed).toBe(0);
+      expect(result.errors).toBe(0);
+
+      // Clean up: resolve the first call
+      resolveQuery({ rows: [] });
+      await firstCall;
+    });
+
+    it('should process dirty pages and return counts', async () => {
+      // Query to get dirty pages
+      mocks.query.mockResolvedValueOnce({
+        rows: [{
+          confluence_id: 'page-1',
+          title: 'Test Page',
+          space_key: 'DEV',
+          body_html: '<p>Some content for embedding</p>',
+        }],
+      });
+
+      // embedPage calls: delete old embeddings
+      mocks.query.mockResolvedValueOnce({ rows: [] });
+
+      // embedPage calls: providerGenerateEmbedding (mocked)
+      mocks.providerGenerateEmbedding.mockResolvedValueOnce([new Array(768).fill(0)]);
+
+      // embedPage calls: insert embedding
+      mocks.query.mockResolvedValueOnce({ rows: [] });
+
+      // embedPage calls: mark page as not dirty
+      mocks.query.mockResolvedValueOnce({ rows: [] });
+
+      const result = await processDirtyPages('process-user');
+      expect(result.processed).toBe(1);
+      expect(result.errors).toBe(0);
+      expect(result.alreadyProcessing).toBeUndefined();
     });
   });
 });

@@ -43,5 +43,8 @@ e2e/.auth/
 tmp/
 temp/
 
+# Research
+research/
+
 # Claude Code
 .claude/

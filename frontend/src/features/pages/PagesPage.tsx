@@ -2,10 +2,10 @@ import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { m } from 'framer-motion';
-import { Search, FileText, Plus, RefreshCw, ChevronLeft, ChevronRight, FolderOpen, Filter, X, List, Loader2, Pin } from 'lucide-react';
+import { Search, FileText, Plus, RefreshCw, ChevronLeft, ChevronRight, FolderOpen, Filter, X, List, Loader2, Cpu, Pin } from 'lucide-react';
 import DOMPurify from 'dompurify';
 import { toast } from 'sonner';
-import { usePages, usePageFilterOptions, usePage, useEmbeddingStatus, usePinnedPages, usePinPage, useUnpinPage } from '../../shared/hooks/use-pages';
+import { usePages, usePageFilterOptions, usePage, useEmbeddingStatus, useTriggerEmbedding, usePinnedPages, usePinPage, useUnpinPage } from '../../shared/hooks/use-pages';
 import { useSpaces, useSync, useSyncStatus } from '../../shared/hooks/use-spaces';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
@@ -68,6 +68,7 @@ export function PagesPage() {
   const syncMutation = useSync();
   const { data: syncStatus } = useSyncStatus();
   const { data: embeddingStatusData } = useEmbeddingStatus();
+  const triggerEmbedding = useTriggerEmbedding();
   const { data: pinnedData } = usePinnedPages();
   const pinMutation = usePinPage();
   const unpinMutation = useUnpinPage();
@@ -209,6 +210,24 @@ export function PagesPage() {
               {embeddingStatusData.totalPages - embeddingStatusData.dirtyPages}/{embeddingStatusData.totalPages}
             </span>
           </div>
+        </div>
+      )}
+
+      {/* Embed Now button: shown when dirty pages exist but no embedding in progress */}
+      {embeddingStatusData && embeddingStatusData.dirtyPages > 0 && !embeddingStatusData.isProcessing && (
+        <div className="glass-card flex items-center gap-3 p-3 border border-yellow-500/30" data-testid="embed-now-banner">
+          <span className="text-sm">
+            {embeddingStatusData.dirtyPages} page{embeddingStatusData.dirtyPages !== 1 ? 's' : ''} pending embedding
+          </span>
+          <button
+            onClick={() => triggerEmbedding.mutate()}
+            disabled={triggerEmbedding.isPending}
+            className="ml-auto flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            data-testid="embed-now-btn"
+          >
+            <Cpu size={14} />
+            {triggerEmbedding.isPending ? 'Starting...' : 'Embed Now'}
+          </button>
         </div>
       )}
 
