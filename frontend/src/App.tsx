@@ -12,6 +12,7 @@ import { PagesPage } from './features/pages/PagesPage';
 import { PageViewPage } from './features/pages/PageViewPage';
 import { NewPagePage } from './features/pages/NewPagePage';
 import { AiAssistantPage } from './features/ai/AiAssistantPage';
+import { GraphPage } from './features/graph/GraphPage';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
@@ -44,6 +45,7 @@ export function App() {
                       <Route path="/pages/new" element={<NewPagePage />} />
                       <Route path="/pages/:id" element={<PageViewPage />} />
                       <Route path="/ai" element={<AiAssistantPage />} />
+                      <Route path="/graph" element={<GraphPage />} />
                       <Route path="/settings" element={<SettingsPage />} />
                       <Route path="*" element={<Navigate to="/" replace />} />
                     </Routes>

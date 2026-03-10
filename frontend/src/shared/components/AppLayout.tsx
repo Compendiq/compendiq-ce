@@ -1,7 +1,7 @@
 import { type ReactNode, useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { m, AnimatePresence } from 'framer-motion';
-import { Search, BookOpen, Bot, Menu, X } from 'lucide-react';
+import { Search, BookOpen, Bot, Menu, X, Share2 } from 'lucide-react';
 import { useCommandPaletteStore } from '../../stores/command-palette-store';
 import { CommandPalette } from './CommandPalette';
 import { ServiceStatus } from './ServiceStatus';
@@ -15,6 +15,7 @@ import { cn } from '../lib/cn';
 
 const navItems = [
   { icon: BookOpen, label: 'Pages', path: '/' },
+  { icon: Share2, label: 'Graph', path: '/graph' },
   { icon: Bot, label: 'AI Assistant', path: '/ai' },
 ];
 
