@@ -17,6 +17,7 @@ import {
   UnknownMacro,
 } from './article-extensions';
 import { MermaidDiagram } from './MermaidDiagram';
+import { DrawioDiagramPreview } from './DrawioDiagramPreview';
 import { cn } from '../lib/cn';
 import type { TocHeading } from './TableOfContents';
 
@@ -190,6 +191,64 @@ export function ArticleViewer({
     };
   }, [isReady, sanitizedContent]);
 
+  // Render Draw.io diagrams: replace .confluence-drawio with DrawioDiagramPreview React components
+  const drawioRootsRef = useRef<Root[]>([]);
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || !isReady) return;
+
+    // Cleanup any previously mounted drawio roots
+    for (const root of drawioRootsRef.current) {
+      root.unmount();
+    }
+    drawioRootsRef.current = [];
+
+    const raf = requestAnimationFrame(() => {
+      const drawioElements = container.querySelectorAll('div.confluence-drawio');
+      drawioElements.forEach((el) => {
+        const htmlEl = el as HTMLElement;
+        const diagramName = htmlEl.getAttribute('data-diagram-name');
+        const img = htmlEl.querySelector('img');
+        const src = img?.getAttribute('src') || null;
+        const alt = img?.getAttribute('alt') || 'Diagram';
+        const link = htmlEl.querySelector('a.drawio-edit-link') as HTMLAnchorElement | null;
+
+        // Build the edit href — use the existing link if already rewritten,
+        // otherwise construct from confluenceUrl + pageId
+        let editHref = link?.getAttribute('href') || '#';
+        if (confluenceUrl && pageId && (editHref === '#' || !editHref.startsWith('http'))) {
+          editHref = `${confluenceUrl}/pages/viewpage.action?pageId=${encodeURIComponent(pageId)}`;
+        }
+
+        // Create a wrapper div that will replace the original .confluence-drawio element
+        const wrapper = document.createElement('div');
+        wrapper.className = 'drawio-diagram-wrapper';
+        wrapper.setAttribute('data-testid', 'drawio-diagram-wrapper');
+        htmlEl.replaceWith(wrapper);
+
+        // Mount a DrawioDiagramPreview React component into the wrapper
+        const root = createRoot(wrapper);
+        root.render(
+          <DrawioDiagramPreview
+            src={src}
+            diagramName={diagramName}
+            alt={alt}
+            editHref={editHref}
+          />,
+        );
+        drawioRootsRef.current.push(root);
+      });
+    });
+
+    return () => {
+      cancelAnimationFrame(raf);
+      for (const root of drawioRootsRef.current) {
+        root.unmount();
+      }
+      drawioRootsRef.current = [];
+    };
+  }, [isReady, sanitizedContent, confluenceUrl, pageId]);
+
   // Add copy buttons to code blocks (skip mermaid blocks which are already replaced)
   useEffect(() => {
     const container = containerRef.current;
@@ -252,6 +311,8 @@ export function ArticleViewer({
     const raf = requestAnimationFrame(() => {
       const images = container.querySelectorAll('img');
       images.forEach((img) => {
+        // Skip images inside draw.io diagram wrappers (they have their own lightbox)
+        if (img.closest('.drawio-diagram-wrapper') || img.closest('.drawio-preview-container')) return;
         img.style.cursor = 'zoom-in';
         img.addEventListener('click', handleImageClick);
       });
@@ -265,24 +326,6 @@ export function ArticleViewer({
       });
     };
   }, [isReady, sanitizedContent, handleImageClick, onImageClick]);
-
-  // Update draw.io edit links with real Confluence URL
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container || !isReady || !confluenceUrl || !pageId) return;
-
-    const raf = requestAnimationFrame(() => {
-      const links = container.querySelectorAll('a.drawio-edit-link');
-      links.forEach((link) => {
-        const anchor = link as HTMLAnchorElement;
-        anchor.href = `${confluenceUrl}/pages/viewpage.action?pageId=${encodeURIComponent(pageId)}`;
-        anchor.target = '_blank';
-        anchor.rel = 'noreferrer';
-      });
-    });
-
-    return () => cancelAnimationFrame(raf);
-  }, [isReady, confluenceUrl, pageId]);
 
   return (
     <div ref={containerRef} className="article-viewer-container">

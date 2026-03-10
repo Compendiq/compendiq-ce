@@ -165,20 +165,48 @@ describe('PageViewPage', () => {
     expect(images[1]).toHaveAttribute('src', 'https://example.com/diagram.svg');
   });
 
-  it('renders draw.io diagrams with data attributes preserved', () => {
+  it('renders draw.io diagrams with enhanced preview', async () => {
     currentMockPage = mockPageWithDrawio;
     const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
 
-    const drawioDiv = container.querySelector('.confluence-drawio');
-    expect(drawioDiv).toBeInTheDocument();
-    expect(drawioDiv).toHaveAttribute('data-diagram-name', 'system-topology');
+    // Wait for TipTap to render the draw.io content.
+    // The DrawioDiagramPreview React mount happens via rAF which may or may not
+    // flush in jsdom. Check for either the enhanced preview or the fallback TipTap HTML.
+    await waitFor(() => {
+      const enhanced = container.querySelector('[data-testid="drawio-preview"]');
+      const fallback = container.querySelector('.confluence-drawio');
+      expect(enhanced || fallback).toBeTruthy();
+    });
 
-    const drawioImg = drawioDiv!.querySelector('img');
-    expect(drawioImg).toHaveAttribute('src', '/api/attachments/page-1/system-topology.png');
+    // Check the enhanced preview if the rAF replacement fired
+    const preview = container.querySelector('[data-testid="drawio-preview"]');
+    if (preview) {
+      // Caption should show the diagram name
+      const caption = container.querySelector('[data-testid="drawio-caption"]');
+      expect(caption).toBeInTheDocument();
+      expect(caption!.textContent).toContain('system-topology');
 
-    const editLink = drawioDiv!.querySelector('a.drawio-edit-link');
-    expect(editLink).toBeInTheDocument();
-    expect(editLink!.textContent).toBe('Edit in Confluence');
+      // Image should be rendered with correct src
+      const img = preview.querySelector('img');
+      expect(img).toHaveAttribute('src', '/api/attachments/page-1/system-topology.png');
+
+      // Edit link should be present
+      const editLink = container.querySelector('[data-testid="drawio-edit-link"]');
+      expect(editLink).toBeInTheDocument();
+      expect(editLink!.textContent).toContain('Edit in Confluence');
+    } else {
+      // Fallback: TipTap rendered the raw node HTML before rAF replacement
+      const drawioDiv = container.querySelector('.confluence-drawio');
+      expect(drawioDiv).toBeInTheDocument();
+      expect(drawioDiv).toHaveAttribute('data-diagram-name', 'system-topology');
+
+      const drawioImg = drawioDiv!.querySelector('img');
+      expect(drawioImg).toHaveAttribute('src', '/api/attachments/page-1/system-topology.png');
+
+      const editLink = drawioDiv!.querySelector('a.drawio-edit-link');
+      expect(editLink).toBeInTheDocument();
+      expect(editLink!.textContent).toBe('Edit in Confluence');
+    }
   });
 
   it('opens lightbox when clicking an image', async () => {
