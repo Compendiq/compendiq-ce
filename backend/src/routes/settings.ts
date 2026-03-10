@@ -26,8 +26,10 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       theme: string;
       sync_interval_min: number;
       show_space_home_content: boolean;
+      embedding_chunk_size: number;
+      embedding_chunk_overlap: number;
     }>(
-      'SELECT confluence_url, confluence_pat, selected_spaces, ollama_model, llm_provider, openai_base_url, openai_api_key, openai_model, theme, sync_interval_min, show_space_home_content FROM user_settings WHERE user_id = $1',
+      'SELECT confluence_url, confluence_pat, selected_spaces, ollama_model, llm_provider, openai_base_url, openai_api_key, openai_model, theme, sync_interval_min, show_space_home_content, embedding_chunk_size, embedding_chunk_overlap FROM user_settings WHERE user_id = $1',
       [request.userId],
     );
 
@@ -48,6 +50,8 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         syncIntervalMin: 15,
         confluenceConnected: false,
         showSpaceHomeContent: true,
+        embeddingChunkSize: 500,
+        embeddingChunkOverlap: 50,
       };
     }
 
@@ -66,6 +70,8 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       syncIntervalMin: row.sync_interval_min,
       confluenceConnected: !!(row.confluence_url && row.confluence_pat),
       showSpaceHomeContent: row.show_space_home_content,
+      embeddingChunkSize: row.embedding_chunk_size ?? 500,
+      embeddingChunkOverlap: row.embedding_chunk_overlap ?? 50,
     };
   });
 
@@ -131,6 +137,43 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       values.push(body.openaiModel);
     }
 
+    if (body.embeddingChunkSize !== undefined) {
+      updates.push(`embedding_chunk_size = $${paramIdx++}`);
+      values.push(body.embeddingChunkSize);
+    }
+
+    if (body.embeddingChunkOverlap !== undefined) {
+      updates.push(`embedding_chunk_overlap = $${paramIdx++}`);
+      values.push(body.embeddingChunkOverlap);
+    }
+
+    // Validate chunk overlap does not exceed 25% of chunk size.
+    // Read current chunk size from DB if only overlap is being changed.
+    if (body.embeddingChunkSize !== undefined || body.embeddingChunkOverlap !== undefined) {
+      let effectiveChunkSize = body.embeddingChunkSize;
+      let effectiveChunkOverlap = body.embeddingChunkOverlap;
+
+      if (effectiveChunkSize === undefined || effectiveChunkOverlap === undefined) {
+        const current = await query<{ embedding_chunk_size: number; embedding_chunk_overlap: number }>(
+          'SELECT embedding_chunk_size, embedding_chunk_overlap FROM user_settings WHERE user_id = $1',
+          [request.userId],
+        );
+        if (current.rows.length > 0) {
+          effectiveChunkSize ??= current.rows[0].embedding_chunk_size ?? 500;
+          effectiveChunkOverlap ??= current.rows[0].embedding_chunk_overlap ?? 50;
+        } else {
+          effectiveChunkSize ??= 500;
+          effectiveChunkOverlap ??= 50;
+        }
+      }
+
+      if (effectiveChunkOverlap > effectiveChunkSize * 0.25) {
+        throw fastify.httpErrors.badRequest(
+          `Chunk overlap (${effectiveChunkOverlap}) must not exceed 25% of chunk size (${effectiveChunkSize}). Maximum allowed: ${Math.floor(effectiveChunkSize * 0.25)}.`,
+        );
+      }
+    }
+
     if (updates.length === 0) {
       return { message: 'No changes' };
     }
@@ -142,6 +185,15 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       `UPDATE user_settings SET ${updates.join(', ')} WHERE user_id = $${paramIdx}`,
       values,
     );
+
+    // If chunk settings changed, mark all user pages dirty for re-embedding
+    if (body.embeddingChunkSize !== undefined || body.embeddingChunkOverlap !== undefined) {
+      await query(
+        'UPDATE cached_pages SET embedding_dirty = TRUE WHERE user_id = $1',
+        [request.userId],
+      );
+      logger.info({ userId: request.userId }, 'Chunk settings changed, all pages marked dirty for re-embedding');
+    }
 
     // If LLM provider changed, update the active in-memory provider
     if (body.llmProvider !== undefined) {

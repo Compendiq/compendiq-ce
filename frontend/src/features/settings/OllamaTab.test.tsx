@@ -42,6 +42,8 @@ const mockSettings: {
   syncIntervalMin: number;
   confluenceConnected: boolean;
   showSpaceHomeContent: boolean;
+  embeddingChunkSize: number;
+  embeddingChunkOverlap: number;
 } = {
   confluenceUrl: 'https://confluence.example.com',
   hasConfluencePat: true,
@@ -56,6 +58,8 @@ const mockSettings: {
   syncIntervalMin: 15,
   confluenceConnected: true,
   showSpaceHomeContent: true,
+  embeddingChunkSize: 500,
+  embeddingChunkOverlap: 50,
 };
 
 const mockModels = [
@@ -353,5 +357,151 @@ describe('LlmTab (OllamaTab)', () => {
     });
 
     expect(screen.getByText('Configured')).toBeInTheDocument();
+  });
+
+  it('renders chunk size input with default value from settings', async () => {
+    mockFetchResponses();
+    render(<SettingsPage />, { wrapper: createWrapper() });
+    await navigateToLlmTab();
+
+    await waitFor(() => {
+      const input = screen.getByTestId('chunk-size-input') as HTMLInputElement;
+      expect(input).toBeInTheDocument();
+      expect(input.value).toBe('500');
+    });
+  });
+
+  it('renders chunk overlap input with default value from settings', async () => {
+    mockFetchResponses();
+    render(<SettingsPage />, { wrapper: createWrapper() });
+    await navigateToLlmTab();
+
+    await waitFor(() => {
+      const input = screen.getByTestId('chunk-overlap-input') as HTMLInputElement;
+      expect(input).toBeInTheDocument();
+      expect(input.value).toBe('50');
+    });
+  });
+
+  it('renders chunk size input with non-default value from settings', async () => {
+    mockFetchResponses({
+      settings: { ...mockSettings, embeddingChunkSize: 256, embeddingChunkOverlap: 32 },
+    });
+    render(<SettingsPage />, { wrapper: createWrapper() });
+    await navigateToLlmTab();
+
+    await waitFor(() => {
+      const sizeInput = screen.getByTestId('chunk-size-input') as HTMLInputElement;
+      expect(sizeInput.value).toBe('256');
+      const overlapInput = screen.getByTestId('chunk-overlap-input') as HTMLInputElement;
+      expect(overlapInput.value).toBe('32');
+    });
+  });
+
+  it('shows warning banner when chunk size is changed from saved value', async () => {
+    mockFetchResponses();
+    render(<SettingsPage />, { wrapper: createWrapper() });
+    await navigateToLlmTab();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('chunk-size-input')).toBeInTheDocument();
+    });
+
+    // Warning should not be visible initially
+    expect(screen.queryByTestId('chunk-change-warning')).not.toBeInTheDocument();
+
+    // Change chunk size
+    fireEvent.change(screen.getByTestId('chunk-size-input'), { target: { value: '256' } });
+
+    // Warning should now appear
+    expect(screen.getByTestId('chunk-change-warning')).toBeInTheDocument();
+    expect(screen.getByTestId('chunk-change-warning').textContent).toContain('re-processing');
+  });
+
+  it('shows warning banner when chunk overlap is changed from saved value', async () => {
+    mockFetchResponses();
+    render(<SettingsPage />, { wrapper: createWrapper() });
+    await navigateToLlmTab();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('chunk-overlap-input')).toBeInTheDocument();
+    });
+
+    expect(screen.queryByTestId('chunk-change-warning')).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId('chunk-overlap-input'), { target: { value: '25' } });
+
+    expect(screen.getByTestId('chunk-change-warning')).toBeInTheDocument();
+  });
+
+  it('does not show warning banner when chunk values are unchanged', async () => {
+    mockFetchResponses();
+    render(<SettingsPage />, { wrapper: createWrapper() });
+    await navigateToLlmTab();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('chunk-size-input')).toBeInTheDocument();
+    });
+
+    // Change and then revert
+    fireEvent.change(screen.getByTestId('chunk-size-input'), { target: { value: '256' } });
+    expect(screen.getByTestId('chunk-change-warning')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId('chunk-size-input'), { target: { value: '500' } });
+    expect(screen.queryByTestId('chunk-change-warning')).not.toBeInTheDocument();
+  });
+
+  it('includes chunk settings in save payload', async () => {
+    const putCalls: Array<{ url: string; body: string }> = [];
+
+    fetchSpy.mockImplementation(async (url: string | URL | Request, init?: RequestInit) => {
+      const path = typeof url === 'string' ? url : url instanceof URL ? url.toString() : (url as Request).url;
+
+      if (init?.method === 'PUT' && path.includes('/api/settings')) {
+        putCalls.push({ url: path, body: init.body as string });
+        return new Response(JSON.stringify({ message: 'Settings updated' }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      if (path.includes('/api/ollama/status')) {
+        return new Response(JSON.stringify(mockStatus), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      if (path.includes('/api/ollama/models')) {
+        return new Response(JSON.stringify(mockModels), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      if (path.includes('/api/settings')) {
+        return new Response(JSON.stringify(mockSettings), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      return new Response('{}', { headers: { 'Content-Type': 'application/json' } });
+    });
+
+    render(<SettingsPage />, { wrapper: createWrapper() });
+    await navigateToLlmTab();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('chunk-size-input')).toBeInTheDocument();
+    });
+
+    // Change chunk size then save
+    fireEvent.change(screen.getByTestId('chunk-size-input'), { target: { value: '256' } });
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    await waitFor(() => {
+      expect(putCalls).toHaveLength(1);
+    });
+
+    const payload = JSON.parse(putCalls[0].body);
+    expect(payload.embeddingChunkSize).toBe(256);
+    expect(payload.embeddingChunkOverlap).toBeDefined();
   });
 });

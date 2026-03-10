@@ -184,8 +184,14 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
   const [openaiBaseUrl, setOpenaiBaseUrl] = useState(settings.openaiBaseUrl ?? '');
   const [openaiApiKey, setOpenaiApiKey] = useState('');
   const [openaiModel, setOpenaiModel] = useState(settings.openaiModel ?? '');
+  const [chunkSize, setChunkSize] = useState(settings.embeddingChunkSize ?? 500);
+  const [chunkOverlap, setChunkOverlap] = useState(settings.embeddingChunkOverlap ?? 50);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+
+  const savedChunkSize = settings.embeddingChunkSize ?? 500;
+  const savedChunkOverlap = settings.embeddingChunkOverlap ?? 50;
+  const hasChunkChanges = chunkSize !== savedChunkSize || chunkOverlap !== savedChunkOverlap;
 
   const { data: ollamaStatus } = useQuery({
     queryKey: ['ollama-status', 'ollama'],
@@ -245,6 +251,8 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
       if (openaiBaseUrl) updates.openaiBaseUrl = openaiBaseUrl;
       if (openaiApiKey) updates.openaiApiKey = openaiApiKey;
     }
+    updates.embeddingChunkSize = chunkSize;
+    updates.embeddingChunkOverlap = chunkOverlap;
     onSave(updates);
   }
 
@@ -385,6 +393,62 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
           {settings.embeddingModel} (server-wide, read-only)
         </div>
       </div>
+
+      {/* Chunk Size */}
+      <div>
+        <label className="mb-1.5 block text-sm font-medium" htmlFor="chunk-size-input">
+          Chunk Size (tokens)
+        </label>
+        <p className="mb-1.5 text-sm text-muted-foreground">
+          Controls how much text is grouped into each searchable unit for AI Q&A.
+          Smaller values (128–256) find precise facts but may miss context.
+          Larger values (512–1024) capture complete sections. Default: 500.
+        </p>
+        <input
+          id="chunk-size-input"
+          type="number"
+          min={128}
+          max={2048}
+          step={64}
+          value={chunkSize}
+          onChange={(e) => setChunkSize(Number(e.target.value))}
+          className="glass-input w-40"
+          data-testid="chunk-size-input"
+        />
+      </div>
+
+      {/* Chunk Overlap */}
+      <div>
+        <label className="mb-1.5 block text-sm font-medium" htmlFor="chunk-overlap-input">
+          Chunk Overlap (tokens)
+        </label>
+        <p className="mb-1.5 text-sm text-muted-foreground">
+          Tokens shared between adjacent chunks to prevent information loss at boundaries.
+          Recommended: 10% of chunk size. Default: 50.
+        </p>
+        <input
+          id="chunk-overlap-input"
+          type="number"
+          min={0}
+          max={512}
+          step={10}
+          value={chunkOverlap}
+          onChange={(e) => setChunkOverlap(Number(e.target.value))}
+          className="glass-input w-40"
+          data-testid="chunk-overlap-input"
+        />
+      </div>
+
+      {/* Warning banner when chunk settings have unsaved changes */}
+      {hasChunkChanges && (
+        <div
+          className="glass-card border-yellow-500/30 p-3 text-sm text-yellow-400"
+          data-testid="chunk-change-warning"
+        >
+          Changing chunk settings requires re-processing all embedded pages.
+          This may take several minutes and temporarily affects AI Q&A.
+        </div>
+      )}
 
       {testResult && (
         <div className={`rounded-md p-3 text-sm ${testResult.success ? 'bg-success/10 text-success' : 'bg-destructive/10 text-destructive'}`} data-testid="llm-test-result">
