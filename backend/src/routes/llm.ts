@@ -27,9 +27,45 @@ import { sanitizeLlmInput } from '../utils/sanitize-llm-input.js';
 import { logAuditEvent } from '../services/audit-service.js';
 import { logger } from '../utils/logger.js';
 import type { LlmProviderType } from '../services/llm-provider.js';
+import { assembleSubPageContext, getMultiPagePromptSuffix } from '../services/subpage-context.js';
 
 const IdParamSchema = z.object({ id: z.string().min(1) });
 const ImprovementsQuerySchema = z.object({ pageId: z.string().optional() });
+
+/**
+ * Assemble page context for LLM consumption, optionally including sub-pages.
+ *
+ * When `includeSubPages` is true and a `pageId` is provided, fetches the parent
+ * page title and assembles it with its sub-page tree. Otherwise, converts the
+ * HTML content directly to markdown.
+ *
+ * Returns the markdown content and an optional multi-page prompt suffix.
+ */
+async function assembleContextIfNeeded(
+  userId: string,
+  pageId: string | undefined,
+  content: string,
+  includeSubPages?: boolean,
+): Promise<{ markdown: string; multiPageSuffix: string }> {
+  if (includeSubPages && pageId) {
+    const pageResult = await query<{ title: string }>(
+      'SELECT title FROM cached_pages WHERE user_id = $1 AND confluence_id = $2',
+      [userId, pageId],
+    );
+    const parentTitle = pageResult.rows[0]?.title ?? 'Untitled';
+
+    const assembled = await assembleSubPageContext(userId, pageId, content, parentTitle);
+    return {
+      markdown: assembled.markdown,
+      multiPageSuffix: getMultiPagePromptSuffix(assembled.pageCount),
+    };
+  }
+
+  return {
+    markdown: htmlToMarkdown(content),
+    multiPageSuffix: '',
+  };
+}
 
 // Rate limit configs for LLM endpoints
 const LLM_STREAM_RATE_LIMIT = { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } };
@@ -155,15 +191,14 @@ export async function llmRoutes(fastify: FastifyInstance) {
   // POST /api/llm/improve - stream improved content
   fastify.post('/llm/improve', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
     const body = ImproveRequestSchema.parse(request.body);
-    const { content, type, model } = body;
+    const { content, type, model, includeSubPages } = body;
     const userId = request.userId;
 
     if (content.length > MAX_INPUT_LENGTH) {
       throw fastify.httpErrors.badRequest(`Content too large (max ${MAX_INPUT_LENGTH} characters)`);
     }
 
-    // Convert HTML to markdown for LLM consumption
-    const markdown = htmlToMarkdown(content);
+    const { markdown, multiPageSuffix } = await assembleContextIfNeeded(userId, body.pageId, content, includeSubPages);
 
     // Sanitize before sending to LLM
     const { sanitized, warnings } = sanitizeLlmInput(markdown);
@@ -171,7 +206,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
       await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/improve' }, request);
     }
 
-    const systemPrompt = getSystemPrompt(`improve_${type}` as SystemPromptKey);
+    const systemPrompt = getSystemPrompt(`improve_${type}` as SystemPromptKey) + multiPageSuffix;
 
     // Check LLM cache
     const cacheKey = buildLlmCacheKey(model, systemPrompt, sanitized);
@@ -253,14 +288,14 @@ export async function llmRoutes(fastify: FastifyInstance) {
   // POST /api/llm/summarize - stream summary
   fastify.post('/llm/summarize', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
     const body = SummarizeRequestSchema.parse(request.body);
-    const { content, model, length = 'medium' } = body;
+    const { content, model, length = 'medium', includeSubPages } = body;
     const userId = request.userId;
 
     if (content.length > MAX_INPUT_LENGTH) {
       throw fastify.httpErrors.badRequest(`Content too large (max ${MAX_INPUT_LENGTH} characters)`);
     }
 
-    const markdown = htmlToMarkdown(content);
+    const { markdown, multiPageSuffix } = await assembleContextIfNeeded(userId, body.pageId, content, includeSubPages);
 
     // Sanitize before sending to LLM
     const { sanitized: sanitizedMarkdown, warnings } = sanitizeLlmInput(markdown);
@@ -274,7 +309,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
       detailed: 'Provide a detailed summary covering all important points, decisions, and action items.',
     };
 
-    const systemPrompt = `${getSystemPrompt('summarize')} ${lengthInstructions[length]}`;
+    const systemPrompt = `${getSystemPrompt('summarize')} ${lengthInstructions[length]}${multiPageSuffix}`;
 
     // Check LLM cache
     const cacheKey = buildLlmCacheKey(model, systemPrompt, sanitizedMarkdown);
@@ -345,14 +380,14 @@ export async function llmRoutes(fastify: FastifyInstance) {
   // POST /api/llm/analyze-quality - stream article quality analysis
   fastify.post('/llm/analyze-quality', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
     const body = AnalyzeQualityRequestSchema.parse(request.body);
-    const { content, model } = body;
+    const { content, model, includeSubPages } = body;
     const userId = request.userId;
 
     if (content.length > MAX_INPUT_LENGTH) {
       throw fastify.httpErrors.badRequest(`Content too large (max ${MAX_INPUT_LENGTH} characters)`);
     }
 
-    const markdown = htmlToMarkdown(content);
+    const { markdown, multiPageSuffix } = await assembleContextIfNeeded(userId, body.pageId, content, includeSubPages);
 
     // Sanitize before sending to LLM
     const { sanitized, warnings } = sanitizeLlmInput(markdown);
@@ -360,7 +395,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
       await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/analyze-quality' }, request);
     }
 
-    const systemPrompt = getSystemPrompt('analyze_quality');
+    const systemPrompt = getSystemPrompt('analyze_quality') + multiPageSuffix;
 
     // Check LLM cache
     const cacheKey = buildLlmCacheKey(model, systemPrompt, sanitized);
@@ -389,7 +424,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
   // POST /api/llm/ask - RAG-powered Q&A with streaming
   fastify.post('/llm/ask', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
     const body = AskRequestSchema.parse(request.body);
-    const { question, model, conversationId } = body;
+    const { question, model, conversationId, includeSubPages } = body;
     const userId = request.userId;
 
     if (question.length > MAX_INPUT_LENGTH) {
@@ -418,11 +453,31 @@ export async function llmRoutes(fastify: FastifyInstance) {
 
     // Perform hybrid RAG search
     const searchResults = await hybridSearch(userId, question);
-    const ragContext = buildRagContext(searchResults);
+    let ragContext = buildRagContext(searchResults);
+
+    // If includeSubPages is enabled and a pageId is provided, augment the RAG context
+    // with the sub-page tree content
+    let multiPageSuffix = '';
+    if (includeSubPages && body.pageId) {
+      const pageResult = await query<{ title: string; body_html: string }>(
+        'SELECT title, body_html FROM cached_pages WHERE user_id = $1 AND confluence_id = $2',
+        [userId, body.pageId],
+      );
+      if (pageResult.rows.length > 0) {
+        const { title, body_html } = pageResult.rows[0];
+        const assembled = await assembleSubPageContext(userId, body.pageId, body_html || '', title);
+        // Prepend the page tree context before the RAG context
+        ragContext = `Page tree context:\n\n${assembled.markdown}\n\n---\n\nAdditional knowledge base context:\n\n${ragContext}`;
+        multiPageSuffix = getMultiPagePromptSuffix(assembled.pageCount);
+      }
+    }
 
     // Check RAG cache (only for new conversations without history)
     const docIds = searchResults.map((r) => r.confluenceId);
-    const ragCacheKey = buildRagCacheKey(model, question, docIds);
+    const ragCacheKey = buildRagCacheKey(model, question, docIds, {
+      includeSubPages,
+      pageId: body.pageId,
+    });
 
     if (conversationHistory.length === 0) {
       const cached = await llmCache.getCachedResponse(ragCacheKey);
@@ -474,7 +529,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
 
     // Build messages
     const messages: ChatMessage[] = [
-      { role: 'system', content: getSystemPrompt('ask') },
+      { role: 'system', content: getSystemPrompt('ask') + multiPageSuffix },
       ...conversationHistory,
       {
         role: 'user',

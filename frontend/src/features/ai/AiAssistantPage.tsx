@@ -3,14 +3,14 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import { m } from 'framer-motion';
 import {
   Send, Bot, User, Loader2, MessageSquare, Plus, Trash2,
-  Wand2, FileText, ListCollapse, Sparkles, GitBranch, FileInput, ShieldCheck,
+  Wand2, FileText, ListCollapse, Sparkles, GitBranch, FileInput, ShieldCheck, Network,
 } from 'lucide-react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '../../shared/lib/api';
 import { streamSSE } from '../../shared/lib/sse';
-import { usePage, useEmbeddingStatus } from '../../shared/hooks/use-pages';
+import { usePage, useEmbeddingStatus, usePageHasChildren } from '../../shared/hooks/use-pages';
 import { cn } from '../../shared/lib/cn';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { DiffView } from '../../shared/components/DiffView';
@@ -64,11 +64,14 @@ export function AiAssistantPage() {
   const [diagramType, setDiagramType] = useState<string>('flowchart');
   const [diagramCode, setDiagramCode] = useState<string>('');
   const [isInsertingDiagram, setIsInsertingDiagram] = useState(false);
+  const [includeSubPages, setIncludeSubPages] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const { data: page } = usePage(pageId ?? undefined);
   const { data: embeddingStatus } = useEmbeddingStatus();
+  const { data: hasChildrenData } = usePageHasChildren(pageId ?? undefined);
+  const pageHasChildren = hasChildrenData?.hasChildren ?? false;
 
   // Abort any in-flight stream on unmount
   useEffect(() => {
@@ -144,7 +147,7 @@ export function AiAssistantPage() {
     try {
       for await (const chunk of streamSSE<{ content?: string; error?: string; done?: boolean; final?: boolean; conversationId?: string; sources?: Source[] }>(
         '/llm/ask',
-        { question, model, conversationId },
+        { question, model, conversationId, pageId: pageId ?? undefined, includeSubPages },
         controller.signal,
       )) {
         if (chunk.error) {
@@ -181,7 +184,7 @@ export function AiAssistantPage() {
     } finally {
       setIsStreaming(false);
     }
-  }, [input, model, isStreaming, conversationId]);
+  }, [input, model, isStreaming, conversationId, pageId, includeSubPages]);
 
   const handleImprove = useCallback(async () => {
     if (isStreaming) return;
@@ -211,6 +214,7 @@ export function AiAssistantPage() {
         type: improvementType,
         model,
         pageId,
+        includeSubPages,
       }, controller.signal)) {
         if (chunk.error) {
           toast.error(chunk.error);
@@ -234,7 +238,7 @@ export function AiAssistantPage() {
     } finally {
       setIsStreaming(false);
     }
-  }, [page, model, improvementType, pageId, isStreaming]);
+  }, [page, model, improvementType, pageId, isStreaming, includeSubPages]);
 
   const handleGenerate = useCallback(async () => {
     if (!input.trim() || isStreaming) return;
@@ -301,6 +305,8 @@ export function AiAssistantPage() {
       for await (const chunk of streamSSE<{ content?: string; error?: string; done?: boolean }>('/llm/summarize', {
         content: page.bodyHtml,
         model,
+        pageId,
+        includeSubPages,
       }, controller.signal)) {
         if (chunk.error) {
           toast.error(chunk.error);
@@ -321,7 +327,7 @@ export function AiAssistantPage() {
     } finally {
       setIsStreaming(false);
     }
-  }, [page, model, isStreaming]);
+  }, [page, model, isStreaming, pageId, includeSubPages]);
 
   const handleQuality = useCallback(async () => {
     if (isStreaming) return;
@@ -348,6 +354,7 @@ export function AiAssistantPage() {
         content: page.bodyHtml,
         model,
         pageId,
+        includeSubPages,
       }, controller.signal)) {
         if (chunk.error) {
           toast.error(chunk.error);
@@ -368,7 +375,7 @@ export function AiAssistantPage() {
     } finally {
       setIsStreaming(false);
     }
-  }, [page, model, pageId, isStreaming]);
+  }, [page, model, pageId, isStreaming, includeSubPages]);
 
   const handleDiagram = useCallback(async () => {
     if (isStreaming) return;
@@ -571,6 +578,26 @@ export function AiAssistantPage() {
             <span className="flex items-center gap-1 rounded bg-primary/10 px-2 py-0.5 text-xs text-primary">
               <FileText size={12} /> {page.title}
             </span>
+          )}
+
+          {page && pageHasChildren && (
+            <label
+              className={cn(
+                'flex cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs transition-colors',
+                includeSubPages ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-foreground/5',
+              )}
+              title="Include sub-pages in the AI context"
+            >
+              <input
+                type="checkbox"
+                checked={includeSubPages}
+                onChange={(e) => setIncludeSubPages(e.target.checked)}
+                className="sr-only"
+                aria-label="Include sub-pages"
+              />
+              <Network size={14} />
+              <span>+ Sub-pages</span>
+            </label>
           )}
         </div>
 
