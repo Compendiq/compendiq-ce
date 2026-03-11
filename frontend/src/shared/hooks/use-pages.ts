@@ -82,7 +82,7 @@ export function usePages(params: PageFilters = {}) {
   });
 }
 
-interface PageTreeItem {
+export interface PageTreeItem {
   id: string;
   spaceKey: string;
   title: string;
@@ -421,4 +421,4 @@ export function useUnpinPage() {
   });
 }
 
-export type { PageSummary, PageDetail, PaginatedPages, PageTreeItem, PageTreeResponse, FilterOptions };
+export type { PageSummary, PageDetail, PaginatedPages, PageTreeResponse, FilterOptions };

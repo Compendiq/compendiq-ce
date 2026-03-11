@@ -24,6 +24,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const openCommandPalette = useCommandPaletteStore((s) => s.open);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const isArticleRoute = /^\/pages\/[^/]+$/.test(location.pathname);
 
   // Show tree sidebar on page-related routes (/ is now the pages view)
   const showTreeSidebar = location.pathname === '/' || location.pathname.startsWith('/pages');
@@ -171,7 +172,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
             </div>
             <div ref={scrollContainerRef} data-scroll-container className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
               <PageTransition>
-                <div className="mx-auto max-w-7xl">
+                <div className={cn('mx-auto w-full', isArticleRoute ? 'max-w-[1400px]' : 'max-w-7xl')}>
                   {children}
                 </div>
               </PageTransition>

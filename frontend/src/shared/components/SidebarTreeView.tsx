@@ -4,7 +4,8 @@ import {
   ChevronRight,
   ChevronDown,
   FileText,
-  Layers,
+  Folder,
+  FolderOpen,
   PanelLeftClose,
   PanelLeft,
   ChevronsUpDown,
@@ -126,11 +127,15 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         ) : (
           <span className="w-[20px] shrink-0" />
         )}
-        {hasChildren ? (
-          <Layers size={15} className="shrink-0 text-primary/70" />
-        ) : (
-          <FileText size={15} className="shrink-0 text-muted-foreground/70" />
-        )}
+        {hasChildren
+          ? (
+            isExpanded || isActive
+              ? <FolderOpen size={15} className="shrink-0 text-primary/80" />
+              : <Folder size={15} className="shrink-0 text-primary/70" />
+            )
+          : (
+            <FileText size={15} className="shrink-0 text-muted-foreground/70" />
+            )}
         <span className="truncate text-sm">{node.page.title}</span>
       </div>
 
