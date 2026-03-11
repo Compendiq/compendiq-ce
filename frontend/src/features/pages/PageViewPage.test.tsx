@@ -188,6 +188,30 @@ describe('PageViewPage', () => {
     expect(screen.getByTestId('embedding-status-badge')).toHaveTextContent('embedded');
   });
 
+  it('does not render the Library button', () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+
+    expect(screen.queryByText('Library')).not.toBeInTheDocument();
+  });
+
+  it('does not render the folder hierarchy info message', () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+
+    expect(
+      screen.queryByText(/This folder is also a readable article/),
+    ).not.toBeInTheDocument();
+  });
+
+  it('renders the AI Improve button and navigates to the improve flow', () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+
+    const aiButton = screen.getByText('AI Improve');
+    expect(aiButton).toBeInTheDocument();
+
+    fireEvent.click(aiButton.closest('button')!);
+    expect(mockNavigate).toHaveBeenCalledWith('/ai?mode=improve&pageId=page-1');
+  });
+
   it('resets the app scroll container when the article route renders', async () => {
     const scrollContainer = document.createElement('div');
     scrollContainer.setAttribute('data-scroll-container', '');
