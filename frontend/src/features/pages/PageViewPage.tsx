@@ -3,7 +3,6 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, m } from 'framer-motion';
 import {
-  ArrowLeft,
   ExternalLink,
   FileText,
   FolderOpen,
@@ -11,6 +10,7 @@ import {
   Save,
   Trash2,
   User,
+  Wand2,
   X,
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -317,12 +317,12 @@ export function PageViewPage() {
 
               <div className="flex flex-wrap items-center justify-end gap-2">
                 <button
-                  onClick={() => navigate('/')}
+                  onClick={() => navigate(`/ai?mode=improve&pageId=${encodeURIComponent(id ?? '')}`)}
                   className="rounded-xl border border-border/60 bg-background/55 px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
                 >
                   <span className="inline-flex items-center gap-2">
-                    <ArrowLeft size={14} />
-                    Library
+                    <Wand2 size={14} />
+                    AI Improve
                   </span>
                 </button>
 
@@ -413,11 +413,6 @@ export function PageViewPage() {
               </div>
             ) : null}
 
-            {page.hasChildren ? (
-              <div className="rounded-2xl border border-primary/15 bg-primary/6 px-4 py-3 text-sm text-muted-foreground">
-                This folder is also a readable article. Select any child page in the left tree to move through the hierarchy without leaving the reader.
-              </div>
-            ) : null}
           </div>
         </div>
       </section>
