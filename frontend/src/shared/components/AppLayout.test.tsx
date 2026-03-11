@@ -180,4 +180,31 @@ describe('AppLayout', () => {
     );
     expect(screen.queryByTestId('article-right-pane')).not.toBeInTheDocument();
   });
+
+  it('has exactly one scroll container (data-scroll-container) to prevent duplicate scrollbars', () => {
+    const { container } = render(
+      <AppLayout>
+        <div>content</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/') },
+    );
+    const scrollContainers = container.querySelectorAll('[data-scroll-container]');
+    expect(scrollContainers).toHaveLength(1);
+
+    const scrollEl = scrollContainers[0] as HTMLElement;
+    expect(scrollEl.className).toContain('overflow-y-auto');
+  });
+
+  it('root layout container prevents outer scrolling with overflow-hidden', () => {
+    const { container } = render(
+      <AppLayout>
+        <div>content</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/') },
+    );
+    // The outermost div should clip overflow to prevent body-level scrollbar
+    const rootDiv = container.firstElementChild as HTMLElement;
+    expect(rootDiv.className).toContain('overflow-hidden');
+    expect(rootDiv.className).toContain('h-screen');
+  });
 });
