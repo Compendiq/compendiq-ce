@@ -45,11 +45,12 @@ function buildTree(pages: PageTreeItem[], homepageId?: string | null): TreeNode[
   }
   sortChildren(roots);
 
-  // If homepageId is provided, root the tree at the homepage's children
+  // If homepageId is provided, keep the homepage itself as the visible root
+  // so it remains clickable as a folder/article entry.
   if (homepageId) {
     const homepageNode = nodeMap.get(homepageId);
     if (homepageNode) {
-      return homepageNode.children;
+      return [homepageNode];
     }
   }
 
@@ -234,6 +235,19 @@ export function SidebarTreeView() {
       }
     }
   }, [activePageId, pages]);
+
+  // When a space is scoped to its homepage, keep that homepage expanded so
+  // the homepage remains clickable while its immediate children stay visible.
+  useEffect(() => {
+    if (!homepageId) return;
+
+    setExpandedIds((prev) => {
+      if (prev.has(homepageId)) return prev;
+      const next = new Set(prev);
+      next.add(homepageId);
+      return next;
+    });
+  }, [homepageId]);
 
   // Auto-select space based on current page
   useEffect(() => {
