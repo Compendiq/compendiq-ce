@@ -43,6 +43,11 @@ vi.mock('../services/ollama-service.js', () => ({
   setActiveProvider: vi.fn(),
 }));
 
+const mockGetSyncOverview = vi.fn();
+vi.mock('../services/sync-overview-service.js', () => ({
+  getSyncOverview: (...args: unknown[]) => mockGetSyncOverview(...args),
+}));
+
 import { settingsRoutes } from './settings.js';
 
 describe('Settings routes – test-confluence', () => {
@@ -300,6 +305,52 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     expect(body.selectedSpaces).toEqual(['DEV', 'DOCS']);
     expect(body.confluenceUrl).toBe('https://confluence.example.com');
     expect(body.confluenceConnected).toBe(true);
+  });
+
+  it('GET /settings/sync-overview returns sync overview payload', async () => {
+    mockGetSyncOverview.mockResolvedValueOnce({
+      sync: { userId: 'test-user-id', status: 'syncing', progress: { current: 2, total: 5, space: 'OPS' } },
+      totals: {
+        selectedSpaces: 1,
+        totalPages: 3,
+        pagesWithAssets: 2,
+        pagesWithIssues: 1,
+        healthyPages: 2,
+        images: { expected: 4, cached: 3, missing: 1 },
+        drawio: { expected: 1, cached: 1, missing: 0 },
+      },
+      spaces: [{
+        spaceKey: 'OPS',
+        spaceName: 'Operations',
+        status: 'syncing',
+        lastSynced: '2026-03-11T10:00:00.000Z',
+        pageCount: 3,
+        pagesWithAssets: 2,
+        pagesWithIssues: 1,
+        images: { expected: 4, cached: 3, missing: 1 },
+        drawio: { expected: 1, cached: 1, missing: 0 },
+      }],
+      issues: [{
+        pageId: 'page-1',
+        pageTitle: 'Runbook',
+        spaceKey: 'OPS',
+        missingImages: 1,
+        missingDrawio: 0,
+        missingFiles: ['missing.png'],
+      }],
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/settings/sync-overview',
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.sync.status).toBe('syncing');
+    expect(body.totals.images.missing).toBe(1);
+    expect(body.issues[0].missingFiles).toEqual(['missing.png']);
+    expect(mockGetSyncOverview).toHaveBeenCalledWith('test-user-id');
   });
 
   it('GET /settings returns defaults when no row exists', async () => {

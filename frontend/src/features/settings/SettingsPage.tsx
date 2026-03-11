@@ -2,17 +2,18 @@ import { useState } from 'react';
 import { m } from 'framer-motion';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import type { SettingsResponse, LlmProviderType, AdminSettings } from '@kb-creator/contracts';
+import type { SettingsResponse, LlmProviderType, AdminSettings, SyncOverviewResponse, SyncOverviewSpace } from '@kb-creator/contracts';
 import { apiFetch } from '../../shared/lib/api';
 import { useAuthStore } from '../../stores/auth-store';
 import { useSettings } from '../../shared/hooks/use-settings';
+import { useSync } from '../../shared/hooks/use-spaces';
 import { SpacesTab } from './SpacesTab';
 import { LabelManager } from './LabelManager';
 import { ErrorDashboard } from './ErrorDashboard';
 import { ThemeTab } from './ThemeTab';
 import { SkeletonFormFields } from '../../shared/components/Skeleton';
 
-type TabId = 'confluence' | 'ollama' | 'spaces' | 'theme' | 'account' | 'labels' | 'errors' | 'embedding';
+type TabId = 'confluence' | 'sync' | 'ollama' | 'spaces' | 'theme' | 'account' | 'labels' | 'errors' | 'embedding';
 
 export function SettingsPage() {
   const queryClient = useQueryClient();
@@ -34,6 +35,7 @@ export function SettingsPage() {
 
   const tabs: { id: TabId; label: string; adminOnly?: boolean }[] = [
     { id: 'confluence', label: 'Confluence' },
+    { id: 'sync', label: 'Sync' },
     { id: 'spaces', label: 'Spaces' },
     { id: 'ollama', label: 'LLM' },
     { id: 'theme', label: 'Theme' },
@@ -73,10 +75,12 @@ export function SettingsPage() {
         </div>
 
         <div className="p-6">
-          {(isLoading || !settings) && activeTab !== 'labels' && activeTab !== 'errors' && activeTab !== 'theme' && activeTab !== 'embedding' ? (
+          {(isLoading || !settings) && activeTab !== 'labels' && activeTab !== 'errors' && activeTab !== 'theme' && activeTab !== 'embedding' && activeTab !== 'sync' ? (
             <SkeletonFormFields />
           ) : activeTab === 'confluence' ? (
             <ConfluenceTab settings={settings!} onSave={(v) => updateSettings.mutate(v)} />
+          ) : activeTab === 'sync' ? (
+            <SyncTab />
           ) : activeTab === 'spaces' ? (
             <SpacesTab
               selectedSpaces={settings?.selectedSpaces ?? []}
@@ -99,6 +103,259 @@ export function SettingsPage() {
         </div>
       </div>
     </m.div>
+  );
+}
+
+const syncBadgeClasses: Record<'idle' | 'syncing' | 'embedding' | 'error', string> = {
+  idle: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300',
+  syncing: 'border-amber-500/30 bg-amber-500/10 text-amber-300',
+  embedding: 'border-sky-500/30 bg-sky-500/10 text-sky-300',
+  error: 'border-red-500/30 bg-red-500/10 text-red-300',
+};
+
+const spaceBadgeClasses: Record<SyncOverviewSpace['status'], string> = {
+  healthy: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300',
+  degraded: 'border-red-500/30 bg-red-500/10 text-red-300',
+  syncing: 'border-amber-500/30 bg-amber-500/10 text-amber-300',
+  not_synced: 'border-slate-500/30 bg-slate-500/10 text-slate-300',
+};
+
+function formatTimestamp(value?: string | null): string {
+  if (!value) return 'Never';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Unknown';
+  return date.toLocaleString();
+}
+
+function MetricCard({
+  label,
+  value,
+  hint,
+  testId,
+}: {
+  label: string;
+  value: string;
+  hint: string;
+  testId?: string;
+}) {
+  return (
+    <div className="rounded-xl border border-border/40 bg-foreground/[0.03] p-4" data-testid={testId}>
+      <div className="text-xs uppercase tracking-[0.16em] text-muted-foreground">{label}</div>
+      <div className="mt-2 text-2xl font-semibold">{value}</div>
+      <div className="mt-1 text-sm text-muted-foreground">{hint}</div>
+    </div>
+  );
+}
+
+function StatusBadge({
+  label,
+  classes,
+  testId,
+}: {
+  label: string;
+  classes: string;
+  testId?: string;
+}) {
+  return (
+    <span
+      className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium uppercase tracking-[0.14em] ${classes}`}
+      data-testid={testId}
+    >
+      {label}
+    </span>
+  );
+}
+
+function SyncTab() {
+  const syncMutation = useSync();
+  const { data, isLoading, isFetching, refetch } = useQuery<SyncOverviewResponse>({
+    queryKey: ['settings', 'sync-overview'],
+    queryFn: () => apiFetch('/settings/sync-overview'),
+    refetchInterval: (query) => {
+      const status = query.state.data?.sync.status;
+      return status === 'syncing' || status === 'embedding' ? 2000 : false;
+    },
+  });
+
+  if (isLoading || !data) {
+    return <SkeletonFormFields />;
+  }
+
+  const syncLabel = data.sync.status === 'syncing'
+    ? `Syncing${data.sync.progress?.space ? ` ${data.sync.progress.space}` : ''}`
+    : data.sync.status === 'embedding'
+      ? 'Embedding'
+      : data.sync.status === 'error'
+        ? 'Error'
+        : 'Idle';
+
+  return (
+    <div className="space-y-6" data-testid="sync-tab-panel">
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <StatusBadge
+              label={syncLabel}
+              classes={syncBadgeClasses[data.sync.status]}
+              testId="sync-overview-status"
+            />
+            {data.sync.progress && data.sync.status === 'syncing' && (
+              <span className="text-sm text-muted-foreground">
+                {data.sync.progress.current}/{data.sync.progress.total} pages
+              </span>
+            )}
+          </div>
+          <p className="text-sm text-muted-foreground">
+            Last completed sync: {formatTimestamp(data.sync.lastSynced)}
+          </p>
+          {data.sync.error && (
+            <p className="text-sm text-destructive" data-testid="sync-overview-error">{data.sync.error}</p>
+          )}
+        </div>
+
+        <div className="flex gap-2">
+          <button
+            onClick={() => refetch()}
+            disabled={isFetching}
+            className="glass-button-secondary"
+            data-testid="sync-overview-refresh"
+          >
+            {isFetching ? 'Refreshing...' : 'Refresh'}
+          </button>
+          <button
+            onClick={() => syncMutation.mutate()}
+            disabled={syncMutation.isPending || data.sync.status === 'syncing'}
+            className="glass-button-primary"
+            data-testid="sync-overview-sync-now"
+          >
+            {data.sync.status === 'syncing' ? 'Syncing...' : syncMutation.isPending ? 'Starting...' : 'Sync Now'}
+          </button>
+        </div>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <MetricCard
+          label="Selected Spaces"
+          value={String(data.totals.selectedSpaces)}
+          hint={`${data.totals.totalPages} cached pages`}
+          testId="sync-metric-spaces"
+        />
+        <MetricCard
+          label="Pages With Assets"
+          value={String(data.totals.pagesWithAssets)}
+          hint={`${data.totals.healthyPages} healthy, ${data.totals.pagesWithIssues} with gaps`}
+          testId="sync-metric-pages"
+        />
+        <MetricCard
+          label="Images"
+          value={`${data.totals.images.cached}/${data.totals.images.expected}`}
+          hint={data.totals.images.missing > 0 ? `${data.totals.images.missing} missing` : 'All cached'}
+          testId="sync-metric-images"
+        />
+        <MetricCard
+          label="Draw.io"
+          value={`${data.totals.drawio.cached}/${data.totals.drawio.expected}`}
+          hint={data.totals.drawio.missing > 0 ? `${data.totals.drawio.missing} missing` : 'All cached'}
+          testId="sync-metric-drawio"
+        />
+      </div>
+
+      <section className="space-y-3">
+        <div>
+          <h2 className="text-sm font-semibold uppercase tracking-[0.16em] text-muted-foreground">Spaces</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Health by selected Confluence space, including images and draw.io exports expected from cached pages.
+          </p>
+        </div>
+
+        <div className="grid gap-3 lg:grid-cols-2">
+          {data.spaces.map((space) => (
+            <div
+              key={space.spaceKey}
+              className="rounded-xl border border-border/40 bg-foreground/[0.03] p-4"
+              data-testid={`sync-overview-space-${space.spaceKey}`}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-base font-semibold">{space.spaceName}</div>
+                  <div className="text-sm text-muted-foreground">{space.spaceKey}</div>
+                </div>
+                <StatusBadge label={space.status.replace('_', ' ')} classes={spaceBadgeClasses[space.status]} />
+              </div>
+
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <div>
+                  <div className="text-xs uppercase tracking-[0.14em] text-muted-foreground">Pages</div>
+                  <div className="mt-1 text-lg font-medium">{space.pageCount}</div>
+                  <div className="text-sm text-muted-foreground">{space.pagesWithAssets} with assets</div>
+                </div>
+                <div>
+                  <div className="text-xs uppercase tracking-[0.14em] text-muted-foreground">Last Synced</div>
+                  <div className="mt-1 text-sm">{formatTimestamp(space.lastSynced)}</div>
+                  <div className="text-sm text-muted-foreground">{space.pagesWithIssues} pages need attention</div>
+                </div>
+                <div>
+                  <div className="text-xs uppercase tracking-[0.14em] text-muted-foreground">Images</div>
+                  <div className="mt-1 text-lg font-medium">{space.images.cached}/{space.images.expected}</div>
+                  <div className="text-sm text-muted-foreground">{space.images.missing} missing</div>
+                </div>
+                <div>
+                  <div className="text-xs uppercase tracking-[0.14em] text-muted-foreground">Draw.io</div>
+                  <div className="mt-1 text-lg font-medium">{space.drawio.cached}/{space.drawio.expected}</div>
+                  <div className="text-sm text-muted-foreground">{space.drawio.missing} missing</div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <div>
+          <h2 className="text-sm font-semibold uppercase tracking-[0.16em] text-muted-foreground">Missing Assets</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Pages listed here still have missing local files, which is the most likely source of image 404s.
+          </p>
+        </div>
+
+        {data.issues.length === 0 ? (
+          <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm text-emerald-300" data-testid="sync-overview-empty">
+            No missing images or draw.io exports were detected in the selected spaces.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {data.issues.map((issue) => (
+              <div
+                key={issue.pageId}
+                className="rounded-xl border border-red-500/30 bg-red-500/10 p-4"
+                data-testid={`sync-overview-issue-${issue.pageId}`}
+              >
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <div className="font-medium">{issue.pageTitle}</div>
+                    <div className="text-sm text-muted-foreground">{issue.spaceKey}</div>
+                  </div>
+                  <div className="text-sm text-red-200">
+                    {issue.missingImages} image missing, {issue.missingDrawio} draw.io missing
+                  </div>
+                </div>
+
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {issue.missingFiles.map((filename) => (
+                    <span
+                      key={filename}
+                      className="rounded-full border border-red-400/30 bg-black/10 px-2.5 py-1 text-xs text-red-100"
+                    >
+                      {filename}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
   );
 }
 

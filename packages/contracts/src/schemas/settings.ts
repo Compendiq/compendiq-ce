@@ -35,6 +35,62 @@ export const SettingsResponseSchema = z.object({
   showSpaceHomeContent: z.boolean(),
 });
 
+export const SyncProgressSchema = z.object({
+  current: z.number().int().nonnegative(),
+  total: z.number().int().nonnegative(),
+  space: z.string().optional(),
+});
+
+export const UserSyncStatusSchema = z.object({
+  userId: z.string(),
+  status: z.enum(['idle', 'syncing', 'embedding', 'error']),
+  progress: SyncProgressSchema.optional(),
+  lastSynced: z.string().datetime().optional(),
+  error: z.string().optional(),
+});
+
+export const AssetSyncCountsSchema = z.object({
+  expected: z.number().int().nonnegative(),
+  cached: z.number().int().nonnegative(),
+  missing: z.number().int().nonnegative(),
+});
+
+export const SyncOverviewSpaceSchema = z.object({
+  spaceKey: z.string(),
+  spaceName: z.string(),
+  status: z.enum(['not_synced', 'syncing', 'healthy', 'degraded']),
+  lastSynced: z.string().datetime().nullable(),
+  pageCount: z.number().int().nonnegative(),
+  pagesWithAssets: z.number().int().nonnegative(),
+  pagesWithIssues: z.number().int().nonnegative(),
+  images: AssetSyncCountsSchema,
+  drawio: AssetSyncCountsSchema,
+});
+
+export const SyncOverviewIssueSchema = z.object({
+  pageId: z.string(),
+  pageTitle: z.string(),
+  spaceKey: z.string(),
+  missingImages: z.number().int().nonnegative(),
+  missingDrawio: z.number().int().nonnegative(),
+  missingFiles: z.array(z.string()),
+});
+
+export const SyncOverviewResponseSchema = z.object({
+  sync: UserSyncStatusSchema,
+  totals: z.object({
+    selectedSpaces: z.number().int().nonnegative(),
+    totalPages: z.number().int().nonnegative(),
+    pagesWithAssets: z.number().int().nonnegative(),
+    pagesWithIssues: z.number().int().nonnegative(),
+    healthyPages: z.number().int().nonnegative(),
+    images: AssetSyncCountsSchema,
+    drawio: AssetSyncCountsSchema,
+  }),
+  spaces: z.array(SyncOverviewSpaceSchema),
+  issues: z.array(SyncOverviewIssueSchema),
+});
+
 export const TestConfluenceSchema = z.object({
   url: z.string().url(),
   // Optional: if omitted the backend uses the stored encrypted PAT
@@ -45,3 +101,8 @@ export type UserSettings = z.infer<typeof UserSettingsSchema>;
 export type UpdateSettingsInput = z.infer<typeof UpdateSettingsSchema>;
 export type SettingsResponse = z.infer<typeof SettingsResponseSchema>;
 export type TestConfluenceInput = z.infer<typeof TestConfluenceSchema>;
+export type UserSyncStatus = z.infer<typeof UserSyncStatusSchema>;
+export type AssetSyncCounts = z.infer<typeof AssetSyncCountsSchema>;
+export type SyncOverviewSpace = z.infer<typeof SyncOverviewSpaceSchema>;
+export type SyncOverviewIssue = z.infer<typeof SyncOverviewIssueSchema>;
+export type SyncOverviewResponse = z.infer<typeof SyncOverviewResponseSchema>;

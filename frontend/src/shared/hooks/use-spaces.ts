@@ -37,6 +37,7 @@ export function useSync() {
     onSuccess: () => {
       // Invalidate sync status so the UI picks up 'syncing' state and starts polling
       queryClient.invalidateQueries({ queryKey: ['sync', 'status'] });
+      queryClient.invalidateQueries({ queryKey: ['settings', 'sync-overview'] });
       queryClient.invalidateQueries({ queryKey: ['spaces'] });
       queryClient.invalidateQueries({ queryKey: ['pages'] });
     },
@@ -46,7 +47,7 @@ export function useSync() {
 export function useSyncStatus() {
   return useQuery<{
     userId: string;
-    status: 'idle' | 'syncing' | 'error';
+    status: 'idle' | 'syncing' | 'embedding' | 'error';
     progress?: { current: number; total: number; space?: string };
     lastSynced?: string;
     error?: string;

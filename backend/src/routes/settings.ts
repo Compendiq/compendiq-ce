@@ -6,6 +6,7 @@ import { encryptPat, decryptPat } from '../utils/crypto.js';
 import { validateUrl } from '../utils/ssrf-guard.js';
 import { logAuditEvent } from '../services/audit-service.js';
 import { setActiveProvider } from '../services/ollama-service.js';
+import { getSyncOverview } from '../services/sync-overview-service.js';
 import { logger } from '../utils/logger.js';
 import { confluenceDispatcher } from '../utils/tls-config.js';
 
@@ -73,6 +74,10 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       confluenceConnected: !!(row.confluence_url && row.confluence_pat),
       showSpaceHomeContent: row.show_space_home_content,
     };
+  });
+
+  fastify.get('/settings/sync-overview', async (request) => {
+    return getSyncOverview(request.userId);
   });
 
   fastify.put('/settings', async (request) => {
