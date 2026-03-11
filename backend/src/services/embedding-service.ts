@@ -6,9 +6,10 @@ import { invalidateGraphCache, acquireEmbeddingLock, releaseEmbeddingLock, isEmb
 import { CircuitBreakerOpenError, ollamaBreakers, openaiBreakers } from './circuit-breaker.js';
 import pgvector from 'pgvector';
 
-const CHUNK_SIZE = 500;     // ~500 tokens target
-const CHUNK_OVERLAP = 50;   // ~50 token overlap
-const CHARS_PER_TOKEN = 4;  // rough estimate
+const CHUNK_SIZE = 500;          // ~500 tokens target
+const CHUNK_OVERLAP = 50;        // ~50 token overlap
+const CHARS_PER_TOKEN = 3;       // conservative estimate (code/tables can be 1–3 chars/token)
+export const CHUNK_HARD_LIMIT = 6_000;  // absolute character ceiling (~1,500–2,000 tokens safety cap)
 
 /** Delay between embedding pages to reduce LLM server pressure (ms). */
 export const INTER_PAGE_DELAY_MS = 200;
@@ -63,6 +64,20 @@ export function isCircuitBreakerError(err: unknown): boolean {
 }
 
 /**
+ * Helper to detect HTTP 400 "input length exceeds context length" errors from
+ * Ollama/OpenAI-compatible embedding endpoints.
+ */
+export function isContextLengthError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = err.message.toLowerCase();
+  return (
+    msg.includes('input length exceeds') ||
+    msg.includes('context length') ||
+    (msg.includes('http 400') && msg.includes('context'))
+  );
+}
+
+/**
  * Get the next retry time for the embedding circuit breaker.
  * Checks both ollama and openai breakers and returns the soonest retry time,
  * or null if neither is open.
@@ -83,6 +98,67 @@ export function getEmbedBreakerNextRetryTime(): number | null {
  */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Word-level fallback splitter. Splits `text` into chunks of at most `maxChars`
+ * characters, breaking on whitespace boundaries. Used when paragraph splitting
+ * still yields an oversized chunk (e.g. a single code block or minified JSON).
+ */
+export function splitByWords(text: string, maxChars: number): string[] {
+  const words = text.split(/\s+/);
+  const result: string[] = [];
+  let current = '';
+
+  for (const word of words) {
+    if (!word) continue;
+
+    // If a single word exceeds maxChars, slice it by characters
+    if (word.length > maxChars) {
+      if (current) {
+        result.push(current);
+        current = '';
+      }
+      for (let offset = 0; offset < word.length; offset += maxChars) {
+        result.push(word.slice(offset, offset + maxChars));
+      }
+      continue;
+    }
+
+    const candidate = current ? current + ' ' + word : word;
+    if (candidate.length > maxChars && current) {
+      result.push(current);
+      current = word;
+    } else {
+      current = candidate;
+    }
+  }
+
+  if (current) result.push(current);
+  return result;
+}
+
+/**
+ * Push a candidate chunk, applying CHUNK_HARD_LIMIT as an absolute ceiling.
+ * If the candidate exceeds the limit, it is split further by words before
+ * being appended to the output array.
+ */
+function pushChunk(
+  chunks: Array<{ text: string; metadata: ChunkMetadata }>,
+  text: string,
+  metadata: ChunkMetadata,
+): void {
+  const trimmed = text.trim();
+  if (!trimmed) return;
+
+  if (trimmed.length <= CHUNK_HARD_LIMIT) {
+    chunks.push({ text: trimmed, metadata });
+  } else {
+    // Word-level fallback for oversized chunks (code blocks, tables, etc.)
+    for (const part of splitByWords(trimmed, CHUNK_HARD_LIMIT)) {
+      if (part.trim()) chunks.push({ text: part.trim(), metadata });
+    }
+  }
 }
 
 /**
@@ -115,16 +191,16 @@ export function chunkText(
       currentSection = headingMatch[1];
     }
 
+    const meta: ChunkMetadata = {
+      page_title: pageTitle,
+      section_title: currentSection,
+      space_key: spaceKey,
+      confluence_id: confluenceId,
+    };
+
     if (trimmed.length <= maxChars) {
-      chunks.push({
-        text: trimmed,
-        metadata: {
-          page_title: pageTitle,
-          section_title: currentSection,
-          space_key: spaceKey,
-          confluence_id: confluenceId,
-        },
-      });
+      // Section fits within the target — still enforce the hard limit
+      pushChunk(chunks, trimmed, meta);
     } else {
       // Split large sections on paragraph boundaries
       const paragraphs = trimmed.split(/\n\n+/);
@@ -132,15 +208,7 @@ export function chunkText(
 
       for (const para of paragraphs) {
         if ((currentChunk + '\n\n' + para).length > maxChars && currentChunk) {
-          chunks.push({
-            text: currentChunk.trim(),
-            metadata: {
-              page_title: pageTitle,
-              section_title: currentSection,
-              space_key: spaceKey,
-              confluence_id: confluenceId,
-            },
-          });
+          pushChunk(chunks, currentChunk, meta);
           // Keep overlap from end of previous chunk
           const words = currentChunk.split(/\s+/);
           const overlapWords = Math.ceil(overlapChars / 5);
@@ -151,15 +219,7 @@ export function chunkText(
       }
 
       if (currentChunk.trim()) {
-        chunks.push({
-          text: currentChunk.trim(),
-          metadata: {
-            page_title: pageTitle,
-            section_title: currentSection,
-            space_key: spaceKey,
-            confluence_id: confluenceId,
-          },
-        });
+        pushChunk(chunks, currentChunk, meta);
       }
     }
   }
@@ -242,6 +302,15 @@ export async function embedPage(
         embeddedCount++;
       }
     } catch (err) {
+      // HTTP 400 "input length exceeds context length" — skip this batch and
+      // continue so the rest of the page's chunks are still embedded.
+      if (isContextLengthError(err)) {
+        logger.warn(
+          { confluenceId, batchOffset: i, batchSize: batch.length },
+          'Skipping oversized embedding batch (context length exceeded)',
+        );
+        continue;
+      }
       logger.error({ err, confluenceId, batch: i }, 'Failed to embed batch');
       throw err;
     }
