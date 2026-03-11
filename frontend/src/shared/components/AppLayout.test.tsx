@@ -66,12 +66,23 @@ describe('AppLayout', () => {
     expect(screen.queryByText('Dashboard')).not.toBeInTheDocument();
   });
 
-  it('renders app logo in top bar', () => {
+  it('renders app logo in sidebar on pages route', () => {
     render(
       <AppLayout>
         <div>content</div>
       </AppLayout>,
       { wrapper: createWrapper('/') },
+    );
+    // Logo is inside the sidebar (mocked) on pages routes, not in the top bar
+    expect(screen.queryByText('AI KB Creator')).not.toBeInTheDocument();
+  });
+
+  it('renders app logo in top bar when sidebar is hidden', () => {
+    render(
+      <AppLayout>
+        <div>content</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/ai') },
     );
     expect(screen.getByText('AI KB Creator')).toBeInTheDocument();
   });
