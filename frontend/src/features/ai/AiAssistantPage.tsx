@@ -1,6 +1,6 @@
 import { m, useReducedMotion } from 'framer-motion';
 import {
-  Bot, User, Loader2, MessageSquare, Plus, Trash2,
+  Bot, User, Loader2, MessageSquare,
   Wand2, ListCollapse, Sparkles, GitBranch, FileText, ShieldCheck, Network,
 } from 'lucide-react';
 import Markdown from 'react-markdown';
@@ -91,60 +91,15 @@ function AiAssistantInner() {
     mode, setMode, page, pageId, pageHasChildren,
     messages, messagesEndRef, isStreaming, isThinking, thinkingElapsed,
     model, models, setModel, isLight,
-    conversations, conversationId, startNewConversation, loadConversation, deleteConversation,
-    embeddingStatus, includeSubPages, setIncludeSubPages,
+    includeSubPages, setIncludeSubPages,
   } = ctx;
 
   const shouldReduceMotion = useReducedMotion();
 
   return (
-    <div className="flex h-full gap-4">
-      {/* Sidebar - Conversation History */}
-      <div className="hidden w-64 flex-col lg:flex">
-        <div className="glass-card flex flex-col h-full">
-          <div className="flex items-center justify-between border-b border-border/50 p-3">
-            <span className="text-sm font-medium">Conversations</span>
-            <button onClick={startNewConversation} className="rounded p-1 hover:bg-foreground/5" title="New conversation">
-              <Plus size={16} />
-            </button>
-          </div>
-          <div className="flex-1 overflow-y-auto p-2 space-y-1">
-            {conversations.map((conv) => (
-              <div
-                key={conv.id}
-                className={cn(
-                  'group flex items-center gap-2 rounded-md px-2 py-1.5 text-sm cursor-pointer',
-                  conversationId === conv.id ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-foreground/5',
-                )}
-              >
-                <button onClick={() => loadConversation(conv.id)} className="flex-1 truncate text-left">
-                  {conv.title || 'Untitled'}
-                </button>
-                <button
-                  onClick={(e) => { e.stopPropagation(); deleteConversation(conv.id); }}
-                  className="opacity-0 group-hover:opacity-100 rounded p-0.5 hover:bg-foreground/10"
-                >
-                  <Trash2 size={12} />
-                </button>
-              </div>
-            ))}
-          </div>
-
-          {embeddingStatus && (
-            <div className="border-t border-border/50 p-3 text-xs text-muted-foreground">
-              <p>Embeddings: {embeddingStatus.totalEmbeddings}</p>
-              {embeddingStatus.dirtyPages > 0 && (
-                <p className="text-warning">{embeddingStatus.dirtyPages} pages need embedding</p>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Main chat area */}
-      <div className="flex flex-1 flex-col">
-        {/* Mode selector + Model */}
-        <div className="glass-card mb-4 flex items-center gap-3 p-3">
+    <div className="space-y-4">
+      {/* Mode selector + Model */}
+      <div className="glass-card flex flex-wrap items-center gap-3 p-3">
           {MODE_BUTTONS.map(({ key, icon: Icon, label }) => (
             <button
               key={key}
@@ -203,19 +158,19 @@ function AiAssistantInner() {
           )}
         </div>
 
-        {/* Mode-specific type selectors */}
-        {mode === 'improve' && <ImproveTypeSelector />}
-        {mode === 'diagram' && <DiagramTypeSelector />}
+      {/* Mode-specific type selectors */}
+      {mode === 'improve' && <ImproveTypeSelector />}
+      {mode === 'diagram' && <DiagramTypeSelector />}
 
-        {/* Messages */}
-        <div className="glass-card flex-1 overflow-y-auto p-4 space-y-4">
-          {messages.length === 0 && (
-            <div className="flex h-full flex-col items-center justify-center text-center">
-              <Bot size={48} className="mb-4 text-muted-foreground" />
-              <p className="text-lg font-medium">{getEmptyTitle(mode)}</p>
-              <p className="text-sm text-muted-foreground">{getEmptySubtitle(mode, page)}</p>
-            </div>
-          )}
+      {/* Messages */}
+      <div className="glass-card p-4 space-y-4 min-h-64">
+        {messages.length === 0 && (
+          <div className="flex min-h-48 flex-col items-center justify-center text-center">
+            <Bot size={48} className="mb-4 text-muted-foreground" />
+            <p className="text-lg font-medium">{getEmptyTitle(mode)}</p>
+            <p className="text-sm text-muted-foreground">{getEmptySubtitle(mode, page)}</p>
+          </div>
+        )}
 
           {messages.map((msg, i) => {
             const isLastAssistant = msg.role === 'assistant' && i === messages.length - 1;
@@ -300,7 +255,6 @@ function AiAssistantInner() {
         {mode === 'summarize' && <SummarizeModeInput />}
         {mode === 'diagram' && <DiagramModeInput />}
         {mode === 'quality' && <QualityModeInput />}
-      </div>
     </div>
   );
 }
