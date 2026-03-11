@@ -343,10 +343,10 @@ export function ArticleRightPane() {
   if (collapsed) {
     return (
       <div
-        className="flex w-10 flex-col items-center border-l border-border/50 bg-card/40 backdrop-blur-sm"
+        className="flex w-10 flex-col items-center border-l border-border/40 bg-card/50 backdrop-blur-md"
         data-testid="article-right-pane-rail"
       >
-        <div className="flex h-12 w-full items-center justify-center border-b border-border/50">
+        <div className="flex h-12 w-full items-center justify-center border-b border-border/40">
           <button
             onClick={toggleSidebar}
             className="rounded-md p-1.5 text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
@@ -363,15 +363,15 @@ export function ArticleRightPane() {
     <aside
       ref={sidebarRef}
       className={cn(
-        'relative flex flex-col border-l border-border/50 bg-card/40 backdrop-blur-sm',
+        'relative flex flex-col border-l border-border/40 bg-card/50 backdrop-blur-md',
         isResizing && 'select-none',
       )}
       style={{ width: `${width}px` }}
       data-testid="article-right-pane"
     >
       {/* Header */}
-      <div className="flex h-12 shrink-0 items-center justify-between border-b border-border/50 px-3">
-        <span className="text-sm font-semibold text-foreground">Article</span>
+      <div className="flex h-12 shrink-0 items-center justify-between border-b border-border/40 px-3">
+        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground/70">Article</span>
         <button
           onClick={toggleSidebar}
           className="rounded-md p-1 text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
@@ -383,7 +383,7 @@ export function ArticleRightPane() {
 
       {/* Action buttons */}
       {!editing && page && (
-        <div className="border-b border-border/50 p-2 space-y-0.5" data-testid="article-actions">
+        <div className="border-b border-border/40 p-2 space-y-0.5" data-testid="article-actions">
           <button
             onClick={() => navigate(`/ai?mode=improve&pageId=${encodeURIComponent(id)}`)}
             className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
@@ -429,9 +429,9 @@ export function ArticleRightPane() {
 
       {/* Outline header + progress */}
       {headings.length > 0 && (
-        <div className="border-b border-border/50 px-3 py-2">
+        <div className="border-b border-border/40 px-3 py-2">
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground/70">
               <ListTree size={13} />
               Outline
             </div>
@@ -473,7 +473,7 @@ export function ArticleRightPane() {
 
       {/* Footer */}
       {page && (
-        <div className="border-t border-border/50 px-3 py-1.5">
+        <div className="border-t border-border/40 px-3 py-1.5">
           <span className="text-[10px] text-muted-foreground truncate block">
             v{page.version} &middot; {page.spaceKey}
           </span>

@@ -24,7 +24,7 @@ const DIAGRAM_TYPES = ['flowchart', 'sequence', 'state', 'mindmap'] as const;
 export function DiagramTypeSelector() {
   const { diagramType, setDiagramType } = useAiContext();
   return (
-    <div className="glass-card mb-4 flex items-center gap-2 p-3">
+    <div className="glass-toolbar mb-4 flex items-center gap-2 p-3">
       <span className="text-sm text-muted-foreground">Type:</span>
       {DIAGRAM_TYPES.map((type) => (
         <button
@@ -126,7 +126,7 @@ export function DiagramModeInput() {
   }, [page, model, diagramType, pageId, isStreaming, runStream, setDiagramCode]);
 
   return (
-    <div className="glass-card mt-4 flex items-center gap-3 p-3">
+    <div className="mt-3 flex items-center gap-3 border-t border-border/40 pt-3">
       <button
         onClick={handleDiagram}
         disabled={isStreaming || !page || !model}

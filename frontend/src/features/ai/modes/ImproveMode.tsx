@@ -14,7 +14,7 @@ const IMPROVEMENT_TYPES = ['grammar', 'structure', 'clarity', 'technical', 'comp
 export function ImproveTypeSelector() {
   const { improvementType, setImprovementType } = useAiContext();
   return (
-    <div className="glass-card mb-4 flex items-center gap-2 p-3">
+    <div className="glass-toolbar mb-4 flex items-center gap-2 p-3">
       <span className="text-sm text-muted-foreground">Type:</span>
       {IMPROVEMENT_TYPES.map((type) => (
         <button
@@ -112,7 +112,7 @@ export function ImproveModeInput() {
   }, [page, model, improvementType, pageId, isStreaming, includeSubPages, runStream, setShowDiffView, setImprovedContent]);
 
   return (
-    <div className="glass-card mt-4 flex items-center gap-3 p-3">
+    <div className="mt-3 flex items-center gap-3 border-t border-border/40 pt-3">
       <button
         onClick={handleImprove}
         disabled={isStreaming || !page || !model}

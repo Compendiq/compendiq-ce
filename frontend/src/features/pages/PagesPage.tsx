@@ -199,14 +199,14 @@ export function PagesPage() {
               placeholder="Search pages..."
               value={search}
               onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-              className="w-full rounded-md bg-foreground/5 py-2 pl-10 pr-4 text-sm outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-primary"
+              className="glass-input pl-10 pr-4"
             />
           </div>
 
           <select
             value={spaceKey}
             onChange={(e) => { setSpaceKey(e.target.value); setPage(1); setForcePageList(false); }}
-            className="rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+            className="glass-select"
           >
             <option value="">All Spaces</option>
             {spaces?.map((s) => (
@@ -217,7 +217,7 @@ export function PagesPage() {
           <select
             value={sort}
             onChange={(e) => setSort(e.target.value as typeof sort)}
-            className="rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+            className="glass-select"
           >
             <option value="modified">Last Modified</option>
             <option value="title">Title</option>
@@ -248,14 +248,14 @@ export function PagesPage() {
 
         {/* Advanced filters panel */}
         {showAdvancedFilters && (
-          <div className="flex flex-wrap items-end gap-3 border-t border-border/50 pt-3" data-testid="advanced-filters-panel">
+          <div className="flex flex-wrap items-end gap-3 border-t border-border/40 pt-3" data-testid="advanced-filters-panel">
             {/* Author filter */}
             <div className="min-w-40">
               <label className="mb-1 block text-xs text-muted-foreground">Author</label>
               <select
                 value={author}
                 onChange={(e) => { setAuthor(e.target.value); setPage(1); }}
-                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="glass-select w-full"
                 data-testid="filter-author"
               >
                 <option value="">All Authors</option>
@@ -271,7 +271,7 @@ export function PagesPage() {
               <select
                 value={labels}
                 onChange={(e) => { setLabels(e.target.value); setPage(1); }}
-                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="glass-select w-full"
                 data-testid="filter-labels"
               >
                 <option value="">All Labels</option>
@@ -287,7 +287,7 @@ export function PagesPage() {
               <select
                 value={freshness}
                 onChange={(e) => { setFreshness(e.target.value); setPage(1); }}
-                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="glass-select w-full"
                 data-testid="filter-freshness"
               >
                 <option value="">Any</option>
@@ -304,7 +304,7 @@ export function PagesPage() {
               <select
                 value={embeddingStatus}
                 onChange={(e) => { setEmbeddingStatus(e.target.value); setPage(1); }}
-                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="glass-select w-full"
                 data-testid="filter-embedding"
               >
                 <option value="">Any</option>
@@ -320,7 +320,7 @@ export function PagesPage() {
                 type="date"
                 value={dateFrom}
                 onChange={(e) => { setDateFrom(e.target.value); setPage(1); }}
-                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="glass-select w-full"
                 data-testid="filter-date-from"
               />
             </div>
@@ -330,7 +330,7 @@ export function PagesPage() {
                 type="date"
                 value={dateTo}
                 onChange={(e) => { setDateTo(e.target.value); setPage(1); }}
-                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="glass-select w-full"
                 data-testid="filter-date-to"
               />
             </div>

@@ -66,7 +66,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
       {/* Right side: header + content */}
       <div className="flex flex-1 flex-col overflow-hidden">
         {/* Top navigation bar */}
-        <header className="flex h-12 shrink-0 items-center border-b border-border/50 bg-card/80 px-4 backdrop-blur-md">
+        <header className="flex h-12 shrink-0 items-center border-b border-border/40 bg-card/80 px-4 backdrop-blur-md">
           {/* Mobile hamburger */}
           <button
             onClick={() => setMobileMenuOpen((v) => !v)}
@@ -137,7 +137,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
               animate={{ height: 'auto', opacity: 1 }}
               exit={{ height: 0, opacity: 0 }}
               transition={{ duration: 0.2 }}
-              className="overflow-hidden border-b border-border/50 bg-card/90 backdrop-blur-md md:hidden"
+              className="overflow-hidden border-b border-border/40 bg-card/90 backdrop-blur-md md:hidden"
             >
               <div className="space-y-1 p-3">
                 {navItems.map(({ icon: Icon, label, path }) => {

@@ -258,17 +258,13 @@ export function PageViewPage() {
       className="space-y-5"
       data-testid="article-page"
     >
-      <section className="overflow-hidden rounded-[32px] border border-border/60 bg-card/75 shadow-sm backdrop-blur-xl">
+      <section className="overflow-hidden glass-card-xl">
         <div
           className={cn(
             'relative overflow-hidden px-5 sm:px-7',
             isHeaderCollapsed ? 'py-3 sm:py-4' : 'py-6 sm:py-7',
           )}
         >
-          {!isHeaderCollapsed && (
-            <div className="absolute inset-x-0 top-0 h-28 bg-[radial-gradient(circle_at_top_left,var(--color-primary)/0.18,transparent_65%)]" />
-          )}
-
           <div className="relative flex flex-col gap-5">
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div className="min-w-0 flex-1 space-y-3">
@@ -414,7 +410,7 @@ export function PageViewPage() {
       </section>
 
       {editing ? (
-        <section className="overflow-hidden rounded-[32px] border border-border/60 bg-card/75 shadow-sm backdrop-blur-xl">
+        <section className="overflow-hidden glass-card-xl">
           <FeatureErrorBoundary featureName="Editor">
             <Editor content={editHtml} onChange={setEditHtml} draftKey={draftKey} />
           </FeatureErrorBoundary>
@@ -422,7 +418,7 @@ export function PageViewPage() {
       ) : (
         <section
           ref={contentRef}
-          className="overflow-hidden rounded-[32px] border border-border/60 bg-card/75 shadow-sm backdrop-blur-xl"
+          className="overflow-hidden glass-card-xl"
           data-testid="article-content-shell"
         >
           <FeatureErrorBoundary featureName="Article Viewer">

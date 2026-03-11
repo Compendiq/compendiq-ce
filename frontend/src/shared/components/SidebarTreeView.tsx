@@ -271,8 +271,8 @@ export function SidebarTreeView() {
 
   if (treeSidebarCollapsed) {
     return (
-      <div className="flex w-10 flex-col items-center border-r border-border/50 bg-card/40 backdrop-blur-sm">
-        <div className="flex h-12 items-center justify-center border-b border-border/50 w-full">
+      <div className="flex w-10 flex-col items-center border-r border-border/40 bg-card/50 backdrop-blur-md">
+        <div className="flex h-12 items-center justify-center border-b border-border/40 w-full">
           <button
             onClick={toggleTreeSidebar}
             className="rounded-md p-1.5 text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
@@ -291,13 +291,13 @@ export function SidebarTreeView() {
     <aside
       ref={sidebarRef}
       className={cn(
-        'relative flex flex-col border-r border-border/50 bg-card/40 backdrop-blur-sm',
+        'relative flex flex-col border-r border-border/40 bg-card/50 backdrop-blur-md',
         isResizing && 'select-none',
       )}
       style={{ width: `${treeSidebarWidth}px` }}
     >
       {/* Sidebar title - aligns with top bar */}
-      <div className="flex h-12 shrink-0 items-center justify-between border-b border-border/50 px-3">
+      <div className="flex h-12 shrink-0 items-center justify-between border-b border-border/40 px-3">
         <Link to="/" className="flex items-center gap-2">
           <span className="text-sm font-semibold text-foreground">AI KB Creator</span>
         </Link>
@@ -311,7 +311,7 @@ export function SidebarTreeView() {
       </div>
 
       {/* Space selector */}
-      <div className="border-b border-border/50 p-2">
+      <div className="border-b border-border/40 p-2">
         <div className="relative">
           <button
             onClick={() => setSpaceDropdownOpen(!spaceDropdownOpen)}
@@ -392,7 +392,7 @@ export function SidebarTreeView() {
 
       {/* Footer stats */}
       {treeData && (
-        <div className="border-t border-border/50 px-3 py-1.5">
+        <div className="border-t border-border/40 px-3 py-1.5">
           <span className="text-[10px] text-muted-foreground">
             {treeData.total} pages{treeSidebarSpaceKey ? ` in ${treeSidebarSpaceKey}` : ''}
           </span>

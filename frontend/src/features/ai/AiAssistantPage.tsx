@@ -99,7 +99,7 @@ function AiAssistantInner() {
   return (
     <div className="space-y-4">
       {/* Mode selector + Model */}
-      <div className="glass-card flex flex-wrap items-center gap-3 p-3">
+      <div className="glass-toolbar flex flex-wrap items-center gap-3 p-3">
           {MODE_BUTTONS.map(({ key, icon: Icon, label }) => (
             <button
               key={key}
@@ -163,7 +163,7 @@ function AiAssistantInner() {
       {mode === 'diagram' && <DiagramTypeSelector />}
 
       {/* Messages */}
-      <div className="glass-card p-4 space-y-4 min-h-64">
+      <div className="glass-card p-4 space-y-4 min-h-48">
         {messages.length === 0 && (
           <div className="flex min-h-48 flex-col items-center justify-center text-center">
             <Bot size={48} className="mb-4 text-muted-foreground" />
@@ -200,7 +200,7 @@ function AiAssistantInner() {
                 )}
                 <div
                   className={cn(
-                    'max-w-[80%] rounded-lg px-4 py-3 text-sm',
+                    'max-w-[80%] rounded-lg px-4 py-3 text-sm xl:max-w-2xl',
                     msg.role === 'user'
                       ? 'bg-primary/15 text-foreground'
                       : 'bg-foreground/5',

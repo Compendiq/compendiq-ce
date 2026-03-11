@@ -507,8 +507,7 @@ describe('AiAssistantPage', () => {
       fireEvent.change(input, { target: { value: 'What is Confluence?' } });
 
       await waitFor(() => {
-        const sendBtnContainer = input.closest('.glass-card');
-        const sendBtn = sendBtnContainer?.querySelector('button');
+        const sendBtn = input.parentElement?.querySelector('button');
         expect(sendBtn).not.toBeDisabled();
       });
 

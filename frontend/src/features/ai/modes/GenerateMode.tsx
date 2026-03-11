@@ -26,7 +26,7 @@ export function GenerateModeInput() {
   const handleSubmit = () => handleGenerate();
 
   return (
-    <div className="glass-card mt-4 flex items-center gap-3 p-3">
+    <div className="mt-3 flex items-center gap-3 border-t border-border/40 pt-3">
       <input
         value={input}
         onChange={(e) => setInput(e.target.value)}
