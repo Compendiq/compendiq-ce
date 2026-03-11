@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import { m } from 'framer-motion';
-import { Check, X, Columns2, Rows3 } from 'lucide-react';
+import { Check, X, Columns2, Rows3, Loader2 } from 'lucide-react';
 import { diffWords } from 'diff';
 import { cn } from '../lib/cn';
 
@@ -9,6 +9,7 @@ interface DiffViewProps {
   improved: string;
   onAccept?: () => void;
   onReject?: () => void;
+  isAccepting?: boolean;
 }
 
 type ViewMode = 'unified' | 'side-by-side';
@@ -19,7 +20,7 @@ interface DiffPart {
   removed?: boolean;
 }
 
-export function DiffView({ original, improved, onAccept, onReject }: DiffViewProps) {
+export function DiffView({ original, improved, onAccept, onReject, isAccepting = false }: DiffViewProps) {
   const [viewMode, setViewMode] = useState<ViewMode>('unified');
 
   const diff = useMemo(
@@ -169,9 +170,14 @@ export function DiffView({ original, improved, onAccept, onReject }: DiffViewPro
           {onAccept && (
             <button
               onClick={onAccept}
-              className="flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+              disabled={isAccepting}
+              className="flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              <Check size={14} /> Accept
+              {isAccepting ? (
+                <><Loader2 size={14} className="animate-spin" /> Applying…</>
+              ) : (
+                <><Check size={14} /> Accept</>
+              )}
             </button>
           )}
         </div>

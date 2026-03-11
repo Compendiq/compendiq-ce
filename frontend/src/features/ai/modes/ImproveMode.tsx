@@ -1,8 +1,9 @@
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 import { Wand2, Loader2 } from 'lucide-react';
 import { useAiContext } from '../AiContext';
 import { DiffView } from '../../../shared/components/DiffView';
 import { cn } from '../../../shared/lib/cn';
+import { apiFetch } from '../../../shared/lib/api';
 import { toast } from 'sonner';
 
 const IMPROVEMENT_TYPES = ['grammar', 'structure', 'clarity', 'technical', 'completeness'] as const;
@@ -35,7 +36,31 @@ export function ImproveTypeSelector() {
  * Diff view shown after an improve stream completes.
  */
 export function ImproveDiffView() {
-  const { page, pageId, navigate, isStreaming, showDiffView, setShowDiffView, improvedContent } = useAiContext();
+  const { page, pageId, navigate, queryClient, isStreaming, showDiffView, setShowDiffView, improvedContent } = useAiContext();
+  const [isApplying, setIsApplying] = useState(false);
+
+  const handleAccept = useCallback(async () => {
+    if (!page || !pageId || !improvedContent || isApplying) return;
+    setIsApplying(true);
+    try {
+      await apiFetch(`/llm/improvements/apply`, {
+        method: 'POST',
+        body: JSON.stringify({
+          pageId,
+          improvedMarkdown: improvedContent,
+          version: page.version,
+          title: page.title,
+        }),
+      });
+      toast.success('Article updated and synced to Confluence');
+      queryClient.invalidateQueries({ queryKey: ['pages', pageId] });
+      navigate(`/pages/${pageId}`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to apply improvement');
+    } finally {
+      setIsApplying(false);
+    }
+  }, [page, pageId, improvedContent, isApplying, queryClient, navigate]);
 
   if (!showDiffView || !page || !improvedContent || isStreaming) return null;
 
@@ -43,10 +68,9 @@ export function ImproveDiffView() {
     <DiffView
       original={page.bodyText || page.bodyHtml}
       improved={improvedContent}
-      onAccept={() => {
-        navigate(`/pages/${pageId}?edit=true`);
-      }}
+      onAccept={handleAccept}
       onReject={() => setShowDiffView(false)}
+      isAccepting={isApplying}
     />
   );
 }

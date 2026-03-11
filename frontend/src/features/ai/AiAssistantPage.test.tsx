@@ -334,6 +334,124 @@ describe('AiAssistantPage', () => {
         expect(toastErrorMock).toHaveBeenCalledWith('LLM server connection lost');
       });
     });
+
+    it('calls apiFetch POST /llm/improvements/apply when Accept is clicked after improvement', async () => {
+      mockPageData = {
+        data: { id: 'p1', title: 'My Article', bodyHtml: '<p>Content</p>', bodyText: 'Content', version: 3 },
+      };
+
+      apiFetchMock.mockImplementation((path: string, opts?: RequestInit) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'llama3' }]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        if (path === '/llm/improvements/apply' && (opts as RequestInit)?.method === 'POST') {
+          return Promise.resolve({ id: 'p1', title: 'My Article', version: 4 });
+        }
+        return Promise.resolve([]);
+      });
+
+      // SSE stream yields improved content and completes
+      async function* fakeImproveStream() {
+        yield { content: '## Improved heading\n\nBetter content.' };
+      }
+      streamSSEMock.mockReturnValue(fakeImproveStream());
+
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
+
+      // Wait for models to load and button to be enabled
+      await waitFor(() => {
+        const btns = screen.getAllByRole('button');
+        const improveBtn = btns.find((b) => b.textContent?.includes('Improve Page'));
+        expect(improveBtn).not.toBeDisabled();
+      });
+
+      // Trigger improve
+      const btns = screen.getAllByRole('button');
+      const improveBtn = btns.find((b) => b.textContent?.includes('Improve Page'))!;
+      fireEvent.click(improveBtn);
+
+      // Wait for Accept button to appear in the DiffView
+      await waitFor(() => {
+        expect(screen.getByText('Accept')).toBeInTheDocument();
+      });
+
+      // Click Accept
+      fireEvent.click(screen.getByText('Accept'));
+
+      // Verify the POST to apply endpoint was made with correct payload
+      await waitFor(() => {
+        const applyCall = apiFetchMock.mock.calls.find(
+          (args: unknown[]) =>
+            args[0] === '/llm/improvements/apply' && (args[1] as RequestInit | undefined)?.method === 'POST',
+        );
+        expect(applyCall).toBeDefined();
+        const body = JSON.parse((applyCall![1] as RequestInit).body as string);
+        expect(body.pageId).toBe('p1');
+        expect(body.improvedMarkdown).toBe('## Improved heading\n\nBetter content.');
+        expect(body.version).toBe(3);
+        expect(body.title).toBe('My Article');
+      });
+
+      // Verify success toast
+      await waitFor(() => {
+        expect(toastSuccessMock).toHaveBeenCalledWith('Article updated and synced to Confluence');
+      });
+    });
+
+    it('shows error toast when apply improvement API call fails', async () => {
+      mockPageData = {
+        data: { id: 'p1', title: 'My Article', bodyHtml: '<p>Content</p>', bodyText: 'Content', version: 3 },
+      };
+
+      apiFetchMock.mockImplementation((path: string, opts?: RequestInit) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'llama3' }]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        if (path === '/llm/improvements/apply' && (opts as RequestInit)?.method === 'POST') {
+          return Promise.reject(new Error('Confluence sync failed'));
+        }
+        return Promise.resolve([]);
+      });
+
+      async function* fakeImproveStream() {
+        yield { content: '## Improved' };
+      }
+      streamSSEMock.mockReturnValue(fakeImproveStream());
+
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
+
+      await waitFor(() => {
+        const btns = screen.getAllByRole('button');
+        const improveBtn = btns.find((b) => b.textContent?.includes('Improve Page'));
+        expect(improveBtn).not.toBeDisabled();
+      });
+
+      const btns = screen.getAllByRole('button');
+      const improveBtn = btns.find((b) => b.textContent?.includes('Improve Page'))!;
+      fireEvent.click(improveBtn);
+
+      await waitFor(() => {
+        expect(screen.getByText('Accept')).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByText('Accept'));
+
+      await waitFor(() => {
+        expect(toastErrorMock).toHaveBeenCalledWith('Confluence sync failed');
+      });
+    });
   });
 
   describe('ask mode', () => {
