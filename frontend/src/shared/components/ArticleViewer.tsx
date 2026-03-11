@@ -226,6 +226,12 @@ export function ArticleViewer({
         const originalSrc = img.getAttribute('src');
         if (!originalSrc) return;
 
+        // Prevent browser from attempting to load the unauthenticated URL
+        // while we fetch with auth. Without this the browser fires a 401
+        // request for every image before our blob rewrite kicks in.
+        img.removeAttribute('src');
+        img.setAttribute('data-original-src', originalSrc);
+
         const blobUrl = await fetchAuthenticatedBlob(originalSrc);
         if (cancelled) {
           if (blobUrl) URL.revokeObjectURL(blobUrl);
@@ -234,6 +240,11 @@ export function ArticleViewer({
         if (blobUrl) {
           blobUrls.push(blobUrl);
           img.src = blobUrl;
+        } else {
+          // Show an error placeholder instead of a broken image icon
+          img.alt = img.alt || 'Image failed to load';
+          img.classList.add('image-load-error');
+          img.title = 'Image could not be loaded from Confluence. Try syncing the page.';
         }
       });
     });

@@ -1,7 +1,7 @@
 import { query } from '../db/postgres.js';
 import { ConfluenceClient, ConfluencePage, ConfluenceSpace } from './confluence-client.js';
 import { confluenceToHtml, htmlToText } from './content-converter.js';
-import { syncDrawioAttachments, syncImageAttachments, cleanPageAttachments } from './attachment-handler.js';
+import { syncDrawioAttachments, syncImageAttachments, cleanPageAttachments, hasLocalAttachments } from './attachment-handler.js';
 import { saveVersionSnapshot } from './version-tracker.js';
 import { processDirtyPages } from './embedding-service.js';
 import { decryptPat } from '../utils/crypto.js';
@@ -187,7 +187,17 @@ async function syncPage(
   );
 
   if (existing.rows.length > 0 && existing.rows[0].version >= page.version.number) {
-    // Page hasn't changed — skip attachment sync to avoid unnecessary API calls
+    // Page content hasn't changed, but check if attachments were cached.
+    // If a previous sync failed to download attachments (transient errors),
+    // retry attachment sync even though the page version is the same.
+    const hasAttachments = await hasLocalAttachments(userId, page.id);
+    if (hasAttachments) {
+      return;
+    }
+    logger.info({ pageId: page.id }, 'Page unchanged but attachment cache missing — re-syncing attachments');
+    const { results: attachments } = await client.getPageAttachments(page.id);
+    await syncDrawioAttachments(client, userId, page.id, bodyStorage, attachments);
+    await syncImageAttachments(client, userId, page.id, bodyStorage, attachments);
     return;
   }
 
