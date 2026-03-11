@@ -76,7 +76,7 @@ export function PageTransition({ children }: PageTransitionProps) {
         : 0;
 
   return (
-    <AnimatePresence mode="sync" initial={false}>
+    <AnimatePresence mode="popLayout" initial={false}>
       <m.div
         key={location.pathname}
         initial={{ opacity: 0, x: slideX }}
