@@ -740,6 +740,102 @@ describe('AiAssistantPage', () => {
     });
   });
 
+  describe('scroll behaviour on conversation switch', () => {
+    it('calls scrollIntoView with instant behaviour when a conversation is loaded', async () => {
+      const scrollIntoViewMock = vi.fn();
+      Element.prototype.scrollIntoView = scrollIntoViewMock;
+
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: '', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([
+            { id: 'conv1', title: 'Old conversation', model: 'llama3', createdAt: '2024-01-01' },
+          ]);
+        }
+        if (path === '/llm/conversations/conv1') {
+          return Promise.resolve({
+            id: 'conv1',
+            model: 'llama3',
+            messages: [
+              { role: 'user', content: 'Hello' },
+              { role: 'assistant', content: 'Hi there!' },
+            ],
+          });
+        }
+        return Promise.resolve([]);
+      });
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      // Wait for the conversation list to load in the sidebar
+      await waitFor(() => {
+        expect(screen.getByText('Old conversation')).toBeInTheDocument();
+      });
+
+      scrollIntoViewMock.mockClear();
+
+      // Click the conversation button to load it (fires loadConversation → setConversationId)
+      fireEvent.click(screen.getByText('Old conversation'));
+
+      // After conversationId changes, the new useEffect must scroll to bottom with 'instant'
+      await waitFor(() => {
+        expect(scrollIntoViewMock).toHaveBeenCalledWith({ behavior: 'instant' });
+      });
+    });
+
+    it('calls scrollIntoView when starting a new conversation (conversationId resets to null)', async () => {
+      const scrollIntoViewMock = vi.fn();
+      Element.prototype.scrollIntoView = scrollIntoViewMock;
+
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: '', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) return Promise.resolve([]);
+        if (path === '/llm/conversations') {
+          return Promise.resolve([
+            { id: 'conv1', title: 'My conv', model: 'llama3', createdAt: '2024-01-01' },
+          ]);
+        }
+        if (path === '/llm/conversations/conv1') {
+          return Promise.resolve({
+            id: 'conv1',
+            model: 'llama3',
+            messages: [{ role: 'user', content: 'Hi' }],
+          });
+        }
+        return Promise.resolve([]);
+      });
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.getByText('My conv')).toBeInTheDocument();
+      });
+
+      // Load a conversation first
+      fireEvent.click(screen.getByText('My conv'));
+      await waitFor(() => {
+        expect(screen.getByText('Hi')).toBeInTheDocument();
+      });
+
+      scrollIntoViewMock.mockClear();
+
+      // Click the "New conversation" button (Plus icon) to reset conversationId → null
+      const newConvBtn = screen.getByTitle('New conversation');
+      fireEvent.click(newConvBtn);
+
+      await waitFor(() => {
+        expect(scrollIntoViewMock).toHaveBeenCalledWith({ behavior: 'instant' });
+      });
+    });
+  });
+
   describe('empty state messages', () => {
     it('shows only the correct empty state for improve mode without spurious messages', () => {
       render(<AiAssistantPage />, { wrapper: createWrapper() });
