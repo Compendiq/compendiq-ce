@@ -8,6 +8,13 @@
 /* Reduce base font from browser default 16px → 15px (~-1px across the app).
    rem-based values scale automatically. Elements already below 12px are
    pinned with explicit font-size overrides further below. */
+html,
+html body,
+#root {
+  height: 100%;
+  overflow: hidden;
+}
+
 html {
   font-size: 15px;
 }
