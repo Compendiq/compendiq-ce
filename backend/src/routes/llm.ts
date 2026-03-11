@@ -8,7 +8,8 @@ import {
 } from '../services/ollama-service.js';
 import { providerStreamChat } from '../services/llm-provider.js';
 import { hybridSearch, buildRagContext } from '../services/rag-service.js';
-import { htmlToMarkdown, confluenceToHtml } from '../services/content-converter.js';
+import { htmlToMarkdown, confluenceToHtml, htmlToConfluence, htmlToText, markdownToHtml } from '../services/content-converter.js';
+import { RedisCache } from '../services/redis-cache.js';
 import { getEmbeddingStatus, processDirtyPages, reEmbedAll, isProcessingUser, embedPage, resetFailedEmbeddings } from '../services/embedding-service.js';
 import type { EmbeddingProgressEvent } from '../services/embedding-service.js';
 import { getClientForUser } from '../services/sync-service.js';
@@ -22,6 +23,7 @@ import {
   GenerateDiagramRequestSchema,
   AnalyzeQualityRequestSchema,
   ForceEmbedTreeRequestSchema,
+  ApplyImprovementRequestSchema,
 } from '@kb-creator/contracts';
 import { z } from 'zod';
 import { sanitizeLlmInput } from '../utils/sanitize-llm-input.js';
@@ -137,7 +139,7 @@ async function streamSSE(
     llmCache?: LlmCache;
     cacheKey?: string;
   },
-): Promise<void> {
+): Promise<string> {
   const controller = new AbortController();
 
   // Abort the generator when the client disconnects
@@ -184,6 +186,8 @@ async function streamSSE(
     request.raw.removeListener('close', onClose);
     reply.raw.end();
   }
+
+  return fullContent;
 }
 
 export async function llmRoutes(fastify: FastifyInstance) {
@@ -269,6 +273,17 @@ export async function llmRoutes(fastify: FastifyInstance) {
       return;
     }
 
+    // Pre-insert improvement record so we have the row to update after streaming
+    let improvementId: string | undefined;
+    if (body.pageId) {
+      const insertResult = await query<{ id: string }>(
+        `INSERT INTO llm_improvements (user_id, confluence_id, improvement_type, model, original_content, improved_content, status)
+         VALUES ($1, $2, $3, $4, $5, '', 'streaming') RETURNING id`,
+        [userId, body.pageId, type, model, content.slice(0, 10000)],
+      );
+      improvementId = insertResult.rows[0]?.id;
+    }
+
     try {
       // Resolve per-user LLM provider and stream
       const generator = providerStreamChat(userId, model, [
@@ -276,16 +291,15 @@ export async function llmRoutes(fastify: FastifyInstance) {
         { role: 'user', content: sanitized },
       ]);
 
-      // Store improvement record
-      if (body.pageId) {
+      const accumulated = await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
+
+      // Persist the full improved content now that streaming is done
+      if (improvementId && accumulated) {
         await query(
-          `INSERT INTO llm_improvements (user_id, confluence_id, improvement_type, model, original_content, improved_content, status)
-           VALUES ($1, $2, $3, $4, $5, '', 'streaming')`,
-          [userId, body.pageId, type, model, content.slice(0, 10000)],
+          `UPDATE llm_improvements SET improved_content = $1, status = 'completed' WHERE id = $2`,
+          [accumulated.slice(0, 50000), improvementId],
         );
       }
-
-      await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
     } finally {
       if (lockAcquired) await llmCache.releaseLock(cacheKey);
     }
@@ -721,6 +735,73 @@ export async function llmRoutes(fastify: FastifyInstance) {
       status: r.status,
       createdAt: r.created_at,
     }));
+  });
+
+  // POST /api/llm/improvements/apply - apply accepted improvement to a page + sync to Confluence
+  fastify.post('/llm/improvements/apply', async (request) => {
+    const body = ApplyImprovementRequestSchema.parse(request.body);
+    const { pageId, improvedMarkdown, version, title } = body;
+    const userId = request.userId;
+
+    const client = await getClientForUser(userId);
+    if (!client) {
+      throw fastify.httpErrors.badRequest('Confluence not configured');
+    }
+
+    // Fetch current page metadata from local cache
+    const existing = await query<{ version: number; title: string }>(
+      'SELECT version, title FROM cached_pages WHERE confluence_id = $1',
+      [pageId],
+    );
+    if (existing.rows.length === 0) {
+      throw fastify.httpErrors.notFound('Page not found');
+    }
+
+    const currentVersion = existing.rows[0].version;
+    const pageTitle = title ?? existing.rows[0].title;
+
+    if (version !== undefined && version < currentVersion) {
+      throw fastify.httpErrors.conflict('Page has been modified since you loaded it. Please refresh and try again.');
+    }
+
+    // Convert improved Markdown → HTML → Confluence XHTML
+    const bodyHtml = await markdownToHtml(improvedMarkdown);
+    const storageBody = htmlToConfluence(bodyHtml);
+
+    // Push update to Confluence and get back the new version
+    const page = await client.updatePage(pageId, pageTitle, storageBody, currentVersion);
+
+    // Update local cache
+    const updatedBodyHtml = confluenceToHtml(page.body?.storage?.value ?? storageBody, pageId);
+    const bodyText = htmlToText(updatedBodyHtml);
+
+    await query(
+      `UPDATE cached_pages SET
+         title = $2, body_storage = $3, body_html = $4, body_text = $5,
+         version = $6, last_synced = NOW(), embedding_dirty = TRUE,
+         embedding_status = 'not_embedded', embedded_at = NULL
+       WHERE confluence_id = $1`,
+      [pageId, pageTitle, page.body?.storage?.value ?? storageBody, updatedBodyHtml, bodyText, page.version.number],
+    );
+
+    // Mark the most recent improvement record for this page as applied
+    await query(
+      `UPDATE llm_improvements SET status = 'applied'
+       WHERE id = (
+         SELECT id FROM llm_improvements
+         WHERE user_id = $1 AND confluence_id = $2 AND status IN ('streaming', 'completed')
+         ORDER BY created_at DESC LIMIT 1
+       )`,
+      [userId, pageId],
+    );
+
+    // Invalidate page list cache
+    const cache = new RedisCache(fastify.redis);
+    await cache.invalidate(userId, 'pages');
+
+    await logAuditEvent(userId, 'PAGE_UPDATED', 'page', pageId, { title: pageTitle, source: 'ai_improvement' }, request);
+
+    return { id: pageId, title: pageTitle, version: page.version.number };
   });
 
   // GET /api/embeddings/status
