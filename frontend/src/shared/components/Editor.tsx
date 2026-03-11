@@ -20,6 +20,49 @@ import { useIsLightTheme } from '../hooks/use-is-light-theme';
 import { MermaidBlock } from './MermaidBlockExtension';
 import type { Editor as EditorType } from '@tiptap/react';
 
+const ConfluenceImage = Image.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      'data-confluence-image-source': {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-confluence-image-source'),
+        renderHTML: (attributes) => attributes['data-confluence-image-source']
+          ? { 'data-confluence-image-source': attributes['data-confluence-image-source'] }
+          : {},
+      },
+      'data-confluence-filename': {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-confluence-filename'),
+        renderHTML: (attributes) => attributes['data-confluence-filename']
+          ? { 'data-confluence-filename': attributes['data-confluence-filename'] }
+          : {},
+      },
+      'data-confluence-owner-page-title': {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-confluence-owner-page-title'),
+        renderHTML: (attributes) => attributes['data-confluence-owner-page-title']
+          ? { 'data-confluence-owner-page-title': attributes['data-confluence-owner-page-title'] }
+          : {},
+      },
+      'data-confluence-owner-space-key': {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-confluence-owner-space-key'),
+        renderHTML: (attributes) => attributes['data-confluence-owner-space-key']
+          ? { 'data-confluence-owner-space-key': attributes['data-confluence-owner-space-key'] }
+          : {},
+      },
+      'data-confluence-url': {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-confluence-url'),
+        renderHTML: (attributes) => attributes['data-confluence-url']
+          ? { 'data-confluence-url': attributes['data-confluence-url'] }
+          : {},
+      },
+    };
+  },
+});
+
 interface EditorProps {
   content?: string;
   onChange?: (html: string) => void;
@@ -305,7 +348,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       TaskItem.configure({ nested: true }),
       MermaidBlock,
       TitledCodeBlock.configure({ lowlight }),
-      Image.configure({ inline: false }),
+      ConfluenceImage.configure({ inline: false }),
       Placeholder.configure({ placeholder: placeholder ?? 'Start writing...' }),
     ],
     content,

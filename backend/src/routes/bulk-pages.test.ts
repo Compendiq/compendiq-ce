@@ -4,6 +4,8 @@ import sensible from '@fastify/sensible';
 import { ZodError } from 'zod';
 import { pagesRoutes } from './pages.js';
 
+const mockConfluenceToHtml = vi.fn().mockReturnValue('<p>content</p>');
+
 // Mock external dependencies
 vi.mock('../services/redis-cache.js', () => {
   return {
@@ -31,7 +33,7 @@ vi.mock('../services/sync-service.js', () => ({
 
 vi.mock('../services/content-converter.js', () => ({
   htmlToConfluence: vi.fn().mockReturnValue('<p>content</p>'),
-  confluenceToHtml: vi.fn().mockReturnValue('<p>content</p>'),
+  confluenceToHtml: (...args: unknown[]) => mockConfluenceToHtml(...args),
   htmlToText: vi.fn().mockReturnValue('content'),
 }));
 
@@ -129,11 +131,12 @@ describe('Bulk Pages Routes (Parallelized)', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockConfluenceToHtml.mockReturnValue('<p>content</p>');
     // Default: batch ownership query returns both pages
     mockQueryFn.mockResolvedValue({
       rows: [
-        { confluence_id: 'page-1', labels: ['existing-tag'] },
-        { confluence_id: 'page-2', labels: ['existing-tag'] },
+        { confluence_id: 'page-1', space_key: 'OPS', labels: ['existing-tag'] },
+        { confluence_id: 'page-2', space_key: 'ENG', labels: ['existing-tag'] },
       ],
       rowCount: 2,
     });
@@ -326,7 +329,7 @@ describe('Bulk Pages Routes (Parallelized)', () => {
 
     it('should use batch ownership query with ANY()', async () => {
       mockQueryFn.mockResolvedValueOnce({
-        rows: [{ confluence_id: 'page-1' }],
+        rows: [{ confluence_id: 'page-1', space_key: 'OPS' }],
         rowCount: 1,
       });
 
@@ -339,6 +342,18 @@ describe('Bulk Pages Routes (Parallelized)', () => {
       // First query call should be the batch ownership check
       const firstCall = mockQueryFn.mock.calls[0];
       expect(firstCall[0]).toContain('ANY($2)');
+    });
+
+    it('passes cached space keys into confluenceToHtml during bulk sync', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/sync',
+        payload: { ids: ['page-1', 'page-2'] },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockConfluenceToHtml).toHaveBeenCalledWith('<p>new content</p>', 'page-1', 'OPS');
+      expect(mockConfluenceToHtml).toHaveBeenCalledWith('<p>new content</p>', 'page-2', 'ENG');
     });
   });
 
