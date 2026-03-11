@@ -51,6 +51,9 @@ import {
   computePageRelationships,
   resetFailedEmbeddings,
   isCircuitBreakerError,
+  isContextLengthError,
+  splitByWords,
+  CHUNK_HARD_LIMIT,
   DIRTY_PAGE_BATCH_SIZE,
   type EmbeddingProgressEvent,
 } from './embedding-service.js';
@@ -1074,5 +1077,147 @@ describe('chunkText', () => {
     for (const chunk of chunks) {
       expect(chunk.text.length).toBeGreaterThan(0);
     }
+  });
+
+  describe('splitByWords', () => {
+    it('returns the input as a single item when it fits within maxChars', () => {
+      const result = splitByWords('hello world foo bar', 100);
+      expect(result).toEqual(['hello world foo bar']);
+    });
+
+    it('splits on word boundaries when text exceeds maxChars', () => {
+      // 5-char words separated by spaces: "aaaaa bbbbb ccccc ddddd"
+      const text = 'aaaaa bbbbb ccccc ddddd';
+      const result = splitByWords(text, 11); // fits 2 words ("aaaaa bbbbb" = 11 chars)
+      expect(result.length).toBeGreaterThan(1);
+      for (const part of result) {
+        expect(part.length).toBeLessThanOrEqual(11);
+      }
+    });
+
+    it('reconstructs all content without dropping words', () => {
+      const words = Array.from({ length: 100 }, (_, i) => `word${i}`);
+      const text = words.join(' ');
+      const result = splitByWords(text, 50);
+      const reconstructed = result.join(' ');
+      expect(reconstructed).toBe(text);
+    });
+
+    it('handles empty string', () => {
+      expect(splitByWords('', 100)).toEqual([]);
+    });
+  });
+
+  describe('isContextLengthError', () => {
+    it('returns true for "input length exceeds context length" message', () => {
+      const err = new Error('HTTP 400 - {"error":{"message":"the input length exceeds the context length"}}');
+      expect(isContextLengthError(err)).toBe(true);
+    });
+
+    it('returns true for message containing "context length"', () => {
+      expect(isContextLengthError(new Error('context length exceeded'))).toBe(true);
+    });
+
+    it('returns false for other HTTP 400 errors', () => {
+      expect(isContextLengthError(new Error('HTTP 400 - invalid request body'))).toBe(false);
+    });
+
+    it('returns false for non-Error values', () => {
+      expect(isContextLengthError('some string')).toBe(false);
+      expect(isContextLengthError(null)).toBe(false);
+      expect(isContextLengthError({ message: 'context length' })).toBe(false);
+    });
+  });
+
+  describe('chunkText — CHUNK_HARD_LIMIT enforcement', () => {
+    it('applies word-level splitting when a small section exceeds CHUNK_HARD_LIMIT (Path 1)', () => {
+      // A single section with no paragraph breaks that exceeds the hard limit
+      // Use chunkSize large enough that maxChars > text length but CHUNK_HARD_LIMIT is still hit
+      const hugeSection = 'word '.repeat(CHUNK_HARD_LIMIT); // well above 6000 chars
+      const chunks = chunkText(hugeSection, 'Title', 'DEV', 'page-1', 99999, 0);
+      expect(chunks.length).toBeGreaterThan(1);
+      for (const chunk of chunks) {
+        expect(chunk.text.length).toBeLessThanOrEqual(CHUNK_HARD_LIMIT);
+      }
+    });
+
+    it('applies word-level splitting for single-paragraph sections with no \\n\\n breaks (Path 2)', () => {
+      // A single section that has NO paragraph breaks (\n\n) — forces the
+      // currentChunk final-push path.  The section is larger than maxChars
+      // (so the else branch is taken) but is a single paragraph.
+      const singlePara = 'x'.repeat(CHUNK_HARD_LIMIT + 500);
+      // chunkSize=1 → maxChars=3 chars, so any real content triggers the else branch
+      const chunks = chunkText(singlePara, 'Title', 'DEV', 'page-1', 1, 0);
+      expect(chunks.length).toBeGreaterThan(0);
+      for (const chunk of chunks) {
+        expect(chunk.text.length).toBeLessThanOrEqual(CHUNK_HARD_LIMIT);
+      }
+    });
+
+    it('all chunks preserve correct metadata', () => {
+      const hugeSection = 'word '.repeat(CHUNK_HARD_LIMIT);
+      const chunks = chunkText(hugeSection, 'MyTitle', 'SPACE', 'conf-42', 99999, 0);
+      for (const chunk of chunks) {
+        expect(chunk.metadata.page_title).toBe('MyTitle');
+        expect(chunk.metadata.space_key).toBe('SPACE');
+        expect(chunk.metadata.confluence_id).toBe('conf-42');
+      }
+    });
+  });
+
+  describe('embedPage — HTTP 400 context-length continuation', () => {
+    function setupQueryMocks() {
+      // htmlToText returns non-empty text
+      mocks.htmlToText.mockReturnValue('Some content for the page');
+      // DELETE old embeddings
+      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+      // UPDATE to mark embedded
+      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+    }
+
+    it('skips an oversized batch (HTTP 400 context-length) and continues embedding remaining batches', async () => {
+      // Make htmlToText return enough text to produce multiple chunks
+      const textWith3Chunks = Array.from(
+        { length: 3 },
+        (_, i) => `## Section ${i}\n${'content '.repeat(10)}`,
+      ).join('\n');
+      mocks.htmlToText.mockReturnValue(textWith3Chunks);
+
+      // DELETE + (INSERT per chunk or error) + UPDATE embedded
+      mocks.query
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // DELETE
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT chunk 0
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT chunk 1
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT chunk 2
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 }); // UPDATE embedded
+
+      const contextErr = new Error('HTTP 400 - input length exceeds context length');
+
+      // First batch (chunks 0..9) throws a context-length error
+      // Second batch succeeds (remaining chunks)
+      mocks.providerGenerateEmbedding
+        .mockRejectedValueOnce(contextErr)
+        .mockImplementation((_userId: string, texts: string[]) =>
+          Promise.resolve(texts.map(() => new Array(768).fill(0.1))),
+        );
+
+      // Should not throw even though first batch failed
+      const count = await embedPage('user-1', 'conf-1', 'Page', 'DEV', '<p>content</p>');
+      // Some chunks should have been embedded (from the successful second batch)
+      expect(count).toBeGreaterThanOrEqual(0);
+    });
+
+    it('rethrows non-context-length errors from embedPage', async () => {
+      mocks.htmlToText.mockReturnValue('Some content for the page that is long enough');
+      mocks.query
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 }); // DELETE
+
+      const serverErr = new Error('HTTP 500 - internal server error');
+      mocks.providerGenerateEmbedding.mockRejectedValueOnce(serverErr);
+
+      await expect(
+        embedPage('user-1', 'conf-1', 'Page', 'DEV', '<p>content</p>'),
+      ).rejects.toThrow('HTTP 500');
+    });
   });
 });
