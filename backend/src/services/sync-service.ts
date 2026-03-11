@@ -1,7 +1,7 @@
 import { query } from '../db/postgres.js';
 import { ConfluenceClient, ConfluencePage, ConfluenceSpace } from './confluence-client.js';
 import { confluenceToHtml, htmlToText } from './content-converter.js';
-import { syncDrawioAttachments, syncImageAttachments, cleanPageAttachments, hasLocalAttachments } from './attachment-handler.js';
+import { syncDrawioAttachments, syncImageAttachments, cleanPageAttachments, getMissingAttachments } from './attachment-handler.js';
 import { saveVersionSnapshot } from './version-tracker.js';
 import { processDirtyPages } from './embedding-service.js';
 import { decryptPat } from '../utils/crypto.js';
@@ -148,6 +148,13 @@ async function syncSpace(client: ConfluenceClient, userId: string, spaceKey: str
     await syncPage(client, userId, spaceKey, page);
   }
 
+  // During incremental sync, also check for pages with missing attachments
+  // that weren't in the modified list. This catches pages whose content
+  // was synced previously but attachment downloads failed.
+  if (lastSynced && (Date.now() - lastSynced.getTime()) < 24 * 60 * 60 * 1000) {
+    await syncMissingAttachments(client, userId, spaceKey);
+  }
+
   // Detect deleted pages (only during full sync)
   if (!lastSynced || (Date.now() - lastSynced.getTime()) >= 24 * 60 * 60 * 1000) {
     await detectDeletedPages(client, spaceKey, pages);
@@ -187,14 +194,14 @@ async function syncPage(
   );
 
   if (existing.rows.length > 0 && existing.rows[0].version >= page.version.number) {
-    // Page content hasn't changed, but check if attachments were cached.
-    // If a previous sync failed to download attachments (transient errors),
-    // retry attachment sync even though the page version is the same.
-    const hasAttachments = await hasLocalAttachments(userId, page.id);
-    if (hasAttachments) {
+    // Page content hasn't changed, but check if all expected attachments are cached.
+    // Previous syncs may have failed to download some/all attachments (transient errors).
+    // Compare expected filenames (from XHTML) against files on disk, per-file.
+    const missing = await getMissingAttachments(userId, page.id, bodyStorage);
+    if (missing.length === 0) {
       return;
     }
-    logger.info({ pageId: page.id }, 'Page unchanged but attachment cache missing — re-syncing attachments');
+    logger.info({ pageId: page.id, missing: missing.length }, 'Page unchanged but some attachments missing — re-syncing');
     const { results: attachments } = await client.getPageAttachments(page.id);
     await syncDrawioAttachments(client, userId, page.id, bodyStorage, attachments);
     await syncImageAttachments(client, userId, page.id, bodyStorage, attachments);
@@ -244,6 +251,47 @@ async function syncPage(
     [page.id, spaceKey, page.title, bodyStorage, bodyHtml, bodyText,
      page.version.number, parentId, labels, author, lastModified],
   );
+}
+
+/**
+ * Find cached pages in a space that have missing attachment files and re-sync them.
+ * This covers the gap where incremental sync skips unchanged pages whose
+ * attachment downloads previously failed.
+ */
+async function syncMissingAttachments(
+  client: ConfluenceClient,
+  userId: string,
+  spaceKey: string,
+): Promise<void> {
+  // Query pages in this space that have XHTML content (body_storage)
+  const pagesResult = await query<{ confluence_id: string; body_storage: string }>(
+    'SELECT confluence_id, body_storage FROM cached_pages WHERE space_key = $1 AND body_storage IS NOT NULL',
+    [spaceKey],
+  );
+
+  let retried = 0;
+  for (const row of pagesResult.rows) {
+    const missing = await getMissingAttachments(userId, row.confluence_id, row.body_storage);
+    if (missing.length === 0) continue;
+
+    logger.info(
+      { pageId: row.confluence_id, missing: missing.length },
+      'Retrying missing attachments for unchanged page',
+    );
+
+    try {
+      const { results: attachments } = await client.getPageAttachments(row.confluence_id);
+      await syncDrawioAttachments(client, userId, row.confluence_id, row.body_storage, attachments);
+      await syncImageAttachments(client, userId, row.confluence_id, row.body_storage, attachments);
+      retried++;
+    } catch (err) {
+      logger.error({ err, pageId: row.confluence_id }, 'Failed to retry missing attachments');
+    }
+  }
+
+  if (retried > 0) {
+    logger.info({ spaceKey, retried }, 'Retried missing attachments for pages');
+  }
 }
 
 async function detectDeletedPages(
