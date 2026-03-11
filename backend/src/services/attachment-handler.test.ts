@@ -7,6 +7,10 @@ import {
   getMimeType,
   cacheAttachment,
   hasLocalAttachments,
+  getExpectedAttachmentFilenames,
+  getMissingAttachments,
+  extractImageFilenames,
+  extractDrawioDiagramNames,
   STREAM_THRESHOLD_BYTES,
   MAX_ATTACHMENT_BYTES,
 } from './attachment-handler.js';
@@ -570,6 +574,121 @@ describe('attachment-handler', () => {
 
       const result = await hasLocalAttachments('user-1', 'page-1');
       expect(result).toBe(false);
+    });
+  });
+
+  describe('getExpectedAttachmentFilenames', () => {
+    it('returns image filenames from XHTML', () => {
+      const body = `<ac:image><ri:attachment ri:filename="photo.png" /></ac:image>
+<ac:image><ri:attachment ri:filename="logo.jpg" /></ac:image>`;
+      expect(getExpectedAttachmentFilenames(body)).toEqual(['photo.png', 'logo.jpg']);
+    });
+
+    it('returns draw.io diagram PNG filenames', () => {
+      const body = `<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">topology</ac:parameter></ac:structured-macro>`;
+      expect(getExpectedAttachmentFilenames(body)).toEqual(['topology.png']);
+    });
+
+    it('combines images and draw.io diagrams', () => {
+      const body = `<ac:image><ri:attachment ri:filename="screenshot.png" /></ac:image>
+<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">arch</ac:parameter></ac:structured-macro>`;
+      expect(getExpectedAttachmentFilenames(body)).toEqual(['screenshot.png', 'arch.png']);
+    });
+
+    it('filters out non-image extensions', () => {
+      const body = `<ac:image><ri:attachment ri:filename="doc.pdf" /></ac:image>
+<ac:image><ri:attachment ri:filename="valid.png" /></ac:image>`;
+      expect(getExpectedAttachmentFilenames(body)).toEqual(['valid.png']);
+    });
+
+    it('returns empty array for content with no attachments', () => {
+      expect(getExpectedAttachmentFilenames('<p>No images</p>')).toEqual([]);
+    });
+  });
+
+  describe('getMissingAttachments', () => {
+    it('returns all filenames when none are cached', async () => {
+      const body = `<ac:image><ri:attachment ri:filename="a.png" /></ac:image>
+<ac:image><ri:attachment ri:filename="b.jpg" /></ac:image>`;
+
+      // fs.access rejects by default (ENOENT) — all files missing
+      const missing = await getMissingAttachments('user-1', 'page-1', body);
+      expect(missing).toEqual(['a.png', 'b.jpg']);
+    });
+
+    it('returns empty when all files are cached', async () => {
+      const body = `<ac:image><ri:attachment ri:filename="a.png" /></ac:image>`;
+
+      // Simulate file exists
+      vi.mocked(fs.access).mockResolvedValueOnce(undefined);
+
+      const missing = await getMissingAttachments('user-1', 'page-1', body);
+      expect(missing).toEqual([]);
+    });
+
+    it('returns only the uncached files', async () => {
+      const body = `<ac:image><ri:attachment ri:filename="cached.png" /></ac:image>
+<ac:image><ri:attachment ri:filename="missing.png" /></ac:image>`;
+
+      // First call: cached.png exists; second call: missing.png does not
+      vi.mocked(fs.access)
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+
+      const missing = await getMissingAttachments('user-1', 'page-1', body);
+      expect(missing).toEqual(['missing.png']);
+    });
+
+    it('returns empty for content with no expected attachments', async () => {
+      const missing = await getMissingAttachments('user-1', 'page-1', '<p>No images</p>');
+      expect(missing).toEqual([]);
+    });
+  });
+
+  describe('case-insensitive filename matching', () => {
+    it('syncImageAttachments matches attachment with different casing', async () => {
+      const bodyStorage = `<ac:image><ri:attachment ri:filename="Screenshot.PNG" /></ac:image>`;
+      const client = createMockClient();
+      // Confluence returns lowercase title
+      const attachments = makeAttachments([
+        { title: 'screenshot.png', download: '/download/screenshot.png' },
+      ]);
+
+      const result = await syncImageAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
+
+      // Result uses the XHTML filename (not the Confluence title)
+      expect(result).toEqual(['Screenshot.PNG']);
+      expect(client.downloadAttachment).toHaveBeenCalledTimes(1);
+    });
+
+    it('fetchAndCacheAttachment matches attachment with different casing', async () => {
+      const imageData = Buffer.from('case-data');
+      const client = createMockClient();
+      (client.getPageAttachments as ReturnType<typeof vi.fn>).mockResolvedValue({
+        results: makeAttachments([
+          { title: 'LOGO.PNG', download: '/download/LOGO.PNG' },
+        ]),
+      });
+      (client.downloadAttachment as ReturnType<typeof vi.fn>).mockResolvedValue(imageData);
+
+      const result = await fetchAndCacheAttachment(client, 'user-1', 'page-1', 'logo.png');
+
+      expect(result).toEqual(imageData);
+      expect(client.downloadAttachment).toHaveBeenCalledWith('/download/LOGO.PNG');
+    });
+
+    it('syncImageAttachments prefers exact match over case-insensitive', async () => {
+      const bodyStorage = `<ac:image><ri:attachment ri:filename="Logo.png" /></ac:image>`;
+      const client = createMockClient();
+      const attachments = makeAttachments([
+        { title: 'logo.png', download: '/download/lower.png' },
+        { title: 'Logo.png', download: '/download/exact.png' },
+      ]);
+
+      await syncImageAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
+
+      // Should use exact match
+      expect(client.downloadAttachment).toHaveBeenCalledWith('/download/exact.png');
     });
   });
 

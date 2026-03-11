@@ -4,8 +4,10 @@ const mocks = vi.hoisted(() => ({
   processDirtyPages: vi.fn().mockResolvedValue({ processed: 3, errors: 0 }),
   getSpaces: vi.fn().mockResolvedValue({ results: [] }),
   getAllPagesInSpace: vi.fn().mockResolvedValue([]),
+  getModifiedPages: vi.fn().mockResolvedValue([]),
   getPage: vi.fn().mockResolvedValue(undefined),
   getPageAttachments: vi.fn().mockResolvedValue({ results: [] }),
+  getMissingAttachments: vi.fn().mockResolvedValue([]),
   query: vi.fn(),
 }));
 
@@ -18,7 +20,7 @@ vi.mock('./confluence-client.js', () => ({
     getSpaces = mocks.getSpaces;
     getAllSpaces = vi.fn().mockResolvedValue([]);
     getAllPagesInSpace = mocks.getAllPagesInSpace;
-    getModifiedPages = vi.fn().mockResolvedValue([]);
+    getModifiedPages = mocks.getModifiedPages;
     getPage = mocks.getPage;
     getPageAttachments = mocks.getPageAttachments;
   },
@@ -33,6 +35,7 @@ vi.mock('./attachment-handler.js', () => ({
   syncDrawioAttachments: vi.fn().mockResolvedValue(undefined),
   syncImageAttachments: vi.fn().mockResolvedValue(undefined),
   cleanPageAttachments: vi.fn().mockResolvedValue(undefined),
+  getMissingAttachments: mocks.getMissingAttachments,
 }));
 
 vi.mock('./version-tracker.js', () => ({
@@ -213,5 +216,127 @@ describe('syncPage attachment cache invalidation', () => {
 
     const { cleanPageAttachments } = await import('./attachment-handler.js');
     expect(cleanPageAttachments).not.toHaveBeenCalled();
+  });
+});
+
+describe('incremental sync with missing attachments', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.processDirtyPages.mockResolvedValue({ processed: 0, errors: 0 });
+    mocks.getMissingAttachments.mockResolvedValue([]);
+  });
+
+  function setupIncrementalSync(opts: {
+    modifiedPages?: Array<{ id: string; title: string }>;
+    cachedPages?: Array<{ confluence_id: string; body_storage: string }>;
+    missingAttachments?: string[];
+  } = {}) {
+    const recentDate = new Date(Date.now() - 1000 * 60 * 5); // 5 minutes ago
+
+    mocks.query
+      // 1. getClientForUser
+      .mockResolvedValueOnce({ rows: [{ confluence_url: 'https://conf.example.com', confluence_pat: 'enc' }] })
+      // 2. user_space_selections
+      .mockResolvedValueOnce({ rows: [{ space_key: 'DEV' }] })
+      // 3. cached_spaces.last_synced → recent → incremental sync
+      .mockResolvedValueOnce({ rows: [{ last_synced: recentDate }] });
+
+    // syncPage calls for each modified page
+    for (const _page of opts.modifiedPages ?? []) {
+      mocks.query
+        // existing page version check
+        .mockResolvedValueOnce({ rows: [] })
+        // upsert page
+        .mockResolvedValueOnce({ rows: [] });
+    }
+
+    // syncMissingAttachments: SELECT cached_pages WHERE space_key
+    mocks.query.mockResolvedValueOnce({
+      rows: opts.cachedPages ?? [],
+    });
+
+    // update space last_synced
+    mocks.query.mockResolvedValueOnce({ rows: [] });
+
+    mocks.getModifiedPages.mockResolvedValueOnce(
+      (opts.modifiedPages ?? []).map((p) => ({
+        id: p.id,
+        title: p.title,
+        version: { number: 1 },
+        space: { key: 'DEV' },
+      })),
+    );
+
+    // Mock getPage + getPageAttachments for each modified page
+    for (const page of opts.modifiedPages ?? []) {
+      mocks.getPage.mockResolvedValueOnce({
+        id: page.id,
+        title: page.title,
+        version: { number: 1, when: new Date().toISOString(), by: { displayName: 'Test' } },
+        ancestors: [],
+        metadata: { labels: { results: [] } },
+        body: { storage: { value: '<p>content</p>' } },
+      });
+      mocks.getPageAttachments.mockResolvedValueOnce({ results: [] });
+    }
+
+    if (opts.missingAttachments && opts.missingAttachments.length > 0) {
+      mocks.getMissingAttachments.mockResolvedValue(opts.missingAttachments);
+      // getPageAttachments for missing attachment retry
+      mocks.getPageAttachments.mockResolvedValueOnce({ results: [] });
+    }
+  }
+
+  it('retries missing attachments for cached pages during incremental sync', async () => {
+    setupIncrementalSync({
+      cachedPages: [
+        { confluence_id: 'page-old', body_storage: '<ac:image><ri:attachment ri:filename="lost.png" /></ac:image>' },
+      ],
+      missingAttachments: ['lost.png'],
+    });
+
+    await syncUser('user-inc');
+
+    const { syncImageAttachments, syncDrawioAttachments } = await import('./attachment-handler.js');
+    // syncImageAttachments should be called for the page with missing attachments
+    expect(syncImageAttachments).toHaveBeenCalled();
+    expect(syncDrawioAttachments).toHaveBeenCalled();
+  });
+
+  it('skips attachment retry when all pages have complete attachments', async () => {
+    setupIncrementalSync({
+      cachedPages: [
+        { confluence_id: 'page-ok', body_storage: '<p>no images</p>' },
+      ],
+    });
+
+    await syncUser('user-inc-ok');
+
+    // getMissingAttachments returns [] (default), so no attachment retry calls
+    // getPageAttachments should not be called for cached pages during retry
+    // (it may be called 0 times or only for modified pages)
+    const { syncImageAttachments } = await import('./attachment-handler.js');
+    expect(syncImageAttachments).not.toHaveBeenCalled();
+  });
+
+  it('does not run syncMissingAttachments during full sync', async () => {
+    mocks.query
+      // 1. getClientForUser
+      .mockResolvedValueOnce({ rows: [{ confluence_url: 'https://conf.example.com', confluence_pat: 'enc' }] })
+      // 2. user_space_selections
+      .mockResolvedValueOnce({ rows: [{ space_key: 'DEV' }] })
+      // 3. cached_spaces.last_synced → null → full sync
+      .mockResolvedValueOnce({ rows: [{ last_synced: null }] })
+      // 4. detectDeletedPages: selection count
+      .mockResolvedValueOnce({ rows: [] })
+      // 5. update space last_synced
+      .mockResolvedValueOnce({ rows: [] });
+
+    mocks.getAllPagesInSpace.mockResolvedValueOnce([]);
+
+    await syncUser('user-full');
+
+    // getMissingAttachments should NOT be called — full sync doesn't trigger syncMissingAttachments
+    expect(mocks.getMissingAttachments).not.toHaveBeenCalled();
   });
 });

@@ -113,7 +113,7 @@ export function getMimeType(filename: string): string {
  * Handles arbitrary attribute ordering and nested parameters reliably,
  * unlike fragile regex approaches.
  */
-function extractDrawioDiagramNames(bodyStorage: string): string[] {
+export function extractDrawioDiagramNames(bodyStorage: string): string[] {
   const dom = new JSDOM(`<body>${bodyStorage}</body>`, { contentType: 'text/html' });
   const doc = dom.window.document;
   const names: string[] = [];
@@ -212,7 +212,7 @@ const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.svg', '.web
  * Parse image attachment filenames from Confluence XHTML storage format using JSDOM.
  * Handles arbitrary attribute ordering reliably, unlike regex approaches.
  */
-function extractImageFilenames(bodyStorage: string): string[] {
+export function extractImageFilenames(bodyStorage: string): string[] {
   const dom = new JSDOM(`<body>${bodyStorage}</body>`, { contentType: 'text/html' });
   const doc = dom.window.document;
   const filenames: string[] = [];
@@ -254,7 +254,10 @@ export async function syncImageAttachments(
     const ext = path.extname(filename).toLowerCase();
     if (!IMAGE_EXTENSIONS.has(ext)) continue;
 
-    const attachment = attachments.find((a) => a.title === filename);
+    // Case-insensitive match: Confluence may return titles with different casing
+    const filenameLower = filename.toLowerCase();
+    const attachment = attachments.find((a) => a.title === filename)
+      ?? attachments.find((a) => a.title.toLowerCase() === filenameLower);
 
     if (attachment?._links?.download) {
       try {
@@ -308,13 +311,21 @@ export async function fetchAndCacheAttachment(
 
   // Fetch the page's attachment list from Confluence
   const { results: attachments } = await client.getPageAttachments(pageId);
-  let attachment = attachments.find((a) => a.title === safe);
+  const safeLower = safe.toLowerCase();
+  // Case-insensitive match: Confluence may return titles with different casing
+  let attachment = attachments.find((a) => a.title === safe)
+    ?? attachments.find((a) => a.title.toLowerCase() === safeLower);
 
   // Draw.io fallback: the content converter generates {name}.png URLs, but
   // the Confluence attachment may be stored as {name}.xml or just {name}.
   if (!attachment && safe.endsWith('.png')) {
     const baseName = safe.slice(0, -4);
-    attachment = attachments.find((a) => a.title === `${baseName}.xml` || a.title === baseName);
+    const baseNameLower = baseName.toLowerCase();
+    attachment = attachments.find((a) => a.title === `${baseName}.xml` || a.title === baseName)
+      ?? attachments.find((a) => {
+        const titleLower = a.title.toLowerCase();
+        return titleLower === `${baseNameLower}.xml` || titleLower === baseNameLower;
+      });
   }
 
   if (!attachment?._links?.download) {
@@ -360,6 +371,37 @@ export async function hasLocalAttachments(userId: string, pageId: string): Promi
   } catch {
     return false;
   }
+}
+
+/**
+ * Get the list of expected attachment filenames for a page based on its XHTML body.
+ * Combines image filenames and draw.io diagram PNG filenames.
+ */
+export function getExpectedAttachmentFilenames(bodyStorage: string): string[] {
+  const imageFiles = extractImageFilenames(bodyStorage)
+    .filter((f) => IMAGE_EXTENSIONS.has(path.extname(f).toLowerCase()));
+  const drawioFiles = extractDrawioDiagramNames(bodyStorage).map((name) => `${name}.png`);
+  return [...imageFiles, ...drawioFiles];
+}
+
+/**
+ * Compare expected attachments (from XHTML parsing) against locally cached files.
+ * Returns the list of filenames that are expected but NOT present on disk.
+ */
+export async function getMissingAttachments(
+  userId: string,
+  pageId: string,
+  bodyStorage: string,
+): Promise<string[]> {
+  const expected = getExpectedAttachmentFilenames(bodyStorage);
+  if (expected.length === 0) return [];
+
+  const missing: string[] = [];
+  for (const filename of expected) {
+    const exists = await attachmentExists(userId, pageId, filename);
+    if (!exists) missing.push(filename);
+  }
+  return missing;
 }
 
 /**
