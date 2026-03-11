@@ -5,12 +5,10 @@ import { LazyMotion, domMax } from 'framer-motion';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { PageViewPage } from './PageViewPage';
 import { useAuthStore } from '../../stores/auth-store';
+import { useArticleViewStore } from '../../stores/article-view-store';
 
 const mockNavigate = vi.fn();
 const mockUpdatePage = vi.fn();
-const mockDeletePage = vi.fn();
-const mockPinPage = vi.fn();
-const mockUnpinPage = vi.fn();
 
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
@@ -119,18 +117,6 @@ let mockIsLoading = false;
 vi.mock('../../shared/hooks/use-pages', () => ({
   usePage: () => ({ data: mockIsLoading ? undefined : currentMockPage, isLoading: mockIsLoading }),
   useUpdatePage: () => ({ mutateAsync: mockUpdatePage, isPending: false }),
-  useDeletePage: () => ({ mutateAsync: mockDeletePage }),
-  usePinnedPages: () => ({ data: { items: [] }, isLoading: false }),
-  usePinPage: () => ({ mutate: mockPinPage }),
-  useUnpinPage: () => ({ mutate: mockUnpinPage }),
-}));
-
-vi.mock('../../shared/hooks/use-settings', () => ({
-  useSettings: () => ({
-    data: {
-      confluenceUrl: 'https://confluence.example.com',
-    },
-  }),
 }));
 
 function createWrapper() {
@@ -159,9 +145,6 @@ describe('PageViewPage', () => {
     mockIsLoading = false;
     mockNavigate.mockReset();
     mockUpdatePage.mockReset().mockResolvedValue(undefined);
-    mockDeletePage.mockReset().mockResolvedValue(undefined);
-    mockPinPage.mockReset();
-    mockUnpinPage.mockReset();
     localStorage.clear();
     Element.prototype.scrollTo = vi.fn();
 
@@ -174,6 +157,8 @@ describe('PageViewPage', () => {
 
   afterEach(() => {
     useAuthStore.getState().clearAuth();
+    useArticleViewStore.getState().setHeadings([]);
+    useArticleViewStore.getState().setEditing(false);
     document.body.innerHTML = '';
   });
 
@@ -188,28 +173,13 @@ describe('PageViewPage', () => {
     expect(screen.getByTestId('embedding-status-badge')).toHaveTextContent('embedded');
   });
 
-  it('does not render the Library button', () => {
+  it('renders the Edit button in the header (action buttons moved to right pane)', () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
 
-    expect(screen.queryByText('Library')).not.toBeInTheDocument();
-  });
-
-  it('does not render the folder hierarchy info message', () => {
-    render(<PageViewPage />, { wrapper: createWrapper() });
-
-    expect(
-      screen.queryByText(/This folder is also a readable article/),
-    ).not.toBeInTheDocument();
-  });
-
-  it('renders the AI Improve button and navigates to the improve flow', () => {
-    render(<PageViewPage />, { wrapper: createWrapper() });
-
-    const aiButton = screen.getByText('AI Improve');
-    expect(aiButton).toBeInTheDocument();
-
-    fireEvent.click(aiButton.closest('button')!);
-    expect(mockNavigate).toHaveBeenCalledWith('/ai?mode=improve&pageId=page-1');
+    expect(screen.getByText('Edit')).toBeInTheDocument();
+    // AI Improve, Pin, Confluence, Delete are now in ArticleRightPane
+    expect(screen.queryByText('AI Improve')).not.toBeInTheDocument();
+    expect(screen.queryByText('Delete')).not.toBeInTheDocument();
   });
 
   it('resets the app scroll container when the article route renders', async () => {
@@ -224,17 +194,6 @@ describe('PageViewPage', () => {
     await waitFor(() => {
       expect(scrollSpy).toHaveBeenCalledWith({ top: 0, left: 0, behavior: 'auto' });
     });
-  });
-
-  it('collapses and reopens the outline rail', async () => {
-    render(<PageViewPage />, { wrapper: createWrapper() });
-
-    expect(await screen.findByTestId('article-outline-panel')).toBeInTheDocument();
-    fireEvent.click(screen.getByLabelText('Hide outline'));
-    expect(screen.getByTestId('article-outline-rail')).toBeInTheDocument();
-
-    fireEvent.click(screen.getByLabelText('Show outline'));
-    expect(await screen.findByTestId('article-outline-panel')).toBeInTheDocument();
   });
 
   it('opens the lightbox from article media', async () => {
@@ -256,21 +215,18 @@ describe('PageViewPage', () => {
     expect(screen.getByLabelText('Collapse article header')).toBeInTheDocument();
   });
 
-  it('collapses the header when the toggle is clicked, hiding metadata and action buttons', async () => {
+  it('collapses the header when the toggle is clicked, hiding metadata', async () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
 
-    expect(screen.getByText('AI Improve')).toBeInTheDocument();
     expect(screen.getByText('docs')).toBeInTheDocument();
 
     fireEvent.click(screen.getByLabelText('Collapse article header'));
 
     await waitFor(() => {
-      expect(screen.queryByText('AI Improve')).not.toBeInTheDocument();
       expect(screen.queryByText('docs')).not.toBeInTheDocument();
     });
 
     expect(screen.getByLabelText('Expand article header')).toBeInTheDocument();
-    // Title remains visible in the slim rail.
     expect(screen.getByText('Engineering Handbook')).toBeInTheDocument();
   });
 
@@ -278,10 +234,9 @@ describe('PageViewPage', () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
 
     fireEvent.click(screen.getByLabelText('Collapse article header'));
-    await waitFor(() => expect(screen.queryByText('AI Improve')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText('docs')).not.toBeInTheDocument());
 
     fireEvent.click(screen.getByLabelText('Expand article header'));
-    expect(await screen.findByText('AI Improve')).toBeInTheDocument();
     expect(await screen.findByText('docs')).toBeInTheDocument();
   });
 
@@ -307,25 +262,23 @@ describe('PageViewPage', () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
 
     await waitFor(() => {
-      expect(screen.queryByText('AI Improve')).not.toBeInTheDocument();
+      expect(screen.queryByText('Edit')).not.toBeInTheDocument();
     });
     expect(screen.getByLabelText('Expand article header')).toBeInTheDocument();
   });
 
   it('keeps header expanded and hides the toggle while in edit mode', async () => {
-    // Start collapsed.
     localStorage.setItem('article-header-collapsed', 'true');
 
     render(<PageViewPage />, { wrapper: createWrapper() });
 
-    await waitFor(() => expect(screen.queryByText('AI Improve')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText('Edit')).not.toBeInTheDocument());
 
     fireEvent.click(screen.getByLabelText('Expand article header'));
     await waitFor(() => expect(screen.getByText('Edit')).toBeInTheDocument());
 
     fireEvent.click(screen.getByText('Edit'));
 
-    // In edit mode the toggle is hidden and the full header is visible.
     expect(screen.queryByLabelText('Collapse article header')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Expand article header')).not.toBeInTheDocument();
     expect(screen.getByText('Save')).toBeInTheDocument();
@@ -351,6 +304,28 @@ describe('PageViewPage', () => {
         bodyHtml: '<p>Updated content</p>',
         version: 7,
       });
+    });
+  });
+
+  it('syncs headings to article-view-store for the right pane', async () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      const storeHeadings = useArticleViewStore.getState().headings;
+      expect(storeHeadings).toHaveLength(2);
+      expect(storeHeadings[0].text).toBe('Introduction');
+    });
+  });
+
+  it('syncs editing state to article-view-store', async () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+
+    expect(useArticleViewStore.getState().editing).toBe(false);
+
+    fireEvent.click(screen.getByText('Edit'));
+
+    await waitFor(() => {
+      expect(useArticleViewStore.getState().editing).toBe(true);
     });
   });
 });

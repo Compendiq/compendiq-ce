@@ -10,6 +10,10 @@ vi.mock('./SidebarTreeView', () => ({
   SidebarTreeView: () => <div data-testid="sidebar-tree-view">Tree Sidebar</div>,
 }));
 
+vi.mock('./ArticleRightPane', () => ({
+  ArticleRightPane: () => <div data-testid="article-right-pane">Article Right Pane</div>,
+}));
+
 vi.mock('./CommandPalette', () => ({
   CommandPalette: () => null,
 }));
@@ -145,5 +149,35 @@ describe('AppLayout', () => {
       { wrapper: createWrapper('/') },
     );
     expect(screen.getByText('test content here')).toBeInTheDocument();
+  });
+
+  it('shows article right pane on /pages/:id route', () => {
+    render(
+      <AppLayout>
+        <div>article</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/pages/123') },
+    );
+    expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
+  });
+
+  it('hides article right pane on non-article routes', () => {
+    render(
+      <AppLayout>
+        <div>ai page</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/ai') },
+    );
+    expect(screen.queryByTestId('article-right-pane')).not.toBeInTheDocument();
+  });
+
+  it('hides article right pane on root route', () => {
+    render(
+      <AppLayout>
+        <div>pages</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/') },
+    );
+    expect(screen.queryByTestId('article-right-pane')).not.toBeInTheDocument();
   });
 });

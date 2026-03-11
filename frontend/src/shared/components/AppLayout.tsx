@@ -8,6 +8,7 @@ import { ServiceStatus } from './ServiceStatus';
 import { Breadcrumb } from './Breadcrumb';
 import { UserMenu } from './UserMenu';
 import { SidebarTreeView } from './SidebarTreeView';
+import { ArticleRightPane } from './ArticleRightPane';
 import { AuroraBackground } from './AuroraBackground';
 import { NoiseOverlay } from './NoiseOverlay';
 import { PageTransition } from './PageTransition';
@@ -165,19 +166,23 @@ export function AppLayout({ children }: { children: ReactNode }) {
           )}
         </AnimatePresence>
 
-        {/* Main content area */}
-        <main className="flex flex-1 flex-col overflow-hidden">
-          <div className="shrink-0 px-4 pt-3 sm:px-6">
-            <ServiceStatus />
-          </div>
-          <div ref={scrollContainerRef} data-scroll-container className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
-            <PageTransition>
-              <div className={cn('mx-auto w-full', isArticleRoute ? 'max-w-[1400px]' : 'max-w-7xl')}>
-                {children}
-              </div>
-            </PageTransition>
-          </div>
-        </main>
+        {/* Main content area + optional right sidebar */}
+        <div className="flex flex-1 overflow-hidden">
+          <main className="flex flex-1 flex-col overflow-hidden">
+            <div className="shrink-0 px-4 pt-3 sm:px-6">
+              <ServiceStatus />
+            </div>
+            <div ref={scrollContainerRef} data-scroll-container className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
+              <PageTransition>
+                <div className={cn('mx-auto w-full', isArticleRoute ? 'max-w-[1400px]' : 'max-w-7xl')}>
+                  {children}
+                </div>
+              </PageTransition>
+            </div>
+          </main>
+
+          {isArticleRoute && <ArticleRightPane />}
+        </div>
       </div>
     </div>
   );

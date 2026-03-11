@@ -5,34 +5,25 @@ import { AnimatePresence, m } from 'framer-motion';
 import {
   ChevronDown,
   ChevronUp,
-  ExternalLink,
   FileText,
   FolderOpen,
-  Pin,
   Save,
-  Trash2,
   User,
-  Wand2,
   X,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '../../shared/lib/cn';
 import {
-  useDeletePage,
   usePage,
-  usePinnedPages,
-  usePinPage,
-  useUnpinPage,
   useUpdatePage,
 } from '../../shared/hooks/use-pages';
-import { useSettings } from '../../shared/hooks/use-settings';
 import { useAuthenticatedSrc } from '../../shared/hooks/use-authenticated-src';
+import { useArticleViewStore } from '../../stores/article-view-store';
 import { FeatureErrorBoundary } from '../../shared/components/FeatureErrorBoundary';
 import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../../shared/components/EmbeddingStatusBadge';
 import { Editor, clearDraft, getDraft } from '../../shared/components/Editor';
 import { ArticleViewer } from '../../shared/components/ArticleViewer';
-import { ArticleOutline } from '../../shared/components/ArticleOutline';
 import type { TocHeading } from '../../shared/components/TableOfContents';
 import { PageViewSkeleton } from '../../shared/components/Skeleton';
 
@@ -98,15 +89,6 @@ function readHeaderCollapsedState() {
   }
 }
 
-function readOutlineState() {
-  try {
-    const stored = localStorage.getItem('article-outline-open');
-    return stored === null ? true : stored === 'true';
-  } catch {
-    return true;
-  }
-}
-
 function scrollArticleToTop() {
   const container = document.querySelector('[data-scroll-container]') as HTMLElement | null;
   if (!container) return;
@@ -126,33 +108,39 @@ export function PageViewPage() {
   const queryClient = useQueryClient();
 
   const { data: page, isLoading } = usePage(id);
-  const { data: pinnedData } = usePinnedPages();
-  const { data: settings } = useSettings();
 
   const updateMutation = useUpdatePage();
-  const deleteMutation = useDeletePage();
-  const pinMutation = usePinPage();
-  const unpinMutation = useUnpinPage();
 
   const contentRef = useRef<HTMLDivElement>(null);
   const draftKey = id ? `page-${id}` : undefined;
-  const isPinned = pinnedData?.items.some((item) => item.id === id) ?? false;
+
+  const setStoreHeadings = useArticleViewStore((s) => s.setHeadings);
+  const setStoreEditing = useArticleViewStore((s) => s.setEditing);
 
   const [editing, setEditing] = useState(false);
   const [editHtml, setEditHtml] = useState('');
   const [editTitle, setEditTitle] = useState('');
   const [headings, setHeadings] = useState<TocHeading[]>([]);
   const [lightboxSrc, setLightboxSrc] = useState<{ alt: string; src: string } | null>(null);
-  const [outlineOpen, setOutlineOpen] = useState(readOutlineState);
   const [headerCollapsed, setHeaderCollapsed] = useState(readHeaderCollapsedState);
 
+  // Sync editing state to the shared store (consumed by ArticleRightPane)
   useEffect(() => {
-    try {
-      localStorage.setItem('article-outline-open', String(outlineOpen));
-    } catch {
-      // Ignore storage write failures.
-    }
-  }, [outlineOpen]);
+    setStoreEditing(editing);
+  }, [editing, setStoreEditing]);
+
+  // Sync headings to the shared store (consumed by ArticleRightPane)
+  useEffect(() => {
+    setStoreHeadings(headings);
+  }, [headings, setStoreHeadings]);
+
+  // Clean up store when unmounting
+  useEffect(() => {
+    return () => {
+      useArticleViewStore.getState().setHeadings([]);
+      useArticleViewStore.getState().setEditing(false);
+    };
+  }, []);
 
   useEffect(() => {
     try {
@@ -231,28 +219,6 @@ export function PageViewPage() {
       }
     }
   }, [draftKey, editHtml, editTitle, id, page, queryClient, updateMutation]);
-
-  const handleDelete = useCallback(async () => {
-    if (!id || !window.confirm('Delete this article? This cannot be undone.')) return;
-
-    try {
-      await deleteMutation.mutateAsync(id);
-      navigate('/');
-      toast.success('Article deleted.');
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to delete article.');
-    }
-  }, [deleteMutation, id, navigate]);
-
-  const handlePinToggle = useCallback(() => {
-    if (!id || !page) return;
-
-    const mutation = isPinned ? unpinMutation : pinMutation;
-    mutation.mutate(id, {
-      onSuccess: () => toast.success(isPinned ? 'Folder/article unpinned.' : 'Folder/article pinned.'),
-      onError: (error) => toast.error(error instanceof Error ? error.message : 'Pin update failed.'),
-    });
-  }, [id, isPinned, page, pinMutation, unpinMutation]);
 
   if (isLoading) {
     return (
@@ -374,46 +340,6 @@ export function PageViewPage() {
                       transition={{ duration: 0.12 }}
                       className="flex flex-wrap items-center gap-2"
                     >
-                      <button
-                        onClick={() => navigate(`/ai?mode=improve&pageId=${encodeURIComponent(id ?? '')}`)}
-                        className="rounded-xl border border-border/60 bg-background/55 px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
-                      >
-                        <span className="inline-flex items-center gap-2">
-                          <Wand2 size={14} />
-                          AI Improve
-                        </span>
-                      </button>
-
-                      <button
-                        onClick={handlePinToggle}
-                        className={cn(
-                          'rounded-xl border border-border/60 px-3 py-2 text-sm transition-colors',
-                          isPinned
-                            ? 'bg-primary/12 text-primary hover:bg-primary/18'
-                            : 'bg-background/55 text-muted-foreground hover:bg-background hover:text-foreground',
-                        )}
-                        aria-label={isPinned ? 'Unpin article' : 'Pin article'}
-                      >
-                        <span className="inline-flex items-center gap-2">
-                          <Pin size={14} className={cn(isPinned && 'fill-current')} />
-                          {isPinned ? 'Pinned' : 'Pin'}
-                        </span>
-                      </button>
-
-                      {settings?.confluenceUrl ? (
-                        <a
-                          href={`${settings.confluenceUrl}/pages/viewpage.action?pageId=${encodeURIComponent(id ?? '')}`}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="rounded-xl border border-border/60 bg-background/55 px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
-                        >
-                          <span className="inline-flex items-center gap-2">
-                            Confluence
-                            <ExternalLink size={14} />
-                          </span>
-                        </a>
-                      ) : null}
-
                       {editing ? (
                         <>
                           <button
@@ -432,28 +358,17 @@ export function PageViewPage() {
                           >
                             <span className="inline-flex items-center gap-2">
                               <Save size={14} />
-                              {updateMutation.isPending ? 'Saving…' : 'Save'}
+                              {updateMutation.isPending ? 'Saving...' : 'Save'}
                             </span>
                           </button>
                         </>
                       ) : (
-                        <>
-                          <button
-                            onClick={handleStartEditing}
-                            className="rounded-xl border border-border/60 bg-background/55 px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            onClick={handleDelete}
-                            className="rounded-xl border border-destructive/30 bg-destructive/8 px-3 py-2 text-sm text-destructive transition-colors hover:bg-destructive/12"
-                          >
-                            <span className="inline-flex items-center gap-2">
-                              <Trash2 size={14} />
-                              Delete
-                            </span>
-                          </button>
-                        </>
+                        <button
+                          onClick={handleStartEditing}
+                          className="rounded-xl border border-border/60 bg-background/55 px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+                        >
+                          Edit
+                        </button>
                       )}
                     </m.div>
                   )}
@@ -505,37 +420,21 @@ export function PageViewPage() {
           </FeatureErrorBoundary>
         </section>
       ) : (
-        <div
-          className={cn(
-            'grid items-start gap-4',
-            outlineOpen ? 'xl:grid-cols-[minmax(0,1fr)_20rem]' : 'xl:grid-cols-[minmax(0,1fr)_3rem]',
-          )}
+        <section
+          ref={contentRef}
+          className="overflow-hidden rounded-[32px] border border-border/60 bg-card/75 shadow-sm backdrop-blur-xl"
+          data-testid="article-content-shell"
         >
-          <section
-            ref={contentRef}
-            className="overflow-hidden rounded-[32px] border border-border/60 bg-card/75 shadow-sm backdrop-blur-xl"
-            data-testid="article-content-shell"
-          >
-            <FeatureErrorBoundary featureName="Article Viewer">
-              <ArticleViewer
-                content={page.bodyHtml}
-                onImageClick={handleImageClick}
-                onHeadingsReady={setHeadings}
-                pageId={id}
-                confluenceUrl={settings?.confluenceUrl}
-                className="px-5 py-6 sm:px-7 sm:py-8"
-              />
-            </FeatureErrorBoundary>
-          </section>
-
-          <ArticleOutline
-            headings={headings}
-            contentRef={contentRef}
-            pageId={id}
-            isOpen={outlineOpen}
-            onToggle={() => setOutlineOpen((current) => !current)}
-          />
-        </div>
+          <FeatureErrorBoundary featureName="Article Viewer">
+            <ArticleViewer
+              content={page.bodyHtml}
+              onImageClick={handleImageClick}
+              onHeadingsReady={setHeadings}
+              pageId={id}
+              className="px-5 py-6 sm:px-7 sm:py-8"
+            />
+          </FeatureErrorBoundary>
+        </section>
       )}
 
       <AnimatePresence>
