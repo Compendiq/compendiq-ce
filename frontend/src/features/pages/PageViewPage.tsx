@@ -3,6 +3,8 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, m } from 'framer-motion';
 import {
+  ChevronDown,
+  ChevronUp,
   ExternalLink,
   FileText,
   FolderOpen,
@@ -88,6 +90,14 @@ function ImageLightbox({
   );
 }
 
+function readHeaderCollapsedState() {
+  try {
+    return localStorage.getItem('article-header-collapsed') === 'true';
+  } catch {
+    return false;
+  }
+}
+
 function readOutlineState() {
   try {
     const stored = localStorage.getItem('article-outline-open');
@@ -134,6 +144,7 @@ export function PageViewPage() {
   const [headings, setHeadings] = useState<TocHeading[]>([]);
   const [lightboxSrc, setLightboxSrc] = useState<{ alt: string; src: string } | null>(null);
   const [outlineOpen, setOutlineOpen] = useState(readOutlineState);
+  const [headerCollapsed, setHeaderCollapsed] = useState(readHeaderCollapsedState);
 
   useEffect(() => {
     try {
@@ -142,6 +153,14 @@ export function PageViewPage() {
       // Ignore storage write failures.
     }
   }, [outlineOpen]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('article-header-collapsed', String(headerCollapsed));
+    } catch {
+      // Ignore storage write failures.
+    }
+  }, [headerCollapsed]);
 
   useLayoutEffect(() => {
     scrollArticleToTop();
@@ -262,6 +281,8 @@ export function PageViewPage() {
   }
 
   const pageKindLabel = page.hasChildren ? 'Folder Article' : 'Article';
+  // Header stays expanded while editing so the title input and action buttons remain accessible.
+  const isHeaderCollapsed = headerCollapsed && !editing;
 
   return (
     <m.div
@@ -272,12 +293,19 @@ export function PageViewPage() {
       data-testid="article-page"
     >
       <section className="overflow-hidden rounded-[32px] border border-border/60 bg-card/75 shadow-sm backdrop-blur-xl">
-        <div className="relative overflow-hidden px-5 py-6 sm:px-7 sm:py-7">
-          <div className="absolute inset-x-0 top-0 h-28 bg-[radial-gradient(circle_at_top_left,var(--color-primary)/0.18,transparent_65%)]" />
+        <div
+          className={cn(
+            'relative overflow-hidden px-5 sm:px-7',
+            isHeaderCollapsed ? 'py-3 sm:py-4' : 'py-6 sm:py-7',
+          )}
+        >
+          {!isHeaderCollapsed && (
+            <div className="absolute inset-x-0 top-0 h-28 bg-[radial-gradient(circle_at_top_left,var(--color-primary)/0.18,transparent_65%)]" />
+          )}
 
           <div className="relative flex flex-col gap-5">
             <div className="flex flex-wrap items-start justify-between gap-4">
-              <div className="min-w-0 space-y-3">
+              <div className="min-w-0 flex-1 space-y-3">
                 {editing ? (
                   <input
                     value={editTitle}
@@ -285,134 +313,187 @@ export function PageViewPage() {
                     className="w-full rounded-2xl border border-border/60 bg-background/60 px-4 py-3 text-2xl font-semibold text-foreground outline-none ring-offset-0 transition-colors focus:border-primary"
                   />
                 ) : (
-                  <h1 className="text-balance text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
+                  <h1
+                    className={cn(
+                      'font-semibold tracking-tight text-foreground',
+                      isHeaderCollapsed
+                        ? 'truncate text-lg'
+                        : 'text-balance text-2xl sm:text-3xl',
+                    )}
+                  >
                     {page.title}
                   </h1>
                 )}
 
-                <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-                  <span className="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-background/55 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.24em]">
-                    {page.hasChildren ? <FolderOpen size={12} /> : <FileText size={12} />}
-                    {pageKindLabel}
-                  </span>
-                  <span className="text-[11px] font-semibold uppercase tracking-[0.24em]">{page.spaceKey}</span>
-                  {page.lastModifiedAt ? <FreshnessBadge lastModified={page.lastModifiedAt} /> : null}
-                  <EmbeddingStatusBadge
-                    embeddingStatus={page.embeddingStatus}
-                    embeddingDirty={page.embeddingDirty}
-                    embeddedAt={page.embeddedAt}
-                    embeddingError={page.embeddingError}
-                  />
-                  {page.author ? (
-                    <span className="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-background/45 px-3 py-1">
-                      <User size={12} />
-                      {page.author}
-                    </span>
-                  ) : null}
-                  <span className="rounded-full border border-border/60 bg-background/45 px-3 py-1">
-                    v{page.version}
-                  </span>
-                </div>
+                <AnimatePresence initial={false}>
+                  {!isHeaderCollapsed && (
+                    <m.div
+                      key="header-metadata"
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: 'auto' }}
+                      exit={{ opacity: 0, height: 0 }}
+                      transition={{ duration: 0.18 }}
+                      className="overflow-hidden"
+                    >
+                      <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                        <span className="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-background/55 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.24em]">
+                          {page.hasChildren ? <FolderOpen size={12} /> : <FileText size={12} />}
+                          {pageKindLabel}
+                        </span>
+                        <span className="text-[11px] font-semibold uppercase tracking-[0.24em]">{page.spaceKey}</span>
+                        {page.lastModifiedAt ? <FreshnessBadge lastModified={page.lastModifiedAt} /> : null}
+                        <EmbeddingStatusBadge
+                          embeddingStatus={page.embeddingStatus}
+                          embeddingDirty={page.embeddingDirty}
+                          embeddedAt={page.embeddedAt}
+                          embeddingError={page.embeddingError}
+                        />
+                        {page.author ? (
+                          <span className="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-background/45 px-3 py-1">
+                            <User size={12} />
+                            {page.author}
+                          </span>
+                        ) : null}
+                        <span className="rounded-full border border-border/60 bg-background/45 px-3 py-1">
+                          v{page.version}
+                        </span>
+                      </div>
+                    </m.div>
+                  )}
+                </AnimatePresence>
               </div>
 
               <div className="flex flex-wrap items-center justify-end gap-2">
-                <button
-                  onClick={() => navigate(`/ai?mode=improve&pageId=${encodeURIComponent(id ?? '')}`)}
-                  className="rounded-xl border border-border/60 bg-background/55 px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
-                >
-                  <span className="inline-flex items-center gap-2">
-                    <Wand2 size={14} />
-                    AI Improve
-                  </span>
-                </button>
+                <AnimatePresence initial={false}>
+                  {!isHeaderCollapsed && (
+                    <m.div
+                      key="header-actions"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      transition={{ duration: 0.12 }}
+                      className="flex flex-wrap items-center gap-2"
+                    >
+                      <button
+                        onClick={() => navigate(`/ai?mode=improve&pageId=${encodeURIComponent(id ?? '')}`)}
+                        className="rounded-xl border border-border/60 bg-background/55 px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+                      >
+                        <span className="inline-flex items-center gap-2">
+                          <Wand2 size={14} />
+                          AI Improve
+                        </span>
+                      </button>
 
-                <button
-                  onClick={handlePinToggle}
-                  className={cn(
-                    'rounded-xl border border-border/60 px-3 py-2 text-sm transition-colors',
-                    isPinned
-                      ? 'bg-primary/12 text-primary hover:bg-primary/18'
-                      : 'bg-background/55 text-muted-foreground hover:bg-background hover:text-foreground',
+                      <button
+                        onClick={handlePinToggle}
+                        className={cn(
+                          'rounded-xl border border-border/60 px-3 py-2 text-sm transition-colors',
+                          isPinned
+                            ? 'bg-primary/12 text-primary hover:bg-primary/18'
+                            : 'bg-background/55 text-muted-foreground hover:bg-background hover:text-foreground',
+                        )}
+                        aria-label={isPinned ? 'Unpin article' : 'Pin article'}
+                      >
+                        <span className="inline-flex items-center gap-2">
+                          <Pin size={14} className={cn(isPinned && 'fill-current')} />
+                          {isPinned ? 'Pinned' : 'Pin'}
+                        </span>
+                      </button>
+
+                      {settings?.confluenceUrl ? (
+                        <a
+                          href={`${settings.confluenceUrl}/pages/viewpage.action?pageId=${encodeURIComponent(id ?? '')}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="rounded-xl border border-border/60 bg-background/55 px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+                        >
+                          <span className="inline-flex items-center gap-2">
+                            Confluence
+                            <ExternalLink size={14} />
+                          </span>
+                        </a>
+                      ) : null}
+
+                      {editing ? (
+                        <>
+                          <button
+                            onClick={handleCancelEditing}
+                            className="rounded-xl border border-border/60 bg-background/55 px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+                          >
+                            <span className="inline-flex items-center gap-2">
+                              <X size={14} />
+                              Cancel
+                            </span>
+                          </button>
+                          <button
+                            onClick={handleSave}
+                            disabled={updateMutation.isPending}
+                            className="rounded-xl bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            <span className="inline-flex items-center gap-2">
+                              <Save size={14} />
+                              {updateMutation.isPending ? 'Saving…' : 'Save'}
+                            </span>
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            onClick={handleStartEditing}
+                            className="rounded-xl border border-border/60 bg-background/55 px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            onClick={handleDelete}
+                            className="rounded-xl border border-destructive/30 bg-destructive/8 px-3 py-2 text-sm text-destructive transition-colors hover:bg-destructive/12"
+                          >
+                            <span className="inline-flex items-center gap-2">
+                              <Trash2 size={14} />
+                              Delete
+                            </span>
+                          </button>
+                        </>
+                      )}
+                    </m.div>
                   )}
-                  aria-label={isPinned ? 'Unpin article' : 'Pin article'}
-                >
-                  <span className="inline-flex items-center gap-2">
-                    <Pin size={14} className={cn(isPinned && 'fill-current')} />
-                    {isPinned ? 'Pinned' : 'Pin'}
-                  </span>
-                </button>
+                </AnimatePresence>
 
-                {settings?.confluenceUrl ? (
-                  <a
-                    href={`${settings.confluenceUrl}/pages/viewpage.action?pageId=${encodeURIComponent(id ?? '')}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="rounded-xl border border-border/60 bg-background/55 px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+                {!editing && (
+                  <button
+                    onClick={() => setHeaderCollapsed((v) => !v)}
+                    className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+                    aria-label={isHeaderCollapsed ? 'Expand article header' : 'Collapse article header'}
                   >
-                    <span className="inline-flex items-center gap-2">
-                      Confluence
-                      <ExternalLink size={14} />
-                    </span>
-                  </a>
-                ) : null}
-
-                {editing ? (
-                  <>
-                    <button
-                      onClick={handleCancelEditing}
-                      className="rounded-xl border border-border/60 bg-background/55 px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
-                    >
-                      <span className="inline-flex items-center gap-2">
-                        <X size={14} />
-                        Cancel
-                      </span>
-                    </button>
-                    <button
-                      onClick={handleSave}
-                      disabled={updateMutation.isPending}
-                      className="rounded-xl bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      <span className="inline-flex items-center gap-2">
-                        <Save size={14} />
-                        {updateMutation.isPending ? 'Saving…' : 'Save'}
-                      </span>
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <button
-                      onClick={handleStartEditing}
-                      className="rounded-xl border border-border/60 bg-background/55 px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
-                    >
-                      Edit
-                    </button>
-                    <button
-                      onClick={handleDelete}
-                      className="rounded-xl border border-destructive/30 bg-destructive/8 px-3 py-2 text-sm text-destructive transition-colors hover:bg-destructive/12"
-                    >
-                      <span className="inline-flex items-center gap-2">
-                        <Trash2 size={14} />
-                        Delete
-                      </span>
-                    </button>
-                  </>
+                    {isHeaderCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+                  </button>
                 )}
               </div>
             </div>
 
-            {page.labels.length > 0 ? (
-              <div className="flex flex-wrap gap-2">
-                {page.labels.map((label) => (
-                  <span
-                    key={label}
-                    className="rounded-full border border-border/60 bg-background/45 px-3 py-1 text-xs font-medium text-muted-foreground"
-                  >
-                    {label}
-                  </span>
-                ))}
-              </div>
-            ) : null}
-
+            <AnimatePresence initial={false}>
+              {!isHeaderCollapsed && page.labels.length > 0 && (
+                <m.div
+                  key="header-labels"
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  transition={{ duration: 0.18 }}
+                  className="overflow-hidden"
+                >
+                  <div className="flex flex-wrap gap-2">
+                    {page.labels.map((label) => (
+                      <span
+                        key={label}
+                        className="rounded-full border border-border/60 bg-background/45 px-3 py-1 text-xs font-medium text-muted-foreground"
+                      >
+                        {label}
+                      </span>
+                    ))}
+                  </div>
+                </m.div>
+              )}
+            </AnimatePresence>
           </div>
         </div>
       </section>
