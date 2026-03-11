@@ -224,12 +224,14 @@ export function AiProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    if (messages.length === 0) return;
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
   // Scroll to bottom immediately when switching conversations so the latest
   // messages are visible right away (independent of the messages-change effect).
   useEffect(() => {
+    if (!conversationId) return;
     messagesEndRef.current?.scrollIntoView({ behavior: 'instant' });
   }, [conversationId]);
 

@@ -86,7 +86,7 @@ export function PageTransition({ children }: PageTransitionProps) {
           duration: reducedMotion ? 0.1 : DURATION,
           ease: [0.25, 0.1, 0.25, 1], // cubic-bezier for smooth deceleration
         }}
-        className="min-h-0 flex-1"
+        className="w-full"
         style={animating ? { willChange: 'opacity, transform' } : undefined}
         onAnimationStart={() => setAnimating(true)}
         onAnimationComplete={() => setAnimating(false)}
