@@ -62,9 +62,9 @@ describe('SidebarTreeView', () => {
     });
   });
 
-  it('renders the Page Tree header', () => {
+  it('renders the AI KB Creator title in sidebar header', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
-    expect(screen.getByText('Page Tree')).toBeInTheDocument();
+    expect(screen.getByText('AI KB Creator')).toBeInTheDocument();
   });
 
   it('renders root pages', () => {
@@ -95,7 +95,7 @@ describe('SidebarTreeView', () => {
   it('shows collapsed state when treeSidebarCollapsed is true', () => {
     useUiStore.setState({ treeSidebarCollapsed: true });
     render(<SidebarTreeView />, { wrapper: createWrapper() });
-    expect(screen.queryByText('Page Tree')).not.toBeInTheDocument();
+    expect(screen.queryByText('AI KB Creator')).not.toBeInTheDocument();
     expect(screen.getByLabelText('Expand tree sidebar')).toBeInTheDocument();
   });
 

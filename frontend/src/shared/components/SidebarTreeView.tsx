@@ -1,5 +1,5 @@
 import { memo, useState, useMemo, useCallback, useEffect, useRef } from 'react';
-import { useNavigate, useParams, useLocation } from 'react-router-dom';
+import { Link, useNavigate, useParams, useLocation } from 'react-router-dom';
 import {
   ChevronRight,
   ChevronDown,
@@ -270,14 +270,16 @@ export function SidebarTreeView() {
 
   if (treeSidebarCollapsed) {
     return (
-      <div className="flex w-10 flex-col items-center border-r border-border/50 bg-card/40 pt-2 backdrop-blur-sm">
-        <button
-          onClick={toggleTreeSidebar}
-          className="rounded-md p-1.5 text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
-          aria-label="Expand tree sidebar"
-        >
-          <PanelLeft size={16} />
-        </button>
+      <div className="flex w-10 flex-col items-center border-r border-border/50 bg-card/40 backdrop-blur-sm">
+        <div className="flex h-12 items-center justify-center border-b border-border/50 w-full">
+          <button
+            onClick={toggleTreeSidebar}
+            className="rounded-md p-1.5 text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+            aria-label="Expand tree sidebar"
+          >
+            <PanelLeft size={16} />
+          </button>
+        </div>
       </div>
     );
   }
@@ -293,11 +295,11 @@ export function SidebarTreeView() {
       )}
       style={{ width: `${treeSidebarWidth}px` }}
     >
-      {/* Header */}
-      <div className="flex h-10 items-center justify-between border-b border-border/50 px-3">
-        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-          Page Tree
-        </span>
+      {/* Sidebar title - aligns with top bar */}
+      <div className="flex h-12 shrink-0 items-center justify-between border-b border-border/50 px-3">
+        <Link to="/" className="flex items-center gap-2">
+          <span className="text-sm font-semibold text-foreground">AI KB Creator</span>
+        </Link>
         <button
           onClick={toggleTreeSidebar}
           className="rounded-md p-1 text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
