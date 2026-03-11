@@ -1714,6 +1714,22 @@ pre:hover .code-copy-btn {
   opacity: 0.9;
 }
 
+/* Failed image placeholder — replaces broken image icon with a styled box */
+.prose img.image-load-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 80px;
+  min-width: 120px;
+  border: 1px dashed var(--glass-border);
+  background: oklch(from var(--color-muted) l c h / 0.15);
+  border-radius: var(--radius-md);
+  padding: 1rem;
+  color: var(--color-muted-foreground);
+  font-size: 0.8125rem;
+  cursor: help;
+}
+
 .tiptap .panel-info,
 .tiptap .panel-warning,
 .tiptap .panel-note,
