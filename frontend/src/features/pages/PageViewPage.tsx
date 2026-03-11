@@ -278,14 +278,6 @@ export function PageViewPage() {
           <div className="relative flex flex-col gap-5">
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div className="min-w-0 space-y-3">
-                <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">
-                  <span className="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-background/55 px-3 py-1">
-                    {page.hasChildren ? <FolderOpen size={12} /> : <FileText size={12} />}
-                    {pageKindLabel}
-                  </span>
-                  <span>{page.spaceKey}</span>
-                </div>
-
                 {editing ? (
                   <input
                     value={editTitle}
@@ -293,12 +285,17 @@ export function PageViewPage() {
                     className="w-full rounded-2xl border border-border/60 bg-background/60 px-4 py-3 text-2xl font-semibold text-foreground outline-none ring-offset-0 transition-colors focus:border-primary"
                   />
                 ) : (
-                  <h1 className="text-balance text-3xl font-semibold tracking-tight text-foreground sm:text-4xl">
+                  <h1 className="text-balance text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
                     {page.title}
                   </h1>
                 )}
 
                 <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-background/55 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.24em]">
+                    {page.hasChildren ? <FolderOpen size={12} /> : <FileText size={12} />}
+                    {pageKindLabel}
+                  </span>
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.24em]">{page.spaceKey}</span>
                   {page.lastModifiedAt ? <FreshnessBadge lastModified={page.lastModifiedAt} /> : null}
                   <EmbeddingStatusBadge
                     embeddingStatus={page.embeddingStatus}
