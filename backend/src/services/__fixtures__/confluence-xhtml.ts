@@ -69,13 +69,6 @@ export const IMAGES_PAGE = `<h2>Screenshots</h2>
 <p>External diagram:</p>
 <ac:image><ri:url ri:value="https://example.com/diagram.svg" /></ac:image>`;
 
-/** Page with cross-page attachment images and rich link-body images */
-export const CROSS_PAGE_IMAGES_PAGE = `<h2>Shared Assets</h2>
-<p>Shared architecture image:</p>
-<ac:image><ri:attachment ri:filename="shared.png"><ri:page ri:content-title="Shared Assets" ri:space-key="ENG" /></ri:attachment></ac:image>
-<p>Linked image:</p>
-<ac:link><ri:page ri:content-title="Shared Assets" /><ac:link-body><ac:image><ri:attachment ri:filename="thumbnail.png" /></ac:image></ac:link-body></ac:link>`;
-
 /** Page with draw.io macros */
 export const DRAWIO_PAGE = `<h2>System Architecture</h2>
 <p>The following diagram shows the system topology:</p>

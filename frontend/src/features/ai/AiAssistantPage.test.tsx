@@ -97,7 +97,7 @@ describe('AiAssistantPage', () => {
   it('uses space-y-4 natural scroll layout without fixed height', () => {
     const { container } = render(<AiAssistantPage />, { wrapper: createWrapper() });
     const rootDiv = container.firstElementChild as HTMLElement;
-    expect(rootDiv.className).toContain('space-y-4');
+    expect(rootDiv.className).toContain('space-y-3');
     expect(rootDiv.className).not.toContain('h-full');
     expect(rootDiv.className).not.toContain('calc');
   });

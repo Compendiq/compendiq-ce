@@ -2,6 +2,7 @@ import { FastifyInstance, FastifyReply } from 'fastify';
 import { query } from '../db/postgres.js';
 import {
   getSystemPrompt, ChatMessage, SystemPromptKey,
+  listModels, checkHealth,
   isLlmVerifySslEnabled, getLlmAuthType,
   getActiveProviderType, getProvider,
 } from '../services/ollama-service.js';
@@ -748,8 +749,8 @@ export async function llmRoutes(fastify: FastifyInstance) {
     }
 
     // Fetch current page metadata from local cache
-    const existing = await query<{ version: number; title: string; space_key: string }>(
-      'SELECT version, title, space_key FROM cached_pages WHERE confluence_id = $1',
+    const existing = await query<{ version: number; title: string }>(
+      'SELECT version, title FROM cached_pages WHERE confluence_id = $1',
       [pageId],
     );
     if (existing.rows.length === 0) {
@@ -771,11 +772,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
     const page = await client.updatePage(pageId, pageTitle, storageBody, currentVersion);
 
     // Update local cache
-    const updatedBodyHtml = confluenceToHtml(
-      page.body?.storage?.value ?? storageBody,
-      pageId,
-      existing.rows[0]?.space_key,
-    );
+    const updatedBodyHtml = confluenceToHtml(page.body?.storage?.value ?? storageBody, pageId);
     const bodyText = htmlToText(updatedBodyHtml);
 
     await query(
@@ -954,6 +951,8 @@ export async function llmRoutes(fastify: FastifyInstance) {
           const storageXhtml = fullPage.body?.storage?.value ?? '';
 
           if (storageXhtml) {
+            const bodyHtml = confluenceToHtml(storageXhtml, page.id);
+
             // Try to get space_key and cached HTML from local DB first
             const cachedRow = await query<{ space_key: string; body_html: string }>(
               'SELECT space_key, body_html FROM cached_pages WHERE confluence_id = $1',
@@ -961,7 +960,6 @@ export async function llmRoutes(fastify: FastifyInstance) {
             );
 
             const resolvedSpaceKey = cachedRow.rows[0]?.space_key ?? '';
-            const bodyHtml = confluenceToHtml(storageXhtml, page.id, resolvedSpaceKey);
             const resolvedBodyHtml = cachedRow.rows[0]?.body_html ?? bodyHtml;
 
             await embedPage(userId, page.id, page.title, resolvedSpaceKey, resolvedBodyHtml);

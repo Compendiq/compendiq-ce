@@ -3,6 +3,8 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import {
   ChevronRight,
   ExternalLink,
+  FileText,
+  FolderOpen,
   ListTree,
   PanelRight,
   PanelRightClose,
@@ -10,6 +12,8 @@ import {
   Trash2,
   Wand2,
 } from 'lucide-react';
+import { FreshnessBadge } from './FreshnessBadge';
+import { EmbeddingStatusBadge } from './EmbeddingStatusBadge';
 import { m } from 'framer-motion';
 import { toast } from 'sonner';
 import { useUiStore } from '../../stores/ui-store';
@@ -371,7 +375,7 @@ export function ArticleRightPane() {
     >
       {/* Header */}
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-border/40 px-3">
-        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground/70">Article</span>
+        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground/70">Properties</span>
         <button
           onClick={toggleSidebar}
           className="rounded-md p-1 text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
@@ -427,6 +431,63 @@ export function ArticleRightPane() {
         </div>
       )}
 
+      {/* Properties section — mirrors Notion's properties panel */}
+      {page && !editing && (
+        <div className="border-b border-border/40 px-3 py-3">
+          <div className="space-y-1.5">
+            <div className="flex items-start justify-between gap-2">
+              <span className="shrink-0 text-xs text-muted-foreground/70">Space</span>
+              <span className="text-right text-xs text-foreground/80">{page.spaceKey}</span>
+            </div>
+            <div className="flex items-start justify-between gap-2">
+              <span className="shrink-0 text-xs text-muted-foreground/70">Type</span>
+              <span className="flex items-center gap-1 text-right text-xs text-foreground/80">
+                {page.hasChildren
+                  ? <><FolderOpen size={11} className="shrink-0 text-muted-foreground/60" /> Folder</>
+                  : <><FileText size={11} className="shrink-0 text-muted-foreground/60" /> Article</>}
+              </span>
+            </div>
+            {page.author && (
+              <div className="flex items-start justify-between gap-2">
+                <span className="shrink-0 text-xs text-muted-foreground/70">Author</span>
+                <span className="max-w-[110px] truncate text-right text-xs text-foreground/80">{page.author}</span>
+              </div>
+            )}
+            <div className="flex items-start justify-between gap-2">
+              <span className="shrink-0 text-xs text-muted-foreground/70">Version</span>
+              <span className="text-right text-xs text-foreground/80">v{page.version}</span>
+            </div>
+            {page.lastModifiedAt && (
+              <div className="flex items-start justify-between gap-2">
+                <span className="shrink-0 text-xs text-muted-foreground/70">Modified</span>
+                <FreshnessBadge lastModified={page.lastModifiedAt} />
+              </div>
+            )}
+            <div className="flex items-start justify-between gap-2">
+              <span className="shrink-0 text-xs text-muted-foreground/70">AI Index</span>
+              <EmbeddingStatusBadge
+                embeddingStatus={page.embeddingStatus}
+                embeddingDirty={page.embeddingDirty}
+                embeddedAt={page.embeddedAt}
+                embeddingError={page.embeddingError}
+              />
+            </div>
+          </div>
+          {page.labels.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1 pt-1">
+              {page.labels.map((label) => (
+                <span
+                  key={label}
+                  className="rounded border border-border/40 bg-foreground/5 px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                >
+                  {label}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Outline header + progress */}
       {headings.length > 0 && (
         <div className="border-b border-border/40 px-3 py-2">
@@ -470,15 +531,6 @@ export function ArticleRightPane() {
           </div>
         )}
       </div>
-
-      {/* Footer */}
-      {page && (
-        <div className="border-t border-border/40 px-3 py-1.5">
-          <span className="text-[10px] text-muted-foreground truncate block">
-            v{page.version} &middot; {page.spaceKey}
-          </span>
-        </div>
-      )}
 
       {/* Resize handle */}
       <div

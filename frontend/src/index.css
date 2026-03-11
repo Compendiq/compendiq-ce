@@ -19,6 +19,51 @@ html {
   font-size: 15px;
 }
 
+/* Premium typography rendering (Obsidian / Notion pattern) */
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "liga" 1, "kern" 1;
+}
+
+/* Thin minimal scrollbars — 5 px, translucent (Obsidian-like) */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: oklch(1 0 0 / 0.12) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: oklch(1 0 0 / 0.12);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: oklch(1 0 0 / 0.22);
+}
+
+/* Light-theme scrollbar override */
+[data-theme-type="light"] * {
+  scrollbar-color: oklch(0 0 0 / 0.15) transparent;
+}
+
+[data-theme-type="light"] ::-webkit-scrollbar-thumb {
+  background: oklch(0 0 0 / 0.15);
+}
+
+[data-theme-type="light"] ::-webkit-scrollbar-thumb:hover {
+  background: oklch(0 0 0 / 0.25);
+}
+
 @theme {
   /* Default theme: Midnight Blue */
   --color-background: oklch(0.145 0.015 285);

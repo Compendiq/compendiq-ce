@@ -1,157 +1,127 @@
-# Confluence article images are not fully mirrored into the app
+# Images and draw.io diagrams not displayed — broken image placeholders
 
-## Summary
+## Bug Description
 
-Inline images are only partially supported today.
+All images and draw.io diagrams from Confluence appear as broken image placeholders in the page viewer. No inline images load at all.
 
-The app already handles one narrow case correctly:
-- images attached to the same Confluence page
-- stored locally under `ATTACHMENTS_DIR`
-- served through `GET /api/attachments/:pageId/:filename`
+## Root Cause Analysis
 
-But the real product requirement is broader:
-- same-page Confluence attachment images must sync and render
-- cross-page Confluence attachment images must sync and render
-- external URL images must be mirrored into app-owned storage and rendered from there
+After a deep investigation of the full image pipeline (sync → storage → content conversion → API proxy → frontend rendering), **multiple issues** contribute to this problem. Some are confirmed code bugs, others are architectural gaps that cause silent failures.
 
-We should keep the current filesystem-plus-volume storage model for now. This issue is not blocked on S3/MinIO.
+---
 
-## Current State
+### Bug 1: Draw.io XML-only fallback creates a filename mismatch (Confirmed)
 
-The current pipeline already exists:
-- sync fetches page XHTML, converts it to HTML, and downloads page-local attachments
-- attachments are cached on disk
-- the backend serves attachment files through an authenticated route
-- the frontend rewrites protected attachment URLs to authenticated blob URLs before rendering
+**Files:** `backend/src/services/content-converter.ts:169`, `backend/src/services/attachment-handler.ts:166-173`
 
-Relevant code:
-- [sync-service.ts](/home/simon/Documents/ai-kb-creator/backend/src/services/sync-service.ts#L217)
-- [attachment-handler.ts](/home/simon/Documents/ai-kb-creator/backend/src/services/attachment-handler.ts#L237)
-- [attachments.ts](/home/simon/Documents/ai-kb-creator/backend/src/routes/attachments.ts#L9)
-- [ArticleViewer.tsx](/home/simon/Documents/ai-kb-creator/frontend/src/shared/components/ArticleViewer.tsx#L211)
+The content converter **always** generates a `.png` URL for draw.io diagrams:
+```typescript
+// content-converter.ts:169
+img.src = `/api/attachments/${pageId}/${encodeURIComponent(diagramName)}.png`;
+```
 
-## Confirmed Gaps
+But when no PNG export exists in Confluence, the sync handler falls back to the XML file or bare name and caches under the **actual** attachment title:
+```typescript
+// attachment-handler.ts:171-172
+attachment = xmlAttachment;
+cacheAs = xmlAttachment.title;  // e.g. "diagram.xml" or "diagram"
+```
 
-### 1. Cross-page attachment images resolve to the wrong page
+**Result:** The HTML references `/api/attachments/{pageId}/diagram.png` but the cached file is `diagram.xml` → local cache miss. The on-demand fallback (`fetchAndCacheAttachment`) also fails because it searches by `title === "diagram.png"` which doesn't match `"diagram.xml"`.
 
-The XHTML-to-HTML converter rewrites any attachment-backed image to the current page ID:
+**Fix:** Either:
+- (a) In the content converter, detect available format and use the correct extension, OR
+- (b) In the attachment handler, always cache draw.io fallbacks as `{name}.png` (rename on save), OR
+- (c) In `fetchAndCacheAttachment`, try multiple filename patterns for draw.io attachments (`.png`, `.xml`, bare name)
 
-- [content-converter.ts](/home/simon/Documents/ai-kb-creator/backend/src/services/content-converter.ts#L142)
+---
 
-That works only when the image attachment belongs to the page being synced. Confluence storage format also supports attachment references owned by another page. In those cases:
-- the generated `/api/attachments/{pageId}/{filename}` URL points at the wrong page
-- sync looks only at the current page’s attachments
-- on-demand cache miss fetches also look only at the current page’s attachments
+### Bug 2: Image sync regex is fragile with attribute ordering (Potential)
 
-Related code:
-- [attachment-handler.ts](/home/simon/Documents/ai-kb-creator/backend/src/services/attachment-handler.ts#L257)
-- [attachment-handler.ts](/home/simon/Documents/ai-kb-creator/backend/src/services/attachment-handler.ts#L312)
+**File:** `backend/src/services/attachment-handler.ts:224`
 
-### 2. External URL images are not mirrored into local storage
+```typescript
+const imagePattern = /<ac:image[^>]*>[\s\S]*?<ri:attachment\s+ri:filename="([^"]+)"[\s\S]*?<\/ac:image>/g;
+```
 
-For `ri:url` images, the converter currently keeps the remote URL directly:
+This regex requires `ri:filename` to be the **first attribute** on `<ri:attachment>`. Confluence XHTML can include other attributes like `ri:version-at-save` before `ri:filename`:
+```xml
+<ri:attachment ri:version-at-save="1" ri:filename="image.png" />
+```
 
-- [content-converter.ts](/home/simon/Documents/ai-kb-creator/backend/src/services/content-converter.ts#L150)
+This would NOT be matched by the regex. The content converter (JSDOM-based) handles any attribute order correctly, so the HTML will reference the image, but the sync will miss downloading it.
 
-That means:
-- sync does not download the image
-- rendering still depends on the external host at view time
-- the image is not stored in the app
-- the app cannot guarantee availability or retention of the asset
+**Mitigated by** the on-demand fallback, but adds latency and relies on Confluence being reachable at view time.
 
-This is a direct mismatch with the desired behavior.
+**Fix:** Use JSDOM instead of regex (like `extractDrawioDiagramNames` already does), or make the regex more flexible: `<ri:attachment[^>]+ri:filename="([^"]+)"`.
 
-### 3. Images inside rich link bodies can be dropped during conversion
+---
 
-`ac:link` conversion currently flattens the link body to text content:
+### Bug 3: Sync skips attachment retries for unchanged pages (Architectural)
 
-- [content-converter.ts](/home/simon/Documents/ai-kb-creator/backend/src/services/content-converter.ts#L117)
-- [content-converter.ts](/home/simon/Documents/ai-kb-creator/backend/src/services/content-converter.ts#L123)
+**File:** `backend/src/services/sync-service.ts:189-191`
 
-If a Confluence page stores an image inside `ac:link-body`, the image markup is lost before rendering. This is separate from attachment syncing and needs to be fixed in the converter.
+```typescript
+if (existing.rows.length > 0 && existing.rows[0].version >= page.version.number) {
+  return;  // Skip — page hasn't changed
+}
+```
 
-### 4. External image mirroring must respect SSRF protections
+If the initial sync caches a page successfully but **fails to download some/all attachments** (caught per-attachment at `attachment-handler.ts:194,264`), subsequent syncs will see the same page version and **skip attachment downloads entirely**. Attachments that failed on first sync are never retried — they can only be fetched via the on-demand fallback.
 
-If we mirror external URL images, downloads must go through the existing SSRF guard:
+**Impact:** If there was a transient Confluence error during the first sync (timeout, rate limit, network blip), all images for those pages remain broken until the page is edited in Confluence (bumping the version number) or the `cached_pages` row is manually deleted.
 
-- [ssrf-guard.ts](/home/simon/Documents/ai-kb-creator/backend/src/utils/ssrf-guard.ts#L53)
+**Fix:** Track attachment sync status (e.g., a flag or count in `cached_pages`, or check filesystem for expected files) and retry attachment downloads even when page version hasn't changed.
 
-This is required so the backend does not become a general-purpose fetch proxy for internal/private network targets.
+---
 
-## Things That Are Already Fixed
+### Bug 4: No attachment metadata tracking in the database (Architectural)
 
-The previous version of this issue was stale in several places.
+Attachments are stored only on the filesystem (`data/attachments/{pageId}/`) with no database table tracking what was downloaded, what failed, or what's expected. This means:
+- No way to query "which pages have missing attachments?"
+- No retry queue for failed downloads
+- If the `data/attachments/` directory is lost, there's no record of what needs re-downloading
+- The sync service has no way to know if it should re-attempt attachment downloads without re-fetching the page from Confluence
 
-These are not current blockers:
-- draw.io XML/bare-name fallback mismatch: current code already caches fallback draw.io sources as `{name}.png`
-  - [attachment-handler.ts](/home/simon/Documents/ai-kb-creator/backend/src/services/attachment-handler.ts#L166)
-- image filename parsing via fragile regex: current code already uses JSDOM-based parsing
-  - [attachment-handler.ts](/home/simon/Documents/ai-kb-creator/backend/src/services/attachment-handler.ts#L211)
-- missing attachment retry for unchanged pages: current sync already retries missing attachments
-  - [sync-service.ts](/home/simon/Documents/ai-kb-creator/backend/src/services/sync-service.ts#L196)
-  - [sync-service.ts](/home/simon/Documents/ai-kb-creator/backend/src/services/sync-service.ts#L261)
-- frontend leaves unauthenticated image URLs in place: current viewer removes `src` first and applies an error state on failure
-  - [ArticleViewer.tsx](/home/simon/Documents/ai-kb-creator/frontend/src/shared/components/ArticleViewer.tsx#L229)
+---
 
-## Storage Decision
+### Bug 5: Silent failure chain — no error surfaces to the user (UX)
 
-Do not introduce S3/MinIO as part of this fix.
+The entire image loading chain swallows errors silently:
 
-Rationale:
-- the repo already persists attachment storage locally
-- production already mounts a persistent Docker volume
-- a single backend instance does not need object storage to solve this problem
+1. **Sync**: `attachment-handler.ts:194,264` — catches download errors, logs them, continues
+2. **On-demand route**: `routes/attachments.ts:32-36` — catches fetch errors, returns 500 or 404
+3. **Frontend**: `use-authenticated-src.ts:129,133` — `fetchAuthenticatedBlob` returns `null` on any error
+4. **ArticleViewer**: `ArticleViewer.tsx:234-236` — if `blobUrl` is null, the original unauthenticated `/api/attachments/` URL stays → browser gets 401 → broken image icon
 
-Relevant code and config:
-- [attachment-handler.ts](/home/simon/Documents/ai-kb-creator/backend/src/services/attachment-handler.ts#L7)
-- [docker-compose.yml](/home/simon/Documents/ai-kb-creator/docker/docker-compose.yml#L36)
-- [ARCHITECTURE-DECISIONS.md](/home/simon/Documents/ai-kb-creator/docs/ARCHITECTURE-DECISIONS.md#L938)
+**The user never sees any error message or indication of WHY images are broken.** No toast, no console warning, no "click to retry" on the image.
 
-S3-compatible storage should only be considered later if we need:
-- multiple backend replicas sharing the same binary asset store
-- ephemeral compute nodes without stable local disk
-- storage separation beyond a Docker volume
+---
 
-## Proposed Implementation
+## Steps to Reproduce
 
-1. Extend XHTML parsing so image references capture enough metadata to identify:
-- same-page attachments
-- cross-page attachments
-- external URL images
+1. Sync a Confluence space that contains pages with embedded images and/or draw.io diagrams
+2. Navigate to any synced page in the app
+3. Observe: all images show as broken image placeholders
+4. Check browser DevTools Network tab: image requests to `/api/attachments/...` return 401 (unauthenticated direct load) or 404/500 (authenticated fetch failure)
 
-2. Change sync so it downloads and stores all article images, not only same-page attachments:
-- resolve the true owner page for attachment-backed images
-- download cross-page attachment images from the correct Confluence page
-- download external URL images into app storage, subject to SSRF validation
+## Expected Behavior
 
-3. Rewrite converted HTML so all mirrored images point to app-owned URLs:
-- same-page images -> local attachment route
-- cross-page images -> local attachment route keyed by the stored asset location
-- external URL images -> local attachment route keyed by stored asset location
+- All inline images from Confluence should display correctly
+- Draw.io diagrams should render as their PNG preview (or show a meaningful placeholder with "View in Confluence" link)
+- Failed image loads should show a clear error state (not a raw broken image icon)
+- Sync should retry failed attachment downloads
 
-4. Preserve rich link-body markup instead of flattening it to plain text.
+## Environment
 
-5. Add test coverage for:
-- same-page attachment images
-- cross-page attachment images
-- external URL image mirroring
-- linked-image bodies
-- blocked external URLs via SSRF rules
+- Confluence Data Center 9.2.15
+- Backend: Fastify 5 + Node.js
+- Frontend: React 19 + TipTap v3
 
-## Acceptance Criteria
+## Suggested Fix Priority
 
-- A synced Confluence page with same-page attachment images renders those images from app-owned storage.
-- A synced Confluence page referencing an image attachment from another Confluence page renders that image from app-owned storage.
-- A synced Confluence page using `ri:url` images downloads and stores those images locally, then renders them from app-owned storage.
-- Images remain available after backend restart when the Docker volume is preserved.
-- External image mirroring is blocked for disallowed internal/private targets.
-- Images embedded inside rich Confluence link bodies are preserved and rendered.
-
-## Sources
-
-- Atlassian Confluence Storage Format:
-  https://confluence.atlassian.com/doc/confluence-storage-format-790796544.html
-- Docker volume persistence docs:
-  https://docs.docker.com/get-started/docker-concepts/running-containers/persisting-container-data/
-- MinIO quickstart, for future object-storage consideration only:
-  https://github.com/minio/minio/blob/master/README.md?plain=1#L14#minio-quickstart-guide
+1. **Bug 1** (draw.io filename mismatch) — High, confirmed code bug
+2. **Bug 5** (silent failure chain) — High, blocks debugging
+3. **Bug 2** (regex fragility) — Medium, switch to JSDOM
+4. **Bug 3** (no retry on unchanged pages) — Medium, architectural improvement
+5. **Bug 4** (no DB tracking) — Low, longer-term improvement

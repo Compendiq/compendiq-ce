@@ -340,13 +340,6 @@ export class ConfluenceClient {
     );
   }
 
-  async findPageByTitle(spaceKey: string | null | undefined, title: string): Promise<ConfluencePage | null> {
-    const escapedTitle = title.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-    const cql = `${spaceKey ? `space="${spaceKey}" AND ` : ''}type=page AND title="${escapedTitle}"`;
-    const response = await this.searchPages(cql, 0, 1);
-    return response.results[0] ?? null;
-  }
-
   async getModifiedPages(since: Date, spaceKey: string): Promise<ConfluencePage[]> {
     const dateStr = since.toISOString().split('T')[0];
     const cql = `space="${spaceKey}" AND type=page AND lastmodified>="${dateStr}" ORDER BY lastmodified DESC`;

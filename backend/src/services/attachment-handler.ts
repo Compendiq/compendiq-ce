@@ -1,16 +1,8 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { JSDOM } from 'jsdom';
-import { request } from 'undici';
 import { ConfluenceClient, ConfluenceAttachment } from './confluence-client.js';
 import { logger } from '../utils/logger.js';
-import { validateUrl } from '../utils/ssrf-guard.js';
-import {
-  extractImageReferences,
-  SUPPORTED_IMAGE_EXTENSIONS,
-  type AttachmentImageSource,
-  type ImageReference,
-} from './image-references.js';
 
 const ATTACHMENTS_BASE = process.env.ATTACHMENTS_DIR ?? 'data/attachments';
 
@@ -214,20 +206,26 @@ export async function syncDrawioAttachments(
   return cachedFiles;
 }
 
-interface ExternalImageDownloadResult {
-  data: Buffer;
-  contentType: string | null;
-}
+const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp']);
 
 /**
  * Parse image attachment filenames from Confluence XHTML storage format using JSDOM.
  * Handles arbitrary attribute ordering reliably, unlike regex approaches.
  */
 export function extractImageFilenames(bodyStorage: string): string[] {
-  return extractImageReferences(bodyStorage)
-    .filter((ref): ref is ImageReference & { source: AttachmentImageSource } => ref.source.kind === 'attachment')
-    .map((ref) => ref.source.attachmentFilename)
-    .filter((filename) => SUPPORTED_IMAGE_EXTENSIONS.has(path.extname(filename).toLowerCase()));
+  const dom = new JSDOM(`<body>${bodyStorage}</body>`, { contentType: 'text/html' });
+  const doc = dom.window.document;
+  const filenames: string[] = [];
+
+  for (const image of [...doc.getElementsByTagName('ac:image')]) {
+    const attachRef = [...image.getElementsByTagName('ri:attachment')][0];
+    if (attachRef) {
+      const filename = attachRef.getAttribute('ri:filename');
+      if (filename) filenames.push(filename);
+    }
+  }
+
+  return filenames;
 }
 
 /**
@@ -242,167 +240,55 @@ export async function syncImageAttachments(
   pageId: string,
   bodyStorage: string,
   attachments: ConfluenceAttachment[],
-  currentSpaceKey?: string,
 ): Promise<string[]> {
-  const refs = extractImageReferences(bodyStorage, currentSpaceKey);
-  if (refs.length === 0) return [];
+  const filenames = extractImageFilenames(bodyStorage);
+
+  if (filenames.length === 0) return [];
 
   const cachedFiles: string[] = [];
   let skipped = 0;
   let downloaded = 0;
-  const pageIdCache = new Map<string, string | null>();
-  const attachmentsCache = new Map<string, ConfluenceAttachment[]>([[pageId, attachments]]);
 
-  for (const ref of refs) {
-    try {
-      const filePath = attachmentPath(userId, pageId, ref.localFilename);
+  for (const filename of filenames) {
+    // Only sync known image types
+    const ext = path.extname(filename).toLowerCase();
+    if (!IMAGE_EXTENSIONS.has(ext)) continue;
 
+    // Case-insensitive match: Confluence may return titles with different casing
+    const filenameLower = filename.toLowerCase();
+    const attachment = attachments.find((a) => a.title === filename)
+      ?? attachments.find((a) => a.title.toLowerCase() === filenameLower);
+
+    if (attachment?._links?.download) {
       try {
-        await fs.access(filePath);
-        cachedFiles.push(ref.localFilename);
-        skipped++;
-        continue;
-      } catch {
-        // File does not exist — proceed with download
-      }
+        const filePath = attachmentPath(userId, pageId, filename);
 
-      if (ref.source.kind === 'attachment') {
-        const ext = path.extname(ref.source.attachmentFilename).toLowerCase();
-        if (!SUPPORTED_IMAGE_EXTENSIONS.has(ext)) continue;
-
-        const sourcePageId = await resolveAttachmentSourcePageId(
-          client,
-          pageIdCache,
-          pageId,
-          ref.source,
-        );
-        if (!sourcePageId) continue;
-
-        const sourceAttachments = await getAttachmentsForPage(
-          client,
-          attachmentsCache,
-          sourcePageId,
-        );
-
-        const attachment = findAttachmentByFilename(sourceAttachments, ref.source.attachmentFilename);
-        if (!attachment?._links?.download) continue;
+        // Skip download if already cached (idempotent)
+        try {
+          await fs.access(filePath);
+          cachedFiles.push(filename);
+          skipped++;
+          continue;
+        } catch {
+          // File does not exist — proceed with download
+        }
 
         const fileSize = attachment.extensions?.fileSize;
-        await cacheAttachment(client, userId, pageId, attachment._links.download, ref.localFilename, fileSize);
-      } else {
-        await cacheExternalImage(userId, pageId, ref.localFilename, ref.source.url);
+        await cacheAttachment(client, userId, pageId, attachment._links.download, filename, fileSize);
+        cachedFiles.push(filename);
+        downloaded++;
+      } catch (err) {
+        logger.error({ err, pageId, filename }, 'Failed to cache image attachment');
       }
-
-      cachedFiles.push(ref.localFilename);
-      downloaded++;
-    } catch (err) {
-      logger.error(
-        { err, pageId, localFilename: ref.localFilename },
-        'Failed to cache page image',
-      );
     }
   }
 
   logger.debug(
-    { pageId, found: refs.length, skipped, downloaded },
+    { pageId, found: filenames.length, skipped, downloaded },
     'syncImageAttachments complete',
   );
 
   return cachedFiles;
-}
-
-function findAttachmentByFilename(
-  attachments: ConfluenceAttachment[],
-  filename: string,
-): ConfluenceAttachment | undefined {
-  const filenameLower = filename.toLowerCase();
-  return attachments.find((a) => a.title === filename)
-    ?? attachments.find((a) => a.title.toLowerCase() === filenameLower);
-}
-
-async function resolveAttachmentSourcePageId(
-  client: ConfluenceClient,
-  pageIdCache: Map<string, string | null>,
-  currentPageId: string,
-  source: AttachmentImageSource,
-): Promise<string | null> {
-  if (!source.sourcePageTitle) {
-    return currentPageId;
-  }
-
-  const cacheKey = `${source.sourceSpaceKey ?? ''}:${source.sourcePageTitle}`;
-  if (pageIdCache.has(cacheKey)) {
-    return pageIdCache.get(cacheKey) ?? null;
-  }
-
-  const page = await client.findPageByTitle(source.sourceSpaceKey, source.sourcePageTitle);
-  const resolvedPageId = page?.id ?? null;
-  pageIdCache.set(cacheKey, resolvedPageId);
-  return resolvedPageId;
-}
-
-async function getAttachmentsForPage(
-  client: ConfluenceClient,
-  attachmentsCache: Map<string, ConfluenceAttachment[]>,
-  pageId: string,
-): Promise<ConfluenceAttachment[]> {
-  const cached = attachmentsCache.get(pageId);
-  if (cached) return cached;
-
-  const { results } = await client.getPageAttachments(pageId);
-  attachmentsCache.set(pageId, results);
-  return results;
-}
-
-async function cacheExternalImage(
-  userId: string,
-  pageId: string,
-  filename: string,
-  url: string,
-): Promise<string> {
-  const dir = attachmentDir(userId, pageId);
-  await fs.mkdir(dir, { recursive: true });
-
-  const filePath = attachmentPath(userId, pageId, filename);
-  const { data } = await downloadExternalImage(url);
-  await fs.writeFile(filePath, data);
-  return filePath;
-}
-
-async function downloadExternalImage(url: string): Promise<ExternalImageDownloadResult> {
-  validateUrl(url);
-
-  const { statusCode, headers, body } = await request(url, {
-    signal: AbortSignal.timeout(60_000),
-  });
-
-  if (statusCode !== 200) {
-    throw new Error(`Failed to download external image: HTTP ${statusCode}`);
-  }
-
-  const contentTypeHeader = headers['content-type'];
-  const contentType = typeof contentTypeHeader === 'string'
-    ? contentTypeHeader.split(';')[0].trim().toLowerCase()
-    : null;
-  if (contentType && !contentType.startsWith('image/')) {
-    throw new Error(`External URL did not return an image: ${contentType}`);
-  }
-
-  const chunks: Buffer[] = [];
-  let totalBytes = 0;
-  for await (const chunk of body) {
-    const buffer = Buffer.from(chunk);
-    totalBytes += buffer.length;
-    if (totalBytes > MAX_ATTACHMENT_BYTES) {
-      throw new Error(`External image too large: exceeded ${MAX_ATTACHMENT_BYTES} bytes`);
-    }
-    chunks.push(buffer);
-  }
-
-  return {
-    data: Buffer.concat(chunks),
-    contentType,
-  };
 }
 
 /**
@@ -425,7 +311,10 @@ export async function fetchAndCacheAttachment(
 
   // Fetch the page's attachment list from Confluence
   const { results: attachments } = await client.getPageAttachments(pageId);
-  let attachment = findAttachmentByFilename(attachments, safe);
+  const safeLower = safe.toLowerCase();
+  // Case-insensitive match: Confluence may return titles with different casing
+  let attachment = attachments.find((a) => a.title === safe)
+    ?? attachments.find((a) => a.title.toLowerCase() === safeLower);
 
   // Draw.io fallback: the content converter generates {name}.png URLs, but
   // the Confluence attachment may be stored as {name}.xml or just {name}.
@@ -469,59 +358,6 @@ export async function fetchAndCacheAttachment(
   return data;
 }
 
-export async function fetchAndCachePageImage(
-  client: ConfluenceClient,
-  userId: string,
-  pageId: string,
-  localFilename: string,
-  bodyStorage: string,
-  currentSpaceKey?: string,
-): Promise<Buffer | null> {
-  const safe = path.basename(localFilename);
-  const refs = extractImageReferences(bodyStorage, currentSpaceKey);
-  const ref = refs.find((candidate) => candidate.localFilename === safe);
-  if (!ref) {
-    return fetchAndCacheAttachment(client, userId, pageId, safe);
-  }
-
-  if (ref.source.kind === 'external-url') {
-    const filePath = await cacheExternalImage(userId, pageId, safe, ref.source.url);
-    return fs.readFile(filePath);
-  }
-
-  const sourcePageId = await resolveAttachmentSourcePageId(
-    client,
-    new Map<string, string | null>(),
-    pageId,
-    ref.source,
-  );
-  if (!sourcePageId) {
-    return null;
-  }
-
-  const { results: attachments } = await client.getPageAttachments(sourcePageId);
-  let attachment = findAttachmentByFilename(attachments, ref.source.attachmentFilename);
-
-  if (!attachment && ref.source.attachmentFilename.endsWith('.png')) {
-    const baseName = ref.source.attachmentFilename.slice(0, -4);
-    const baseNameLower = baseName.toLowerCase();
-    attachment = attachments.find((a) => a.title === `${baseName}.xml` || a.title === baseName)
-      ?? attachments.find((a) => {
-        const titleLower = a.title.toLowerCase();
-        return titleLower === `${baseNameLower}.xml` || titleLower === baseNameLower;
-      });
-  }
-
-  if (!attachment?._links?.download) {
-    logger.debug({ userId, pageId, localFilename: safe }, 'Page image not found in Confluence');
-    return null;
-  }
-
-  const fileSize = attachment.extensions?.fileSize;
-  await cacheAttachment(client, userId, pageId, attachment._links.download, safe, fileSize);
-  return fs.readFile(attachmentPath(userId, pageId, safe));
-}
-
 /**
  * Check if local attachment cache exists for a page (has at least one file).
  * Used by sync-service to decide whether to retry attachment downloads
@@ -541,13 +377,9 @@ export async function hasLocalAttachments(userId: string, pageId: string): Promi
  * Get the list of expected attachment filenames for a page based on its XHTML body.
  * Combines image filenames and draw.io diagram PNG filenames.
  */
-export function getExpectedAttachmentFilenames(bodyStorage: string, currentSpaceKey?: string): string[] {
-  const imageFiles = extractImageReferences(bodyStorage, currentSpaceKey)
-    .filter((ref) => {
-      if (ref.source.kind === 'external-url') return true;
-      return SUPPORTED_IMAGE_EXTENSIONS.has(path.extname(ref.source.attachmentFilename).toLowerCase());
-    })
-    .map((ref) => ref.localFilename);
+export function getExpectedAttachmentFilenames(bodyStorage: string): string[] {
+  const imageFiles = extractImageFilenames(bodyStorage)
+    .filter((f) => IMAGE_EXTENSIONS.has(path.extname(f).toLowerCase()));
   const drawioFiles = extractDrawioDiagramNames(bodyStorage).map((name) => `${name}.png`);
   return [...imageFiles, ...drawioFiles];
 }
@@ -560,9 +392,8 @@ export async function getMissingAttachments(
   userId: string,
   pageId: string,
   bodyStorage: string,
-  currentSpaceKey?: string,
 ): Promise<string[]> {
-  const expected = getExpectedAttachmentFilenames(bodyStorage, currentSpaceKey);
+  const expected = getExpectedAttachmentFilenames(bodyStorage);
   if (expected.length === 0) return [];
 
   const missing: string[] = [];
@@ -590,6 +421,7 @@ export async function cleanPageAttachments(userId: string, pageId: string): Prom
  * Attachments are now stored in a shared directory, so this is a no-op.
  * Individual page attachments are cleaned via cleanPageAttachments when pages are deleted.
  */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 export async function cleanUserAttachments(_userId: string): Promise<void> {
   // No-op: attachments are now shared across users, keyed only by pageId.
   // Use cleanPageAttachments(userId, pageId) when a specific page is deleted.

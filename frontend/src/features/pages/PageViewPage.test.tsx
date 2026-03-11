@@ -162,15 +162,11 @@ describe('PageViewPage', () => {
     document.body.innerHTML = '';
   });
 
-  it('renders a folder article with content metadata and labels', () => {
+  it('renders the article title and space key in the breadcrumb', () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
 
-    expect(screen.getByText('Folder Article')).toBeInTheDocument();
     expect(screen.getByText('Engineering Handbook')).toBeInTheDocument();
     expect(screen.getByText('ENG')).toBeInTheDocument();
-    expect(screen.getByText('docs')).toBeInTheDocument();
-    expect(screen.getByText('platform')).toBeInTheDocument();
-    expect(screen.getByTestId('embedding-status-badge')).toHaveTextContent('embedded');
   });
 
   it('renders the Edit button in the header (action buttons moved to right pane)', () => {
@@ -209,80 +205,14 @@ describe('PageViewPage', () => {
     });
   });
 
-  it('renders the collapse toggle button on the right side of the header', () => {
+  it('shows save and cancel buttons in edit mode', () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
-
-    expect(screen.getByLabelText('Collapse article header')).toBeInTheDocument();
-  });
-
-  it('collapses the header when the toggle is clicked, hiding metadata', async () => {
-    render(<PageViewPage />, { wrapper: createWrapper() });
-
-    expect(screen.getByText('docs')).toBeInTheDocument();
-
-    fireEvent.click(screen.getByLabelText('Collapse article header'));
-
-    await waitFor(() => {
-      expect(screen.queryByText('docs')).not.toBeInTheDocument();
-    });
-
-    expect(screen.getByLabelText('Expand article header')).toBeInTheDocument();
-    expect(screen.getByText('Engineering Handbook')).toBeInTheDocument();
-  });
-
-  it('expands the header again when the toggle is clicked while collapsed', async () => {
-    render(<PageViewPage />, { wrapper: createWrapper() });
-
-    fireEvent.click(screen.getByLabelText('Collapse article header'));
-    await waitFor(() => expect(screen.queryByText('docs')).not.toBeInTheDocument());
-
-    fireEvent.click(screen.getByLabelText('Expand article header'));
-    expect(await screen.findByText('docs')).toBeInTheDocument();
-  });
-
-  it('persists collapsed state to localStorage', async () => {
-    render(<PageViewPage />, { wrapper: createWrapper() });
-
-    fireEvent.click(screen.getByLabelText('Collapse article header'));
-
-    await waitFor(() => {
-      expect(localStorage.getItem('article-header-collapsed')).toBe('true');
-    });
-
-    fireEvent.click(screen.getByLabelText('Expand article header'));
-
-    await waitFor(() => {
-      expect(localStorage.getItem('article-header-collapsed')).toBe('false');
-    });
-  });
-
-  it('restores collapsed state from localStorage on mount', async () => {
-    localStorage.setItem('article-header-collapsed', 'true');
-
-    render(<PageViewPage />, { wrapper: createWrapper() });
-
-    await waitFor(() => {
-      expect(screen.queryByText('Edit')).not.toBeInTheDocument();
-    });
-    expect(screen.getByLabelText('Expand article header')).toBeInTheDocument();
-  });
-
-  it('keeps header expanded and hides the toggle while in edit mode', async () => {
-    localStorage.setItem('article-header-collapsed', 'true');
-
-    render(<PageViewPage />, { wrapper: createWrapper() });
-
-    await waitFor(() => expect(screen.queryByText('Edit')).not.toBeInTheDocument());
-
-    fireEvent.click(screen.getByLabelText('Expand article header'));
-    await waitFor(() => expect(screen.getByText('Edit')).toBeInTheDocument());
 
     fireEvent.click(screen.getByText('Edit'));
 
-    expect(screen.queryByLabelText('Collapse article header')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Expand article header')).not.toBeInTheDocument();
     expect(screen.getByText('Save')).toBeInTheDocument();
     expect(screen.getByText('Cancel')).toBeInTheDocument();
+    expect(screen.queryByText('Edit')).not.toBeInTheDocument();
   });
 
   it('saves edited article content', async () => {

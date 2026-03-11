@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { m } from 'framer-motion';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import type { SettingsResponse, LlmProviderType, AdminSettings } from '@kb-creator/contracts';
@@ -45,20 +46,24 @@ export function SettingsPage() {
   const visibleTabs = tabs.filter((t) => !t.adminOnly || isAdmin);
 
   return (
-    <div>
-      <h1 className="mb-6 text-2xl font-bold">Settings</h1>
+    <m.div
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.18 }}
+    >
+      <h1 className="mb-6 text-2xl font-bold tracking-[-0.01em]">Settings</h1>
 
       <div className="glass-card">
-        {/* Tab bar */}
-        <div className="flex border-b border-border/50 overflow-x-auto">
+        {/* Tab bar — Obsidian style: no fill on inactive, inset bottom-border on active */}
+        <div className="flex overflow-x-auto border-b border-border/40">
           {visibleTabs.map((tab) => (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              className={`px-6 py-3 text-sm font-medium transition-colors whitespace-nowrap ${
+              className={`whitespace-nowrap px-5 py-2.5 text-sm transition-all duration-150 ${
                 activeTab === tab.id
-                  ? 'border-b-2 border-primary text-primary'
-                  : 'text-muted-foreground hover:text-foreground'
+                  ? 'text-foreground shadow-[inset_0_-2px_0_0_var(--color-primary)]'
+                  : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground/80'
               }`}
               data-testid={`tab-${tab.id}`}
             >
@@ -93,7 +98,7 @@ export function SettingsPage() {
           )}
         </div>
       </div>
-    </div>
+    </m.div>
   );
 }
 

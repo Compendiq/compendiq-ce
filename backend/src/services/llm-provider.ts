@@ -8,6 +8,7 @@
  */
 
 import { query } from '../db/postgres.js';
+import { logger } from '../utils/logger.js';
 import {
   streamChat as ollamaStreamChat,
   chat as ollamaChat,

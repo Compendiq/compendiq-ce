@@ -183,9 +183,6 @@ export function buildOllamaFetch(): typeof fetch | undefined {
       mergedInit.dispatcher = llmDispatcher;
     }
 
-    return undiciFetch(
-      input as unknown as Parameters<typeof undiciFetch>[0],
-      mergedInit as unknown as Parameters<typeof undiciFetch>[1],
-    ) as unknown as Promise<Response>;
+    return undiciFetch(input as any, mergedInit as any) as unknown as Promise<Response>;
   };
 }

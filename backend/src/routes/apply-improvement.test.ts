@@ -149,8 +149,8 @@ describe('POST /api/llm/improvements/apply', () => {
 
     // Default: page exists in DB with version 5
     mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('SELECT version, title, space_key FROM cached_pages')) {
-        return Promise.resolve({ rows: [{ version: 5, title: 'My Article', space_key: 'OPS' }] });
+      if (sql.includes('SELECT version, title FROM cached_pages')) {
+        return Promise.resolve({ rows: [{ version: 5, title: 'My Article' }] });
       }
       return Promise.resolve({ rows: [] });
     });
@@ -187,7 +187,7 @@ describe('POST /api/llm/improvements/apply', () => {
 
   it('returns 404 when page does not exist in local cache', async () => {
     mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('SELECT version, title, space_key FROM cached_pages')) {
+      if (sql.includes('SELECT version, title FROM cached_pages')) {
         return Promise.resolve({ rows: [] });
       }
       return Promise.resolve({ rows: [] });
@@ -207,8 +207,8 @@ describe('POST /api/llm/improvements/apply', () => {
 
   it('returns 409 on version conflict', async () => {
     mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('SELECT version, title, space_key FROM cached_pages')) {
-        return Promise.resolve({ rows: [{ version: 10, title: 'My Article', space_key: 'OPS' }] });
+      if (sql.includes('SELECT version, title FROM cached_pages')) {
+        return Promise.resolve({ rows: [{ version: 10, title: 'My Article' }] });
       }
       return Promise.resolve({ rows: [] });
     });
@@ -254,12 +254,6 @@ describe('POST /api/llm/improvements/apply', () => {
       'My Article',
       '<p class="confluence">Improved XHTML</p>',
       5,
-    );
-
-    expect(mockConfluenceToHtml).toHaveBeenCalledWith(
-      '<p class="confluence">Improved XHTML</p>',
-      'page-1',
-      'OPS',
     );
 
     // Local cache update (UPDATE cached_pages)

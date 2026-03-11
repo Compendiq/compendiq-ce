@@ -97,80 +97,88 @@ function AiAssistantInner() {
   const shouldReduceMotion = useReducedMotion();
 
   return (
-    <div className="space-y-4">
-      {/* Mode selector + Model */}
-      <div className="glass-toolbar flex flex-wrap items-center gap-3 p-3">
-          {MODE_BUTTONS.map(({ key, icon: Icon, label }) => (
-            <button
-              key={key}
-              onClick={() => setMode(key)}
-              className={cn(
-                'flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors',
-                mode === key ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-foreground/5',
-              )}
-            >
-              <Icon size={14} /> {label}
-            </button>
-          ))}
+    <m.div
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.18 }}
+      className="space-y-3"
+    >
+      {/* Mode selector — Obsidian-like: minimal, no heavy glass */}
+      <div className="flex flex-wrap items-center gap-1 rounded-xl border border-border/40 bg-card/50 px-3 py-2 backdrop-blur-sm">
+        {MODE_BUTTONS.map(({ key, icon: Icon, label }) => (
+          <button
+            key={key}
+            onClick={() => setMode(key)}
+            className={cn(
+              'flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs transition-colors',
+              mode === key
+                ? 'bg-primary/12 font-medium text-primary'
+                : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
+            )}
+          >
+            <Icon size={13} /> {label}
+          </button>
+        ))}
 
-          <div className="flex-1" />
+        <div className="flex-1" />
 
-          {models.length === 0 ? (
-            <span className="flex items-center gap-1.5 rounded-md bg-foreground/5 px-2 py-1 text-sm text-muted-foreground">
-              <Loader2 size={12} className="animate-spin" /> Loading models...
-            </span>
-          ) : (
-            <select
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              className="rounded-md bg-foreground/5 px-2 py-1 text-sm outline-none"
-            >
-              {models.map((m) => (
-                <option key={m.name} value={m.name}>{m.name}</option>
-              ))}
-            </select>
-          )}
+        {models.length === 0 ? (
+          <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Loader2 size={11} className="animate-spin" /> Loading models...
+          </span>
+        ) : (
+          <select
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            className="rounded bg-foreground/5 px-2 py-0.5 text-xs outline-none"
+          >
+            {models.map((m) => (
+              <option key={m.name} value={m.name}>{m.name}</option>
+            ))}
+          </select>
+        )}
 
-          {page && (
-            <span className="flex items-center gap-1 rounded bg-primary/10 px-2 py-0.5 text-xs text-primary">
-              <FileText size={12} /> {page.title}
-            </span>
-          )}
+        {page && (
+          <span className="flex items-center gap-1 rounded bg-foreground/5 px-2 py-0.5 text-[11px] text-muted-foreground">
+            <FileText size={11} /> {page.title}
+          </span>
+        )}
 
-          {page && pageHasChildren && (
-            <label
-              className={cn(
-                'flex cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs transition-colors',
-                includeSubPages ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-foreground/5',
-              )}
-              title="Include sub-pages in the AI context"
-            >
-              <input
-                type="checkbox"
-                checked={includeSubPages}
-                onChange={(e) => setIncludeSubPages(e.target.checked)}
-                className="sr-only"
-                aria-label="Include sub-pages"
-              />
-              <Network size={14} />
-              <span>+ Sub-pages</span>
-            </label>
-          )}
-        </div>
+        {page && pageHasChildren && (
+          <label
+            className={cn(
+              'flex cursor-pointer items-center gap-1 rounded-md px-2 py-0.5 text-xs transition-colors',
+              includeSubPages ? 'bg-primary/12 text-primary' : 'text-muted-foreground hover:bg-foreground/5',
+            )}
+            title="Include sub-pages in the AI context"
+          >
+            <input
+              type="checkbox"
+              checked={includeSubPages}
+              onChange={(e) => setIncludeSubPages(e.target.checked)}
+              className="sr-only"
+              aria-label="Include sub-pages"
+            />
+            <Network size={12} />
+            <span>+ Sub-pages</span>
+          </label>
+        )}
+      </div>
 
       {/* Mode-specific type selectors */}
       {mode === 'improve' && <ImproveTypeSelector />}
       {mode === 'diagram' && <DiagramTypeSelector />}
 
-      {/* Messages */}
-      <div className="glass-card p-4 space-y-4 min-h-48">
-        {messages.length === 0 && (
-          <div className="flex min-h-48 flex-col items-center justify-center text-center">
-            <Bot size={48} className="mb-4 text-muted-foreground" />
-            <p className="text-lg font-medium">{getEmptyTitle(mode)}</p>
-            <p className="text-sm text-muted-foreground">{getEmptySubtitle(mode, page)}</p>
-          </div>
-        )}
+      {/* Messages — clean document-like surface, no heavy glass */}
+      <div className="overflow-hidden rounded-xl border border-border/40 bg-card/40 backdrop-blur-sm">
+        <div className="min-h-[360px] space-y-4 p-5">
+          {messages.length === 0 && (
+            <div className="flex min-h-[300px] flex-col items-center justify-center text-center">
+              <Bot size={44} className="mb-4 text-muted-foreground/50" />
+              <p className="text-base font-medium">{getEmptyTitle(mode)}</p>
+              <p className="mt-1 max-w-sm text-sm text-muted-foreground">{getEmptySubtitle(mode, page)}</p>
+            </div>
+          )}
 
           {messages.map((msg, i) => {
             const isLastAssistant = msg.role === 'assistant' && i === messages.length - 1;
@@ -194,15 +202,15 @@ function AiAssistantInner() {
                 className={cn('flex gap-3', msg.role === 'user' && 'justify-end')}
               >
                 {msg.role === 'assistant' && (
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/20">
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/15">
                     <Bot size={16} className="text-primary" />
                   </div>
                 )}
                 <div
                   className={cn(
-                    'max-w-[80%] rounded-lg px-4 py-3 text-sm xl:max-w-2xl',
+                    'max-w-[80%] rounded-2xl px-4 py-3 text-sm xl:max-w-2xl',
                     msg.role === 'user'
-                      ? 'bg-primary/15 text-foreground'
+                      ? 'bg-primary/10 text-foreground'
                       : 'bg-foreground/5',
                   )}
                 >
@@ -234,8 +242,8 @@ function AiAssistantInner() {
                   )}
                 </div>
                 {msg.role === 'user' && (
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-secondary">
-                    <User size={16} />
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-foreground/8">
+                    <User size={16} className="text-muted-foreground" />
                   </div>
                 )}
               </m.div>
@@ -247,15 +255,16 @@ function AiAssistantInner() {
           {mode === 'improve' && <ImproveDiffView />}
           {mode === 'diagram' && <DiagramPreview />}
         </div>
+      </div>
 
-        {/* Mode-specific input bar */}
-        {mode === 'ask' && <AskModeInput />}
-        {mode === 'improve' && <ImproveModeInput />}
-        {mode === 'generate' && <GenerateModeInput />}
-        {mode === 'summarize' && <SummarizeModeInput />}
-        {mode === 'diagram' && <DiagramModeInput />}
-        {mode === 'quality' && <QualityModeInput />}
-    </div>
+      {/* Mode-specific input bar */}
+      {mode === 'ask' && <AskModeInput />}
+      {mode === 'improve' && <ImproveModeInput />}
+      {mode === 'generate' && <GenerateModeInput />}
+      {mode === 'summarize' && <SummarizeModeInput />}
+      {mode === 'diagram' && <DiagramModeInput />}
+      {mode === 'quality' && <QualityModeInput />}
+    </m.div>
   );
 }
 

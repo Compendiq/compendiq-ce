@@ -365,7 +365,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     const page = await client.createPage(body.spaceKey, body.title, storageBody, body.parentId);
 
     // Convert back to clean HTML for local cache
-    const bodyHtml = confluenceToHtml(page.body?.storage?.value ?? storageBody, page.id, body.spaceKey);
+    const bodyHtml = confluenceToHtml(page.body?.storage?.value ?? storageBody, page.id);
     const { htmlToText } = await import('../services/content-converter.js');
     const bodyText = htmlToText(bodyHtml);
 
@@ -403,8 +403,8 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     }
 
     // Version conflict check
-    const existing = await query<{ version: number; space_key: string }>(
-      'SELECT version, space_key FROM cached_pages WHERE confluence_id = $1',
+    const existing = await query<{ version: number }>(
+      'SELECT version FROM cached_pages WHERE confluence_id = $1',
       [id],
     );
     if (existing.rows.length > 0 && body.version !== undefined && body.version < existing.rows[0].version) {
@@ -417,11 +417,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     const page = await client.updatePage(id, body.title, storageBody, currentVersion);
 
     // Update local cache
-    const bodyHtml = confluenceToHtml(
-      page.body?.storage?.value ?? storageBody,
-      id,
-      existing.rows[0]?.space_key,
-    );
+    const bodyHtml = confluenceToHtml(page.body?.storage?.value ?? storageBody, id);
     const { htmlToText } = await import('../services/content-converter.js');
     const bodyText = htmlToText(bodyHtml);
 
@@ -482,8 +478,8 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     }
 
     // Batch verify access: pages in user's selected spaces
-    const existing = await query<{ confluence_id: string; space_key: string }>(
-      `SELECT cp.confluence_id, cp.space_key FROM cached_pages cp
+    const existing = await query<{ confluence_id: string }>(
+      `SELECT cp.confluence_id FROM cached_pages cp
        JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
        WHERE cp.confluence_id = ANY($2)`,
       [userId, ids],
@@ -541,14 +537,13 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     }
 
     // Batch verify access: pages in user's selected spaces
-    const existing = await query<{ confluence_id: string; space_key: string }>(
-      `SELECT cp.confluence_id, cp.space_key FROM cached_pages cp
+    const existing = await query<{ confluence_id: string }>(
+      `SELECT cp.confluence_id FROM cached_pages cp
        JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
        WHERE cp.confluence_id = ANY($2)`,
       [userId, ids],
     );
     const ownedIds = new Set(existing.rows.map((r) => r.confluence_id));
-    const spaceKeysById = new Map(existing.rows.map((r) => [r.confluence_id, r.space_key]));
     const notFoundIds = ids.filter((id) => !ownedIds.has(id));
     const errors: string[] = notFoundIds.map((id) => `Page ${id} not found`);
     let failed = notFoundIds.length;
@@ -562,11 +557,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       [...ownedIds].map((id) =>
         bulkLimit(async () => {
           const page = await client.getPage(id);
-          const bodyHtml = confluenceToHtml(
-            page.body?.storage?.value ?? '',
-            id,
-            spaceKeysById.get(id),
-          );
+          const bodyHtml = confluenceToHtml(page.body?.storage?.value ?? '', id);
           const bodyText = htmlToText(bodyHtml);
 
           await query(

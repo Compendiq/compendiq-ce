@@ -2,17 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, m } from 'framer-motion';
-import {
-  ChevronDown,
-  ChevronUp,
-  FileText,
-  FolderOpen,
-  Save,
-  User,
-  X,
-} from 'lucide-react';
+import { FileText, FolderOpen, X } from 'lucide-react';
 import { toast } from 'sonner';
-import { cn } from '../../shared/lib/cn';
 import {
   usePage,
   useUpdatePage,
@@ -20,8 +11,6 @@ import {
 import { useAuthenticatedSrc } from '../../shared/hooks/use-authenticated-src';
 import { useArticleViewStore } from '../../stores/article-view-store';
 import { FeatureErrorBoundary } from '../../shared/components/FeatureErrorBoundary';
-import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
-import { EmbeddingStatusBadge } from '../../shared/components/EmbeddingStatusBadge';
 import { Editor, clearDraft, getDraft } from '../../shared/components/Editor';
 import { ArticleViewer } from '../../shared/components/ArticleViewer';
 import type { TocHeading } from '../../shared/components/TableOfContents';
@@ -42,7 +31,6 @@ function ImageLightbox({
     const handleKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose();
     };
-
     document.addEventListener('keydown', handleKey);
     return () => document.removeEventListener('keydown', handleKey);
   }, [onClose]);
@@ -81,21 +69,11 @@ function ImageLightbox({
   );
 }
 
-function readHeaderCollapsedState() {
-  try {
-    return localStorage.getItem('article-header-collapsed') === 'true';
-  } catch {
-    return false;
-  }
-}
-
 function scrollArticleToTop() {
   const container = document.querySelector('[data-scroll-container]') as HTMLElement | null;
   if (!container) return;
-
   container.scrollTop = 0;
   container.scrollTo?.({ top: 0, left: 0, behavior: 'auto' });
-
   requestAnimationFrame(() => {
     container.scrollTop = 0;
     container.scrollTo?.({ top: 0, left: 0, behavior: 'auto' });
@@ -108,7 +86,6 @@ export function PageViewPage() {
   const queryClient = useQueryClient();
 
   const { data: page, isLoading } = usePage(id);
-
   const updateMutation = useUpdatePage();
 
   const contentRef = useRef<HTMLDivElement>(null);
@@ -122,7 +99,6 @@ export function PageViewPage() {
   const [editTitle, setEditTitle] = useState('');
   const [headings, setHeadings] = useState<TocHeading[]>([]);
   const [lightboxSrc, setLightboxSrc] = useState<{ alt: string; src: string } | null>(null);
-  const [headerCollapsed, setHeaderCollapsed] = useState(readHeaderCollapsedState);
 
   // Sync editing state to the shared store (consumed by ArticleRightPane)
   useEffect(() => {
@@ -141,14 +117,6 @@ export function PageViewPage() {
       useArticleViewStore.getState().setEditing(false);
     };
   }, []);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('article-header-collapsed', String(headerCollapsed));
-    } catch {
-      // Ignore storage write failures.
-    }
-  }, [headerCollapsed]);
 
   useLayoutEffect(() => {
     scrollArticleToTop();
@@ -169,7 +137,6 @@ export function PageViewPage() {
 
   const handleStartEditing = useCallback(() => {
     if (!page || !id) return;
-
     setEditTitle(page.title);
     const draft = getDraft(`page-${id}`);
     if (draft && draft !== page.bodyHtml) {
@@ -178,7 +145,6 @@ export function PageViewPage() {
     } else {
       setEditHtml(page.bodyHtml);
     }
-
     setEditing(true);
   }, [id, page]);
 
@@ -189,7 +155,6 @@ export function PageViewPage() {
 
   const handleSave = useCallback(async () => {
     if (!id || !page) return;
-
     try {
       await updateMutation.mutateAsync({
         id,
@@ -197,7 +162,6 @@ export function PageViewPage() {
         bodyHtml: editHtml,
         version: page.version,
       });
-
       if (draftKey) clearDraft(draftKey);
       setEditing(false);
       toast.success('Article saved.');
@@ -246,192 +210,93 @@ export function PageViewPage() {
     );
   }
 
-  const pageKindLabel = page.hasChildren ? 'Folder Article' : 'Article';
-  // Header stays expanded while editing so the title input and action buttons remain accessible.
-  const isHeaderCollapsed = headerCollapsed && !editing;
-
   return (
     <m.div
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.18 }}
-      className="space-y-5"
       data-testid="article-page"
     >
-      <section className="overflow-hidden glass-card-xl">
-        <div
-          className={cn(
-            'relative overflow-hidden px-5 sm:px-7',
-            isHeaderCollapsed ? 'py-3 sm:py-4' : 'py-6 sm:py-7',
-          )}
-        >
-          <div className="relative flex flex-col gap-5">
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div className="min-w-0 flex-1 space-y-3">
-                {editing ? (
-                  <input
-                    value={editTitle}
-                    onChange={(event) => setEditTitle(event.target.value)}
-                    className="w-full rounded-2xl border border-border/60 bg-background/60 px-4 py-3 text-2xl font-semibold text-foreground outline-none ring-offset-0 transition-colors focus:border-primary"
-                  />
-                ) : (
-                  <h1
-                    className={cn(
-                      'font-semibold tracking-tight text-foreground',
-                      isHeaderCollapsed
-                        ? 'truncate text-lg'
-                        : 'text-balance text-2xl sm:text-3xl',
-                    )}
-                  >
-                    {page.title}
-                  </h1>
-                )}
+      {/* Single unified document card */}
+      <div className="overflow-hidden glass-card-xl">
+        {/* Breadcrumb / action strip */}
+        <div className="flex items-center justify-between gap-4 border-b border-border/25 px-5 py-2 sm:px-7">
+          <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground/60">
+            {page.hasChildren
+              ? <FolderOpen size={12} className="shrink-0" />
+              : <FileText size={12} className="shrink-0" />}
+            <span className="truncate">{page.spaceKey}</span>
+          </span>
 
-                <AnimatePresence initial={false}>
-                  {!isHeaderCollapsed && (
-                    <m.div
-                      key="header-metadata"
-                      initial={{ opacity: 0, height: 0 }}
-                      animate={{ opacity: 1, height: 'auto' }}
-                      exit={{ opacity: 0, height: 0 }}
-                      transition={{ duration: 0.18 }}
-                      className="overflow-hidden"
-                    >
-                      <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-                        <span className="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-background/55 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.24em]">
-                          {page.hasChildren ? <FolderOpen size={12} /> : <FileText size={12} />}
-                          {pageKindLabel}
-                        </span>
-                        <span className="text-[11px] font-semibold uppercase tracking-[0.24em]">{page.spaceKey}</span>
-                        {page.lastModifiedAt ? <FreshnessBadge lastModified={page.lastModifiedAt} /> : null}
-                        <EmbeddingStatusBadge
-                          embeddingStatus={page.embeddingStatus}
-                          embeddingDirty={page.embeddingDirty}
-                          embeddedAt={page.embeddedAt}
-                          embeddingError={page.embeddingError}
-                        />
-                        {page.author ? (
-                          <span className="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-background/45 px-3 py-1">
-                            <User size={12} />
-                            {page.author}
-                          </span>
-                        ) : null}
-                        <span className="rounded-full border border-border/60 bg-background/45 px-3 py-1">
-                          v{page.version}
-                        </span>
-                      </div>
-                    </m.div>
-                  )}
-                </AnimatePresence>
-              </div>
+          <div className="flex shrink-0 items-center gap-1.5">
+            {editing ? (
+              <>
+                <button
+                  onClick={handleCancelEditing}
+                  className="rounded-md px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSave}
+                  disabled={updateMutation.isPending}
+                  className="rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-60"
+                >
+                  {updateMutation.isPending ? 'Saving…' : 'Save'}
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={handleStartEditing}
+                className="rounded-md px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+              >
+                Edit
+              </button>
+            )}
+          </div>
+        </div>
 
-              <div className="flex flex-wrap items-center justify-end gap-2">
-                <AnimatePresence initial={false}>
-                  {!isHeaderCollapsed && (
-                    <m.div
-                      key="header-actions"
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      exit={{ opacity: 0 }}
-                      transition={{ duration: 0.12 }}
-                      className="flex flex-wrap items-center gap-2"
-                    >
-                      {editing ? (
-                        <>
-                          <button
-                            onClick={handleCancelEditing}
-                            className="rounded-xl border border-border/60 bg-background/55 px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
-                          >
-                            <span className="inline-flex items-center gap-2">
-                              <X size={14} />
-                              Cancel
-                            </span>
-                          </button>
-                          <button
-                            onClick={handleSave}
-                            disabled={updateMutation.isPending}
-                            className="rounded-xl bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            <span className="inline-flex items-center gap-2">
-                              <Save size={14} />
-                              {updateMutation.isPending ? 'Saving...' : 'Save'}
-                            </span>
-                          </button>
-                        </>
-                      ) : (
-                        <button
-                          onClick={handleStartEditing}
-                          className="rounded-xl border border-border/60 bg-background/55 px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
-                        >
-                          Edit
-                        </button>
-                      )}
-                    </m.div>
-                  )}
-                </AnimatePresence>
-
-                {!editing && (
-                  <button
-                    onClick={() => setHeaderCollapsed((v) => !v)}
-                    className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
-                    aria-label={isHeaderCollapsed ? 'Expand article header' : 'Collapse article header'}
-                  >
-                    {isHeaderCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
-                  </button>
-                )}
+        {editing ? (
+          <>
+            {/* Editable title — reading column, same width as editor content */}
+            <div className="border-b border-border/25 px-5 py-5 sm:px-10">
+              <div className="mx-auto max-w-[720px]">
+                <input
+                  value={editTitle}
+                  onChange={(event) => setEditTitle(event.target.value)}
+                  className="w-full bg-transparent text-3xl font-bold leading-tight tracking-[-0.02em] text-foreground outline-none placeholder:text-muted-foreground/40"
+                  placeholder="Article title…"
+                />
               </div>
             </div>
 
-            <AnimatePresence initial={false}>
-              {!isHeaderCollapsed && page.labels.length > 0 && (
-                <m.div
-                  key="header-labels"
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  exit={{ opacity: 0, height: 0 }}
-                  transition={{ duration: 0.18 }}
-                  className="overflow-hidden"
-                >
-                  <div className="flex flex-wrap gap-2">
-                    {page.labels.map((label) => (
-                      <span
-                        key={label}
-                        className="rounded-full border border-border/60 bg-background/45 px-3 py-1 text-xs font-medium text-muted-foreground"
-                      >
-                        {label}
-                      </span>
-                    ))}
-                  </div>
-                </m.div>
-              )}
-            </AnimatePresence>
-          </div>
-        </div>
-      </section>
+            {/* Editor — naked (no inner glass-card, we are already inside glass-card-xl) */}
+            <FeatureErrorBoundary featureName="Editor">
+              <Editor content={editHtml} onChange={setEditHtml} draftKey={draftKey} naked />
+            </FeatureErrorBoundary>
+          </>
+        ) : (
+          /* Reading view — constrained to 720 px reading column */
+          <div
+            ref={contentRef}
+            className="mx-auto max-w-[720px] px-5 pb-16 pt-10 sm:px-10 sm:pt-12"
+            data-testid="article-content-shell"
+          >
+            <h1 className="mb-10 text-4xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground sm:text-5xl">
+              {page.title}
+            </h1>
 
-      {editing ? (
-        <section className="overflow-hidden glass-card-xl">
-          <FeatureErrorBoundary featureName="Editor">
-            <Editor content={editHtml} onChange={setEditHtml} draftKey={draftKey} />
-          </FeatureErrorBoundary>
-        </section>
-      ) : (
-        <section
-          ref={contentRef}
-          className="overflow-hidden glass-card-xl"
-          data-testid="article-content-shell"
-        >
-          <FeatureErrorBoundary featureName="Article Viewer">
-            <ArticleViewer
-              content={page.bodyHtml}
-              onImageClick={handleImageClick}
-              onHeadingsReady={setHeadings}
-              pageId={id}
-              className="px-5 py-6 sm:px-7 sm:py-8"
-            />
-          </FeatureErrorBoundary>
-        </section>
-      )}
+            <FeatureErrorBoundary featureName="Article Viewer">
+              <ArticleViewer
+                content={page.bodyHtml}
+                onImageClick={handleImageClick}
+                onHeadingsReady={setHeadings}
+                pageId={id}
+              />
+            </FeatureErrorBoundary>
+          </div>
+        )}
+      </div>
 
       <AnimatePresence>
         {lightboxSrc ? (

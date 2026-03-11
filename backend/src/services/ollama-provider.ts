@@ -6,7 +6,7 @@
 
 import { Ollama } from 'ollama';
 import type { Config } from 'ollama';
-import { Agent, fetch as undiciFetch, type Dispatcher } from 'undici';
+import { Agent, fetch as undiciFetch } from 'undici';
 import pLimit from 'p-limit';
 import { logger } from '../utils/logger.js';
 import { ollamaBreakers } from './circuit-breaker.js';
@@ -47,15 +47,11 @@ const llmDispatcher = buildLlmDispatcher();
  */
 const ollamaFetch: typeof fetch = (input, init?) => {
   const hasSignal = init?.signal != null;
-  const requestInit: RequestInit & { dispatcher?: Dispatcher } = {
+  return undiciFetch(input as any, {
     ...init,
     signal: hasSignal ? init!.signal : AbortSignal.timeout(OLLAMA_REQUEST_TIMEOUT_MS),
     dispatcher: llmDispatcher,
-  };
-  return undiciFetch(
-    input as unknown as Parameters<typeof undiciFetch>[0],
-    requestInit as unknown as Parameters<typeof undiciFetch>[1],
-  ) as unknown as ReturnType<typeof fetch>;
+  } as any) as unknown as ReturnType<typeof fetch>;
 };
 
 function buildOllamaConfig(): Partial<Config> {

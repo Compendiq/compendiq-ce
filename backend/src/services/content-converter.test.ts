@@ -14,7 +14,6 @@ import {
   EXPAND_PAGE,
   LINKS_PAGE,
   IMAGES_PAGE,
-  CROSS_PAGE_IMAGES_PAGE,
   DRAWIO_PAGE,
   TOC_PAGE,
   TABLE_PAGE,
@@ -94,31 +93,14 @@ describe('content-converter', () => {
       const html = confluenceToHtml(IMAGES_PAGE, '12345');
       expect(html).toContain('src="/api/attachments/12345/dashboard.png"');
       expect(html).toContain('alt="dashboard.png"');
-      expect(html).toContain('data-confluence-image-source="attachment"');
       expect(html).toContain('width="600"');
-      expect(html).toContain('src="/api/attachments/12345/external-');
-      expect(html).toContain('data-confluence-image-source="external-url"');
-      expect(html).toContain('data-confluence-url="https://example.com/diagram.svg"');
+      expect(html).toContain('src="https://example.com/diagram.svg"');
       expect(html).not.toContain('ri:attachment');
     });
 
     it('converts images without pageId to hash references', () => {
       const html = confluenceToHtml(IMAGES_PAGE);
       expect(html).toContain('src="#attachment:dashboard.png"');
-    });
-
-    it('converts cross-page attachment images to deterministic local filenames', () => {
-      const html = confluenceToHtml(CROSS_PAGE_IMAGES_PAGE, '55', 'OPS');
-      expect(html).toMatch(/src="\/api\/attachments\/55\/shared\.xref-[a-f0-9]{12}\.png"/);
-      expect(html).toContain('data-confluence-owner-page-title="Shared Assets"');
-      expect(html).toContain('data-confluence-owner-space-key="ENG"');
-    });
-
-    it('preserves images inside rich link bodies', () => {
-      const html = confluenceToHtml(CROSS_PAGE_IMAGES_PAGE, '55', 'OPS');
-      expect(html).toContain('<a href="#confluence-page:Shared Assets"');
-      expect(html).toContain('<img');
-      expect(html).not.toContain('thumbnail.png</a>');
     });
 
     it('converts draw.io macros', () => {
@@ -300,20 +282,10 @@ describe('content-converter', () => {
     });
 
     it('round-trips image attachments', () => {
-      const html = confluenceToHtml(IMAGES_PAGE, '12345', 'OPS');
+      const html = confluenceToHtml(IMAGES_PAGE, '12345');
       const xhtml = htmlToConfluence(html);
       expect(xhtml).toContain('ri:filename');
       expect(xhtml).toContain('dashboard.png');
-      expect(xhtml).toContain('ri:url');
-      expect(xhtml).toContain('https://example.com/diagram.svg');
-    });
-
-    it('round-trips cross-page image metadata back to ri:page references', () => {
-      const html = confluenceToHtml(CROSS_PAGE_IMAGES_PAGE, '55', 'OPS');
-      const xhtml = htmlToConfluence(html);
-      expect(xhtml).toContain('ri:filename="shared.png"');
-      expect(xhtml).toContain('ri:content-title="Shared Assets"');
-      expect(xhtml).toContain('ri:space-key="ENG"');
     });
 
     it('round-trips complex page preserving structure', () => {

@@ -211,22 +211,6 @@ describe('ConfluenceClient', () => {
     });
   });
 
-  describe('findPageByTitle', () => {
-    it('searches by exact title and optional space key', async () => {
-      const client = new ConfluenceClient(baseUrl, pat);
-      mockRequest.mockResolvedValue({
-        statusCode: 200,
-        body: { text: async () => JSON.stringify({ results: [{ id: '123', title: 'Shared Assets' }], start: 0, limit: 1, size: 1 }) },
-      } as never);
-
-      const result = await client.findPageByTitle('OPS', 'Shared Assets');
-
-      expect(result).toMatchObject({ id: '123', title: 'Shared Assets' });
-      const callUrl = mockRequest.mock.calls[0][0] as string;
-      expect(callUrl).toContain(encodeURIComponent('space="OPS" AND type=page AND title="Shared Assets"'));
-    });
-  });
-
   describe('label management', () => {
     it('should fetch labels for a page', async () => {
       const client = new ConfluenceClient(baseUrl, pat);

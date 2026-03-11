@@ -11,7 +11,7 @@
  *   OPENAI_API_KEY   - API key (fallback)
  */
 
-import { Agent, fetch as undiciFetch, type Dispatcher } from 'undici';
+import { Agent, fetch as undiciFetch } from 'undici';
 import { logger } from '../utils/logger.js';
 import { openaiBreakers } from './circuit-breaker.js';
 import pLimit from 'p-limit';
@@ -73,14 +73,10 @@ function makeHeaders(config: OpenAIConfig): Record<string, string> {
  * means LLM_VERIFY_SSL=false had no effect.
  */
 function llmFetch(url: string | URL, init?: RequestInit): Promise<Response> {
-  const requestInit: RequestInit & { dispatcher?: Dispatcher } = {
+  return undiciFetch(url, {
     ...init,
     dispatcher: llmDispatcher,
-  };
-  return undiciFetch(
-    url as unknown as Parameters<typeof undiciFetch>[0],
-    requestInit as unknown as Parameters<typeof undiciFetch>[1],
-  ) as unknown as Promise<Response>;
+  } as any) as unknown as Promise<Response>;
 }
 
 async function openaiRequest(

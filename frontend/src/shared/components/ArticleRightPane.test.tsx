@@ -53,6 +53,16 @@ vi.mock('../hooks/use-settings', () => ({
   }),
 }));
 
+vi.mock('./FreshnessBadge', () => ({
+  FreshnessBadge: ({ lastModified }: { lastModified: string }) => <span>{lastModified}</span>,
+}));
+
+vi.mock('./EmbeddingStatusBadge', () => ({
+  EmbeddingStatusBadge: ({ embeddingStatus }: { embeddingStatus: string }) => (
+    <span data-testid="embedding-status-badge">{embeddingStatus}</span>
+  ),
+}));
+
 function createWrapper() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -92,7 +102,7 @@ describe('ArticleRightPane', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
-    expect(screen.getByText('Article')).toBeInTheDocument();
+    expect(screen.getByText('Properties')).toBeInTheDocument();
     expect(screen.getByText('AI Improve')).toBeInTheDocument();
     expect(screen.getByText('Pin')).toBeInTheDocument();
     expect(screen.getByText('Open in Confluence')).toBeInTheDocument();
