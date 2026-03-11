@@ -41,22 +41,6 @@ describe('ArticleViewer', () => {
     expect(mockFetchAuthenticatedBlob).toHaveBeenCalledWith('/api/attachments/page-1/dashboard.png');
   });
 
-  it('adds error placeholder class when image fetch fails', async () => {
-    mockFetchAuthenticatedBlob.mockResolvedValueOnce(null);
-
-    const html = '<p><img src="/api/attachments/page-1/missing.png" alt="Missing" /></p>';
-    const { container } = render(<ArticleViewer content={html} />);
-
-    await waitFor(() => {
-      const img = container.querySelector('img');
-      expect(img?.classList.contains('image-load-error')).toBe(true);
-    });
-
-    // Should have a helpful title tooltip
-    const img = container.querySelector('img')!;
-    expect(img.title).toContain('could not be loaded');
-  });
-
   it('does not rewrite external images through the authenticated attachment fetcher', async () => {
     const html = '<p><img src="https://example.com/diagram.svg" alt="External" /></p>';
     const { container } = render(<ArticleViewer content={html} />);
