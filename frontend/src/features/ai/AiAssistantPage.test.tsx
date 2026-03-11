@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { LazyMotion, domAnimation } from 'framer-motion';
+import { LazyMotion, domMax } from 'framer-motion';
 import { AiAssistantPage } from './AiAssistantPage';
 import { useAuthStore } from '../../stores/auth-store';
 
@@ -46,7 +46,7 @@ function createWrapper(initialEntries = ['/ai']) {
     return (
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={initialEntries}>
-          <LazyMotion features={domAnimation}>
+          <LazyMotion features={domMax}>
             {children}
           </LazyMotion>
         </MemoryRouter>
@@ -352,6 +352,64 @@ describe('AiAssistantPage', () => {
       }
     });
 
+    it('removes empty assistant message when ask stream throws an error', async () => {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'llama3' }]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([]);
+      });
+
+      async function* fakeErrorStream() {
+        throw new Error('Connection lost');
+      }
+      streamSSEMock.mockReturnValue(fakeErrorStream());
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      // Wait for model to load
+      await waitFor(() => {
+        expect(screen.queryByText('Loading models...')).not.toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Ask a question...');
+      fireEvent.change(input, { target: { value: 'What is Confluence?' } });
+
+      await waitFor(() => {
+        const sendBtnContainer = input.closest('.glass-card');
+        const sendBtn = sendBtnContainer?.querySelector('button');
+        expect(sendBtn).not.toBeDisabled();
+      });
+
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      // Wait for the error toast
+      await waitFor(() => {
+        expect(toastErrorMock).toHaveBeenCalledWith('Connection lost');
+      });
+
+      // The user message should still be visible
+      expect(screen.getByText('What is Confluence?')).toBeInTheDocument();
+
+      // The empty assistant message should have been removed.
+      // AskMode adds the user message directly via setMessages (not via runStream's
+      // userMessage option), so this test specifically verifies the fix: runStream
+      // must always remove the placeholder assistant message on error.
+      // If there were an assistant bubble, it would contain a Bot icon or typing indicator.
+      expect(screen.queryByTestId('typing-indicator')).not.toBeInTheDocument();
+
+      // Verify there is exactly 1 message bubble (the user message), not 2
+      // User messages have "justify-end" class on their container
+      const messageBubbles = document.querySelectorAll('.max-w-\\[80\\%\\]');
+      expect(messageBubbles.length).toBe(1);
+    });
+
     it('enables send button when model is loaded and input is provided', async () => {
       apiFetchMock.mockImplementation((path: string) => {
         if (path === '/settings') {
@@ -531,6 +589,153 @@ describe('AiAssistantPage', () => {
       // Verify success toast
       await waitFor(() => {
         expect(toastSuccessMock).toHaveBeenCalledWith('Diagram inserted into article');
+      });
+    });
+  });
+
+  describe('sub-pages toggle', () => {
+    it('does not show toggle when no page is selected', () => {
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+      expect(screen.queryByText('+ Sub-pages')).not.toBeInTheDocument();
+    });
+
+    it('does not show toggle when page has no children', () => {
+      mockPageData = {
+        data: { id: 'p1', title: 'Test Page', bodyHtml: '<p>Content</p>', bodyText: 'Content', hasChildren: false },
+      };
+
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
+
+      expect(screen.getByText('Test Page')).toBeInTheDocument();
+      expect(screen.queryByText('+ Sub-pages')).not.toBeInTheDocument();
+    });
+
+    it('shows toggle when page has children', () => {
+      mockPageData = {
+        data: { id: 'p1', title: 'Parent Page', bodyHtml: '<p>Content</p>', bodyText: 'Content', hasChildren: true },
+      };
+
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
+
+      expect(screen.getByText('+ Sub-pages')).toBeInTheDocument();
+    });
+
+    it('toggles the checkbox when clicked', () => {
+      mockPageData = {
+        data: { id: 'p1', title: 'Parent Page', bodyHtml: '<p>Content</p>', bodyText: 'Content', hasChildren: true },
+      };
+
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
+
+      const checkbox = screen.getByRole('checkbox', { name: 'Include sub-pages' });
+      expect(checkbox).not.toBeChecked();
+
+      fireEvent.click(checkbox);
+      expect(checkbox).toBeChecked();
+
+      fireEvent.click(checkbox);
+      expect(checkbox).not.toBeChecked();
+    });
+
+    it('passes includeSubPages to improve SSE when toggle is on', async () => {
+      mockPageData = {
+        data: { id: 'p1', title: 'Parent Page', bodyHtml: '<p>Content</p>', bodyText: 'Content', hasChildren: true },
+      };
+
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'llama3' }]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([]);
+      });
+
+      async function* fakeStream() {
+        yield { content: 'improved' };
+      }
+      streamSSEMock.mockReturnValue(fakeStream());
+
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
+
+      // Enable sub-pages toggle
+      const checkbox = screen.getByRole('checkbox', { name: 'Include sub-pages' });
+      fireEvent.click(checkbox);
+
+      // Wait for models to load
+      await waitFor(() => {
+        const btns = screen.getAllByRole('button');
+        const improveBtn = btns.find((b) => b.textContent?.includes('Improve Page'));
+        expect(improveBtn).not.toBeDisabled();
+      });
+
+      // Click improve
+      const buttons = screen.getAllByRole('button');
+      const improveBtn = buttons.find((b) => b.textContent?.includes('Improve Page'))!;
+      fireEvent.click(improveBtn);
+
+      await waitFor(() => {
+        expect(streamSSEMock).toHaveBeenCalledWith(
+          '/llm/improve',
+          expect.objectContaining({
+            includeSubPages: true,
+            pageId: 'p1',
+          }),
+          expect.any(Object),
+        );
+      });
+    });
+
+    it('passes includeSubPages=false when toggle is off', async () => {
+      mockPageData = {
+        data: { id: 'p1', title: 'Parent Page', bodyHtml: '<p>Content</p>', bodyText: 'Content', hasChildren: true },
+      };
+
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'llama3' }]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([]);
+      });
+
+      async function* fakeStream() {
+        yield { content: 'improved' };
+      }
+      streamSSEMock.mockReturnValue(fakeStream());
+
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
+
+      // Do NOT enable sub-pages toggle
+
+      await waitFor(() => {
+        const btns = screen.getAllByRole('button');
+        const improveBtn = btns.find((b) => b.textContent?.includes('Improve Page'));
+        expect(improveBtn).not.toBeDisabled();
+      });
+
+      const buttons = screen.getAllByRole('button');
+      const improveBtn = buttons.find((b) => b.textContent?.includes('Improve Page'))!;
+      fireEvent.click(improveBtn);
+
+      await waitFor(() => {
+        expect(streamSSEMock).toHaveBeenCalledWith(
+          '/llm/improve',
+          expect.objectContaining({
+            includeSubPages: false,
+            pageId: 'p1',
+          }),
+          expect.any(Object),
+        );
       });
     });
   });

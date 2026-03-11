@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { LazyMotion, domAnimation } from 'framer-motion';
+import { LazyMotion, domMax } from 'framer-motion';
 import { AppLayout } from './AppLayout';
 
 // Mock SidebarTreeView to isolate AppLayout tests
@@ -18,6 +18,14 @@ vi.mock('./ServiceStatus', () => ({
   ServiceStatus: () => null,
 }));
 
+vi.mock('./AuroraBackground', () => ({
+  AuroraBackground: () => <div data-testid="aurora-background" />,
+}));
+
+vi.mock('./NoiseOverlay', () => ({
+  NoiseOverlay: () => null,
+}));
+
 function createWrapper(initialPath = '/') {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -26,7 +34,7 @@ function createWrapper(initialPath = '/') {
     return (
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={[initialPath]}>
-          <LazyMotion features={domAnimation}>
+          <LazyMotion features={domMax}>
             {children}
           </LazyMotion>
         </MemoryRouter>
@@ -38,20 +46,24 @@ function createWrapper(initialPath = '/') {
 describe('AppLayout', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // jsdom does not implement Element.scrollTo — stub it so the scroll-reset
+    // useEffect in AppLayout does not throw
+    Element.prototype.scrollTo = vi.fn();
   });
 
-  it('renders top navigation with all nav items', () => {
+  it('renders top navigation with nav items (no Settings or Dashboard)', () => {
     render(
       <AppLayout>
         <div>content</div>
       </AppLayout>,
       { wrapper: createWrapper('/') },
     );
-    // Dashboard appears in both nav and breadcrumb
-    expect(screen.getAllByText('Dashboard').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText('Pages')).toBeInTheDocument();
+    // "Pages" appears in both nav and breadcrumb on root route
+    expect(screen.getAllByText('Pages').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('AI Assistant')).toBeInTheDocument();
-    expect(screen.getByText('Settings')).toBeInTheDocument();
+    // Settings moved to UserMenu, Dashboard merged into Pages
+    expect(screen.queryByText('Settings')).not.toBeInTheDocument();
+    expect(screen.queryByText('Dashboard')).not.toBeInTheDocument();
   });
 
   it('renders app logo in top bar', () => {
@@ -74,12 +86,12 @@ describe('AppLayout', () => {
     expect(screen.getByText('Search...')).toBeInTheDocument();
   });
 
-  it('shows tree sidebar on /pages route', () => {
+  it('shows tree sidebar on root route (pages view)', () => {
     render(
       <AppLayout>
         <div>page content</div>
       </AppLayout>,
-      { wrapper: createWrapper('/pages') },
+      { wrapper: createWrapper('/') },
     );
     expect(screen.getByTestId('sidebar-tree-view')).toBeInTheDocument();
   });
@@ -94,22 +106,22 @@ describe('AppLayout', () => {
     expect(screen.getByTestId('sidebar-tree-view')).toBeInTheDocument();
   });
 
-  it('hides tree sidebar on non-pages routes', () => {
-    render(
-      <AppLayout>
-        <div>dashboard</div>
-      </AppLayout>,
-      { wrapper: createWrapper('/') },
-    );
-    expect(screen.queryByTestId('sidebar-tree-view')).not.toBeInTheDocument();
-  });
-
   it('hides tree sidebar on /ai route', () => {
     render(
       <AppLayout>
         <div>ai page</div>
       </AppLayout>,
       { wrapper: createWrapper('/ai') },
+    );
+    expect(screen.queryByTestId('sidebar-tree-view')).not.toBeInTheDocument();
+  });
+
+  it('hides tree sidebar on /settings route', () => {
+    render(
+      <AppLayout>
+        <div>settings</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/settings') },
     );
     expect(screen.queryByTestId('sidebar-tree-view')).not.toBeInTheDocument();
   });

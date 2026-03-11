@@ -1,17 +1,58 @@
+import { lazy, Suspense } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
-import { LazyMotion, domAnimation } from 'framer-motion';
+import { LazyMotion, domMax } from 'framer-motion';
 import { useAuthStore } from './stores/auth-store';
 import { useSessionInit } from './shared/hooks/useSessionInit';
 import { useThemeEffect } from './shared/hooks/useThemeEffect';
 import { AppLayout } from './shared/components/AppLayout';
 import { ErrorBoundary } from './shared/components/ErrorBoundary';
+
 import { LoginPage } from './features/settings/LoginPage';
-import { DashboardPage } from './features/dashboard/DashboardPage';
-import { SettingsPage } from './features/settings/SettingsPage';
-import { PagesPage } from './features/pages/PagesPage';
-import { PageViewPage } from './features/pages/PageViewPage';
-import { NewPagePage } from './features/pages/NewPagePage';
-import { AiAssistantPage } from './features/ai/AiAssistantPage';
+
+// Route-based code splitting: lazy-load all page components (#186)
+// LoginPage is statically imported — it's the first screen for
+// unauthenticated users and lazy-loading it causes a "Loading..." flash.
+// DashboardPage removed — merged into PagesPage (issue #109)
+const SettingsPage = lazy(() =>
+  import('./features/settings/SettingsPage').then((m) => ({
+    default: m.SettingsPage,
+  })),
+);
+const PagesPage = lazy(() =>
+  import('./features/pages/PagesPage').then((m) => ({
+    default: m.PagesPage,
+  })),
+);
+const PageViewPage = lazy(() =>
+  import('./features/pages/PageViewPage').then((m) => ({
+    default: m.PageViewPage,
+  })),
+);
+const NewPagePage = lazy(() =>
+  import('./features/pages/NewPagePage').then((m) => ({
+    default: m.NewPagePage,
+  })),
+);
+const AiAssistantPage = lazy(() =>
+  import('./features/ai/AiAssistantPage').then((m) => ({
+    default: m.AiAssistantPage,
+  })),
+);
+const GraphPage = lazy(() =>
+  import('./features/graph/GraphPage').then((m) => ({
+    default: m.GraphPage,
+  })),
+);
+
+export function PageLoadingFallback() {
+  return (
+    <div className="flex items-center justify-center h-64">
+      <div className="glass-card p-8 text-center">
+        <div className="animate-pulse text-muted-foreground">Loading...</div>
+      </div>
+    </div>
+  );
+}
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
@@ -28,31 +69,51 @@ export function App() {
   useThemeEffect();
 
   return (
-    <LazyMotion features={domAnimation}>
+    <LazyMotion features={domMax}>
       <ErrorBoundary>
-        <Routes>
-          <Route path="/login" element={<LoginPage />} />
-          <Route
-            path="/*"
-            element={
-              <ProtectedRoute>
-                <AppLayout>
-                  <ErrorBoundary>
-                    <Routes>
-                      <Route path="/" element={<DashboardPage />} />
-                      <Route path="/pages" element={<PagesPage />} />
-                      <Route path="/pages/new" element={<NewPagePage />} />
-                      <Route path="/pages/:id" element={<PageViewPage />} />
-                      <Route path="/ai" element={<AiAssistantPage />} />
-                      <Route path="/settings" element={<SettingsPage />} />
-                      <Route path="*" element={<Navigate to="/" replace />} />
-                    </Routes>
-                  </ErrorBoundary>
-                </AppLayout>
-              </ProtectedRoute>
-            }
-          />
-        </Routes>
+        <Suspense fallback={<PageLoadingFallback />}>
+          <Routes>
+            <Route path="/login" element={<LoginPage />} />
+            <Route
+              path="/*"
+              element={
+                <ProtectedRoute>
+                  <AppLayout>
+                    <ErrorBoundary>
+                      <Suspense fallback={<PageLoadingFallback />}>
+                        <Routes>
+                          <Route path="/" element={<PagesPage />} />
+                          <Route
+                            path="/pages"
+                            element={<Navigate to="/" replace />}
+                          />
+                          <Route
+                            path="/pages/new"
+                            element={<NewPagePage />}
+                          />
+                          <Route
+                            path="/pages/:id"
+                            element={<PageViewPage />}
+                          />
+                          <Route path="/ai" element={<AiAssistantPage />} />
+                          <Route path="/graph" element={<GraphPage />} />
+                          <Route
+                            path="/settings"
+                            element={<SettingsPage />}
+                          />
+                          <Route
+                            path="*"
+                            element={<Navigate to="/" replace />}
+                          />
+                        </Routes>
+                      </Suspense>
+                    </ErrorBoundary>
+                  </AppLayout>
+                </ProtectedRoute>
+              }
+            />
+          </Routes>
+        </Suspense>
       </ErrorBoundary>
     </LazyMotion>
   );

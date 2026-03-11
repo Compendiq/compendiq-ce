@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { LazyMotion, domAnimation } from 'framer-motion';
+import { LazyMotion, domMax } from 'framer-motion';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { CommandPalette } from './CommandPalette';
 import { useCommandPaletteStore } from '../../stores/command-palette-store';
@@ -14,7 +14,7 @@ function createWrapper() {
     return (
       <QueryClientProvider client={queryClient}>
         <MemoryRouter>
-          <LazyMotion features={domAnimation}>
+          <LazyMotion features={domMax}>
             {children}
           </LazyMotion>
         </MemoryRouter>
@@ -193,5 +193,115 @@ describe('CommandPalette', () => {
     expect(screen.getByText('Select')).toBeInTheDocument();
     expect(screen.getByText('Close')).toBeInTheDocument();
     unmount();
+  });
+
+  it('shows /ai hint in footer when not in AI mode', () => {
+    useCommandPaletteStore.getState().open();
+    const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
+
+    expect(screen.getByText('AI mode')).toBeInTheDocument();
+    unmount();
+  });
+
+  describe('AI mode', () => {
+    it('activates AI mode when query starts with /ai', () => {
+      useCommandPaletteStore.getState().open();
+      const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
+
+      const input = screen.getByLabelText('Search');
+      fireEvent.change(input, { target: { value: '/ai' } });
+
+      // The AI mode section header should be present
+      expect(screen.getByTestId('ai-mode-ask-button')).toBeInTheDocument();
+      unmount();
+    });
+
+    it('shows "Ask AI" as prominent result in AI mode', () => {
+      useCommandPaletteStore.getState().open();
+      const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
+
+      const input = screen.getByLabelText('Search');
+      fireEvent.change(input, { target: { value: '/ai' } });
+
+      expect(screen.getByText('Ask AI')).toBeInTheDocument();
+      unmount();
+    });
+
+    it('shows query text in AI result when provided', () => {
+      useCommandPaletteStore.getState().open();
+      const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
+
+      const input = screen.getByLabelText('Search');
+      fireEvent.change(input, { target: { value: '/ai how to configure auth' } });
+
+      expect(screen.getByText('Ask AI: how to configure auth')).toBeInTheDocument();
+      unmount();
+    });
+
+    it('hides quick actions in AI mode', () => {
+      useCommandPaletteStore.getState().open();
+      const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
+
+      const input = screen.getByLabelText('Search');
+      fireEvent.change(input, { target: { value: '/ai test' } });
+
+      expect(screen.queryByText('Quick Actions')).not.toBeInTheDocument();
+      expect(screen.queryByText('New Page')).not.toBeInTheDocument();
+      unmount();
+    });
+
+    it('navigates to /ai when Ask AI is selected', () => {
+      useCommandPaletteStore.getState().open();
+      const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
+
+      const input = screen.getByLabelText('Search');
+      fireEvent.change(input, { target: { value: '/ai' } });
+
+      // Press Enter to select
+      fireEvent.keyDown(input, { key: 'Enter' });
+      expect(mockNavigate).toHaveBeenCalledWith('/ai');
+      unmount();
+    });
+
+    it('hides /ai hint in footer when in AI mode', () => {
+      useCommandPaletteStore.getState().open();
+      const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
+
+      const input = screen.getByLabelText('Search');
+      fireEvent.change(input, { target: { value: '/ai' } });
+
+      expect(screen.queryByText('AI mode')).not.toBeInTheDocument();
+      unmount();
+    });
+
+    it('does not show "No pages found" in AI mode', async () => {
+      useCommandPaletteStore.getState().open();
+      const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
+
+      const input = screen.getByLabelText('Search');
+      fireEvent.change(input, { target: { value: '/ai some query' } });
+
+      // Wait a bit for any async operations
+      await waitFor(() => {
+        expect(screen.queryByText('No pages found')).not.toBeInTheDocument();
+      });
+      unmount();
+    });
+
+    it('changes placeholder text in AI mode', () => {
+      useCommandPaletteStore.getState().open();
+      const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
+
+      const input = screen.getByLabelText('Search');
+
+      // Before AI mode
+      expect(input).toHaveAttribute('placeholder', 'Search pages or type a command...');
+
+      // Enter AI mode
+      fireEvent.change(input, { target: { value: '/ai' } });
+      expect(input).toHaveAttribute('placeholder', 'Ask AI anything...');
+
+      unmount();
+    });
   });
 });

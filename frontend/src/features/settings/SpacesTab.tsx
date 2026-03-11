@@ -91,7 +91,7 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
         <button
           onClick={() => fetchSpaces()}
           disabled={loadingAvailable}
-          className="flex items-center gap-1.5 rounded-md border border-border/50 px-3 py-1.5 text-sm hover:bg-foreground/5 disabled:opacity-50"
+          className="glass-button-secondary px-3 py-1.5"
         >
           {loadingAvailable ? (
             <Loader2 size={14} className="animate-spin" />
@@ -176,14 +176,14 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
         <button
           onClick={handleSave}
           disabled={selected.size === 0}
-          className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          className="glass-button-primary"
         >
           Save Selection ({selected.size})
         </button>
         <button
           onClick={() => syncMutation.mutate()}
           disabled={selected.size === 0 || syncMutation.isPending}
-          className="flex items-center gap-1.5 rounded-md border border-border/50 px-4 py-2 text-sm hover:bg-foreground/5 disabled:opacity-50"
+          className="glass-button-secondary"
         >
           {syncMutation.isPending ? (
             <Loader2 size={14} className="animate-spin" />

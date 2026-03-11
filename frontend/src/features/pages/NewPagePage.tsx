@@ -4,6 +4,7 @@ import { ArrowLeft, Save } from 'lucide-react';
 import { useCreatePage } from '../../shared/hooks/use-pages';
 import { useSpaces } from '../../shared/hooks/use-spaces';
 import { Editor, clearDraft } from '../../shared/components/Editor';
+import { FeatureErrorBoundary } from '../../shared/components/FeatureErrorBoundary';
 import { toast } from 'sonner';
 
 const NEW_PAGE_DRAFT_KEY = 'new-page';
@@ -40,7 +41,7 @@ export function NewPagePage() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <button onClick={() => navigate('/pages')} className="rounded p-1.5 text-muted-foreground hover:bg-foreground/5">
+          <button onClick={() => navigate('/pages')} className="glass-button-ghost">
             <ArrowLeft size={18} />
           </button>
           <h1 className="text-xl font-bold">New Page</h1>
@@ -48,7 +49,7 @@ export function NewPagePage() {
         <button
           onClick={handleCreate}
           disabled={createMutation.isPending || !title.trim() || !spaceKey}
-          className="flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          className="glass-button-primary"
         >
           <Save size={14} /> {createMutation.isPending ? 'Creating...' : 'Create Page'}
         </button>
@@ -62,7 +63,7 @@ export function NewPagePage() {
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               placeholder="Page title..."
-              className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+              className="glass-input"
             />
           </div>
           <div className="w-48">
@@ -70,7 +71,7 @@ export function NewPagePage() {
             <select
               value={spaceKey}
               onChange={(e) => setSpaceKey(e.target.value)}
-              className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+              className="glass-select w-full"
             >
               <option value="">Select space...</option>
               {spaces?.map((s) => (
@@ -81,7 +82,9 @@ export function NewPagePage() {
         </div>
       </div>
 
-      <Editor content="" onChange={setBodyHtml} placeholder="Start writing your article..." draftKey={NEW_PAGE_DRAFT_KEY} />
+      <FeatureErrorBoundary featureName="Editor">
+        <Editor content="" onChange={setBodyHtml} placeholder="Start writing your article..." draftKey={NEW_PAGE_DRAFT_KEY} />
+      </FeatureErrorBoundary>
     </div>
   );
 }

@@ -1,32 +1,55 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { m, AnimatePresence } from 'framer-motion';
+import { AnimatePresence, m } from 'framer-motion';
 import {
-  ArrowLeft, Edit3, Save, X, Trash2, Wand2, FileText,
-  ExternalLink, Clock, User,
+  ArrowLeft,
+  ExternalLink,
+  FileText,
+  FolderOpen,
+  Pin,
+  Save,
+  Trash2,
+  User,
+  X,
 } from 'lucide-react';
-import type { SettingsResponse } from '@kb-creator/contracts';
-import { usePage, useUpdatePage, useDeletePage } from '../../shared/hooks/use-pages';
-import { useSettings } from '../../shared/hooks/use-settings';
-import { Editor, getDraft, clearDraft } from '../../shared/components/Editor';
-import { ArticleViewer } from '../../shared/components/ArticleViewer';
-import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
-import { TableOfContents } from '../../shared/components/TableOfContents';
-import type { TocHeading } from '../../shared/components/TableOfContents';
-import { DuplicateDetector } from './DuplicateDetector';
-import { AutoTagger } from './AutoTagger';
-import { TagEditor } from './TagEditor';
-import { VersionHistory } from './VersionHistory';
-import { FlowchartGenerator } from './FlowchartGenerator';
-import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { toast } from 'sonner';
+import { cn } from '../../shared/lib/cn';
+import {
+  useDeletePage,
+  usePage,
+  usePinnedPages,
+  usePinPage,
+  useUnpinPage,
+  useUpdatePage,
+} from '../../shared/hooks/use-pages';
+import { useSettings } from '../../shared/hooks/use-settings';
+import { useAuthenticatedSrc } from '../../shared/hooks/use-authenticated-src';
+import { FeatureErrorBoundary } from '../../shared/components/FeatureErrorBoundary';
+import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
+import { EmbeddingStatusBadge } from '../../shared/components/EmbeddingStatusBadge';
+import { Editor, clearDraft, getDraft } from '../../shared/components/Editor';
+import { ArticleViewer } from '../../shared/components/ArticleViewer';
+import { ArticleOutline } from '../../shared/components/ArticleOutline';
+import type { TocHeading } from '../../shared/components/TableOfContents';
+import { PageViewSkeleton } from '../../shared/components/Skeleton';
 
-function ImageLightbox({ src, alt, onClose }: { src: string; alt: string; onClose: () => void }) {
+function ImageLightbox({
+  alt,
+  onClose,
+  src,
+}: {
+  alt: string;
+  onClose: () => void;
+  src: string;
+}) {
+  const { blobSrc, loading } = useAuthenticatedSrc(src);
+
   useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
     };
+
     document.addEventListener('keydown', handleKey);
     return () => document.removeEventListener('keydown', handleKey);
   }, [onClose]);
@@ -43,67 +66,123 @@ function ImageLightbox({ src, alt, onClose }: { src: string; alt: string; onClos
     >
       <button
         onClick={onClose}
-        className="absolute top-4 right-4 rounded-full bg-foreground/10 p-2 text-white hover:bg-foreground/20"
+        className="absolute right-4 top-4 rounded-full bg-white/10 p-2 text-white transition-colors hover:bg-white/20"
         aria-label="Close preview"
       >
-        <X size={20} />
+        <X size={18} />
       </button>
-      <img
-        src={src}
-        alt={alt}
-        className="max-h-[90vh] max-w-[90vw] rounded-lg object-contain"
-        onClick={(e) => e.stopPropagation()}
-      />
+
+      {loading ? (
+        <div className="text-sm text-white/70">Loading image…</div>
+      ) : blobSrc ? (
+        <img
+          src={blobSrc}
+          alt={alt}
+          className="max-h-[90vh] max-w-[90vw] rounded-2xl object-contain"
+          onClick={(event) => event.stopPropagation()}
+        />
+      ) : (
+        <div className="text-sm text-white/70">Failed to load image.</div>
+      )}
     </m.div>
   );
+}
+
+function readOutlineState() {
+  try {
+    const stored = localStorage.getItem('article-outline-open');
+    return stored === null ? true : stored === 'true';
+  } catch {
+    return true;
+  }
+}
+
+function scrollArticleToTop() {
+  const container = document.querySelector('[data-scroll-container]') as HTMLElement | null;
+  if (!container) return;
+
+  container.scrollTop = 0;
+  container.scrollTo?.({ top: 0, left: 0, behavior: 'auto' });
+
+  requestAnimationFrame(() => {
+    container.scrollTop = 0;
+    container.scrollTo?.({ top: 0, left: 0, behavior: 'auto' });
+  });
 }
 
 export function PageViewPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { data: page, isLoading } = usePage(id);
-  const updateMutation = useUpdatePage();
-  const deleteMutation = useDeletePage();
-  const isLight = useIsLightTheme();
-
   const queryClient = useQueryClient();
-  const [editing, setEditing] = useState(false);
-  const [editTitle, setEditTitle] = useState('');
-  const [editHtml, setEditHtml] = useState('');
-  const [lightboxSrc, setLightboxSrc] = useState<{ src: string; alt: string } | null>(null);
-  const [tocHeadings, setTocHeadings] = useState<TocHeading[]>([]);
-  const contentRef = useRef<HTMLDivElement>(null);
 
+  const { data: page, isLoading } = usePage(id);
+  const { data: pinnedData } = usePinnedPages();
   const { data: settings } = useSettings();
 
+  const updateMutation = useUpdatePage();
+  const deleteMutation = useDeletePage();
+  const pinMutation = usePinPage();
+  const unpinMutation = useUnpinPage();
+
+  const contentRef = useRef<HTMLDivElement>(null);
   const draftKey = id ? `page-${id}` : undefined;
+  const isPinned = pinnedData?.items.some((item) => item.id === id) ?? false;
+
+  const [editing, setEditing] = useState(false);
+  const [editHtml, setEditHtml] = useState('');
+  const [editTitle, setEditTitle] = useState('');
+  const [headings, setHeadings] = useState<TocHeading[]>([]);
+  const [lightboxSrc, setLightboxSrc] = useState<{ alt: string; src: string } | null>(null);
+  const [outlineOpen, setOutlineOpen] = useState(readOutlineState);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('article-outline-open', String(outlineOpen));
+    } catch {
+      // Ignore storage write failures.
+    }
+  }, [outlineOpen]);
+
+  useLayoutEffect(() => {
+    scrollArticleToTop();
+  }, [id]);
+
+  useEffect(() => {
+    if (!page) return;
+    scrollArticleToTop();
+  }, [id, page?.version, page]);
 
   const handleImageClick = useCallback((src: string, alt: string) => {
-    setLightboxSrc({ src, alt });
+    setLightboxSrc({ alt, src });
   }, []);
 
-  const startEditing = useCallback(() => {
+  const handleCloseLightbox = useCallback(() => {
+    setLightboxSrc(null);
+  }, []);
+
+  const handleStartEditing = useCallback(() => {
     if (!page || !id) return;
+
     setEditTitle(page.title);
     const draft = getDraft(`page-${id}`);
     if (draft && draft !== page.bodyHtml) {
-      const useDraft = window.confirm('A draft was found for this page. Restore it?');
-      setEditHtml(useDraft ? draft : page.bodyHtml);
+      const restoreDraft = window.confirm('A draft was found for this article. Restore it?');
+      setEditHtml(restoreDraft ? draft : page.bodyHtml);
     } else {
       setEditHtml(page.bodyHtml);
     }
+
     setEditing(true);
-  }, [page, id]);
+  }, [id, page]);
 
-  const closeLightbox = useCallback(() => setLightboxSrc(null), []);
-
-  const cancelEditing = useCallback(() => {
+  const handleCancelEditing = useCallback(() => {
     if (draftKey) clearDraft(draftKey);
     setEditing(false);
   }, [draftKey]);
 
-  const handleSave = async () => {
+  const handleSave = useCallback(async () => {
     if (!id || !page) return;
+
     try {
       await updateMutation.mutateAsync({
         id,
@@ -111,14 +190,14 @@ export function PageViewPage() {
         bodyHtml: editHtml,
         version: page.version,
       });
+
       if (draftKey) clearDraft(draftKey);
       setEditing(false);
-      toast.success('Page saved successfully');
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to save page';
-      // Handle version conflict (HTTP 409)
+      toast.success('Article saved.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to save article.';
       if (message.includes('modified since you loaded')) {
-        toast.error('Version conflict — the page was edited elsewhere.', {
+        toast.error('Version conflict detected.', {
           action: {
             label: 'Reload',
             onClick: () => {
@@ -126,178 +205,271 @@ export function PageViewPage() {
               setEditing(false);
             },
           },
-          duration: 10000,
+          duration: 10_000,
         });
       } else {
         toast.error(message);
       }
     }
-  };
+  }, [draftKey, editHtml, editTitle, id, page, queryClient, updateMutation]);
 
-  const handleDelete = async () => {
-    if (!id || !window.confirm('Delete this page? This cannot be undone.')) return;
+  const handleDelete = useCallback(async () => {
+    if (!id || !window.confirm('Delete this article? This cannot be undone.')) return;
+
     try {
       await deleteMutation.mutateAsync(id);
-      navigate('/pages');
-      toast.success('Page deleted');
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to delete page');
+      navigate('/');
+      toast.success('Article deleted.');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to delete article.');
     }
-  };
+  }, [deleteMutation, id, navigate]);
+
+  const handlePinToggle = useCallback(() => {
+    if (!id || !page) return;
+
+    const mutation = isPinned ? unpinMutation : pinMutation;
+    mutation.mutate(id, {
+      onSuccess: () => toast.success(isPinned ? 'Folder/article unpinned.' : 'Folder/article pinned.'),
+      onError: (error) => toast.error(error instanceof Error ? error.message : 'Pin update failed.'),
+    });
+  }, [id, isPinned, page, pinMutation, unpinMutation]);
 
   if (isLoading) {
     return (
-      <div className="space-y-4">
-        <div className="glass-card h-12 animate-pulse" />
-        <div className="glass-card h-96 animate-pulse" />
-      </div>
+      <m.div initial={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.16 }}>
+        <PageViewSkeleton />
+      </m.div>
     );
   }
 
   if (!page) {
     return (
-      <div className="glass-card flex flex-col items-center justify-center py-16">
-        <FileText size={48} className="mb-4 text-muted-foreground" />
-        <p className="text-lg font-medium">Page not found</p>
-        <button onClick={() => navigate('/pages')} className="mt-4 text-sm text-primary hover:underline">
-          Back to pages
+      <div className="glass-card flex min-h-[18rem] flex-col items-center justify-center gap-3 py-16 text-center">
+        <FileText size={42} className="text-muted-foreground" />
+        <h1 className="text-xl font-semibold text-foreground">Article not found</h1>
+        <p className="max-w-md text-sm text-muted-foreground">
+          The selected page is unavailable or no longer accessible in the synced space tree.
+        </p>
+        <button
+          onClick={() => navigate('/')}
+          className="rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+        >
+          Return to pages
         </button>
       </div>
     );
   }
 
+  const pageKindLabel = page.hasChildren ? 'Folder Article' : 'Article';
+
   return (
     <m.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      className="space-y-4"
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.18 }}
+      className="space-y-5"
+      data-testid="article-page"
     >
-      {/* Top bar */}
-      <div className="flex items-center justify-between gap-4">
-        <div className="flex items-center gap-3 min-w-0">
-          <button onClick={() => navigate('/pages')} className="rounded p-1.5 text-muted-foreground hover:bg-foreground/5">
-            <ArrowLeft size={18} />
-          </button>
-          {editing ? (
-            <input
-              value={editTitle}
-              onChange={(e) => setEditTitle(e.target.value)}
-              className="flex-1 rounded-md bg-foreground/5 px-3 py-1.5 text-lg font-bold outline-none focus:ring-1 focus:ring-primary"
-            />
-          ) : (
-            <h1 className="truncate text-xl font-bold">{page.title}</h1>
-          )}
+      <section className="overflow-hidden rounded-[32px] border border-border/60 bg-card/75 shadow-sm backdrop-blur-xl">
+        <div className="relative overflow-hidden px-5 py-6 sm:px-7 sm:py-7">
+          <div className="absolute inset-x-0 top-0 h-28 bg-[radial-gradient(circle_at_top_left,var(--color-primary)/0.18,transparent_65%)]" />
+
+          <div className="relative flex flex-col gap-5">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div className="min-w-0 space-y-3">
+                {editing ? (
+                  <input
+                    value={editTitle}
+                    onChange={(event) => setEditTitle(event.target.value)}
+                    className="w-full rounded-2xl border border-border/60 bg-background/60 px-4 py-3 text-2xl font-semibold text-foreground outline-none ring-offset-0 transition-colors focus:border-primary"
+                  />
+                ) : (
+                  <h1 className="text-balance text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
+                    {page.title}
+                  </h1>
+                )}
+
+                <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-background/55 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.24em]">
+                    {page.hasChildren ? <FolderOpen size={12} /> : <FileText size={12} />}
+                    {pageKindLabel}
+                  </span>
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.24em]">{page.spaceKey}</span>
+                  {page.lastModifiedAt ? <FreshnessBadge lastModified={page.lastModifiedAt} /> : null}
+                  <EmbeddingStatusBadge
+                    embeddingStatus={page.embeddingStatus}
+                    embeddingDirty={page.embeddingDirty}
+                    embeddedAt={page.embeddedAt}
+                    embeddingError={page.embeddingError}
+                  />
+                  {page.author ? (
+                    <span className="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-background/45 px-3 py-1">
+                      <User size={12} />
+                      {page.author}
+                    </span>
+                  ) : null}
+                  <span className="rounded-full border border-border/60 bg-background/45 px-3 py-1">
+                    v{page.version}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <button
+                  onClick={() => navigate('/')}
+                  className="rounded-xl border border-border/60 bg-background/55 px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+                >
+                  <span className="inline-flex items-center gap-2">
+                    <ArrowLeft size={14} />
+                    Library
+                  </span>
+                </button>
+
+                <button
+                  onClick={handlePinToggle}
+                  className={cn(
+                    'rounded-xl border border-border/60 px-3 py-2 text-sm transition-colors',
+                    isPinned
+                      ? 'bg-primary/12 text-primary hover:bg-primary/18'
+                      : 'bg-background/55 text-muted-foreground hover:bg-background hover:text-foreground',
+                  )}
+                  aria-label={isPinned ? 'Unpin article' : 'Pin article'}
+                >
+                  <span className="inline-flex items-center gap-2">
+                    <Pin size={14} className={cn(isPinned && 'fill-current')} />
+                    {isPinned ? 'Pinned' : 'Pin'}
+                  </span>
+                </button>
+
+                {settings?.confluenceUrl ? (
+                  <a
+                    href={`${settings.confluenceUrl}/pages/viewpage.action?pageId=${encodeURIComponent(id ?? '')}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="rounded-xl border border-border/60 bg-background/55 px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+                  >
+                    <span className="inline-flex items-center gap-2">
+                      Confluence
+                      <ExternalLink size={14} />
+                    </span>
+                  </a>
+                ) : null}
+
+                {editing ? (
+                  <>
+                    <button
+                      onClick={handleCancelEditing}
+                      className="rounded-xl border border-border/60 bg-background/55 px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+                    >
+                      <span className="inline-flex items-center gap-2">
+                        <X size={14} />
+                        Cancel
+                      </span>
+                    </button>
+                    <button
+                      onClick={handleSave}
+                      disabled={updateMutation.isPending}
+                      className="rounded-xl bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      <span className="inline-flex items-center gap-2">
+                        <Save size={14} />
+                        {updateMutation.isPending ? 'Saving…' : 'Save'}
+                      </span>
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      onClick={handleStartEditing}
+                      className="rounded-xl border border-border/60 bg-background/55 px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+                    >
+                      Edit
+                    </button>
+                    <button
+                      onClick={handleDelete}
+                      className="rounded-xl border border-destructive/30 bg-destructive/8 px-3 py-2 text-sm text-destructive transition-colors hover:bg-destructive/12"
+                    >
+                      <span className="inline-flex items-center gap-2">
+                        <Trash2 size={14} />
+                        Delete
+                      </span>
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {page.labels.length > 0 ? (
+              <div className="flex flex-wrap gap-2">
+                {page.labels.map((label) => (
+                  <span
+                    key={label}
+                    className="rounded-full border border-border/60 bg-background/45 px-3 py-1 text-xs font-medium text-muted-foreground"
+                  >
+                    {label}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+
+            {page.hasChildren ? (
+              <div className="rounded-2xl border border-primary/15 bg-primary/6 px-4 py-3 text-sm text-muted-foreground">
+                This folder is also a readable article. Select any child page in the left tree to move through the hierarchy without leaving the reader.
+              </div>
+            ) : null}
+          </div>
         </div>
+      </section>
 
-        <div className="flex shrink-0 gap-2">
-          {editing ? (
-            <>
-              <button
-                onClick={cancelEditing}
-                className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
-              >
-                <X size={14} /> Cancel
-              </button>
-              <button
-                onClick={handleSave}
-                disabled={updateMutation.isPending}
-                className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-              >
-                <Save size={14} /> {updateMutation.isPending ? 'Saving...' : 'Save'}
-              </button>
-            </>
-          ) : (
-            <>
-              <AutoTagger
-                pageId={id!}
-                currentLabels={page.labels}
-                model="qwen3:latest"
-              />
-              <button
-                onClick={() => navigate(`/ai?pageId=${id}`)}
-                className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
-              >
-                <Wand2 size={14} /> AI Improve
-              </button>
-              <button
-                onClick={startEditing}
-                className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
-              >
-                <Edit3 size={14} /> Edit
-              </button>
-              <button
-                onClick={handleDelete}
-                className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm text-destructive hover:bg-destructive/10"
-              >
-                <Trash2 size={14} />
-              </button>
-            </>
-          )}
-        </div>
-      </div>
-
-      {/* Metadata */}
-      <div className="glass-card flex flex-wrap items-center gap-4 px-4 py-3 text-sm text-muted-foreground">
-        <span className="rounded bg-primary/10 px-2 py-0.5 text-xs text-primary">{page.spaceKey}</span>
-        {page.lastModifiedAt && (
-          <FreshnessBadge lastModified={page.lastModifiedAt} />
-        )}
-        {page.author && (
-          <span className="flex items-center gap-1"><User size={12} /> {page.author}</span>
-        )}
-        {page.lastModifiedAt && (
-          <span className="flex items-center gap-1">
-            <Clock size={12} /> {new Date(page.lastModifiedAt).toLocaleString()}
-          </span>
-        )}
-        <span className="text-xs">v{page.version}</span>
-        <TagEditor pageId={id!} labels={page.labels} editing={editing} />
-        {settings?.confluenceUrl && (
-          <a
-            href={`${settings.confluenceUrl}/pages/viewpage.action?pageId=${encodeURIComponent(id!)}`}
-            target="_blank"
-            rel="noreferrer"
-            className="ml-auto flex items-center gap-1 text-primary hover:underline"
-          >
-            Open in Confluence <ExternalLink size={12} />
-          </a>
-        )}
-      </div>
-
-      {/* Content with optional Table of Contents */}
       {editing ? (
-        <Editor content={editHtml} onChange={setEditHtml} draftKey={draftKey} />
+        <section className="overflow-hidden rounded-[32px] border border-border/60 bg-card/75 shadow-sm backdrop-blur-xl">
+          <FeatureErrorBoundary featureName="Editor">
+            <Editor content={editHtml} onChange={setEditHtml} draftKey={draftKey} />
+          </FeatureErrorBoundary>
+        </section>
       ) : (
-        <>
-          <div className="flex gap-4">
-            <div className="glass-card flex-1 overflow-hidden" ref={contentRef}>
+        <div
+          className={cn(
+            'grid items-start gap-4',
+            outlineOpen ? 'xl:grid-cols-[minmax(0,1fr)_20rem]' : 'xl:grid-cols-[minmax(0,1fr)_3rem]',
+          )}
+        >
+          <section
+            ref={contentRef}
+            className="overflow-hidden rounded-[32px] border border-border/60 bg-card/75 shadow-sm backdrop-blur-xl"
+            data-testid="article-content-shell"
+          >
+            <FeatureErrorBoundary featureName="Article Viewer">
               <ArticleViewer
                 content={page.bodyHtml}
                 onImageClick={handleImageClick}
-                confluenceUrl={settings?.confluenceUrl}
+                onHeadingsReady={setHeadings}
                 pageId={id}
-                onHeadingsReady={setTocHeadings}
+                confluenceUrl={settings?.confluenceUrl}
+                className="px-5 py-6 sm:px-7 sm:py-8"
               />
-            </div>
-            <div className="hidden w-64 shrink-0 space-y-4 lg:block sticky top-4 self-start max-h-[calc(100vh-2rem)] overflow-y-auto">
-              <TableOfContents headings={tocHeadings} contentRef={contentRef} />
-              <VersionHistory pageId={id!} currentBodyText={page.bodyText} model="qwen3:latest" />
-              <DuplicateDetector pageId={id!} pageTitle={page.title} />
-            </div>
-          </div>
-          <FlowchartGenerator pageId={id!} bodyHtml={page.bodyHtml} pageTitle={page.title} pageVersion={page.version} />
-        </>
+            </FeatureErrorBoundary>
+          </section>
+
+          <ArticleOutline
+            headings={headings}
+            contentRef={contentRef}
+            pageId={id}
+            isOpen={outlineOpen}
+            onToggle={() => setOutlineOpen((current) => !current)}
+          />
+        </div>
       )}
 
-      {/* Image lightbox */}
       <AnimatePresence>
-        {lightboxSrc && (
+        {lightboxSrc ? (
           <ImageLightbox
-            src={lightboxSrc.src}
             alt={lightboxSrc.alt}
-            onClose={closeLightbox}
+            onClose={handleCloseLightbox}
+            src={lightboxSrc.src}
           />
-        )}
+        ) : null}
       </AnimatePresence>
     </m.div>
   );

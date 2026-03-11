@@ -1,4 +1,7 @@
 import { request } from 'undici';
+import { createWriteStream } from 'fs';
+import { pipeline } from 'stream/promises';
+import { unlink } from 'fs/promises';
 import { validateUrl } from '../utils/ssrf-guard.js';
 import { logger } from '../utils/logger.js';
 import { confluenceDispatcher } from '../utils/tls-config.js';
@@ -43,17 +46,36 @@ interface PaginatedResponse<T> {
   _links?: { next?: string };
 }
 
+export interface RetryOptions {
+  /** Maximum number of attempts (including the first). Default: 3 */
+  maxAttempts?: number;
+  /** Base delay in milliseconds before the first retry. Default: 1000 */
+  baseDelay?: number;
+}
+
+export interface ConfluenceClientOptions {
+  /** Retry configuration for transient errors. */
+  retry?: RetryOptions;
+}
+
 export class ConfluenceClient {
   private baseUrl: string;
   private pat: string;
+  private retryOpts: RetryOptions;
 
-  constructor(baseUrl: string, pat: string) {
+  constructor(baseUrl: string, pat: string, options?: ConfluenceClientOptions) {
     // Remove trailing slash
     this.baseUrl = baseUrl.replace(/\/+$/, '');
     this.pat = pat;
+    this.retryOpts = options?.retry ?? {};
   }
 
-  private async fetch<T>(path: string, options: {
+  /**
+   * Single-attempt HTTP request to the Confluence REST API.
+   * On transient errors (429, 502, 503, 504), throws a ConfluenceError
+   * with `retryAfterMs` populated from the Retry-After header when present.
+   */
+  private async fetchOnce<T>(path: string, options: {
     method?: string;
     body?: unknown;
     signal?: AbortSignal;
@@ -83,7 +105,7 @@ export class ConfluenceClient {
       opts.dispatcher = confluenceDispatcher;
     }
 
-    const { statusCode, body: responseBody } = await request(url, opts as Parameters<typeof request>[1]);
+    const { statusCode, headers: responseHeaders, body: responseBody } = await request(url, opts as Parameters<typeof request>[1]);
 
     const text = await responseBody.text();
 
@@ -108,10 +130,29 @@ export class ConfluenceClient {
         detail = text.slice(0, 200);
       }
       const suffix = detail ? `: ${detail}` : '';
-      throw new ConfluenceError(`Confluence API error: HTTP ${statusCode}${suffix}`, statusCode);
+      const error = new ConfluenceError(`Confluence API error: HTTP ${statusCode}${suffix}`, statusCode);
+
+      // Attach Retry-After delay for 429 responses so the retry wrapper can honour it
+      if (statusCode === 429) {
+        error.retryAfterMs = parseRetryAfter(responseHeaders['retry-after']);
+      }
+
+      throw error;
     }
 
     return JSON.parse(text) as T;
+  }
+
+  /**
+   * HTTP request with automatic retry on transient errors.
+   * Wraps `fetchOnce` with exponential backoff (max 3 attempts).
+   */
+  private async fetch<T>(path: string, options: {
+    method?: string;
+    body?: unknown;
+    signal?: AbortSignal;
+  } = {}): Promise<T> {
+    return withRetry(() => this.fetchOnce<T>(path, options), this.retryOpts);
   }
 
   async getSpaces(start = 0, limit = 100): Promise<PaginatedResponse<ConfluenceSpace>> {
@@ -146,12 +187,36 @@ export class ConfluenceClient {
   }
 
   async getPageAttachments(pageId: string): Promise<PaginatedResponse<ConfluenceAttachment>> {
-    return this.fetch(
-      `/rest/api/content/${encodeURIComponent(pageId)}/child/attachment?limit=100`,
-    );
+    const limit = 100;
+    const allResults: ConfluenceAttachment[] = [];
+    let start = 0;
+
+    while (true) {
+      const page = await this.fetch<PaginatedResponse<ConfluenceAttachment>>(
+        `/rest/api/content/${encodeURIComponent(pageId)}/child/attachment?limit=${limit}&start=${start}`,
+      );
+      allResults.push(...page.results);
+      if (page.results.length < limit) break;
+      start += limit;
+    }
+
+    return {
+      results: allResults,
+      start: 0,
+      limit,
+      size: allResults.length,
+    };
   }
 
   async downloadAttachment(downloadPath: string): Promise<Buffer> {
+    return withRetry(() => this.downloadAttachmentOnce(downloadPath), this.retryOpts);
+  }
+
+  /**
+   * Single-attempt attachment download. Separated from `downloadAttachment`
+   * so that `withRetry` can re-execute the full HTTP request on transient failures.
+   */
+  private async downloadAttachmentOnce(downloadPath: string): Promise<Buffer> {
     const url = `${this.baseUrl}${downloadPath}`;
 
     // SSRF protection: validate URL before download
@@ -165,10 +230,14 @@ export class ConfluenceClient {
       opts.dispatcher = confluenceDispatcher;
     }
 
-    const { statusCode, body } = await request(url, opts as Parameters<typeof request>[1]);
+    const { statusCode, headers: responseHeaders, body } = await request(url, opts as Parameters<typeof request>[1]);
 
     if (statusCode !== 200) {
-      throw new ConfluenceError(`Failed to download attachment: HTTP ${statusCode}`, statusCode);
+      const error = new ConfluenceError(`Failed to download attachment: HTTP ${statusCode}`, statusCode);
+      if (statusCode === 429) {
+        error.retryAfterMs = parseRetryAfter(responseHeaders['retry-after']);
+      }
+      throw error;
     }
 
     const chunks: Buffer[] = [];
@@ -176,6 +245,93 @@ export class ConfluenceClient {
       chunks.push(Buffer.from(chunk));
     }
     return Buffer.concat(chunks);
+  }
+
+  /**
+   * Stream an attachment directly to a file on disk instead of buffering in memory.
+   * Enforces a maximum file size to prevent disk exhaustion.
+   * Cleans up partial files on error.
+   *
+   * @param downloadPath - The Confluence download path (e.g. /download/attachments/123/file.pdf)
+   * @param outputPath - Local filesystem path to write the file to
+   * @param maxSizeBytes - Maximum allowed file size in bytes (default 50 MB)
+   */
+  async downloadAttachmentToFile(
+    downloadPath: string,
+    outputPath: string,
+    maxSizeBytes = 50 * 1024 * 1024,
+  ): Promise<void> {
+    const url = `${this.baseUrl}${downloadPath}`;
+
+    // SSRF protection: validate URL before download
+    validateUrl(url);
+
+    const opts: Record<string, unknown> = {
+      headers: { 'Authorization': `Bearer ${this.pat}` },
+      signal: AbortSignal.timeout(120_000),
+    };
+    if (confluenceDispatcher) {
+      opts.dispatcher = confluenceDispatcher;
+    }
+
+    const { statusCode, headers, body } = await request(url, opts as Parameters<typeof request>[1]);
+
+    if (statusCode !== 200) {
+      // Drain the body to release the socket
+      body.destroy();
+      throw new ConfluenceError(`Failed to download attachment: HTTP ${statusCode}`, statusCode);
+    }
+
+    // Check Content-Length header upfront if available
+    const contentLengthHeader = headers['content-length'];
+    const contentLength = typeof contentLengthHeader === 'string'
+      ? parseInt(contentLengthHeader, 10)
+      : 0;
+    if (contentLength > maxSizeBytes) {
+      body.destroy();
+      throw new AttachmentTooLargeError(
+        `Attachment too large: ${contentLength} bytes exceeds limit of ${maxSizeBytes} bytes`,
+        contentLength,
+        maxSizeBytes,
+      );
+    }
+
+    // Stream to disk with size tracking
+    let bytesWritten = 0;
+    const writeStream = createWriteStream(outputPath);
+
+    try {
+      await pipeline(
+        body,
+        async function* (source) {
+          for await (const chunk of source) {
+            bytesWritten += chunk.length;
+            if (bytesWritten > maxSizeBytes) {
+              throw new AttachmentTooLargeError(
+                `Attachment too large: exceeded limit of ${maxSizeBytes} bytes during download`,
+                bytesWritten,
+                maxSizeBytes,
+              );
+            }
+            yield chunk;
+          }
+        },
+        writeStream,
+      );
+    } catch (err) {
+      // Clean up partial file on any error
+      try {
+        await unlink(outputPath);
+      } catch {
+        // File may not exist if write never started
+      }
+      throw err;
+    }
+
+    logger.debug(
+      { downloadPath, outputPath, bytesWritten },
+      'Streamed attachment to file',
+    );
   }
 
   async searchPages(cql: string, start = 0, limit = 50): Promise<PaginatedResponse<ConfluencePage>> {
@@ -278,6 +434,57 @@ export class ConfluenceClient {
     }
   }
 
+  async getChildPages(parentId: string, start = 0, limit = 50): Promise<PaginatedResponse<ConfluencePage>> {
+    return this.fetch(
+      `/rest/api/content/${encodeURIComponent(parentId)}/child/page?start=${start}&limit=${limit}&expand=version,ancestors,metadata.labels,body.storage`,
+    );
+  }
+
+  async getAllChildPages(parentId: string): Promise<ConfluencePage[]> {
+    const pages: ConfluencePage[] = [];
+    let start = 0;
+    const limit = 50;
+
+    while (true) {
+      const response = await this.getChildPages(parentId, start, limit);
+      pages.push(...response.results);
+      if (response.size < limit || !response._links?.next) break;
+      start += limit;
+    }
+
+    return pages;
+  }
+
+  /**
+   * Recursively fetch all descendant pages of a given parent page.
+   * Returns the flat list of all descendants (not including the parent itself).
+   * @param maxPages - Maximum number of descendant pages to return (default 200).
+   *                   Prevents runaway traversal on large page trees.
+   */
+  async getDescendantPages(parentId: string, maxPages = 200): Promise<ConfluencePage[]> {
+    const allDescendants: ConfluencePage[] = [];
+    const queue: string[] = [parentId];
+
+    while (queue.length > 0) {
+      if (allDescendants.length >= maxPages) {
+        logger.warn({ parentId, maxPages, collected: allDescendants.length }, 'getDescendantPages hit maxPages limit');
+        break;
+      }
+      const currentId = queue.shift()!;
+      const children = await this.getAllChildPages(currentId);
+      for (const child of children) {
+        allDescendants.push(child);
+        if (allDescendants.length >= maxPages) {
+          logger.warn({ parentId, maxPages, collected: allDescendants.length }, 'getDescendantPages hit maxPages limit');
+          break;
+        }
+        queue.push(child.id);
+      }
+    }
+
+    return allDescendants;
+  }
+
   async getAllPagesInSpace(spaceKey: string): Promise<ConfluencePage[]> {
     const pages: ConfluencePage[] = [];
     let start = 0;
@@ -294,7 +501,37 @@ export class ConfluenceClient {
   }
 }
 
+/**
+ * Parses the HTTP `Retry-After` header value into milliseconds.
+ * Supports both delay-seconds (e.g. "5") and HTTP-date formats.
+ * Returns `undefined` if the header is missing or unparseable.
+ */
+export function parseRetryAfter(header: string | string[] | undefined): number | undefined {
+  if (header == null) return undefined;
+  const value = Array.isArray(header) ? header[0] : header;
+  if (!value) return undefined;
+
+  // Try numeric seconds first (most common for 429 responses)
+  const seconds = Number(value);
+  if (!Number.isNaN(seconds)) {
+    // Negative values are invalid per RFC 7231; treat as unparseable
+    return seconds >= 0 ? seconds * 1000 : undefined;
+  }
+
+  // Try HTTP-date (e.g. "Wed, 21 Oct 2015 07:28:00 GMT")
+  const date = new Date(value);
+  if (!Number.isNaN(date.getTime())) {
+    const delayMs = date.getTime() - Date.now();
+    return delayMs > 0 ? delayMs : 0;
+  }
+
+  return undefined;
+}
+
 export class ConfluenceError extends Error {
+  /** Parsed Retry-After value in milliseconds (present on 429 responses) */
+  public retryAfterMs?: number;
+
   constructor(
     message: string,
     public statusCode: number,
@@ -302,6 +539,88 @@ export class ConfluenceError extends Error {
     super(message);
     this.name = 'ConfluenceError';
   }
+}
+
+export class AttachmentTooLargeError extends Error {
+  constructor(
+    message: string,
+    public actualSize: number,
+    public maxSize: number,
+  ) {
+    super(message);
+    this.name = 'AttachmentTooLargeError';
+  }
+}
+
+/** Status codes that indicate a transient server-side or proxy error worth retrying. */
+const TRANSIENT_STATUS_CODES = new Set([429, 502, 503, 504]);
+
+/**
+ * Determines whether an error is transient and the request should be retried.
+ * Returns true for:
+ *  - ConfluenceError with status 429, 502, 503, or 504
+ *  - Network-level errors (ECONNRESET, ETIMEDOUT, UND_ERR_CONNECT_TIMEOUT)
+ * Returns false for client errors (400, 401, 403, 404) and other non-transient failures.
+ */
+export function isTransientError(err: unknown): boolean {
+  if (err instanceof ConfluenceError) {
+    return TRANSIENT_STATUS_CODES.has(err.statusCode);
+  }
+  if (err instanceof Error) {
+    const msg = err.message;
+    return (
+      msg.includes('ECONNRESET') ||
+      msg.includes('ETIMEDOUT') ||
+      msg.includes('UND_ERR_CONNECT_TIMEOUT')
+    );
+  }
+  return false;
+}
+
+/**
+ * Retries an async operation with exponential backoff and jitter.
+ *
+ * Delay formula: `baseDelay * 2^attempt + random(0..500)ms`
+ * For 429 responses with a Retry-After header, the server-specified delay is used instead.
+ */
+export async function withRetry<T>(
+  fn: () => Promise<T>,
+  opts?: RetryOptions,
+): Promise<T> {
+  const { maxAttempts = 3, baseDelay = 1000 } = opts ?? {};
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const isLastAttempt = attempt === maxAttempts - 1;
+      if (isLastAttempt || !isTransientError(err)) {
+        throw err;
+      }
+
+      // Use Retry-After header delay if the server provided one (429 responses)
+      let delay: number;
+      if (err instanceof ConfluenceError && err.retryAfterMs != null) {
+        delay = err.retryAfterMs;
+      } else {
+        delay = baseDelay * Math.pow(2, attempt) + Math.random() * 500;
+      }
+
+      logger.warn(
+        {
+          attempt: attempt + 1,
+          maxAttempts,
+          delayMs: Math.round(delay),
+          error: err instanceof Error ? err.message : String(err),
+        },
+        'Confluence API transient error, retrying',
+      );
+
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+  // TypeScript requires a return; this line is unreachable because the last
+  // iteration always throws (isLastAttempt === true).
+  throw new Error('withRetry: unreachable');
 }
 
 export type { ConfluenceSpace, ConfluencePage, ConfluenceAttachment, PaginatedResponse };

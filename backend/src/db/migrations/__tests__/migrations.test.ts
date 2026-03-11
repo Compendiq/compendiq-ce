@@ -34,6 +34,33 @@ describe.skipIf(!dbAvailable)('Database migrations', () => {
     expect(names).toContain('012_error_log.sql');
     expect(names).toContain('013_search_analytics.sql');
     expect(names).toContain('014_page_versions.sql');
+    expect(names).toContain('019_add_performance_indexes.sql');
+  });
+
+  describe('performance indexes (migration 019)', () => {
+    it('should have idx_cached_pages_dirty_modified composite index', async () => {
+      const result = await query<{ indexname: string; indexdef: string }>(
+        `SELECT indexname, indexdef FROM pg_indexes
+         WHERE tablename = 'cached_pages'
+         AND indexname = 'idx_cached_pages_dirty_modified'`,
+      );
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0].indexdef).toContain('user_id');
+      expect(result.rows[0].indexdef).toContain('embedding_dirty');
+      expect(result.rows[0].indexdef).toContain('last_modified_at');
+    });
+
+    it('should have idx_cached_pages_space_modified composite index', async () => {
+      const result = await query<{ indexname: string; indexdef: string }>(
+        `SELECT indexname, indexdef FROM pg_indexes
+         WHERE tablename = 'cached_pages'
+         AND indexname = 'idx_cached_pages_space_modified'`,
+      );
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0].indexdef).toContain('user_id');
+      expect(result.rows[0].indexdef).toContain('space_key');
+      expect(result.rows[0].indexdef).toContain('last_modified_at');
+    });
   });
 
   describe('required tables exist', () => {

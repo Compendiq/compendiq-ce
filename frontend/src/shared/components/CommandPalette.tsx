@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { m, AnimatePresence } from 'framer-motion';
 import {
   Search, FileText, Plus, Settings, Bot, RefreshCw,
-  Clock, ArrowRight,
+  Clock, ArrowRight, Sparkles,
 } from 'lucide-react';
 import { useCommandPaletteStore } from '../../stores/command-palette-store';
 import { apiFetch } from '../lib/api';
@@ -48,7 +48,8 @@ function addRecentSearch(term: string) {
 }
 
 export function CommandPalette() {
-  const { isOpen, close } = useCommandPaletteStore();
+  const isOpen = useCommandPaletteStore((s) => s.isOpen);
+  const close = useCommandPaletteStore((s) => s.close);
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -58,6 +59,10 @@ export function CommandPalette() {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // AI mode: activated when query starts with "/ai"
+  const isAiMode = query.trimStart().toLowerCase().startsWith('/ai');
+  const aiQuery = isAiMode ? query.trimStart().slice(3).trim() : '';
 
   // Load recent searches when opened
   useEffect(() => {
@@ -73,9 +78,9 @@ export function CommandPalette() {
     }
   }, [isOpen]);
 
-  // Search pages with debounce
+  // Search pages with debounce (skip in AI mode)
   useEffect(() => {
-    if (!query.trim()) {
+    if (!query.trim() || isAiMode) {
       setResults([]);
       setSelectedIndex(0);
       return;
@@ -99,13 +104,21 @@ export function CommandPalette() {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [query]);
+  }, [query, isAiMode]);
 
   // Build combined items list for keyboard navigation
   const allItems = useMemo(() => {
-    const items: Array<{ id: string; type: 'result' | 'action' | 'recent'; label: string; path?: string }> = [];
+    const items: Array<{ id: string; type: 'result' | 'action' | 'recent' | 'ai'; label: string; path?: string }> = [];
 
-    if (query.trim()) {
+    if (isAiMode) {
+      // In AI mode, show "Ask AI" as the prominent first result
+      items.push({
+        id: 'ai-ask',
+        type: 'ai',
+        label: aiQuery ? `Ask AI: ${aiQuery}` : 'Ask AI',
+        path: '/ai',
+      });
+    } else if (query.trim()) {
       results.forEach((r) => {
         items.push({ id: `result-${r.id}`, type: 'result', label: r.title, path: `/pages/${r.id}` });
       });
@@ -117,12 +130,14 @@ export function CommandPalette() {
       });
     }
 
-    QUICK_ACTIONS.forEach((a) => {
-      items.push({ id: a.id, type: 'action', label: a.label, path: a.path });
-    });
+    if (!isAiMode) {
+      QUICK_ACTIONS.forEach((a) => {
+        items.push({ id: a.id, type: 'action', label: a.label, path: a.path });
+      });
+    }
 
     return items;
-  }, [query, results, recentSearches]);
+  }, [query, results, recentSearches, isAiMode, aiQuery]);
 
   const handleSelect = useCallback((index: number) => {
     const item = allItems[index];
@@ -184,18 +199,31 @@ export function CommandPalette() {
             role="dialog"
             aria-label="Command palette"
           >
-            <div className="glass-card overflow-hidden shadow-2xl">
+            <div className={cn(
+              'glass-card overflow-hidden shadow-2xl transition-shadow duration-200',
+              isAiMode && 'shadow-[0_0_30px_-5px_rgba(168,85,247,0.4)] ring-1 ring-purple-500/30',
+            )}>
               {/* Search input */}
-              <div className="flex items-center gap-3 border-b border-border/50 px-4 py-3">
-                <Search size={18} className="text-muted-foreground" />
+              <div className={cn(
+                'flex items-center gap-3 border-b border-border/50 px-4 py-3',
+                isAiMode && 'border-purple-500/30',
+              )}>
+                {isAiMode ? (
+                  <Sparkles size={18} className="text-purple-400" />
+                ) : (
+                  <Search size={18} className="text-muted-foreground" />
+                )}
                 <input
                   ref={inputRef}
                   type="text"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  placeholder="Search pages or type a command..."
-                  className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+                  placeholder={isAiMode ? 'Ask AI anything...' : 'Search pages or type a command...'}
+                  className={cn(
+                    'flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground',
+                    isAiMode && 'text-purple-700 dark:text-purple-100 placeholder:text-purple-300/50',
+                  )}
                   aria-label="Search"
                 />
                 <kbd className="rounded border border-border/50 px-1.5 py-0.5 text-[10px] text-muted-foreground">
@@ -205,8 +233,34 @@ export function CommandPalette() {
 
               {/* Results */}
               <div className="max-h-80 overflow-y-auto p-2">
+                {/* AI mode result */}
+                {isAiMode && (
+                  <div className="mb-2">
+                    <p className="mb-1 px-2 text-[11px] font-medium uppercase tracking-wider text-purple-400">
+                      AI Assistant
+                    </p>
+                    <button
+                      onClick={() => handleSelect(0)}
+                      onMouseEnter={() => setSelectedIndex(0)}
+                      data-testid="ai-mode-ask-button"
+                      className={cn(
+                        'flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-sm transition-colors',
+                        selectedIndex === 0
+                          ? 'bg-purple-500/20 text-purple-300'
+                          : 'text-foreground hover:bg-purple-500/10',
+                      )}
+                    >
+                      <Sparkles size={14} className="shrink-0 text-purple-400" />
+                      <span className="font-medium">{aiQuery ? `Ask AI: ${aiQuery}` : 'Ask AI'}</span>
+                      <kbd className="ml-auto rounded border border-border/50 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                        Enter
+                      </kbd>
+                    </button>
+                  </div>
+                )}
+
                 {/* Search results */}
-                {query.trim() && results.length > 0 && (
+                {query.trim() && !isAiMode && results.length > 0 && (
                   <div className="mb-2">
                     <p className="mb-1 px-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
                       Pages
@@ -235,14 +289,14 @@ export function CommandPalette() {
                 )}
 
                 {/* Loading indicator */}
-                {isSearching && (
+                {isSearching && !isAiMode && (
                   <div className="flex items-center justify-center py-4 text-sm text-muted-foreground">
                     Searching...
                   </div>
                 )}
 
                 {/* No results */}
-                {query.trim() && !isSearching && results.length === 0 && (
+                {query.trim() && !isAiMode && !isSearching && results.length === 0 && (
                   <div className="py-4 text-center text-sm text-muted-foreground">
                     No pages found
                   </div>
@@ -277,41 +331,49 @@ export function CommandPalette() {
                   </div>
                 )}
 
-                {/* Quick actions */}
-                <div>
-                  <p className="mb-1 px-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-                    Quick Actions
-                  </p>
-                  {QUICK_ACTIONS.map((action, i) => {
-                    const baseIdx = query.trim()
-                      ? results.length + i
-                      : recentSearches.length + i;
-                    const Icon = action.icon;
-                    return (
-                      <button
-                        key={action.id}
-                        onClick={() => handleSelect(baseIdx)}
-                        onMouseEnter={() => setSelectedIndex(baseIdx)}
-                        className={cn(
-                          'flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors',
-                          selectedIndex === baseIdx
-                            ? 'bg-primary/15 text-primary'
-                            : 'text-foreground hover:bg-foreground/5',
-                        )}
-                      >
-                        <Icon size={14} className="shrink-0" />
-                        <span>{action.label}</span>
-                      </button>
-                    );
-                  })}
-                </div>
+                {/* Quick actions (hidden in AI mode) */}
+                {!isAiMode && (
+                  <div>
+                    <p className="mb-1 px-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                      Quick Actions
+                    </p>
+                    {QUICK_ACTIONS.map((action, i) => {
+                      const baseIdx = query.trim()
+                        ? results.length + i
+                        : recentSearches.length + i;
+                      const Icon = action.icon;
+                      return (
+                        <button
+                          key={action.id}
+                          onClick={() => handleSelect(baseIdx)}
+                          onMouseEnter={() => setSelectedIndex(baseIdx)}
+                          className={cn(
+                            'flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors',
+                            selectedIndex === baseIdx
+                              ? 'bg-primary/15 text-primary'
+                              : 'text-foreground hover:bg-foreground/5',
+                          )}
+                        >
+                          <Icon size={14} className="shrink-0" />
+                          <span>{action.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
 
               {/* Footer */}
-              <div className="flex items-center gap-4 border-t border-border/50 px-4 py-2 text-[11px] text-muted-foreground">
+              <div className={cn(
+                'flex items-center gap-4 border-t border-border/50 px-4 py-2 text-[11px] text-muted-foreground',
+                isAiMode && 'border-purple-500/30',
+              )}>
                 <span><kbd className="rounded border border-border/50 px-1 py-0.5">↑↓</kbd> Navigate</span>
                 <span><kbd className="rounded border border-border/50 px-1 py-0.5">↵</kbd> Select</span>
                 <span><kbd className="rounded border border-border/50 px-1 py-0.5">esc</kbd> Close</span>
+                {!isAiMode && (
+                  <span className="ml-auto"><kbd className="rounded border border-border/50 px-1 py-0.5">/ai</kbd> AI mode</span>
+                )}
               </div>
             </div>
           </m.div>

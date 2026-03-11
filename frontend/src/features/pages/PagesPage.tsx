@@ -11,6 +11,7 @@ import { useSettings } from '../../shared/hooks/use-settings';
 import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../../shared/components/EmbeddingStatusBadge';
 import { BulkOperations } from './BulkOperations';
+import { KPICards } from './KPICards';
 import { cn } from '../../shared/lib/cn';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 
@@ -142,6 +143,13 @@ export function PagesPage() {
           </button>
         </div>
       </div>
+
+      {/* KPI Cards */}
+      <KPICards
+        embeddingStatus={embeddingStatusData}
+        spacesCount={spaces?.length ?? 0}
+        lastSynced={syncStatus?.lastSynced}
+      />
 
       {/* Sync progress */}
       {syncStatus?.status === 'syncing' && syncStatus.progress && (
@@ -403,6 +411,7 @@ export function PagesPage() {
                   'glass-card-hover flex w-full items-center gap-4 p-4 text-left',
                   selectedIds.has(pageItem.id) && 'border-primary/40 bg-primary/5',
                 )}
+                data-testid={`article-hover-${pageItem.id}`}
               >
                 {/* Checkbox for bulk selection */}
                 <button

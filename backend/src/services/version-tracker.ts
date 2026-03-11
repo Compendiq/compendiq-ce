@@ -17,9 +17,9 @@ export interface PageVersion {
 /**
  * Save a version snapshot before updating a page.
  * Called during sync to preserve the current state.
+ * Shared table (no user_id).
  */
 export async function saveVersionSnapshot(
-  userId: string,
   confluenceId: string,
   versionNumber: number,
   title: string,
@@ -28,10 +28,10 @@ export async function saveVersionSnapshot(
 ): Promise<void> {
   try {
     await query(
-      `INSERT INTO page_versions (user_id, confluence_id, version_number, title, body_html, body_text)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (user_id, confluence_id, version_number) DO NOTHING`,
-      [userId, confluenceId, versionNumber, title, bodyHtml, bodyText],
+      `INSERT INTO page_versions (confluence_id, version_number, title, body_html, body_text)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (confluence_id, version_number) DO NOTHING`,
+      [confluenceId, versionNumber, title, bodyHtml, bodyText],
     );
   } catch (err) {
     // Never let version tracking break the sync flow
@@ -41,6 +41,7 @@ export async function saveVersionSnapshot(
 
 /**
  * Get version history for a page.
+ * Access controlled via caller verifying user has access to the page's space.
  */
 export async function getVersionHistory(
   userId: string,
@@ -53,10 +54,12 @@ export async function getVersionHistory(
     title: string;
     synced_at: Date;
   }>(
-    `SELECT id, confluence_id, version_number, title, synced_at
-     FROM page_versions
-     WHERE user_id = $1 AND confluence_id = $2
-     ORDER BY version_number DESC`,
+    `SELECT pv.id, pv.confluence_id, pv.version_number, pv.title, pv.synced_at
+     FROM page_versions pv
+     JOIN cached_pages cp ON pv.confluence_id = cp.confluence_id
+     JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
+     WHERE pv.confluence_id = $2
+     ORDER BY pv.version_number DESC`,
     [userId, confluenceId],
   );
 
@@ -86,9 +89,11 @@ export async function getVersion(
     body_text: string | null;
     synced_at: Date;
   }>(
-    `SELECT id, confluence_id, version_number, title, body_html, body_text, synced_at
-     FROM page_versions
-     WHERE user_id = $1 AND confluence_id = $2 AND version_number = $3`,
+    `SELECT pv.id, pv.confluence_id, pv.version_number, pv.title, pv.body_html, pv.body_text, pv.synced_at
+     FROM page_versions pv
+     JOIN cached_pages cp ON pv.confluence_id = cp.confluence_id
+     JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
+     WHERE pv.confluence_id = $2 AND pv.version_number = $3`,
     [userId, confluenceId, versionNumber],
   );
 

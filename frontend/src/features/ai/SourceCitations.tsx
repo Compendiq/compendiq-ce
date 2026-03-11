@@ -9,6 +9,8 @@ export interface Source {
   spaceKey: string;
   confluenceId: string;
   sectionTitle?: string;
+  /** RAG similarity score (0-1 scale), used for confidence badges */
+  score?: number;
 }
 
 interface SourceCitationsProps {

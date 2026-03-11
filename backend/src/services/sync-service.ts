@@ -1,7 +1,7 @@
 import { query } from '../db/postgres.js';
 import { ConfluenceClient, ConfluencePage, ConfluenceSpace } from './confluence-client.js';
 import { confluenceToHtml, htmlToText } from './content-converter.js';
-import { syncDrawioAttachments, syncImageAttachments, cleanPageAttachments } from './attachment-handler.js';
+import { syncDrawioAttachments, syncImageAttachments, cleanPageAttachments, hasLocalAttachments } from './attachment-handler.js';
 import { saveVersionSnapshot } from './version-tracker.js';
 import { processDirtyPages } from './embedding-service.js';
 import { decryptPat } from '../utils/crypto.js';
@@ -9,7 +9,7 @@ import { logger } from '../utils/logger.js';
 
 interface SyncStatus {
   userId: string;
-  status: 'idle' | 'syncing' | 'error';
+  status: 'idle' | 'syncing' | 'embedding' | 'error';
   progress?: { current: number; total: number; space?: string };
   lastSynced?: Date;
   error?: string;
@@ -46,11 +46,12 @@ export async function syncUser(userId: string): Promise<void> {
     return;
   }
 
-  const settingsResult = await query<{ selected_spaces: string[] }>(
-    'SELECT selected_spaces FROM user_settings WHERE user_id = $1',
+  // Read selected spaces from user_space_selections
+  const settingsResult = await query<{ space_key: string }>(
+    'SELECT space_key FROM user_space_selections WHERE user_id = $1',
     [userId],
   );
-  const spaces = settingsResult.rows[0]?.selected_spaces ?? [];
+  const spaces = settingsResult.rows.map((r) => r.space_key);
   if (spaces.length === 0) {
     logger.info({ userId }, 'No spaces selected, skipping sync');
     syncStatuses.set(userId, { userId, status: 'idle' });
@@ -68,19 +69,30 @@ export async function syncUser(userId: string): Promise<void> {
       await syncSpace(client, userId, spaceKey, spacesByKey.get(spaceKey));
     }
 
-    // Trigger embedding for dirty pages asynchronously after sync
+    // Set status to 'embedding' while processing dirty pages
+    syncStatuses.set(userId, {
+      userId,
+      status: 'embedding',
+      lastSynced: new Date(),
+    });
+
+    // Trigger embedding for dirty pages; update status when complete
     processDirtyPages(userId).then(({ processed, errors }) => {
       if (processed > 0 || errors > 0) {
         logger.info({ userId, processed, errors }, 'Post-sync embedding completed');
       }
+      syncStatuses.set(userId, {
+        userId,
+        status: 'idle',
+        lastSynced: new Date(),
+      });
     }).catch((err) => {
       logger.error({ err, userId }, 'Post-sync embedding failed');
-    });
-
-    syncStatuses.set(userId, {
-      userId,
-      status: 'idle',
-      lastSynced: new Date(),
+      syncStatuses.set(userId, {
+        userId,
+        status: 'idle',
+        lastSynced: new Date(),
+      });
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
@@ -93,22 +105,22 @@ export async function syncUser(userId: string): Promise<void> {
 async function syncSpace(client: ConfluenceClient, userId: string, spaceKey: string, space?: ConfluenceSpace): Promise<void> {
   logger.info({ userId, spaceKey }, 'Syncing space');
 
-  // Upsert space metadata (uses pre-fetched space data to avoid redundant API calls)
+  // Upsert shared space metadata (no user_id)
   if (space) {
     const homepageId = space.homepage?.id ?? null;
     await query(
-      `INSERT INTO cached_spaces (user_id, space_key, space_name, homepage_id)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (user_id, space_key)
-       DO UPDATE SET space_name = $3, homepage_id = $4, last_synced = NOW()`,
-      [userId, spaceKey, space.name, homepageId],
+      `INSERT INTO cached_spaces (space_key, space_name, homepage_id)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (space_key)
+       DO UPDATE SET space_name = $2, homepage_id = $3, last_synced = NOW()`,
+      [spaceKey, space.name, homepageId],
     );
   }
 
-  // Check last sync time for incremental sync
+  // Check last sync time for incremental sync (global, not per-user)
   const lastSyncResult = await query<{ last_synced: Date }>(
-    'SELECT last_synced FROM cached_spaces WHERE user_id = $1 AND space_key = $2',
-    [userId, spaceKey],
+    'SELECT last_synced FROM cached_spaces WHERE space_key = $1',
+    [spaceKey],
   );
   const lastSynced = lastSyncResult.rows[0]?.last_synced;
 
@@ -138,13 +150,13 @@ async function syncSpace(client: ConfluenceClient, userId: string, spaceKey: str
 
   // Detect deleted pages (only during full sync)
   if (!lastSynced || (Date.now() - lastSynced.getTime()) >= 24 * 60 * 60 * 1000) {
-    await detectDeletedPages(client, userId, spaceKey, pages);
+    await detectDeletedPages(client, spaceKey, pages);
   }
 
-  // Update space sync timestamp
+  // Update space sync timestamp (shared table)
   await query(
-    'UPDATE cached_spaces SET last_synced = NOW() WHERE user_id = $1 AND space_key = $2',
-    [userId, spaceKey],
+    'UPDATE cached_spaces SET last_synced = NOW() WHERE space_key = $1',
+    [spaceKey],
   );
 }
 
@@ -162,32 +174,47 @@ async function syncPage(
   const bodyHtml = confluenceToHtml(bodyStorage, page.id);
   const bodyText = htmlToText(bodyHtml);
 
-  // Fetch attachments once, pass to both sync functions to avoid duplicate API calls
-  const { results: attachments } = await client.getPageAttachments(page.id);
-  await syncDrawioAttachments(client, userId, page.id, bodyStorage, attachments);
-  await syncImageAttachments(client, userId, page.id, bodyStorage, attachments);
-
   // Extract metadata
   const labels = page.metadata?.labels?.results?.map((l) => l.name) ?? [];
   const parentId = page.ancestors?.length ? page.ancestors[page.ancestors.length - 1].id : null;
   const author = page.version?.by?.displayName ?? null;
   const lastModified = page.version?.when ? new Date(page.version.when) : new Date();
 
-  // Check if page exists and has changed
+  // Check if page exists and has changed (shared table, no user_id)
   const existing = await query<{ version: number; title: string; body_html: string; body_text: string }>(
-    'SELECT version, title, body_html, body_text FROM cached_pages WHERE user_id = $1 AND confluence_id = $2',
-    [userId, page.id],
+    'SELECT version, title, body_html, body_text FROM cached_pages WHERE confluence_id = $1',
+    [page.id],
   );
 
   if (existing.rows.length > 0 && existing.rows[0].version >= page.version.number) {
-    // Page hasn't changed
+    // Page content hasn't changed, but check if attachments were cached.
+    // If a previous sync failed to download attachments (transient errors),
+    // retry attachment sync even though the page version is the same.
+    const hasAttachments = await hasLocalAttachments(userId, page.id);
+    if (hasAttachments) {
+      return;
+    }
+    logger.info({ pageId: page.id }, 'Page unchanged but attachment cache missing — re-syncing attachments');
+    const { results: attachments } = await client.getPageAttachments(page.id);
+    await syncDrawioAttachments(client, userId, page.id, bodyStorage, attachments);
+    await syncImageAttachments(client, userId, page.id, bodyStorage, attachments);
     return;
   }
+
+  // Clear stale attachment cache when an existing page has a new version,
+  // so updated diagrams/images are re-downloaded rather than served from cache.
+  if (existing.rows.length > 0) {
+    await cleanPageAttachments(userId, page.id);
+  }
+
+  // Fetch attachments once and sync after version guard to avoid API calls for unchanged pages
+  const { results: attachments } = await client.getPageAttachments(page.id);
+  await syncDrawioAttachments(client, userId, page.id, bodyStorage, attachments);
+  await syncImageAttachments(client, userId, page.id, bodyStorage, attachments);
 
   // Save current version snapshot before updating (for version history / semantic diff)
   if (existing.rows.length > 0) {
     await saveVersionSnapshot(
-      userId,
       page.id,
       existing.rows[0].version,
       existing.rows[0].title,
@@ -196,13 +223,13 @@ async function syncPage(
     );
   }
 
-  // Upsert page
+  // Upsert page (shared table, no user_id)
   await query(
     `INSERT INTO cached_pages
-       (user_id, confluence_id, space_key, title, body_storage, body_html, body_text,
+       (confluence_id, space_key, title, body_storage, body_html, body_text,
         version, parent_id, labels, author, last_modified_at, embedding_dirty)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, TRUE)
-     ON CONFLICT (user_id, confluence_id) DO UPDATE SET
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, TRUE)
+     ON CONFLICT (confluence_id) DO UPDATE SET
        title = EXCLUDED.title,
        body_storage = EXCLUDED.body_storage,
        body_html = EXCLUDED.body_html,
@@ -214,30 +241,42 @@ async function syncPage(
        last_modified_at = EXCLUDED.last_modified_at,
        last_synced = NOW(),
        embedding_dirty = TRUE`,
-    [userId, page.id, spaceKey, page.title, bodyStorage, bodyHtml, bodyText,
+    [page.id, spaceKey, page.title, bodyStorage, bodyHtml, bodyText,
      page.version.number, parentId, labels, author, lastModified],
   );
 }
 
 async function detectDeletedPages(
   _client: ConfluenceClient,
-  userId: string,
   spaceKey: string,
   currentPages: ConfluencePage[],
 ): Promise<void> {
+  // Only delete pages when exactly one user has this space selected.
+  // If multiple users share the space, one user's limited-permission sync
+  // could incorrectly delete pages still visible to another user.
+  const selectionCount = await query<{ count: string }>(
+    'SELECT COUNT(*) AS count FROM user_space_selections WHERE space_key = $1',
+    [spaceKey],
+  );
+  if (parseInt(selectionCount.rows[0]?.count ?? '0', 10) !== 1) {
+    logger.info({ spaceKey }, 'Skipping stale-page detection: space is shared by multiple users');
+    return;
+  }
+
   const currentIds = new Set(currentPages.map((p) => p.id));
 
+  // Query shared table by space_key only
   const existingResult = await query<{ confluence_id: string }>(
-    'SELECT confluence_id FROM cached_pages WHERE user_id = $1 AND space_key = $2',
-    [userId, spaceKey],
+    'SELECT confluence_id FROM cached_pages WHERE space_key = $1',
+    [spaceKey],
   );
 
   for (const { confluence_id } of existingResult.rows) {
     if (!currentIds.has(confluence_id)) {
-      logger.info({ userId, confluenceId: confluence_id }, 'Deleting stale page');
-      await query('DELETE FROM page_embeddings WHERE user_id = $1 AND confluence_id = $2', [userId, confluence_id]);
-      await query('DELETE FROM cached_pages WHERE user_id = $1 AND confluence_id = $2', [userId, confluence_id]);
-      await cleanPageAttachments(userId, confluence_id);
+      logger.info({ spaceKey, confluenceId: confluence_id }, 'Deleting stale page');
+      // page_embeddings are deleted by CASCADE on cached_pages
+      await query('DELETE FROM cached_pages WHERE confluence_id = $1', [confluence_id]);
+      await cleanPageAttachments('', confluence_id);
     }
   }
 }
@@ -269,11 +308,11 @@ export function startSyncWorker(intervalMinutes = 15): void {
     syncLock = true;
 
     try {
-      // Get all users with configured connections
+      // Get all users with configured connections and space selections
       const users = await query<{ user_id: string }>(
-        `SELECT us.user_id FROM user_settings us
-         WHERE us.confluence_url IS NOT NULL AND us.confluence_pat IS NOT NULL
-           AND array_length(us.selected_spaces, 1) > 0`,
+        `SELECT DISTINCT us.user_id FROM user_settings us
+         JOIN user_space_selections uss ON uss.user_id = us.user_id
+         WHERE us.confluence_url IS NOT NULL AND us.confluence_pat IS NOT NULL`,
       );
 
       for (const { user_id } of users.rows) {

@@ -2,7 +2,7 @@ import { useAuthStore } from '../../stores/auth-store';
 
 const API_BASE = '/api';
 
-class ApiError extends Error {
+export class ApiError extends Error {
   constructor(
     public statusCode: number,
     message: string,

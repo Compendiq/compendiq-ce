@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import type { SettingsResponse, LlmProviderType } from '@kb-creator/contracts';
+import type { SettingsResponse, LlmProviderType, AdminSettings } from '@kb-creator/contracts';
 import { apiFetch } from '../../shared/lib/api';
 import { useAuthStore } from '../../stores/auth-store';
 import { useSettings } from '../../shared/hooks/use-settings';
@@ -9,8 +9,9 @@ import { SpacesTab } from './SpacesTab';
 import { LabelManager } from './LabelManager';
 import { ErrorDashboard } from './ErrorDashboard';
 import { ThemeTab } from './ThemeTab';
+import { SkeletonFormFields } from '../../shared/components/Skeleton';
 
-type TabId = 'confluence' | 'ollama' | 'spaces' | 'theme' | 'account' | 'labels' | 'errors';
+type TabId = 'confluence' | 'ollama' | 'spaces' | 'theme' | 'account' | 'labels' | 'errors' | 'embedding';
 
 export function SettingsPage() {
   const queryClient = useQueryClient();
@@ -38,6 +39,7 @@ export function SettingsPage() {
     { id: 'account', label: 'Account' },
     { id: 'labels', label: 'Labels', adminOnly: true },
     { id: 'errors', label: 'Errors', adminOnly: true },
+    { id: 'embedding', label: 'Embedding', adminOnly: true },
   ];
 
   const visibleTabs = tabs.filter((t) => !t.adminOnly || isAdmin);
@@ -66,10 +68,8 @@ export function SettingsPage() {
         </div>
 
         <div className="p-6">
-          {(isLoading || !settings) && activeTab !== 'labels' && activeTab !== 'errors' && activeTab !== 'theme' ? (
-            <div className="flex h-32 items-center justify-center text-muted-foreground">
-              Loading settings...
-            </div>
+          {(isLoading || !settings) && activeTab !== 'labels' && activeTab !== 'errors' && activeTab !== 'theme' && activeTab !== 'embedding' ? (
+            <SkeletonFormFields />
           ) : activeTab === 'confluence' ? (
             <ConfluenceTab settings={settings!} onSave={(v) => updateSettings.mutate(v)} />
           ) : activeTab === 'spaces' ? (
@@ -86,6 +86,8 @@ export function SettingsPage() {
             <LabelManager />
           ) : activeTab === 'errors' && isAdmin ? (
             <ErrorDashboard />
+          ) : activeTab === 'embedding' && isAdmin ? (
+            <EmbeddingTab />
           ) : (
             <AccountTab />
           )}
@@ -106,7 +108,7 @@ function ConfluenceTab({ settings, onSave }: { settings: SettingsResponse; onSav
     try {
       const result = await apiFetch<{ success: boolean; message: string }>(
         '/settings/test-confluence',
-        { method: 'POST', body: JSON.stringify({ url, pat: pat || 'existing' }) },
+        { method: 'POST', body: JSON.stringify({ url, pat: pat || undefined }) },
       );
       setTestResult(result);
     } catch (err) {
@@ -124,7 +126,7 @@ function ConfluenceTab({ settings, onSave }: { settings: SettingsResponse; onSav
           type="url"
           value={url}
           onChange={(e) => setUrl(e.target.value)}
-          className="w-full rounded-md border border-border/50 bg-foreground/5 px-3 py-2 text-sm outline-none focus:border-primary"
+          className="glass-input"
           placeholder="https://confluence.company.com"
         />
       </div>
@@ -140,7 +142,7 @@ function ConfluenceTab({ settings, onSave }: { settings: SettingsResponse; onSav
           type="password"
           value={pat}
           onChange={(e) => setPat(e.target.value)}
-          className="w-full rounded-md border border-border/50 bg-foreground/5 px-3 py-2 text-sm outline-none focus:border-primary"
+          className="glass-input"
           placeholder={settings.hasConfluencePat ? '••••••••••' : 'Enter PAT'}
         />
       </div>
@@ -155,13 +157,13 @@ function ConfluenceTab({ settings, onSave }: { settings: SettingsResponse; onSav
         <button
           onClick={testConnection}
           disabled={testing || !url}
-          className="rounded-md border border-border/50 px-4 py-2 text-sm hover:bg-foreground/5 disabled:opacity-50"
+          className="glass-button-secondary"
         >
           {testing ? 'Testing...' : 'Test Connection'}
         </button>
         <button
           onClick={() => onSave({ confluenceUrl: url, ...(pat ? { confluencePat: pat } : {}) })}
-          className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          className="glass-button-primary"
         >
           Save
         </button>
@@ -185,6 +187,8 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
   const [openaiBaseUrl, setOpenaiBaseUrl] = useState(settings.openaiBaseUrl ?? '');
   const [openaiApiKey, setOpenaiApiKey] = useState('');
   const [openaiModel, setOpenaiModel] = useState(settings.openaiModel ?? '');
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
 
   const { data: ollamaStatus } = useQuery({
     queryKey: ['ollama-status', 'ollama'],
@@ -218,6 +222,23 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
   const currentModel = provider === 'ollama' ? ollamaModel : openaiModel;
   const setCurrentModel = provider === 'ollama' ? setOllamaModel : setOpenaiModel;
 
+  async function testConnection() {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const result = await apiFetch<LlmStatusResponse>(`/ollama/status?provider=${provider}`);
+      if (result.connected) {
+        setTestResult({ success: true, message: `Connected to ${provider === 'openai' ? 'OpenAI-compatible' : 'Ollama'} server` });
+      } else {
+        setTestResult({ success: false, message: result.error ?? 'Connection failed' });
+      }
+    } catch (err) {
+      setTestResult({ success: false, message: err instanceof Error ? err.message : 'Connection test failed' });
+    } finally {
+      setTesting(false);
+    }
+  }
+
   function handleSave() {
     const updates: Record<string, unknown> = { llmProvider: provider };
     if (provider === 'ollama') {
@@ -237,7 +258,7 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
         <label className="mb-1.5 block text-sm font-medium">LLM Provider</label>
         <div className="flex gap-2">
           <button
-            onClick={() => setProvider('ollama')}
+            onClick={() => { setProvider('ollama'); setTestResult(null); }}
             className={`rounded-md px-4 py-2 text-sm font-medium transition-colors ${
               provider === 'ollama'
                 ? 'bg-primary/15 text-primary border border-primary/30'
@@ -248,7 +269,7 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
             Ollama
           </button>
           <button
-            onClick={() => setProvider('openai')}
+            onClick={() => { setProvider('openai'); setTestResult(null); }}
             className={`rounded-md px-4 py-2 text-sm font-medium transition-colors ${
               provider === 'openai'
                 ? 'bg-primary/15 text-primary border border-primary/30'
@@ -279,7 +300,7 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
                 type="url"
                 value={openaiBaseUrl}
                 onChange={(e) => setOpenaiBaseUrl(e.target.value)}
-                className="flex-1 rounded-md border border-border/50 bg-foreground/5 px-3 py-2 text-sm outline-none focus:border-primary"
+                className="glass-input flex-1"
                 placeholder="https://api.openai.com/v1"
                 data-testid="openai-base-url-input"
               />
@@ -303,7 +324,7 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
               type="password"
               value={openaiApiKey}
               onChange={(e) => setOpenaiApiKey(e.target.value)}
-              className="w-full rounded-md border border-border/50 bg-foreground/5 px-3 py-2 text-sm outline-none focus:border-primary"
+              className="glass-input"
               placeholder={settings.hasOpenaiApiKey ? '••••••••••' : 'Enter API key'}
               data-testid="openai-api-key-input"
             />
@@ -318,7 +339,7 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
           <select
             value={currentModel}
             onChange={(e) => setCurrentModel(e.target.value)}
-            className="flex-1 rounded-md border border-border/50 bg-foreground/5 px-3 py-2 text-sm outline-none focus:border-primary"
+            className="glass-select flex-1"
             data-testid="ollama-model-select"
           >
             {models && models.length > 0
@@ -330,7 +351,7 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
           <button
             onClick={() => refetchModels()}
             disabled={loadingModels}
-            className="rounded-md border border-border/50 px-3 py-2 text-sm hover:bg-foreground/5 disabled:opacity-50"
+            className="glass-button-secondary px-3"
             data-testid="ollama-scan-btn"
           >
             {loadingModels ? 'Scanning...' : 'Scan'}
@@ -352,7 +373,7 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
               type="text"
               value={openaiModel}
               onChange={(e) => setOpenaiModel(e.target.value)}
-              className="w-full rounded-md border border-border/50 bg-foreground/5 px-3 py-2 text-sm outline-none focus:border-primary"
+              className="glass-input"
               placeholder="Or type a model name..."
               data-testid="openai-model-input"
             />
@@ -368,18 +389,153 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
         </div>
       </div>
 
-      <button
-        onClick={handleSave}
-        className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-      >
-        Save
-      </button>
+      {testResult && (
+        <div className={`rounded-md p-3 text-sm ${testResult.success ? 'bg-success/10 text-success' : 'bg-destructive/10 text-destructive'}`} data-testid="llm-test-result">
+          {testResult.message}
+        </div>
+      )}
+
+      <div className="flex gap-3">
+        <button
+          onClick={testConnection}
+          disabled={testing}
+          className="glass-button-secondary"
+          data-testid="llm-test-btn"
+        >
+          {testing ? 'Testing...' : 'Test Connection'}
+        </button>
+        <button
+          onClick={handleSave}
+          className="glass-button-primary"
+        >
+          Save
+        </button>
+      </div>
     </div>
   );
 }
 
 // Keep backward-compatible export name for tests
 export { LlmTab as OllamaTab };
+
+function EmbeddingTab() {
+  const queryClient = useQueryClient();
+
+  const { data: adminSettings, isLoading } = useQuery({
+    queryKey: ['admin-settings'],
+    queryFn: () => apiFetch<AdminSettings>('/admin/settings'),
+  });
+
+  const [chunkSize, setChunkSize] = useState<number | undefined>(undefined);
+  const [chunkOverlap, setChunkOverlap] = useState<number | undefined>(undefined);
+
+  // Initialise local state once data loads
+  const effectiveChunkSize = chunkSize ?? adminSettings?.embeddingChunkSize ?? 500;
+  const effectiveChunkOverlap = chunkOverlap ?? adminSettings?.embeddingChunkOverlap ?? 50;
+
+  const savedChunkSize = adminSettings?.embeddingChunkSize ?? 500;
+  const savedChunkOverlap = adminSettings?.embeddingChunkOverlap ?? 50;
+  const hasChanges =
+    (chunkSize !== undefined && chunkSize !== savedChunkSize) ||
+    (chunkOverlap !== undefined && chunkOverlap !== savedChunkOverlap);
+
+  const updateAdminSettings = useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      apiFetch('/admin/settings', { method: 'PUT', body: JSON.stringify(body) }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
+      setChunkSize(undefined);
+      setChunkOverlap(undefined);
+      toast.success('Embedding settings saved. All pages queued for re-embedding.');
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  function handleSave() {
+    const updates: Record<string, unknown> = {};
+    if (chunkSize !== undefined) updates.embeddingChunkSize = chunkSize;
+    if (chunkOverlap !== undefined) updates.embeddingChunkOverlap = chunkOverlap;
+    if (Object.keys(updates).length > 0) {
+      updateAdminSettings.mutate(updates);
+    }
+  }
+
+  if (isLoading) {
+    return <SkeletonFormFields />;
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="glass-card border-yellow-500/30 p-3 text-sm text-yellow-400">
+        These settings are shared across all users. Changing them will trigger re-embedding of all pages, which may take several minutes.
+      </div>
+
+      <div>
+        <label className="mb-1.5 block text-sm font-medium" htmlFor="admin-chunk-size-input">
+          Chunk Size (tokens)
+        </label>
+        <p className="mb-1.5 text-sm text-muted-foreground">
+          Controls how much text is grouped into each searchable unit for AI Q&amp;A.
+          Smaller values (128-256) find precise facts but may miss context.
+          Larger values (512-1024) capture complete sections. Default: 500.
+        </p>
+        <input
+          id="admin-chunk-size-input"
+          type="number"
+          min={128}
+          max={2048}
+          step={64}
+          value={effectiveChunkSize}
+          onChange={(e) => setChunkSize(Number(e.target.value))}
+          className="glass-input w-40"
+          data-testid="admin-chunk-size-input"
+        />
+      </div>
+
+      <div>
+        <label className="mb-1.5 block text-sm font-medium" htmlFor="admin-chunk-overlap-input">
+          Chunk Overlap (tokens)
+        </label>
+        <p className="mb-1.5 text-sm text-muted-foreground">
+          Tokens shared between adjacent chunks to prevent information loss at boundaries.
+          Recommended: 10% of chunk size. Default: 50.
+        </p>
+        <input
+          id="admin-chunk-overlap-input"
+          type="number"
+          min={0}
+          max={512}
+          step={10}
+          value={effectiveChunkOverlap}
+          onChange={(e) => setChunkOverlap(Number(e.target.value))}
+          className="glass-input w-40"
+          data-testid="admin-chunk-overlap-input"
+        />
+      </div>
+
+      {hasChanges && (
+        <div
+          className="glass-card border-yellow-500/30 p-3 text-sm text-yellow-400"
+          data-testid="admin-chunk-change-warning"
+        >
+          Saving will mark all embedded pages dirty and trigger global re-embedding.
+          This may take several minutes and temporarily affects AI Q&amp;A for all users.
+        </div>
+      )}
+
+      <div>
+        <button
+          onClick={handleSave}
+          disabled={!hasChanges || updateAdminSettings.isPending}
+          className="glass-button-primary"
+          data-testid="admin-chunk-save-btn"
+        >
+          {updateAdminSettings.isPending ? 'Saving...' : 'Save'}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function AccountTab() {
   return (

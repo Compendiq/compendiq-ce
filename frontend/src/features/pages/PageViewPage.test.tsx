@@ -1,80 +1,148 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { LazyMotion, domAnimation } from 'framer-motion';
+import { LazyMotion, domMax } from 'framer-motion';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { PageViewPage } from './PageViewPage';
 import { useAuthStore } from '../../stores/auth-store';
+
+const mockNavigate = vi.fn();
+const mockUpdatePage = vi.fn();
+const mockDeletePage = vi.fn();
+const mockPinPage = vi.fn();
+const mockUnpinPage = vi.fn();
 
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
   return {
     ...actual,
-    useNavigate: () => vi.fn(),
+    useNavigate: () => mockNavigate,
   };
 });
 
+vi.mock('../../shared/components/ArticleViewer', async () => {
+  const React = await vi.importActual<typeof import('react')>('react');
+
+  return {
+    ArticleViewer: ({
+      className,
+      content,
+      onHeadingsReady,
+      onImageClick,
+    }: {
+      className?: string;
+      content: string;
+      onHeadingsReady?: (headings: Array<{ id: string; text: string; level: number }>) => void;
+      onImageClick?: (src: string, alt: string) => void;
+    }) => {
+      React.useEffect(() => {
+        onHeadingsReady?.([
+          { id: 'intro', text: 'Introduction', level: 1 },
+          { id: 'usage', text: 'Usage', level: 2 },
+        ]);
+      }, [onHeadingsReady]);
+
+      return (
+        <div className={className}>
+          <button onClick={() => onImageClick?.('/api/attachments/page-1/diagram.png', 'Diagram')}>
+            Preview image
+          </button>
+          <div dangerouslySetInnerHTML={{ __html: content }} />
+        </div>
+      );
+    },
+  };
+});
+
+vi.mock('../../shared/components/Editor', () => ({
+  Editor: ({
+    content,
+    onChange,
+  }: {
+    content: string;
+    onChange: (value: string) => void;
+  }) => (
+    <textarea
+      aria-label="Article editor"
+      value={content}
+      onChange={(event) => onChange(event.target.value)}
+    />
+  ),
+  getDraft: () => null,
+  clearDraft: vi.fn(),
+}));
+
+vi.mock('../../shared/components/FeatureErrorBoundary', () => ({
+  FeatureErrorBoundary: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+
+vi.mock('../../shared/components/FreshnessBadge', () => ({
+  FreshnessBadge: ({ lastModified }: { lastModified: string }) => <span>{lastModified}</span>,
+}));
+
+vi.mock('../../shared/components/EmbeddingStatusBadge', () => ({
+  EmbeddingStatusBadge: ({ embeddingStatus }: { embeddingStatus: string }) => (
+    <span data-testid="embedding-status-badge">{embeddingStatus}</span>
+  ),
+}));
+
+vi.mock('../../shared/components/Skeleton', () => ({
+  PageViewSkeleton: () => <div data-testid="page-view-skeleton" />,
+}));
+
+vi.mock('../../shared/hooks/use-authenticated-src', () => ({
+  useAuthenticatedSrc: (src: string) => ({ blobSrc: src, loading: false }),
+}));
+
 const mockPage = {
-  confluenceId: 'page-1',
-  title: 'Test Page',
-  spaceKey: 'DEV',
-  bodyHtml: '<h2>Hello</h2><p>World</p>',
-  bodyText: 'Hello World',
-  version: 3,
-  author: 'testuser',
-  labels: ['docs'],
-  lastModifiedAt: '2025-01-01T00:00:00Z',
-  status: 'current',
+  id: 'page-1',
+  title: 'Engineering Handbook',
+  spaceKey: 'ENG',
+  bodyHtml: '<h1 id="intro">Introduction</h1><p>Body</p>',
+  bodyText: 'Body',
+  version: 7,
+  parentId: null,
+  labels: ['docs', 'platform'],
+  author: 'simon',
+  lastModifiedAt: '2026-03-01T12:00:00Z',
+  lastSynced: '2026-03-01T12:00:00Z',
+  hasChildren: true,
+  embeddingDirty: false,
+  embeddingStatus: 'embedded',
+  embeddedAt: '2026-03-01T12:00:00Z',
+  embeddingError: null,
 };
 
-const mockPageWithCode = {
-  ...mockPage,
-  bodyHtml: '<p>Use <code>console.log()</code> for debugging.</p><pre><code class="language-javascript">const x = 42;\nconsole.log(x);</code></pre>',
-  bodyText: 'Use console.log() for debugging. const x = 42; console.log(x);',
-};
-
-const mockPageWithImages = {
-  ...mockPage,
-  bodyHtml: '<h2>Screenshots</h2><img src="/api/attachments/page-1/dashboard.png" alt="dashboard.png" width="600"><p>External:</p><img src="https://example.com/diagram.svg" alt="external">',
-  bodyText: 'Screenshots External:',
-};
-
-const mockPageWithDrawio = {
-  ...mockPage,
-  bodyHtml: '<h2>Architecture</h2><div class="confluence-drawio" data-diagram-name="system-topology"><img src="/api/attachments/page-1/system-topology.png" alt="Draw.io diagram: system-topology"><a class="drawio-edit-link" href="#" data-drawio="true">Edit in Confluence</a></div>',
-  bodyText: 'Architecture',
-};
-
-const mockPageWithHeadings = {
-  ...mockPage,
-  bodyHtml: '<h1>Main Title</h1><p>Intro paragraph.</p><h2>Section One</h2><p>Content for section one.</p><h3>Subsection</h3><p>Deeper content.</p><h2>Section Two</h2><ul><li>Item A</li><li>Item B</li></ul>',
-  bodyText: 'Main Title Intro paragraph. Section One Content for section one. Subsection Deeper content. Section Two Item A Item B',
-};
-
-const mockPageWithPanelsAndTasks = {
-  ...mockPage,
-  bodyHtml: '<div class="panel-info"><p>This is an info panel.</p></div><div class="panel-warning"><p>Watch out!</p></div><ul data-type="taskList"><li data-type="taskItem" data-checked="true">Done task</li><li data-type="taskItem" data-checked="false">Open task</li></ul><blockquote><p>A wise quote.</p></blockquote><hr><details><summary>Expand me</summary><p>Hidden content.</p></details>',
-  bodyText: 'This is an info panel. Watch out! Done task Open task A wise quote. Hidden content.',
-};
-
-let currentMockPage = mockPage;
+let currentMockPage: typeof mockPage | undefined = mockPage;
+let mockIsLoading = false;
 
 vi.mock('../../shared/hooks/use-pages', () => ({
-  usePage: () => ({ data: currentMockPage, isLoading: false }),
-  useUpdatePage: () => ({ mutateAsync: vi.fn(), isPending: false }),
-  useUpdatePageLabels: () => ({ mutate: vi.fn(), isPending: false }),
-  useDeletePage: () => ({ mutateAsync: vi.fn() }),
+  usePage: () => ({ data: mockIsLoading ? undefined : currentMockPage, isLoading: mockIsLoading }),
+  useUpdatePage: () => ({ mutateAsync: mockUpdatePage, isPending: false }),
+  useDeletePage: () => ({ mutateAsync: mockDeletePage }),
+  usePinnedPages: () => ({ data: { items: [] }, isLoading: false }),
+  usePinPage: () => ({ mutate: mockPinPage }),
+  useUnpinPage: () => ({ mutate: mockUnpinPage }),
+}));
+
+vi.mock('../../shared/hooks/use-settings', () => ({
+  useSettings: () => ({
+    data: {
+      confluenceUrl: 'https://confluence.example.com',
+    },
+  }),
 }));
 
 function createWrapper() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
+
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return (
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={['/pages/page-1']}>
-          <LazyMotion features={domAnimation}>
+          <LazyMotion features={domMax}>
             <Routes>
               <Route path="/pages/:id" element={children} />
             </Routes>
@@ -88,240 +156,95 @@ function createWrapper() {
 describe('PageViewPage', () => {
   beforeEach(() => {
     currentMockPage = mockPage;
-    useAuthStore.getState().setAuth('test-token', {
+    mockIsLoading = false;
+    mockNavigate.mockReset();
+    mockUpdatePage.mockReset().mockResolvedValue(undefined);
+    mockDeletePage.mockReset().mockResolvedValue(undefined);
+    mockPinPage.mockReset();
+    mockUnpinPage.mockReset();
+    localStorage.clear();
+    Element.prototype.scrollTo = vi.fn();
+
+    useAuthStore.getState().setAuth('token', {
       id: '1',
-      username: 'testuser',
+      username: 'simon',
       role: 'user',
     });
-    // Mock fetch for sub-components that may call APIs
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({}), {
-        headers: { 'Content-Type': 'application/json' },
-      }),
-    );
   });
 
   afterEach(() => {
-    vi.restoreAllMocks();
     useAuthStore.getState().clearAuth();
+    document.body.innerHTML = '';
   });
 
-  it('renders page title and metadata', () => {
+  it('renders a folder article with content metadata and labels', () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
 
-    expect(screen.getByText('Test Page')).toBeInTheDocument();
-    expect(screen.getByText('DEV')).toBeInTheDocument();
-    expect(screen.getByText('v3')).toBeInTheDocument();
+    expect(screen.getByText('Folder Article')).toBeInTheDocument();
+    expect(screen.getByText('Engineering Handbook')).toBeInTheDocument();
+    expect(screen.getByText('ENG')).toBeInTheDocument();
     expect(screen.getByText('docs')).toBeInTheDocument();
+    expect(screen.getByText('platform')).toBeInTheDocument();
+    expect(screen.getByTestId('embedding-status-badge')).toHaveTextContent('embedded');
   });
 
-  it('renders sidebar with sticky positioning', () => {
-    const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
+  it('resets the app scroll container when the article route renders', async () => {
+    const scrollContainer = document.createElement('div');
+    scrollContainer.setAttribute('data-scroll-container', '');
+    document.body.appendChild(scrollContainer);
 
-    // The sidebar div should have sticky positioning classes
-    const sidebar = container.querySelector('.sticky.top-4.self-start');
-    expect(sidebar).toBeInTheDocument();
-    expect(sidebar).toHaveClass('sticky', 'top-4', 'self-start');
-  });
+    const scrollSpy = vi.spyOn(scrollContainer, 'scrollTo');
 
-  it('sidebar contains version history and duplicate detector sections', () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
 
-    expect(screen.getByText('Duplicate Detection')).toBeInTheDocument();
-  });
-
-  it('renders inline code and code blocks visually', () => {
-    currentMockPage = mockPageWithCode;
-    const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
-
-    // Content area should have prose classes for code styling
-    const contentArea = container.querySelector('.prose');
-    expect(contentArea).toBeInTheDocument();
-
-    // Inline code should be rendered
-    const inlineCode = container.querySelector('code');
-    expect(inlineCode).toBeInTheDocument();
-    expect(inlineCode!.textContent).toBe('console.log()');
-
-    // Code block should be rendered with language class
-    const codeBlock = container.querySelector('pre code.language-javascript');
-    expect(codeBlock).toBeInTheDocument();
-    expect(codeBlock!.textContent).toContain('const x = 42');
-  });
-
-  it('renders images with correct src attributes', () => {
-    currentMockPage = mockPageWithImages;
-    const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
-
-    const images = container.querySelectorAll('img');
-    expect(images).toHaveLength(2);
-
-    // Local attachment image
-    expect(images[0]).toHaveAttribute('src', '/api/attachments/page-1/dashboard.png');
-    expect(images[0]).toHaveAttribute('alt', 'dashboard.png');
-
-    // External image
-    expect(images[1]).toHaveAttribute('src', 'https://example.com/diagram.svg');
-  });
-
-  it('renders draw.io diagrams with data attributes preserved', () => {
-    currentMockPage = mockPageWithDrawio;
-    const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
-
-    const drawioDiv = container.querySelector('.confluence-drawio');
-    expect(drawioDiv).toBeInTheDocument();
-    expect(drawioDiv).toHaveAttribute('data-diagram-name', 'system-topology');
-
-    const drawioImg = drawioDiv!.querySelector('img');
-    expect(drawioImg).toHaveAttribute('src', '/api/attachments/page-1/system-topology.png');
-
-    const editLink = drawioDiv!.querySelector('a.drawio-edit-link');
-    expect(editLink).toBeInTheDocument();
-    expect(editLink!.textContent).toBe('Edit in Confluence');
-  });
-
-  it('opens lightbox when clicking an image', async () => {
-    currentMockPage = mockPageWithImages;
-    const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
-
-    // Wait for TipTap to render and the rAF-based image click handler to attach
-    let image: HTMLImageElement | null = null;
     await waitFor(() => {
-      image = container.querySelector('img');
-      expect(image).toBeTruthy();
-      expect(image!.style.cursor).toBe('zoom-in');
+      expect(scrollSpy).toHaveBeenCalledWith({ top: 0, left: 0, behavior: 'auto' });
     });
-
-    // Click the image
-    fireEvent.click(image!);
-
-    // Lightbox should appear with a dialog role
-    const lightbox = screen.getByRole('dialog');
-    expect(lightbox).toBeInTheDocument();
-
-    // Close button should be present
-    const closeBtn = screen.getByLabelText('Close preview');
-    expect(closeBtn).toBeInTheDocument();
   });
 
-  it('closes lightbox when clicking close button', async () => {
-    currentMockPage = mockPageWithImages;
-    const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
+  it('collapses and reopens the outline rail', async () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
 
-    // Wait for image click handler
-    let image: HTMLImageElement | null = null;
-    await waitFor(() => {
-      image = container.querySelector('img');
-      expect(image).toBeTruthy();
-      expect(image!.style.cursor).toBe('zoom-in');
-    });
+    expect(await screen.findByTestId('article-outline-panel')).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText('Hide outline'));
+    expect(screen.getByTestId('article-outline-rail')).toBeInTheDocument();
 
-    fireEvent.click(image!);
+    fireEvent.click(screen.getByLabelText('Show outline'));
+    expect(await screen.findByTestId('article-outline-panel')).toBeInTheDocument();
+  });
 
-    // Lightbox is open
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  it('opens the lightbox from article media', async () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
 
-    // Click close
+    fireEvent.click(screen.getByText('Preview image'));
+
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
     fireEvent.click(screen.getByLabelText('Close preview'));
 
-    // Wait for AnimatePresence exit animation
     await waitFor(() => {
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     });
   });
 
-  it('closes lightbox on Escape key', async () => {
-    currentMockPage = mockPageWithImages;
-    const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
+  it('saves edited article content', async () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
 
-    // Wait for image click handler
-    let image: HTMLImageElement | null = null;
-    await waitFor(() => {
-      image = container.querySelector('img');
-      expect(image).toBeTruthy();
-      expect(image!.style.cursor).toBe('zoom-in');
+    fireEvent.click(screen.getByText('Edit'));
+    fireEvent.change(screen.getByDisplayValue('Engineering Handbook'), {
+      target: { value: 'Updated Engineering Handbook' },
     });
-
-    fireEvent.click(image!);
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
-
-    // Press Escape
-    fireEvent.keyDown(document, { key: 'Escape' });
-
-    // Wait for AnimatePresence exit animation
-    await waitFor(() => {
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Article editor'), {
+      target: { value: '<p>Updated content</p>' },
     });
-  });
+    fireEvent.click(screen.getByText('Save'));
 
-  it('renders headings with proper hierarchy in the content area', () => {
-    currentMockPage = mockPageWithHeadings;
-    const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
-
-    const contentArea = container.querySelector('.prose');
-    expect(contentArea).toBeInTheDocument();
-
-    // All heading levels should render
-    const h1 = contentArea!.querySelector('h1');
-    expect(h1).toBeInTheDocument();
-    expect(h1!.textContent).toBe('Main Title');
-
-    const h2s = contentArea!.querySelectorAll('h2');
-    expect(h2s).toHaveLength(2);
-    expect(h2s[0].textContent).toBe('Section One');
-    expect(h2s[1].textContent).toBe('Section Two');
-
-    const h3 = contentArea!.querySelector('h3');
-    expect(h3).toBeInTheDocument();
-    expect(h3!.textContent).toBe('Subsection');
-
-    // Lists should render
-    const listItems = contentArea!.querySelectorAll('li');
-    expect(listItems.length).toBeGreaterThanOrEqual(2);
-  });
-
-  it('renders panels, task lists, blockquotes, and expand sections', () => {
-    currentMockPage = mockPageWithPanelsAndTasks;
-    const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
-
-    const contentArea = container.querySelector('.prose');
-    expect(contentArea).toBeInTheDocument();
-
-    // Info and warning panels
-    const infoPanel = contentArea!.querySelector('.panel-info');
-    expect(infoPanel).toBeInTheDocument();
-    expect(infoPanel!.textContent).toContain('info panel');
-
-    const warningPanel = contentArea!.querySelector('.panel-warning');
-    expect(warningPanel).toBeInTheDocument();
-    expect(warningPanel!.textContent).toContain('Watch out');
-
-    // Task list with checked/unchecked items
-    const taskList = contentArea!.querySelector('ul[data-type="taskList"]');
-    expect(taskList).toBeInTheDocument();
-
-    const checkedTask = contentArea!.querySelector('li[data-checked="true"]');
-    expect(checkedTask).toBeInTheDocument();
-    expect(checkedTask!.textContent).toContain('Done task');
-
-    const uncheckedTask = contentArea!.querySelector('li[data-checked="false"]');
-    expect(uncheckedTask).toBeInTheDocument();
-    expect(uncheckedTask!.textContent).toContain('Open task');
-
-    // Blockquote
-    const blockquote = contentArea!.querySelector('blockquote');
-    expect(blockquote).toBeInTheDocument();
-    expect(blockquote!.textContent).toContain('wise quote');
-
-    // Horizontal rule
-    const hr = contentArea!.querySelector('hr');
-    expect(hr).toBeInTheDocument();
-
-    // Expand section (details/summary)
-    const details = contentArea!.querySelector('details');
-    expect(details).toBeInTheDocument();
-    const summary = details!.querySelector('summary');
-    expect(summary).toBeInTheDocument();
-    expect(summary!.textContent).toBe('Expand me');
+    await waitFor(() => {
+      expect(mockUpdatePage).toHaveBeenCalledWith({
+        id: 'page-1',
+        title: 'Updated Engineering Handbook',
+        bodyHtml: '<p>Updated content</p>',
+        version: 7,
+      });
+    });
   });
 });

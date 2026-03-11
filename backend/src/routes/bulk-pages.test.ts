@@ -66,6 +66,14 @@ vi.mock('../utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
+const mockProcessDirtyPages = vi.fn().mockResolvedValue({ processed: 2, errors: 0 });
+const mockIsProcessingUser = vi.fn().mockResolvedValue(false);
+vi.mock('../services/embedding-service.js', () => ({
+  processDirtyPages: (...args: unknown[]) => mockProcessDirtyPages(...args),
+  isProcessingUser: (...args: unknown[]) => mockIsProcessingUser(...args),
+  computePageRelationships: vi.fn().mockResolvedValue(0),
+}));
+
 // Mock the database with a function we can control per test
 const mockQueryFn = vi.fn();
 vi.mock('../db/postgres.js', () => ({
@@ -76,8 +84,9 @@ vi.mock('../db/postgres.js', () => ({
 }));
 
 import { getClientForUser } from '../services/sync-service.js';
+import { cleanPageAttachments } from '../services/attachment-handler.js';
 
-describe('Bulk Pages Routes', () => {
+describe('Bulk Pages Routes (Parallelized)', () => {
   let app: ReturnType<typeof Fastify>;
 
   beforeAll(async () => {
@@ -120,8 +129,14 @@ describe('Bulk Pages Routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    // Default: page exists for ownership check
-    mockQueryFn.mockResolvedValue({ rows: [{ confluence_id: 'page-1', labels: ['existing-tag'] }], rowCount: 1 });
+    // Default: batch ownership query returns both pages
+    mockQueryFn.mockResolvedValue({
+      rows: [
+        { confluence_id: 'page-1', labels: ['existing-tag'] },
+        { confluence_id: 'page-2', labels: ['existing-tag'] },
+      ],
+      rowCount: 2,
+    });
   });
 
   describe('POST /api/pages/bulk/delete', () => {
@@ -149,11 +164,12 @@ describe('Bulk Pages Routes', () => {
       expect(response.statusCode).toBe(400);
     });
 
-    it('should report failures for pages not owned by user', async () => {
-      // First call: page not found, second call: page found
-      mockQueryFn
-        .mockResolvedValueOnce({ rows: [], rowCount: 0 })
-        .mockResolvedValueOnce({ rows: [{ confluence_id: 'page-2' }], rowCount: 1 });
+    it('should report not-found pages from batch ownership check', async () => {
+      // Batch query returns only page-2 (not-found is missing)
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ confluence_id: 'page-2' }],
+        rowCount: 1,
+      });
 
       const response = await app.inject({
         method: 'POST',
@@ -179,6 +195,89 @@ describe('Bulk Pages Routes', () => {
 
       expect(response.statusCode).toBe(400);
     });
+
+    it('should use batch DELETE queries with ANY()', async () => {
+      // Single page owned
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ confluence_id: 'page-1' }],
+        rowCount: 1,
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/delete',
+        payload: { ids: ['page-1'] },
+      });
+
+      expect(response.statusCode).toBe(200);
+
+      // Verify cached_pages DELETE uses ANY($1) (no user_id in shared table)
+      // and pinned_pages DELETE uses ANY($2) (user_id=$1, page_id=ANY($2))
+      const cachedPageDelete = mockQueryFn.mock.calls.find(
+        (call: unknown[]) => typeof call[0] === 'string' &&
+          (call[0] as string).includes('DELETE FROM cached_pages'),
+      );
+      expect(cachedPageDelete).toBeDefined();
+      expect(cachedPageDelete![0]).toContain('ANY($1)');
+
+      const pinnedDelete = mockQueryFn.mock.calls.find(
+        (call: unknown[]) => typeof call[0] === 'string' &&
+          (call[0] as string).includes('DELETE FROM pinned_pages'),
+      );
+      expect(pinnedDelete).toBeDefined();
+      expect(pinnedDelete![0]).toContain('ANY($2)');
+    });
+
+    it('should call cleanPageAttachments for each deleted page', async () => {
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ confluence_id: 'page-1' }, { confluence_id: 'page-2' }],
+        rowCount: 2,
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/delete',
+        payload: { ids: ['page-1', 'page-2'] },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(cleanPageAttachments).toHaveBeenCalledTimes(2);
+      expect(cleanPageAttachments).toHaveBeenCalledWith('test-user-id', 'page-1');
+      expect(cleanPageAttachments).toHaveBeenCalledWith('test-user-id', 'page-2');
+    });
+
+    it('should handle partial Confluence delete failures', async () => {
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ confluence_id: 'page-1' }, { confluence_id: 'page-2' }],
+        rowCount: 2,
+      });
+
+      // Set up a new client mock where deletePage fails on the second call
+      let callCount = 0;
+      const failingClient = {
+        deletePage: vi.fn().mockImplementation(() => {
+          callCount++;
+          if (callCount === 2) return Promise.reject(new Error('Confluence error'));
+          return Promise.resolve(undefined);
+        }),
+        getPage: vi.fn(),
+        addLabels: vi.fn(),
+        removeLabel: vi.fn(),
+      };
+      (getClientForUser as ReturnType<typeof vi.fn>).mockResolvedValueOnce(failingClient);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/delete',
+        payload: { ids: ['page-1', 'page-2'] },
+      });
+
+      const body = JSON.parse(response.body);
+      expect(body.succeeded).toBe(1);
+      expect(body.failed).toBe(1);
+      expect(body.errors).toHaveLength(1);
+      expect(body.errors[0]).toContain('Confluence error');
+    });
   });
 
   describe('POST /api/pages/bulk/sync', () => {
@@ -186,12 +285,12 @@ describe('Bulk Pages Routes', () => {
       const response = await app.inject({
         method: 'POST',
         url: '/api/pages/bulk/sync',
-        payload: { ids: ['page-1'] },
+        payload: { ids: ['page-1', 'page-2'] },
       });
 
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
-      expect(body.succeeded).toBe(1);
+      expect(body.succeeded).toBe(2);
       expect(body.failed).toBe(0);
     });
 
@@ -204,10 +303,53 @@ describe('Bulk Pages Routes', () => {
 
       expect(response.statusCode).toBe(400);
     });
+
+    it('should report not-found pages in sync', async () => {
+      // Batch query returns only page-1 (page-999 not found)
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ confluence_id: 'page-1' }],
+        rowCount: 1,
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/sync',
+        payload: { ids: ['page-1', 'page-999'] },
+      });
+
+      const body = JSON.parse(response.body);
+      expect(body.succeeded).toBe(1);
+      expect(body.failed).toBe(1);
+      expect(body.errors[0]).toContain('page-999');
+      expect(body.errors[0]).toContain('not found');
+    });
+
+    it('should use batch ownership query with ANY()', async () => {
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ confluence_id: 'page-1' }],
+        rowCount: 1,
+      });
+
+      await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/sync',
+        payload: { ids: ['page-1'] },
+      });
+
+      // First query call should be the batch ownership check
+      const firstCall = mockQueryFn.mock.calls[0];
+      expect(firstCall[0]).toContain('ANY($2)');
+    });
   });
 
   describe('POST /api/pages/bulk/embed', () => {
-    it('should mark pages as embedding dirty', async () => {
+    it('should mark pages as embedding dirty and trigger processing', async () => {
+      // The new code uses UPDATE...RETURNING, so mock must return rows
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ confluence_id: 'page-1' }, { confluence_id: 'page-2' }],
+        rowCount: 2,
+      });
+
       const response = await app.inject({
         method: 'POST',
         url: '/api/pages/bulk/embed',
@@ -217,10 +359,29 @@ describe('Bulk Pages Routes', () => {
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
       expect(body.succeeded).toBe(2);
+
+      // Verify processDirtyPages was called fire-and-forget
+      await vi.waitFor(() => {
+        expect(mockProcessDirtyPages).toHaveBeenCalledWith('test-user-id');
+      });
+    });
+
+    it('should not trigger processing when no pages succeeded', async () => {
+      mockQueryFn.mockResolvedValue({ rows: [], rowCount: 0 });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/embed',
+        payload: { ids: ['nonexistent'] },
+      });
+
+      const body = JSON.parse(response.body);
+      expect(body.failed).toBe(1);
+      expect(mockProcessDirtyPages).not.toHaveBeenCalled();
     });
 
     it('should report failure for non-existent page', async () => {
-      mockQueryFn.mockResolvedValueOnce({ rowCount: 0 });
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
 
       const response = await app.inject({
         method: 'POST',
@@ -232,10 +393,49 @@ describe('Bulk Pages Routes', () => {
       expect(body.failed).toBe(1);
       expect(body.errors[0]).toContain('not found');
     });
+
+    it('should return 409 when embedding is already in progress', async () => {
+      mockIsProcessingUser.mockResolvedValueOnce(true);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/embed',
+        payload: { ids: ['page-1'] },
+      });
+
+      expect(response.statusCode).toBe(409);
+      const body = JSON.parse(response.body);
+      expect(body.error).toContain('already in progress');
+    });
+
+    it('should use single batch UPDATE with ANY() and RETURNING', async () => {
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ confluence_id: 'page-1' }],
+        rowCount: 1,
+      });
+
+      await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/embed',
+        payload: { ids: ['page-1'] },
+      });
+
+      // The embed endpoint now issues a single UPDATE...RETURNING query
+      // ids are ANY($1), userId is $2 in subquery for space_key access control
+      const embedCall = mockQueryFn.mock.calls[0];
+      expect(embedCall[0]).toContain('ANY($1)');
+      expect(embedCall[0]).toContain('RETURNING');
+    });
   });
 
   describe('POST /api/pages/bulk/tag', () => {
     it('should add tags to multiple pages', async () => {
+      // Override default mock to return only page-1 for this single-ID test
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ confluence_id: 'page-1', labels: ['existing-tag'] }],
+        rowCount: 1,
+      });
+
       const response = await app.inject({
         method: 'POST',
         url: '/api/pages/bulk/tag',
@@ -251,6 +451,12 @@ describe('Bulk Pages Routes', () => {
     });
 
     it('should remove tags from multiple pages', async () => {
+      // Override default mock to return only page-1 for this single-ID test
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ confluence_id: 'page-1', labels: ['existing-tag'] }],
+        rowCount: 1,
+      });
+
       const response = await app.inject({
         method: 'POST',
         url: '/api/pages/bulk/tag',
@@ -286,6 +492,11 @@ describe('Bulk Pages Routes', () => {
     });
 
     it('should sync added tags to Confluence', async () => {
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ confluence_id: 'page-1', labels: ['existing-tag'] }],
+        rowCount: 1,
+      });
+
       const response = await app.inject({
         method: 'POST',
         url: '/api/pages/bulk/tag',
@@ -301,6 +512,11 @@ describe('Bulk Pages Routes', () => {
     });
 
     it('should sync removed tags to Confluence', async () => {
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ confluence_id: 'page-1', labels: ['existing-tag'] }],
+        rowCount: 1,
+      });
+
       const response = await app.inject({
         method: 'POST',
         url: '/api/pages/bulk/tag',
@@ -313,6 +529,50 @@ describe('Bulk Pages Routes', () => {
       expect(response.statusCode).toBe(200);
       const client = await vi.mocked(getClientForUser).mock.results[0].value;
       expect(client.removeLabel).toHaveBeenCalledWith('page-1', 'existing-tag');
+    });
+
+    it('should use batch label fetch with ANY()', async () => {
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ confluence_id: 'page-1', labels: ['existing-tag'] }],
+        rowCount: 1,
+      });
+
+      await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/tag',
+        payload: {
+          ids: ['page-1'],
+          addTags: ['new-tag'],
+        },
+      });
+
+      // First query should be the batch label fetch
+      const firstCall = mockQueryFn.mock.calls[0];
+      expect(firstCall[0]).toContain('ANY($2)');
+      expect(firstCall[0]).toContain('labels');
+    });
+
+    it('should report not-found pages in tag operation', async () => {
+      // Batch query returns only page-1 (page-999 not found)
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ confluence_id: 'page-1', labels: ['existing-tag'] }],
+        rowCount: 1,
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/tag',
+        payload: {
+          ids: ['page-1', 'page-999'],
+          addTags: ['new-tag'],
+        },
+      });
+
+      const body = JSON.parse(response.body);
+      expect(body.succeeded).toBe(1);
+      expect(body.failed).toBe(1);
+      expect(body.errors[0]).toContain('page-999');
+      expect(body.errors[0]).toContain('not found');
     });
   });
 });

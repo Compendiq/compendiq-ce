@@ -32,6 +32,8 @@ const mockPagesResponse = {
       lastModifiedAt: '2025-01-15T00:00:00Z',
       lastSynced: '2025-01-16T00:00:00Z',
       embeddingDirty: false,
+      embeddingStatus: 'embedded',
+      embeddedAt: '2025-01-16T00:00:00Z',
     },
   ],
   total: 1,
@@ -86,8 +88,81 @@ function mockFetchWithEmbeddingStatus(embeddingStatus: typeof mockEmbeddingStatu
         headers: { 'Content-Type': 'application/json' },
       });
     }
+    if (url.includes('/pages/pinned')) {
+      return new Response(JSON.stringify({ items: [], total: 0 }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.includes('/settings')) {
+      return new Response(JSON.stringify({}), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
     // Default: pages list
     return new Response(JSON.stringify(mockPagesResponse), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  });
+}
+
+/** Generate N mock page items for large-list tests */
+function makeManyPages(n: number) {
+  return {
+    items: Array.from({ length: n }, (_, i) => ({
+      id: `page-${i + 1}`,
+      spaceKey: 'DEV',
+      title: `Page ${i + 1}`,
+      version: 1,
+      parentId: null,
+      labels: [],
+      author: 'Alice',
+      lastModifiedAt: '2025-01-15T00:00:00Z',
+      lastSynced: '2025-01-16T00:00:00Z',
+      embeddingDirty: false,
+      embeddingStatus: 'embedded' as const,
+      embeddedAt: '2025-01-16T00:00:00Z',
+    })),
+    total: n,
+    page: 1,
+    limit: n,
+    totalPages: 1,
+  };
+}
+
+function mockFetchWithPages(pagesResponse: ReturnType<typeof makeManyPages>) {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+    const url = typeof input === 'string' ? input : (input as Request).url;
+    if (url.includes('/embeddings/status')) {
+      return new Response(JSON.stringify(mockEmbeddingStatusIdle), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.includes('/pages/filters')) {
+      return new Response(JSON.stringify(mockFilterOptions), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.includes('/spaces')) {
+      return new Response(JSON.stringify(mockSpaces), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.includes('/sync/status')) {
+      return new Response(JSON.stringify({ status: 'idle' }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.includes('/pages/pinned')) {
+      return new Response(JSON.stringify({ items: [], total: 0 }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.includes('/settings')) {
+      return new Response(JSON.stringify({}), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify(pagesResponse), {
       headers: { 'Content-Type': 'application/json' },
     });
   });
@@ -100,6 +175,16 @@ describe('PagesPage', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it('renders KPI cards at the top of the page', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    expect(screen.getByTestId('kpi-cards')).toBeInTheDocument();
+    expect(screen.getByTestId('kpi-total-articles')).toBeInTheDocument();
+    expect(screen.getByTestId('kpi-embedded-pages')).toBeInTheDocument();
+    expect(screen.getByTestId('kpi-spaces-synced')).toBeInTheDocument();
+    expect(screen.getByTestId('kpi-last-sync')).toBeInTheDocument();
+    expect(screen.getByTestId('kpi-embedding-coverage')).toBeInTheDocument();
   });
 
   it('renders the page title, search input, and filter controls', () => {
@@ -223,5 +308,26 @@ describe('PagesPage', () => {
     // Wait for pages to load to ensure all queries have resolved
     await screen.findByText('Test Page');
     expect(screen.queryByTestId('embedding-progress-banner')).not.toBeInTheDocument();
+  });
+
+  // --- Scroll behaviour tests ---
+
+  it('never renders a nested scroll container — single page scroll for all list sizes', async () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    await screen.findByText('Test Page');
+    // No element with overflow-auto should exist for the page list
+    expect(screen.queryByTestId('virtual-scroll-container')).not.toBeInTheDocument();
+  });
+
+  it('renders all items in a plain list for large page counts (>20)', async () => {
+    vi.restoreAllMocks();
+    mockFetchWithPages(makeManyPages(50));
+    render(<PagesPage />, { wrapper: createWrapper() });
+
+    // All 50 items should render in a simple div, no separate scroll container
+    expect(screen.queryByTestId('virtual-scroll-container')).not.toBeInTheDocument();
+    // Each item renders an article-hover wrapper with its id
+    const items = await screen.findAllByTestId(/^article-hover-/);
+    expect(items.length).toBeGreaterThanOrEqual(50);
   });
 });

@@ -18,6 +18,9 @@ vi.mock('../services/embedding-service.js', () => ({
   getEmbeddingStatus: vi.fn().mockResolvedValue({ totalPages: 0, dirtyPages: 0, totalEmbeddings: 0, isProcessing: false }),
   processDirtyPages: vi.fn().mockResolvedValue({ processed: 0, errors: 0 }),
   reEmbedAll: vi.fn().mockResolvedValue(undefined),
+  embedPage: vi.fn(),
+  isProcessingUser: vi.fn().mockReturnValue(false),
+  resetFailedEmbeddings: vi.fn().mockResolvedValue(0),
 }));
 
 vi.mock('../services/content-converter.js', () => ({

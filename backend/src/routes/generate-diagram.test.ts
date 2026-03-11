@@ -47,6 +47,9 @@ vi.mock('../services/embedding-service.js', () => ({
   getEmbeddingStatus: vi.fn(),
   processDirtyPages: vi.fn(),
   reEmbedAll: vi.fn(),
+  embedPage: vi.fn(),
+  isProcessingUser: vi.fn().mockReturnValue(false),
+  resetFailedEmbeddings: vi.fn().mockResolvedValue(0),
 }));
 
 const mockGetCachedResponse = vi.fn().mockResolvedValue(null);
@@ -56,6 +59,9 @@ vi.mock('../services/llm-cache.js', () => {
   class MockLlmCache {
     getCachedResponse = mockGetCachedResponse;
     setCachedResponse = mockSetCachedResponse;
+    acquireLock = vi.fn().mockResolvedValue(true);
+    releaseLock = vi.fn().mockResolvedValue(undefined);
+    waitForCachedResponse = vi.fn().mockResolvedValue(null);
     clearAll = vi.fn();
   }
   return {

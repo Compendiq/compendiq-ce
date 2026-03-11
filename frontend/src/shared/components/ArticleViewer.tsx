@@ -13,8 +13,12 @@ import {
   Panel,
   DrawioDiagram,
   ConfluenceToc,
+  ConfluenceStatus,
+  ConfluenceChildren,
   UnknownMacro,
 } from './article-extensions';
+import { MermaidBlock } from './MermaidBlockExtension';
+import { fetchAuthenticatedBlob } from '../hooks/use-authenticated-src';
 import { cn } from '../lib/cn';
 import type { TocHeading } from './TableOfContents';
 
@@ -44,6 +48,8 @@ interface ArticleViewerProps {
   pageId?: string | null;
   /** Callback with parsed headings for Table of Contents */
   onHeadingsReady?: (headings: TocHeading[]) => void;
+  /** Callback to trigger a manual Confluence sync (e.g. refresh stale diagrams) */
+  onRequestSync?: () => void;
   /** Additional CSS classes */
   className?: string;
 }
@@ -54,6 +60,7 @@ export function ArticleViewer({
   confluenceUrl,
   pageId,
   onHeadingsReady,
+  onRequestSync,
   className,
 }: ArticleViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -62,7 +69,7 @@ export function ArticleViewer({
   const sanitizedContent = useMemo(
     () =>
       DOMPurify.sanitize(content, {
-        ADD_ATTR: ['data-diagram-name', 'data-drawio', 'data-confluence-link', 'data-type', 'data-checked', 'data-color'],
+        ADD_ATTR: ['data-diagram-name', 'data-drawio', 'data-confluence-link', 'data-type', 'data-checked', 'data-color', 'data-title'],
       }),
     [content],
   );
@@ -83,13 +90,28 @@ export function ArticleViewer({
       TableHeader,
       TaskList,
       TaskItem.configure({ nested: true }),
-      CodeBlockLowlight.configure({ lowlight }),
+      CodeBlockLowlight.extend({
+        addAttributes() {
+          return {
+            ...this.parent?.(),
+            title: {
+              default: null,
+              parseHTML: (element) => element.getAttribute('data-title'),
+              renderHTML: (attributes) =>
+                attributes.title ? { 'data-title': attributes.title } : {},
+            },
+          };
+        },
+      }).configure({ lowlight }),
       Image.configure({ inline: false }),
       Details,
       DetailsSummary,
       Panel,
       DrawioDiagram,
       ConfluenceToc,
+      ConfluenceStatus,
+      ConfluenceChildren,
+      MermaidBlock,
       UnknownMacro,
     ],
     content: sanitizedContent,
@@ -184,6 +206,54 @@ export function ArticleViewer({
     });
 
     return () => cancelAnimationFrame(raf);
+  }, [isReady, sanitizedContent]);
+
+  // Rewrite /api/attachments/... image srcs to authenticated blob URLs.
+  // Browser <img> tags cannot send Authorization headers, so without this
+  // the backend returns 401 for every inline image.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || !isReady) return;
+
+    const blobUrls: string[] = [];
+    let cancelled = false;
+
+    const raf = requestAnimationFrame(() => {
+      const images = container.querySelectorAll<HTMLImageElement>('img[src^="/api/attachments/"]');
+      if (images.length === 0) return;
+
+      images.forEach(async (img) => {
+        const originalSrc = img.getAttribute('src');
+        if (!originalSrc) return;
+
+        // Prevent browser from attempting to load the unauthenticated URL
+        // while we fetch with auth. Without this the browser fires a 401
+        // request for every image before our blob rewrite kicks in.
+        img.removeAttribute('src');
+        img.setAttribute('data-original-src', originalSrc);
+
+        const blobUrl = await fetchAuthenticatedBlob(originalSrc);
+        if (cancelled) {
+          if (blobUrl) URL.revokeObjectURL(blobUrl);
+          return;
+        }
+        if (blobUrl) {
+          blobUrls.push(blobUrl);
+          img.src = blobUrl;
+        } else {
+          // Show an error placeholder instead of a broken image icon
+          img.alt = img.alt || 'Image failed to load';
+          img.classList.add('image-load-error');
+          img.title = 'Image could not be loaded from Confluence. Try syncing the page.';
+        }
+      });
+    });
+
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+      blobUrls.forEach((url) => URL.revokeObjectURL(url));
+    };
   }, [isReady, sanitizedContent]);
 
   // Image click-to-zoom

@@ -3,20 +3,22 @@ import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
 import { TaskList, TaskItem } from '@tiptap/extension-list';
-import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight';
 import { Image } from '@tiptap/extension-image';
+import { TitledCodeBlock } from './TitledCodeBlock';
 import { Placeholder } from '@tiptap/extensions';
-import { common, createLowlight } from 'lowlight';
+import { lowlight } from '../lib/lowlight';
 import {
   Bold, Italic, Strikethrough, Code, Heading1, Heading2, Heading3,
   List, ListOrdered, CheckSquare, Quote, Minus, Undo2, Redo2,
   Table as TableIcon, Image as ImageIcon, CodeSquare,
+  ArrowUpFromLine, ArrowDownFromLine, ArrowLeftFromLine, ArrowRightFromLine,
+  Trash2, Columns3, Rows3, Merge, SplitSquareHorizontal,
+  ToggleLeft, PanelTop,
 } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { useIsLightTheme } from '../hooks/use-is-light-theme';
+import { MermaidBlock } from './MermaidBlockExtension';
 import type { Editor as EditorType } from '@tiptap/react';
-
-const lowlight = createLowlight(common);
 
 interface EditorProps {
   content?: string;
@@ -142,6 +144,117 @@ function EditorToolbar({ editor }: { editor: EditorType }) {
   );
 }
 
+function TableContextToolbar({ editor }: { editor: EditorType }) {
+  if (!editor.isActive('table')) return null;
+
+  return (
+    <div
+      data-testid="table-context-toolbar"
+      className="flex flex-wrap items-center gap-0.5 border-b border-border/50 bg-card/80 backdrop-blur-md px-2 py-1.5"
+    >
+      <span className="mr-1 text-xs font-medium text-muted-foreground select-none">Table</span>
+
+      <ToolbarSeparator />
+
+      {/* Row operations */}
+      <ToolbarButton
+        onClick={() => editor.chain().focus().addRowBefore().run()}
+        disabled={!editor.can().addRowBefore()}
+        title="Add row before"
+      >
+        <ArrowUpFromLine size={15} />
+      </ToolbarButton>
+      <ToolbarButton
+        onClick={() => editor.chain().focus().addRowAfter().run()}
+        disabled={!editor.can().addRowAfter()}
+        title="Add row after"
+      >
+        <ArrowDownFromLine size={15} />
+      </ToolbarButton>
+      <ToolbarButton
+        onClick={() => editor.chain().focus().deleteRow().run()}
+        disabled={!editor.can().deleteRow()}
+        title="Delete row"
+      >
+        <Rows3 size={15} className="text-destructive/70" />
+      </ToolbarButton>
+
+      <ToolbarSeparator />
+
+      {/* Column operations */}
+      <ToolbarButton
+        onClick={() => editor.chain().focus().addColumnBefore().run()}
+        disabled={!editor.can().addColumnBefore()}
+        title="Add column before"
+      >
+        <ArrowLeftFromLine size={15} />
+      </ToolbarButton>
+      <ToolbarButton
+        onClick={() => editor.chain().focus().addColumnAfter().run()}
+        disabled={!editor.can().addColumnAfter()}
+        title="Add column after"
+      >
+        <ArrowRightFromLine size={15} />
+      </ToolbarButton>
+      <ToolbarButton
+        onClick={() => editor.chain().focus().deleteColumn().run()}
+        disabled={!editor.can().deleteColumn()}
+        title="Delete column"
+      >
+        <Columns3 size={15} className="text-destructive/70" />
+      </ToolbarButton>
+
+      <ToolbarSeparator />
+
+      {/* Merge / Split */}
+      <ToolbarButton
+        onClick={() => editor.chain().focus().mergeCells().run()}
+        disabled={!editor.can().mergeCells()}
+        title="Merge cells"
+      >
+        <Merge size={15} />
+      </ToolbarButton>
+      <ToolbarButton
+        onClick={() => editor.chain().focus().splitCell().run()}
+        disabled={!editor.can().splitCell()}
+        title="Split cell"
+      >
+        <SplitSquareHorizontal size={15} />
+      </ToolbarButton>
+
+      <ToolbarSeparator />
+
+      {/* Header toggles */}
+      <ToolbarButton
+        onClick={() => editor.chain().focus().toggleHeaderRow().run()}
+        disabled={!editor.can().toggleHeaderRow()}
+        active={editor.isActive('tableHeader')}
+        title="Toggle header row"
+      >
+        <PanelTop size={15} />
+      </ToolbarButton>
+      <ToolbarButton
+        onClick={() => editor.chain().focus().toggleHeaderColumn().run()}
+        disabled={!editor.can().toggleHeaderColumn()}
+        title="Toggle header column"
+      >
+        <ToggleLeft size={15} />
+      </ToolbarButton>
+
+      <div className="flex-1" />
+
+      {/* Delete table */}
+      <ToolbarButton
+        onClick={() => editor.chain().focus().deleteTable().run()}
+        disabled={!editor.can().deleteTable()}
+        title="Delete table"
+      >
+        <Trash2 size={15} className="text-destructive/70" />
+      </ToolbarButton>
+    </div>
+  );
+}
+
 const AUTO_SAVE_DELAY = 2000;
 
 // eslint-disable-next-line react-refresh/only-export-components
@@ -190,7 +303,8 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       TableHeader,
       TaskList,
       TaskItem.configure({ nested: true }),
-      CodeBlockLowlight.configure({ lowlight }),
+      MermaidBlock,
+      TitledCodeBlock.configure({ lowlight }),
       Image.configure({ inline: false }),
       Placeholder.configure({ placeholder: placeholder ?? 'Start writing...' }),
     ],
@@ -207,14 +321,15 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
   return (
     <div className="glass-card overflow-hidden">
       {editable && editor && <EditorToolbar editor={editor} />}
+      {editable && editor && <TableContextToolbar editor={editor} />}
       <EditorContent
         editor={editor}
         className={cn(
-          'prose max-w-none px-4 py-3',
+          'prose max-w-none',
           !isLight && 'prose-invert',
-          '[&_.tiptap]:min-h-[200px] [&_.tiptap]:outline-none',
+          '[&_.tiptap]:min-h-[200px] [&_.tiptap]:max-w-4xl [&_.tiptap]:mx-auto [&_.tiptap]:px-10 [&_.tiptap]:py-3 [&_.tiptap]:outline-none',
           '[&_table]:border-collapse [&_td]:border [&_td]:border-border/50 [&_td]:p-2 [&_th]:border [&_th]:border-border/50 [&_th]:bg-foreground/5 [&_th]:p-2',
-          '[&_pre]:rounded-md [&_pre]:bg-foreground/5 [&_pre]:p-4',
+          '[&_pre]:rounded-md [&_pre]:bg-foreground/5 [&_pre:not([data-title])]:p-4 [&_pre[data-title]]:px-4 [&_pre[data-title]]:pb-4',
           '[&_ul[data-type=taskList]]:list-none [&_ul[data-type=taskList]]:pl-0',
         )}
       />

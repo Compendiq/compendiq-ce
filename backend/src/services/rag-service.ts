@@ -19,6 +19,7 @@ interface SearchResult {
 /**
  * Vector search: cosine similarity on page_embeddings.
  * Sets hnsw.ef_search for this transaction to improve recall.
+ * Scoped to pages in the user's selected spaces.
  *
  * Tradeoff: higher ef_search = better recall but slower query.
  * Default PostgreSQL ef_search is 40; we use 100 for better RAG recall.
@@ -36,11 +37,12 @@ async function vectorSearch(userId: string, questionEmbedding: number[], limit =
       metadata: { page_title: string; section_title: string; space_key: string };
       distance: number;
     }>(
-      `SELECT confluence_id, chunk_text, metadata,
-              embedding <=> $2 AS distance
-       FROM page_embeddings
-       WHERE user_id = $1
-       ORDER BY embedding <=> $2
+      `SELECT pe.confluence_id, pe.chunk_text, pe.metadata,
+              pe.embedding <=> $2 AS distance
+       FROM page_embeddings pe
+       JOIN cached_pages cp ON pe.confluence_id = cp.confluence_id
+       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
+       ORDER BY pe.embedding <=> $2
        LIMIT $3`,
       [userId, pgvector.toSql(questionEmbedding), limit],
     );
@@ -65,6 +67,7 @@ async function vectorSearch(userId: string, questionEmbedding: number[], limit =
 
 /**
  * Keyword search: PostgreSQL full-text search on cached_pages.
+ * Scoped to pages in the user's selected spaces.
  */
 async function keywordSearch(userId: string, questionText: string, limit = 10): Promise<SearchResult[]> {
   // Use plainto_tsquery which safely handles arbitrary user input
@@ -79,13 +82,13 @@ async function keywordSearch(userId: string, questionText: string, limit = 10): 
     body_text: string;
     rank: number;
   }>(
-    `SELECT confluence_id, title, space_key,
-            substring(body_text, 1, 500) as body_text,
-            ts_rank(to_tsvector('english', coalesce(title, '') || ' ' || coalesce(body_text, '')),
+    `SELECT cp.confluence_id, cp.title, cp.space_key,
+            substring(cp.body_text, 1, 500) as body_text,
+            ts_rank(to_tsvector('english', coalesce(cp.title, '') || ' ' || coalesce(cp.body_text, '')),
                     plainto_tsquery('english', $2)) AS rank
-     FROM cached_pages
-     WHERE user_id = $1
-       AND to_tsvector('english', coalesce(title, '') || ' ' || coalesce(body_text, '')) @@ plainto_tsquery('english', $2)
+     FROM cached_pages cp
+     JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
+     WHERE to_tsvector('english', coalesce(cp.title, '') || ' ' || coalesce(cp.body_text, '')) @@ plainto_tsquery('english', $2)
      ORDER BY rank DESC
      LIMIT $3`,
     [userId, trimmed, limit],
@@ -166,6 +169,7 @@ async function recordSearchAnalytics(
 /**
  * Hybrid RAG search: combines vector search + keyword search using RRF.
  * Returns top results with source metadata for citations.
+ * Scoped to pages in the user's selected spaces.
  */
 export async function hybridSearch(
   userId: string,

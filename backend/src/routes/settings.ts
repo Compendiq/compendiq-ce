@@ -2,9 +2,10 @@ import { FastifyInstance } from 'fastify';
 import { request as undiciRequest } from 'undici';
 import { UpdateSettingsSchema, TestConfluenceSchema } from '@kb-creator/contracts';
 import { query } from '../db/postgres.js';
-import { encryptPat } from '../utils/crypto.js';
+import { encryptPat, decryptPat } from '../utils/crypto.js';
 import { validateUrl } from '../utils/ssrf-guard.js';
 import { logAuditEvent } from '../services/audit-service.js';
+import { setActiveProvider } from '../services/ollama-service.js';
 import { logger } from '../utils/logger.js';
 import { confluenceDispatcher } from '../utils/tls-config.js';
 
@@ -16,7 +17,6 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     const result = await query<{
       confluence_url: string | null;
       confluence_pat: string | null;
-      selected_spaces: string[];
       ollama_model: string;
       llm_provider: string;
       openai_base_url: string | null;
@@ -26,9 +26,16 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       sync_interval_min: number;
       show_space_home_content: boolean;
     }>(
-      'SELECT confluence_url, confluence_pat, selected_spaces, ollama_model, llm_provider, openai_base_url, openai_api_key, openai_model, theme, sync_interval_min, show_space_home_content FROM user_settings WHERE user_id = $1',
+      'SELECT confluence_url, confluence_pat, ollama_model, llm_provider, openai_base_url, openai_api_key, openai_model, theme, sync_interval_min, show_space_home_content FROM user_settings WHERE user_id = $1',
       [request.userId],
     );
+
+    // Fetch selected spaces from user_space_selections
+    const spacesResult = await query<{ space_key: string }>(
+      'SELECT space_key FROM user_space_selections WHERE user_id = $1 ORDER BY space_key',
+      [request.userId],
+    );
+    const selectedSpaces = spacesResult.rows.map((r) => r.space_key);
 
     if (result.rows.length === 0) {
       // Create default settings if missing
@@ -36,7 +43,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       return {
         confluenceUrl: null,
         hasConfluencePat: false,
-        selectedSpaces: [],
+        selectedSpaces,
         ollamaModel: 'qwen3.5',
         llmProvider: 'ollama' as const,
         openaiBaseUrl: null,
@@ -54,7 +61,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     return {
       confluenceUrl: row.confluence_url,
       hasConfluencePat: !!row.confluence_pat,
-      selectedSpaces: row.selected_spaces ?? [],
+      selectedSpaces,
       ollamaModel: row.ollama_model,
       llmProvider: (row.llm_provider ?? 'ollama') as 'ollama' | 'openai',
       openaiBaseUrl: row.openai_base_url,
@@ -83,11 +90,6 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     if (body.confluencePat !== undefined && body.confluencePat !== null) {
       updates.push(`confluence_pat = $${paramIdx++}`);
       values.push(encryptPat(body.confluencePat));
-    }
-
-    if (body.selectedSpaces !== undefined) {
-      updates.push(`selected_spaces = $${paramIdx++}`);
-      values.push(body.selectedSpaces);
     }
 
     if (body.ollamaModel !== undefined) {
@@ -130,19 +132,41 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       values.push(body.openaiModel);
     }
 
-    if (updates.length === 0) {
-      return { message: 'No changes' };
+    // Handle selectedSpaces via user_space_selections table
+    if (body.selectedSpaces !== undefined) {
+      const newSpaces = body.selectedSpaces;
+
+      // Delete spaces no longer selected by this user
+      await query(
+        'DELETE FROM user_space_selections WHERE user_id = $1 AND space_key <> ALL($2::text[])',
+        [request.userId, newSpaces],
+      );
+
+      // Insert newly selected spaces (idempotent)
+      for (const spaceKey of newSpaces) {
+        await query(
+          'INSERT INTO user_space_selections (user_id, space_key) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+          [request.userId, spaceKey],
+        );
+      }
     }
 
-    updates.push(`updated_at = NOW()`);
-    values.push(request.userId);
+    if (updates.length > 0) {
+      updates.push(`updated_at = NOW()`);
+      values.push(request.userId);
 
-    await query(
-      `UPDATE user_settings SET ${updates.join(', ')} WHERE user_id = $${paramIdx}`,
-      values,
-    );
+      await query(
+        `UPDATE user_settings SET ${updates.join(', ')} WHERE user_id = $${paramIdx}`,
+        values,
+      );
+    }
 
-    // If PAT or URL changed, invalidate all user data (ADR-017)
+    // If LLM provider changed, update the active in-memory provider
+    if (body.llmProvider !== undefined) {
+      setActiveProvider(body.llmProvider as 'ollama' | 'openai');
+    }
+
+    // If PAT or URL changed, invalidate user-specific cached data (ADR-017)
     if (body.confluencePat !== undefined || body.confluenceUrl !== undefined) {
       logger.info({ userId: request.userId }, 'PAT/URL changed, invalidating user cache');
       await invalidateUserData(request.userId, fastify);
@@ -159,7 +183,27 @@ export async function settingsRoutes(fastify: FastifyInstance) {
   });
 
   fastify.post('/settings/test-confluence', async (request) => {
-    const { url, pat } = TestConfluenceSchema.parse(request.body);
+    const { url, pat: patFromBody } = TestConfluenceSchema.parse(request.body);
+
+    // Resolve PAT: use body value if provided, otherwise fall back to stored encrypted PAT
+    let resolvedPat: string;
+    if (patFromBody) {
+      resolvedPat = patFromBody;
+    } else {
+      const stored = await query<{ confluence_pat: string | null }>(
+        'SELECT confluence_pat FROM user_settings WHERE user_id = $1',
+        [request.userId],
+      );
+      const encryptedPat = stored.rows[0]?.confluence_pat ?? null;
+      if (!encryptedPat) {
+        return { success: false, message: 'No PAT saved — save settings first' };
+      }
+      try {
+        resolvedPat = decryptPat(encryptedPat);
+      } catch {
+        return { success: false, message: 'Stored PAT could not be decrypted' };
+      }
+    }
 
     // SSRF protection: use centralized validator
     try {
@@ -171,7 +215,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     try {
       const opts: Record<string, unknown> = {
         method: 'GET',
-        headers: { Authorization: `Bearer ${pat}` },
+        headers: { Authorization: `Bearer ${resolvedPat}` },
         signal: AbortSignal.timeout(10_000),
       };
       if (confluenceDispatcher) {
@@ -200,10 +244,12 @@ export async function settingsRoutes(fastify: FastifyInstance) {
 }
 
 async function invalidateUserData(userId: string, fastify: FastifyInstance): Promise<void> {
-  // Delete cached data for user (ADR-017)
-  await query('DELETE FROM page_embeddings WHERE user_id = $1', [userId]);
-  await query('DELETE FROM cached_pages WHERE user_id = $1', [userId]);
-  await query('DELETE FROM cached_spaces WHERE user_id = $1', [userId]);
+  // When a user's PAT/URL changes, their space selections are no longer valid.
+  // Clear their space selections so they re-configure with the new credentials.
+  // Shared tables (cached_pages, cached_spaces, page_embeddings) are NOT deleted here
+  // because they are shared across users. Pages are only removed via sync when no
+  // user selects the space.
+  await query('DELETE FROM user_space_selections WHERE user_id = $1', [userId]);
 
   // Invalidate Redis keys using SCAN (avoids O(N) KEYS command)
   try {

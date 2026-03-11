@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { LazyMotion, domAnimation } from 'framer-motion';
+import { LazyMotion, domMax } from 'framer-motion';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { DuplicateDetector } from './DuplicateDetector';
 import { useAuthStore } from '../../stores/auth-store';
@@ -23,7 +23,7 @@ function createWrapper() {
     return (
       <QueryClientProvider client={queryClient}>
         <MemoryRouter>
-          <LazyMotion features={domAnimation}>
+          <LazyMotion features={domMax}>
             {children}
           </LazyMotion>
         </MemoryRouter>
@@ -47,14 +47,26 @@ describe('DuplicateDetector', () => {
     useAuthStore.getState().clearAuth();
   });
 
-  it('renders the Find Duplicates button', () => {
+  it('renders the Duplicates toolbar button', () => {
     render(
       <DuplicateDetector pageId="page-1" pageTitle="Test Page" />,
       { wrapper: createWrapper() },
     );
 
-    expect(screen.getByText('Find Duplicates')).toBeInTheDocument();
+    expect(screen.getByText('Duplicates')).toBeInTheDocument();
+    expect(screen.getByTitle('Find duplicate pages')).toBeInTheDocument();
+  });
+
+  it('opens dialog with Find Duplicates button when clicked', () => {
+    render(
+      <DuplicateDetector pageId="page-1" pageTitle="Test Page" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('Duplicates'));
+
     expect(screen.getByText('Duplicate Detection')).toBeInTheDocument();
+    expect(screen.getByText('Find Duplicates')).toBeInTheDocument();
   });
 
   it('shows loading state when scanning', async () => {
@@ -68,6 +80,9 @@ describe('DuplicateDetector', () => {
       { wrapper: createWrapper() },
     );
 
+    // Open the dialog
+    fireEvent.click(screen.getByText('Duplicates'));
+    // Click Find Duplicates inside the dialog
     fireEvent.click(screen.getByText('Find Duplicates'));
 
     await waitFor(() => {
@@ -88,6 +103,7 @@ describe('DuplicateDetector', () => {
       { wrapper: createWrapper() },
     );
 
+    fireEvent.click(screen.getByText('Duplicates'));
     fireEvent.click(screen.getByText('Find Duplicates'));
 
     await waitFor(() => {
@@ -120,6 +136,7 @@ describe('DuplicateDetector', () => {
       { wrapper: createWrapper() },
     );
 
+    fireEvent.click(screen.getByText('Duplicates'));
     fireEvent.click(screen.getByText('Find Duplicates'));
 
     await waitFor(() => {
@@ -155,6 +172,7 @@ describe('DuplicateDetector', () => {
       { wrapper: createWrapper() },
     );
 
+    fireEvent.click(screen.getByText('Duplicates'));
     fireEvent.click(screen.getByText('Find Duplicates'));
 
     await waitFor(() => {
@@ -163,5 +181,21 @@ describe('DuplicateDetector', () => {
 
     fireEvent.click(screen.getByText('View'));
     expect(mockNavigate).toHaveBeenCalledWith('/pages/page-2');
+  });
+
+  it('closes dialog via close button', async () => {
+    render(
+      <DuplicateDetector pageId="page-1" pageTitle="Test Page" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('Duplicates'));
+    expect(screen.getByText('Duplicate Detection')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText('Close'));
+
+    await waitFor(() => {
+      expect(screen.queryByText('Duplicate Detection')).not.toBeInTheDocument();
+    });
   });
 });

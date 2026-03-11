@@ -1,10 +1,12 @@
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
-import { LogOut, User } from 'lucide-react';
+import { LogOut, Settings, User } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../../stores/auth-store';
 import { logoutApi } from '../lib/api';
 
 export function UserMenu() {
   const user = useAuthStore((s) => s.user);
+  const navigate = useNavigate();
 
   return (
     <DropdownMenu.Root>
@@ -28,6 +30,13 @@ export function UserMenu() {
             Signed in as <span className="font-medium text-foreground">{user?.username}</span>
           </DropdownMenu.Label>
           <DropdownMenu.Separator className="my-1 h-px bg-foreground/10" />
+          <DropdownMenu.Item
+            onSelect={() => navigate('/settings')}
+            className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground transition-colors"
+          >
+            <Settings size={14} />
+            Settings
+          </DropdownMenu.Item>
           <DropdownMenu.Item
             onSelect={() => void logoutApi()}
             className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground transition-colors"

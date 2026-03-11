@@ -30,6 +30,7 @@ logs/
 
 # Data (draw.io attachment cache)
 backend/data/
+data/
 
 # Coverage
 coverage/
@@ -42,6 +43,9 @@ e2e/.auth/
 # Temp
 tmp/
 temp/
+
+# Research
+research/
 
 # Claude Code
 .claude/

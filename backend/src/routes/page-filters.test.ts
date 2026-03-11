@@ -76,6 +76,8 @@ const defaultPageRow = {
   last_modified_at: new Date('2025-01-15'),
   last_synced: new Date('2025-01-16'),
   embedding_dirty: false,
+  embedding_status: 'embedded',
+  embedded_at: new Date('2025-01-16'),
 };
 
 describe('Page Filters', () => {
@@ -265,10 +267,10 @@ describe('Page Filters', () => {
   describe('GET /api/pages/filters', () => {
     it('should return distinct authors and labels', async () => {
       mockQueryFn.mockImplementation((sql: string) => {
-        if (typeof sql === 'string' && sql.includes('DISTINCT author')) {
+        if (typeof sql === 'string' && sql.includes('DISTINCT') && sql.includes('author')) {
           return { rows: [{ author: 'Alice' }, { author: 'Bob' }] };
         }
-        if (typeof sql === 'string' && sql.includes('unnest(labels)')) {
+        if (typeof sql === 'string' && sql.includes('unnest') && sql.includes('labels')) {
           return { rows: [{ label: 'architecture' }, { label: 'howto' }] };
         }
         return { rows: [], rowCount: 0 };

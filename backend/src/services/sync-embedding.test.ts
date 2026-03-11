@@ -4,6 +4,8 @@ const mocks = vi.hoisted(() => ({
   processDirtyPages: vi.fn().mockResolvedValue({ processed: 3, errors: 0 }),
   getSpaces: vi.fn().mockResolvedValue({ results: [] }),
   getAllPagesInSpace: vi.fn().mockResolvedValue([]),
+  getPage: vi.fn().mockResolvedValue(undefined),
+  getPageAttachments: vi.fn().mockResolvedValue({ results: [] }),
   query: vi.fn(),
 }));
 
@@ -17,6 +19,8 @@ vi.mock('./confluence-client.js', () => ({
     getAllSpaces = vi.fn().mockResolvedValue([]);
     getAllPagesInSpace = mocks.getAllPagesInSpace;
     getModifiedPages = vi.fn().mockResolvedValue([]);
+    getPage = mocks.getPage;
+    getPageAttachments = mocks.getPageAttachments;
   },
 }));
 
@@ -47,7 +51,7 @@ vi.mock('../db/postgres.js', () => ({
   query: (...args: unknown[]) => mocks.query(...args),
 }));
 
-import { syncUser } from './sync-service.js';
+import { syncUser, getSyncStatus } from './sync-service.js';
 
 describe('syncUser auto-embedding', () => {
   beforeEach(() => {
@@ -61,8 +65,8 @@ describe('syncUser auto-embedding', () => {
       .mockResolvedValueOnce({
         rows: [{ confluence_url: 'https://confluence.example.com', confluence_pat: 'encrypted-pat' }],
       })
-      // 2. selected_spaces
-      .mockResolvedValueOnce({ rows: [{ selected_spaces: ['DEV'] }] })
+      // 2. selected_spaces from user_space_selections
+      .mockResolvedValueOnce({ rows: [{ space_key: 'DEV' }] })
       // 3. last_synced (no previous sync → full sync)
       .mockResolvedValueOnce({ rows: [{ last_synced: null }] })
       // 4. detectDeletedPages: existing pages
@@ -70,7 +74,6 @@ describe('syncUser auto-embedding', () => {
       // 5. update space sync timestamp
       .mockResolvedValueOnce({ rows: [] });
 
-    mocks.getSpaces.mockResolvedValueOnce({ results: [] });
     mocks.getAllPagesInSpace.mockResolvedValueOnce([]);
   }
 
@@ -81,6 +84,44 @@ describe('syncUser auto-embedding', () => {
 
     await vi.waitFor(() => {
       expect(mocks.processDirtyPages).toHaveBeenCalledWith('user-1');
+    });
+  });
+
+  it('should set status to embedding after sync completes', async () => {
+    // Use a deferred promise to control when processDirtyPages resolves
+    let resolveEmbedding!: (value: { processed: number; errors: number }) => void;
+    mocks.processDirtyPages.mockReturnValueOnce(
+      new Promise((resolve) => { resolveEmbedding = resolve; }),
+    );
+
+    setupSuccessfulSync();
+
+    await syncUser('user-5');
+
+    // Status should be 'embedding' while processDirtyPages is still running
+    const statusDuringEmbed = getSyncStatus('user-5');
+    expect(statusDuringEmbed.status).toBe('embedding');
+
+    // Resolve embedding
+    resolveEmbedding({ processed: 3, errors: 0 });
+
+    // After embedding completes, status should be 'idle'
+    await vi.waitFor(() => {
+      const statusAfter = getSyncStatus('user-5');
+      expect(statusAfter.status).toBe('idle');
+    });
+  });
+
+  it('should set status to idle even if embedding fails', async () => {
+    mocks.processDirtyPages.mockRejectedValueOnce(new Error('Ollama offline'));
+    setupSuccessfulSync();
+
+    await syncUser('user-6');
+
+    // Wait for the rejected promise to settle
+    await vi.waitFor(() => {
+      const status = getSyncStatus('user-6');
+      expect(status.status).toBe('idle');
     });
   });
 
@@ -99,7 +140,7 @@ describe('syncUser auto-embedding', () => {
       .mockResolvedValueOnce({
         rows: [{ confluence_url: 'https://confluence.example.com', confluence_pat: 'encrypted-pat' }],
       })
-      .mockResolvedValueOnce({ rows: [{ selected_spaces: [] }] });
+      .mockResolvedValueOnce({ rows: [] });
 
     await syncUser('user-3');
 
@@ -111,5 +152,66 @@ describe('syncUser auto-embedding', () => {
     setupSuccessfulSync();
 
     await expect(syncUser('user-4')).resolves.toBeUndefined();
+  });
+});
+
+describe('syncPage attachment cache invalidation', () => {
+  const mockPage = {
+    id: 'page-1',
+    title: 'Test Page',
+    version: { number: 2, when: '2024-01-02T00:00:00Z', by: { displayName: 'Alice' } },
+    space: { key: 'DEV' },
+    ancestors: [],
+    metadata: { labels: { results: [] } },
+    body: { storage: { value: '<p>content</p>' } },
+  };
+
+  function setupSyncWithPage(existingVersion: number | null) {
+    mocks.query
+      // 1. getClientForUser: user_settings
+      .mockResolvedValueOnce({ rows: [{ confluence_url: 'https://conf.example.com', confluence_pat: 'enc' }] })
+      // 2. user_space_selections (shared table, PR #240)
+      .mockResolvedValueOnce({ rows: [{ space_key: 'DEV' }] })
+      // 3. last_synced (no previous sync → full sync; space=undefined so no upsert)
+      .mockResolvedValueOnce({ rows: [] })
+      // 4. syncPage: existing page version check
+      .mockResolvedValueOnce(
+        existingVersion !== null
+          ? { rows: [{ version: existingVersion, title: 'Old', body_html: '<p>old</p>', body_text: 'old' }] }
+          : { rows: [] },
+      )
+      // 5. syncPage: upsert page
+      .mockResolvedValueOnce({ rows: [] })
+      // 6. detectDeletedPages: existing page ids
+      .mockResolvedValueOnce({ rows: [] })
+      // 7. update space last_synced
+      .mockResolvedValueOnce({ rows: [] });
+
+    mocks.getAllPagesInSpace.mockResolvedValueOnce([mockPage]);
+    mocks.getPage.mockResolvedValueOnce(mockPage);
+    mocks.getPageAttachments.mockResolvedValueOnce({ results: [] });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.processDirtyPages.mockResolvedValue({ processed: 0, errors: 0 });
+  });
+
+  it('clears attachment cache when an existing page has a new version', async () => {
+    setupSyncWithPage(1); // existing version 1, new version 2
+
+    await syncUser('user-cache-clear');
+
+    const { cleanPageAttachments } = await import('./attachment-handler.js');
+    expect(cleanPageAttachments).toHaveBeenCalledWith('user-cache-clear', 'page-1');
+  });
+
+  it('does not clear attachment cache for brand-new pages', async () => {
+    setupSyncWithPage(null); // no existing row
+
+    await syncUser('user-cache-new');
+
+    const { cleanPageAttachments } = await import('./attachment-handler.js');
+    expect(cleanPageAttachments).not.toHaveBeenCalled();
   });
 });

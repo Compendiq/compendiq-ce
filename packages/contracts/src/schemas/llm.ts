@@ -13,6 +13,7 @@ export const ImproveRequestSchema = z.object({
   type: ImprovementTypeSchema,
   model: z.string().min(1),
   pageId: z.string().optional(),
+  includeSubPages: z.boolean().optional(),
 });
 
 export const GenerateRequestSchema = z.object({
@@ -28,12 +29,15 @@ export const SummarizeRequestSchema = z.object({
   model: z.string().min(1),
   length: z.enum(['short', 'medium', 'detailed']).default('medium'),
   pageId: z.string().optional(),
+  includeSubPages: z.boolean().optional(),
 });
 
 export const AskRequestSchema = z.object({
   question: z.string().min(1),
   model: z.string().min(1),
   conversationId: z.string().uuid().optional(),
+  pageId: z.string().optional(),
+  includeSubPages: z.boolean().optional(),
 });
 
 export const GenerateDiagramRequestSchema = z.object({
@@ -41,6 +45,17 @@ export const GenerateDiagramRequestSchema = z.object({
   model: z.string().min(1),
   diagramType: z.enum(['flowchart', 'sequence', 'state', 'mindmap']).default('flowchart'),
   pageId: z.string().optional(),
+});
+
+export const AnalyzeQualityRequestSchema = z.object({
+  content: z.string().min(1),
+  model: z.string().min(1),
+  pageId: z.string().optional(),
+  includeSubPages: z.boolean().optional(),
+});
+
+export const ForceEmbedTreeRequestSchema = z.object({
+  pageId: z.string().min(1),
 });
 
 export const ConversationSchema = z.object({
@@ -85,6 +100,8 @@ export type SummarizeRequest = z.infer<typeof SummarizeRequestSchema>;
 export type AskRequest = z.infer<typeof AskRequestSchema>;
 export type GenerateDiagramRequest = z.infer<typeof GenerateDiagramRequestSchema>;
 export type DiagramType = z.infer<typeof GenerateDiagramRequestSchema>['diagramType'];
+export type AnalyzeQualityRequest = z.infer<typeof AnalyzeQualityRequestSchema>;
+export type ForceEmbedTreeRequest = z.infer<typeof ForceEmbedTreeRequestSchema>;
 export type Conversation = z.infer<typeof ConversationSchema>;
 export type Improvement = z.infer<typeof ImprovementSchema>;
 export type OllamaModel = z.infer<typeof OllamaModelSchema>;

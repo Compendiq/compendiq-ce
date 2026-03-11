@@ -573,7 +573,9 @@ html {
   border: 1px solid var(--glass-border);
   background: oklch(from var(--color-card) l c h / 0.8);
   backdrop-filter: blur(12px);
-  box-shadow: 0 8px 32px var(--glass-shadow);
+  box-shadow:
+    inset 0 1px 0 oklch(1 0 0 / 0.08),
+    0 8px 32px var(--glass-shadow);
 }
 
 @utility glass-card-hover {
@@ -581,21 +583,314 @@ html {
   border: 1px solid var(--glass-border);
   background: oklch(from var(--color-card) l c h / 0.8);
   backdrop-filter: blur(12px);
-  box-shadow: 0 8px 32px var(--glass-shadow);
-  transition: all 0.2s ease;
+  box-shadow:
+    inset 0 1px 0 oklch(1 0 0 / 0.08),
+    0 8px 32px var(--glass-shadow);
+  transition: box-shadow 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
   &:hover {
     border-color: var(--glass-border-hover);
-    box-shadow: 0 12px 40px var(--glass-shadow-hover);
+    box-shadow:
+      inset 0 1px 0 oklch(1 0 0 / 0.08),
+      0 0 0 1px oklch(from var(--color-primary) l c h / 0.5),
+      0 0 20px oklch(from var(--color-primary) l c h / 0.15),
+      0 12px 40px var(--glass-shadow-hover);
+    transform: translateY(-1px);
   }
 }
 
-/* Gradient mesh background */
+/* ===========================
+   BUTTON UTILITIES
+   =========================== */
+
+@utility glass-button-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  border-radius: var(--radius-lg);
+  background-color: var(--color-primary);
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  font-weight: 500;
+  color: var(--color-primary-foreground);
+  transition: background-color 0.15s ease, transform 0.1s ease;
+  &:hover { background-color: oklch(from var(--color-primary) l c h / 0.9); }
+  &:active { transform: scale(0.98); }
+  &:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--color-background), 0 0 0 4px oklch(from var(--color-primary) l c h / 0.5);
+  }
+  &:disabled { opacity: 0.5; pointer-events: none; }
+}
+
+@utility glass-button-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  border-radius: var(--radius-md);
+  border: 1px solid oklch(from var(--color-border) l c h / 0.5);
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  transition: background-color 0.15s ease, transform 0.1s ease;
+  &:hover { background-color: oklch(from var(--color-foreground) l c h / 0.05); }
+  &:active { transform: scale(0.98); }
+  &:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--color-background), 0 0 0 4px oklch(from var(--color-primary) l c h / 0.5);
+  }
+  &:disabled { opacity: 0.5; pointer-events: none; }
+}
+
+@utility glass-button-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  padding: 0.375rem;
+  color: var(--color-muted-foreground);
+  transition: background-color 0.15s ease, color 0.15s ease, transform 0.1s ease;
+  &:hover {
+    background-color: oklch(from var(--color-foreground) l c h / 0.05);
+    color: var(--color-foreground);
+  }
+  &:active { transform: scale(0.98); }
+  &:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--color-background), 0 0 0 4px oklch(from var(--color-primary) l c h / 0.5);
+  }
+}
+
+/* ===========================
+   INPUT UTILITIES
+   =========================== */
+
+@utility glass-input {
+  width: 100%;
+  border-radius: var(--radius-md);
+  border: 1px solid oklch(from var(--color-border) l c h / 0.5);
+  background-color: oklch(from var(--color-foreground) l c h / 0.05);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  &:focus {
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 1px var(--color-primary);
+  }
+}
+
+@utility glass-select {
+  border-radius: var(--radius-md);
+  background-color: oklch(from var(--color-foreground) l c h / 0.05);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  outline: none;
+  transition: box-shadow 0.15s ease;
+  &:focus {
+    box-shadow: 0 0 0 1px var(--color-primary);
+  }
+}
+
+/* ===========================
+   SKELETON LOADER
+   =========================== */
+
+@utility skeleton {
+  background: linear-gradient(90deg, var(--color-muted) 25%, oklch(from var(--color-muted) calc(l + 0.08) c h) 50%, var(--color-muted) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.6s cubic-bezier(.4,0,.2,1) infinite;
+  border-radius: var(--radius-md);
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ===========================
+   CONTENT-AWARE SKELETONS
+   =========================== */
+
+/* Article card skeleton: title bar + 2 meta chips + 3 excerpt lines */
+.skeleton-article-card {
+  .skeleton-title { height: 1rem; width: 70%; margin-bottom: 0.75rem; }
+  .skeleton-meta { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; }
+  .skeleton-chip { height: 0.75rem; width: 3.5rem; border-radius: 9999px; }
+  .skeleton-line { height: 0.625rem; margin-bottom: 0.375rem; }
+  .skeleton-line:nth-child(1) { width: 100%; }
+  .skeleton-line:nth-child(2) { width: 92%; }
+  .skeleton-line:last-child { width: 60%; }
+}
+
+/* KPI card skeleton: label + number + icon */
+.skeleton-kpi-card {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  .skeleton-icon { height: 2rem; width: 2rem; border-radius: var(--radius-md); flex-shrink: 0; }
+  .skeleton-label { height: 0.625rem; width: 4rem; margin-bottom: 0.375rem; }
+  .skeleton-number { height: 1.125rem; width: 2.5rem; }
+}
+
+/* Chat message skeleton: avatar circle + bubble */
+.skeleton-chat-message {
+  display: flex;
+  gap: 0.75rem;
+  .skeleton-avatar { height: 2rem; width: 2rem; border-radius: 9999px; flex-shrink: 0; }
+  .skeleton-bubble {
+    flex: 1;
+    padding: 0.75rem;
+    border-radius: var(--radius-md);
+    .skeleton-text-line { height: 0.625rem; margin-bottom: 0.375rem; }
+    .skeleton-text-line:nth-child(1) { width: 85%; }
+    .skeleton-text-line:nth-child(2) { width: 65%; }
+    .skeleton-text-line:last-child { width: 40%; }
+  }
+}
+
+/* ===========================
+   AI ANIMATION KEYFRAMES
+   =========================== */
+
+/* Streaming cursor blink */
+@keyframes cursor-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* AI thinking blob morph */
+@keyframes blob-morph {
+  0%, 100% {
+    border-radius: 60% 40% 30% 70% / 60% 30% 70% 40%;
+    transform: rotate(0deg) scale(1);
+  }
+  25% {
+    border-radius: 30% 60% 70% 40% / 50% 60% 30% 60%;
+    transform: rotate(90deg) scale(1.05);
+  }
+  50% {
+    border-radius: 50% 60% 30% 60% / 30% 40% 70% 60%;
+    transform: rotate(180deg) scale(0.95);
+  }
+  75% {
+    border-radius: 40% 60% 50% 40% / 60% 50% 40% 60%;
+    transform: rotate(270deg) scale(1.02);
+  }
+}
+
+/* AI thinking blob glow pulse */
+@keyframes blob-pulse {
+  0%, 100% { opacity: 0.5; transform: scale(1); }
+  50% { opacity: 0.8; transform: scale(1.15); }
+}
+
+/* Typing indicator dot bounce */
+@keyframes typing-bounce {
+  0%, 60%, 100% { transform: translateY(0); }
+  30% { transform: translateY(-4px); }
+}
+
+/* Gradient mesh background (static fallback for reduced effects) */
 @utility mesh-gradient {
   background:
     radial-gradient(ellipse at 20% 50%, var(--mesh-1) 0%, transparent 50%),
     radial-gradient(ellipse at 80% 20%, var(--mesh-2) 0%, transparent 50%),
     radial-gradient(ellipse at 50% 80%, var(--mesh-3) 0%, transparent 50%),
     var(--color-background);
+}
+
+/* ===========================
+   AURORA BACKGROUND
+   Three drifting radial gradient blobs.
+   GPU-composited: uses transform/opacity only.
+   =========================== */
+
+.aurora-blob {
+  position: absolute;
+  width: 60%;
+  height: 60%;
+  border-radius: 50%;
+  filter: blur(120px);
+  mix-blend-mode: screen;
+  will-change: transform;
+  opacity: 0.7;
+}
+
+.aurora-blob-indigo {
+  background: var(--mesh-1);
+  top: -10%;
+  left: 10%;
+  animation: aurora-drift-1 25s ease-in-out infinite;
+}
+
+.aurora-blob-cyan {
+  background: var(--mesh-2);
+  top: 30%;
+  right: -5%;
+  animation: aurora-drift-2 30s ease-in-out infinite;
+}
+
+.aurora-blob-rose {
+  background: var(--mesh-3);
+  bottom: -10%;
+  left: 30%;
+  animation: aurora-drift-3 20s ease-in-out infinite;
+}
+
+@keyframes aurora-drift-1 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(8%, 12%) scale(1.05); }
+  66% { transform: translate(-5%, -8%) scale(0.95); }
+}
+
+@keyframes aurora-drift-2 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(-10%, 6%) scale(1.08); }
+  66% { transform: translate(6%, -10%) scale(0.92); }
+}
+
+@keyframes aurora-drift-3 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(12%, -6%) scale(0.95); }
+  66% { transform: translate(-8%, 8%) scale(1.06); }
+}
+
+/* ===========================
+   GLOW ON INTERACTIVE ELEMENTS
+   =========================== */
+
+@utility glow-interactive {
+  transition: box-shadow 0.2s ease;
+  &:hover {
+    box-shadow:
+      0 0 0 1px oklch(from var(--color-primary) l c h / 0.5),
+      0 0 20px oklch(from var(--color-primary) l c h / 0.15);
+  }
+}
+
+/* ===========================
+   GRADIENT BORDERS (Dark Mode)
+   Subtle inset top highlight on glass cards.
+   =========================== */
+
+@utility glass-gradient-border {
+  box-shadow:
+    inset 0 1px 0 oklch(1 0 0 / 0.08),
+    0 8px 32px var(--glass-shadow);
+}
+
+/* ===========================
+   TABULAR NUMERALS
+   For stat numbers, KPI cards, counters.
+   =========================== */
+
+@utility tabular-nums {
+  font-variant-numeric: tabular-nums;
 }
 
 /* ============================================
@@ -714,41 +1009,41 @@ html {
 
 /* Headings — gradient accent underline, proper spacing */
 .prose :where(h1) {
-  font-size: 1.875rem;
-  font-weight: 800;
-  letter-spacing: -0.025em;
-  line-height: 1.2;
-  margin-top: 2rem;
-  margin-bottom: 1rem;
-  padding-bottom: 0.5rem;
-  border-bottom: 2px solid oklch(from var(--color-primary) l c h / 0.3);
-}
-
-.prose :where(h2) {
   font-size: 1.5rem;
   font-weight: 700;
   letter-spacing: -0.02em;
   line-height: 1.3;
   margin-top: 1.75rem;
   margin-bottom: 0.75rem;
-  padding-bottom: 0.35rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 2px solid oklch(from var(--color-primary) l c h / 0.3);
+}
+
+.prose :where(h2) {
+  font-size: 1.25rem;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  line-height: 1.35;
+  margin-top: 1.5rem;
+  margin-bottom: 0.625rem;
+  padding-bottom: 0.3rem;
   border-bottom: 1px solid oklch(from var(--color-primary) l c h / 0.15);
 }
 
 .prose :where(h3) {
-  font-size: 1.25rem;
-  font-weight: 600;
-  line-height: 1.4;
-  margin-top: 1.5rem;
-  margin-bottom: 0.5rem;
-}
-
-.prose :where(h4) {
-  font-size: 1.125rem;
+  font-size: 1.1rem;
   font-weight: 600;
   line-height: 1.4;
   margin-top: 1.25rem;
   margin-bottom: 0.5rem;
+}
+
+.prose :where(h4) {
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.45;
+  margin-top: 1rem;
+  margin-bottom: 0.375rem;
 }
 
 /* First heading should not have top margin */
@@ -974,7 +1269,47 @@ html {
   color: var(--color-muted-foreground);
 }
 
+/* DrawioDiagramPreview React component — glassmorphic container */
+.drawio-preview-container {
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* Light background panel behind diagram images for dark mode readability */
+.drawio-preview-container [data-testid="drawio-image-panel"] {
+  border-radius: var(--radius-sm);
+  min-height: 6rem;
+}
+
+/* Prevent prose from adding unwanted margins to the preview wrapper */
+.prose .drawio-diagram-wrapper {
+  margin: 0;
+}
+
+.prose .drawio-diagram-wrapper img {
+  margin: 0;
+}
+
 /* TOC placeholder */
+/* ToC collapsible section animations (Radix Collapsible) */
+.toc-collapsible-content {
+  overflow: hidden;
+}
+.toc-collapsible-content[data-state='open'] {
+  animation: toc-slide-down 200ms ease-out;
+}
+.toc-collapsible-content[data-state='closed'] {
+  animation: toc-slide-up 200ms ease-out;
+}
+@keyframes toc-slide-down {
+  from { height: 0; }
+  to   { height: var(--radix-collapsible-content-height); }
+}
+@keyframes toc-slide-up {
+  from { height: var(--radix-collapsible-content-height); }
+  to   { height: 0; }
+}
+
 .prose .confluence-toc {
   border: 1px dashed var(--glass-border);
   border-radius: var(--radius-md);
@@ -993,6 +1328,105 @@ html {
   margin: 1rem 0;
   background: oklch(from var(--color-muted) l c h / 0.15);
   font-size: 0.875rem;
+}
+
+/* Status badges — colored inline lozenges matching Confluence */
+.prose .confluence-status,
+.tiptap .confluence-status {
+  display: inline-block;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.025em;
+  padding: 0.15em 0.5em;
+  border-radius: 0.1875rem;
+  vertical-align: baseline;
+  white-space: nowrap;
+}
+
+.prose .confluence-status[data-color="grey"],
+.tiptap .confluence-status[data-color="grey"] {
+  background: oklch(0.55 0 0 / 0.2);
+  color: oklch(0.75 0 0);
+  border: 1px solid oklch(0.55 0 0 / 0.3);
+}
+
+.prose .confluence-status[data-color="red"],
+.tiptap .confluence-status[data-color="red"] {
+  background: oklch(0.55 0.2 25 / 0.2);
+  color: oklch(0.75 0.15 25);
+  border: 1px solid oklch(0.55 0.2 25 / 0.3);
+}
+
+.prose .confluence-status[data-color="yellow"],
+.tiptap .confluence-status[data-color="yellow"] {
+  background: oklch(0.7 0.15 80 / 0.2);
+  color: oklch(0.82 0.12 80);
+  border: 1px solid oklch(0.7 0.15 80 / 0.3);
+}
+
+.prose .confluence-status[data-color="green"],
+.tiptap .confluence-status[data-color="green"] {
+  background: oklch(0.65 0.2 145 / 0.2);
+  color: oklch(0.78 0.15 145);
+  border: 1px solid oklch(0.65 0.2 145 / 0.3);
+}
+
+.prose .confluence-status[data-color="blue"],
+.tiptap .confluence-status[data-color="blue"] {
+  background: oklch(0.6 0.15 240 / 0.2);
+  color: oklch(0.75 0.12 240);
+  border: 1px solid oklch(0.6 0.15 240 / 0.3);
+}
+
+/* Light theme status badge overrides */
+[data-theme-type="light"] .prose .confluence-status[data-color="grey"],
+[data-theme-type="light"] .tiptap .confluence-status[data-color="grey"] {
+  background: oklch(0.7 0 0 / 0.15);
+  color: oklch(0.4 0 0);
+  border-color: oklch(0.7 0 0 / 0.3);
+}
+
+[data-theme-type="light"] .prose .confluence-status[data-color="red"],
+[data-theme-type="light"] .tiptap .confluence-status[data-color="red"] {
+  background: oklch(0.65 0.2 25 / 0.15);
+  color: oklch(0.45 0.2 25);
+  border-color: oklch(0.65 0.2 25 / 0.3);
+}
+
+[data-theme-type="light"] .prose .confluence-status[data-color="yellow"],
+[data-theme-type="light"] .tiptap .confluence-status[data-color="yellow"] {
+  background: oklch(0.85 0.15 80 / 0.2);
+  color: oklch(0.45 0.12 80);
+  border-color: oklch(0.85 0.15 80 / 0.3);
+}
+
+[data-theme-type="light"] .prose .confluence-status[data-color="green"],
+[data-theme-type="light"] .tiptap .confluence-status[data-color="green"] {
+  background: oklch(0.75 0.2 145 / 0.15);
+  color: oklch(0.4 0.18 145);
+  border-color: oklch(0.75 0.2 145 / 0.3);
+}
+
+[data-theme-type="light"] .prose .confluence-status[data-color="blue"],
+[data-theme-type="light"] .tiptap .confluence-status[data-color="blue"] {
+  background: oklch(0.7 0.15 240 / 0.15);
+  color: oklch(0.4 0.15 240);
+  border-color: oklch(0.7 0.15 240 / 0.3);
+}
+
+/* Children macro placeholder */
+.prose .confluence-children-macro,
+.tiptap .confluence-children-macro {
+  border: 1px dashed var(--glass-border);
+  border-radius: var(--radius-md);
+  padding: 0.5rem 1rem;
+  margin: 1rem 0;
+  font-size: 0.875rem;
+  color: var(--color-muted-foreground);
+  font-style: italic;
+  background: oklch(from var(--color-muted) l c h / 0.08);
 }
 
 /* Confluence page links — subtle badge style */
@@ -1140,11 +1574,48 @@ pre:hover .code-copy-btn {
 }
 
 /* ============================================
+   Code block title header
+   Renders the data-title attribute as a label
+   above the code block, matching Confluence UI.
+   ============================================ */
+
+.prose :where(pre[data-title]) {
+  position: relative;
+  padding-top: 2.25rem;
+}
+
+.prose :where(pre[data-title])::before {
+  content: attr(data-title);
+  display: block;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 0.3rem 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-family: inherit;
+  color: var(--color-muted-foreground);
+  background: oklch(1 0 0 / 0.05);
+  border-bottom: 1px solid oklch(1 0 0 / 0.08);
+  border-radius: 0.5rem 0.5rem 0 0;
+  letter-spacing: 0.01em;
+}
+
+[data-theme-type="light"] .prose :where(pre[data-title])::before {
+  background: oklch(0 0 0 / 0.04);
+  border-bottom-color: oklch(0 0 0 / 0.08);
+}
+
+/* ============================================
    Article viewer — TipTap read-only overrides
    ============================================ */
 
 .article-viewer .tiptap {
-  padding: 1.5rem;
+  max-width: 56rem; /* ~max-w-4xl for comfortable reading width */
+  margin-left: auto;
+  margin-right: auto;
+  padding: 1.5rem 2.5rem;
 }
 
 /* TipTap editor styles */
@@ -1243,6 +1714,22 @@ pre:hover .code-copy-btn {
   opacity: 0.9;
 }
 
+/* Failed image placeholder — replaces broken image icon with a styled box */
+.prose img.image-load-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 80px;
+  min-width: 120px;
+  border: 1px dashed var(--glass-border);
+  background: oklch(from var(--color-muted) l c h / 0.15);
+  border-radius: var(--radius-md);
+  padding: 1rem;
+  color: var(--color-muted-foreground);
+  font-size: 0.8125rem;
+  cursor: help;
+}
+
 .tiptap .panel-info,
 .tiptap .panel-warning,
 .tiptap .panel-note,
@@ -1258,12 +1745,111 @@ pre:hover .code-copy-btn {
 .tiptap .panel-note { border-color: var(--color-primary); background: oklch(from var(--color-primary) l c h / 0.1); }
 .tiptap .panel-tip { border-color: var(--color-success); background: oklch(from var(--color-success) l c h / 0.1); }
 
+/* ===========================
+   CLICK RIPPLE EFFECT
+   =========================== */
+
+@keyframes ripple-expand {
+  0% {
+    transform: scale(0);
+    opacity: 0.4;
+  }
+  100% {
+    transform: scale(4);
+    opacity: 0;
+  }
+}
+
+.ripple-container {
+  position: relative;
+  overflow: hidden;
+}
+
+.ripple-effect {
+  position: absolute;
+  border-radius: 50%;
+  width: 50px;
+  height: 50px;
+  margin-top: -25px;
+  margin-left: -25px;
+  background: radial-gradient(circle, oklch(1 0 0 / 0.35) 0%, oklch(1 0 0 / 0) 70%);
+  pointer-events: none;
+  animation: ripple-expand 0.6s ease-out forwards;
+}
+
+/* ===========================
+   DIRECTION-AWARE HOVER
+   =========================== */
+
+.direction-aware-hover {
+  position: relative;
+  overflow: hidden;
+}
+
+.direction-aware-hover .hover-bloom {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  z-index: 0;
+}
+
+.direction-aware-hover:hover .hover-bloom {
+  opacity: 1;
+}
+
+/* ===========================
+   CARD STACK EFFECT
+   =========================== */
+
+.card-stack {
+  position: relative;
+}
+
+.card-stack::before,
+.card-stack::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--glass-border);
+  background: oklch(from var(--color-card) l c h / 0.4);
+  transition: transform 0.3s ease, opacity 0.3s ease;
+  z-index: -1;
+  pointer-events: none;
+}
+
+.card-stack::before {
+  transform: translate(2px, 2px);
+  opacity: 0.5;
+}
+
+.card-stack::after {
+  transform: translate(4px, 4px);
+  opacity: 0.3;
+}
+
+.card-stack:hover::before {
+  transform: translate(3px, 3px) rotate(0.5deg);
+  opacity: 0.6;
+}
+
+.card-stack:hover::after {
+  transform: translate(6px, 6px) rotate(-0.5deg);
+  opacity: 0.4;
+}
+
 /* Reduced motion */
 @media (prefers-reduced-motion: reduce) {
   * {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+
+  .aurora-blob {
+    animation: none !important;
   }
 }
 

@@ -1,10 +1,11 @@
-import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import { memo, useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import {
   ChevronRight,
   ChevronDown,
   FileText,
-  Layers,
+  Folder,
+  FolderOpen,
   PanelLeftClose,
   PanelLeft,
   ChevronsUpDown,
@@ -15,7 +16,7 @@ import { useUiStore } from '../../stores/ui-store';
 import { cn } from '../lib/cn';
 import type { PageTreeItem } from '../hooks/use-pages';
 
-interface TreeNode {
+export interface TreeNode {
   page: PageTreeItem;
   children: TreeNode[];
 }
@@ -44,11 +45,12 @@ function buildTree(pages: PageTreeItem[], homepageId?: string | null): TreeNode[
   }
   sortChildren(roots);
 
-  // If homepageId is provided, root the tree at the homepage's children
+  // If homepageId is provided, keep the homepage itself as the visible root
+  // so it remains clickable as a folder/article entry.
   if (homepageId) {
     const homepageNode = nodeMap.get(homepageId);
     if (homepageNode) {
-      return homepageNode.children;
+      return [homepageNode];
     }
   }
 
@@ -71,23 +73,37 @@ function findAncestorIds(pages: PageTreeItem[], targetId: string): Set<string> {
   return ancestors;
 }
 
-function SidebarTreeNode({
-  node,
-  level = 0,
-  expandedSet,
-  toggleExpand,
-  activePageId,
-}: {
+export interface SidebarTreeNodeProps {
   node: TreeNode;
   level?: number;
   expandedSet: Set<string>;
   toggleExpand: (id: string) => void;
   activePageId: string | undefined;
-}) {
+}
+
+export const SidebarTreeNode = memo(function SidebarTreeNode({
+  node,
+  level = 0,
+  expandedSet,
+  toggleExpand,
+  activePageId,
+}: SidebarTreeNodeProps) {
   const navigate = useNavigate();
   const isExpanded = expandedSet.has(node.page.id);
   const hasChildren = node.children.length > 0;
   const isActive = node.page.id === activePageId;
+
+  const handleNavigate = useCallback(() => {
+    navigate(`/pages/${node.page.id}`);
+  }, [navigate, node.page.id]);
+
+  const handleToggle = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      toggleExpand(node.page.id);
+    },
+    [toggleExpand, node.page.id],
+  );
 
   return (
     <div>
@@ -99,14 +115,11 @@ function SidebarTreeNode({
             : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
         )}
         style={{ paddingLeft: `${level * 16 + 8}px` }}
-        onClick={() => navigate(`/pages/${node.page.id}`)}
+        onClick={handleNavigate}
       >
         {hasChildren ? (
           <button
-            onClick={(e) => {
-              e.stopPropagation();
-              toggleExpand(node.page.id);
-            }}
+            onClick={handleToggle}
             className="shrink-0 rounded p-0.5 hover:bg-foreground/10"
             aria-label={isExpanded ? 'Collapse' : 'Expand'}
           >
@@ -115,11 +128,15 @@ function SidebarTreeNode({
         ) : (
           <span className="w-[20px] shrink-0" />
         )}
-        {hasChildren ? (
-          <Layers size={15} className="shrink-0 text-primary/70" />
-        ) : (
-          <FileText size={15} className="shrink-0 text-muted-foreground/70" />
-        )}
+        {hasChildren
+          ? (
+            isExpanded || isActive
+              ? <FolderOpen size={15} className="shrink-0 text-primary/80" />
+              : <Folder size={15} className="shrink-0 text-primary/70" />
+            )
+          : (
+            <FileText size={15} className="shrink-0 text-muted-foreground/70" />
+            )}
         <span className="truncate text-sm">{node.page.title}</span>
       </div>
 
@@ -139,19 +156,24 @@ function SidebarTreeNode({
       )}
     </div>
   );
-}
+}, (prev, next) => {
+  return (
+    prev.node === next.node &&
+    prev.level === next.level &&
+    prev.activePageId === next.activePageId &&
+    prev.expandedSet === next.expandedSet
+  );
+});
 
 export function SidebarTreeView() {
   const location = useLocation();
   const { id: routePageId } = useParams<{ id: string }>();
-  const {
-    treeSidebarCollapsed,
-    toggleTreeSidebar,
-    treeSidebarSpaceKey,
-    setTreeSidebarSpaceKey,
-    treeSidebarWidth,
-    setTreeSidebarWidth,
-  } = useUiStore();
+  const treeSidebarCollapsed = useUiStore((s) => s.treeSidebarCollapsed);
+  const toggleTreeSidebar = useUiStore((s) => s.toggleTreeSidebar);
+  const treeSidebarSpaceKey = useUiStore((s) => s.treeSidebarSpaceKey);
+  const setTreeSidebarSpaceKey = useUiStore((s) => s.setTreeSidebarSpaceKey);
+  const treeSidebarWidth = useUiStore((s) => s.treeSidebarWidth);
+  const setTreeSidebarWidth = useUiStore((s) => s.setTreeSidebarWidth);
 
   // Determine active page ID from URL
   const activePageId = useMemo(() => {
@@ -213,6 +235,19 @@ export function SidebarTreeView() {
       }
     }
   }, [activePageId, pages]);
+
+  // When a space is scoped to its homepage, keep that homepage expanded so
+  // the homepage remains clickable while its immediate children stay visible.
+  useEffect(() => {
+    if (!homepageId) return;
+
+    setExpandedIds((prev) => {
+      if (prev.has(homepageId)) return prev;
+      const next = new Set(prev);
+      next.add(homepageId);
+      return next;
+    });
+  }, [homepageId]);
 
   // Auto-select space based on current page
   useEffect(() => {

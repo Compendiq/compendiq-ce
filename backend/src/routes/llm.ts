@@ -8,29 +8,121 @@ import {
 } from '../services/ollama-service.js';
 import { providerStreamChat } from '../services/llm-provider.js';
 import { hybridSearch, buildRagContext } from '../services/rag-service.js';
-import { htmlToMarkdown } from '../services/content-converter.js';
-import { getEmbeddingStatus, processDirtyPages, reEmbedAll } from '../services/embedding-service.js';
+import { htmlToMarkdown, confluenceToHtml } from '../services/content-converter.js';
+import { getEmbeddingStatus, processDirtyPages, reEmbedAll, isProcessingUser, embedPage, resetFailedEmbeddings } from '../services/embedding-service.js';
+import type { EmbeddingProgressEvent } from '../services/embedding-service.js';
+import { getClientForUser } from '../services/sync-service.js';
 import { getOllamaCircuitBreakerStatus, getOpenaiCircuitBreakerStatus } from '../services/circuit-breaker.js';
-import { LlmCache, buildLlmCacheKey, buildRagCacheKey } from '../services/llm-cache.js';
+import { LlmCache, buildLlmCacheKey, buildRagCacheKey, type CachedLlmResponse } from '../services/llm-cache.js';
 import {
   ImproveRequestSchema,
   GenerateRequestSchema,
   SummarizeRequestSchema,
   AskRequestSchema,
   GenerateDiagramRequestSchema,
+  AnalyzeQualityRequestSchema,
+  ForceEmbedTreeRequestSchema,
 } from '@kb-creator/contracts';
 import { z } from 'zod';
 import { sanitizeLlmInput } from '../utils/sanitize-llm-input.js';
 import { logAuditEvent } from '../services/audit-service.js';
 import { logger } from '../utils/logger.js';
 import type { LlmProviderType } from '../services/llm-provider.js';
+import { assembleSubPageContext, getMultiPagePromptSuffix } from '../services/subpage-context.js';
 
 const IdParamSchema = z.object({ id: z.string().min(1) });
 const ImprovementsQuerySchema = z.object({ pageId: z.string().optional() });
 
+/**
+ * Assemble page context for LLM consumption, optionally including sub-pages.
+ *
+ * When `includeSubPages` is true and a `pageId` is provided, fetches the parent
+ * page title and assembles it with its sub-page tree. Otherwise, converts the
+ * HTML content directly to markdown.
+ *
+ * Returns the markdown content and an optional multi-page prompt suffix.
+ */
+async function assembleContextIfNeeded(
+  userId: string,
+  pageId: string | undefined,
+  content: string,
+  includeSubPages?: boolean,
+): Promise<{ markdown: string; multiPageSuffix: string }> {
+  if (includeSubPages && pageId) {
+    const pageResult = await query<{ title: string }>(
+      'SELECT title FROM cached_pages WHERE confluence_id = $1',
+      [pageId],
+    );
+    const parentTitle = pageResult.rows[0]?.title ?? 'Untitled';
+
+    const assembled = await assembleSubPageContext(userId, pageId, content, parentTitle);
+    return {
+      markdown: assembled.markdown,
+      multiPageSuffix: getMultiPagePromptSuffix(assembled.pageCount),
+    };
+  }
+
+  return {
+    markdown: htmlToMarkdown(content),
+    multiPageSuffix: '',
+  };
+}
+
 // Rate limit configs for LLM endpoints
 const LLM_STREAM_RATE_LIMIT = { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } };
 const EMBEDDING_RATE_LIMIT = { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } };
+
+/**
+ * Send a cached SSE response as a single chunk and end the stream.
+ */
+function sendCachedSSE(
+  reply: FastifyReply,
+  content: string,
+  extras?: Record<string, unknown>,
+): void {
+  reply.raw.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  reply.raw.write(`data: ${JSON.stringify({ content, done: true, cached: true })}\n\n`);
+  if (extras) {
+    reply.raw.write(`data: ${JSON.stringify({ ...extras, done: true, final: true })}\n\n`);
+  }
+  reply.raw.end();
+}
+
+/**
+ * Check the LLM cache with stampede protection.
+ *
+ * 1. Return cached response immediately if present.
+ * 2. Try to acquire a Redis lock so only one request generates.
+ * 3. If the lock is already held by another request, poll until the cached
+ *    result appears (or timeout, in which case we return null so the caller
+ *    can generate anyway).
+ *
+ * The caller MUST call `releaseLock()` in a finally block when `lockAcquired`
+ * is true, after writing the generated result to the cache.
+ */
+async function checkCacheWithLock(
+  llmCache: LlmCache,
+  cacheKey: string,
+): Promise<{ cached: CachedLlmResponse | null; lockAcquired: boolean }> {
+  // Fast path — already in cache
+  const cached = await llmCache.getCachedResponse(cacheKey);
+  if (cached) return { cached, lockAcquired: false };
+
+  // Try to become the single generator for this key
+  const lockAcquired = await llmCache.acquireLock(cacheKey);
+  if (lockAcquired) {
+    return { cached: null, lockAcquired: true };
+  }
+
+  // Another request holds the lock — wait for it to populate the cache
+  const waited = await llmCache.waitForCachedResponse(cacheKey);
+  return { cached: waited, lockAcquired: false };
+}
 
 /**
  * Helper to stream SSE response from an async generator with abort support.
@@ -152,15 +244,14 @@ export async function llmRoutes(fastify: FastifyInstance) {
   // POST /api/llm/improve - stream improved content
   fastify.post('/llm/improve', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
     const body = ImproveRequestSchema.parse(request.body);
-    const { content, type, model } = body;
+    const { content, type, model, includeSubPages } = body;
     const userId = request.userId;
 
     if (content.length > MAX_INPUT_LENGTH) {
       throw fastify.httpErrors.badRequest(`Content too large (max ${MAX_INPUT_LENGTH} characters)`);
     }
 
-    // Convert HTML to markdown for LLM consumption
-    const markdown = htmlToMarkdown(content);
+    const { markdown, multiPageSuffix } = await assembleContextIfNeeded(userId, body.pageId, content, includeSubPages);
 
     // Sanitize before sending to LLM
     const { sanitized, warnings } = sanitizeLlmInput(markdown);
@@ -168,39 +259,36 @@ export async function llmRoutes(fastify: FastifyInstance) {
       await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/improve' }, request);
     }
 
-    const systemPrompt = getSystemPrompt(`improve_${type}` as SystemPromptKey);
+    const systemPrompt = getSystemPrompt(`improve_${type}` as SystemPromptKey) + multiPageSuffix;
 
-    // Check LLM cache
+    // Check LLM cache with stampede protection
     const cacheKey = buildLlmCacheKey(model, systemPrompt, sanitized);
-    const cached = await llmCache.getCachedResponse(cacheKey);
+    const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
-      reply.raw.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'X-Accel-Buffering': 'no',
-      });
-      reply.raw.write(`data: ${JSON.stringify({ content: cached.content, done: true, cached: true })}\n\n`);
-      reply.raw.end();
+      sendCachedSSE(reply, cached.content);
       return;
     }
 
-    // Resolve per-user LLM provider and stream
-    const generator = providerStreamChat(userId, model, [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: sanitized },
-    ]);
+    try {
+      // Resolve per-user LLM provider and stream
+      const generator = providerStreamChat(userId, model, [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: sanitized },
+      ]);
 
-    // Store improvement record
-    if (body.pageId) {
-      await query(
-        `INSERT INTO llm_improvements (user_id, confluence_id, improvement_type, model, original_content, improved_content, status)
-         VALUES ($1, $2, $3, $4, $5, '', 'streaming')`,
-        [userId, body.pageId, type, model, content.slice(0, 10000)],
-      );
+      // Store improvement record
+      if (body.pageId) {
+        await query(
+          `INSERT INTO llm_improvements (user_id, confluence_id, improvement_type, model, original_content, improved_content, status)
+           VALUES ($1, $2, $3, $4, $5, '', 'streaming')`,
+          [userId, body.pageId, type, model, content.slice(0, 10000)],
+        );
+      }
+
+      await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
+    } finally {
+      if (lockAcquired) await llmCache.releaseLock(cacheKey);
     }
-
-    await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
   });
 
   // POST /api/llm/generate - stream generated article
@@ -223,41 +311,38 @@ export async function llmRoutes(fastify: FastifyInstance) {
       ? getSystemPrompt(`generate_${template}` as SystemPromptKey)
       : getSystemPrompt('generate');
 
-    // Check LLM cache
+    // Check LLM cache with stampede protection
     const cacheKey = buildLlmCacheKey(model, systemPrompt, sanitized);
-    const cached = await llmCache.getCachedResponse(cacheKey);
+    const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
-      reply.raw.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'X-Accel-Buffering': 'no',
-      });
-      reply.raw.write(`data: ${JSON.stringify({ content: cached.content, done: true, cached: true })}\n\n`);
-      reply.raw.end();
+      sendCachedSSE(reply, cached.content);
       return;
     }
 
-    // Resolve per-user LLM provider and stream
-    const generator = providerStreamChat(userId, model, [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: sanitized },
-    ]);
+    try {
+      // Resolve per-user LLM provider and stream
+      const generator = providerStreamChat(userId, model, [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: sanitized },
+      ]);
 
-    await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
+      await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
+    } finally {
+      if (lockAcquired) await llmCache.releaseLock(cacheKey);
+    }
   });
 
   // POST /api/llm/summarize - stream summary
   fastify.post('/llm/summarize', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
     const body = SummarizeRequestSchema.parse(request.body);
-    const { content, model, length = 'medium' } = body;
+    const { content, model, length = 'medium', includeSubPages } = body;
     const userId = request.userId;
 
     if (content.length > MAX_INPUT_LENGTH) {
       throw fastify.httpErrors.badRequest(`Content too large (max ${MAX_INPUT_LENGTH} characters)`);
     }
 
-    const markdown = htmlToMarkdown(content);
+    const { markdown, multiPageSuffix } = await assembleContextIfNeeded(userId, body.pageId, content, includeSubPages);
 
     // Sanitize before sending to LLM
     const { sanitized: sanitizedMarkdown, warnings } = sanitizeLlmInput(markdown);
@@ -271,30 +356,27 @@ export async function llmRoutes(fastify: FastifyInstance) {
       detailed: 'Provide a detailed summary covering all important points, decisions, and action items.',
     };
 
-    const systemPrompt = `${getSystemPrompt('summarize')} ${lengthInstructions[length]}`;
+    const systemPrompt = `${getSystemPrompt('summarize')} ${lengthInstructions[length]}${multiPageSuffix}`;
 
-    // Check LLM cache
+    // Check LLM cache with stampede protection
     const cacheKey = buildLlmCacheKey(model, systemPrompt, sanitizedMarkdown);
-    const cached = await llmCache.getCachedResponse(cacheKey);
+    const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
-      reply.raw.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'X-Accel-Buffering': 'no',
-      });
-      reply.raw.write(`data: ${JSON.stringify({ content: cached.content, done: true, cached: true })}\n\n`);
-      reply.raw.end();
+      sendCachedSSE(reply, cached.content);
       return;
     }
 
-    // Resolve per-user LLM provider and stream
-    const generator = providerStreamChat(userId, model, [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: sanitizedMarkdown },
-    ]);
+    try {
+      // Resolve per-user LLM provider and stream
+      const generator = providerStreamChat(userId, model, [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: sanitizedMarkdown },
+      ]);
 
-    await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
+      await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
+    } finally {
+      if (lockAcquired) await llmCache.releaseLock(cacheKey);
+    }
   });
 
   // POST /api/llm/generate-diagram - stream Mermaid diagram from article content
@@ -316,33 +398,71 @@ export async function llmRoutes(fastify: FastifyInstance) {
 
     const systemPrompt = getSystemPrompt(`generate_diagram_${diagramType}` as SystemPromptKey);
 
-    // Check LLM cache
+    // Check LLM cache with stampede protection
     const cacheKey = buildLlmCacheKey(model, systemPrompt, sanitized);
-    const cached = await llmCache.getCachedResponse(cacheKey);
+    const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
-      reply.raw.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'X-Accel-Buffering': 'no',
-      });
-      reply.raw.write(`data: ${JSON.stringify({ content: cached.content, done: true, cached: true })}\n\n`);
-      reply.raw.end();
+      sendCachedSSE(reply, cached.content);
       return;
     }
 
-    const generator = providerStreamChat(request.userId, model, [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: sanitized },
-    ]);
+    try {
+      const generator = providerStreamChat(request.userId, model, [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: sanitized },
+      ]);
 
-    await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
+      await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
+    } finally {
+      if (lockAcquired) await llmCache.releaseLock(cacheKey);
+    }
+  });
+
+  // POST /api/llm/analyze-quality - stream article quality analysis
+  fastify.post('/llm/analyze-quality', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
+    const body = AnalyzeQualityRequestSchema.parse(request.body);
+    const { content, model, includeSubPages } = body;
+    const userId = request.userId;
+
+    if (content.length > MAX_INPUT_LENGTH) {
+      throw fastify.httpErrors.badRequest(`Content too large (max ${MAX_INPUT_LENGTH} characters)`);
+    }
+
+    const { markdown, multiPageSuffix } = await assembleContextIfNeeded(userId, body.pageId, content, includeSubPages);
+
+    // Sanitize before sending to LLM
+    const { sanitized, warnings } = sanitizeLlmInput(markdown);
+    if (warnings.length > 0) {
+      await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/analyze-quality' }, request);
+    }
+
+    const systemPrompt = getSystemPrompt('analyze_quality') + multiPageSuffix;
+
+    // Check LLM cache with stampede protection
+    const cacheKey = buildLlmCacheKey(model, systemPrompt, sanitized);
+    const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
+    if (cached) {
+      sendCachedSSE(reply, cached.content);
+      return;
+    }
+
+    try {
+      // Resolve per-user LLM provider and stream
+      const generator = providerStreamChat(userId, model, [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: sanitized },
+      ]);
+
+      await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
+    } finally {
+      if (lockAcquired) await llmCache.releaseLock(cacheKey);
+    }
   });
 
   // POST /api/llm/ask - RAG-powered Q&A with streaming
   fastify.post('/llm/ask', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
     const body = AskRequestSchema.parse(request.body);
-    const { question, model, conversationId } = body;
+    const { question, model, conversationId, includeSubPages } = body;
     const userId = request.userId;
 
     if (question.length > MAX_INPUT_LENGTH) {
@@ -371,148 +491,145 @@ export async function llmRoutes(fastify: FastifyInstance) {
 
     // Perform hybrid RAG search
     const searchResults = await hybridSearch(userId, question);
-    const ragContext = buildRagContext(searchResults);
+    let ragContext = buildRagContext(searchResults);
 
-    // Check RAG cache (only for new conversations without history)
+    // If includeSubPages is enabled and a pageId is provided, augment the RAG context
+    // with the sub-page tree content
+    let multiPageSuffix = '';
+    if (includeSubPages && body.pageId) {
+      const pageResult = await query<{ title: string; body_html: string }>(
+        'SELECT title, body_html FROM cached_pages WHERE confluence_id = $1',
+        [body.pageId],
+      );
+      if (pageResult.rows.length > 0) {
+        const { title, body_html } = pageResult.rows[0];
+        const assembled = await assembleSubPageContext(userId, body.pageId, body_html || '', title);
+        // Prepend the page tree context before the RAG context
+        ragContext = `Page tree context:\n\n${assembled.markdown}\n\n---\n\nAdditional knowledge base context:\n\n${ragContext}`;
+        multiPageSuffix = getMultiPagePromptSuffix(assembled.pageCount);
+      }
+    }
+
+    // Check RAG cache with stampede protection (only for new conversations without history)
     const docIds = searchResults.map((r) => r.confluenceId);
-    const ragCacheKey = buildRagCacheKey(model, question, docIds);
+    const ragCacheKey = buildRagCacheKey(model, question, docIds, {
+      includeSubPages,
+      pageId: body.pageId,
+    });
+
+    const sources = searchResults.map((r) => ({
+      pageTitle: r.pageTitle,
+      spaceKey: r.spaceKey,
+      confluenceId: r.confluenceId,
+      sectionTitle: r.sectionTitle,
+      score: r.score,
+    }));
+
+    // Helper to save/create conversation from a cached answer
+    const saveConversation = async (answer: string) => {
+      const newMessages: ChatMessage[] = [
+        ...conversationHistory,
+        { role: 'user', content: question },
+        { role: 'assistant', content: answer },
+      ];
+
+      if (convId) {
+        await query(
+          'UPDATE llm_conversations SET messages = $3, updated_at = NOW() WHERE id = $1 AND user_id = $2',
+          [convId, userId, JSON.stringify(newMessages)],
+        );
+      } else {
+        const insertResult = await query<{ id: string }>(
+          `INSERT INTO llm_conversations (user_id, model, title, messages)
+           VALUES ($1, $2, $3, $4) RETURNING id`,
+          [userId, model, question.slice(0, 100), JSON.stringify(newMessages)],
+        );
+        convId = insertResult.rows[0].id;
+      }
+    };
+
+    let ragLockAcquired = false;
 
     if (conversationHistory.length === 0) {
-      const cached = await llmCache.getCachedResponse(ragCacheKey);
+      const { cached, lockAcquired } = await checkCacheWithLock(llmCache, ragCacheKey);
+      ragLockAcquired = lockAcquired;
+
       if (cached) {
-        // Save/create conversation even for cached responses
-        const newMessages: ChatMessage[] = [
-          { role: 'user', content: question },
-          { role: 'assistant', content: cached.content },
-        ];
+        await saveConversation(cached.content);
 
-        if (convId) {
-          await query(
-            'UPDATE llm_conversations SET messages = $3, updated_at = NOW() WHERE id = $1 AND user_id = $2',
-            [convId, userId, JSON.stringify(newMessages)],
-          );
-        } else {
-          const insertResult = await query<{ id: string }>(
-            `INSERT INTO llm_conversations (user_id, model, title, messages)
-             VALUES ($1, $2, $3, $4) RETURNING id`,
-            [userId, model, question.slice(0, 100), JSON.stringify(newMessages)],
-          );
-          convId = insertResult.rows[0].id;
-        }
-
-        const sources = searchResults.map((r) => ({
-          pageTitle: r.pageTitle,
-          spaceKey: r.spaceKey,
-          confluenceId: r.confluenceId,
-          sectionTitle: r.sectionTitle,
-        }));
-
-        reply.raw.writeHead(200, {
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          'Connection': 'keep-alive',
-          'X-Accel-Buffering': 'no',
-        });
-        reply.raw.write(`data: ${JSON.stringify({ content: cached.content, done: true, cached: true })}\n\n`);
-        reply.raw.write(`data: ${JSON.stringify({
-          done: true,
-          final: true,
+        sendCachedSSE(reply, cached.content, {
           conversationId: convId,
           sources,
-        })}\n\n`);
-        reply.raw.end();
+        });
         return;
       }
     }
 
-    // Build messages
-    const messages: ChatMessage[] = [
-      { role: 'system', content: getSystemPrompt('ask') },
-      ...conversationHistory,
-      {
-        role: 'user',
-        content: `Context from knowledge base:\n\n${ragContext}\n\n---\n\nQuestion: ${sanitizedQuestion}`,
-      },
-    ];
-
-    // Stream the response and collect full answer
-    const controller = new AbortController();
-    const onClose = () => controller.abort();
-    request.raw.on('close', onClose);
-
-    // Resolve per-user LLM provider and stream
-    const generator = providerStreamChat(userId, model, messages, controller.signal);
-    let fullAnswer = '';
-
-    reply.raw.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-      'X-Accel-Buffering': 'no',
-    });
-
     try {
-      for await (const chunk of generator) {
-        if (controller.signal.aborted) {
-          logger.debug('RAG SSE stream aborted by client disconnect');
-          break;
+      // Build messages
+      const messages: ChatMessage[] = [
+        { role: 'system', content: getSystemPrompt('ask') + multiPageSuffix },
+        ...conversationHistory,
+        {
+          role: 'user',
+          content: `Context from knowledge base:\n\n${ragContext}\n\n---\n\nQuestion: ${sanitizedQuestion}`,
+        },
+      ];
+
+      // Stream the response and collect full answer
+      const controller = new AbortController();
+      const onClose = () => controller.abort();
+      request.raw.on('close', onClose);
+
+      // Resolve per-user LLM provider and stream
+      const generator = providerStreamChat(userId, model, messages, controller.signal);
+      let fullAnswer = '';
+
+      reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+
+      try {
+        for await (const chunk of generator) {
+          if (controller.signal.aborted) {
+            logger.debug('RAG SSE stream aborted by client disconnect');
+            break;
+          }
+          fullAnswer += chunk.content;
+          reply.raw.write(`data: ${JSON.stringify({ content: chunk.content, done: chunk.done })}\n\n`);
         }
-        fullAnswer += chunk.content;
-        reply.raw.write(`data: ${JSON.stringify({ content: chunk.content, done: chunk.done })}\n\n`);
-      }
 
-      if (!controller.signal.aborted) {
-        // Cache the response
-        if (fullAnswer) {
-          await llmCache.setCachedResponse(ragCacheKey, fullAnswer);
+        if (!controller.signal.aborted) {
+          // Cache the response
+          if (fullAnswer) {
+            await llmCache.setCachedResponse(ragCacheKey, fullAnswer);
+          }
+
+          await saveConversation(fullAnswer);
+
+          reply.raw.write(`data: ${JSON.stringify({
+            done: true,
+            final: true,
+            conversationId: convId,
+            sources,
+          })}\n\n`);
         }
-
-        // Save/update conversation
-        const newMessages: ChatMessage[] = [
-          ...conversationHistory,
-          { role: 'user', content: question },
-          { role: 'assistant', content: fullAnswer },
-        ];
-
-        if (convId) {
-          await query(
-            'UPDATE llm_conversations SET messages = $3, updated_at = NOW() WHERE id = $1 AND user_id = $2',
-            [convId, userId, JSON.stringify(newMessages)],
-          );
+      } catch (err) {
+        if (controller.signal.aborted || (err instanceof Error && err.name === 'AbortError')) {
+          logger.debug('RAG stream aborted by client disconnect');
         } else {
-          const insertResult = await query<{ id: string }>(
-            `INSERT INTO llm_conversations (user_id, model, title, messages)
-             VALUES ($1, $2, $3, $4) RETURNING id`,
-            [userId, model, question.slice(0, 100), JSON.stringify(newMessages)],
-          );
-          convId = insertResult.rows[0].id;
+          logger.error({ err }, 'RAG stream error');
+          reply.raw.write(`data: ${JSON.stringify({ error: 'Stream error', done: true })}\n\n`);
         }
-
-        // Send final event with metadata
-        const sources = searchResults.map((r) => ({
-          pageTitle: r.pageTitle,
-          spaceKey: r.spaceKey,
-          confluenceId: r.confluenceId,
-          sectionTitle: r.sectionTitle,
-        }));
-
-        reply.raw.write(`data: ${JSON.stringify({
-          done: true,
-          final: true,
-          conversationId: convId,
-          sources,
-        })}\n\n`);
-      }
-    } catch (err) {
-      if (controller.signal.aborted || (err instanceof Error && err.name === 'AbortError')) {
-        logger.debug('RAG stream aborted by client disconnect');
-      } else {
-        logger.error({ err }, 'RAG stream error');
-        reply.raw.write(`data: ${JSON.stringify({ error: 'Stream error', done: true })}\n\n`);
+      } finally {
+        request.raw.removeListener('close', onClose);
+        reply.raw.end();
       }
     } finally {
-      request.raw.removeListener('close', onClose);
-      reply.raw.end();
+      if (ragLockAcquired) await llmCache.releaseLock(ragCacheKey);
     }
   });
 
@@ -611,16 +728,200 @@ export async function llmRoutes(fastify: FastifyInstance) {
     return getEmbeddingStatus(request.userId);
   });
 
-  // POST /api/embeddings/process - trigger embedding processing
-  fastify.post('/embeddings/process', EMBEDDING_RATE_LIMIT, async (request, _reply) => {
+  // POST /api/embeddings/process - trigger embedding processing with SSE progress
+  fastify.post('/embeddings/process', EMBEDDING_RATE_LIMIT, async (request, reply) => {
     const userId = request.userId;
 
-    // Run in background
-    processDirtyPages(userId).catch((err) => {
-      logger.error({ err, userId }, 'Embedding processing failed');
+    // Return 409 if embedding is already in progress for this user
+    if (await isProcessingUser(userId)) {
+      throw fastify.httpErrors.conflict('Embedding processing is already in progress for this user');
+    }
+
+    // Set up SSE response
+    const controller = new AbortController();
+    const onClose = () => controller.abort();
+    request.raw.on('close', onClose);
+
+    reply.raw.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
     });
 
-    return { message: 'Embedding processing started' };
+    // Send initial event
+    reply.raw.write(`data: ${JSON.stringify({ type: 'started', message: 'Embedding processing started' })}\n\n`);
+
+    try {
+      const onProgress = (event: EmbeddingProgressEvent) => {
+        if (!controller.signal.aborted) {
+          reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
+        }
+      };
+
+      await processDirtyPages(userId, onProgress);
+    } catch (err) {
+      if (controller.signal.aborted || (err instanceof Error && err.name === 'AbortError')) {
+        logger.debug('Embedding process SSE aborted by client disconnect');
+      } else {
+        logger.error({ err, userId }, 'Embedding processing failed');
+        reply.raw.write(`data: ${JSON.stringify({ type: 'error', error: 'Embedding processing failed', done: true })}\n\n`);
+      }
+    } finally {
+      request.raw.removeListener('close', onClose);
+      reply.raw.end();
+    }
+  });
+
+  // POST /api/embeddings/retry-failed - reset failed embeddings and reprocess
+  fastify.post('/embeddings/retry-failed', EMBEDDING_RATE_LIMIT, async (request, reply) => {
+    const userId = request.userId;
+
+    // Return 409 if embedding is already in progress for this user
+    if (await isProcessingUser(userId)) {
+      throw fastify.httpErrors.conflict('Embedding processing is already in progress for this user');
+    }
+
+    // Reset all failed pages back to 'not_embedded'
+    const resetCount = await resetFailedEmbeddings();
+
+    if (resetCount === 0) {
+      return { message: 'No failed embeddings to retry', reset: 0 };
+    }
+
+    // Set up SSE response for reprocessing
+    const controller = new AbortController();
+    const onClose = () => controller.abort();
+    request.raw.on('close', onClose);
+
+    reply.raw.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+
+    reply.raw.write(`data: ${JSON.stringify({ type: 'started', message: `Reset ${resetCount} failed pages, reprocessing...`, reset: resetCount })}\n\n`);
+
+    try {
+      const onProgress = (event: EmbeddingProgressEvent) => {
+        if (!controller.signal.aborted) {
+          reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
+        }
+      };
+
+      await processDirtyPages(userId, onProgress);
+    } catch (err) {
+      if (controller.signal.aborted || (err instanceof Error && err.name === 'AbortError')) {
+        logger.debug('Retry-failed SSE aborted by client disconnect');
+      } else {
+        logger.error({ err, userId }, 'Retry-failed embedding processing failed');
+        reply.raw.write(`data: ${JSON.stringify({ type: 'error', error: 'Retry processing failed', done: true })}\n\n`);
+      }
+    } finally {
+      request.raw.removeListener('close', onClose);
+      reply.raw.end();
+    }
+  });
+
+  // POST /api/embeddings/force-embed-tree - force-embed a page and all its sub-pages via SSE
+  fastify.post('/embeddings/force-embed-tree', EMBEDDING_RATE_LIMIT, async (request, reply) => {
+    const { pageId } = ForceEmbedTreeRequestSchema.parse(request.body);
+    const userId = request.userId;
+
+    const client = await getClientForUser(userId);
+    if (!client) {
+      throw fastify.httpErrors.badRequest('Confluence credentials not configured');
+    }
+
+    // Set up SSE response
+    const controller = new AbortController();
+    const onClose = () => controller.abort();
+    request.raw.on('close', onClose);
+
+    reply.raw.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+
+    try {
+      // Phase 1: Discover all pages in the tree
+      reply.raw.write(`data: ${JSON.stringify({ phase: 'discovering', total: 0, completed: 0, done: false })}\n\n`);
+
+      const rootPage = await client.getPage(pageId);
+      const descendants = await client.getDescendantPages(pageId);
+      const allPages = [rootPage, ...descendants];
+      const total = allPages.length;
+
+      reply.raw.write(`data: ${JSON.stringify({ phase: 'embedding', total, completed: 0, done: false })}\n\n`);
+
+      // Phase 2: Embed each page, reporting progress
+      let completed = 0;
+      let errors = 0;
+
+      for (const page of allPages) {
+        if (controller.signal.aborted) break;
+
+        try {
+          // Fetch full page content if not already expanded
+          const fullPage = page.body?.storage?.value ? page : await client.getPage(page.id);
+          const storageXhtml = fullPage.body?.storage?.value ?? '';
+
+          if (storageXhtml) {
+            const bodyHtml = confluenceToHtml(storageXhtml, page.id);
+
+            // Try to get space_key and cached HTML from local DB first
+            const cachedRow = await query<{ space_key: string; body_html: string }>(
+              'SELECT space_key, body_html FROM cached_pages WHERE confluence_id = $1',
+              [page.id],
+            );
+
+            const resolvedSpaceKey = cachedRow.rows[0]?.space_key ?? '';
+            const resolvedBodyHtml = cachedRow.rows[0]?.body_html ?? bodyHtml;
+
+            await embedPage(userId, page.id, page.title, resolvedSpaceKey, resolvedBodyHtml);
+          }
+
+          completed++;
+        } catch (err) {
+          errors++;
+          completed++;
+          logger.error({ err, pageId: page.id, title: page.title }, 'Failed to embed page in tree');
+        }
+
+        reply.raw.write(`data: ${JSON.stringify({
+          phase: 'embedding',
+          total,
+          completed,
+          errors,
+          currentPage: page.title,
+          done: false,
+        })}\n\n`);
+      }
+
+      // Final event
+      if (!controller.signal.aborted) {
+        reply.raw.write(`data: ${JSON.stringify({
+          phase: 'complete',
+          total,
+          completed,
+          errors,
+          done: true,
+        })}\n\n`);
+      }
+    } catch (err) {
+      if (controller.signal.aborted || (err instanceof Error && err.name === 'AbortError')) {
+        logger.debug('Force embed tree SSE aborted by client disconnect');
+      } else {
+        logger.error({ err, pageId }, 'Force embed tree failed');
+        reply.raw.write(`data: ${JSON.stringify({ error: 'Failed to embed page tree', done: true })}\n\n`);
+      }
+    } finally {
+      request.raw.removeListener('close', onClose);
+      reply.raw.end();
+    }
   });
 
   // POST /api/admin/re-embed - admin only: re-embed all pages

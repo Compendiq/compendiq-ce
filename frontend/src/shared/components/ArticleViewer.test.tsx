@@ -1,8 +1,74 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, waitFor } from '@testing-library/react';
+
+// Mock mermaid (must be before component import)
+const mockMermaidRender = vi.fn().mockResolvedValue({ svg: '<svg data-testid="mermaid-svg">diagram</svg>' });
+vi.mock('mermaid', () => ({
+  default: {
+    initialize: vi.fn(),
+    render: (...args: unknown[]) => mockMermaidRender(...args),
+  },
+}));
+
+// Mock useIsLightTheme hook
+vi.mock('../hooks/use-is-light-theme', () => ({
+  useIsLightTheme: () => false,
+}));
+
+const mockFetchAuthenticatedBlob = vi.fn();
+vi.mock('../hooks/use-authenticated-src', () => ({
+  fetchAuthenticatedBlob: (...args: unknown[]) => mockFetchAuthenticatedBlob(...args),
+}));
+
 import { ArticleViewer } from './ArticleViewer';
 
 describe('ArticleViewer', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('rewrites protected attachment images to authenticated blob URLs', async () => {
+    mockFetchAuthenticatedBlob.mockResolvedValueOnce('blob:dashboard');
+
+    const html = '<p><img src="/api/attachments/page-1/dashboard.png" alt="Dashboard" /></p>';
+    const { container } = render(<ArticleViewer content={html} />);
+
+    await waitFor(() => {
+      const img = container.querySelector('img');
+      expect(img).toHaveAttribute('src', 'blob:dashboard');
+    });
+
+    expect(mockFetchAuthenticatedBlob).toHaveBeenCalledWith('/api/attachments/page-1/dashboard.png');
+  });
+
+  it('adds error placeholder class when image fetch fails', async () => {
+    mockFetchAuthenticatedBlob.mockResolvedValueOnce(null);
+
+    const html = '<p><img src="/api/attachments/page-1/missing.png" alt="Missing" /></p>';
+    const { container } = render(<ArticleViewer content={html} />);
+
+    await waitFor(() => {
+      const img = container.querySelector('img');
+      expect(img?.classList.contains('image-load-error')).toBe(true);
+    });
+
+    // Should have a helpful title tooltip
+    const img = container.querySelector('img')!;
+    expect(img.title).toContain('could not be loaded');
+  });
+
+  it('does not rewrite external images through the authenticated attachment fetcher', async () => {
+    const html = '<p><img src="https://example.com/diagram.svg" alt="External" /></p>';
+    const { container } = render(<ArticleViewer content={html} />);
+
+    await waitFor(() => {
+      const img = container.querySelector('img');
+      expect(img).toHaveAttribute('src', 'https://example.com/diagram.svg');
+    });
+
+    expect(mockFetchAuthenticatedBlob).not.toHaveBeenCalled();
+  });
+
   it('renders HTML content with proper headings', async () => {
     const html = '<h1>Main Title</h1><p>Some content here</p><h2>Section Two</h2><p>More content</p>';
 
@@ -66,6 +132,73 @@ describe('ArticleViewer', () => {
 
     expect(container.querySelectorAll('th')).toHaveLength(2);
     expect(container.querySelectorAll('td')).toHaveLength(2);
+  });
+
+  it('renders multi-row tables with header and multiple data rows', async () => {
+    const html = [
+      '<table>',
+      '<thead><tr><th>Name</th><th>Role</th><th>Status</th></tr></thead>',
+      '<tbody>',
+      '<tr><td>Alice</td><td>Engineer</td><td>Active</td></tr>',
+      '<tr><td>Bob</td><td>Designer</td><td>Active</td></tr>',
+      '<tr><td>Carol</td><td>Manager</td><td>On Leave</td></tr>',
+      '<tr><td>Dave</td><td>DevOps</td><td>Active</td></tr>',
+      '</tbody>',
+      '</table>',
+    ].join('');
+
+    const { container } = render(<ArticleViewer content={html} />);
+
+    await waitFor(() => {
+      expect(container.querySelector('table')).toBeTruthy();
+    });
+
+    // Header row
+    const headers = container.querySelectorAll('th');
+    expect(headers).toHaveLength(3);
+    expect(headers[0].textContent).toBe('Name');
+    expect(headers[1].textContent).toBe('Role');
+    expect(headers[2].textContent).toBe('Status');
+
+    // Data rows (4 rows x 3 cells = 12 td elements)
+    const cells = container.querySelectorAll('td');
+    expect(cells).toHaveLength(12);
+    expect(cells[0].textContent).toBe('Alice');
+    expect(cells[3].textContent).toBe('Bob');
+    expect(cells[6].textContent).toBe('Carol');
+    expect(cells[9].textContent).toBe('Dave');
+
+    // Verify all rows rendered
+    const rows = container.querySelectorAll('tr');
+    expect(rows).toHaveLength(5); // 1 header + 4 data rows
+  });
+
+  it('renders tables with colspan and rowspan attributes', async () => {
+    const html = [
+      '<table>',
+      '<thead><tr><th colspan="2">Full Name</th><th>Age</th></tr></thead>',
+      '<tbody>',
+      '<tr><td>First</td><td>Last</td><td rowspan="2">30</td></tr>',
+      '<tr><td>John</td><td>Doe</td></tr>',
+      '</tbody>',
+      '</table>',
+    ].join('');
+
+    const { container } = render(<ArticleViewer content={html} />);
+
+    await waitFor(() => {
+      expect(container.querySelector('table')).toBeTruthy();
+    });
+
+    // Check colspan header
+    const headerWithColspan = container.querySelector('th[colspan="2"]');
+    expect(headerWithColspan).toBeTruthy();
+    expect(headerWithColspan?.textContent).toBe('Full Name');
+
+    // Check rowspan cell
+    const cellWithRowspan = container.querySelector('td[rowspan="2"]');
+    expect(cellWithRowspan).toBeTruthy();
+    expect(cellWithRowspan?.textContent).toBe('30');
   });
 
   it('renders blockquotes', async () => {
@@ -165,6 +298,33 @@ describe('ArticleViewer', () => {
     expect(container.querySelector('.panel-info')?.textContent).toContain('Info panel content');
   });
 
+  it('renders Confluence status badges', async () => {
+    const html = '<p>Status: <span class="confluence-status" data-color="green">DONE</span></p>';
+
+    const { container } = render(<ArticleViewer content={html} />);
+
+    await waitFor(() => {
+      expect(container.querySelector('.confluence-status')).toBeTruthy();
+    });
+
+    const badge = container.querySelector('.confluence-status')!;
+    expect(badge.textContent).toBe('DONE');
+    expect(badge.getAttribute('data-color')).toBe('green');
+  });
+
+  it('renders Confluence children macro placeholder', async () => {
+    const html = '<div class="confluence-children-macro" data-sort="title">[Children pages listed here]</div>';
+
+    const { container } = render(<ArticleViewer content={html} />);
+
+    await waitFor(() => {
+      expect(container.querySelector('.confluence-children-macro')).toBeTruthy();
+    });
+
+    const placeholder = container.querySelector('.confluence-children-macro')!;
+    expect(placeholder.textContent).toContain('Children pages listed here');
+  });
+
   it('renders collapsible details/summary sections', async () => {
     const html = '<details><summary>Click to expand</summary><p>Hidden content</p></details>';
 
@@ -205,5 +365,80 @@ describe('ArticleViewer', () => {
       expect(img).toBeTruthy();
       expect(img?.style.cursor).toBe('zoom-in');
     });
+  });
+
+  it('renders mermaid code blocks as MermaidDiagram components', async () => {
+    const html = '<pre><code class="language-mermaid">graph TD\n  A --> B</code></pre>';
+
+    const { container } = render(<ArticleViewer content={html} />);
+
+    // The mermaid code block should be replaced with a MermaidDiagram wrapper
+    await waitFor(() => {
+      const wrapper = container.querySelector('.mermaid-diagram-wrapper');
+      expect(wrapper).toBeTruthy();
+    });
+
+    // The original <pre> element should no longer exist (replaced by the wrapper)
+    const pre = container.querySelector('pre > code.language-mermaid');
+    expect(pre).toBeNull();
+  });
+
+  it('renders regular code blocks normally alongside mermaid diagrams', async () => {
+    const html = '<pre><code class="language-javascript">const x = 1;</code></pre><pre><code class="language-mermaid">graph TD\n  A --> B</code></pre>';
+
+    const { container } = render(<ArticleViewer content={html} />);
+
+    // Wait for rendering
+    await waitFor(() => {
+      // Mermaid block should be replaced
+      const wrapper = container.querySelector('.mermaid-diagram-wrapper');
+      expect(wrapper).toBeTruthy();
+    });
+
+    // Regular code block should still exist with copy button
+    await waitFor(() => {
+      const copyBtn = container.querySelector('.code-copy-btn');
+      expect(copyBtn).toBeTruthy();
+    });
+  });
+
+  it('renders code blocks with data-title attribute', async () => {
+    const html = '<pre data-title="docker-compose.yml"><code class="language-yaml">version: "3.8"</code></pre>';
+
+    const { container } = render(<ArticleViewer content={html} />);
+
+    await waitFor(() => {
+      expect(container.querySelector('pre')).toBeTruthy();
+    });
+
+    const pre = container.querySelector('pre')!;
+    expect(pre.getAttribute('data-title')).toBe('docker-compose.yml');
+  });
+
+  it('renders code blocks without data-title normally', async () => {
+    const html = '<pre><code class="language-bash">echo "hello"</code></pre>';
+
+    const { container } = render(<ArticleViewer content={html} />);
+
+    await waitFor(() => {
+      expect(container.querySelector('pre')).toBeTruthy();
+    });
+
+    const pre = container.querySelector('pre')!;
+    expect(pre.getAttribute('data-title')).toBeNull();
+  });
+
+  it('renders empty mermaid code blocks with empty state placeholder', async () => {
+    const html = '<pre><code class="language-mermaid">   </code></pre>';
+
+    const { container } = render(<ArticleViewer content={html} />);
+
+    // The wrapper renders but shows an empty-state message instead of a diagram
+    await waitFor(() => {
+      expect(container.querySelector('.mermaid-diagram-wrapper')).toBeTruthy();
+    });
+
+    // MermaidDiagram should NOT be invoked for empty code (no mermaid-container)
+    expect(container.querySelector('.mermaid-container')).toBeNull();
   });
 });

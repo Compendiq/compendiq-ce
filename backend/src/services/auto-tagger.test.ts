@@ -1,11 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import { parseTagResponse, ALLOWED_TAGS, autoTagContent } from './auto-tagger.js';
 
-// Mock ollama-service to avoid real API calls
-const mockChat = vi.fn();
-vi.mock('./ollama-service.js', () => ({
-  chat: (...args: unknown[]) => mockChat(...args),
-  generateEmbedding: vi.fn(),
+// Mock llm-provider to avoid real API calls (provider-aware resolution)
+const mockProviderChat = vi.fn();
+vi.mock('./llm-provider.js', () => ({
+  providerChat: (...args: unknown[]) => mockProviderChat(...args),
 }));
 
 vi.mock('./content-converter.js', () => ({
@@ -108,32 +107,67 @@ describe('AutoTagger', () => {
 
   describe('autoTagContent', () => {
     it('should return parsed tags on successful LLM response', async () => {
-      mockChat.mockResolvedValueOnce('["architecture", "deployment"]');
+      mockProviderChat.mockResolvedValueOnce('["architecture", "deployment"]');
 
-      const result = await autoTagContent('qwen3:32b', 'some content');
+      const result = await autoTagContent('test-user-id', 'qwen3:32b', 'some content');
       expect(result).toEqual(['architecture', 'deployment']);
-      expect(mockChat).toHaveBeenCalledOnce();
+      expect(mockProviderChat).toHaveBeenCalledOnce();
+      // Verify userId is passed as the first argument
+      expect(mockProviderChat).toHaveBeenCalledWith(
+        'test-user-id',
+        'qwen3:32b',
+        expect.any(Array),
+      );
     });
 
     it('should wrap LLM errors with descriptive message', async () => {
-      mockChat.mockRejectedValueOnce(new Error('connect ECONNREFUSED 127.0.0.1:11434'));
+      mockProviderChat.mockRejectedValueOnce(new Error('connect ECONNREFUSED 127.0.0.1:11434'));
 
-      await expect(autoTagContent('qwen3:32b', 'some content'))
-        .rejects.toThrow('Auto-tag LLM call failed: connect ECONNREFUSED 127.0.0.1:11434');
+      await expect(autoTagContent('test-user-id', 'qwen3:32b', 'some content'))
+        .rejects.toThrow('Auto-tag failed: connect ECONNREFUSED 127.0.0.1:11434');
     });
 
     it('should wrap non-Error LLM failures with descriptive message', async () => {
-      mockChat.mockRejectedValueOnce('string error');
+      mockProviderChat.mockRejectedValueOnce('string error');
 
-      await expect(autoTagContent('qwen3:32b', 'some content'))
-        .rejects.toThrow('Auto-tag LLM call failed: string error');
+      await expect(autoTagContent('test-user-id', 'qwen3:32b', 'some content'))
+        .rejects.toThrow('Auto-tag failed: string error');
     });
 
     it('should wrap fetch failed errors', async () => {
-      mockChat.mockRejectedValueOnce(new TypeError('fetch failed'));
+      mockProviderChat.mockRejectedValueOnce(new TypeError('fetch failed'));
 
-      await expect(autoTagContent('qwen3:32b', 'some content'))
-        .rejects.toThrow('Auto-tag LLM call failed: fetch failed');
+      await expect(autoTagContent('test-user-id', 'qwen3:32b', 'some content'))
+        .rejects.toThrow('Auto-tag failed: fetch failed');
+    });
+
+    it('should preserve original error as cause', async () => {
+      const original = new Error('connect ECONNREFUSED 127.0.0.1:11434');
+      mockProviderChat.mockRejectedValueOnce(original);
+
+      try {
+        await autoTagContent('test-user-id', 'qwen3:32b', 'some content');
+        expect.fail('should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(Error);
+        expect((err as Error).cause).toBe(original);
+      }
+    });
+
+    it('should preserve CircuitBreakerOpenError as cause', async () => {
+      const cbError = new Error('ollama-chat: LLM server temporarily unavailable');
+      cbError.name = 'CircuitBreakerOpenError';
+      mockProviderChat.mockRejectedValueOnce(cbError);
+
+      try {
+        await autoTagContent('test-user-id', 'qwen3:32b', 'some content');
+        expect.fail('should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(Error);
+        const cause = (err as Error).cause as Error;
+        expect(cause).toBe(cbError);
+        expect(cause.name).toBe('CircuitBreakerOpenError');
+      }
     });
   });
 });
