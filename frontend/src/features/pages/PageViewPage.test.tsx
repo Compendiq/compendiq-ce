@@ -250,6 +250,88 @@ describe('PageViewPage', () => {
     });
   });
 
+  it('renders the collapse toggle button on the right side of the header', () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+
+    expect(screen.getByLabelText('Collapse article header')).toBeInTheDocument();
+  });
+
+  it('collapses the header when the toggle is clicked, hiding metadata and action buttons', async () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+
+    expect(screen.getByText('AI Improve')).toBeInTheDocument();
+    expect(screen.getByText('docs')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText('Collapse article header'));
+
+    await waitFor(() => {
+      expect(screen.queryByText('AI Improve')).not.toBeInTheDocument();
+      expect(screen.queryByText('docs')).not.toBeInTheDocument();
+    });
+
+    expect(screen.getByLabelText('Expand article header')).toBeInTheDocument();
+    // Title remains visible in the slim rail.
+    expect(screen.getByText('Engineering Handbook')).toBeInTheDocument();
+  });
+
+  it('expands the header again when the toggle is clicked while collapsed', async () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByLabelText('Collapse article header'));
+    await waitFor(() => expect(screen.queryByText('AI Improve')).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByLabelText('Expand article header'));
+    expect(await screen.findByText('AI Improve')).toBeInTheDocument();
+    expect(await screen.findByText('docs')).toBeInTheDocument();
+  });
+
+  it('persists collapsed state to localStorage', async () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByLabelText('Collapse article header'));
+
+    await waitFor(() => {
+      expect(localStorage.getItem('article-header-collapsed')).toBe('true');
+    });
+
+    fireEvent.click(screen.getByLabelText('Expand article header'));
+
+    await waitFor(() => {
+      expect(localStorage.getItem('article-header-collapsed')).toBe('false');
+    });
+  });
+
+  it('restores collapsed state from localStorage on mount', async () => {
+    localStorage.setItem('article-header-collapsed', 'true');
+
+    render(<PageViewPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.queryByText('AI Improve')).not.toBeInTheDocument();
+    });
+    expect(screen.getByLabelText('Expand article header')).toBeInTheDocument();
+  });
+
+  it('keeps header expanded and hides the toggle while in edit mode', async () => {
+    // Start collapsed.
+    localStorage.setItem('article-header-collapsed', 'true');
+
+    render(<PageViewPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => expect(screen.queryByText('AI Improve')).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByLabelText('Expand article header'));
+    await waitFor(() => expect(screen.getByText('Edit')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Edit'));
+
+    // In edit mode the toggle is hidden and the full header is visible.
+    expect(screen.queryByLabelText('Collapse article header')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Expand article header')).not.toBeInTheDocument();
+    expect(screen.getByText('Save')).toBeInTheDocument();
+    expect(screen.getByText('Cancel')).toBeInTheDocument();
+  });
+
   it('saves edited article content', async () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
 
