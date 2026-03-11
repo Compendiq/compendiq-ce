@@ -178,7 +178,7 @@ async function syncPage(
   const bodyStorage = page.body?.storage?.value ?? '';
 
   // Convert to HTML
-  const bodyHtml = confluenceToHtml(bodyStorage, page.id);
+  const bodyHtml = confluenceToHtml(bodyStorage, page.id, spaceKey);
   const bodyText = htmlToText(bodyHtml);
 
   // Extract metadata
@@ -194,17 +194,44 @@ async function syncPage(
   );
 
   if (existing.rows.length > 0 && existing.rows[0].version >= page.version.number) {
+    const htmlChanged = existing.rows[0].body_html !== bodyHtml || existing.rows[0].body_text !== bodyText;
+
     // Page content hasn't changed, but check if all expected attachments are cached.
     // Previous syncs may have failed to download some/all attachments (transient errors).
     // Compare expected filenames (from XHTML) against files on disk, per-file.
-    const missing = await getMissingAttachments(userId, page.id, bodyStorage);
-    if (missing.length === 0) {
+    const missing = await getMissingAttachments(userId, page.id, bodyStorage, spaceKey);
+    if (missing.length === 0 && !htmlChanged) {
       return;
     }
-    logger.info({ pageId: page.id, missing: missing.length }, 'Page unchanged but some attachments missing — re-syncing');
-    const { results: attachments } = await client.getPageAttachments(page.id);
-    await syncDrawioAttachments(client, userId, page.id, bodyStorage, attachments);
-    await syncImageAttachments(client, userId, page.id, bodyStorage, attachments);
+
+    if (missing.length > 0) {
+      logger.info({ pageId: page.id, missing: missing.length }, 'Page unchanged but some attachments missing — re-syncing');
+      const { results: attachments } = await client.getPageAttachments(page.id);
+      await syncDrawioAttachments(client, userId, page.id, bodyStorage, attachments);
+      await syncImageAttachments(client, userId, page.id, bodyStorage, attachments, spaceKey);
+    }
+
+    if (htmlChanged) {
+      await query(
+        `UPDATE cached_pages
+         SET title = $2,
+             body_storage = $3,
+             body_html = $4,
+             body_text = $5,
+             parent_id = $6,
+             labels = $7,
+             author = $8,
+             last_modified_at = $9,
+             last_synced = NOW(),
+             embedding_dirty = CASE
+               WHEN body_text IS DISTINCT FROM $5 THEN TRUE
+               ELSE embedding_dirty
+             END
+         WHERE confluence_id = $1`,
+        [page.id, page.title, bodyStorage, bodyHtml, bodyText, parentId, labels, author, lastModified],
+      );
+    }
+
     return;
   }
 
@@ -217,7 +244,7 @@ async function syncPage(
   // Fetch attachments once and sync after version guard to avoid API calls for unchanged pages
   const { results: attachments } = await client.getPageAttachments(page.id);
   await syncDrawioAttachments(client, userId, page.id, bodyStorage, attachments);
-  await syncImageAttachments(client, userId, page.id, bodyStorage, attachments);
+  await syncImageAttachments(client, userId, page.id, bodyStorage, attachments, spaceKey);
 
   // Save current version snapshot before updating (for version history / semantic diff)
   if (existing.rows.length > 0) {
@@ -271,7 +298,7 @@ async function syncMissingAttachments(
 
   let retried = 0;
   for (const row of pagesResult.rows) {
-    const missing = await getMissingAttachments(userId, row.confluence_id, row.body_storage);
+    const missing = await getMissingAttachments(userId, row.confluence_id, row.body_storage, spaceKey);
     if (missing.length === 0) continue;
 
     logger.info(
@@ -282,7 +309,7 @@ async function syncMissingAttachments(
     try {
       const { results: attachments } = await client.getPageAttachments(row.confluence_id);
       await syncDrawioAttachments(client, userId, row.confluence_id, row.body_storage, attachments);
-      await syncImageAttachments(client, userId, row.confluence_id, row.body_storage, attachments);
+      await syncImageAttachments(client, userId, row.confluence_id, row.body_storage, attachments, spaceKey);
       retried++;
     } catch (err) {
       logger.error({ err, pageId: row.confluence_id }, 'Failed to retry missing attachments');

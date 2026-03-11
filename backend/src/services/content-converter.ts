@@ -3,6 +3,10 @@ import TurndownService from 'turndown';
 import { gfm } from 'turndown-plugin-gfm';
 import { marked } from 'marked';
 import he from 'he';
+import {
+  getAttachmentImageSource,
+  getLocalFilenameForImageSource,
+} from './image-references.js';
 
 // JSDOM 28's HTML parser treats <![CDATA[...]]> as comments. Pre-process to
 // convert CDATA sections into text that survives HTML parsing.
@@ -38,7 +42,7 @@ function getParamValue(macro: Element, name: string): string | null {
  * Converts Confluence storage format (XHTML) to clean HTML for TipTap editor.
  * Handles common Confluence macros: code blocks, task lists, panels, links, images, draw.io.
  */
-export function confluenceToHtml(storageXhtml: string, pageId?: string): string {
+export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey?: string): string {
   const dom = new JSDOM(`<body>${stripCdata(storageXhtml)}</body>`, { contentType: 'text/html' });
   const doc = dom.window.document;
 
@@ -120,15 +124,27 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string): string 
     if (pageRef) {
       const pageTitle = pageRef.getAttribute('ri:content-title') ?? '';
       a.href = `#confluence-page:${pageTitle}`;
-      a.textContent = bodyEl?.textContent ?? pageTitle;
+      if (bodyEl && bodyEl.tagName.toLowerCase() === 'ac:link-body') {
+        a.innerHTML = bodyEl.innerHTML;
+      } else {
+        a.textContent = bodyEl?.textContent ?? pageTitle;
+      }
       a.setAttribute('data-confluence-link', 'page');
     } else if (attachRef) {
       const filename = attachRef.getAttribute('ri:filename') ?? '';
       a.href = `#confluence-attachment:${filename}`;
-      a.textContent = bodyEl?.textContent ?? filename;
+      if (bodyEl && bodyEl.tagName.toLowerCase() === 'ac:link-body') {
+        a.innerHTML = bodyEl.innerHTML;
+      } else {
+        a.textContent = bodyEl?.textContent ?? filename;
+      }
       a.setAttribute('data-confluence-link', 'attachment');
     } else {
-      a.textContent = bodyEl?.textContent ?? '';
+      if (bodyEl && bodyEl.tagName.toLowerCase() === 'ac:link-body') {
+        a.innerHTML = bodyEl.innerHTML;
+      } else {
+        a.textContent = bodyEl?.textContent ?? '';
+      }
     }
     link.replaceWith(a);
   }
@@ -140,15 +156,40 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string): string 
 
     const img = doc.createElement('img');
     if (attachRef) {
-      const filename = attachRef.getAttribute('ri:filename') ?? '';
-      if (pageId) {
-        img.src = `/api/attachments/${pageId}/${encodeURIComponent(filename)}`;
-      } else {
-        img.src = `#attachment:${filename}`;
+      const source = getAttachmentImageSource(attachRef, spaceKey);
+      if (!source) {
+        image.replaceWith(img);
+        continue;
       }
-      img.alt = filename;
+      const localFilename = getLocalFilenameForImageSource(source);
+      if (pageId) {
+        img.src = `/api/attachments/${pageId}/${encodeURIComponent(localFilename)}`;
+      } else {
+        img.src = `#attachment:${localFilename}`;
+      }
+      img.alt = source.attachmentFilename;
+      img.setAttribute('data-confluence-image-source', 'attachment');
+      img.setAttribute('data-confluence-filename', source.attachmentFilename);
+      if (source.sourcePageTitle) {
+        img.setAttribute('data-confluence-owner-page-title', source.sourcePageTitle);
+      }
+      if (source.sourceSpaceKey) {
+        img.setAttribute('data-confluence-owner-space-key', source.sourceSpaceKey);
+      }
     } else if (urlRef) {
-      img.src = urlRef.getAttribute('ri:value') ?? '';
+      const url = urlRef.getAttribute('ri:value') ?? '';
+      const localFilename = getLocalFilenameForImageSource({
+        kind: 'external-url',
+        url,
+      });
+      if (pageId) {
+        img.src = `/api/attachments/${pageId}/${encodeURIComponent(localFilename)}`;
+      } else {
+        img.src = url;
+      }
+      img.setAttribute('data-confluence-image-source', 'external-url');
+      img.setAttribute('data-confluence-url', url);
+      img.alt = pathBasename(url) || 'External image';
     }
     const width = image.getAttribute('ac:width');
     if (width) img.width = parseInt(width, 10);
@@ -377,11 +418,36 @@ export function htmlToConfluence(html: string): string {
   // Convert images with attachment references back
   for (const img of doc.querySelectorAll('img[src^="/api/attachments/"]')) {
     const src = img.getAttribute('src') ?? '';
-    const filename = decodeURIComponent(src.split('/').pop() ?? '');
+    const sourceType = img.getAttribute('data-confluence-image-source');
+    if (sourceType === 'external-url') {
+      const url = img.getAttribute('data-confluence-url') ?? '';
+      const acImage = doc.createElement('ac:image');
+      const riUrl = doc.createElement('ri:url');
+      riUrl.setAttribute('ri:value', url);
+      acImage.appendChild(riUrl);
+
+      const width = img.getAttribute('width');
+      if (width) acImage.setAttribute('ac:width', width);
+      img.replaceWith(acImage);
+      continue;
+    }
+
+    const filename = img.getAttribute('data-confluence-filename')
+      ?? decodeURIComponent(src.split('/').pop() ?? '');
 
     const acImage = doc.createElement('ac:image');
     const riAttachment = doc.createElement('ri:attachment');
     riAttachment.setAttribute('ri:filename', filename);
+    const ownerPageTitle = img.getAttribute('data-confluence-owner-page-title');
+    const ownerSpaceKey = img.getAttribute('data-confluence-owner-space-key');
+    if (ownerPageTitle) {
+      const riPage = doc.createElement('ri:page');
+      riPage.setAttribute('ri:content-title', ownerPageTitle);
+      if (ownerSpaceKey) {
+        riPage.setAttribute('ri:space-key', ownerSpaceKey);
+      }
+      riAttachment.appendChild(riPage);
+    }
     acImage.appendChild(riAttachment);
 
     const width = img.getAttribute('width');
@@ -411,6 +477,15 @@ export function htmlToConfluence(html: string): string {
   );
 
   return result;
+}
+
+function pathBasename(urlString: string): string {
+  try {
+    const parsed = new URL(urlString);
+    return parsed.pathname.split('/').pop() ?? '';
+  } catch {
+    return '';
+  }
 }
 
 /**

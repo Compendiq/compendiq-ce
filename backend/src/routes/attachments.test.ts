@@ -6,8 +6,13 @@ import { attachmentRoutes } from './attachments.js';
 // Mock the attachment handler
 vi.mock('../services/attachment-handler.js', () => ({
   readAttachment: vi.fn(),
-  fetchAndCacheAttachment: vi.fn(),
+  fetchAndCachePageImage: vi.fn(),
   getMimeType: vi.fn(),
+}));
+
+const mockQuery = vi.fn();
+vi.mock('../db/postgres.js', () => ({
+  query: (...args: unknown[]) => mockQuery(...args),
 }));
 
 // Mock sync-service to provide getClientForUser
@@ -21,10 +26,10 @@ vi.mock('../utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
-import { readAttachment, fetchAndCacheAttachment, getMimeType } from '../services/attachment-handler.js';
+import { readAttachment, fetchAndCachePageImage, getMimeType } from '../services/attachment-handler.js';
 
 const mockReadAttachment = vi.mocked(readAttachment);
-const mockFetchAndCacheAttachment = vi.mocked(fetchAndCacheAttachment);
+const mockFetchAndCachePageImage = vi.mocked(fetchAndCachePageImage);
 const mockGetMimeType = vi.mocked(getMimeType);
 
 describe('Attachment routes', () => {
@@ -52,6 +57,22 @@ describe('Attachment routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockQuery.mockResolvedValue({
+      rows: [{ body_storage: '<ac:image><ri:attachment ri:filename="screenshot.png" /></ac:image>', space_key: 'OPS' }],
+    });
+  });
+
+  it('should return 404 when the page is not in the user selected spaces', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/attachments/page-123/image.png',
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(mockReadAttachment).not.toHaveBeenCalled();
+    expect(mockGetClientForUser).not.toHaveBeenCalled();
   });
 
   it('should return 404 with reason no_confluence_client when user has no PAT configured', async () => {
@@ -66,7 +87,7 @@ describe('Attachment routes', () => {
     expect(response.statusCode).toBe(404);
     expect(response.json()).toMatchObject({ reason: 'no_confluence_client' });
     // Should not attempt on-demand fetch without a client
-    expect(mockFetchAndCacheAttachment).not.toHaveBeenCalled();
+    expect(mockFetchAndCachePageImage).not.toHaveBeenCalled();
   });
 
   it('should serve PNG attachment with correct headers', async () => {
@@ -85,7 +106,7 @@ describe('Attachment routes', () => {
     expect(response.headers['content-disposition']).toBeUndefined();
     // Should not attempt on-demand fetch when cache hit
     expect(mockGetClientForUser).not.toHaveBeenCalled();
-    expect(mockFetchAndCacheAttachment).not.toHaveBeenCalled();
+    expect(mockFetchAndCachePageImage).not.toHaveBeenCalled();
   });
 
   it('should add sandbox CSP and attachment disposition for SVG files', async () => {
@@ -122,7 +143,7 @@ describe('Attachment routes', () => {
       const imageData = Buffer.from('fetched-from-confluence');
       mockReadAttachment.mockResolvedValue(null);
       mockGetClientForUser.mockResolvedValue({ /* mock client */ });
-      mockFetchAndCacheAttachment.mockResolvedValue(imageData);
+      mockFetchAndCachePageImage.mockResolvedValue(imageData);
       mockGetMimeType.mockReturnValue('image/png');
 
       const response = await app.inject({
@@ -133,18 +154,20 @@ describe('Attachment routes', () => {
       expect(response.statusCode).toBe(200);
       expect(response.headers['content-type']).toBe('image/png');
       expect(response.body).toBe('fetched-from-confluence');
-      expect(mockFetchAndCacheAttachment).toHaveBeenCalledWith(
+      expect(mockFetchAndCachePageImage).toHaveBeenCalledWith(
         expect.anything(), // the client
         'test-user',
         'page-456',
         'screenshot.png',
+        '<ac:image><ri:attachment ri:filename="screenshot.png" /></ac:image>',
+        'OPS',
       );
     });
 
     it('should return 404 with reason not_found_in_confluence when fetch returns null', async () => {
       mockReadAttachment.mockResolvedValue(null);
       mockGetClientForUser.mockResolvedValue({ /* mock client */ });
-      mockFetchAndCacheAttachment.mockResolvedValue(null);
+      mockFetchAndCachePageImage.mockResolvedValue(null);
 
       const response = await app.inject({
         method: 'GET',
@@ -158,7 +181,7 @@ describe('Attachment routes', () => {
     it('should return 500 when on-demand fetch throws an error', async () => {
       mockReadAttachment.mockResolvedValue(null);
       mockGetClientForUser.mockResolvedValue({ /* mock client */ });
-      mockFetchAndCacheAttachment.mockRejectedValue(new Error('Confluence unreachable'));
+      mockFetchAndCachePageImage.mockRejectedValue(new Error('Confluence unreachable'));
 
       const response = await app.inject({
         method: 'GET',
@@ -179,7 +202,7 @@ describe('Attachment routes', () => {
 
       expect(response.statusCode).toBe(404);
       expect(response.json()).toMatchObject({ reason: 'no_confluence_client' });
-      expect(mockFetchAndCacheAttachment).not.toHaveBeenCalled();
+      expect(mockFetchAndCachePageImage).not.toHaveBeenCalled();
     });
   });
 });

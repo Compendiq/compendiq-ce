@@ -1,9 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import fs from 'fs/promises';
+import { request } from 'undici';
 import {
   syncImageAttachments,
   syncDrawioAttachments,
   fetchAndCacheAttachment,
+  fetchAndCachePageImage,
   getMimeType,
   cacheAttachment,
   hasLocalAttachments,
@@ -15,6 +17,15 @@ import {
   MAX_ATTACHMENT_BYTES,
 } from './attachment-handler.js';
 import type { ConfluenceClient, ConfluenceAttachment } from './confluence-client.js';
+import { getLocalFilenameForImageSource } from './image-references.js';
+
+vi.mock('undici', () => ({
+  request: vi.fn(),
+}));
+
+vi.mock('../utils/ssrf-guard.js', () => ({
+  validateUrl: vi.fn(),
+}));
 
 // Mock fs to avoid real filesystem operations.
 // fs.access defaults to REJECT (ENOENT) so tests see a cold cache by default.
@@ -39,6 +50,7 @@ vi.mock('../utils/logger.js', () => ({
 function createMockClient(): ConfluenceClient {
   return {
     getPageAttachments: vi.fn(),
+    findPageByTitle: vi.fn(),
     downloadAttachment: vi.fn().mockResolvedValue(Buffer.from('fake-image-data')),
     downloadAttachmentToFile: vi.fn().mockResolvedValue(undefined),
   } as unknown as ConfluenceClient;
@@ -54,6 +66,8 @@ function makeAttachments(items: Array<{ title: string; download: string; fileSiz
   }));
 }
 
+const mockRequest = vi.mocked(request);
+
 describe('attachment-handler', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -66,6 +80,7 @@ describe('attachment-handler', () => {
     vi.mocked(fs.readFile).mockResolvedValue(Buffer.from('test'));
     vi.mocked(fs.rm).mockResolvedValue(undefined);
     vi.mocked(fs.readdir as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    mockRequest.mockReset();
   });
 
   describe('getMimeType', () => {
@@ -183,14 +198,24 @@ describe('attachment-handler', () => {
       expect(result).toHaveLength(6);
     });
 
-    it('ignores URL-based images (only syncs attachment-based)', async () => {
+    it('downloads external URL images into local cache', async () => {
       const bodyStorage = `<ac:image><ri:url ri:value="https://example.com/img.png" /></ac:image>`;
       const client = createMockClient();
+      mockRequest.mockResolvedValue({
+        statusCode: 200,
+        headers: { 'content-type': 'image/png' },
+        body: (async function* () {
+          yield Buffer.from('external-image');
+        })(),
+      } as never);
 
       const result = await syncImageAttachments(client, 'user-1', 'page-1', bodyStorage, []);
 
-      expect(result).toEqual([]);
+      expect(result).toEqual([
+        getLocalFilenameForImageSource({ kind: 'external-url', url: 'https://example.com/img.png' }),
+      ]);
       expect(client.getPageAttachments).not.toHaveBeenCalled();
+      expect(fs.writeFile).toHaveBeenCalledOnce();
     });
 
     it('skips download when image is already cached (idempotent)', async () => {
@@ -223,6 +248,25 @@ describe('attachment-handler', () => {
       expect(result).toEqual(['new.png']);
       expect(client.downloadAttachment).toHaveBeenCalledOnce();
       expect(fs.writeFile).toHaveBeenCalledOnce();
+    });
+
+    it('downloads cross-page attachment images from the resolved owner page', async () => {
+      const bodyStorage = `<ac:image><ri:attachment ri:filename="shared.png"><ri:page ri:content-title="Shared Assets" ri:space-key="OPS" /></ri:attachment></ac:image>`;
+      const client = createMockClient();
+      (client.findPageByTitle as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 'page-shared' });
+      (client.getPageAttachments as ReturnType<typeof vi.fn>).mockResolvedValue({
+        results: makeAttachments([
+          { title: 'shared.png', download: '/download/shared.png' },
+        ]),
+      });
+
+      const result = await syncImageAttachments(client, 'user-1', 'page-1', bodyStorage, [], 'OPS');
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatch(/^shared\.xref-[a-f0-9]{12}\.png$/);
+      expect(client.findPageByTitle).toHaveBeenCalledWith('OPS', 'Shared Assets');
+      expect(client.getPageAttachments).toHaveBeenCalledWith('page-shared');
+      expect(client.downloadAttachment).toHaveBeenCalledWith('/download/shared.png');
     });
   });
 
@@ -300,6 +344,60 @@ describe('attachment-handler', () => {
       await expect(
         fetchAndCacheAttachment(client, 'user-1', 'page-1', 'logo.png'),
       ).rejects.toThrow('Confluence unreachable');
+    });
+  });
+
+  describe('fetchAndCachePageImage', () => {
+    it('fetches a mirrored external image using its local filename', async () => {
+      const client = createMockClient();
+      mockRequest.mockResolvedValue({
+        statusCode: 200,
+        headers: { 'content-type': 'image/png' },
+        body: (async function* () {
+          yield Buffer.from('external-image');
+        })(),
+      } as never);
+      (fs.readFile as ReturnType<typeof vi.fn>).mockResolvedValue(Buffer.from('external-image'));
+
+      const result = await fetchAndCachePageImage(
+        client,
+        'user-1',
+        'page-1',
+        getLocalFilenameForImageSource({ kind: 'external-url', url: 'https://example.com/img.png' }),
+        '<ac:image><ri:url ri:value="https://example.com/img.png" /></ac:image>',
+      );
+
+      expect(result).toEqual(Buffer.from('external-image'));
+      expect(mockRequest).toHaveBeenCalled();
+    });
+
+    it('fetches a mirrored cross-page image using its local filename', async () => {
+      const client = createMockClient();
+      (client.findPageByTitle as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 'shared-page' });
+      (client.getPageAttachments as ReturnType<typeof vi.fn>).mockResolvedValue({
+        results: makeAttachments([
+          { title: 'shared.png', download: '/download/shared.png' },
+        ]),
+      });
+      (client.downloadAttachment as ReturnType<typeof vi.fn>).mockResolvedValue(Buffer.from('shared-image'));
+
+      const result = await fetchAndCachePageImage(
+        client,
+        'user-1',
+        'page-1',
+        getLocalFilenameForImageSource({
+          kind: 'attachment',
+          attachmentFilename: 'shared.png',
+          sourcePageTitle: 'Shared Assets',
+          sourceSpaceKey: 'OPS',
+        }),
+        '<ac:image><ri:attachment ri:filename="shared.png"><ri:page ri:content-title="Shared Assets" ri:space-key="OPS" /></ri:attachment></ac:image>',
+        'OPS',
+      );
+
+      expect(result).toEqual(Buffer.from('test'));
+      expect(client.findPageByTitle).toHaveBeenCalledWith('OPS', 'Shared Assets');
+      expect(client.downloadAttachment).toHaveBeenCalledWith('/download/shared.png');
     });
   });
 
@@ -593,6 +691,20 @@ describe('attachment-handler', () => {
       const body = `<ac:image><ri:attachment ri:filename="screenshot.png" /></ac:image>
 <ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">arch</ac:parameter></ac:structured-macro>`;
       expect(getExpectedAttachmentFilenames(body)).toEqual(['screenshot.png', 'arch.png']);
+    });
+
+    it('includes deterministic filenames for cross-page and external images', () => {
+      const body = `<ac:image><ri:attachment ri:filename="shared.png"><ri:page ri:content-title="Shared Assets" ri:space-key="OPS" /></ri:attachment></ac:image>
+<ac:image><ri:url ri:value="https://example.com/img.png" /></ac:image>`;
+      expect(getExpectedAttachmentFilenames(body, 'OPS')).toEqual([
+        getLocalFilenameForImageSource({
+          kind: 'attachment',
+          attachmentFilename: 'shared.png',
+          sourcePageTitle: 'Shared Assets',
+          sourceSpaceKey: 'OPS',
+        }),
+        getLocalFilenameForImageSource({ kind: 'external-url', url: 'https://example.com/img.png' }),
+      ]);
     });
 
     it('filters out non-image extensions', () => {

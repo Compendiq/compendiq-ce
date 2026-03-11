@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify';
-import { readAttachment, fetchAndCacheAttachment, getMimeType } from '../services/attachment-handler.js';
+import { query } from '../db/postgres.js';
+import { readAttachment, fetchAndCachePageImage, getMimeType } from '../services/attachment-handler.js';
 import { getClientForUser } from '../services/sync-service.js';
 import { logger } from '../utils/logger.js';
 
@@ -10,6 +11,22 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
   fastify.get('/attachments/:pageId/:filename', async (request, reply) => {
     const { pageId, filename } = request.params as { pageId: string; filename: string };
     const userId = request.userId;
+
+    const pageResult = await query<{ body_storage: string | null; space_key: string }>(
+      `SELECT cp.body_storage, cp.space_key
+       FROM cached_pages cp
+       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
+       WHERE cp.confluence_id = $2`,
+      [userId, pageId],
+    );
+    const cachedPage = pageResult.rows[0];
+    if (!cachedPage) {
+      return reply.status(404).send({
+        statusCode: 404,
+        error: 'Not Found',
+        message: 'Attachment not found',
+      });
+    }
 
     // Try local cache first
     let data = await readAttachment(userId, pageId, filename);
@@ -28,7 +45,18 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
       }
 
       try {
-        data = await fetchAndCacheAttachment(client, userId, pageId, filename);
+        if (cachedPage.body_storage) {
+          data = await fetchAndCachePageImage(
+            client,
+            userId,
+            pageId,
+            filename,
+            cachedPage.body_storage,
+            cachedPage.space_key,
+          );
+        } else {
+          data = null;
+        }
       } catch (err) {
         logger.error({ err, userId, pageId, filename }, 'On-demand attachment fetch failed');
         // Infrastructure error — don't expose as a "not found"
@@ -36,7 +64,7 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
       }
 
       if (!data) {
-        // fetchAndCacheAttachment returned null — attachment genuinely not in Confluence
+        // fetchAndCachePageImage returned null — asset genuinely not in source system
         return reply.status(404).send({
           statusCode: 404,
           error: 'Not Found',

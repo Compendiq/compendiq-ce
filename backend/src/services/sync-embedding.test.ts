@@ -169,7 +169,7 @@ describe('syncPage attachment cache invalidation', () => {
     body: { storage: { value: '<p>content</p>' } },
   };
 
-  function setupSyncWithPage(existingVersion: number | null) {
+  function setupSyncWithPage(existingVersion: number | null, existingBodyHtml = '<p>old</p>', existingBodyText = 'old') {
     mocks.query
       // 1. getClientForUser: user_settings
       .mockResolvedValueOnce({ rows: [{ confluence_url: 'https://conf.example.com', confluence_pat: 'enc' }] })
@@ -180,7 +180,7 @@ describe('syncPage attachment cache invalidation', () => {
       // 4. syncPage: existing page version check
       .mockResolvedValueOnce(
         existingVersion !== null
-          ? { rows: [{ version: existingVersion, title: 'Old', body_html: '<p>old</p>', body_text: 'old' }] }
+          ? { rows: [{ version: existingVersion, title: 'Old', body_html: existingBodyHtml, body_text: existingBodyText }] }
           : { rows: [] },
       )
       // 5. syncPage: upsert page
@@ -216,6 +216,17 @@ describe('syncPage attachment cache invalidation', () => {
 
     const { cleanPageAttachments } = await import('./attachment-handler.js');
     expect(cleanPageAttachments).not.toHaveBeenCalled();
+  });
+
+  it('refreshes cached HTML for unchanged pages when the rendered output changes', async () => {
+    setupSyncWithPage(2);
+
+    await syncUser('user-html-refresh');
+
+    expect(mocks.query).toHaveBeenCalledWith(
+      expect.stringContaining('UPDATE cached_pages'),
+      expect.arrayContaining(['page-1', 'Test Page', '<p>content</p>', '<p>html</p>', 'plain text']),
+    );
   });
 });
 
