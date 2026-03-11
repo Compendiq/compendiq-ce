@@ -227,6 +227,12 @@ export function AiProvider({ children }: { children: ReactNode }) {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // Scroll to bottom immediately when switching conversations so the latest
+  // messages are visible right away (independent of the messages-change effect).
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'instant' });
+  }, [conversationId]);
+
   const startNewConversation = useCallback(() => {
     setMessages([]);
     setConversationId(null);
