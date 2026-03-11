@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   ChevronRight,
   ExternalLink,
@@ -150,8 +150,16 @@ const OutlineNodeItem = memo(function OutlineNodeItem({
 // ---------- ArticleRightPane ----------
 
 export function ArticleRightPane() {
-  const { id } = useParams<{ id: string }>();
+  const location = useLocation();
   const navigate = useNavigate();
+
+  // Extract page ID from pathname instead of useParams, because this component
+  // is rendered in AppLayout (outer Route) where descendant route params like
+  // :id from /pages/:id are not available via useParams.
+  const id = useMemo(() => {
+    const match = location.pathname.match(/^\/pages\/([^/]+)$/);
+    return match?.[1];
+  }, [location.pathname]);
 
   const collapsed = useUiStore((s) => s.articleSidebarCollapsed);
   const toggleSidebar = useUiStore((s) => s.toggleArticleSidebar);

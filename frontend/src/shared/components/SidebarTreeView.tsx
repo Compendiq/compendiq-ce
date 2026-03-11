@@ -1,5 +1,5 @@
 import { memo, useState, useMemo, useCallback, useEffect, useRef } from 'react';
-import { Link, useNavigate, useParams, useLocation } from 'react-router-dom';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
 import {
   ChevronRight,
   ChevronDown,
@@ -167,7 +167,6 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
 
 export function SidebarTreeView() {
   const location = useLocation();
-  const { id: routePageId } = useParams<{ id: string }>();
   const treeSidebarCollapsed = useUiStore((s) => s.treeSidebarCollapsed);
   const toggleTreeSidebar = useUiStore((s) => s.toggleTreeSidebar);
   const treeSidebarSpaceKey = useUiStore((s) => s.treeSidebarSpaceKey);
@@ -175,11 +174,13 @@ export function SidebarTreeView() {
   const treeSidebarWidth = useUiStore((s) => s.treeSidebarWidth);
   const setTreeSidebarWidth = useUiStore((s) => s.setTreeSidebarWidth);
 
-  // Determine active page ID from URL
+  // Extract active page ID from pathname (useParams is unavailable here
+  // because this component is rendered in AppLayout, outside the inner
+  // <Routes> that defines /pages/:id).
   const activePageId = useMemo(() => {
-    const match = location.pathname.match(/^\/pages\/(.+)$/);
-    return match ? match[1] : routePageId;
-  }, [location.pathname, routePageId]);
+    const match = location.pathname.match(/^\/pages\/([^/]+)$/);
+    return match?.[1];
+  }, [location.pathname]);
 
   const { data: spaces } = useSpaces();
   const { data: treeData, isLoading } = usePageTree({
