@@ -4,7 +4,8 @@ import {
   ChevronRight,
   ChevronDown,
   FileText,
-  Layers,
+  Folder,
+  FolderOpen,
   PanelLeftClose,
   PanelLeft,
   ChevronsUpDown,
@@ -44,11 +45,12 @@ function buildTree(pages: PageTreeItem[], homepageId?: string | null): TreeNode[
   }
   sortChildren(roots);
 
-  // If homepageId is provided, root the tree at the homepage's children
+  // If homepageId is provided, keep the homepage itself as the visible root
+  // so it remains clickable as a folder/article entry.
   if (homepageId) {
     const homepageNode = nodeMap.get(homepageId);
     if (homepageNode) {
-      return homepageNode.children;
+      return [homepageNode];
     }
   }
 
@@ -126,11 +128,15 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         ) : (
           <span className="w-[20px] shrink-0" />
         )}
-        {hasChildren ? (
-          <Layers size={15} className="shrink-0 text-primary/70" />
-        ) : (
-          <FileText size={15} className="shrink-0 text-muted-foreground/70" />
-        )}
+        {hasChildren
+          ? (
+            isExpanded || isActive
+              ? <FolderOpen size={15} className="shrink-0 text-primary/80" />
+              : <Folder size={15} className="shrink-0 text-primary/70" />
+            )
+          : (
+            <FileText size={15} className="shrink-0 text-muted-foreground/70" />
+            )}
         <span className="truncate text-sm">{node.page.title}</span>
       </div>
 
@@ -229,6 +235,19 @@ export function SidebarTreeView() {
       }
     }
   }, [activePageId, pages]);
+
+  // When a space is scoped to its homepage, keep that homepage expanded so
+  // the homepage remains clickable while its immediate children stay visible.
+  useEffect(() => {
+    if (!homepageId) return;
+
+    setExpandedIds((prev) => {
+      if (prev.has(homepageId)) return prev;
+      const next = new Set(prev);
+      next.add(homepageId);
+      return next;
+    });
+  }, [homepageId]);
 
   // Auto-select space based on current page
   useEffect(() => {

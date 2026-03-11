@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-unused-vars */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -6,7 +5,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SidebarTreeView, SidebarTreeNode } from './SidebarTreeView';
 import type { TreeNode, SidebarTreeNodeProps } from './SidebarTreeView';
 import { useUiStore } from '../../stores/ui-store';
-/* eslint-enable @typescript-eslint/no-unused-vars */
 
 const mockNavigate = vi.fn();
 vi.mock('react-router-dom', async () => {
@@ -172,12 +170,13 @@ describe('SidebarTreeView', () => {
     expect(screen.queryByRole('separator', { name: 'Resize tree sidebar' })).not.toBeInTheDocument();
   });
 
-  it('roots tree at homepage children when space with homepageId is selected', () => {
+  it('keeps the homepage visible and expands its children when a space with homepageId is selected', () => {
     useUiStore.setState({
       treeSidebarCollapsed: false,
       treeSidebarSpaceKey: 'DEV',
     });
     render(<SidebarTreeView />, { wrapper: createWrapper() });
+    expect(screen.getByText('Getting Started')).toBeInTheDocument();
     expect(screen.getByText('Installation')).toBeInTheDocument();
     expect(screen.getByText('Configuration')).toBeInTheDocument();
     expect(screen.queryByText('API Reference')).not.toBeInTheDocument();
