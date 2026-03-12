@@ -24,7 +24,7 @@ vi.mock('../utils/tls-config.js', () => ({
 }));
 
 import { request } from 'undici';
-import { ConfluenceClient, ConfluenceError, isTransientError, parseRetryAfter, withRetry, buildDownloadUrl } from './confluence-client.js';
+import { ConfluenceClient, ConfluenceError, isTransientError, parseRetryAfter, withRetry, buildDownloadUrl, buildDownloadUrlCandidates } from './confluence-client.js';
 import * as tlsConfig from '../utils/tls-config.js';
 import { logger } from '../utils/logger.js';
 
@@ -1041,6 +1041,170 @@ describe('buildDownloadUrl', () => {
   it('should handle paths without query string', () => {
     const url = buildDownloadUrl('/download/attachments/123/file.png', base);
     expect(url).toBe('https://confluence.example.com/download/attachments/123/file.png');
+  });
+});
+
+describe('buildDownloadUrlCandidates', () => {
+  const base = 'https://confluence.example.com';
+
+  it('should return a single URL for simple paths (all strategies produce the same URL)', () => {
+    const urls = buildDownloadUrlCandidates('/download/attachments/123/file.pdf', base);
+    expect(urls).toEqual([
+      'https://confluence.example.com/download/attachments/123/file.pdf',
+    ]);
+  });
+
+  it('should return 3 unique URLs for filenames with special chars and query params', () => {
+    const urls = buildDownloadUrlCandidates(
+      '/download/attachments/123/image 2018-1-22 9:26:20.png?version=1&api=v2',
+      base,
+    );
+    expect(urls).toEqual([
+      // 1. Fully encoded path + query
+      'https://confluence.example.com/download/attachments/123/image%202018-1-22%209%3A26%3A20.png?version=1&api=v2',
+      // 2. Raw path as-is (Confluence's own encoding preserved)
+      'https://confluence.example.com/download/attachments/123/image 2018-1-22 9:26:20.png?version=1&api=v2',
+      // 3. Encoded path without query params
+      'https://confluence.example.com/download/attachments/123/image%202018-1-22%209%3A26%3A20.png',
+    ]);
+  });
+
+  it('should return 2 URLs when raw and encoded differ but there is no query string', () => {
+    const urls = buildDownloadUrlCandidates(
+      '/download/attachments/123/image+name.png',
+      base,
+    );
+    expect(urls).toEqual([
+      // 1. Encoded: + decoded as space then re-encoded as %20
+      'https://confluence.example.com/download/attachments/123/image%20name.png',
+      // 2. Raw: + preserved
+      'https://confluence.example.com/download/attachments/123/image+name.png',
+    ]);
+  });
+
+  it('should return 2 URLs when only query param removal produces a unique URL', () => {
+    const urls = buildDownloadUrlCandidates(
+      '/download/attachments/123/file.pdf?version=1&modificationDate=123&api=v2',
+      base,
+    );
+    expect(urls).toEqual([
+      'https://confluence.example.com/download/attachments/123/file.pdf?version=1&modificationDate=123&api=v2',
+      'https://confluence.example.com/download/attachments/123/file.pdf',
+    ]);
+  });
+});
+
+describe('downloadAttachment fallback strategies', () => {
+  const baseUrl = 'https://confluence.example.com';
+  const pat = 'test-pat';
+  const retryOpts = { maxAttempts: 1, baseDelay: 1 };
+  const mockRequest = request as ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('should try fallback URL when first strategy returns 500', async () => {
+    const client = new ConfluenceClient(baseUrl, pat, { retry: retryOpts });
+    let callCount = 0;
+    mockRequest.mockImplementation(async () => {
+      callCount++;
+      if (callCount === 1) {
+        // First strategy (encoded URL) fails with 500
+        return {
+          statusCode: 500,
+          headers: {},
+          body: { text: async () => 'Internal Server Error' },
+        } as never;
+      }
+      // Second strategy (raw URL) succeeds
+      return {
+        statusCode: 200,
+        headers: {},
+        body: (async function* () {
+          yield Buffer.from('image-data');
+        })(),
+      } as never;
+    });
+
+    const result = await client.downloadAttachment(
+      '/download/attachments/123/image+2018-1-22+9%3A26%3A20.png?version=1&api=v2',
+    );
+
+    expect(result.toString()).toBe('image-data');
+    // Encoded URL failed, raw URL succeeded
+    expect(mockRequest).toHaveBeenCalledTimes(2);
+    // Second call should be the raw URL (preserving + and %3A from Confluence)
+    const secondUrl = mockRequest.mock.calls[1][0] as string;
+    expect(secondUrl).toBe(
+      'https://confluence.example.com/download/attachments/123/image+2018-1-22+9%3A26%3A20.png?version=1&api=v2',
+    );
+  });
+
+  it('should try URL without query params when both encoded and raw fail', async () => {
+    const client = new ConfluenceClient(baseUrl, pat, { retry: retryOpts });
+    let callCount = 0;
+    mockRequest.mockImplementation(async () => {
+      callCount++;
+      if (callCount <= 2) {
+        return {
+          statusCode: 500,
+          headers: {},
+          body: { text: async () => 'Internal Server Error' },
+        } as never;
+      }
+      return {
+        statusCode: 200,
+        headers: {},
+        body: (async function* () {
+          yield Buffer.from('image-data');
+        })(),
+      } as never;
+    });
+
+    const result = await client.downloadAttachment(
+      '/download/attachments/123/image 9:26.png?version=1&api=v2',
+    );
+
+    expect(result.toString()).toBe('image-data');
+    expect(mockRequest).toHaveBeenCalledTimes(3);
+    // Third call is encoded URL without query params
+    const thirdUrl = mockRequest.mock.calls[2][0] as string;
+    expect(thirdUrl).toBe(
+      'https://confluence.example.com/download/attachments/123/image%209%3A26.png',
+    );
+  });
+
+  it('should throw immediately on 429 without trying fallback URLs', async () => {
+    const client = new ConfluenceClient(baseUrl, pat, { retry: retryOpts });
+    mockRequest.mockResolvedValue({
+      statusCode: 429,
+      headers: { 'retry-after': '0' },
+      body: { text: async () => 'Rate limited' },
+    } as never);
+
+    await expect(
+      client.downloadAttachment('/download/attachments/123/image+name.png?version=1&api=v2'),
+    ).rejects.toThrow(ConfluenceError);
+
+    // Only 1 call — 429 throws immediately, no fallback
+    expect(mockRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('should use maxRedirections in download requests', async () => {
+    const client = new ConfluenceClient(baseUrl, pat, { retry: retryOpts });
+    mockRequest.mockResolvedValue({
+      statusCode: 200,
+      headers: {},
+      body: (async function* () {
+        yield Buffer.from('data');
+      })(),
+    } as never);
+
+    await client.downloadAttachment('/download/attachments/123/file.pdf');
+
+    const opts = mockRequest.mock.calls[0][1] as Record<string, unknown>;
+    expect(opts.maxRedirections).toBe(10);
   });
 });
 

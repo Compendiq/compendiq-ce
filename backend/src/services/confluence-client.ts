@@ -215,16 +215,44 @@ export class ConfluenceClient {
   /**
    * Single-attempt attachment download. Separated from `downloadAttachment`
    * so that `withRetry` can re-execute the full HTTP request on transient failures.
+   *
+   * Uses a multi-strategy approach: tries the properly encoded URL first,
+   * then falls back to the raw URL (preserving Confluence's own encoding),
+   * then tries without query parameters. This handles edge cases where
+   * Confluence's `_links.download` encoding doesn't round-trip through
+   * decode/re-encode, or where version/modificationDate params cause 500s.
    */
   private async downloadAttachmentOnce(downloadPath: string): Promise<Buffer> {
-    const url = buildDownloadUrl(downloadPath, this.baseUrl);
+    const urls = buildDownloadUrlCandidates(downloadPath, this.baseUrl);
 
-    // SSRF protection: validate URL before download
+    let lastError: Error | undefined;
+    for (const url of urls) {
+      try {
+        return await this.fetchAttachmentBuffer(url);
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        // On 429 (rate-limit), throw immediately — don't try fallback URLs
+        if (err instanceof ConfluenceError && err.statusCode === 429) throw err;
+        logger.debug(
+          { url, error: lastError.message },
+          'Attachment download attempt failed, trying next URL strategy',
+        );
+      }
+    }
+    throw lastError!;
+  }
+
+  /**
+   * Low-level HTTP GET that returns the response body as a Buffer.
+   * Follows redirects (up to 10 hops) and validates the URL for SSRF.
+   */
+  private async fetchAttachmentBuffer(url: string): Promise<Buffer> {
     validateUrl(url);
 
     const opts: Record<string, unknown> = {
       headers: { 'Authorization': `Bearer ${this.pat}` },
       signal: AbortSignal.timeout(60_000),
+      maxRedirections: 10,
     };
     if (confluenceDispatcher) {
       opts.dispatcher = confluenceDispatcher;
@@ -233,9 +261,17 @@ export class ConfluenceClient {
     const { statusCode, headers: responseHeaders, body } = await request(url, opts as Parameters<typeof request>[1]);
 
     if (statusCode !== 200) {
-      const error = new ConfluenceError(`Failed to download attachment: HTTP ${statusCode}`, statusCode);
+      // Drain body to release the socket
+      const bodyText = await body.text().catch(() => '');
+      const error = new ConfluenceError(
+        `Failed to download attachment: HTTP ${statusCode}`,
+        statusCode,
+      );
       if (statusCode === 429) {
         error.retryAfterMs = parseRetryAfter(responseHeaders['retry-after']);
+      }
+      if (statusCode >= 500) {
+        logger.warn({ url, statusCode, body: bodyText.slice(0, 200) }, 'Confluence returned server error for attachment download');
       }
       throw error;
     }
@@ -261,14 +297,39 @@ export class ConfluenceClient {
     outputPath: string,
     maxSizeBytes = 50 * 1024 * 1024,
   ): Promise<void> {
-    const url = buildDownloadUrl(downloadPath, this.baseUrl);
+    const urls = buildDownloadUrlCandidates(downloadPath, this.baseUrl);
 
-    // SSRF protection: validate URL before download
+    let lastError: Error | undefined;
+    for (const url of urls) {
+      try {
+        return await this.streamAttachmentToFile(url, outputPath, maxSizeBytes);
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        if (err instanceof ConfluenceError && err.statusCode === 429) throw err;
+        logger.debug(
+          { url, error: lastError.message },
+          'Streamed attachment download attempt failed, trying next URL strategy',
+        );
+      }
+    }
+    throw lastError!;
+  }
+
+  /**
+   * Low-level streaming download to file. Follows redirects, validates SSRF,
+   * enforces max size, and cleans up partial files on error.
+   */
+  private async streamAttachmentToFile(
+    url: string,
+    outputPath: string,
+    maxSizeBytes: number,
+  ): Promise<void> {
     validateUrl(url);
 
     const opts: Record<string, unknown> = {
       headers: { 'Authorization': `Bearer ${this.pat}` },
       signal: AbortSignal.timeout(120_000),
+      maxRedirections: 10,
     };
     if (confluenceDispatcher) {
       opts.dispatcher = confluenceDispatcher;
@@ -277,7 +338,6 @@ export class ConfluenceClient {
     const { statusCode, headers, body } = await request(url, opts as Parameters<typeof request>[1]);
 
     if (statusCode !== 200) {
-      // Drain the body to release the socket
       body.destroy();
       throw new ConfluenceError(`Failed to download attachment: HTTP ${statusCode}`, statusCode);
     }
@@ -329,7 +389,7 @@ export class ConfluenceClient {
     }
 
     logger.debug(
-      { downloadPath, outputPath, bytesWritten },
+      { url, outputPath, bytesWritten },
       'Streamed attachment to file',
     );
   }
@@ -571,6 +631,41 @@ export function buildDownloadUrl(downloadPath: string, baseUrl: string): string 
     .join('/');
 
   return `${baseUrl}${encodedPath}${queryPart}`;
+}
+
+/**
+ * Generate a list of candidate download URLs to try, in priority order.
+ *
+ * Different Confluence DC versions and configurations may expect different URL
+ * encodings. This function returns up to 3 unique URL strategies:
+ *
+ * 1. **Encoded URL** — fully percent-encoded path segments (handles colons, spaces, etc.)
+ * 2. **Raw URL** — `_links.download` path appended as-is to the base URL, preserving
+ *    whatever encoding Confluence already applied (e.g. `+` for spaces)
+ * 3. **Encoded URL without query params** — some Confluence versions return HTTP 500
+ *    when `version` / `modificationDate` query params reference stale metadata;
+ *    stripping the query string can work as a last resort
+ *
+ * Duplicate URLs are removed so we never retry the same URL twice.
+ */
+export function buildDownloadUrlCandidates(downloadPath: string, baseUrl: string): string[] {
+  const encodedUrl = buildDownloadUrl(downloadPath, baseUrl);
+  const rawUrl = `${baseUrl}${downloadPath}`;
+
+  const qIdx = downloadPath.indexOf('?');
+  const pathOnly = qIdx >= 0 ? downloadPath.slice(0, qIdx) : downloadPath;
+  const encodedNoQuery = buildDownloadUrl(pathOnly, baseUrl);
+
+  // De-duplicate while preserving priority order
+  const seen = new Set<string>();
+  const urls: string[] = [];
+  for (const url of [encodedUrl, rawUrl, encodedNoQuery]) {
+    if (!seen.has(url)) {
+      seen.add(url);
+      urls.push(url);
+    }
+  }
+  return urls;
 }
 
 export class ConfluenceError extends Error {
