@@ -6,6 +6,7 @@ import {
   syncDrawioAttachments,
   fetchAndCacheAttachment,
   fetchAndCachePageImage,
+  readAttachment,
   getMimeType,
   cacheAttachment,
   hasLocalAttachments,
@@ -985,6 +986,103 @@ describe('attachment-handler', () => {
       it('MAX_ATTACHMENT_BYTES should be 50 MB', () => {
         expect(MAX_ATTACHMENT_BYTES).toBe(50 * 1024 * 1024);
       });
+    });
+  });
+
+  describe('readAttachment xref fallback', () => {
+    it('returns file contents when exact filename exists', async () => {
+      const data = Buffer.from('exact-match');
+      vi.mocked(fs.readFile).mockResolvedValueOnce(data);
+
+      const result = await readAttachment('user-1', 'page-1', 'logo.png');
+
+      expect(result).toEqual(data);
+    });
+
+    it('finds xref variant when exact filename is not found', async () => {
+      const xrefData = Buffer.from('xref-match');
+      // First readFile (exact match) fails
+      vi.mocked(fs.readFile)
+        .mockRejectedValueOnce(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }))
+        // Second readFile (xref variant) succeeds
+        .mockResolvedValueOnce(xrefData);
+
+      // readdir returns an xref variant on disk
+      vi.mocked(fs.readdir as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+        'logo.xref-abc123def456.png',
+      ]);
+
+      const result = await readAttachment('user-1', 'page-1', 'logo.png');
+
+      expect(result).toEqual(xrefData);
+    });
+
+    it('returns null when neither exact nor xref variant exists', async () => {
+      vi.mocked(fs.readFile)
+        .mockRejectedValueOnce(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+      vi.mocked(fs.readdir as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+        'other-image.png',
+      ]);
+
+      const result = await readAttachment('user-1', 'page-1', 'logo.png');
+
+      expect(result).toBeNull();
+    });
+
+    it('returns null when directory does not exist', async () => {
+      vi.mocked(fs.readFile)
+        .mockRejectedValueOnce(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+      vi.mocked(fs.readdir as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+        Object.assign(new Error('ENOENT'), { code: 'ENOENT' }),
+      );
+
+      const result = await readAttachment('user-1', 'page-1', 'logo.png');
+
+      expect(result).toBeNull();
+    });
+
+    it('matches xref variant with correct extension only', async () => {
+      vi.mocked(fs.readFile)
+        .mockRejectedValueOnce(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+      // Directory has xref files with wrong extension
+      vi.mocked(fs.readdir as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+        'logo.xref-abc123def456.gif',  // wrong extension
+        'logo.xref-abc123def456.jpg',  // wrong extension
+      ]);
+
+      const result = await readAttachment('user-1', 'page-1', 'logo.png');
+
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('fetchAndCachePageImage xref fallback', () => {
+    it('finds cross-page ref by base attachment filename when exact localFilename match fails', async () => {
+      const client = createMockClient();
+      (client.findPageByTitle as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 'shared-page' });
+      (client.getPageAttachments as ReturnType<typeof vi.fn>).mockResolvedValue({
+        results: makeAttachments([
+          { title: 'shared.png', download: '/download/shared.png' },
+        ]),
+      });
+      (client.downloadAttachment as ReturnType<typeof vi.fn>).mockResolvedValue(Buffer.from('shared-image'));
+
+      // The XHTML references a cross-page image — localFilename will be "shared.xref-{hash}.png"
+      // but we request the plain "shared.png" (as stale HTML would)
+      const bodyStorage = '<ac:image><ri:attachment ri:filename="shared.png"><ri:page ri:content-title="Shared Assets" ri:space-key="OPS" /></ri:attachment></ac:image>';
+
+      const result = await fetchAndCachePageImage(
+        client,
+        'user-1',
+        'page-1',
+        'shared.png',  // Plain name from stale HTML
+        bodyStorage,
+        'OPS',
+      );
+
+      expect(result).toEqual(Buffer.from('test')); // readFile mock returns 'test'
+      expect(client.findPageByTitle).toHaveBeenCalledWith('OPS', 'Shared Assets');
+      expect(client.downloadAttachment).toHaveBeenCalledWith('/download/shared.png');
     });
   });
 });

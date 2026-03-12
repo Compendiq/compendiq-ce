@@ -649,17 +649,18 @@ export function buildDownloadUrl(downloadPath: string, baseUrl: string): string 
  * Duplicate URLs are removed so we never retry the same URL twice.
  */
 export function buildDownloadUrlCandidates(downloadPath: string, baseUrl: string): string[] {
+  // Raw URL: preserve Confluence's encoding (e.g. `+` for spaces), only fix literal spaces
+  const rawUrl = `${baseUrl}${downloadPath.replace(/ /g, '%20')}`;
   const encodedUrl = buildDownloadUrl(downloadPath, baseUrl);
-  const rawUrl = `${baseUrl}${downloadPath}`;
 
   const qIdx = downloadPath.indexOf('?');
   const pathOnly = qIdx >= 0 ? downloadPath.slice(0, qIdx) : downloadPath;
-  const encodedNoQuery = buildDownloadUrl(pathOnly, baseUrl);
+  const rawNoQuery = `${baseUrl}${pathOnly.replace(/ /g, '%20')}`;
 
   // De-duplicate while preserving priority order
   const seen = new Set<string>();
   const urls: string[] = [];
-  for (const url of [encodedUrl, rawUrl, encodedNoQuery]) {
+  for (const url of [rawUrl, encodedUrl, rawNoQuery]) {
     if (!seen.has(url)) {
       seen.add(url);
       urls.push(url);
