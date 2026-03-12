@@ -217,7 +217,8 @@ export class ConfluenceClient {
    * so that `withRetry` can re-execute the full HTTP request on transient failures.
    */
   private async downloadAttachmentOnce(downloadPath: string): Promise<Buffer> {
-    const url = `${this.baseUrl}${downloadPath}`;
+    // Use URL constructor to properly encode special chars (spaces, colons) in filenames
+    const url = new URL(downloadPath, this.baseUrl).href;
 
     // SSRF protection: validate URL before download
     validateUrl(url);
@@ -261,7 +262,8 @@ export class ConfluenceClient {
     outputPath: string,
     maxSizeBytes = 50 * 1024 * 1024,
   ): Promise<void> {
-    const url = `${this.baseUrl}${downloadPath}`;
+    // Use URL constructor to properly encode special chars (spaces, colons) in filenames
+    const url = new URL(downloadPath, this.baseUrl).href;
 
     // SSRF protection: validate URL before download
     validateUrl(url);
