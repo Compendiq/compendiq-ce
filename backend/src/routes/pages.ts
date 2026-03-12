@@ -42,13 +42,13 @@ export async function pagesRoutes(fastify: FastifyInstance) {
   fastify.get('/pages', async (request) => {
     const userId = request.userId;
     const params = PageListQuerySchema.parse(request.query);
-    const { spaceKey, search, author, labels, freshness, embeddingStatus, dateFrom, dateTo, page = 1, limit = 50, sort = 'title' } = params;
+    const { spaceKey, search, author, labels, freshness, embeddingStatus, qualityMin, qualityMax, qualityStatus, dateFrom, dateTo, page = 1, limit = 50, sort = 'title' } = params;
 
     // Cache all page list queries. Filtered queries use a shorter TTL (2 min) vs
     // unfiltered (15 min) since filter results change more frequently (e.g. search
     // results after edits, embedding status during processing).
-    const hasFilters = !!(search || author || labels || freshness || embeddingStatus || dateFrom || dateTo);
-    const filterParts = [spaceKey ?? '', search ?? '', author ?? '', labels ?? '', freshness ?? '', embeddingStatus ?? '', dateFrom ?? '', dateTo ?? '', page, limit, sort].join(':');
+    const hasFilters = !!(search || author || labels || freshness || embeddingStatus || qualityMin !== undefined || qualityMax !== undefined || qualityStatus || dateFrom || dateTo);
+    const filterParts = [spaceKey ?? '', search ?? '', author ?? '', labels ?? '', freshness ?? '', embeddingStatus ?? '', qualityMin ?? '', qualityMax ?? '', qualityStatus ?? '', dateFrom ?? '', dateTo ?? '', page, limit, sort].join(':');
     const cacheKey = `list:${filterParts}`;
     const cacheTtl = hasFilters ? 120 : 900; // 2 min for filtered, 15 min for unfiltered
 
@@ -109,6 +109,21 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       values.push(embeddingStatus === 'pending');
     }
 
+    if (qualityMin !== undefined) {
+      whereClause += ` AND cp.quality_score >= $${paramIdx++}`;
+      values.push(qualityMin);
+    }
+
+    if (qualityMax !== undefined) {
+      whereClause += ` AND cp.quality_score <= $${paramIdx++}`;
+      values.push(qualityMax);
+    }
+
+    if (qualityStatus) {
+      whereClause += ` AND cp.quality_status = $${paramIdx++}`;
+      values.push(qualityStatus);
+    }
+
     if (dateFrom) {
       whereClause += ` AND cp.last_modified_at >= $${paramIdx++}`;
       values.push(dateFrom);
@@ -124,6 +139,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       title: 'cp.title ASC',
       modified: 'cp.last_modified_at DESC NULLS LAST',
       author: 'cp.author ASC NULLS LAST',
+      quality: 'cp.quality_score DESC NULLS LAST',
     };
     const orderBy = sortMap[sort] ?? sortMap.title;
 
@@ -138,7 +154,10 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     const sql = `
       SELECT cp.confluence_id, cp.space_key, cp.title, cp.version,
              cp.parent_id, cp.labels, cp.author, cp.last_modified_at, cp.last_synced,
-             cp.embedding_dirty, cp.embedding_status, cp.embedded_at, cp.embedding_error
+             cp.embedding_dirty, cp.embedding_status, cp.embedded_at, cp.embedding_error,
+             cp.quality_score, cp.quality_status, cp.quality_completeness, cp.quality_clarity,
+             cp.quality_structure, cp.quality_accuracy, cp.quality_readability,
+             cp.quality_summary, cp.quality_analyzed_at, cp.quality_error
       FROM cached_pages cp
       ${whereClause}
       ORDER BY ${orderBy}
@@ -160,6 +179,16 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       embedding_status: string;
       embedded_at: Date | null;
       embedding_error: string | null;
+      quality_score: number | null;
+      quality_status: string | null;
+      quality_completeness: number | null;
+      quality_clarity: number | null;
+      quality_structure: number | null;
+      quality_accuracy: number | null;
+      quality_readability: number | null;
+      quality_summary: string | null;
+      quality_analyzed_at: Date | null;
+      quality_error: string | null;
     }>(sql, values);
 
     const response = {
@@ -177,6 +206,16 @@ export async function pagesRoutes(fastify: FastifyInstance) {
         embeddingStatus: row.embedding_status,
         embeddedAt: row.embedded_at,
         embeddingError: row.embedding_error,
+        qualityScore: row.quality_score,
+        qualityStatus: row.quality_status,
+        qualityCompleteness: row.quality_completeness,
+        qualityClarity: row.quality_clarity,
+        qualityStructure: row.quality_structure,
+        qualityAccuracy: row.quality_accuracy,
+        qualityReadability: row.quality_readability,
+        qualitySummary: row.quality_summary,
+        qualityAnalyzedAt: row.quality_analyzed_at,
+        qualityError: row.quality_error,
       })),
       total,
       page,
@@ -295,10 +334,23 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       embedded_at: Date | null;
       embedding_error: string | null;
       has_children: boolean;
+      quality_score: number | null;
+      quality_status: string | null;
+      quality_completeness: number | null;
+      quality_clarity: number | null;
+      quality_structure: number | null;
+      quality_accuracy: number | null;
+      quality_readability: number | null;
+      quality_summary: string | null;
+      quality_analyzed_at: Date | null;
+      quality_error: string | null;
     }>(
       `SELECT cp.confluence_id, cp.space_key, cp.title, cp.body_storage, cp.body_html, cp.body_text,
               cp.version, cp.parent_id, cp.labels, cp.author, cp.last_modified_at, cp.last_synced,
               cp.embedding_dirty, cp.embedding_status, cp.embedded_at, cp.embedding_error,
+              cp.quality_score, cp.quality_status, cp.quality_completeness, cp.quality_clarity,
+              cp.quality_structure, cp.quality_accuracy, cp.quality_readability,
+              cp.quality_summary, cp.quality_analyzed_at, cp.quality_error,
               EXISTS(SELECT 1 FROM cached_pages c2 WHERE c2.parent_id = cp.confluence_id) as has_children
        FROM cached_pages cp
        JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
@@ -329,6 +381,16 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       embeddingStatus: row.embedding_status,
       embeddedAt: row.embedded_at,
       embeddingError: row.embedding_error,
+      qualityScore: row.quality_score,
+      qualityStatus: row.quality_status,
+      qualityCompleteness: row.quality_completeness,
+      qualityClarity: row.quality_clarity,
+      qualityStructure: row.quality_structure,
+      qualityAccuracy: row.quality_accuracy,
+      qualityReadability: row.quality_readability,
+      qualitySummary: row.quality_summary,
+      qualityAnalyzedAt: row.quality_analyzed_at,
+      qualityError: row.quality_error,
     };
   });
 

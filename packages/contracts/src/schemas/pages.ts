@@ -3,6 +3,9 @@ import { z } from 'zod';
 export const PageEmbeddingStatusEnum = z.enum(['not_embedded', 'embedding', 'embedded', 'failed']);
 export type PageEmbeddingStatus = z.infer<typeof PageEmbeddingStatusEnum>;
 
+export const PageQualityStatusEnum = z.enum(['pending', 'analyzing', 'analyzed', 'failed', 'skipped']);
+export type PageQualityStatus = z.infer<typeof PageQualityStatusEnum>;
+
 export const PageSummarySchema = z.object({
   id: z.string(),
   spaceKey: z.string(),
@@ -16,6 +19,16 @@ export const PageSummarySchema = z.object({
   embeddingDirty: z.boolean(),
   embeddingStatus: PageEmbeddingStatusEnum.default('not_embedded'),
   embeddedAt: z.coerce.date().nullable().optional(),
+  qualityScore: z.number().nullable().optional(),
+  qualityStatus: PageQualityStatusEnum.nullable().optional(),
+  qualityCompleteness: z.number().nullable().optional(),
+  qualityClarity: z.number().nullable().optional(),
+  qualityStructure: z.number().nullable().optional(),
+  qualityAccuracy: z.number().nullable().optional(),
+  qualityReadability: z.number().nullable().optional(),
+  qualitySummary: z.string().nullable().optional(),
+  qualityAnalyzedAt: z.coerce.date().nullable().optional(),
+  qualityError: z.string().nullable().optional(),
 });
 
 export const PageDetailSchema = PageSummarySchema.extend({
@@ -44,11 +57,14 @@ export const PageListQuerySchema = z.object({
   labels: z.string().optional(), // comma-separated label names
   freshness: z.enum(['fresh', 'recent', 'aging', 'stale']).optional(),
   embeddingStatus: z.enum(['pending', 'done']).optional(),
+  qualityMin: z.coerce.number().int().min(0).max(100).optional(),
+  qualityMax: z.coerce.number().int().min(0).max(100).optional(),
+  qualityStatus: z.enum(['pending', 'analyzing', 'analyzed', 'failed', 'skipped']).optional(),
   dateFrom: z.string().optional(), // ISO date string
   dateTo: z.string().optional(),   // ISO date string
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(50),
-  sort: z.enum(['title', 'modified', 'author']).default('title'),
+  sort: z.enum(['title', 'modified', 'author', 'quality']).default('title'),
 });
 
 export type PageSummary = z.infer<typeof PageSummarySchema>;
