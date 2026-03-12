@@ -317,7 +317,7 @@ export function ArticleViewer({
           '[&_th]:border [&_th]:border-[var(--glass-border)] [&_th]:bg-[oklch(from_var(--color-muted)_l_c_h_/_0.3)] [&_th]:p-2 [&_th]:font-semibold',
           // Task list styles
           '[&_ul[data-type=taskList]]:list-none [&_ul[data-type=taskList]]:pl-0',
-          '[&_ul[data-type=taskList]_li]:flex [&_ul[data-type=taskList]_li]:items-start [&_ul[data-type=taskList]_li]:gap-2',
+          '[&_ul[data-type=taskList]_li]:flex [&_ul[data-type=taskList]_li]:items-center [&_ul[data-type=taskList]_li]:gap-2',
           className,
         )}
       />

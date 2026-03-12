@@ -79,6 +79,9 @@ export interface AiContextValue {
   includeSubPages: boolean;
   setIncludeSubPages: (v: boolean) => void;
 
+  // Page loading
+  isPageLoading: boolean;
+
   // Embedding status
   embeddingStatus: EmbeddingStatusData | undefined;
 
@@ -133,7 +136,10 @@ export function AiProvider({ children }: { children: ReactNode }) {
   const pageId = searchParams.get('pageId');
   const isLight = useIsLightTheme();
 
-  const [mode, setMode] = useState<Mode>(pageId ? 'improve' : 'ask');
+  const VALID_MODES: Mode[] = ['ask', 'improve', 'generate', 'summarize', 'diagram', 'quality'];
+  const rawMode = searchParams.get('mode');
+  const urlMode = VALID_MODES.includes(rawMode as Mode) ? (rawMode as Mode) : null;
+  const [mode, setMode] = useState<Mode>(urlMode ?? (pageId ? 'improve' : 'ask'));
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
@@ -154,7 +160,8 @@ export function AiProvider({ children }: { children: ReactNode }) {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const { data: page } = usePage(pageId ?? undefined);
+  const isStreamingRef = useRef(false);
+  const { data: page, isLoading: isPageLoading } = usePage(pageId ?? undefined);
   const { data: embeddingStatus } = useEmbeddingStatus();
   const pageHasChildren = page?.hasChildren ?? false;
 
@@ -277,7 +284,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
       userMessage?: string;
     },
   ) => {
-    if (isStreaming) return;
+    if (isStreamingRef.current) return;
 
     abortRef.current?.abort();
     const controller = new AbortController();
@@ -288,6 +295,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
     }
 
     opts?.onBeforeStream?.();
+    isStreamingRef.current = true;
     setIsStreaming(true);
     setIsThinking(true);
 
@@ -336,10 +344,11 @@ export function AiProvider({ children }: { children: ReactNode }) {
       // adds a placeholder assistant message, regardless of whether userMessage was passed.
       setMessages((prev) => prev.slice(0, -1));
     } finally {
+      isStreamingRef.current = false;
       setIsStreaming(false);
       setIsThinking(false);
     }
-  }, [isStreaming]);
+  }, []);
 
   const value: AiContextValue = {
     pageId,
@@ -372,6 +381,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
     messagesEndRef,
     includeSubPages,
     setIncludeSubPages,
+    isPageLoading,
     embeddingStatus,
     isLight,
     improvementType,

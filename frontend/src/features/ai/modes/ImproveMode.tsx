@@ -80,7 +80,7 @@ export function ImproveDiffView() {
  */
 export function ImproveModeInput() {
   const {
-    isStreaming, page, model, pageId, includeSubPages, runStream,
+    isStreaming, page, isPageLoading, model, pageId, includeSubPages, runStream,
     improvementType, setShowDiffView, setImprovedContent,
   } = useAiContext();
 
@@ -115,11 +115,13 @@ export function ImproveModeInput() {
     <div className="mt-3 flex items-center gap-3 border-t border-border/40 pt-3">
       <button
         onClick={handleImprove}
-        disabled={isStreaming || !page || !model}
+        disabled={isStreaming || !page || isPageLoading || !model}
         className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
       >
         {isStreaming ? (
           <><Loader2 size={14} className="animate-spin" /> Processing...</>
+        ) : isPageLoading ? (
+          <><Loader2 size={14} className="animate-spin" /> Loading page...</>
         ) : !model ? (
           <><Loader2 size={14} className="animate-spin" /> Loading models...</>
         ) : (

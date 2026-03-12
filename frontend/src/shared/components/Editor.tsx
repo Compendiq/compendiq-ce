@@ -109,7 +109,7 @@ function ToolbarSeparator() {
 
 function EditorToolbar({ editor }: { editor: EditorType }) {
   return (
-    <div className="flex flex-wrap items-center gap-0.5 border-b border-border/50 px-2 py-1.5">
+    <div className="sticky top-0 z-10 flex flex-wrap items-center gap-0.5 border-b border-border/50 bg-card/95 backdrop-blur-sm px-2 py-1.5">
       <ToolbarButton onClick={() => editor.chain().focus().toggleBold().run()} active={editor.isActive('bold')} title="Bold">
         <Bold size={16} />
       </ToolbarButton>
@@ -195,7 +195,7 @@ function TableContextToolbar({ editor }: { editor: EditorType }) {
   return (
     <div
       data-testid="table-context-toolbar"
-      className="flex flex-wrap items-center gap-0.5 border-b border-border/50 bg-card/80 backdrop-blur-md px-2 py-1.5"
+      className="sticky top-[37px] z-10 flex flex-wrap items-center gap-0.5 border-b border-border/50 bg-card/95 backdrop-blur-sm px-2 py-1.5"
     >
       <span className="mr-1 text-xs font-medium text-muted-foreground select-none">Table</span>
 
@@ -364,7 +364,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
   });
 
   return (
-    <div className={naked ? 'overflow-hidden' : 'glass-card overflow-hidden'}>
+    <div className={naked ? '' : 'glass-card'}>
       {editable && editor && <EditorToolbar editor={editor} />}
       {editable && editor && <TableContextToolbar editor={editor} />}
       <EditorContent
@@ -372,7 +372,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
         className={cn(
           'prose max-w-none',
           !isLight && 'prose-invert',
-          '[&_.tiptap]:min-h-[200px] [&_.tiptap]:max-w-[720px] [&_.tiptap]:mx-auto [&_.tiptap]:px-10 [&_.tiptap]:py-6 [&_.tiptap]:outline-none',
+          '[&_.tiptap]:min-h-[200px] [&_.tiptap]:px-10 [&_.tiptap]:py-6 [&_.tiptap]:outline-none',
           '[&_table]:border-collapse [&_td]:border [&_td]:border-border/50 [&_td]:p-2 [&_th]:border [&_th]:border-border/50 [&_th]:bg-foreground/5 [&_th]:p-2',
           '[&_pre]:rounded-md [&_pre]:bg-foreground/5 [&_pre:not([data-title])]:p-4 [&_pre[data-title]]:px-4 [&_pre[data-title]]:pb-4',
           '[&_ul[data-type=taskList]]:list-none [&_ul[data-type=taskList]]:pl-0',
