@@ -245,7 +245,8 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
     macro.replaceWith(div);
   }
 
-  // Process children / ui-children display macro -> placeholder div with optional sort/reverse params
+  // Process children / ui-children display macro -> placeholder div, preserving all params
+  const childrenParamNames = ['sort', 'reverse', 'depth', 'first', 'page', 'style', 'excerptType'];
   for (const macro of byTag(doc, 'ac:structured-macro')) {
     const macroName = getMacroName(macro);
     if (macroName !== 'children' && macroName !== 'ui-children') continue;
@@ -253,10 +254,10 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
     div.className = 'confluence-children-macro';
     div.setAttribute('data-macro-name', macroName);
     div.textContent = '[Children pages listed here]';
-    const sort = getParamValue(macro, 'sort');
-    const reverse = getParamValue(macro, 'reverse');
-    if (sort !== null && sort !== undefined) div.setAttribute('data-sort', sort);
-    if (reverse !== null && reverse !== undefined) div.setAttribute('data-reverse', reverse);
+    for (const paramName of childrenParamNames) {
+      const val = getParamValue(macro, paramName);
+      if (val !== null && val !== undefined) div.setAttribute(`data-${paramName}`, val);
+    }
     macro.replaceWith(div);
   }
 
@@ -368,23 +369,19 @@ export function htmlToConfluence(html: string): string {
   }
 
   // Convert children / ui-children macro placeholders back to ac:structured-macro
+  const childrenRoundTripParams = ['sort', 'reverse', 'depth', 'first', 'page', 'style', 'excerptType'];
   for (const div of doc.querySelectorAll('div.confluence-children-macro')) {
     const macro = doc.createElement('ac:structured-macro');
     const originalName = div.getAttribute('data-macro-name') || 'children';
     macro.setAttribute('ac:name', originalName);
-    const sort = div.getAttribute('data-sort');
-    const reverse = div.getAttribute('data-reverse');
-    if (sort !== null) {
-      const p = doc.createElement('ac:parameter');
-      p.setAttribute('ac:name', 'sort');
-      p.textContent = sort;
-      macro.appendChild(p);
-    }
-    if (reverse !== null) {
-      const p = doc.createElement('ac:parameter');
-      p.setAttribute('ac:name', 'reverse');
-      p.textContent = reverse;
-      macro.appendChild(p);
+    for (const paramName of childrenRoundTripParams) {
+      const val = div.getAttribute(`data-${paramName}`);
+      if (val !== null) {
+        const p = doc.createElement('ac:parameter');
+        p.setAttribute('ac:name', paramName);
+        p.textContent = val;
+        macro.appendChild(p);
+      }
     }
     div.replaceWith(macro);
   }

@@ -232,8 +232,11 @@ export function AiProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (messages.length === 0) return;
+    // Skip auto-scroll in improve mode — the page should stay in place
+    // so the user can see the full UI instead of jumping to the message area
+    if (mode === 'improve') return;
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, mode]);
 
   // Scroll to bottom immediately when switching conversations so the latest
   // messages are visible right away (independent of the messages-change effect).

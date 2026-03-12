@@ -11,7 +11,8 @@ import {
 import { useAuthenticatedSrc } from '../../shared/hooks/use-authenticated-src';
 import { useArticleViewStore } from '../../stores/article-view-store';
 import { FeatureErrorBoundary } from '../../shared/components/FeatureErrorBoundary';
-import { Editor, clearDraft, getDraft } from '../../shared/components/Editor';
+import { Editor, EditorToolbar, TableContextToolbar, clearDraft, getDraft } from '../../shared/components/Editor';
+import type { Editor as EditorType } from '@tiptap/react';
 import { ArticleViewer } from '../../shared/components/ArticleViewer';
 import type { TocHeading } from '../../shared/components/TableOfContents';
 import { PageViewSkeleton } from '../../shared/components/Skeleton';
@@ -95,6 +96,7 @@ export function PageViewPage() {
   const setStoreEditing = useArticleViewStore((s) => s.setEditing);
 
   const [editing, setEditing] = useState(false);
+  const editorInstanceRef = useRef<EditorType | null>(null);
   const [editHtml, setEditHtml] = useState('');
   const [editTitle, setEditTitle] = useState('');
   const [headings, setHeadings] = useState<TocHeading[]>([]);
@@ -256,6 +258,14 @@ export function PageViewPage() {
           </div>
         </div>
 
+        {/* Sticky toolbar — outside glass-card-xl overflow context */}
+        {editing && editorInstanceRef.current && (
+          <div className="sticky top-0 z-20 border-b border-border/25 bg-card/95 backdrop-blur-sm">
+            <EditorToolbar editor={editorInstanceRef.current} />
+            <TableContextToolbar editor={editorInstanceRef.current} />
+          </div>
+        )}
+
         {editing ? (
           <>
             {/* Editable title — reading column, same width as editor content */}
@@ -272,7 +282,7 @@ export function PageViewPage() {
 
             {/* Editor — naked (no inner glass-card, we are already inside glass-card-xl) */}
             <FeatureErrorBoundary featureName="Editor">
-              <Editor content={editHtml} onChange={setEditHtml} draftKey={draftKey} naked />
+              <Editor content={editHtml} onChange={setEditHtml} draftKey={draftKey} naked editorRef={editorInstanceRef} hideToolbar />
             </FeatureErrorBoundary>
           </>
         ) : (
