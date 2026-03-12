@@ -556,7 +556,10 @@ export function buildDownloadUrl(downloadPath: string, baseUrl: string): string 
     .split('/')
     .map((segment) => {
       if (!segment) return segment;
-      // Decode first to normalise already-encoded segments (+ → space, %XX → char)
+      // Decode first to normalise already-encoded segments (%XX → char).
+      // Also treat `+` as space: while `+` only means space in
+      // application/x-www-form-urlencoded (not in URL paths per RFC 3986),
+      // Confluence DC encodes spaces as `+` in some _links.download paths.
       let decoded: string;
       try {
         decoded = decodeURIComponent(segment.replace(/\+/g, ' '));

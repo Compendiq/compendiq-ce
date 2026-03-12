@@ -28,6 +28,16 @@ let syncLock = false;
 const attachmentFailures = new Map<string, number>();
 const MAX_ATTACHMENT_FAILURES = 3;
 
+/** Remove all failure-tracking entries for a page (e.g. on new version or deletion). */
+function clearPageFailures(pageId: string): void {
+  const prefix = `${pageId}:`;
+  for (const key of attachmentFailures.keys()) {
+    if (key.startsWith(prefix)) {
+      attachmentFailures.delete(key);
+    }
+  }
+}
+
 /**
  * Get a ConfluenceClient for a user by decrypting their stored credentials.
  */
@@ -214,10 +224,38 @@ async function syncPage(
     }
 
     if (missing.length > 0) {
-      logger.info({ pageId: page.id, missing: missing.length }, 'Page unchanged but some attachments missing — re-syncing');
-      const { results: attachments } = await client.getPageAttachments(page.id);
-      await syncDrawioAttachments(client, userId, page.id, bodyStorage, attachments);
-      await syncImageAttachments(client, userId, page.id, bodyStorage, attachments, spaceKey);
+      // Filter out attachments that have exceeded the failure threshold
+      const retriable = missing.filter((f) => {
+        const key = `${page.id}:${f}`;
+        return (attachmentFailures.get(key) ?? 0) < MAX_ATTACHMENT_FAILURES;
+      });
+
+      if (retriable.length > 0) {
+        logger.info({ pageId: page.id, missing: retriable.length }, 'Page unchanged but some attachments missing — re-syncing');
+        const { results: attachments } = await client.getPageAttachments(page.id);
+        await syncDrawioAttachments(client, userId, page.id, bodyStorage, attachments);
+        await syncImageAttachments(client, userId, page.id, bodyStorage, attachments, spaceKey);
+
+        // Track which are still missing
+        const stillMissing = new Set(
+          await getMissingAttachments(userId, page.id, bodyStorage, spaceKey),
+        );
+        for (const f of retriable) {
+          const key = `${page.id}:${f}`;
+          if (stillMissing.has(f)) {
+            const count = (attachmentFailures.get(key) ?? 0) + 1;
+            attachmentFailures.set(key, count);
+            if (count >= MAX_ATTACHMENT_FAILURES) {
+              logger.warn(
+                { pageId: page.id, filename: f, failures: count },
+                'Attachment permanently failed — skipping until restart',
+              );
+            }
+          } else {
+            attachmentFailures.delete(key);
+          }
+        }
+      }
     }
 
     if (htmlChanged) {
@@ -248,6 +286,8 @@ async function syncPage(
   // so updated diagrams/images are re-downloaded rather than served from cache.
   if (existing.rows.length > 0) {
     await cleanPageAttachments(userId, page.id);
+    // Reset failure tracking — new version may have fixed broken attachments
+    clearPageFailures(page.id);
   }
 
   // Fetch attachments once and sync after version guard to avoid API calls for unchanged pages
@@ -395,6 +435,7 @@ async function detectDeletedPages(
       // page_embeddings are deleted by CASCADE on cached_pages
       await query('DELETE FROM cached_pages WHERE confluence_id = $1', [confluence_id]);
       await cleanPageAttachments('', confluence_id);
+      clearPageFailures(confluence_id);
     }
   }
 }
