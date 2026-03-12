@@ -20,6 +20,15 @@ let syncIntervalHandle: ReturnType<typeof setInterval> | null = null;
 let syncLock = false;
 
 /**
+ * Tracks persistent attachment download failures to avoid retrying
+ * permanently broken attachments on every sync cycle.
+ * Key: `${pageId}:${filename}`, Value: consecutive failure count.
+ * Resets on process restart.
+ */
+const attachmentFailures = new Map<string, number>();
+const MAX_ATTACHMENT_FAILURES = 3;
+
+/**
  * Get a ConfluenceClient for a user by decrypting their stored credentials.
  */
 export async function getClientForUser(userId: string): Promise<ConfluenceClient | null> {
@@ -284,6 +293,10 @@ async function syncPage(
  * Find cached pages in a space that have missing attachment files and re-sync them.
  * This covers the gap where incremental sync skips unchanged pages whose
  * attachment downloads previously failed.
+ *
+ * Attachments that fail repeatedly (e.g. Confluence returns 500 for old files
+ * with problematic filenames) are tracked in `attachmentFailures` and skipped
+ * after MAX_ATTACHMENT_FAILURES consecutive failures to avoid log noise.
  */
 async function syncMissingAttachments(
   client: ConfluenceClient,
@@ -298,11 +311,19 @@ async function syncMissingAttachments(
 
   let retried = 0;
   for (const row of pagesResult.rows) {
-    const missing = await getMissingAttachments(userId, row.confluence_id, row.body_storage, spaceKey);
-    if (missing.length === 0) continue;
+    const allMissing = await getMissingAttachments(userId, row.confluence_id, row.body_storage, spaceKey);
+    if (allMissing.length === 0) continue;
+
+    // Filter out attachments that have exceeded the failure threshold
+    const retriable = allMissing.filter((f) => {
+      const key = `${row.confluence_id}:${f}`;
+      return (attachmentFailures.get(key) ?? 0) < MAX_ATTACHMENT_FAILURES;
+    });
+
+    if (retriable.length === 0) continue;
 
     logger.info(
-      { pageId: row.confluence_id, missing: missing.length },
+      { pageId: row.confluence_id, missing: retriable.length },
       'Retrying missing attachments for unchanged page',
     );
 
@@ -310,6 +331,28 @@ async function syncMissingAttachments(
       const { results: attachments } = await client.getPageAttachments(row.confluence_id);
       await syncDrawioAttachments(client, userId, row.confluence_id, row.body_storage, attachments);
       await syncImageAttachments(client, userId, row.confluence_id, row.body_storage, attachments, spaceKey);
+
+      // Check which are still missing and update failure counts
+      const stillMissing = new Set(
+        await getMissingAttachments(userId, row.confluence_id, row.body_storage, spaceKey),
+      );
+
+      for (const f of retriable) {
+        const key = `${row.confluence_id}:${f}`;
+        if (stillMissing.has(f)) {
+          const count = (attachmentFailures.get(key) ?? 0) + 1;
+          attachmentFailures.set(key, count);
+          if (count >= MAX_ATTACHMENT_FAILURES) {
+            logger.warn(
+              { pageId: row.confluence_id, filename: f, failures: count },
+              'Attachment permanently failed — skipping until restart',
+            );
+          }
+        } else {
+          attachmentFailures.delete(key);
+        }
+      }
+
       retried++;
     } catch (err) {
       logger.error({ err, pageId: row.confluence_id }, 'Failed to retry missing attachments');

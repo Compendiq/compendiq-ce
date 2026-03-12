@@ -24,7 +24,7 @@ vi.mock('../utils/tls-config.js', () => ({
 }));
 
 import { request } from 'undici';
-import { ConfluenceClient, ConfluenceError, isTransientError, parseRetryAfter, withRetry } from './confluence-client.js';
+import { ConfluenceClient, ConfluenceError, isTransientError, parseRetryAfter, withRetry, buildDownloadUrl } from './confluence-client.js';
 import * as tlsConfig from '../utils/tls-config.js';
 import { logger } from '../utils/logger.js';
 
@@ -814,6 +814,25 @@ describe('ConfluenceClient', () => {
       expect(mockRequest).toHaveBeenCalledTimes(2);
     });
 
+    it('should encode special characters in attachment download URLs', async () => {
+      const client = new ConfluenceClient(baseUrl, pat, retryOpts);
+      mockRequest.mockResolvedValue({
+        statusCode: 200,
+        headers: {},
+        body: (async function* () {
+          yield Buffer.from('file-content');
+        })(),
+      } as never);
+
+      await client.downloadAttachment('/download/attachments/228459100/image2018-1-22 9:26:20.png?version=1&api=v2');
+
+      const callUrl = mockRequest.mock.calls[0][0] as string;
+      // Spaces encoded as %20, colons as %3A
+      expect(callUrl).toBe(
+        'https://confluence.example.com/download/attachments/228459100/image2018-1-22%209%3A26%3A20.png?version=1&api=v2',
+      );
+    });
+
     it('should retry downloadAttachment on transient errors', async () => {
       const client = new ConfluenceClient(baseUrl, pat, retryOpts);
       let callCount = 0;
@@ -969,6 +988,59 @@ describe('parseRetryAfter', () => {
 
   it('should return undefined for negative number', () => {
     expect(parseRetryAfter('-5')).toBeUndefined();
+  });
+});
+
+describe('buildDownloadUrl', () => {
+  const base = 'https://confluence.example.com';
+
+  it('should encode spaces in filenames', () => {
+    const url = buildDownloadUrl('/download/attachments/123/image 2018.png', base);
+    expect(url).toBe('https://confluence.example.com/download/attachments/123/image%202018.png');
+  });
+
+  it('should encode colons in filenames', () => {
+    const url = buildDownloadUrl('/download/attachments/228459100/image2018-1-22 9:26:20.png', base);
+    expect(url).toBe(
+      'https://confluence.example.com/download/attachments/228459100/image2018-1-22%209%3A26%3A20.png',
+    );
+  });
+
+  it('should preserve query string as-is', () => {
+    const url = buildDownloadUrl(
+      '/download/attachments/123/file.png?version=1&modificationDate=1516609580000&api=v2',
+      base,
+    );
+    expect(url).toBe(
+      'https://confluence.example.com/download/attachments/123/file.png?version=1&modificationDate=1516609580000&api=v2',
+    );
+  });
+
+  it('should not double-encode already percent-encoded filenames', () => {
+    const url = buildDownloadUrl('/download/attachments/123/image%202018.png', base);
+    expect(url).toBe('https://confluence.example.com/download/attachments/123/image%202018.png');
+  });
+
+  it('should decode + as space then re-encode', () => {
+    const url = buildDownloadUrl('/download/attachments/123/image+2018.png', base);
+    expect(url).toBe('https://confluence.example.com/download/attachments/123/image%202018.png');
+  });
+
+  it('should handle simple paths without special characters', () => {
+    const url = buildDownloadUrl('/download/attachments/123/file.pdf', base);
+    expect(url).toBe('https://confluence.example.com/download/attachments/123/file.pdf');
+  });
+
+  it('should encode brackets and other special characters', () => {
+    const url = buildDownloadUrl('/download/attachments/123/report (final).png', base);
+    expect(url).toBe(
+      'https://confluence.example.com/download/attachments/123/report%20(final).png',
+    );
+  });
+
+  it('should handle paths without query string', () => {
+    const url = buildDownloadUrl('/download/attachments/123/file.png', base);
+    expect(url).toBe('https://confluence.example.com/download/attachments/123/file.png');
   });
 });
 
