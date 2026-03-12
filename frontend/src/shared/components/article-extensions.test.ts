@@ -145,6 +145,40 @@ describe('article-extensions', () => {
     });
   });
 
+    it('renderHTML preserves null attributes and does not drop falsy values', () => {
+      const renderHTML = ConfluenceChildren.config.renderHTML;
+      if (!renderHTML) throw new Error('renderHTML not defined');
+
+      // Simulate a node with some attrs set and some null
+      const node = {
+        attrs: {
+          sort: 'title',
+          reverse: null,
+          depth: '0', // falsy as number but truthy as string
+          first: null,
+          page: null,
+          style: null,
+          excerptType: null,
+          'macro-name': 'ui-children',
+        },
+      };
+
+      const result = renderHTML.call(
+        { name: 'confluenceChildren', options: {}, storage: {}, parent: undefined },
+        { node, HTMLAttributes: {} },
+      ) as [string, Record<string, string>, string];
+
+      const [tag, attrs, content] = result;
+      expect(tag).toBe('div');
+      expect(content).toBe('[Children pages listed here]');
+      expect(attrs['data-sort']).toBe('title');
+      expect(attrs['data-depth']).toBe('0');
+      expect(attrs['data-macro-name']).toBe('ui-children');
+      // Null attrs should not appear
+      expect(attrs).not.toHaveProperty('data-reverse');
+      expect(attrs).not.toHaveProperty('data-first');
+    });
+
   describe('UnknownMacro', () => {
     it('has correct name', () => {
       expect(UnknownMacro.name).toBe('unknownMacro');

@@ -471,6 +471,13 @@ describe('content-converter', () => {
       expect(md).not.toContain('confluence-status');
     });
 
+    it('converts ui-children macro to markdown placeholder', () => {
+      const html = confluenceToHtml(UI_CHILDREN_MACRO_PAGE);
+      const md = htmlToMarkdown(html);
+      expect(md).toContain('[Children pages]');
+      expect(md).not.toContain('confluence-children-macro');
+    });
+
     it('produces clean markdown for LLM consumption from complex page', () => {
       const html = confluenceToHtml(COMPLEX_PAGE, '42');
       const md = htmlToMarkdown(html);
