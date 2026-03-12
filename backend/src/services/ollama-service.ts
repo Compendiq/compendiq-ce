@@ -95,7 +95,7 @@ export function getProvider(type: LlmProviderType): LlmProvider {
 
 // ─── System prompts (provider-agnostic) ─────────────────────────────────────
 
-const LANGUAGE_PRESERVATION_INSTRUCTION = `IMPORTANT: Keep the text in its ORIGINAL language. If the text is in German, respond in German. If in English, respond in English. Never translate — only improve the text while preserving its language.`;
+export const LANGUAGE_PRESERVATION_INSTRUCTION = `IMPORTANT: Keep the text in its ORIGINAL language. If the text is in German, respond in German. If in English, respond in English. Never translate — only improve the text while preserving its language.`;
 
 const SYSTEM_PROMPTS = {
   improve_grammar: `You are a technical writing assistant. Improve the grammar, spelling, and punctuation of the following article while preserving its meaning and structure. Return the improved text in Markdown format. Only output the improved text, no explanations. ${LANGUAGE_PRESERVATION_INSTRUCTION}`,

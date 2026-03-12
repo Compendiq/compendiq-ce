@@ -2,6 +2,7 @@ import { FastifyInstance, FastifyReply } from 'fastify';
 import { query } from '../db/postgres.js';
 import {
   getSystemPrompt, ChatMessage, SystemPromptKey,
+  LANGUAGE_PRESERVATION_INSTRUCTION,
   listModels, checkHealth,
   isLlmVerifySslEnabled, getLlmAuthType,
   getActiveProviderType, getProvider,
@@ -68,6 +69,22 @@ async function assembleContextIfNeeded(
     markdown: htmlToMarkdown(content),
     multiPageSuffix: '',
   };
+}
+
+/**
+ * Fetch user's custom prompt for a given key, or fall back to the built-in default.
+ */
+async function resolveSystemPrompt(userId: string, key: SystemPromptKey): Promise<string> {
+  const result = await query<{ custom_prompts: Record<string, string> }>(
+    'SELECT custom_prompts FROM user_settings WHERE user_id = $1',
+    [userId],
+  );
+  const custom = result.rows[0]?.custom_prompts?.[key];
+  if (custom && custom.trim()) {
+    // Always append language preservation instruction to custom prompts
+    return `${custom} ${LANGUAGE_PRESERVATION_INSTRUCTION}`;
+  }
+  return getSystemPrompt(key);
 }
 
 // Rate limit configs for LLM endpoints
@@ -263,7 +280,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
       await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/improve' }, request);
     }
 
-    const systemPrompt = getSystemPrompt(`improve_${type}` as SystemPromptKey) + multiPageSuffix;
+    const systemPrompt = await resolveSystemPrompt(userId, `improve_${type}` as SystemPromptKey) + multiPageSuffix;
 
     // Check LLM cache with stampede protection
     const cacheKey = buildLlmCacheKey(model, systemPrompt, sanitized);

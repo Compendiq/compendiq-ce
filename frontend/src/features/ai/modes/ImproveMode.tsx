@@ -8,26 +8,40 @@ import { toast } from 'sonner';
 
 const IMPROVEMENT_TYPES = ['grammar', 'structure', 'clarity', 'technical', 'completeness'] as const;
 
+const IMPROVEMENT_DESCRIPTIONS: Record<(typeof IMPROVEMENT_TYPES)[number], string> = {
+  grammar: 'Fix spelling, grammar, and punctuation without changing meaning',
+  structure: 'Reorganize headings, paragraph flow, and logical order',
+  clarity: 'Simplify complex sentences and remove unnecessary jargon',
+  technical: 'Fix technical errors and add missing technical details',
+  completeness: 'Fill gaps, add missing sections, and include examples',
+};
+
 /**
  * Improvement type selector rendered above the message area.
  */
 export function ImproveTypeSelector() {
   const { improvementType, setImprovementType } = useAiContext();
   return (
-    <div className="glass-toolbar mb-4 flex items-center gap-2 p-3">
-      <span className="text-sm text-muted-foreground">Type:</span>
-      {IMPROVEMENT_TYPES.map((type) => (
-        <button
-          key={type}
-          onClick={() => setImprovementType(type)}
-          className={cn(
-            'rounded-md px-2.5 py-1 text-xs capitalize',
-            improvementType === type ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-foreground/5',
-          )}
-        >
-          {type}
-        </button>
-      ))}
+    <div className="glass-toolbar mb-4 space-y-2 p-3">
+      <span className="text-sm text-muted-foreground">Improvement type:</span>
+      <div className="flex flex-wrap items-center gap-2">
+        {IMPROVEMENT_TYPES.map((type) => (
+          <button
+            key={type}
+            onClick={() => setImprovementType(type)}
+            title={IMPROVEMENT_DESCRIPTIONS[type]}
+            className={cn(
+              'rounded-md px-2.5 py-1 text-xs capitalize',
+              improvementType === type ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-foreground/5',
+            )}
+          >
+            {type}
+          </button>
+        ))}
+      </div>
+      <p className="text-xs text-muted-foreground/70">
+        {IMPROVEMENT_DESCRIPTIONS[improvementType as keyof typeof IMPROVEMENT_DESCRIPTIONS]}
+      </p>
     </div>
   );
 }

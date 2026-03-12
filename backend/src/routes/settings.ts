@@ -26,8 +26,9 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       theme: string;
       sync_interval_min: number;
       show_space_home_content: boolean;
+      custom_prompts: Record<string, string>;
     }>(
-      'SELECT confluence_url, confluence_pat, ollama_model, llm_provider, openai_base_url, openai_api_key, openai_model, theme, sync_interval_min, show_space_home_content FROM user_settings WHERE user_id = $1',
+      'SELECT confluence_url, confluence_pat, ollama_model, llm_provider, openai_base_url, openai_api_key, openai_model, theme, sync_interval_min, show_space_home_content, custom_prompts FROM user_settings WHERE user_id = $1',
       [request.userId],
     );
 
@@ -55,6 +56,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         syncIntervalMin: 15,
         confluenceConnected: false,
         showSpaceHomeContent: true,
+        customPrompts: {},
       };
     }
 
@@ -73,6 +75,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       syncIntervalMin: row.sync_interval_min,
       confluenceConnected: !!(row.confluence_url && row.confluence_pat),
       showSpaceHomeContent: row.show_space_home_content,
+      customPrompts: row.custom_prompts ?? {},
     };
   });
 
@@ -135,6 +138,11 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     if (body.openaiModel !== undefined) {
       updates.push(`openai_model = $${paramIdx++}`);
       values.push(body.openaiModel);
+    }
+
+    if (body.customPrompts !== undefined) {
+      updates.push(`custom_prompts = $${paramIdx++}`);
+      values.push(JSON.stringify(body.customPrompts));
     }
 
     // Handle selectedSpaces via user_space_selections table
