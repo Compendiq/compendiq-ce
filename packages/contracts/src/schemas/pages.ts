@@ -6,6 +6,9 @@ export type PageEmbeddingStatus = z.infer<typeof PageEmbeddingStatusEnum>;
 export const PageQualityStatusEnum = z.enum(['pending', 'analyzing', 'analyzed', 'failed', 'skipped']);
 export type PageQualityStatus = z.infer<typeof PageQualityStatusEnum>;
 
+export const PageSummaryStatusEnum = z.enum(['pending', 'summarizing', 'summarized', 'failed', 'skipped']);
+export type PageSummaryStatus = z.infer<typeof PageSummaryStatusEnum>;
+
 export const PageSummarySchema = z.object({
   id: z.string(),
   spaceKey: z.string(),
@@ -29,12 +32,17 @@ export const PageSummarySchema = z.object({
   qualitySummary: z.string().nullable().optional(),
   qualityAnalyzedAt: z.coerce.date().nullable().optional(),
   qualityError: z.string().nullable().optional(),
+  summaryStatus: PageSummaryStatusEnum.default('pending').optional(),
 });
 
 export const PageDetailSchema = PageSummarySchema.extend({
   bodyHtml: z.string(),
   bodyText: z.string(),
   hasChildren: z.boolean().default(false),
+  summaryHtml: z.string().nullable().optional(),
+  summaryGeneratedAt: z.coerce.date().nullable().optional(),
+  summaryModel: z.string().nullable().optional(),
+  summaryError: z.string().nullable().optional(),
 });
 
 export const CreatePageSchema = z.object({

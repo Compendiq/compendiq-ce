@@ -273,6 +273,10 @@ async function syncPage(
              embedding_dirty = CASE
                WHEN body_text IS DISTINCT FROM $5 THEN TRUE
                ELSE embedding_dirty
+             END,
+             summary_status = CASE
+               WHEN body_text IS DISTINCT FROM $5 THEN 'pending'
+               ELSE summary_status
              END
          WHERE confluence_id = $1`,
         [page.id, page.title, bodyStorage, bodyHtml, bodyText, parentId, labels, author, lastModified],
@@ -310,8 +314,9 @@ async function syncPage(
   await query(
     `INSERT INTO cached_pages
        (confluence_id, space_key, title, body_storage, body_html, body_text,
-        version, parent_id, labels, author, last_modified_at, embedding_dirty)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, TRUE)
+        version, parent_id, labels, author, last_modified_at, embedding_dirty,
+        summary_status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, TRUE, 'pending')
      ON CONFLICT (confluence_id) DO UPDATE SET
        title = EXCLUDED.title,
        body_storage = EXCLUDED.body_storage,
@@ -323,7 +328,8 @@ async function syncPage(
        author = EXCLUDED.author,
        last_modified_at = EXCLUDED.last_modified_at,
        last_synced = NOW(),
-       embedding_dirty = TRUE`,
+       embedding_dirty = TRUE,
+       summary_status = 'pending'`,
     [page.id, spaceKey, page.title, bodyStorage, bodyHtml, bodyText,
      page.version.number, parentId, labels, author, lastModified],
   );

@@ -18,6 +18,7 @@ import type { Editor as EditorType } from '@tiptap/core';
 import { ArticleViewer } from '../../shared/components/ArticleViewer';
 import { DrawioEditor } from '../../shared/components/DrawioEditor';
 import { apiFetch } from '../../shared/lib/api';
+import { ArticleSummary } from '../../shared/components/ArticleSummary';
 import type { TocHeading } from '../../shared/components/TableOfContents';
 import { PageViewSkeleton } from '../../shared/components/Skeleton';
 
@@ -360,6 +361,17 @@ export function PageViewPage() {
             <h1 className="mb-10 text-4xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground sm:text-5xl">
               {page.title}
             </h1>
+
+            {page.summaryStatus && (
+              <ArticleSummary
+                pageId={page.id}
+                summaryHtml={page.summaryHtml}
+                summaryStatus={page.summaryStatus}
+                summaryGeneratedAt={page.summaryGeneratedAt}
+                summaryModel={page.summaryModel}
+                summaryError={page.summaryError}
+              />
+            )}
 
             <FeatureErrorBoundary featureName="Article Viewer">
               <ArticleViewer

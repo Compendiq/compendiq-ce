@@ -6,6 +6,7 @@ import { buildApp } from './app.js';
 import { runMigrations, closePool } from './db/postgres.js';
 import { startSyncWorker, stopSyncWorker } from './services/sync-service.js';
 import { startQualityWorker, stopQualityWorker } from './services/quality-worker.js';
+import { startSummaryWorker, stopSummaryWorker } from './services/summary-worker.js';
 import { markStartupComplete } from './routes/health.js';
 import { logger } from './utils/logger.js';
 
@@ -49,11 +50,16 @@ async function start() {
   // Start background quality analysis worker
   startQualityWorker();
 
+  // Start background summary worker
+  const summaryInterval = parseInt(process.env.SUMMARY_CHECK_INTERVAL_MINUTES ?? '60', 10);
+  startSummaryWorker(summaryInterval);
+
   // Graceful shutdown
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutting down...');
     stopQualityWorker();
     stopSyncWorker();
+    stopSummaryWorker();
     await app.close();
     await closePool();
     await shutdownTelemetry();

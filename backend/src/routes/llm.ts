@@ -14,6 +14,7 @@ import { RedisCache } from '../services/redis-cache.js';
 import { getEmbeddingStatus, processDirtyPages, reEmbedAll, isProcessingUser, embedPage, resetFailedEmbeddings } from '../services/embedding-service.js';
 import type { EmbeddingProgressEvent } from '../services/embedding-service.js';
 import { getClientForUser } from '../services/sync-service.js';
+import { getSummaryStatus, rescanAllSummaries, regenerateSummary, runSummaryBatch } from '../services/summary-worker.js';
 import { getOllamaCircuitBreakerStatus, getOpenaiCircuitBreakerStatus } from '../services/circuit-breaker.js';
 import { getQualityStatus, forceQualityRescan } from '../services/quality-worker.js';
 import { LlmCache, buildLlmCacheKey, buildRagCacheKey, type CachedLlmResponse } from '../services/llm-cache.js';
@@ -1073,5 +1074,51 @@ export async function llmRoutes(fastify: FastifyInstance) {
   }, async () => {
     const count = await forceQualityRescan();
     return { message: `Quality rescan started — ${count} pages reset to pending`, pagesReset: count };
+  });
+
+  // ======== Background Summary Status & Actions (Issue #323) ========
+
+  // GET /api/llm/summary-status - get overall summary worker stats
+  fastify.get('/llm/summary-status', async () => {
+    return getSummaryStatus();
+  });
+
+  // POST /api/llm/summary-rescan - admin: reset all summaries to re-generate
+  fastify.post('/llm/summary-rescan', {
+    preHandler: fastify.requireAdmin,
+    config: { rateLimit: { max: 5, timeWindow: '1 minute' } },
+  }, async (request) => {
+    const resetCount = await rescanAllSummaries();
+    await logAuditEvent(request.userId, 'SUMMARY_RESCAN', 'llm', undefined, { resetCount }, request);
+
+    // Fire off a batch immediately (don't await — let it run in background)
+    runSummaryBatch().catch((err) => {
+      logger.error({ err }, 'Summary rescan immediate batch failed');
+    });
+
+    return { message: `Reset ${resetCount} pages for re-summarization`, resetCount };
+  });
+
+  // POST /api/llm/summary-regenerate/:pageId - re-generate summary for one page
+  fastify.post('/llm/summary-regenerate/:pageId', async (request) => {
+    const { pageId } = z.object({ pageId: z.string().min(1) }).parse(request.params);
+
+    // Verify page exists
+    const pageResult = await query<{ confluence_id: string }>(
+      'SELECT confluence_id FROM cached_pages WHERE confluence_id = $1',
+      [pageId],
+    );
+    if (pageResult.rows.length === 0) {
+      throw fastify.httpErrors.notFound('Page not found');
+    }
+
+    await regenerateSummary(pageId);
+
+    // Fire off a batch immediately for this page
+    runSummaryBatch().catch((err) => {
+      logger.error({ err, pageId }, 'Summary regenerate immediate batch failed');
+    });
+
+    return { message: 'Summary regeneration queued', pageId };
   });
 }
