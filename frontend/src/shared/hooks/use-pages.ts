@@ -5,6 +5,7 @@ import { streamSSE } from '../lib/sse';
 
 export type EmbeddingStatus = 'not_embedded' | 'embedding' | 'embedded' | 'failed';
 export type QualityStatus = 'pending' | 'analyzing' | 'analyzed' | 'failed' | 'skipped';
+export type SummaryStatus = 'pending' | 'summarizing' | 'summarized' | 'failed' | 'skipped';
 
 interface PageSummary {
   id: string;
@@ -30,12 +31,17 @@ interface PageSummary {
   qualitySummary: string | null;
   qualityAnalyzedAt: string | null;
   qualityError: string | null;
+  summaryStatus?: SummaryStatus;
 }
 
 interface PageDetail extends PageSummary {
   bodyHtml: string;
   bodyText: string;
   hasChildren: boolean;
+  summaryHtml: string | null;
+  summaryGeneratedAt: string | null;
+  summaryModel: string | null;
+  summaryError: string | null;
 }
 
 interface PaginatedPages {
@@ -457,6 +463,21 @@ export function useUnpinPage() {
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['pages', 'pinned'] });
+    },
+  });
+}
+
+// ======== Summary Regeneration (Issue #323) ========
+
+export function useSummaryRegenerate() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (pageId: string) =>
+      apiFetch<{ message: string; pageId: string }>(`/llm/summary-regenerate/${pageId}`, {
+        method: 'POST',
+      }),
+    onSuccess: (_data, pageId) => {
+      queryClient.invalidateQueries({ queryKey: ['pages', pageId] });
     },
   });
 }

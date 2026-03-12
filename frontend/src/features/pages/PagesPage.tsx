@@ -11,6 +11,7 @@ import { useSettings } from '../../shared/hooks/use-settings';
 import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../../shared/components/EmbeddingStatusBadge';
 import { QualityScoreBadge } from '../../shared/components/QualityScoreBadge';
+import { SummaryStatusBadge } from '../../shared/components/SummaryStatusBadge';
 import { BulkOperations } from './BulkOperations';
 import { KPICards } from './KPICards';
 import { cn } from '../../shared/lib/cn';
@@ -484,6 +485,7 @@ export function PagesPage() {
                     qualityAnalyzedAt={pageItem.qualityAnalyzedAt}
                     qualityError={pageItem.qualityError}
                   />
+                  <SummaryStatusBadge status={pageItem.summaryStatus} />
                   <EmbeddingStatusBadge embeddingDirty={pageItem.embeddingDirty} />
                   {pageItem.lastModifiedAt && (
                     <FreshnessBadge lastModified={pageItem.lastModifiedAt} />

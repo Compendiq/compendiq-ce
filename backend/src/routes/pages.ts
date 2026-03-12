@@ -157,7 +157,8 @@ export async function pagesRoutes(fastify: FastifyInstance) {
              cp.embedding_dirty, cp.embedding_status, cp.embedded_at, cp.embedding_error,
              cp.quality_score, cp.quality_status, cp.quality_completeness, cp.quality_clarity,
              cp.quality_structure, cp.quality_accuracy, cp.quality_readability,
-             cp.quality_summary, cp.quality_analyzed_at, cp.quality_error
+             cp.quality_summary, cp.quality_analyzed_at, cp.quality_error,
+             cp.summary_status
       FROM cached_pages cp
       ${whereClause}
       ORDER BY ${orderBy}
@@ -189,6 +190,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       quality_summary: string | null;
       quality_analyzed_at: Date | null;
       quality_error: string | null;
+      summary_status: string;
     }>(sql, values);
 
     const response = {
@@ -216,6 +218,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
         qualitySummary: row.quality_summary,
         qualityAnalyzedAt: row.quality_analyzed_at,
         qualityError: row.quality_error,
+        summaryStatus: row.summary_status,
       })),
       total,
       page,
@@ -344,6 +347,11 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       quality_summary: string | null;
       quality_analyzed_at: Date | null;
       quality_error: string | null;
+      summary_html: string | null;
+      summary_status: string;
+      summary_generated_at: Date | null;
+      summary_model: string | null;
+      summary_error: string | null;
     }>(
       `SELECT cp.confluence_id, cp.space_key, cp.title, cp.body_storage, cp.body_html, cp.body_text,
               cp.version, cp.parent_id, cp.labels, cp.author, cp.last_modified_at, cp.last_synced,
@@ -351,7 +359,8 @@ export async function pagesRoutes(fastify: FastifyInstance) {
               cp.quality_score, cp.quality_status, cp.quality_completeness, cp.quality_clarity,
               cp.quality_structure, cp.quality_accuracy, cp.quality_readability,
               cp.quality_summary, cp.quality_analyzed_at, cp.quality_error,
-              EXISTS(SELECT 1 FROM cached_pages c2 WHERE c2.parent_id = cp.confluence_id) as has_children
+              EXISTS(SELECT 1 FROM cached_pages c2 WHERE c2.parent_id = cp.confluence_id) as has_children,
+              cp.summary_html, cp.summary_status, cp.summary_generated_at, cp.summary_model, cp.summary_error
        FROM cached_pages cp
        JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
        WHERE cp.confluence_id = $2`,
@@ -391,6 +400,11 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       qualitySummary: row.quality_summary,
       qualityAnalyzedAt: row.quality_analyzed_at,
       qualityError: row.quality_error,
+      summaryHtml: row.summary_html,
+      summaryStatus: row.summary_status,
+      summaryGeneratedAt: row.summary_generated_at,
+      summaryModel: row.summary_model,
+      summaryError: row.summary_error,
     };
   });
 
