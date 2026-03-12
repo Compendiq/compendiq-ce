@@ -1,8 +1,8 @@
-import { query } from '../db/postgres.js';
+import { query } from '../core/db/postgres.js';
 import { chat } from './ollama-service.js';
-import { htmlToMarkdown } from './content-converter.js';
-import { sanitizeLlmInput } from '../utils/sanitize-llm-input.js';
-import { logger } from '../utils/logger.js';
+import { htmlToMarkdown } from '../core/services/content-converter.js';
+import { sanitizeLlmInput } from '../core/utils/sanitize-llm-input.js';
+import { logger } from '../core/utils/logger.js';
 
 export interface PageVersion {
   id: string;

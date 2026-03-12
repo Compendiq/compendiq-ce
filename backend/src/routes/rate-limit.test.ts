@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { buildApp } from '../app.js';
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../test-db-helper.js';
-import { generateAccessToken } from '../plugins/auth.js';
-import { query } from '../db/postgres.js';
+import { generateAccessToken } from '../core/plugins/auth.js';
+import { query } from '../core/db/postgres.js';
 import { FastifyInstance } from 'fastify';
 
 const dbAvailable = await isDbAvailable();

@@ -26,7 +26,7 @@ vi.mock('./confluence-client.js', () => ({
   },
 }));
 
-vi.mock('./content-converter.js', () => ({
+vi.mock('../core/services/content-converter.js', () => ({
   confluenceToHtml: vi.fn().mockReturnValue('<p>html</p>'),
   htmlToText: vi.fn().mockReturnValue('plain text'),
 }));
@@ -42,15 +42,15 @@ vi.mock('./version-tracker.js', () => ({
   saveVersionSnapshot: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../utils/crypto.js', () => ({
+vi.mock('../core/utils/crypto.js', () => ({
   decryptPat: vi.fn().mockReturnValue('decrypted-pat'),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
-vi.mock('../db/postgres.js', () => ({
+vi.mock('../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mocks.query(...args),
 }));
 

@@ -12,7 +12,7 @@ vi.mock('../services/attachment-handler.js', () => ({
 }));
 
 const mockQuery = vi.fn();
-vi.mock('../db/postgres.js', () => ({
+vi.mock('../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
 }));
 
@@ -23,7 +23,7 @@ vi.mock('../services/sync-service.js', () => ({
 }));
 
 // Mock logger
-vi.mock('../utils/logger.js', () => ({
+vi.mock('../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 

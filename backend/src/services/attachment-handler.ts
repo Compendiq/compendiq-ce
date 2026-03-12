@@ -3,8 +3,8 @@ import path from 'path';
 import { JSDOM } from 'jsdom';
 import { request } from 'undici';
 import { ConfluenceClient, ConfluenceAttachment } from './confluence-client.js';
-import { logger } from '../utils/logger.js';
-import { validateUrl } from '../utils/ssrf-guard.js';
+import { logger } from '../core/utils/logger.js';
+import { validateUrl } from '../core/utils/ssrf-guard.js';
 import {
   extractImageReferences,
   SUPPORTED_IMAGE_EXTENSIONS,

@@ -1,11 +1,11 @@
-import { query } from '../db/postgres.js';
+import { query } from '../core/db/postgres.js';
 import { ConfluenceClient, ConfluencePage, ConfluenceSpace } from './confluence-client.js';
-import { confluenceToHtml, htmlToText } from './content-converter.js';
+import { confluenceToHtml, htmlToText } from '../core/services/content-converter.js';
 import { syncDrawioAttachments, syncImageAttachments, cleanPageAttachments, getMissingAttachments } from './attachment-handler.js';
 import { saveVersionSnapshot } from './version-tracker.js';
 import { processDirtyPages } from './embedding-service.js';
-import { decryptPat } from '../utils/crypto.js';
-import { logger } from '../utils/logger.js';
+import { decryptPat } from '../core/utils/crypto.js';
+import { logger } from '../core/utils/logger.js';
 
 interface SyncStatus {
   userId: string;

@@ -7,8 +7,8 @@
  * Also provides per-user provider resolution from user_settings (multi-user support).
  */
 
-import { query } from '../db/postgres.js';
-import { logger } from '../utils/logger.js';
+import { query } from '../core/db/postgres.js';
+import { logger } from '../core/utils/logger.js';
 import {
   streamChat as ollamaStreamChat,
   chat as ollamaChat,

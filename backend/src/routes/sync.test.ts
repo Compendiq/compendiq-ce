@@ -13,11 +13,11 @@ vi.mock('../services/sync-service.js', () => ({
   setSyncStatus: (...args: unknown[]) => mockSetSyncStatus(...args),
 }));
 
-vi.mock('../services/audit-service.js', () => ({
+vi.mock('../core/services/audit-service.js', () => ({
   logAuditEvent: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 

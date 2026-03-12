@@ -1,9 +1,9 @@
-import { query } from '../db/postgres.js';
+import { query } from '../core/db/postgres.js';
 import { providerGenerateEmbedding } from './llm-provider.js';
-import { htmlToText } from './content-converter.js';
-import { logger } from '../utils/logger.js';
-import { invalidateGraphCache, acquireEmbeddingLock, releaseEmbeddingLock, isEmbeddingLocked } from './redis-cache.js';
-import { CircuitBreakerOpenError, ollamaBreakers, openaiBreakers } from './circuit-breaker.js';
+import { htmlToText } from '../core/services/content-converter.js';
+import { logger } from '../core/utils/logger.js';
+import { invalidateGraphCache, acquireEmbeddingLock, releaseEmbeddingLock, isEmbeddingLocked } from '../core/services/redis-cache.js';
+import { CircuitBreakerOpenError, ollamaBreakers, openaiBreakers } from '../core/services/circuit-breaker.js';
 import pgvector from 'pgvector';
 
 const CHUNK_SIZE = 500;          // ~500 tokens target

@@ -6,18 +6,18 @@ vi.mock('undici', () => ({
 }));
 
 // Mock ssrf-guard to allow test URLs
-vi.mock('../utils/ssrf-guard.js', () => ({
+vi.mock('../core/utils/ssrf-guard.js', () => ({
   validateUrl: vi.fn(),
 }));
 
 // Mock logger
-vi.mock('../utils/logger.js', () => ({
+vi.mock('../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
 // Mock tls-config — default: no custom dispatcher
 const mockDispatcher = { isMockDispatcher: true };
-vi.mock('../utils/tls-config.js', () => ({
+vi.mock('../core/utils/tls-config.js', () => ({
   confluenceDispatcher: undefined,
   buildConnectOptions: vi.fn().mockReturnValue(undefined),
   isVerifySslEnabled: vi.fn().mockReturnValue(true),
@@ -25,8 +25,8 @@ vi.mock('../utils/tls-config.js', () => ({
 
 import { request } from 'undici';
 import { ConfluenceClient, ConfluenceError, isTransientError, parseRetryAfter, withRetry, buildDownloadUrl, buildDownloadUrlCandidates } from './confluence-client.js';
-import * as tlsConfig from '../utils/tls-config.js';
-import { logger } from '../utils/logger.js';
+import * as tlsConfig from '../core/utils/tls-config.js';
+import { logger } from '../core/utils/logger.js';
 
 const mockRequest = vi.mocked(request);
 

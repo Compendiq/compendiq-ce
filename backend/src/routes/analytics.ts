@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { query } from '../db/postgres.js';
+import { query } from '../core/db/postgres.js';
 
 const KnowledgeGapsQuerySchema = z.object({
   days: z.coerce.number().int().positive().max(365).default(30),

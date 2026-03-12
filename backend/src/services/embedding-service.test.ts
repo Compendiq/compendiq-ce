@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { CircuitBreakerOpenError } from './circuit-breaker.js';
+import { CircuitBreakerOpenError } from '../core/services/circuit-breaker.js';
 
 const FAKE_LOCK_ID = 'fake-lock-id-for-tests';
 
@@ -15,7 +15,7 @@ const mocks = vi.hoisted(() => ({
   invalidateGraphCache: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../db/postgres.js', () => ({
+vi.mock('../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mocks.query(...args),
 }));
 
@@ -23,7 +23,7 @@ vi.mock('./llm-provider.js', () => ({
   providerGenerateEmbedding: mocks.providerGenerateEmbedding,
 }));
 
-vi.mock('./content-converter.js', () => ({
+vi.mock('../core/services/content-converter.js', () => ({
   htmlToText: mocks.htmlToText,
 }));
 
@@ -31,11 +31,11 @@ vi.mock('pgvector', () => ({
   default: { toSql: mocks.toSql },
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
-vi.mock('./redis-cache.js', () => ({
+vi.mock('../core/services/redis-cache.js', () => ({
   acquireEmbeddingLock: (...args: unknown[]) => mocks.acquireEmbeddingLock(...args),
   releaseEmbeddingLock: (...args: unknown[]) => mocks.releaseEmbeddingLock(...args),
   isEmbeddingLocked: (...args: unknown[]) => mocks.isEmbeddingLocked(...args),

@@ -24,7 +24,7 @@ vi.mock('undici', () => ({
   request: vi.fn(),
 }));
 
-vi.mock('../utils/ssrf-guard.js', () => ({
+vi.mock('../core/utils/ssrf-guard.js', () => ({
   validateUrl: vi.fn(),
 }));
 
@@ -44,7 +44,7 @@ vi.mock('fs/promises', () => ({
 }));
 
 // Mock logger
-vi.mock('../utils/logger.js', () => ({
+vi.mock('../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 

@@ -8,8 +8,8 @@
  * The active provider can be switched at runtime via `setActiveProvider()`.
  */
 
-import { sanitizeLlmInput } from '../utils/sanitize-llm-input.js';
-import { logger } from '../utils/logger.js';
+import { sanitizeLlmInput } from '../core/utils/sanitize-llm-input.js';
+import { logger } from '../core/utils/logger.js';
 import { OllamaProvider } from './ollama-provider.js';
 import { OpenAIProvider } from './openai-service.js';
 import type { LlmProvider, LlmProviderType } from './llm-provider.js';

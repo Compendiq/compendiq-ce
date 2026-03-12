@@ -7,9 +7,9 @@ import swaggerUi from '@fastify/swagger-ui';
 import cookie from '@fastify/cookie';
 import sensible from '@fastify/sensible';
 import { serializerCompiler, validatorCompiler } from 'fastify-type-provider-zod';
-import correlationIdPlugin from './plugins/correlation-id.js';
-import authPlugin from './plugins/auth.js';
-import redisPlugin from './plugins/redis.js';
+import correlationIdPlugin from './core/plugins/correlation-id.js';
+import authPlugin from './core/plugins/auth.js';
+import redisPlugin from './core/plugins/redis.js';
 import { healthRoutes } from './routes/health.js';
 import { authRoutes } from './routes/auth.js';
 import { settingsRoutes } from './routes/settings.js';
@@ -21,8 +21,8 @@ import { llmRoutes } from './routes/llm.js';
 import { adminRoutes } from './routes/admin.js';
 import { analyticsRoutes } from './routes/analytics.js';
 import { ZodError } from 'zod';
-import { trackError } from './services/error-tracker.js';
-import { logger } from './utils/logger.js';
+import { trackError } from './core/services/error-tracker.js';
+import { logger } from './core/utils/logger.js';
 
 export async function buildApp() {
   const app = Fastify({

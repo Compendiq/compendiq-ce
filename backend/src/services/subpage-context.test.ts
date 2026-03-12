@@ -2,11 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockQuery = vi.fn();
 
-vi.mock('../db/postgres.js', () => ({
+vi.mock('../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
 }));
 
-vi.mock('./content-converter.js', () => ({
+vi.mock('../core/services/content-converter.js', () => ({
   htmlToMarkdown: vi.fn((html: string) => `md:${html}`),
 }));
 

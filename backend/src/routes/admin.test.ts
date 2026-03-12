@@ -5,17 +5,17 @@ import { ZodError } from 'zod';
 import { adminRoutes } from './admin.js';
 
 // Mock external dependencies
-vi.mock('../utils/crypto.js', () => ({
+vi.mock('../core/utils/crypto.js', () => ({
   reEncryptPat: vi.fn().mockReturnValue(null),
 }));
 
-vi.mock('../services/audit-service.js', () => ({
+vi.mock('../core/services/audit-service.js', () => ({
   getAuditLog: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, limit: 50 }),
   logAuditEvent: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Mock error tracker
-vi.mock('../services/error-tracker.js', () => ({
+vi.mock('../core/services/error-tracker.js', () => ({
   listErrors: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, limit: 50 }),
   resolveError: vi.fn().mockResolvedValue(true),
   getErrorSummary: vi.fn().mockResolvedValue({
@@ -28,19 +28,19 @@ vi.mock('../services/error-tracker.js', () => ({
 }));
 
 // Mock the database
-vi.mock('../db/postgres.js', () => ({
+vi.mock('../core/db/postgres.js', () => ({
   query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
   getPool: vi.fn().mockReturnValue({}),
   runMigrations: vi.fn(),
   closePool: vi.fn(),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
-import { listErrors, resolveError, getErrorSummary } from '../services/error-tracker.js';
-import { query as mockQuery } from '../db/postgres.js';
+import { listErrors, resolveError, getErrorSummary } from '../core/services/error-tracker.js';
+import { query as mockQuery } from '../core/db/postgres.js';
 
 describe('Admin routes', () => {
   let app: ReturnType<typeof Fastify>;

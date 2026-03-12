@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../test-db-helper.js';
-import { query } from '../db/postgres.js';
+import { query } from '../core/db/postgres.js';
 import {
   computeContentHash,
   getSummaryStatus,

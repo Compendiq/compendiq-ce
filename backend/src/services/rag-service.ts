@@ -1,7 +1,7 @@
-import { query, getPool } from '../db/postgres.js';
+import { query, getPool } from '../core/db/postgres.js';
 import { providerGenerateEmbedding } from './llm-provider.js';
 import pgvector from 'pgvector';
-import { logger } from '../utils/logger.js';
+import { logger } from '../core/utils/logger.js';
 
 // Configurable ef_search: higher = better recall, slower query.
 // Default 100 provides good recall/latency tradeoff for ~10K embeddings.

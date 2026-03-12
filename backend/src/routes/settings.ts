@@ -1,14 +1,14 @@
 import { FastifyInstance } from 'fastify';
 import { request as undiciRequest } from 'undici';
 import { UpdateSettingsSchema, TestConfluenceSchema } from '@kb-creator/contracts';
-import { query } from '../db/postgres.js';
-import { encryptPat, decryptPat } from '../utils/crypto.js';
-import { validateUrl } from '../utils/ssrf-guard.js';
-import { logAuditEvent } from '../services/audit-service.js';
+import { query } from '../core/db/postgres.js';
+import { encryptPat, decryptPat } from '../core/utils/crypto.js';
+import { validateUrl } from '../core/utils/ssrf-guard.js';
+import { logAuditEvent } from '../core/services/audit-service.js';
 import { setActiveProvider } from '../services/ollama-service.js';
 import { getSyncOverview } from '../services/sync-overview-service.js';
-import { logger } from '../utils/logger.js';
-import { confluenceDispatcher } from '../utils/tls-config.js';
+import { logger } from '../core/utils/logger.js';
+import { confluenceDispatcher } from '../core/utils/tls-config.js';
 
 export async function settingsRoutes(fastify: FastifyInstance) {
   // All settings routes require auth

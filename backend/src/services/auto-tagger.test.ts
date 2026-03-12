@@ -7,15 +7,15 @@ vi.mock('./llm-provider.js', () => ({
   providerChat: (...args: unknown[]) => mockProviderChat(...args),
 }));
 
-vi.mock('./content-converter.js', () => ({
+vi.mock('../core/services/content-converter.js', () => ({
   htmlToMarkdown: vi.fn().mockReturnValue('some markdown content'),
 }));
 
-vi.mock('../utils/sanitize-llm-input.js', () => ({
+vi.mock('../core/utils/sanitize-llm-input.js', () => ({
   sanitizeLlmInput: vi.fn().mockReturnValue({ sanitized: 'sanitized content' }),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 

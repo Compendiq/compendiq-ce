@@ -23,7 +23,7 @@ vi.mock('../services/embedding-service.js', () => ({
   resetFailedEmbeddings: vi.fn().mockResolvedValue(0),
 }));
 
-vi.mock('../services/content-converter.js', () => ({
+vi.mock('../core/services/content-converter.js', () => ({
   htmlToMarkdown: vi.fn().mockImplementation((s: string) => s),
   markdownToHtml: vi.fn().mockImplementation((s: string) => s),
 }));

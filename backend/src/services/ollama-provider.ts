@@ -8,8 +8,8 @@ import { Ollama } from 'ollama';
 import type { Config } from 'ollama';
 import { Agent, fetch as undiciFetch } from 'undici';
 import pLimit from 'p-limit';
-import { logger } from '../utils/logger.js';
-import { ollamaBreakers } from './circuit-breaker.js';
+import { logger } from '../core/utils/logger.js';
+import { ollamaBreakers } from '../core/services/circuit-breaker.js';
 import type {
   LlmProvider,
   ChatMessage,

@@ -1,10 +1,10 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { query } from '../db/postgres.js';
+import { query } from '../core/db/postgres.js';
 import { readAttachment, fetchAndCachePageImage, getMimeType, writeAttachmentCache } from '../services/attachment-handler.js';
 import { getClientForUser } from '../services/sync-service.js';
-import { getRedisClient } from '../services/redis-cache.js';
-import { logger } from '../utils/logger.js';
+import { getRedisClient } from '../core/services/redis-cache.js';
+import { logger } from '../core/utils/logger.js';
 
 const UpdateAttachmentBodySchema = z.object({
   dataUri: z.string().min(1, 'dataUri is required'),

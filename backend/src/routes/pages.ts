@@ -1,17 +1,17 @@
 import { FastifyInstance } from 'fastify';
-import { query } from '../db/postgres.js';
-import { RedisCache } from '../services/redis-cache.js';
+import { query } from '../core/db/postgres.js';
+import { RedisCache } from '../core/services/redis-cache.js';
 import { getClientForUser } from '../services/sync-service.js';
-import { htmlToConfluence, confluenceToHtml } from '../services/content-converter.js';
+import { htmlToConfluence, confluenceToHtml } from '../core/services/content-converter.js';
 import { cleanPageAttachments } from '../services/attachment-handler.js';
-import { logAuditEvent } from '../services/audit-service.js';
+import { logAuditEvent } from '../core/services/audit-service.js';
 import { findDuplicates, scanAllDuplicates } from '../services/duplicate-detector.js';
 import { autoTagPage, applyTags, autoTagAllPages, ALLOWED_TAGS, AllowedTag } from '../services/auto-tagger.js';
 import { getVersionHistory, getVersion, getSemanticDiff, saveVersionSnapshot } from '../services/version-tracker.js';
 import { processDirtyPages, isProcessingUser, computePageRelationships } from '../services/embedding-service.js';
 import { PageListQuerySchema, PageTreeQuerySchema, CreatePageSchema, UpdatePageSchema } from '@kb-creator/contracts';
 import { z } from 'zod';
-import { logger } from '../utils/logger.js';
+import { logger } from '../core/utils/logger.js';
 import pLimit from 'p-limit';
 
 const BulkIdsSchema = z.object({ ids: z.array(z.string().min(1)).min(1).max(100) });
@@ -442,7 +442,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
 
     // Convert back to clean HTML for local cache
     const bodyHtml = confluenceToHtml(page.body?.storage?.value ?? storageBody, page.id, body.spaceKey);
-    const { htmlToText } = await import('../services/content-converter.js');
+    const { htmlToText } = await import('../core/services/content-converter.js');
     const bodyText = htmlToText(bodyHtml);
 
     // Store in local cache (shared table, no user_id)
@@ -498,7 +498,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
       id,
       existing.rows[0]?.space_key,
     );
-    const { htmlToText } = await import('../services/content-converter.js');
+    const { htmlToText } = await import('../core/services/content-converter.js');
     const bodyText = htmlToText(bodyHtml);
 
     await query(
@@ -630,7 +630,7 @@ export async function pagesRoutes(fastify: FastifyInstance) {
     let failed = notFoundIds.length;
 
     // Eager-load htmlToText once (avoid repeated dynamic import)
-    const { htmlToText } = await import('../services/content-converter.js');
+    const { htmlToText } = await import('../core/services/content-converter.js');
 
     // Fetch latest from Confluence in parallel with concurrency control
     const bulkLimit = pLimit(5);

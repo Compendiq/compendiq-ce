@@ -1,5 +1,5 @@
 import { FastifyInstance, FastifyReply } from 'fastify';
-import { query } from '../db/postgres.js';
+import { query } from '../core/db/postgres.js';
 import {
   getSystemPrompt, ChatMessage, SystemPromptKey,
   LANGUAGE_PRESERVATION_INSTRUCTION,
@@ -9,13 +9,13 @@ import {
 } from '../services/ollama-service.js';
 import { providerStreamChat } from '../services/llm-provider.js';
 import { hybridSearch, buildRagContext } from '../services/rag-service.js';
-import { htmlToMarkdown, confluenceToHtml, htmlToConfluence, htmlToText, markdownToHtml } from '../services/content-converter.js';
-import { RedisCache } from '../services/redis-cache.js';
+import { htmlToMarkdown, confluenceToHtml, htmlToConfluence, htmlToText, markdownToHtml } from '../core/services/content-converter.js';
+import { RedisCache } from '../core/services/redis-cache.js';
 import { getEmbeddingStatus, processDirtyPages, reEmbedAll, isProcessingUser, embedPage, resetFailedEmbeddings } from '../services/embedding-service.js';
 import type { EmbeddingProgressEvent } from '../services/embedding-service.js';
 import { getClientForUser } from '../services/sync-service.js';
 import { getSummaryStatus, rescanAllSummaries, regenerateSummary, runSummaryBatch } from '../services/summary-worker.js';
-import { getOllamaCircuitBreakerStatus, getOpenaiCircuitBreakerStatus } from '../services/circuit-breaker.js';
+import { getOllamaCircuitBreakerStatus, getOpenaiCircuitBreakerStatus } from '../core/services/circuit-breaker.js';
 import { getQualityStatus, forceQualityRescan } from '../services/quality-worker.js';
 import { LlmCache, buildLlmCacheKey, buildRagCacheKey, type CachedLlmResponse } from '../services/llm-cache.js';
 import {
@@ -29,9 +29,9 @@ import {
   ApplyImprovementRequestSchema,
 } from '@kb-creator/contracts';
 import { z } from 'zod';
-import { sanitizeLlmInput } from '../utils/sanitize-llm-input.js';
-import { logAuditEvent } from '../services/audit-service.js';
-import { logger } from '../utils/logger.js';
+import { sanitizeLlmInput } from '../core/utils/sanitize-llm-input.js';
+import { logAuditEvent } from '../core/services/audit-service.js';
+import { logger } from '../core/utils/logger.js';
 import type { LlmProviderType } from '../services/llm-provider.js';
 import { assembleSubPageContext, getMultiPagePromptSuffix } from '../services/subpage-context.js';
 

@@ -2,9 +2,9 @@ import { request } from 'undici';
 import { createWriteStream } from 'fs';
 import { pipeline } from 'stream/promises';
 import { unlink } from 'fs/promises';
-import { validateUrl } from '../utils/ssrf-guard.js';
-import { logger } from '../utils/logger.js';
-import { confluenceDispatcher } from '../utils/tls-config.js';
+import { validateUrl } from '../core/utils/ssrf-guard.js';
+import { logger } from '../core/utils/logger.js';
+import { confluenceDispatcher } from '../core/utils/tls-config.js';
 
 interface ConfluenceSpace {
   key: string;

@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { syncUser, getSyncStatus, setSyncStatus } from '../services/sync-service.js';
-import { logAuditEvent } from '../services/audit-service.js';
-import { logger } from '../utils/logger.js';
+import { logAuditEvent } from '../core/services/audit-service.js';
+import { logger } from '../core/utils/logger.js';
 
 export async function syncRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);

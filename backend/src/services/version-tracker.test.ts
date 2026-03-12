@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../test-db-helper.js';
-import { query } from '../db/postgres.js';
+import { query } from '../core/db/postgres.js';
 import { saveVersionSnapshot, getVersionHistory, getVersion } from './version-tracker.js';
 
 const dbAvailable = await isDbAvailable();

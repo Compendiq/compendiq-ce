@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-vi.mock('./circuit-breaker.js', () => ({
+vi.mock('../core/services/circuit-breaker.js', () => ({
   ollamaBreakers: {
     chat: { execute: vi.fn((fn: () => unknown) => fn()) },
     embed: { execute: vi.fn((fn: () => unknown) => fn()) },
@@ -8,11 +8,11 @@ vi.mock('./circuit-breaker.js', () => ({
   },
 }));
 
-vi.mock('../utils/sanitize-llm-input.js', () => ({
+vi.mock('../core/utils/sanitize-llm-input.js', () => ({
   sanitizeLlmInput: vi.fn((input: string) => ({ sanitized: input, warnings: [] })),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('../core/utils/logger.js', () => ({
   logger: { debug: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn() },
 }));
 
@@ -109,13 +109,13 @@ describe('LLM provider switching', () => {
 });
 
 // Per-user provider resolution tests
-vi.mock('../db/postgres.js', () => ({
+vi.mock('../core/db/postgres.js', () => ({
   query: vi.fn(),
 }));
 
 describe('per-user provider resolution', () => {
   it('should return ollama when user has no settings', async () => {
-    const { query } = await import('../db/postgres.js');
+    const { query } = await import('../core/db/postgres.js');
     (query as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ rows: [] });
 
     const { resolveUserProvider } = await import('./llm-provider.js');
@@ -124,7 +124,7 @@ describe('per-user provider resolution', () => {
   });
 
   it('should return openai when user has llm_provider=openai', async () => {
-    const { query } = await import('../db/postgres.js');
+    const { query } = await import('../core/db/postgres.js');
     (query as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       rows: [{ llm_provider: 'openai' }],
     });
@@ -135,7 +135,7 @@ describe('per-user provider resolution', () => {
   });
 
   it('should return ollama when user has llm_provider=ollama', async () => {
-    const { query } = await import('../db/postgres.js');
+    const { query } = await import('../core/db/postgres.js');
     (query as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       rows: [{ llm_provider: 'ollama' }],
     });

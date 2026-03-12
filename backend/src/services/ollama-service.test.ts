@@ -15,7 +15,7 @@ vi.mock('undici', () => ({
   fetch: mockUndiciFetch,
 }));
 
-vi.mock('./circuit-breaker.js', () => ({
+vi.mock('../core/services/circuit-breaker.js', () => ({
   ollamaBreakers: {
     chat: { execute: vi.fn((fn: () => unknown) => fn()) },
     embed: { execute: vi.fn((fn: () => unknown) => fn()) },
@@ -23,11 +23,11 @@ vi.mock('./circuit-breaker.js', () => ({
   },
 }));
 
-vi.mock('../utils/sanitize-llm-input.js', () => ({
+vi.mock('../core/utils/sanitize-llm-input.js', () => ({
   sanitizeLlmInput: vi.fn((input: string) => ({ sanitized: input, warnings: [] })),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('../core/utils/logger.js', () => ({
   logger: { debug: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn() },
 }));
 

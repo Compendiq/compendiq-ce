@@ -6,11 +6,11 @@
  * configurable interval and batch size via env vars.
  */
 
-import { query } from '../db/postgres.js';
+import { query } from '../core/db/postgres.js';
 import { getSystemPrompt, streamChat } from './ollama-service.js';
-import { sanitizeLlmInput } from '../utils/sanitize-llm-input.js';
-import { htmlToMarkdown } from './content-converter.js';
-import { logger } from '../utils/logger.js';
+import { sanitizeLlmInput } from '../core/utils/sanitize-llm-input.js';
+import { htmlToMarkdown } from '../core/services/content-converter.js';
+import { logger } from '../core/utils/logger.js';
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 

@@ -4,7 +4,7 @@ import sensible from '@fastify/sensible';
 import { healthRoutes, markStartupComplete } from './health.js';
 
 // Mock the database check
-vi.mock('../db/postgres.js', () => ({
+vi.mock('../core/db/postgres.js', () => ({
   checkConnection: vi.fn().mockResolvedValue(true),
   getPool: vi.fn().mockReturnValue({}),
   query: vi.fn(),
@@ -13,13 +13,13 @@ vi.mock('../db/postgres.js', () => ({
 }));
 
 // Mock Redis plugin check
-vi.mock('../plugins/redis.js', () => ({
+vi.mock('../core/plugins/redis.js', () => ({
   checkRedisConnection: vi.fn().mockResolvedValue(true),
   default: vi.fn(),
 }));
 
 // Mock circuit breakers
-vi.mock('../services/circuit-breaker.js', () => {
+vi.mock('../core/services/circuit-breaker.js', () => {
   const closedBreaker = { state: 'CLOSED', failureCount: 0, successCount: 0, lastFailureTime: null, nextRetryTime: null };
   return {
     getOllamaCircuitBreakerStatus: vi.fn().mockReturnValue({
@@ -40,12 +40,12 @@ vi.mock('../services/ollama-service.js', () => ({
   getActiveProviderType: () => mockGetActiveProviderType(),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('../core/utils/logger.js', () => ({
   logger: { debug: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn() },
 }));
 
-import { checkConnection as mockCheckPg } from '../db/postgres.js';
-import { checkRedisConnection as mockCheckRedis } from '../plugins/redis.js';
+import { checkConnection as mockCheckPg } from '../core/db/postgres.js';
+import { checkRedisConnection as mockCheckRedis } from '../core/plugins/redis.js';
 
 describe('Health routes', () => {
   let app: ReturnType<typeof Fastify>;

@@ -1,5 +1,5 @@
-import { query, getPool } from '../db/postgres.js';
-import { logger } from '../utils/logger.js';
+import { query, getPool } from '../core/db/postgres.js';
+import { logger } from '../core/utils/logger.js';
 
 const RAG_EF_SEARCH = parseInt(process.env.RAG_EF_SEARCH ?? '100', 10);
 

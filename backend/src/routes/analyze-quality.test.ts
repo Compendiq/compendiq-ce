@@ -15,7 +15,7 @@ vi.mock('../services/ollama-service.js', () => ({
   generateEmbedding: vi.fn(),
 }));
 
-vi.mock('../services/circuit-breaker.js', () => ({
+vi.mock('../core/services/circuit-breaker.js', () => ({
   getOllamaCircuitBreakerStatus: vi.fn().mockReturnValue({
     chat: { state: 'CLOSED' },
     embed: { state: 'CLOSED' },
@@ -28,7 +28,7 @@ vi.mock('../services/circuit-breaker.js', () => ({
   },
 }));
 
-vi.mock('../db/postgres.js', () => ({
+vi.mock('../core/db/postgres.js', () => ({
   query: vi.fn().mockResolvedValue({ rows: [] }),
   runMigrations: vi.fn(),
   closePool: vi.fn(),
@@ -39,7 +39,7 @@ vi.mock('../services/rag-service.js', () => ({
   buildRagContext: vi.fn(),
 }));
 
-vi.mock('../services/content-converter.js', () => ({
+vi.mock('../core/services/content-converter.js', () => ({
   htmlToMarkdown: vi.fn((html: string) => html),
 }));
 
@@ -71,11 +71,11 @@ vi.mock('../services/llm-cache.js', () => {
   };
 });
 
-vi.mock('../services/audit-service.js', () => ({
+vi.mock('../core/services/audit-service.js', () => ({
   logAuditEvent: vi.fn(),
 }));
 
-vi.mock('../utils/sanitize-llm-input.js', () => ({
+vi.mock('../core/utils/sanitize-llm-input.js', () => ({
   sanitizeLlmInput: vi.fn((input: string) => ({ sanitized: input, warnings: [] })),
 }));
 

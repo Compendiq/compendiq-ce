@@ -7,9 +7,9 @@
  * Content length limits prevent exceeding LLM context windows.
  */
 
-import { query } from '../db/postgres.js';
-import { htmlToMarkdown } from './content-converter.js';
-import { logger } from '../utils/logger.js';
+import { query } from '../core/db/postgres.js';
+import { htmlToMarkdown } from '../core/services/content-converter.js';
+import { logger } from '../core/utils/logger.js';
 
 /** Maximum combined context size in characters (approx 60K tokens for most LLMs). */
 export const MAX_COMBINED_CONTEXT_CHARS = 200_000;

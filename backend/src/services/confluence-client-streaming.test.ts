@@ -7,17 +7,17 @@ vi.mock('undici', () => ({
 }));
 
 // Mock ssrf-guard to allow test URLs
-vi.mock('../utils/ssrf-guard.js', () => ({
+vi.mock('../core/utils/ssrf-guard.js', () => ({
   validateUrl: vi.fn(),
 }));
 
 // Mock logger
-vi.mock('../utils/logger.js', () => ({
+vi.mock('../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
 // Mock tls-config
-vi.mock('../utils/tls-config.js', () => ({
+vi.mock('../core/utils/tls-config.js', () => ({
   confluenceDispatcher: undefined,
   buildConnectOptions: vi.fn().mockReturnValue(undefined),
   isVerifySslEnabled: vi.fn().mockReturnValue(true),

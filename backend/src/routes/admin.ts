@@ -1,10 +1,10 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { query } from '../db/postgres.js';
-import { reEncryptPat } from '../utils/crypto.js';
-import { getAuditLog, logAuditEvent } from '../services/audit-service.js';
-import { listErrors, resolveError, getErrorSummary } from '../services/error-tracker.js';
-import { logger } from '../utils/logger.js';
+import { query } from '../core/db/postgres.js';
+import { reEncryptPat } from '../core/utils/crypto.js';
+import { getAuditLog, logAuditEvent } from '../core/services/audit-service.js';
+import { listErrors, resolveError, getErrorSummary } from '../core/services/error-tracker.js';
+import { logger } from '../core/utils/logger.js';
 import { UpdateAdminSettingsSchema } from '@kb-creator/contracts';
 
 const AuditLogQuerySchema = z.object({

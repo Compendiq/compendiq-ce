@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../test-db-helper.js';
-import { query } from '../db/postgres.js';
+import { query } from '../core/db/postgres.js';
 import {
   generateAccessToken,
   generateRefreshToken,
@@ -10,7 +10,7 @@ import {
   revokeAllUserTokens,
   cleanupExpiredTokens,
   verifyToken,
-} from '../plugins/auth.js';
+} from '../core/plugins/auth.js';
 
 const dbAvailable = await isDbAvailable();
 

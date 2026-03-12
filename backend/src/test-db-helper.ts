@@ -1,4 +1,4 @@
-import { runMigrations, getPool, closePool, checkConnection } from './db/postgres.js';
+import { runMigrations, getPool, closePool, checkConnection } from './core/db/postgres.js';
 
 let initialized = false;
 let _dbAvailable: boolean | null = null;

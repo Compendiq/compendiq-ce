@@ -5,22 +5,22 @@ import { ZodError } from 'zod';
 
 const mockQuery = vi.fn();
 
-vi.mock('../db/postgres.js', () => ({
+vi.mock('../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
   getPool: vi.fn().mockReturnValue({}),
   runMigrations: vi.fn(),
   closePool: vi.fn(),
 }));
 
-vi.mock('../utils/crypto.js', () => ({
+vi.mock('../core/utils/crypto.js', () => ({
   encryptPat: vi.fn().mockReturnValue('encrypted-pat'),
 }));
 
-vi.mock('../services/audit-service.js', () => ({
+vi.mock('../core/services/audit-service.js', () => ({
   logAuditEvent: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
@@ -28,7 +28,7 @@ vi.mock('undici', () => ({
   request: vi.fn(),
 }));
 
-vi.mock('../utils/tls-config.js', () => ({
+vi.mock('../core/utils/tls-config.js', () => ({
   confluenceDispatcher: undefined,
   buildConnectOptions: vi.fn().mockReturnValue(undefined),
 }));

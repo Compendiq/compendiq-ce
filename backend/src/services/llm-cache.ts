@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 import type { RedisClientType } from 'redis';
-import { logger } from '../utils/logger.js';
+import { logger } from '../core/utils/logger.js';
 
 const LLM_CACHE_TTL = parseInt(process.env.LLM_CACHE_TTL ?? '3600', 10); // 1 hour default
 const KEY_PREFIX = 'kb:llm:';

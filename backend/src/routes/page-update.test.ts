@@ -10,7 +10,7 @@ const mockHtmlToConfluence = vi.fn().mockReturnValue('<p>storage</p>');
 const mockHtmlToText = vi.fn().mockReturnValue('converted');
 const mockLogAuditEvent = vi.fn();
 
-vi.mock('../db/postgres.js', () => ({
+vi.mock('../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
 }));
 
@@ -18,13 +18,13 @@ vi.mock('../services/sync-service.js', () => ({
   getClientForUser: (...args: unknown[]) => mockGetClientForUser(...args),
 }));
 
-vi.mock('../services/content-converter.js', () => ({
+vi.mock('../core/services/content-converter.js', () => ({
   confluenceToHtml: (...args: unknown[]) => mockConfluenceToHtml(...args),
   htmlToConfluence: (...args: unknown[]) => mockHtmlToConfluence(...args),
   htmlToText: (...args: unknown[]) => mockHtmlToText(...args),
 }));
 
-vi.mock('../services/redis-cache.js', () => ({
+vi.mock('../core/services/redis-cache.js', () => ({
   RedisCache: class MockRedisCache {
     get = vi.fn().mockResolvedValue(null);
     set = vi.fn().mockResolvedValue(undefined);
@@ -36,7 +36,7 @@ vi.mock('../services/attachment-handler.js', () => ({
   cleanPageAttachments: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../services/audit-service.js', () => ({
+vi.mock('../core/services/audit-service.js', () => ({
   logAuditEvent: (...args: unknown[]) => mockLogAuditEvent(...args),
 }));
 
@@ -65,7 +65,7 @@ vi.mock('../services/embedding-service.js', () => ({
   computePageRelationships: vi.fn().mockResolvedValue(0),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 

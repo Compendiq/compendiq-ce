@@ -7,7 +7,7 @@ import { pagesRoutes } from './pages.js';
 const mockConfluenceToHtml = vi.fn().mockReturnValue('<p>content</p>');
 
 // Mock external dependencies
-vi.mock('../services/redis-cache.js', () => {
+vi.mock('../core/services/redis-cache.js', () => {
   return {
     RedisCache: class MockRedisCache {
       get = vi.fn().mockResolvedValue(null);
@@ -31,7 +31,7 @@ vi.mock('../services/sync-service.js', () => ({
   }),
 }));
 
-vi.mock('../services/content-converter.js', () => ({
+vi.mock('../core/services/content-converter.js', () => ({
   htmlToConfluence: vi.fn().mockReturnValue('<p>content</p>'),
   confluenceToHtml: (...args: unknown[]) => mockConfluenceToHtml(...args),
   htmlToText: vi.fn().mockReturnValue('content'),
@@ -41,7 +41,7 @@ vi.mock('../services/attachment-handler.js', () => ({
   cleanPageAttachments: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../services/audit-service.js', () => ({
+vi.mock('../core/services/audit-service.js', () => ({
   logAuditEvent: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -64,7 +64,7 @@ vi.mock('../services/version-tracker.js', () => ({
   saveVersionSnapshot: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
@@ -78,7 +78,7 @@ vi.mock('../services/embedding-service.js', () => ({
 
 // Mock the database with a function we can control per test
 const mockQueryFn = vi.fn();
-vi.mock('../db/postgres.js', () => ({
+vi.mock('../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQueryFn(...args),
   getPool: vi.fn().mockReturnValue({}),
   runMigrations: vi.fn(),

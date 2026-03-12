@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import bcrypt from 'bcrypt';
 import { RegisterSchema, LoginSchema } from '@kb-creator/contracts';
-import { query } from '../db/postgres.js';
+import { query } from '../core/db/postgres.js';
 import {
   generateAccessToken,
   generateRefreshToken,
@@ -9,9 +9,9 @@ import {
   revokeToken,
   revokeAllUserTokens,
   cleanupExpiredTokens,
-} from '../plugins/auth.js';
-import { logAuditEvent } from '../services/audit-service.js';
-import { logger } from '../utils/logger.js';
+} from '../core/plugins/auth.js';
+import { logAuditEvent } from '../core/services/audit-service.js';
+import { logger } from '../core/utils/logger.js';
 
 const SALT_ROUNDS = 12;
 const REFRESH_COOKIE = 'kb_refresh';
@@ -184,7 +184,7 @@ export async function authRoutes(fastify: FastifyInstance) {
     try {
       const authHeader = request.headers.authorization;
       if (authHeader?.startsWith('Bearer ')) {
-        const { verifyToken } = await import('../plugins/auth.js');
+        const { verifyToken } = await import('../core/plugins/auth.js');
         const payload = await verifyToken(authHeader.slice(7));
         userId = payload.sub;
       }

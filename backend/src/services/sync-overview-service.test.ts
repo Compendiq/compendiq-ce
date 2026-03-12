@@ -5,7 +5,7 @@ const mockQuery = vi.fn();
 const mockAttachmentExists = vi.fn();
 const mockGetSyncStatus = vi.fn();
 
-vi.mock('../db/postgres.js', () => ({
+vi.mock('../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
 }));
 

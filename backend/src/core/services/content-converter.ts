@@ -6,7 +6,7 @@ import he from 'he';
 import {
   getAttachmentImageSource,
   getLocalFilenameForImageSource,
-} from './image-references.js';
+} from '../../services/image-references.js';
 
 // JSDOM 28's HTML parser treats <![CDATA[...]]> as comments. Pre-process to
 // convert CDATA sections into text that survives HTML parsing.

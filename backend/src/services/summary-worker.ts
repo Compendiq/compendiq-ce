@@ -12,9 +12,9 @@
  */
 
 import crypto from 'node:crypto';
-import { query } from '../db/postgres.js';
+import { query } from '../core/db/postgres.js';
 import { summarizeContent } from './ollama-service.js';
-import { logger } from '../utils/logger.js';
+import { logger } from '../core/utils/logger.js';
 
 // ---------------------------------------------------------------------------
 // Configuration

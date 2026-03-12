@@ -12,7 +12,7 @@ vi.mock('undici', async (importOriginal) => {
   };
 });
 
-vi.mock('./circuit-breaker.js', () => ({
+vi.mock('../core/services/circuit-breaker.js', () => ({
   openaiBreakers: {
     chat: { execute: vi.fn((fn: () => unknown) => fn()) },
     embed: { execute: vi.fn((fn: () => unknown) => fn()) },
@@ -20,7 +20,7 @@ vi.mock('./circuit-breaker.js', () => ({
   },
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('../core/utils/logger.js', () => ({
   logger: { debug: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn() },
 }));
 
