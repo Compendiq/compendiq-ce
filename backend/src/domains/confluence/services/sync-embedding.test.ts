@@ -11,7 +11,7 @@ const mocks = vi.hoisted(() => ({
   query: vi.fn(),
 }));
 
-vi.mock('./embedding-service.js', () => ({
+vi.mock('../../llm/services/embedding-service.js', () => ({
   processDirtyPages: mocks.processDirtyPages,
 }));
 
@@ -38,7 +38,7 @@ vi.mock('./attachment-handler.js', () => ({
   getMissingAttachments: mocks.getMissingAttachments,
 }));
 
-vi.mock('./version-tracker.js', () => ({
+vi.mock('../../knowledge/services/version-tracker.js', () => ({
   saveVersionSnapshot: vi.fn().mockResolvedValue(undefined),
 }));
 

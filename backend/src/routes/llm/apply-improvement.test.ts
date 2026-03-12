@@ -112,7 +112,7 @@ vi.mock('../../domains/confluence/services/subpage-context.js', () => ({
   getMultiPagePromptSuffix: vi.fn().mockReturnValue(''),
 }));
 
-import { llmConversationRoutes } from './llm/llm-conversations.js';
+import { llmConversationRoutes } from './llm-conversations.js';
 
 describe('POST /api/llm/improvements/apply', () => {
   let app: ReturnType<typeof Fastify>;

@@ -95,7 +95,7 @@ vi.mock('../../core/utils/sanitize-llm-input.js', () => ({
   sanitizeLlmInput: vi.fn((input: string) => ({ sanitized: input, warnings: [] })),
 }));
 
-import { llmModelRoutes } from './llm/llm-models.js';
+import { llmModelRoutes } from './llm-models.js';
 
 describe('Ollama status and models routes', () => {
   let app: ReturnType<typeof Fastify>;

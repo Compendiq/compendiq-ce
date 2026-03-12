@@ -103,7 +103,7 @@ vi.mock('../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
-import { llmEmbeddingRoutes } from './llm/llm-embeddings.js';
+import { llmEmbeddingRoutes } from './llm-embeddings.js';
 
 describe('POST /api/embeddings/force-embed-tree', () => {
   let app: ReturnType<typeof Fastify>;

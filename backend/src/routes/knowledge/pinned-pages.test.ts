@@ -3,6 +3,7 @@ import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 import { ZodError } from 'zod';
 import { pinnedPagesRoutes } from './pinned-pages.js';
+import { pagesCrudRoutes } from './pages-crud.js';
 
 // Mock external dependencies
 vi.mock('../../core/services/redis-cache.js', () => {
@@ -41,6 +42,11 @@ vi.mock('../../domains/confluence/services/attachment-handler.js', () => ({
 
 vi.mock('../../core/services/audit-service.js', () => ({
   logAuditEvent: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('../../domains/llm/services/embedding-service.js', () => ({
+  processDirtyPages: vi.fn().mockResolvedValue({ processed: 0, errors: 0 }),
+  isProcessingUser: vi.fn().mockReturnValue(false),
 }));
 
 vi.mock('../../domains/knowledge/services/duplicate-detector.js', () => ({
@@ -106,6 +112,7 @@ describe('Pinned Pages API', () => {
     app.decorate('redis', {});
 
     await app.register(pinnedPagesRoutes, { prefix: '/api' });
+    await app.register(pagesCrudRoutes, { prefix: '/api' });
     await app.ready();
   });
 

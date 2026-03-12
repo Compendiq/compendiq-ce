@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vites
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 import { ZodError } from 'zod';
-import { llmEmbeddingRoutes } from './llm-embeddings.js';
+import { pagesCrudRoutes } from '../knowledge/pages-crud.js';
 
 vi.mock('../../core/services/redis-cache.js', () => {
   return {
@@ -30,6 +30,11 @@ vi.mock('../../domains/confluence/services/attachment-handler.js', () => ({
 
 vi.mock('../../core/services/audit-service.js', () => ({
   logAuditEvent: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('../../domains/llm/services/embedding-service.js', () => ({
+  processDirtyPages: vi.fn().mockResolvedValue({ processed: 0, errors: 0 }),
+  isProcessingUser: vi.fn().mockReturnValue(false),
 }));
 
 vi.mock('../../domains/knowledge/services/duplicate-detector.js', () => ({
@@ -94,7 +99,7 @@ describe('Embedding Status in API responses', () => {
     });
     app.decorate('redis', {});
 
-    await app.register(llmEmbeddingRoutes, { prefix: '/api' });
+    await app.register(pagesCrudRoutes, { prefix: '/api' });
     await app.ready();
   });
 

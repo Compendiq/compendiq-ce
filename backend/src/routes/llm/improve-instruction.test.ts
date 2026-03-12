@@ -99,7 +99,7 @@ vi.mock('../../core/utils/sanitize-llm-input.js', () => ({
   sanitizeLlmInput: vi.fn((input: string) => ({ sanitized: input, warnings: [] })),
 }));
 
-import { llmChatRoutes } from './llm/llm-chat.js';
+import { llmChatRoutes } from './llm-chat.js';
 
 describe('POST /api/llm/improve - instruction field', () => {
   let app: ReturnType<typeof Fastify>;
