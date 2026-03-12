@@ -21,18 +21,24 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
     );
     const cachedPage = pageResult.rows[0];
     if (!cachedPage) {
+      logger.warn({ userId, pageId, filename }, 'Attachment 404: page not found in user space selections');
       return reply.status(404).send({
         statusCode: 404,
         error: 'Not Found',
         message: 'Attachment not found',
+        reason: 'page_not_in_selected_spaces',
       });
     }
 
     // Try local cache first
     let data = await readAttachment(userId, pageId, filename);
+    if (data) {
+      logger.debug({ pageId, filename, size: data.length }, 'Serving attachment from local cache');
+    }
 
     // On cache miss, fetch from Confluence on-demand
     if (!data) {
+      logger.debug({ pageId, filename }, 'Attachment cache miss — attempting on-demand fetch');
       const client = await getClientForUser(userId);
       if (!client) {
         // User has no Confluence PAT configured — can't fetch on-demand

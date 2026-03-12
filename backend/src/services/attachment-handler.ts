@@ -94,10 +94,11 @@ export async function attachmentExists(userId: string, pageId: string, filename:
  * but the sync stored the file with an xref suffix.
  */
 export async function readAttachment(userId: string, pageId: string, filename: string): Promise<Buffer | null> {
+  const fullPath = attachmentPath(userId, pageId, filename);
   try {
-    return await fs.readFile(attachmentPath(userId, pageId, filename));
-  } catch {
-    // Exact file not found — try xref variants on disk
+    return await fs.readFile(fullPath);
+  } catch (err) {
+    logger.debug({ pageId, filename, fullPath, error: (err as NodeJS.ErrnoException).code }, 'Exact attachment path miss');
   }
 
   // Search for .xref- variants: "foo.jpg" matches "foo.xref-{hash}.jpg"
@@ -111,10 +112,12 @@ export async function readAttachment(userId: string, pageId: string, filename: s
     const entries = await fs.readdir(dir);
     const match = entries.find((e) => e.startsWith(prefix) && e.endsWith(ext));
     if (match) {
+      logger.debug({ pageId, filename, xrefMatch: match }, 'Serving attachment via xref fallback');
       return await fs.readFile(path.join(dir, path.basename(match)));
     }
+    logger.debug({ pageId, filename, dir, dirContents: entries.slice(0, 20) }, 'No xref match found — listing dir contents');
   } catch {
-    // Directory doesn't exist
+    logger.debug({ pageId, filename, dir }, 'Attachment directory does not exist');
   }
 
   return null;
