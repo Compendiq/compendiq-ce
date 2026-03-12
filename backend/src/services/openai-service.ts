@@ -24,6 +24,8 @@ import type {
 } from './llm-provider.js';
 
 const REQUEST_TIMEOUT_MS = 60_000;
+/** Streaming requests can take much longer (large articles). */
+const STREAM_TIMEOUT_MS = 300_000;
 
 // Max 2 concurrent LLM calls (same as Ollama)
 const llmLimit = pLimit(2);
@@ -154,7 +156,7 @@ export class OpenAIProvider implements LlmProvider {
             messages: messages.map((m) => ({ role: m.role, content: m.content })),
             stream: true,
           },
-          signal,
+          signal ?? AbortSignal.timeout(STREAM_TIMEOUT_MS),
         );
 
         if (!response.ok) {
