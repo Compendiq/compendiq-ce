@@ -9,6 +9,7 @@ import {
   useUpdatePage,
 } from '../../shared/hooks/use-pages';
 import { useAuthenticatedSrc } from '../../shared/hooks/use-authenticated-src';
+import { useSettings } from '../../shared/hooks/use-settings';
 import { useArticleViewStore } from '../../stores/article-view-store';
 import { FeatureErrorBoundary } from '../../shared/components/FeatureErrorBoundary';
 import { Editor, EditorToolbar, TableContextToolbar, clearDraft, getDraft } from '../../shared/components/Editor';
@@ -87,6 +88,7 @@ export function PageViewPage() {
   const queryClient = useQueryClient();
 
   const { data: page, isLoading } = usePage(id);
+  const { data: settings } = useSettings();
   const updateMutation = useUpdatePage();
 
   const contentRef = useRef<HTMLDivElement>(null);
@@ -299,6 +301,7 @@ export function PageViewPage() {
             <FeatureErrorBoundary featureName="Article Viewer">
               <ArticleViewer
                 content={page.bodyHtml}
+                confluenceUrl={settings?.confluenceUrl}
                 onImageClick={handleImageClick}
                 onHeadingsReady={setHeadings}
                 pageId={id}

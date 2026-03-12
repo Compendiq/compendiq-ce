@@ -24,14 +24,18 @@ vi.mock('../../shared/components/ArticleViewer', async () => {
   return {
     ArticleViewer: ({
       className,
+      confluenceUrl,
       content,
       onHeadingsReady,
       onImageClick,
+      pageId,
     }: {
       className?: string;
+      confluenceUrl?: string | null;
       content: string;
       onHeadingsReady?: (headings: Array<{ id: string; text: string; level: number }>) => void;
       onImageClick?: (src: string, alt: string) => void;
+      pageId?: string | null;
     }) => {
       React.useEffect(() => {
         onHeadingsReady?.([
@@ -41,7 +45,7 @@ vi.mock('../../shared/components/ArticleViewer', async () => {
       }, [onHeadingsReady]);
 
       return (
-        <div className={className}>
+        <div className={className} data-testid="article-viewer" data-confluence-url={confluenceUrl ?? ''} data-page-id={pageId ?? ''}>
           <button onClick={() => onImageClick?.('/api/attachments/page-1/diagram.png', 'Diagram')}>
             Preview image
           </button>
@@ -90,6 +94,13 @@ vi.mock('../../shared/components/Skeleton', () => ({
 
 vi.mock('../../shared/hooks/use-authenticated-src', () => ({
   useAuthenticatedSrc: (src: string) => ({ blobSrc: src, loading: false }),
+}));
+
+vi.mock('../../shared/hooks/use-settings', () => ({
+  useSettings: () => ({
+    data: { confluenceUrl: 'https://confluence.example.com' },
+    isLoading: false,
+  }),
 }));
 
 const mockPage = {
@@ -235,6 +246,14 @@ describe('PageViewPage', () => {
         version: 7,
       });
     });
+  });
+
+  it('passes confluenceUrl from settings to ArticleViewer for draw.io edit links', () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+
+    const viewer = screen.getByTestId('article-viewer');
+    expect(viewer).toHaveAttribute('data-confluence-url', 'https://confluence.example.com');
+    expect(viewer).toHaveAttribute('data-page-id', 'page-1');
   });
 
   it('syncs headings to article-view-store for the right pane', async () => {
