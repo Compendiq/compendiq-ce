@@ -8,6 +8,7 @@ vi.mock('../services/attachment-handler.js', () => ({
   readAttachment: vi.fn(),
   fetchAndCachePageImage: vi.fn(),
   getMimeType: vi.fn(),
+  writeAttachmentCache: vi.fn(),
 }));
 
 const mockQuery = vi.fn();
@@ -26,11 +27,16 @@ vi.mock('../utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
-import { readAttachment, fetchAndCachePageImage, getMimeType } from '../services/attachment-handler.js';
+import { readAttachment, fetchAndCachePageImage, getMimeType, writeAttachmentCache } from '../services/attachment-handler.js';
 
 const mockReadAttachment = vi.mocked(readAttachment);
 const mockFetchAndCachePageImage = vi.mocked(fetchAndCachePageImage);
 const mockGetMimeType = vi.mocked(getMimeType);
+const mockWriteAttachmentCache = vi.mocked(writeAttachmentCache);
+
+// Valid 1x1 transparent PNG (smallest valid PNG file)
+const VALID_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+const VALID_PNG_DATA_URI = `data:image/png;base64,${VALID_PNG_BASE64}`;
 
 describe('Attachment routes', () => {
   let app: ReturnType<typeof Fastify>;
@@ -203,6 +209,116 @@ describe('Attachment routes', () => {
       expect(response.statusCode).toBe(404);
       expect(response.json()).toMatchObject({ reason: 'no_confluence_client' });
       expect(mockFetchAndCachePageImage).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('PUT /api/attachments/:pageId/:filename', () => {
+    const mockClient = {
+      updateAttachment: vi.fn().mockResolvedValue({ id: 'att-1', title: 'diagram.png' }),
+    };
+
+    it('should return 400 when dataUri is missing', async () => {
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/attachments/page-123/diagram.png',
+        payload: {},
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({ message: expect.stringContaining('dataUri') });
+    });
+
+    it('should return 400 when dataUri is not a PNG data URI', async () => {
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/attachments/page-123/diagram.png',
+        payload: { dataUri: 'data:image/jpeg;base64,abc123' },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({ message: expect.stringContaining('PNG') });
+    });
+
+    it('should return 400 when PNG data is not valid PNG', async () => {
+      // Valid base64 but not a PNG file
+      const notPngBase64 = Buffer.from('not a png file at all').toString('base64');
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/attachments/page-123/diagram.png',
+        payload: { dataUri: `data:image/png;base64,${notPngBase64}` },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({ message: expect.stringContaining('valid PNG') });
+    });
+
+    it('should return 404 when page is not in user selected spaces', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/attachments/page-999/diagram.png',
+        payload: { dataUri: VALID_PNG_DATA_URI },
+      });
+
+      expect(response.statusCode).toBe(404);
+    });
+
+    it('should return 400 when user has no Confluence client', async () => {
+      mockGetClientForUser.mockResolvedValue(null);
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/attachments/page-123/diagram.png',
+        payload: { dataUri: VALID_PNG_DATA_URI },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({ message: expect.stringContaining('PAT') });
+    });
+
+    it('should upload to Confluence and update local cache on success', async () => {
+      mockGetClientForUser.mockResolvedValue(mockClient);
+      mockWriteAttachmentCache.mockResolvedValue('/data/attachments/page-123/diagram.png');
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/attachments/page-123/diagram.png',
+        payload: { dataUri: VALID_PNG_DATA_URI },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ success: true, filename: 'diagram.png' });
+
+      // Verify Confluence upload was called
+      expect(mockClient.updateAttachment).toHaveBeenCalledWith(
+        'page-123',
+        'diagram.png',
+        expect.any(Buffer),
+        'image/png',
+      );
+
+      // Verify local cache was updated
+      expect(mockWriteAttachmentCache).toHaveBeenCalledWith(
+        'test-user',
+        'page-123',
+        'diagram.png',
+        expect.any(Buffer),
+      );
+    });
+
+    it('should return 500 when Confluence upload fails', async () => {
+      mockGetClientForUser.mockResolvedValue({
+        updateAttachment: vi.fn().mockRejectedValue(new Error('Confluence down')),
+      });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/attachments/page-123/diagram.png',
+        payload: { dataUri: VALID_PNG_DATA_URI },
+      });
+
+      expect(response.statusCode).toBe(500);
     });
   });
 });

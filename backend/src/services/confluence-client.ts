@@ -486,6 +486,83 @@ export class ConfluenceClient {
     );
   }
 
+  /**
+   * Upload or update an attachment on a Confluence page.
+   *
+   * Uses the Confluence DC REST API for attachment upload:
+   *   POST /rest/api/content/{pageId}/child/attachment
+   * with `X-Atlassian-Token: nocheck` and multipart/form-data body.
+   *
+   * If an attachment with the same filename already exists, Confluence
+   * creates a new version of it.
+   */
+  async updateAttachment(
+    pageId: string,
+    filename: string,
+    data: Buffer,
+    mimeType: string,
+  ): Promise<ConfluenceAttachment> {
+    const url = `${this.baseUrl}/rest/api/content/${encodeURIComponent(pageId)}/child/attachment`;
+
+    validateUrl(url);
+
+    // Build multipart/form-data manually using a boundary
+    const boundary = `----FormBoundary${Date.now()}`;
+    const parts: Buffer[] = [];
+
+    // File part
+    parts.push(Buffer.from(
+      `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
+      `Content-Type: ${mimeType}\r\n\r\n`,
+    ));
+    parts.push(data);
+    parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
+
+    const body = Buffer.concat(parts);
+
+    const opts: Record<string, unknown> = {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${this.pat}`,
+        'X-Atlassian-Token': 'nocheck',
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+      },
+      body,
+      signal: AbortSignal.timeout(60_000),
+    };
+    if (confluenceDispatcher) {
+      opts.dispatcher = confluenceDispatcher;
+    }
+
+    const { statusCode, body: responseBody } = await request(url, opts as Parameters<typeof request>[1]);
+
+    const text = await responseBody.text();
+
+    if (statusCode === 401) {
+      throw new ConfluenceError('Invalid or expired PAT', 401);
+    }
+    if (statusCode === 403) {
+      throw new ConfluenceError('Insufficient permissions to update attachment', 403);
+    }
+    if (statusCode >= 400) {
+      logger.error({ statusCode, url, body: text.slice(0, 500) }, 'Confluence attachment upload error');
+      let detail: string;
+      try {
+        const parsed = JSON.parse(text);
+        detail = parsed.message || parsed.reason || '';
+      } catch {
+        detail = text.slice(0, 200);
+      }
+      const suffix = detail ? `: ${detail}` : '';
+      throw new ConfluenceError(`Confluence attachment upload error: HTTP ${statusCode}${suffix}`, statusCode);
+    }
+
+    const result = JSON.parse(text);
+    // Confluence returns { results: [attachment] } for attachment uploads
+    return result.results?.[0] ?? result;
+  }
+
   async setLabels(pageId: string, desiredLabels: string[]): Promise<void> {
     const currentLabels = await this.getLabels(pageId);
     const currentSet = new Set(currentLabels);

@@ -14,6 +14,8 @@ import { FeatureErrorBoundary } from '../../shared/components/FeatureErrorBounda
 import { Editor, EditorToolbar, TableContextToolbar, clearDraft, getDraft } from '../../shared/components/Editor';
 import type { Editor as EditorType } from '@tiptap/core';
 import { ArticleViewer } from '../../shared/components/ArticleViewer';
+import { DrawioEditor } from '../../shared/components/DrawioEditor';
+import { apiFetch } from '../../shared/lib/api';
 import type { TocHeading } from '../../shared/components/TableOfContents';
 import { PageViewSkeleton } from '../../shared/components/Skeleton';
 
@@ -101,6 +103,7 @@ export function PageViewPage() {
   const [editTitle, setEditTitle] = useState('');
   const [headings, setHeadings] = useState<TocHeading[]>([]);
   const [lightboxSrc, setLightboxSrc] = useState<{ alt: string; src: string } | null>(null);
+  const [drawioEditingDiagram, setDrawioEditingDiagram] = useState<string | null>(null);
 
   // Sync editing state to the shared store (consumed by ArticleRightPane)
   useEffect(() => {
@@ -185,6 +188,32 @@ export function PageViewPage() {
       }
     }
   }, [draftKey, editHtml, editTitle, id, page, queryClient, updateMutation]);
+
+  // Draw.io inline editing handlers
+  const handleEditDiagram = useCallback((diagramName: string) => {
+    setDrawioEditingDiagram(diagramName);
+  }, []);
+
+  const handleDrawioClose = useCallback(() => {
+    setDrawioEditingDiagram(null);
+  }, []);
+
+  const handleDrawioSave = useCallback(async (dataUri: string, _xml: string) => {
+    if (!id || !drawioEditingDiagram) return;
+    const filename = `${drawioEditingDiagram}.png`;
+    try {
+      await apiFetch(`/attachments/${encodeURIComponent(id)}/${encodeURIComponent(filename)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ dataUri }),
+      });
+      toast.success('Diagram saved.');
+      // Refresh the page data so the updated diagram image is shown
+      queryClient.invalidateQueries({ queryKey: ['pages', id] });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to save diagram.';
+      toast.error(message);
+    }
+  }, [id, drawioEditingDiagram, queryClient]);
 
   if (isLoading) {
     return (
@@ -300,6 +329,7 @@ export function PageViewPage() {
               <ArticleViewer
                 content={page.bodyHtml}
                 onImageClick={handleImageClick}
+                onEditDiagram={handleEditDiagram}
                 onHeadingsReady={setHeadings}
                 pageId={id}
               />
@@ -317,6 +347,14 @@ export function PageViewPage() {
           />
         ) : null}
       </AnimatePresence>
+
+      {drawioEditingDiagram && (
+        <DrawioEditor
+          xml=""
+          onSave={handleDrawioSave}
+          onClose={handleDrawioClose}
+        />
+      )}
     </m.div>
   );
 }
