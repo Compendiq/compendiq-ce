@@ -1,7 +1,7 @@
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { cn } from '../../shared/lib/cn';
-import { StreamingCursor } from '../../shared/components/StreamingCursor';
+import { StreamingCursor } from '../../shared/components/feedback/StreamingCursor';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 
 interface StreamingMessageProps {

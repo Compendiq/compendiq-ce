@@ -2,8 +2,8 @@ import { useMemo } from 'react';
 import { m } from 'framer-motion';
 import { FileText, Layers, Database, Clock } from 'lucide-react';
 import { formatRelativeTime } from '../../shared/lib/format-relative-time';
-import { AnimatedCounter } from '../../shared/components/AnimatedCounter';
-import { TiltCard } from '../../shared/components/TiltCard';
+import { AnimatedCounter } from '../../shared/components/effects/AnimatedCounter';
+import { TiltCard } from '../../shared/components/effects/TiltCard';
 
 interface KPICardsProps {
   embeddingStatus?: {

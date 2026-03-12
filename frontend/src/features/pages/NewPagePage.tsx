@@ -3,8 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, Save } from 'lucide-react';
 import { useCreatePage } from '../../shared/hooks/use-pages';
 import { useSpaces } from '../../shared/hooks/use-spaces';
-import { Editor, clearDraft } from '../../shared/components/Editor';
-import { FeatureErrorBoundary } from '../../shared/components/FeatureErrorBoundary';
+import { Editor, clearDraft } from '../../shared/components/article/Editor';
+import { FeatureErrorBoundary } from '../../shared/components/feedback/FeatureErrorBoundary';
 import { toast } from 'sonner';
 
 const NEW_PAGE_DRAFT_KEY = 'new-page';

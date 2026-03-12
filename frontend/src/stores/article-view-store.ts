@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { TocHeading } from '../shared/components/TableOfContents';
+import type { TocHeading } from '../shared/components/article/TableOfContents';
 
 interface ArticleViewState {
   headings: TocHeading[];

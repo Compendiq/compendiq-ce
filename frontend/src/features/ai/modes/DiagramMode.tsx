@@ -1,7 +1,7 @@
 import { useCallback } from 'react';
 import { GitBranch, FileInput, Loader2 } from 'lucide-react';
 import { useAiContext } from '../AiContext';
-import { MermaidDiagram } from '../../../shared/components/MermaidDiagram';
+import { MermaidDiagram } from '../../../shared/components/diagrams/MermaidDiagram';
 import { cn } from '../../../shared/lib/cn';
 import { apiFetch } from '../../../shared/lib/api';
 import { toast } from 'sonner';
