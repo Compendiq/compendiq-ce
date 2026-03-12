@@ -51,6 +51,9 @@ interface ArticleViewerProps {
   onHeadingsReady?: (headings: TocHeading[]) => void;
   /** Callback to trigger a manual Confluence sync (e.g. refresh stale diagrams) */
   onRequestSync?: () => void;
+  /** Callback when user clicks "Edit Diagram" on a draw.io container.
+   *  Receives the diagram name so the parent can open the DrawioEditor. */
+  onEditDiagram?: (diagramName: string) => void;
   /** Additional CSS classes */
   className?: string;
 }
@@ -62,6 +65,7 @@ export function ArticleViewer({
   pageId,
   onHeadingsReady,
   onRequestSync,
+  onEditDiagram,
   className,
 }: ArticleViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -306,6 +310,41 @@ export function ArticleViewer({
 
     return () => cancelAnimationFrame(raf);
   }, [isReady, confluenceUrl, pageId]);
+
+  // Add inline "Edit Diagram" overlay buttons on draw.io containers
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || !isReady || !onEditDiagram) return;
+
+    const raf = requestAnimationFrame(() => {
+      const drawioContainers = container.querySelectorAll<HTMLElement>('.confluence-drawio');
+      drawioContainers.forEach((drawioDiv) => {
+        // Skip if already injected
+        if (drawioDiv.querySelector('.drawio-inline-edit-btn')) return;
+
+        drawioDiv.style.position = 'relative';
+
+        const btn = document.createElement('button');
+        btn.className = 'drawio-inline-edit-btn';
+        btn.textContent = 'Edit Diagram';
+        btn.setAttribute('aria-label', 'Edit this draw.io diagram');
+        btn.setAttribute('data-testid', 'drawio-edit-btn');
+
+        btn.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const diagramName = drawioDiv.getAttribute('data-diagram-name');
+          if (diagramName) {
+            onEditDiagram(diagramName);
+          }
+        });
+
+        drawioDiv.appendChild(btn);
+      });
+    });
+
+    return () => cancelAnimationFrame(raf);
+  }, [isReady, sanitizedContent, onEditDiagram]);
 
   return (
     <div ref={containerRef} className="article-viewer-container">

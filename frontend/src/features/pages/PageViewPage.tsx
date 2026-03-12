@@ -16,6 +16,8 @@ import { QualityScoreBadge } from '../../shared/components/QualityScoreBadge';
 import { Editor, EditorToolbar, TableContextToolbar, clearDraft, getDraft } from '../../shared/components/Editor';
 import type { Editor as EditorType } from '@tiptap/core';
 import { ArticleViewer } from '../../shared/components/ArticleViewer';
+import { DrawioEditor } from '../../shared/components/DrawioEditor';
+import { apiFetch } from '../../shared/lib/api';
 import type { TocHeading } from '../../shared/components/TableOfContents';
 import { PageViewSkeleton } from '../../shared/components/Skeleton';
 
@@ -104,6 +106,8 @@ export function PageViewPage() {
   const [editTitle, setEditTitle] = useState('');
   const [headings, setHeadings] = useState<TocHeading[]>([]);
   const [lightboxSrc, setLightboxSrc] = useState<{ alt: string; src: string } | null>(null);
+  const [drawioEditingDiagram, setDrawioEditingDiagram] = useState<string | null>(null);
+  const [drawioXml, setDrawioXml] = useState<string>('');
 
   // Sync editing state to the shared store (consumed by ArticleRightPane)
   useEffect(() => {
@@ -188,6 +192,52 @@ export function PageViewPage() {
       }
     }
   }, [draftKey, editHtml, editTitle, id, page, queryClient, updateMutation]);
+
+  // Draw.io inline editing handlers
+  const handleEditDiagram = useCallback(async (diagramName: string) => {
+    // Fetch the diagram PNG from the attachment cache — draw.io can load PNG+XML data URIs
+    if (!id) return;
+    let dataUri = '';
+    try {
+      const { accessToken } = (await import('../../stores/auth-store')).useAuthStore.getState();
+      const res = await fetch(`/api/attachments/${encodeURIComponent(id)}/${encodeURIComponent(diagramName)}.png`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (res.ok) {
+        const blob = await res.blob();
+        dataUri = await new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.readAsDataURL(blob);
+        });
+      }
+    } catch {
+      // If we can't fetch the existing diagram, open editor empty (user can redraw)
+    }
+    setDrawioXml(dataUri);
+    setDrawioEditingDiagram(diagramName);
+  }, [id]);
+
+  const handleDrawioClose = useCallback(() => {
+    setDrawioEditingDiagram(null);
+  }, []);
+
+  const handleDrawioSave = useCallback(async (dataUri: string, _xml: string) => {
+    if (!id || !drawioEditingDiagram) return;
+    const filename = `${drawioEditingDiagram}.png`;
+    try {
+      await apiFetch(`/attachments/${encodeURIComponent(id)}/${encodeURIComponent(filename)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ dataUri }),
+      });
+      toast.success('Diagram saved.');
+      // Refresh the page data so the updated diagram image is shown
+      queryClient.invalidateQueries({ queryKey: ['pages', id] });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to save diagram.';
+      toast.error(message);
+    }
+  }, [id, drawioEditingDiagram, queryClient]);
 
   if (isLoading) {
     return (
@@ -316,6 +366,7 @@ export function PageViewPage() {
                 content={page.bodyHtml}
                 confluenceUrl={settings?.confluenceUrl}
                 onImageClick={handleImageClick}
+                onEditDiagram={handleEditDiagram}
                 onHeadingsReady={setHeadings}
                 pageId={id}
               />
@@ -333,6 +384,14 @@ export function PageViewPage() {
           />
         ) : null}
       </AnimatePresence>
+
+      {drawioEditingDiagram && (
+        <DrawioEditor
+          xml={drawioXml}
+          onSave={handleDrawioSave}
+          onClose={handleDrawioClose}
+        />
+      )}
     </m.div>
   );
 }

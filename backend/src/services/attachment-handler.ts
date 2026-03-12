@@ -559,6 +559,25 @@ export async function fetchAndCachePageImage(
 }
 
 /**
+ * Write (or overwrite) a file in the local attachment cache.
+ * Used when the user edits a diagram inline and we need to update
+ * the cached PNG without re-downloading from Confluence.
+ */
+export async function writeAttachmentCache(
+  userId: string,
+  pageId: string,
+  filename: string,
+  data: Buffer,
+): Promise<string> {
+  const dir = attachmentDir(userId, pageId);
+  await fs.mkdir(dir, { recursive: true });
+  const filePath = attachmentPath(userId, pageId, filename);
+  await fs.writeFile(filePath, data);
+  logger.debug({ userId, pageId, filename, size: data.length }, 'Wrote attachment to local cache');
+  return filePath;
+}
+
+/**
  * Check if local attachment cache exists for a page (has at least one file).
  * Used by sync-service to decide whether to retry attachment downloads
  * for pages whose content version hasn't changed.

@@ -1830,6 +1830,36 @@ pre:hover .code-copy-btn {
   background: oklch(from var(--color-primary) l c h / 0.1);
 }
 
+/* Inline draw.io edit button — shown on hover over diagram containers */
+.confluence-drawio .drawio-inline-edit-btn {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.35rem 0.75rem;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-primary-foreground);
+  background: oklch(from var(--color-primary) l c h / 0.85);
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s ease, background 0.15s ease;
+  backdrop-filter: blur(4px);
+}
+
+.confluence-drawio:hover .drawio-inline-edit-btn {
+  opacity: 1;
+}
+
+.confluence-drawio .drawio-inline-edit-btn:hover {
+  background: var(--color-primary);
+}
+
 /* Page view images — zoom-in cursor, rounded corners */
 .prose img {
   border-radius: var(--radius-md);
