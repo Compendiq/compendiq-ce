@@ -7,7 +7,7 @@ import { runMigrations, closePool } from './core/db/postgres.js';
 import { startSyncWorker, stopSyncWorker } from './domains/confluence/services/sync-service.js';
 import { startQualityWorker, stopQualityWorker } from './domains/knowledge/services/quality-worker.js';
 import { startSummaryWorker, stopSummaryWorker } from './domains/knowledge/services/summary-worker.js';
-import { markStartupComplete } from './routes/health.js';
+import { markStartupComplete } from './routes/foundation/health.js';
 import { logger } from './core/utils/logger.js';
 
 const PORT = parseInt(process.env.BACKEND_PORT ?? '3051', 10);
