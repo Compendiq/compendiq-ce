@@ -217,8 +217,7 @@ export class ConfluenceClient {
    * so that `withRetry` can re-execute the full HTTP request on transient failures.
    */
   private async downloadAttachmentOnce(downloadPath: string): Promise<Buffer> {
-    // Use URL constructor to properly encode special chars (spaces, colons) in filenames
-    const url = new URL(downloadPath, this.baseUrl).href;
+    const url = buildDownloadUrl(downloadPath, this.baseUrl);
 
     // SSRF protection: validate URL before download
     validateUrl(url);
@@ -262,8 +261,7 @@ export class ConfluenceClient {
     outputPath: string,
     maxSizeBytes = 50 * 1024 * 1024,
   ): Promise<void> {
-    // Use URL constructor to properly encode special chars (spaces, colons) in filenames
-    const url = new URL(downloadPath, this.baseUrl).href;
+    const url = buildDownloadUrl(downloadPath, this.baseUrl);
 
     // SSRF protection: validate URL before download
     validateUrl(url);
@@ -535,6 +533,44 @@ export function parseRetryAfter(header: string | string[] | undefined): number |
   }
 
   return undefined;
+}
+
+/**
+ * Build a fully-qualified download URL from a Confluence `_links.download` path.
+ *
+ * Confluence filenames may contain characters (colons, spaces, brackets, etc.)
+ * that are technically valid in URL paths per RFC 3986 but cause Confluence DC
+ * to return HTTP 500 when not percent-encoded. `new URL()` alone won't encode
+ * colons or other sub-delimiters in paths.
+ *
+ * This function encodes each path segment with `encodeURIComponent` to handle
+ * all special characters. Already percent-encoded segments are decoded first
+ * to avoid double-encoding.
+ */
+export function buildDownloadUrl(downloadPath: string, baseUrl: string): string {
+  const qIdx = downloadPath.indexOf('?');
+  const pathPart = qIdx >= 0 ? downloadPath.slice(0, qIdx) : downloadPath;
+  const queryPart = qIdx >= 0 ? downloadPath.slice(qIdx) : '';
+
+  const encodedPath = pathPart
+    .split('/')
+    .map((segment) => {
+      if (!segment) return segment;
+      // Decode first to normalise already-encoded segments (%XX → char).
+      // Also treat `+` as space: while `+` only means space in
+      // application/x-www-form-urlencoded (not in URL paths per RFC 3986),
+      // Confluence DC encodes spaces as `+` in some _links.download paths.
+      let decoded: string;
+      try {
+        decoded = decodeURIComponent(segment.replace(/\+/g, ' '));
+      } catch {
+        decoded = segment;
+      }
+      return encodeURIComponent(decoded);
+    })
+    .join('/');
+
+  return `${baseUrl}${encodedPath}${queryPart}`;
 }
 
 export class ConfluenceError extends Error {
