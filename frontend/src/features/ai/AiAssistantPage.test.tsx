@@ -22,7 +22,7 @@ vi.mock('../../shared/lib/sse', () => ({
 }));
 
 // Default: no page selected
-let mockPageData: { data: unknown } = { data: undefined };
+let mockPageData: { data: unknown; isLoading?: boolean } = { data: undefined };
 vi.mock('../../shared/hooks/use-pages', () => ({
   usePage: () => mockPageData,
   useEmbeddingStatus: () => ({ data: undefined }),
@@ -214,6 +214,39 @@ describe('AiAssistantPage', () => {
       await waitFor(() => {
         expect(screen.getByText('Ready to improve: My Article')).toBeInTheDocument();
       });
+    });
+
+    it('shows "Loading page..." when page data is still being fetched', () => {
+      mockPageData = { data: undefined, isLoading: true };
+
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'llama3' }]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([]);
+      });
+
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?pageId=p1']) });
+
+      // Button should show "Loading page..." and be disabled
+      const buttons = screen.getAllByRole('button');
+      const loadingBtn = buttons.find((b) => b.textContent?.includes('Loading page'));
+      expect(loadingBtn).toBeDefined();
+      expect(loadingBtn).toBeDisabled();
+    });
+
+    it('reads mode from URL query param', () => {
+      render(<AiAssistantPage />, { wrapper: createWrapper(['/ai?mode=improve']) });
+
+      // The improve mode tab should be active
+      const improveTab = screen.getByText('Improve');
+      expect(improveTab.closest('button')?.className).toContain('text-primary');
     });
 
     it('enables improve button when page is loaded and model is available', async () => {

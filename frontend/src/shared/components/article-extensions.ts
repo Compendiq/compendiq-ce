@@ -229,7 +229,7 @@ export const ConfluenceChildren = Node.create({
     const htmlAttrs: Record<string, string> = { class: 'confluence-children-macro' };
     const paramNames = ['sort', 'reverse', 'depth', 'first', 'page', 'style', 'excerptType', 'macro-name'];
     for (const name of paramNames) {
-      if (node.attrs[name]) htmlAttrs[`data-${name}`] = node.attrs[name];
+      if (node.attrs[name] != null) htmlAttrs[`data-${name}`] = node.attrs[name];
     }
     return ['div', htmlAttrs, '[Children pages listed here]'];
   },
