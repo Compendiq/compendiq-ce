@@ -53,114 +53,112 @@ export function AppLayout({ children }: { children: ReactNode }) {
   }, [openCommandPalette]);
 
   return (
-    <div className="flex h-screen overflow-hidden" style={{ backgroundColor: 'var(--bg-surround)' }}>
+    <div className="flex h-screen flex-col overflow-hidden" style={{ backgroundColor: 'var(--bg-surround)' }}>
       <CommandPalette />
 
-      {/* Left sidebar - spans full height, only on pages routes */}
-      {showTreeSidebar && <SidebarTreeView />}
+      {/* Top navigation bar - full width, always on top */}
+      <header className="relative z-10 flex h-12 shrink-0 items-center border-b border-border/40 bg-card/80 px-4 backdrop-blur-md">
+        {/* Mobile hamburger */}
+        <button
+          onClick={() => setMobileMenuOpen((v) => !v)}
+          className="glass-button-ghost mr-2 md:hidden"
+          aria-label="Toggle menu"
+        >
+          {mobileMenuOpen ? <X size={18} /> : <Menu size={18} />}
+        </button>
 
-      {/* Right side: header + content */}
-      <div className="flex flex-1 flex-col overflow-hidden">
-        {/* Top navigation bar */}
-        <header className="flex h-12 shrink-0 items-center border-b border-border/40 bg-card/80 px-4 backdrop-blur-md">
-          {/* Mobile hamburger */}
+        {/* Logo - always visible in header */}
+        <Link to="/" className="flex items-center gap-2 mr-6">
+          <span className="text-sm font-semibold text-foreground">AI KB Creator</span>
+        </Link>
+
+        {/* Breadcrumb */}
+        <div className="flex items-center">
+          <Breadcrumb />
+        </div>
+
+        {/* Main navigation - hidden on mobile */}
+        <nav className="ml-auto hidden items-center gap-0.5 md:flex">
+          {navItems.map(({ icon: Icon, label, path }) => {
+            const active =
+              path === '/'
+                ? location.pathname === '/' || location.pathname.startsWith('/pages')
+                : location.pathname.startsWith(path);
+            return (
+              <Link
+                key={path}
+                to={path}
+                className={cn(
+                  'flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors',
+                  active
+                    ? 'bg-primary/15 text-primary font-medium'
+                    : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
+                )}
+              >
+                <Icon size={16} />
+                {label}
+              </Link>
+            );
+          })}
+        </nav>
+
+        {/* Right side: search + user */}
+        <div className="flex items-center gap-3 ml-3">
           <button
-            onClick={() => setMobileMenuOpen((v) => !v)}
-            className="glass-button-ghost mr-2 md:hidden"
-            aria-label="Toggle menu"
+            onClick={openCommandPalette}
+            className="flex items-center gap-1.5 rounded-md bg-foreground/5 px-2.5 py-1 text-xs text-muted-foreground hover:bg-foreground/10 transition-colors"
           >
-            {mobileMenuOpen ? <X size={18} /> : <Menu size={18} />}
+            <Search size={12} />
+            <span className="hidden sm:inline">Search...</span>
+            <kbd className="hidden rounded border border-border/50 px-1 py-0.5 text-[10px] sm:inline">
+              {navigator.platform?.includes('Mac') ? '\u2318' : 'Ctrl'}K
+            </kbd>
           </button>
+          <UserMenu />
+        </div>
+      </header>
 
-          {/* Logo - only shown when sidebar is hidden */}
-          {!showTreeSidebar && (
-            <Link to="/" className="flex items-center gap-2 mr-6">
-              <span className="text-sm font-semibold text-foreground">AI KB Creator</span>
-            </Link>
-          )}
+      {/* Mobile navigation menu */}
+      <AnimatePresence>
+        {mobileMenuOpen && (
+          <m.nav
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="overflow-hidden border-b border-border/40 bg-card/90 backdrop-blur-md md:hidden"
+          >
+            <div className="space-y-1 p-3">
+              {navItems.map(({ icon: Icon, label, path }) => {
+                const active =
+                  path === '/'
+                    ? location.pathname === '/'
+                    : location.pathname.startsWith(path);
+                return (
+                  <Link
+                    key={path}
+                    to={path}
+                    className={cn(
+                      'flex items-center gap-3 rounded-lg px-4 py-3 text-sm transition-colors',
+                      active
+                        ? 'bg-primary/15 text-primary font-medium'
+                        : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
+                    )}
+                  >
+                    <Icon size={18} />
+                    {label}
+                  </Link>
+                );
+              })}
+            </div>
+          </m.nav>
+        )}
+      </AnimatePresence>
 
-          {/* Breadcrumb */}
-          <div className="flex items-center">
-            <Breadcrumb />
-          </div>
-
-          {/* Main navigation - hidden on mobile */}
-          <nav className="ml-auto hidden items-center gap-0.5 md:flex">
-            {navItems.map(({ icon: Icon, label, path }) => {
-              const active =
-                path === '/'
-                  ? location.pathname === '/' || location.pathname.startsWith('/pages')
-                  : location.pathname.startsWith(path);
-              return (
-                <Link
-                  key={path}
-                  to={path}
-                  className={cn(
-                    'flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors',
-                    active
-                      ? 'bg-primary/15 text-primary font-medium'
-                      : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
-                  )}
-                >
-                  <Icon size={16} />
-                  {label}
-                </Link>
-              );
-            })}
-          </nav>
-
-          {/* Right side: search + user */}
-          <div className={cn('flex items-center gap-3', showTreeSidebar && 'ml-3')}>
-            <button
-              onClick={openCommandPalette}
-              className="flex items-center gap-1.5 rounded-md bg-foreground/5 px-2.5 py-1 text-xs text-muted-foreground hover:bg-foreground/10 transition-colors"
-            >
-              <Search size={12} />
-              <span className="hidden sm:inline">Search...</span>
-              <kbd className="hidden rounded border border-border/50 px-1 py-0.5 text-[10px] sm:inline">
-                {navigator.platform?.includes('Mac') ? '\u2318' : 'Ctrl'}K
-              </kbd>
-            </button>
-            <UserMenu />
-          </div>
-        </header>
-
-        {/* Mobile navigation menu */}
-        <AnimatePresence>
-          {mobileMenuOpen && (
-            <m.nav
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: 'auto', opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              transition={{ duration: 0.2 }}
-              className="overflow-hidden border-b border-border/40 bg-card/90 backdrop-blur-md md:hidden"
-            >
-              <div className="space-y-1 p-3">
-                {navItems.map(({ icon: Icon, label, path }) => {
-                  const active =
-                    path === '/'
-                      ? location.pathname === '/'
-                      : location.pathname.startsWith(path);
-                  return (
-                    <Link
-                      key={path}
-                      to={path}
-                      className={cn(
-                        'flex items-center gap-3 rounded-lg px-4 py-3 text-sm transition-colors',
-                        active
-                          ? 'bg-primary/15 text-primary font-medium'
-                          : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
-                      )}
-                    >
-                      <Icon size={18} />
-                      {label}
-                    </Link>
-                  );
-                })}
-              </div>
-            </m.nav>
-          )}
-        </AnimatePresence>
+      {/* Below header: sidebar + content area */}
+      <div className="flex flex-1 overflow-hidden">
+        {/* Left sidebar - below header, only on pages routes */}
+        {showTreeSidebar && <SidebarTreeView />}
 
         {/* Main content area + optional right sidebar */}
         <div className="flex flex-1 overflow-hidden">

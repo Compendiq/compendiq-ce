@@ -62,9 +62,11 @@ describe('SidebarTreeView', () => {
     });
   });
 
-  it('renders the AI KB Creator title in sidebar header', () => {
+  it('renders "Pages" label in sidebar header (title moved to top header)', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
-    expect(screen.getByText('AI KB Creator')).toBeInTheDocument();
+    expect(screen.getByText('Pages')).toBeInTheDocument();
+    // "AI KB Creator" title is no longer in the sidebar — it moved to AppLayout header
+    expect(screen.queryByText('AI KB Creator')).not.toBeInTheDocument();
   });
 
   it('renders root pages', () => {
@@ -95,7 +97,7 @@ describe('SidebarTreeView', () => {
   it('shows collapsed state when treeSidebarCollapsed is true', () => {
     useUiStore.setState({ treeSidebarCollapsed: true });
     render(<SidebarTreeView />, { wrapper: createWrapper() });
-    expect(screen.queryByText('AI KB Creator')).not.toBeInTheDocument();
+    expect(screen.queryByText('Pages')).not.toBeInTheDocument();
     expect(screen.getByLabelText('Expand tree sidebar')).toBeInTheDocument();
   });
 

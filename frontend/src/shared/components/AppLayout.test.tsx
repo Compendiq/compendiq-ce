@@ -62,18 +62,17 @@ describe('AppLayout', () => {
     expect(screen.queryByText('Dashboard')).not.toBeInTheDocument();
   });
 
-  it('renders app logo in sidebar on pages route', () => {
-    render(
+  it('renders app logo in top header bar on all routes', () => {
+    const { unmount } = render(
       <AppLayout>
         <div>content</div>
       </AppLayout>,
       { wrapper: createWrapper('/') },
     );
-    // Logo is inside the sidebar (mocked) on pages routes, not in the top bar
-    expect(screen.queryByText('AI KB Creator')).not.toBeInTheDocument();
-  });
+    // Logo is always in the top header bar, regardless of sidebar visibility
+    expect(screen.getByText('AI KB Creator')).toBeInTheDocument();
+    unmount();
 
-  it('renders app logo in top bar when sidebar is hidden', () => {
     render(
       <AppLayout>
         <div>content</div>
@@ -81,6 +80,23 @@ describe('AppLayout', () => {
       { wrapper: createWrapper('/ai') },
     );
     expect(screen.getByText('AI KB Creator')).toBeInTheDocument();
+  });
+
+  it('header spans full width above sidebar and content', () => {
+    const { container } = render(
+      <AppLayout>
+        <div>content</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/') },
+    );
+    // Root container should be flex-col (vertical stacking: header on top)
+    const rootDiv = container.firstElementChild as HTMLElement;
+    expect(rootDiv.className).toContain('flex-col');
+
+    // Header should be a direct child of the root (not nested inside sidebar wrapper)
+    const header = rootDiv.querySelector('header');
+    expect(header).toBeTruthy();
+    expect(header!.parentElement).toBe(rootDiv);
   });
 
   it('renders search button in top bar', () => {

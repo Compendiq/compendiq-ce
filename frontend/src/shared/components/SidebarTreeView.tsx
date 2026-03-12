@@ -1,5 +1,5 @@
 import { memo, useState, useMemo, useCallback, useEffect, useRef } from 'react';
-import { Link, useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import {
   ChevronRight,
   ChevronDown,
@@ -273,7 +273,7 @@ export function SidebarTreeView() {
   if (treeSidebarCollapsed) {
     return (
       <div className="flex w-10 flex-col items-center border-r border-border/40 bg-card/50 backdrop-blur-md">
-        <div className="flex h-12 items-center justify-center border-b border-border/40 w-full">
+        <div className="flex h-10 items-center justify-center w-full">
           <button
             onClick={toggleTreeSidebar}
             className="rounded-md p-1.5 text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
@@ -297,11 +297,9 @@ export function SidebarTreeView() {
       )}
       style={{ width: `${treeSidebarWidth}px` }}
     >
-      {/* Sidebar title - aligns with top bar */}
-      <div className="flex h-12 shrink-0 items-center justify-between border-b border-border/40 px-3">
-        <Link to="/" className="flex items-center gap-2">
-          <span className="text-sm font-semibold text-foreground">AI KB Creator</span>
-        </Link>
+      {/* Sidebar header with collapse toggle */}
+      <div className="flex h-10 shrink-0 items-center justify-between border-b border-border/40 px-3">
+        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground/70">Pages</span>
         <button
           onClick={toggleTreeSidebar}
           className="rounded-md p-1 text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
