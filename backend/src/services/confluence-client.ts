@@ -513,7 +513,7 @@ export class ConfluenceClient {
     // File part
     parts.push(Buffer.from(
       `--${boundary}\r\n` +
-      `Content-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
+      `Content-Disposition: form-data; name="file"; filename="${filename.replace(/["\\]/g, '_')}"\r\n` +
       `Content-Type: ${mimeType}\r\n\r\n`,
     ));
     parts.push(data);

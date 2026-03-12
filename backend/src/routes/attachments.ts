@@ -1,8 +1,14 @@
 import { FastifyInstance } from 'fastify';
+import { z } from 'zod';
 import { query } from '../db/postgres.js';
 import { readAttachment, fetchAndCachePageImage, getMimeType, writeAttachmentCache } from '../services/attachment-handler.js';
 import { getClientForUser } from '../services/sync-service.js';
+import { getRedisClient } from '../services/redis-cache.js';
 import { logger } from '../utils/logger.js';
+
+const UpdateAttachmentBodySchema = z.object({
+  dataUri: z.string().min(1, 'dataUri is required'),
+});
 
 /** Maximum allowed attachment upload size: 10 MB */
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
@@ -102,16 +108,17 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
   fastify.put('/attachments/:pageId/:filename', async (request, reply) => {
     const { pageId, filename } = request.params as { pageId: string; filename: string };
     const userId = request.userId;
-    const { dataUri } = request.body as { dataUri?: string };
 
-    // Validate dataUri is present and is a PNG data URI
-    if (!dataUri || typeof dataUri !== 'string') {
+    // Validate request body with Zod
+    const parseResult = UpdateAttachmentBodySchema.safeParse(request.body);
+    if (!parseResult.success) {
       return reply.status(400).send({
         statusCode: 400,
         error: 'Bad Request',
-        message: 'Missing or invalid dataUri in request body',
+        message: parseResult.error.issues[0]?.message ?? 'Missing or invalid dataUri in request body',
       });
     }
+    const { dataUri } = parseResult.data;
 
     const pngPrefix = 'data:image/png;base64,';
     if (!dataUri.startsWith(pngPrefix)) {
@@ -186,6 +193,17 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
 
       // Update local cache so the image is served immediately without re-sync
       await writeAttachmentCache(userId, pageId, filename, pngBuffer);
+
+      // Invalidate Redis page cache so other users get the updated diagram
+      try {
+        const redis = getRedisClient();
+        if (redis) {
+          const keys = await redis.keys(`*:page:${pageId}*`);
+          if (keys.length > 0) await redis.del(keys);
+        }
+      } catch {
+        // Redis may be unavailable — non-fatal, cache will expire naturally
+      }
 
       logger.info({ userId, pageId, filename, size: pngBuffer.length }, 'Diagram attachment updated');
 

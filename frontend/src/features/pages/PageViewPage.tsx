@@ -104,6 +104,7 @@ export function PageViewPage() {
   const [headings, setHeadings] = useState<TocHeading[]>([]);
   const [lightboxSrc, setLightboxSrc] = useState<{ alt: string; src: string } | null>(null);
   const [drawioEditingDiagram, setDrawioEditingDiagram] = useState<string | null>(null);
+  const [drawioXml, setDrawioXml] = useState<string>('');
 
   // Sync editing state to the shared store (consumed by ArticleRightPane)
   useEffect(() => {
@@ -190,9 +191,29 @@ export function PageViewPage() {
   }, [draftKey, editHtml, editTitle, id, page, queryClient, updateMutation]);
 
   // Draw.io inline editing handlers
-  const handleEditDiagram = useCallback((diagramName: string) => {
+  const handleEditDiagram = useCallback(async (diagramName: string) => {
+    // Fetch the diagram PNG from the attachment cache — draw.io can load PNG+XML data URIs
+    if (!id) return;
+    let dataUri = '';
+    try {
+      const { accessToken } = (await import('../../stores/auth-store')).useAuthStore.getState();
+      const res = await fetch(`/api/attachments/${encodeURIComponent(id)}/${encodeURIComponent(diagramName)}.png`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (res.ok) {
+        const blob = await res.blob();
+        dataUri = await new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.readAsDataURL(blob);
+        });
+      }
+    } catch {
+      // If we can't fetch the existing diagram, open editor empty (user can redraw)
+    }
+    setDrawioXml(dataUri);
     setDrawioEditingDiagram(diagramName);
-  }, []);
+  }, [id]);
 
   const handleDrawioClose = useCallback(() => {
     setDrawioEditingDiagram(null);
@@ -350,7 +371,7 @@ export function PageViewPage() {
 
       {drawioEditingDiagram && (
         <DrawioEditor
-          xml=""
+          xml={drawioXml}
           onSave={handleDrawioSave}
           onClose={handleDrawioClose}
         />

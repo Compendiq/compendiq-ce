@@ -225,7 +225,7 @@ describe('Attachment routes', () => {
       });
 
       expect(response.statusCode).toBe(400);
-      expect(response.json()).toMatchObject({ message: expect.stringContaining('dataUri') });
+      expect(response.json()).toMatchObject({ message: expect.stringMatching(/dataUri|Invalid input/) });
     });
 
     it('should return 400 when dataUri is not a PNG data URI', async () => {

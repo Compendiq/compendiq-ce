@@ -74,9 +74,14 @@ export function DrawioEditor({ xml, onSave, onClose }: DrawioEditorProps) {
         case 'export':
           // PNG export arrived; persist and exit
           if (data.data) {
-            onSave(data.data, pendingXmlRef.current).then(() => {
-              postToDrawio({ action: 'exit' });
-            });
+            onSave(data.data, pendingXmlRef.current)
+              .then(() => {
+                postToDrawio({ action: 'exit' });
+              })
+              .catch(() => {
+                // Save failed — return to ready state so user can retry
+                setPhase('ready');
+              });
           }
           break;
 
@@ -146,6 +151,7 @@ export function DrawioEditor({ xml, onSave, onClose }: DrawioEditorProps) {
         className="h-full w-full border-0"
         title="Draw.io Diagram Editor"
         data-testid="drawio-iframe"
+        sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
       />
     </div>
   );
