@@ -13,7 +13,11 @@ export const CUSTOM_PROMPT_KEYS = [
 ] as const;
 export type CustomPromptKey = (typeof CUSTOM_PROMPT_KEYS)[number];
 
-export const CustomPromptsSchema = z.record(z.string(), z.string()).default({});
+export const CustomPromptsSchema = z.object(
+  Object.fromEntries(CUSTOM_PROMPT_KEYS.map((k) => [k, z.string().max(5000).optional()])) as {
+    [K in CustomPromptKey]: z.ZodOptional<z.ZodString>;
+  },
+).strict().default({});
 export type CustomPrompts = Partial<Record<CustomPromptKey, string>>;
 
 export const UserSettingsSchema = z.object({

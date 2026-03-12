@@ -433,6 +433,27 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     expect(body.customPrompts).toEqual({});
   });
 
+  it('PUT /settings rejects invalid customPrompts keys', async () => {
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { customPrompts: { not_a_valid_key: 'bad' } },
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
+  it('PUT /settings rejects customPrompts values exceeding 5000 chars', async () => {
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { customPrompts: { improve_grammar: 'x'.repeat(5001) } },
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
+
   it('PUT /settings persists customPrompts as JSON', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 }); // UPDATE
 
