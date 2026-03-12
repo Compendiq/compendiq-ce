@@ -216,9 +216,9 @@ export class ConfluenceClient {
    * Single-attempt attachment download. Separated from `downloadAttachment`
    * so that `withRetry` can re-execute the full HTTP request on transient failures.
    *
-   * Uses a multi-strategy approach: tries the properly encoded URL first,
-   * then falls back to the raw URL (preserving Confluence's own encoding),
-   * then tries without query parameters. This handles edge cases where
+   * Uses a multi-strategy approach: tries the raw URL first (preserving
+   * Confluence's own encoding like `+` for spaces), then falls back to
+   * the fully encoded URL, then tries without query parameters. This handles edge cases where
    * Confluence's `_links.download` encoding doesn't round-trip through
    * decode/re-encode, or where version/modificationDate params cause 500s.
    */
@@ -339,7 +339,11 @@ export class ConfluenceClient {
 
     if (statusCode !== 200) {
       body.destroy();
-      throw new ConfluenceError(`Failed to download attachment: HTTP ${statusCode}`, statusCode);
+      const error = new ConfluenceError(`Failed to download attachment: HTTP ${statusCode}`, statusCode);
+      if (statusCode === 429) {
+        error.retryAfterMs = parseRetryAfter(headers['retry-after']);
+      }
+      throw error;
     }
 
     // Check Content-Length header upfront if available
@@ -639,10 +643,11 @@ export function buildDownloadUrl(downloadPath: string, baseUrl: string): string 
  * Different Confluence DC versions and configurations may expect different URL
  * encodings. This function returns up to 3 unique URL strategies:
  *
- * 1. **Encoded URL** — fully percent-encoded path segments (handles colons, spaces, etc.)
- * 2. **Raw URL** — `_links.download` path appended as-is to the base URL, preserving
- *    whatever encoding Confluence already applied (e.g. `+` for spaces)
- * 3. **Encoded URL without query params** — some Confluence versions return HTTP 500
+ * 1. **Raw URL** — `_links.download` path appended as-is to the base URL, preserving
+ *    whatever encoding Confluence already applied (e.g. `+` for spaces), with only
+ *    literal spaces escaped to `%20`
+ * 2. **Encoded URL** — fully percent-encoded path segments (handles colons, spaces, etc.)
+ * 3. **Raw URL without query params** — some Confluence versions return HTTP 500
  *    when `version` / `modificationDate` query params reference stale metadata;
  *    stripping the query string can work as a last resort
  *

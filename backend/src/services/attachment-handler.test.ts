@@ -1071,6 +1071,10 @@ describe('attachment-handler', () => {
       // but we request the plain "shared.png" (as stale HTML would)
       const bodyStorage = '<ac:image><ri:attachment ri:filename="shared.png"><ri:page ri:content-title="Shared Assets" ri:space-key="OPS" /></ri:attachment></ac:image>';
 
+      // After cacheAttachment writes, fetchAndCachePageImage reads back from disk
+      const cachedData = Buffer.from('cached-shared');
+      vi.mocked(fs.readFile).mockResolvedValue(cachedData);
+
       const result = await fetchAndCachePageImage(
         client,
         'user-1',
@@ -1080,7 +1084,7 @@ describe('attachment-handler', () => {
         'OPS',
       );
 
-      expect(result).toEqual(Buffer.from('test')); // readFile mock returns 'test'
+      expect(result).toEqual(cachedData);
       expect(client.findPageByTitle).toHaveBeenCalledWith('OPS', 'Shared Assets');
       expect(client.downloadAttachment).toHaveBeenCalledWith('/download/shared.png');
     });

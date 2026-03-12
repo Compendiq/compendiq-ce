@@ -101,9 +101,10 @@ export async function readAttachment(userId: string, pageId: string, filename: s
   }
 
   // Search for .xref- variants: "foo.jpg" matches "foo.xref-{hash}.jpg"
+  const safe = path.basename(filename);
   const dir = attachmentDir('', pageId);
-  const ext = path.extname(filename);
-  const stem = ext ? filename.slice(0, -ext.length) : filename;
+  const ext = path.extname(safe);
+  const stem = ext ? safe.slice(0, -ext.length) : safe;
   const prefix = `${stem}.xref-`;
 
   try {
