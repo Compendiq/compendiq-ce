@@ -6,7 +6,7 @@ import he from 'he';
 import {
   getAttachmentImageSource,
   getLocalFilenameForImageSource,
-} from '../../services/image-references.js';
+} from '../../domains/confluence/services/image-references.js';
 
 // JSDOM 28's HTML parser treats <![CDATA[...]]> as comments. Pre-process to
 // convert CDATA sections into text that survives HTML parsing.

@@ -2,19 +2,19 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
 
 // Mock ollama-service before any imports
-vi.mock('../services/ollama-service.js', () => ({
+vi.mock('../domains/llm/services/ollama-service.js', () => ({
   streamChat: vi.fn(),
   getSystemPrompt: vi.fn().mockReturnValue('System prompt'),
   listModels: vi.fn().mockResolvedValue([]),
   checkHealth: vi.fn().mockResolvedValue({ connected: true }),
 }));
 
-vi.mock('../services/rag-service.js', () => ({
+vi.mock('../domains/llm/services/rag-service.js', () => ({
   hybridSearch: vi.fn().mockResolvedValue([]),
   buildRagContext: vi.fn().mockReturnValue('No context'),
 }));
 
-vi.mock('../services/embedding-service.js', () => ({
+vi.mock('../domains/llm/services/embedding-service.js', () => ({
   getEmbeddingStatus: vi.fn().mockResolvedValue({ totalPages: 0, dirtyPages: 0, totalEmbeddings: 0, isProcessing: false }),
   processDirtyPages: vi.fn().mockResolvedValue({ processed: 0, errors: 0 }),
   reEmbedAll: vi.fn().mockResolvedValue(undefined),
@@ -28,7 +28,7 @@ vi.mock('../core/services/content-converter.js', () => ({
   markdownToHtml: vi.fn().mockImplementation((s: string) => s),
 }));
 
-import { streamChat } from '../services/ollama-service.js';
+import { streamChat } from '../domains/llm/services/ollama-service.js';
 
 describe('SSE abort on client disconnect', () => {
   beforeEach(() => {

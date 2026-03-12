@@ -7,7 +7,7 @@ const mockSyncUser = vi.fn().mockResolvedValue(undefined);
 const mockGetSyncStatus = vi.fn();
 const mockSetSyncStatus = vi.fn();
 
-vi.mock('../services/sync-service.js', () => ({
+vi.mock('../domains/confluence/services/sync-service.js', () => ({
   syncUser: (...args: unknown[]) => mockSyncUser(...args),
   getSyncStatus: (...args: unknown[]) => mockGetSyncStatus(...args),
   setSyncStatus: (...args: unknown[]) => mockSetSyncStatus(...args),

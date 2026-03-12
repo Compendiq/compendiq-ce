@@ -1,5 +1,5 @@
 import { FastifyInstance } from 'fastify';
-import { syncUser, getSyncStatus, setSyncStatus } from '../services/sync-service.js';
+import { syncUser, getSyncStatus, setSyncStatus } from '../domains/confluence/services/sync-service.js';
 import { logAuditEvent } from '../core/services/audit-service.js';
 import { logger } from '../core/utils/logger.js';
 

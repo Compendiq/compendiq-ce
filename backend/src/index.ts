@@ -4,9 +4,9 @@ import { initTelemetry, shutdownTelemetry } from './telemetry.js';
 
 import { buildApp } from './app.js';
 import { runMigrations, closePool } from './core/db/postgres.js';
-import { startSyncWorker, stopSyncWorker } from './services/sync-service.js';
-import { startQualityWorker, stopQualityWorker } from './services/quality-worker.js';
-import { startSummaryWorker, stopSummaryWorker } from './services/summary-worker.js';
+import { startSyncWorker, stopSyncWorker } from './domains/confluence/services/sync-service.js';
+import { startQualityWorker, stopQualityWorker } from './domains/knowledge/services/quality-worker.js';
+import { startSummaryWorker, stopSummaryWorker } from './domains/knowledge/services/summary-worker.js';
 import { markStartupComplete } from './routes/health.js';
 import { logger } from './core/utils/logger.js';
 

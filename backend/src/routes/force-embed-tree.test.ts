@@ -6,7 +6,7 @@ const mockGetClientForUser = vi.fn();
 const mockEmbedPage = vi.fn();
 const mockQuery = vi.fn().mockResolvedValue({ rows: [] });
 
-vi.mock('../services/ollama-service.js', () => ({
+vi.mock('../domains/llm/services/ollama-service.js', () => ({
   listModels: vi.fn(),
   checkHealth: vi.fn(),
   streamChat: vi.fn(),
@@ -22,7 +22,7 @@ vi.mock('../services/ollama-service.js', () => ({
   }),
 }));
 
-vi.mock('../services/llm-provider.js', () => ({
+vi.mock('../domains/llm/services/llm-provider.js', () => ({
   providerStreamChat: vi.fn(),
   providerGenerateEmbedding: vi.fn(),
 }));
@@ -51,7 +51,7 @@ vi.mock('../core/db/postgres.js', () => ({
   closePool: vi.fn(),
 }));
 
-vi.mock('../services/rag-service.js', () => ({
+vi.mock('../domains/llm/services/rag-service.js', () => ({
   hybridSearch: vi.fn(),
   buildRagContext: vi.fn(),
 }));
@@ -62,7 +62,7 @@ vi.mock('../core/services/content-converter.js', () => ({
   htmlToText: vi.fn((html: string) => html),
 }));
 
-vi.mock('../services/embedding-service.js', () => ({
+vi.mock('../domains/llm/services/embedding-service.js', () => ({
   getEmbeddingStatus: vi.fn(),
   processDirtyPages: vi.fn(),
   reEmbedAll: vi.fn(),
@@ -71,11 +71,11 @@ vi.mock('../services/embedding-service.js', () => ({
   resetFailedEmbeddings: vi.fn().mockResolvedValue(0),
 }));
 
-vi.mock('../services/sync-service.js', () => ({
+vi.mock('../domains/confluence/services/sync-service.js', () => ({
   getClientForUser: (...args: unknown[]) => mockGetClientForUser(...args),
 }));
 
-vi.mock('../services/llm-cache.js', () => {
+vi.mock('../domains/llm/services/llm-cache.js', () => {
   class MockLlmCache {
     getCachedResponse = vi.fn().mockResolvedValue(null);
     setCachedResponse = vi.fn();

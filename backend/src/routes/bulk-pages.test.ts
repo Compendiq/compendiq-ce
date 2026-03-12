@@ -17,7 +17,7 @@ vi.mock('../core/services/redis-cache.js', () => {
   };
 });
 
-vi.mock('../services/sync-service.js', () => ({
+vi.mock('../domains/confluence/services/sync-service.js', () => ({
   getClientForUser: vi.fn().mockResolvedValue({
     deletePage: vi.fn().mockResolvedValue(undefined),
     getPage: vi.fn().mockResolvedValue({
@@ -37,7 +37,7 @@ vi.mock('../core/services/content-converter.js', () => ({
   htmlToText: vi.fn().mockReturnValue('content'),
 }));
 
-vi.mock('../services/attachment-handler.js', () => ({
+vi.mock('../domains/confluence/services/attachment-handler.js', () => ({
   cleanPageAttachments: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -45,19 +45,19 @@ vi.mock('../core/services/audit-service.js', () => ({
   logAuditEvent: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../services/duplicate-detector.js', () => ({
+vi.mock('../domains/knowledge/services/duplicate-detector.js', () => ({
   findDuplicates: vi.fn().mockResolvedValue([]),
   scanAllDuplicates: vi.fn().mockResolvedValue([]),
 }));
 
-vi.mock('../services/auto-tagger.js', () => ({
+vi.mock('../domains/knowledge/services/auto-tagger.js', () => ({
   autoTagPage: vi.fn().mockResolvedValue({ tags: [] }),
   applyTags: vi.fn().mockResolvedValue([]),
   autoTagAllPages: vi.fn().mockResolvedValue(undefined),
   ALLOWED_TAGS: ['architecture', 'howto', 'troubleshooting'],
 }));
 
-vi.mock('../services/version-tracker.js', () => ({
+vi.mock('../domains/knowledge/services/version-tracker.js', () => ({
   getVersionHistory: vi.fn().mockResolvedValue([]),
   getVersion: vi.fn().mockResolvedValue(null),
   getSemanticDiff: vi.fn().mockResolvedValue('no diff'),
@@ -70,7 +70,7 @@ vi.mock('../core/utils/logger.js', () => ({
 
 const mockProcessDirtyPages = vi.fn().mockResolvedValue({ processed: 2, errors: 0 });
 const mockIsProcessingUser = vi.fn().mockResolvedValue(false);
-vi.mock('../services/embedding-service.js', () => ({
+vi.mock('../domains/llm/services/embedding-service.js', () => ({
   processDirtyPages: (...args: unknown[]) => mockProcessDirtyPages(...args),
   isProcessingUser: (...args: unknown[]) => mockIsProcessingUser(...args),
   computePageRelationships: vi.fn().mockResolvedValue(0),
@@ -85,8 +85,8 @@ vi.mock('../core/db/postgres.js', () => ({
   closePool: vi.fn(),
 }));
 
-import { getClientForUser } from '../services/sync-service.js';
-import { cleanPageAttachments } from '../services/attachment-handler.js';
+import { getClientForUser } from '../domains/confluence/services/sync-service.js';
+import { cleanPageAttachments } from '../domains/confluence/services/attachment-handler.js';
 
 describe('Bulk Pages Routes (Parallelized)', () => {
   let app: ReturnType<typeof Fastify>;

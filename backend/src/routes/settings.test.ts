@@ -39,12 +39,12 @@ vi.mock('../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
-vi.mock('../services/ollama-service.js', () => ({
+vi.mock('../domains/llm/services/ollama-service.js', () => ({
   setActiveProvider: vi.fn(),
 }));
 
 const mockGetSyncOverview = vi.fn();
-vi.mock('../services/sync-overview-service.js', () => ({
+vi.mock('../domains/confluence/services/sync-overview-service.js', () => ({
   getSyncOverview: (...args: unknown[]) => mockGetSyncOverview(...args),
 }));
 

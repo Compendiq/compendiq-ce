@@ -4,7 +4,7 @@ import sensible from '@fastify/sensible';
 
 const mockProviderStreamChat = vi.fn();
 
-vi.mock('../services/ollama-service.js', () => ({
+vi.mock('../domains/llm/services/ollama-service.js', () => ({
   listModels: vi.fn(),
   checkHealth: vi.fn(),
   streamChat: vi.fn(),
@@ -21,7 +21,7 @@ vi.mock('../services/ollama-service.js', () => ({
   LANGUAGE_PRESERVATION_INSTRUCTION: 'Keep the text in its ORIGINAL language.',
 }));
 
-vi.mock('../services/llm-provider.js', () => ({
+vi.mock('../domains/llm/services/llm-provider.js', () => ({
   providerStreamChat: (...args: unknown[]) => mockProviderStreamChat(...args),
   providerGenerateEmbedding: vi.fn(),
 }));
@@ -42,7 +42,7 @@ vi.mock('../core/db/postgres.js', () => ({
   closePool: vi.fn(),
 }));
 
-vi.mock('../services/rag-service.js', () => ({
+vi.mock('../domains/llm/services/rag-service.js', () => ({
   hybridSearch: vi.fn(),
   buildRagContext: vi.fn(),
 }));
@@ -55,7 +55,7 @@ vi.mock('../core/services/content-converter.js', () => ({
   markdownToHtml: vi.fn(),
 }));
 
-vi.mock('../services/embedding-service.js', () => ({
+vi.mock('../domains/llm/services/embedding-service.js', () => ({
   getEmbeddingStatus: vi.fn(),
   processDirtyPages: vi.fn(),
   reEmbedAll: vi.fn(),
@@ -66,7 +66,7 @@ vi.mock('../services/embedding-service.js', () => ({
 
 const mockGetCachedResponse = vi.fn().mockResolvedValue(null);
 
-vi.mock('../services/llm-cache.js', () => {
+vi.mock('../domains/llm/services/llm-cache.js', () => {
   class MockLlmCache {
     getCachedResponse = mockGetCachedResponse;
     setCachedResponse = vi.fn();
@@ -86,11 +86,11 @@ vi.mock('../core/services/audit-service.js', () => ({
   logAuditEvent: vi.fn(),
 }));
 
-vi.mock('../services/sync-service.js', () => ({
+vi.mock('../domains/confluence/services/sync-service.js', () => ({
   getClientForUser: vi.fn(),
 }));
 
-vi.mock('../services/subpage-context.js', () => ({
+vi.mock('../domains/confluence/services/subpage-context.js', () => ({
   assembleSubPageContext: vi.fn(),
   getMultiPagePromptSuffix: vi.fn().mockReturnValue(''),
 }));

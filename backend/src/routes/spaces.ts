@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { query } from '../core/db/postgres.js';
 import { RedisCache } from '../core/services/redis-cache.js';
-import { getClientForUser } from '../services/sync-service.js';
+import { getClientForUser } from '../domains/confluence/services/sync-service.js';
 
 export async function spacesRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);

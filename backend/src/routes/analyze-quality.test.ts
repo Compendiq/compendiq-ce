@@ -6,7 +6,7 @@ import sensible from '@fastify/sensible';
 const mockStreamChat = vi.fn();
 const mockGetSystemPrompt = vi.fn().mockReturnValue('You are a quality analyst');
 
-vi.mock('../services/ollama-service.js', () => ({
+vi.mock('../domains/llm/services/ollama-service.js', () => ({
   listModels: vi.fn(),
   checkHealth: vi.fn(),
   streamChat: (...args: unknown[]) => mockStreamChat(...args),
@@ -34,7 +34,7 @@ vi.mock('../core/db/postgres.js', () => ({
   closePool: vi.fn(),
 }));
 
-vi.mock('../services/rag-service.js', () => ({
+vi.mock('../domains/llm/services/rag-service.js', () => ({
   hybridSearch: vi.fn(),
   buildRagContext: vi.fn(),
 }));
@@ -43,7 +43,7 @@ vi.mock('../core/services/content-converter.js', () => ({
   htmlToMarkdown: vi.fn((html: string) => html),
 }));
 
-vi.mock('../services/embedding-service.js', () => ({
+vi.mock('../domains/llm/services/embedding-service.js', () => ({
   getEmbeddingStatus: vi.fn(),
   processDirtyPages: vi.fn(),
   reEmbedAll: vi.fn(),
@@ -55,7 +55,7 @@ vi.mock('../services/embedding-service.js', () => ({
 const mockGetCachedResponse = vi.fn().mockResolvedValue(null);
 const mockSetCachedResponse = vi.fn();
 
-vi.mock('../services/llm-cache.js', () => {
+vi.mock('../domains/llm/services/llm-cache.js', () => {
   class MockLlmCache {
     getCachedResponse = mockGetCachedResponse;
     setCachedResponse = mockSetCachedResponse;

@@ -15,7 +15,7 @@ vi.mock('../core/services/redis-cache.js', () => {
   };
 });
 
-vi.mock('../services/sync-service.js', () => ({
+vi.mock('../domains/confluence/services/sync-service.js', () => ({
   getClientForUser: vi.fn().mockResolvedValue({
     deletePage: vi.fn().mockResolvedValue(undefined),
     getPage: vi.fn().mockResolvedValue({
@@ -35,7 +35,7 @@ vi.mock('../core/services/content-converter.js', () => ({
   htmlToText: vi.fn().mockReturnValue('content'),
 }));
 
-vi.mock('../services/attachment-handler.js', () => ({
+vi.mock('../domains/confluence/services/attachment-handler.js', () => ({
   cleanPageAttachments: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -43,20 +43,20 @@ vi.mock('../core/services/audit-service.js', () => ({
   logAuditEvent: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../services/duplicate-detector.js', () => ({
+vi.mock('../domains/knowledge/services/duplicate-detector.js', () => ({
   findDuplicates: vi.fn().mockResolvedValue([]),
   scanAllDuplicates: vi.fn().mockResolvedValue([]),
 }));
 
 const mockAutoTagPage = vi.fn();
-vi.mock('../services/auto-tagger.js', () => ({
+vi.mock('../domains/knowledge/services/auto-tagger.js', () => ({
   autoTagPage: (...args: unknown[]) => mockAutoTagPage(...args),
   applyTags: vi.fn().mockResolvedValue([]),
   autoTagAllPages: vi.fn().mockResolvedValue(undefined),
   ALLOWED_TAGS: ['architecture', 'deployment', 'troubleshooting', 'how-to', 'api', 'security', 'database', 'monitoring', 'configuration', 'onboarding', 'policy', 'runbook'],
 }));
 
-vi.mock('../services/version-tracker.js', () => ({
+vi.mock('../domains/knowledge/services/version-tracker.js', () => ({
   getVersionHistory: vi.fn().mockResolvedValue([]),
   getVersion: vi.fn().mockResolvedValue(null),
   getSemanticDiff: vi.fn().mockResolvedValue('no diff'),

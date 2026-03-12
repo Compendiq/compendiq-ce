@@ -1,8 +1,8 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { query } from '../core/db/postgres.js';
-import { readAttachment, fetchAndCachePageImage, getMimeType, writeAttachmentCache } from '../services/attachment-handler.js';
-import { getClientForUser } from '../services/sync-service.js';
+import { readAttachment, fetchAndCachePageImage, getMimeType, writeAttachmentCache } from '../domains/confluence/services/attachment-handler.js';
+import { getClientForUser } from '../domains/confluence/services/sync-service.js';
 import { getRedisClient } from '../core/services/redis-cache.js';
 import { logger } from '../core/utils/logger.js';
 

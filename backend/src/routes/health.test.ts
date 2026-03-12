@@ -35,7 +35,7 @@ vi.mock('../core/services/circuit-breaker.js', () => {
 const mockCheckHealth = vi.fn().mockResolvedValue({ connected: true });
 const mockGetActiveProviderType = vi.fn().mockReturnValue('ollama');
 
-vi.mock('../services/ollama-service.js', () => ({
+vi.mock('../domains/llm/services/ollama-service.js', () => ({
   checkHealth: (...args: unknown[]) => mockCheckHealth(...args),
   getActiveProviderType: () => mockGetActiveProviderType(),
 }));

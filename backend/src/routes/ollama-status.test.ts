@@ -9,7 +9,7 @@ const mockCheckHealth = vi.fn();
 const mockIsLlmVerifySslEnabled = vi.fn().mockReturnValue(true);
 const mockGetLlmAuthType = vi.fn().mockReturnValue('bearer');
 
-vi.mock('../services/ollama-service.js', () => {
+vi.mock('../domains/llm/services/ollama-service.js', () => {
   const listModels = (...args: unknown[]) => mockListModels(...args);
   const checkHealth = (...args: unknown[]) => mockCheckHealth(...args);
   const mockProvider = {
@@ -53,7 +53,7 @@ vi.mock('../core/db/postgres.js', () => ({
   closePool: vi.fn(),
 }));
 
-vi.mock('../services/rag-service.js', () => ({
+vi.mock('../domains/llm/services/rag-service.js', () => ({
   hybridSearch: vi.fn(),
   buildRagContext: vi.fn(),
 }));
@@ -62,7 +62,7 @@ vi.mock('../core/services/content-converter.js', () => ({
   htmlToMarkdown: vi.fn((html: string) => html),
 }));
 
-vi.mock('../services/embedding-service.js', () => ({
+vi.mock('../domains/llm/services/embedding-service.js', () => ({
   getEmbeddingStatus: vi.fn(),
   processDirtyPages: vi.fn(),
   reEmbedAll: vi.fn(),
@@ -71,7 +71,7 @@ vi.mock('../services/embedding-service.js', () => ({
   resetFailedEmbeddings: vi.fn().mockResolvedValue(0),
 }));
 
-vi.mock('../services/llm-cache.js', () => {
+vi.mock('../domains/llm/services/llm-cache.js', () => {
   class MockLlmCache {
     getCachedResponse = vi.fn().mockResolvedValue(null);
     setCachedResponse = vi.fn();

@@ -2,7 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { checkConnection as checkPg } from '../core/db/postgres.js';
 import { checkRedisConnection } from '../core/plugins/redis.js';
 import { getOllamaCircuitBreakerStatus, getOpenaiCircuitBreakerStatus } from '../core/services/circuit-breaker.js';
-import { checkHealth as checkLlmHealth, getActiveProviderType } from '../services/ollama-service.js';
+import { checkHealth as checkLlmHealth, getActiveProviderType } from '../domains/llm/services/ollama-service.js';
 import { logger } from '../core/utils/logger.js';
 
 // Track whether startup checks have passed

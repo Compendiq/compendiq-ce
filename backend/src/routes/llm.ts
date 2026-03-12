@@ -6,18 +6,18 @@ import {
   listModels, checkHealth,
   isLlmVerifySslEnabled, getLlmAuthType,
   getActiveProviderType, getProvider,
-} from '../services/ollama-service.js';
-import { providerStreamChat } from '../services/llm-provider.js';
-import { hybridSearch, buildRagContext } from '../services/rag-service.js';
+} from '../domains/llm/services/ollama-service.js';
+import { providerStreamChat } from '../domains/llm/services/llm-provider.js';
+import { hybridSearch, buildRagContext } from '../domains/llm/services/rag-service.js';
 import { htmlToMarkdown, confluenceToHtml, htmlToConfluence, htmlToText, markdownToHtml } from '../core/services/content-converter.js';
 import { RedisCache } from '../core/services/redis-cache.js';
-import { getEmbeddingStatus, processDirtyPages, reEmbedAll, isProcessingUser, embedPage, resetFailedEmbeddings } from '../services/embedding-service.js';
-import type { EmbeddingProgressEvent } from '../services/embedding-service.js';
-import { getClientForUser } from '../services/sync-service.js';
-import { getSummaryStatus, rescanAllSummaries, regenerateSummary, runSummaryBatch } from '../services/summary-worker.js';
+import { getEmbeddingStatus, processDirtyPages, reEmbedAll, isProcessingUser, embedPage, resetFailedEmbeddings } from '../domains/llm/services/embedding-service.js';
+import type { EmbeddingProgressEvent } from '../domains/llm/services/embedding-service.js';
+import { getClientForUser } from '../domains/confluence/services/sync-service.js';
+import { getSummaryStatus, rescanAllSummaries, regenerateSummary, runSummaryBatch } from '../domains/knowledge/services/summary-worker.js';
 import { getOllamaCircuitBreakerStatus, getOpenaiCircuitBreakerStatus } from '../core/services/circuit-breaker.js';
-import { getQualityStatus, forceQualityRescan } from '../services/quality-worker.js';
-import { LlmCache, buildLlmCacheKey, buildRagCacheKey, type CachedLlmResponse } from '../services/llm-cache.js';
+import { getQualityStatus, forceQualityRescan } from '../domains/knowledge/services/quality-worker.js';
+import { LlmCache, buildLlmCacheKey, buildRagCacheKey, type CachedLlmResponse } from '../domains/llm/services/llm-cache.js';
 import {
   ImproveRequestSchema,
   GenerateRequestSchema,
@@ -32,8 +32,8 @@ import { z } from 'zod';
 import { sanitizeLlmInput } from '../core/utils/sanitize-llm-input.js';
 import { logAuditEvent } from '../core/services/audit-service.js';
 import { logger } from '../core/utils/logger.js';
-import type { LlmProviderType } from '../services/llm-provider.js';
-import { assembleSubPageContext, getMultiPagePromptSuffix } from '../services/subpage-context.js';
+import type { LlmProviderType } from '../domains/llm/services/llm-provider.js';
+import { assembleSubPageContext, getMultiPagePromptSuffix } from '../domains/confluence/services/subpage-context.js';
 
 const IdParamSchema = z.object({ id: z.string().min(1) });
 const ImprovementsQuerySchema = z.object({ pageId: z.string().optional() });

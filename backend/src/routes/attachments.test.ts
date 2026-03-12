@@ -4,7 +4,7 @@ import sensible from '@fastify/sensible';
 import { attachmentRoutes } from './attachments.js';
 
 // Mock the attachment handler
-vi.mock('../services/attachment-handler.js', () => ({
+vi.mock('../domains/confluence/services/attachment-handler.js', () => ({
   readAttachment: vi.fn(),
   fetchAndCachePageImage: vi.fn(),
   getMimeType: vi.fn(),
@@ -18,7 +18,7 @@ vi.mock('../core/db/postgres.js', () => ({
 
 // Mock sync-service to provide getClientForUser
 const mockGetClientForUser = vi.fn();
-vi.mock('../services/sync-service.js', () => ({
+vi.mock('../domains/confluence/services/sync-service.js', () => ({
   getClientForUser: (...args: unknown[]) => mockGetClientForUser(...args),
 }));
 
@@ -27,7 +27,7 @@ vi.mock('../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
-import { readAttachment, fetchAndCachePageImage, getMimeType, writeAttachmentCache } from '../services/attachment-handler.js';
+import { readAttachment, fetchAndCachePageImage, getMimeType, writeAttachmentCache } from '../domains/confluence/services/attachment-handler.js';
 
 const mockReadAttachment = vi.mocked(readAttachment);
 const mockFetchAndCachePageImage = vi.mocked(fetchAndCachePageImage);
