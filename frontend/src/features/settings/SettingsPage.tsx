@@ -56,7 +56,7 @@ export function SettingsPage() {
     >
       <h1 className="mb-6 text-2xl font-bold tracking-[-0.01em]">Settings</h1>
 
-      <div className="glass-card">
+      <div className="rounded-xl border border-border">
         {/* Tab bar — Obsidian style: no fill on inactive, inset bottom-border on active */}
         <div className="flex overflow-x-auto border-b border-border/40">
           {visibleTabs.map((tab) => (
@@ -731,7 +731,7 @@ function EmbeddingTab() {
 
   return (
     <div className="space-y-6">
-      <div className="glass-card border-yellow-500/30 p-3 text-sm text-yellow-400">
+      <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/5 p-3 text-sm text-yellow-400">
         These settings are shared across all users. Changing them will trigger re-embedding of all pages, which may take several minutes.
       </div>
 
@@ -780,7 +780,7 @@ function EmbeddingTab() {
 
       {hasChanges && (
         <div
-          className="glass-card border-yellow-500/30 p-3 text-sm text-yellow-400"
+          className="rounded-lg border border-yellow-500/30 bg-yellow-500/5 p-3 text-sm text-yellow-400"
           data-testid="admin-chunk-change-warning"
         >
           Saving will mark all embedded pages dirty and trigger global re-embedding.

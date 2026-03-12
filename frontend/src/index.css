@@ -107,6 +107,11 @@ body {
 
   /* Inline code color (overridden for light themes) */
   --inline-code-color: oklch(0.85 0.12 30);
+
+  /* Flat layout surface colors — surround is the app shell bg,
+     content is the slightly lighter main content area */
+  --bg-surround: oklch(0.145 0.015 285);
+  --bg-content: oklch(0.17 0.015 285);
 }
 
 /* ===========================
@@ -132,6 +137,8 @@ body {
   --mesh-1: oklch(0.28 0.08 195 / 0.4);
   --mesh-2: oklch(0.23 0.06 210 / 0.3);
   --mesh-3: oklch(0.18 0.05 180 / 0.2);
+  --bg-surround: oklch(0.14 0.02 200);
+  --bg-content: oklch(0.165 0.02 200);
 }
 
 /* ---- Theme: Emerald Dark ---- */
@@ -153,6 +160,8 @@ body {
   --mesh-1: oklch(0.28 0.08 145 / 0.4);
   --mesh-2: oklch(0.23 0.06 160 / 0.3);
   --mesh-3: oklch(0.18 0.05 130 / 0.2);
+  --bg-surround: oklch(0.14 0.02 155);
+  --bg-content: oklch(0.165 0.02 155);
 }
 
 /* ---- Theme: Rose Noir ---- */
@@ -174,6 +183,8 @@ body {
   --mesh-1: oklch(0.28 0.1 350 / 0.4);
   --mesh-2: oklch(0.23 0.08 330 / 0.3);
   --mesh-3: oklch(0.18 0.06 10 / 0.2);
+  --bg-surround: oklch(0.145 0.015 350);
+  --bg-content: oklch(0.17 0.015 350);
 }
 
 /* ---- Theme: Amber Night ---- */
@@ -195,6 +206,8 @@ body {
   --mesh-1: oklch(0.28 0.08 80 / 0.4);
   --mesh-2: oklch(0.23 0.06 60 / 0.3);
   --mesh-3: oklch(0.18 0.05 40 / 0.2);
+  --bg-surround: oklch(0.145 0.015 70);
+  --bg-content: oklch(0.17 0.015 70);
 }
 
 /* ---- Theme: Arctic Frost ---- */
@@ -216,6 +229,8 @@ body {
   --mesh-1: oklch(0.28 0.06 230 / 0.4);
   --mesh-2: oklch(0.23 0.04 220 / 0.3);
   --mesh-3: oklch(0.18 0.03 240 / 0.2);
+  --bg-surround: oklch(0.15 0.01 230);
+  --bg-content: oklch(0.175 0.01 230);
 }
 
 /* ---- Theme: Violet Storm ---- */
@@ -237,6 +252,8 @@ body {
   --mesh-1: oklch(0.28 0.12 290 / 0.4);
   --mesh-2: oklch(0.23 0.08 310 / 0.3);
   --mesh-3: oklch(0.18 0.06 270 / 0.2);
+  --bg-surround: oklch(0.13 0.03 290);
+  --bg-content: oklch(0.155 0.03 290);
 }
 
 /* ---- Theme: Cyber Teal ---- */
@@ -258,6 +275,8 @@ body {
   --mesh-1: oklch(0.26 0.08 170 / 0.4);
   --mesh-2: oklch(0.21 0.06 185 / 0.3);
   --mesh-3: oklch(0.16 0.05 160 / 0.2);
+  --bg-surround: oklch(0.12 0.02 175);
+  --bg-content: oklch(0.145 0.02 175);
 }
 
 /* ---- Theme: Sunset Glow ---- */
@@ -279,6 +298,8 @@ body {
   --mesh-1: oklch(0.28 0.1 25 / 0.4);
   --mesh-2: oklch(0.23 0.08 45 / 0.3);
   --mesh-3: oklch(0.18 0.06 10 / 0.2);
+  --bg-surround: oklch(0.14 0.015 30);
+  --bg-content: oklch(0.165 0.015 30);
 }
 
 /* ---- Theme: Slate Minimal ---- */
@@ -300,6 +321,8 @@ body {
   --mesh-1: oklch(0.25 0.005 260 / 0.3);
   --mesh-2: oklch(0.2 0.003 270 / 0.2);
   --mesh-3: oklch(0.18 0.003 250 / 0.15);
+  --bg-surround: oklch(0.15 0.003 260);
+  --bg-content: oklch(0.175 0.003 260);
 }
 
 /* ===========================
@@ -338,6 +361,8 @@ body {
   --mesh-1: oklch(0.92 0.03 255 / 0.3);
   --mesh-2: oklch(0.94 0.02 230 / 0.2);
   --mesh-3: oklch(0.93 0.02 280 / 0.15);
+  --bg-surround: oklch(0.95 0.005 260);
+  --bg-content: oklch(0.99 0.003 260);
 }
 
 /* ---- Theme: Lavender Bloom ---- */
@@ -359,6 +384,8 @@ body {
   --mesh-1: oklch(0.92 0.04 295 / 0.3);
   --mesh-2: oklch(0.94 0.03 310 / 0.2);
   --mesh-3: oklch(0.93 0.02 275 / 0.15);
+  --bg-surround: oklch(0.94 0.012 300);
+  --bg-content: oklch(0.98 0.005 300);
 }
 
 /* ---- Theme: Mint Fresh ---- */
@@ -380,6 +407,8 @@ body {
   --mesh-1: oklch(0.92 0.04 150 / 0.3);
   --mesh-2: oklch(0.94 0.03 170 / 0.2);
   --mesh-3: oklch(0.93 0.02 135 / 0.15);
+  --bg-surround: oklch(0.95 0.012 155);
+  --bg-content: oklch(0.99 0.005 155);
 }
 
 /* ---- Theme: Peach Blossom ---- */
@@ -401,6 +430,8 @@ body {
   --mesh-1: oklch(0.92 0.04 50 / 0.3);
   --mesh-2: oklch(0.94 0.03 70 / 0.2);
   --mesh-3: oklch(0.93 0.02 35 / 0.15);
+  --bg-surround: oklch(0.95 0.012 60);
+  --bg-content: oklch(0.99 0.005 60);
 }
 
 /* ---- Theme: Sky Blue ---- */
@@ -422,6 +453,8 @@ body {
   --mesh-1: oklch(0.92 0.03 225 / 0.3);
   --mesh-2: oklch(0.94 0.02 245 / 0.2);
   --mesh-3: oklch(0.93 0.02 210 / 0.15);
+  --bg-surround: oklch(0.95 0.008 230);
+  --bg-content: oklch(0.99 0.003 230);
 }
 
 /* ---- Theme: Lemon Drop ---- */
@@ -443,6 +476,8 @@ body {
   --mesh-1: oklch(0.92 0.04 85 / 0.3);
   --mesh-2: oklch(0.94 0.03 105 / 0.2);
   --mesh-3: oklch(0.93 0.02 70 / 0.15);
+  --bg-surround: oklch(0.95 0.015 95);
+  --bg-content: oklch(0.99 0.005 95);
 }
 
 /* ---- Theme: Rose Garden ---- */
@@ -464,6 +499,8 @@ body {
   --mesh-1: oklch(0.92 0.04 10 / 0.3);
   --mesh-2: oklch(0.94 0.03 350 / 0.2);
   --mesh-3: oklch(0.93 0.02 25 / 0.15);
+  --bg-surround: oklch(0.95 0.01 10);
+  --bg-content: oklch(0.99 0.004 10);
 }
 
 /* ---- Theme: Sage Light ---- */
@@ -485,6 +522,8 @@ body {
   --mesh-1: oklch(0.91 0.02 145 / 0.3);
   --mesh-2: oklch(0.93 0.015 160 / 0.2);
   --mesh-3: oklch(0.92 0.01 130 / 0.15);
+  --bg-surround: oklch(0.94 0.008 145);
+  --bg-content: oklch(0.98 0.004 145);
 }
 
 /* ---- Theme: Sand Dune ---- */
@@ -506,6 +545,8 @@ body {
   --mesh-1: oklch(0.91 0.02 75 / 0.3);
   --mesh-2: oklch(0.93 0.015 60 / 0.2);
   --mesh-3: oklch(0.92 0.01 90 / 0.15);
+  --bg-surround: oklch(0.94 0.01 75);
+  --bg-content: oklch(0.98 0.004 75);
 }
 
 /* ---- Theme: Ice Crystal ---- */
@@ -527,6 +568,8 @@ body {
   --mesh-1: oklch(0.91 0.01 250 / 0.25);
   --mesh-2: oklch(0.93 0.008 240 / 0.18);
   --mesh-3: oklch(0.92 0.006 260 / 0.12);
+  --bg-surround: oklch(0.94 0.004 250);
+  --bg-content: oklch(0.98 0.002 250);
 }
 
 /* ===========================
@@ -552,6 +595,8 @@ body {
   --mesh-1: oklch(0.9 0.03 260 / 0.3);
   --mesh-2: oklch(0.92 0.025 290 / 0.2);
   --mesh-3: oklch(0.91 0.02 230 / 0.15);
+  --bg-surround: oklch(0.93 0.004 260);
+  --bg-content: oklch(0.97 0.003 260);
 }
 
 /* ---- Theme: Catppuccin Frappé (Mid-Dark) ---- */
@@ -573,6 +618,8 @@ body {
   --mesh-1: oklch(0.32 0.06 260 / 0.4);
   --mesh-2: oklch(0.3 0.05 290 / 0.3);
   --mesh-3: oklch(0.28 0.04 240 / 0.2);
+  --bg-surround: oklch(0.28 0.02 270);
+  --bg-content: oklch(0.305 0.02 270);
 }
 
 /* ---- Theme: Catppuccin Macchiato (Dark) ---- */
@@ -594,6 +641,8 @@ body {
   --mesh-1: oklch(0.27 0.06 255 / 0.4);
   --mesh-2: oklch(0.25 0.05 295 / 0.3);
   --mesh-3: oklch(0.23 0.04 235 / 0.2);
+  --bg-surround: oklch(0.23 0.02 270);
+  --bg-content: oklch(0.255 0.02 270);
 }
 
 /* ---- Theme: Catppuccin Mocha (Darkest) ---- */
@@ -615,6 +664,8 @@ body {
   --mesh-1: oklch(0.24 0.06 255 / 0.4);
   --mesh-2: oklch(0.22 0.05 300 / 0.3);
   --mesh-3: oklch(0.2 0.04 235 / 0.2);
+  --bg-surround: oklch(0.19 0.02 275);
+  --bg-content: oklch(0.215 0.02 275);
 }
 
 /* ===========================
@@ -669,6 +720,14 @@ body {
   border: 1px solid oklch(from var(--color-border) l c h / 0.4);
   background: oklch(from var(--color-card) l c h / 0.5);
   backdrop-filter: blur(8px);
+}
+
+/* Flat content surface — replaces glass-card at the page level.
+   Provides a subtle lightness shift from the surrounding shell. */
+@utility content-surface {
+  background-color: var(--bg-content);
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--color-border);
 }
 
 /* ===========================
