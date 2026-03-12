@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { m } from 'framer-motion';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import type { SettingsResponse, LlmProviderType, AdminSettings, SyncOverviewResponse, SyncOverviewSpace } from '@kb-creator/contracts';
+import type { SettingsResponse, LlmProviderType, AdminSettings, SyncOverviewResponse, SyncOverviewSpace, CustomPrompts } from '@kb-creator/contracts';
 import { apiFetch } from '../../shared/lib/api';
 import { useAuthStore } from '../../stores/auth-store';
 import { useSettings } from '../../shared/hooks/use-settings';
@@ -13,7 +13,7 @@ import { ErrorDashboard } from './ErrorDashboard';
 import { ThemeTab } from './ThemeTab';
 import { SkeletonFormFields } from '../../shared/components/Skeleton';
 
-type TabId = 'confluence' | 'sync' | 'ollama' | 'spaces' | 'theme' | 'account' | 'labels' | 'errors' | 'embedding';
+type TabId = 'confluence' | 'sync' | 'ollama' | 'ai-prompts' | 'spaces' | 'theme' | 'account' | 'labels' | 'errors' | 'embedding';
 
 export function SettingsPage() {
   const queryClient = useQueryClient();
@@ -38,6 +38,7 @@ export function SettingsPage() {
     { id: 'sync', label: 'Sync' },
     { id: 'spaces', label: 'Spaces' },
     { id: 'ollama', label: 'LLM' },
+    { id: 'ai-prompts', label: 'AI Prompts' },
     { id: 'theme', label: 'Theme' },
     { id: 'account', label: 'Account' },
     { id: 'labels', label: 'Labels', adminOnly: true },
@@ -89,6 +90,8 @@ export function SettingsPage() {
             />
           ) : activeTab === 'ollama' ? (
             <LlmTab settings={settings!} onSave={(v) => updateSettings.mutate(v)} />
+          ) : activeTab === 'ai-prompts' ? (
+            <AiPromptsTab settings={settings!} onSave={(v) => updateSettings.mutate(v)} />
           ) : activeTab === 'theme' ? (
             <ThemeTab onSave={(v) => updateSettings.mutate(v)} />
           ) : activeTab === 'labels' && isAdmin ? (
@@ -793,6 +796,102 @@ function EmbeddingTab() {
           data-testid="admin-chunk-save-btn"
         >
           {updateAdminSettings.isPending ? 'Saving...' : 'Save'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+const PROMPT_TYPES = [
+  {
+    key: 'improve_grammar' as const,
+    label: 'Grammar',
+    description: 'Fix spelling, grammar, and punctuation without changing meaning.',
+    placeholder: 'You are a technical writing assistant. Improve the grammar, spelling, and punctuation of the following article while preserving its meaning and structure. Return the improved text in Markdown format. Only output the improved text, no explanations.',
+  },
+  {
+    key: 'improve_structure' as const,
+    label: 'Structure',
+    description: 'Reorganize headings, paragraph flow, and logical order.',
+    placeholder: 'You are a technical writing assistant. Improve the structure and organization of the following article. Add clear headings, improve paragraph flow, and ensure logical order. Return the improved text in Markdown format. Only output the improved text, no explanations.',
+  },
+  {
+    key: 'improve_clarity' as const,
+    label: 'Clarity',
+    description: 'Simplify complex sentences and remove unnecessary jargon.',
+    placeholder: 'You are a technical writing assistant. Improve the clarity and readability of the following article. Simplify complex sentences, remove jargon where possible, and ensure each point is clear. Return the improved text in Markdown format. Only output the improved text, no explanations.',
+  },
+  {
+    key: 'improve_technical' as const,
+    label: 'Technical',
+    description: 'Fix technical errors and add missing technical details.',
+    placeholder: 'You are a technical expert reviewer. Review the following article for technical accuracy. Fix any technical errors, update outdated information, and add missing technical details. Return the improved text in Markdown format. Only output the improved text, no explanations.',
+  },
+  {
+    key: 'improve_completeness' as const,
+    label: 'Completeness',
+    description: 'Fill gaps, add missing sections, and include examples.',
+    placeholder: 'You are a technical writing assistant. Review the following article for completeness. Identify and fill in any missing sections, add examples where helpful, and ensure all topics are adequately covered. Return the improved text in Markdown format. Only output the improved text, no explanations.',
+  },
+];
+
+function AiPromptsTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: Record<string, unknown>) => void }) {
+  const [prompts, setPrompts] = useState<CustomPrompts>(settings.customPrompts ?? {});
+  const saved = settings.customPrompts ?? {};
+  const hasChanges = JSON.stringify(prompts) !== JSON.stringify(saved);
+
+  function handleChange(key: string, value: string) {
+    setPrompts((prev) => {
+      const next = { ...prev };
+      if (value.trim()) {
+        next[key as keyof CustomPrompts] = value;
+      } else {
+        delete next[key as keyof CustomPrompts];
+      }
+      return next;
+    });
+  }
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <p className="text-sm text-muted-foreground">
+          Customize the system prompts used by the AI Improver. Leave empty to use the built-in default.
+          The language preservation instruction is always appended automatically.
+        </p>
+      </div>
+
+      {PROMPT_TYPES.map((pt) => (
+        <div key={pt.key}>
+          <label className="mb-1 block text-sm font-medium">{pt.label}</label>
+          <p className="mb-1.5 text-xs text-muted-foreground">{pt.description}</p>
+          <textarea
+            value={prompts[pt.key] ?? ''}
+            onChange={(e) => handleChange(pt.key, e.target.value)}
+            placeholder={pt.placeholder}
+            rows={3}
+            className="glass-input w-full resize-y font-mono text-xs"
+            data-testid={`prompt-${pt.key}`}
+          />
+          {prompts[pt.key] && (
+            <button
+              onClick={() => handleChange(pt.key, '')}
+              className="mt-1 text-xs text-muted-foreground hover:text-destructive"
+            >
+              Reset to default
+            </button>
+          )}
+        </div>
+      ))}
+
+      <div>
+        <button
+          onClick={() => onSave({ customPrompts: prompts })}
+          disabled={!hasChanges}
+          className="glass-button-primary"
+          data-testid="ai-prompts-save-btn"
+        >
+          Save
         </button>
       </div>
     </div>

@@ -404,4 +404,50 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     expect(deleteCalls).toHaveLength(1);
     expect(deleteCalls[0][1]).toContain('test-user-id');
   });
+
+  it('GET /settings returns customPrompts from DB', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{
+        confluence_url: null, confluence_pat: null, ollama_model: 'qwen3.5',
+        llm_provider: 'ollama', openai_base_url: null, openai_api_key: null,
+        openai_model: null, theme: 'glass-dark', sync_interval_min: 15,
+        show_space_home_content: true,
+        custom_prompts: { improve_grammar: 'Fix grammar pls' },
+      }],
+    });
+    mockQuery.mockResolvedValueOnce({ rows: [] }); // spaces
+
+    const response = await app.inject({ method: 'GET', url: '/api/settings' });
+    const body = JSON.parse(response.body);
+
+    expect(body.customPrompts).toEqual({ improve_grammar: 'Fix grammar pls' });
+  });
+
+  it('GET /settings returns empty customPrompts when no row exists', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    mockQuery.mockResolvedValueOnce({ rows: [] }); // spaces (queried before the empty check)
+
+    const response = await app.inject({ method: 'GET', url: '/api/settings' });
+    const body = JSON.parse(response.body);
+
+    expect(body.customPrompts).toEqual({});
+  });
+
+  it('PUT /settings persists customPrompts as JSON', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 }); // UPDATE
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { customPrompts: { improve_clarity: 'Be clear!' } },
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    const updateCalls = mockQuery.mock.calls.filter(
+      (call) => typeof call[0] === 'string' && (call[0] as string).includes('custom_prompts'),
+    );
+    expect(updateCalls).toHaveLength(1);
+    expect(updateCalls[0][1]).toContain(JSON.stringify({ improve_clarity: 'Be clear!' }));
+  });
 });
