@@ -3,7 +3,7 @@ import { query } from '../../core/db/postgres.js';
 import { ChatMessage } from '../../domains/llm/services/ollama-service.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { ApplyImprovementRequestSchema } from '@kb-creator/contracts';
-import { htmlToMarkdown, confluenceToHtml, htmlToConfluence, htmlToText, markdownToHtml } from '../../core/services/content-converter.js';
+import { confluenceToHtml, htmlToConfluence, htmlToText, markdownToHtml } from '../../core/services/content-converter.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { IdParamSchema, ImprovementsQuerySchema } from './_helpers.js';
