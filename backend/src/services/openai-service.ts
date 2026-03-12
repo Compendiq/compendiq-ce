@@ -24,8 +24,8 @@ import type {
 } from './llm-provider.js';
 
 const REQUEST_TIMEOUT_MS = 60_000;
-/** Streaming requests can take much longer (large articles). */
-const STREAM_TIMEOUT_MS = 300_000;
+/** Streaming requests can take much longer (large articles). Configurable via env. */
+const STREAM_TIMEOUT_MS = parseInt(process.env.LLM_STREAM_TIMEOUT_MS ?? '300000', 10);
 
 // Max 2 concurrent LLM calls (same as Ollama)
 const llmLimit = pLimit(2);

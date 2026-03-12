@@ -219,6 +219,54 @@ describe('OpenAIProvider', () => {
       expect(chunks.some((c) => c.content === 'Hello')).toBe(true);
       expect(chunks.some((c) => c.content === ' World')).toBe(true);
     });
+
+    it('should use 5-minute streaming timeout when no signal is provided', async () => {
+      const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+
+      const sseData = 'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode(sseData));
+          controller.close();
+        },
+      });
+      mockFetch.mockResolvedValueOnce(new Response(stream, { status: 200 }));
+
+      const provider = new OpenAIProvider();
+      for await (const _chunk of provider.streamChat('gpt-4o', [{ role: 'user', content: 'Hi' }])) {
+        // consume
+      }
+
+      // streamChat should request the 300s streaming timeout, not the 60s default
+      expect(timeoutSpy).toHaveBeenCalledWith(300_000);
+      timeoutSpy.mockRestore();
+    });
+
+    it('should honour a caller-provided signal instead of the default streaming timeout', async () => {
+      const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+      const callerSignal = AbortSignal.timeout(10_000);
+
+      const sseData = 'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode(sseData));
+          controller.close();
+        },
+      });
+      mockFetch.mockResolvedValueOnce(new Response(stream, { status: 200 }));
+
+      const provider = new OpenAIProvider();
+      for await (const _chunk of provider.streamChat('gpt-4o', [{ role: 'user', content: 'Hi' }], callerSignal)) {
+        // consume
+      }
+
+      // The 300_000 streaming fallback should NOT have been created
+      const streamTimeoutCalls = timeoutSpy.mock.calls.filter(([ms]) => ms === 300_000);
+      expect(streamTimeoutCalls).toHaveLength(0);
+      timeoutSpy.mockRestore();
+    });
   });
 
   describe('configuration', () => {

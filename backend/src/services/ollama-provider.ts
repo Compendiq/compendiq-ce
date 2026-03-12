@@ -20,8 +20,8 @@ import type {
 
 /** Default timeout for Ollama HTTP requests (30 s). */
 const OLLAMA_REQUEST_TIMEOUT_MS = 30_000;
-/** Streaming requests can take much longer (large articles). */
-const OLLAMA_STREAM_TIMEOUT_MS = 300_000;
+/** Streaming requests can take much longer (large articles). Configurable via env. */
+const OLLAMA_STREAM_TIMEOUT_MS = parseInt(process.env.LLM_STREAM_TIMEOUT_MS ?? '300000', 10);
 
 /** Whether to verify TLS certificates for LLM connections (default: true). */
 const llmVerifySsl = process.env.LLM_VERIFY_SSL !== 'false';
