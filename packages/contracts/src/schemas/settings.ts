@@ -3,6 +3,19 @@ import { z } from 'zod';
 export const LlmProviderSchema = z.enum(['ollama', 'openai']);
 export type LlmProviderType = z.infer<typeof LlmProviderSchema>;
 
+/** Valid keys for custom system prompt overrides. */
+export const CUSTOM_PROMPT_KEYS = [
+  'improve_grammar',
+  'improve_structure',
+  'improve_clarity',
+  'improve_technical',
+  'improve_completeness',
+] as const;
+export type CustomPromptKey = (typeof CUSTOM_PROMPT_KEYS)[number];
+
+export const CustomPromptsSchema = z.record(z.string(), z.string()).default({});
+export type CustomPrompts = Partial<Record<CustomPromptKey, string>>;
+
 export const UserSettingsSchema = z.object({
   confluenceUrl: z.string().url().nullable(),
   confluencePat: z.string().nullable(), // Only sent on update, never returned
@@ -15,6 +28,7 @@ export const UserSettingsSchema = z.object({
   theme: z.string(),
   syncIntervalMin: z.number().int().min(1).max(1440),
   showSpaceHomeContent: z.boolean(),
+  customPrompts: CustomPromptsSchema.optional(),
 });
 
 export const UpdateSettingsSchema = UserSettingsSchema.partial();
@@ -33,6 +47,7 @@ export const SettingsResponseSchema = z.object({
   syncIntervalMin: z.number(),
   confluenceConnected: z.boolean(),
   showSpaceHomeContent: z.boolean(),
+  customPrompts: CustomPromptsSchema,
 });
 
 export const SyncProgressSchema = z.object({

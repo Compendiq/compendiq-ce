@@ -70,6 +70,18 @@ async function assembleContextIfNeeded(
   };
 }
 
+/**
+ * Fetch user's custom prompt for a given key, or fall back to the built-in default.
+ */
+async function resolveSystemPrompt(userId: string, key: SystemPromptKey): Promise<string> {
+  const result = await query<{ custom_prompts: Record<string, string> }>(
+    'SELECT custom_prompts FROM user_settings WHERE user_id = $1',
+    [userId],
+  );
+  const custom = result.rows[0]?.custom_prompts?.[key];
+  return custom && custom.trim() ? custom : getSystemPrompt(key);
+}
+
 // Rate limit configs for LLM endpoints
 const LLM_STREAM_RATE_LIMIT = { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } };
 const EMBEDDING_RATE_LIMIT = { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } };
@@ -263,7 +275,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
       await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/improve' }, request);
     }
 
-    const systemPrompt = getSystemPrompt(`improve_${type}` as SystemPromptKey) + multiPageSuffix;
+    const systemPrompt = await resolveSystemPrompt(userId, `improve_${type}` as SystemPromptKey) + multiPageSuffix;
 
     // Check LLM cache with stampede protection
     const cacheKey = buildLlmCacheKey(model, systemPrompt, sanitized);
