@@ -2,6 +2,7 @@ import { FastifyInstance, FastifyReply } from 'fastify';
 import { query } from '../db/postgres.js';
 import {
   getSystemPrompt, ChatMessage, SystemPromptKey,
+  LANGUAGE_PRESERVATION_INSTRUCTION,
   listModels, checkHealth,
   isLlmVerifySslEnabled, getLlmAuthType,
   getActiveProviderType, getProvider,
@@ -79,7 +80,11 @@ async function resolveSystemPrompt(userId: string, key: SystemPromptKey): Promis
     [userId],
   );
   const custom = result.rows[0]?.custom_prompts?.[key];
-  return custom && custom.trim() ? custom : getSystemPrompt(key);
+  if (custom && custom.trim()) {
+    // Always append language preservation instruction to custom prompts
+    return `${custom} ${LANGUAGE_PRESERVATION_INSTRUCTION}`;
+  }
+  return getSystemPrompt(key);
 }
 
 // Rate limit configs for LLM endpoints
