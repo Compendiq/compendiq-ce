@@ -9,6 +9,8 @@ import { Breadcrumb } from './Breadcrumb';
 import { UserMenu } from './UserMenu';
 import { SidebarTreeView } from './SidebarTreeView';
 import { ArticleRightPane } from './ArticleRightPane';
+import { AuroraBackground } from './AuroraBackground';
+import { NoiseOverlay } from './NoiseOverlay';
 import { PageTransition } from './PageTransition';
 import { cn } from '../lib/cn';
 
@@ -53,7 +55,9 @@ export function AppLayout({ children }: { children: ReactNode }) {
   }, [openCommandPalette]);
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden" style={{ backgroundColor: 'var(--bg-surround)' }}>
+    <div className="flex h-screen flex-col overflow-hidden bg-background">
+      <AuroraBackground />
+      <NoiseOverlay />
       <CommandPalette />
 
       {/* Top navigation bar - full width, always on top */}
@@ -168,10 +172,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
             </div>
             <div ref={scrollContainerRef} data-scroll-container className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
               <PageTransition>
-                <div
-                  className={cn('mx-auto w-full', isArticleRoute ? 'max-w-[1400px]' : 'max-w-7xl')}
-                  style={{ backgroundColor: 'var(--bg-content)', borderRadius: 'var(--radius-xl)' }}
-                >
+                <div className={cn('mx-auto w-full', isArticleRoute ? 'max-w-[1400px]' : 'max-w-7xl')}>
                   {children}
                 </div>
               </PageTransition>

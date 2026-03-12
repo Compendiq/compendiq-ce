@@ -22,6 +22,14 @@ vi.mock('./ServiceStatus', () => ({
   ServiceStatus: () => null,
 }));
 
+vi.mock('./AuroraBackground', () => ({
+  AuroraBackground: () => <div data-testid="aurora-background" />,
+}));
+
+vi.mock('./NoiseOverlay', () => ({
+  NoiseOverlay: () => null,
+}));
+
 function createWrapper(initialPath = '/') {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -214,34 +222,5 @@ describe('AppLayout', () => {
     const rootDiv = container.firstElementChild as HTMLElement;
     expect(rootDiv.className).toContain('overflow-hidden');
     expect(rootDiv.className).toContain('h-screen');
-  });
-
-  it('uses flat bg-surround background instead of aurora/noise overlays', () => {
-    const { container } = render(
-      <AppLayout>
-        <div>content</div>
-      </AppLayout>,
-      { wrapper: createWrapper('/') },
-    );
-    const rootDiv = container.firstElementChild as HTMLElement;
-    // Should use --bg-surround inline style, not bg-background class
-    expect(rootDiv.style.backgroundColor).toBe('var(--bg-surround)');
-    expect(rootDiv.className).not.toContain('bg-background');
-    // Aurora and noise overlays should not be rendered
-    expect(container.querySelector('[data-testid="aurora-background"]')).toBeNull();
-    expect(container.querySelector('[data-testid="noise-overlay"]')).toBeNull();
-  });
-
-  it('applies bg-content to the content container', () => {
-    const { container } = render(
-      <AppLayout>
-        <div>content</div>
-      </AppLayout>,
-      { wrapper: createWrapper('/') },
-    );
-    // The max-width content wrapper should have bg-content
-    const contentWrapper = container.querySelector('.max-w-7xl') as HTMLElement;
-    expect(contentWrapper).not.toBeNull();
-    expect(contentWrapper.style.backgroundColor).toBe('var(--bg-content)');
   });
 });

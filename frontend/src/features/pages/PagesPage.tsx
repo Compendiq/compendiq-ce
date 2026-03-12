@@ -169,7 +169,7 @@ export function PagesPage() {
 
       {/* Sync progress */}
       {syncStatus?.status === 'syncing' && syncStatus.progress && (
-        <div className="rounded-xl border border-border p-3">
+        <div className="glass-card p-3">
           <div className="flex items-center justify-between text-sm">
             <span>Syncing {syncStatus.progress.space}...</span>
             <span>{syncStatus.progress.current}/{syncStatus.progress.total}</span>
@@ -185,7 +185,7 @@ export function PagesPage() {
 
       {/* Embedding progress */}
       {embeddingStatusData?.isProcessing && (
-        <div className="rounded-xl border border-primary/30 flex items-center gap-3 p-3" data-testid="embedding-progress-banner">
+        <div className="glass-card flex items-center gap-3 p-3 border border-primary/30" data-testid="embedding-progress-banner">
           <Loader2 size={16} className="animate-spin text-primary" />
           <span className="text-sm">
             Embedding in progress — {embeddingStatusData.dirtyPages} pages remaining
@@ -205,7 +205,7 @@ export function PagesPage() {
       )}
 
       {/* Filters */}
-      <div className="rounded-xl border border-border space-y-3 p-4">
+      <div className="glass-card space-y-3 p-4">
         <div className="flex flex-wrap items-center gap-3">
           {/* Search */}
           <div className="relative flex-1 min-w-48">
@@ -387,7 +387,7 @@ export function PagesPage() {
       {/* Space home content (when enabled and a space is selected) */}
       {showHomeContent && !forcePageList ? (
         homePageLoading ? (
-          <div className="rounded-xl border border-border h-96 animate-pulse" />
+          <div className="glass-card h-96 animate-pulse" />
         ) : homePage ? (
           <m.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-3">
             <div className="flex items-center justify-between">
@@ -409,7 +409,7 @@ export function PagesPage() {
               </div>
             </div>
             <div
-              className={`rounded-xl border border-border prose max-w-none p-6${isLight ? '' : ' prose-invert'}`}
+              className={`glass-card prose max-w-none p-6${isLight ? '' : ' prose-invert'}`}
               dangerouslySetInnerHTML={{ __html: sanitizedHomeHtml }}
             />
           </m.div>
@@ -420,11 +420,11 @@ export function PagesPage() {
       {isLoading ? (
         <div className="space-y-3">
           {Array.from({ length: 5 }).map((_, i) => (
-            <div key={i} className="rounded-xl border border-border h-16 animate-pulse" />
+            <div key={i} className="glass-card h-16 animate-pulse" />
           ))}
         </div>
       ) : !pagesData?.items.length ? (
-        <div className="rounded-xl border border-border flex flex-col items-center justify-center py-16 text-center">
+        <div className="glass-card flex flex-col items-center justify-center py-16 text-center">
           <FolderOpen size={48} className="mb-4 text-muted-foreground" />
           <p className="text-lg font-medium">No pages found</p>
           <p className="text-sm text-muted-foreground">
