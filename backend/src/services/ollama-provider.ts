@@ -20,6 +20,8 @@ import type {
 
 /** Default timeout for Ollama HTTP requests (30 s). */
 const OLLAMA_REQUEST_TIMEOUT_MS = 30_000;
+/** Streaming requests can take much longer (large articles). Configurable via env. */
+const OLLAMA_STREAM_TIMEOUT_MS = parseInt(process.env.LLM_STREAM_TIMEOUT_MS ?? '300000', 10);
 
 /** Whether to verify TLS certificates for LLM connections (default: true). */
 const llmVerifySsl = process.env.LLM_VERIFY_SSL !== 'false';
@@ -47,9 +49,16 @@ const llmDispatcher = buildLlmDispatcher();
  */
 const ollamaFetch: typeof fetch = (input, init?) => {
   const hasSignal = init?.signal != null;
+  // Streaming requests (large article improvements) can take several minutes;
+  // detect stream:true in the body and apply a longer timeout.
+  let isStream = false;
+  if (!hasSignal && typeof init?.body === 'string') {
+    try { isStream = JSON.parse(init.body).stream === true; } catch { /* ignore */ }
+  }
+  const timeout = isStream ? OLLAMA_STREAM_TIMEOUT_MS : OLLAMA_REQUEST_TIMEOUT_MS;
   return undiciFetch(input as any, {
     ...init,
-    signal: hasSignal ? init!.signal : AbortSignal.timeout(OLLAMA_REQUEST_TIMEOUT_MS),
+    signal: hasSignal ? init!.signal : AbortSignal.timeout(timeout),
     dispatcher: llmDispatcher,
   } as any) as unknown as ReturnType<typeof fetch>;
 };

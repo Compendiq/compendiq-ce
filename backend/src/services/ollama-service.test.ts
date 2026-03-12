@@ -4,10 +4,15 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // based on the LLM_BEARER_TOKEN env var. Since the module initializes at import time,
 // we use dynamic imports with vi.resetModules() to test different configurations.
 
+const { mockUndiciFetch } = vi.hoisted(() => ({
+  mockUndiciFetch: vi.fn().mockReturnValue(Promise.resolve(new Response('{}'))),
+}));
+
 vi.mock('undici', () => ({
   Agent: class MockAgent {
     constructor(public opts: Record<string, unknown>) {}
   },
+  fetch: mockUndiciFetch,
 }));
 
 vi.mock('./circuit-breaker.js', () => ({
@@ -271,5 +276,85 @@ describe('ollama-service system prompts — language preservation', () => {
 
     expect(prompt).not.toContain('ORIGINAL language');
     expect(prompt).not.toContain('Never translate');
+  });
+});
+
+describe('ollama-provider ollamaFetch streaming timeout detection', () => {
+  const originalEnv = { ...process.env };
+
+  beforeEach(() => {
+    capturedConfig = undefined;
+    mockUndiciFetch.mockReset();
+    mockUndiciFetch.mockReturnValue(Promise.resolve(new Response('{}')));
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  it('should use 5-minute timeout for streaming requests (stream:true in body)', async () => {
+    delete process.env.LLM_BEARER_TOKEN;
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+
+    await import('./ollama-service.js');
+    const fetchFn = capturedConfig!.fetch as typeof fetch;
+
+    await fetchFn('http://test/api/chat', {
+      method: 'POST',
+      body: JSON.stringify({ model: 'qwen3', messages: [], stream: true }),
+    });
+
+    expect(timeoutSpy).toHaveBeenCalledWith(300_000);
+    timeoutSpy.mockRestore();
+  });
+
+  it('should use 30-second timeout for non-streaming requests', async () => {
+    delete process.env.LLM_BEARER_TOKEN;
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+
+    await import('./ollama-service.js');
+    const fetchFn = capturedConfig!.fetch as typeof fetch;
+
+    await fetchFn('http://test/api/chat', {
+      method: 'POST',
+      body: JSON.stringify({ model: 'qwen3', messages: [], stream: false }),
+    });
+
+    expect(timeoutSpy).toHaveBeenCalledWith(30_000);
+    timeoutSpy.mockRestore();
+  });
+
+  it('should use 30-second timeout when body is not valid JSON', async () => {
+    delete process.env.LLM_BEARER_TOKEN;
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+
+    await import('./ollama-service.js');
+    const fetchFn = capturedConfig!.fetch as typeof fetch;
+
+    await fetchFn('http://test/api/tags', { method: 'GET' });
+
+    expect(timeoutSpy).toHaveBeenCalledWith(30_000);
+    timeoutSpy.mockRestore();
+  });
+
+  it('should not override a caller-provided signal', async () => {
+    delete process.env.LLM_BEARER_TOKEN;
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+
+    await import('./ollama-service.js');
+    const fetchFn = capturedConfig!.fetch as typeof fetch;
+
+    const callerSignal = AbortSignal.timeout(5_000);
+    await fetchFn('http://test/api/chat', {
+      method: 'POST',
+      body: JSON.stringify({ model: 'qwen3', messages: [], stream: true }),
+      signal: callerSignal,
+    });
+
+    // The fetch should have been called with the caller's signal, not a new timeout
+    const passedSignal = mockUndiciFetch.mock.calls[0][1]?.signal;
+    expect(passedSignal).toBe(callerSignal);
+    timeoutSpy.mockRestore();
   });
 });
