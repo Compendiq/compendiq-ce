@@ -102,6 +102,47 @@ describe('article-extensions', () => {
       expect(parseRules).toBeDefined();
       expect(parseRules).toContainEqual(expect.objectContaining({ tag: 'div.confluence-children-macro' }));
     });
+
+    it('defines attributes for all supported parameters', () => {
+      const addAttributes = ConfluenceChildren.config.addAttributes;
+      const attrs = addAttributes?.call({ name: 'confluenceChildren', options: {}, storage: {}, parent: undefined });
+      expect(attrs).toBeDefined();
+      const expectedParams = ['sort', 'reverse', 'depth', 'first', 'page', 'style', 'excerptType', 'macro-name'];
+      for (const param of expectedParams) {
+        expect(attrs).toHaveProperty(param);
+        expect(attrs[param].default).toBeNull();
+      }
+    });
+
+    it('parseHTML reads data-* attributes for each parameter', () => {
+      const addAttributes = ConfluenceChildren.config.addAttributes;
+      const attrs = addAttributes?.call({ name: 'confluenceChildren', options: {}, storage: {}, parent: undefined });
+      // Create a mock element with data attributes (case-insensitive like real DOM)
+      const mockElement = {
+        getAttribute: (name: string) => {
+          const map: Record<string, string> = {
+            'data-sort': 'creation',
+            'data-reverse': 'true',
+            'data-depth': '2',
+            'data-first': '10',
+            'data-page': 'My Page',
+            'data-style': 'h3',
+            'data-excerpttype': 'rich',
+            'data-macro-name': 'ui-children',
+          };
+          return map[name.toLowerCase()] ?? null;
+        },
+      } as unknown as HTMLElement;
+
+      expect(attrs.sort.parseHTML(mockElement)).toBe('creation');
+      expect(attrs.reverse.parseHTML(mockElement)).toBe('true');
+      expect(attrs.depth.parseHTML(mockElement)).toBe('2');
+      expect(attrs.first.parseHTML(mockElement)).toBe('10');
+      expect(attrs.page.parseHTML(mockElement)).toBe('My Page');
+      expect(attrs.style.parseHTML(mockElement)).toBe('h3');
+      expect(attrs.excerptType.parseHTML(mockElement)).toBe('rich');
+      expect(attrs['macro-name'].parseHTML(mockElement)).toBe('ui-children');
+    });
   });
 
   describe('UnknownMacro', () => {

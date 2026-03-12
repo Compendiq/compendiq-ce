@@ -72,8 +72,8 @@ interface EditorProps {
   draftKey?: string;
   /** Remove the glass-card wrapper (use inside an already-styled card). Default false. */
   naked?: boolean;
-  /** Ref to receive the TipTap editor instance. */
-  editorRef?: React.MutableRefObject<EditorType | null>;
+  /** Callback fired when the TipTap editor instance is ready (or destroyed). */
+  onEditorReady?: (editor: EditorType | null) => void;
   /** Hide built-in toolbar. Default false. */
   hideToolbar?: boolean;
 }
@@ -322,7 +322,7 @@ export function clearDraft(key: string): void {
   } catch { /* ignore */ }
 }
 
-export function Editor({ content, onChange, editable = true, placeholder, draftKey, naked = false, editorRef, hideToolbar = false }: EditorProps) {
+export function Editor({ content, onChange, editable = true, placeholder, draftKey, naked = false, onEditorReady, hideToolbar = false }: EditorProps) {
   const isLight = useIsLightTheme();
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
@@ -367,10 +367,11 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
     },
   });
 
-  // Expose editor instance to parent via ref
+  // Notify parent when editor instance is ready (triggers re-render via setState)
   useEffect(() => {
-    if (editorRef) editorRef.current = editor;
-  }, [editor, editorRef]);
+    onEditorReady?.(editor);
+    return () => onEditorReady?.(null);
+  }, [editor, onEditorReady]);
 
   return (
     <div className={naked ? '' : 'glass-card'}>

@@ -211,6 +211,14 @@ export const CHILDREN_MACRO_PAGE = `<h2>Sub-pages</h2>
 export const CHILDREN_MACRO_NO_PARAMS_PAGE = `<h2>Sub-pages</h2>
 <ac:structured-macro ac:name="children"></ac:structured-macro>`;
 
+/** Page with children macro using all supported parameters */
+export const CHILDREN_MACRO_ALL_PARAMS_PAGE = `<h2>Sub-pages</h2>
+<ac:structured-macro ac:name="children"><ac:parameter ac:name="sort">creation</ac:parameter><ac:parameter ac:name="reverse">true</ac:parameter><ac:parameter ac:name="depth">2</ac:parameter><ac:parameter ac:name="first">10</ac:parameter><ac:parameter ac:name="page">My Parent</ac:parameter><ac:parameter ac:name="style">h3</ac:parameter><ac:parameter ac:name="excerptType">rich</ac:parameter></ac:structured-macro>`;
+
+/** Page with ui-children macro variant */
+export const UI_CHILDREN_MACRO_PAGE = `<h2>Sub-pages</h2>
+<ac:structured-macro ac:name="ui-children"><ac:parameter ac:name="sort">title</ac:parameter><ac:parameter ac:name="depth">3</ac:parameter></ac:structured-macro>`;
+
 /** Page with data-macro-name attribute variant (some Confluence versions use this) */
 export const DATA_MACRO_VARIANT_PAGE = `<h2>Code Example</h2>
 <ac:structured-macro data-macro-name="code"><ac:parameter ac:name="language">python</ac:parameter><ac:plain-text-body><![CDATA[print("hello world")]]></ac:plain-text-body></ac:structured-macro>

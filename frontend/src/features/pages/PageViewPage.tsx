@@ -12,7 +12,7 @@ import { useAuthenticatedSrc } from '../../shared/hooks/use-authenticated-src';
 import { useArticleViewStore } from '../../stores/article-view-store';
 import { FeatureErrorBoundary } from '../../shared/components/FeatureErrorBoundary';
 import { Editor, EditorToolbar, TableContextToolbar, clearDraft, getDraft } from '../../shared/components/Editor';
-import type { Editor as EditorType } from '@tiptap/react';
+import type { Editor as EditorType } from '@tiptap/core';
 import { ArticleViewer } from '../../shared/components/ArticleViewer';
 import type { TocHeading } from '../../shared/components/TableOfContents';
 import { PageViewSkeleton } from '../../shared/components/Skeleton';
@@ -96,7 +96,7 @@ export function PageViewPage() {
   const setStoreEditing = useArticleViewStore((s) => s.setEditing);
 
   const [editing, setEditing] = useState(false);
-  const editorInstanceRef = useRef<EditorType | null>(null);
+  const [editorInstance, setEditorInstance] = useState<EditorType | null>(null);
   const [editHtml, setEditHtml] = useState('');
   const [editTitle, setEditTitle] = useState('');
   const [headings, setHeadings] = useState<TocHeading[]>([]);
@@ -219,8 +219,16 @@ export function PageViewPage() {
       transition={{ duration: 0.18 }}
       data-testid="article-page"
     >
+      {/* Sticky toolbar — rendered OUTSIDE glass-card-xl so sticky works */}
+      {editing && editorInstance && (
+        <div className="sticky top-0 z-20 rounded-t-xl border-b border-border/25 bg-card/95 backdrop-blur-sm glass-card-xl overflow-visible">
+          <EditorToolbar editor={editorInstance} />
+          <TableContextToolbar editor={editorInstance} />
+        </div>
+      )}
+
       {/* Single unified document card */}
-      <div className="overflow-hidden glass-card-xl">
+      <div className={editing ? 'overflow-hidden glass-card-xl rounded-t-none' : 'overflow-hidden glass-card-xl'}>
         {/* Breadcrumb / action strip */}
         <div className="flex items-center justify-between gap-4 border-b border-border/25 px-5 py-2 sm:px-7">
           <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground/60">
@@ -258,14 +266,6 @@ export function PageViewPage() {
           </div>
         </div>
 
-        {/* Sticky toolbar — outside glass-card-xl overflow context */}
-        {editing && editorInstanceRef.current && (
-          <div className="sticky top-0 z-20 border-b border-border/25 bg-card/95 backdrop-blur-sm">
-            <EditorToolbar editor={editorInstanceRef.current} />
-            <TableContextToolbar editor={editorInstanceRef.current} />
-          </div>
-        )}
-
         {editing ? (
           <>
             {/* Editable title — reading column, same width as editor content */}
@@ -282,7 +282,7 @@ export function PageViewPage() {
 
             {/* Editor — naked (no inner glass-card, we are already inside glass-card-xl) */}
             <FeatureErrorBoundary featureName="Editor">
-              <Editor content={editHtml} onChange={setEditHtml} draftKey={draftKey} naked editorRef={editorInstanceRef} hideToolbar />
+              <Editor content={editHtml} onChange={setEditHtml} draftKey={draftKey} naked onEditorReady={setEditorInstance} hideToolbar />
             </FeatureErrorBoundary>
           </>
         ) : (
