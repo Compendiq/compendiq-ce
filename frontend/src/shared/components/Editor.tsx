@@ -72,6 +72,10 @@ interface EditorProps {
   draftKey?: string;
   /** Remove the glass-card wrapper (use inside an already-styled card). Default false. */
   naked?: boolean;
+  /** Ref to receive the TipTap editor instance. */
+  editorRef?: React.MutableRefObject<EditorType | null>;
+  /** Hide built-in toolbar. Default false. */
+  hideToolbar?: boolean;
 }
 
 function ToolbarButton({
@@ -107,7 +111,7 @@ function ToolbarSeparator() {
   return <div className="mx-1 h-5 w-px bg-foreground/10" />;
 }
 
-function EditorToolbar({ editor }: { editor: EditorType }) {
+export function EditorToolbar({ editor }: { editor: EditorType }) {
   return (
     <div className="sticky top-0 z-10 flex flex-wrap items-center gap-0.5 border-b border-border/50 bg-card/95 backdrop-blur-sm px-2 py-1.5">
       <ToolbarButton onClick={() => editor.chain().focus().toggleBold().run()} active={editor.isActive('bold')} title="Bold">
@@ -189,7 +193,7 @@ function EditorToolbar({ editor }: { editor: EditorType }) {
   );
 }
 
-function TableContextToolbar({ editor }: { editor: EditorType }) {
+export function TableContextToolbar({ editor }: { editor: EditorType }) {
   if (!editor.isActive('table')) return null;
 
   return (
@@ -318,7 +322,7 @@ export function clearDraft(key: string): void {
   } catch { /* ignore */ }
 }
 
-export function Editor({ content, onChange, editable = true, placeholder, draftKey, naked = false }: EditorProps) {
+export function Editor({ content, onChange, editable = true, placeholder, draftKey, naked = false, editorRef, hideToolbar = false }: EditorProps) {
   const isLight = useIsLightTheme();
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
@@ -363,10 +367,15 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
     },
   });
 
+  // Expose editor instance to parent via ref
+  useEffect(() => {
+    if (editorRef) editorRef.current = editor;
+  }, [editor, editorRef]);
+
   return (
     <div className={naked ? '' : 'glass-card'}>
-      {editable && editor && <EditorToolbar editor={editor} />}
-      {editable && editor && <TableContextToolbar editor={editor} />}
+      {editable && editor && !hideToolbar && <EditorToolbar editor={editor} />}
+      {editable && editor && !hideToolbar && <TableContextToolbar editor={editor} />}
       <EditorContent
         editor={editor}
         className={cn(

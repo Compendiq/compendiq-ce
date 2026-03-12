@@ -210,16 +210,15 @@ export const ConfluenceChildren = Node.create({
   atom: true,
 
   addAttributes() {
-    return {
-      sort: {
+    const paramNames = ['sort', 'reverse', 'depth', 'first', 'page', 'style', 'excerptType', 'macro-name'];
+    const attrs: Record<string, { default: null; parseHTML: (el: HTMLElement) => string | null }> = {};
+    for (const name of paramNames) {
+      attrs[name] = {
         default: null,
-        parseHTML: (element) => element.getAttribute('data-sort'),
-      },
-      reverse: {
-        default: null,
-        parseHTML: (element) => element.getAttribute('data-reverse'),
-      },
-    };
+        parseHTML: (element) => element.getAttribute(`data-${name}`),
+      };
+    }
+    return attrs;
   },
 
   parseHTML() {
@@ -227,10 +226,12 @@ export const ConfluenceChildren = Node.create({
   },
 
   renderHTML({ node }) {
-    const attrs: Record<string, string> = { class: 'confluence-children-macro' };
-    if (node.attrs.sort) attrs['data-sort'] = node.attrs.sort;
-    if (node.attrs.reverse) attrs['data-reverse'] = node.attrs.reverse;
-    return ['div', attrs, '[Children pages listed here]'];
+    const htmlAttrs: Record<string, string> = { class: 'confluence-children-macro' };
+    const paramNames = ['sort', 'reverse', 'depth', 'first', 'page', 'style', 'excerptType', 'macro-name'];
+    for (const name of paramNames) {
+      if (node.attrs[name]) htmlAttrs[`data-${name}`] = node.attrs[name];
+    }
+    return ['div', htmlAttrs, '[Children pages listed here]'];
   },
 });
 
