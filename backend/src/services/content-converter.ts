@@ -245,11 +245,13 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
     macro.replaceWith(div);
   }
 
-  // Process children display macro -> placeholder div with optional sort/reverse params
+  // Process children / ui-children display macro -> placeholder div with optional sort/reverse params
   for (const macro of byTag(doc, 'ac:structured-macro')) {
-    if (getMacroName(macro) !== 'children') continue;
+    const macroName = getMacroName(macro);
+    if (macroName !== 'children' && macroName !== 'ui-children') continue;
     const div = doc.createElement('div');
     div.className = 'confluence-children-macro';
+    div.setAttribute('data-macro-name', macroName);
     div.textContent = '[Children pages listed here]';
     const sort = getParamValue(macro, 'sort');
     const reverse = getParamValue(macro, 'reverse');
@@ -365,10 +367,11 @@ export function htmlToConfluence(html: string): string {
     details.replaceWith(macro);
   }
 
-  // Convert children macro placeholders back to ac:structured-macro[name=children]
+  // Convert children / ui-children macro placeholders back to ac:structured-macro
   for (const div of doc.querySelectorAll('div.confluence-children-macro')) {
     const macro = doc.createElement('ac:structured-macro');
-    macro.setAttribute('ac:name', 'children');
+    const originalName = div.getAttribute('data-macro-name') || 'children';
+    macro.setAttribute('ac:name', originalName);
     const sort = div.getAttribute('data-sort');
     const reverse = div.getAttribute('data-reverse');
     if (sort !== null) {

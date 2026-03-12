@@ -94,8 +94,9 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
   const isActive = node.page.id === activePageId;
 
   const handleNavigate = useCallback(() => {
+    if (hasChildren) toggleExpand(node.page.id);
     navigate(`/pages/${node.page.id}`);
-  }, [navigate, node.page.id]);
+  }, [navigate, node.page.id, hasChildren, toggleExpand]);
 
   const handleToggle = useCallback(
     (e: React.MouseEvent) => {

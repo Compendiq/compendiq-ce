@@ -260,7 +260,7 @@ export function PageViewPage() {
           <>
             {/* Editable title — reading column, same width as editor content */}
             <div className="border-b border-border/25 px-5 py-5 sm:px-10">
-              <div className="mx-auto max-w-[720px]">
+              <div>
                 <input
                   value={editTitle}
                   onChange={(event) => setEditTitle(event.target.value)}
@@ -279,7 +279,7 @@ export function PageViewPage() {
           /* Reading view — constrained to 720 px reading column */
           <div
             ref={contentRef}
-            className="mx-auto max-w-[720px] px-5 pb-16 pt-10 sm:px-10 sm:pt-12"
+            className="px-5 pb-16 pt-10 sm:px-10 sm:pt-12"
             data-testid="article-content-shell"
           >
             <h1 className="mb-10 text-4xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground sm:text-5xl">
