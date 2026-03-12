@@ -453,6 +453,7 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     expect(response.statusCode).toBe(400);
   });
 
+
   it('PUT /settings persists customPrompts as JSON', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 }); // UPDATE
 
