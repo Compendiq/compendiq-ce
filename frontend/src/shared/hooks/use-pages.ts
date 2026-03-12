@@ -4,6 +4,7 @@ import { apiFetch } from '../lib/api';
 import { streamSSE } from '../lib/sse';
 
 export type EmbeddingStatus = 'not_embedded' | 'embedding' | 'embedded' | 'failed';
+export type QualityStatus = 'pending' | 'analyzing' | 'analyzed' | 'failed' | 'skipped';
 
 interface PageSummary {
   id: string;
@@ -19,6 +20,16 @@ interface PageSummary {
   embeddingStatus: EmbeddingStatus;
   embeddedAt: string | null;
   embeddingError: string | null;
+  qualityScore: number | null;
+  qualityStatus: QualityStatus | null;
+  qualityCompleteness: number | null;
+  qualityClarity: number | null;
+  qualityStructure: number | null;
+  qualityAccuracy: number | null;
+  qualityReadability: number | null;
+  qualitySummary: string | null;
+  qualityAnalyzedAt: string | null;
+  qualityError: string | null;
 }
 
 interface PageDetail extends PageSummary {
@@ -42,22 +53,26 @@ export interface PageFilters {
   labels?: string;
   freshness?: 'fresh' | 'recent' | 'aging' | 'stale';
   embeddingStatus?: 'pending' | 'done';
+  qualityMin?: number;
+  qualityMax?: number;
+  qualityStatus?: QualityStatus;
   dateFrom?: string;
   dateTo?: string;
   page?: number;
   limit?: number;
-  sort?: 'title' | 'modified' | 'author';
+  sort?: 'title' | 'modified' | 'author' | 'quality';
 }
 
 export function usePages(params: PageFilters = {}) {
   const {
     spaceKey, search, author, labels, freshness,
-    embeddingStatus, dateFrom, dateTo, page, limit, sort,
+    embeddingStatus, qualityMin, qualityMax, qualityStatus,
+    dateFrom, dateTo, page, limit, sort,
   } = params;
 
   const queryKey = useMemo(
-    () => ['pages', { spaceKey, search, author, labels, freshness, embeddingStatus, dateFrom, dateTo, page, limit, sort }] as const,
-    [spaceKey, search, author, labels, freshness, embeddingStatus, dateFrom, dateTo, page, limit, sort],
+    () => ['pages', { spaceKey, search, author, labels, freshness, embeddingStatus, qualityMin, qualityMax, qualityStatus, dateFrom, dateTo, page, limit, sort }] as const,
+    [spaceKey, search, author, labels, freshness, embeddingStatus, qualityMin, qualityMax, qualityStatus, dateFrom, dateTo, page, limit, sort],
   );
 
   const qs = useMemo(() => {
@@ -68,13 +83,16 @@ export function usePages(params: PageFilters = {}) {
     if (labels) sp.set('labels', labels);
     if (freshness) sp.set('freshness', freshness);
     if (embeddingStatus) sp.set('embeddingStatus', embeddingStatus);
+    if (qualityMin !== undefined) sp.set('qualityMin', String(qualityMin));
+    if (qualityMax !== undefined) sp.set('qualityMax', String(qualityMax));
+    if (qualityStatus) sp.set('qualityStatus', qualityStatus);
     if (dateFrom) sp.set('dateFrom', dateFrom);
     if (dateTo) sp.set('dateTo', dateTo);
     if (page) sp.set('page', String(page));
     if (limit) sp.set('limit', String(limit));
     if (sort) sp.set('sort', sort);
     return sp.toString();
-  }, [spaceKey, search, author, labels, freshness, embeddingStatus, dateFrom, dateTo, page, limit, sort]);
+  }, [spaceKey, search, author, labels, freshness, embeddingStatus, qualityMin, qualityMax, qualityStatus, dateFrom, dateTo, page, limit, sort]);
 
   return useQuery<PaginatedPages>({
     queryKey,
@@ -330,6 +348,28 @@ export function useEmbeddingProcess() {
   }, []);
 
   return { start, cancel, isProcessing, progress };
+}
+
+// ======== Quality Analysis Status ========
+
+export interface QualityStatusData {
+  totalPages: number;
+  analyzedPages: number;
+  pendingPages: number;
+  failedPages: number;
+  skippedPages: number;
+  averageScore: number | null;
+  isProcessing: boolean;
+}
+
+export function useQualityStatus() {
+  return useQuery<QualityStatusData>({
+    queryKey: ['quality', 'status'],
+    queryFn: () => apiFetch('/llm/quality-status'),
+    refetchInterval: (query) => {
+      return query.state.data?.isProcessing ? 5000 : 30_000;
+    },
+  });
 }
 
 // ======== Pinned Pages (Issue #144) ========

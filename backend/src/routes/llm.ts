@@ -15,6 +15,7 @@ import { getEmbeddingStatus, processDirtyPages, reEmbedAll, isProcessingUser, em
 import type { EmbeddingProgressEvent } from '../services/embedding-service.js';
 import { getClientForUser } from '../services/sync-service.js';
 import { getOllamaCircuitBreakerStatus, getOpenaiCircuitBreakerStatus } from '../services/circuit-breaker.js';
+import { getQualityStatus, forceQualityRescan } from '../services/quality-worker.js';
 import { LlmCache, buildLlmCacheKey, buildRagCacheKey, type CachedLlmResponse } from '../services/llm-cache.js';
 import {
   ImproveRequestSchema,
@@ -1044,5 +1045,19 @@ export async function llmRoutes(fastify: FastifyInstance) {
   }, async () => {
     const deleted = await llmCache.clearAll();
     return { message: `LLM cache cleared`, entriesDeleted: deleted };
+  });
+
+  // GET /api/llm/quality-status - aggregate quality analysis stats
+  fastify.get('/llm/quality-status', async () => {
+    return getQualityStatus();
+  });
+
+  // POST /api/llm/quality-rescan - admin only: force re-analysis of all pages
+  fastify.post('/llm/quality-rescan', {
+    preHandler: fastify.requireAdmin,
+    config: { rateLimit: { max: 5, timeWindow: '1 minute' } },
+  }, async () => {
+    const count = await forceQualityRescan();
+    return { message: `Quality rescan started — ${count} pages reset to pending`, pagesReset: count };
   });
 }

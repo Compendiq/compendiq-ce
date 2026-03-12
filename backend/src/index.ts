@@ -5,6 +5,7 @@ import { initTelemetry, shutdownTelemetry } from './telemetry.js';
 import { buildApp } from './app.js';
 import { runMigrations, closePool } from './db/postgres.js';
 import { startSyncWorker, stopSyncWorker } from './services/sync-service.js';
+import { startQualityWorker, stopQualityWorker } from './services/quality-worker.js';
 import { markStartupComplete } from './routes/health.js';
 import { logger } from './utils/logger.js';
 
@@ -45,9 +46,13 @@ async function start() {
   const syncInterval = parseInt(process.env.SYNC_INTERVAL_MIN ?? '15', 10);
   startSyncWorker(syncInterval);
 
+  // Start background quality analysis worker
+  startQualityWorker();
+
   // Graceful shutdown
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutting down...');
+    stopQualityWorker();
     stopSyncWorker();
     await app.close();
     await closePool();

@@ -11,6 +11,7 @@ import {
 import { useAuthenticatedSrc } from '../../shared/hooks/use-authenticated-src';
 import { useArticleViewStore } from '../../stores/article-view-store';
 import { FeatureErrorBoundary } from '../../shared/components/FeatureErrorBoundary';
+import { QualityScoreBadge } from '../../shared/components/QualityScoreBadge';
 import { Editor, EditorToolbar, TableContextToolbar, clearDraft, getDraft } from '../../shared/components/Editor';
 import type { Editor as EditorType } from '@tiptap/core';
 import { ArticleViewer } from '../../shared/components/ArticleViewer';
@@ -236,6 +237,18 @@ export function PageViewPage() {
               ? <FolderOpen size={12} className="shrink-0" />
               : <FileText size={12} className="shrink-0" />}
             <span className="truncate">{page.spaceKey}</span>
+            <QualityScoreBadge
+              qualityScore={page.qualityScore ?? null}
+              qualityStatus={page.qualityStatus ?? null}
+              qualityCompleteness={page.qualityCompleteness}
+              qualityClarity={page.qualityClarity}
+              qualityStructure={page.qualityStructure}
+              qualityAccuracy={page.qualityAccuracy}
+              qualityReadability={page.qualityReadability}
+              qualitySummary={page.qualitySummary}
+              qualityAnalyzedAt={page.qualityAnalyzedAt}
+              qualityError={page.qualityError}
+            />
           </span>
 
           <div className="flex shrink-0 items-center gap-1.5">

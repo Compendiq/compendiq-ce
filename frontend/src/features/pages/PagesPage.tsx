@@ -10,6 +10,7 @@ import { useSpaces, useSync, useSyncStatus } from '../../shared/hooks/use-spaces
 import { useSettings } from '../../shared/hooks/use-settings';
 import { FreshnessBadge } from '../../shared/components/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../../shared/components/EmbeddingStatusBadge';
+import { QualityScoreBadge } from '../../shared/components/QualityScoreBadge';
 import { BulkOperations } from './BulkOperations';
 import { KPICards } from './KPICards';
 import { cn } from '../../shared/lib/cn';
@@ -24,11 +25,12 @@ export function PagesPage() {
   const [labels, setLabels] = useState<string>('');
   const [freshness, setFreshness] = useState<string>('');
   const [embeddingStatus, setEmbeddingStatus] = useState<string>('');
+  const [qualityFilter, setQualityFilter] = useState<string>('');
   const [dateFrom, setDateFrom] = useState<string>('');
   const [dateTo, setDateTo] = useState<string>('');
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [page, setPage] = useState(1);
-  const [sort, setSort] = useState<'title' | 'modified' | 'author'>('modified');
+  const [sort, setSort] = useState<'title' | 'modified' | 'author' | 'quality'>('modified');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   const { data: settings } = useSettings();
@@ -52,6 +54,17 @@ export function PagesPage() {
     [homePage],
   );
 
+  // Map quality filter preset to min/max range
+  const qualityRange = useMemo(() => {
+    switch (qualityFilter) {
+      case 'excellent': return { qualityMin: 90, qualityMax: 100 };
+      case 'good': return { qualityMin: 70, qualityMax: 89 };
+      case 'needs-work': return { qualityMin: 50, qualityMax: 69 };
+      case 'poor': return { qualityMin: 0, qualityMax: 49 };
+      default: return {};
+    }
+  }, [qualityFilter]);
+
   const { data: pagesData, isLoading } = usePages({
     spaceKey: spaceKey || undefined,
     search: search || undefined,
@@ -59,6 +72,7 @@ export function PagesPage() {
     labels: labels || undefined,
     freshness: (freshness || undefined) as 'fresh' | 'recent' | 'aging' | 'stale' | undefined,
     embeddingStatus: (embeddingStatus || undefined) as 'pending' | 'done' | undefined,
+    ...qualityRange,
     dateFrom: dateFrom || undefined,
     dateTo: dateTo || undefined,
     page,
@@ -80,13 +94,14 @@ export function PagesPage() {
     }
   }, [embeddingStatusData, queryClient]);
 
-  const activeFilterCount = [author, labels, freshness, embeddingStatus, dateFrom, dateTo].filter(Boolean).length;
+  const activeFilterCount = [author, labels, freshness, embeddingStatus, qualityFilter, dateFrom, dateTo].filter(Boolean).length;
 
   const clearAllFilters = useCallback(() => {
     setAuthor('');
     setLabels('');
     setFreshness('');
     setEmbeddingStatus('');
+    setQualityFilter('');
     setDateFrom('');
     setDateTo('');
     setPage(1);
@@ -222,6 +237,7 @@ export function PagesPage() {
             <option value="modified">Last Modified</option>
             <option value="title">Title</option>
             <option value="author">Author</option>
+            <option value="quality">Quality Score</option>
           </select>
 
           {/* Advanced filters toggle */}
@@ -310,6 +326,23 @@ export function PagesPage() {
                 <option value="">Any</option>
                 <option value="pending">Needs Embedding</option>
                 <option value="done">Embedded</option>
+              </select>
+            </div>
+
+            {/* Quality score filter */}
+            <div className="min-w-36">
+              <label className="mb-1 block text-xs text-muted-foreground">Quality</label>
+              <select
+                value={qualityFilter}
+                onChange={(e) => { setQualityFilter(e.target.value); setPage(1); }}
+                className="glass-select w-full"
+                data-testid="filter-quality"
+              >
+                <option value="">Any</option>
+                <option value="excellent">Excellent (90-100)</option>
+                <option value="good">Good (70-89)</option>
+                <option value="needs-work">Needs Work (50-69)</option>
+                <option value="poor">Poor (0-49)</option>
               </select>
             </div>
 
@@ -439,6 +472,18 @@ export function PagesPage() {
                       )}
                     </div>
                   </div>
+                  <QualityScoreBadge
+                    qualityScore={pageItem.qualityScore}
+                    qualityStatus={pageItem.qualityStatus}
+                    qualityCompleteness={pageItem.qualityCompleteness}
+                    qualityClarity={pageItem.qualityClarity}
+                    qualityStructure={pageItem.qualityStructure}
+                    qualityAccuracy={pageItem.qualityAccuracy}
+                    qualityReadability={pageItem.qualityReadability}
+                    qualitySummary={pageItem.qualitySummary}
+                    qualityAnalyzedAt={pageItem.qualityAnalyzedAt}
+                    qualityError={pageItem.qualityError}
+                  />
                   <EmbeddingStatusBadge embeddingDirty={pageItem.embeddingDirty} />
                   {pageItem.lastModifiedAt && (
                     <FreshnessBadge lastModified={pageItem.lastModifiedAt} />
