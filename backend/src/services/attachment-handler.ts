@@ -88,14 +88,36 @@ export async function attachmentExists(userId: string, pageId: string, filename:
 }
 
 /**
- * Read a cached attachment.
+ * Read a cached attachment. If the exact filename is not found, searches for
+ * cross-page reference variants (.xref-{hash}) that match the same base name.
+ * This handles the case where stale cached HTML references a plain filename
+ * but the sync stored the file with an xref suffix.
  */
 export async function readAttachment(userId: string, pageId: string, filename: string): Promise<Buffer | null> {
   try {
     return await fs.readFile(attachmentPath(userId, pageId, filename));
   } catch {
-    return null;
+    // Exact file not found — try xref variants on disk
   }
+
+  // Search for .xref- variants: "foo.jpg" matches "foo.xref-{hash}.jpg"
+  const safe = path.basename(filename);
+  const dir = attachmentDir('', pageId);
+  const ext = path.extname(safe);
+  const stem = ext ? safe.slice(0, -ext.length) : safe;
+  const prefix = `${stem}.xref-`;
+
+  try {
+    const entries = await fs.readdir(dir);
+    const match = entries.find((e) => e.startsWith(prefix) && e.endsWith(ext));
+    if (match) {
+      return await fs.readFile(path.join(dir, path.basename(match)));
+    }
+  } catch {
+    // Directory doesn't exist
+  }
+
+  return null;
 }
 
 /**
@@ -479,7 +501,18 @@ export async function fetchAndCachePageImage(
 ): Promise<Buffer | null> {
   const safe = path.basename(localFilename);
   const refs = extractImageReferences(bodyStorage, currentSpaceKey);
-  const ref = refs.find((candidate) => candidate.localFilename === safe);
+  let ref = refs.find((candidate) => candidate.localFilename === safe);
+
+  // If no exact match, the requested filename may come from stale cached HTML
+  // that predates cross-page reference support. Search by base attachment
+  // filename (ignoring the .xref- suffix) to find the correct cross-page ref.
+  if (!ref) {
+    ref = refs.find((candidate) =>
+      candidate.source.kind === 'attachment' &&
+      path.basename(candidate.source.attachmentFilename) === safe,
+    );
+  }
+
   if (!ref) {
     return fetchAndCacheAttachment(client, userId, pageId, safe);
   }
