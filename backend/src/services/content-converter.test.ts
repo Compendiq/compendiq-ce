@@ -23,6 +23,8 @@ import {
   USER_MENTIONS_PAGE,
   DATA_MACRO_VARIANT_PAGE,
   STATUS_MACRO_PAGE,
+  CHILDREN_MACRO_ALL_PARAMS_PAGE,
+  UI_CHILDREN_MACRO_PAGE,
 } from './__fixtures__/confluence-xhtml.js';
 
 describe('content-converter', () => {
@@ -289,6 +291,40 @@ describe('content-converter', () => {
       expect(xhtml).toContain('>DONE<');
       expect(xhtml).toContain('>IN PROGRESS<');
       expect(xhtml).not.toContain('confluence-status');
+    });
+
+    it('round-trips children macro with all parameters', () => {
+      const html = confluenceToHtml(CHILDREN_MACRO_ALL_PARAMS_PAGE);
+      expect(html).toContain('data-sort="creation"');
+      expect(html).toContain('data-reverse="true"');
+      expect(html).toContain('data-depth="2"');
+      expect(html).toContain('data-first="10"');
+      expect(html).toContain('data-page="My Parent"');
+      expect(html).toContain('data-style="h3"');
+      // HTML attributes are case-insensitive; jsdom lowercases on serialization
+      expect(html).toContain('data-excerpttype="rich"');
+
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toContain('ac:name="children"');
+      expect(xhtml).toContain('>creation<');
+      expect(xhtml).toContain('>true<');
+      expect(xhtml).toContain('>2<');
+      expect(xhtml).toContain('>10<');
+      expect(xhtml).toContain('>My Parent<');
+      expect(xhtml).toContain('>h3<');
+      expect(xhtml).toContain('>rich<');
+    });
+
+    it('round-trips ui-children macro preserving macro name', () => {
+      const html = confluenceToHtml(UI_CHILDREN_MACRO_PAGE);
+      expect(html).toContain('data-macro-name="ui-children"');
+      expect(html).toContain('data-sort="title"');
+      expect(html).toContain('data-depth="3"');
+
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toContain('ac:name="ui-children"');
+      expect(xhtml).toContain('>title<');
+      expect(xhtml).toContain('>3<');
     });
 
     it('round-trips draw.io macros', () => {
