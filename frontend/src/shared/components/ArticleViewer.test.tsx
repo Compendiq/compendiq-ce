@@ -428,6 +428,21 @@ describe('ArticleViewer', () => {
     expect(pre.getAttribute('data-title')).toBeNull();
   });
 
+  it('applies prose-invert class only in dark theme', async () => {
+    const html = '<p>Dark theme content</p>';
+
+    const { container } = render(<ArticleViewer content={html} />);
+
+    await waitFor(() => {
+      const editorContent = container.querySelector('.article-viewer');
+      expect(editorContent).toBeTruthy();
+    });
+
+    const editorContent = container.querySelector('.article-viewer')!;
+    // useIsLightTheme is mocked to return false (dark theme), so prose-invert should be present
+    expect(editorContent.classList.contains('prose-invert')).toBe(true);
+  });
+
   it('renders empty mermaid code blocks with empty state placeholder', async () => {
     const html = '<pre><code class="language-mermaid">   </code></pre>';
 
