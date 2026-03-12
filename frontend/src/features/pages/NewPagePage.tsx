@@ -55,7 +55,7 @@ export function NewPagePage() {
         </button>
       </div>
 
-      <div className="glass-card space-y-4 p-4">
+      <div className="space-y-4 rounded-xl border border-border p-4">
         <div className="flex gap-4">
           <div className="flex-1">
             <label className="mb-1 block text-sm font-medium">Title</label>

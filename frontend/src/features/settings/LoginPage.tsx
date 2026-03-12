@@ -33,8 +33,8 @@ export function LoginPage() {
   }
 
   return (
-    <div className="mesh-gradient flex min-h-screen items-center justify-center p-4">
-      <div className="glass-card w-full max-w-md p-8">
+    <div className="flex min-h-screen items-center justify-center p-4" style={{ backgroundColor: 'var(--bg-surround)' }}>
+      <div className="w-full max-w-md rounded-xl border border-border p-8" style={{ backgroundColor: 'var(--bg-content)' }}>
         <h1 className="mb-2 text-center text-2xl font-bold">AI KB Creator</h1>
         <p className="mb-8 text-center text-sm text-muted-foreground">
           {isRegister ? 'Create your account' : 'Sign in to your account'}

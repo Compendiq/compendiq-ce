@@ -196,7 +196,7 @@ export function PageViewPage() {
 
   if (!page) {
     return (
-      <div className="glass-card flex min-h-[18rem] flex-col items-center justify-center gap-3 py-16 text-center">
+      <div className="flex min-h-[18rem] flex-col items-center justify-center gap-3 py-16 text-center">
         <FileText size={42} className="text-muted-foreground" />
         <h1 className="text-xl font-semibold text-foreground">Article not found</h1>
         <p className="max-w-md text-sm text-muted-foreground">
@@ -219,16 +219,16 @@ export function PageViewPage() {
       transition={{ duration: 0.18 }}
       data-testid="article-page"
     >
-      {/* Sticky toolbar — rendered OUTSIDE glass-card-xl so sticky works */}
+      {/* Sticky toolbar — rendered outside the document card so sticky works */}
       {editing && editorInstance && (
-        <div className="sticky top-0 z-20 rounded-t-xl border-b border-border/25 bg-card/95 backdrop-blur-sm glass-card-xl overflow-visible">
+        <div className="sticky top-0 z-20 rounded-t-xl border-b border-border/25 bg-card/95 backdrop-blur-sm overflow-visible">
           <EditorToolbar editor={editorInstance} />
           <TableContextToolbar editor={editorInstance} />
         </div>
       )}
 
       {/* Single unified document card */}
-      <div className={editing ? 'overflow-hidden glass-card-xl rounded-t-none' : 'overflow-hidden glass-card-xl'}>
+      <div className={editing ? 'overflow-hidden rounded-t-none' : 'overflow-hidden'}>
         {/* Breadcrumb / action strip */}
         <div className="flex items-center justify-between gap-4 border-b border-border/25 px-5 py-2 sm:px-7">
           <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground/60">
@@ -280,7 +280,7 @@ export function PageViewPage() {
               </div>
             </div>
 
-            {/* Editor — naked (no inner glass-card, we are already inside glass-card-xl) */}
+            {/* Editor — naked (no inner chrome, we are already inside the document card) */}
             <FeatureErrorBoundary featureName="Editor">
               <Editor content={editHtml} onChange={setEditHtml} draftKey={draftKey} naked onEditorReady={setEditorInstance} hideToolbar />
             </FeatureErrorBoundary>
