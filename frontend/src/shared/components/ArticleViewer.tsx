@@ -20,6 +20,7 @@ import {
 import { MermaidBlock } from './MermaidBlockExtension';
 import { fetchAuthenticatedBlob } from '../hooks/use-authenticated-src';
 import { cn } from '../lib/cn';
+import { useIsLightTheme } from '../hooks/use-is-light-theme';
 import type { TocHeading } from './TableOfContents';
 
 // Configure DOMPurify to preserve Confluence-specific attributes
@@ -65,6 +66,7 @@ export function ArticleViewer({
 }: ArticleViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [isReady, setIsReady] = useState(false);
+  const isLight = useIsLightTheme();
 
   const sanitizedContent = useMemo(
     () =>
@@ -310,7 +312,8 @@ export function ArticleViewer({
       <EditorContent
         editor={editor}
         className={cn(
-          'article-viewer prose prose-invert max-w-none',
+          'article-viewer prose max-w-none',
+          !isLight && 'prose-invert',
           '[&_.tiptap]:outline-none',
           // Table styles
           '[&_table]:border-collapse [&_td]:border [&_td]:border-[var(--glass-border)] [&_td]:p-2',

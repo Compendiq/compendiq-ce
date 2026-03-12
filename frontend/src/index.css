@@ -21,6 +21,7 @@ html {
 
 /* Premium typography rendering (Obsidian / Notion pattern) */
 body {
+  font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
@@ -65,21 +66,21 @@ body {
 }
 
 @theme {
-  /* Default theme: Midnight Blue */
-  --color-background: oklch(0.145 0.015 285);
-  --color-foreground: oklch(0.95 0.01 280);
-  --color-card: oklch(0.2 0.02 280);
-  --color-card-foreground: oklch(0.95 0.01 280);
+  /* Default theme: Midnight Blue (Linear-inspired neutral dark) */
+  --color-background: oklch(0.14 0.005 260);
+  --color-foreground: oklch(0.93 0.005 260);
+  --color-card: oklch(0.18 0.008 260);
+  --color-card-foreground: oklch(0.93 0.005 260);
   --color-primary: oklch(0.65 0.2 260);
   --color-primary-foreground: oklch(0.98 0.005 260);
-  --color-secondary: oklch(0.3 0.02 280);
-  --color-secondary-foreground: oklch(0.9 0.01 280);
-  --color-muted: oklch(0.25 0.015 280);
-  --color-muted-foreground: oklch(0.65 0.01 280);
-  --color-accent: oklch(0.35 0.03 280);
-  --color-accent-foreground: oklch(0.95 0.01 280);
+  --color-secondary: oklch(0.25 0.008 260);
+  --color-secondary-foreground: oklch(0.88 0.005 260);
+  --color-muted: oklch(0.22 0.005 260);
+  --color-muted-foreground: oklch(0.65 0.005 260);
+  --color-accent: oklch(0.28 0.01 260);
+  --color-accent-foreground: oklch(0.93 0.005 260);
   --color-destructive: oklch(0.55 0.2 25);
-  --color-border: oklch(0.35 0.02 280);
+  --color-border: oklch(0.25 0.005 260);
   --color-ring: oklch(0.65 0.2 260);
   --color-success: oklch(0.65 0.2 145);
   --color-warning: oklch(0.7 0.15 80);
@@ -100,10 +101,10 @@ body {
   --mesh-3: oklch(0.2 0.06 320 / 0.2);
 
   /* Glass utility colors (overridden for light themes) */
-  --glass-border: oklch(1 0 0 / 0.1);
-  --glass-border-hover: oklch(1 0 0 / 0.2);
-  --glass-shadow: oklch(0 0 0 / 0.3);
-  --glass-shadow-hover: oklch(0 0 0 / 0.4);
+  --glass-border: oklch(1 0 0 / 0.08);
+  --glass-border-hover: oklch(1 0 0 / 0.15);
+  --glass-shadow: oklch(0 0 0 / 0.2);
+  --glass-shadow-hover: oklch(0 0 0 / 0.3);
 
   /* Inline code color (overridden for light themes) */
   --inline-code-color: oklch(0.85 0.12 30);
@@ -120,19 +121,19 @@ body {
 
 /* ---- Theme: Ocean Depth ---- */
 [data-theme="ocean-depth"] {
-  --color-background: oklch(0.14 0.02 200);
-  --color-foreground: oklch(0.95 0.01 200);
-  --color-card: oklch(0.19 0.025 200);
-  --color-card-foreground: oklch(0.95 0.01 200);
+  --color-background: oklch(0.14 0.008 200);
+  --color-foreground: oklch(0.93 0.005 200);
+  --color-card: oklch(0.18 0.01 200);
+  --color-card-foreground: oklch(0.93 0.005 200);
   --color-primary: oklch(0.7 0.15 195);
   --color-primary-foreground: oklch(0.15 0.02 195);
-  --color-secondary: oklch(0.28 0.02 200);
-  --color-secondary-foreground: oklch(0.9 0.01 200);
-  --color-muted: oklch(0.24 0.015 200);
-  --color-muted-foreground: oklch(0.65 0.01 200);
-  --color-accent: oklch(0.33 0.03 195);
-  --color-accent-foreground: oklch(0.95 0.01 200);
-  --color-border: oklch(0.33 0.02 200);
+  --color-secondary: oklch(0.25 0.008 200);
+  --color-secondary-foreground: oklch(0.88 0.005 200);
+  --color-muted: oklch(0.22 0.006 200);
+  --color-muted-foreground: oklch(0.65 0.005 200);
+  --color-accent: oklch(0.28 0.012 195);
+  --color-accent-foreground: oklch(0.93 0.005 200);
+  --color-border: oklch(0.25 0.008 200);
   --color-ring: oklch(0.7 0.15 195);
   --mesh-1: oklch(0.28 0.08 195 / 0.4);
   --mesh-2: oklch(0.23 0.06 210 / 0.3);
@@ -143,19 +144,19 @@ body {
 
 /* ---- Theme: Emerald Dark ---- */
 [data-theme="emerald-dark"] {
-  --color-background: oklch(0.14 0.02 155);
-  --color-foreground: oklch(0.95 0.01 150);
-  --color-card: oklch(0.19 0.025 155);
-  --color-card-foreground: oklch(0.95 0.01 150);
+  --color-background: oklch(0.14 0.008 155);
+  --color-foreground: oklch(0.93 0.005 155);
+  --color-card: oklch(0.18 0.01 155);
+  --color-card-foreground: oklch(0.93 0.005 155);
   --color-primary: oklch(0.65 0.2 145);
   --color-primary-foreground: oklch(0.15 0.03 145);
-  --color-secondary: oklch(0.28 0.02 155);
-  --color-secondary-foreground: oklch(0.9 0.01 150);
-  --color-muted: oklch(0.24 0.015 155);
-  --color-muted-foreground: oklch(0.65 0.01 150);
-  --color-accent: oklch(0.33 0.03 150);
-  --color-accent-foreground: oklch(0.95 0.01 150);
-  --color-border: oklch(0.33 0.02 155);
+  --color-secondary: oklch(0.25 0.008 155);
+  --color-secondary-foreground: oklch(0.88 0.005 155);
+  --color-muted: oklch(0.22 0.006 155);
+  --color-muted-foreground: oklch(0.65 0.005 155);
+  --color-accent: oklch(0.28 0.012 150);
+  --color-accent-foreground: oklch(0.93 0.005 155);
+  --color-border: oklch(0.25 0.008 155);
   --color-ring: oklch(0.65 0.2 145);
   --mesh-1: oklch(0.28 0.08 145 / 0.4);
   --mesh-2: oklch(0.23 0.06 160 / 0.3);
@@ -166,19 +167,19 @@ body {
 
 /* ---- Theme: Rose Noir ---- */
 [data-theme="rose-noir"] {
-  --color-background: oklch(0.145 0.015 350);
-  --color-foreground: oklch(0.95 0.01 350);
-  --color-card: oklch(0.2 0.025 350);
-  --color-card-foreground: oklch(0.95 0.01 350);
+  --color-background: oklch(0.14 0.008 350);
+  --color-foreground: oklch(0.93 0.005 350);
+  --color-card: oklch(0.18 0.01 350);
+  --color-card-foreground: oklch(0.93 0.005 350);
   --color-primary: oklch(0.6 0.22 350);
   --color-primary-foreground: oklch(0.98 0.005 350);
-  --color-secondary: oklch(0.28 0.02 350);
-  --color-secondary-foreground: oklch(0.9 0.01 350);
-  --color-muted: oklch(0.24 0.015 350);
-  --color-muted-foreground: oklch(0.65 0.01 350);
-  --color-accent: oklch(0.33 0.04 350);
-  --color-accent-foreground: oklch(0.95 0.01 350);
-  --color-border: oklch(0.33 0.025 350);
+  --color-secondary: oklch(0.25 0.008 350);
+  --color-secondary-foreground: oklch(0.88 0.005 350);
+  --color-muted: oklch(0.22 0.006 350);
+  --color-muted-foreground: oklch(0.65 0.005 350);
+  --color-accent: oklch(0.28 0.012 350);
+  --color-accent-foreground: oklch(0.93 0.005 350);
+  --color-border: oklch(0.25 0.008 350);
   --color-ring: oklch(0.6 0.22 350);
   --mesh-1: oklch(0.28 0.1 350 / 0.4);
   --mesh-2: oklch(0.23 0.08 330 / 0.3);
@@ -189,19 +190,19 @@ body {
 
 /* ---- Theme: Amber Night ---- */
 [data-theme="amber-night"] {
-  --color-background: oklch(0.145 0.015 70);
-  --color-foreground: oklch(0.95 0.01 70);
-  --color-card: oklch(0.2 0.025 70);
-  --color-card-foreground: oklch(0.95 0.01 70);
+  --color-background: oklch(0.14 0.008 70);
+  --color-foreground: oklch(0.93 0.005 70);
+  --color-card: oklch(0.18 0.01 70);
+  --color-card-foreground: oklch(0.93 0.005 70);
   --color-primary: oklch(0.75 0.18 80);
   --color-primary-foreground: oklch(0.15 0.02 80);
-  --color-secondary: oklch(0.28 0.02 70);
-  --color-secondary-foreground: oklch(0.9 0.01 70);
-  --color-muted: oklch(0.24 0.015 70);
-  --color-muted-foreground: oklch(0.65 0.01 70);
-  --color-accent: oklch(0.33 0.04 65);
-  --color-accent-foreground: oklch(0.95 0.01 70);
-  --color-border: oklch(0.33 0.025 70);
+  --color-secondary: oklch(0.25 0.008 70);
+  --color-secondary-foreground: oklch(0.88 0.005 70);
+  --color-muted: oklch(0.22 0.006 70);
+  --color-muted-foreground: oklch(0.65 0.005 70);
+  --color-accent: oklch(0.28 0.012 65);
+  --color-accent-foreground: oklch(0.93 0.005 70);
+  --color-border: oklch(0.25 0.008 70);
   --color-ring: oklch(0.75 0.18 80);
   --mesh-1: oklch(0.28 0.08 80 / 0.4);
   --mesh-2: oklch(0.23 0.06 60 / 0.3);
@@ -212,19 +213,19 @@ body {
 
 /* ---- Theme: Arctic Frost ---- */
 [data-theme="arctic-frost"] {
-  --color-background: oklch(0.15 0.01 230);
-  --color-foreground: oklch(0.95 0.005 230);
-  --color-card: oklch(0.2 0.015 230);
-  --color-card-foreground: oklch(0.95 0.005 230);
+  --color-background: oklch(0.14 0.005 230);
+  --color-foreground: oklch(0.93 0.005 230);
+  --color-card: oklch(0.18 0.008 230);
+  --color-card-foreground: oklch(0.93 0.005 230);
   --color-primary: oklch(0.72 0.12 230);
   --color-primary-foreground: oklch(0.15 0.01 230);
-  --color-secondary: oklch(0.28 0.01 230);
-  --color-secondary-foreground: oklch(0.9 0.005 230);
-  --color-muted: oklch(0.24 0.01 230);
+  --color-secondary: oklch(0.25 0.005 230);
+  --color-secondary-foreground: oklch(0.88 0.005 230);
+  --color-muted: oklch(0.22 0.005 230);
   --color-muted-foreground: oklch(0.65 0.005 230);
-  --color-accent: oklch(0.33 0.02 230);
-  --color-accent-foreground: oklch(0.95 0.005 230);
-  --color-border: oklch(0.33 0.015 230);
+  --color-accent: oklch(0.28 0.008 230);
+  --color-accent-foreground: oklch(0.93 0.005 230);
+  --color-border: oklch(0.25 0.005 230);
   --color-ring: oklch(0.72 0.12 230);
   --mesh-1: oklch(0.28 0.06 230 / 0.4);
   --mesh-2: oklch(0.23 0.04 220 / 0.3);
@@ -235,19 +236,19 @@ body {
 
 /* ---- Theme: Violet Storm ---- */
 [data-theme="violet-storm"] {
-  --color-background: oklch(0.13 0.03 290);
-  --color-foreground: oklch(0.95 0.01 290);
-  --color-card: oklch(0.18 0.04 290);
-  --color-card-foreground: oklch(0.95 0.01 290);
+  --color-background: oklch(0.14 0.008 290);
+  --color-foreground: oklch(0.93 0.005 290);
+  --color-card: oklch(0.18 0.012 290);
+  --color-card-foreground: oklch(0.93 0.005 290);
   --color-primary: oklch(0.65 0.2 290);
   --color-primary-foreground: oklch(0.98 0.005 290);
-  --color-secondary: oklch(0.27 0.03 290);
-  --color-secondary-foreground: oklch(0.9 0.01 290);
-  --color-muted: oklch(0.23 0.025 290);
-  --color-muted-foreground: oklch(0.65 0.01 290);
-  --color-accent: oklch(0.33 0.05 290);
-  --color-accent-foreground: oklch(0.95 0.01 290);
-  --color-border: oklch(0.33 0.035 290);
+  --color-secondary: oklch(0.25 0.008 290);
+  --color-secondary-foreground: oklch(0.88 0.005 290);
+  --color-muted: oklch(0.22 0.006 290);
+  --color-muted-foreground: oklch(0.65 0.005 290);
+  --color-accent: oklch(0.28 0.015 290);
+  --color-accent-foreground: oklch(0.93 0.005 290);
+  --color-border: oklch(0.25 0.008 290);
   --color-ring: oklch(0.65 0.2 290);
   --mesh-1: oklch(0.28 0.12 290 / 0.4);
   --mesh-2: oklch(0.23 0.08 310 / 0.3);
@@ -258,19 +259,19 @@ body {
 
 /* ---- Theme: Cyber Teal ---- */
 [data-theme="cyber-teal"] {
-  --color-background: oklch(0.12 0.02 175);
-  --color-foreground: oklch(0.95 0.01 175);
-  --color-card: oklch(0.17 0.025 175);
-  --color-card-foreground: oklch(0.95 0.01 175);
+  --color-background: oklch(0.14 0.008 175);
+  --color-foreground: oklch(0.93 0.005 175);
+  --color-card: oklch(0.18 0.01 175);
+  --color-card-foreground: oklch(0.93 0.005 175);
   --color-primary: oklch(0.7 0.17 170);
   --color-primary-foreground: oklch(0.12 0.02 170);
-  --color-secondary: oklch(0.26 0.02 175);
-  --color-secondary-foreground: oklch(0.9 0.01 175);
-  --color-muted: oklch(0.22 0.015 175);
-  --color-muted-foreground: oklch(0.65 0.01 175);
-  --color-accent: oklch(0.31 0.03 170);
-  --color-accent-foreground: oklch(0.95 0.01 175);
-  --color-border: oklch(0.31 0.025 175);
+  --color-secondary: oklch(0.25 0.008 175);
+  --color-secondary-foreground: oklch(0.88 0.005 175);
+  --color-muted: oklch(0.22 0.006 175);
+  --color-muted-foreground: oklch(0.65 0.005 175);
+  --color-accent: oklch(0.28 0.012 170);
+  --color-accent-foreground: oklch(0.93 0.005 175);
+  --color-border: oklch(0.25 0.008 175);
   --color-ring: oklch(0.7 0.17 170);
   --mesh-1: oklch(0.26 0.08 170 / 0.4);
   --mesh-2: oklch(0.21 0.06 185 / 0.3);
@@ -281,19 +282,19 @@ body {
 
 /* ---- Theme: Sunset Glow ---- */
 [data-theme="sunset-glow"] {
-  --color-background: oklch(0.14 0.015 30);
-  --color-foreground: oklch(0.95 0.01 30);
-  --color-card: oklch(0.19 0.025 30);
-  --color-card-foreground: oklch(0.95 0.01 30);
+  --color-background: oklch(0.14 0.008 30);
+  --color-foreground: oklch(0.93 0.005 30);
+  --color-card: oklch(0.18 0.01 30);
+  --color-card-foreground: oklch(0.93 0.005 30);
   --color-primary: oklch(0.65 0.2 25);
   --color-primary-foreground: oklch(0.98 0.005 25);
-  --color-secondary: oklch(0.28 0.02 30);
-  --color-secondary-foreground: oklch(0.9 0.01 30);
-  --color-muted: oklch(0.24 0.015 30);
-  --color-muted-foreground: oklch(0.65 0.01 30);
-  --color-accent: oklch(0.33 0.04 45);
-  --color-accent-foreground: oklch(0.95 0.01 30);
-  --color-border: oklch(0.33 0.025 30);
+  --color-secondary: oklch(0.25 0.008 30);
+  --color-secondary-foreground: oklch(0.88 0.005 30);
+  --color-muted: oklch(0.22 0.006 30);
+  --color-muted-foreground: oklch(0.65 0.005 30);
+  --color-accent: oklch(0.28 0.012 45);
+  --color-accent-foreground: oklch(0.93 0.005 30);
+  --color-border: oklch(0.25 0.008 30);
   --color-ring: oklch(0.65 0.2 25);
   --mesh-1: oklch(0.28 0.1 25 / 0.4);
   --mesh-2: oklch(0.23 0.08 45 / 0.3);
@@ -304,19 +305,19 @@ body {
 
 /* ---- Theme: Slate Minimal ---- */
 [data-theme="slate-minimal"] {
-  --color-background: oklch(0.15 0.003 260);
-  --color-foreground: oklch(0.92 0.003 260);
-  --color-card: oklch(0.2 0.005 260);
-  --color-card-foreground: oklch(0.92 0.003 260);
+  --color-background: oklch(0.14 0.003 260);
+  --color-foreground: oklch(0.93 0.003 260);
+  --color-card: oklch(0.18 0.004 260);
+  --color-card-foreground: oklch(0.93 0.003 260);
   --color-primary: oklch(0.65 0.01 260);
   --color-primary-foreground: oklch(0.98 0.003 260);
-  --color-secondary: oklch(0.28 0.005 260);
+  --color-secondary: oklch(0.25 0.004 260);
   --color-secondary-foreground: oklch(0.88 0.003 260);
-  --color-muted: oklch(0.24 0.003 260);
+  --color-muted: oklch(0.22 0.003 260);
   --color-muted-foreground: oklch(0.6 0.005 260);
-  --color-accent: oklch(0.33 0.005 260);
-  --color-accent-foreground: oklch(0.92 0.003 260);
-  --color-border: oklch(0.33 0.005 260);
+  --color-accent: oklch(0.28 0.005 260);
+  --color-accent-foreground: oklch(0.93 0.003 260);
+  --color-border: oklch(0.25 0.004 260);
   --color-ring: oklch(0.65 0.01 260);
   --mesh-1: oklch(0.25 0.005 260 / 0.3);
   --mesh-2: oklch(0.2 0.003 270 / 0.2);
@@ -344,19 +345,19 @@ body {
 
 /* ---- Theme: Cloud White ---- */
 [data-theme="cloud-white"] {
-  --color-background: oklch(0.97 0.005 260);
-  --color-foreground: oklch(0.2 0.02 260);
-  --color-card: oklch(0.99 0.002 260);
-  --color-card-foreground: oklch(0.2 0.02 260);
+  --color-background: oklch(0.985 0.003 260);
+  --color-foreground: oklch(0.15 0.01 260);
+  --color-card: oklch(0.995 0.002 260);
+  --color-card-foreground: oklch(0.15 0.01 260);
   --color-primary: oklch(0.6 0.2 255);
   --color-primary-foreground: oklch(0.98 0.005 255);
-  --color-secondary: oklch(0.93 0.008 260);
-  --color-secondary-foreground: oklch(0.3 0.02 260);
-  --color-muted: oklch(0.92 0.005 260);
-  --color-muted-foreground: oklch(0.45 0.01 260);
-  --color-accent: oklch(0.94 0.01 255);
-  --color-accent-foreground: oklch(0.25 0.02 260);
-  --color-border: oklch(0.88 0.01 260);
+  --color-secondary: oklch(0.94 0.005 260);
+  --color-secondary-foreground: oklch(0.25 0.01 260);
+  --color-muted: oklch(0.93 0.004 260);
+  --color-muted-foreground: oklch(0.45 0.005 260);
+  --color-accent: oklch(0.95 0.006 255);
+  --color-accent-foreground: oklch(0.2 0.01 260);
+  --color-border: oklch(0.88 0.005 260);
   --color-ring: oklch(0.6 0.2 255);
   --mesh-1: oklch(0.92 0.03 255 / 0.3);
   --mesh-2: oklch(0.94 0.02 230 / 0.2);
@@ -367,19 +368,19 @@ body {
 
 /* ---- Theme: Lavender Bloom ---- */
 [data-theme="lavender-bloom"] {
-  --color-background: oklch(0.96 0.015 300);
-  --color-foreground: oklch(0.22 0.03 290);
-  --color-card: oklch(0.99 0.005 300);
-  --color-card-foreground: oklch(0.22 0.03 290);
+  --color-background: oklch(0.98 0.008 300);
+  --color-foreground: oklch(0.15 0.015 290);
+  --color-card: oklch(0.995 0.004 300);
+  --color-card-foreground: oklch(0.15 0.015 290);
   --color-primary: oklch(0.6 0.22 290);
   --color-primary-foreground: oklch(0.98 0.005 290);
-  --color-secondary: oklch(0.93 0.015 300);
-  --color-secondary-foreground: oklch(0.3 0.03 290);
-  --color-muted: oklch(0.92 0.01 300);
-  --color-muted-foreground: oklch(0.45 0.015 290);
-  --color-accent: oklch(0.93 0.02 295);
-  --color-accent-foreground: oklch(0.25 0.03 290);
-  --color-border: oklch(0.87 0.015 300);
+  --color-secondary: oklch(0.94 0.008 300);
+  --color-secondary-foreground: oklch(0.25 0.015 290);
+  --color-muted: oklch(0.93 0.006 300);
+  --color-muted-foreground: oklch(0.45 0.008 290);
+  --color-accent: oklch(0.95 0.01 295);
+  --color-accent-foreground: oklch(0.2 0.015 290);
+  --color-border: oklch(0.88 0.008 300);
   --color-ring: oklch(0.6 0.22 290);
   --mesh-1: oklch(0.92 0.04 295 / 0.3);
   --mesh-2: oklch(0.94 0.03 310 / 0.2);
@@ -390,19 +391,19 @@ body {
 
 /* ---- Theme: Mint Fresh ---- */
 [data-theme="mint-fresh"] {
-  --color-background: oklch(0.97 0.015 155);
-  --color-foreground: oklch(0.2 0.03 155);
-  --color-card: oklch(0.99 0.005 155);
-  --color-card-foreground: oklch(0.2 0.03 155);
+  --color-background: oklch(0.98 0.008 155);
+  --color-foreground: oklch(0.15 0.015 155);
+  --color-card: oklch(0.995 0.004 155);
+  --color-card-foreground: oklch(0.15 0.015 155);
   --color-primary: oklch(0.6 0.2 150);
   --color-primary-foreground: oklch(0.98 0.005 150);
-  --color-secondary: oklch(0.93 0.015 155);
-  --color-secondary-foreground: oklch(0.3 0.03 155);
-  --color-muted: oklch(0.92 0.01 155);
-  --color-muted-foreground: oklch(0.45 0.015 155);
-  --color-accent: oklch(0.93 0.02 160);
-  --color-accent-foreground: oklch(0.25 0.03 155);
-  --color-border: oklch(0.87 0.015 155);
+  --color-secondary: oklch(0.94 0.008 155);
+  --color-secondary-foreground: oklch(0.25 0.015 155);
+  --color-muted: oklch(0.93 0.006 155);
+  --color-muted-foreground: oklch(0.45 0.008 155);
+  --color-accent: oklch(0.95 0.01 160);
+  --color-accent-foreground: oklch(0.2 0.015 155);
+  --color-border: oklch(0.88 0.008 155);
   --color-ring: oklch(0.6 0.2 150);
   --mesh-1: oklch(0.92 0.04 150 / 0.3);
   --mesh-2: oklch(0.94 0.03 170 / 0.2);
@@ -413,19 +414,19 @@ body {
 
 /* ---- Theme: Peach Blossom ---- */
 [data-theme="peach-blossom"] {
-  --color-background: oklch(0.97 0.015 60);
-  --color-foreground: oklch(0.22 0.03 50);
-  --color-card: oklch(0.99 0.005 60);
-  --color-card-foreground: oklch(0.22 0.03 50);
+  --color-background: oklch(0.98 0.008 60);
+  --color-foreground: oklch(0.15 0.015 50);
+  --color-card: oklch(0.995 0.004 60);
+  --color-card-foreground: oklch(0.15 0.015 50);
   --color-primary: oklch(0.68 0.18 50);
   --color-primary-foreground: oklch(0.98 0.005 50);
-  --color-secondary: oklch(0.93 0.015 60);
-  --color-secondary-foreground: oklch(0.3 0.03 50);
-  --color-muted: oklch(0.92 0.01 60);
-  --color-muted-foreground: oklch(0.45 0.015 50);
-  --color-accent: oklch(0.93 0.02 55);
-  --color-accent-foreground: oklch(0.25 0.03 50);
-  --color-border: oklch(0.87 0.015 60);
+  --color-secondary: oklch(0.94 0.008 60);
+  --color-secondary-foreground: oklch(0.25 0.015 50);
+  --color-muted: oklch(0.93 0.006 60);
+  --color-muted-foreground: oklch(0.45 0.008 50);
+  --color-accent: oklch(0.95 0.01 55);
+  --color-accent-foreground: oklch(0.2 0.015 50);
+  --color-border: oklch(0.88 0.008 60);
   --color-ring: oklch(0.68 0.18 50);
   --mesh-1: oklch(0.92 0.04 50 / 0.3);
   --mesh-2: oklch(0.94 0.03 70 / 0.2);
@@ -436,19 +437,19 @@ body {
 
 /* ---- Theme: Sky Blue ---- */
 [data-theme="sky-blue"] {
-  --color-background: oklch(0.97 0.01 230);
-  --color-foreground: oklch(0.2 0.02 230);
-  --color-card: oklch(0.99 0.003 230);
-  --color-card-foreground: oklch(0.2 0.02 230);
+  --color-background: oklch(0.985 0.005 230);
+  --color-foreground: oklch(0.15 0.01 230);
+  --color-card: oklch(0.995 0.003 230);
+  --color-card-foreground: oklch(0.15 0.01 230);
   --color-primary: oklch(0.65 0.17 230);
   --color-primary-foreground: oklch(0.98 0.005 230);
-  --color-secondary: oklch(0.93 0.01 230);
-  --color-secondary-foreground: oklch(0.3 0.02 230);
-  --color-muted: oklch(0.92 0.008 230);
-  --color-muted-foreground: oklch(0.45 0.01 230);
-  --color-accent: oklch(0.93 0.015 225);
-  --color-accent-foreground: oklch(0.25 0.02 230);
-  --color-border: oklch(0.87 0.01 230);
+  --color-secondary: oklch(0.94 0.005 230);
+  --color-secondary-foreground: oklch(0.25 0.01 230);
+  --color-muted: oklch(0.93 0.004 230);
+  --color-muted-foreground: oklch(0.45 0.005 230);
+  --color-accent: oklch(0.95 0.008 225);
+  --color-accent-foreground: oklch(0.2 0.01 230);
+  --color-border: oklch(0.88 0.005 230);
   --color-ring: oklch(0.65 0.17 230);
   --mesh-1: oklch(0.92 0.03 225 / 0.3);
   --mesh-2: oklch(0.94 0.02 245 / 0.2);
@@ -459,19 +460,19 @@ body {
 
 /* ---- Theme: Lemon Drop ---- */
 [data-theme="lemon-drop"] {
-  --color-background: oklch(0.97 0.02 95);
-  --color-foreground: oklch(0.22 0.03 80);
-  --color-card: oklch(0.99 0.005 95);
-  --color-card-foreground: oklch(0.22 0.03 80);
+  --color-background: oklch(0.98 0.01 95);
+  --color-foreground: oklch(0.15 0.015 80);
+  --color-card: oklch(0.995 0.004 95);
+  --color-card-foreground: oklch(0.15 0.015 80);
   --color-primary: oklch(0.72 0.17 85);
   --color-primary-foreground: oklch(0.15 0.03 85);
-  --color-secondary: oklch(0.93 0.02 95);
-  --color-secondary-foreground: oklch(0.3 0.03 80);
-  --color-muted: oklch(0.92 0.015 95);
-  --color-muted-foreground: oklch(0.45 0.015 80);
-  --color-accent: oklch(0.93 0.025 90);
-  --color-accent-foreground: oklch(0.25 0.03 80);
-  --color-border: oklch(0.87 0.02 95);
+  --color-secondary: oklch(0.94 0.01 95);
+  --color-secondary-foreground: oklch(0.25 0.015 80);
+  --color-muted: oklch(0.93 0.008 95);
+  --color-muted-foreground: oklch(0.45 0.008 80);
+  --color-accent: oklch(0.95 0.012 90);
+  --color-accent-foreground: oklch(0.2 0.015 80);
+  --color-border: oklch(0.88 0.01 95);
   --color-ring: oklch(0.72 0.17 85);
   --mesh-1: oklch(0.92 0.04 85 / 0.3);
   --mesh-2: oklch(0.94 0.03 105 / 0.2);
@@ -482,19 +483,19 @@ body {
 
 /* ---- Theme: Rose Garden ---- */
 [data-theme="rose-garden"] {
-  --color-background: oklch(0.97 0.012 10);
-  --color-foreground: oklch(0.22 0.03 355);
-  --color-card: oklch(0.99 0.004 10);
-  --color-card-foreground: oklch(0.22 0.03 355);
+  --color-background: oklch(0.98 0.006 10);
+  --color-foreground: oklch(0.15 0.015 355);
+  --color-card: oklch(0.995 0.003 10);
+  --color-card-foreground: oklch(0.15 0.015 355);
   --color-primary: oklch(0.6 0.22 10);
   --color-primary-foreground: oklch(0.98 0.005 10);
-  --color-secondary: oklch(0.93 0.012 10);
-  --color-secondary-foreground: oklch(0.3 0.03 355);
-  --color-muted: oklch(0.92 0.008 10);
-  --color-muted-foreground: oklch(0.45 0.015 355);
-  --color-accent: oklch(0.93 0.018 5);
-  --color-accent-foreground: oklch(0.25 0.03 355);
-  --color-border: oklch(0.87 0.012 10);
+  --color-secondary: oklch(0.94 0.006 10);
+  --color-secondary-foreground: oklch(0.25 0.015 355);
+  --color-muted: oklch(0.93 0.005 10);
+  --color-muted-foreground: oklch(0.45 0.008 355);
+  --color-accent: oklch(0.95 0.01 5);
+  --color-accent-foreground: oklch(0.2 0.015 355);
+  --color-border: oklch(0.88 0.006 10);
   --color-ring: oklch(0.6 0.22 10);
   --mesh-1: oklch(0.92 0.04 10 / 0.3);
   --mesh-2: oklch(0.94 0.03 350 / 0.2);
@@ -505,19 +506,19 @@ body {
 
 /* ---- Theme: Sage Light ---- */
 [data-theme="sage-light"] {
-  --color-background: oklch(0.96 0.01 145);
-  --color-foreground: oklch(0.22 0.02 145);
-  --color-card: oklch(0.99 0.004 145);
-  --color-card-foreground: oklch(0.22 0.02 145);
+  --color-background: oklch(0.98 0.005 145);
+  --color-foreground: oklch(0.15 0.01 145);
+  --color-card: oklch(0.995 0.003 145);
+  --color-card-foreground: oklch(0.15 0.01 145);
   --color-primary: oklch(0.55 0.1 145);
   --color-primary-foreground: oklch(0.98 0.005 145);
-  --color-secondary: oklch(0.93 0.01 145);
-  --color-secondary-foreground: oklch(0.3 0.02 145);
-  --color-muted: oklch(0.91 0.008 145);
-  --color-muted-foreground: oklch(0.45 0.01 145);
-  --color-accent: oklch(0.93 0.012 150);
-  --color-accent-foreground: oklch(0.25 0.02 145);
-  --color-border: oklch(0.86 0.01 145);
+  --color-secondary: oklch(0.94 0.005 145);
+  --color-secondary-foreground: oklch(0.25 0.01 145);
+  --color-muted: oklch(0.93 0.004 145);
+  --color-muted-foreground: oklch(0.45 0.005 145);
+  --color-accent: oklch(0.95 0.006 150);
+  --color-accent-foreground: oklch(0.2 0.01 145);
+  --color-border: oklch(0.88 0.005 145);
   --color-ring: oklch(0.55 0.1 145);
   --mesh-1: oklch(0.91 0.02 145 / 0.3);
   --mesh-2: oklch(0.93 0.015 160 / 0.2);
@@ -528,19 +529,19 @@ body {
 
 /* ---- Theme: Sand Dune ---- */
 [data-theme="sand-dune"] {
-  --color-background: oklch(0.96 0.012 75);
-  --color-foreground: oklch(0.25 0.03 70);
-  --color-card: oklch(0.99 0.004 75);
-  --color-card-foreground: oklch(0.25 0.03 70);
+  --color-background: oklch(0.98 0.006 75);
+  --color-foreground: oklch(0.15 0.015 70);
+  --color-card: oklch(0.995 0.003 75);
+  --color-card-foreground: oklch(0.15 0.015 70);
   --color-primary: oklch(0.6 0.12 75);
   --color-primary-foreground: oklch(0.98 0.005 75);
-  --color-secondary: oklch(0.93 0.012 75);
-  --color-secondary-foreground: oklch(0.32 0.03 70);
-  --color-muted: oklch(0.91 0.01 75);
-  --color-muted-foreground: oklch(0.48 0.015 70);
-  --color-accent: oklch(0.92 0.015 80);
-  --color-accent-foreground: oklch(0.28 0.03 70);
-  --color-border: oklch(0.86 0.012 75);
+  --color-secondary: oklch(0.94 0.006 75);
+  --color-secondary-foreground: oklch(0.25 0.015 70);
+  --color-muted: oklch(0.93 0.005 75);
+  --color-muted-foreground: oklch(0.45 0.008 70);
+  --color-accent: oklch(0.95 0.008 80);
+  --color-accent-foreground: oklch(0.2 0.015 70);
+  --color-border: oklch(0.88 0.006 75);
   --color-ring: oklch(0.6 0.12 75);
   --mesh-1: oklch(0.91 0.02 75 / 0.3);
   --mesh-2: oklch(0.93 0.015 60 / 0.2);
@@ -551,19 +552,19 @@ body {
 
 /* ---- Theme: Ice Crystal ---- */
 [data-theme="ice-crystal"] {
-  --color-background: oklch(0.96 0.005 250);
-  --color-foreground: oklch(0.22 0.015 250);
-  --color-card: oklch(0.99 0.002 250);
-  --color-card-foreground: oklch(0.22 0.015 250);
+  --color-background: oklch(0.985 0.003 250);
+  --color-foreground: oklch(0.15 0.008 250);
+  --color-card: oklch(0.995 0.002 250);
+  --color-card-foreground: oklch(0.15 0.008 250);
   --color-primary: oklch(0.55 0.04 250);
   --color-primary-foreground: oklch(0.98 0.003 250);
-  --color-secondary: oklch(0.93 0.005 250);
-  --color-secondary-foreground: oklch(0.3 0.015 250);
-  --color-muted: oklch(0.91 0.004 250);
-  --color-muted-foreground: oklch(0.48 0.01 250);
-  --color-accent: oklch(0.92 0.006 245);
-  --color-accent-foreground: oklch(0.25 0.015 250);
-  --color-border: oklch(0.86 0.005 250);
+  --color-secondary: oklch(0.94 0.004 250);
+  --color-secondary-foreground: oklch(0.25 0.008 250);
+  --color-muted: oklch(0.93 0.003 250);
+  --color-muted-foreground: oklch(0.45 0.005 250);
+  --color-accent: oklch(0.95 0.005 245);
+  --color-accent-foreground: oklch(0.2 0.008 250);
+  --color-border: oklch(0.88 0.004 250);
   --color-ring: oklch(0.55 0.04 250);
   --mesh-1: oklch(0.91 0.01 250 / 0.25);
   --mesh-2: oklch(0.93 0.008 240 / 0.18);
@@ -578,19 +579,19 @@ body {
 
 /* ---- Theme: Catppuccin Latte (Light) ---- */
 [data-theme="catppuccin-latte"] {
-  --color-background: oklch(0.95 0.005 260);
-  --color-foreground: oklch(0.35 0.03 270);
-  --color-card: oklch(0.92 0.008 260);
-  --color-card-foreground: oklch(0.35 0.03 270);
+  --color-background: oklch(0.96 0.004 260);
+  --color-foreground: oklch(0.2 0.015 270);
+  --color-card: oklch(0.94 0.005 260);
+  --color-card-foreground: oklch(0.2 0.015 270);
   --color-primary: oklch(0.5 0.22 260);
   --color-primary-foreground: oklch(0.97 0.005 260);
-  --color-secondary: oklch(0.88 0.008 260);
-  --color-secondary-foreground: oklch(0.4 0.03 270);
-  --color-muted: oklch(0.86 0.006 260);
-  --color-muted-foreground: oklch(0.48 0.02 270);
-  --color-accent: oklch(0.88 0.015 290);
-  --color-accent-foreground: oklch(0.35 0.03 270);
-  --color-border: oklch(0.83 0.008 260);
+  --color-secondary: oklch(0.9 0.005 260);
+  --color-secondary-foreground: oklch(0.3 0.015 270);
+  --color-muted: oklch(0.88 0.004 260);
+  --color-muted-foreground: oklch(0.45 0.01 270);
+  --color-accent: oklch(0.9 0.008 290);
+  --color-accent-foreground: oklch(0.25 0.015 270);
+  --color-border: oklch(0.85 0.005 260);
   --color-ring: oklch(0.5 0.22 260);
   --mesh-1: oklch(0.9 0.03 260 / 0.3);
   --mesh-2: oklch(0.92 0.025 290 / 0.2);
@@ -599,21 +600,21 @@ body {
   --bg-content: oklch(0.97 0.003 260);
 }
 
-/* ---- Theme: Catppuccin Frappé (Mid-Dark) ---- */
+/* ---- Theme: Catppuccin Frappe (Mid-Dark) ---- */
 [data-theme="catppuccin-frappe"] {
-  --color-background: oklch(0.28 0.02 270);
-  --color-foreground: oklch(0.85 0.02 270);
-  --color-card: oklch(0.25 0.018 270);
-  --color-card-foreground: oklch(0.85 0.02 270);
+  --color-background: oklch(0.26 0.008 270);
+  --color-foreground: oklch(0.88 0.008 270);
+  --color-card: oklch(0.29 0.01 270);
+  --color-card-foreground: oklch(0.88 0.008 270);
   --color-primary: oklch(0.7 0.12 260);
   --color-primary-foreground: oklch(0.2 0.02 260);
-  --color-secondary: oklch(0.33 0.02 270);
-  --color-secondary-foreground: oklch(0.82 0.02 270);
-  --color-muted: oklch(0.31 0.015 270);
-  --color-muted-foreground: oklch(0.6 0.015 270);
-  --color-accent: oklch(0.35 0.03 290);
-  --color-accent-foreground: oklch(0.85 0.02 270);
-  --color-border: oklch(0.38 0.02 270);
+  --color-secondary: oklch(0.32 0.008 270);
+  --color-secondary-foreground: oklch(0.82 0.008 270);
+  --color-muted: oklch(0.3 0.006 270);
+  --color-muted-foreground: oklch(0.6 0.008 270);
+  --color-accent: oklch(0.34 0.012 290);
+  --color-accent-foreground: oklch(0.88 0.008 270);
+  --color-border: oklch(0.35 0.008 270);
   --color-ring: oklch(0.7 0.12 260);
   --mesh-1: oklch(0.32 0.06 260 / 0.4);
   --mesh-2: oklch(0.3 0.05 290 / 0.3);
@@ -624,19 +625,19 @@ body {
 
 /* ---- Theme: Catppuccin Macchiato (Dark) ---- */
 [data-theme="catppuccin-macchiato"] {
-  --color-background: oklch(0.23 0.02 270);
-  --color-foreground: oklch(0.87 0.02 270);
-  --color-card: oklch(0.2 0.018 270);
-  --color-card-foreground: oklch(0.87 0.02 270);
+  --color-background: oklch(0.2 0.008 270);
+  --color-foreground: oklch(0.9 0.008 270);
+  --color-card: oklch(0.23 0.01 270);
+  --color-card-foreground: oklch(0.9 0.008 270);
   --color-primary: oklch(0.72 0.12 255);
   --color-primary-foreground: oklch(0.18 0.02 255);
-  --color-secondary: oklch(0.28 0.02 270);
-  --color-secondary-foreground: oklch(0.84 0.02 270);
-  --color-muted: oklch(0.26 0.015 270);
-  --color-muted-foreground: oklch(0.58 0.015 270);
-  --color-accent: oklch(0.3 0.03 295);
-  --color-accent-foreground: oklch(0.87 0.02 270);
-  --color-border: oklch(0.33 0.02 270);
+  --color-secondary: oklch(0.27 0.008 270);
+  --color-secondary-foreground: oklch(0.84 0.008 270);
+  --color-muted: oklch(0.25 0.006 270);
+  --color-muted-foreground: oklch(0.58 0.008 270);
+  --color-accent: oklch(0.29 0.012 295);
+  --color-accent-foreground: oklch(0.9 0.008 270);
+  --color-border: oklch(0.3 0.008 270);
   --color-ring: oklch(0.72 0.12 255);
   --mesh-1: oklch(0.27 0.06 255 / 0.4);
   --mesh-2: oklch(0.25 0.05 295 / 0.3);
@@ -647,19 +648,19 @@ body {
 
 /* ---- Theme: Catppuccin Mocha (Darkest) ---- */
 [data-theme="catppuccin-mocha"] {
-  --color-background: oklch(0.19 0.02 275);
-  --color-foreground: oklch(0.87 0.025 270);
-  --color-card: oklch(0.16 0.018 275);
-  --color-card-foreground: oklch(0.87 0.025 270);
+  --color-background: oklch(0.16 0.008 275);
+  --color-foreground: oklch(0.9 0.01 270);
+  --color-card: oklch(0.19 0.01 275);
+  --color-card-foreground: oklch(0.9 0.01 270);
   --color-primary: oklch(0.75 0.11 255);
   --color-primary-foreground: oklch(0.15 0.02 255);
-  --color-secondary: oklch(0.24 0.02 275);
-  --color-secondary-foreground: oklch(0.84 0.025 270);
-  --color-muted: oklch(0.22 0.015 275);
-  --color-muted-foreground: oklch(0.55 0.015 270);
-  --color-accent: oklch(0.26 0.03 300);
-  --color-accent-foreground: oklch(0.87 0.025 270);
-  --color-border: oklch(0.3 0.02 275);
+  --color-secondary: oklch(0.23 0.008 275);
+  --color-secondary-foreground: oklch(0.84 0.01 270);
+  --color-muted: oklch(0.21 0.006 275);
+  --color-muted-foreground: oklch(0.55 0.008 270);
+  --color-accent: oklch(0.25 0.012 300);
+  --color-accent-foreground: oklch(0.9 0.01 270);
+  --color-border: oklch(0.27 0.008 275);
   --color-ring: oklch(0.75 0.11 255);
   --mesh-1: oklch(0.24 0.06 255 / 0.4);
   --mesh-2: oklch(0.22 0.05 300 / 0.3);
@@ -1029,13 +1030,13 @@ body {
    Inline code & code block styles
    ============================================ */
 
-/* Inline code — visible background like Confluence */
+/* Inline code — subtle background pill */
 .prose :where(code):not(:where(pre code)) {
-  background: oklch(1 0 0 / 0.08);
-  border: 1px solid oklch(1 0 0 / 0.12);
+  background: oklch(from var(--color-muted) l c h / 0.4);
+  border: 1px solid oklch(from var(--color-border) l c h / 0.5);
   border-radius: 0.25rem;
-  padding: 0.15em 0.35em;
-  font-size: 0.875em;
+  padding: 0.1em 0.3em;
+  font-size: 0.85em;
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   color: var(--inline-code-color, oklch(0.85 0.12 30));
   word-break: break-word;
@@ -1046,15 +1047,15 @@ body {
   content: none;
 }
 
-/* Code blocks */
+/* Code blocks — flat background, no blur */
 .prose :where(pre) {
-  background: oklch(0.12 0.01 280);
-  border: 1px solid oklch(1 0 0 / 0.08);
-  border-radius: 0.5rem;
-  padding: 1rem;
+  background: oklch(from var(--color-muted) l c h / 0.3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 0.75rem 1rem;
   overflow-x: auto;
-  font-size: 0.875rem;
-  line-height: 1.6;
+  font-size: 0.85rem;
+  line-height: 1.55;
 }
 
 .prose :where(pre code) {
@@ -1062,7 +1063,7 @@ body {
   border: none;
   padding: 0;
   font-size: inherit;
-  color: oklch(0.88 0.01 280);
+  color: var(--color-foreground);
 }
 
 /* ============================================
@@ -1139,16 +1140,17 @@ body {
    Applies to both read-mode (.prose) and editor
    ============================================ */
 
-/* Headings — gradient accent underline, proper spacing */
+/* Headings — neutral border, compact spacing (Linear / Obsidian inspired) */
 .prose :where(h1) {
   font-size: 1.5rem;
   font-weight: 700;
   letter-spacing: -0.02em;
   line-height: 1.3;
-  margin-top: 1.75rem;
-  margin-bottom: 0.75rem;
+  margin-top: 1.5rem;
+  margin-bottom: 0.5rem;
   padding-bottom: 0.4rem;
-  border-bottom: 2px solid oklch(from var(--color-primary) l c h / 0.3);
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-foreground);
 }
 
 .prose :where(h2) {
@@ -1156,10 +1158,11 @@ body {
   font-weight: 650;
   letter-spacing: -0.015em;
   line-height: 1.35;
-  margin-top: 1.5rem;
-  margin-bottom: 0.625rem;
-  padding-bottom: 0.3rem;
-  border-bottom: 1px solid oklch(from var(--color-primary) l c h / 0.15);
+  margin-top: 1.25rem;
+  margin-bottom: 0.5rem;
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid oklch(from var(--color-border) l c h / 0.6);
+  color: var(--color-foreground);
 }
 
 .prose :where(h3) {
@@ -1167,7 +1170,8 @@ body {
   font-weight: 600;
   line-height: 1.4;
   margin-top: 1.25rem;
-  margin-bottom: 0.5rem;
+  margin-bottom: 0.375rem;
+  color: var(--color-foreground);
 }
 
 .prose :where(h4) {
@@ -1176,6 +1180,7 @@ body {
   line-height: 1.45;
   margin-top: 1rem;
   margin-bottom: 0.375rem;
+  color: var(--color-foreground);
 }
 
 /* First heading should not have top margin */
@@ -1183,11 +1188,11 @@ body {
   margin-top: 0;
 }
 
-/* Paragraphs */
+/* Paragraphs — compact spacing */
 .prose :where(p) {
-  margin-top: 0.75rem;
-  margin-bottom: 0.75rem;
-  line-height: 1.75;
+  margin-top: 0.5rem;
+  margin-bottom: 0.5rem;
+  line-height: 1.6;
 }
 
 /* Links — theme-colored with underline on hover */
@@ -1203,12 +1208,12 @@ body {
   text-underline-offset: 2px;
 }
 
-/* Blockquotes — glassmorphic accent border */
+/* Blockquotes — flat, neutral left border */
 .prose :where(blockquote) {
-  border-left: 3px solid var(--color-primary);
-  background: oklch(from var(--color-primary) l c h / 0.05);
-  padding: 0.75rem 1rem;
-  margin: 1.25rem 0;
+  border-left: 2px solid var(--color-border);
+  background: oklch(from var(--color-muted) l c h / 0.15);
+  padding: 0.5rem 1rem;
+  margin: 1rem 0;
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
   font-style: italic;
   color: var(--color-muted-foreground);
@@ -1218,64 +1223,58 @@ body {
   margin: 0.25rem 0;
 }
 
-/* Lists — better spacing & bullets */
+/* Lists — muted markers, compact spacing */
 .prose :where(ul) {
-  margin: 0.75rem 0;
-  padding-left: 1.5rem;
+  margin: 0.5rem 0;
+  padding-left: 1.25rem;
 }
 
 .prose :where(ol) {
-  margin: 0.75rem 0;
-  padding-left: 1.5rem;
+  margin: 0.5rem 0;
+  padding-left: 1.25rem;
 }
 
 .prose :where(li) {
-  margin-top: 0.25rem;
-  margin-bottom: 0.25rem;
-  line-height: 1.65;
+  margin-top: 0.15rem;
+  margin-bottom: 0.15rem;
+  line-height: 1.5;
 }
 
 .prose :where(li)::marker {
-  color: var(--color-primary);
+  color: var(--color-muted-foreground);
 }
 
-/* Horizontal rules — subtle glass divider */
+/* Horizontal rules — neutral divider */
 .prose :where(hr) {
   border: none;
   height: 1px;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    oklch(from var(--color-primary) l c h / 0.3) 20%,
-    oklch(from var(--color-primary) l c h / 0.3) 80%,
-    transparent
-  );
-  margin: 2rem 0;
+  background: var(--color-border);
+  margin: 1.5rem 0;
 }
 
-/* Tables — glassmorphic styling */
+/* Tables — flat, subtle styling */
 .prose :where(table) {
   border-collapse: collapse;
   width: 100%;
-  margin: 1.25rem 0;
+  margin: 1rem 0;
   font-size: 0.9375rem;
 }
 
 .prose :where(th) {
-  background: oklch(from var(--color-muted) l c h / 0.3);
+  background: oklch(from var(--color-muted) l c h / 0.2);
   font-weight: 600;
   text-align: left;
-  padding: 0.625rem 0.75rem;
-  border: 1px solid var(--glass-border);
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--color-border);
 }
 
 .prose :where(td) {
   padding: 0.5rem 0.75rem;
-  border: 1px solid var(--glass-border);
+  border: 1px solid oklch(from var(--color-border) l c h / 0.6);
 }
 
 .prose :where(tbody tr:hover) {
-  background: oklch(from var(--color-primary) l c h / 0.03);
+  background: oklch(from var(--color-muted) l c h / 0.1);
 }
 
 /* Strong & emphasis */
@@ -1578,10 +1577,10 @@ body {
   --tw-prose-links: var(--color-primary);
   --tw-prose-bold: var(--color-foreground);
   --tw-prose-counters: var(--color-muted-foreground);
-  --tw-prose-bullets: var(--color-primary);
+  --tw-prose-bullets: var(--color-muted-foreground);
   --tw-prose-hr: var(--color-border);
   --tw-prose-quotes: var(--color-muted-foreground);
-  --tw-prose-quote-borders: var(--color-primary);
+  --tw-prose-quote-borders: var(--color-border);
   --tw-prose-captions: var(--color-muted-foreground);
   --tw-prose-kbd: var(--color-foreground);
   --tw-prose-kbd-shadows: var(--color-border);
@@ -1594,19 +1593,19 @@ body {
 
 /* Light theme inline code overrides */
 [data-theme-type="light"] .prose :where(code):not(:where(pre code)) {
-  background: oklch(0 0 0 / 0.06);
-  border-color: oklch(0 0 0 / 0.1);
+  background: oklch(from var(--color-muted) l c h / 0.5);
+  border-color: oklch(from var(--color-border) l c h / 0.5);
   color: oklch(0.45 0.15 25);
 }
 
 /* Light theme code blocks */
 [data-theme-type="light"] .prose :where(pre) {
-  background: oklch(from var(--color-muted) l c h / 0.4);
-  border-color: oklch(0 0 0 / 0.08);
+  background: oklch(from var(--color-muted) l c h / 0.35);
+  border-color: var(--color-border);
 }
 
 [data-theme-type="light"] .prose :where(pre code) {
-  color: oklch(0.3 0.02 280);
+  color: var(--color-foreground);
 }
 
 /* ============================================
