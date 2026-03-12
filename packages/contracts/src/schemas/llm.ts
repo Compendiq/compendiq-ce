@@ -14,6 +14,7 @@ export const ImproveRequestSchema = z.object({
   model: z.string().min(1),
   pageId: z.string().optional(),
   includeSubPages: z.boolean().optional(),
+  instruction: z.string().max(10000).optional(),
 });
 
 export const GenerateRequestSchema = z.object({

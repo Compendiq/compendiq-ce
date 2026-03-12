@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { Wand2, Loader2 } from 'lucide-react';
 import { useAiContext } from '../AiContext';
 import { DiffView } from '../../../shared/components/DiffView';
@@ -90,13 +90,15 @@ export function ImproveDiffView() {
 }
 
 /**
- * Input bar for improve mode: a single action button.
+ * Input bar for improve mode: an optional instruction textarea and an action button.
  */
 export function ImproveModeInput() {
   const {
     isStreaming, page, isPageLoading, model, pageId, includeSubPages, runStream,
     improvementType, setShowDiffView, setImprovedContent,
   } = useAiContext();
+  const [instruction, setInstruction] = useState('');
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const handleImprove = useCallback(async () => {
     if (isStreaming) return;
@@ -112,9 +114,16 @@ export function ImproveModeInput() {
     setShowDiffView(false);
     setImprovedContent('');
 
+    const body: Record<string, unknown> = {
+      content: page.bodyHtml, type: improvementType, model, pageId, includeSubPages,
+    };
+    if (instruction.trim()) {
+      body.instruction = instruction.trim();
+    }
+
     await runStream(
       '/llm/improve',
-      { content: page.bodyHtml, type: improvementType, model, pageId, includeSubPages },
+      body,
       {
         userMessage: `Improve (${improvementType}): ${page.title}`,
         onComplete: (accumulated) => {
@@ -123,10 +132,20 @@ export function ImproveModeInput() {
         },
       },
     );
-  }, [page, model, improvementType, pageId, isStreaming, includeSubPages, runStream, setShowDiffView, setImprovedContent]);
+  }, [page, model, improvementType, pageId, isStreaming, includeSubPages, instruction, runStream, setShowDiffView, setImprovedContent]);
 
   return (
-    <div className="mt-3 flex items-center gap-3 border-t border-border/40 pt-3">
+    <div className="mt-3 flex flex-col gap-3 border-t border-border/40 pt-3">
+      <textarea
+        ref={textareaRef}
+        value={instruction}
+        onChange={(e) => setInstruction(e.target.value)}
+        placeholder="Additional instructions (optional) — e.g. 'Focus on the intro' or paste draft notes to merge"
+        maxLength={10000}
+        rows={2}
+        disabled={isStreaming}
+        className="w-full resize-y rounded-lg border border-border/40 bg-background/50 px-3 py-2 text-sm placeholder:text-muted-foreground/60 focus:border-primary/50 focus:outline-none disabled:opacity-50"
+      />
       <button
         onClick={handleImprove}
         disabled={isStreaming || !page || isPageLoading || !model}

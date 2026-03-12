@@ -204,9 +204,13 @@ export function improveContent(
   content: string,
   type: 'grammar' | 'structure' | 'clarity' | 'technical' | 'completeness',
   signal?: AbortSignal,
+  instruction?: string,
 ): AsyncGenerator<StreamChunk> {
   const { sanitized } = sanitizeLlmInput(content);
-  const systemPrompt = getSystemPrompt(`improve_${type}` as SystemPromptKey);
+  let systemPrompt = getSystemPrompt(`improve_${type}` as SystemPromptKey);
+  if (instruction) {
+    systemPrompt += `\n\nADDITIONAL USER INSTRUCTIONS:\n${instruction}`;
+  }
   return streamChat(model, [
     { role: 'system', content: systemPrompt },
     { role: 'user', content: sanitized },

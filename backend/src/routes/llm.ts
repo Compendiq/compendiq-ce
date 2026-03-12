@@ -265,7 +265,7 @@ export async function llmRoutes(fastify: FastifyInstance) {
   // POST /api/llm/improve - stream improved content
   fastify.post('/llm/improve', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
     const body = ImproveRequestSchema.parse(request.body);
-    const { content, type, model, includeSubPages } = body;
+    const { content, type, model, includeSubPages, instruction } = body;
     const userId = request.userId;
 
     if (content.length > MAX_INPUT_LENGTH) {
@@ -280,7 +280,21 @@ export async function llmRoutes(fastify: FastifyInstance) {
       await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/improve' }, request);
     }
 
-    const systemPrompt = await resolveSystemPrompt(userId, `improve_${type}` as SystemPromptKey) + multiPageSuffix;
+    // Sanitize optional user instruction (strip HTML tags, limit length)
+    let sanitizedInstruction: string | undefined;
+    if (instruction) {
+      const stripped = instruction.replace(/<[^>]*>/g, '').slice(0, 10000);
+      const { sanitized: instrSanitized, warnings: instrWarnings } = sanitizeLlmInput(stripped);
+      sanitizedInstruction = instrSanitized;
+      if (instrWarnings.length > 0) {
+        await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings: instrWarnings, route: '/llm/improve', field: 'instruction' }, request);
+      }
+    }
+
+    let systemPrompt = await resolveSystemPrompt(userId, `improve_${type}` as SystemPromptKey) + multiPageSuffix;
+    if (sanitizedInstruction) {
+      systemPrompt += `\n\nADDITIONAL USER INSTRUCTIONS:\n${sanitizedInstruction}`;
+    }
 
     // Check LLM cache with stampede protection
     const cacheKey = buildLlmCacheKey(model, systemPrompt, sanitized);
