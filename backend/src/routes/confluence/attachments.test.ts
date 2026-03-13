@@ -27,7 +27,16 @@ vi.mock('../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
+// Mock Redis client
+const mockRedisGet = vi.fn();
+const mockRedisSetEx = vi.fn();
+const mockRedisClient = { get: mockRedisGet, setEx: mockRedisSetEx };
+vi.mock('../../core/services/redis-cache.js', () => ({
+  getRedisClient: () => mockRedisClient,
+}));
+
 import { readAttachment, fetchAndCachePageImage, getMimeType, writeAttachmentCache } from '../../domains/confluence/services/attachment-handler.js';
+import { ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
 
 const mockReadAttachment = vi.mocked(readAttachment);
 const mockFetchAndCachePageImage = vi.mocked(fetchAndCachePageImage);
@@ -66,6 +75,8 @@ describe('Attachment routes', () => {
     mockQuery.mockResolvedValue({
       rows: [{ body_storage: '<ac:image><ri:attachment ri:filename="screenshot.png" /></ac:image>', space_key: 'OPS' }],
     });
+    mockRedisGet.mockResolvedValue(null);
+    mockRedisSetEx.mockResolvedValue('OK');
   });
 
   it('should return 404 when the page is not in the user selected spaces', async () => {
@@ -184,7 +195,30 @@ describe('Attachment routes', () => {
       expect(response.json()).toMatchObject({ reason: 'not_found_in_confluence' });
     });
 
-    it('should return 500 when on-demand fetch throws an error', async () => {
+    it('should return 502 with reason confluence_upstream_error when Confluence returns a 500 error', async () => {
+      mockReadAttachment.mockResolvedValue(null);
+      mockGetClientForUser.mockResolvedValue({ /* mock client */ });
+      mockFetchAndCachePageImage.mockRejectedValue(new ConfluenceError('Internal Server Error', 500));
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/attachments/page-456/broken.png',
+      });
+
+      expect(response.statusCode).toBe(502);
+      expect(response.json()).toMatchObject({
+        statusCode: 502,
+        error: 'Bad Gateway',
+        reason: 'confluence_upstream_error',
+      });
+      expect(mockRedisSetEx).toHaveBeenCalledWith(
+        'attachment:failure:test-user:page-456:broken.png',
+        300,
+        '1',
+      );
+    });
+
+    it('should return 500 when on-demand fetch throws a generic (non-Confluence) error', async () => {
       mockReadAttachment.mockResolvedValue(null);
       mockGetClientForUser.mockResolvedValue({ /* mock client */ });
       mockFetchAndCachePageImage.mockRejectedValue(new Error('Confluence unreachable'));
@@ -195,6 +229,25 @@ describe('Attachment routes', () => {
       });
 
       expect(response.statusCode).toBe(500);
+    });
+
+    it('should return 502 immediately from failure sentinel without calling fetchAndCachePageImage', async () => {
+      mockReadAttachment.mockResolvedValue(null);
+      mockRedisGet.mockResolvedValue('1');
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/attachments/page-456/broken.png',
+      });
+
+      expect(response.statusCode).toBe(502);
+      expect(response.json()).toMatchObject({
+        statusCode: 502,
+        error: 'Bad Gateway',
+        reason: 'confluence_upstream_error',
+      });
+      expect(mockGetClientForUser).not.toHaveBeenCalled();
+      expect(mockFetchAndCachePageImage).not.toHaveBeenCalled();
     });
 
     it('should return 404 with reason no_confluence_client when user has no Confluence credentials', async () => {
