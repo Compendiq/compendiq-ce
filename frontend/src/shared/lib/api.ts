@@ -27,6 +27,24 @@ async function refreshAccessToken(): Promise<string | null> {
   }
 }
 
+/**
+ * Deduplicates concurrent refresh calls. When multiple requests get 401
+ * simultaneously (e.g. page load with expired token), only the first
+ * triggers an actual refresh; all others await the same promise.
+ * Without this, concurrent refreshes race to rotate the token, and the
+ * backend's reuse detection revokes the entire token family.
+ */
+let pendingRefresh: Promise<string | null> | null = null;
+
+function refreshAccessTokenOnce(): Promise<string | null> {
+  if (!pendingRefresh) {
+    pendingRefresh = refreshAccessToken().finally(() => {
+      pendingRefresh = null;
+    });
+  }
+  return pendingRefresh;
+}
+
 export async function apiFetch<T = unknown>(
   path: string,
   options: RequestInit = {},
@@ -47,7 +65,7 @@ export async function apiFetch<T = unknown>(
   // page-reload where accessToken was cleared from memory but
   // the httpOnly refresh cookie is still present)
   if (res.status === 401) {
-    const newToken = await refreshAccessToken();
+    const newToken = await refreshAccessTokenOnce();
     if (newToken) {
       headers.set('Authorization', `Bearer ${newToken}`);
       res = await fetch(`${API_BASE}${path}`, { ...options, headers, credentials: 'include' });
