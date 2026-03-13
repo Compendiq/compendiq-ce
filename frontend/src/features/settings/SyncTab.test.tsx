@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { SettingsPage } from './SettingsPage';
 
-const authState = { user: { role: 'user' }, accessToken: 'test-token', setAuth: vi.fn(), clearAuth: vi.fn() };
+let authState = { user: { role: 'user' as string }, accessToken: 'test-token', setAuth: vi.fn(), clearAuth: vi.fn() };
 vi.mock('../../stores/auth-store', () => ({
   useAuthStore: Object.assign(
     (selector: (state: typeof authState) => unknown) => selector(authState),
@@ -64,6 +64,25 @@ const mockOverview = {
   }],
 };
 
+const mockQualityStatus = {
+  totalPages: 100,
+  analyzedPages: 75,
+  pendingPages: 15,
+  failedPages: 5,
+  skippedPages: 5,
+  averageScore: 72,
+  isProcessing: false,
+};
+
+const mockSummaryStatus = {
+  totalPages: 100,
+  summarizedPages: 80,
+  pendingPages: 10,
+  failedPages: 3,
+  skippedPages: 7,
+  isProcessing: false,
+};
+
 function createWrapper() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -85,13 +104,22 @@ describe('Settings SyncTab', () => {
 
   beforeEach(() => {
     fetchSpy = vi.spyOn(globalThis, 'fetch');
+    authState = { user: { role: 'user' }, accessToken: 'test-token', setAuth: vi.fn(), clearAuth: vi.fn() };
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  function mockFetchResponses(overview = mockOverview) {
+  function mockFetchResponses(overrides?: {
+    overview?: typeof mockOverview;
+    quality?: typeof mockQualityStatus;
+    summary?: typeof mockSummaryStatus;
+  }) {
+    const overview = overrides?.overview ?? mockOverview;
+    const quality = overrides?.quality ?? mockQualityStatus;
+    const summary = overrides?.summary ?? mockSummaryStatus;
+
     fetchSpy.mockImplementation(async (url: string | URL | Request, options?: RequestInit) => {
       const path = typeof url === 'string' ? url : url instanceof URL ? url.toString() : url.url;
 
@@ -109,6 +137,30 @@ describe('Settings SyncTab', () => {
 
       if (path.includes('/api/sync') && options?.method === 'POST') {
         return new Response(JSON.stringify({ message: 'Sync started', status: { userId: 'user-1', status: 'syncing' } }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      if (path.includes('/api/llm/quality-status')) {
+        return new Response(JSON.stringify(quality), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      if (path.includes('/api/llm/quality-rescan') && options?.method === 'POST') {
+        return new Response(JSON.stringify({ message: 'Quality rescan started — 100 pages reset to pending', pagesReset: 100 }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      if (path.includes('/api/llm/summary-status')) {
+        return new Response(JSON.stringify(summary), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      if (path.includes('/api/llm/summary-rescan') && options?.method === 'POST') {
+        return new Response(JSON.stringify({ message: 'Reset 100 pages for re-summarization', resetCount: 100 }), {
           headers: { 'Content-Type': 'application/json' },
         });
       }
@@ -145,20 +197,22 @@ describe('Settings SyncTab', () => {
 
   it('shows a clean empty state when no missing assets are present', async () => {
     mockFetchResponses({
-      ...mockOverview,
-      totals: {
-        ...mockOverview.totals,
-        pagesWithIssues: 0,
-        healthyPages: 2,
-        images: { expected: 2, cached: 2, missing: 0 },
+      overview: {
+        ...mockOverview,
+        totals: {
+          ...mockOverview.totals,
+          pagesWithIssues: 0,
+          healthyPages: 2,
+          images: { expected: 2, cached: 2, missing: 0 },
+        },
+        spaces: [{
+          ...mockOverview.spaces[0],
+          status: 'healthy',
+          pagesWithIssues: 0,
+          images: { expected: 2, cached: 2, missing: 0 },
+        }],
+        issues: [],
       },
-      spaces: [{
-        ...mockOverview.spaces[0],
-        status: 'healthy',
-        pagesWithIssues: 0,
-        images: { expected: 2, cached: 2, missing: 0 },
-      }],
-      issues: [],
     });
     await navigateToSyncTab();
 
@@ -183,5 +237,73 @@ describe('Settings SyncTab', () => {
         expect.objectContaining({ method: 'POST' }),
       );
     });
+  });
+
+  it('renders quality analysis section with metric cards', async () => {
+    mockFetchResponses();
+    await navigateToSyncTab();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('quality-worker-section')).toBeInTheDocument();
+    });
+
+    expect(screen.getByTestId('quality-worker-status')).toHaveTextContent('Idle');
+    expect(screen.getByTestId('quality-metric-analyzed')).toHaveTextContent('75');
+    expect(screen.getByTestId('quality-metric-pending')).toHaveTextContent('15');
+    expect(screen.getByTestId('quality-metric-failed')).toHaveTextContent('5');
+    expect(screen.getByTestId('quality-metric-avg-score')).toHaveTextContent('72');
+  });
+
+  it('renders summary worker section with metric cards', async () => {
+    mockFetchResponses();
+    await navigateToSyncTab();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('summary-worker-section')).toBeInTheDocument();
+    });
+
+    expect(screen.getByTestId('summary-worker-status')).toHaveTextContent('Idle');
+    expect(screen.getByTestId('summary-metric-summarized')).toHaveTextContent('80');
+    expect(screen.getByTestId('summary-metric-pending')).toHaveTextContent('10');
+    expect(screen.getByTestId('summary-metric-failed')).toHaveTextContent('3');
+    expect(screen.getByTestId('summary-metric-skipped')).toHaveTextContent('7');
+  });
+
+  it('shows processing status badge when workers are active', async () => {
+    mockFetchResponses({
+      quality: { ...mockQualityStatus, isProcessing: true },
+      summary: { ...mockSummaryStatus, isProcessing: true },
+    });
+    await navigateToSyncTab();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('quality-worker-status')).toHaveTextContent('Analyzing');
+    });
+
+    expect(screen.getByTestId('summary-worker-status')).toHaveTextContent('Summarizing');
+  });
+
+  it('hides Force Rescan buttons for non-admin users', async () => {
+    mockFetchResponses();
+    await navigateToSyncTab();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('quality-worker-section')).toBeInTheDocument();
+    });
+
+    expect(screen.queryByTestId('quality-force-rescan')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('summary-force-rescan')).not.toBeInTheDocument();
+  });
+
+  it('shows Force Rescan buttons for admin users', async () => {
+    authState = { user: { role: 'admin' }, accessToken: 'test-token', setAuth: vi.fn(), clearAuth: vi.fn() };
+    mockFetchResponses();
+    await navigateToSyncTab();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('quality-force-rescan')).toBeInTheDocument();
+    });
+
+    expect(screen.getByTestId('summary-force-rescan')).toBeInTheDocument();
   });
 });

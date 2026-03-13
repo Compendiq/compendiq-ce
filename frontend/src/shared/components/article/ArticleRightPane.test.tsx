@@ -37,9 +37,19 @@ const mockPage = {
   embeddingStatus: 'embedded',
   embeddedAt: '2026-03-01T12:00:00Z',
   embeddingError: null,
+  qualityScore: 85,
+  qualityStatus: 'analyzed' as const,
+  qualityCompleteness: 80,
+  qualityClarity: 90,
+  qualityStructure: 85,
+  qualityAccuracy: 82,
+  qualityReadability: 88,
+  qualitySummary: 'Well-written article',
+  qualityAnalyzedAt: '2026-03-01T12:00:00Z',
+  qualityError: null,
 };
 
-vi.mock('../hooks/use-pages', () => ({
+vi.mock('../../hooks/use-pages', () => ({
   usePage: () => ({ data: mockPage, isLoading: false }),
   useDeletePage: () => ({ mutateAsync: mockDeletePage }),
   usePinnedPages: () => ({ data: { items: [] }, isLoading: false }),
@@ -47,19 +57,25 @@ vi.mock('../hooks/use-pages', () => ({
   useUnpinPage: () => ({ mutate: mockUnpinPage }),
 }));
 
-vi.mock('../hooks/use-settings', () => ({
+vi.mock('../../hooks/use-settings', () => ({
   useSettings: () => ({
     data: { confluenceUrl: 'https://confluence.example.com' },
   }),
 }));
 
-vi.mock('./FreshnessBadge', () => ({
+vi.mock('../badges/FreshnessBadge', () => ({
   FreshnessBadge: ({ lastModified }: { lastModified: string }) => <span>{lastModified}</span>,
 }));
 
-vi.mock('./EmbeddingStatusBadge', () => ({
+vi.mock('../badges/EmbeddingStatusBadge', () => ({
   EmbeddingStatusBadge: ({ embeddingStatus }: { embeddingStatus: string }) => (
     <span data-testid="embedding-status-badge">{embeddingStatus}</span>
+  ),
+}));
+
+vi.mock('../badges/QualityScoreBadge', () => ({
+  QualityScoreBadge: ({ qualityScore }: { qualityScore: number | null }) => (
+    <span data-testid="quality-score-badge">{qualityScore ?? 'N/A'}</span>
   ),
 }));
 
@@ -179,5 +195,12 @@ describe('ArticleRightPane', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     expect(screen.getByRole('separator', { name: 'Resize article sidebar' })).toBeInTheDocument();
+  });
+
+  it('renders QualityScoreBadge in properties when quality score is present', () => {
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    expect(screen.getByTestId('quality-score-badge')).toBeInTheDocument();
+    expect(screen.getByTestId('quality-score-badge')).toHaveTextContent('85');
   });
 });
