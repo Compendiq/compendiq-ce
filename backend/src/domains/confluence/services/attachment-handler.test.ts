@@ -18,7 +18,7 @@ import {
   MAX_ATTACHMENT_BYTES,
 } from './attachment-handler.js';
 import type { ConfluenceClient, ConfluenceAttachment } from './confluence-client.js';
-import { getLocalFilenameForImageSource } from './image-references.js';
+import { getLocalFilenameForImageSource } from '../../../core/services/image-references.js';
 
 vi.mock('undici', () => ({
   request: vi.fn(),

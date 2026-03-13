@@ -10,17 +10,22 @@ export default tseslint.config(
     plugins: { boundaries },
     settings: {
       'boundaries/elements': [
-        { type: 'core', pattern: 'src/core/**', mode: 'file' },
-        { type: 'confluence', pattern: 'src/domains/confluence/**', mode: 'file' },
-        { type: 'llm', pattern: 'src/domains/llm/**', mode: 'file' },
-        { type: 'knowledge', pattern: 'src/domains/knowledge/**', mode: 'file' },
-        { type: 'routes-foundation', pattern: 'src/routes/foundation/**', mode: 'file' },
-        { type: 'routes-confluence', pattern: 'src/routes/confluence/**', mode: 'file' },
-        { type: 'routes-llm', pattern: 'src/routes/llm/**', mode: 'file' },
-        { type: 'routes-knowledge', pattern: 'src/routes/knowledge/**', mode: 'file' },
-        { type: 'app', pattern: ['src/app.ts', 'src/index.ts', 'src/telemetry.ts'], mode: 'file' },
+        { type: 'core', pattern: 'src/core/*', mode: 'folder' },
+        { type: 'confluence', pattern: 'src/domains/confluence/*', mode: 'folder' },
+        { type: 'llm', pattern: 'src/domains/llm/*', mode: 'folder' },
+        { type: 'knowledge', pattern: 'src/domains/knowledge/*', mode: 'folder' },
+        { type: 'routes-foundation', pattern: 'src/routes/foundation/*', mode: 'folder' },
+        { type: 'routes-confluence', pattern: 'src/routes/confluence/*', mode: 'folder' },
+        { type: 'routes-llm', pattern: 'src/routes/llm/*', mode: 'folder' },
+        { type: 'routes-knowledge', pattern: 'src/routes/knowledge/*', mode: 'folder' },
+        { type: 'app', pattern: ['src/app.ts', 'src/index.ts', 'src/telemetry.ts'], mode: 'full' },
       ],
       'boundaries/ignore': ['**/*.test.ts', '**/test-*.ts'],
+      'import/resolver': {
+        typescript: {
+          alwaysTryTypes: true,
+        },
+      },
     },
     rules: {
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
@@ -31,12 +36,12 @@ export default tseslint.config(
         {
           default: 'allow',
           rules: [
-            // Core cannot import from any domain
+            // Core cannot import from any domain or route
             {
               from: 'core',
               disallow: ['confluence', 'llm', 'knowledge', 'routes-foundation', 'routes-confluence', 'routes-llm', 'routes-knowledge'],
             },
-            // Confluence domain: only core (exception: sync-embedding → llm/embedding-service)
+            // Confluence domain: core + llm (for sync-embedding cross-domain)
             {
               from: 'confluence',
               disallow: ['knowledge', 'routes-foundation', 'routes-confluence', 'routes-llm', 'routes-knowledge'],

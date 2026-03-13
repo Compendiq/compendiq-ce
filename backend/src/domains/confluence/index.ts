@@ -21,5 +21,5 @@ export {
   stopSyncWorker,
 } from './services/sync-service.js';
 export { getSyncOverview } from './services/sync-overview-service.js';
-export { extractImageReferences, getLocalFilenameForImageSource } from './services/image-references.js';
+export { extractImageReferences, getLocalFilenameForImageSource } from '../../core/services/image-references.js';
 export { assembleSubPageContext, getMultiPagePromptSuffix } from './services/subpage-context.js';

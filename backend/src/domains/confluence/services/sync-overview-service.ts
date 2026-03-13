@@ -1,7 +1,7 @@
 import type { SyncOverviewResponse, SyncOverviewSpace, SyncOverviewIssue, AssetSyncCounts } from '@kb-creator/contracts';
 import { query } from '../../../core/db/postgres.js';
 import { attachmentExists, extractDrawioDiagramNames } from './attachment-handler.js';
-import { extractImageReferences } from './image-references.js';
+import { extractImageReferences } from '../../../core/services/image-references.js';
 import { getSyncStatus } from './sync-service.js';
 
 interface OverviewRow {

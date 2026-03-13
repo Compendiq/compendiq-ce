@@ -10,7 +10,7 @@ import {
   SUPPORTED_IMAGE_EXTENSIONS,
   type AttachmentImageSource,
   type ImageReference,
-} from './image-references.js';
+} from '../../../core/services/image-references.js';
 
 const ATTACHMENTS_BASE = process.env.ATTACHMENTS_DIR ?? 'data/attachments';
 

@@ -33,6 +33,7 @@ import { pagesEmbeddingRoutes } from './routes/knowledge/pages-embeddings.js';
 import { pagesDuplicateRoutes } from './routes/knowledge/pages-duplicates.js';
 import { pinnedPagesRoutes } from './routes/knowledge/pinned-pages.js';
 import { analyticsRoutes } from './routes/knowledge/analytics.js';
+import { knowledgeAdminRoutes } from './routes/knowledge/knowledge-admin.js';
 
 import { ZodError } from 'zod';
 import { trackError } from './core/services/error-tracker.js';
@@ -139,6 +140,7 @@ export async function buildApp() {
   await app.register(pagesDuplicateRoutes, { prefix: '/api' });
   await app.register(pinnedPagesRoutes, { prefix: '/api' });
   await app.register(analyticsRoutes, { prefix: '/api' });
+  await app.register(knowledgeAdminRoutes, { prefix: '/api' });
 
   return app;
 }
