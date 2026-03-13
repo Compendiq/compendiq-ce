@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useAuthStore } from '../../stores/auth-store';
+import { refreshAccessTokenOnce } from '../lib/api';
 
 /**
  * Fetches a protected API resource with the auth token and returns a blob URL.
@@ -54,7 +55,7 @@ export function useAuthenticatedSrc(apiUrl: string | null): {
 
         // On 401, attempt a silent token refresh and retry once
         if (res.status === 401) {
-          const newToken = await tryRefreshToken();
+          const newToken = await refreshAccessTokenOnce();
           if (newToken && !cancelled) {
             headers['Authorization'] = `Bearer ${newToken}`;
             res = await fetch(apiUrl!, { headers, credentials: 'include' });
@@ -119,7 +120,7 @@ export async function fetchAuthenticatedBlob(apiUrl: string): Promise<string | n
     let res = await fetch(apiUrl, { headers, credentials: 'include' });
 
     if (res.status === 401) {
-      const newToken = await tryRefreshToken();
+      const newToken = await refreshAccessTokenOnce();
       if (newToken) {
         headers['Authorization'] = `Bearer ${newToken}`;
         res = await fetch(apiUrl, { headers, credentials: 'include' });
@@ -135,17 +136,3 @@ export async function fetchAuthenticatedBlob(apiUrl: string): Promise<string | n
   }
 }
 
-async function tryRefreshToken(): Promise<string | null> {
-  try {
-    const res = await fetch('/api/auth/refresh', {
-      method: 'POST',
-      credentials: 'include',
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    useAuthStore.getState().setAuth(data.accessToken, data.user);
-    return data.accessToken;
-  } catch {
-    return null;
-  }
-}

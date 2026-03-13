@@ -36,7 +36,7 @@ async function refreshAccessToken(): Promise<string | null> {
  */
 let pendingRefresh: Promise<string | null> | null = null;
 
-function refreshAccessTokenOnce(): Promise<string | null> {
+export function refreshAccessTokenOnce(): Promise<string | null> {
   if (!pendingRefresh) {
     pendingRefresh = refreshAccessToken().finally(() => {
       pendingRefresh = null;
