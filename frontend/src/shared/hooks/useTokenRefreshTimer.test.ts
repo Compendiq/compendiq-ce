@@ -138,6 +138,48 @@ describe('useTokenRefreshTimer', () => {
     expect(mockRefreshAccessTokenOnce).not.toHaveBeenCalled();
   });
 
+  it('clears the old timer and schedules a new one when accessToken changes', () => {
+    const now = Math.floor(Date.now() / 1000);
+
+    // Initial token: exp = now + 100s → timer fires at 75s (75_000 ms)
+    const firstExp = now + 100;
+    accessTokenState = 'first.token.here';
+    mockedDecodeJwt.mockReturnValue({ exp: firstExp } as ReturnType<typeof decodeJwt>);
+
+    const { rerender } = renderHook(() => useTokenRefreshTimer());
+
+    // Old timer is set but has not fired yet
+    vi.advanceTimersByTime(74_999);
+    expect(mockRefreshAccessTokenOnce).not.toHaveBeenCalled();
+
+    // Simulate a successful token refresh: the store emits a new accessToken
+    // with exp = now + 200s → new timer should fire at 150s (150_000 ms from now,
+    // but relative to the re-render we only need to advance by ~150_000 ms total
+    // since fake timers track elapsed time across the whole test).
+    const secondExp = now + 200;
+    accessTokenState = 'second.token.after.refresh';
+    mockedDecodeJwt.mockReturnValue({ exp: secondExp } as ReturnType<typeof decodeJwt>);
+
+    // Re-render so the hook sees the new accessToken value from the store
+    rerender();
+
+    // The old timer (would have fired at 75_000 ms total) must have been cleared.
+    // Advance past where the old timer would have fired.
+    vi.advanceTimersByTime(1); // now at 75_000 ms total
+    expect(mockRefreshAccessTokenOnce).not.toHaveBeenCalled();
+
+    // New timer fires at 75% of the new token's remaining lifetime.
+    // At re-render time ~75_000 ms have elapsed; secondExp remaining ≈ 200 - 75 = 125s.
+    // 75% of 125s = 93.75s → 93_750 ms after re-render.
+    // Advance to just before the new timer fires.
+    vi.advanceTimersByTime(93_748);
+    expect(mockRefreshAccessTokenOnce).not.toHaveBeenCalled();
+
+    // Advance the final 2 ms — new timer fires now.
+    vi.advanceTimersByTime(2);
+    expect(mockRefreshAccessTokenOnce).toHaveBeenCalledTimes(1);
+  });
+
   it('silently swallows proactive refresh failures', () => {
     const now = Math.floor(Date.now() / 1000);
     const exp = now + 100;
