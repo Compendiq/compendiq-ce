@@ -38,6 +38,8 @@ import { analyticsRoutes } from './routes/knowledge/analytics.js';
 import { knowledgeAdminRoutes } from './routes/knowledge/knowledge-admin.js';
 import { templateRoutes } from './routes/knowledge/templates.js';
 import { pagesExportRoutes } from './routes/knowledge/pages-export.js';
+import { commentsRoutes } from './routes/knowledge/comments.js';
+import { pagesImportRoutes } from './routes/knowledge/pages-import.js';
 
 import { ZodError } from 'zod';
 import { trackError } from './core/services/error-tracker.js';
@@ -161,6 +163,8 @@ export async function buildApp() {
   await app.register(knowledgeAdminRoutes, { prefix: '/api' });
   await app.register(templateRoutes, { prefix: '/api' });
   await app.register(pagesExportRoutes, { prefix: '/api' });
+  await app.register(commentsRoutes, { prefix: '/api' });
+  await app.register(pagesImportRoutes, { prefix: '/api' });
 
   return app;
 }
