@@ -202,7 +202,7 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
       const { processed, errors } = await runSummaryBatch('test-model');
       expect(errors).toBe(0);
       // The page should have been detected as changed and re-summarized
-      expect(processed).toBeGreaterThanOrEqual(1);
+      expect(processed).toBe(1);
 
       const result = await query<{
         summary_status: string;
