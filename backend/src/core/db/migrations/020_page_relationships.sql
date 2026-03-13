@@ -1,6 +1,6 @@
 -- Pre-computed page relationships for knowledge graph visualization.
 -- Populated after embedding completes; refreshed on re-embed.
-CREATE TABLE page_relationships (
+CREATE TABLE IF NOT EXISTS page_relationships (
   id                SERIAL PRIMARY KEY,
   user_id           UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   page_id_1         TEXT NOT NULL,
@@ -11,7 +11,7 @@ CREATE TABLE page_relationships (
   UNIQUE(user_id, page_id_1, page_id_2, relationship_type)
 );
 
-CREATE INDEX idx_page_relationships_user ON page_relationships(user_id);
-CREATE INDEX idx_page_relationships_page1 ON page_relationships(user_id, page_id_1);
-CREATE INDEX idx_page_relationships_page2 ON page_relationships(user_id, page_id_2);
-CREATE INDEX idx_page_relationships_type ON page_relationships(user_id, relationship_type);
+CREATE INDEX IF NOT EXISTS idx_page_relationships_user ON page_relationships(user_id);
+CREATE INDEX IF NOT EXISTS idx_page_relationships_page1 ON page_relationships(user_id, page_id_1);
+CREATE INDEX IF NOT EXISTS idx_page_relationships_page2 ON page_relationships(user_id, page_id_2);
+CREATE INDEX IF NOT EXISTS idx_page_relationships_type ON page_relationships(user_id, relationship_type);

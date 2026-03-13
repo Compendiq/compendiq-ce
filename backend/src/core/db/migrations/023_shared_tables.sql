@@ -23,11 +23,15 @@ CREATE TABLE IF NOT EXISTS user_space_selections (
 );
 
 -- Migrate existing selected_spaces arrays → individual rows
-INSERT INTO user_space_selections (user_id, space_key)
-SELECT user_id, unnest(selected_spaces)
-FROM   user_settings
-WHERE  array_length(selected_spaces, 1) > 0
-ON CONFLICT DO NOTHING;
+-- (only if the source column still exists — idempotent guard)
+DO $$ BEGIN
+  INSERT INTO user_space_selections (user_id, space_key)
+  SELECT user_id, unnest(selected_spaces)
+  FROM   user_settings
+  WHERE  array_length(selected_spaces, 1) > 0
+  ON CONFLICT DO NOTHING;
+EXCEPTION WHEN undefined_column THEN NULL;
+END $$;
 
 -- ── 2. Create admin_settings ─────────────────────────────────────────────────
 
@@ -46,7 +50,10 @@ TRUNCATE page_relationships, page_versions, page_embeddings, cached_pages, cache
 -- ── 4. cached_spaces: drop user_id, new unique constraint ────────────────────
 
 ALTER TABLE cached_spaces DROP COLUMN IF EXISTS user_id CASCADE;
-ALTER TABLE cached_spaces ADD CONSTRAINT cached_spaces_space_key_key UNIQUE (space_key);
+DO $$ BEGIN
+  ALTER TABLE cached_spaces ADD CONSTRAINT cached_spaces_space_key_key UNIQUE (space_key);
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 -- ── 5. cached_pages: drop user_id, new unique, update indexes ────────────────
 
@@ -61,7 +68,10 @@ DROP INDEX IF EXISTS idx_cached_pages_space_modified;
 -- preserved automatically.
 
 ALTER TABLE cached_pages DROP COLUMN IF EXISTS user_id CASCADE;
-ALTER TABLE cached_pages ADD CONSTRAINT cached_pages_confluence_id_key UNIQUE (confluence_id);
+DO $$ BEGIN
+  ALTER TABLE cached_pages ADD CONSTRAINT cached_pages_confluence_id_key UNIQUE (confluence_id);
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 -- Recreate indexes without user_id
 CREATE INDEX IF NOT EXISTS idx_cached_pages_space         ON cached_pages(space_key);
@@ -75,23 +85,32 @@ CREATE INDEX IF NOT EXISTS idx_cached_pages_space_modified ON cached_pages(space
 DROP INDEX IF EXISTS idx_page_embeddings_user;
 
 ALTER TABLE page_embeddings DROP COLUMN IF EXISTS user_id CASCADE;
-ALTER TABLE page_embeddings
-  ADD CONSTRAINT page_embeddings_confluence_id_chunk_index_key
-    UNIQUE (confluence_id, chunk_index);
+DO $$ BEGIN
+  ALTER TABLE page_embeddings
+    ADD CONSTRAINT page_embeddings_confluence_id_chunk_index_key
+      UNIQUE (confluence_id, chunk_index);
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 -- Cascade FK: deleting a cached_page auto-removes its embeddings
-ALTER TABLE page_embeddings
-  ADD CONSTRAINT fk_page_embeddings_page
-    FOREIGN KEY (confluence_id) REFERENCES cached_pages(confluence_id) ON DELETE CASCADE;
+DO $$ BEGIN
+  ALTER TABLE page_embeddings
+    ADD CONSTRAINT fk_page_embeddings_page
+      FOREIGN KEY (confluence_id) REFERENCES cached_pages(confluence_id) ON DELETE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 -- ── 7. page_versions: drop user_id, new unique, update index ─────────────────
 
 DROP INDEX IF EXISTS idx_page_versions_page;
 
 ALTER TABLE page_versions DROP COLUMN IF EXISTS user_id CASCADE;
-ALTER TABLE page_versions
-  ADD CONSTRAINT page_versions_confluence_id_version_number_key
-    UNIQUE (confluence_id, version_number);
+DO $$ BEGIN
+  ALTER TABLE page_versions
+    ADD CONSTRAINT page_versions_confluence_id_version_number_key
+      UNIQUE (confluence_id, version_number);
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_page_versions_page ON page_versions(confluence_id);
 
@@ -103,9 +122,12 @@ DROP INDEX IF EXISTS idx_page_relationships_page2;
 DROP INDEX IF EXISTS idx_page_relationships_type;
 
 ALTER TABLE page_relationships DROP COLUMN IF EXISTS user_id CASCADE;
-ALTER TABLE page_relationships
-  ADD CONSTRAINT page_relationships_page_id_1_page_id_2_type_key
-    UNIQUE (page_id_1, page_id_2, relationship_type);
+DO $$ BEGIN
+  ALTER TABLE page_relationships
+    ADD CONSTRAINT page_relationships_page_id_1_page_id_2_type_key
+      UNIQUE (page_id_1, page_id_2, relationship_type);
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_page_relationships_page1 ON page_relationships(page_id_1);
 CREATE INDEX IF NOT EXISTS idx_page_relationships_page2 ON page_relationships(page_id_2);

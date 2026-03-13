@@ -37,7 +37,7 @@ describe.skipIf(!dbAvailable)('Database migrations', () => {
     expect(names).toContain('021_add_performance_indexes.sql');
   });
 
-  describe('performance indexes (migration 021)', () => {
+  describe('performance indexes (migration 021, updated by 023)', () => {
     it('should have idx_cached_pages_dirty_modified composite index', async () => {
       const result = await query<{ indexname: string; indexdef: string }>(
         `SELECT indexname, indexdef FROM pg_indexes
@@ -45,7 +45,7 @@ describe.skipIf(!dbAvailable)('Database migrations', () => {
          AND indexname = 'idx_cached_pages_dirty_modified'`,
       );
       expect(result.rows).toHaveLength(1);
-      expect(result.rows[0].indexdef).toContain('user_id');
+      // After migration 023 (shared tables), user_id was dropped from cached_pages
       expect(result.rows[0].indexdef).toContain('embedding_dirty');
       expect(result.rows[0].indexdef).toContain('last_modified_at');
     });
@@ -57,7 +57,6 @@ describe.skipIf(!dbAvailable)('Database migrations', () => {
          AND indexname = 'idx_cached_pages_space_modified'`,
       );
       expect(result.rows).toHaveLength(1);
-      expect(result.rows[0].indexdef).toContain('user_id');
       expect(result.rows[0].indexdef).toContain('space_key');
       expect(result.rows[0].indexdef).toContain('last_modified_at');
     });
@@ -145,7 +144,7 @@ describe.skipIf(!dbAvailable)('Database migrations', () => {
       expect(columns).toContain('user_id');
       expect(columns).toContain('confluence_url');
       expect(columns).toContain('confluence_pat');
-      expect(columns).toContain('selected_spaces');
+      // selected_spaces was migrated to user_space_selections table in migration 023
       expect(columns).toContain('ollama_model');
       expect(columns).toContain('theme');
       expect(columns).toContain('sync_interval_min');

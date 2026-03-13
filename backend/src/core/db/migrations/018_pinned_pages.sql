@@ -1,4 +1,4 @@
-CREATE TABLE pinned_pages (
+CREATE TABLE IF NOT EXISTS pinned_pages (
   id         SERIAL PRIMARY KEY,
   user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   page_id    TEXT NOT NULL,
@@ -7,4 +7,4 @@ CREATE TABLE pinned_pages (
   UNIQUE(user_id, page_id)
 );
 
-CREATE INDEX idx_pinned_pages_user ON pinned_pages(user_id, pin_order);
+CREATE INDEX IF NOT EXISTS idx_pinned_pages_user ON pinned_pages(user_id, pin_order);
