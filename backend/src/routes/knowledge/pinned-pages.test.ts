@@ -370,10 +370,14 @@ describe('Pinned Pages API', () => {
 
   describe('Page deletion cleans up pinned_pages', () => {
     it('should delete pinned_pages row when single-deleting a page', async () => {
-      // deletePage mock is handled by sync-service mock
+      // First query: load page to determine source (new standalone-aware lookup)
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ id: 42, source: 'confluence', created_by_user_id: null, confluence_id: 'page-1' }],
+        rowCount: 1,
+      });
       // pinned_pages delete
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
-      // cached_pages delete (page_embeddings cascade-deleted via FK)
+      // pages delete (page_embeddings cascade-deleted via FK)
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
       const response = await app.inject({
@@ -382,19 +386,19 @@ describe('Pinned Pages API', () => {
       });
 
       expect(response.statusCode).toBe(200);
-      // First query after Confluence deletePage should be pinned_pages cleanup
-      expect(mockQueryFn.mock.calls[0][0]).toContain('DELETE FROM pinned_pages');
-      expect(mockQueryFn.mock.calls[0][1]).toEqual(['test-user-id', 'page-1']);
+      // Second query (after page lookup) should be pinned_pages cleanup
+      expect(mockQueryFn.mock.calls[1][0]).toContain('DELETE FROM pinned_pages');
+      expect(mockQueryFn.mock.calls[1][1]).toEqual(['test-user-id', 42]);
     });
 
     it('should delete pinned_pages row when bulk-deleting pages', async () => {
-      // Bulk delete uses batched queries: ownership check, then parallel cleanup (pinned_pages, cached_pages)
-      // page_embeddings are cascade-deleted via FK on cached_pages
+      // Bulk delete uses batched queries: ownership check, then parallel cleanup (pinned_pages, pages)
+      // page_embeddings are cascade-deleted via FK on pages
       // batch ownership check via JOIN user_space_selections
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ confluence_id: 'page-1' }], rowCount: 1 });
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ confluence_id: 'page-1', space_key: 'DEV' }], rowCount: 1 });
       // batched pinned_pages delete via ANY($2)
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
-      // batched cached_pages delete via ANY($1)
+      // batched pages delete via ANY($1)
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
       const response = await app.inject({

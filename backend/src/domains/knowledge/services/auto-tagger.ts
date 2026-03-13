@@ -133,7 +133,7 @@ export async function autoTagPage(
     body_html: string;
     labels: string[];
   }>(
-    'SELECT body_html, labels FROM cached_pages WHERE confluence_id = $1',
+    'SELECT body_html, labels FROM cached_pages WHERE confluence_id = $1 AND deleted_at IS NULL',
     [confluenceId],
   );
 
@@ -210,7 +210,8 @@ export async function autoTagAllPages(
     `SELECT cp.confluence_id, cp.body_html
      FROM cached_pages cp
      JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
-     WHERE (cp.labels IS NULL OR array_length(cp.labels, 1) IS NULL)
+     WHERE cp.deleted_at IS NULL
+       AND (cp.labels IS NULL OR array_length(cp.labels, 1) IS NULL)
        AND cp.body_html IS NOT NULL`,
     [userId],
   );

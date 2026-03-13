@@ -12,14 +12,15 @@ interface SearchResult {
   chunkText: string;
   pageTitle: string;
   sectionTitle: string;
-  spaceKey: string;
+  spaceKey: string | null;
   score: number;
 }
 
 /**
  * Vector search: cosine similarity on page_embeddings.
  * Sets hnsw.ef_search for this transaction to improve recall.
- * Scoped to pages in the user's selected spaces.
+ * Scoped to: Confluence pages in user's selected spaces + standalone articles
+ * the user can access (shared, or private and owned by the user).
  *
  * Tradeoff: higher ef_search = better recall but slower query.
  * Default PostgreSQL ef_search is 40; we use 100 for better RAG recall.
@@ -37,11 +38,17 @@ async function vectorSearch(userId: string, questionEmbedding: number[], limit =
       metadata: { page_title: string; section_title: string; space_key: string };
       distance: number;
     }>(
-      `SELECT pe.confluence_id, pe.chunk_text, pe.metadata,
+      `SELECT cp.confluence_id, pe.chunk_text, pe.metadata,
               pe.embedding <=> $2 AS distance
        FROM page_embeddings pe
-       JOIN cached_pages cp ON pe.confluence_id = cp.confluence_id
-       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
+       JOIN pages cp ON pe.confluence_id = cp.confluence_id
+       LEFT JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
+       WHERE (
+         (cp.source = 'confluence' AND uss.space_key IS NOT NULL)
+         OR (cp.source = 'standalone' AND cp.visibility = 'shared')
+         OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $1::int)
+       )
+       AND cp.deleted_at IS NULL
        ORDER BY pe.embedding <=> $2
        LIMIT $3`,
       [userId, pgvector.toSql(questionEmbedding), limit],
@@ -66,8 +73,9 @@ async function vectorSearch(userId: string, questionEmbedding: number[], limit =
 }
 
 /**
- * Keyword search: PostgreSQL full-text search on cached_pages.
- * Scoped to pages in the user's selected spaces.
+ * Keyword search: PostgreSQL full-text search on pages.
+ * Scoped to: Confluence pages in user's selected spaces + standalone articles
+ * the user can access (shared, or private and owned by the user).
  */
 async function keywordSearch(userId: string, questionText: string, limit = 10): Promise<SearchResult[]> {
   // Use plainto_tsquery which safely handles arbitrary user input
@@ -86,9 +94,15 @@ async function keywordSearch(userId: string, questionText: string, limit = 10): 
             substring(cp.body_text, 1, 500) as body_text,
             ts_rank(to_tsvector('english', coalesce(cp.title, '') || ' ' || coalesce(cp.body_text, '')),
                     plainto_tsquery('english', $2)) AS rank
-     FROM cached_pages cp
-     JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
+     FROM pages cp
+     LEFT JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
      WHERE to_tsvector('english', coalesce(cp.title, '') || ' ' || coalesce(cp.body_text, '')) @@ plainto_tsquery('english', $2)
+       AND (
+         (cp.source = 'confluence' AND uss.space_key IS NOT NULL)
+         OR (cp.source = 'standalone' AND cp.visibility = 'shared')
+         OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $1::int)
+       )
+       AND cp.deleted_at IS NULL
      ORDER BY rank DESC
      LIMIT $3`,
     [userId, trimmed, limit],
@@ -169,7 +183,7 @@ async function recordSearchAnalytics(
 /**
  * Hybrid RAG search: combines vector search + keyword search using RRF.
  * Returns top results with source metadata for citations.
- * Scoped to pages in the user's selected spaces.
+ * Scoped to: Confluence pages in user's selected spaces + accessible standalone articles.
  */
 export async function hybridSearch(
   userId: string,
@@ -224,7 +238,7 @@ export function buildRagContext(results: SearchResult[]): string {
 
   return results
     .map((r, i) => {
-      return `[Source ${i + 1}: "${r.pageTitle}" (Space: ${r.spaceKey}, Section: ${r.sectionTitle})]\n${r.chunkText}`;
+      return `[Source ${i + 1}: "${r.pageTitle}" (Space: ${r.spaceKey || 'Local'}, Section: ${r.sectionTitle})]\n${r.chunkText}`;
     })
     .join('\n\n---\n\n');
 }

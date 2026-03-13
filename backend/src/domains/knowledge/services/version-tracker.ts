@@ -58,7 +58,8 @@ export async function getVersionHistory(
      FROM page_versions pv
      JOIN cached_pages cp ON pv.confluence_id = cp.confluence_id
      JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
-     WHERE pv.confluence_id = $2
+     WHERE cp.deleted_at IS NULL
+       AND pv.confluence_id = $2
      ORDER BY pv.version_number DESC`,
     [userId, confluenceId],
   );
@@ -93,7 +94,8 @@ export async function getVersion(
      FROM page_versions pv
      JOIN cached_pages cp ON pv.confluence_id = cp.confluence_id
      JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
-     WHERE pv.confluence_id = $2 AND pv.version_number = $3`,
+     WHERE cp.deleted_at IS NULL
+       AND pv.confluence_id = $2 AND pv.version_number = $3`,
     [userId, confluenceId, versionNumber],
   );
 

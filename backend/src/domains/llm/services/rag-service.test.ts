@@ -84,5 +84,49 @@ describe('RAG Service', () => {
         expect(context).toContain(`[Source ${i}:`);
       }
     });
+
+    it('should show "Local" for standalone articles with null spaceKey', () => {
+      const results: SearchResult[] = [
+        {
+          confluenceId: 'standalone-1',
+          chunkText: 'Standalone article content.',
+          pageTitle: 'My Local Article',
+          sectionTitle: 'Overview',
+          spaceKey: null,
+          score: 0.75,
+        },
+      ];
+
+      const context = buildRagContext(results);
+      expect(context).toContain('Space: Local');
+      expect(context).toContain('"My Local Article"');
+      expect(context).toContain('Standalone article content.');
+    });
+
+    it('should handle mixed confluence and standalone results', () => {
+      const results: SearchResult[] = [
+        {
+          confluenceId: 'page-1',
+          chunkText: 'Confluence content.',
+          pageTitle: 'Confluence Page',
+          sectionTitle: 'Intro',
+          spaceKey: 'DEV',
+          score: 0.9,
+        },
+        {
+          confluenceId: 'standalone-1',
+          chunkText: 'Standalone content.',
+          pageTitle: 'Local Article',
+          sectionTitle: 'Details',
+          spaceKey: null,
+          score: 0.8,
+        },
+      ];
+
+      const context = buildRagContext(results);
+      expect(context).toContain('Space: DEV');
+      expect(context).toContain('Space: Local');
+      expect(context).toContain('---');
+    });
   });
 });

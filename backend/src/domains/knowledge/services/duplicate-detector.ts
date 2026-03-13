@@ -51,7 +51,7 @@ export async function findDuplicates(
 
   // Get the source page title for title similarity comparison
   const sourcePageResult = await query<{ title: string }>(
-    'SELECT title FROM cached_pages WHERE confluence_id = $1',
+    'SELECT title FROM cached_pages WHERE confluence_id = $1 AND deleted_at IS NULL',
     [confluenceId],
   );
   if (sourcePageResult.rows.length === 0) {
@@ -141,7 +141,8 @@ export async function scanAllDuplicates(
     `SELECT DISTINCT cp.confluence_id, cp.title
      FROM cached_pages cp
      JOIN page_embeddings pe ON cp.confluence_id = pe.confluence_id
-     JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1`,
+     JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
+     WHERE cp.deleted_at IS NULL`,
     [userId],
   );
 

@@ -369,7 +369,7 @@ export async function processDirtyPages(
 
     // Get total count for logging purposes (global, not per-user)
     const countResult = await query<{ count: string }>(
-      'SELECT COUNT(*) as count FROM cached_pages WHERE embedding_dirty = TRUE AND body_html IS NOT NULL',
+      'SELECT COUNT(*) as count FROM cached_pages WHERE embedding_dirty = TRUE AND body_html IS NOT NULL AND deleted_at IS NULL',
     );
     const totalDirty = parseInt(countResult.rows[0].count, 10);
     logger.info({ userId, dirtyPages: totalDirty }, 'Processing dirty pages for embedding');
@@ -394,7 +394,7 @@ export async function processDirtyPages(
       }>(
         `SELECT confluence_id, title, space_key, body_html
          FROM cached_pages
-         WHERE embedding_dirty = TRUE AND body_html IS NOT NULL
+         WHERE embedding_dirty = TRUE AND body_html IS NOT NULL AND deleted_at IS NULL
          ORDER BY last_modified_at DESC
          LIMIT $1 OFFSET $2`,
         [DIRTY_PAGE_BATCH_SIZE, offset],
@@ -610,7 +610,7 @@ export async function resetFailedEmbeddings(): Promise<number> {
   const result = await query(
     `UPDATE cached_pages
      SET embedding_dirty = TRUE, embedding_status = 'not_embedded', embedding_error = NULL
-     WHERE embedding_status = 'failed'`,
+     WHERE embedding_status = 'failed' AND deleted_at IS NULL`,
   );
 
   const count = result.rowCount ?? 0;
@@ -683,7 +683,8 @@ export async function computePageRelationships(): Promise<number> {
          END AS score
        FROM cached_pages a
        JOIN cached_pages b ON a.confluence_id < b.confluence_id
-       WHERE a.labels IS NOT NULL AND array_length(a.labels, 1) > 0
+       WHERE a.deleted_at IS NULL AND b.deleted_at IS NULL
+         AND a.labels IS NOT NULL AND array_length(a.labels, 1) > 0
          AND b.labels IS NOT NULL AND array_length(b.labels, 1) > 0
          AND a.labels && b.labels
      )
@@ -709,25 +710,28 @@ export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatu
   const [totalResult, dirtyResult, embeddingResult, embeddedPagesResult, isProcessing] = await Promise.all([
     query<{ count: string }>(
       `SELECT COUNT(*) as count FROM cached_pages cp
-       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1`,
+       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
+       WHERE cp.deleted_at IS NULL`,
       [userId],
     ),
     query<{ count: string }>(
       `SELECT COUNT(*) as count FROM cached_pages cp
        JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
-       WHERE cp.embedding_dirty = TRUE`,
+       WHERE cp.deleted_at IS NULL AND cp.embedding_dirty = TRUE`,
       [userId],
     ),
     query<{ count: string }>(
       `SELECT COUNT(*) as count FROM page_embeddings pe
        JOIN cached_pages cp ON pe.confluence_id = cp.confluence_id
-       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1`,
+       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
+       WHERE cp.deleted_at IS NULL`,
       [userId],
     ),
     query<{ count: string }>(
       `SELECT COUNT(DISTINCT pe.confluence_id) as count FROM page_embeddings pe
        JOIN cached_pages cp ON pe.confluence_id = cp.confluence_id
-       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1`,
+       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
+       WHERE cp.deleted_at IS NULL`,
       [userId],
     ),
     isEmbeddingLocked(userId),

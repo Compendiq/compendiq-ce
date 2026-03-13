@@ -196,6 +196,7 @@ export async function processBatch(): Promise<number> {
     `SELECT confluence_id, COALESCE(body_html, '') AS body_html, COALESCE(body_text, '') AS body_text, quality_retry_count
      FROM cached_pages
      WHERE quality_status = 'pending'
+       AND deleted_at IS NULL
        AND (body_text IS NOT NULL AND body_text != '')
      ORDER BY last_synced ASC
      LIMIT $1`,
@@ -215,6 +216,7 @@ export async function processBatch(): Promise<number> {
       `SELECT confluence_id, COALESCE(body_html, '') AS body_html, COALESCE(body_text, '') AS body_text, quality_retry_count
        FROM cached_pages
        WHERE quality_status = 'analyzed'
+         AND deleted_at IS NULL
          AND last_modified_at > quality_analyzed_at
          AND (body_text IS NOT NULL AND body_text != '')
        ORDER BY last_modified_at DESC
@@ -236,6 +238,7 @@ export async function processBatch(): Promise<number> {
       `SELECT confluence_id, COALESCE(body_html, '') AS body_html, COALESCE(body_text, '') AS body_text, quality_retry_count
        FROM cached_pages
        WHERE quality_status = 'failed'
+         AND deleted_at IS NULL
          AND quality_retry_count < $2
          AND (body_text IS NOT NULL AND body_text != '')
        ORDER BY quality_analyzed_at ASC NULLS FIRST
@@ -250,6 +253,7 @@ export async function processBatch(): Promise<number> {
     `UPDATE cached_pages
      SET quality_status = 'skipped'
      WHERE quality_status = 'pending'
+       AND deleted_at IS NULL
        AND (body_text IS NULL OR body_text = '')`,
   );
   if (skippedResult.rowCount && skippedResult.rowCount > 0) {
@@ -335,7 +339,7 @@ export function stopQualityWorker(): void {
  */
 export async function forceQualityRescan(): Promise<number> {
   const result = await query(
-    `UPDATE cached_pages SET quality_status = 'pending', quality_score = NULL, quality_error = NULL, quality_retry_count = 0 WHERE quality_status != 'pending'`,
+    `UPDATE cached_pages SET quality_status = 'pending', quality_score = NULL, quality_error = NULL, quality_retry_count = 0 WHERE quality_status != 'pending' AND deleted_at IS NULL`,
   );
   const count = result.rowCount ?? 0;
   logger.info({ count }, 'Forced quality rescan — all pages reset to pending');
@@ -369,7 +373,8 @@ export async function getQualityStatus(): Promise<{
        COUNT(*) FILTER (WHERE quality_status = 'failed') AS failed,
        COUNT(*) FILTER (WHERE quality_status = 'skipped') AS skipped,
        ROUND(AVG(quality_score) FILTER (WHERE quality_status = 'analyzed'))::TEXT AS avg_score
-     FROM cached_pages`,
+     FROM cached_pages
+     WHERE deleted_at IS NULL`,
   );
 
   const row = result.rows[0];

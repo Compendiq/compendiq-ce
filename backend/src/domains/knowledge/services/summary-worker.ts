@@ -68,6 +68,7 @@ export async function getSummaryStatus(): Promise<SummaryStatus> {
       COUNT(*) FILTER (WHERE summary_status = 'failed')      AS failed,
       COUNT(*) FILTER (WHERE summary_status = 'skipped')     AS skipped
     FROM cached_pages
+    WHERE deleted_at IS NULL
   `);
 
   const row = result.rows[0];
@@ -144,6 +145,7 @@ async function findCandidates(batchSize: number): Promise<SummaryCandidate[]> {
     `SELECT confluence_id, body_text, summary_content_hash, summary_retry_count, title
      FROM cached_pages
      WHERE summary_status IN ('pending', 'failed')
+       AND deleted_at IS NULL
        AND (summary_status = 'pending' OR summary_retry_count < $1)
      ORDER BY
        CASE summary_status WHEN 'pending' THEN 0 ELSE 1 END,
@@ -251,6 +253,7 @@ export async function runSummaryBatch(model?: string): Promise<{ processed: numb
     `UPDATE cached_pages
      SET summary_status = 'pending'
      WHERE summary_status = 'summarized'
+       AND deleted_at IS NULL
        AND summary_content_hash IS NOT NULL
        AND body_text IS NOT NULL
        AND length(body_text) >= $1
@@ -350,6 +353,7 @@ export async function rescanAllSummaries(): Promise<number> {
          summary_status = 'pending',
          summary_retry_count = 0
      WHERE summary_status != 'skipped'
+       AND deleted_at IS NULL
      RETURNING confluence_id`,
   );
   return result.rowCount ?? 0;

@@ -214,11 +214,11 @@ describe('Bulk Pages Routes (Parallelized)', () => {
 
       expect(response.statusCode).toBe(200);
 
-      // Verify cached_pages DELETE uses ANY($1) (no user_id in shared table)
+      // Verify pages DELETE uses ANY($1) (no user_id in shared table)
       // and pinned_pages DELETE uses ANY($2) (user_id=$1, page_id=ANY($2))
       const cachedPageDelete = mockQueryFn.mock.calls.find(
         (call: unknown[]) => typeof call[0] === 'string' &&
-          (call[0] as string).includes('DELETE FROM cached_pages'),
+          (call[0] as string).includes('DELETE FROM pages'),
       );
       expect(cachedPageDelete).toBeDefined();
       expect(cachedPageDelete![0]).toContain('ANY($1)');
