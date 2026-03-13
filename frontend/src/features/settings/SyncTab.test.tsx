@@ -251,6 +251,7 @@ describe('Settings SyncTab', () => {
     expect(screen.getByTestId('quality-metric-analyzed')).toHaveTextContent('75');
     expect(screen.getByTestId('quality-metric-pending')).toHaveTextContent('15');
     expect(screen.getByTestId('quality-metric-failed')).toHaveTextContent('5');
+    expect(screen.getByTestId('quality-metric-skipped')).toHaveTextContent('5');
     expect(screen.getByTestId('quality-metric-avg-score')).toHaveTextContent('72');
   });
 

@@ -218,7 +218,7 @@ function SyncTab() {
 
   const qualityRescanMutation = useMutation({
     mutationFn: () => apiFetch('/llm/quality-rescan', { method: 'POST' }),
-    onSuccess: (data: any) => {
+    onSuccess: (data: { message: string; pagesReset: number }) => {
       toast.success(data.message);
       queryClient.invalidateQueries({ queryKey: ['quality-status'] });
     },
@@ -235,7 +235,7 @@ function SyncTab() {
 
   const summaryRescanMutation = useMutation({
     mutationFn: () => apiFetch('/llm/summary-rescan', { method: 'POST' }),
-    onSuccess: (data: any) => {
+    onSuccess: (data: { message: string; resetCount: number }) => {
       toast.success(data.message);
       queryClient.invalidateQueries({ queryKey: ['summary-status'] });
     },
@@ -453,7 +453,7 @@ function SyncTab() {
         </div>
 
         {qualityStatus && (
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
             <MetricCard
               label="Analyzed"
               value={String(qualityStatus.analyzedPages)}
@@ -471,6 +471,12 @@ function SyncTab() {
               value={String(qualityStatus.failedPages)}
               hint="Analysis encountered errors"
               testId="quality-metric-failed"
+            />
+            <MetricCard
+              label="Skipped"
+              value={String(qualityStatus.skippedPages)}
+              hint="Content too short"
+              testId="quality-metric-skipped"
             />
             <MetricCard
               label="Avg Score"
