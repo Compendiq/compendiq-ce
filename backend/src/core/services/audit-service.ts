@@ -22,7 +22,8 @@ export type AuditAction =
   | 'SYNC_COMPLETED'
   | 'ENCRYPTION_KEY_ROTATED'
   | 'PROMPT_INJECTION_DETECTED'
-  | 'SUMMARY_RESCAN';
+  | 'SUMMARY_RESCAN'
+  | 'PDF_EXTRACTED';
 
 export interface AuditLogEntry {
   id: string;

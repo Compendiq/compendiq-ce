@@ -6,6 +6,7 @@ import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import cookie from '@fastify/cookie';
 import sensible from '@fastify/sensible';
+import multipart from '@fastify/multipart';
 import { serializerCompiler, validatorCompiler } from 'fastify-type-provider-zod';
 import correlationIdPlugin from './core/plugins/correlation-id.js';
 import authPlugin from './core/plugins/auth.js';
@@ -25,6 +26,7 @@ import { llmConversationRoutes } from './routes/llm/llm-conversations.js';
 import { llmEmbeddingRoutes } from './routes/llm/llm-embeddings.js';
 import { llmModelRoutes } from './routes/llm/llm-models.js';
 import { llmAdminRoutes } from './routes/llm/llm-admin.js';
+import { llmPdfRoutes } from './routes/llm/llm-pdf.js';
 // Knowledge routes
 import { pagesCrudRoutes } from './routes/knowledge/pages-crud.js';
 import { pagesVersionRoutes } from './routes/knowledge/pages-versions.js';
@@ -58,6 +60,13 @@ export async function buildApp() {
   await app.register(sensible);
   await app.register(cookie);
   await app.register(compress);
+  await app.register(multipart, {
+    limits: {
+      fileSize: 20 * 1024 * 1024, // 20 MB
+      files: 1,
+      fields: 0,
+    },
+  });
 
   await app.register(rateLimit, {
     global: true,
@@ -131,6 +140,7 @@ export async function buildApp() {
   await app.register(llmEmbeddingRoutes, { prefix: '/api' });
   await app.register(llmModelRoutes, { prefix: '/api' });
   await app.register(llmAdminRoutes, { prefix: '/api' });
+  await app.register(llmPdfRoutes, { prefix: '/api' });
 
   // Knowledge routes
   await app.register(pagesCrudRoutes, { prefix: '/api' });

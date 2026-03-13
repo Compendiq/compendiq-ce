@@ -27,6 +27,7 @@ import {
   sanitizeLlmInput,
   LLM_STREAM_RATE_LIMIT,
   MAX_INPUT_LENGTH,
+  MAX_PDF_TEXT_FOR_LLM,
 } from './_helpers.js';
 
 export async function llmChatRoutes(fastify: FastifyInstance) {
@@ -112,7 +113,7 @@ export async function llmChatRoutes(fastify: FastifyInstance) {
   // POST /api/llm/generate - stream generated article
   fastify.post('/llm/generate', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
     const body = GenerateRequestSchema.parse(request.body);
-    const { prompt, model, template } = body;
+    const { prompt, model, template, pdfText } = body;
     const userId = request.userId;
 
     if (prompt.length > MAX_INPUT_LENGTH) {
@@ -125,12 +126,40 @@ export async function llmChatRoutes(fastify: FastifyInstance) {
       await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/generate' }, request);
     }
 
-    const systemPrompt = template
-      ? getSystemPrompt(`generate_${template}` as SystemPromptKey)
-      : getSystemPrompt('generate');
+    // When PDF text is provided, sanitize it and use the generate_from_pdf prompt
+    let userContent = sanitized;
+    let systemPrompt: string;
+
+    if (pdfText) {
+      const { sanitized: sanitizedPdf, warnings: pdfWarnings } = sanitizeLlmInput(pdfText);
+      if (pdfWarnings.length > 0) {
+        await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, {
+          warnings: pdfWarnings, route: '/llm/generate', field: 'pdfText',
+        }, request);
+      }
+
+      // Truncate to fit within model context windows
+      let pdfForLlm = sanitizedPdf;
+      if (sanitizedPdf.length > MAX_PDF_TEXT_FOR_LLM) {
+        pdfForLlm = sanitizedPdf.slice(0, MAX_PDF_TEXT_FOR_LLM) +
+          '\n\n[Document truncated — only the first ~80,000 characters were included due to context window limits.]';
+        logger.info({ original: sanitizedPdf.length, truncated: MAX_PDF_TEXT_FOR_LLM }, 'PDF text truncated for LLM context window');
+      }
+
+      // Use template-specific prompt or generate_from_pdf
+      systemPrompt = template
+        ? getSystemPrompt(`generate_${template}` as SystemPromptKey)
+        : getSystemPrompt('generate_from_pdf' as SystemPromptKey);
+
+      userContent = `## Source Document\n${pdfForLlm}\n\n## Instructions\n${sanitized}`;
+    } else {
+      systemPrompt = template
+        ? getSystemPrompt(`generate_${template}` as SystemPromptKey)
+        : getSystemPrompt('generate');
+    }
 
     // Check LLM cache with stampede protection
-    const cacheKey = buildLlmCacheKey(model, systemPrompt, sanitized);
+    const cacheKey = buildLlmCacheKey(model, systemPrompt, userContent);
     const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
       sendCachedSSE(reply, cached.content);
@@ -141,7 +170,7 @@ export async function llmChatRoutes(fastify: FastifyInstance) {
       // Resolve per-user LLM provider and stream
       const generator = providerStreamChat(userId, model, [
         { role: 'system', content: systemPrompt },
-        { role: 'user', content: sanitized },
+        { role: 'user', content: userContent },
       ]);
 
       await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });

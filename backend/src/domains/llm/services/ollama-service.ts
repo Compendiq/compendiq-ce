@@ -118,6 +118,8 @@ const SYSTEM_PROMPTS = {
 
   generate_troubleshooting: `You are a support engineer creating documentation. Generate a troubleshooting guide with: Symptom description, Possible causes, Diagnostic steps, Resolution steps, and Prevention measures for each issue. Return in Markdown format.`,
 
+  generate_from_pdf: `You are a technical documentation writer. You are given the extracted text of a PDF document as source material. Using this source content and the user's instructions, generate a well-structured knowledge base article. Reorganize, clarify, and improve the content as needed. Use clear headings, code examples where appropriate, and follow best practices for technical documentation. Return the article in Markdown format.`,
+
   summarize: `You are a technical writing assistant. Provide a concise summary of the following article. Focus on the key points, decisions, and actionable items. Return the summary in Markdown format. ${LANGUAGE_PRESERVATION_INSTRUCTION}`,
 
   ask: `You are a knowledgeable assistant that answers questions based on the provided knowledge base context. Answer accurately based on the context. If the context doesn't contain enough information, say so. Always cite which articles your answer is based on. Respond in the same language as the user's question.`,

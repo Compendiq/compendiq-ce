@@ -23,6 +23,14 @@ export const GenerateRequestSchema = z.object({
   model: z.string().min(1),
   spaceKey: z.string().optional(),
   parentId: z.string().optional(),
+  pdfText: z.string().max(200_000).optional(),
+});
+
+export const ExtractPdfResponseSchema = z.object({
+  text: z.string(),
+  totalPages: z.number(),
+  fileSize: z.number(),
+  preview: z.string(),
 });
 
 export const SummarizeRequestSchema = z.object({
@@ -114,4 +122,5 @@ export type ApplyImprovementRequest = z.infer<typeof ApplyImprovementRequestSche
 export type Conversation = z.infer<typeof ConversationSchema>;
 export type Improvement = z.infer<typeof ImprovementSchema>;
 export type OllamaModel = z.infer<typeof OllamaModelSchema>;
+export type ExtractPdfResponse = z.infer<typeof ExtractPdfResponseSchema>;
 export type EmbeddingStatus = z.infer<typeof EmbeddingStatusSchema>;

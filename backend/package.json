@@ -16,6 +16,7 @@
     "@fastify/compress": "^8.3.1",
     "@fastify/cookie": "^11.0.2",
     "@fastify/cors": "^11.0.0",
+    "@fastify/multipart": "^9.4.0",
     "@fastify/rate-limit": "^10.2.0",
     "@fastify/sensible": "^6.0.3",
     "@fastify/static": "^9.0.0",
@@ -42,6 +43,7 @@
     "turndown": "^7.2.0",
     "turndown-plugin-gfm": "^1.0.2",
     "undici": "^7.22.0",
+    "unpdf": "^1.4.0",
     "uuid": "^13.0.0",
     "zod": "^4.3.6"
   },

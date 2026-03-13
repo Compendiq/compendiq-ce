@@ -1,11 +1,15 @@
-import { useState, useCallback, useMemo } from 'react';
-import { Send, Loader2, Save, Search, ChevronDown, X, FolderOpen } from 'lucide-react';
+import { useState, useCallback, useRef, useMemo } from 'react';
+import { Send, Loader2, Save, Search, ChevronDown, X, FolderOpen, Upload, FileText, AlertTriangle } from 'lucide-react';
 import { useAiContext } from '../AiContext';
 import { useSpaces } from '../../../shared/hooks/use-spaces';
 import { usePages, useCreatePage, type PageFilters } from '../../../shared/hooks/use-pages';
+import { useExtractPdf, type ExtractPdfResult } from '../../../shared/hooks/use-extract-pdf';
 import { toast } from 'sonner';
 import { marked } from 'marked';
 import { cn } from '../../../shared/lib/cn';
+
+/** Threshold above which the backend truncates PDF text for the LLM context window. */
+export const PDF_TEXT_TRUNCATION_THRESHOLD = 80_000;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -22,6 +26,13 @@ function markdownToHtml(md: string): string {
   // marked.parse can return string | Promise<string>; with async: false (default) it's sync
   const result = marked.parse(md, { async: false });
   return typeof result === 'string' ? result : '';
+}
+
+/** Format bytes to human-readable size. */
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +165,151 @@ function ParentPagePicker({
 }
 
 // ---------------------------------------------------------------------------
+// PDF Upload Zone
+// ---------------------------------------------------------------------------
+
+function PdfUploadZone({
+  onExtracted,
+  pdfData,
+  pdfFilename,
+  onRemove,
+  isExtracting,
+  disabled,
+}: {
+  onExtracted: (result: ExtractPdfResult, filename: string) => void;
+  pdfData: ExtractPdfResult | null;
+  pdfFilename: string | null;
+  onRemove: () => void;
+  isExtracting: boolean;
+  disabled: boolean;
+}) {
+  const { extractPdf } = useExtractPdf();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
+
+  const handleFile = useCallback(async (file: File) => {
+    if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+      toast.error('Only PDF files are accepted');
+      return;
+    }
+    if (file.size > 20 * 1024 * 1024) {
+      toast.error('File exceeds 20 MB limit');
+      return;
+    }
+    try {
+      const result = await extractPdf(file);
+      onExtracted(result, file.name);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'PDF extraction failed');
+    }
+  }, [extractPdf, onExtracted]);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    const file = e.dataTransfer.files[0];
+    if (file) handleFile(file);
+  }, [handleFile]);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(true);
+  }, []);
+
+  const handleDragLeave = useCallback(() => {
+    setIsDragOver(false);
+  }, []);
+
+  // Show preview card if PDF is already extracted
+  if (pdfData && pdfFilename) {
+    return (
+      <div
+        className="flex items-start gap-3 rounded-lg border border-border/40 bg-background/50 p-3"
+        data-testid="pdf-preview-card"
+      >
+        <FileText size={20} className="mt-0.5 shrink-0 text-primary" />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <span className="truncate">{pdfFilename}</span>
+            <span className="shrink-0 text-xs text-muted-foreground">
+              {formatFileSize(pdfData.fileSize)}
+            </span>
+            <span className="shrink-0 text-xs text-muted-foreground">
+              {pdfData.totalPages} {pdfData.totalPages === 1 ? 'page' : 'pages'}
+            </span>
+          </div>
+          <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
+            {pdfData.preview}
+          </p>
+          {pdfData.text.length > PDF_TEXT_TRUNCATION_THRESHOLD && (
+            <p className="mt-1 flex items-center gap-1 text-xs text-yellow-600 dark:text-yellow-400" data-testid="pdf-truncation-warning">
+              <AlertTriangle size={12} />
+              Document will be truncated to ~80K characters for the LLM
+            </p>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={onRemove}
+          disabled={disabled}
+          className="shrink-0 rounded p-1 text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+          data-testid="pdf-remove-button"
+        >
+          <X size={14} />
+        </button>
+      </div>
+    );
+  }
+
+  // Show upload zone
+  return (
+    <div>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="application/pdf,.pdf"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) handleFile(file);
+          // Reset so re-selecting the same file triggers onChange
+          e.target.value = '';
+        }}
+        data-testid="pdf-file-input"
+      />
+      <button
+        type="button"
+        onClick={() => fileInputRef.current?.click()}
+        onDrop={handleDrop}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        disabled={isExtracting || disabled}
+        className={cn(
+          'flex w-full items-center justify-center gap-2 rounded-lg border border-dashed px-4 py-3 text-sm transition-colors',
+          isDragOver
+            ? 'border-primary bg-primary/10 text-primary'
+            : 'border-border/40 text-muted-foreground hover:border-border/60 hover:text-foreground',
+          (isExtracting || disabled) && 'pointer-events-none opacity-50',
+        )}
+        data-testid="pdf-upload-zone"
+      >
+        {isExtracting ? (
+          <>
+            <Loader2 size={16} className="animate-spin" />
+            Extracting text...
+          </>
+        ) : (
+          <>
+            <Upload size={16} />
+            Drop a PDF here or click to browse (max 20 MB)
+          </>
+        )}
+      </button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Save to Confluence dialog
 // ---------------------------------------------------------------------------
 
@@ -275,12 +431,28 @@ export function GenerateSavePanel({
 
 /**
  * Generate mode: free-text prompt to create a new article via LLM streaming.
+ * Optionally upload a PDF to use as source material.
  * After generation completes, shows a save panel to publish to Confluence.
  */
 export function GenerateModeInput() {
   const { input, setInput, isStreaming, model, setMessages, runStream } = useAiContext();
   const [generatedContent, setGeneratedContent] = useState('');
   const [showSavePanel, setShowSavePanel] = useState(false);
+
+  // PDF upload state
+  const { isExtracting } = useExtractPdf();
+  const [pdfData, setPdfData] = useState<ExtractPdfResult | null>(null);
+  const [pdfFilename, setPdfFilename] = useState<string | null>(null);
+
+  const handlePdfExtracted = useCallback((result: ExtractPdfResult, filename: string) => {
+    setPdfData(result);
+    setPdfFilename(filename);
+  }, []);
+
+  const handlePdfRemove = useCallback(() => {
+    setPdfData(null);
+    setPdfFilename(null);
+  }, []);
 
   const handleGenerate = useCallback(async () => {
     if (!input.trim() || isStreaming) return;
@@ -291,11 +463,20 @@ export function GenerateModeInput() {
 
     const prompt = input.trim();
     setInput('');
-    setMessages([{ role: 'user', content: `Generate: ${prompt}` }]);
+
+    const displayMessage = pdfData
+      ? `Generate from PDF (${pdfFilename}): ${prompt}`
+      : `Generate: ${prompt}`;
+    setMessages([{ role: 'user', content: displayMessage }]);
     setGeneratedContent('');
     setShowSavePanel(false);
 
-    await runStream('/llm/generate', { prompt, model }, {
+    const body: Record<string, unknown> = { prompt, model };
+    if (pdfData) {
+      body.pdfText = pdfData.text;
+    }
+
+    await runStream('/llm/generate', body, {
       onComplete: (accumulated) => {
         if (accumulated) {
           setGeneratedContent(accumulated);
@@ -303,7 +484,7 @@ export function GenerateModeInput() {
         }
       },
     });
-  }, [input, model, isStreaming, setInput, setMessages, runStream]);
+  }, [input, model, isStreaming, pdfData, pdfFilename, setInput, setMessages, runStream]);
 
   const handleSubmit = () => handleGenerate();
 
@@ -318,26 +499,38 @@ export function GenerateModeInput() {
           onSaved={() => {
             setShowSavePanel(false);
             setGeneratedContent('');
+            handlePdfRemove();
           }}
         />
       )}
 
-      <div className="mt-3 flex items-center gap-3 border-t border-border/40 pt-3">
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSubmit()}
-          placeholder="Describe the article to generate..."
+      <div className="mt-3 space-y-3 border-t border-border/40 pt-3">
+        <PdfUploadZone
+          onExtracted={handlePdfExtracted}
+          pdfData={pdfData}
+          pdfFilename={pdfFilename}
+          onRemove={handlePdfRemove}
+          isExtracting={isExtracting}
           disabled={isStreaming}
-          className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
         />
-        <button
-          onClick={handleSubmit}
-          disabled={isStreaming || !input.trim() || !model}
-          className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
-        >
-          {isStreaming ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
-        </button>
+
+        <div className="flex items-center gap-3">
+          <input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSubmit()}
+            placeholder={pdfData ? 'Instructions for generating from PDF...' : 'Describe the article to generate...'}
+            disabled={isStreaming}
+            className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+          />
+          <button
+            onClick={handleSubmit}
+            disabled={isStreaming || !input.trim() || !model}
+            className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
+          >
+            {isStreaming ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+          </button>
+        </div>
       </div>
     </>
   );

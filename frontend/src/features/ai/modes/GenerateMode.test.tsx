@@ -19,6 +19,16 @@ vi.mock('../../../shared/lib/sse', () => ({
   streamSSE: (...args: unknown[]) => streamSSEMock(...args),
 }));
 
+const mockExtractPdf = vi.fn();
+const mockIsExtracting = { value: false };
+vi.mock('../../../shared/hooks/use-extract-pdf', () => ({
+  useExtractPdf: () => ({
+    extractPdf: (...args: unknown[]) => mockExtractPdf(...args),
+    isExtracting: mockIsExtracting.value,
+    error: null,
+  }),
+}));
+
 let mockPageData: { data: unknown } = { data: undefined };
 vi.mock('../../../shared/hooks/use-pages', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../shared/hooks/use-pages')>();
@@ -62,10 +72,18 @@ function createWrapper(initialEntries = ['/ai?mode=generate']) {
   };
 }
 
+/** Get the Send button (the one inside the input bar, not the upload zone) */
+function getSendButton() {
+  // The send button is always the last button in the input bar
+  const buttons = screen.getAllByRole('button');
+  return buttons[buttons.length - 1];
+}
+
 describe('GenerateMode', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockPageData = { data: undefined };
+    mockIsExtracting.value = false;
     mockSpacesData = {
       data: [
         { key: 'DEV', name: 'Development', homepageId: null, lastSynced: '', pageCount: 10 },
@@ -103,17 +121,17 @@ describe('GenerateMode', () => {
   });
 
   describe('GenerateModeInput', () => {
-    it('renders the prompt input and send button', () => {
+    it('renders the prompt input, send button, and PDF upload zone', () => {
       render(<GenerateModeInput />, { wrapper: createWrapper() });
 
       expect(screen.getByPlaceholderText('Describe the article to generate...')).toBeInTheDocument();
-      expect(screen.getByRole('button')).toBeInTheDocument();
+      expect(screen.getByTestId('pdf-upload-zone')).toBeInTheDocument();
+      expect(getSendButton()).toBeInTheDocument();
     });
 
     it('disables send when input is empty', () => {
       render(<GenerateModeInput />, { wrapper: createWrapper() });
-      const btn = screen.getByRole('button');
-      expect(btn).toBeDisabled();
+      expect(getSendButton()).toBeDisabled();
     });
 
     it('calls runStream with correct params when generate is triggered', async () => {
@@ -128,11 +146,10 @@ describe('GenerateMode', () => {
       fireEvent.change(input, { target: { value: 'Write a guide about Docker' } });
 
       await waitFor(() => {
-        const btn = screen.getByRole('button');
-        expect(btn).not.toBeDisabled();
+        expect(getSendButton()).not.toBeDisabled();
       });
 
-      fireEvent.click(screen.getByRole('button'));
+      fireEvent.click(getSendButton());
 
       await waitFor(() => {
         expect(streamSSEMock).toHaveBeenCalledWith(
@@ -158,10 +175,10 @@ describe('GenerateMode', () => {
       fireEvent.change(input, { target: { value: 'Write about Docker' } });
 
       await waitFor(() => {
-        expect(screen.getByRole('button')).not.toBeDisabled();
+        expect(getSendButton()).not.toBeDisabled();
       });
 
-      fireEvent.click(screen.getByRole('button'));
+      fireEvent.click(getSendButton());
 
       await waitFor(() => {
         expect(screen.getByTestId('generate-save-panel')).toBeInTheDocument();
@@ -184,10 +201,10 @@ describe('GenerateMode', () => {
       fireEvent.change(input, { target: { value: 'Write about Docker' } });
 
       await waitFor(() => {
-        expect(screen.getByRole('button')).not.toBeDisabled();
+        expect(getSendButton()).not.toBeDisabled();
       });
 
-      fireEvent.click(screen.getByRole('button'));
+      fireEvent.click(getSendButton());
 
       await waitFor(() => {
         expect(toastErrorMock).toHaveBeenCalledWith('LLM connection lost');
@@ -211,10 +228,10 @@ describe('GenerateMode', () => {
       fireEvent.change(input, { target: { value: 'Write article' } });
 
       await waitFor(() => {
-        expect(screen.getByRole('button')).not.toBeDisabled();
+        expect(getSendButton()).not.toBeDisabled();
       });
 
-      fireEvent.click(screen.getByRole('button'));
+      fireEvent.click(getSendButton());
 
       // Stream is still in progress, save panel should not show yet
       // The save panel only appears after onComplete fires
@@ -224,6 +241,200 @@ describe('GenerateMode', () => {
 
       // Clean up
       resolveStream?.();
+    });
+  });
+
+  describe('PDF Upload', () => {
+    it('renders the PDF upload zone', () => {
+      render(<GenerateModeInput />, { wrapper: createWrapper() });
+      expect(screen.getByTestId('pdf-upload-zone')).toBeInTheDocument();
+      expect(screen.getByText(/Drop a PDF here or click to browse/)).toBeInTheDocument();
+    });
+
+    it('shows preview card after PDF extraction', async () => {
+      mockExtractPdf.mockResolvedValue({
+        text: 'Extracted PDF content for testing',
+        totalPages: 5,
+        fileSize: 1024 * 1024 * 2.4, // 2.4 MB
+        preview: 'Extracted PDF content for testing',
+      });
+
+      render(<GenerateModeInput />, { wrapper: createWrapper() });
+
+      // Simulate file selection via the hidden input
+      const fileInput = screen.getByTestId('pdf-file-input');
+      const pdfFile = new File(['%PDF-1.4 dummy content'], 'report.pdf', { type: 'application/pdf' });
+      fireEvent.change(fileInput, { target: { files: [pdfFile] } });
+
+      // Wait for the preview card to appear
+      await waitFor(() => {
+        expect(screen.getByTestId('pdf-preview-card')).toBeInTheDocument();
+      });
+
+      expect(screen.getByText('report.pdf')).toBeInTheDocument();
+      expect(screen.getByText('5 pages')).toBeInTheDocument();
+    });
+
+    it('removes PDF when remove button is clicked', async () => {
+      mockExtractPdf.mockResolvedValue({
+        text: 'PDF text',
+        totalPages: 1,
+        fileSize: 1024,
+        preview: 'PDF text',
+      });
+
+      render(<GenerateModeInput />, { wrapper: createWrapper() });
+
+      const fileInput = screen.getByTestId('pdf-file-input');
+      const pdfFile = new File(['%PDF-1.4'], 'test.pdf', { type: 'application/pdf' });
+      fireEvent.change(fileInput, { target: { files: [pdfFile] } });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('pdf-preview-card')).toBeInTheDocument();
+      });
+
+      // Click remove
+      fireEvent.click(screen.getByTestId('pdf-remove-button'));
+
+      // Preview should disappear, upload zone should return
+      expect(screen.queryByTestId('pdf-preview-card')).not.toBeInTheDocument();
+      expect(screen.getByTestId('pdf-upload-zone')).toBeInTheDocument();
+    });
+
+    it('sends pdfText with generate request when PDF is uploaded', async () => {
+      mockExtractPdf.mockResolvedValue({
+        text: 'Extracted PDF text content',
+        totalPages: 3,
+        fileSize: 5000,
+        preview: 'Extracted PDF text content',
+      });
+
+      async function* fakeStream() {
+        yield { content: '# Generated Article\n\nContent based on PDF.' };
+      }
+      streamSSEMock.mockReturnValue(fakeStream());
+
+      render(<GenerateModeInput />, { wrapper: createWrapper() });
+
+      // Upload PDF
+      const fileInput = screen.getByTestId('pdf-file-input');
+      const pdfFile = new File(['%PDF-1.4'], 'doc.pdf', { type: 'application/pdf' });
+      fireEvent.change(fileInput, { target: { files: [pdfFile] } });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('pdf-preview-card')).toBeInTheDocument();
+      });
+
+      // Enter instructions
+      const input = screen.getByPlaceholderText('Instructions for generating from PDF...');
+      fireEvent.change(input, { target: { value: 'Create a runbook' } });
+
+      await waitFor(() => {
+        expect(getSendButton()).not.toBeDisabled();
+      });
+
+      fireEvent.click(getSendButton());
+
+      await waitFor(() => {
+        expect(streamSSEMock).toHaveBeenCalledWith(
+          '/llm/generate',
+          expect.objectContaining({
+            prompt: 'Create a runbook',
+            model: 'llama3',
+            pdfText: 'Extracted PDF text content',
+          }),
+          expect.any(Object),
+        );
+      });
+    });
+
+    it('works normally without PDF (existing behavior preserved)', async () => {
+      async function* fakeStream() {
+        yield { content: '# Article' };
+      }
+      streamSSEMock.mockReturnValue(fakeStream());
+
+      render(<GenerateModeInput />, { wrapper: createWrapper() });
+
+      const input = screen.getByPlaceholderText('Describe the article to generate...');
+      fireEvent.change(input, { target: { value: 'Write about testing' } });
+
+      await waitFor(() => {
+        expect(getSendButton()).not.toBeDisabled();
+      });
+
+      fireEvent.click(getSendButton());
+
+      await waitFor(() => {
+        expect(streamSSEMock).toHaveBeenCalledWith(
+          '/llm/generate',
+          expect.objectContaining({
+            prompt: 'Write about testing',
+            model: 'llama3',
+          }),
+          expect.any(Object),
+        );
+        // Should NOT include pdfText when no PDF uploaded
+        const callArgs = streamSSEMock.mock.calls[0];
+        expect(callArgs[1].pdfText).toBeUndefined();
+      });
+    });
+
+    it('shows error toast when PDF extraction fails', async () => {
+      mockExtractPdf.mockRejectedValue(new Error('File exceeds 20 MB limit'));
+
+      render(<GenerateModeInput />, { wrapper: createWrapper() });
+
+      const fileInput = screen.getByTestId('pdf-file-input');
+      const pdfFile = new File(['%PDF-1.4'], 'huge.pdf', { type: 'application/pdf' });
+      fireEvent.change(fileInput, { target: { files: [pdfFile] } });
+
+      await waitFor(() => {
+        expect(toastErrorMock).toHaveBeenCalledWith('File exceeds 20 MB limit');
+      });
+
+      // Upload zone should still be visible (no preview card)
+      expect(screen.queryByTestId('pdf-preview-card')).not.toBeInTheDocument();
+      expect(screen.getByTestId('pdf-upload-zone')).toBeInTheDocument();
+    });
+
+    it('rejects non-PDF files client-side', async () => {
+      render(<GenerateModeInput />, { wrapper: createWrapper() });
+
+      const fileInput = screen.getByTestId('pdf-file-input');
+      const textFile = new File(['hello'], 'notes.txt', { type: 'text/plain' });
+      fireEvent.change(fileInput, { target: { files: [textFile] } });
+
+      await waitFor(() => {
+        expect(toastErrorMock).toHaveBeenCalledWith('Only PDF files are accepted');
+      });
+
+      expect(mockExtractPdf).not.toHaveBeenCalled();
+    });
+
+    it('changes placeholder text when PDF is uploaded', async () => {
+      mockExtractPdf.mockResolvedValue({
+        text: 'PDF text',
+        totalPages: 1,
+        fileSize: 1024,
+        preview: 'PDF text',
+      });
+
+      render(<GenerateModeInput />, { wrapper: createWrapper() });
+
+      // Before upload: standard placeholder
+      expect(screen.getByPlaceholderText('Describe the article to generate...')).toBeInTheDocument();
+
+      const fileInput = screen.getByTestId('pdf-file-input');
+      const pdfFile = new File(['%PDF-1.4'], 'doc.pdf', { type: 'application/pdf' });
+      fireEvent.change(fileInput, { target: { files: [pdfFile] } });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('pdf-preview-card')).toBeInTheDocument();
+      });
+
+      // After upload: PDF-specific placeholder
+      expect(screen.getByPlaceholderText('Instructions for generating from PDF...')).toBeInTheDocument();
     });
   });
 

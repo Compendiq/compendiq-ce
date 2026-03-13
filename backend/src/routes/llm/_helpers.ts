@@ -23,6 +23,9 @@ export const EMBEDDING_RATE_LIMIT = { config: { rateLimit: { max: 5, timeWindow:
 // Maximum input size to prevent abuse (100KB)
 export const MAX_INPUT_LENGTH = 100_000;
 
+// Maximum PDF text length sent to LLM (~20K tokens, safe for most model context windows)
+export const MAX_PDF_TEXT_FOR_LLM = 80_000;
+
 /**
  * Assemble page context for LLM consumption, optionally including sub-pages.
  *
