@@ -4,13 +4,26 @@ vi.mock('./logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
+/** Create a mock Agent class whose instances have a .compose() method */
+function createMockAgent() {
+  const composedDispatcher = { isComposed: true };
+  // Use a real class so `new Agent()` works (arrow fns can't be constructors)
+  const MockAgent = vi.fn().mockImplementation(function (this: Record<string, unknown>) {
+    this.compose = vi.fn().mockReturnValue(composedDispatcher);
+  });
+  return { MockAgent, composedDispatcher };
+}
+
+/** Mock redirect interceptor */
+const mockRedirectInterceptor = vi.fn();
+
 describe('tls-config', () => {
   beforeEach(() => {
     vi.resetModules();
     vi.unstubAllEnvs();
   });
 
-  it('should not create dispatcher when no CA bundle and SSL verification enabled', async () => {
+  it('should create dispatcher with redirect interceptor even without custom TLS config', async () => {
     vi.stubEnv('CONFLUENCE_VERIFY_SSL', 'true');
     vi.stubEnv('NODE_EXTRA_CA_CERTS', '');
 
@@ -18,13 +31,20 @@ describe('tls-config', () => {
       readFileSync: vi.fn().mockImplementation(() => { throw new Error('ENOENT'); }),
       existsSync: vi.fn().mockReturnValue(false),
     }));
+
+    const { MockAgent, composedDispatcher } = createMockAgent();
     vi.doMock('undici', () => ({
-      Agent: vi.fn(),
+      Agent: MockAgent,
+      Dispatcher: class {},
+      interceptors: { redirect: mockRedirectInterceptor },
     }));
 
     const { confluenceDispatcher, buildConnectOptions } = await import('./tls-config.js');
-    expect(confluenceDispatcher).toBeUndefined();
+    // No custom TLS, but dispatcher is always created for redirect support
+    expect(confluenceDispatcher).toBe(composedDispatcher);
     expect(buildConnectOptions()).toBeUndefined();
+    // Agent created without connect options
+    expect(MockAgent).toHaveBeenCalledWith();
   });
 
   it('should create dispatcher with rejectUnauthorized false when CONFLUENCE_VERIFY_SSL is false', async () => {
@@ -36,13 +56,15 @@ describe('tls-config', () => {
       existsSync: vi.fn().mockReturnValue(false),
     }));
 
-    const MockAgent = vi.fn();
+    const { MockAgent, composedDispatcher } = createMockAgent();
     vi.doMock('undici', () => ({
       Agent: MockAgent,
+      Dispatcher: class {},
+      interceptors: { redirect: mockRedirectInterceptor },
     }));
 
     const { confluenceDispatcher } = await import('./tls-config.js');
-    expect(confluenceDispatcher).toBeDefined();
+    expect(confluenceDispatcher).toBe(composedDispatcher);
     expect(MockAgent).toHaveBeenCalledWith({
       connect: { rejectUnauthorized: false },
     });
@@ -58,13 +80,15 @@ describe('tls-config', () => {
       existsSync: vi.fn().mockReturnValue(false),
     }));
 
-    const MockAgent = vi.fn();
+    const { MockAgent, composedDispatcher } = createMockAgent();
     vi.doMock('undici', () => ({
       Agent: MockAgent,
+      Dispatcher: class {},
+      interceptors: { redirect: mockRedirectInterceptor },
     }));
 
     const { confluenceDispatcher } = await import('./tls-config.js');
-    expect(confluenceDispatcher).toBeDefined();
+    expect(confluenceDispatcher).toBe(composedDispatcher);
     expect(MockAgent).toHaveBeenCalledWith({
       connect: { ca: fakeCert },
     });
@@ -80,13 +104,15 @@ describe('tls-config', () => {
       existsSync: vi.fn().mockReturnValue(true),
     }));
 
-    const MockAgent = vi.fn();
+    const { MockAgent, composedDispatcher } = createMockAgent();
     vi.doMock('undici', () => ({
       Agent: MockAgent,
+      Dispatcher: class {},
+      interceptors: { redirect: mockRedirectInterceptor },
     }));
 
     const { confluenceDispatcher } = await import('./tls-config.js');
-    expect(confluenceDispatcher).toBeDefined();
+    expect(confluenceDispatcher).toBe(composedDispatcher);
     expect(MockAgent).toHaveBeenCalledWith({
       connect: { ca: fakeCert },
     });
@@ -100,8 +126,12 @@ describe('tls-config', () => {
       readFileSync: vi.fn().mockImplementation(() => { throw new Error('ENOENT'); }),
       existsSync: vi.fn().mockReturnValue(false),
     }));
+
+    const { MockAgent } = createMockAgent();
     vi.doMock('undici', () => ({
-      Agent: vi.fn(),
+      Agent: MockAgent,
+      Dispatcher: class {},
+      interceptors: { redirect: mockRedirectInterceptor },
     }));
 
     const { isVerifySslEnabled } = await import('./tls-config.js');

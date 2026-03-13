@@ -18,7 +18,7 @@ vi.mock('../../../core/utils/logger.js', () => ({
 
 // Mock tls-config
 vi.mock('../../../core/utils/tls-config.js', () => ({
-  confluenceDispatcher: undefined,
+  confluenceDispatcher: { isMockDispatcher: true },
   buildConnectOptions: vi.fn().mockReturnValue(undefined),
   isVerifySslEnabled: vi.fn().mockReturnValue(true),
 }));

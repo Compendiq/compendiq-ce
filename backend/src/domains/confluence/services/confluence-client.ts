@@ -100,10 +100,8 @@ export class ConfluenceClient {
       headers,
       body: body ? JSON.stringify(body) : undefined,
       signal: signal ?? AbortSignal.timeout(30_000),
+      dispatcher: confluenceDispatcher,
     };
-    if (confluenceDispatcher) {
-      opts.dispatcher = confluenceDispatcher;
-    }
 
     const { statusCode, headers: responseHeaders, body: responseBody } = await request(url, opts as Parameters<typeof request>[1]);
 
@@ -252,11 +250,8 @@ export class ConfluenceClient {
     const opts: Record<string, unknown> = {
       headers: { 'Authorization': `Bearer ${this.pat}` },
       signal: AbortSignal.timeout(60_000),
-      maxRedirections: 10,
+      dispatcher: confluenceDispatcher,
     };
-    if (confluenceDispatcher) {
-      opts.dispatcher = confluenceDispatcher;
-    }
 
     const { statusCode, headers: responseHeaders, body } = await request(url, opts as Parameters<typeof request>[1]);
 
@@ -329,11 +324,8 @@ export class ConfluenceClient {
     const opts: Record<string, unknown> = {
       headers: { 'Authorization': `Bearer ${this.pat}` },
       signal: AbortSignal.timeout(120_000),
-      maxRedirections: 10,
+      dispatcher: confluenceDispatcher,
     };
-    if (confluenceDispatcher) {
-      opts.dispatcher = confluenceDispatcher;
-    }
 
     const { statusCode, headers, body } = await request(url, opts as Parameters<typeof request>[1]);
 
@@ -530,10 +522,8 @@ export class ConfluenceClient {
       },
       body,
       signal: AbortSignal.timeout(60_000),
+      dispatcher: confluenceDispatcher,
     };
-    if (confluenceDispatcher) {
-      opts.dispatcher = confluenceDispatcher;
-    }
 
     const { statusCode, body: responseBody } = await request(url, opts as Parameters<typeof request>[1]);
 

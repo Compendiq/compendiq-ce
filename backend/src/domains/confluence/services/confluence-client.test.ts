@@ -15,10 +15,11 @@ vi.mock('../../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
-// Mock tls-config — default: no custom dispatcher
-const mockDispatcher = { isMockDispatcher: true };
+// Mock tls-config — always provides a dispatcher (undici v7 redirect interceptor)
+const mockDefaultDispatcher = { isDefaultDispatcher: true };
+const mockCustomDispatcher = { isCustomDispatcher: true };
 vi.mock('../../../core/utils/tls-config.js', () => ({
-  confluenceDispatcher: undefined,
+  confluenceDispatcher: { isDefaultDispatcher: true },
   buildConnectOptions: vi.fn().mockReturnValue(undefined),
   isVerifySslEnabled: vi.fn().mockReturnValue(true),
 }));
@@ -36,12 +37,12 @@ describe('ConfluenceClient', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    // Reset to no dispatcher by default
-    (tlsConfig as { confluenceDispatcher: unknown }).confluenceDispatcher = undefined;
+    // Reset to default dispatcher
+    (tlsConfig as { confluenceDispatcher: unknown }).confluenceDispatcher = mockDefaultDispatcher;
   });
 
   describe('TLS dispatcher', () => {
-    it('should not set dispatcher when no custom TLS config', async () => {
+    it('should always pass dispatcher for redirect support', async () => {
       const client = new ConfluenceClient(baseUrl, pat);
       mockRequest.mockResolvedValue({
         statusCode: 200,
@@ -51,11 +52,11 @@ describe('ConfluenceClient', () => {
       await client.getSpaces();
 
       const callArgs = mockRequest.mock.calls[0];
-      expect(callArgs[1]).not.toHaveProperty('dispatcher');
+      expect((callArgs[1] as Record<string, unknown>).dispatcher).toBeDefined();
     });
 
-    it('should pass dispatcher when custom TLS config exists', async () => {
-      (tlsConfig as { confluenceDispatcher: unknown }).confluenceDispatcher = mockDispatcher;
+    it('should pass custom dispatcher when custom TLS config exists', async () => {
+      (tlsConfig as { confluenceDispatcher: unknown }).confluenceDispatcher = mockCustomDispatcher;
 
       const client = new ConfluenceClient(baseUrl, pat);
       mockRequest.mockResolvedValue({
@@ -66,11 +67,11 @@ describe('ConfluenceClient', () => {
       await client.getSpaces();
 
       const callArgs = mockRequest.mock.calls[0];
-      expect((callArgs[1] as Record<string, unknown>).dispatcher).toBe(mockDispatcher);
+      expect((callArgs[1] as Record<string, unknown>).dispatcher).toBe(mockCustomDispatcher);
     });
 
     it('should pass dispatcher for attachment downloads', async () => {
-      (tlsConfig as { confluenceDispatcher: unknown }).confluenceDispatcher = mockDispatcher;
+      (tlsConfig as { confluenceDispatcher: unknown }).confluenceDispatcher = mockCustomDispatcher;
 
       const client = new ConfluenceClient(baseUrl, pat);
       mockRequest.mockResolvedValue({
@@ -83,7 +84,7 @@ describe('ConfluenceClient', () => {
       await client.downloadAttachment('/download/attachments/123/file.pdf');
 
       const callArgs = mockRequest.mock.calls[0];
-      expect((callArgs[1] as Record<string, unknown>).dispatcher).toBe(mockDispatcher);
+      expect((callArgs[1] as Record<string, unknown>).dispatcher).toBe(mockCustomDispatcher);
     });
   });
 
@@ -1191,7 +1192,7 @@ describe('downloadAttachment fallback strategies', () => {
     expect(mockRequest).toHaveBeenCalledTimes(1);
   });
 
-  it('should use maxRedirections in download requests', async () => {
+  it('should use dispatcher for redirect support in download requests', async () => {
     const client = new ConfluenceClient(baseUrl, pat, { retry: retryOpts });
     mockRequest.mockResolvedValue({
       statusCode: 200,
@@ -1204,7 +1205,9 @@ describe('downloadAttachment fallback strategies', () => {
     await client.downloadAttachment('/download/attachments/123/file.pdf');
 
     const opts = mockRequest.mock.calls[0][1] as Record<string, unknown>;
-    expect(opts.maxRedirections).toBe(10);
+    // maxRedirections removed in undici v7; redirect is handled by the dispatcher's interceptor
+    expect(opts.dispatcher).toBeDefined();
+    expect(opts.maxRedirections).toBeUndefined();
   });
 });
 

@@ -1,5 +1,5 @@
 import { readFileSync, existsSync } from 'fs';
-import { Agent } from 'undici';
+import { Agent, Dispatcher, interceptors } from 'undici';
 import { logger } from './logger.js';
 
 /**
@@ -72,16 +72,20 @@ export function buildConnectOptions(): Record<string, unknown> | undefined {
 }
 
 /**
- * Pre-configured undici Agent with TLS options for Confluence connections.
+ * Pre-configured undici Agent with TLS + redirect options for Confluence connections.
  * In undici v7, TLS connect options must be set at Agent construction time —
  * they are ignored when passed per-request to request().
+ * maxRedirections was also removed from per-request options in undici v7;
+ * redirect support is now provided via the redirect interceptor.
  */
 const connectOpts = buildConnectOptions();
-export const confluenceDispatcher: Agent | undefined = connectOpts
-  ? new Agent({ connect: connectOpts })
-  : undefined;
+const redirectInterceptor = interceptors.redirect({ maxRedirections: 10 });
 
-if (confluenceDispatcher) {
+export const confluenceDispatcher: Dispatcher = connectOpts
+  ? new Agent({ connect: connectOpts }).compose(redirectInterceptor)
+  : new Agent().compose(redirectInterceptor);
+
+if (connectOpts) {
   logger.info(
     { verifySsl, hasCustomCa: !!caBundleContents },
     'Created undici Agent with custom TLS configuration for Confluence',

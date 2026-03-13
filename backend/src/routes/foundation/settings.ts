@@ -230,10 +230,8 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         method: 'GET',
         headers: { Authorization: `Bearer ${resolvedPat}` },
         signal: AbortSignal.timeout(10_000),
+        dispatcher: confluenceDispatcher,
       };
-      if (confluenceDispatcher) {
-        opts.dispatcher = confluenceDispatcher;
-      }
 
       const { statusCode, body: responseBody } = await undiciRequest(
         `${url}/rest/api/space?limit=1`,
