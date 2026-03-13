@@ -188,6 +188,72 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
       expect(result.rows[0].summary_content_hash).toHaveLength(64);
     });
 
+    it('should detect content changes via hash mismatch and re-summarize', async () => {
+      const longContent = 'B'.repeat(200);
+      const staleHash = 'aaaa'.repeat(16); // 64-char fake hash that won't match
+
+      // Insert a page that was previously summarized but whose content has since changed
+      await query(
+        `INSERT INTO cached_pages (confluence_id, space_key, title, body_text, summary_status, summary_content_hash, summary_text)
+         VALUES ('changed1', $1, 'Changed Page', $2, 'summarized', $3, 'old summary')`,
+        [testSpaceKey, longContent, staleHash],
+      );
+
+      const { processed, errors } = await runSummaryBatch('test-model');
+      expect(errors).toBe(0);
+      // The page should have been detected as changed and re-summarized
+      expect(processed).toBeGreaterThanOrEqual(1);
+
+      const result = await query<{
+        summary_status: string;
+        summary_content_hash: string;
+      }>(
+        "SELECT summary_status, summary_content_hash FROM cached_pages WHERE confluence_id = 'changed1'",
+      );
+
+      expect(result.rows[0].summary_status).toBe('summarized');
+      // Hash should now match the actual content
+      expect(result.rows[0].summary_content_hash).toBe(computeContentHash(longContent));
+    });
+
+    it('should not re-summarize when content hash matches', async () => {
+      const longContent = 'C'.repeat(200);
+      const correctHash = computeContentHash(longContent);
+
+      // Insert a page that is already summarized with the correct hash
+      await query(
+        `INSERT INTO cached_pages (confluence_id, space_key, title, body_text, summary_status, summary_content_hash, summary_text)
+         VALUES ('unchanged1', $1, 'Unchanged Page', $2, 'summarized', $3, 'existing summary')`,
+        [testSpaceKey, longContent, correctHash],
+      );
+
+      const { processed } = await runSummaryBatch('test-model');
+      expect(processed).toBe(0);
+
+      // Summary should remain unchanged
+      const result = await query<{ summary_text: string }>(
+        "SELECT summary_text FROM cached_pages WHERE confluence_id = 'unchanged1'",
+      );
+      expect(result.rows[0].summary_text).toBe('existing summary');
+    });
+
+    it('should handle body_text with special characters in hash comparison', async () => {
+      // Content with backslashes, unicode, and special chars that would break ::bytea cast
+      const specialContent = 'A'.repeat(100) + ' backslash: \\ quote: " unicode: ü emoji: 🎉 tab:\t newline:\n end';
+      const correctHash = computeContentHash(specialContent);
+
+      await query(
+        `INSERT INTO cached_pages (confluence_id, space_key, title, body_text, summary_status, summary_content_hash, summary_text)
+         VALUES ('special1', $1, 'Special Chars Page', $2, 'summarized', $3, 'existing summary')`,
+        [testSpaceKey, specialContent, correctHash],
+      );
+
+      // Should NOT crash and should NOT re-summarize (hash matches)
+      const { processed, errors } = await runSummaryBatch('test-model');
+      expect(errors).toBe(0);
+      expect(processed).toBe(0);
+    });
+
     it('should return 0 processed when no model is configured', async () => {
       // runSummaryBatch with empty model and env vars not set
       const result = await runSummaryBatch('');

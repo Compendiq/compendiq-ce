@@ -254,7 +254,7 @@ export async function runSummaryBatch(model?: string): Promise<{ processed: numb
        AND summary_content_hash IS NOT NULL
        AND body_text IS NOT NULL
        AND length(body_text) >= $1
-       AND summary_content_hash != encode(sha256(body_text::bytea), 'hex')`,
+       AND summary_content_hash != encode(sha256(convert_to(body_text, 'UTF-8')), 'hex')`,
     [MIN_BODY_LENGTH],
   );
 
