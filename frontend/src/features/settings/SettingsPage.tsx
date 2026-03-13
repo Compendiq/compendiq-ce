@@ -217,8 +217,8 @@ function SyncTab() {
   });
 
   const qualityRescanMutation = useMutation({
-    mutationFn: () => apiFetch('/llm/quality-rescan', { method: 'POST' }),
-    onSuccess: (data: { message: string; pagesReset: number }) => {
+    mutationFn: () => apiFetch<{ message: string; pagesReset: number }>('/llm/quality-rescan', { method: 'POST' }),
+    onSuccess: (data) => {
       toast.success(data.message);
       queryClient.invalidateQueries({ queryKey: ['quality-status'] });
     },
@@ -234,8 +234,8 @@ function SyncTab() {
   });
 
   const summaryRescanMutation = useMutation({
-    mutationFn: () => apiFetch('/llm/summary-rescan', { method: 'POST' }),
-    onSuccess: (data: { message: string; resetCount: number }) => {
+    mutationFn: () => apiFetch<{ message: string; resetCount: number }>('/llm/summary-rescan', { method: 'POST' }),
+    onSuccess: (data) => {
       toast.success(data.message);
       queryClient.invalidateQueries({ queryKey: ['summary-status'] });
     },
