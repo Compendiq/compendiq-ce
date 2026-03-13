@@ -169,7 +169,35 @@ function StatusBadge({
   );
 }
 
+const workerBadgeClasses = {
+  processing: 'border-purple-500/30 bg-purple-500/10 text-purple-300',
+  idle: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300',
+};
+
+interface QualityStatusResponse {
+  totalPages: number;
+  analyzedPages: number;
+  pendingPages: number;
+  failedPages: number;
+  skippedPages: number;
+  averageScore: number | null;
+  isProcessing: boolean;
+}
+
+interface SummaryStatusResponse {
+  totalPages: number;
+  summarizedPages: number;
+  pendingPages: number;
+  failedPages: number;
+  skippedPages: number;
+  isProcessing: boolean;
+}
+
 function SyncTab() {
+  const queryClient = useQueryClient();
+  const user = useAuthStore((s) => s.user);
+  const isAdmin = user?.role === 'admin';
+
   const syncMutation = useSync();
   const { data, isLoading, isFetching, refetch } = useQuery<SyncOverviewResponse>({
     queryKey: ['settings', 'sync-overview'],
@@ -178,6 +206,40 @@ function SyncTab() {
       const status = query.state.data?.sync.status;
       return status === 'syncing' || status === 'embedding' ? 2000 : false;
     },
+  });
+
+  const { data: qualityStatus } = useQuery<QualityStatusResponse>({
+    queryKey: ['quality-status'],
+    queryFn: () => apiFetch('/llm/quality-status'),
+    refetchInterval: (query) => {
+      return query.state.data?.isProcessing ? 3000 : false;
+    },
+  });
+
+  const qualityRescanMutation = useMutation({
+    mutationFn: () => apiFetch('/llm/quality-rescan', { method: 'POST' }),
+    onSuccess: (data: { message: string; pagesReset: number }) => {
+      toast.success(data.message);
+      queryClient.invalidateQueries({ queryKey: ['quality-status'] });
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const { data: summaryStatus } = useQuery<SummaryStatusResponse>({
+    queryKey: ['summary-status'],
+    queryFn: () => apiFetch('/llm/summary-status'),
+    refetchInterval: (query) => {
+      return query.state.data?.isProcessing ? 3000 : false;
+    },
+  });
+
+  const summaryRescanMutation = useMutation({
+    mutationFn: () => apiFetch('/llm/summary-rescan', { method: 'POST' }),
+    onSuccess: (data: { message: string; resetCount: number }) => {
+      toast.success(data.message);
+      queryClient.invalidateQueries({ queryKey: ['summary-status'] });
+    },
+    onError: (err) => toast.error(err.message),
   });
 
   if (isLoading || !data) {
@@ -355,6 +417,134 @@ function SyncTab() {
                 </div>
               </div>
             ))}
+          </div>
+        )}
+      </section>
+
+      {/* Quality Analysis Worker */}
+      <section className="space-y-3" data-testid="quality-worker-section">
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div className="space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-sm font-semibold uppercase tracking-[0.16em] text-muted-foreground">Quality Analysis</h2>
+              {qualityStatus && (
+                <StatusBadge
+                  label={qualityStatus.isProcessing ? 'Analyzing' : 'Idle'}
+                  classes={qualityStatus.isProcessing ? workerBadgeClasses.processing : workerBadgeClasses.idle}
+                  testId="quality-worker-status"
+                />
+              )}
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Background worker that scores each article on completeness, clarity, structure, accuracy, and readability.
+            </p>
+          </div>
+
+          {isAdmin && (
+            <button
+              onClick={() => qualityRescanMutation.mutate()}
+              disabled={qualityRescanMutation.isPending}
+              className="glass-button-secondary whitespace-nowrap"
+              data-testid="quality-force-rescan"
+            >
+              {qualityRescanMutation.isPending ? 'Rescanning...' : 'Force Rescan'}
+            </button>
+          )}
+        </div>
+
+        {qualityStatus && (
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+            <MetricCard
+              label="Analyzed"
+              value={String(qualityStatus.analyzedPages)}
+              hint={`of ${qualityStatus.totalPages} total pages`}
+              testId="quality-metric-analyzed"
+            />
+            <MetricCard
+              label="Pending"
+              value={String(qualityStatus.pendingPages)}
+              hint="Waiting for analysis"
+              testId="quality-metric-pending"
+            />
+            <MetricCard
+              label="Failed"
+              value={String(qualityStatus.failedPages)}
+              hint="Analysis encountered errors"
+              testId="quality-metric-failed"
+            />
+            <MetricCard
+              label="Skipped"
+              value={String(qualityStatus.skippedPages)}
+              hint="Content too short"
+              testId="quality-metric-skipped"
+            />
+            <MetricCard
+              label="Avg Score"
+              value={qualityStatus.averageScore !== null ? String(qualityStatus.averageScore) : '—'}
+              hint={qualityStatus.averageScore !== null ? 'Out of 100' : 'No scores yet'}
+              testId="quality-metric-avg-score"
+            />
+          </div>
+        )}
+      </section>
+
+      {/* Summary Worker */}
+      <section className="space-y-3" data-testid="summary-worker-section">
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div className="space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-sm font-semibold uppercase tracking-[0.16em] text-muted-foreground">Article Summaries</h2>
+              {summaryStatus && (
+                <StatusBadge
+                  label={summaryStatus.isProcessing ? 'Summarizing' : 'Idle'}
+                  classes={summaryStatus.isProcessing ? workerBadgeClasses.processing : workerBadgeClasses.idle}
+                  testId="summary-worker-status"
+                />
+              )}
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Background worker that generates concise summaries for each article using the LLM.
+            </p>
+          </div>
+
+          {isAdmin && (
+            <button
+              onClick={() => summaryRescanMutation.mutate()}
+              disabled={summaryRescanMutation.isPending}
+              className="glass-button-secondary whitespace-nowrap"
+              data-testid="summary-force-rescan"
+            >
+              {summaryRescanMutation.isPending ? 'Rescanning...' : 'Force Rescan'}
+            </button>
+          )}
+        </div>
+
+        {summaryStatus && (
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <MetricCard
+              label="Summarized"
+              value={String(summaryStatus.summarizedPages)}
+              hint={`of ${summaryStatus.totalPages} total pages`}
+              testId="summary-metric-summarized"
+            />
+            <MetricCard
+              label="Pending"
+              value={String(summaryStatus.pendingPages)}
+              hint="Waiting for summarization"
+              testId="summary-metric-pending"
+            />
+            <MetricCard
+              label="Failed"
+              value={String(summaryStatus.failedPages)}
+              hint="Summarization encountered errors"
+              testId="summary-metric-failed"
+            />
+            <MetricCard
+              label="Skipped"
+              value={String(summaryStatus.skippedPages)}
+              hint="No content to summarize"
+              testId="summary-metric-skipped"
+            />
           </div>
         )}
       </section>

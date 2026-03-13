@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { FreshnessBadge } from '../badges/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../badges/EmbeddingStatusBadge';
+import { QualityScoreBadge } from '../badges/QualityScoreBadge';
 import { m } from 'framer-motion';
 import { toast } from 'sonner';
 import { useUiStore } from '../../../stores/ui-store';
@@ -458,6 +459,20 @@ export function ArticleRightPane() {
               embeddedAt={page.embeddedAt}
               embeddingError={page.embeddingError}
             />
+            {page.qualityScore !== undefined && page.qualityScore !== null && (
+              <QualityScoreBadge
+                qualityScore={page.qualityScore}
+                qualityStatus={page.qualityStatus ?? null}
+                qualityCompleteness={page.qualityCompleteness}
+                qualityClarity={page.qualityClarity}
+                qualityStructure={page.qualityStructure}
+                qualityAccuracy={page.qualityAccuracy}
+                qualityReadability={page.qualityReadability}
+                qualitySummary={page.qualitySummary}
+                qualityAnalyzedAt={page.qualityAnalyzedAt}
+                qualityError={page.qualityError}
+              />
+            )}
             {page.labels.map((label) => (
               <span
                 key={label}
