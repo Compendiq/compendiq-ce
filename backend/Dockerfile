@@ -56,7 +56,7 @@ COPY --chown=node:node --from=builder /app/packages/contracts/package.json ./nod
 # Copy compiled backend
 COPY --chown=node:node --from=builder /app/backend/dist/ dist/
 # Copy SQL migration files (not emitted by tsc)
-COPY --chown=node:node --from=builder /app/backend/src/db/migrations/ dist/db/migrations/
+COPY --chown=node:node --from=builder /app/backend/src/core/db/migrations/ dist/core/db/migrations/
 
 USER node
 

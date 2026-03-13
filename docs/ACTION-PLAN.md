@@ -38,9 +38,45 @@ Web interface for managing Confluence knowledge base articles, enhanced with a l
      - history
 ```
 
+### Backend Directory Structure (PR #334)
+
+```
+backend/src/
+├── core/                        # Shared infrastructure (no domain imports)
+│   ├── db/postgres.ts           # Connection pool + migration runner
+│   ├── db/migrations/           # Sequential SQL files (001-026)
+│   ├── plugins/                 # Fastify plugins (auth, cors, rate-limit, redis)
+│   ├── services/                # redis-cache, audit, error-tracker, content-converter,
+│   │                            #   circuit-breaker, image-references
+│   └── utils/                   # crypto, logger, sanitize, ssrf-guard, tls/llm config
+├── domains/
+│   ├── confluence/services/     # confluence-client, sync-service, attachment-handler,
+│   │                            #   subpage-context, sync-overview-service
+│   ├── llm/services/            # ollama-service, llm-provider, embedding-service,
+│   │                            #   rag-service, llm-cache
+│   └── knowledge/services/      # auto-tagger, quality-worker, summary-worker,
+│                                #   version-tracker, duplicate-detector
+├── routes/
+│   ├── foundation/              # health, auth, settings, admin
+│   ├── confluence/              # spaces, sync, attachments
+│   ├── llm/                     # llm-chat (SSE), llm-conversations, llm-embeddings,
+│   │                            #   llm-models, llm-admin
+│   └── knowledge/               # pages-crud, pages-versions, pages-tags, pages-embeddings,
+│                                #   pages-duplicates, pinned-pages, analytics, knowledge-admin
+├── app.ts                       # Fastify app builder + route registration
+└── index.ts                     # Entry point + background workers
+```
+
+**Domain boundary rules** (ESLint-enforced via `eslint-plugin-boundaries`):
+- `core` → no domain or route imports
+- `confluence` → core + llm (for sync-embedding)
+- `llm` → core only
+- `knowledge` → core + llm + confluence
+- Routes → core + own domain (knowledge routes can access all domains)
+
 ## Database Schema (ADR-006)
 
-9 migration files:
+26 migration files (001-026):
 - **001_extensions**: pgvector + pg_trgm
 - **002_users**: id, username, password_hash
 - **003_user_settings**: confluence_url, confluence_pat (encrypted), selected_spaces[], ollama_model
@@ -49,7 +85,24 @@ Web interface for managing Confluence knowledge base articles, enhanced with a l
 - **006_page_embeddings**: chunk_text, embedding vector(768), metadata JSONB, HNSW index
 - **007_llm_conversations**: user_id, page_id, model, messages JSONB
 - **008_llm_improvements**: confluence_id, improvement_type, original/improved content, status
-- **009_admin_roles**: add `role` column to users ('user' | 'admin'), first user is admin (ADR-019)
+- **009_refresh_tokens**: refresh token rotation (ADR-007)
+- **010_audit_log**: audit trail for user actions
+- **011_hnsw_tuning**: HNSW index parameter tuning
+- **012_error_log**: automated error tracking
+- **013_search_analytics**: search query analytics
+- **014_page_versions**: version history snapshots
+- **015_show_space_home_content**: user setting for space home visibility
+- **016_llm_provider_settings**: multi-provider LLM support (ollama/openai)
+- **017_embedding_status**: 4-state embedding model (not_embedded/embedding/embedded/failed)
+- **018_pinned_pages**: user pinned articles
+- **019_embedding_error**: error message storage for failed embeddings
+- **020_page_relationships**: knowledge graph relationships (similarity, links, labels)
+- **021_add_performance_indexes**: composite indexes for common queries
+- **022_embedding_chunk_settings**: configurable chunk size/overlap
+- **023_shared_tables**: user_space_selections shared table
+- **024_custom_prompts**: user-defined LLM system prompts
+- **025_quality_scores**: page quality analysis results
+- **026_article_summaries**: auto-generated article summaries
 
 Full schema in ADR-006.
 
@@ -68,7 +121,7 @@ Full schema in ADR-006.
   - `GET /rest/api/content/search?cql=lastmodified>"2024-01-01"` — verify CQL delta sync
   - `GET /rest/api/content/{id}/child/attachment` — verify draw.io attachments are accessible
   - `POST /rest/api/content` — verify page creation with storage format body
-- [ ] Save 10-20 representative page XHTML bodies as test fixtures in `backend/src/services/__fixtures__/`
+- [ ] Save 10-20 representative page XHTML bodies as test fixtures in `backend/src/core/services/__fixtures__/`
 - [ ] Document any deviations from API docs (pagination behavior, field names, error formats)
 
 ### 0.2 Content Converter Spike
@@ -181,7 +234,7 @@ Full schema in ADR-006.
 > References: ADR-003 (content pipeline), ADR-004 (caching), ADR-013 (draw.io)
 
 ### 3.1 Confluence API Client Service
-- [ ] `ConfluenceClient` class: typed HTTP client with PAT Bearer auth (`undici`)
+- [ ] `domains/confluence/services/confluence-client.ts`: typed HTTP client with PAT Bearer auth (`undici`)
 - [ ] Per-user client instances (decrypt PAT from user_settings)
 - [ ] Methods:
   - `getSpaces()` -> `GET /rest/api/space`
@@ -196,7 +249,7 @@ Full schema in ADR-006.
 - [ ] SSL verification control (`CONFLUENCE_VERIFY_SSL` env var)
 
 ### 3.2 Content Format Converter (ADR-003)
-- [ ] `content-converter.ts` service
+- [ ] `core/services/content-converter.ts` service
 - [ ] `confluenceToHtml(xhtml)`: strip `ac:*/ri:*` macros -> clean HTML
   - Code blocks: `ac:structured-macro[name=code]` -> `<pre><code>`
   - Task lists: `ac:task-list/ac:task` -> `<ul data-type="taskList">`
@@ -219,7 +272,7 @@ Full schema in ADR-006.
 - [ ] Replace macro with `<img src="/api/attachments/{pageId}/{filename}">` + "Edit in Confluence" link in `body_html`
 
 ### 3.4 Redis Cache Layer (ADR-004)
-- [ ] `redis-cache.ts` service
+- [ ] `core/services/redis-cache.ts` service
 - [ ] Cache page lists per space per user (TTL 15min)
 - [ ] Cache space metadata (TTL 15min)
 - [ ] Cache search results (TTL 5min)
@@ -229,7 +282,7 @@ Full schema in ADR-006.
 
 ### 3.5 Sync & Persistent Storage (ADR-004)
 - [ ] Run migrations 004-005 (cached_spaces, cached_pages)
-- [ ] `sync-service.ts`
+- [ ] `domains/confluence/services/sync-service.ts`
 - [ ] Initial full sync: fetch all pages from selected spaces -> PostgreSQL + warm Redis
 - [ ] Incremental sync: CQL `lastmodified > "last_sync_timestamp"` for delta
 - [ ] Background sync worker: `setInterval` + lock flag (ADR-014), configurable interval, default 15 min
@@ -257,7 +310,7 @@ Full schema in ADR-006.
 > References: ADR-005 (SSE), ADR-012 (RAG pipeline)
 
 ### 4.1 Ollama Service
-- [ ] `ollama-service.ts` using `ollama` npm package
+- [ ] `domains/llm/services/ollama-service.ts` using `ollama` npm package
 - [ ] Model listing (`ollama.list()`)
 - [ ] Model health check (`ollama.show(model)`)
 - [ ] Streaming chat completions (`ollama.chat({ stream: true })`)
@@ -268,7 +321,7 @@ Full schema in ADR-006.
 
 ### 4.2 Embedding Pipeline (ADR-012)
 - [ ] Run migration 006 (page_embeddings with HNSW index)
-- [ ] `embedding-service.ts`
+- [ ] `domains/llm/services/embedding-service.ts`
 - [ ] Text chunking: split on headings first, then paragraphs, ~500 tokens with 50 token overlap
 - [ ] Preserve chunk metadata: `{page_title, section_title, space_key}`
 - [ ] Generate embeddings via `ollama.embed({ model: 'nomic-embed-text', input: chunk })`
@@ -280,7 +333,7 @@ Full schema in ADR-006.
 - [ ] Bulk delete old embeddings when page is deleted or re-chunked
 
 ### 4.3 RAG Service (ADR-012)
-- [ ] `rag-service.ts`
+- [ ] `domains/llm/services/rag-service.ts`
 - [ ] Generate question embedding via Ollama
 - [ ] Vector search: cosine similarity on `page_embeddings` (top 10)
 - [ ] Keyword search: PostgreSQL `ts_vector` full-text search on `cached_pages` (top 10)
