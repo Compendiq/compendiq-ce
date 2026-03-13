@@ -839,9 +839,11 @@ const DrawioDiagram = Node.create({
 ## ADR-014: Background Workers
 
 ### Context
-The app needs two background tasks: Confluence sync (every 15min) and embedding generation (after sync or on dirty pages). Fastify has no built-in job scheduler.
+The app needs several background tasks: Confluence sync, embedding generation, article quality analysis, and auto-summarization. Fastify has no built-in job scheduler.
 
 ### Decision: **Simple `setInterval` with lock flags**
+
+All four workers follow the same pattern: `setInterval` with an in-memory lock flag to prevent concurrent execution, configurable interval and batch size via env vars, and a 30-second delayed initial batch on startup.
 
 ```typescript
 // In index.ts after server start
@@ -858,14 +860,41 @@ setInterval(async () => {
 }, SYNC_INTERVAL_MS);
 ```
 
+#### Workers
+
+| Worker | Interval | Batch Size | Model Env Var | Retry Limit |
+|--------|----------|------------|---------------|-------------|
+| Sync | `SYNC_INTERVAL_MINUTES` (15) | All changed pages | N/A | N/A |
+| Embedding | After sync | All dirty pages | `EMBEDDING_MODEL` | N/A |
+| Quality Analysis | `QUALITY_CHECK_INTERVAL_MINUTES` (60) | `QUALITY_BATCH_SIZE` (5) | `QUALITY_MODEL` → `DEFAULT_LLM_MODEL` → `qwen3:4b` | 3 (`quality_retry_count`) |
+| Summary | `SUMMARY_CHECK_INTERVAL_MINUTES` (60) | `SUMMARY_BATCH_SIZE` (5) | `SUMMARY_MODEL` → `DEFAULT_LLM_MODEL` | 3 (`summary_retry_count`) |
+
+#### Worker Lifecycle
+
+1. **Startup**: `startXxxWorker()` called from `index.ts`, registers `setInterval`
+2. **Initial batch**: Runs 30 seconds after startup via `triggerXxxBatch()` (lock-guarded)
+3. **Interval batches**: Every N minutes, processes up to BATCH_SIZE pages
+4. **Priority**: Pending pages first, then stale/changed content, then failed (with retries remaining)
+5. **Shutdown**: `stopXxxWorker()` called on SIGTERM/SIGINT, clears interval
+
+#### Quality Analysis Worker
+
+Scores articles across 6 dimensions (overall, completeness, clarity, structure, accuracy, readability) by sending content to the LLM with a structured prompt. Results stored in `cached_pages` columns. Pages with changed content (`last_modified_at > quality_analyzed_at`) are automatically re-analyzed. Status: `pending → analyzing → analyzed | failed | skipped`.
+
+#### Summary Worker
+
+Generates plain-text and HTML summaries by sending article content to the LLM. Detects content changes via SHA-256 hash comparison (using PostgreSQL built-in `sha256()`, no pgcrypto extension needed). Status: `pending → summarizing → summarized | failed | skipped`.
+
 **Why not bullmq/pg-boss?**
 - 4-15 users, ~1000 pages total. A simple interval is sufficient.
 - No distributed workers needed (single backend instance).
 - Redis-based job queues add complexity for zero benefit at this scale.
 
-**Crash recovery**: On restart, all `embedding_dirty` flags are still set in PostgreSQL. The next interval picks them up automatically. No work is lost.
+**Crash recovery**: On restart, all status flags and `embedding_dirty` markers are still set in PostgreSQL. The next interval picks them up automatically. No work is lost. Failed pages retry up to 3 times before being left in `failed` state.
 
 **Per-user sync**: The worker iterates all users with configured Confluence connections and syncs each user's spaces sequentially. At 15 users × 1000 pages, a full delta sync takes seconds (CQL returns only changed pages).
+
+**Admin controls**: Force rescan endpoints (`POST /api/llm/quality-rescan`, `POST /api/llm/summary-rescan`) reset all pages to pending. Status endpoints (`GET /api/llm/quality-status`, `GET /api/llm/summary-status`) expose aggregate stats. All visible in Settings > Sync tab.
 
 ---
 
@@ -992,7 +1021,7 @@ The embedding model is server-wide. Changing it requires re-generating all embed
 | 011 | Docker Stack | 4 services (frontend, backend, postgres+pgvector, redis) | Proper caching + vector search, manageable ops |
 | 012 | RAG Pipeline | pgvector + hybrid search (vector + keyword) + nomic-embed-text | Best LLM context quality for Q&A |
 | 013 | Draw.io Support | Read-only rendering + "Edit in Confluence" link | Display diagrams, edit in Confluence |
-| 014 | Background Workers | `setInterval` + lock flag | Simple, sufficient for 4-15 users, crash-safe |
+| 014 | Background Workers | `setInterval` + lock flag + retry limits | Simple, 4 workers (sync, embedding, quality, summary), crash-safe, admin controls |
 | 015 | Ollama Architecture | Shared server, global concurrency limit, per-user chat model | Single instance, no per-user URL complexity |
 | 016 | Diff View | v1: Accept All/Reject All, v2: individual changes | Ship simple first, iterate |
 | 017 | PAT Change Behavior | Invalidate all user data + full re-sync | Safest approach for URL/PAT changes |
