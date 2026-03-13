@@ -34,10 +34,10 @@ describe.skipIf(!dbAvailable)('Database migrations', () => {
     expect(names).toContain('012_error_log.sql');
     expect(names).toContain('013_search_analytics.sql');
     expect(names).toContain('014_page_versions.sql');
-    expect(names).toContain('019_add_performance_indexes.sql');
+    expect(names).toContain('021_add_performance_indexes.sql');
   });
 
-  describe('performance indexes (migration 019)', () => {
+  describe('performance indexes (migration 021)', () => {
     it('should have idx_cached_pages_dirty_modified composite index', async () => {
       const result = await query<{ indexname: string; indexdef: string }>(
         `SELECT indexname, indexdef FROM pg_indexes
