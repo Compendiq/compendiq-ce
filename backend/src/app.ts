@@ -40,6 +40,9 @@ import { templateRoutes } from './routes/knowledge/templates.js';
 import { pagesExportRoutes } from './routes/knowledge/pages-export.js';
 import { commentsRoutes } from './routes/knowledge/comments.js';
 import { pagesImportRoutes } from './routes/knowledge/pages-import.js';
+import { contentAnalyticsRoutes } from './routes/knowledge/content-analytics.js';
+import { verificationRoutes } from './routes/knowledge/verification.js';
+import { notificationRoutes } from './routes/foundation/notifications.js';
 
 import { ZodError } from 'zod';
 import { trackError } from './core/services/error-tracker.js';
@@ -165,6 +168,9 @@ export async function buildApp() {
   await app.register(pagesExportRoutes, { prefix: '/api' });
   await app.register(commentsRoutes, { prefix: '/api' });
   await app.register(pagesImportRoutes, { prefix: '/api' });
+  await app.register(contentAnalyticsRoutes, { prefix: '/api' });
+  await app.register(verificationRoutes, { prefix: '/api' });
+  await app.register(notificationRoutes, { prefix: '/api' });
 
   return app;
 }
