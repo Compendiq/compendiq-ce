@@ -50,6 +50,8 @@ export const PageDetailSchema = PageSummarySchema.extend({
   bodyHtml: z.string(),
   bodyText: z.string(),
   hasChildren: z.boolean().default(false),
+  hasDraft: z.boolean().optional(),
+  draftUpdatedAt: z.string().nullable().optional(),
   summaryHtml: z.string().nullable().optional(),
   summaryGeneratedAt: z.coerce.date().nullable().optional(),
   summaryModel: z.string().nullable().optional(),
@@ -70,6 +72,14 @@ export const UpdatePageSchema = z.object({
   bodyHtml: z.string(),
   version: z.number().int().positive().optional(),
   visibility: PageVisibilityEnum.optional(),
+});
+
+export const SaveDraftSchema = z.object({
+  bodyHtml: z.string().min(1),
+});
+
+export const PublishDraftSchema = z.object({
+  version: z.number().int().positive().optional(),
 });
 
 export const PageListQuerySchema = z.object({
@@ -95,6 +105,8 @@ export type PageSummary = z.infer<typeof PageSummarySchema>;
 export type PageDetail = z.infer<typeof PageDetailSchema>;
 export type CreatePageInput = z.infer<typeof CreatePageSchema>;
 export type UpdatePageInput = z.infer<typeof UpdatePageSchema>;
+export type SaveDraftInput = z.infer<typeof SaveDraftSchema>;
+export type PublishDraftInput = z.infer<typeof PublishDraftSchema>;
 export const PageTreeItemSchema = z.object({
   id: z.union([z.string(), z.number()]),
   spaceKey: z.string().nullable(),

@@ -6,7 +6,7 @@ import { htmlToConfluence, confluenceToHtml } from '../../core/services/content-
 import { cleanPageAttachments } from '../../domains/confluence/services/attachment-handler.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { processDirtyPages, isProcessingUser } from '../../domains/llm/services/embedding-service.js';
-import { PageListQuerySchema, PageTreeQuerySchema, CreatePageSchema, UpdatePageSchema } from '@kb-creator/contracts';
+import { PageListQuerySchema, PageTreeQuerySchema, CreatePageSchema, UpdatePageSchema, SaveDraftSchema } from '@kb-creator/contracts';
 import { z } from 'zod';
 import { logger } from '../../core/utils/logger.js';
 import pLimit from 'p-limit';
@@ -383,6 +383,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       source: string;
       visibility: string;
       created_by_user_id: string | null;
+      has_draft: boolean;
+      draft_updated_at: Date | null;
     }>(
       `SELECT cp.id, cp.confluence_id, cp.space_key, cp.title, cp.body_storage, cp.body_html, cp.body_text,
               cp.version, cp.parent_id, cp.labels, cp.author, cp.last_modified_at, cp.last_synced,
@@ -392,7 +394,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
               cp.quality_summary, cp.quality_analyzed_at, cp.quality_error,
               EXISTS(SELECT 1 FROM pages c2 WHERE c2.parent_id = cp.confluence_id AND cp.confluence_id IS NOT NULL) as has_children,
               cp.summary_html, cp.summary_status, cp.summary_generated_at, cp.summary_model, cp.summary_error,
-              cp.source, cp.visibility, cp.created_by_user_id
+              cp.source, cp.visibility, cp.created_by_user_id,
+              (cp.draft_body_html IS NOT NULL) as has_draft, cp.draft_updated_at
        FROM pages cp
        WHERE ${isNumericId ? 'cp.id = $2' : 'cp.confluence_id = $2'}
          AND cp.deleted_at IS NULL`,
@@ -457,6 +460,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       summaryError: row.summary_error,
       source: row.source,
       visibility: row.visibility,
+      hasDraft: row.has_draft,
+      draftUpdatedAt: row.draft_updated_at?.toISOString() ?? null,
     };
   });
 
@@ -756,6 +761,186 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     await logAuditEvent(userId, 'PAGE_DELETED', 'page', String(id), {}, request);
 
     return { message: 'Page deleted' };
+  });
+
+  // ======== Draft-while-published (#362) ========
+
+  // PUT /api/pages/:id/draft — save draft (does not affect live content)
+  fastify.put('/pages/:id/draft', async (request) => {
+    const { id } = IdParamSchema.parse(request.params);
+    const body = SaveDraftSchema.parse(request.body);
+    const userId = request.userId;
+    const pageId = parseInt(id, 10);
+
+    const existing = await query<{
+      id: number; source: string; created_by_user_id: string | null;
+      visibility: string; deleted_at: Date | null;
+    }>(
+      'SELECT id, source, created_by_user_id, visibility, deleted_at FROM pages WHERE id = $1 AND deleted_at IS NULL',
+      [pageId],
+    );
+    if (!existing.rows.length) throw fastify.httpErrors.notFound('Page not found');
+
+    const page = existing.rows[0];
+
+    // Access control: standalone pages require ownership or shared visibility
+    if (page.source === 'standalone' && page.created_by_user_id !== userId && page.visibility !== 'shared') {
+      throw fastify.httpErrors.forbidden('Not authorized to edit this page');
+    }
+
+    const { htmlToText } = await import('../../core/services/content-converter.js');
+    const draftText = htmlToText(body.bodyHtml);
+
+    await query(
+      `UPDATE pages SET draft_body_html = $1, draft_body_text = $2, draft_updated_at = NOW(), draft_updated_by = $3 WHERE id = $4`,
+      [body.bodyHtml, draftText, userId, page.id],
+    );
+
+    return { id: page.id, hasDraft: true, draftUpdatedAt: new Date().toISOString() };
+  });
+
+  // GET /api/pages/:id/draft — get draft content
+  fastify.get('/pages/:id/draft', async (request) => {
+    const { id } = IdParamSchema.parse(request.params);
+    const userId = request.userId;
+    const pageId = parseInt(id, 10);
+
+    const result = await query<{
+      id: number; source: string; created_by_user_id: string | null;
+      visibility: string; draft_body_html: string | null;
+      draft_body_text: string | null; draft_updated_at: Date | null;
+      draft_updated_by: string | null;
+    }>(
+      `SELECT id, source, created_by_user_id, visibility, draft_body_html, draft_body_text, draft_updated_at, draft_updated_by FROM pages WHERE id = $1 AND deleted_at IS NULL`,
+      [pageId],
+    );
+    if (!result.rows.length) throw fastify.httpErrors.notFound('Page not found');
+
+    const row = result.rows[0];
+
+    // Access control
+    if (row.source === 'standalone' && row.created_by_user_id !== userId && row.visibility !== 'shared') {
+      throw fastify.httpErrors.notFound('Page not found');
+    }
+
+    if (!row.draft_body_html) throw fastify.httpErrors.notFound('No draft exists');
+
+    return {
+      id: row.id,
+      bodyHtml: row.draft_body_html,
+      bodyText: row.draft_body_text,
+      updatedAt: row.draft_updated_at,
+      updatedBy: row.draft_updated_by,
+    };
+  });
+
+  // POST /api/pages/:id/draft/publish — atomically publish draft to live
+  fastify.post('/pages/:id/draft/publish', async (request) => {
+    const { id } = IdParamSchema.parse(request.params);
+    const userId = request.userId;
+    const pageId = parseInt(id, 10);
+
+    const existing = await query<{
+      id: number; version: number; title: string;
+      body_html: string | null; body_text: string | null; body_storage: string | null;
+      source: string; created_by_user_id: string | null;
+      visibility: string; confluence_id: string | null;
+      draft_body_html: string | null; draft_body_storage: string | null;
+    }>(
+      `SELECT id, version, title, body_html, body_text, body_storage, source, created_by_user_id, visibility, confluence_id, draft_body_html, draft_body_storage FROM pages WHERE id = $1 AND deleted_at IS NULL`,
+      [pageId],
+    );
+    if (!existing.rows.length) throw fastify.httpErrors.notFound('Page not found');
+
+    const page = existing.rows[0];
+
+    // Access control
+    if (page.source === 'standalone' && page.created_by_user_id !== userId && page.visibility !== 'shared') {
+      throw fastify.httpErrors.forbidden('Not authorized to publish this page');
+    }
+
+    if (!page.draft_body_html) throw fastify.httpErrors.badRequest('No draft to publish');
+
+    // Atomically: save current live to page_versions, swap draft -> live, clear draft
+    await query('BEGIN');
+    try {
+      // Save current live version to page_versions
+      await query(
+        `INSERT INTO page_versions (page_id, version_number, title, body_html, body_text, synced_at)
+         VALUES ($1, $2, $3, $4, $5, NOW())
+         ON CONFLICT DO NOTHING`,
+        [page.id, page.version, page.title, page.body_html, page.body_text],
+      );
+
+      // Swap draft -> live, increment version, mark embedding dirty, clear draft
+      await query(
+        `UPDATE pages SET
+          body_html = draft_body_html, body_text = draft_body_text,
+          body_storage = COALESCE(draft_body_storage, body_storage),
+          version = version + 1, embedding_dirty = TRUE,
+          embedding_status = 'not_embedded', embedded_at = NULL,
+          last_modified_at = NOW(),
+          draft_body_html = NULL, draft_body_text = NULL, draft_body_storage = NULL,
+          draft_updated_at = NULL, draft_updated_by = NULL
+         WHERE id = $1`,
+        [page.id],
+      );
+
+      await query('COMMIT');
+    } catch (err) {
+      await query('ROLLBACK');
+      throw err;
+    }
+
+    // For Confluence articles, push updated content upstream (best-effort)
+    if (page.source === 'confluence' && page.confluence_id) {
+      try {
+        const client = await getClientForUser(userId);
+        if (client) {
+          const storageBody = htmlToConfluence(page.draft_body_html!);
+          await client.updatePage(page.confluence_id, page.title, storageBody, page.version + 1);
+        }
+      } catch (err) {
+        // Log but don't fail — local publish succeeded
+        request.log.error({ err }, 'Failed to push draft to Confluence');
+      }
+    }
+
+    await cache.invalidate(userId, 'pages');
+    await logAuditEvent(userId, 'DRAFT_PUBLISHED', 'page', String(page.id),
+      { version: page.version + 1 }, request);
+
+    return { id: page.id, version: page.version + 1, published: true };
+  });
+
+  // DELETE /api/pages/:id/draft — discard draft
+  fastify.delete('/pages/:id/draft', async (request) => {
+    const { id } = IdParamSchema.parse(request.params);
+    const userId = request.userId;
+    const pageId = parseInt(id, 10);
+
+    const existing = await query<{
+      id: number; source: string; created_by_user_id: string | null;
+      visibility: string;
+    }>(
+      'SELECT id, source, created_by_user_id, visibility FROM pages WHERE id = $1 AND deleted_at IS NULL',
+      [pageId],
+    );
+    if (!existing.rows.length) throw fastify.httpErrors.notFound('Page not found');
+
+    const page = existing.rows[0];
+
+    // Access control
+    if (page.source === 'standalone' && page.created_by_user_id !== userId && page.visibility !== 'shared') {
+      throw fastify.httpErrors.forbidden('Not authorized to discard this draft');
+    }
+
+    await query(
+      `UPDATE pages SET draft_body_html = NULL, draft_body_text = NULL, draft_body_storage = NULL, draft_updated_at = NULL, draft_updated_by = NULL WHERE id = $1`,
+      [page.id],
+    );
+
+    return { id: page.id, hasDraft: false };
   });
 
   // ======== Bulk Operations (Issue #28, parallelized #192) ========
