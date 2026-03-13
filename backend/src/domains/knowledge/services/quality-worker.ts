@@ -15,7 +15,8 @@ import { logger } from '../../../core/utils/logger.js';
 // ─── Configuration ────────────────────────────────────────────────────────────
 
 const QUALITY_BATCH_SIZE = parseInt(process.env.QUALITY_BATCH_SIZE ?? '5', 10);
-const QUALITY_MODEL = process.env.QUALITY_MODEL ?? process.env.LLM_DEFAULT_MODEL ?? 'qwen3:4b';
+const QUALITY_MODEL = process.env.QUALITY_MODEL ?? process.env.DEFAULT_LLM_MODEL ?? 'qwen3:4b';
+const MAX_RETRIES = 3;
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
@@ -103,6 +104,7 @@ async function analyzePageQuality(
   confluenceId: string,
   bodyHtml: string,
   bodyText: string,
+  currentRetryCount: number = 0,
 ): Promise<void> {
   // Mark as analyzing
   await query(
@@ -123,9 +125,10 @@ async function analyzePageQuality(
         `UPDATE cached_pages
          SET quality_status = 'failed',
              quality_error = $2,
+             quality_retry_count = $3,
              quality_analyzed_at = NOW()
          WHERE confluence_id = $1`,
-        [confluenceId, 'Failed to parse structured quality scores from LLM output'],
+        [confluenceId, 'Failed to parse structured quality scores from LLM output', currentRetryCount + 1],
       );
       return;
     }
@@ -141,6 +144,7 @@ async function analyzePageQuality(
            quality_summary = $8,
            quality_status = 'analyzed',
            quality_error = NULL,
+           quality_retry_count = 0,
            quality_analyzed_at = NOW()
        WHERE confluence_id = $1`,
       [
@@ -163,9 +167,10 @@ async function analyzePageQuality(
       `UPDATE cached_pages
        SET quality_status = 'failed',
            quality_error = $2,
+           quality_retry_count = $3,
            quality_analyzed_at = NOW()
        WHERE confluence_id = $1`,
-      [confluenceId, message.slice(0, 1000)],
+      [confluenceId, message.slice(0, 1000), currentRetryCount + 1],
     );
   }
 }
@@ -186,8 +191,9 @@ export async function processBatch(): Promise<number> {
     confluence_id: string;
     body_html: string;
     body_text: string;
+    quality_retry_count: number;
   }>(
-    `SELECT confluence_id, COALESCE(body_html, '') AS body_html, COALESCE(body_text, '') AS body_text
+    `SELECT confluence_id, COALESCE(body_html, '') AS body_html, COALESCE(body_text, '') AS body_text, quality_retry_count
      FROM cached_pages
      WHERE quality_status = 'pending'
        AND (body_text IS NOT NULL AND body_text != '')
@@ -204,8 +210,9 @@ export async function processBatch(): Promise<number> {
       confluence_id: string;
       body_html: string;
       body_text: string;
+      quality_retry_count: number;
     }>(
-      `SELECT confluence_id, COALESCE(body_html, '') AS body_html, COALESCE(body_text, '') AS body_text
+      `SELECT confluence_id, COALESCE(body_html, '') AS body_html, COALESCE(body_text, '') AS body_text, quality_retry_count
        FROM cached_pages
        WHERE quality_status = 'analyzed'
          AND last_modified_at > quality_analyzed_at
@@ -217,21 +224,23 @@ export async function processBatch(): Promise<number> {
     pages = [...pages, ...staleResult.rows];
   }
 
-  // Priority 3: Failed pages (retry up to MAX_RETRY_COUNT times)
+  // Priority 3: Failed pages (retry up to MAX_RETRIES times)
   if (pages.length < QUALITY_BATCH_SIZE) {
     const remaining = QUALITY_BATCH_SIZE - pages.length;
     const failedResult = await query<{
       confluence_id: string;
       body_html: string;
       body_text: string;
+      quality_retry_count: number;
     }>(
-      `SELECT confluence_id, COALESCE(body_html, '') AS body_html, COALESCE(body_text, '') AS body_text
+      `SELECT confluence_id, COALESCE(body_html, '') AS body_html, COALESCE(body_text, '') AS body_text, quality_retry_count
        FROM cached_pages
        WHERE quality_status = 'failed'
+         AND quality_retry_count < $2
          AND (body_text IS NOT NULL AND body_text != '')
        ORDER BY quality_analyzed_at ASC NULLS FIRST
        LIMIT $1`,
-      [remaining],
+      [remaining, MAX_RETRIES],
     );
     pages = [...pages, ...failedResult.rows];
   }
@@ -249,7 +258,7 @@ export async function processBatch(): Promise<number> {
 
   // Process each page sequentially (LLM calls are resource-intensive)
   for (const page of pages) {
-    await analyzePageQuality(page.confluence_id, page.body_html, page.body_text);
+    await analyzePageQuality(page.confluence_id, page.body_html, page.body_text, page.quality_retry_count);
   }
 
   return pages.length;
@@ -288,6 +297,28 @@ export function startQualityWorker(intervalMinutes?: number): void {
 }
 
 /**
+ * Trigger a single quality batch run with lock guards.
+ * Safe to call from startup timers — will no-op if the worker is already processing.
+ */
+export async function triggerQualityBatch(): Promise<void> {
+  if (qualityLock) return;
+  qualityLock = true;
+  isProcessing = true;
+
+  try {
+    const processed = await processBatch();
+    if (processed > 0) {
+      logger.info({ processed }, 'Initial quality analysis batch completed');
+    }
+  } catch (err) {
+    logger.error({ err }, 'Initial quality analysis batch error');
+  } finally {
+    qualityLock = false;
+    isProcessing = false;
+  }
+}
+
+/**
  * Stop the background quality analysis worker.
  */
 export function stopQualityWorker(): void {
@@ -304,7 +335,7 @@ export function stopQualityWorker(): void {
  */
 export async function forceQualityRescan(): Promise<number> {
   const result = await query(
-    `UPDATE cached_pages SET quality_status = 'pending', quality_score = NULL, quality_error = NULL WHERE quality_status != 'pending'`,
+    `UPDATE cached_pages SET quality_status = 'pending', quality_score = NULL, quality_error = NULL, quality_retry_count = 0 WHERE quality_status != 'pending'`,
   );
   const count = result.rowCount ?? 0;
   logger.info({ count }, 'Forced quality rescan — all pages reset to pending');

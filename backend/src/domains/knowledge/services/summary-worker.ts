@@ -216,7 +216,9 @@ async function summarizePage(
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
     const newRetryCount = candidate.summary_retry_count + 1;
-    const newStatus = newRetryCount >= MAX_RETRIES ? 'failed' : 'failed';
+    // Status is always 'failed' — retry gating is handled by the
+    // findCandidates SQL query which filters on summary_retry_count < MAX_RETRIES.
+    const newStatus = 'failed';
 
     await query(
       `UPDATE cached_pages
@@ -305,6 +307,28 @@ export function startSummaryWorker(intervalMinutes?: number): void {
     { intervalMinutes: intervalMinutes ?? SUMMARY_CHECK_INTERVAL_MINUTES },
     'Background summary worker started',
   );
+}
+
+/**
+ * Trigger a single summary batch run with lock guards.
+ * Safe to call from startup timers — will no-op if the worker is already processing.
+ */
+export async function triggerSummaryBatch(): Promise<void> {
+  if (workerLock) return;
+  workerLock = true;
+  isProcessing = true;
+
+  try {
+    const { processed, errors } = await runSummaryBatch();
+    if (processed > 0 || errors > 0) {
+      logger.info({ processed, errors }, 'Initial summary batch completed');
+    }
+  } catch (err) {
+    logger.error({ err }, 'Initial summary batch error');
+  } finally {
+    workerLock = false;
+    isProcessing = false;
+  }
 }
 
 export function stopSummaryWorker(): void {
