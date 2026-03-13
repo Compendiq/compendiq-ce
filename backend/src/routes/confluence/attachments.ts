@@ -4,6 +4,7 @@ import { query } from '../../core/db/postgres.js';
 import { readAttachment, fetchAndCachePageImage, getMimeType, writeAttachmentCache } from '../../domains/confluence/services/attachment-handler.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { getRedisClient } from '../../core/services/redis-cache.js';
+import { ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
 import { logger } from '../../core/utils/logger.js';
 
 const UpdateAttachmentBodySchema = z.object({
@@ -48,6 +49,27 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
     // On cache miss, fetch from Confluence on-demand
     if (!data) {
       logger.debug({ pageId, filename }, 'Attachment cache miss — attempting on-demand fetch');
+
+      // Check for a cached failure sentinel — avoids hammering Confluence for known-broken attachments
+      const failureSentinelKey = `attachment:failure:${userId}:${pageId}:${filename}`;
+      try {
+        const redis = getRedisClient();
+        if (redis) {
+          const sentinel = await redis.get(failureSentinelKey);
+          if (sentinel) {
+            logger.warn({ userId, pageId, filename }, 'Attachment fetch skipped: cached failure sentinel found');
+            return reply.status(502).send({
+              statusCode: 502,
+              error: 'Bad Gateway',
+              message: 'Attachment unavailable: Confluence returned a server error',
+              reason: 'confluence_upstream_error',
+            });
+          }
+        }
+      } catch {
+        // Redis may be unavailable — proceed with the fetch attempt
+      }
+
       const client = await getClientForUser(userId);
       if (!client) {
         // User has no Confluence PAT configured — can't fetch on-demand
@@ -73,6 +95,25 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
           data = null;
         }
       } catch (err) {
+        if (err instanceof ConfluenceError && err.statusCode >= 500) {
+          // Confluence returned a server error (e.g. broken/legacy attachment) — cache the failure
+          // to avoid repeated hammering, then surface as 502 Bad Gateway
+          logger.warn({ err, userId, pageId, filename, statusCode: err.statusCode }, 'Confluence server error fetching attachment — caching failure sentinel');
+          try {
+            const redis = getRedisClient();
+            if (redis) {
+              await redis.setEx(failureSentinelKey, 300, '1');
+            }
+          } catch {
+            // Redis may be unavailable — non-fatal
+          }
+          return reply.status(502).send({
+            statusCode: 502,
+            error: 'Bad Gateway',
+            message: 'Attachment unavailable: Confluence returned a server error',
+            reason: 'confluence_upstream_error',
+          });
+        }
         logger.error({ err, userId, pageId, filename }, 'On-demand attachment fetch failed');
         // Infrastructure error — don't expose as a "not found"
         throw fastify.httpErrors.internalServerError('Failed to fetch attachment from Confluence');
