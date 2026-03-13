@@ -5,8 +5,8 @@ import { initTelemetry, shutdownTelemetry } from './telemetry.js';
 import { buildApp } from './app.js';
 import { runMigrations, closePool } from './core/db/postgres.js';
 import { startSyncWorker, stopSyncWorker } from './domains/confluence/services/sync-service.js';
-import { startQualityWorker, stopQualityWorker } from './domains/knowledge/services/quality-worker.js';
-import { startSummaryWorker, stopSummaryWorker } from './domains/knowledge/services/summary-worker.js';
+import { startQualityWorker, stopQualityWorker, triggerQualityBatch } from './domains/knowledge/services/quality-worker.js';
+import { startSummaryWorker, stopSummaryWorker, triggerSummaryBatch } from './domains/knowledge/services/summary-worker.js';
 import { markStartupComplete } from './routes/foundation/health.js';
 import { logger } from './core/utils/logger.js';
 
@@ -54,20 +54,12 @@ async function start() {
   const summaryInterval = parseInt(process.env.SUMMARY_CHECK_INTERVAL_MINUTES ?? '60', 10);
   startSummaryWorker(summaryInterval);
 
-  // Run initial worker batches after 30s delay to let server stabilize
+  // Run initial worker batches after 30s delay to let server stabilize.
+  // Uses lock-guarded trigger functions to prevent concurrent execution
+  // if a worker interval fires at the same time.
   setTimeout(async () => {
-    try {
-      const { processBatch } = await import('./domains/knowledge/services/quality-worker.js');
-      await processBatch();
-    } catch (err) {
-      logger.error({ err }, 'Initial quality batch failed');
-    }
-    try {
-      const { runSummaryBatch } = await import('./domains/knowledge/services/summary-worker.js');
-      await runSummaryBatch();
-    } catch (err) {
-      logger.error({ err }, 'Initial summary batch failed');
-    }
+    await triggerQualityBatch();
+    await triggerSummaryBatch();
   }, 30_000);
 
   // Graceful shutdown

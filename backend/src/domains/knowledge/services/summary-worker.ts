@@ -309,6 +309,28 @@ export function startSummaryWorker(intervalMinutes?: number): void {
   );
 }
 
+/**
+ * Trigger a single summary batch run with lock guards.
+ * Safe to call from startup timers — will no-op if the worker is already processing.
+ */
+export async function triggerSummaryBatch(): Promise<void> {
+  if (workerLock) return;
+  workerLock = true;
+  isProcessing = true;
+
+  try {
+    const { processed, errors } = await runSummaryBatch();
+    if (processed > 0 || errors > 0) {
+      logger.info({ processed, errors }, 'Initial summary batch completed');
+    }
+  } catch (err) {
+    logger.error({ err }, 'Initial summary batch error');
+  } finally {
+    workerLock = false;
+    isProcessing = false;
+  }
+}
+
 export function stopSummaryWorker(): void {
   if (workerIntervalHandle) {
     clearInterval(workerIntervalHandle);

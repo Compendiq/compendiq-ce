@@ -297,6 +297,28 @@ export function startQualityWorker(intervalMinutes?: number): void {
 }
 
 /**
+ * Trigger a single quality batch run with lock guards.
+ * Safe to call from startup timers — will no-op if the worker is already processing.
+ */
+export async function triggerQualityBatch(): Promise<void> {
+  if (qualityLock) return;
+  qualityLock = true;
+  isProcessing = true;
+
+  try {
+    const processed = await processBatch();
+    if (processed > 0) {
+      logger.info({ processed }, 'Initial quality analysis batch completed');
+    }
+  } catch (err) {
+    logger.error({ err }, 'Initial quality analysis batch error');
+  } finally {
+    qualityLock = false;
+    isProcessing = false;
+  }
+}
+
+/**
  * Stop the background quality analysis worker.
  */
 export function stopQualityWorker(): void {
