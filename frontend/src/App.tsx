@@ -4,6 +4,7 @@ import { LazyMotion, domMax } from 'framer-motion';
 import { useAuthStore } from './stores/auth-store';
 import { useSessionInit } from './shared/hooks/useSessionInit';
 import { useThemeEffect } from './shared/hooks/useThemeEffect';
+import { useTokenRefreshTimer } from './shared/hooks/useTokenRefreshTimer';
 import { AppLayout } from './shared/components/layout/AppLayout';
 import { ErrorBoundary } from './shared/components/feedback/ErrorBoundary';
 
@@ -66,6 +67,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
 export function App() {
   useSessionInit();
+  useTokenRefreshTimer();
   useThemeEffect();
 
   return (
