@@ -54,6 +54,22 @@ async function start() {
   const summaryInterval = parseInt(process.env.SUMMARY_CHECK_INTERVAL_MINUTES ?? '60', 10);
   startSummaryWorker(summaryInterval);
 
+  // Run initial worker batches after 30s delay to let server stabilize
+  setTimeout(async () => {
+    try {
+      const { processBatch } = await import('./domains/knowledge/services/quality-worker.js');
+      await processBatch();
+    } catch (err) {
+      logger.error({ err }, 'Initial quality batch failed');
+    }
+    try {
+      const { runSummaryBatch } = await import('./domains/knowledge/services/summary-worker.js');
+      await runSummaryBatch();
+    } catch (err) {
+      logger.error({ err }, 'Initial summary batch failed');
+    }
+  }, 30_000);
+
   // Graceful shutdown
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutting down...');
