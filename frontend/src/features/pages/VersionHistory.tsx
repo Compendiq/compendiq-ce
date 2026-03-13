@@ -4,7 +4,7 @@ import { AnimatePresence, m } from 'framer-motion';
 import { History, Eye, GitCompare, Sparkles, Loader2, X } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { apiFetch } from '../../shared/lib/api';
-import { DiffView } from '../../shared/components/DiffView';
+import { DiffView } from '../../shared/components/article/DiffView';
 import { cn } from '../../shared/lib/cn';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 

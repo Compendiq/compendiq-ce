@@ -10,7 +10,7 @@
  *   OTEL_EXPORTER_OTLP_ENDPOINT - OTLP endpoint (if set, uses OTLP exporter; otherwise console)
  */
 
-import { logger } from './utils/logger.js';
+import { logger } from './core/utils/logger.js';
 
 let sdkInstance: { shutdown: () => Promise<void> } | null = null;
 

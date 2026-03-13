@@ -35,33 +35,53 @@ npm run test -w frontend   # Frontend only
 
 ## Architecture
 
-Flat monorepo with shared contracts (ADR-001, ADR-008):
+Flat monorepo with domain-based backend structure and shared contracts (ADR-001, ADR-008):
 
 ```
 ai-kb-creator/
 ├── backend/src/
-│   ├── plugins/          # Fastify plugins (auth, cors, rate-limit, swagger)
-│   ├── routes/           # REST API routes (auth, pages, spaces, llm, settings, sync, ollama)
-│   ├── services/         # Business logic
-│   │   ├── confluence-client.ts   # Typed Confluence REST API client
-│   │   ├── ollama-service.ts      # Ollama chat + embeddings
-│   │   ├── embedding-service.ts   # pgvector chunking + embedding pipeline
-│   │   ├── rag-service.ts         # Hybrid search + RAG prompt building
-│   │   ├── redis-cache.ts         # Redis caching layer
-│   │   ├── sync-service.ts        # Background Confluence sync worker
-│   │   └── content-converter.ts   # XHTML ↔ HTML ↔ Markdown + draw.io
-│   ├── db/
-│   │   ├── postgres.ts            # Connection pool + migration runner
-│   │   └── migrations/            # Sequential SQL files (001-009)
-│   └── index.ts
+│   ├── core/                        # Shared infrastructure (no domain imports)
+│   │   ├── db/postgres.ts           # Connection pool + migration runner
+│   │   ├── db/migrations/           # Sequential SQL files (001-026)
+│   │   ├── plugins/                 # Fastify plugins (auth, cors, rate-limit, redis)
+│   │   ├── services/                # Cross-cutting: redis-cache, audit, error-tracker,
+│   │   │                            #   content-converter, circuit-breaker, image-references
+│   │   └── utils/                   # crypto, logger, sanitize, ssrf-guard, tls/llm config
+│   ├── domains/
+│   │   ├── confluence/services/     # confluence-client, sync-service, attachment-handler,
+│   │   │                            #   subpage-context, sync-overview-service
+│   │   ├── llm/services/            # ollama-service, llm-provider, embedding-service,
+│   │   │                            #   rag-service, llm-cache
+│   │   └── knowledge/services/      # auto-tagger, quality-worker, summary-worker,
+│   │                                #   version-tracker, duplicate-detector
+│   ├── routes/
+│   │   ├── foundation/              # health, auth, settings, admin
+│   │   ├── confluence/              # spaces, sync, attachments
+│   │   ├── llm/                     # llm-chat (SSE streaming), llm-conversations,
+│   │   │                            #   llm-embeddings, llm-models, llm-admin
+│   │   └── knowledge/               # pages-crud, pages-versions, pages-tags,
+│   │                                #   pages-embeddings, pages-duplicates, pinned-pages,
+│   │                                #   analytics, knowledge-admin
+│   ├── app.ts                       # Fastify app builder + route registration
+│   └── index.ts                     # Entry point + workers
 ├── frontend/src/
 │   ├── features/         # Domain-grouped UI (dashboard, pages, ai-assistant, settings)
 │   ├── shared/           # Reusable components, hooks, lib
+│   │   └── components/   # Categorized: layout/, article/, diagrams/, badges/, feedback/, effects/
 │   ├── stores/           # Zustand stores (auth, theme, ui, settings)
 │   └── providers/        # Context providers (Query, Auth, Router)
 ├── packages/contracts/   # Shared Zod schemas + TypeScript types (@kb-creator/contracts)
 └── docker/               # Docker Compose files
 ```
+
+### Domain Boundary Rules (ESLint-enforced)
+
+Import restrictions enforced by `eslint-plugin-boundaries`:
+- **core** → no domain or route imports
+- **confluence** → core + llm (for sync-embedding)
+- **llm** → core only
+- **knowledge** → core + llm + confluence
+- **routes** → core + own domain (knowledge routes can access all domains)
 
 ## Tech Stack
 

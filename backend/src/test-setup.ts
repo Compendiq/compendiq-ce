@@ -1,5 +1,5 @@
 import { afterAll } from 'vitest';
-import { closePool } from './db/postgres.js';
+import { closePool } from './core/db/postgres.js';
 
 // Set test environment variables
 process.env.POSTGRES_URL = process.env.POSTGRES_TEST_URL ?? 'postgresql://kb_user:changeme-postgres@localhost:5433/kb_creator_test';

@@ -6,9 +6,9 @@ import {
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { cn } from '../../shared/lib/cn';
-import { ConfidenceBadge } from '../../shared/components/ConfidenceBadge';
-import { StreamingCursor } from '../../shared/components/StreamingCursor';
-import { AIThinkingBlob } from '../../shared/components/AIThinkingBlob';
+import { ConfidenceBadge } from '../../shared/components/badges/ConfidenceBadge';
+import { StreamingCursor } from '../../shared/components/feedback/StreamingCursor';
+import { AIThinkingBlob } from '../../shared/components/feedback/AIThinkingBlob';
 import { SourceCitations } from './SourceCitations';
 import { CitationChips } from './CitationChips';
 import { AiProvider, useAiContext, type Mode } from './AiContext';

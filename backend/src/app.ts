@@ -7,22 +7,37 @@ import swaggerUi from '@fastify/swagger-ui';
 import cookie from '@fastify/cookie';
 import sensible from '@fastify/sensible';
 import { serializerCompiler, validatorCompiler } from 'fastify-type-provider-zod';
-import correlationIdPlugin from './plugins/correlation-id.js';
-import authPlugin from './plugins/auth.js';
-import redisPlugin from './plugins/redis.js';
-import { healthRoutes } from './routes/health.js';
-import { authRoutes } from './routes/auth.js';
-import { settingsRoutes } from './routes/settings.js';
-import { spacesRoutes } from './routes/spaces.js';
-import { pagesRoutes } from './routes/pages.js';
-import { syncRoutes } from './routes/sync.js';
-import { attachmentRoutes } from './routes/attachments.js';
-import { llmRoutes } from './routes/llm.js';
-import { adminRoutes } from './routes/admin.js';
-import { analyticsRoutes } from './routes/analytics.js';
+import correlationIdPlugin from './core/plugins/correlation-id.js';
+import authPlugin from './core/plugins/auth.js';
+import redisPlugin from './core/plugins/redis.js';
+// Foundation routes
+import { healthRoutes } from './routes/foundation/health.js';
+import { authRoutes } from './routes/foundation/auth.js';
+import { settingsRoutes } from './routes/foundation/settings.js';
+import { adminRoutes } from './routes/foundation/admin.js';
+// Confluence routes
+import { spacesRoutes } from './routes/confluence/spaces.js';
+import { syncRoutes } from './routes/confluence/sync.js';
+import { attachmentRoutes } from './routes/confluence/attachments.js';
+// LLM routes
+import { llmChatRoutes } from './routes/llm/llm-chat.js';
+import { llmConversationRoutes } from './routes/llm/llm-conversations.js';
+import { llmEmbeddingRoutes } from './routes/llm/llm-embeddings.js';
+import { llmModelRoutes } from './routes/llm/llm-models.js';
+import { llmAdminRoutes } from './routes/llm/llm-admin.js';
+// Knowledge routes
+import { pagesCrudRoutes } from './routes/knowledge/pages-crud.js';
+import { pagesVersionRoutes } from './routes/knowledge/pages-versions.js';
+import { pagesTagRoutes } from './routes/knowledge/pages-tags.js';
+import { pagesEmbeddingRoutes } from './routes/knowledge/pages-embeddings.js';
+import { pagesDuplicateRoutes } from './routes/knowledge/pages-duplicates.js';
+import { pinnedPagesRoutes } from './routes/knowledge/pinned-pages.js';
+import { analyticsRoutes } from './routes/knowledge/analytics.js';
+import { knowledgeAdminRoutes } from './routes/knowledge/knowledge-admin.js';
+
 import { ZodError } from 'zod';
-import { trackError } from './services/error-tracker.js';
-import { logger } from './utils/logger.js';
+import { trackError } from './core/services/error-tracker.js';
+import { logger } from './core/utils/logger.js';
 
 export async function buildApp() {
   const app = Fastify({
@@ -99,17 +114,33 @@ export async function buildApp() {
     });
   });
 
-  // Routes
+  // Foundation routes
   await app.register(healthRoutes, { prefix: '/api' });
   await app.register(authRoutes, { prefix: '/api/auth' });
   await app.register(settingsRoutes, { prefix: '/api' });
+  await app.register(adminRoutes, { prefix: '/api' });
+
+  // Confluence routes
   await app.register(spacesRoutes, { prefix: '/api' });
-  await app.register(pagesRoutes, { prefix: '/api' });
   await app.register(syncRoutes, { prefix: '/api' });
   await app.register(attachmentRoutes, { prefix: '/api' });
-  await app.register(llmRoutes, { prefix: '/api' });
-  await app.register(adminRoutes, { prefix: '/api' });
+
+  // LLM routes
+  await app.register(llmChatRoutes, { prefix: '/api' });
+  await app.register(llmConversationRoutes, { prefix: '/api' });
+  await app.register(llmEmbeddingRoutes, { prefix: '/api' });
+  await app.register(llmModelRoutes, { prefix: '/api' });
+  await app.register(llmAdminRoutes, { prefix: '/api' });
+
+  // Knowledge routes
+  await app.register(pagesCrudRoutes, { prefix: '/api' });
+  await app.register(pagesVersionRoutes, { prefix: '/api' });
+  await app.register(pagesTagRoutes, { prefix: '/api' });
+  await app.register(pagesEmbeddingRoutes, { prefix: '/api' });
+  await app.register(pagesDuplicateRoutes, { prefix: '/api' });
+  await app.register(pinnedPagesRoutes, { prefix: '/api' });
   await app.register(analyticsRoutes, { prefix: '/api' });
+  await app.register(knowledgeAdminRoutes, { prefix: '/api' });
 
   return app;
 }

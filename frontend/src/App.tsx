@@ -4,8 +4,8 @@ import { LazyMotion, domMax } from 'framer-motion';
 import { useAuthStore } from './stores/auth-store';
 import { useSessionInit } from './shared/hooks/useSessionInit';
 import { useThemeEffect } from './shared/hooks/useThemeEffect';
-import { AppLayout } from './shared/components/AppLayout';
-import { ErrorBoundary } from './shared/components/ErrorBoundary';
+import { AppLayout } from './shared/components/layout/AppLayout';
+import { ErrorBoundary } from './shared/components/feedback/ErrorBoundary';
 
 import { LoginPage } from './features/settings/LoginPage';
 

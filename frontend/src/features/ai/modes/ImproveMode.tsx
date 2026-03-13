@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from 'react';
 import { Wand2, Loader2 } from 'lucide-react';
 import { useAiContext } from '../AiContext';
-import { DiffView } from '../../../shared/components/DiffView';
+import { DiffView } from '../../../shared/components/article/DiffView';
 import { cn } from '../../../shared/lib/cn';
 import { apiFetch } from '../../../shared/lib/api';
 import { toast } from 'sonner';

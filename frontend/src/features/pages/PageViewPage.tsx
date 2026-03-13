@@ -11,16 +11,16 @@ import {
 import { useAuthenticatedSrc } from '../../shared/hooks/use-authenticated-src';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { useArticleViewStore } from '../../stores/article-view-store';
-import { FeatureErrorBoundary } from '../../shared/components/FeatureErrorBoundary';
-import { QualityScoreBadge } from '../../shared/components/QualityScoreBadge';
-import { Editor, EditorToolbar, TableContextToolbar, clearDraft, getDraft } from '../../shared/components/Editor';
+import { FeatureErrorBoundary } from '../../shared/components/feedback/FeatureErrorBoundary';
+import { QualityScoreBadge } from '../../shared/components/badges/QualityScoreBadge';
+import { Editor, EditorToolbar, TableContextToolbar, clearDraft, getDraft } from '../../shared/components/article/Editor';
 import type { Editor as EditorType } from '@tiptap/core';
-import { ArticleViewer } from '../../shared/components/ArticleViewer';
-import { DrawioEditor } from '../../shared/components/DrawioEditor';
+import { ArticleViewer } from '../../shared/components/article/ArticleViewer';
+import { DrawioEditor } from '../../shared/components/diagrams/DrawioEditor';
 import { apiFetch } from '../../shared/lib/api';
-import { ArticleSummary } from '../../shared/components/ArticleSummary';
-import type { TocHeading } from '../../shared/components/TableOfContents';
-import { PageViewSkeleton } from '../../shared/components/Skeleton';
+import { ArticleSummary } from '../../shared/components/article/ArticleSummary';
+import type { TocHeading } from '../../shared/components/article/TableOfContents';
+import { PageViewSkeleton } from '../../shared/components/feedback/Skeleton';
 
 function ImageLightbox({
   alt,

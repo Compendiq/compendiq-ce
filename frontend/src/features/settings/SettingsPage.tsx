@@ -11,7 +11,7 @@ import { SpacesTab } from './SpacesTab';
 import { LabelManager } from './LabelManager';
 import { ErrorDashboard } from './ErrorDashboard';
 import { ThemeTab } from './ThemeTab';
-import { SkeletonFormFields } from '../../shared/components/Skeleton';
+import { SkeletonFormFields } from '../../shared/components/feedback/Skeleton';
 
 type TabId = 'confluence' | 'sync' | 'ollama' | 'ai-prompts' | 'spaces' | 'theme' | 'account' | 'labels' | 'errors' | 'embedding';
 

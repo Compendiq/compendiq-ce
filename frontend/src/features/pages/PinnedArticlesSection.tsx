@@ -3,7 +3,7 @@ import { m } from 'framer-motion';
 import { Pin, PinOff, Clock, User } from 'lucide-react';
 import { toast } from 'sonner';
 import { usePinnedPages, useUnpinPage } from '../../shared/hooks/use-pages';
-import { TiltCard } from '../../shared/components/TiltCard';
+import { TiltCard } from '../../shared/components/effects/TiltCard';
 
 export function PinnedArticlesSection() {
   const navigate = useNavigate();

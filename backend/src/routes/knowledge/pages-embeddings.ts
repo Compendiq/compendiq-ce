@@ -1,0 +1,98 @@
+import { FastifyInstance } from 'fastify';
+import { query } from '../../core/db/postgres.js';
+import { RedisCache } from '../../core/services/redis-cache.js';
+import { computePageRelationships } from '../../domains/llm/services/embedding-service.js';
+
+export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
+  fastify.addHook('onRequest', fastify.authenticate);
+  const cache = new RedisCache(fastify.redis);
+
+  // GET /api/pages/graph - nodes (pages) + edges (relationships) for knowledge graph
+  fastify.get('/pages/graph', async (request) => {
+    const userId = request.userId;
+
+    const cacheKey = 'graph';
+    const cached = await cache.get(userId, 'pages', cacheKey);
+    if (cached) return cached;
+
+    // Fetch all pages as nodes
+    const nodesResult = await query<{
+      confluence_id: string;
+      space_key: string;
+      title: string;
+      labels: string[];
+      embedding_status: string;
+      last_modified_at: Date | null;
+    }>(
+      `SELECT cp.confluence_id, cp.space_key, cp.title, cp.labels, cp.embedding_status, cp.last_modified_at
+       FROM cached_pages cp
+       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
+       ORDER BY cp.title ASC`,
+      [userId],
+    );
+
+    // Fetch embedding counts per page for node sizing
+    const embeddingCountResult = await query<{
+      confluence_id: string;
+      count: string;
+    }>(
+      `SELECT pe.confluence_id, COUNT(*) as count
+       FROM page_embeddings pe
+       JOIN cached_pages cp ON pe.confluence_id = cp.confluence_id
+       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
+       GROUP BY pe.confluence_id`,
+      [userId],
+    );
+
+    const embeddingCountMap = new Map<string, number>();
+    for (const row of embeddingCountResult.rows) {
+      embeddingCountMap.set(row.confluence_id, parseInt(row.count, 10));
+    }
+
+    // Fetch pre-computed relationships as edges
+    const edgesResult = await query<{
+      page_id_1: string;
+      page_id_2: string;
+      relationship_type: string;
+      score: number;
+    }>(
+      `SELECT page_id_1, page_id_2, relationship_type, score
+       FROM page_relationships
+       ORDER BY score DESC`,
+      [],
+    );
+
+    const nodes = nodesResult.rows.map((row) => ({
+      id: row.confluence_id,
+      spaceKey: row.space_key,
+      title: row.title,
+      labels: row.labels ?? [],
+      embeddingStatus: row.embedding_status,
+      embeddingCount: embeddingCountMap.get(row.confluence_id) ?? 0,
+      lastModifiedAt: row.last_modified_at,
+    }));
+
+    const edges = edgesResult.rows.map((row) => ({
+      source: row.page_id_1,
+      target: row.page_id_2,
+      type: row.relationship_type,
+      score: row.score,
+    }));
+
+    const response = { nodes, edges };
+    await cache.set(userId, 'pages', cacheKey, response);
+    return response;
+  });
+
+  // POST /api/pages/graph/refresh - recompute page relationships (admin)
+  fastify.post('/pages/graph/refresh', {
+    preHandler: fastify.requireAdmin,
+  }, async (request) => {
+    const userId = request.userId;
+
+    const edgeCount = await computePageRelationships();
+    await cache.invalidate(userId, 'pages');
+
+    return { message: 'Graph relationships refreshed', edges: edgeCount };
+  });
+}
