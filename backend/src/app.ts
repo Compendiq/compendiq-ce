@@ -104,8 +104,14 @@ export async function buildApp() {
       return;
     }
 
-    logger.error({ err: error }, 'Request error');
     const statusCode = error.statusCode ?? 500;
+
+    // Log auth errors at warn level to reduce noise from expected 401/403 responses
+    if (statusCode === 401 || statusCode === 403) {
+      logger.warn({ err: error }, 'Auth error');
+    } else {
+      logger.error({ err: error }, 'Request error');
+    }
 
     // Auto-track 500 errors in the database
     if (statusCode === 500) {
