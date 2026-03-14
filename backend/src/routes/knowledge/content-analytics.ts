@@ -7,12 +7,12 @@ import { query } from '../../core/db/postgres.js';
 const IdParamSchema = z.object({ id: z.coerce.number().int().positive() });
 
 const FeedbackBodySchema = z.object({
-  is_helpful: z.boolean(),
+  isHelpful: z.boolean(),
   comment: z.string().max(2000).optional(),
 });
 
 const ViewBodySchema = z.object({
-  session_id: z.string().max(256).optional(),
+  sessionId: z.string().max(256).optional(),
 });
 
 const TrendingQuerySchema = z.object({
@@ -38,7 +38,7 @@ export async function contentAnalyticsRoutes(fastify: FastifyInstance) {
   // Submit or update "was this helpful?" vote (one per user per page, upsert)
   fastify.post('/pages/:id/feedback', async (request, reply) => {
     const { id: pageId } = IdParamSchema.parse(request.params);
-    const { is_helpful, comment } = FeedbackBodySchema.parse(request.body);
+    const { isHelpful, comment } = FeedbackBodySchema.parse(request.body);
     const userId = request.userId;
 
     const result = await query<{ id: number }>(
@@ -49,7 +49,7 @@ export async function contentAnalyticsRoutes(fastify: FastifyInstance) {
                      comment    = EXCLUDED.comment,
                      updated_at = NOW()
        RETURNING id`,
-      [pageId, userId, is_helpful, comment ?? null],
+      [pageId, userId, isHelpful, comment ?? null],
     );
 
     reply.status(201).send({ id: result.rows[0].id });
@@ -97,17 +97,17 @@ export async function contentAnalyticsRoutes(fastify: FastifyInstance) {
   // Record a page view (deduplicated by session_id within 30 minutes)
   fastify.post('/pages/:id/view', async (request, reply) => {
     const { id: pageId } = IdParamSchema.parse(request.params);
-    const { session_id } = ViewBodySchema.parse(request.body ?? {});
+    const { sessionId } = ViewBodySchema.parse(request.body ?? {});
     const userId = request.userId;
 
     // Deduplicate: skip if same user+page+session viewed within last 30 min
-    if (session_id) {
+    if (sessionId) {
       const recent = await query<{ id: number }>(
         `SELECT id FROM page_views
          WHERE page_id = $1 AND user_id = $2 AND session_id = $3
            AND viewed_at > NOW() - INTERVAL '30 minutes'
          LIMIT 1`,
-        [pageId, userId, session_id],
+        [pageId, userId, sessionId],
       );
 
       if (recent.rows.length > 0) {
@@ -119,7 +119,7 @@ export async function contentAnalyticsRoutes(fastify: FastifyInstance) {
     await query(
       `INSERT INTO page_views (page_id, user_id, session_id)
        VALUES ($1, $2, $3)`,
-      [pageId, userId, session_id ?? null],
+      [pageId, userId, sessionId ?? null],
     );
 
     reply.status(201).send({ recorded: true });

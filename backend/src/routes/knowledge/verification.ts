@@ -17,23 +17,25 @@ export async function verificationRoutes(fastify: FastifyInstance) {
   // All verification routes require authentication
   fastify.addHook('onRequest', fastify.authenticate);
 
-  /** Check that a page exists and the user has access to it. */
-  async function assertPageAccess(confluenceId: string, userId: string): Promise<void> {
+  /** Check that a page exists and the user has access to it. Accepts integer id or confluence_id string. */
+  async function assertPageAccess(pageId: string, userId: string): Promise<number> {
+    const isNumeric = /^\d+$/.test(pageId);
     const check = await query<{ id: number }>(
       `SELECT p.id FROM pages p
        LEFT JOIN user_space_selections uss ON p.space_key = uss.space_key AND uss.user_id = $1
-       WHERE p.confluence_id = $2
+       WHERE ${isNumeric ? 'p.id = $2' : 'p.confluence_id = $2'}
          AND p.deleted_at IS NULL
          AND (
            (p.source = 'confluence' AND uss.space_key IS NOT NULL)
            OR (p.source = 'standalone' AND p.visibility = 'shared')
            OR (p.source = 'standalone' AND p.visibility = 'private' AND p.created_by_user_id = $1)
          )`,
-      [userId, confluenceId],
+      [userId, isNumeric ? parseInt(pageId, 10) : pageId],
     );
     if (check.rows.length === 0) {
       throw fastify.httpErrors.notFound('Page not found');
     }
+    return check.rows[0].id;
   }
 
   // POST /api/pages/:id/verify — One-click re-verify
@@ -41,16 +43,16 @@ export async function verificationRoutes(fastify: FastifyInstance) {
     const { id } = IdParamSchema.parse(request.params);
     const userId = request.userId;
 
-    await assertPageAccess(id, userId);
+    const pageId = await assertPageAccess(id, userId);
 
     const result = await query(
       `UPDATE pages SET
         verified_by = $1,
         verified_at = NOW(),
         next_review_at = NOW() + (review_interval_days || ' days')::INTERVAL
-       WHERE confluence_id = $2
-       RETURNING confluence_id`,
-      [userId, id],
+       WHERE id = $2
+       RETURNING id`,
+      [userId, pageId],
     );
 
     if (result.rowCount === 0) {
@@ -69,7 +71,7 @@ export async function verificationRoutes(fastify: FastifyInstance) {
     const userId = request.userId;
     const { ownerId } = OwnerBodySchema.parse(request.body);
 
-    await assertPageAccess(id, userId);
+    const pageId = await assertPageAccess(id, userId);
 
     // Verify the owner user exists
     const userCheck = await query('SELECT id FROM users WHERE id = $1', [ownerId]);
@@ -78,8 +80,8 @@ export async function verificationRoutes(fastify: FastifyInstance) {
     }
 
     const result = await query(
-      'UPDATE pages SET owner_id = $1 WHERE confluence_id = $2 RETURNING confluence_id',
-      [ownerId, id],
+      'UPDATE pages SET owner_id = $1 WHERE id = $2 RETURNING id',
+      [ownerId, pageId],
     );
 
     if (result.rowCount === 0) {
@@ -98,7 +100,7 @@ export async function verificationRoutes(fastify: FastifyInstance) {
     const userId = request.userId;
     const { days } = ReviewIntervalBodySchema.parse(request.body);
 
-    await assertPageAccess(id, userId);
+    const pageId = await assertPageAccess(id, userId);
 
     // Update interval and recalculate next_review_at if page was previously verified
     const result = await query(
@@ -108,9 +110,9 @@ export async function verificationRoutes(fastify: FastifyInstance) {
           WHEN verified_at IS NOT NULL THEN verified_at + ($1 || ' days')::INTERVAL
           ELSE next_review_at
         END
-       WHERE confluence_id = $2
-       RETURNING confluence_id`,
-      [days, id],
+       WHERE id = $2
+       RETURNING id`,
+      [days, pageId],
     );
 
     if (result.rowCount === 0) {
