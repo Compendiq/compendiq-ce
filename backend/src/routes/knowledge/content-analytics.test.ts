@@ -25,9 +25,9 @@ describe.skipIf(!dbAvailable)('Content Analytics (DB)', () => {
     );
     userId = userResult.rows[0].id;
 
-    // Create a test page (cached_pages requires space_key, title, confluence_id)
+    // Create a test page (pages requires space_key, title, confluence_id)
     const pageResult = await query<{ id: number }>(
-      `INSERT INTO cached_pages (confluence_id, space_key, title, body_text, last_modified_at)
+      `INSERT INTO pages (confluence_id, space_key, title, body_text, last_modified_at)
        VALUES ('conf-1', 'DEV', 'Test Article', 'Some content here', NOW())
        RETURNING id`,
     );
@@ -157,7 +157,7 @@ describe.skipIf(!dbAvailable)('Content Analytics (DB)', () => {
       [pageId, userId],
     );
 
-    await query('DELETE FROM cached_pages WHERE id = $1', [pageId]);
+    await query('DELETE FROM pages WHERE id = $1', [pageId]);
 
     const result = await query<{ count: string }>(
       'SELECT COUNT(*) as count FROM article_feedback WHERE page_id = $1',
@@ -228,7 +228,7 @@ describe.skipIf(!dbAvailable)('Content Analytics (DB)', () => {
   it('should support trending article aggregation', async () => {
     // Create a second page
     const page2 = await query<{ id: number }>(
-      `INSERT INTO cached_pages (confluence_id, space_key, title)
+      `INSERT INTO pages (confluence_id, space_key, title)
        VALUES ('conf-2', 'DEV', 'Second Article')
        RETURNING id`,
     );
@@ -253,7 +253,7 @@ describe.skipIf(!dbAvailable)('Content Analytics (DB)', () => {
     }>(
       `SELECT pv.page_id, COUNT(*) AS view_count, cp.title
        FROM page_views pv
-       JOIN cached_pages cp ON cp.id = pv.page_id
+       JOIN pages cp ON cp.id = pv.page_id
        WHERE pv.viewed_at >= NOW() - INTERVAL '7 days'
        GROUP BY pv.page_id, cp.title
        ORDER BY COUNT(*) DESC`,
@@ -272,7 +272,7 @@ describe.skipIf(!dbAvailable)('Content Analytics (DB)', () => {
       [pageId, userId],
     );
 
-    await query('DELETE FROM cached_pages WHERE id = $1', [pageId]);
+    await query('DELETE FROM pages WHERE id = $1', [pageId]);
 
     const result = await query<{ count: string }>(
       'SELECT COUNT(*) as count FROM page_views WHERE page_id = $1',
@@ -318,7 +318,7 @@ describe.skipIf(!dbAvailable)('Content Analytics (DB)', () => {
          COALESCE(fb.helpful_count, 0)     AS helpful_count,
          COALESCE(fb.not_helpful_count, 0)  AS not_helpful_count,
          COALESCE(pv.view_count, 0)         AS view_count
-       FROM cached_pages cp
+       FROM pages cp
        LEFT JOIN (
          SELECT page_id,
                 COUNT(*) FILTER (WHERE is_helpful = TRUE)  AS helpful_count,

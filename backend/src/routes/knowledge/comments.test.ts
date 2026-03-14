@@ -6,14 +6,14 @@ import { ZodError } from 'zod';
 // Hoisted query mock
 const mockQuery = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 });
 
-vi.mock('../db/postgres.js', () => ({
+vi.mock('../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
   getPool: vi.fn().mockReturnValue({}),
   runMigrations: vi.fn(),
   closePool: vi.fn(),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 

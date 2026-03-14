@@ -197,7 +197,20 @@ export async function knowledgeRequestRoutes(fastify: FastifyInstance) {
   // PATCH /api/knowledge-requests/:id - Update a request
   fastify.patch('/knowledge-requests/:id', async (request, reply) => {
     const { id } = IdParamSchema.parse(request.params);
+    const userId = request.userId;
     const body = UpdateRequestSchema.parse(request.body);
+
+    // Authorization: only requester or assignee can modify
+    const existing = await query<{ requested_by: string; assigned_to: string | null }>(
+      'SELECT requested_by, assigned_to FROM knowledge_requests WHERE id = $1',
+      [id],
+    );
+    if (existing.rows.length === 0) {
+      return reply.notFound('Knowledge request not found');
+    }
+    if (existing.rows[0].requested_by !== userId && existing.rows[0].assigned_to !== userId) {
+      throw fastify.httpErrors.forbidden('Not authorized');
+    }
 
     // Build SET clause dynamically
     const setClauses: string[] = [];
@@ -246,7 +259,20 @@ export async function knowledgeRequestRoutes(fastify: FastifyInstance) {
   // POST /api/knowledge-requests/:id/fulfill - Link request to a page
   fastify.post('/knowledge-requests/:id/fulfill', async (request, reply) => {
     const { id } = IdParamSchema.parse(request.params);
+    const userId = request.userId;
     const { pageId } = FulfillRequestSchema.parse(request.body);
+
+    // Authorization: only requester or assignee can fulfill
+    const existing = await query<{ requested_by: string; assigned_to: string | null }>(
+      'SELECT requested_by, assigned_to FROM knowledge_requests WHERE id = $1',
+      [id],
+    );
+    if (existing.rows.length === 0) {
+      return reply.notFound('Knowledge request not found');
+    }
+    if (existing.rows[0].requested_by !== userId && existing.rows[0].assigned_to !== userId) {
+      throw fastify.httpErrors.forbidden('Not authorized');
+    }
 
     // Verify page exists
     const pageCheck = await query<{ id: number }>(

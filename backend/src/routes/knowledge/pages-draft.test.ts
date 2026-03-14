@@ -128,7 +128,7 @@ describe('Draft-while-published routes', () => {
       const response = await app.inject({
         method: 'PUT',
         url: '/api/pages/10/draft',
-        payload: { bodyHtml: '<p>draft content</p>' },
+        payload: { title: 'Test Page', bodyHtml: '<p>draft content</p>' },
       });
 
       expect(response.statusCode).toBe(200);
@@ -154,7 +154,7 @@ describe('Draft-while-published routes', () => {
       const response = await app.inject({
         method: 'PUT',
         url: '/api/pages/10/draft',
-        payload: { bodyHtml: '<p>draft by another user</p>' },
+        payload: { title: 'Test Page', bodyHtml: '<p>draft by another user</p>' },
       });
 
       expect(response.statusCode).toBe(200);
@@ -176,7 +176,7 @@ describe('Draft-while-published routes', () => {
       const response = await app.inject({
         method: 'PUT',
         url: '/api/pages/10/draft',
-        payload: { bodyHtml: '<p>sneaky draft</p>' },
+        payload: { title: 'Sneaky Title', bodyHtml: '<p>sneaky draft</p>' },
       });
 
       expect(response.statusCode).toBe(403);
@@ -188,7 +188,7 @@ describe('Draft-while-published routes', () => {
       const response = await app.inject({
         method: 'PUT',
         url: '/api/pages/999/draft',
-        payload: { bodyHtml: '<p>draft</p>' },
+        payload: { title: 'Draft Title', bodyHtml: '<p>draft</p>' },
       });
 
       expect(response.statusCode).toBe(404);

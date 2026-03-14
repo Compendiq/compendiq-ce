@@ -17,10 +17,31 @@ export async function verificationRoutes(fastify: FastifyInstance) {
   // All verification routes require authentication
   fastify.addHook('onRequest', fastify.authenticate);
 
+  /** Check that a page exists and the user has access to it. */
+  async function assertPageAccess(confluenceId: string, userId: string): Promise<void> {
+    const check = await query<{ id: number }>(
+      `SELECT p.id FROM pages p
+       LEFT JOIN user_space_selections uss ON p.space_key = uss.space_key AND uss.user_id = $1
+       WHERE p.confluence_id = $2
+         AND p.deleted_at IS NULL
+         AND (
+           (p.source = 'confluence' AND uss.space_key IS NOT NULL)
+           OR (p.source = 'standalone' AND p.visibility = 'shared')
+           OR (p.source = 'standalone' AND p.visibility = 'private' AND p.created_by_user_id = $1)
+         )`,
+      [userId, confluenceId],
+    );
+    if (check.rows.length === 0) {
+      throw fastify.httpErrors.notFound('Page not found');
+    }
+  }
+
   // POST /api/pages/:id/verify — One-click re-verify
   fastify.post('/pages/:id/verify', async (request, reply) => {
     const { id } = IdParamSchema.parse(request.params);
     const userId = request.userId;
+
+    await assertPageAccess(id, userId);
 
     const result = await query(
       `UPDATE pages SET
@@ -45,7 +66,10 @@ export async function verificationRoutes(fastify: FastifyInstance) {
   // PUT /api/pages/:id/owner — Assign owner
   fastify.put('/pages/:id/owner', async (request, reply) => {
     const { id } = IdParamSchema.parse(request.params);
+    const userId = request.userId;
     const { ownerId } = OwnerBodySchema.parse(request.body);
+
+    await assertPageAccess(id, userId);
 
     // Verify the owner user exists
     const userCheck = await query('SELECT id FROM users WHERE id = $1', [ownerId]);
@@ -71,7 +95,10 @@ export async function verificationRoutes(fastify: FastifyInstance) {
   // PUT /api/pages/:id/review-interval — Set review interval
   fastify.put('/pages/:id/review-interval', async (request, reply) => {
     const { id } = IdParamSchema.parse(request.params);
+    const userId = request.userId;
     const { days } = ReviewIntervalBodySchema.parse(request.body);
+
+    await assertPageAccess(id, userId);
 
     // Update interval and recalculate next_review_at if page was previously verified
     const result = await query(

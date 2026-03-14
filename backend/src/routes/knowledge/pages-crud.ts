@@ -41,9 +41,16 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     if (cached) return cached;
 
     // Build WHERE clause separately for reuse in count query
-    // Access control: JOIN user_space_selections so each user only sees pages from
-    // their selected spaces (shared tables access pattern).
-    let whereClause = 'JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1';
+    // Access control: LEFT JOIN + dual-path WHERE so each user sees:
+    //   - Confluence pages from their selected spaces
+    //   - Shared standalone articles (visible to all)
+    //   - Their own private standalone articles
+    let whereClause = `LEFT JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
+      WHERE (
+        (cp.source = 'confluence' AND uss.space_key IS NOT NULL)
+        OR (cp.source = 'standalone' AND cp.visibility = 'shared')
+        OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $1)
+      )`;
     const values: unknown[] = [userId];
     let paramIdx = 2;
 

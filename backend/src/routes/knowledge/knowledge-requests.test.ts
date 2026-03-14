@@ -5,7 +5,7 @@ import { ZodError } from 'zod';
 import { knowledgeRequestRoutes } from './knowledge-requests.js';
 
 const mockQueryFn = vi.fn();
-vi.mock('../db/postgres.js', () => ({
+vi.mock('../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQueryFn(...args),
   getPool: vi.fn().mockReturnValue({}),
   runMigrations: vi.fn(),

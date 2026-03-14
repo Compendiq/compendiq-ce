@@ -6,7 +6,7 @@ const { mockGeneratePdf } = vi.hoisted(() => {
   return { mockGeneratePdf };
 });
 
-vi.mock('../services/pdf-service.js', () => ({
+vi.mock('../../core/services/pdf-service.js', () => ({
   generatePdf: mockGeneratePdf,
 }));
 
@@ -32,19 +32,19 @@ vi.mock('pdf-lib', () => ({
 }));
 
 // Mock postgres
-vi.mock('../db/postgres.js', () => ({
+vi.mock('../../core/db/postgres.js', () => ({
   query: vi.fn(),
 }));
 
 // Mock auth
-vi.mock('../plugins/auth.js', () => ({
+vi.mock('../../core/plugins/auth.js', () => ({
   default: vi.fn(),
 }));
 
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 import { pagesExportRoutes } from './pages-export.js';
-import { query } from '../db/postgres.js';
+import { query } from '../../core/db/postgres.js';
 
 const mockQuery = vi.mocked(query);
 

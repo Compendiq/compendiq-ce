@@ -34,7 +34,7 @@ describe.skipIf(!dbAvailable)('Verification system (DB)', () => {
     // Create a test page
     confluenceId = 'test-page-1';
     await query(
-      `INSERT INTO cached_pages
+      `INSERT INTO pages
          (confluence_id, space_key, title, version, embedding_dirty, embedding_status)
        VALUES ($1, 'TEST', 'Test Page', 1, FALSE, 'not_embedded')`,
       [confluenceId],
@@ -44,7 +44,7 @@ describe.skipIf(!dbAvailable)('Verification system (DB)', () => {
   it('should add verification columns via migration', async () => {
     const result = await query<{ column_name: string }>(
       `SELECT column_name FROM information_schema.columns
-       WHERE table_name = 'cached_pages'
+       WHERE table_name = 'pages'
          AND column_name IN ('owner_id', 'review_interval_days', 'next_review_at', 'verified_by', 'verified_at')
        ORDER BY column_name`,
     );
@@ -58,7 +58,7 @@ describe.skipIf(!dbAvailable)('Verification system (DB)', () => {
 
   it('should default review_interval_days to 90', async () => {
     const result = await query<{ review_interval_days: number }>(
-      'SELECT review_interval_days FROM cached_pages WHERE confluence_id = $1',
+      'SELECT review_interval_days FROM pages WHERE confluence_id = $1',
       [confluenceId],
     );
     expect(result.rows[0].review_interval_days).toBe(90);
@@ -67,7 +67,7 @@ describe.skipIf(!dbAvailable)('Verification system (DB)', () => {
   it('should verify a page and compute next_review_at', async () => {
     // Verify the page
     await query(
-      `UPDATE cached_pages SET
+      `UPDATE pages SET
         verified_by = $1,
         verified_at = NOW(),
         next_review_at = NOW() + (review_interval_days || ' days')::INTERVAL
@@ -81,7 +81,7 @@ describe.skipIf(!dbAvailable)('Verification system (DB)', () => {
       next_review_at: Date;
       review_interval_days: number;
     }>(
-      'SELECT verified_by, verified_at, next_review_at, review_interval_days FROM cached_pages WHERE confluence_id = $1',
+      'SELECT verified_by, verified_at, next_review_at, review_interval_days FROM pages WHERE confluence_id = $1',
       [confluenceId],
     );
 
@@ -98,12 +98,12 @@ describe.skipIf(!dbAvailable)('Verification system (DB)', () => {
 
   it('should assign an owner', async () => {
     await query(
-      'UPDATE cached_pages SET owner_id = $1 WHERE confluence_id = $2',
+      'UPDATE pages SET owner_id = $1 WHERE confluence_id = $2',
       [otherUserId, confluenceId],
     );
 
     const result = await query<{ owner_id: string }>(
-      'SELECT owner_id FROM cached_pages WHERE confluence_id = $1',
+      'SELECT owner_id FROM pages WHERE confluence_id = $1',
       [confluenceId],
     );
     expect(result.rows[0].owner_id).toBe(otherUserId);
@@ -111,7 +111,7 @@ describe.skipIf(!dbAvailable)('Verification system (DB)', () => {
 
   it('should set owner_id to NULL when owner user is deleted', async () => {
     await query(
-      'UPDATE cached_pages SET owner_id = $1 WHERE confluence_id = $2',
+      'UPDATE pages SET owner_id = $1 WHERE confluence_id = $2',
       [otherUserId, confluenceId],
     );
 
@@ -119,7 +119,7 @@ describe.skipIf(!dbAvailable)('Verification system (DB)', () => {
     await query('DELETE FROM users WHERE id = $1', [otherUserId]);
 
     const result = await query<{ owner_id: string | null }>(
-      'SELECT owner_id FROM cached_pages WHERE confluence_id = $1',
+      'SELECT owner_id FROM pages WHERE confluence_id = $1',
       [confluenceId],
     );
     expect(result.rows[0].owner_id).toBeNull();
@@ -127,7 +127,7 @@ describe.skipIf(!dbAvailable)('Verification system (DB)', () => {
 
   it('should set verified_by to NULL when verifier user is deleted', async () => {
     await query(
-      `UPDATE cached_pages SET verified_by = $1, verified_at = NOW(),
+      `UPDATE pages SET verified_by = $1, verified_at = NOW(),
         next_review_at = NOW() + INTERVAL '90 days'
        WHERE confluence_id = $2`,
       [userId, confluenceId],
@@ -136,7 +136,7 @@ describe.skipIf(!dbAvailable)('Verification system (DB)', () => {
     await query('DELETE FROM users WHERE id = $1', [userId]);
 
     const result = await query<{ verified_by: string | null }>(
-      'SELECT verified_by FROM cached_pages WHERE confluence_id = $1',
+      'SELECT verified_by FROM pages WHERE confluence_id = $1',
       [confluenceId],
     );
     expect(result.rows[0].verified_by).toBeNull();
@@ -145,7 +145,7 @@ describe.skipIf(!dbAvailable)('Verification system (DB)', () => {
   it('should update review_interval_days and recalculate next_review_at', async () => {
     // First verify the page
     await query(
-      `UPDATE cached_pages SET
+      `UPDATE pages SET
         verified_by = $1,
         verified_at = NOW(),
         next_review_at = NOW() + INTERVAL '90 days'
@@ -155,7 +155,7 @@ describe.skipIf(!dbAvailable)('Verification system (DB)', () => {
 
     // Update interval to 30 days
     await query(
-      `UPDATE cached_pages SET
+      `UPDATE pages SET
         review_interval_days = 30,
         next_review_at = CASE
           WHEN verified_at IS NOT NULL THEN verified_at + INTERVAL '30 days'
@@ -170,7 +170,7 @@ describe.skipIf(!dbAvailable)('Verification system (DB)', () => {
       verified_at: Date;
       next_review_at: Date;
     }>(
-      'SELECT review_interval_days, verified_at, next_review_at FROM cached_pages WHERE confluence_id = $1',
+      'SELECT review_interval_days, verified_at, next_review_at FROM pages WHERE confluence_id = $1',
       [confluenceId],
     );
 
@@ -184,7 +184,7 @@ describe.skipIf(!dbAvailable)('Verification system (DB)', () => {
     // Create additional pages with different staleness states
     // Page 2: fresh (next_review_at > NOW() + 14 days)
     await query(
-      `INSERT INTO cached_pages
+      `INSERT INTO pages
          (confluence_id, space_key, title, version, embedding_dirty, embedding_status,
           verified_by, verified_at, next_review_at)
        VALUES ('page-fresh', 'TEST', 'Fresh Page', 1, FALSE, 'not_embedded',
@@ -194,7 +194,7 @@ describe.skipIf(!dbAvailable)('Verification system (DB)', () => {
 
     // Page 3: aging (next_review_at between NOW() and NOW() + 14 days)
     await query(
-      `INSERT INTO cached_pages
+      `INSERT INTO pages
          (confluence_id, space_key, title, version, embedding_dirty, embedding_status,
           verified_by, verified_at, next_review_at)
        VALUES ('page-aging', 'TEST', 'Aging Page', 1, FALSE, 'not_embedded',
@@ -204,7 +204,7 @@ describe.skipIf(!dbAvailable)('Verification system (DB)', () => {
 
     // Page 4: overdue (next_review_at < NOW())
     await query(
-      `INSERT INTO cached_pages
+      `INSERT INTO pages
          (confluence_id, space_key, title, version, embedding_dirty, embedding_status,
           verified_by, verified_at, next_review_at)
        VALUES ('page-overdue', 'TEST', 'Overdue Page', 1, FALSE, 'not_embedded',
@@ -227,7 +227,7 @@ describe.skipIf(!dbAvailable)('Verification system (DB)', () => {
         COUNT(*) FILTER (WHERE next_review_at < NOW()) AS overdue,
         COUNT(*) FILTER (WHERE next_review_at IS NULL) AS unverified,
         COUNT(*) AS total
-       FROM cached_pages`,
+       FROM pages`,
     );
 
     const row = result.rows[0];
@@ -241,7 +241,7 @@ describe.skipIf(!dbAvailable)('Verification system (DB)', () => {
   it('should create partial indexes for verification queries', async () => {
     const result = await query<{ indexname: string }>(
       `SELECT indexname FROM pg_indexes
-       WHERE tablename = 'cached_pages'
+       WHERE tablename = 'pages'
          AND indexname IN ('pages_next_review_idx', 'pages_owner_idx')
        ORDER BY indexname`,
     );
