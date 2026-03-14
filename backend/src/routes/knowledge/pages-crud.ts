@@ -529,23 +529,53 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       const { htmlToText } = await import('../../core/services/content-converter.js');
       const bodyText = htmlToText(body.bodyHtml);
 
-      const result = await query(
+      // If spaceKey is provided, verify it's a local space
+      let spaceKey: string | null = null;
+      if (body.spaceKey) {
+        const spaceCheck = await query<{ source: string }>(
+          'SELECT source FROM cached_spaces WHERE space_key = $1',
+          [body.spaceKey],
+        );
+        if (spaceCheck.rows.length > 0 && spaceCheck.rows[0].source === 'local') {
+          spaceKey = body.spaceKey;
+        }
+      }
+
+      // Compute path and depth if parentId is provided
+      let parentPath: string | null = null;
+      if (body.parentId) {
+        const parentResult = await query<{ path: string | null }>(
+          'SELECT path FROM pages WHERE id = $1 AND deleted_at IS NULL',
+          [body.parentId],
+        );
+        if (parentResult.rows.length > 0) {
+          parentPath = parentResult.rows[0].path;
+        }
+      }
+
+      const result = await query<{ id: number; title: string; version: number }>(
         `INSERT INTO pages
            (title, body_html, body_text, body_storage, source, created_by_user_id,
             visibility, version, space_key, confluence_id, parent_id,
             embedding_dirty, embedding_status, last_synced)
-         VALUES ($1, $2, $3, NULL, 'standalone', $4, $5, 1, NULL, NULL, $6,
+         VALUES ($1, $2, $3, NULL, 'standalone', $4, $5, 1, $6, NULL, $7,
                  TRUE, 'not_embedded', NOW())
          RETURNING id, title, version`,
         [body.title, body.bodyHtml, bodyText, userId,
-         body.visibility ?? 'shared', body.parentId ?? null],
+         body.visibility ?? 'shared', spaceKey, body.parentId ?? null],
       );
 
       const newPage = result.rows[0];
 
+      // Compute and set materialized path now that we have the page id
+      const newPath = parentPath ? `${parentPath}/${newPage.id}` : `/${newPage.id}`;
+      const depth = newPath.split('/').filter(Boolean).length - 1;
+      await query('UPDATE pages SET path = $1, depth = $2 WHERE id = $3',
+        [newPath, depth, newPage.id]);
+
       await cache.invalidate(userId, 'pages');
       await logAuditEvent(userId, 'PAGE_CREATED', 'page', String(newPage.id),
-        { source: 'standalone', title: body.title, visibility: body.visibility ?? 'shared' }, request);
+        { source: 'standalone', title: body.title, visibility: body.visibility ?? 'shared', spaceKey }, request);
 
       return { id: newPage.id, title: newPage.title, version: newPage.version, source: 'standalone' };
     }

@@ -25,7 +25,12 @@ export type AuditAction =
   | 'PROMPT_INJECTION_DETECTED'
   | 'SUMMARY_RESCAN'
   | 'PDF_EXTRACTED'
-  | 'DRAFT_PUBLISHED';
+  | 'DRAFT_PUBLISHED'
+  | 'LOCAL_SPACE_CREATED'
+  | 'LOCAL_SPACE_UPDATED'
+  | 'LOCAL_SPACE_DELETED'
+  | 'PAGE_MOVED'
+  | 'PAGE_REORDERED';
 
 export interface AuditLogEntry {
   id: string;

@@ -42,7 +42,7 @@ ai-kb-creator/
 ├── backend/src/
 │   ├── core/                        # Shared infrastructure (no domain imports)
 │   │   ├── db/postgres.ts           # Connection pool + migration runner
-│   │   ├── db/migrations/           # Sequential SQL files (001-026)
+│   │   ├── db/migrations/           # Sequential SQL files (001-038)
 │   │   ├── plugins/                 # Fastify plugins (auth, cors, rate-limit, redis)
 │   │   ├── services/                # Cross-cutting: redis-cache, audit, error-tracker,
 │   │   │                            #   content-converter, circuit-breaker, image-references
@@ -61,7 +61,10 @@ ai-kb-creator/
 │   │   │                            #   llm-embeddings, llm-models, llm-admin
 │   │   └── knowledge/               # pages-crud, pages-versions, pages-tags,
 │   │                                #   pages-embeddings, pages-duplicates, pinned-pages,
-│   │                                #   analytics, knowledge-admin
+│   │                                #   analytics, knowledge-admin, templates, comments,
+│   │                                #   content-analytics, verification, knowledge-requests,
+│   │                                #   search, pages-export, pages-import, pages-draft,
+│   │                                #   local-spaces
 │   ├── app.ts                       # Fastify app builder + route registration
 │   └── index.ts                     # Entry point + workers
 ├── frontend/src/
