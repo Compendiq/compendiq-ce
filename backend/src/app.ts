@@ -16,6 +16,7 @@ import { healthRoutes } from './routes/foundation/health.js';
 import { authRoutes } from './routes/foundation/auth.js';
 import { settingsRoutes } from './routes/foundation/settings.js';
 import { adminRoutes } from './routes/foundation/admin.js';
+import { rbacRoutes } from './routes/foundation/rbac.js';
 // Confluence routes
 import { spacesRoutes } from './routes/confluence/spaces.js';
 import { syncRoutes } from './routes/confluence/sync.js';
@@ -144,6 +145,7 @@ export async function buildApp() {
   await app.register(authRoutes, { prefix: '/api/auth' });
   await app.register(settingsRoutes, { prefix: '/api' });
   await app.register(adminRoutes, { prefix: '/api' });
+  await app.register(rbacRoutes, { prefix: '/api' });
 
   // Confluence routes
   await app.register(spacesRoutes, { prefix: '/api' });
