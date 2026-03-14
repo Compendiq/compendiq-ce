@@ -195,11 +195,7 @@ export async function commentsRoutes(fastify: FastifyInstance) {
     const userId = request.userId;
 
     // Verify page exists
-<<<<<<< HEAD
-    const pageCheck = await query('SELECT id FROM cached_pages WHERE id = $1', [pageId]);
-=======
     const pageCheck = await query('SELECT id FROM pages WHERE id = $1', [pageId]);
->>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))
     if (pageCheck.rows.length === 0) {
       return reply.notFound('Page not found');
     }

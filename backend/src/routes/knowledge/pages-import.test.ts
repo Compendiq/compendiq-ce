@@ -4,18 +4,18 @@ import sensible from '@fastify/sensible';
 
 // Mock database
 const mockQuery = vi.fn();
-vi.mock('../db/postgres.js', () => ({
+vi.mock('../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
 }));
 
 // Mock content-converter
-vi.mock('../services/content-converter.js', () => ({
+vi.mock('../../core/services/content-converter.js', () => ({
   markdownToHtml: vi.fn().mockResolvedValue('<p>Hello world</p>'),
   htmlToText: vi.fn().mockReturnValue('Hello world'),
 }));
 
 // Mock audit service
-vi.mock('../services/audit-service.js', () => ({
+vi.mock('../../core/services/audit-service.js', () => ({
   logAuditEvent: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -80,7 +80,7 @@ describe('Pages import routes', () => {
       // Verify database insert was called with correct params
       expect(mockQuery).toHaveBeenCalledOnce();
       const [sql, params] = mockQuery.mock.calls[0];
-      expect(sql).toContain('INSERT INTO cached_pages');
+      expect(sql).toContain('INSERT INTO pages');
       expect(sql).toContain("'standalone'");
       expect(params[0]).toMatch(/^standalone-/);  // confluence_id
       expect(params[1]).toBe('Test Article');       // title

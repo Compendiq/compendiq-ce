@@ -4,6 +4,7 @@ import { markdownToHtml, htmlToText } from '../../core/services/content-converte
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { z } from 'zod';
 import { randomUUID } from 'crypto';
+import DOMPurify from 'isomorphic-dompurify';
 
 const ImportMarkdownSchema = z.object({
   markdown: z.string().min(1, 'markdown field required').max(1_000_000, 'Markdown too large (max ~1MB)'),
@@ -72,13 +73,24 @@ export function parseFrontMatter(markdown: string): { metadata: Record<string, s
 }
 
 /**
- * Sanitize HTML to prevent XSS — strip script tags, event handlers, and javascript: URLs.
+ * Sanitize HTML to prevent XSS using DOMPurify with a strict allowlist.
+ * Strips all tags/attributes not explicitly permitted.
  */
 function sanitizeHtml(html: string): string {
-  return html
-    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-    .replace(/\bon\w+\s*=\s*["'][^"']*["']/gi, '')
-    .replace(/javascript:/gi, '');
+  return DOMPurify.sanitize(html, {
+    ALLOWED_TAGS: [
+      'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+      'p', 'br', 'hr',
+      'ul', 'ol', 'li',
+      'a', 'img',
+      'code', 'pre', 'blockquote',
+      'table', 'thead', 'tbody', 'tr', 'th', 'td',
+      'strong', 'em', 'del', 'sup', 'sub', 'mark',
+      'span', 'div',
+    ],
+    ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'class', 'id', 'target', 'rel'],
+    ALLOW_DATA_ATTR: false,
+  });
 }
 
 async function importMarkdown(

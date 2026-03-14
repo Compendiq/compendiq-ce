@@ -97,7 +97,6 @@ describe('PUT /api/pages/:id', () => {
     mockHtmlToText.mockReturnValue('converted');
 
     mockQuery.mockImplementation((sql: string) => {
-<<<<<<< HEAD
       if (sql.includes('SELECT id, version, space_key')) {
         return Promise.resolve({
           rows: [{
@@ -106,10 +105,6 @@ describe('PUT /api/pages/:id', () => {
             confluence_id: 'page-1', deleted_at: null,
           }],
         });
-=======
-      if (sql.includes('SELECT version, space_key FROM pages')) {
-        return Promise.resolve({ rows: [{ version: 7, space_key: 'OPS' }] });
->>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))
       }
       return Promise.resolve({ rows: [] });
     });

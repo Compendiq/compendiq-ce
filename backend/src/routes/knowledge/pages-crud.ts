@@ -146,11 +146,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
              cp.quality_score, cp.quality_status, cp.quality_completeness, cp.quality_clarity,
              cp.quality_structure, cp.quality_accuracy, cp.quality_readability,
              cp.quality_summary, cp.quality_analyzed_at, cp.quality_error,
-<<<<<<< HEAD
              cp.summary_status, cp.source, cp.visibility
-=======
-             cp.summary_status
->>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))
       FROM pages cp
       ${whereClause}
       ORDER BY ${orderBy}
@@ -396,7 +392,6 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
               cp.quality_score, cp.quality_status, cp.quality_completeness, cp.quality_clarity,
               cp.quality_structure, cp.quality_accuracy, cp.quality_readability,
               cp.quality_summary, cp.quality_analyzed_at, cp.quality_error,
-<<<<<<< HEAD
               EXISTS(SELECT 1 FROM pages c2 WHERE c2.parent_id = cp.confluence_id AND cp.confluence_id IS NOT NULL) as has_children,
               cp.summary_html, cp.summary_status, cp.summary_generated_at, cp.summary_model, cp.summary_error,
               cp.source, cp.visibility, cp.created_by_user_id,
@@ -405,14 +400,6 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
        WHERE ${isNumericId ? 'cp.id = $2' : 'cp.confluence_id = $2'}
          AND cp.deleted_at IS NULL`,
       [userId, isNumericId ? parseInt(id, 10) : id],
-=======
-              EXISTS(SELECT 1 FROM pages c2 WHERE c2.parent_id = cp.confluence_id) as has_children,
-              cp.summary_html, cp.summary_status, cp.summary_generated_at, cp.summary_model, cp.summary_error
-       FROM pages cp
-       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
-       WHERE cp.confluence_id = $2`,
-      [userId, id],
->>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))
     );
 
     if (result.rows.length === 0) {
@@ -537,7 +524,6 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const userId = request.userId;
     const isStandalone = body.source === 'standalone' || !body.spaceKey;
 
-<<<<<<< HEAD
     if (isStandalone) {
       // --- Standalone article: no Confluence call, store locally ---
       const { htmlToText } = await import('../../core/services/content-converter.js');
@@ -595,12 +581,6 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     }
 
     // --- Confluence article: existing flow ---
-=======
-    if (!body.spaceKey) {
-      throw fastify.httpErrors.badRequest('spaceKey is required when creating a Confluence page');
-    }
-
->>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))
     const client = await getClientForUser(userId);
     if (!client) {
       throw fastify.httpErrors.badRequest('Confluence not configured');
@@ -707,15 +687,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     }
 
     // Version conflict check
-<<<<<<< HEAD
     if (body.version !== undefined && body.version < existingPage.version) {
-=======
-    const existing = await query<{ version: number; space_key: string }>(
-      'SELECT version, space_key FROM pages WHERE confluence_id = $1',
-      [id],
-    );
-    if (existing.rows.length > 0 && body.version !== undefined && body.version < existing.rows[0].version) {
->>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))
       throw fastify.httpErrors.conflict('Page has been modified since you loaded it. Please refresh and try again.');
     }
 
@@ -806,17 +778,11 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     await client.deletePage(existingPage.confluence_id!);
 
     // Clean up local data (page_embeddings cascade-deleted via FK)
-<<<<<<< HEAD
     await query('DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = $2', [userId, existingPage.id]);
     await query('DELETE FROM pages WHERE id = $1', [existingPage.id]);
     if (existingPage.confluence_id) {
       await cleanPageAttachments(userId, existingPage.confluence_id);
     }
-=======
-    await query('DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = $2', [userId, id]);
-    await query('DELETE FROM pages WHERE confluence_id = $1', [id]);
-    await cleanPageAttachments(userId, id);
->>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))
 
     // Invalidate cache
     await cache.invalidate(userId, 'pages');

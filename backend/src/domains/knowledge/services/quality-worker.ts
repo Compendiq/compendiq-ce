@@ -339,11 +339,7 @@ export function stopQualityWorker(): void {
  */
 export async function forceQualityRescan(): Promise<number> {
   const result = await query(
-<<<<<<< HEAD
-    `UPDATE cached_pages SET quality_status = 'pending', quality_score = NULL, quality_error = NULL, quality_retry_count = 0 WHERE quality_status != 'pending' AND deleted_at IS NULL`,
-=======
-    `UPDATE pages SET quality_status = 'pending', quality_score = NULL, quality_error = NULL, quality_retry_count = 0 WHERE quality_status != 'pending'`,
->>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))
+    `UPDATE pages SET quality_status = 'pending', quality_score = NULL, quality_error = NULL, quality_retry_count = 0 WHERE quality_status != 'pending' AND deleted_at IS NULL`,
   );
   const count = result.rowCount ?? 0;
   logger.info({ count }, 'Forced quality rescan — all pages reset to pending');
@@ -377,12 +373,8 @@ export async function getQualityStatus(): Promise<{
        COUNT(*) FILTER (WHERE quality_status = 'failed') AS failed,
        COUNT(*) FILTER (WHERE quality_status = 'skipped') AS skipped,
        ROUND(AVG(quality_score) FILTER (WHERE quality_status = 'analyzed'))::TEXT AS avg_score
-<<<<<<< HEAD
-     FROM cached_pages
+     FROM pages
      WHERE deleted_at IS NULL`,
-=======
-     FROM pages`,
->>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))
   );
 
   const row = result.rows[0];

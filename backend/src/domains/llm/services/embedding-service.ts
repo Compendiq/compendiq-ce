@@ -369,11 +369,7 @@ export async function processDirtyPages(
 
     // Get total count for logging purposes (global, not per-user)
     const countResult = await query<{ count: string }>(
-<<<<<<< HEAD
-      'SELECT COUNT(*) as count FROM cached_pages WHERE embedding_dirty = TRUE AND body_html IS NOT NULL AND deleted_at IS NULL',
-=======
-      'SELECT COUNT(*) as count FROM pages WHERE embedding_dirty = TRUE AND body_html IS NOT NULL',
->>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))
+      'SELECT COUNT(*) as count FROM pages WHERE embedding_dirty = TRUE AND body_html IS NOT NULL AND deleted_at IS NULL',
     );
     const totalDirty = parseInt(countResult.rows[0].count, 10);
     logger.info({ userId, dirtyPages: totalDirty }, 'Processing dirty pages for embedding');
@@ -397,13 +393,8 @@ export async function processDirtyPages(
         body_html: string;
       }>(
         `SELECT confluence_id, title, space_key, body_html
-<<<<<<< HEAD
-         FROM cached_pages
-         WHERE embedding_dirty = TRUE AND body_html IS NOT NULL AND deleted_at IS NULL
-=======
          FROM pages
-         WHERE embedding_dirty = TRUE AND body_html IS NOT NULL
->>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))
+         WHERE embedding_dirty = TRUE AND body_html IS NOT NULL AND deleted_at IS NULL
          ORDER BY last_modified_at DESC
          LIMIT $1 OFFSET $2`,
         [DIRTY_PAGE_BATCH_SIZE, offset],
@@ -690,16 +681,10 @@ export async function computePageRelationships(): Promise<number> {
              array_length(b.labels, 1)::real
            )
          END AS score
-<<<<<<< HEAD
-       FROM cached_pages a
-       JOIN cached_pages b ON a.confluence_id < b.confluence_id
-       WHERE a.deleted_at IS NULL AND b.deleted_at IS NULL
-         AND a.labels IS NOT NULL AND array_length(a.labels, 1) > 0
-=======
        FROM pages a
        JOIN pages b ON a.confluence_id < b.confluence_id
-       WHERE a.labels IS NOT NULL AND array_length(a.labels, 1) > 0
->>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))
+       WHERE a.deleted_at IS NULL AND b.deleted_at IS NULL
+         AND a.labels IS NOT NULL AND array_length(a.labels, 1) > 0
          AND b.labels IS NOT NULL AND array_length(b.labels, 1) > 0
          AND a.labels && b.labels
      )
@@ -724,14 +709,9 @@ export async function computePageRelationships(): Promise<number> {
 export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatus> {
   const [totalResult, dirtyResult, embeddingResult, embeddedPagesResult, isProcessing] = await Promise.all([
     query<{ count: string }>(
-<<<<<<< HEAD
-      `SELECT COUNT(*) as count FROM cached_pages cp
+      `SELECT COUNT(*) as count FROM pages cp
        JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
        WHERE cp.deleted_at IS NULL`,
-=======
-      `SELECT COUNT(*) as count FROM pages cp
-       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1`,
->>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))
       [userId],
     ),
     query<{ count: string }>(
@@ -742,26 +722,16 @@ export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatu
     ),
     query<{ count: string }>(
       `SELECT COUNT(*) as count FROM page_embeddings pe
-<<<<<<< HEAD
-       JOIN cached_pages cp ON pe.confluence_id = cp.confluence_id
+       JOIN pages cp ON pe.confluence_id = cp.confluence_id
        JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
        WHERE cp.deleted_at IS NULL`,
-=======
-       JOIN pages cp ON pe.confluence_id = cp.confluence_id
-       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1`,
->>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))
       [userId],
     ),
     query<{ count: string }>(
       `SELECT COUNT(DISTINCT pe.confluence_id) as count FROM page_embeddings pe
-<<<<<<< HEAD
-       JOIN cached_pages cp ON pe.confluence_id = cp.confluence_id
+       JOIN pages cp ON pe.confluence_id = cp.confluence_id
        JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
        WHERE cp.deleted_at IS NULL`,
-=======
-       JOIN pages cp ON pe.confluence_id = cp.confluence_id
-       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1`,
->>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))
       [userId],
     ),
     isEmbeddingLocked(userId),

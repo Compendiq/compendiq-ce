@@ -1,6 +1,5 @@
 import { z } from 'zod';
 
-<<<<<<< HEAD
 export const TemplateSchema = z.object({
   id: z.number(),
   title: z.string(),
@@ -70,19 +69,3 @@ export type CreateTemplateInput = z.infer<typeof CreateTemplateSchema>;
 export type UpdateTemplateInput = z.infer<typeof UpdateTemplateSchema>;
 export type UseTemplateInput = z.infer<typeof UseTemplateSchema>;
 export type TemplateListQuery = z.infer<typeof TemplateListQuerySchema>;
-=======
-export const TemplateTypeEnum = z.enum(['runbook', 'how-to', 'troubleshooting', 'decision', 'blank']);
-export type TemplateType = z.infer<typeof TemplateTypeEnum>;
-
-export const TemplateSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  type: TemplateTypeEnum,
-  description: z.string().optional(),
-  bodyHtml: z.string(),
-  createdAt: z.coerce.date().optional(),
-  updatedAt: z.coerce.date().optional(),
-});
-
-export type Template = z.infer<typeof TemplateSchema>;
->>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))

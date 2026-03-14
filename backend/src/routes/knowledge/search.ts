@@ -30,16 +30,31 @@ export async function searchRoutes(fastify: FastifyInstance) {
   fastify.get('/search', async (request) => {
     const params = SearchQuerySchema.parse(request.query);
     const { q, spaceKey, author, dateFrom, dateTo, tags, sort, page, limit } = params;
+    const userId = request.userId;
 
     const offset = (page - 1) * limit;
     const conditions: string[] = [];
-    const values: unknown[] = [q];
-    let paramIndex = 2;
+    // $1 = search query, $2 = userId for access control
+    const values: unknown[] = [q, userId];
+    let paramIndex = 3;
 
     // Base full-text search condition
     conditions.push(
       `to_tsvector('english', COALESCE(cp.title, '') || ' ' || COALESCE(cp.body_text, '')) @@ plainto_tsquery('english', $1)`,
     );
+
+    // Access control: confluence pages require space selection; standalone pages
+    // require shared visibility or ownership by the current user
+    conditions.push(
+      `(
+        (cp.source = 'confluence' AND uss.space_key IS NOT NULL)
+        OR (cp.source = 'standalone' AND cp.visibility = 'shared')
+        OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $2)
+      )`,
+    );
+
+    // Exclude soft-deleted pages
+    conditions.push('cp.deleted_at IS NULL');
 
     // Optional filters
     if (spaceKey) {
@@ -77,6 +92,9 @@ export async function searchRoutes(fastify: FastifyInstance) {
 
     const whereClause = conditions.join(' AND ');
 
+    // Access control JOIN — LEFT JOIN so standalone pages (no space selection) are still included
+    const accessJoin = `LEFT JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $2`;
+
     // Determine sort order
     let orderClause: string;
     switch (sort) {
@@ -94,8 +112,8 @@ export async function searchRoutes(fastify: FastifyInstance) {
 
     // Count total matches
     const countResult = await query<{ count: string }>(
-      `SELECT COUNT(*) AS count FROM pages cp WHERE ${whereClause}`,
-      [q, ...values.slice(1)],
+      `SELECT COUNT(*) AS count FROM pages cp ${accessJoin} WHERE ${whereClause}`,
+      values,
     );
     const total = parseInt(countResult.rows[0].count, 10);
 
@@ -121,13 +139,15 @@ export async function searchRoutes(fastify: FastifyInstance) {
               ts_headline('english', COALESCE(cp.body_text, ''), plainto_tsquery('english', $1),
                           'MaxWords=30, MinWords=15, StartSel=<mark>, StopSel=</mark>') AS snippet
        FROM pages cp
+       ${accessJoin}
        WHERE ${whereClause}
        ORDER BY ${orderClause}
        LIMIT $${limitParamIndex} OFFSET $${offsetParamIndex}`,
-      [q, ...values.slice(1), limit, offset],
+      [...values, limit, offset],
     );
 
     // Facet aggregation — get available filter values with counts
+    // Uses the same access control JOIN + deleted_at filter
     const facetResult = await query<{
       facet: string;
       value: string;
@@ -135,24 +155,46 @@ export async function searchRoutes(fastify: FastifyInstance) {
     }>(
       `SELECT 'space' AS facet, cp.space_key AS value, COUNT(*)::TEXT AS count
        FROM pages cp
+       LEFT JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $2
        WHERE to_tsvector('english', COALESCE(cp.title, '') || ' ' || COALESCE(cp.body_text, ''))
              @@ plainto_tsquery('english', $1)
+         AND (
+           (cp.source = 'confluence' AND uss.space_key IS NOT NULL)
+           OR (cp.source = 'standalone' AND cp.visibility = 'shared')
+           OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $2)
+         )
+         AND cp.deleted_at IS NULL
          AND cp.space_key IS NOT NULL
        GROUP BY cp.space_key
        UNION ALL
        SELECT 'author' AS facet, cp.author AS value, COUNT(*)::TEXT AS count
        FROM pages cp
+       LEFT JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $2
        WHERE to_tsvector('english', COALESCE(cp.title, '') || ' ' || COALESCE(cp.body_text, ''))
              @@ plainto_tsquery('english', $1)
+         AND (
+           (cp.source = 'confluence' AND uss.space_key IS NOT NULL)
+           OR (cp.source = 'standalone' AND cp.visibility = 'shared')
+           OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $2)
+         )
+         AND cp.deleted_at IS NULL
          AND cp.author IS NOT NULL
        GROUP BY cp.author
        UNION ALL
        SELECT 'tag' AS facet, tag AS value, COUNT(*)::TEXT AS count
-       FROM pages cp, unnest(cp.labels) AS tag
+       FROM pages cp
+       LEFT JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $2
+       CROSS JOIN unnest(cp.labels) AS tag
        WHERE to_tsvector('english', COALESCE(cp.title, '') || ' ' || COALESCE(cp.body_text, ''))
              @@ plainto_tsquery('english', $1)
+         AND (
+           (cp.source = 'confluence' AND uss.space_key IS NOT NULL)
+           OR (cp.source = 'standalone' AND cp.visibility = 'shared')
+           OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $2)
+         )
+         AND cp.deleted_at IS NULL
        GROUP BY tag`,
-      [q],
+      [q, userId],
     );
 
     // Organize facets by type

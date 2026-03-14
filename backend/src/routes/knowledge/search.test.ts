@@ -4,12 +4,12 @@ import sensible from '@fastify/sensible';
 import { ZodError } from 'zod';
 import { searchRoutes } from './search.js';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
 const mockQueryFn = vi.fn();
-vi.mock('../db/postgres.js', () => ({
+vi.mock('../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQueryFn(...args),
   getPool: vi.fn().mockReturnValue({}),
   runMigrations: vi.fn(),
@@ -133,6 +133,27 @@ describe('Search Routes', () => {
       });
 
       expect(response.statusCode).toBe(400);
+    });
+
+    it('should include access control JOIN and deleted_at filter', async () => {
+      mockQueryFn.mockResolvedValue({ rows: [{ count: '0' }] });
+
+      await app.inject({
+        method: 'GET',
+        url: '/api/search?q=test',
+      });
+
+      const countCall = mockQueryFn.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('COUNT(*)'),
+      );
+      expect(countCall).toBeDefined();
+      const sql = countCall![0] as string;
+      expect(sql).toContain('LEFT JOIN user_space_selections uss');
+      expect(sql).toContain('cp.deleted_at IS NULL');
+      expect(sql).toContain('cp.source');
+      expect(sql).toContain('cp.visibility');
+      // userId should be in the params
+      expect(countCall![1] as unknown[]).toContain('test-user-id');
     });
 
     it('should filter by spaceKey', async () => {

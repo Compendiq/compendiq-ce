@@ -133,11 +133,7 @@ export async function autoTagPage(
     body_html: string;
     labels: string[];
   }>(
-<<<<<<< HEAD
-    'SELECT body_html, labels FROM cached_pages WHERE confluence_id = $1 AND deleted_at IS NULL',
-=======
-    'SELECT body_html, labels FROM pages WHERE confluence_id = $1',
->>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))
+    'SELECT body_html, labels FROM pages WHERE confluence_id = $1 AND deleted_at IS NULL',
     [confluenceId],
   );
 

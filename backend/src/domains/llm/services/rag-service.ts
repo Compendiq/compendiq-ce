@@ -42,7 +42,6 @@ async function vectorSearch(userId: string, questionEmbedding: number[], limit =
               pe.embedding <=> $2 AS distance
        FROM page_embeddings pe
        JOIN pages cp ON pe.confluence_id = cp.confluence_id
-<<<<<<< HEAD
        LEFT JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
        WHERE (
          (cp.source = 'confluence' AND uss.space_key IS NOT NULL)
@@ -50,9 +49,6 @@ async function vectorSearch(userId: string, questionEmbedding: number[], limit =
          OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $1::int)
        )
        AND cp.deleted_at IS NULL
-=======
-       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
->>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))
        ORDER BY pe.embedding <=> $2
        LIMIT $3`,
       [userId, pgvector.toSql(questionEmbedding), limit],
@@ -78,12 +74,8 @@ async function vectorSearch(userId: string, questionEmbedding: number[], limit =
 
 /**
  * Keyword search: PostgreSQL full-text search on pages.
-<<<<<<< HEAD
  * Scoped to: Confluence pages in user's selected spaces + standalone articles
  * the user can access (shared, or private and owned by the user).
-=======
- * Scoped to pages in the user's selected spaces.
->>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))
  */
 async function keywordSearch(userId: string, questionText: string, limit = 10): Promise<SearchResult[]> {
   // Use plainto_tsquery which safely handles arbitrary user input
@@ -103,11 +95,7 @@ async function keywordSearch(userId: string, questionText: string, limit = 10): 
             ts_rank(to_tsvector('english', coalesce(cp.title, '') || ' ' || coalesce(cp.body_text, '')),
                     plainto_tsquery('english', $2)) AS rank
      FROM pages cp
-<<<<<<< HEAD
      LEFT JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
-=======
-     JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
->>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))
      WHERE to_tsvector('english', coalesce(cp.title, '') || ' ' || coalesce(cp.body_text, '')) @@ plainto_tsquery('english', $2)
        AND (
          (cp.source = 'confluence' AND uss.space_key IS NOT NULL)

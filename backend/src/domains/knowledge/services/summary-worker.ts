@@ -67,12 +67,8 @@ export async function getSummaryStatus(): Promise<SummaryStatus> {
       COUNT(*) FILTER (WHERE summary_status = 'pending')     AS pending,
       COUNT(*) FILTER (WHERE summary_status = 'failed')      AS failed,
       COUNT(*) FILTER (WHERE summary_status = 'skipped')     AS skipped
-<<<<<<< HEAD
-    FROM cached_pages
-    WHERE deleted_at IS NULL
-=======
     FROM pages
->>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))
+    WHERE deleted_at IS NULL
   `);
 
   const row = result.rows[0];
