@@ -274,16 +274,15 @@ export function PageViewPage() {
       transition={{ duration: 0.18 }}
       data-testid="article-page"
     >
-      {/* Sticky toolbar — rendered OUTSIDE glass-card-xl so sticky works */}
-      {editing && editorInstance && (
-        <div className="sticky top-0 z-30 rounded-t-xl border-b border-border/25 bg-card glass-card-xl overflow-visible">
-          <EditorToolbar editor={editorInstance} />
-          <TableContextToolbar editor={editorInstance} />
-        </div>
-      )}
-
       {/* Single unified document card */}
-      <div className={editing ? 'overflow-hidden glass-card-xl rounded-t-none' : 'overflow-hidden glass-card-xl'}>
+      <div className="glass-card-xl">
+        {/* Sticky toolbar — INSIDE the card, first child, so content scrolls under it */}
+        {editing && editorInstance && (
+          <div className="sticky top-0 z-30 border-b border-border/25 bg-card rounded-t-xl">
+            <EditorToolbar editor={editorInstance} />
+            <TableContextToolbar editor={editorInstance} />
+          </div>
+        )}
         {/* Breadcrumb / action strip */}
         <div className="flex items-center justify-between gap-4 border-b border-border/25 px-5 py-2 sm:px-7">
           <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground/60">
