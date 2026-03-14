@@ -540,7 +540,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       let spaceKey: string | null = null;
       if (body.spaceKey) {
         const spaceCheck = await query<{ source: string }>(
-          'SELECT source FROM cached_spaces WHERE space_key = $1',
+          'SELECT source FROM spaces WHERE space_key = $1',
           [body.spaceKey],
         );
         if (spaceCheck.rows.length > 0 && spaceCheck.rows[0].source === 'local') {
@@ -548,16 +548,21 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         }
       }
 
-      // Compute path and depth if parentId is provided
+      // Validate and compute path if parentId is provided
       let parentPath: string | null = null;
       if (body.parentId) {
-        const parentResult = await query<{ path: string | null }>(
-          'SELECT path FROM pages WHERE id = $1 AND deleted_at IS NULL',
+        const parentResult = await query<{ path: string | null; space_key: string | null }>(
+          'SELECT path, space_key FROM pages WHERE id = $1 AND deleted_at IS NULL',
           [body.parentId],
         );
-        if (parentResult.rows.length > 0) {
-          parentPath = parentResult.rows[0].path;
+        if (parentResult.rows.length === 0) {
+          throw fastify.httpErrors.badRequest('Parent page not found');
         }
+        // Verify parent belongs to the same space (when a space is specified)
+        if (spaceKey && parentResult.rows[0].space_key !== spaceKey) {
+          throw fastify.httpErrors.badRequest('Parent page must belong to the same space');
+        }
+        parentPath = parentResult.rows[0].path;
       }
 
       const result = await query<{ id: number; title: string; version: number }>(
