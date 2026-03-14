@@ -162,8 +162,9 @@ export function KPICards({ embeddingStatus, spacesCount, lastSynced }: KPICardsP
         <m.div
           key={label}
           variants={fadeUp}
+          className="h-full"
         >
-          <TiltCard className="glass-card p-4" maxTilt={10} data-testid={testId}>
+          <TiltCard className="glass-card p-4 h-full" maxTilt={10} data-testid={testId}>
             <div className="flex items-center gap-3">
               <div className={`rounded-lg bg-foreground/5 p-2 ${color}`}>
                 <Icon size={16} />
@@ -186,21 +187,22 @@ export function KPICards({ embeddingStatus, spacesCount, lastSynced }: KPICardsP
       {/* Embedding Coverage Ring - special card with SVG arc */}
       <m.div
         variants={fadeUp}
-        className="glass-card p-4"
-        data-testid="kpi-embedding-coverage"
+        className="h-full"
       >
-        <div className="flex items-center gap-3">
-          <EmbeddingCoverageRing
-            percent={embeddingStatus ? coveragePercent : 0}
-            isProcessing={embeddingStatus?.isProcessing ?? false}
-          />
-          <div className="min-w-0">
-            <p className="truncate text-xs text-muted-foreground">Embedding Coverage</p>
-            <p className="text-base font-semibold">
-              {embeddingStatus ? `${coveragePercent}%` : '--'}
-            </p>
+        <TiltCard className="glass-card p-4 h-full" maxTilt={10} data-testid="kpi-embedding-coverage">
+          <div className="flex items-center gap-3">
+            <EmbeddingCoverageRing
+              percent={embeddingStatus ? coveragePercent : 0}
+              isProcessing={embeddingStatus?.isProcessing ?? false}
+            />
+            <div className="min-w-0">
+              <p className="truncate text-xs text-muted-foreground">Embedding Coverage</p>
+              <p className="text-base font-semibold">
+                {embeddingStatus ? `${coveragePercent}%` : '--'}
+              </p>
+            </div>
           </div>
-        </div>
+        </TiltCard>
       </m.div>
     </m.div>
   );
