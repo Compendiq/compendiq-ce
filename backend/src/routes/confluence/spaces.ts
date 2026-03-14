@@ -15,7 +15,7 @@ export async function spacesRoutes(fastify: FastifyInstance) {
     const cached = await cache.get<unknown[]>(userId, 'spaces', 'list');
     if (cached) return cached;
 
-    // Fetch spaces the user has selected from shared cached_spaces
+    // Fetch spaces the user has selected from shared spaces
     const result = await query<{
       space_key: string;
       space_name: string;
@@ -23,7 +23,7 @@ export async function spacesRoutes(fastify: FastifyInstance) {
       last_synced: Date;
     }>(
       `SELECT cs.space_key, cs.space_name, cs.homepage_id, cs.last_synced
-       FROM cached_spaces cs
+       FROM spaces cs
        JOIN user_space_selections uss ON cs.space_key = uss.space_key AND uss.user_id = $1
        ORDER BY cs.space_name`,
       [userId],

@@ -128,7 +128,7 @@ async function syncSpace(client: ConfluenceClient, userId: string, spaceKey: str
   if (space) {
     const homepageId = space.homepage?.id ?? null;
     await query(
-      `INSERT INTO cached_spaces (space_key, space_name, homepage_id)
+      `INSERT INTO spaces (space_key, space_name, homepage_id)
        VALUES ($1, $2, $3)
        ON CONFLICT (space_key)
        DO UPDATE SET space_name = $2, homepage_id = $3, last_synced = NOW()`,
@@ -138,7 +138,7 @@ async function syncSpace(client: ConfluenceClient, userId: string, spaceKey: str
 
   // Check last sync time for incremental sync (global, not per-user)
   const lastSyncResult = await query<{ last_synced: Date }>(
-    'SELECT last_synced FROM cached_spaces WHERE space_key = $1',
+    'SELECT last_synced FROM spaces WHERE space_key = $1',
     [spaceKey],
   );
   const lastSynced = lastSyncResult.rows[0]?.last_synced;
@@ -181,7 +181,7 @@ async function syncSpace(client: ConfluenceClient, userId: string, spaceKey: str
 
   // Update space sync timestamp (shared table)
   await query(
-    'UPDATE cached_spaces SET last_synced = NOW() WHERE space_key = $1',
+    'UPDATE spaces SET last_synced = NOW() WHERE space_key = $1',
     [spaceKey],
   );
 }

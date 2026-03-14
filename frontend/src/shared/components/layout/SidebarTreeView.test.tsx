@@ -30,12 +30,21 @@ const mockSpaces = [
   { key: 'OPS', name: 'Operations', homepageId: null, lastSynced: '2026-03-01T00:00:00Z', pageCount: 2 },
 ];
 
-vi.mock('../hooks/use-pages', () => ({
+const mockLocalSpaces = [
+  { key: 'NOTES', name: 'My Notes', description: null, icon: null, pageCount: 3, createdBy: null, createdAt: '2026-03-01T00:00:00Z', source: 'local' as const },
+];
+
+vi.mock('../../hooks/use-pages', () => ({
   usePageTree: () => ({ data: mockTreeData, isLoading: false }),
 }));
 
-vi.mock('../hooks/use-spaces', () => ({
+vi.mock('../../hooks/use-spaces', () => ({
   useSpaces: () => ({ data: mockSpaces }),
+}));
+
+vi.mock('../../hooks/use-standalone', () => ({
+  useLocalSpaces: () => ({ data: mockLocalSpaces }),
+  useReorderPage: () => ({ mutate: vi.fn() }),
 }));
 
 function createWrapper(initialPath = '/pages') {
@@ -65,7 +74,7 @@ describe('SidebarTreeView', () => {
   it('renders "Pages" label in sidebar header (title moved to top header)', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
     expect(screen.getByText('Pages')).toBeInTheDocument();
-    // "AI KB Creator" title is no longer in the sidebar — it moved to AppLayout header
+    // "AI KB Creator" title is no longer in the sidebar -- it moved to AppLayout header
     expect(screen.queryByText('AI KB Creator')).not.toBeInTheDocument();
   });
 
@@ -111,11 +120,26 @@ describe('SidebarTreeView', () => {
     expect(screen.getByText('4 pages')).toBeInTheDocument();
   });
 
-  it('opens space dropdown and shows space options', () => {
+  it('opens space dropdown and shows confluence and local space options', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByText('All Spaces'));
     expect(screen.getByText('Development')).toBeInTheDocument();
     expect(screen.getByText('Operations')).toBeInTheDocument();
+    // Local space
+    expect(screen.getByText('My Notes')).toBeInTheDocument();
+  });
+
+  it('shows grouped space headers in dropdown', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText('All Spaces'));
+    expect(screen.getByText('Confluence')).toBeInTheDocument();
+    expect(screen.getByText('Local')).toBeInTheDocument();
+  });
+
+  it('shows "New Space" button in dropdown', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText('All Spaces'));
+    expect(screen.getByText('New Space')).toBeInTheDocument();
   });
 
   it('renders resize handle', () => {
@@ -182,6 +206,17 @@ describe('SidebarTreeView', () => {
     expect(screen.getByText('Installation')).toBeInTheDocument();
     expect(screen.getByText('Configuration')).toBeInTheDocument();
     expect(screen.queryByText('API Reference')).not.toBeInTheDocument();
+  });
+
+  it('has a New Space button in sidebar header', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    expect(screen.getByLabelText('New Space')).toBeInTheDocument();
+  });
+
+  it('navigates to new space page when New Space is clicked in header', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByLabelText('New Space'));
+    expect(mockNavigate).toHaveBeenCalledWith('/spaces/new');
   });
 });
 

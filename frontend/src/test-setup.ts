@@ -15,6 +15,14 @@ class MockIntersectionObserver {
 
 globalThis.IntersectionObserver = MockIntersectionObserver as unknown as typeof IntersectionObserver;
 
+// Mock ResizeObserver for jsdom (used by @dnd-kit/dom)
+class MockResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+globalThis.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver;
+
 // Mock matchMedia for jsdom (used by useCanHover, prefers-reduced-motion checks, and media query listeners)
 // Default: hover-capable device, no reduced motion
 if (!window.matchMedia) {
