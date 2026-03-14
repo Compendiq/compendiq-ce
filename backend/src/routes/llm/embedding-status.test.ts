@@ -111,29 +111,46 @@ describe('Embedding Status in API responses', () => {
     vi.clearAllMocks();
   });
 
+  // Common fields for standalone-aware GET /pages/:id (source, visibility, etc.)
+  const confluencePageDefaults = {
+    id: 1,
+    source: 'confluence',
+    visibility: 'shared',
+    created_by_user_id: null,
+    deleted_at: null,
+  };
+
+  // Helper: mock the page query + access control query for confluence pages
+  function mockDetailPageQuery(pageRow: Record<string, unknown>) {
+    mockQueryFn.mockImplementation((sql: string) => {
+      if (typeof sql === 'string' && sql.includes('user_space_selections')) {
+        return { rows: [{ '?column?': 1 }], rowCount: 1 };
+      }
+      return { rows: [{ ...confluencePageDefaults, ...pageRow }], rowCount: 1 };
+    });
+  }
+
   describe('GET /api/pages/:id', () => {
     it('should return embeddingStatus and embeddedAt for an embedded page', async () => {
       const embeddedAt = new Date('2026-03-01T12:00:00Z');
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{
-          confluence_id: 'page-1',
-          space_key: 'DEV',
-          title: 'Test Page',
-          body_storage: '<p>content</p>',
-          body_html: '<p>content</p>',
-          body_text: 'content',
-          version: 3,
-          parent_id: null,
-          labels: ['docs'],
-          author: 'testuser',
-          last_modified_at: new Date('2026-02-28'),
-          last_synced: new Date('2026-03-01'),
-          embedding_dirty: false,
-          embedding_status: 'embedded',
-          embedded_at: embeddedAt,
-          embedding_error: null,
-          has_children: false,
-        }],
+      mockDetailPageQuery({
+        confluence_id: 'page-1',
+        space_key: 'DEV',
+        title: 'Test Page',
+        body_storage: '<p>content</p>',
+        body_html: '<p>content</p>',
+        body_text: 'content',
+        version: 3,
+        parent_id: null,
+        labels: ['docs'],
+        author: 'testuser',
+        last_modified_at: new Date('2026-02-28'),
+        last_synced: new Date('2026-03-01'),
+        embedding_dirty: false,
+        embedding_status: 'embedded',
+        embedded_at: embeddedAt,
+        embedding_error: null,
+        has_children: false,
       });
 
       const response = await app.inject({
@@ -149,26 +166,24 @@ describe('Embedding Status in API responses', () => {
     });
 
     it('should return embeddingStatus "not_embedded" for a new page', async () => {
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{
-          confluence_id: 'page-2',
-          space_key: 'DEV',
-          title: 'New Page',
-          body_storage: '<p>new</p>',
-          body_html: '<p>new</p>',
-          body_text: 'new',
-          version: 1,
-          parent_id: null,
-          labels: [],
-          author: 'testuser',
-          last_modified_at: new Date('2026-03-10'),
-          last_synced: new Date('2026-03-10'),
-          embedding_dirty: true,
-          embedding_status: 'not_embedded',
-          embedded_at: null,
-          embedding_error: null,
-          has_children: false,
-        }],
+      mockDetailPageQuery({
+        confluence_id: 'page-2',
+        space_key: 'DEV',
+        title: 'New Page',
+        body_storage: '<p>new</p>',
+        body_html: '<p>new</p>',
+        body_text: 'new',
+        version: 1,
+        parent_id: null,
+        labels: [],
+        author: 'testuser',
+        last_modified_at: new Date('2026-03-10'),
+        last_synced: new Date('2026-03-10'),
+        embedding_dirty: true,
+        embedding_status: 'not_embedded',
+        embedded_at: null,
+        embedding_error: null,
+        has_children: false,
       });
 
       const response = await app.inject({
@@ -184,26 +199,24 @@ describe('Embedding Status in API responses', () => {
     });
 
     it('should return embeddingStatus "failed" with null error when no error stored', async () => {
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{
-          confluence_id: 'page-3',
-          space_key: 'DEV',
-          title: 'Failed Page',
-          body_storage: '<p>fail</p>',
-          body_html: '<p>fail</p>',
-          body_text: 'fail',
-          version: 2,
-          parent_id: null,
-          labels: [],
-          author: 'testuser',
-          last_modified_at: new Date('2026-03-05'),
-          last_synced: new Date('2026-03-05'),
-          embedding_dirty: true,
-          embedding_status: 'failed',
-          embedded_at: null,
-          embedding_error: null,
-          has_children: false,
-        }],
+      mockDetailPageQuery({
+        confluence_id: 'page-3',
+        space_key: 'DEV',
+        title: 'Failed Page',
+        body_storage: '<p>fail</p>',
+        body_html: '<p>fail</p>',
+        body_text: 'fail',
+        version: 2,
+        parent_id: null,
+        labels: [],
+        author: 'testuser',
+        last_modified_at: new Date('2026-03-05'),
+        last_synced: new Date('2026-03-05'),
+        embedding_dirty: true,
+        embedding_status: 'failed',
+        embedded_at: null,
+        embedding_error: null,
+        has_children: false,
       });
 
       const response = await app.inject({
@@ -218,26 +231,24 @@ describe('Embedding Status in API responses', () => {
     });
 
     it('should return embeddingError with the error message for a failed embedding', async () => {
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{
-          confluence_id: 'page-3b',
-          space_key: 'DEV',
-          title: 'Failed Page With Error',
-          body_storage: '<p>fail</p>',
-          body_html: '<p>fail</p>',
-          body_text: 'fail',
-          version: 2,
-          parent_id: null,
-          labels: [],
-          author: 'testuser',
-          last_modified_at: new Date('2026-03-05'),
-          last_synced: new Date('2026-03-05'),
-          embedding_dirty: true,
-          embedding_status: 'failed',
-          embedded_at: null,
-          embedding_error: 'Model nomic-embed-text not found',
-          has_children: false,
-        }],
+      mockDetailPageQuery({
+        confluence_id: 'page-3b',
+        space_key: 'DEV',
+        title: 'Failed Page With Error',
+        body_storage: '<p>fail</p>',
+        body_html: '<p>fail</p>',
+        body_text: 'fail',
+        version: 2,
+        parent_id: null,
+        labels: [],
+        author: 'testuser',
+        last_modified_at: new Date('2026-03-05'),
+        last_synced: new Date('2026-03-05'),
+        embedding_dirty: true,
+        embedding_status: 'failed',
+        embedded_at: null,
+        embedding_error: 'Model nomic-embed-text not found',
+        has_children: false,
       });
 
       const response = await app.inject({
@@ -252,26 +263,24 @@ describe('Embedding Status in API responses', () => {
     });
 
     it('should return embeddingStatus "embedding" for a page being processed', async () => {
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{
-          confluence_id: 'page-4',
-          space_key: 'DEV',
-          title: 'Processing Page',
-          body_storage: '<p>processing</p>',
-          body_html: '<p>processing</p>',
-          body_text: 'processing',
-          version: 2,
-          parent_id: null,
-          labels: [],
-          author: 'testuser',
-          last_modified_at: new Date('2026-03-08'),
-          last_synced: new Date('2026-03-08'),
-          embedding_dirty: true,
-          embedding_status: 'embedding',
-          embedded_at: null,
-          embedding_error: null,
-          has_children: false,
-        }],
+      mockDetailPageQuery({
+        confluence_id: 'page-4',
+        space_key: 'DEV',
+        title: 'Processing Page',
+        body_storage: '<p>processing</p>',
+        body_html: '<p>processing</p>',
+        body_text: 'processing',
+        version: 2,
+        parent_id: null,
+        labels: [],
+        author: 'testuser',
+        last_modified_at: new Date('2026-03-08'),
+        last_synced: new Date('2026-03-08'),
+        embedding_dirty: true,
+        embedding_status: 'embedding',
+        embedded_at: null,
+        embedding_error: null,
+        has_children: false,
       });
 
       const response = await app.inject({
@@ -285,26 +294,24 @@ describe('Embedding Status in API responses', () => {
     });
 
     it('should return hasChildren true when page has child pages', async () => {
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{
-          confluence_id: 'page-5',
-          space_key: 'DEV',
-          title: 'Parent Page',
-          body_storage: '<p>parent</p>',
-          body_html: '<p>parent</p>',
-          body_text: 'parent',
-          version: 1,
-          parent_id: null,
-          labels: [],
-          author: 'testuser',
-          last_modified_at: new Date('2026-03-10'),
-          last_synced: new Date('2026-03-10'),
-          embedding_dirty: false,
-          embedding_status: 'embedded',
-          embedded_at: new Date('2026-03-10'),
-          embedding_error: null,
-          has_children: true,
-        }],
+      mockDetailPageQuery({
+        confluence_id: 'page-5',
+        space_key: 'DEV',
+        title: 'Parent Page',
+        body_storage: '<p>parent</p>',
+        body_html: '<p>parent</p>',
+        body_text: 'parent',
+        version: 1,
+        parent_id: null,
+        labels: [],
+        author: 'testuser',
+        last_modified_at: new Date('2026-03-10'),
+        last_synced: new Date('2026-03-10'),
+        embedding_dirty: false,
+        embedding_status: 'embedded',
+        embedded_at: new Date('2026-03-10'),
+        embedding_error: null,
+        has_children: true,
       });
 
       const response = await app.inject({

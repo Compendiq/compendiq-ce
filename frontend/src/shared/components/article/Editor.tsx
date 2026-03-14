@@ -113,7 +113,7 @@ function ToolbarSeparator() {
 
 export function EditorToolbar({ editor }: { editor: EditorType }) {
   return (
-    <div className="sticky top-0 z-10 flex flex-wrap items-center gap-0.5 border-b border-border/50 bg-card/95 backdrop-blur-sm px-2 py-1.5">
+    <div className="flex flex-wrap items-center gap-0.5 px-2 py-1.5">
       <ToolbarButton onClick={() => editor.chain().focus().toggleBold().run()} active={editor.isActive('bold')} title="Bold">
         <Bold size={16} />
       </ToolbarButton>
@@ -199,7 +199,7 @@ export function TableContextToolbar({ editor }: { editor: EditorType }) {
   return (
     <div
       data-testid="table-context-toolbar"
-      className="sticky top-[37px] z-10 flex flex-wrap items-center gap-0.5 border-b border-border/50 bg-card/95 backdrop-blur-sm px-2 py-1.5"
+      className="flex flex-wrap items-center gap-0.5 border-t border-border/50 px-2 py-1.5"
     >
       <span className="mr-1 text-xs font-medium text-muted-foreground select-none">Table</span>
 
@@ -375,8 +375,12 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
 
   return (
     <div className={naked ? '' : 'glass-card'}>
-      {editable && editor && !hideToolbar && <EditorToolbar editor={editor} />}
-      {editable && editor && !hideToolbar && <TableContextToolbar editor={editor} />}
+      {editable && editor && !hideToolbar && (
+        <div className="sticky top-0 z-30 rounded-t-xl border-b border-border/50 bg-card before:absolute before:bottom-full before:left-0 before:right-0 before:h-[200px] before:bg-background">
+          <EditorToolbar editor={editor} />
+          <TableContextToolbar editor={editor} />
+        </div>
+      )}
       <EditorContent
         editor={editor}
         className={cn(

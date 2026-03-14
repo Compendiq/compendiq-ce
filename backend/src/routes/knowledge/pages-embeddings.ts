@@ -25,7 +25,7 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
       last_modified_at: Date | null;
     }>(
       `SELECT cp.confluence_id, cp.space_key, cp.title, cp.labels, cp.embedding_status, cp.last_modified_at
-       FROM cached_pages cp
+       FROM pages cp
        JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
        ORDER BY cp.title ASC`,
       [userId],
@@ -38,7 +38,7 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
     }>(
       `SELECT pe.confluence_id, COUNT(*) as count
        FROM page_embeddings pe
-       JOIN cached_pages cp ON pe.confluence_id = cp.confluence_id
+       JOIN pages cp ON pe.confluence_id = cp.confluence_id
        JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
        GROUP BY pe.confluence_id`,
       [userId],

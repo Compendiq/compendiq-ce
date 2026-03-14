@@ -2,7 +2,7 @@ import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { m } from 'framer-motion';
-import { Search, FileText, Plus, RefreshCw, ChevronLeft, ChevronRight, FolderOpen, Filter, X, List, Loader2 } from 'lucide-react';
+import { Search, FileText, Plus, RefreshCw, ChevronLeft, ChevronRight, FolderOpen, Filter, X, List, Loader2, Trash2, Lock, Globe } from 'lucide-react';
 import DOMPurify from 'dompurify';
 import { toast } from 'sonner';
 import { usePages, usePageFilterOptions, usePage, useEmbeddingStatus } from '../../shared/hooks/use-pages';
@@ -32,6 +32,7 @@ export function PagesPage() {
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState<'title' | 'modified' | 'author' | 'quality'>('modified');
+  const [sourceFilter, setSourceFilter] = useState<string>('');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   const { data: settings } = useSettings();
@@ -95,7 +96,7 @@ export function PagesPage() {
     }
   }, [embeddingStatusData, queryClient]);
 
-  const activeFilterCount = [author, labels, freshness, embeddingStatus, qualityFilter, dateFrom, dateTo].filter(Boolean).length;
+  const activeFilterCount = [author, labels, freshness, embeddingStatus, qualityFilter, dateFrom, dateTo, sourceFilter].filter(Boolean).length;
 
   const clearAllFilters = useCallback(() => {
     setAuthor('');
@@ -105,6 +106,7 @@ export function PagesPage() {
     setQualityFilter('');
     setDateFrom('');
     setDateTo('');
+    setSourceFilter('');
     setPage(1);
   }, []);
 
@@ -138,10 +140,18 @@ export function PagesPage() {
         <div>
           <h1 className="text-2xl font-bold">Pages</h1>
           <p className="text-sm text-muted-foreground">
-            Browse and manage your Confluence knowledge base
+            Browse and manage your knowledge base
           </p>
         </div>
         <div className="flex gap-2">
+          <button
+            onClick={() => navigate('/trash')}
+            className="glass-card flex items-center gap-2 px-4 py-2 text-sm hover:bg-foreground/5"
+            data-testid="trash-link"
+          >
+            <Trash2 size={16} />
+            Trash
+          </button>
           <button
             onClick={() => syncMutation.mutate()}
             disabled={syncStatus?.status === 'syncing'}
@@ -228,6 +238,17 @@ export function PagesPage() {
             {spaces?.map((s) => (
               <option key={s.key} value={s.key}>{s.name}</option>
             ))}
+          </select>
+
+          <select
+            value={sourceFilter}
+            onChange={(e) => { setSourceFilter(e.target.value); setPage(1); }}
+            className="glass-select"
+            data-testid="filter-source"
+          >
+            <option value="">All Sources</option>
+            <option value="confluence">Confluence</option>
+            <option value="local">Local</option>
           </select>
 
           <select
@@ -464,9 +485,33 @@ export function PagesPage() {
                   className="flex min-w-0 flex-1 items-center gap-4"
                 >
                   <div className="min-w-0 flex-1 text-left">
-                    <p className="truncate font-medium">{pageItem.title}</p>
+                    <div className="flex items-center gap-2">
+                      <p className="truncate font-medium">{pageItem.title}</p>
+                      {/* Source badge */}
+                      {pageItem.spaceKey === '__local__' ? (
+                        <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-500" data-testid={`source-badge-${pageItem.id}`}>
+                          Local
+                        </span>
+                      ) : (
+                        <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-blue-500/15 px-2 py-0.5 text-[10px] font-medium text-blue-500" data-testid={`source-badge-${pageItem.id}`}>
+                          Confluence
+                        </span>
+                      )}
+                      {/* Visibility badge for standalone articles */}
+                      {pageItem.spaceKey === '__local__' && (
+                        ('visibility' in pageItem && (pageItem as Record<string, unknown>).visibility === 'shared') ? (
+                          <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-sky-500/15 px-2 py-0.5 text-[10px] font-medium text-sky-500" data-testid={`visibility-badge-${pageItem.id}`}>
+                            <Globe size={10} /> Shared
+                          </span>
+                        ) : (
+                          <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-500" data-testid={`visibility-badge-${pageItem.id}`}>
+                            <Lock size={10} /> Private
+                          </span>
+                        )
+                      )}
+                    </div>
                     <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                      <span>{pageItem.spaceKey}</span>
+                      {pageItem.spaceKey !== '__local__' && <span>{pageItem.spaceKey}</span>}
                       {pageItem.author && <span>{pageItem.author}</span>}
                       {pageItem.lastModifiedAt && (
                         <span>{new Date(pageItem.lastModifiedAt).toLocaleDateString()}</span>

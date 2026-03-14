@@ -16,6 +16,7 @@ import { healthRoutes } from './routes/foundation/health.js';
 import { authRoutes } from './routes/foundation/auth.js';
 import { settingsRoutes } from './routes/foundation/settings.js';
 import { adminRoutes } from './routes/foundation/admin.js';
+import { rbacRoutes } from './routes/foundation/rbac.js';
 // Confluence routes
 import { spacesRoutes } from './routes/confluence/spaces.js';
 import { syncRoutes } from './routes/confluence/sync.js';
@@ -36,6 +37,16 @@ import { pagesDuplicateRoutes } from './routes/knowledge/pages-duplicates.js';
 import { pinnedPagesRoutes } from './routes/knowledge/pinned-pages.js';
 import { analyticsRoutes } from './routes/knowledge/analytics.js';
 import { knowledgeAdminRoutes } from './routes/knowledge/knowledge-admin.js';
+import { templateRoutes } from './routes/knowledge/templates.js';
+import { pagesExportRoutes } from './routes/knowledge/pages-export.js';
+import { commentsRoutes } from './routes/knowledge/comments.js';
+import { pagesImportRoutes } from './routes/knowledge/pages-import.js';
+import { contentAnalyticsRoutes } from './routes/knowledge/content-analytics.js';
+import { verificationRoutes } from './routes/knowledge/verification.js';
+import { notificationRoutes } from './routes/foundation/notifications.js';
+import { knowledgeRequestRoutes } from './routes/knowledge/knowledge-requests.js';
+import { searchRoutes } from './routes/knowledge/search.js';
+import { localSpacesRoutes } from './routes/knowledge/local-spaces.js';
 
 import { ZodError } from 'zod';
 import { trackError } from './core/services/error-tracker.js';
@@ -134,6 +145,7 @@ export async function buildApp() {
   await app.register(authRoutes, { prefix: '/api/auth' });
   await app.register(settingsRoutes, { prefix: '/api' });
   await app.register(adminRoutes, { prefix: '/api' });
+  await app.register(rbacRoutes, { prefix: '/api' });
 
   // Confluence routes
   await app.register(spacesRoutes, { prefix: '/api' });
@@ -157,6 +169,16 @@ export async function buildApp() {
   await app.register(pinnedPagesRoutes, { prefix: '/api' });
   await app.register(analyticsRoutes, { prefix: '/api' });
   await app.register(knowledgeAdminRoutes, { prefix: '/api' });
+  await app.register(templateRoutes, { prefix: '/api' });
+  await app.register(pagesExportRoutes, { prefix: '/api' });
+  await app.register(commentsRoutes, { prefix: '/api' });
+  await app.register(pagesImportRoutes, { prefix: '/api' });
+  await app.register(contentAnalyticsRoutes, { prefix: '/api' });
+  await app.register(verificationRoutes, { prefix: '/api' });
+  await app.register(notificationRoutes, { prefix: '/api' });
+  await app.register(knowledgeRequestRoutes, { prefix: '/api' });
+  await app.register(searchRoutes, { prefix: '/api' });
+  await app.register(localSpacesRoutes, { prefix: '/api' });
 
   return app;
 }

@@ -133,7 +133,7 @@ export async function autoTagPage(
     body_html: string;
     labels: string[];
   }>(
-    'SELECT body_html, labels FROM cached_pages WHERE confluence_id = $1',
+    'SELECT body_html, labels FROM pages WHERE confluence_id = $1 AND deleted_at IS NULL',
     [confluenceId],
   );
 
@@ -155,7 +155,7 @@ export async function autoTagPage(
 }
 
 /**
- * Apply tags to a page's cached_pages labels column.
+ * Apply tags to a page's pages labels column.
  */
 export async function applyTags(
   userId: string,
@@ -164,7 +164,7 @@ export async function applyTags(
 ): Promise<string[]> {
   // Merge with existing labels (avoid duplicates)
   const existing = await query<{ labels: string[] }>(
-    'SELECT labels FROM cached_pages WHERE confluence_id = $1',
+    'SELECT labels FROM pages WHERE confluence_id = $1',
     [confluenceId],
   );
 
@@ -176,7 +176,7 @@ export async function applyTags(
   const mergedLabels = Array.from(new Set([...existingLabels, ...tags]));
 
   await query(
-    'UPDATE cached_pages SET labels = $2 WHERE confluence_id = $1',
+    'UPDATE pages SET labels = $2 WHERE confluence_id = $1',
     [confluenceId, mergedLabels],
   );
 
@@ -208,9 +208,10 @@ export async function autoTagAllPages(
     body_html: string;
   }>(
     `SELECT cp.confluence_id, cp.body_html
-     FROM cached_pages cp
+     FROM pages cp
      JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
-     WHERE (cp.labels IS NULL OR array_length(cp.labels, 1) IS NULL)
+     WHERE cp.deleted_at IS NULL
+       AND (cp.labels IS NULL OR array_length(cp.labels, 1) IS NULL)
        AND cp.body_html IS NOT NULL`,
     [userId],
   );

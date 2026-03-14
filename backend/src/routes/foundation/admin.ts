@@ -148,7 +148,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
   fastify.get('/admin/labels', ADMIN_RATE_LIMIT, async () => {
     const result = await query<{ label: string; page_count: number }>(
       `SELECT unnest(labels) as label, COUNT(*) as page_count
-       FROM cached_pages
+       FROM pages
        WHERE labels IS NOT NULL AND array_length(labels, 1) > 0
        GROUP BY label
        ORDER BY label ASC`,
@@ -166,7 +166,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
 
     // Replace oldName with newName in the labels array for all pages that have the old label
     const result = await query(
-      `UPDATE cached_pages
+      `UPDATE pages
        SET labels = array_replace(labels, $1, $2)
        WHERE $1 = ANY(labels)`,
       [oldName, newName],
@@ -192,7 +192,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
     const { name } = LabelNameParamSchema.parse(request.params);
 
     const result = await query(
-      `UPDATE cached_pages
+      `UPDATE pages
        SET labels = array_remove(labels, $1)
        WHERE $1 = ANY(labels)`,
       [name],
@@ -285,7 +285,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
     }
 
     // Mark all pages dirty for re-embedding since chunk settings changed globally
-    await query('UPDATE cached_pages SET embedding_dirty = TRUE');
+    await query('UPDATE pages SET embedding_dirty = TRUE');
     logger.info({ userId: request.userId, updates }, 'Admin chunk settings changed, all pages marked dirty');
 
     await logAuditEvent(

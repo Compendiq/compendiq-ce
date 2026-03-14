@@ -85,7 +85,7 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
 
     // Fetch existing labels
     const existing = await query<{ labels: string[] }>(
-      'SELECT labels FROM cached_pages WHERE confluence_id = $1',
+      'SELECT labels FROM pages WHERE confluence_id = $1',
       [id],
     );
 
@@ -111,7 +111,7 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
     }
 
     await query(
-      'UPDATE cached_pages SET labels = $2 WHERE confluence_id = $1',
+      'UPDATE pages SET labels = $2 WHERE confluence_id = $1',
       [id, labels],
     );
 

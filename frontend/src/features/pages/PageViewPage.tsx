@@ -2,12 +2,13 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, m } from 'framer-motion';
-import { FileText, FolderOpen, X } from 'lucide-react';
+import { FileText, FolderOpen, X, Upload, ShieldCheck, Globe, Lock, ThumbsUp, ThumbsDown, AlertCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   usePage,
   useUpdatePage,
 } from '../../shared/hooks/use-pages';
+import { useSubmitFeedback, useVerifyPage } from '../../shared/hooks/use-standalone';
 import { useAuthenticatedSrc } from '../../shared/hooks/use-authenticated-src';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { useArticleViewStore } from '../../stores/article-view-store';
@@ -273,23 +274,53 @@ export function PageViewPage() {
       transition={{ duration: 0.18 }}
       data-testid="article-page"
     >
-      {/* Sticky toolbar — rendered OUTSIDE glass-card-xl so sticky works */}
+      {/* Sticky toolbar — ABOVE the card, sticks at top-0 with no movement */}
       {editing && editorInstance && (
-        <div className="sticky top-0 z-20 rounded-t-xl border-b border-border/25 bg-card/95 backdrop-blur-sm glass-card-xl overflow-visible">
+        <div className="sticky top-0 z-30 border border-border/25 bg-card rounded-t-xl shadow-[0_8px_32px_var(--glass-shadow)] before:absolute before:-z-10 before:-top-[100px] before:bottom-0 before:-left-[14px] before:-right-[14px] sm:before:-left-[22px] sm:before:-right-[22px] before:bg-background">
           <EditorToolbar editor={editorInstance} />
           <TableContextToolbar editor={editorInstance} />
         </div>
       )}
-
       {/* Single unified document card */}
-      <div className={editing ? 'overflow-hidden glass-card-xl rounded-t-none' : 'overflow-hidden glass-card-xl'}>
+      <div
+        className={editing ? 'glass-card-xl rounded-t-none -mt-px' : 'glass-card-xl'}
+        style={editing ? { clipPath: 'inset(0 -100px -100px -100px round 0 0 var(--radius-xl) var(--radius-xl))' } : undefined}
+      >
         {/* Breadcrumb / action strip */}
         <div className="flex items-center justify-between gap-4 border-b border-border/25 px-5 py-2 sm:px-7">
           <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground/60">
             {page.hasChildren
               ? <FolderOpen size={12} className="shrink-0" />
               : <FileText size={12} className="shrink-0" />}
-            <span className="truncate">{page.spaceKey}</span>
+            {page.spaceKey !== '__local__' && <span className="truncate">{page.spaceKey}</span>}
+            {/* Source badge */}
+            {page.spaceKey === '__local__' ? (
+              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-500" data-testid="source-badge">
+                Local
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 rounded-full bg-blue-500/15 px-2 py-0.5 text-[10px] font-medium text-blue-500" data-testid="source-badge">
+                Confluence
+              </span>
+            )}
+            {/* Visibility badge for standalone articles */}
+            {page.spaceKey === '__local__' && (
+              'visibility' in page && (page as Record<string, unknown>).visibility === 'shared' ? (
+                <span className="inline-flex items-center gap-1 rounded-full bg-sky-500/15 px-2 py-0.5 text-[10px] font-medium text-sky-500" data-testid="visibility-badge">
+                  <Globe size={10} /> Shared
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-500" data-testid="visibility-badge">
+                  <Lock size={10} /> Private
+                </span>
+              )
+            )}
+            {/* Draft indicator */}
+            {'hasDraft' in page && Boolean((page as Record<string, unknown>).hasDraft) && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-orange-500/15 px-2 py-0.5 text-[10px] font-medium text-orange-500" data-testid="draft-indicator">
+                <AlertCircle size={10} /> Draft
+              </span>
+            )}
             <QualityScoreBadge
               qualityScore={page.qualityScore ?? null}
               qualityStatus={page.qualityStatus ?? null}
@@ -322,12 +353,27 @@ export function PageViewPage() {
                 </button>
               </>
             ) : (
-              <button
-                onClick={handleStartEditing}
-                className="rounded-md px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
-              >
-                Edit
-              </button>
+              <>
+                {/* Publish to Confluence for standalone articles */}
+                {page.spaceKey === '__local__' && (
+                  <button
+                    onClick={() => toast.info('Publish to Confluence coming soon')}
+                    className="rounded-md px-2.5 py-1 text-xs text-blue-500 transition-colors hover:bg-blue-500/10"
+                    data-testid="publish-confluence-btn"
+                  >
+                    <Upload size={12} className="mr-1 inline" />
+                    Publish to Confluence
+                  </button>
+                )}
+                {/* Verify button */}
+                <VerifyButton pageId={id} />
+                <button
+                  onClick={handleStartEditing}
+                  className="rounded-md px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+                >
+                  Edit
+                </button>
+              </>
             )}
           </div>
         </div>
@@ -383,6 +429,9 @@ export function PageViewPage() {
                 pageId={id}
               />
             </FeatureErrorBoundary>
+
+            {/* Feedback widget */}
+            <FeedbackWidget pageId={id} />
           </div>
         )}
       </div>
@@ -405,5 +454,80 @@ export function PageViewPage() {
         />
       )}
     </m.div>
+  );
+}
+
+function FeedbackWidget({ pageId }: { pageId: string | undefined }) {
+  const [submitted, setSubmitted] = useState(false);
+  const numericId = pageId ? Number(pageId) : 0;
+  const submitFeedback = useSubmitFeedback(numericId);
+
+  const handleFeedback = async (helpful: boolean) => {
+    if (!pageId) return;
+    try {
+      await submitFeedback.mutateAsync({ helpful });
+      setSubmitted(true);
+      toast.success('Thank you for your feedback!');
+    } catch {
+      toast.error('Failed to submit feedback');
+    }
+  };
+
+  if (submitted) {
+    return (
+      <div className="mt-12 border-t border-border/25 pt-6 text-center" data-testid="feedback-widget">
+        <p className="text-sm text-muted-foreground">Thanks for your feedback!</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-12 border-t border-border/25 pt-6" data-testid="feedback-widget">
+      <p className="mb-3 text-sm font-medium text-muted-foreground">Was this article helpful?</p>
+      <div className="flex gap-2">
+        <button
+          onClick={() => handleFeedback(true)}
+          disabled={submitFeedback.isPending}
+          className="flex items-center gap-1.5 rounded-lg bg-emerald-500/10 px-4 py-2 text-sm text-emerald-500 transition-colors hover:bg-emerald-500/20 disabled:opacity-50"
+          data-testid="feedback-helpful"
+        >
+          <ThumbsUp size={14} /> Yes
+        </button>
+        <button
+          onClick={() => handleFeedback(false)}
+          disabled={submitFeedback.isPending}
+          className="flex items-center gap-1.5 rounded-lg bg-red-500/10 px-4 py-2 text-sm text-red-500 transition-colors hover:bg-red-500/20 disabled:opacity-50"
+          data-testid="feedback-not-helpful"
+        >
+          <ThumbsDown size={14} /> No
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function VerifyButton({ pageId }: { pageId: string | undefined }) {
+  const verifyMutation = useVerifyPage();
+
+  const handleVerify = async () => {
+    if (!pageId) return;
+    try {
+      await verifyMutation.mutateAsync({ pageId: Number(pageId), verified: true });
+      toast.success('Page verified');
+    } catch {
+      toast.error('Failed to verify page');
+    }
+  };
+
+  return (
+    <button
+      onClick={handleVerify}
+      disabled={verifyMutation.isPending}
+      className="rounded-md px-2.5 py-1 text-xs text-emerald-500 transition-colors hover:bg-emerald-500/10 disabled:opacity-50"
+      data-testid="verify-btn"
+    >
+      <ShieldCheck size={12} className="mr-1 inline" />
+      {verifyMutation.isPending ? 'Verifying...' : 'Verify'}
+    </button>
   );
 }

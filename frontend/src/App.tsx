@@ -39,6 +39,11 @@ const AiAssistantPage = lazy(() =>
     default: m.AiAssistantPage,
   })),
 );
+const TrashPage = lazy(() =>
+  import('./features/pages/TrashPage').then((m) => ({
+    default: m.TrashPage,
+  })),
+);
 const GraphPage = lazy(() =>
   import('./features/graph/GraphPage').then((m) => ({
     default: m.GraphPage,
@@ -97,6 +102,7 @@ export function App() {
                             path="/pages/:id"
                             element={<PageViewPage />}
                           />
+                          <Route path="/trash" element={<TrashPage />} />
                           <Route path="/ai" element={<AiAssistantPage />} />
                           <Route path="/graph" element={<GraphPage />} />
                           <Route

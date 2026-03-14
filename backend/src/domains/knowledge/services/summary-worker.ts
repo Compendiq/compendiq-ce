@@ -1,7 +1,7 @@
 /**
  * Background auto-summarizer worker.
  *
- * Periodically scans cached_pages for articles that need summarization
+ * Periodically scans pages for articles that need summarization
  * (never summarized, content changed, or failed with retries remaining)
  * and generates summaries using the LLM service.
  *
@@ -67,7 +67,8 @@ export async function getSummaryStatus(): Promise<SummaryStatus> {
       COUNT(*) FILTER (WHERE summary_status = 'pending')     AS pending,
       COUNT(*) FILTER (WHERE summary_status = 'failed')      AS failed,
       COUNT(*) FILTER (WHERE summary_status = 'skipped')     AS skipped
-    FROM cached_pages
+    FROM pages
+    WHERE deleted_at IS NULL
   `);
 
   const row = result.rows[0];
@@ -142,8 +143,9 @@ interface SummaryCandidate {
 async function findCandidates(batchSize: number): Promise<SummaryCandidate[]> {
   const result = await query<SummaryCandidate>(
     `SELECT confluence_id, body_text, summary_content_hash, summary_retry_count, title
-     FROM cached_pages
+     FROM pages
      WHERE summary_status IN ('pending', 'failed')
+       AND deleted_at IS NULL
        AND (summary_status = 'pending' OR summary_retry_count < $1)
      ORDER BY
        CASE summary_status WHEN 'pending' THEN 0 ELSE 1 END,
@@ -166,7 +168,7 @@ async function summarizePage(
   // Skip empty/short content
   if (!body_text || body_text.length < MIN_BODY_LENGTH) {
     await query(
-      `UPDATE cached_pages
+      `UPDATE pages
        SET summary_status = 'skipped',
            summary_error = 'Content too short for summarization'
        WHERE confluence_id = $1`,
@@ -180,7 +182,7 @@ async function summarizePage(
 
   // Mark as summarizing
   await query(
-    `UPDATE cached_pages SET summary_status = 'summarizing' WHERE confluence_id = $1`,
+    `UPDATE pages SET summary_status = 'summarizing' WHERE confluence_id = $1`,
     [confluence_id],
   );
 
@@ -199,7 +201,7 @@ async function summarizePage(
 
     // Store result
     await query(
-      `UPDATE cached_pages
+      `UPDATE pages
        SET summary_text = $1,
            summary_html = $2,
            summary_status = 'summarized',
@@ -221,7 +223,7 @@ async function summarizePage(
     const newStatus = 'failed';
 
     await query(
-      `UPDATE cached_pages
+      `UPDATE pages
        SET summary_status = $1,
            summary_error = $2,
            summary_retry_count = $3
@@ -248,9 +250,10 @@ export async function runSummaryBatch(model?: string): Promise<{ processed: numb
 
   // Phase 1: Detect content changes (hash mismatch) and mark as pending
   await query(
-    `UPDATE cached_pages
+    `UPDATE pages
      SET summary_status = 'pending'
      WHERE summary_status = 'summarized'
+       AND deleted_at IS NULL
        AND summary_content_hash IS NOT NULL
        AND body_text IS NOT NULL
        AND length(body_text) >= $1
@@ -345,11 +348,12 @@ export function stopSummaryWorker(): void {
  */
 export async function rescanAllSummaries(): Promise<number> {
   const result = await query(
-    `UPDATE cached_pages
+    `UPDATE pages
      SET summary_content_hash = NULL,
          summary_status = 'pending',
          summary_retry_count = 0
      WHERE summary_status != 'skipped'
+       AND deleted_at IS NULL
      RETURNING confluence_id`,
   );
   return result.rowCount ?? 0;
@@ -360,7 +364,7 @@ export async function rescanAllSummaries(): Promise<number> {
  */
 export async function regenerateSummary(pageId: string): Promise<void> {
   await query(
-    `UPDATE cached_pages
+    `UPDATE pages
      SET summary_status = 'pending',
          summary_content_hash = NULL,
          summary_retry_count = 0,

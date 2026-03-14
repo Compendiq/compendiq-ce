@@ -27,7 +27,7 @@ export async function pinnedPagesRoutes(fastify: FastifyInstance) {
       `SELECT pp.page_id, pp.pin_order, pp.pinned_at,
               cp.confluence_id, cp.space_key, cp.title, cp.author, cp.last_modified_at, cp.body_text
        FROM pinned_pages pp
-       JOIN cached_pages cp ON cp.confluence_id = pp.page_id
+       JOIN pages cp ON cp.confluence_id = pp.page_id
        WHERE pp.user_id = $1
        ORDER BY pp.pinned_at DESC`,
       [userId],
@@ -55,7 +55,7 @@ export async function pinnedPagesRoutes(fastify: FastifyInstance) {
 
     // Verify the page exists for this user
     const pageResult = await query<{ confluence_id: string }>(
-      `SELECT cp.confluence_id FROM cached_pages cp
+      `SELECT cp.confluence_id FROM pages cp
        JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
        WHERE cp.confluence_id = $2`,
       [userId, id],

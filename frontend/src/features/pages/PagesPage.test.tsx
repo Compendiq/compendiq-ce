@@ -287,9 +287,10 @@ describe('PagesPage', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     const title = await screen.findByText('Test Page');
     expect(title).toBeInTheDocument();
-    // Title container should have text-left alignment
-    const container = title.parentElement!;
-    expect(container.className).toContain('text-left');
+    // Title ancestor container should have text-left alignment
+    // (title is inside a flex wrapper for badges, which is inside the text-left container)
+    const textLeftAncestor = title.closest('.text-left');
+    expect(textLeftAncestor).not.toBeNull();
   });
 
   it('shows embedding progress banner when embedding is processing', async () => {

@@ -24,7 +24,7 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
 
     const pageResult = await query<{ body_storage: string | null; space_key: string }>(
       `SELECT cp.body_storage, cp.space_key
-       FROM cached_pages cp
+       FROM pages cp
        JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
        WHERE cp.confluence_id = $2`,
       [userId, pageId],
@@ -205,7 +205,7 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
     // Verify the page belongs to the user's selected spaces
     const pageResult = await query<{ body_storage: string | null; space_key: string }>(
       `SELECT cp.body_storage, cp.space_key
-       FROM cached_pages cp
+       FROM pages cp
        JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
        WHERE cp.confluence_id = $2`,
       [userId, pageId],

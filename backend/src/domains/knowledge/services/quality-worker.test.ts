@@ -225,7 +225,7 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
   describe('processBatch', () => {
     it('should analyze pending pages', async () => {
       await query(
-        `INSERT INTO cached_pages (confluence_id, space_key, title, body_text, body_html, quality_status)
+        `INSERT INTO pages (confluence_id, space_key, title, body_text, body_html, quality_status)
          VALUES ('q1', $1, 'Quality Page', 'Some content for analysis', '<p>Some content for analysis</p>', 'pending')`,
         [testSpaceKey],
       );
@@ -234,7 +234,7 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
       expect(processed).toBe(1);
 
       const result = await query<{ quality_status: string; quality_score: number; quality_retry_count: number }>(
-        "SELECT quality_status, quality_score, quality_retry_count FROM cached_pages WHERE confluence_id = 'q1'",
+        "SELECT quality_status, quality_score, quality_retry_count FROM pages WHERE confluence_id = 'q1'",
       );
       expect(result.rows[0].quality_status).toBe('analyzed');
       expect(result.rows[0].quality_score).toBe(75);
@@ -244,7 +244,7 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
     it('should not pick up failed pages that have exhausted retries', async () => {
       // Insert a failed page with retry count at MAX_RETRIES (3)
       await query(
-        `INSERT INTO cached_pages (confluence_id, space_key, title, body_text, body_html, quality_status, quality_retry_count, quality_analyzed_at)
+        `INSERT INTO pages (confluence_id, space_key, title, body_text, body_html, quality_status, quality_retry_count, quality_analyzed_at)
          VALUES ('exhausted1', $1, 'Exhausted Page', 'Some content', '<p>Some content</p>', 'failed', 3, NOW())`,
         [testSpaceKey],
       );
@@ -254,7 +254,7 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
 
       // Status should remain failed
       const result = await query<{ quality_status: string; quality_retry_count: number }>(
-        "SELECT quality_status, quality_retry_count FROM cached_pages WHERE confluence_id = 'exhausted1'",
+        "SELECT quality_status, quality_retry_count FROM pages WHERE confluence_id = 'exhausted1'",
       );
       expect(result.rows[0].quality_status).toBe('failed');
       expect(result.rows[0].quality_retry_count).toBe(3);
@@ -263,7 +263,7 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
     it('should pick up failed pages that have retries remaining', async () => {
       // Insert a failed page with retry count below MAX_RETRIES
       await query(
-        `INSERT INTO cached_pages (confluence_id, space_key, title, body_text, body_html, quality_status, quality_retry_count, quality_analyzed_at)
+        `INSERT INTO pages (confluence_id, space_key, title, body_text, body_html, quality_status, quality_retry_count, quality_analyzed_at)
          VALUES ('retry1', $1, 'Retryable Page', 'Some content for retry', '<p>Some content for retry</p>', 'failed', 1, NOW())`,
         [testSpaceKey],
       );
@@ -272,7 +272,7 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
       expect(processed).toBe(1);
 
       const result = await query<{ quality_status: string; quality_retry_count: number }>(
-        "SELECT quality_status, quality_retry_count FROM cached_pages WHERE confluence_id = 'retry1'",
+        "SELECT quality_status, quality_retry_count FROM pages WHERE confluence_id = 'retry1'",
       );
       // LLM mock returns valid scores, so page should be analyzed
       expect(result.rows[0].quality_status).toBe('analyzed');
@@ -283,7 +283,7 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
   describe('forceQualityRescan', () => {
     it('should reset all non-pending pages including retry count', async () => {
       await query(
-        `INSERT INTO cached_pages (confluence_id, space_key, title, body_text, quality_status, quality_score, quality_retry_count)
+        `INSERT INTO pages (confluence_id, space_key, title, body_text, quality_status, quality_score, quality_retry_count)
          VALUES ('r1', $1, 'Analyzed Page', 'content', 'analyzed', 85, 0),
                 ('r2', $1, 'Failed Page', 'content', 'failed', NULL, 3),
                 ('r3', $1, 'Pending Page', 'content', 'pending', NULL, 0)`,
@@ -294,7 +294,7 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
       expect(resetCount).toBe(2); // r1 and r2, not r3 (already pending)
 
       const result = await query<{ confluence_id: string; quality_status: string; quality_retry_count: number; quality_score: number | null }>(
-        'SELECT confluence_id, quality_status, quality_retry_count, quality_score FROM cached_pages ORDER BY confluence_id',
+        'SELECT confluence_id, quality_status, quality_retry_count, quality_score FROM pages ORDER BY confluence_id',
       );
 
       // r1: analyzed -> pending, score cleared, retry reset

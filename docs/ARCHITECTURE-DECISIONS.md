@@ -1004,6 +1004,47 @@ The embedding model is server-wide. Changing it requires re-generating all embed
 
 ---
 
+## ADR-020: Standalone KB Articles & Confluence-Free Mode
+
+### Context
+The app was originally a Confluence-only cache — every article required a `confluence_id` and `space_key`. Users without Confluence couldn't use the app at all. Issue #353 proposed making the app work standalone and as a hybrid Confluence + local KB.
+
+### Decision: **Shared `pages` table with `source` discriminator + universal SERIAL FK**
+
+**Table rename**: `cached_pages` → `pages` — the table is no longer just a cache; standalone articles are the source of truth.
+
+**New columns on `pages`**:
+- `source` (`'confluence'` | `'standalone'`) — discriminates article origin
+- `created_by_user_id` (UUID FK) — owner for standalone articles
+- `visibility` (`'private'` | `'shared'`) — access control for standalone articles
+- `deleted_at` (TIMESTAMPTZ) — soft delete for standalone articles (trash/restore)
+
+**Universal FK migration**: All 5 dependent tables (`page_embeddings`, `page_versions`, `llm_improvements`, `pinned_pages`, `page_relationships`) migrated from `confluence_id TEXT` to `page_id INT REFERENCES pages(id)`. The SERIAL `id` is now the canonical identifier everywhere. This eliminates orphaning when standalone articles are published to Confluence.
+
+**RAG dual-path access control**: Every query that previously used `INNER JOIN user_space_selections` now uses `LEFT JOIN` with a triple-OR WHERE clause:
+1. Confluence pages where user has selected the space
+2. Standalone shared pages (visible to all)
+3. Standalone private pages (visible to owner only)
+
+**Soft delete**: Standalone articles use `deleted_at` instead of hard delete. Workers skip `deleted_at IS NOT NULL`. Trash endpoint lists deleted articles with restore/permanent-delete.
+
+**Content verification**: Per-article `review_interval_days`, `next_review_at`, `verified_by`, `verified_at` — Guru-style staleness system.
+
+**Draft-while-published**: Separate `draft_body_html` columns allow editing without affecting the live article. Atomic publish swaps draft → live.
+
+### Alternatives Considered
+1. **Separate table for standalone articles** — rejected because all existing features (RAG, embeddings, quality scoring, summaries) would need duplication
+2. **Keep `cached_pages` name** — rejected because standalone articles are the source of truth, not a cache
+3. **Keep `confluence_id` as FK target** — rejected because standalone articles have no `confluence_id`, creating a dual-identifier problem
+
+### Consequences
+- All existing features work on standalone articles with zero extra code (embeddings, RAG, quality, summaries, tagging, duplicate detection)
+- Every SELECT query on `pages` must include `AND deleted_at IS NULL`
+- `confluence_id` remains on the table as metadata (nullable, partial unique index) but is no longer a join key
+- Migrations 028-037 must apply in order; historical migrations (001-027) are never modified
+
+---
+
 ## Summary of All Decisions
 
 | # | Decision | Choice | Key Rationale |
@@ -1027,3 +1068,4 @@ The embedding model is server-wide. Changing it requires re-generating all embed
 | 017 | PAT Change Behavior | Invalidate all user data + full re-sync | Safest approach for URL/PAT changes |
 | 018 | Draw.io Image Storage | Local filesystem cache + Docker volume | Fast, no Confluence dependency for viewing |
 | 019 | Admin Role & Re-embed | Simple role column, first user is admin | Protects destructive re-embed operation |
+| 020 | Standalone KB Articles | Shared `pages` table + `source` discriminator + universal SERIAL FK | All features work on standalone articles; no dual-identifier problem |

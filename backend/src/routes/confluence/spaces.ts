@@ -32,7 +32,7 @@ export async function spacesRoutes(fastify: FastifyInstance) {
     // Get page counts per space (scoped to user's selections)
     const countsResult = await query<{ space_key: string; count: string }>(
       `SELECT cp.space_key, COUNT(*) as count
-       FROM cached_pages cp
+       FROM pages cp
        JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
        GROUP BY cp.space_key`,
       [userId],

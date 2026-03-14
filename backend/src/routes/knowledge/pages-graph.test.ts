@@ -126,7 +126,7 @@ describe('Knowledge Graph API', () => {
 
   describe('GET /api/pages/graph', () => {
     it('should return nodes and edges for the knowledge graph', async () => {
-      // Query 1: cached_pages (nodes)
+      // Query 1: pages (nodes)
       mockQueryFn.mockResolvedValueOnce({
         rows: [
           {

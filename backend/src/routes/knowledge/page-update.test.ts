@@ -97,8 +97,14 @@ describe('PUT /api/pages/:id', () => {
     mockHtmlToText.mockReturnValue('converted');
 
     mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('SELECT version, space_key FROM cached_pages')) {
-        return Promise.resolve({ rows: [{ version: 7, space_key: 'OPS' }] });
+      if (sql.includes('SELECT id, version, space_key')) {
+        return Promise.resolve({
+          rows: [{
+            id: 42, version: 7, space_key: 'OPS', source: 'confluence',
+            created_by_user_id: null, visibility: 'shared',
+            confluence_id: 'page-1', deleted_at: null,
+          }],
+        });
       }
       return Promise.resolve({ rows: [] });
     });

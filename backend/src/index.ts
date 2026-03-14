@@ -68,6 +68,7 @@ async function start() {
     stopQualityWorker();
     stopSyncWorker();
     stopSummaryWorker();
+    try { const { closeBrowser } = await import('./core/services/pdf-service.js'); await closeBrowser(); } catch {}
     await app.close();
     await closePool();
     await shutdownTelemetry();

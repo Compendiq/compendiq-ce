@@ -160,7 +160,7 @@ export async function llmEmbeddingRoutes(fastify: FastifyInstance) {
           if (storageXhtml) {
             // Try to get space_key and cached HTML from local DB first
             const cachedRow = await query<{ space_key: string; body_html: string }>(
-              'SELECT space_key, body_html FROM cached_pages WHERE confluence_id = $1',
+              'SELECT space_key, body_html FROM pages WHERE confluence_id = $1',
               [page.id],
             );
 

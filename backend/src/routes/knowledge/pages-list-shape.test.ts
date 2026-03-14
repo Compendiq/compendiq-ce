@@ -76,6 +76,8 @@ const listPageRow = {
   last_modified_at: new Date('2025-01-15'),
   last_synced: new Date('2025-01-16'),
   embedding_dirty: false,
+  source: 'confluence',
+  visibility: 'shared',
 };
 
 const detailPageRow = {
@@ -83,6 +85,9 @@ const detailPageRow = {
   body_storage: '<p>XHTML storage content</p>',
   body_html: '<p>Clean HTML content</p>',
   body_text: 'Plain text content',
+  created_by_user_id: null,
+  deleted_at: null,
+  has_children: false,
 };
 
 describe('Page list vs detail response shapes (#179)', () => {
@@ -156,7 +161,8 @@ describe('Page list vs detail response shapes (#179)', () => {
       expect(item).not.toHaveProperty('body_storage');
 
       // Summary fields MUST be present
-      expect(item).toHaveProperty('id', 'page-1');
+      expect(item).toHaveProperty('id', 1);
+      expect(item).toHaveProperty('confluenceId', 'page-1');
       expect(item).toHaveProperty('spaceKey', 'DEV');
       expect(item).toHaveProperty('title', 'Test Page');
       expect(item).toHaveProperty('version', 1);
@@ -180,7 +186,7 @@ describe('Page list vs detail response shapes (#179)', () => {
 
       // Find the SELECT query (not the COUNT query)
       const selectCall = mockQueryFn.mock.calls.find(
-        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('SELECT cp.confluence_id'),
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('SELECT cp.id'),
       );
       expect(selectCall).toBeDefined();
 
@@ -207,7 +213,7 @@ describe('Page list vs detail response shapes (#179)', () => {
 
       // Find the SELECT query (not the COUNT query)
       const selectCall = mockQueryFn.mock.calls.find(
-        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('SELECT cp.confluence_id'),
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('SELECT cp.id'),
       );
       expect(selectCall).toBeDefined();
 
@@ -247,9 +253,11 @@ describe('Page list vs detail response shapes (#179)', () => {
 
   describe('GET /api/pages/:id (detail)', () => {
     it('should include bodyHtml and bodyText in the response', async () => {
-      mockQueryFn.mockResolvedValue({
-        rows: [detailPageRow],
-        rowCount: 1,
+      mockQueryFn.mockImplementation((sql: string) => {
+        if (typeof sql === 'string' && sql.includes('user_space_selections')) {
+          return { rows: [{ '?column?': 1 }], rowCount: 1 };
+        }
+        return { rows: [detailPageRow], rowCount: 1 };
       });
 
       const response = await app.inject({
@@ -265,16 +273,19 @@ describe('Page list vs detail response shapes (#179)', () => {
       expect(body).toHaveProperty('bodyText', 'Plain text content');
 
       // And also include summary fields
-      expect(body).toHaveProperty('id', 'page-1');
+      expect(body).toHaveProperty('id', 1);
+      expect(body).toHaveProperty('confluenceId', 'page-1');
       expect(body).toHaveProperty('spaceKey', 'DEV');
       expect(body).toHaveProperty('title', 'Test Page');
       expect(body).toHaveProperty('version', 1);
     });
 
     it('should select body_html and body_text in the detail SQL query', async () => {
-      mockQueryFn.mockResolvedValue({
-        rows: [detailPageRow],
-        rowCount: 1,
+      mockQueryFn.mockImplementation((sql: string) => {
+        if (typeof sql === 'string' && sql.includes('user_space_selections')) {
+          return { rows: [{ '?column?': 1 }], rowCount: 1 };
+        }
+        return { rows: [detailPageRow], rowCount: 1 };
       });
 
       await app.inject({

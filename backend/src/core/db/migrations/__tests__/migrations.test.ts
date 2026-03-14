@@ -38,23 +38,23 @@ describe.skipIf(!dbAvailable)('Database migrations', () => {
   });
 
   describe('performance indexes (migration 021, updated by 023)', () => {
-    it('should have idx_cached_pages_dirty_modified composite index', async () => {
+    it('should have idx_pages_dirty_modified composite index', async () => {
       const result = await query<{ indexname: string; indexdef: string }>(
         `SELECT indexname, indexdef FROM pg_indexes
-         WHERE tablename = 'cached_pages'
-         AND indexname = 'idx_cached_pages_dirty_modified'`,
+         WHERE tablename = 'pages'
+         AND indexname = 'idx_pages_dirty_modified'`,
       );
       expect(result.rows).toHaveLength(1);
-      // After migration 023 (shared tables), user_id was dropped from cached_pages
+      // After migration 023 (shared tables), user_id was dropped from pages
       expect(result.rows[0].indexdef).toContain('embedding_dirty');
       expect(result.rows[0].indexdef).toContain('last_modified_at');
     });
 
-    it('should have idx_cached_pages_space_modified composite index', async () => {
+    it('should have idx_pages_space_modified composite index', async () => {
       const result = await query<{ indexname: string; indexdef: string }>(
         `SELECT indexname, indexdef FROM pg_indexes
-         WHERE tablename = 'cached_pages'
-         AND indexname = 'idx_cached_pages_space_modified'`,
+         WHERE tablename = 'pages'
+         AND indexname = 'idx_pages_space_modified'`,
       );
       expect(result.rows).toHaveLength(1);
       expect(result.rows[0].indexdef).toContain('space_key');
@@ -67,7 +67,7 @@ describe.skipIf(!dbAvailable)('Database migrations', () => {
       'users',
       'user_settings',
       'cached_spaces',
-      'cached_pages',
+      'pages',
       'page_embeddings',
       'llm_conversations',
       'llm_improvements',
@@ -151,12 +151,12 @@ describe.skipIf(!dbAvailable)('Database migrations', () => {
     });
   });
 
-  describe('cached_pages table schema', () => {
+  describe('pages table schema', () => {
     it('should have embedding_dirty column', async () => {
       const result = await query<{ column_name: string; column_default: string }>(
         `SELECT column_name, column_default
          FROM information_schema.columns
-         WHERE table_name = 'cached_pages' AND column_name = 'embedding_dirty'`,
+         WHERE table_name = 'pages' AND column_name = 'embedding_dirty'`,
       );
       expect(result.rows).toHaveLength(1);
     });
@@ -164,7 +164,7 @@ describe.skipIf(!dbAvailable)('Database migrations', () => {
     it('should have all required columns', async () => {
       const result = await query<{ column_name: string }>(
         `SELECT column_name FROM information_schema.columns
-         WHERE table_name = 'cached_pages' ORDER BY ordinal_position`,
+         WHERE table_name = 'pages' ORDER BY ordinal_position`,
       );
       const columns = result.rows.map((r) => r.column_name);
       expect(columns).toContain('confluence_id');

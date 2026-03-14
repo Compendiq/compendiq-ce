@@ -78,7 +78,7 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
     it('should return aggregate counts across all pages', async () => {
       // Insert pages with various summary statuses
       await query(
-        `INSERT INTO cached_pages (confluence_id, space_key, title, body_text, summary_status)
+        `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status)
          VALUES ('p1', $1, 'Page 1', 'content one', 'pending'),
                 ('p2', $1, 'Page 2', 'content two', 'summarized'),
                 ('p3', $1, 'Page 3', 'content three', 'failed'),
@@ -99,7 +99,7 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
   describe('rescanAllSummaries', () => {
     it('should reset all non-skipped pages to pending', async () => {
       await query(
-        `INSERT INTO cached_pages (confluence_id, space_key, title, body_text, summary_status, summary_retry_count)
+        `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status, summary_retry_count)
          VALUES ('p1', $1, 'Page 1', 'content one', 'summarized', 0),
                 ('p2', $1, 'Page 2', 'content two', 'failed', 3),
                 ('p3', $1, 'Page 3', 'short', 'skipped', 0)`,
@@ -110,7 +110,7 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
       expect(resetCount).toBe(2); // p1 and p2, not p3 (skipped)
 
       const result = await query<{ confluence_id: string; summary_status: string; summary_retry_count: number }>(
-        'SELECT confluence_id, summary_status, summary_retry_count FROM cached_pages ORDER BY confluence_id',
+        'SELECT confluence_id, summary_status, summary_retry_count FROM pages ORDER BY confluence_id',
       );
 
       expect(result.rows[0].summary_status).toBe('pending');
@@ -124,7 +124,7 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
   describe('regenerateSummary', () => {
     it('should reset a single page to pending', async () => {
       await query(
-        `INSERT INTO cached_pages (confluence_id, space_key, title, body_text, summary_status, summary_retry_count, summary_error)
+        `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status, summary_retry_count, summary_error)
          VALUES ('p1', $1, 'Page 1', 'content one', 'failed', 3, 'some error')`,
         [testSpaceKey],
       );
@@ -132,7 +132,7 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
       await regenerateSummary('p1');
 
       const result = await query<{ summary_status: string; summary_retry_count: number; summary_error: string | null }>(
-        'SELECT summary_status, summary_retry_count, summary_error FROM cached_pages WHERE confluence_id = $1',
+        'SELECT summary_status, summary_retry_count, summary_error FROM pages WHERE confluence_id = $1',
         ['p1'],
       );
 
@@ -145,7 +145,7 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
   describe('runSummaryBatch', () => {
     it('should skip pages with body_text shorter than 100 chars', async () => {
       await query(
-        `INSERT INTO cached_pages (confluence_id, space_key, title, body_text, summary_status)
+        `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status)
          VALUES ('short1', $1, 'Short Page', 'too short', 'pending')`,
         [testSpaceKey],
       );
@@ -154,7 +154,7 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
       expect(processed).toBe(1); // processed but skipped
 
       const result = await query<{ summary_status: string }>(
-        "SELECT summary_status FROM cached_pages WHERE confluence_id = 'short1'",
+        "SELECT summary_status FROM pages WHERE confluence_id = 'short1'",
       );
       expect(result.rows[0].summary_status).toBe('skipped');
     });
@@ -162,7 +162,7 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
     it('should generate summary for eligible pages', async () => {
       const longContent = 'A'.repeat(200);
       await query(
-        `INSERT INTO cached_pages (confluence_id, space_key, title, body_text, summary_status)
+        `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status)
          VALUES ('long1', $1, 'Long Page', $2, 'pending')`,
         [testSpaceKey, longContent],
       );
@@ -178,7 +178,7 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
         summary_model: string;
         summary_content_hash: string;
       }>(
-        "SELECT summary_status, summary_text, summary_html, summary_model, summary_content_hash FROM cached_pages WHERE confluence_id = 'long1'",
+        "SELECT summary_status, summary_text, summary_html, summary_model, summary_content_hash FROM pages WHERE confluence_id = 'long1'",
       );
 
       expect(result.rows[0].summary_status).toBe('summarized');
@@ -194,7 +194,7 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
 
       // Insert a page that was previously summarized but whose content has since changed
       await query(
-        `INSERT INTO cached_pages (confluence_id, space_key, title, body_text, summary_status, summary_content_hash, summary_text)
+        `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status, summary_content_hash, summary_text)
          VALUES ('changed1', $1, 'Changed Page', $2, 'summarized', $3, 'old summary')`,
         [testSpaceKey, longContent, staleHash],
       );
@@ -208,7 +208,7 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
         summary_status: string;
         summary_content_hash: string;
       }>(
-        "SELECT summary_status, summary_content_hash FROM cached_pages WHERE confluence_id = 'changed1'",
+        "SELECT summary_status, summary_content_hash FROM pages WHERE confluence_id = 'changed1'",
       );
 
       expect(result.rows[0].summary_status).toBe('summarized');
@@ -222,7 +222,7 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
 
       // Insert a page that is already summarized with the correct hash
       await query(
-        `INSERT INTO cached_pages (confluence_id, space_key, title, body_text, summary_status, summary_content_hash, summary_text)
+        `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status, summary_content_hash, summary_text)
          VALUES ('unchanged1', $1, 'Unchanged Page', $2, 'summarized', $3, 'existing summary')`,
         [testSpaceKey, longContent, correctHash],
       );
@@ -232,7 +232,7 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
 
       // Summary should remain unchanged
       const result = await query<{ summary_text: string }>(
-        "SELECT summary_text FROM cached_pages WHERE confluence_id = 'unchanged1'",
+        "SELECT summary_text FROM pages WHERE confluence_id = 'unchanged1'",
       );
       expect(result.rows[0].summary_text).toBe('existing summary');
     });
@@ -243,7 +243,7 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
       const correctHash = computeContentHash(specialContent);
 
       await query(
-        `INSERT INTO cached_pages (confluence_id, space_key, title, body_text, summary_status, summary_content_hash, summary_text)
+        `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status, summary_content_hash, summary_text)
          VALUES ('special1', $1, 'Special Chars Page', $2, 'summarized', $3, 'existing summary')`,
         [testSpaceKey, specialContent, correctHash],
       );

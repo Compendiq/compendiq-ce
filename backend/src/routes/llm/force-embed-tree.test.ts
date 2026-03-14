@@ -180,7 +180,7 @@ describe('POST /api/embeddings/force-embed-tree', () => {
     mockGetClientForUser.mockResolvedValue(mockClient);
     mockEmbedPage.mockResolvedValue(5);
 
-    // Mock DB query for cached_pages lookup
+    // Mock DB query for pages lookup
     mockQuery.mockResolvedValue({
       rows: [{ space_key: 'DEV', body_html: '<p>cached content</p>' }],
     });

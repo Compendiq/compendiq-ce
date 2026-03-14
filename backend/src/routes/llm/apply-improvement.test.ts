@@ -149,7 +149,7 @@ describe('POST /api/llm/improvements/apply', () => {
 
     // Default: page exists in DB with version 5
     mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('SELECT version, title, space_key FROM cached_pages')) {
+      if (sql.includes('SELECT version, title, space_key FROM pages')) {
         return Promise.resolve({ rows: [{ version: 5, title: 'My Article', space_key: 'OPS' }] });
       }
       return Promise.resolve({ rows: [] });
@@ -187,7 +187,7 @@ describe('POST /api/llm/improvements/apply', () => {
 
   it('returns 404 when page does not exist in local cache', async () => {
     mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('SELECT version, title, space_key FROM cached_pages')) {
+      if (sql.includes('SELECT version, title, space_key FROM pages')) {
         return Promise.resolve({ rows: [] });
       }
       return Promise.resolve({ rows: [] });
@@ -207,7 +207,7 @@ describe('POST /api/llm/improvements/apply', () => {
 
   it('returns 409 on version conflict', async () => {
     mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('SELECT version, title, space_key FROM cached_pages')) {
+      if (sql.includes('SELECT version, title, space_key FROM pages')) {
         return Promise.resolve({ rows: [{ version: 10, title: 'My Article', space_key: 'OPS' }] });
       }
       return Promise.resolve({ rows: [] });
@@ -262,9 +262,9 @@ describe('POST /api/llm/improvements/apply', () => {
       'OPS',
     );
 
-    // Local cache update (UPDATE cached_pages)
+    // Local cache update (UPDATE pages)
     const updateCall = (mockQuery.mock.calls as unknown[][]).find(
-      (args) => typeof args[0] === 'string' && (args[0] as string).includes('UPDATE cached_pages'),
+      (args) => typeof args[0] === 'string' && (args[0] as string).includes('UPDATE pages'),
     );
     expect(updateCall).toBeDefined();
 
@@ -289,7 +289,7 @@ describe('POST /api/llm/improvements/apply', () => {
     expect(response.statusCode).toBe(200);
     expect(mockClient.updatePage).toHaveBeenCalledWith(
       'page-1',
-      'My Article', // from cached_pages
+      'My Article', // from pages
       expect.any(String),
       5,
     );

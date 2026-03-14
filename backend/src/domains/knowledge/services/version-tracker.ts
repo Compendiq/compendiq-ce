@@ -56,9 +56,10 @@ export async function getVersionHistory(
   }>(
     `SELECT pv.id, pv.confluence_id, pv.version_number, pv.title, pv.synced_at
      FROM page_versions pv
-     JOIN cached_pages cp ON pv.confluence_id = cp.confluence_id
+     JOIN pages cp ON pv.confluence_id = cp.confluence_id
      JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
-     WHERE pv.confluence_id = $2
+     WHERE cp.deleted_at IS NULL
+       AND pv.confluence_id = $2
      ORDER BY pv.version_number DESC`,
     [userId, confluenceId],
   );
@@ -91,9 +92,10 @@ export async function getVersion(
   }>(
     `SELECT pv.id, pv.confluence_id, pv.version_number, pv.title, pv.body_html, pv.body_text, pv.synced_at
      FROM page_versions pv
-     JOIN cached_pages cp ON pv.confluence_id = cp.confluence_id
+     JOIN pages cp ON pv.confluence_id = cp.confluence_id
      JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
-     WHERE pv.confluence_id = $2 AND pv.version_number = $3`,
+     WHERE cp.deleted_at IS NULL
+       AND pv.confluence_id = $2 AND pv.version_number = $3`,
     [userId, confluenceId, versionNumber],
   );
 
