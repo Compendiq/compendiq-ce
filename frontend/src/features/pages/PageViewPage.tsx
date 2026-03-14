@@ -276,7 +276,7 @@ export function PageViewPage() {
     >
       {/* Sticky toolbar — rendered OUTSIDE glass-card-xl so sticky works */}
       {editing && editorInstance && (
-        <div className="sticky top-0 z-20 rounded-t-xl border-b border-border/25 bg-card/95 backdrop-blur-sm glass-card-xl overflow-visible">
+        <div className="sticky top-0 z-30 rounded-t-xl border-b border-border/25 bg-card glass-card-xl overflow-visible">
           <EditorToolbar editor={editorInstance} />
           <TableContextToolbar editor={editorInstance} />
         </div>
