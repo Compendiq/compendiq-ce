@@ -322,9 +322,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     const result = await query<{
       id: number; title: string; source: string; visibility: string;
-      deleted_at: Date; created_at: Date;
+      deleted_at: Date; last_synced: Date;
     }>(
-      `SELECT id, title, source, visibility, deleted_at, created_at
+      `SELECT id, title, source, visibility, deleted_at, last_synced
        FROM pages
        WHERE source = 'standalone' AND deleted_at IS NOT NULL AND created_by_user_id = $1
        ORDER BY deleted_at DESC`,
@@ -338,7 +338,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         source: row.source,
         visibility: row.visibility,
         deletedAt: row.deleted_at,
-        createdAt: row.created_at,
+        createdAt: row.last_synced,
       })),
       total: result.rows.length,
     };
@@ -404,9 +404,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
               cp.source, cp.visibility, cp.created_by_user_id,
               (cp.draft_body_html IS NOT NULL) as has_draft, cp.draft_updated_at
        FROM pages cp
-       WHERE ${isNumericId ? 'cp.id = $2' : 'cp.confluence_id = $2'}
+       WHERE ${isNumericId ? 'cp.id = $1' : 'cp.confluence_id = $1'}
          AND cp.deleted_at IS NULL`,
-      [userId, isNumericId ? parseInt(id, 10) : id],
+      [isNumericId ? parseInt(id, 10) : id],
     );
 
     if (result.rows.length === 0) {

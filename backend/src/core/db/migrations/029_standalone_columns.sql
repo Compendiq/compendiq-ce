@@ -19,8 +19,11 @@ ALTER TABLE pages ADD COLUMN deleted_at TIMESTAMPTZ;
 ALTER TABLE pages ALTER COLUMN confluence_id DROP NOT NULL;
 ALTER TABLE pages ALTER COLUMN space_key DROP NOT NULL;
 
--- Replace absolute unique index with partial unique (Confluence pages only)
+-- Replace absolute unique constraint with partial unique (Confluence pages only)
+ALTER TABLE pages DROP CONSTRAINT IF EXISTS pages_confluence_id_key CASCADE;
+ALTER TABLE pages DROP CONSTRAINT IF EXISTS cached_pages_confluence_id_key CASCADE;
 DROP INDEX IF EXISTS pages_confluence_id_key;
+DROP INDEX IF EXISTS cached_pages_confluence_id_key;
 CREATE UNIQUE INDEX pages_confluence_id_unique
   ON pages(confluence_id) WHERE confluence_id IS NOT NULL;
 

@@ -43,6 +43,7 @@ ALTER TABLE page_versions ADD CONSTRAINT page_versions_page_id_fk
   FOREIGN KEY (page_id) REFERENCES pages(id) ON DELETE CASCADE;
 
 -- Replace old unique constraint
+ALTER TABLE page_versions DROP CONSTRAINT IF EXISTS page_versions_confluence_id_version_number_key;
 DROP INDEX IF EXISTS page_versions_confluence_id_version_number_key;
 CREATE UNIQUE INDEX page_versions_page_id_version_unique
   ON page_versions(page_id, version_number);
@@ -86,6 +87,10 @@ ALTER TABLE pinned_pages ALTER COLUMN new_page_id SET NOT NULL;
 ALTER TABLE pinned_pages ADD CONSTRAINT pinned_pages_page_id_fk
   FOREIGN KEY (new_page_id) REFERENCES pages(id) ON DELETE CASCADE;
 
+-- Drop old constraints before dropping the column
+ALTER TABLE pinned_pages DROP CONSTRAINT IF EXISTS pinned_pages_user_page_unique;
+ALTER TABLE pinned_pages DROP CONSTRAINT IF EXISTS pinned_pages_pkey;
+DROP INDEX IF EXISTS pinned_pages_user_page_unique;
 -- Drop old TEXT column and rename new one
 ALTER TABLE pinned_pages DROP COLUMN page_id;
 ALTER TABLE pinned_pages RENAME COLUMN new_page_id TO page_id;
