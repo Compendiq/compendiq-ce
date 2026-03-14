@@ -274,15 +274,15 @@ export function PageViewPage() {
       transition={{ duration: 0.18 }}
       data-testid="article-page"
     >
+      {/* Sticky toolbar — ABOVE the card, sticks at top-0 with no movement */}
+      {editing && editorInstance && (
+        <div className="sticky top-0 z-30 border border-border/25 bg-card rounded-t-xl before:absolute before:bottom-full before:left-0 before:right-0 before:h-[100px] before:bg-background">
+          <EditorToolbar editor={editorInstance} />
+          <TableContextToolbar editor={editorInstance} />
+        </div>
+      )}
       {/* Single unified document card */}
-      <div className="glass-card-xl">
-        {/* Sticky toolbar — negative top to cover scroll container padding gap */}
-        {editing && editorInstance && (
-          <div className="sticky -top-7 z-30 border-b border-border/25 bg-card rounded-t-xl pt-7">
-            <EditorToolbar editor={editorInstance} />
-            <TableContextToolbar editor={editorInstance} />
-          </div>
-        )}
+      <div className={editing ? 'glass-card-xl rounded-t-none -mt-px' : 'glass-card-xl'}>
         {/* Breadcrumb / action strip */}
         <div className="flex items-center justify-between gap-4 border-b border-border/25 px-5 py-2 sm:px-7">
           <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground/60">
