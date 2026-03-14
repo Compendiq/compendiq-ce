@@ -9,7 +9,7 @@ import { Breadcrumb } from './Breadcrumb';
 import { UserMenu } from './UserMenu';
 import { SidebarTreeView } from './SidebarTreeView';
 import { ArticleRightPane } from '../article/ArticleRightPane';
-import { AuroraBackground } from '../effects/AuroraBackground';
+// Aurora background removed — replaced with plain background
 import { NoiseOverlay } from '../effects/NoiseOverlay';
 import { PageTransition } from './PageTransition';
 import { cn } from '../../lib/cn';
@@ -56,7 +56,6 @@ export function AppLayout({ children }: { children: ReactNode }) {
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background">
-      <AuroraBackground />
       <NoiseOverlay />
       <CommandPalette />
 
