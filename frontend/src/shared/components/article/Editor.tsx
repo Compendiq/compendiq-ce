@@ -376,7 +376,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
   return (
     <div className={naked ? '' : 'glass-card'}>
       {editable && editor && !hideToolbar && (
-        <div className="sticky top-0 z-30 rounded-t-xl border-b border-border/50 bg-card">
+        <div className="sticky top-0 z-30 rounded-t-xl border-b border-border/50 bg-card before:absolute before:bottom-full before:left-0 before:right-0 before:h-[200px] before:bg-background">
           <EditorToolbar editor={editor} />
           <TableContextToolbar editor={editor} />
         </div>

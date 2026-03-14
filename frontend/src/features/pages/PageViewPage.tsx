@@ -276,9 +276,9 @@ export function PageViewPage() {
     >
       {/* Single unified document card */}
       <div className="glass-card-xl">
-        {/* Sticky toolbar — INSIDE the card, first child, so content scrolls under it */}
+        {/* Sticky toolbar — covers full top area so scrolling content is hidden above it */}
         {editing && editorInstance && (
-          <div className="sticky top-0 z-30 border-b border-border/25 bg-card rounded-t-xl">
+          <div className="sticky top-0 z-30 border-b border-border/25 bg-card rounded-t-xl before:absolute before:bottom-full before:left-0 before:right-0 before:h-[200px] before:bg-background">
             <EditorToolbar editor={editorInstance} />
             <TableContextToolbar editor={editorInstance} />
           </div>
