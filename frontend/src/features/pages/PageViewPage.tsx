@@ -276,13 +276,16 @@ export function PageViewPage() {
     >
       {/* Sticky toolbar — ABOVE the card, sticks at top-0 with no movement */}
       {editing && editorInstance && (
-        <div className="sticky top-0 z-30 border border-border/25 bg-card rounded-t-xl before:absolute before:bottom-full before:left-0 before:right-0 before:h-[100px] before:bg-background">
+        <div className="sticky top-0 z-30 border border-border/25 bg-card rounded-t-xl shadow-[0_8px_32px_var(--glass-shadow)] before:absolute before:-z-10 before:-top-[100px] before:bottom-0 before:-left-[22px] before:-right-[22px] before:bg-background">
           <EditorToolbar editor={editorInstance} />
           <TableContextToolbar editor={editorInstance} />
         </div>
       )}
       {/* Single unified document card */}
-      <div className={editing ? 'glass-card-xl rounded-t-none -mt-px' : 'glass-card-xl'}>
+      <div
+        className={editing ? 'glass-card-xl rounded-t-none -mt-px' : 'glass-card-xl'}
+        style={editing ? { clipPath: 'inset(0 -100px -100px -100px round 0 0 var(--radius-xl) var(--radius-xl))' } : undefined}
+      >
         {/* Breadcrumb / action strip */}
         <div className="flex items-center justify-between gap-4 border-b border-border/25 px-5 py-2 sm:px-7">
           <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground/60">
