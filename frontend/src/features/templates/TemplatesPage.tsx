@@ -25,10 +25,9 @@ function useTemplates() {
 function useCreateFromTemplate() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (templateId: string) =>
-      apiFetch<{ id: string; title: string }>('/templates/use', {
+    mutationFn: (templateId: number) =>
+      apiFetch<{ id: number; title: string; bodyJson: string; bodyHtml: string }>(`/templates/${templateId}/use`, {
         method: 'POST',
-        body: JSON.stringify({ templateId }),
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['templates'] });
@@ -57,10 +56,10 @@ export function TemplatesPage() {
     async (template: Template) => {
       try {
         const result = await createFromTemplate.mutateAsync(template.id);
-        toast.success(`Page created from "${template.title}"`);
-        navigate(`/pages/${result.id}`);
+        toast.success(`Template "${template.title}" loaded`);
+        navigate('/pages/new', { state: { templateTitle: result.title, templateBodyHtml: result.bodyHtml } });
       } catch (err) {
-        toast.error(err instanceof Error ? err.message : 'Failed to create page from template');
+        toast.error(err instanceof Error ? err.message : 'Failed to use template');
       }
     },
     [createFromTemplate, navigate],

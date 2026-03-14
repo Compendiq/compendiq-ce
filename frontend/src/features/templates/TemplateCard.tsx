@@ -3,7 +3,7 @@ import { Eye, Play, FileText } from 'lucide-react';
 import { cn } from '../../shared/lib/cn';
 
 export interface Template {
-  id: string;
+  id: number;
   title: string;
   description: string;
   category: string;

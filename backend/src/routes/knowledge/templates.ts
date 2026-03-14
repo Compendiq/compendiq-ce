@@ -187,7 +187,7 @@ export async function templateRoutes(fastify: FastifyInstance) {
   fastify.post('/templates/:id/use', async (request) => {
     const { id } = IdParamSchema.parse(request.params);
     const userId = request.userId;
-    const body = UseTemplateSchema.parse(request.body);
+    const body = UseTemplateSchema.parse(request.body ?? {});
 
     const tpl = await query<{
       id: number;
