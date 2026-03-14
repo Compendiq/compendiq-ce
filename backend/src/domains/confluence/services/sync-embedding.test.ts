@@ -224,7 +224,7 @@ describe('syncPage attachment cache invalidation', () => {
     await syncUser('user-html-refresh');
 
     expect(mocks.query).toHaveBeenCalledWith(
-      expect.stringContaining('UPDATE cached_pages'),
+      expect.stringContaining('UPDATE pages'),
       expect.arrayContaining(['page-1', 'Test Page', '<p>content</p>', '<p>html</p>', 'plain text']),
     );
   });
@@ -261,7 +261,7 @@ describe('incremental sync with missing attachments', () => {
         .mockResolvedValueOnce({ rows: [] });
     }
 
-    // syncMissingAttachments: SELECT cached_pages WHERE space_key
+    // syncMissingAttachments: SELECT pages WHERE space_key
     mocks.query.mockResolvedValueOnce({
       rows: opts.cachedPages ?? [],
     });

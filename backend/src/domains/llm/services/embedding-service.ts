@@ -264,7 +264,7 @@ export async function embedPage(
   if (!plainText || plainText.length < 20) {
     logger.debug({ confluenceId, pageTitle }, 'Skipping empty/short page for embedding');
     await query(
-      'UPDATE cached_pages SET embedding_dirty = FALSE WHERE confluence_id = $1',
+      'UPDATE pages SET embedding_dirty = FALSE WHERE confluence_id = $1',
       [confluenceId],
     );
     return 0;
@@ -318,7 +318,7 @@ export async function embedPage(
 
   // Mark page as no longer dirty + update embedding status + clear any previous error
   await query(
-    `UPDATE cached_pages SET embedding_dirty = FALSE, embedding_status = 'embedded', embedded_at = NOW(), embedding_error = NULL
+    `UPDATE pages SET embedding_dirty = FALSE, embedding_status = 'embedded', embedded_at = NOW(), embedding_error = NULL
      WHERE confluence_id = $1`,
     [confluenceId],
   );
@@ -369,7 +369,11 @@ export async function processDirtyPages(
 
     // Get total count for logging purposes (global, not per-user)
     const countResult = await query<{ count: string }>(
+<<<<<<< HEAD
       'SELECT COUNT(*) as count FROM cached_pages WHERE embedding_dirty = TRUE AND body_html IS NOT NULL AND deleted_at IS NULL',
+=======
+      'SELECT COUNT(*) as count FROM pages WHERE embedding_dirty = TRUE AND body_html IS NOT NULL',
+>>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))
     );
     const totalDirty = parseInt(countResult.rows[0].count, 10);
     logger.info({ userId, dirtyPages: totalDirty }, 'Processing dirty pages for embedding');
@@ -393,8 +397,13 @@ export async function processDirtyPages(
         body_html: string;
       }>(
         `SELECT confluence_id, title, space_key, body_html
+<<<<<<< HEAD
          FROM cached_pages
          WHERE embedding_dirty = TRUE AND body_html IS NOT NULL AND deleted_at IS NULL
+=======
+         FROM pages
+         WHERE embedding_dirty = TRUE AND body_html IS NOT NULL
+>>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))
          ORDER BY last_modified_at DESC
          LIMIT $1 OFFSET $2`,
         [DIRTY_PAGE_BATCH_SIZE, offset],
@@ -409,7 +418,7 @@ export async function processDirtyPages(
         try {
           // Mark page as currently embedding and clear any previous error
           await query(
-            `UPDATE cached_pages SET embedding_status = 'embedding', embedding_error = NULL WHERE confluence_id = $1`,
+            `UPDATE pages SET embedding_status = 'embedding', embedding_error = NULL WHERE confluence_id = $1`,
             [page.confluence_id],
           );
 
@@ -489,7 +498,7 @@ export async function processDirtyPages(
                   const errorMessage = retryErr instanceof Error ? retryErr.message : String(retryErr);
                   logger.error({ err: retryErr, confluenceId: page.confluence_id }, 'Failed to embed page after circuit breaker recovery');
                   await query(
-                    `UPDATE cached_pages SET embedding_status = 'failed', embedding_error = $2 WHERE confluence_id = $1`,
+                    `UPDATE pages SET embedding_status = 'failed', embedding_error = $2 WHERE confluence_id = $1`,
                     [page.confluence_id, errorMessage.slice(0, 1000)],
                   ).catch((updateErr) => logger.error({ err: updateErr }, 'Failed to update embedding_status to failed'));
                   totalErrors++;
@@ -520,7 +529,7 @@ export async function processDirtyPages(
           logger.error({ err, confluenceId: page.confluence_id }, 'Failed to embed page');
           const errorMessage = err instanceof Error ? err.message : String(err);
           await query(
-            `UPDATE cached_pages SET embedding_status = 'failed', embedding_error = $2 WHERE confluence_id = $1`,
+            `UPDATE pages SET embedding_status = 'failed', embedding_error = $2 WHERE confluence_id = $1`,
             [page.confluence_id, errorMessage.slice(0, 1000)],
           ).catch((updateErr) => logger.error({ err: updateErr }, 'Failed to update embedding_status to failed'));
           totalErrors++;
@@ -608,7 +617,7 @@ export async function processDirtyPages(
  */
 export async function resetFailedEmbeddings(): Promise<number> {
   const result = await query(
-    `UPDATE cached_pages
+    `UPDATE pages
      SET embedding_dirty = TRUE, embedding_status = 'not_embedded', embedding_error = NULL
      WHERE embedding_status = 'failed' AND deleted_at IS NULL`,
   );
@@ -681,10 +690,16 @@ export async function computePageRelationships(): Promise<number> {
              array_length(b.labels, 1)::real
            )
          END AS score
+<<<<<<< HEAD
        FROM cached_pages a
        JOIN cached_pages b ON a.confluence_id < b.confluence_id
        WHERE a.deleted_at IS NULL AND b.deleted_at IS NULL
          AND a.labels IS NOT NULL AND array_length(a.labels, 1) > 0
+=======
+       FROM pages a
+       JOIN pages b ON a.confluence_id < b.confluence_id
+       WHERE a.labels IS NOT NULL AND array_length(a.labels, 1) > 0
+>>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))
          AND b.labels IS NOT NULL AND array_length(b.labels, 1) > 0
          AND a.labels && b.labels
      )
@@ -709,29 +724,44 @@ export async function computePageRelationships(): Promise<number> {
 export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatus> {
   const [totalResult, dirtyResult, embeddingResult, embeddedPagesResult, isProcessing] = await Promise.all([
     query<{ count: string }>(
+<<<<<<< HEAD
       `SELECT COUNT(*) as count FROM cached_pages cp
        JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
        WHERE cp.deleted_at IS NULL`,
+=======
+      `SELECT COUNT(*) as count FROM pages cp
+       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1`,
+>>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))
       [userId],
     ),
     query<{ count: string }>(
-      `SELECT COUNT(*) as count FROM cached_pages cp
+      `SELECT COUNT(*) as count FROM pages cp
        JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
        WHERE cp.deleted_at IS NULL AND cp.embedding_dirty = TRUE`,
       [userId],
     ),
     query<{ count: string }>(
       `SELECT COUNT(*) as count FROM page_embeddings pe
+<<<<<<< HEAD
        JOIN cached_pages cp ON pe.confluence_id = cp.confluence_id
        JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
        WHERE cp.deleted_at IS NULL`,
+=======
+       JOIN pages cp ON pe.confluence_id = cp.confluence_id
+       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1`,
+>>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))
       [userId],
     ),
     query<{ count: string }>(
       `SELECT COUNT(DISTINCT pe.confluence_id) as count FROM page_embeddings pe
+<<<<<<< HEAD
        JOIN cached_pages cp ON pe.confluence_id = cp.confluence_id
        JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
        WHERE cp.deleted_at IS NULL`,
+=======
+       JOIN pages cp ON pe.confluence_id = cp.confluence_id
+       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1`,
+>>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))
       [userId],
     ),
     isEmbeddingLocked(userId),
@@ -751,7 +781,7 @@ export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatu
  */
 export async function reEmbedAll(): Promise<void> {
   await query('DELETE FROM page_embeddings');
-  await query(`UPDATE cached_pages SET embedding_dirty = TRUE, embedding_status = 'not_embedded', embedded_at = NULL, embedding_error = NULL`);
+  await query(`UPDATE pages SET embedding_dirty = TRUE, embedding_status = 'not_embedded', embedded_at = NULL, embedding_error = NULL`);
   logger.info('All embeddings cleared, pages marked dirty for re-embedding');
 
   // Use a system user ID for provider selection (pick any active user with settings)

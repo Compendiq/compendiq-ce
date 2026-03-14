@@ -378,7 +378,7 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     });
 
     const dirtyCalls = mockQuery.mock.calls.filter(
-      (call) => typeof call[0] === 'string' && (call[0] as string).includes('embedding_dirty = TRUE') && (call[0] as string).includes('cached_pages'),
+      (call) => typeof call[0] === 'string' && (call[0] as string).includes('embedding_dirty = TRUE') && (call[0] as string).includes('pages'),
     );
     expect(dirtyCalls).toHaveLength(0);
   });

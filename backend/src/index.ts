@@ -68,8 +68,18 @@ async function start() {
     stopQualityWorker();
     stopSyncWorker();
     stopSummaryWorker();
+<<<<<<< HEAD
     const { closeBrowser } = await import('./core/services/pdf-service.js');
     await closeBrowser();
+=======
+    try {
+      const pdfModulePath = './core/services/pdf-service.js';
+      const pdfService = await import(pdfModulePath);
+      if (pdfService?.closeBrowser) await pdfService.closeBrowser();
+    } catch {
+      // pdf-service not available, skip browser cleanup
+    }
+>>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))
     await app.close();
     await closePool();
     await shutdownTelemetry();

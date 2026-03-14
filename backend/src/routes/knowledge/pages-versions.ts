@@ -21,13 +21,13 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
 
     const versions = await getVersionHistory(userId, id);
 
-    // Also include the current version from cached_pages
+    // Also include the current version from pages
     const currentResult = await query<{
       version: number;
       title: string;
       last_modified_at: Date | null;
     }>(
-      'SELECT version, title, last_modified_at FROM cached_pages WHERE confluence_id = $1',
+      'SELECT version, title, last_modified_at FROM pages WHERE confluence_id = $1',
       [id],
     );
 
@@ -61,7 +61,7 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
       body_html: string;
       body_text: string;
     }>(
-      'SELECT version, title, body_html, body_text FROM cached_pages WHERE confluence_id = $1',
+      'SELECT version, title, body_html, body_text FROM pages WHERE confluence_id = $1',
       [id],
     );
 
@@ -106,7 +106,7 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
       body_html: string;
       body_text: string;
     }>(
-      'SELECT version, title, body_html, body_text FROM cached_pages WHERE confluence_id = $1',
+      'SELECT version, title, body_html, body_text FROM pages WHERE confluence_id = $1',
       [id],
     );
 

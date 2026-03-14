@@ -114,7 +114,7 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
 
     // Fetch current page metadata from local cache
     const existing = await query<{ version: number; title: string; space_key: string }>(
-      'SELECT version, title, space_key FROM cached_pages WHERE confluence_id = $1',
+      'SELECT version, title, space_key FROM pages WHERE confluence_id = $1',
       [pageId],
     );
     if (existing.rows.length === 0) {
@@ -144,7 +144,7 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     const bodyText = htmlToText(updatedBodyHtml);
 
     await query(
-      `UPDATE cached_pages SET
+      `UPDATE pages SET
          title = $2, body_storage = $3, body_html = $4, body_text = $5,
          version = $6, last_synced = NOW(), embedding_dirty = TRUE,
          embedding_status = 'not_embedded', embedded_at = NULL

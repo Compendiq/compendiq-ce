@@ -345,7 +345,7 @@ export async function llmChatRoutes(fastify: FastifyInstance) {
     let multiPageSuffix = '';
     if (includeSubPages && body.pageId) {
       const pageResult = await query<{ title: string; body_html: string }>(
-        'SELECT title, body_html FROM cached_pages WHERE confluence_id = $1',
+        'SELECT title, body_html FROM pages WHERE confluence_id = $1',
         [body.pageId],
       );
       if (pageResult.rows.length > 0) {

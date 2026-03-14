@@ -51,7 +51,11 @@ export async function findDuplicates(
 
   // Get the source page title for title similarity comparison
   const sourcePageResult = await query<{ title: string }>(
+<<<<<<< HEAD
     'SELECT title FROM cached_pages WHERE confluence_id = $1 AND deleted_at IS NULL',
+=======
+    'SELECT title FROM pages WHERE confluence_id = $1',
+>>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))
     [confluenceId],
   );
   if (sourcePageResult.rows.length === 0) {
@@ -139,7 +143,7 @@ export async function scanAllDuplicates(
   // Get all pages with embeddings
   const pages = await query<{ confluence_id: string; title: string }>(
     `SELECT DISTINCT cp.confluence_id, cp.title
-     FROM cached_pages cp
+     FROM pages cp
      JOIN page_embeddings pe ON cp.confluence_id = pe.confluence_id
      JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
      WHERE cp.deleted_at IS NULL`,

@@ -16,7 +16,11 @@ export const PageVisibilityEnum = z.enum(['private', 'shared']);
 export type PageVisibility = z.infer<typeof PageVisibilityEnum>;
 
 export const PageSummarySchema = z.object({
+<<<<<<< HEAD
   id: z.union([z.string(), z.number()]),
+=======
+  id: z.union([z.string(), z.number()]).transform(String),
+>>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))
   spaceKey: z.string().nullable(),
   title: z.string(),
   author: z.string().nullable(),
@@ -41,8 +45,13 @@ export const PageSummarySchema = z.object({
   summaryStatus: PageSummaryStatusEnum.default('pending').optional(),
   source: PageSourceEnum.default('confluence'),
   visibility: PageVisibilityEnum.default('shared'),
+<<<<<<< HEAD
   createdByUserId: z.union([z.string(), z.number()]).nullable().optional(),
   deletedAt: z.string().nullable().optional(),
+=======
+  createdByUserId: z.number().nullable().optional(),
+  deletedAt: z.coerce.date().nullable().optional(),
+>>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))
   confluenceId: z.string().nullable().optional(),
 });
 
@@ -56,6 +65,8 @@ export const PageDetailSchema = PageSummarySchema.extend({
   summaryGeneratedAt: z.coerce.date().nullable().optional(),
   summaryModel: z.string().nullable().optional(),
   summaryError: z.string().nullable().optional(),
+  hasDraft: z.boolean().default(false),
+  draftUpdatedAt: z.coerce.date().nullable().optional(),
 });
 
 export const CreatePageSchema = z.object({
@@ -63,8 +74,13 @@ export const CreatePageSchema = z.object({
   title: z.string().min(1).max(500),
   bodyHtml: z.string(),
   parentId: z.string().optional(),
+<<<<<<< HEAD
   source: PageSourceEnum.optional().default('standalone'),
   visibility: PageVisibilityEnum.optional().default('shared'),
+=======
+  source: PageSourceEnum.optional(),
+  visibility: PageVisibilityEnum.optional(),
+>>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))
 });
 
 export const UpdatePageSchema = z.object({
@@ -72,6 +88,7 @@ export const UpdatePageSchema = z.object({
   bodyHtml: z.string(),
   version: z.number().int().positive().optional(),
   visibility: PageVisibilityEnum.optional(),
+<<<<<<< HEAD
 });
 
 export const SaveDraftSchema = z.object({
@@ -80,6 +97,8 @@ export const SaveDraftSchema = z.object({
 
 export const PublishDraftSchema = z.object({
   version: z.number().int().positive().optional(),
+=======
+>>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))
 });
 
 export const PageListQuerySchema = z.object({
@@ -99,16 +118,24 @@ export const PageListQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(50),
   sort: z.enum(['title', 'modified', 'author', 'quality']).default('title'),
+  source: PageSourceEnum.optional(),
+  visibility: PageVisibilityEnum.optional(),
 });
 
 export type PageSummary = z.infer<typeof PageSummarySchema>;
 export type PageDetail = z.infer<typeof PageDetailSchema>;
 export type CreatePageInput = z.infer<typeof CreatePageSchema>;
 export type UpdatePageInput = z.infer<typeof UpdatePageSchema>;
+<<<<<<< HEAD
 export type SaveDraftInput = z.infer<typeof SaveDraftSchema>;
 export type PublishDraftInput = z.infer<typeof PublishDraftSchema>;
 export const PageTreeItemSchema = z.object({
   id: z.union([z.string(), z.number()]),
+=======
+
+export const PageTreeItemSchema = z.object({
+  id: z.union([z.string(), z.number()]).transform(String),
+>>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))
   spaceKey: z.string().nullable(),
   title: z.string(),
   parentId: z.string().nullable(),
@@ -120,5 +147,17 @@ export const PageTreeQuerySchema = z.object({
   spaceKey: z.string().optional(),
 });
 
+export const SaveDraftSchema = z.object({
+  title: z.string().min(1).max(500),
+  bodyHtml: z.string(),
+});
+
+export const PublishDraftSchema = z.object({
+  title: z.string().min(1).max(500).optional(),
+  bodyHtml: z.string().optional(),
+});
+
 export type PageListQuery = z.infer<typeof PageListQuerySchema>;
 export type PageTreeItem = z.infer<typeof PageTreeItemSchema>;
+export type SaveDraftInput = z.infer<typeof SaveDraftSchema>;
+export type PublishDraftInput = z.infer<typeof PublishDraftSchema>;

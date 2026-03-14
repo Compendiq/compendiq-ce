@@ -52,7 +52,7 @@ export async function knowledgeAdminRoutes(fastify: FastifyInstance) {
 
     // Verify page exists
     const pageResult = await query<{ confluence_id: string }>(
-      'SELECT confluence_id FROM cached_pages WHERE confluence_id = $1',
+      'SELECT confluence_id FROM pages WHERE confluence_id = $1',
       [pageId],
     );
     if (pageResult.rows.length === 0) {

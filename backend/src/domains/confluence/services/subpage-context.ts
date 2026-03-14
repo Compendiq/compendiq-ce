@@ -1,7 +1,7 @@
 /**
  * Sub-page context assembly service.
  *
- * Fetches a parent page and all its recursive sub-pages from cached_pages,
+ * Fetches a parent page and all its recursive sub-pages from pages,
  * then concatenates them with clear page boundary markers for LLM consumption.
  *
  * Content length limits prevent exceeding LLM context windows.
@@ -61,7 +61,7 @@ export async function fetchSubPages(
       body_html: string;
     }>(
       `SELECT confluence_id, title, body_html
-       FROM cached_pages
+       FROM pages
        WHERE parent_id = $1`,
       [current.id],
     );
@@ -92,7 +92,7 @@ export async function hasSubPages(
   pageId: string,
 ): Promise<boolean> {
   const result = await query<{ count: string }>(
-    `SELECT COUNT(*) as count FROM cached_pages WHERE parent_id = $1`,
+    `SELECT COUNT(*) as count FROM pages WHERE parent_id = $1`,
     [pageId],
   );
   return parseInt(result.rows[0].count, 10) > 0;

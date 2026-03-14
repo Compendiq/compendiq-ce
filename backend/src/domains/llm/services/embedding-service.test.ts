@@ -976,7 +976,7 @@ describe('embedding-service', () => {
 
     // Verify the UPDATE queries were called to mark pages as not dirty
     const updateCalls = mocks.query.mock.calls.filter(
-      (call: unknown[]) => typeof call[0] === 'string' && call[0].includes('UPDATE cached_pages SET embedding_dirty = FALSE'),
+      (call: unknown[]) => typeof call[0] === 'string' && call[0].includes('UPDATE pages SET embedding_dirty = FALSE'),
     );
     expect(updateCalls).toHaveLength(2);
   });
@@ -997,7 +997,7 @@ describe('embedPage', () => {
     // Should have called UPDATE to clear embedding_dirty
     expect(mocks.query).toHaveBeenCalledTimes(1);
     expect(mocks.query).toHaveBeenCalledWith(
-      'UPDATE cached_pages SET embedding_dirty = FALSE WHERE confluence_id = $1',
+      'UPDATE pages SET embedding_dirty = FALSE WHERE confluence_id = $1',
       ['page-short'],
     );
   });
@@ -1011,7 +1011,7 @@ describe('embedPage', () => {
     expect(result).toBe(0);
     expect(mocks.query).toHaveBeenCalledTimes(1);
     expect(mocks.query).toHaveBeenCalledWith(
-      'UPDATE cached_pages SET embedding_dirty = FALSE WHERE confluence_id = $1',
+      'UPDATE pages SET embedding_dirty = FALSE WHERE confluence_id = $1',
       ['page-empty'],
     );
   });

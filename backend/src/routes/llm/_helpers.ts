@@ -43,7 +43,7 @@ export async function assembleContextIfNeeded(
 ): Promise<{ markdown: string; multiPageSuffix: string }> {
   if (includeSubPages && pageId) {
     const pageResult = await query<{ title: string }>(
-      'SELECT title FROM cached_pages WHERE confluence_id = $1',
+      'SELECT title FROM pages WHERE confluence_id = $1',
       [pageId],
     );
     const parentTitle = pageResult.rows[0]?.title ?? 'Untitled';

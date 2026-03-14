@@ -5,7 +5,11 @@
 
 CREATE TABLE comments (
   id          SERIAL PRIMARY KEY,
+<<<<<<< HEAD
   page_id     INTEGER NOT NULL REFERENCES cached_pages(id) ON DELETE CASCADE,
+=======
+  page_id     INTEGER NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+>>>>>>> 46f8d99 (fix: restore missing worktree files + fix cached_pages references (#353))
   user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   parent_id   INTEGER REFERENCES comments(id) ON DELETE CASCADE,
   body        TEXT NOT NULL,

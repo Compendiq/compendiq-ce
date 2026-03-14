@@ -208,7 +208,7 @@ async function syncPage(
 
   // Check if page exists and has changed (shared table, no user_id)
   const existing = await query<{ version: number; title: string; body_html: string; body_text: string }>(
-    'SELECT version, title, body_html, body_text FROM cached_pages WHERE confluence_id = $1',
+    'SELECT version, title, body_html, body_text FROM pages WHERE confluence_id = $1',
     [page.id],
   );
 
@@ -260,7 +260,7 @@ async function syncPage(
 
     if (htmlChanged) {
       await query(
-        `UPDATE cached_pages
+        `UPDATE pages
          SET title = $2,
              body_storage = $3,
              body_html = $4,
@@ -312,7 +312,7 @@ async function syncPage(
 
   // Upsert page (shared table, no user_id)
   await query(
-    `INSERT INTO cached_pages
+    `INSERT INTO pages
        (confluence_id, space_key, title, body_storage, body_html, body_text,
         version, parent_id, labels, author, last_modified_at, embedding_dirty,
         summary_status)
@@ -351,7 +351,7 @@ async function syncMissingAttachments(
 ): Promise<void> {
   // Query pages in this space that have XHTML content (body_storage)
   const pagesResult = await query<{ confluence_id: string; body_storage: string }>(
-    'SELECT confluence_id, body_storage FROM cached_pages WHERE space_key = $1 AND body_storage IS NOT NULL',
+    'SELECT confluence_id, body_storage FROM pages WHERE space_key = $1 AND body_storage IS NOT NULL',
     [spaceKey],
   );
 
@@ -431,15 +431,15 @@ async function detectDeletedPages(
 
   // Query shared table by space_key only
   const existingResult = await query<{ confluence_id: string }>(
-    'SELECT confluence_id FROM cached_pages WHERE space_key = $1',
+    'SELECT confluence_id FROM pages WHERE space_key = $1',
     [spaceKey],
   );
 
   for (const { confluence_id } of existingResult.rows) {
     if (!currentIds.has(confluence_id)) {
       logger.info({ spaceKey, confluenceId: confluence_id }, 'Deleting stale page');
-      // page_embeddings are deleted by CASCADE on cached_pages
-      await query('DELETE FROM cached_pages WHERE confluence_id = $1', [confluence_id]);
+      // page_embeddings are deleted by CASCADE on pages
+      await query('DELETE FROM pages WHERE confluence_id = $1', [confluence_id]);
       await cleanPageAttachments('', confluence_id);
       clearPageFailures(confluence_id);
     }
