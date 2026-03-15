@@ -66,7 +66,7 @@ describe.skipIf(!dbAvailable)('Database migrations', () => {
     const expectedTables = [
       'users',
       'user_settings',
-      'cached_spaces',
+      'spaces',
       'pages',
       'page_embeddings',
       'llm_conversations',

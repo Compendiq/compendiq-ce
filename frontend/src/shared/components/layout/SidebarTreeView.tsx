@@ -9,9 +9,16 @@ import {
   PanelLeftClose,
   PanelLeft,
   ChevronsUpDown,
+  GripVertical,
+  Plus,
+  Globe,
+  HardDrive,
 } from 'lucide-react';
+import { DragDropProvider } from '@dnd-kit/react';
+import { useSortable, isSortable } from '@dnd-kit/react/sortable';
 import { usePageTree } from '../../hooks/use-pages';
 import { useSpaces } from '../../hooks/use-spaces';
+import { useLocalSpaces, useReorderPage } from '../../hooks/use-standalone';
 import { useUiStore } from '../../../stores/ui-store';
 import { cn } from '../../lib/cn';
 import type { PageTreeItem } from '../../hooks/use-pages';
@@ -79,6 +86,8 @@ export interface SidebarTreeNodeProps {
   expandedSet: Set<string>;
   toggleExpand: (id: string) => void;
   activePageId: string | undefined;
+  enableDrag?: boolean;
+  sortableIndex?: number;
 }
 
 export const SidebarTreeNode = memo(function SidebarTreeNode({
@@ -87,11 +96,20 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
   expandedSet,
   toggleExpand,
   activePageId,
+  enableDrag = false,
+  sortableIndex,
 }: SidebarTreeNodeProps) {
   const navigate = useNavigate();
   const isExpanded = expandedSet.has(node.page.id);
   const hasChildren = node.children.length > 0;
   const isActive = node.page.id === activePageId;
+
+  // Always call hook (React rules), but only use the ref when DnD is active
+  const sortable = useSortable({
+    id: node.page.id,
+    index: sortableIndex ?? 0,
+    disabled: !enableDrag,
+  });
 
   const handleNavigate = useCallback(() => {
     if (hasChildren) toggleExpand(node.page.id);
@@ -107,7 +125,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
   );
 
   return (
-    <div>
+    <div ref={enableDrag ? sortable.ref : undefined}>
       <div
         className={cn(
           'group flex items-center gap-1.5 rounded-md py-1.5 pr-2 text-sm transition-colors cursor-pointer',
@@ -118,6 +136,11 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         style={{ paddingLeft: `${level * 16 + 8}px` }}
         onClick={handleNavigate}
       >
+        {enableDrag && (
+          <span className="shrink-0 opacity-0 group-hover:opacity-50 cursor-grab active:cursor-grabbing transition-opacity" aria-label="Drag to reorder">
+            <GripVertical size={12} />
+          </span>
+        )}
         {hasChildren ? (
           <button
             onClick={handleToggle}
@@ -143,7 +166,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
 
       {hasChildren && isExpanded && (
         <div>
-          {node.children.map((child) => (
+          {node.children.map((child, idx) => (
             <SidebarTreeNode
               key={child.page.id}
               node={child}
@@ -151,6 +174,8 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
               expandedSet={expandedSet}
               toggleExpand={toggleExpand}
               activePageId={activePageId}
+              enableDrag={enableDrag}
+              sortableIndex={enableDrag ? idx : undefined}
             />
           ))}
         </div>
@@ -162,12 +187,23 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
     prev.node === next.node &&
     prev.level === next.level &&
     prev.activePageId === next.activePageId &&
-    prev.expandedSet === next.expandedSet
+    prev.expandedSet === next.expandedSet &&
+    prev.enableDrag === next.enableDrag &&
+    prev.sortableIndex === next.sortableIndex
   );
 });
 
+interface SpaceOption {
+  key: string;
+  name: string;
+  pageCount: number;
+  source: 'confluence' | 'local';
+  homepageId?: string | null;
+}
+
 export function SidebarTreeView() {
   const location = useLocation();
+  const navigate = useNavigate();
   const treeSidebarCollapsed = useUiStore((s) => s.treeSidebarCollapsed);
   const toggleTreeSidebar = useUiStore((s) => s.toggleTreeSidebar);
   const treeSidebarSpaceKey = useUiStore((s) => s.treeSidebarSpaceKey);
@@ -183,19 +219,47 @@ export function SidebarTreeView() {
     return match?.[1];
   }, [location.pathname]);
 
-  const { data: spaces } = useSpaces();
+  const { data: confluenceSpaces } = useSpaces();
+  const { data: localSpacesData } = useLocalSpaces();
   const { data: treeData, isLoading } = usePageTree({
     spaceKey: treeSidebarSpaceKey,
   });
+  const reorderPage = useReorderPage();
+
+  // Merge confluence + local spaces for the selector
+  const allSpaces = useMemo<SpaceOption[]>(() => {
+    const result: SpaceOption[] = [];
+    if (confluenceSpaces) {
+      confluenceSpaces.forEach((s) => result.push({
+        key: s.key,
+        name: s.name,
+        pageCount: s.pageCount,
+        source: 'confluence',
+        homepageId: s.homepageId,
+      }));
+    }
+    // Local spaces API returns an array directly
+    const localArr = Array.isArray(localSpacesData) ? localSpacesData : [];
+    localArr.forEach((s) => result.push({
+      key: s.key,
+      name: s.name,
+      pageCount: s.pageCount,
+      source: 'local',
+    }));
+    return result;
+  }, [confluenceSpaces, localSpacesData]);
 
   const pages = useMemo(() => treeData?.items ?? [], [treeData]);
-  const homepageId = useMemo(
-    () => treeSidebarSpaceKey ? spaces?.find((s) => s.key === treeSidebarSpaceKey)?.homepageId : undefined,
-    [treeSidebarSpaceKey, spaces],
+  const selectedSpaceOption = useMemo(
+    () => treeSidebarSpaceKey ? allSpaces.find((s) => s.key === treeSidebarSpaceKey) : undefined,
+    [treeSidebarSpaceKey, allSpaces],
   );
+  const homepageId = selectedSpaceOption?.homepageId;
   const tree = useMemo(() => buildTree(pages, homepageId), [pages, homepageId]);
+  const isLocalSpace = selectedSpaceOption?.source === 'local';
 
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+
   const [spaceDropdownOpen, setSpaceDropdownOpen] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
   const sidebarRef = useRef<HTMLElement>(null);
@@ -270,6 +334,26 @@ export function SidebarTreeView() {
     });
   }, []);
 
+  // Handle drag end for sortable reordering
+  const handleDragEnd = useCallback(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (event: any) => {
+      if (event.canceled) return;
+      const source = event.operation?.source;
+      if (!source || !isSortable(source)) return;
+
+      // isSortable narrows to SortableDraggable | SortableDroppable
+      // Both have `index`; only SortableDraggable has `initialIndex`
+      const currentIndex = source.index;
+      const startIndex = 'initialIndex' in source ? (source as { initialIndex: number }).initialIndex : currentIndex;
+      if (startIndex === currentIndex) return;
+
+      const pageId = String(source.id);
+      reorderPage.mutate({ id: pageId, sortOrder: currentIndex });
+    },
+    [reorderPage],
+  );
+
   if (treeSidebarCollapsed) {
     return (
       <div className="flex w-10 flex-col items-center border-r border-border/40 bg-card/50 backdrop-blur-md">
@@ -286,7 +370,9 @@ export function SidebarTreeView() {
     );
   }
 
-  const selectedSpace = spaces?.find((s) => s.key === treeSidebarSpaceKey);
+  // Combine spaces for display, grouped by source
+  const confluenceOptions = allSpaces.filter((s) => s.source === 'confluence');
+  const localOptions = allSpaces.filter((s) => s.source === 'local');
 
   return (
     <aside
@@ -300,13 +386,23 @@ export function SidebarTreeView() {
       {/* Sidebar header with collapse toggle */}
       <div className="flex h-10 shrink-0 items-center justify-between border-b border-border/40 px-3">
         <span className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground/70">Pages</span>
-        <button
-          onClick={toggleTreeSidebar}
-          className="rounded-md p-1 text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
-          aria-label="Collapse tree sidebar"
-        >
-          <PanelLeftClose size={14} />
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => navigate('/spaces/new')}
+            className="rounded-md p-1 text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+            aria-label="New Space"
+            title="Create new space"
+          >
+            <Plus size={14} />
+          </button>
+          <button
+            onClick={toggleTreeSidebar}
+            className="rounded-md p-1 text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+            aria-label="Collapse tree sidebar"
+          >
+            <PanelLeftClose size={14} />
+          </button>
+        </div>
       </div>
 
       {/* Space selector */}
@@ -316,13 +412,21 @@ export function SidebarTreeView() {
             onClick={() => setSpaceDropdownOpen(!spaceDropdownOpen)}
             className="flex w-full items-center justify-between rounded-md bg-foreground/5 px-2.5 py-1.5 text-xs text-foreground hover:bg-foreground/10 transition-colors"
           >
-            <span className="truncate">
-              {selectedSpace ? `${selectedSpace.name} (${selectedSpace.key})` : 'All Spaces'}
+            <span className="flex items-center gap-1.5 truncate">
+              {selectedSpaceOption ? (
+                <>
+                  {selectedSpaceOption.source === 'local'
+                    ? <HardDrive size={10} className="shrink-0 text-primary/70" />
+                    : <Globe size={10} className="shrink-0 text-muted-foreground/70" />
+                  }
+                  {selectedSpaceOption.name} ({selectedSpaceOption.key})
+                </>
+              ) : 'All Spaces'}
             </span>
             <ChevronsUpDown size={12} className="shrink-0 text-muted-foreground" />
           </button>
           {spaceDropdownOpen && (
-            <div className="absolute left-0 right-0 top-full z-50 mt-1 rounded-md border border-border/50 bg-card shadow-xl backdrop-blur-xl">
+            <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-64 overflow-y-auto rounded-md border border-border/50 bg-card shadow-xl backdrop-blur-xl">
               <button
                 onClick={() => {
                   setTreeSidebarSpaceKey(undefined);
@@ -335,30 +439,84 @@ export function SidebarTreeView() {
               >
                 All Spaces
               </button>
-              {spaces?.map((space) => (
-                <button
-                  key={space.key}
-                  onClick={() => {
-                    setTreeSidebarSpaceKey(space.key);
-                    setSpaceDropdownOpen(false);
-                  }}
-                  className={cn(
-                    'flex w-full items-center justify-between px-2.5 py-1.5 text-xs hover:bg-foreground/5 transition-colors',
-                    treeSidebarSpaceKey === space.key
-                      ? 'text-primary font-medium'
-                      : 'text-foreground',
-                  )}
-                >
-                  <span className="truncate">{space.name}</span>
-                  <span className="shrink-0 text-muted-foreground ml-2">{space.pageCount}</span>
-                </button>
-              ))}
+
+              {/* Confluence spaces */}
+              {confluenceOptions.length > 0 && (
+                <>
+                  <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">
+                    Confluence
+                  </div>
+                  {confluenceOptions.map((space) => (
+                    <button
+                      key={space.key}
+                      onClick={() => {
+                        setTreeSidebarSpaceKey(space.key);
+                        setSpaceDropdownOpen(false);
+                      }}
+                      className={cn(
+                        'flex w-full items-center justify-between px-2.5 py-1.5 text-xs hover:bg-foreground/5 transition-colors',
+                        treeSidebarSpaceKey === space.key
+                          ? 'text-primary font-medium'
+                          : 'text-foreground',
+                      )}
+                    >
+                      <span className="flex items-center gap-1.5 truncate">
+                        <Globe size={10} className="shrink-0 text-muted-foreground/70" />
+                        {space.name}
+                      </span>
+                      <span className="shrink-0 text-muted-foreground ml-2">{space.pageCount}</span>
+                    </button>
+                  ))}
+                </>
+              )}
+
+              {/* Local spaces */}
+              {localOptions.length > 0 && (
+                <>
+                  <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">
+                    Local
+                  </div>
+                  {localOptions.map((space) => (
+                    <button
+                      key={space.key}
+                      onClick={() => {
+                        setTreeSidebarSpaceKey(space.key);
+                        setSpaceDropdownOpen(false);
+                      }}
+                      className={cn(
+                        'flex w-full items-center justify-between px-2.5 py-1.5 text-xs hover:bg-foreground/5 transition-colors',
+                        treeSidebarSpaceKey === space.key
+                          ? 'text-primary font-medium'
+                          : 'text-foreground',
+                      )}
+                    >
+                      <span className="flex items-center gap-1.5 truncate">
+                        <HardDrive size={10} className="shrink-0 text-primary/70" />
+                        {space.name}
+                      </span>
+                      <span className="shrink-0 text-muted-foreground ml-2">{space.pageCount}</span>
+                    </button>
+                  ))}
+                </>
+              )}
+
+              {/* Create new space link */}
+              <button
+                onClick={() => {
+                  setSpaceDropdownOpen(false);
+                  navigate('/spaces/new');
+                }}
+                className="flex w-full items-center gap-1.5 border-t border-border/30 px-2.5 py-1.5 text-xs text-primary hover:bg-foreground/5 transition-colors"
+              >
+                <Plus size={10} />
+                New Space
+              </button>
             </div>
           )}
         </div>
       </div>
 
-      {/* Tree content */}
+      {/* Tree content with drag-and-drop */}
       <div className="flex-1 overflow-y-auto p-1.5">
         {isLoading ? (
           <div className="space-y-1.5 p-2">
@@ -374,6 +532,22 @@ export function SidebarTreeView() {
           <div className="px-3 py-6 text-center text-xs text-muted-foreground">
             {treeSidebarSpaceKey ? 'No pages in this space.' : 'No pages synced yet.'}
           </div>
+        ) : isLocalSpace ? (
+          <DragDropProvider onDragEnd={handleDragEnd}>
+            <div className="space-y-0.5">
+              {tree.map((node, idx) => (
+                <SidebarTreeNode
+                  key={node.page.id}
+                  node={node}
+                  expandedSet={expandedIds}
+                  toggleExpand={toggleExpand}
+                  activePageId={activePageId}
+                  enableDrag
+                  sortableIndex={idx}
+                />
+              ))}
+            </div>
+          </DragDropProvider>
         ) : (
           <div className="space-y-0.5">
             {tree.map((node) => (

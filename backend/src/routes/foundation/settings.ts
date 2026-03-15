@@ -257,7 +257,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
 async function invalidateUserData(userId: string, fastify: FastifyInstance): Promise<void> {
   // When a user's PAT/URL changes, their space selections are no longer valid.
   // Clear their space selections so they re-configure with the new credentials.
-  // Shared tables (pages, cached_spaces, page_embeddings) are NOT deleted here
+  // Shared tables (pages, spaces, page_embeddings) are NOT deleted here
   // because they are shared across users. Pages are only removed via sync when no
   // user selects the space.
   await query('DELETE FROM user_space_selections WHERE user_id = $1', [userId]);

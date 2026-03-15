@@ -434,10 +434,39 @@ export function useLocalSpaces() {
 export function useCreateLocalSpace() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (data: { key: string; name: string; description?: string }) =>
+    mutationFn: (data: { key: string; name: string; description?: string; icon?: string }) =>
       apiFetch<LocalSpace>('/spaces/local', {
         method: 'POST',
         body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['local-spaces'] });
+      queryClient.invalidateQueries({ queryKey: ['spaces'] });
+    },
+  });
+}
+
+export function useUpdateLocalSpace() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ key, ...data }: { key: string; name?: string; description?: string; icon?: string }) =>
+      apiFetch(`/spaces/local/${key}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['local-spaces'] });
+      queryClient.invalidateQueries({ queryKey: ['spaces'] });
+    },
+  });
+}
+
+export function useDeleteLocalSpace() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (key: string) =>
+      apiFetch(`/spaces/local/${key}`, {
+        method: 'DELETE',
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['local-spaces'] });
@@ -451,6 +480,56 @@ export function useSpaceTree(spaceKey: string) {
     queryKey: ['space-tree', spaceKey],
     queryFn: () => apiFetch<{ items: SpaceTreeNode[] }>(`/spaces/${spaceKey}/tree`),
     enabled: !!spaceKey,
+  });
+}
+
+export function useMovePage() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...data }: { id: string; parentId: string | null; spaceKey?: string }) =>
+      apiFetch(`/pages/${id}/move`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['pages'] });
+      queryClient.invalidateQueries({ queryKey: ['space-tree'] });
+      queryClient.invalidateQueries({ queryKey: ['spaces'] });
+    },
+  });
+}
+
+export function useReorderPage() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, sortOrder }: { id: string; sortOrder: number }) =>
+      apiFetch(`/pages/${id}/reorder`, {
+        method: 'PUT',
+        body: JSON.stringify({ sortOrder }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['pages'] });
+      queryClient.invalidateQueries({ queryKey: ['space-tree'] });
+    },
+  });
+}
+
+// ======== Breadcrumb ========
+
+export interface BreadcrumbData {
+  spaceKey: string | null;
+  spaceName: string | null;
+  source: 'confluence' | 'local';
+  ancestors: { id: number; title: string }[];
+  current: { id: number; title: string };
+}
+
+export function usePageBreadcrumb(pageId: string | undefined) {
+  return useQuery({
+    queryKey: ['page-breadcrumb', pageId],
+    queryFn: () => apiFetch<BreadcrumbData>(`/pages/${pageId}/breadcrumb`),
+    enabled: !!pageId,
+    staleTime: 60_000,
   });
 }
 
@@ -597,8 +676,11 @@ export interface LocalSpace {
   key: string;
   name: string;
   description: string | null;
+  icon: string | null;
   pageCount: number;
+  createdBy: string | null;
   createdAt: string;
+  source: 'local';
 }
 
 export interface SpaceTreeNode {

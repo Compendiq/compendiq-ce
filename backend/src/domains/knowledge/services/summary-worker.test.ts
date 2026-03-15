@@ -43,7 +43,7 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
 
     // Create space
     await query(
-      "INSERT INTO cached_spaces (space_key, space_name) VALUES ($1, 'Test Space')",
+      "INSERT INTO spaces (space_key, space_name) VALUES ($1, 'Test Space')",
       [testSpaceKey],
     );
 

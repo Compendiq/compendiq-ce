@@ -249,7 +249,7 @@ describe('incremental sync with missing attachments', () => {
       .mockResolvedValueOnce({ rows: [{ confluence_url: 'https://conf.example.com', confluence_pat: 'enc' }] })
       // 2. user_space_selections
       .mockResolvedValueOnce({ rows: [{ space_key: 'DEV' }] })
-      // 3. cached_spaces.last_synced → recent → incremental sync
+      // 3. spaces.last_synced → recent → incremental sync
       .mockResolvedValueOnce({ rows: [{ last_synced: recentDate }] });
 
     // syncPage calls for each modified page
@@ -336,7 +336,7 @@ describe('incremental sync with missing attachments', () => {
       .mockResolvedValueOnce({ rows: [{ confluence_url: 'https://conf.example.com', confluence_pat: 'enc' }] })
       // 2. user_space_selections
       .mockResolvedValueOnce({ rows: [{ space_key: 'DEV' }] })
-      // 3. cached_spaces.last_synced → null → full sync
+      // 3. spaces.last_synced → null → full sync
       .mockResolvedValueOnce({ rows: [{ last_synced: null }] })
       // 4. detectDeletedPages: selection count
       .mockResolvedValueOnce({ rows: [] })

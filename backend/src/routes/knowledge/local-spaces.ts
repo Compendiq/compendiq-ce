@@ -67,7 +67,7 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
     }>(
       `SELECT cs.space_key, cs.space_name, cs.description, cs.icon, cs.created_by,
               cs.last_synced AS created_at
-       FROM cached_spaces cs
+       FROM spaces cs
        WHERE cs.source = 'local'
        ORDER BY cs.space_name`,
     );
@@ -76,7 +76,7 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
     const countsResult = await query<{ space_key: string; count: string }>(
       `SELECT space_key, COUNT(*) as count
        FROM pages
-       WHERE space_key IN (SELECT space_key FROM cached_spaces WHERE source = 'local')
+       WHERE space_key IN (SELECT space_key FROM spaces WHERE source = 'local')
          AND deleted_at IS NULL
        GROUP BY space_key`,
     );
@@ -104,7 +104,7 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
 
     // Check for duplicate key
     const existing = await query(
-      'SELECT 1 FROM cached_spaces WHERE space_key = $1',
+      'SELECT 1 FROM spaces WHERE space_key = $1',
       [body.key],
     );
     if (existing.rows.length > 0) {
@@ -112,7 +112,7 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
     }
 
     await query(
-      `INSERT INTO cached_spaces (space_key, space_name, description, icon, source, created_by, last_synced)
+      `INSERT INTO spaces (space_key, space_name, description, icon, source, created_by, last_synced)
        VALUES ($1, $2, $3, $4, 'local', $5, NOW())`,
       [body.key, body.name, body.description ?? null, body.icon ?? null, userId],
     );
@@ -132,7 +132,7 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
 
     // Verify it's a local space
     const existing = await query<{ source: string; created_by: string | null }>(
-      'SELECT source, created_by FROM cached_spaces WHERE space_key = $1',
+      'SELECT source, created_by FROM spaces WHERE space_key = $1',
       [key],
     );
     if (existing.rows.length === 0) {
@@ -165,7 +165,7 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
 
     values.push(key);
     await query(
-      `UPDATE cached_spaces SET ${setClauses.join(', ')} WHERE space_key = $${paramIdx}`,
+      `UPDATE spaces SET ${setClauses.join(', ')} WHERE space_key = $${paramIdx}`,
       values,
     );
 
@@ -181,7 +181,7 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
     const { key } = KeyParamSchema.parse(request.params);
 
     const existing = await query<{ source: string }>(
-      'SELECT source FROM cached_spaces WHERE space_key = $1',
+      'SELECT source FROM spaces WHERE space_key = $1',
       [key],
     );
     if (existing.rows.length === 0) {
@@ -202,7 +202,7 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
       );
     }
 
-    await query('DELETE FROM cached_spaces WHERE space_key = $1', [key]);
+    await query('DELETE FROM spaces WHERE space_key = $1', [key]);
 
     await cache.invalidate(userId, 'spaces');
     await logAuditEvent(userId, 'LOCAL_SPACE_DELETED', 'space', key, {}, request);
@@ -221,7 +221,7 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
 
     // Verify space exists
     const spaceCheck = await query(
-      'SELECT 1 FROM cached_spaces WHERE space_key = $1',
+      'SELECT 1 FROM spaces WHERE space_key = $1',
       [key],
     );
     if (spaceCheck.rows.length === 0) {
@@ -373,5 +373,95 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
       { sortOrder: body.sortOrder }, request);
 
     return { id: parseInt(String(id), 10), sortOrder: body.sortOrder };
+  });
+
+  // GET /api/pages/:id/breadcrumb - get parent chain for breadcrumb display
+  fastify.get('/pages/:id/breadcrumb', async (request) => {
+    const { id } = IdParamSchema.parse(request.params);
+
+    const page = await query<{
+      id: number;
+      title: string;
+      parent_id: string | null;
+      space_key: string | null;
+      path: string | null;
+    }>(
+      'SELECT id, title, parent_id, space_key, path FROM pages WHERE id = $1 AND deleted_at IS NULL',
+      [id],
+    );
+
+    if (page.rows.length === 0) {
+      throw fastify.httpErrors.notFound('Page not found');
+    }
+
+    // Fetch all ancestors in a single query using the materialized path column.
+    // The path format is /id1/id2/id3 -- we extract the ancestor IDs, exclude
+    // the current page, and fetch them all at once (eliminates N+1 queries).
+    const currentPage = page.rows[0];
+    const crumbs: { id: number; title: string }[] = [];
+
+    if (currentPage.path) {
+      const pathIds = currentPage.path
+        .split('/')
+        .filter(Boolean)
+        .map(Number)
+        .filter((pid) => pid !== currentPage.id);
+
+      if (pathIds.length > 0) {
+        const ancestors = await query<{ id: number; title: string }>(
+          `SELECT id, title FROM pages
+           WHERE id = ANY($1::int[]) AND deleted_at IS NULL`,
+          [pathIds],
+        );
+
+        // Order ancestors according to their position in the path
+        const ancestorMap = new Map(ancestors.rows.map((r) => [r.id, r]));
+        for (const pid of pathIds) {
+          const ancestor = ancestorMap.get(pid);
+          if (ancestor) crumbs.push({ id: ancestor.id, title: ancestor.title });
+        }
+      }
+    } else if (currentPage.parent_id !== null) {
+      // Fallback for pages without materialized path: walk the parent chain
+      let currentParentId: string | null = currentPage.parent_id;
+      const maxDepth = 20;
+      let depth = 0;
+
+      while (currentParentId !== null && depth < maxDepth) {
+        const parentResult: { rows: { id: number; title: string; parent_id: string | null }[] } =
+          await query<{ id: number; title: string; parent_id: string | null }>(
+            'SELECT id, title, parent_id FROM pages WHERE id = $1 AND deleted_at IS NULL',
+            [currentParentId],
+          );
+
+        if (parentResult.rows.length === 0) break;
+        crumbs.unshift({ id: parentResult.rows[0].id, title: parentResult.rows[0].title });
+        currentParentId = parentResult.rows[0].parent_id;
+        depth++;
+      }
+    }
+
+    // Get space name and source in one query
+    let spaceName: string | null = null;
+    let spaceSource: 'confluence' | 'local' = 'confluence';
+    const spaceKey = currentPage.space_key;
+    if (spaceKey) {
+      const spaceResult = await query<{ space_name: string; source: string }>(
+        'SELECT space_name, source FROM spaces WHERE space_key = $1',
+        [spaceKey],
+      );
+      if (spaceResult.rows.length > 0) {
+        spaceName = spaceResult.rows[0].space_name;
+        spaceSource = spaceResult.rows[0].source as 'confluence' | 'local';
+      }
+    }
+
+    return {
+      spaceKey,
+      spaceName,
+      source: spaceSource,
+      ancestors: crumbs,
+      current: { id: currentPage.id, title: currentPage.title },
+    };
   });
 }

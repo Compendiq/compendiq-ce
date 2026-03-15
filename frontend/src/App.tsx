@@ -49,6 +49,16 @@ const GraphPage = lazy(() =>
     default: m.GraphPage,
   })),
 );
+const NewSpacePage = lazy(() =>
+  import('./features/spaces/NewSpacePage').then((m) => ({
+    default: m.NewSpacePage,
+  })),
+);
+const SpaceSettingsPage = lazy(() =>
+  import('./features/spaces/SpaceSettingsPage').then((m) => ({
+    default: m.SpaceSettingsPage,
+  })),
+);
 
 export function PageLoadingFallback() {
   return (
@@ -105,6 +115,8 @@ export function App() {
                           <Route path="/trash" element={<TrashPage />} />
                           <Route path="/ai" element={<AiAssistantPage />} />
                           <Route path="/graph" element={<GraphPage />} />
+                          <Route path="/spaces/new" element={<NewSpacePage />} />
+                          <Route path="/spaces/:key/settings" element={<SpaceSettingsPage />} />
                           <Route
                             path="/settings"
                             element={<SettingsPage />}

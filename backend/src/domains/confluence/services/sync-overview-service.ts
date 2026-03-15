@@ -61,7 +61,7 @@ export async function getSyncOverview(userId: string): Promise<SyncOverviewRespo
        cp.title AS page_title,
        cp.body_storage
      FROM user_space_selections uss
-     LEFT JOIN cached_spaces cs ON cs.space_key = uss.space_key
+     LEFT JOIN spaces cs ON cs.space_key = uss.space_key
      LEFT JOIN pages cp ON cp.space_key = uss.space_key
      WHERE uss.user_id = $1
      ORDER BY uss.space_key, cp.title NULLS LAST`,
