@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, Save, Upload, LayoutTemplate, Globe, Lock } from 'lucide-react';
 import { useCreatePage } from '../../shared/hooks/use-pages';
@@ -6,6 +6,8 @@ import { useSpaces } from '../../shared/hooks/use-spaces';
 import { useTemplates, useUseTemplate, useImportMarkdown } from '../../shared/hooks/use-standalone';
 import { Editor, clearDraft } from '../../shared/components/article/Editor';
 import { FeatureErrorBoundary } from '../../shared/components/feedback/FeatureErrorBoundary';
+import { LocationPicker } from '../../shared/components/LocationPicker';
+import type { LocationSelection } from '../../shared/components/LocationPicker';
 import { cn } from '../../shared/lib/cn';
 import { toast } from 'sonner';
 
@@ -22,12 +24,28 @@ export function NewPagePage() {
 
   const [title, setTitle] = useState('');
   const [spaceKey, setSpaceKey] = useState('');
+  const [parentId, setParentId] = useState<string | undefined>();
   const [bodyHtml, setBodyHtml] = useState('');
   const [articleType, setArticleType] = useState<ArticleType>('local');
   const [visibility, setVisibility] = useState<Visibility>('private');
   const [showTemplateGallery, setShowTemplateGallery] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleSpaceChange = useCallback((newSpaceKey: string) => {
+    setSpaceKey(newSpaceKey);
+    setParentId(undefined); // Reset parent when space changes
+  }, []);
+
+  const handleLocationSelect = useCallback((selection: LocationSelection) => {
+    setParentId(selection.parentId);
+  }, []);
+
+  // Reset parentId when switching article types to avoid sending
+  // a parent selected in one context to the wrong context
+  useEffect(() => {
+    setParentId(undefined);
+  }, [articleType]);
 
   const handleCreate = async () => {
     if (!title.trim()) {
@@ -43,6 +61,7 @@ export function NewPagePage() {
         spaceKey: articleType === 'confluence' ? spaceKey : '__local__',
         title: title.trim(),
         bodyHtml,
+        ...(parentId ? { parentId } : {}),
         ...(articleType === 'local' ? { visibility } : {}),
       } as Parameters<typeof createMutation.mutateAsync>[0]);
       clearDraft(NEW_PAGE_DRAFT_KEY);
@@ -171,7 +190,7 @@ export function NewPagePage() {
               <label className="mb-1 block text-sm font-medium">Space</label>
               <select
                 value={spaceKey}
-                onChange={(e) => setSpaceKey(e.target.value)}
+                onChange={(e) => handleSpaceChange(e.target.value)}
                 className="glass-select w-full"
                 data-testid="space-selector"
               >
@@ -213,6 +232,18 @@ export function NewPagePage() {
             </div>
           )}
         </div>
+
+        {/* Location picker — select parent page within the chosen space */}
+        {(articleType === 'local' || (articleType === 'confluence' && spaceKey)) && (
+          <div data-testid="location-picker-section">
+            <label className="mb-1 block text-sm font-medium">Parent Location</label>
+            <LocationPicker
+              spaceKey={articleType === 'confluence' ? spaceKey : '__local__'}
+              parentId={parentId}
+              onSelect={handleLocationSelect}
+            />
+          </div>
+        )}
       </div>
 
       <FeatureErrorBoundary featureName="Editor">
