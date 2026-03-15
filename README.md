@@ -3,7 +3,7 @@
 <!-- TODO: Add project logo -->
 
 [![Build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)]()
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D22.0.0-brightgreen)]()
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue)]()
 
@@ -298,6 +298,3 @@ docker compose -f docker/docker-compose.dev.yml logs -f
 6. Run `npm test`, `npm run lint`, and `npm run typecheck` before submitting
 7. Keep commits concise -- describe "why", not "what"
 
-## License
-
-MIT License. See [LICENSE](LICENSE) for details.
