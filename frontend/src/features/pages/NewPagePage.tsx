@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, Save, Upload, LayoutTemplate, Globe, Lock } from 'lucide-react';
 import { useCreatePage } from '../../shared/hooks/use-pages';
@@ -40,6 +40,12 @@ export function NewPagePage() {
   const handleLocationSelect = useCallback((selection: LocationSelection) => {
     setParentId(selection.parentId);
   }, []);
+
+  // Reset parentId when switching article types to avoid sending
+  // a parent selected in one context to the wrong context
+  useEffect(() => {
+    setParentId(undefined);
+  }, [articleType]);
 
   const handleCreate = async () => {
     if (!title.trim()) {

@@ -540,7 +540,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       let spaceKey: string | null = null;
       if (body.spaceKey) {
         const spaceCheck = await query<{ source: string }>(
-          'SELECT source FROM spaces WHERE space_key = $1',
+          'SELECT source FROM cached_spaces WHERE space_key = $1',
           [body.spaceKey],
         );
         if (spaceCheck.rows.length > 0 && spaceCheck.rows[0].source === 'local') {
