@@ -175,7 +175,7 @@ describe('RBAC service', () => {
       expect(spaces).toEqual(['DEV', 'OPS', 'HR']);
     });
 
-    it('should return spaces from RBAC assignments and legacy selections', async () => {
+    it('should return spaces from RBAC assignments (not user_space_selections)', async () => {
       const queryMock = mockQuery as ReturnType<typeof vi.fn>;
       queryMock.mockResolvedValueOnce({ rows: [] }); // not admin
       queryMock.mockResolvedValueOnce({ rows: [
@@ -194,6 +194,19 @@ describe('RBAC service', () => {
 
       const spaces = await getUserAccessibleSpaces('user-id');
       expect(spaces).toEqual([]);
+    });
+
+    it('should query space_role_assignments only (not user_space_selections)', async () => {
+      const queryMock = mockQuery as ReturnType<typeof vi.fn>;
+      queryMock.mockResolvedValueOnce({ rows: [] }); // not admin
+      queryMock.mockResolvedValueOnce({ rows: [] }); // no assignments
+
+      await getUserAccessibleSpaces('user-id');
+
+      // The second call (after admin check) should be the spaces query
+      const sqlArg = queryMock.mock.calls[1][0] as string;
+      expect(sqlArg).toContain('space_role_assignments');
+      expect(sqlArg).not.toContain('user_space_selections');
     });
   });
 

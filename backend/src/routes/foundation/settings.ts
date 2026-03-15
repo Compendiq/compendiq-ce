@@ -154,12 +154,16 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       const editorRoleId = editorRoleResult.rows[0]?.id;
 
       if (editorRoleId) {
-        // Remove assignments for spaces no longer selected
+        // Remove ONLY editor role assignments for deselected spaces.
+        // Higher-privilege roles (space_admin, system_admin) are NOT removed
+        // when a user deselects a space in settings -- those require explicit
+        // admin action via the RBAC admin UI.
         await query(
           `DELETE FROM space_role_assignments
            WHERE principal_type = 'user' AND principal_id = $1
+             AND role_id = $3
              AND space_key <> ALL($2::text[])`,
-          [request.userId, newSpaces],
+          [request.userId, newSpaces, editorRoleId],
         );
 
         // Insert new space assignments (idempotent)

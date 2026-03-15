@@ -206,8 +206,11 @@ export async function getUserSpaceRole(
 /**
  * Get all space keys a user has access to via RBAC space_role_assignments.
  * System admins get all spaces.
- * Also includes user_space_selections for backward compatibility during migration.
  * Results are cached in Redis with TTL of 60s.
+ *
+ * NOTE: This does NOT query user_space_selections. That table stores the
+ * user's Confluence sync preferences (which spaces to sync), NOT access
+ * control. RBAC space access is determined solely by space_role_assignments.
  */
 export async function getUserAccessibleSpaces(userId: string): Promise<string[]> {
   // System admin gets all spaces
@@ -223,22 +226,15 @@ export async function getUserAccessibleSpaces(userId: string): Promise<string[]>
   const cached = await getCached<string[]>(cacheKey);
   if (cached !== null) return cached;
 
-  // Combine RBAC assignments with legacy user_space_selections
-  // This ensures backward compatibility during the migration period
+  // Query RBAC assignments only (direct user + group-based)
   const result = await query<{ space_key: string }>(
-    `SELECT DISTINCT space_key FROM (
-       -- RBAC direct user assignments
-       SELECT sra.space_key FROM space_role_assignments sra
-       WHERE sra.principal_type = 'user' AND sra.principal_id = $1
-       UNION
-       -- RBAC group-based assignments
-       SELECT sra.space_key FROM space_role_assignments sra
-       JOIN group_memberships gm ON gm.group_id = sra.principal_id::INTEGER AND sra.principal_type = 'group'
-       WHERE gm.user_id = $1
-       UNION
-       -- Legacy user_space_selections (backward compat)
-       SELECT uss.space_key FROM user_space_selections uss WHERE uss.user_id = $1
-     ) AS accessible_spaces`,
+    `SELECT DISTINCT sra.space_key
+     FROM space_role_assignments sra
+     JOIN roles r ON sra.role_id = r.id
+     WHERE (sra.principal_type = 'user' AND sra.principal_id = $1)
+        OR (sra.principal_type = 'group' AND sra.principal_id::int IN (
+            SELECT group_id FROM group_memberships WHERE user_id = $1::uuid
+        ))`,
     [userId],
   );
 
