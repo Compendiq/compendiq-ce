@@ -37,11 +37,13 @@ vi.mock('../../core/services/audit-service.js', () => ({
 const mockRedisGet = vi.fn();
 const mockRedisSet = vi.fn();
 const mockRedisDel = vi.fn();
+const mockRedisGetDel = vi.fn();
 vi.mock('../../core/services/redis-cache.js', () => ({
   getRedisClient: vi.fn(() => ({
     get: mockRedisGet,
     set: mockRedisSet,
     del: mockRedisDel,
+    getDel: mockRedisGetDel,
   })),
 }));
 
@@ -293,14 +295,13 @@ describe('OIDC Routes', () => {
   });
 
   describe('POST /api/auth/oidc/exchange', () => {
-    it('exchanges a valid login code for tokens', async () => {
+    it('exchanges a valid login code for tokens (atomic getDel)', async () => {
       const storedData = {
         accessToken: 'stored-access-token',
         refreshToken: 'stored-refresh-token',
         user: { id: 'user-123', username: 'jdoe', role: 'user' },
       };
-      mockRedisGet.mockResolvedValue(JSON.stringify(storedData));
-      mockRedisDel.mockResolvedValue(1);
+      mockRedisGetDel.mockResolvedValue(JSON.stringify(storedData));
 
       const res = await app.inject({
         method: 'POST',
@@ -313,12 +314,13 @@ describe('OIDC Routes', () => {
       const body = JSON.parse(res.body);
       expect(body.accessToken).toBe('stored-access-token');
       expect(body.user.username).toBe('jdoe');
-      // Verify code was consumed (deleted)
-      expect(mockRedisDel).toHaveBeenCalledWith('oidc:login_code:valid-login-code');
+      // Verify atomic get-and-delete was used (not separate get + del)
+      expect(mockRedisGetDel).toHaveBeenCalledWith('oidc:login_code:valid-login-code');
+      expect(mockRedisDel).not.toHaveBeenCalled();
     });
 
     it('returns 401 for invalid login code', async () => {
-      mockRedisGet.mockResolvedValue(null);
+      mockRedisGetDel.mockResolvedValue(null);
 
       const res = await app.inject({
         method: 'POST',
@@ -351,6 +353,31 @@ describe('OIDC Routes', () => {
       const body = JSON.parse(res.body);
       expect(body.endSessionUrl).toContain('https://idp.example.com/logout');
       expect(body.endSessionUrl).toContain('client_id=test-client-id');
+    });
+
+    it('requires authentication (onRequest hook)', async () => {
+      // Build a separate app where authenticate rejects unauthenticated requests
+      const strictApp = Fastify({ logger: false });
+      await strictApp.register(sensible);
+      await strictApp.register(cookie);
+      strictApp.decorate('authenticate', async (request: FastifyRequest) => {
+        // Simulate auth failure — no Authorization header
+        throw strictApp.httpErrors.unauthorized('Not authenticated');
+      });
+      strictApp.decorate('requireAdmin', async () => { /* no-op */ });
+      strictApp.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) => {
+        const statusCode = error.statusCode ?? 500;
+        reply.status(statusCode).send({ error: error.message, statusCode });
+      });
+      await strictApp.register(oidcRoutes, { prefix: '/api' });
+
+      const res = await strictApp.inject({
+        method: 'POST',
+        url: '/api/auth/oidc/logout',
+      });
+
+      expect(res.statusCode).toBe(401);
+      await strictApp.close();
     });
   });
 
@@ -414,6 +441,33 @@ describe('OIDC Routes', () => {
         clientId: 'test-client-id',
         clientSecret: 'super-secret',
       }));
+    });
+
+    it('saves without clientSecret to preserve existing secret', async () => {
+      vi.mocked(upsertProvider).mockResolvedValue(MOCK_PROVIDER);
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/oidc',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          issuerUrl: 'https://idp.example.com',
+          clientId: 'test-client-id',
+          // clientSecret intentionally omitted — backend should preserve existing
+          redirectUri: 'http://localhost:3051/api/auth/oidc/callback',
+          groupsClaim: 'groups',
+          enabled: true,
+        }),
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(upsertProvider).toHaveBeenCalledWith(expect.objectContaining({
+        issuerUrl: 'https://idp.example.com',
+        clientId: 'test-client-id',
+      }));
+      // clientSecret should be undefined (not 'UNCHANGED')
+      const call = vi.mocked(upsertProvider).mock.calls[0][0];
+      expect(call.clientSecret).toBeUndefined();
     });
 
     it('rejects invalid input', async () => {

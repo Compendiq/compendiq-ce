@@ -86,6 +86,12 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+function AdminRoute({ children }: { children: React.ReactNode }) {
+  const user = useAuthStore((s) => s.user);
+  if (user?.role !== 'admin') return <Navigate to="/" replace />;
+  return <>{children}</>;
+}
+
 export function App() {
   useSessionInit();
   useTokenRefreshTimer();
@@ -130,7 +136,7 @@ export function App() {
                           />
                           <Route
                             path="/settings/oidc"
-                            element={<OidcSettingsPage />}
+                            element={<AdminRoute><OidcSettingsPage /></AdminRoute>}
                           />
                           <Route
                             path="*"

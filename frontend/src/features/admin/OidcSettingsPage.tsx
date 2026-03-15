@@ -145,7 +145,9 @@ function ProviderTab() {
     saveMutation.mutate({
       issuerUrl,
       clientId,
-      clientSecret: clientSecret || 'UNCHANGED',
+      // Only send clientSecret when the admin entered a new value.
+      // Omitting it tells the backend to preserve the existing encrypted secret.
+      ...(clientSecret ? { clientSecret } : {}),
       redirectUri,
       groupsClaim,
       enabled,

@@ -3,6 +3,7 @@ import * as jose from 'jose';
 import { query } from '../db/postgres.js';
 import { encryptPat, decryptPat } from '../utils/crypto.js';
 import { logger } from '../utils/logger.js';
+import { validateUrl } from '../utils/ssrf-guard.js';
 import { getRedisClient } from './redis-cache.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -115,8 +116,9 @@ export async function getDiscoveryDocument(
     }
   }
 
-  // Fetch from IdP
+  // Fetch from IdP — validate URL to prevent SSRF attacks
   const discoveryUrl = issuerUrl.replace(/\/$/, '') + '/.well-known/openid-configuration';
+  validateUrl(discoveryUrl);
   const response = await fetch(discoveryUrl, {
     headers: { Accept: 'application/json' },
     signal: AbortSignal.timeout(10_000),
@@ -133,6 +135,16 @@ export async function getDiscoveryDocument(
   // Validate required fields
   if (!doc.issuer || !doc.authorization_endpoint || !doc.token_endpoint || !doc.jwks_uri) {
     throw new Error('OIDC discovery document missing required fields');
+  }
+
+  // Per OIDC Discovery spec Section 4.3: the issuer in the discovery document
+  // MUST exactly match the issuer URL used to retrieve the document.
+  const normalizedIssuer = issuerUrl.replace(/\/$/, '');
+  const normalizedDocIssuer = doc.issuer.replace(/\/$/, '');
+  if (normalizedDocIssuer !== normalizedIssuer) {
+    throw new Error(
+      `OIDC issuer mismatch: expected '${normalizedIssuer}' but discovery document returned '${normalizedDocIssuer}'`,
+    );
   }
 
   // Cache in Redis
@@ -238,13 +250,15 @@ export async function upsertProvider(config: {
   name?: string;
   issuerUrl: string;
   clientId: string;
-  clientSecret: string;
+  clientSecret?: string;
   redirectUri: string;
   groupsClaim?: string;
   enabled?: boolean;
 }): Promise<OidcProviderConfig> {
   const name = config.name ?? 'default';
-  const encryptedSecret = encryptPat(config.clientSecret);
+  // Only encrypt the secret when a new value is provided (not undefined/null/empty).
+  // When the frontend omits the secret, we preserve the existing encrypted value in the DB.
+  const encryptedSecret = config.clientSecret ? encryptPat(config.clientSecret) : null;
   const groupsClaim = config.groupsClaim ?? 'groups';
   const enabled = config.enabled ?? false;
 
@@ -261,12 +275,12 @@ export async function upsertProvider(config: {
     updated_at: string;
   }>(
     `INSERT INTO oidc_providers (name, issuer_url, client_id, client_secret_encrypted, redirect_uri, groups_claim, enabled)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     VALUES ($1, $2, $3, COALESCE($4, ''), $5, $6, $7)
      ON CONFLICT (name)
      DO UPDATE SET
        issuer_url = EXCLUDED.issuer_url,
        client_id = EXCLUDED.client_id,
-       client_secret_encrypted = EXCLUDED.client_secret_encrypted,
+       client_secret_encrypted = CASE WHEN $4 IS NULL THEN oidc_providers.client_secret_encrypted ELSE $4 END,
        redirect_uri = EXCLUDED.redirect_uri,
        groups_claim = EXCLUDED.groups_claim,
        enabled = EXCLUDED.enabled,
@@ -323,11 +337,9 @@ export async function consumeAuthSession(state: string): Promise<OidcAuthSession
   }
 
   const key = `${AUTH_SESSION_PREFIX}${state}`;
-  const data = await redis.get(key);
+  // Atomic get-and-delete prevents TOCTOU race (double-use of auth sessions)
+  const data = await redis.getDel(key);
   if (!data) return null;
-
-  // Delete immediately (one-time use)
-  await redis.del(key);
 
   return JSON.parse(data) as OidcAuthSession;
 }

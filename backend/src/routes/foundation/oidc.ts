@@ -61,7 +61,7 @@ const OidcExchangeBodySchema = z.object({
 const OidcProviderBodySchema = z.object({
   issuerUrl: z.string().url(),
   clientId: z.string().min(1).max(500),
-  clientSecret: z.string().min(1).max(2000),
+  clientSecret: z.string().min(1).max(2000).optional(),
   redirectUri: z.string().url(),
   groupsClaim: z.string().min(1).max(100).optional(),
   enabled: z.boolean().optional(),
@@ -236,13 +236,11 @@ export async function oidcRoutes(fastify: FastifyInstance) {
     }
 
     const key = `${LOGIN_CODE_PREFIX}${code}`;
-    const data = await redis.get(key);
+    // Atomic get-and-delete prevents TOCTOU race (double-use of login codes)
+    const data = await redis.getDel(key);
     if (!data) {
       throw fastify.httpErrors.unauthorized('Invalid or expired login code');
     }
-
-    // Consume immediately (one-time use)
-    await redis.del(key);
 
     const result = JSON.parse(data) as {
       accessToken: string;
@@ -259,8 +257,9 @@ export async function oidcRoutes(fastify: FastifyInstance) {
   /**
    * POST /api/auth/oidc/logout
    * Clears session and returns the IdP logout URL if available.
+   * Requires authentication to prevent abuse.
    */
-  fastify.post('/auth/oidc/logout', async (request, reply) => {
+  fastify.post('/auth/oidc/logout', { onRequest: [fastify.authenticate] }, async (request, reply) => {
     let endSessionUrl: string | undefined;
 
     try {
