@@ -59,7 +59,8 @@ describe('Knowledge Requests API', () => {
   });
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
+    mockQueryFn.mockResolvedValue({ rows: [], rowCount: 0 });
   });
 
   describe('POST /api/knowledge-requests', () => {
@@ -257,6 +258,9 @@ describe('Knowledge Requests API', () => {
 
   describe('PATCH /api/knowledge-requests/:id', () => {
     it('should update status and assignee', async () => {
+      // Auth SELECT: verify requester/assignee before update
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ requested_by: testUserId, assigned_to: null }], rowCount: 1 });
+      // UPDATE result
       mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 1 }], rowCount: 1 });
 
       const response = await app.inject({
@@ -272,14 +276,17 @@ describe('Knowledge Requests API', () => {
       const body = JSON.parse(response.body);
       expect(body.updated).toBe(true);
 
-      // Verify the UPDATE query includes both fields
-      const updateCall = mockQueryFn.mock.calls[0];
+      // Verify the UPDATE query includes both fields (calls[0] is auth SELECT, calls[1] is UPDATE)
+      const updateCall = mockQueryFn.mock.calls[1];
       expect(updateCall[0]).toContain('assigned_to');
       expect(updateCall[0]).toContain('status');
       expect(updateCall[0]).toContain('updated_at = NOW()');
     });
 
     it('should return 400 when no fields provided', async () => {
+      // Auth SELECT runs before the empty-setClauses check
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ requested_by: testUserId, assigned_to: null }], rowCount: 1 });
+
       const response = await app.inject({
         method: 'PATCH',
         url: '/api/knowledge-requests/1',
@@ -304,6 +311,8 @@ describe('Knowledge Requests API', () => {
 
   describe('POST /api/knowledge-requests/:id/fulfill', () => {
     it('should fulfill a request by linking a page', async () => {
+      // Auth SELECT: verify requester/assignee before fulfill
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ requested_by: testUserId, assigned_to: null }], rowCount: 1 });
       // page existence check
       mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 42 }], rowCount: 1 });
       // update query
@@ -320,13 +329,16 @@ describe('Knowledge Requests API', () => {
       expect(body.fulfilled).toBe(true);
       expect(body.pageId).toBe(42);
 
-      // Verify status set to completed
-      const updateCall = mockQueryFn.mock.calls[1];
+      // Verify status set to completed (calls[0]=auth, calls[1]=page check, calls[2]=UPDATE)
+      const updateCall = mockQueryFn.mock.calls[2];
       expect(updateCall[0]).toContain("status = 'completed'");
       expect(updateCall[0]).toContain('fulfilled_by_page_id = $1');
     });
 
     it('should return 404 when page does not exist', async () => {
+      // Auth SELECT passes (request exists and user is authorized)
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ requested_by: testUserId, assigned_to: null }], rowCount: 1 });
+      // Page check returns empty (page not found)
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
 
       const response = await app.inject({

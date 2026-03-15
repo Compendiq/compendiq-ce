@@ -10,14 +10,14 @@ vi.mock('../../core/services/rbac-service.js', () => ({
 
 const mockQuery = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 });
 
-vi.mock('../db/postgres.js', () => ({
+vi.mock('../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
   getPool: vi.fn().mockReturnValue({}),
   runMigrations: vi.fn(),
   closePool: vi.fn(),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
@@ -395,10 +395,10 @@ describe('Notification routes', () => {
 
 describe('Notification service – createNotification', () => {
   // Import once; module is already cached with mocked dependencies
-  let createNotification: typeof import('../services/notification-service.js')['createNotification'];
+  let createNotification: typeof import('../../core/services/notification-service.js')['createNotification'];
 
   beforeAll(async () => {
-    const mod = await import('../services/notification-service.js');
+    const mod = await import('../../core/services/notification-service.js');
     createNotification = mod.createNotification;
   });
 
