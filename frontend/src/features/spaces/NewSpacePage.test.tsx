@@ -113,4 +113,40 @@ describe('NewSpacePage', () => {
     const submitButton = screen.getByText('Create Space');
     expect(submitButton).toBeDisabled();
   });
+
+  it('allows selecting an icon and passes it to the mutation', async () => {
+    mockMutateAsync.mockResolvedValueOnce({ key: 'TEST_SPACE', name: 'Test Space' });
+    renderPage();
+
+    const nameInput = screen.getByLabelText('Space Name');
+    fireEvent.change(nameInput, { target: { value: 'Test Space' } });
+
+    // Select the "Code" icon
+    fireEvent.click(screen.getByTitle('Code'));
+
+    const submitButton = screen.getByText('Create Space');
+    fireEvent.click(submitButton);
+
+    await waitFor(() => {
+      expect(mockMutateAsync).toHaveBeenCalledWith({
+        key: 'TEST_SPACE',
+        name: 'Test Space',
+        description: undefined,
+        icon: 'code',
+      });
+    });
+  });
+
+  it('deselects icon on second click', () => {
+    renderPage();
+    const codeButton = screen.getByTitle('Code');
+
+    // Select
+    fireEvent.click(codeButton);
+    expect(codeButton.className).toContain('border-primary');
+
+    // Deselect
+    fireEvent.click(codeButton);
+    expect(codeButton.className).not.toContain('border-primary');
+  });
 });

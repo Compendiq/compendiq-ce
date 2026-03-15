@@ -384,8 +384,9 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
       title: string;
       parent_id: string | null;
       space_key: string | null;
+      path: string | null;
     }>(
-      'SELECT id, title, parent_id, space_key FROM pages WHERE id = $1 AND deleted_at IS NULL',
+      'SELECT id, title, parent_id, space_key, path FROM pages WHERE id = $1 AND deleted_at IS NULL',
       [id],
     );
 
@@ -393,48 +394,74 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.notFound('Page not found');
     }
 
-    // Walk up the parent chain to build the breadcrumb
+    // Fetch all ancestors in a single query using the materialized path column.
+    // The path format is /id1/id2/id3 -- we extract the ancestor IDs, exclude
+    // the current page, and fetch them all at once (eliminates N+1 queries).
+    const currentPage = page.rows[0];
     const crumbs: { id: number; title: string }[] = [];
-    let currentParentId = page.rows[0].parent_id;
 
-    // Safety limit to prevent infinite loops in case of data inconsistency
-    const maxDepth = 20;
-    let depth = 0;
+    if (currentPage.path) {
+      const pathIds = currentPage.path
+        .split('/')
+        .filter(Boolean)
+        .map(Number)
+        .filter((pid) => pid !== currentPage.id);
 
-    while (currentParentId !== null && depth < maxDepth) {
-      const parent = await query<{
-        id: number;
-        title: string;
-        parent_id: string | null;
-      }>(
-        'SELECT id, title, parent_id FROM pages WHERE id = $1 AND deleted_at IS NULL',
-        [currentParentId],
-      );
+      if (pathIds.length > 0) {
+        const ancestors = await query<{ id: number; title: string }>(
+          `SELECT id, title FROM pages
+           WHERE id = ANY($1::int[]) AND deleted_at IS NULL`,
+          [pathIds],
+        );
 
-      if (parent.rows.length === 0) break;
-      crumbs.unshift({ id: parent.rows[0].id, title: parent.rows[0].title });
-      currentParentId = parent.rows[0].parent_id;
-      depth++;
+        // Order ancestors according to their position in the path
+        const ancestorMap = new Map(ancestors.rows.map((r) => [r.id, r]));
+        for (const pid of pathIds) {
+          const ancestor = ancestorMap.get(pid);
+          if (ancestor) crumbs.push({ id: ancestor.id, title: ancestor.title });
+        }
+      }
+    } else if (currentPage.parent_id !== null) {
+      // Fallback for pages without materialized path: walk the parent chain
+      let currentParentId: string | null = currentPage.parent_id;
+      const maxDepth = 20;
+      let depth = 0;
+
+      while (currentParentId !== null && depth < maxDepth) {
+        const parentResult: { rows: { id: number; title: string; parent_id: string | null }[] } =
+          await query<{ id: number; title: string; parent_id: string | null }>(
+            'SELECT id, title, parent_id FROM pages WHERE id = $1 AND deleted_at IS NULL',
+            [currentParentId],
+          );
+
+        if (parentResult.rows.length === 0) break;
+        crumbs.unshift({ id: parentResult.rows[0].id, title: parentResult.rows[0].title });
+        currentParentId = parentResult.rows[0].parent_id;
+        depth++;
+      }
     }
 
-    // Get space name if available
+    // Get space name and source in one query
     let spaceName: string | null = null;
-    const spaceKey = page.rows[0].space_key;
+    let spaceSource: 'confluence' | 'local' = 'confluence';
+    const spaceKey = currentPage.space_key;
     if (spaceKey) {
-      const spaceResult = await query<{ space_name: string }>(
-        'SELECT space_name FROM spaces WHERE space_key = $1',
+      const spaceResult = await query<{ space_name: string; source: string }>(
+        'SELECT space_name, source FROM spaces WHERE space_key = $1',
         [spaceKey],
       );
       if (spaceResult.rows.length > 0) {
         spaceName = spaceResult.rows[0].space_name;
+        spaceSource = spaceResult.rows[0].source as 'confluence' | 'local';
       }
     }
 
     return {
       spaceKey,
       spaceName,
+      source: spaceSource,
       ancestors: crumbs,
-      current: { id: page.rows[0].id, title: page.rows[0].title },
+      current: { id: currentPage.id, title: currentPage.title },
     };
   });
 }

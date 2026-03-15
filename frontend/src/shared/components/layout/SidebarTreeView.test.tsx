@@ -6,6 +6,15 @@ import { SidebarTreeView, SidebarTreeNode } from './SidebarTreeView';
 import type { TreeNode, SidebarTreeNodeProps } from './SidebarTreeView';
 import { useUiStore } from '../../../stores/ui-store';
 
+vi.mock('@dnd-kit/react', () => ({
+  DragDropProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+
+vi.mock('@dnd-kit/react/sortable', () => ({
+  useSortable: () => ({ ref: { current: null }, isDragging: false }),
+  isSortable: () => false,
+}));
+
 const mockNavigate = vi.fn();
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');

@@ -23,6 +23,7 @@ export function NewSpacePage() {
   const [name, setName] = useState('');
   const [key, setKey] = useState('');
   const [description, setDescription] = useState('');
+  const [selectedIcon, setSelectedIcon] = useState<string | undefined>(undefined);
   const [keyTouched, setKeyTouched] = useState(false);
 
   // Auto-generate key from name (unless user has manually edited it)
@@ -51,6 +52,7 @@ export function NewSpacePage() {
           key: key.trim(),
           name: name.trim(),
           description: description.trim() || undefined,
+          icon: selectedIcon,
         });
         toast.success(`Space "${name}" created`);
         navigate('/');
@@ -59,7 +61,7 @@ export function NewSpacePage() {
         toast.error(message);
       }
     },
-    [name, key, description, createSpace, navigate],
+    [name, key, description, selectedIcon, createSpace, navigate],
   );
 
   return (
@@ -155,7 +157,12 @@ export function NewSpacePage() {
                 <button
                   key={icon.value}
                   type="button"
-                  className="rounded-md border border-border/30 px-2 py-1 text-[10px] text-muted-foreground hover:bg-foreground/5 hover:text-foreground transition-colors"
+                  onClick={() => setSelectedIcon(selectedIcon === icon.value ? undefined : icon.value)}
+                  className={`rounded-md border px-2 py-1 text-[10px] transition-colors ${
+                    selectedIcon === icon.value
+                      ? 'border-primary bg-primary/10 text-primary font-medium'
+                      : 'border-border/30 text-muted-foreground hover:bg-foreground/5 hover:text-foreground'
+                  }`}
                   title={icon.label}
                 >
                   {icon.label}

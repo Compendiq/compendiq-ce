@@ -434,7 +434,7 @@ export function useLocalSpaces() {
 export function useCreateLocalSpace() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (data: { key: string; name: string; description?: string }) =>
+    mutationFn: (data: { key: string; name: string; description?: string; icon?: string }) =>
       apiFetch<LocalSpace>('/spaces/local', {
         method: 'POST',
         body: JSON.stringify(data),
@@ -519,6 +519,7 @@ export function useReorderPage() {
 export interface BreadcrumbData {
   spaceKey: string | null;
   spaceName: string | null;
+  source: 'confluence' | 'local';
   ancestors: { id: number; title: string }[];
   current: { id: number; title: string };
 }

@@ -8,6 +8,7 @@ import { Breadcrumb } from './Breadcrumb';
 const mockBreadcrumbData = {
   spaceKey: 'DEV',
   spaceName: 'Development',
+  source: 'confluence' as const,
   ancestors: [
     { id: 100, title: 'Getting Started' },
   ],
