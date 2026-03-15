@@ -360,7 +360,7 @@ describe('OIDC Routes', () => {
       const strictApp = Fastify({ logger: false });
       await strictApp.register(sensible);
       await strictApp.register(cookie);
-      strictApp.decorate('authenticate', async (request: FastifyRequest) => {
+      strictApp.decorate('authenticate', async (_request: FastifyRequest) => {
         // Simulate auth failure — no Authorization header
         throw strictApp.httpErrors.unauthorized('Not authenticated');
       });
