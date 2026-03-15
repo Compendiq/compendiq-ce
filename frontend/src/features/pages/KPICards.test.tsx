@@ -227,6 +227,32 @@ describe('KPICards', () => {
     const svg = ring.querySelector('svg');
     expect(svg).toHaveAttribute('aria-label', 'Embedding coverage: 100%');
   });
+
+  it('all cards use consistent DOM structure for equal height', () => {
+    render(
+      <KPICards
+        embeddingStatus={mockEmbeddingStatus}
+        spacesCount={5}
+        lastSynced="2026-03-10T10:00:00Z"
+      />,
+      { wrapper: Wrapper },
+    );
+
+    const testIds = [
+      'kpi-total-articles',
+      'kpi-embedded-pages',
+      'kpi-spaces-synced',
+      'kpi-last-sync',
+      'kpi-embedding-coverage',
+    ];
+
+    for (const testId of testIds) {
+      const card = screen.getByTestId(testId);
+      // Each card element should have glass-card and h-full classes
+      expect(card.className).toContain('glass-card');
+      expect(card.className).toContain('h-full');
+    }
+  });
 });
 
 describe('formatRelativeTime', () => {
