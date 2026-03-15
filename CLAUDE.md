@@ -42,10 +42,11 @@ ai-kb-creator/
 ├── backend/src/
 │   ├── core/                        # Shared infrastructure (no domain imports)
 │   │   ├── db/postgres.ts           # Connection pool + migration runner
-│   │   ├── db/migrations/           # Sequential SQL files (001-038)
+│   │   ├── db/migrations/           # Sequential SQL files (001-040)
 │   │   ├── plugins/                 # Fastify plugins (auth, cors, rate-limit, redis)
 │   │   ├── services/                # Cross-cutting: redis-cache, audit, error-tracker,
-│   │   │                            #   content-converter, circuit-breaker, image-references
+│   │   │                            #   content-converter, circuit-breaker, image-references,
+│   │   │                            #   oidc-service, rbac-service
 │   │   └── utils/                   # crypto, logger, sanitize, ssrf-guard, tls/llm config
 │   ├── domains/
 │   │   ├── confluence/services/     # confluence-client, sync-service, attachment-handler,
@@ -55,7 +56,7 @@ ai-kb-creator/
 │   │   └── knowledge/services/      # auto-tagger, quality-worker, summary-worker,
 │   │                                #   version-tracker, duplicate-detector
 │   ├── routes/
-│   │   ├── foundation/              # health, auth, settings, admin
+│   │   ├── foundation/              # health, auth, settings, admin, oidc, rbac
 │   │   ├── confluence/              # spaces, sync, attachments
 │   │   ├── llm/                     # llm-chat (SSE streaming), llm-conversations,
 │   │   │                            #   llm-embeddings, llm-models, llm-admin
@@ -189,3 +190,7 @@ Copy `.env.example` to `.env`. Key vars:
 - `SUMMARY_CHECK_INTERVAL_MINUTES` (default: `60`)
 - `SUMMARY_BATCH_SIZE` (default: `5`, pages per batch)
 - `SUMMARY_MODEL` (default: `DEFAULT_LLM_MODEL`, then empty = disabled)
+- `OIDC_ISSUER_URL` (optional, OIDC identity provider URL)
+- `OIDC_CLIENT_ID` (optional, OIDC client ID)
+- `OIDC_CLIENT_SECRET` (optional, encrypted at rest in DB)
+- `OIDC_REDIRECT_URI` (optional, callback URL for OIDC flow)
