@@ -122,10 +122,10 @@ describe('NewPagePage', () => {
     expect(screen.queryByTestId('location-picker-section')).not.toBeInTheDocument();
   });
 
-  it('does not show location picker for local articles', () => {
+  it('shows location picker for local articles', () => {
     render(<NewPagePage />, { wrapper: createWrapper() });
-    // Default is local - no location picker should show
-    expect(screen.queryByTestId('location-picker-section')).not.toBeInTheDocument();
+    // Default is local - location picker should show for organizing local pages
+    expect(screen.getByTestId('location-picker-section')).toBeInTheDocument();
   });
 
   it('creates a page with parentId when location is selected', async () => {

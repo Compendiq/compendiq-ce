@@ -228,11 +228,11 @@ export function NewPagePage() {
         </div>
 
         {/* Location picker — select parent page within the chosen space */}
-        {articleType === 'confluence' && spaceKey && (
+        {(articleType === 'local' || (articleType === 'confluence' && spaceKey)) && (
           <div data-testid="location-picker-section">
             <label className="mb-1 block text-sm font-medium">Parent Location</label>
             <LocationPicker
-              spaceKey={spaceKey}
+              spaceKey={articleType === 'confluence' ? spaceKey : '__local__'}
               parentId={parentId}
               onSelect={handleLocationSelect}
             />

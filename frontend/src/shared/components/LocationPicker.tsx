@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, memo } from 'react';
+import { useState, useMemo, useEffect, useCallback, memo } from 'react';
 import * as Popover from '@radix-ui/react-popover';
 import {
   MapPin,
@@ -342,7 +342,7 @@ export function LocationPicker({
   }, []);
 
   // Sync internal state when prop changes
-  useMemo(() => {
+  useEffect(() => {
     setSelectedParentId(parentId);
   }, [parentId]);
 
