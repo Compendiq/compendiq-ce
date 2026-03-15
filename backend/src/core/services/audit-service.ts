@@ -30,7 +30,9 @@ export type AuditAction =
   | 'LOCAL_SPACE_UPDATED'
   | 'LOCAL_SPACE_DELETED'
   | 'PAGE_MOVED'
-  | 'PAGE_REORDERED';
+  | 'PAGE_REORDERED'
+  | 'OIDC_LOGIN'
+  | 'OIDC_LOGIN_FAILED';
 
 export interface AuditLogEntry {
   id: string;

@@ -9,6 +9,7 @@ import { AppLayout } from './shared/components/layout/AppLayout';
 import { ErrorBoundary } from './shared/components/feedback/ErrorBoundary';
 
 import { LoginPage } from './features/settings/LoginPage';
+import { OidcCallbackPage } from './features/auth/OidcCallbackPage';
 
 // Route-based code splitting: lazy-load all page components (#186)
 // LoginPage is statically imported — it's the first screen for
@@ -59,6 +60,11 @@ const SpaceSettingsPage = lazy(() =>
     default: m.SpaceSettingsPage,
   })),
 );
+const OidcSettingsPage = lazy(() =>
+  import('./features/admin/OidcSettingsPage').then((m) => ({
+    default: m.OidcSettingsPage,
+  })),
+);
 
 export function PageLoadingFallback() {
   return (
@@ -80,6 +86,12 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+function AdminRoute({ children }: { children: React.ReactNode }) {
+  const user = useAuthStore((s) => s.user);
+  if (user?.role !== 'admin') return <Navigate to="/" replace />;
+  return <>{children}</>;
+}
+
 export function App() {
   useSessionInit();
   useTokenRefreshTimer();
@@ -91,6 +103,7 @@ export function App() {
         <Suspense fallback={<PageLoadingFallback />}>
           <Routes>
             <Route path="/login" element={<LoginPage />} />
+            <Route path="/auth/oidc/callback" element={<OidcCallbackPage />} />
             <Route
               path="/*"
               element={
@@ -120,6 +133,10 @@ export function App() {
                           <Route
                             path="/settings"
                             element={<SettingsPage />}
+                          />
+                          <Route
+                            path="/settings/oidc"
+                            element={<AdminRoute><OidcSettingsPage /></AdminRoute>}
                           />
                           <Route
                             path="*"
