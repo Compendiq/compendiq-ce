@@ -11,6 +11,11 @@ vi.mock('../../domains/confluence/services/attachment-handler.js', () => ({
   writeAttachmentCache: vi.fn(),
 }));
 
+vi.mock('../../core/services/rbac-service.js', () => ({
+  getUserAccessibleSpaces: vi.fn().mockResolvedValue(['DEV', 'OPS']),
+  invalidateRbacCache: vi.fn().mockResolvedValue(undefined),
+}));
+
 const mockQuery = vi.fn();
 vi.mock('../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQuery(...args),

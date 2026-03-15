@@ -1,4 +1,5 @@
 import { query, getPool } from '../../../core/db/postgres.js';
+import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { logger } from '../../../core/utils/logger.js';
 
 const RAG_EF_SEARCH = parseInt(process.env.RAG_EF_SEARCH ?? '100', 10);
@@ -136,14 +137,15 @@ export async function scanAllDuplicates(
 ): Promise<Array<{ page1: DuplicateCandidate & { sourceId: string }; page2: DuplicateCandidate }>> {
   const { distanceThreshold = 0.15, maxPairsPerPage = 3 } = options;
 
-  // Get all pages with embeddings
+  // Get all pages with embeddings (RBAC access control)
+  const dupSpaces = await getUserAccessibleSpaces(userId);
   const pages = await query<{ confluence_id: string; title: string }>(
     `SELECT DISTINCT cp.confluence_id, cp.title
      FROM pages cp
      JOIN page_embeddings pe ON cp.confluence_id = pe.confluence_id
-     JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
-     WHERE cp.deleted_at IS NULL`,
-    [userId],
+     WHERE cp.space_key = ANY($1::text[])
+       AND cp.deleted_at IS NULL`,
+    [dupSpaces],
   );
 
   const allPairs: Array<{ page1: DuplicateCandidate & { sourceId: string }; page2: DuplicateCandidate }> = [];

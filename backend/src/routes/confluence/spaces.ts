@@ -2,12 +2,13 @@ import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
+import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 
 export async function spacesRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
   const cache = new RedisCache(fastify.redis);
 
-  // GET /api/spaces - list the user's selected spaces (via user_space_selections)
+  // GET /api/spaces - list the user's accessible spaces (via RBAC)
   fastify.get('/spaces', async (request) => {
     const userId = request.userId;
 
@@ -15,7 +16,8 @@ export async function spacesRoutes(fastify: FastifyInstance) {
     const cached = await cache.get<unknown[]>(userId, 'spaces', 'list');
     if (cached) return cached;
 
-    // Fetch spaces the user has selected from shared spaces
+    // Fetch spaces the user has access to via RBAC from shared spaces
+    const userSpaces = await getUserAccessibleSpaces(userId);
     const result = await query<{
       space_key: string;
       space_name: string;
@@ -24,18 +26,18 @@ export async function spacesRoutes(fastify: FastifyInstance) {
     }>(
       `SELECT cs.space_key, cs.space_name, cs.homepage_id, cs.last_synced
        FROM spaces cs
-       JOIN user_space_selections uss ON cs.space_key = uss.space_key AND uss.user_id = $1
+       WHERE cs.space_key = ANY($1::text[])
        ORDER BY cs.space_name`,
-      [userId],
+      [userSpaces],
     );
 
-    // Get page counts per space (scoped to user's selections)
+    // Get page counts per space (scoped to user's RBAC access)
     const countsResult = await query<{ space_key: string; count: string }>(
       `SELECT cp.space_key, COUNT(*) as count
        FROM pages cp
-       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
+       WHERE cp.space_key = ANY($1::text[])
        GROUP BY cp.space_key`,
-      [userId],
+      [userSpaces],
     );
     const counts = new Map(countsResult.rows.map((r) => [r.space_key, parseInt(r.count, 10)]));
 

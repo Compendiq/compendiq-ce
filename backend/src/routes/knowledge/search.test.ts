@@ -8,6 +8,10 @@ vi.mock('../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
+vi.mock('../../core/services/rbac-service.js', () => ({
+  getUserAccessibleSpaces: vi.fn().mockResolvedValue(['TEST']),
+}));
+
 const mockQueryFn = vi.fn();
 vi.mock('../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQueryFn(...args),
@@ -148,12 +152,10 @@ describe('Search Routes', () => {
       );
       expect(countCall).toBeDefined();
       const sql = countCall![0] as string;
-      expect(sql).toContain('LEFT JOIN user_space_selections uss');
+      expect(sql).toContain('cp.space_key = ANY');
       expect(sql).toContain('cp.deleted_at IS NULL');
       expect(sql).toContain('cp.source');
       expect(sql).toContain('cp.visibility');
-      // userId should be in the params
-      expect(countCall![1] as unknown[]).toContain('test-user-id');
     });
 
     it('should filter by spaceKey', async () => {

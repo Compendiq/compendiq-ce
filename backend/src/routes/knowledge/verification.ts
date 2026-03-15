@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { query } from '../../core/db/postgres.js';
+import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 import { logger } from '../../core/utils/logger.js';
 
 const IdParamSchema = z.object({ id: z.string().min(1) });
@@ -20,17 +21,17 @@ export async function verificationRoutes(fastify: FastifyInstance) {
   /** Check that a page exists and the user has access to it. Accepts integer id or confluence_id string. */
   async function assertPageAccess(pageId: string, userId: string): Promise<number> {
     const isNumeric = /^\d+$/.test(pageId);
+    const verifySpaces = await getUserAccessibleSpaces(userId);
     const check = await query<{ id: number }>(
       `SELECT p.id FROM pages p
-       LEFT JOIN user_space_selections uss ON p.space_key = uss.space_key AND uss.user_id = $1
        WHERE ${isNumeric ? 'p.id = $2' : 'p.confluence_id = $2'}
          AND p.deleted_at IS NULL
          AND (
-           (p.source = 'confluence' AND uss.space_key IS NOT NULL)
+           (p.source = 'confluence' AND p.space_key = ANY($1::text[]))
            OR (p.source = 'standalone' AND p.visibility = 'shared')
-           OR (p.source = 'standalone' AND p.visibility = 'private' AND p.created_by_user_id = $1)
+           OR (p.source = 'standalone' AND p.visibility = 'private' AND p.created_by_user_id = $3)
          )`,
-      [userId, isNumeric ? parseInt(pageId, 10) : pageId],
+      [verifySpaces, isNumeric ? parseInt(pageId, 10) : pageId, userId],
     );
     if (check.rows.length === 0) {
       throw fastify.httpErrors.notFound('Page not found');

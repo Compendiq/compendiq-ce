@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { query } from '../../core/db/postgres.js';
-import { userHasPermission, getUserAccessibleSpaces, invalidatePermissionCache } from '../../core/services/rbac-service.js';
+import { invalidateRbacCache, userHasPermission, getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 
 // ---- Zod schemas ----
 
@@ -41,12 +41,38 @@ const SpaceRoleDeleteParamSchema = z.object({
   assignmentId: z.coerce.number().int().positive(),
 });
 
-const PermissionCheckSchema = z.object({
+const PermissionCheckQuerySchema = z.object({
   permission: z.string().min(1),
-  spaceKey: z.string().min(1).optional(),
+  resourceType: z.enum(['space', 'page']).optional(),
+  resourceId: z.string().min(1).optional(),
 });
 
-// Rate limit config for RBAC endpoints
+const AceBodySchema = z.object({
+  resourceType: z.enum(['space', 'page']),
+  resourceId: z.coerce.number().int().positive(),
+  principalType: z.enum(['user', 'group']),
+  principalId: z.string().min(1),
+  permission: z.enum(['read', 'comment', 'edit', 'delete', 'manage']),
+});
+
+const AceDeleteParamSchema = z.object({
+  id: z.coerce.number().int().positive(),
+});
+
+const AceQueryParamSchema = z.object({
+  resourceType: z.enum(['space', 'page']),
+  resourceId: z.coerce.number().int().positive(),
+});
+
+const PageInheritPermsSchema = z.object({
+  id: z.coerce.number().int().positive(),
+});
+
+const PageInheritPermsBodySchema = z.object({
+  inheritPerms: z.boolean(),
+});
+
+// Rate limit config for RBAC admin endpoints
 const RBAC_RATE_LIMIT = { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } };
 
 export async function rbacRoutes(fastify: FastifyInstance) {
@@ -56,24 +82,45 @@ export async function rbacRoutes(fastify: FastifyInstance) {
   // NOT fastify.requireAdmin.
   // ========================
 
-  // POST /api/permissions/check — check if the current user has a specific permission
+  // GET /api/permissions/check -- check if current user has a permission
   // Available to ALL authenticated users (used by frontend usePermission hook)
-  fastify.post('/permissions/check', {
+  fastify.get('/permissions/check', {
     onRequest: fastify.authenticate,
     ...RBAC_RATE_LIMIT,
   }, async (request) => {
-    const { permission, spaceKey } = PermissionCheckSchema.parse(request.body);
-    const granted = await userHasPermission(request.userId, permission, spaceKey);
-    return { granted };
+    const { permission, resourceType, resourceId } = PermissionCheckQuerySchema.parse(request.query);
+
+    // System admin always has all permissions
+    if (request.userRole === 'admin') {
+      return { allowed: true };
+    }
+
+    if (resourceType === 'page' && resourceId) {
+      const pageId = parseInt(resourceId, 10);
+      const pageRow = await query<{ space_key: string | null }>(
+        'SELECT space_key FROM pages WHERE id = $1 AND deleted_at IS NULL',
+        [pageId],
+      );
+      const spaceKey = pageRow.rows[0]?.space_key ?? undefined;
+      const allowed = await userHasPermission(request.userId, permission, spaceKey, pageId);
+      return { allowed };
+    }
+
+    if (resourceType === 'space' && resourceId) {
+      const allowed = await userHasPermission(request.userId, permission, resourceId);
+      return { allowed };
+    }
+
+    return { allowed: false };
   });
 
-  // GET /api/permissions/spaces — list spaces the current user can access via RBAC
+  // GET /api/permissions/spaces -- list spaces the current user can access via RBAC
   // Available to ALL authenticated users
   fastify.get('/permissions/spaces', {
     onRequest: fastify.authenticate,
     ...RBAC_RATE_LIMIT,
   }, async (request) => {
-    // System admins can access all spaces — return empty array to signal "no restriction"
+    // System admins can access all spaces -- return empty array to signal "no restriction"
     if (request.userRole === 'admin') {
       return { spaces: [], unrestricted: true };
     }
@@ -82,20 +129,20 @@ export async function rbacRoutes(fastify: FastifyInstance) {
   });
 
   // ========================
-  // Admin-only routes — encapsulated via fastify.register so the onRequest
+  // Admin-only routes -- encapsulated via fastify.register so the onRequest
   // hook only applies to routes inside this closure, not the permission
   // check routes above.
   // ========================
 
-  await fastify.register(async function adminRoutes(adminFastify) {
-    adminFastify.addHook('onRequest', adminFastify.requireAdmin);
+  await fastify.register(async function adminRoutes(admin) {
+    admin.addHook('onRequest', admin.requireAdmin);
 
     // ========================
     // Roles
     // ========================
 
-    // GET /api/roles — list all roles
-    adminFastify.get('/roles', RBAC_RATE_LIMIT, async () => {
+    // GET /api/roles -- list all roles
+    admin.get('/roles', RBAC_RATE_LIMIT, async () => {
       const result = await query<{
         id: number;
         name: string;
@@ -119,8 +166,8 @@ export async function rbacRoutes(fastify: FastifyInstance) {
     // Groups
     // ========================
 
-    // GET /api/groups — list groups with member count
-    adminFastify.get('/groups', RBAC_RATE_LIMIT, async () => {
+    // GET /api/groups -- list groups with member count
+    admin.get('/groups', RBAC_RATE_LIMIT, async () => {
       const result = await query<{
         id: number;
         name: string;
@@ -146,8 +193,8 @@ export async function rbacRoutes(fastify: FastifyInstance) {
       }));
     });
 
-    // POST /api/groups — create group
-    adminFastify.post('/groups', RBAC_RATE_LIMIT, async (request, reply) => {
+    // POST /api/groups -- create group
+    admin.post('/groups', RBAC_RATE_LIMIT, async (request, reply) => {
       const { name, description } = GroupBodySchema.parse(request.body);
 
       const result = await query<{ id: number; name: string; description: string | null; source: string; created_at: string }>(
@@ -156,6 +203,7 @@ export async function rbacRoutes(fastify: FastifyInstance) {
         [name, description ?? null],
       );
 
+      await invalidateRbacCache();
       const row = result.rows[0];
       reply.status(201);
       return {
@@ -168,8 +216,8 @@ export async function rbacRoutes(fastify: FastifyInstance) {
       };
     });
 
-    // PATCH /api/groups/:id — update group
-    adminFastify.patch('/groups/:id', RBAC_RATE_LIMIT, async (request) => {
+    // PATCH /api/groups/:id -- update group
+    admin.patch('/groups/:id', RBAC_RATE_LIMIT, async (request) => {
       const { id } = GroupIdParamSchema.parse(request.params);
       const body = GroupPatchSchema.parse(request.body);
 
@@ -194,9 +242,10 @@ export async function rbacRoutes(fastify: FastifyInstance) {
       );
 
       if (result.rows.length === 0) {
-        throw adminFastify.httpErrors.notFound('Group not found');
+        throw admin.httpErrors.notFound('Group not found');
       }
 
+      await invalidateRbacCache();
       const row = result.rows[0];
       return {
         id: row.id,
@@ -207,16 +256,17 @@ export async function rbacRoutes(fastify: FastifyInstance) {
       };
     });
 
-    // DELETE /api/groups/:id — delete group
-    adminFastify.delete('/groups/:id', RBAC_RATE_LIMIT, async (request) => {
+    // DELETE /api/groups/:id -- delete group
+    admin.delete('/groups/:id', RBAC_RATE_LIMIT, async (request) => {
       const { id } = GroupIdParamSchema.parse(request.params);
 
       const result = await query('DELETE FROM groups WHERE id = $1 RETURNING id', [id]);
 
       if (result.rows.length === 0) {
-        throw adminFastify.httpErrors.notFound('Group not found');
+        throw admin.httpErrors.notFound('Group not found');
       }
 
+      await invalidateRbacCache();
       return { message: 'Group deleted' };
     });
 
@@ -224,14 +274,14 @@ export async function rbacRoutes(fastify: FastifyInstance) {
     // Group members
     // ========================
 
-    // GET /api/groups/:id/members — list members of a group
-    adminFastify.get('/groups/:id/members', RBAC_RATE_LIMIT, async (request) => {
+    // GET /api/groups/:id/members -- list members of a group
+    admin.get('/groups/:id/members', RBAC_RATE_LIMIT, async (request) => {
       const { id } = GroupIdParamSchema.parse(request.params);
 
       // Verify group exists
       const groupCheck = await query('SELECT 1 FROM groups WHERE id = $1', [id]);
       if (groupCheck.rows.length === 0) {
-        throw adminFastify.httpErrors.notFound('Group not found');
+        throw admin.httpErrors.notFound('Group not found');
       }
 
       const result = await query<{
@@ -256,21 +306,21 @@ export async function rbacRoutes(fastify: FastifyInstance) {
       }));
     });
 
-    // POST /api/groups/:id/members — add user to group
-    adminFastify.post('/groups/:id/members', RBAC_RATE_LIMIT, async (request, reply) => {
+    // POST /api/groups/:id/members -- add user to group
+    admin.post('/groups/:id/members', RBAC_RATE_LIMIT, async (request, reply) => {
       const { id } = GroupIdParamSchema.parse(request.params);
       const { userId } = MemberBodySchema.parse(request.body);
 
       // Verify group exists
       const groupCheck = await query('SELECT 1 FROM groups WHERE id = $1', [id]);
       if (groupCheck.rows.length === 0) {
-        throw adminFastify.httpErrors.notFound('Group not found');
+        throw admin.httpErrors.notFound('Group not found');
       }
 
       // Verify user exists
       const userCheck = await query('SELECT 1 FROM users WHERE id = $1', [userId]);
       if (userCheck.rows.length === 0) {
-        throw adminFastify.httpErrors.notFound('User not found');
+        throw admin.httpErrors.notFound('User not found');
       }
 
       try {
@@ -281,20 +331,18 @@ export async function rbacRoutes(fastify: FastifyInstance) {
       } catch (err: unknown) {
         // Unique constraint violation = already a member
         if ((err as { code?: string }).code === '23505') {
-          throw adminFastify.httpErrors.conflict('User is already a member of this group');
+          throw admin.httpErrors.conflict('User is already a member of this group');
         }
         throw err;
       }
 
-      // Group membership changed — invalidate cached permission checks for this user
-      await invalidatePermissionCache(userId);
-
+      await invalidateRbacCache(userId);
       reply.status(201);
       return { message: 'User added to group' };
     });
 
-    // DELETE /api/groups/:id/members/:userId — remove user from group
-    adminFastify.delete('/groups/:id/members/:userId', RBAC_RATE_LIMIT, async (request) => {
+    // DELETE /api/groups/:id/members/:userId -- remove user from group
+    admin.delete('/groups/:id/members/:userId', RBAC_RATE_LIMIT, async (request) => {
       const { id, userId } = MemberRemoveParamSchema.parse(request.params);
 
       const result = await query(
@@ -303,12 +351,10 @@ export async function rbacRoutes(fastify: FastifyInstance) {
       );
 
       if (result.rows.length === 0) {
-        throw adminFastify.httpErrors.notFound('Membership not found');
+        throw admin.httpErrors.notFound('Membership not found');
       }
 
-      // Group membership changed — invalidate cached permission checks for this user
-      await invalidatePermissionCache(userId);
-
+      await invalidateRbacCache(userId);
       return { message: 'User removed from group' };
     });
 
@@ -316,8 +362,8 @@ export async function rbacRoutes(fastify: FastifyInstance) {
     // Space role assignments
     // ========================
 
-    // GET /api/spaces/:key/roles — list role assignments for a space
-    adminFastify.get('/spaces/:key/roles', RBAC_RATE_LIMIT, async (request) => {
+    // GET /api/spaces/:key/roles -- list role assignments for a space
+    admin.get('/spaces/:key/roles', RBAC_RATE_LIMIT, async (request) => {
       const { key } = SpaceKeyParamSchema.parse(request.params);
 
       const result = await query<{
@@ -328,10 +374,15 @@ export async function rbacRoutes(fastify: FastifyInstance) {
         role_id: number;
         role_name: string;
         role_display_name: string;
+        principal_name: string | null;
         created_at: string;
       }>(
         `SELECT sra.id, sra.space_key, sra.principal_type, sra.principal_id,
                 sra.role_id, r.name AS role_name, r.display_name AS role_display_name,
+                CASE
+                  WHEN sra.principal_type = 'user' THEN (SELECT u.username FROM users u WHERE u.id = sra.principal_id::uuid)
+                  WHEN sra.principal_type = 'group' THEN (SELECT g.name FROM groups g WHERE g.id = sra.principal_id::integer)
+                END AS principal_name,
                 sra.created_at
          FROM space_role_assignments sra
          JOIN roles r ON r.id = sra.role_id
@@ -345,6 +396,7 @@ export async function rbacRoutes(fastify: FastifyInstance) {
         spaceKey: r.space_key,
         principalType: r.principal_type,
         principalId: r.principal_id,
+        principalName: r.principal_name,
         roleId: r.role_id,
         roleName: r.role_name,
         roleDisplayName: r.role_display_name,
@@ -352,15 +404,15 @@ export async function rbacRoutes(fastify: FastifyInstance) {
       }));
     });
 
-    // POST /api/spaces/:key/roles — assign role in space
-    adminFastify.post('/spaces/:key/roles', RBAC_RATE_LIMIT, async (request, reply) => {
+    // POST /api/spaces/:key/roles -- assign role in space
+    admin.post('/spaces/:key/roles', RBAC_RATE_LIMIT, async (request, reply) => {
       const { key } = SpaceKeyParamSchema.parse(request.params);
       const { principalType, principalId, roleId } = SpaceRoleBodySchema.parse(request.body);
 
       // Verify role exists
       const roleCheck = await query('SELECT 1 FROM roles WHERE id = $1', [roleId]);
       if (roleCheck.rows.length === 0) {
-        throw adminFastify.httpErrors.notFound('Role not found');
+        throw admin.httpErrors.notFound('Role not found');
       }
 
       try {
@@ -371,21 +423,7 @@ export async function rbacRoutes(fastify: FastifyInstance) {
           [key, principalType, principalId, roleId],
         );
 
-        // Invalidate permission cache for the affected principal
-        if (principalType === 'user') {
-          await invalidatePermissionCache(principalId);
-        }
-        // For group assignments, invalidate all members' caches
-        if (principalType === 'group') {
-          const members = await query<{ user_id: string }>(
-            'SELECT user_id FROM group_memberships WHERE group_id = $1',
-            [principalId],
-          );
-          for (const member of members.rows) {
-            await invalidatePermissionCache(member.user_id);
-          }
-        }
-
+        await invalidateRbacCache();
         reply.status(201);
         return {
           id: result.rows[0].id,
@@ -397,7 +435,7 @@ export async function rbacRoutes(fastify: FastifyInstance) {
         };
       } catch (err: unknown) {
         if ((err as { code?: string }).code === '23505') {
-          throw adminFastify.httpErrors.conflict(
+          throw admin.httpErrors.conflict(
             'A role assignment already exists for this principal in this space',
           );
         }
@@ -405,15 +443,9 @@ export async function rbacRoutes(fastify: FastifyInstance) {
       }
     });
 
-    // DELETE /api/spaces/:key/roles/:assignmentId — remove role assignment
-    adminFastify.delete('/spaces/:key/roles/:assignmentId', RBAC_RATE_LIMIT, async (request) => {
+    // DELETE /api/spaces/:key/roles/:assignmentId -- remove role assignment
+    admin.delete('/spaces/:key/roles/:assignmentId', RBAC_RATE_LIMIT, async (request) => {
       const { key, assignmentId } = SpaceRoleDeleteParamSchema.parse(request.params);
-
-      // Fetch the assignment before deleting so we can invalidate the right caches
-      const assignment = await query<{ principal_type: string; principal_id: string }>(
-        'SELECT principal_type, principal_id FROM space_role_assignments WHERE id = $1 AND space_key = $2',
-        [assignmentId, key],
-      );
 
       const result = await query(
         'DELETE FROM space_role_assignments WHERE id = $1 AND space_key = $2 RETURNING id',
@@ -421,27 +453,147 @@ export async function rbacRoutes(fastify: FastifyInstance) {
       );
 
       if (result.rows.length === 0) {
-        throw adminFastify.httpErrors.notFound('Role assignment not found');
+        throw admin.httpErrors.notFound('Role assignment not found');
       }
 
-      // Invalidate permission cache for the affected principal
-      if (assignment.rows.length > 0) {
-        const { principal_type, principal_id } = assignment.rows[0];
-        if (principal_type === 'user') {
-          await invalidatePermissionCache(principal_id);
-        }
-        if (principal_type === 'group') {
-          const members = await query<{ user_id: string }>(
-            'SELECT user_id FROM group_memberships WHERE group_id = $1',
-            [principal_id],
-          );
-          for (const member of members.rows) {
-            await invalidatePermissionCache(member.user_id);
-          }
-        }
-      }
-
+      await invalidateRbacCache();
       return { message: 'Role assignment removed' };
     });
-  });
+
+    // ========================
+    // Access Control Entries (ACEs)
+    // ========================
+
+    // GET /api/access-control -- list ACEs for a resource
+    admin.get('/access-control', RBAC_RATE_LIMIT, async (request) => {
+      const { resourceType, resourceId } = AceQueryParamSchema.parse(request.query);
+
+      const result = await query<{
+        id: number;
+        resource_type: string;
+        resource_id: number;
+        principal_type: string;
+        principal_id: string;
+        permission: string;
+        principal_name: string | null;
+        created_at: string;
+      }>(
+        `SELECT ace.id, ace.resource_type, ace.resource_id, ace.principal_type, ace.principal_id,
+                ace.permission,
+                CASE
+                  WHEN ace.principal_type = 'user' THEN (SELECT u.username FROM users u WHERE u.id = ace.principal_id::uuid)
+                  WHEN ace.principal_type = 'group' THEN (SELECT g.name FROM groups g WHERE g.id = ace.principal_id::integer)
+                END AS principal_name,
+                ace.created_at
+         FROM access_control_entries ace
+         WHERE ace.resource_type = $1 AND ace.resource_id = $2
+         ORDER BY ace.principal_type, ace.principal_id, ace.permission`,
+        [resourceType, resourceId],
+      );
+
+      return result.rows.map((r) => ({
+        id: r.id,
+        resourceType: r.resource_type,
+        resourceId: r.resource_id,
+        principalType: r.principal_type,
+        principalId: r.principal_id,
+        principalName: r.principal_name,
+        permission: r.permission,
+        createdAt: r.created_at,
+      }));
+    });
+
+    // POST /api/access-control -- create ACE
+    admin.post('/access-control', RBAC_RATE_LIMIT, async (request, reply) => {
+      const { resourceType, resourceId, principalType, principalId, permission } = AceBodySchema.parse(request.body);
+
+      try {
+        const result = await query<{ id: number; created_at: string }>(
+          `INSERT INTO access_control_entries (resource_type, resource_id, principal_type, principal_id, permission)
+           VALUES ($1, $2, $3, $4, $5)
+           RETURNING id, created_at`,
+          [resourceType, resourceId, principalType, principalId, permission],
+        );
+
+        await invalidateRbacCache();
+        reply.status(201);
+        return {
+          id: result.rows[0].id,
+          resourceType,
+          resourceId,
+          principalType,
+          principalId,
+          permission,
+          createdAt: result.rows[0].created_at,
+        };
+      } catch (err: unknown) {
+        if ((err as { code?: string }).code === '23505') {
+          throw admin.httpErrors.conflict('This access control entry already exists');
+        }
+        throw err;
+      }
+    });
+
+    // DELETE /api/access-control/:id -- delete ACE
+    admin.delete('/access-control/:id', RBAC_RATE_LIMIT, async (request) => {
+      const { id } = AceDeleteParamSchema.parse(request.params);
+
+      const result = await query(
+        'DELETE FROM access_control_entries WHERE id = $1 RETURNING id',
+        [id],
+      );
+
+      if (result.rows.length === 0) {
+        throw admin.httpErrors.notFound('Access control entry not found');
+      }
+
+      await invalidateRbacCache();
+      return { message: 'Access control entry removed' };
+    });
+
+    // ========================
+    // Page inherit_perms toggle
+    // ========================
+
+    // PUT /api/pages/:id/inherit-perms -- toggle page permission inheritance
+    admin.put('/pages/:id/inherit-perms', RBAC_RATE_LIMIT, async (request) => {
+      const { id } = PageInheritPermsSchema.parse(request.params);
+      const { inheritPerms } = PageInheritPermsBodySchema.parse(request.body);
+
+      const result = await query(
+        'UPDATE pages SET inherit_perms = $1 WHERE id = $2 RETURNING id',
+        [inheritPerms, id],
+      );
+
+      if (result.rows.length === 0) {
+        throw admin.httpErrors.notFound('Page not found');
+      }
+
+      await invalidateRbacCache();
+      return { message: inheritPerms ? 'Page now inherits space permissions' : 'Page now uses custom permissions' };
+    });
+
+    // ========================
+    // Users list (for assigning to groups/spaces)
+    // ========================
+
+    // GET /api/users -- list all users (for admin assignment UIs)
+    admin.get('/users', RBAC_RATE_LIMIT, async () => {
+      const result = await query<{
+        id: string;
+        username: string;
+        role: string;
+        created_at: string;
+      }>(
+        'SELECT id, username, role, created_at FROM users ORDER BY username',
+      );
+
+      return result.rows.map((r) => ({
+        id: r.id,
+        username: r.username,
+        role: r.role,
+        createdAt: r.created_at,
+      }));
+    });
+  }); // end admin routes register block
 }

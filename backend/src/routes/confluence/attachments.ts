@@ -4,6 +4,7 @@ import { query } from '../../core/db/postgres.js';
 import { readAttachment, fetchAndCachePageImage, getMimeType, writeAttachmentCache } from '../../domains/confluence/services/attachment-handler.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { getRedisClient } from '../../core/services/redis-cache.js';
+import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 import { ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
 import { logger } from '../../core/utils/logger.js';
 
@@ -22,16 +23,17 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
     const { pageId, filename } = request.params as { pageId: string; filename: string };
     const userId = request.userId;
 
+    const attachSpaces = await getUserAccessibleSpaces(userId);
     const pageResult = await query<{ body_storage: string | null; space_key: string }>(
       `SELECT cp.body_storage, cp.space_key
        FROM pages cp
-       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
-       WHERE cp.confluence_id = $2`,
-      [userId, pageId],
+       WHERE cp.space_key = ANY($1::text[])
+         AND cp.confluence_id = $2`,
+      [attachSpaces, pageId],
     );
     const cachedPage = pageResult.rows[0];
     if (!cachedPage) {
-      logger.warn({ userId, pageId, filename }, 'Attachment 404: page not found in user space selections');
+      logger.warn({ userId, pageId, filename }, 'Attachment 404: page not found in user accessible spaces');
       return reply.status(404).send({
         statusCode: 404,
         error: 'Not Found',
@@ -202,19 +204,20 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
       });
     }
 
-    // Verify the page belongs to the user's selected spaces
+    // Verify the page belongs to the user's accessible spaces (RBAC)
+    const putSpaces = await getUserAccessibleSpaces(userId);
     const pageResult = await query<{ body_storage: string | null; space_key: string }>(
       `SELECT cp.body_storage, cp.space_key
        FROM pages cp
-       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
-       WHERE cp.confluence_id = $2`,
-      [userId, pageId],
+       WHERE cp.space_key = ANY($1::text[])
+         AND cp.confluence_id = $2`,
+      [putSpaces, pageId],
     );
     if (pageResult.rows.length === 0) {
       return reply.status(404).send({
         statusCode: 404,
         error: 'Not Found',
-        message: 'Page not found in selected spaces',
+        message: 'Page not found in accessible spaces',
       });
     }
 

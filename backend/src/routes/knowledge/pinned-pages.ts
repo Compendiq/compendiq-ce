@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
+import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 import { z } from 'zod';
 
 const IdParamSchema = z.object({ id: z.string().min(1) });
@@ -53,12 +54,13 @@ export async function pinnedPagesRoutes(fastify: FastifyInstance) {
     const { id } = IdParamSchema.parse(request.params);
     const userId = request.userId;
 
-    // Verify the page exists for this user
+    // Verify the page exists and user has access via RBAC
+    const pinSpaces = await getUserAccessibleSpaces(userId);
     const pageResult = await query<{ confluence_id: string }>(
       `SELECT cp.confluence_id FROM pages cp
-       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
-       WHERE cp.confluence_id = $2`,
-      [userId, id],
+       WHERE cp.space_key = ANY($1::text[])
+         AND cp.confluence_id = $2`,
+      [pinSpaces, id],
     );
     if (pageResult.rows.length === 0) {
       throw fastify.httpErrors.notFound('Page not found');

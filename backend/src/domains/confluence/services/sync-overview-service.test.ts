@@ -21,6 +21,10 @@ vi.mock('./sync-service.js', () => ({
   getSyncStatus: (...args: unknown[]) => mockGetSyncStatus(...args),
 }));
 
+vi.mock('../../../core/services/rbac-service.js', () => ({
+  getUserAccessibleSpaces: vi.fn().mockResolvedValue(['DEV']),
+}));
+
 describe('getSyncOverview', () => {
   beforeEach(() => {
     vi.clearAllMocks();

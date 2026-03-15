@@ -73,6 +73,11 @@ vi.mock('../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
+vi.mock('../../core/services/rbac-service.js', () => ({
+  getUserAccessibleSpaces: vi.fn().mockResolvedValue(['DEV', 'OPS']),
+  invalidateRbacCache: vi.fn().mockResolvedValue(undefined),
+}));
+
 const mockQueryFn = vi.fn();
 vi.mock('../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQueryFn(...args),
@@ -252,12 +257,12 @@ describe('Knowledge Graph API', () => {
         url: '/api/pages/graph',
       });
 
-      // Nodes and embedding counts queries use userId for access control
+      // Nodes and embedding counts queries use RBAC space keys for access control
       expect(mockQueryFn).toHaveBeenCalledTimes(3);
-      // First two queries (nodes + embedding counts) should include userId
-      expect(mockQueryFn.mock.calls[0][1]).toContain('test-user-id');
-      expect(mockQueryFn.mock.calls[1][1]).toContain('test-user-id');
-      // Third query (edges/relationships) is global (no user_id needed - no PII)
+      // First two queries (nodes + embedding counts) should include space keys
+      expect(mockQueryFn.mock.calls[0][0]).toContain('space_key = ANY');
+      expect(mockQueryFn.mock.calls[1][0]).toContain('space_key = ANY');
+      // Third query (edges/relationships) is global (no scope needed)
       expect(mockQueryFn.mock.calls[2][1]).toEqual([]);
     });
 

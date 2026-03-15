@@ -56,6 +56,10 @@ vi.mock('../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
+vi.mock('../../core/services/rbac-service.js', () => ({
+  getUserAccessibleSpaces: vi.fn().mockResolvedValue(['DEV']),
+}));
+
 const mockQueryFn = vi.fn();
 vi.mock('../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQueryFn(...args),
@@ -254,8 +258,8 @@ describe('Page list vs detail response shapes (#179)', () => {
   describe('GET /api/pages/:id (detail)', () => {
     it('should include bodyHtml and bodyText in the response', async () => {
       mockQueryFn.mockImplementation((sql: string) => {
-        if (typeof sql === 'string' && sql.includes('user_space_selections')) {
-          return { rows: [{ '?column?': 1 }], rowCount: 1 };
+        if (typeof sql === 'string' && sql.includes('roles') && sql.includes('editor')) {
+          return { rows: [{ id: 3 }], rowCount: 1 };
         }
         return { rows: [detailPageRow], rowCount: 1 };
       });
@@ -282,8 +286,8 @@ describe('Page list vs detail response shapes (#179)', () => {
 
     it('should select body_html and body_text in the detail SQL query', async () => {
       mockQueryFn.mockImplementation((sql: string) => {
-        if (typeof sql === 'string' && sql.includes('user_space_selections')) {
-          return { rows: [{ '?column?': 1 }], rowCount: 1 };
+        if (typeof sql === 'string' && sql.includes('roles') && sql.includes('editor')) {
+          return { rows: [{ id: 3 }], rowCount: 1 };
         }
         return { rows: [detailPageRow], rowCount: 1 };
       });

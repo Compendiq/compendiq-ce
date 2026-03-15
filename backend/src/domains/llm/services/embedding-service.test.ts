@@ -42,6 +42,10 @@ vi.mock('../../../core/services/redis-cache.js', () => ({
   invalidateGraphCache: (...args: unknown[]) => mocks.invalidateGraphCache(...args),
 }));
 
+vi.mock('../../../core/services/rbac-service.js', () => ({
+  getUserAccessibleSpaces: vi.fn().mockResolvedValue(['TEST']),
+}));
+
 import {
   getEmbeddingStatus,
   chunkText,
@@ -139,7 +143,7 @@ describe('embedding-service', () => {
       expect(status.isProcessing).toBe(false);
     });
 
-    it('should pass userId to all queries', async () => {
+    it('should scope queries to accessible spaces', async () => {
       mocks.query
         .mockResolvedValueOnce({ rows: [{ count: '0' }] })
         .mockResolvedValueOnce({ rows: [{ count: '0' }] })
@@ -148,9 +152,10 @@ describe('embedding-service', () => {
 
       await getEmbeddingStatus('test-user-42');
 
-      // All 4 queries use user_id as first param (via JOIN on user_space_selections)
+      // All 4 queries should use space_key = ANY for RBAC access control
       for (const call of mocks.query.mock.calls) {
-        expect(call[1][0]).toEqual('test-user-42');
+        const sql = call[0] as string;
+        expect(sql).toContain('space_key = ANY');
       }
     });
 

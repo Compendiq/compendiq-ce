@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { computePageRelationships } from '../../domains/llm/services/embedding-service.js';
+import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 
 export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -15,7 +16,8 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
     const cached = await cache.get(userId, 'pages', cacheKey);
     if (cached) return cached;
 
-    // Fetch all pages as nodes
+    // Fetch all pages as nodes (RBAC access control)
+    const graphSpaces = await getUserAccessibleSpaces(userId);
     const nodesResult = await query<{
       confluence_id: string;
       space_key: string;
@@ -26,9 +28,9 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
     }>(
       `SELECT cp.confluence_id, cp.space_key, cp.title, cp.labels, cp.embedding_status, cp.last_modified_at
        FROM pages cp
-       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
+       WHERE cp.space_key = ANY($1::text[])
        ORDER BY cp.title ASC`,
-      [userId],
+      [graphSpaces],
     );
 
     // Fetch embedding counts per page for node sizing
@@ -39,9 +41,9 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
       `SELECT pe.confluence_id, COUNT(*) as count
        FROM page_embeddings pe
        JOIN pages cp ON pe.confluence_id = cp.confluence_id
-       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
+       WHERE cp.space_key = ANY($1::text[])
        GROUP BY pe.confluence_id`,
-      [userId],
+      [graphSpaces],
     );
 
     const embeddingCountMap = new Map<string, number>();

@@ -2,54 +2,147 @@ import { query } from '../db/postgres.js';
 import { getRedisClient } from './redis-cache.js';
 import { logger } from '../utils/logger.js';
 
-/** TTL for cached permission checks (seconds). */
-const PERMISSION_CACHE_TTL = 60; // 1 minute — short because role changes should take effect quickly
+const RBAC_CACHE_TTL = 60; // 60 seconds
+
+// ── Cache helpers ───────────────────────────────────────────────────────────
+
+function permsCacheKey(userId: string, spaceKey: string): string {
+  return `rbac:perms:${userId}:${spaceKey}`;
+}
+
+function spacesAccessCacheKey(userId: string): string {
+  return `rbac:spaces:${userId}`;
+}
+
+function adminCacheKey(userId: string): string {
+  return `rbac:admin:${userId}`;
+}
+
+async function getCached<T>(key: string): Promise<T | null> {
+  const redis = getRedisClient();
+  if (!redis) return null;
+  try {
+    const data = await redis.get(key);
+    if (!data) return null;
+    return JSON.parse(data) as T;
+  } catch (err) {
+    logger.error({ err, key }, 'RBAC cache get error');
+    return null;
+  }
+}
+
+async function setCache(key: string, data: unknown, ttl = RBAC_CACHE_TTL): Promise<void> {
+  const redis = getRedisClient();
+  if (!redis) return;
+  try {
+    await redis.setEx(key, ttl, JSON.stringify(data));
+  } catch (err) {
+    logger.error({ err, key }, 'RBAC cache set error');
+  }
+}
 
 /**
- * Build a Redis key for a cached permission check result.
+ * Invalidate all RBAC cache entries for a user.
+ * Called when any role/group/ACE write occurs.
  */
-function permissionCacheKey(userId: string, permission: string, spaceKey: string): string {
-  return `rbac:perm:${userId}:${spaceKey}:${permission}`;
+export async function invalidateRbacCache(userId?: string): Promise<void> {
+  const redis = getRedisClient();
+  if (!redis) return;
+  try {
+    const pattern = userId ? `rbac:*:${userId}*` : 'rbac:*';
+    let cursor = '0';
+    do {
+      const result = await redis.scan(cursor, { MATCH: pattern, COUNT: 100 });
+      cursor = String(result.cursor);
+      if (result.keys.length > 0) {
+        await redis.del(result.keys);
+      }
+    } while (cursor !== '0');
+    logger.debug({ userId, pattern }, 'RBAC cache invalidated');
+  } catch (err) {
+    logger.error({ err, userId }, 'RBAC cache invalidation error');
+  }
 }
+
+// ── Admin check ─────────────────────────────────────────────────────────────
+
+/**
+ * Check if a user has system admin role.
+ * Cached in Redis for RBAC_CACHE_TTL.
+ */
+export async function isSystemAdmin(userId: string): Promise<boolean> {
+  const cacheKey = adminCacheKey(userId);
+  const cached = await getCached<boolean>(cacheKey);
+  if (cached !== null) return cached;
+
+  const adminCheck = await query(
+    `SELECT 1 FROM users u WHERE u.id = $1 AND u.role = 'admin'`,
+    [userId],
+  );
+  const isAdmin = adminCheck.rows.length > 0;
+  await setCache(cacheKey, isAdmin);
+  return isAdmin;
+}
+
+// ── Permission check ────────────────────────────────────────────────────────
 
 /**
  * Check whether a user has a specific permission, optionally scoped to a space.
  *
  * Resolution order:
- *  1. System admin bypass (users.role = 'admin') — always grants all permissions.
- *  2. Direct user assignment in space_role_assignments.
- *  3. Group-based assignment via group_memberships + space_role_assignments.
+ *  1. System admin bypass (users.role = 'admin') -- always grants all permissions.
+ *  2. Page-level ACE (if page has inherit_perms = false).
+ *  3. Direct user assignment in space_role_assignments.
+ *  4. Group-based assignment via group_memberships + space_role_assignments.
  *
- * Results are cached in Redis for PERMISSION_CACHE_TTL seconds to avoid
- * repeated DB hits on every request.
+ * Results are cached in Redis with TTL of 60s.
  */
 export async function userHasPermission(
   userId: string,
   permission: string,
   spaceKey?: string,
+  pageId?: number,
 ): Promise<boolean> {
-  // System admin bypass — the existing users.role column is authoritative
-  const adminCheck = await query(
-    `SELECT 1 FROM users u WHERE u.id = $1 AND u.role = 'admin'`,
-    [userId],
-  );
-  if (adminCheck.rows.length > 0) return true;
+  // System admin bypass
+  if (await isSystemAdmin(userId)) return true;
 
   if (!spaceKey) return false;
 
-  // Check Redis cache first
-  const redis = getRedisClient();
-  const cacheKey = permissionCacheKey(userId, permission, spaceKey);
-  if (redis) {
-    try {
-      const cached = await redis.get(cacheKey);
-      if (cached !== null) {
-        return cached === '1';
+  // Check page-level ACE override if pageId is provided
+  if (pageId) {
+    const pageCheck = await query<{ inherit_perms: boolean }>(
+      'SELECT inherit_perms FROM pages WHERE id = $1',
+      [pageId],
+    );
+    if (pageCheck.rows.length > 0 && !pageCheck.rows[0].inherit_perms) {
+      // Page has custom ACEs -- check them
+      const aceCheck = await query<{ permission: string }>(
+        `SELECT ace.permission FROM access_control_entries ace
+         WHERE ace.resource_type = 'page' AND ace.resource_id = $1
+           AND (
+             (ace.principal_type = 'user' AND ace.principal_id = $2)
+             OR (ace.principal_type = 'group' AND ace.principal_id::INTEGER IN (
+               SELECT group_id FROM group_memberships WHERE user_id = $2
+             ))
+           )`,
+        [pageId, userId],
+      );
+      for (const row of aceCheck.rows) {
+        if (row.permission === permission) return true;
       }
-    } catch (err) {
-      logger.warn({ err }, 'Redis cache read failed for permission check, falling back to DB');
+      return false; // Page has custom ACEs but user doesn't have the requested permission
     }
   }
+
+  // Check cached space-level permissions
+  const cacheKey = permsCacheKey(userId, spaceKey);
+  const cached = await getCached<string[]>(cacheKey);
+  if (cached !== null) {
+    return cached.includes(permission);
+  }
+
+  // Build the full permissions set for this user in this space
+  const permissions = new Set<string>();
 
   // Check direct user assignment
   const directCheck = await query<{ permissions: string[] }>(
@@ -60,10 +153,7 @@ export async function userHasPermission(
   );
 
   for (const row of directCheck.rows) {
-    if (row.permissions.includes(permission)) {
-      await cachePermissionResult(cacheKey, true);
-      return true;
-    }
+    for (const p of row.permissions) permissions.add(p);
   }
 
   // Check group-based assignments
@@ -76,49 +166,14 @@ export async function userHasPermission(
   );
 
   for (const row of groupCheck.rows) {
-    if (row.permissions.includes(permission)) {
-      await cachePermissionResult(cacheKey, true);
-      return true;
-    }
+    for (const p of row.permissions) permissions.add(p);
   }
 
-  await cachePermissionResult(cacheKey, false);
-  return false;
-}
+  // Cache the full permission set
+  const permsArray = Array.from(permissions);
+  await setCache(cacheKey, permsArray);
 
-/**
- * Cache a permission check result in Redis. Best-effort — failures are logged
- * but never propagated to callers.
- */
-async function cachePermissionResult(cacheKey: string, granted: boolean): Promise<void> {
-  const redis = getRedisClient();
-  if (!redis) return;
-  try {
-    await redis.set(cacheKey, granted ? '1' : '0', { EX: PERMISSION_CACHE_TTL });
-  } catch (err) {
-    logger.warn({ err, cacheKey }, 'Redis cache write failed for permission check');
-  }
-}
-
-/**
- * Invalidate all cached permission results for a user.
- * Call this when a user's roles or group memberships change.
- */
-export async function invalidatePermissionCache(userId: string): Promise<void> {
-  const redis = getRedisClient();
-  if (!redis) return;
-  try {
-    let cursor = '0';
-    do {
-      const result = await redis.scan(cursor, { MATCH: `rbac:perm:${userId}:*`, COUNT: 100 });
-      cursor = String(result.cursor);
-      if (result.keys.length > 0) {
-        await redis.del(result.keys);
-      }
-    } while (cursor !== '0');
-  } catch (err) {
-    logger.warn({ err, userId }, 'Failed to invalidate permission cache');
-  }
+  return permissions.has(permission);
 }
 
 /**
@@ -146,21 +201,32 @@ export async function getUserSpaceRole(
   return result.rows[0]?.name ?? null;
 }
 
+// ── Space access ────────────────────────────────────────────────────────────
+
 /**
- * Returns all space keys the user can access via RBAC.
- *
- * Sources (UNION):
- *  1. Direct user assignments in space_role_assignments.
- *  2. Group-based assignments via group_memberships + space_role_assignments.
+ * Get all space keys a user has access to via RBAC space_role_assignments.
+ * System admins get all spaces.
+ * Results are cached in Redis with TTL of 60s.
  *
  * NOTE: This does NOT query user_space_selections. That table stores the
  * user's Confluence sync preferences (which spaces to sync), NOT access
  * control. RBAC space access is determined solely by space_role_assignments.
- *
- * System admins (users.role = 'admin') bypass this entirely — callers should
- * check admin status separately before calling this function.
  */
 export async function getUserAccessibleSpaces(userId: string): Promise<string[]> {
+  // System admin gets all spaces
+  if (await isSystemAdmin(userId)) {
+    const allSpaces = await query<{ space_key: string }>(
+      'SELECT DISTINCT space_key FROM pages WHERE deleted_at IS NULL AND space_key IS NOT NULL',
+    );
+    return allSpaces.rows.map((r) => r.space_key);
+  }
+
+  // Check cache
+  const cacheKey = spacesAccessCacheKey(userId);
+  const cached = await getCached<string[]>(cacheKey);
+  if (cached !== null) return cached;
+
+  // Query RBAC assignments only (direct user + group-based)
   const result = await query<{ space_key: string }>(
     `SELECT DISTINCT sra.space_key
      FROM space_role_assignments sra
@@ -171,5 +237,64 @@ export async function getUserAccessibleSpaces(userId: string): Promise<string[]>
         ))`,
     [userId],
   );
-  return result.rows.map((r) => r.space_key);
+
+  const spaceKeys = result.rows.map((r) => r.space_key);
+  await setCache(cacheKey, spaceKeys);
+  return spaceKeys;
+}
+
+/**
+ * Check if a user has access to a specific page based on RBAC and page-level ACEs.
+ * Handles both confluence and standalone pages.
+ */
+export async function userCanAccessPage(
+  userId: string,
+  pageId: number,
+): Promise<boolean> {
+  // System admin bypass
+  if (await isSystemAdmin(userId)) return true;
+
+  // Get the page's space key, source, and visibility
+  const pageResult = await query<{
+    space_key: string | null;
+    source: string;
+    visibility: string | null;
+    created_by_user_id: string | null;
+    inherit_perms: boolean;
+  }>(
+    `SELECT space_key, source, visibility, created_by_user_id, inherit_perms FROM pages WHERE id = $1 AND deleted_at IS NULL`,
+    [pageId],
+  );
+
+  if (pageResult.rows.length === 0) return false;
+  const page = pageResult.rows[0];
+
+  // Standalone pages: check visibility rules
+  if (page.source === 'standalone') {
+    if (page.visibility === 'shared') return true;
+    if (page.visibility === 'private' && page.created_by_user_id === userId) return true;
+    return false;
+  }
+
+  // Page-level ACE override
+  if (!page.inherit_perms) {
+    const aceCheck = await query(
+      `SELECT 1 FROM access_control_entries ace
+       WHERE ace.resource_type = 'page' AND ace.resource_id = $1
+         AND (
+           (ace.principal_type = 'user' AND ace.principal_id = $2)
+           OR (ace.principal_type = 'group' AND ace.principal_id::INTEGER IN (
+             SELECT group_id FROM group_memberships WHERE user_id = $2
+           ))
+         )
+       LIMIT 1`,
+      [pageId, userId],
+    );
+    return aceCheck.rows.length > 0;
+  }
+
+  // Space-level access check for confluence pages
+  if (!page.space_key) return false;
+  const accessibleSpaces = await getUserAccessibleSpaces(userId);
+  return accessibleSpaces.includes(page.space_key);
 }

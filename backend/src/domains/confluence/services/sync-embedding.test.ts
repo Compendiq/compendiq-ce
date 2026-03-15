@@ -54,6 +54,11 @@ vi.mock('../../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mocks.query(...args),
 }));
 
+const mockGetUserAccessibleSpaces = vi.fn().mockResolvedValue(['DEV']);
+vi.mock('../../../core/services/rbac-service.js', () => ({
+  getUserAccessibleSpaces: (...args: unknown[]) => mockGetUserAccessibleSpaces(...args),
+}));
+
 import { syncUser, getSyncStatus } from './sync-service.js';
 
 describe('syncUser auto-embedding', () => {
@@ -68,13 +73,14 @@ describe('syncUser auto-embedding', () => {
       .mockResolvedValueOnce({
         rows: [{ confluence_url: 'https://confluence.example.com', confluence_pat: 'encrypted-pat' }],
       })
-      // 2. selected_spaces from user_space_selections
-      .mockResolvedValueOnce({ rows: [{ space_key: 'DEV' }] })
-      // 3. last_synced (no previous sync → full sync)
+      // 2. getUserAccessibleSpaces is mocked (returns ['DEV'])
+      // 3. last_synced (no previous sync -> full sync)
       .mockResolvedValueOnce({ rows: [{ last_synced: null }] })
-      // 4. detectDeletedPages: existing pages
+      // 4. detectDeletedPages: count of users with this space
+      .mockResolvedValueOnce({ rows: [{ count: '1' }] })
+      // 5. detectDeletedPages: existing pages
       .mockResolvedValueOnce({ rows: [] })
-      // 5. update space sync timestamp
+      // 6. update space sync timestamp
       .mockResolvedValueOnce({ rows: [] });
 
     mocks.getAllPagesInSpace.mockResolvedValueOnce([]);
@@ -139,11 +145,11 @@ describe('syncUser auto-embedding', () => {
   });
 
   it('should not call processDirtyPages when no spaces selected', async () => {
+    mockGetUserAccessibleSpaces.mockResolvedValueOnce([]); // No spaces for this test
     mocks.query
       .mockResolvedValueOnce({
         rows: [{ confluence_url: 'https://confluence.example.com', confluence_pat: 'encrypted-pat' }],
-      })
-      .mockResolvedValueOnce({ rows: [] });
+      });
 
     await syncUser('user-3');
 
@@ -173,9 +179,8 @@ describe('syncPage attachment cache invalidation', () => {
     mocks.query
       // 1. getClientForUser: user_settings
       .mockResolvedValueOnce({ rows: [{ confluence_url: 'https://conf.example.com', confluence_pat: 'enc' }] })
-      // 2. user_space_selections (shared table, PR #240)
-      .mockResolvedValueOnce({ rows: [{ space_key: 'DEV' }] })
-      // 3. last_synced (no previous sync → full sync; space=undefined so no upsert)
+      // 2. getUserAccessibleSpaces is mocked (returns ['DEV'])
+      // 3. last_synced (no previous sync -> full sync; space=undefined so no upsert)
       .mockResolvedValueOnce({ rows: [] })
       // 4. syncPage: existing page version check
       .mockResolvedValueOnce(
@@ -185,9 +190,11 @@ describe('syncPage attachment cache invalidation', () => {
       )
       // 5. syncPage: upsert page
       .mockResolvedValueOnce({ rows: [] })
-      // 6. detectDeletedPages: existing page ids
+      // 6. detectDeletedPages: count of users with this space
+      .mockResolvedValueOnce({ rows: [{ count: '1' }] })
+      // 7. detectDeletedPages: existing page ids
       .mockResolvedValueOnce({ rows: [] })
-      // 7. update space last_synced
+      // 8. update space last_synced
       .mockResolvedValueOnce({ rows: [] });
 
     mocks.getAllPagesInSpace.mockResolvedValueOnce([mockPage]);
@@ -247,9 +254,8 @@ describe('incremental sync with missing attachments', () => {
     mocks.query
       // 1. getClientForUser
       .mockResolvedValueOnce({ rows: [{ confluence_url: 'https://conf.example.com', confluence_pat: 'enc' }] })
-      // 2. user_space_selections
-      .mockResolvedValueOnce({ rows: [{ space_key: 'DEV' }] })
-      // 3. spaces.last_synced → recent → incremental sync
+      // 2. getUserAccessibleSpaces is mocked (returns ['DEV'])
+      // 3. spaces.last_synced -> recent -> incremental sync
       .mockResolvedValueOnce({ rows: [{ last_synced: recentDate }] });
 
     // syncPage calls for each modified page
@@ -334,13 +340,14 @@ describe('incremental sync with missing attachments', () => {
     mocks.query
       // 1. getClientForUser
       .mockResolvedValueOnce({ rows: [{ confluence_url: 'https://conf.example.com', confluence_pat: 'enc' }] })
-      // 2. user_space_selections
-      .mockResolvedValueOnce({ rows: [{ space_key: 'DEV' }] })
-      // 3. spaces.last_synced → null → full sync
+      // 2. getUserAccessibleSpaces is mocked (returns ['DEV'])
+      // 3. spaces.last_synced -> null -> full sync
       .mockResolvedValueOnce({ rows: [{ last_synced: null }] })
-      // 4. detectDeletedPages: selection count
+      // 4. detectDeletedPages: count of users with this space
+      .mockResolvedValueOnce({ rows: [{ count: '1' }] })
+      // 5. detectDeletedPages: existing page ids
       .mockResolvedValueOnce({ rows: [] })
-      // 5. update space last_synced
+      // 6. update space last_synced
       .mockResolvedValueOnce({ rows: [] });
 
     mocks.getAllPagesInSpace.mockResolvedValueOnce([]);

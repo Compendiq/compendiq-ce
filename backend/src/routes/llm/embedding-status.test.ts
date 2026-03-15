@@ -60,6 +60,10 @@ vi.mock('../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
+vi.mock('../../core/services/rbac-service.js', () => ({
+  getUserAccessibleSpaces: vi.fn().mockResolvedValue(['DEV']),
+}));
+
 const mockQueryFn = vi.fn();
 vi.mock('../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQueryFn(...args),
@@ -122,10 +126,7 @@ describe('Embedding Status in API responses', () => {
 
   // Helper: mock the page query + access control query for confluence pages
   function mockDetailPageQuery(pageRow: Record<string, unknown>) {
-    mockQueryFn.mockImplementation((sql: string) => {
-      if (typeof sql === 'string' && sql.includes('user_space_selections')) {
-        return { rows: [{ '?column?': 1 }], rowCount: 1 };
-      }
+    mockQueryFn.mockImplementation((_sql: string) => {
       return { rows: [{ ...confluencePageDefaults, ...pageRow }], rowCount: 1 };
     });
   }

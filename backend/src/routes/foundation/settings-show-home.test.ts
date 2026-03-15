@@ -24,6 +24,11 @@ vi.mock('../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
+vi.mock('../../core/services/rbac-service.js', () => ({
+  getUserAccessibleSpaces: vi.fn().mockResolvedValue([]),
+  invalidateRbacCache: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock('undici', () => ({
   request: vi.fn(),
 }));
@@ -100,8 +105,7 @@ describe('Settings routes – showSpaceHomeContent', () => {
       }],
       rowCount: 1,
     });
-    // Query 2: user_space_selections
-    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    // getUserAccessibleSpaces is mocked
 
     const response = await app.inject({ method: 'GET', url: '/api/settings' });
     const body = JSON.parse(response.body);
