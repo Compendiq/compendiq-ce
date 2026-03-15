@@ -2,6 +2,7 @@ import { query } from '../../../core/db/postgres.js';
 import { chat } from '../../llm/services/ollama-service.js';
 import { htmlToMarkdown } from '../../../core/services/content-converter.js';
 import { sanitizeLlmInput } from '../../../core/utils/sanitize-llm-input.js';
+import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { logger } from '../../../core/utils/logger.js';
 
 export interface PageVersion {
@@ -47,6 +48,7 @@ export async function getVersionHistory(
   userId: string,
   confluenceId: string,
 ): Promise<Omit<PageVersion, 'bodyHtml' | 'bodyText'>[]> {
+  const vhSpaces = await getUserAccessibleSpaces(userId);
   const result = await query<{
     id: string;
     confluence_id: string;
@@ -57,11 +59,11 @@ export async function getVersionHistory(
     `SELECT pv.id, pv.confluence_id, pv.version_number, pv.title, pv.synced_at
      FROM page_versions pv
      JOIN pages cp ON pv.confluence_id = cp.confluence_id
-     JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
-     WHERE cp.deleted_at IS NULL
+     WHERE cp.space_key = ANY($1::text[])
+       AND cp.deleted_at IS NULL
        AND pv.confluence_id = $2
      ORDER BY pv.version_number DESC`,
-    [userId, confluenceId],
+    [vhSpaces, confluenceId],
   );
 
   return result.rows.map((row) => ({
@@ -93,10 +95,10 @@ export async function getVersion(
     `SELECT pv.id, pv.confluence_id, pv.version_number, pv.title, pv.body_html, pv.body_text, pv.synced_at
      FROM page_versions pv
      JOIN pages cp ON pv.confluence_id = cp.confluence_id
-     JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
-     WHERE cp.deleted_at IS NULL
+     WHERE cp.space_key = ANY($1::text[])
+       AND cp.deleted_at IS NULL
        AND pv.confluence_id = $2 AND pv.version_number = $3`,
-    [userId, confluenceId, versionNumber],
+    [await getUserAccessibleSpaces(userId), confluenceId, versionNumber],
   );
 
   if (result.rows.length === 0) return null;

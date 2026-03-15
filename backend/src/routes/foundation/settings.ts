@@ -5,6 +5,7 @@ import { query } from '../../core/db/postgres.js';
 import { encryptPat, decryptPat } from '../../core/utils/crypto.js';
 import { validateUrl } from '../../core/utils/ssrf-guard.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
+import { getUserAccessibleSpaces, invalidateRbacCache } from '../../core/services/rbac-service.js';
 import { setActiveProvider } from '../../domains/llm/services/ollama-service.js';
 import { getSyncOverview } from '../../domains/confluence/services/sync-overview-service.js';
 import { logger } from '../../core/utils/logger.js';
@@ -32,12 +33,9 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       [request.userId],
     );
 
-    // Fetch selected spaces from user_space_selections
-    const spacesResult = await query<{ space_key: string }>(
-      'SELECT space_key FROM user_space_selections WHERE user_id = $1 ORDER BY space_key',
-      [request.userId],
-    );
-    const selectedSpaces = spacesResult.rows.map((r) => r.space_key);
+    // Fetch accessible spaces from RBAC
+    const selectedSpaces = await getUserAccessibleSpaces(request.userId);
+    selectedSpaces.sort();
 
     if (result.rows.length === 0) {
       // Create default settings if missing
@@ -145,25 +143,36 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       values.push(JSON.stringify(body.customPrompts));
     }
 
-    // Handle selectedSpaces via user_space_selections table.
-    // IMPORTANT: This only manages sync preferences (which Confluence spaces to
-    // sync). It does NOT touch space_role_assignments, so RBAC roles (editor,
-    // space_admin, etc.) are preserved even when a user deselects a space.
+    // Handle selectedSpaces via RBAC space_role_assignments
     if (body.selectedSpaces !== undefined) {
       const newSpaces = body.selectedSpaces;
 
-      // Delete spaces no longer selected by this user (sync preferences only)
-      await query(
-        'DELETE FROM user_space_selections WHERE user_id = $1 AND space_key <> ALL($2::text[])',
-        [request.userId, newSpaces],
+      // Get the editor role ID for default assignment
+      const editorRoleResult = await query<{ id: number }>(
+        "SELECT id FROM roles WHERE name = 'editor' LIMIT 1",
       );
+      const editorRoleId = editorRoleResult.rows[0]?.id;
 
-      // Insert newly selected spaces (idempotent)
-      for (const spaceKey of newSpaces) {
+      if (editorRoleId) {
+        // Remove assignments for spaces no longer selected
         await query(
-          'INSERT INTO user_space_selections (user_id, space_key) VALUES ($1, $2) ON CONFLICT DO NOTHING',
-          [request.userId, spaceKey],
+          `DELETE FROM space_role_assignments
+           WHERE principal_type = 'user' AND principal_id = $1
+             AND space_key <> ALL($2::text[])`,
+          [request.userId, newSpaces],
         );
+
+        // Insert new space assignments (idempotent)
+        for (const spaceKey of newSpaces) {
+          await query(
+            `INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
+             VALUES ($1, 'user', $2, $3)
+             ON CONFLICT (space_key, principal_type, principal_id) DO NOTHING`,
+            [spaceKey, request.userId, editorRoleId],
+          );
+        }
+
+        await invalidateRbacCache(request.userId);
       }
     }
 
@@ -258,12 +267,16 @@ export async function settingsRoutes(fastify: FastifyInstance) {
 }
 
 async function invalidateUserData(userId: string, fastify: FastifyInstance): Promise<void> {
-  // When a user's PAT/URL changes, their space selections are no longer valid.
-  // Clear their space selections so they re-configure with the new credentials.
+  // When a user's PAT/URL changes, their RBAC space assignments are no longer valid.
+  // Clear their space role assignments so they re-configure with the new credentials.
   // Shared tables (pages, spaces, page_embeddings) are NOT deleted here
   // because they are shared across users. Pages are only removed via sync when no
   // user selects the space.
-  await query('DELETE FROM user_space_selections WHERE user_id = $1', [userId]);
+  await query(
+    `DELETE FROM space_role_assignments WHERE principal_type = 'user' AND principal_id = $1`,
+    [userId],
+  );
+  await invalidateRbacCache(userId);
 
   // Invalidate Redis keys using SCAN (avoids O(N) KEYS command)
   try {

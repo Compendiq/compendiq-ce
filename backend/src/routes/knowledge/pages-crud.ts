@@ -6,6 +6,7 @@ import { htmlToConfluence, confluenceToHtml } from '../../core/services/content-
 import { cleanPageAttachments } from '../../domains/confluence/services/attachment-handler.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { processDirtyPages, isProcessingUser } from '../../domains/llm/services/embedding-service.js';
+import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 import { PageListQuerySchema, PageTreeQuerySchema, CreatePageSchema, UpdatePageSchema, SaveDraftSchema } from '@kb-creator/contracts';
 import { z } from 'zod';
 import { logger } from '../../core/utils/logger.js';
@@ -41,18 +42,18 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     if (cached) return cached;
 
     // Build WHERE clause separately for reuse in count query
-    // Access control: LEFT JOIN + dual-path WHERE so each user sees:
-    //   - Confluence pages from their selected spaces
+    // Access control: RBAC-based space access check
+    //   - Confluence pages from user's accessible spaces (via RBAC)
     //   - Shared standalone articles (visible to all)
     //   - Their own private standalone articles
-    let whereClause = `LEFT JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
-      WHERE (
-        (cp.source = 'confluence' AND uss.space_key IS NOT NULL)
+    const accessibleSpaces = await getUserAccessibleSpaces(userId);
+    let whereClause = `WHERE (
+        (cp.source = 'confluence' AND cp.space_key = ANY($1::text[]))
         OR (cp.source = 'standalone' AND cp.visibility = 'shared')
-        OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $1)
+        OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $2)
       )`;
-    const values: unknown[] = [userId];
-    let paramIdx = 2;
+    const values: unknown[] = [accessibleSpaces, userId];
+    let paramIdx = 3;
 
     // Exclude soft-deleted pages from normal listings
     whereClause += ' AND cp.deleted_at IS NULL';
@@ -241,13 +242,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const cached = await cache.get(userId, 'pages', cacheKey);
     if (cached) return cached;
 
-    // Access control via space selection join
-    const joinClause = 'JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1';
-    const values: unknown[] = [userId];
-    let treeWhereClause = '';
+    // Access control via RBAC
+    const treeSpaces = await getUserAccessibleSpaces(userId);
+    const values: unknown[] = [treeSpaces];
+    let treeWhereClause = 'WHERE cp.space_key = ANY($1::text[])';
 
     if (params.spaceKey) {
-      treeWhereClause = 'WHERE cp.space_key = $2';
+      treeWhereClause += ' AND cp.space_key = $2';
       values.push(params.spaceKey);
     }
 
@@ -265,7 +266,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     }>(
       `SELECT cp.confluence_id, cp.space_key, cp.title, cp.parent_id, cp.labels, cp.last_modified_at,
               cp.embedding_dirty, cp.embedding_status, cp.embedded_at, cp.embedding_error
-       FROM pages cp ${joinClause} ${treeWhereClause}
+       FROM pages cp ${treeWhereClause}
        ORDER BY cp.title ASC`,
       values,
     );
@@ -294,18 +295,19 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
   fastify.get('/pages/filters', async (request) => {
     const userId = request.userId;
 
+    const filterSpaces = await getUserAccessibleSpaces(userId);
     const [authorsResult, labelsResult] = await Promise.all([
       query<{ author: string }>(
         `SELECT DISTINCT cp.author FROM pages cp
-         JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
-         WHERE cp.author IS NOT NULL ORDER BY cp.author ASC`,
-        [userId],
+         WHERE cp.space_key = ANY($1::text[])
+           AND cp.author IS NOT NULL ORDER BY cp.author ASC`,
+        [filterSpaces],
       ),
       query<{ label: string }>(
         `SELECT DISTINCT unnest(cp.labels) AS label FROM pages cp
-         JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
+         WHERE cp.space_key = ANY($1::text[])
          ORDER BY label ASC`,
-        [userId],
+        [filterSpaces],
       ),
     ]);
 
@@ -415,14 +417,11 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     const row = result.rows[0];
 
-    // Access control: Confluence pages require space selection; standalone pages
+    // Access control: Confluence pages require RBAC space access; standalone pages
     // require ownership or shared visibility
     if (row.source === 'confluence') {
-      const accessCheck = await query(
-        'SELECT 1 FROM user_space_selections WHERE space_key = $1 AND user_id = $2',
-        [row.space_key, userId],
-      );
-      if (accessCheck.rows.length === 0) {
+      const spaces = await getUserAccessibleSpaces(userId);
+      if (!row.space_key || !spaces.includes(row.space_key)) {
         throw fastify.httpErrors.notFound('Page not found');
       }
     } else {
@@ -997,12 +996,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.badRequest('Confluence not configured');
     }
 
-    // Batch verify access: pages in user's selected spaces
+    // Batch verify access: pages in user's accessible spaces (RBAC)
+    const bulkAccessSpaces = await getUserAccessibleSpaces(userId);
     const existing = await query<{ confluence_id: string; space_key: string }>(
       `SELECT cp.confluence_id, cp.space_key FROM pages cp
-       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
-       WHERE cp.confluence_id = ANY($2)`,
-      [userId, ids],
+       WHERE cp.space_key = ANY($1::text[])
+         AND cp.confluence_id = ANY($2)`,
+      [bulkAccessSpaces, ids],
     );
     const ownedIds = new Set(existing.rows.map((r) => r.confluence_id));
     const notFoundIds = ids.filter((id) => !ownedIds.has(id));
@@ -1056,12 +1056,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.badRequest('Confluence not configured');
     }
 
-    // Batch verify access: pages in user's selected spaces
+    // Batch verify access: pages in user's accessible spaces (RBAC)
+    const bulkAccessSpaces = await getUserAccessibleSpaces(userId);
     const existing = await query<{ confluence_id: string; space_key: string }>(
       `SELECT cp.confluence_id, cp.space_key FROM pages cp
-       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
-       WHERE cp.confluence_id = ANY($2)`,
-      [userId, ids],
+       WHERE cp.space_key = ANY($1::text[])
+         AND cp.confluence_id = ANY($2)`,
+      [bulkAccessSpaces, ids],
     );
     const ownedIds = new Set(existing.rows.map((r) => r.confluence_id));
     const spaceKeysById = new Map(existing.rows.map((r) => [r.confluence_id, r.space_key]));
@@ -1128,12 +1129,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     }
 
     // Batch update: single query with ANY() and RETURNING instead of N updates
+    const embedSpaces = await getUserAccessibleSpaces(userId);
     const result = await query<{ confluence_id: string }>(
       `UPDATE pages SET embedding_dirty = TRUE
        WHERE confluence_id = ANY($1)
-         AND space_key IN (SELECT space_key FROM user_space_selections WHERE user_id = $2)
+         AND space_key = ANY($2::text[])
        RETURNING confluence_id`,
-      [ids, userId],
+      [ids, embedSpaces],
     );
 
     const updatedIds = new Set(result.rows.map((r) => r.confluence_id));
@@ -1163,12 +1165,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     const client = await getClientForUser(userId);
 
-    // Batch fetch labels: single query with space-based access control
+    // Batch fetch labels: single query with RBAC space-based access control
+    const tagSpaces = await getUserAccessibleSpaces(userId);
     const existing = await query<{ confluence_id: string; labels: string[] }>(
       `SELECT cp.confluence_id, cp.labels FROM pages cp
-       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
-       WHERE cp.confluence_id = ANY($2)`,
-      [userId, ids],
+       WHERE cp.space_key = ANY($1::text[])
+         AND cp.confluence_id = ANY($2)`,
+      [tagSpaces, ids],
     );
     const pageLabelsMap = new Map(existing.rows.map((r) => [r.confluence_id, r.labels || []]));
     const notFoundIds = ids.filter((id) => !pageLabelsMap.has(id));

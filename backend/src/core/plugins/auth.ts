@@ -4,6 +4,7 @@ import * as jose from 'jose';
 import { randomUUID } from 'crypto';
 import { query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
+import { userHasPermission } from '../services/rbac-service.js';
 
 const JWT_ISSUER = 'kb-creator';
 const ACCESS_TOKEN_EXPIRY = process.env.ACCESS_TOKEN_EXPIRY ?? '1h';
@@ -31,6 +32,7 @@ declare module 'fastify' {
     userId: string;
     username: string;
     userRole: 'user' | 'admin';
+    userCan: (permission: string, resourceType?: 'space' | 'page', resourceId?: string | number) => Promise<boolean>;
   }
   interface FastifyInstance {
     authenticate: (request: FastifyRequest) => Promise<void>;
@@ -185,6 +187,34 @@ export default fp(async (fastify: FastifyInstance) => {
       request.userId = payload.sub;
       request.username = payload.username;
       request.userRole = payload.role;
+
+      // Attach RBAC permission checker to request
+      request.userCan = async (
+        permission: string,
+        resourceType?: 'space' | 'page',
+        resourceId?: string | number,
+      ): Promise<boolean> => {
+        // System admin bypasses all checks
+        if (request.userRole === 'admin') return true;
+
+        if (resourceType === 'page' && resourceId !== undefined) {
+          const pageId = typeof resourceId === 'string' ? parseInt(resourceId, 10) : resourceId;
+          // Look up the page's space_key for the space-level check
+          const pageRow = await query<{ space_key: string | null }>(
+            'SELECT space_key FROM pages WHERE id = $1 AND deleted_at IS NULL',
+            [pageId],
+          );
+          const spaceKey = pageRow.rows[0]?.space_key ?? undefined;
+          return userHasPermission(request.userId, permission, spaceKey, pageId);
+        }
+
+        if (resourceType === 'space' && resourceId !== undefined) {
+          return userHasPermission(request.userId, permission, String(resourceId));
+        }
+
+        // Global permission check (no resource scope)
+        return userHasPermission(request.userId, permission);
+      };
     } catch (err) {
       logger.debug({ err }, 'Token verification failed');
       throw fastify.httpErrors.unauthorized('Invalid or expired token');

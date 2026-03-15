@@ -2,6 +2,7 @@ import { providerChat } from '../../llm/services/llm-provider.js';
 import { htmlToMarkdown } from '../../../core/services/content-converter.js';
 import { sanitizeLlmInput } from '../../../core/utils/sanitize-llm-input.js';
 import { query } from '../../../core/db/postgres.js';
+import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { logger } from '../../../core/utils/logger.js';
 import { getClientForUser } from '../../confluence/services/sync-service.js';
 
@@ -209,11 +210,11 @@ export async function autoTagAllPages(
   }>(
     `SELECT cp.confluence_id, cp.body_html
      FROM pages cp
-     JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
-     WHERE cp.deleted_at IS NULL
+     WHERE cp.space_key = ANY($1::text[])
+       AND cp.deleted_at IS NULL
        AND (cp.labels IS NULL OR array_length(cp.labels, 1) IS NULL)
        AND cp.body_html IS NOT NULL`,
-    [userId],
+    [await getUserAccessibleSpaces(userId)],
   );
 
   let tagged = 0;

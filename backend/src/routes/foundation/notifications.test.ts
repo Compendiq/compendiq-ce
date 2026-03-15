@@ -3,6 +3,11 @@ import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 
 // Hoisted query mock so we can reference it in tests
+vi.mock('../../core/services/rbac-service.js', () => ({
+  getUserAccessibleSpaces: vi.fn().mockResolvedValue(['DEV', 'OPS']),
+  invalidateRbacCache: vi.fn().mockResolvedValue(undefined),
+}));
+
 const mockQuery = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 });
 
 vi.mock('../db/postgres.js', () => ({

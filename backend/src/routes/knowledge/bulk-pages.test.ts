@@ -77,6 +77,11 @@ vi.mock('../../domains/llm/services/embedding-service.js', () => ({
 }));
 
 // Mock the database with a function we can control per test
+vi.mock('../../core/services/rbac-service.js', () => ({
+  getUserAccessibleSpaces: vi.fn().mockResolvedValue(['DEV', 'OPS']),
+  invalidateRbacCache: vi.fn().mockResolvedValue(undefined),
+}));
+
 const mockQueryFn = vi.fn();
 vi.mock('../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQueryFn(...args),

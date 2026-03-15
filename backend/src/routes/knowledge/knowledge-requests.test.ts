@@ -4,6 +4,11 @@ import sensible from '@fastify/sensible';
 import { ZodError } from 'zod';
 import { knowledgeRequestRoutes } from './knowledge-requests.js';
 
+vi.mock('../../core/services/rbac-service.js', () => ({
+  getUserAccessibleSpaces: vi.fn().mockResolvedValue(['DEV', 'OPS']),
+  invalidateRbacCache: vi.fn().mockResolvedValue(undefined),
+}));
+
 const mockQueryFn = vi.fn();
 vi.mock('../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQueryFn(...args),

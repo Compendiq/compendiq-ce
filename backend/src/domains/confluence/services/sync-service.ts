@@ -4,6 +4,7 @@ import { confluenceToHtml, htmlToText } from '../../../core/services/content-con
 import { syncDrawioAttachments, syncImageAttachments, cleanPageAttachments, getMissingAttachments } from './attachment-handler.js';
 import { saveVersionSnapshot } from '../../knowledge/services/version-tracker.js';
 import { processDirtyPages } from '../../llm/services/embedding-service.js';
+import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { decryptPat } from '../../../core/utils/crypto.js';
 import { logger } from '../../../core/utils/logger.js';
 
@@ -65,12 +66,8 @@ export async function syncUser(userId: string): Promise<void> {
     return;
   }
 
-  // Read selected spaces from user_space_selections
-  const settingsResult = await query<{ space_key: string }>(
-    'SELECT space_key FROM user_space_selections WHERE user_id = $1',
-    [userId],
-  );
-  const spaces = settingsResult.rows.map((r) => r.space_key);
+  // Read accessible spaces from RBAC
+  const spaces = await getUserAccessibleSpaces(userId);
   if (spaces.length === 0) {
     logger.info({ userId }, 'No spaces selected, skipping sync');
     syncStatuses.set(userId, { userId, status: 'idle' });
@@ -415,11 +412,12 @@ async function detectDeletedPages(
   spaceKey: string,
   currentPages: ConfluencePage[],
 ): Promise<void> {
-  // Only delete pages when exactly one user has this space selected.
+  // Only delete pages when exactly one user has this space assigned via RBAC.
   // If multiple users share the space, one user's limited-permission sync
   // could incorrectly delete pages still visible to another user.
   const selectionCount = await query<{ count: string }>(
-    'SELECT COUNT(*) AS count FROM user_space_selections WHERE space_key = $1',
+    `SELECT COUNT(DISTINCT principal_id) AS count FROM space_role_assignments
+     WHERE space_key = $1 AND principal_type = 'user'`,
     [spaceKey],
   );
   if (parseInt(selectionCount.rows[0]?.count ?? '0', 10) !== 1) {
@@ -473,11 +471,14 @@ export function startSyncWorker(intervalMinutes = 15): void {
     syncLock = true;
 
     try {
-      // Get all users with configured connections and space selections
+      // Get all users with configured connections and RBAC space assignments
       const users = await query<{ user_id: string }>(
         `SELECT DISTINCT us.user_id FROM user_settings us
-         JOIN user_space_selections uss ON uss.user_id = us.user_id
-         WHERE us.confluence_url IS NOT NULL AND us.confluence_pat IS NOT NULL`,
+         WHERE us.confluence_url IS NOT NULL AND us.confluence_pat IS NOT NULL
+           AND EXISTS (
+             SELECT 1 FROM space_role_assignments sra
+             WHERE sra.principal_type = 'user' AND sra.principal_id = us.user_id::TEXT
+           )`,
       );
 
       for (const { user_id } of users.rows) {

@@ -47,10 +47,13 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
       [testSpaceKey],
     );
 
-    // Link user to space
+    // Link user to space via RBAC
+    const editorRole = await query<{ id: number }>("SELECT id FROM roles WHERE name = 'editor' LIMIT 1");
+    const roleId = editorRole.rows[0]?.id ?? 3;
     await query(
-      'INSERT INTO user_space_selections (user_id, space_key) VALUES ($1, $2)',
-      [testUserId, testSpaceKey],
+      `INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
+       VALUES ($1, 'user', $2, $3) ON CONFLICT DO NOTHING`,
+      [testSpaceKey, testUserId, roleId],
     );
   });
 

@@ -56,6 +56,11 @@ vi.mock('../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
+vi.mock('../../core/services/rbac-service.js', () => ({
+  getUserAccessibleSpaces: vi.fn().mockResolvedValue(['DEV', 'OPS']),
+  invalidateRbacCache: vi.fn().mockResolvedValue(undefined),
+}));
+
 const mockQueryFn = vi.fn();
 vi.mock('../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQueryFn(...args),

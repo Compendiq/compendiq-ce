@@ -1,5 +1,6 @@
 import { query, getPool } from '../../../core/db/postgres.js';
 import { providerGenerateEmbedding } from './llm-provider.js';
+import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import pgvector from 'pgvector';
 import { logger } from '../../../core/utils/logger.js';
 
@@ -26,6 +27,7 @@ interface SearchResult {
  * Default PostgreSQL ef_search is 40; we use 100 for better RAG recall.
  */
 async function vectorSearch(userId: string, questionEmbedding: number[], limit = 10): Promise<SearchResult[]> {
+  const vecSpaces = await getUserAccessibleSpaces(userId);
   // Use a dedicated client so SET LOCAL applies to our query
   const client = await getPool().connect();
   try {
@@ -42,16 +44,15 @@ async function vectorSearch(userId: string, questionEmbedding: number[], limit =
               pe.embedding <=> $2 AS distance
        FROM page_embeddings pe
        JOIN pages cp ON pe.confluence_id = cp.confluence_id
-       LEFT JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
        WHERE (
-         (cp.source = 'confluence' AND uss.space_key IS NOT NULL)
+         (cp.source = 'confluence' AND cp.space_key = ANY($1::text[]))
          OR (cp.source = 'standalone' AND cp.visibility = 'shared')
-         OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $1::int)
+         OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $4)
        )
        AND cp.deleted_at IS NULL
        ORDER BY pe.embedding <=> $2
        LIMIT $3`,
-      [userId, pgvector.toSql(questionEmbedding), limit],
+      [vecSpaces, pgvector.toSql(questionEmbedding), limit, userId],
     );
 
     await client.query('COMMIT');
@@ -83,6 +84,7 @@ async function keywordSearch(userId: string, questionText: string, limit = 10): 
   const trimmed = questionText.trim();
   if (!trimmed) return [];
 
+  const kwSpaces = await getUserAccessibleSpaces(userId);
   const result = await query<{
     confluence_id: string;
     title: string;
@@ -95,17 +97,16 @@ async function keywordSearch(userId: string, questionText: string, limit = 10): 
             ts_rank(to_tsvector('english', coalesce(cp.title, '') || ' ' || coalesce(cp.body_text, '')),
                     plainto_tsquery('english', $2)) AS rank
      FROM pages cp
-     LEFT JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
      WHERE to_tsvector('english', coalesce(cp.title, '') || ' ' || coalesce(cp.body_text, '')) @@ plainto_tsquery('english', $2)
        AND (
-         (cp.source = 'confluence' AND uss.space_key IS NOT NULL)
+         (cp.source = 'confluence' AND cp.space_key = ANY($1::text[]))
          OR (cp.source = 'standalone' AND cp.visibility = 'shared')
-         OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $1::int)
+         OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $4)
        )
        AND cp.deleted_at IS NULL
      ORDER BY rank DESC
      LIMIT $3`,
-    [userId, trimmed, limit],
+    [kwSpaces, trimmed, limit, userId],
   );
 
   return result.rows.map((row) => ({

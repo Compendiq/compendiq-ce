@@ -39,6 +39,12 @@ vi.mock('../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
+const mockGetUserAccessibleSpaces = vi.fn().mockResolvedValue(['DEV', 'DOCS']);
+vi.mock('../../core/services/rbac-service.js', () => ({
+  getUserAccessibleSpaces: (...args: unknown[]) => mockGetUserAccessibleSpaces(...args),
+  invalidateRbacCache: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock('../../domains/llm/services/ollama-service.js', () => ({
   setActiveProvider: vi.fn(),
 }));
@@ -279,7 +285,7 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
   });
 
-  it('GET /settings returns settings from DB with selected spaces from user_space_selections', async () => {
+  it('GET /settings returns settings from DB with accessible spaces from RBAC', async () => {
     // Query 1: user_settings
     mockQuery.mockResolvedValueOnce({
       rows: [{
@@ -295,8 +301,7 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
         show_space_home_content: true,
       }],
     });
-    // Query 2: user_space_selections
-    mockQuery.mockResolvedValueOnce({ rows: [{ space_key: 'DEV' }, { space_key: 'DOCS' }] });
+    // getUserAccessibleSpaces is mocked to return ['DEV', 'DOCS']
 
     const response = await app.inject({ method: 'GET', url: '/api/settings' });
 
@@ -354,7 +359,9 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
   });
 
   it('GET /settings returns defaults when no row exists', async () => {
-    // Query 1: user_settings → no row
+    // No spaces accessible for a brand new user
+    mockGetUserAccessibleSpaces.mockResolvedValueOnce([]);
+    // Query 1: user_settings -> no row
     mockQuery.mockResolvedValueOnce({ rows: [] });
     // Query 2: INSERT default settings
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
@@ -383,11 +390,12 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     expect(dirtyCalls).toHaveLength(0);
   });
 
-  it('PUT /settings updates selectedSpaces via user_space_selections', async () => {
-    // UPDATE user_settings (no other fields change here)
-    // DELETE old spaces
+  it('PUT /settings updates selectedSpaces via RBAC space_role_assignments', async () => {
+    // Query: get editor role
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 3 }], rowCount: 1 });
+    // DELETE old assignments
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-    // INSERT new space
+    // INSERT new assignment
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
     const response = await app.inject({
@@ -399,7 +407,7 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     expect(response.statusCode).toBe(200);
 
     const deleteCalls = mockQuery.mock.calls.filter(
-      (call) => typeof call[0] === 'string' && (call[0] as string).includes('DELETE FROM user_space_selections'),
+      (call) => typeof call[0] === 'string' && (call[0] as string).includes('DELETE FROM space_role_assignments'),
     );
     expect(deleteCalls).toHaveLength(1);
     expect(deleteCalls[0][1]).toContain('test-user-id');
@@ -415,7 +423,7 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
         custom_prompts: { improve_grammar: 'Fix grammar pls' },
       }],
     });
-    mockQuery.mockResolvedValueOnce({ rows: [] }); // spaces
+    // getUserAccessibleSpaces is mocked
 
     const response = await app.inject({ method: 'GET', url: '/api/settings' });
     const body = JSON.parse(response.body);

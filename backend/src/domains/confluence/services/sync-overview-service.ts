@@ -3,6 +3,7 @@ import { query } from '../../../core/db/postgres.js';
 import { attachmentExists, extractDrawioDiagramNames } from './attachment-handler.js';
 import { extractImageReferences } from '../../../core/services/image-references.js';
 import { getSyncStatus } from './sync-service.js';
+import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 
 interface OverviewRow {
   space_key: string;
@@ -52,20 +53,20 @@ async function summarizeAssets(
 }
 
 export async function getSyncOverview(userId: string): Promise<SyncOverviewResponse> {
+  const overviewSpaces = await getUserAccessibleSpaces(userId);
   const rowsResult = await query<OverviewRow>(
     `SELECT
-       uss.space_key,
+       s.space_key,
        cs.space_name,
        cs.last_synced AS space_last_synced,
        cp.confluence_id AS page_id,
        cp.title AS page_title,
        cp.body_storage
-     FROM user_space_selections uss
-     LEFT JOIN spaces cs ON cs.space_key = uss.space_key
-     LEFT JOIN pages cp ON cp.space_key = uss.space_key
-     WHERE uss.user_id = $1
-     ORDER BY uss.space_key, cp.title NULLS LAST`,
-    [userId],
+     FROM unnest($1::text[]) AS s(space_key)
+     LEFT JOIN spaces cs ON cs.space_key = s.space_key
+     LEFT JOIN pages cp ON cp.space_key = s.space_key
+     ORDER BY s.space_key, cp.title NULLS LAST`,
+    [overviewSpaces],
   );
 
   const sync = getSyncStatus(userId);

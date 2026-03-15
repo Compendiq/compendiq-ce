@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { query } from '../../core/db/postgres.js';
+import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 
 const SearchQuerySchema = z.object({
   q: z.string().min(1).max(500),
@@ -34,22 +35,23 @@ export async function searchRoutes(fastify: FastifyInstance) {
 
     const offset = (page - 1) * limit;
     const conditions: string[] = [];
-    // $1 = search query, $2 = userId for access control
-    const values: unknown[] = [q, userId];
-    let paramIndex = 3;
+    // $1 = search query, $2 = accessible space keys, $3 = userId for standalone access
+    const searchSpaces = await getUserAccessibleSpaces(userId);
+    const values: unknown[] = [q, searchSpaces, userId];
+    let paramIndex = 4;
 
     // Base full-text search condition
     conditions.push(
       `to_tsvector('english', COALESCE(cp.title, '') || ' ' || COALESCE(cp.body_text, '')) @@ plainto_tsquery('english', $1)`,
     );
 
-    // Access control: confluence pages require space selection; standalone pages
+    // Access control: RBAC-based space access for confluence pages; standalone pages
     // require shared visibility or ownership by the current user
     conditions.push(
       `(
-        (cp.source = 'confluence' AND uss.space_key IS NOT NULL)
+        (cp.source = 'confluence' AND cp.space_key = ANY($2::text[]))
         OR (cp.source = 'standalone' AND cp.visibility = 'shared')
-        OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $2)
+        OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $3)
       )`,
     );
 
@@ -92,8 +94,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
 
     const whereClause = conditions.join(' AND ');
 
-    // Access control JOIN — LEFT JOIN so standalone pages (no space selection) are still included
-    const accessJoin = `LEFT JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $2`;
+    // No JOIN needed — access control is handled via WHERE clause with RBAC space keys
 
     // Determine sort order
     let orderClause: string;
@@ -112,7 +113,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
 
     // Count total matches
     const countResult = await query<{ count: string }>(
-      `SELECT COUNT(*) AS count FROM pages cp ${accessJoin} WHERE ${whereClause}`,
+      `SELECT COUNT(*) AS count FROM pages cp WHERE ${whereClause}`,
       values,
     );
     const total = parseInt(countResult.rows[0].count, 10);
@@ -139,7 +140,6 @@ export async function searchRoutes(fastify: FastifyInstance) {
               ts_headline('english', COALESCE(cp.body_text, ''), plainto_tsquery('english', $1),
                           'MaxWords=30, MinWords=15, StartSel=<mark>, StopSel=</mark>') AS snippet
        FROM pages cp
-       ${accessJoin}
        WHERE ${whereClause}
        ORDER BY ${orderClause}
        LIMIT $${limitParamIndex} OFFSET $${offsetParamIndex}`,
@@ -147,7 +147,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
     );
 
     // Facet aggregation — get available filter values with counts
-    // Uses the same access control JOIN + deleted_at filter
+    // Uses the same RBAC access control + deleted_at filter
     const facetResult = await query<{
       facet: string;
       value: string;
@@ -155,13 +155,12 @@ export async function searchRoutes(fastify: FastifyInstance) {
     }>(
       `SELECT 'space' AS facet, cp.space_key AS value, COUNT(*)::TEXT AS count
        FROM pages cp
-       LEFT JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $2
        WHERE to_tsvector('english', COALESCE(cp.title, '') || ' ' || COALESCE(cp.body_text, ''))
              @@ plainto_tsquery('english', $1)
          AND (
-           (cp.source = 'confluence' AND uss.space_key IS NOT NULL)
+           (cp.source = 'confluence' AND cp.space_key = ANY($2::text[]))
            OR (cp.source = 'standalone' AND cp.visibility = 'shared')
-           OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $2)
+           OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $3)
          )
          AND cp.deleted_at IS NULL
          AND cp.space_key IS NOT NULL
@@ -169,13 +168,12 @@ export async function searchRoutes(fastify: FastifyInstance) {
        UNION ALL
        SELECT 'author' AS facet, cp.author AS value, COUNT(*)::TEXT AS count
        FROM pages cp
-       LEFT JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $2
        WHERE to_tsvector('english', COALESCE(cp.title, '') || ' ' || COALESCE(cp.body_text, ''))
              @@ plainto_tsquery('english', $1)
          AND (
-           (cp.source = 'confluence' AND uss.space_key IS NOT NULL)
+           (cp.source = 'confluence' AND cp.space_key = ANY($2::text[]))
            OR (cp.source = 'standalone' AND cp.visibility = 'shared')
-           OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $2)
+           OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $3)
          )
          AND cp.deleted_at IS NULL
          AND cp.author IS NOT NULL
@@ -183,18 +181,17 @@ export async function searchRoutes(fastify: FastifyInstance) {
        UNION ALL
        SELECT 'tag' AS facet, tag AS value, COUNT(*)::TEXT AS count
        FROM pages cp
-       LEFT JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $2
        CROSS JOIN unnest(cp.labels) AS tag
        WHERE to_tsvector('english', COALESCE(cp.title, '') || ' ' || COALESCE(cp.body_text, ''))
              @@ plainto_tsquery('english', $1)
          AND (
-           (cp.source = 'confluence' AND uss.space_key IS NOT NULL)
+           (cp.source = 'confluence' AND cp.space_key = ANY($2::text[]))
            OR (cp.source = 'standalone' AND cp.visibility = 'shared')
-           OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $2)
+           OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $3)
          )
          AND cp.deleted_at IS NULL
        GROUP BY tag`,
-      [q, userId],
+      [q, searchSpaces, userId],
     );
 
     // Organize facets by type

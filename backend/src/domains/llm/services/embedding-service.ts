@@ -3,6 +3,7 @@ import { providerGenerateEmbedding } from './llm-provider.js';
 import { htmlToText } from '../../../core/services/content-converter.js';
 import { logger } from '../../../core/utils/logger.js';
 import { invalidateGraphCache, acquireEmbeddingLock, releaseEmbeddingLock, isEmbeddingLocked } from '../../../core/services/redis-cache.js';
+import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { CircuitBreakerOpenError, ollamaBreakers, openaiBreakers } from '../../../core/services/circuit-breaker.js';
 import pgvector from 'pgvector';
 
@@ -707,32 +708,33 @@ export async function computePageRelationships(): Promise<number> {
  * Get embedding status scoped to a user's selected spaces.
  */
 export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatus> {
+  const statusSpaces = await getUserAccessibleSpaces(userId);
   const [totalResult, dirtyResult, embeddingResult, embeddedPagesResult, isProcessing] = await Promise.all([
     query<{ count: string }>(
       `SELECT COUNT(*) as count FROM pages cp
-       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
-       WHERE cp.deleted_at IS NULL`,
-      [userId],
+       WHERE cp.space_key = ANY($1::text[])
+         AND cp.deleted_at IS NULL`,
+      [statusSpaces],
     ),
     query<{ count: string }>(
       `SELECT COUNT(*) as count FROM pages cp
-       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
-       WHERE cp.deleted_at IS NULL AND cp.embedding_dirty = TRUE`,
-      [userId],
+       WHERE cp.space_key = ANY($1::text[])
+         AND cp.deleted_at IS NULL AND cp.embedding_dirty = TRUE`,
+      [statusSpaces],
     ),
     query<{ count: string }>(
       `SELECT COUNT(*) as count FROM page_embeddings pe
        JOIN pages cp ON pe.confluence_id = cp.confluence_id
-       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
-       WHERE cp.deleted_at IS NULL`,
-      [userId],
+       WHERE cp.space_key = ANY($1::text[])
+         AND cp.deleted_at IS NULL`,
+      [statusSpaces],
     ),
     query<{ count: string }>(
       `SELECT COUNT(DISTINCT pe.confluence_id) as count FROM page_embeddings pe
        JOIN pages cp ON pe.confluence_id = cp.confluence_id
-       JOIN user_space_selections uss ON cp.space_key = uss.space_key AND uss.user_id = $1
-       WHERE cp.deleted_at IS NULL`,
-      [userId],
+       WHERE cp.space_key = ANY($1::text[])
+         AND cp.deleted_at IS NULL`,
+      [statusSpaces],
     ),
     isEmbeddingLocked(userId),
   ]);
