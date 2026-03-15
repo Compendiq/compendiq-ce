@@ -145,11 +145,14 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       values.push(JSON.stringify(body.customPrompts));
     }
 
-    // Handle selectedSpaces via user_space_selections table
+    // Handle selectedSpaces via user_space_selections table.
+    // IMPORTANT: This only manages sync preferences (which Confluence spaces to
+    // sync). It does NOT touch space_role_assignments, so RBAC roles (editor,
+    // space_admin, etc.) are preserved even when a user deselects a space.
     if (body.selectedSpaces !== undefined) {
       const newSpaces = body.selectedSpaces;
 
-      // Delete spaces no longer selected by this user
+      // Delete spaces no longer selected by this user (sync preferences only)
       await query(
         'DELETE FROM user_space_selections WHERE user_id = $1 AND space_key <> ALL($2::text[])',
         [request.userId, newSpaces],

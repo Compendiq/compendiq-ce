@@ -16,7 +16,15 @@ vi.mock('../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
+// Mock rbac-service functions used by route handlers
+vi.mock('../../core/services/rbac-service.js', () => ({
+  userHasPermission: vi.fn().mockResolvedValue(false),
+  getUserAccessibleSpaces: vi.fn().mockResolvedValue([]),
+  invalidatePermissionCache: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { query as mockQuery } from '../../core/db/postgres.js';
+import { userHasPermission as mockUserHasPermission, getUserAccessibleSpaces as mockGetUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 
 // Valid UUID that passes Zod's UUID validation (variant nibble = 8-b)
 const VALID_UUID = 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11';
@@ -29,13 +37,16 @@ function pgUniqueViolation(): Error {
 }
 
 describe('RBAC routes', () => {
+  // Admin app — for testing admin-only routes
   let app: ReturnType<typeof Fastify>;
+  // Regular user app — for testing user-accessible routes
+  let userApp: ReturnType<typeof Fastify>;
 
   beforeAll(async () => {
+    // Admin app setup
     app = Fastify({ logger: false });
     await app.register(sensible);
 
-    // Match production error handler for Zod validation errors
     app.setErrorHandler((error, _request, reply) => {
       if (error instanceof ZodError) {
         reply.status(400).send({
@@ -62,16 +73,172 @@ describe('RBAC routes', () => {
 
     await app.register(rbacRoutes, { prefix: '/api' });
     await app.ready();
+
+    // Regular user app setup
+    userApp = Fastify({ logger: false });
+    await userApp.register(sensible);
+
+    userApp.setErrorHandler((error, _request, reply) => {
+      if (error instanceof ZodError) {
+        reply.status(400).send({
+          error: 'ValidationError',
+          message: error.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; '),
+          statusCode: 400,
+        });
+        return;
+      }
+      reply.status(error.statusCode ?? 500).send({ error: error.message, statusCode: error.statusCode ?? 500 });
+    });
+
+    // Decorate with mock auth (regular user)
+    userApp.decorate('authenticate', async (request: { userId: string; username: string; userRole: string }) => {
+      request.userId = 'regular-user-id';
+      request.username = 'regularuser';
+      request.userRole = 'user';
+    });
+    userApp.decorate('requireAdmin', async (request: { userId: string; username: string; userRole: string }) => {
+      // Simulate admin check failing for regular users
+      request.userId = 'regular-user-id';
+      request.username = 'regularuser';
+      request.userRole = 'user';
+      const err = new Error('Admin access required');
+      (err as Error & { statusCode: number }).statusCode = 403;
+      throw err;
+    });
+
+    await userApp.register(rbacRoutes, { prefix: '/api' });
+    await userApp.ready();
   });
 
   afterAll(async () => {
     await app.close();
+    await userApp.close();
   });
 
   beforeEach(() => {
     vi.clearAllMocks();
     // Reset default to empty rows so no bleed between tests
     (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [], rowCount: 0 });
+    (mockUserHasPermission as ReturnType<typeof vi.fn>).mockResolvedValue(false);
+    (mockGetUserAccessibleSpaces as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+  });
+
+  // ========================
+  // User-accessible permission routes
+  // ========================
+
+  describe('POST /api/permissions/check', () => {
+    it('should be accessible to regular (non-admin) users', async () => {
+      (mockUserHasPermission as ReturnType<typeof vi.fn>).mockResolvedValueOnce(true);
+
+      const response = await userApp.inject({
+        method: 'POST',
+        url: '/api/permissions/check',
+        payload: { permission: 'read', spaceKey: 'ENG' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.granted).toBe(true);
+    });
+
+    it('should return granted=false when user lacks permission', async () => {
+      (mockUserHasPermission as ReturnType<typeof vi.fn>).mockResolvedValueOnce(false);
+
+      const response = await userApp.inject({
+        method: 'POST',
+        url: '/api/permissions/check',
+        payload: { permission: 'edit', spaceKey: 'HR' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body).granted).toBe(false);
+    });
+
+    it('should work without spaceKey (system-level permission check)', async () => {
+      (mockUserHasPermission as ReturnType<typeof vi.fn>).mockResolvedValueOnce(false);
+
+      const response = await userApp.inject({
+        method: 'POST',
+        url: '/api/permissions/check',
+        payload: { permission: 'admin' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body).granted).toBe(false);
+    });
+
+    it('should reject missing permission field', async () => {
+      const response = await userApp.inject({
+        method: 'POST',
+        url: '/api/permissions/check',
+        payload: {},
+      });
+
+      expect(response.statusCode).toBe(400);
+    });
+  });
+
+  describe('GET /api/permissions/spaces', () => {
+    it('should be accessible to regular (non-admin) users', async () => {
+      (mockGetUserAccessibleSpaces as ReturnType<typeof vi.fn>).mockResolvedValueOnce(['ENG', 'HR']);
+
+      const response = await userApp.inject({
+        method: 'GET',
+        url: '/api/permissions/spaces',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.spaces).toEqual(['ENG', 'HR']);
+      expect(body.unrestricted).toBe(false);
+    });
+
+    it('should return unrestricted=true for admin users', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/permissions/spaces',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.unrestricted).toBe(true);
+      expect(body.spaces).toEqual([]);
+    });
+  });
+
+  // ========================
+  // Admin-only routes remain protected
+  // ========================
+
+  describe('admin-only route protection', () => {
+    it('should block regular users from GET /api/roles', async () => {
+      const response = await userApp.inject({
+        method: 'GET',
+        url: '/api/roles',
+      });
+
+      expect(response.statusCode).toBe(403);
+    });
+
+    it('should block regular users from GET /api/groups', async () => {
+      const response = await userApp.inject({
+        method: 'GET',
+        url: '/api/groups',
+      });
+
+      expect(response.statusCode).toBe(403);
+    });
+
+    it('should block regular users from POST /api/groups', async () => {
+      const response = await userApp.inject({
+        method: 'POST',
+        url: '/api/groups',
+        payload: { name: 'Hackers' },
+      });
+
+      expect(response.statusCode).toBe(403);
+    });
   });
 
   // ========================
@@ -353,7 +520,13 @@ describe('RBAC routes', () => {
 
   describe('DELETE /api/spaces/:key/roles/:assignmentId', () => {
     it('should remove a role assignment', async () => {
-      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ rows: [{ id: 1 }] });
+      const queryMock = mockQuery as ReturnType<typeof vi.fn>;
+      // First query: fetch assignment before delete
+      queryMock.mockResolvedValueOnce({
+        rows: [{ principal_type: 'user', principal_id: 'user-1' }],
+      });
+      // Second query: delete
+      queryMock.mockResolvedValueOnce({ rows: [{ id: 1 }] });
 
       const response = await app.inject({
         method: 'DELETE',
