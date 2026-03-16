@@ -69,8 +69,8 @@ export function AppLayout({ children }: { children: ReactNode }) {
       <NoiseOverlay />
       <CommandPalette />
 
-      {/* Top navigation bar - full width, always on top */}
-      <header className="relative z-10 flex h-12 shrink-0 items-center border-b border-border/40 bg-card/80 px-4 backdrop-blur-md">
+      {/* Top navigation bar — Liquid Glass floating header */}
+      <header className="relative z-10 mx-2 mt-2 flex h-11 shrink-0 items-center rounded-xl glass-header px-4">
         {/* Mobile hamburger */}
         <button
           onClick={() => setMobileMenuOpen((v) => !v)}
@@ -90,8 +90,8 @@ export function AppLayout({ children }: { children: ReactNode }) {
           <Breadcrumb />
         </div>
 
-        {/* Main navigation - hidden on mobile */}
-        <nav className="ml-auto hidden items-center gap-0.5 md:flex">
+        {/* Main navigation — glass pill active states */}
+        <nav className="ml-auto hidden items-center gap-1 md:flex">
           {navItems.map(({ icon: Icon, label, path }) => {
             const active =
               path === '/'
@@ -102,13 +102,13 @@ export function AppLayout({ children }: { children: ReactNode }) {
                 key={path}
                 to={path}
                 className={cn(
-                  'flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors',
+                  'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
                   active
-                    ? 'bg-primary/15 text-primary font-medium'
-                    : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
+                    ? 'glass-pill-active text-primary font-medium'
+                    : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
                 )}
               >
-                <Icon size={16} />
+                <Icon size={15} className={cn(active && 'drop-shadow-[0_1px_2px_oklch(from_var(--color-primary)_l_c_h_/_0.3)]')} />
                 {label}
               </Link>
             );
@@ -119,7 +119,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
         <div className="flex items-center gap-3 ml-3">
           <button
             onClick={openCommandPalette}
-            className="flex items-center gap-1.5 rounded-md bg-foreground/5 px-2.5 py-1 text-xs text-muted-foreground hover:bg-foreground/10 transition-colors"
+            className="flex items-center gap-1.5 rounded-lg bg-foreground/5 px-2.5 py-1 text-xs text-muted-foreground hover:bg-foreground/8 transition-colors"
           >
             <Search size={12} />
             <span className="hidden sm:inline">Search...</span>
@@ -139,7 +139,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
             animate={{ height: 'auto', opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
             transition={{ duration: 0.2 }}
-            className="overflow-hidden border-b border-border/40 bg-card/90 backdrop-blur-md md:hidden"
+            className="overflow-hidden mx-2 mt-1 rounded-xl glass-header md:hidden"
           >
             <div className="space-y-1 p-3">
               {navItems.map(({ icon: Icon, label, path }) => {
@@ -152,10 +152,10 @@ export function AppLayout({ children }: { children: ReactNode }) {
                     key={path}
                     to={path}
                     className={cn(
-                      'flex items-center gap-3 rounded-lg px-4 py-3 text-sm transition-colors',
+                      'flex items-center gap-3 rounded-lg px-4 py-3 text-sm transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
                       active
-                        ? 'bg-primary/15 text-primary font-medium'
-                        : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
+                        ? 'glass-pill-active text-primary font-medium'
+                        : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
                     )}
                   >
                     <Icon size={18} />
@@ -168,14 +168,14 @@ export function AppLayout({ children }: { children: ReactNode }) {
         )}
       </AnimatePresence>
 
-      {/* Below header: sidebar + content area */}
-      <div className="flex flex-1 overflow-hidden">
+      {/* Below header: sidebar + content area with floating gaps */}
+      <div className="flex flex-1 gap-1.5 overflow-hidden p-2 pt-1.5">
         {/* Left sidebar - below header, only on pages routes */}
         {showTreeSidebar && <SidebarTreeView />}
 
         {/* Main content area + optional right sidebar */}
-        <div className="flex flex-1 overflow-hidden">
-          <main className="flex flex-1 flex-col overflow-hidden">
+        <div className="flex flex-1 gap-1.5 overflow-hidden">
+          <main className="flex flex-1 flex-col overflow-hidden rounded-xl bg-card/40">
             <div className="shrink-0 px-4 pt-3 sm:px-6">
               <ServiceStatus />
             </div>

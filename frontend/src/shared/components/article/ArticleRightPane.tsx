@@ -15,7 +15,7 @@ import {
 import { FreshnessBadge } from '../badges/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../badges/EmbeddingStatusBadge';
 import { QualityScoreBadge } from '../badges/QualityScoreBadge';
-import { m } from 'framer-motion';
+import { m, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import { useUiStore } from '../../../stores/ui-store';
 import { useArticleViewStore } from '../../../stores/article-view-store';
@@ -75,6 +75,8 @@ function readCollapsedIds(storageKey: string): Set<string> {
   }
 }
 
+const sidebarSpring = { type: 'spring' as const, stiffness: 400, damping: 30 };
+
 // ---------- OutlineNode component ----------
 
 interface OutlineNodeItemProps {
@@ -103,10 +105,10 @@ const OutlineNodeItem = memo(function OutlineNodeItem({
     <div>
       <div
         className={cn(
-          'group flex items-center gap-1.5 rounded-md py-1.5 pr-2 text-sm transition-colors cursor-pointer',
+          'group flex items-center gap-1.5 rounded-[10px] h-9 pr-2 text-sm cursor-pointer transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
           isActive
-            ? 'bg-primary/15 text-primary font-medium'
-            : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
+            ? 'glass-pill-active text-primary font-medium'
+            : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
         )}
         style={{ paddingLeft: `${level * 16 + 8}px` }}
         onClick={() => onNavigate(heading.id)}
@@ -129,7 +131,7 @@ const OutlineNodeItem = memo(function OutlineNodeItem({
         ) : (
           <span className="w-[20px] shrink-0" />
         )}
-        <ListTree size={15} className="shrink-0 text-muted-foreground/70" />
+        <ListTree size={15} className={cn('shrink-0 opacity-70', isActive && 'text-primary opacity-100')} />
         <span className="truncate text-sm">{heading.text}</span>
       </div>
 
@@ -170,6 +172,7 @@ export function ArticleRightPane() {
   const toggleSidebar = useUiStore((s) => s.toggleArticleSidebar);
   const width = useUiStore((s) => s.articleSidebarWidth);
   const setWidth = useUiStore((s) => s.setArticleSidebarWidth);
+  const reduceEffects = useUiStore((s) => s.reduceEffects);
 
   const headings = useArticleViewStore((s) => s.headings);
   const editing = useArticleViewStore((s) => s.editing);
@@ -345,68 +348,82 @@ export function ArticleRightPane() {
 
   if (!id) return null;
 
+  // Collapsed rail — glass pill style
   if (collapsed) {
     return (
-      <div
-        className="flex w-10 flex-col items-center border-l border-border/40 bg-card/50 backdrop-blur-md"
-        data-testid="article-right-pane-rail"
-      >
-        <div className="flex h-12 w-full items-center justify-center border-b border-border/40">
-          <button
-            onClick={toggleSidebar}
-            className="rounded-md p-1.5 text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
-            aria-label="Expand article sidebar"
-          >
-            <PanelRight size={16} />
-          </button>
-        </div>
-      </div>
+      <AnimatePresence mode="wait">
+        <m.div
+          key="collapsed-rail"
+          initial={reduceEffects ? false : { width: 0, opacity: 0 }}
+          animate={{ width: 40, opacity: 1 }}
+          exit={{ width: 0, opacity: 0 }}
+          transition={reduceEffects ? { duration: 0 } : sidebarSpring}
+          className="flex flex-col items-center rounded-xl glass-sidebar overflow-hidden"
+          data-testid="article-right-pane-rail"
+        >
+          <div className="flex h-12 w-full items-center justify-center">
+            <button
+              onClick={toggleSidebar}
+              className="rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
+              aria-label="Expand article sidebar"
+            >
+              <PanelRight size={16} />
+            </button>
+          </div>
+        </m.div>
+      </AnimatePresence>
     );
   }
 
   return (
-    <aside
+    <m.aside
       ref={sidebarRef}
+      key="expanded-sidebar"
+      initial={reduceEffects ? false : { width: 0, opacity: 0 }}
+      animate={{ width, opacity: 1 }}
+      transition={reduceEffects || isResizing ? { duration: 0 } : sidebarSpring}
       className={cn(
-        'relative flex flex-col border-l border-border/40 bg-card/50 backdrop-blur-md',
+        'relative flex flex-col glass-sidebar overflow-hidden',
         isResizing && 'select-none',
       )}
-      style={{ width: `${width}px` }}
       data-testid="article-right-pane"
     >
       {/* Header */}
-      <div className="flex h-12 shrink-0 items-center justify-between border-b border-border/40 px-3">
-        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground/70">Properties</span>
+      <div className="flex h-10 shrink-0 items-center justify-between px-3">
+        <span className="text-xs font-semibold text-muted-foreground/60">Properties</span>
         <button
           onClick={toggleSidebar}
-          className="rounded-md p-1 text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+          className="rounded-lg p-1 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
           aria-label="Collapse article sidebar"
         >
           <PanelRightClose size={14} />
         </button>
       </div>
 
-      {/* Action buttons */}
+      {/* Divider */}
+      <div className="mx-3 h-px bg-[var(--glass-sidebar-divider)]" />
+
+      {/* Action buttons — glass button style */}
       {!editing && page && (
-        <div className="border-b border-border/40 p-2 space-y-0.5" data-testid="article-actions">
+        <div className="p-2 space-y-0.5" data-testid="article-actions">
           <button
             onClick={() => navigate(`/ai?mode=improve&pageId=${encodeURIComponent(id)}`)}
-            className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
           >
-            <Wand2 size={15} className="shrink-0" />
+            <Wand2 size={15} className="shrink-0 opacity-70" />
             <span className="truncate">AI Improve</span>
           </button>
 
           <button
             onClick={handlePinToggle}
             className={cn(
-              'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-sm transition-colors',
+              'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
               isPinned
-                ? 'text-primary font-medium bg-primary/8 hover:bg-primary/12'
-                : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
+                ? 'glass-pill-active text-primary font-medium'
+                : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
             )}
           >
-            <Pin size={15} className={cn('shrink-0', isPinned && 'fill-current')} />
+            <Pin size={15} className={cn('shrink-0 opacity-70', isPinned && 'fill-current opacity-100')} />
             <span className="truncate">{isPinned ? 'Pinned' : 'Pin'}</span>
           </button>
 
@@ -415,100 +432,106 @@ export function ArticleRightPane() {
               href={`${settings.confluenceUrl}/pages/viewpage.action?pageId=${encodeURIComponent(id)}`}
               target="_blank"
               rel="noreferrer"
-              className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
             >
-              <ExternalLink size={15} className="shrink-0" />
+              <ExternalLink size={15} className="shrink-0 opacity-70" />
               <span className="truncate">Open in Confluence</span>
             </a>
           )}
 
           <button
             onClick={handleDelete}
-            className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-sm text-destructive/80 transition-colors hover:bg-destructive/8 hover:text-destructive"
+            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-destructive/80 transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-destructive/8 hover:text-destructive"
           >
-            <Trash2 size={15} className="shrink-0" />
+            <Trash2 size={15} className="shrink-0 opacity-70" />
             <span className="truncate">Delete</span>
           </button>
         </div>
       )}
 
-      {/* Properties section — mirrors Notion's properties panel */}
+      {/* Properties section — glass pill badges */}
       {page && !editing && (
-        <div className="border-b border-border/40 px-3 py-3">
-          <div className="flex flex-wrap gap-1.5">
-            <span className="inline-flex items-center gap-1 rounded-full border border-border/40 bg-foreground/5 px-2 py-0.5 text-[10px] text-foreground/80">
-              {page.spaceKey}
-            </span>
-            <span className="inline-flex items-center gap-1 rounded-full border border-border/40 bg-foreground/5 px-2 py-0.5 text-[10px] text-foreground/80">
-              {page.hasChildren
-                ? <><FolderOpen size={10} className="shrink-0 text-muted-foreground/60" /> Folder</>
-                : <><FileText size={10} className="shrink-0 text-muted-foreground/60" /> Article</>}
-            </span>
-            {page.author && (
-              <span className="inline-flex max-w-[120px] truncate rounded-full border border-border/40 bg-foreground/5 px-2 py-0.5 text-[10px] text-foreground/80">
-                {page.author}
+        <>
+          <div className="mx-3 h-px bg-[var(--glass-sidebar-divider)]" />
+          <div className="px-3 py-3">
+            <div className="flex flex-wrap gap-1.5">
+              <span className="inline-flex items-center gap-1 glass-pill-active rounded-full px-2 py-0.5 text-[10px] text-foreground/80">
+                {page.spaceKey}
               </span>
-            )}
-            <span className="inline-flex rounded-full border border-border/40 bg-foreground/5 px-2 py-0.5 text-[10px] text-foreground/80">
-              v{page.version}
-            </span>
-            {page.lastModifiedAt && <FreshnessBadge lastModified={page.lastModifiedAt} />}
-            <EmbeddingStatusBadge
-              embeddingStatus={page.embeddingStatus}
-              embeddingDirty={page.embeddingDirty}
-              embeddedAt={page.embeddedAt}
-              embeddingError={page.embeddingError}
-            />
-            {page.qualityScore !== undefined && page.qualityScore !== null && (
-              <QualityScoreBadge
-                qualityScore={page.qualityScore}
-                qualityStatus={page.qualityStatus ?? null}
-                qualityCompleteness={page.qualityCompleteness}
-                qualityClarity={page.qualityClarity}
-                qualityStructure={page.qualityStructure}
-                qualityAccuracy={page.qualityAccuracy}
-                qualityReadability={page.qualityReadability}
-                qualitySummary={page.qualitySummary}
-                qualityAnalyzedAt={page.qualityAnalyzedAt}
-                qualityError={page.qualityError}
+              <span className="inline-flex items-center gap-1 glass-pill-active rounded-full px-2 py-0.5 text-[10px] text-foreground/80">
+                {page.hasChildren
+                  ? <><FolderOpen size={10} className="shrink-0 text-muted-foreground/60" /> Folder</>
+                  : <><FileText size={10} className="shrink-0 text-muted-foreground/60" /> Article</>}
+              </span>
+              {page.author && (
+                <span className="inline-flex max-w-[120px] truncate glass-pill-active rounded-full px-2 py-0.5 text-[10px] text-foreground/80">
+                  {page.author}
+                </span>
+              )}
+              <span className="inline-flex glass-pill-active rounded-full px-2 py-0.5 text-[10px] text-foreground/80">
+                v{page.version}
+              </span>
+              {page.lastModifiedAt && <FreshnessBadge lastModified={page.lastModifiedAt} />}
+              <EmbeddingStatusBadge
+                embeddingStatus={page.embeddingStatus}
+                embeddingDirty={page.embeddingDirty}
+                embeddedAt={page.embeddedAt}
+                embeddingError={page.embeddingError}
               />
-            )}
-            {page.labels.map((label) => (
-              <span
-                key={label}
-                className="rounded-full border border-border/40 bg-foreground/5 px-2 py-0.5 text-[10px] text-muted-foreground"
-              >
-                {label}
-              </span>
-            ))}
+              {page.qualityScore !== undefined && page.qualityScore !== null && (
+                <QualityScoreBadge
+                  qualityScore={page.qualityScore}
+                  qualityStatus={page.qualityStatus ?? null}
+                  qualityCompleteness={page.qualityCompleteness}
+                  qualityClarity={page.qualityClarity}
+                  qualityStructure={page.qualityStructure}
+                  qualityAccuracy={page.qualityAccuracy}
+                  qualityReadability={page.qualityReadability}
+                  qualitySummary={page.qualitySummary}
+                  qualityAnalyzedAt={page.qualityAnalyzedAt}
+                  qualityError={page.qualityError}
+                />
+              )}
+              {page.labels.map((label) => (
+                <span
+                  key={label}
+                  className="glass-pill-active rounded-full px-2 py-0.5 text-[10px] text-muted-foreground"
+                >
+                  {label}
+                </span>
+              ))}
+            </div>
           </div>
-        </div>
+        </>
       )}
 
       {/* Outline header + progress */}
       {headings.length > 0 && (
-        <div className="border-b border-border/40 px-3 py-2">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground/70">
-              <ListTree size={13} />
-              Outline
+        <>
+          <div className="mx-3 h-px bg-[var(--glass-sidebar-divider)]" />
+          <div className="px-3 py-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground/60">
+                <ListTree size={13} />
+                Outline
+              </div>
+              <span className="text-[10px] text-muted-foreground/50">
+                {headings.length} section{headings.length === 1 ? '' : 's'}
+              </span>
             </div>
-            <span className="text-[10px] text-muted-foreground">
-              {headings.length} section{headings.length === 1 ? '' : 's'}
-            </span>
+            <div className="mt-2 h-1 overflow-hidden rounded-full bg-foreground/8">
+              <m.div
+                className="h-full rounded-full bg-primary"
+                style={{ width: `${readingProgress}%` }}
+                transition={{ duration: 0.12 }}
+              />
+            </div>
           </div>
-          <div className="mt-2 h-1 overflow-hidden rounded-full bg-foreground/8">
-            <m.div
-              className="h-full rounded-full bg-primary"
-              style={{ width: `${readingProgress}%` }}
-              transition={{ duration: 0.12 }}
-            />
-          </div>
-        </div>
+        </>
       )}
 
-      {/* Outline tree */}
-      <div className="flex-1 overflow-y-auto p-1.5" data-testid="article-outline-tree">
+      {/* Outline tree — with scroll mask */}
+      <div className="flex-1 overflow-y-auto p-1.5 glass-scroll-mask" data-testid="article-outline-tree">
         {headings.length === 0 ? (
           <div className="px-3 py-6 text-center text-xs text-muted-foreground">
             No headings in this article.
@@ -536,10 +559,10 @@ export function ArticleRightPane() {
         aria-orientation="vertical"
         onMouseDown={handleResizeStart}
         className={cn(
-          'absolute left-0 top-0 bottom-0 w-1 cursor-col-resize transition-colors hover:bg-primary/40',
+          'absolute left-0 top-2 bottom-2 w-1 cursor-col-resize rounded-full transition-colors hover:bg-primary/40',
           isResizing && 'bg-primary/60',
         )}
       />
-    </aside>
+    </m.aside>
   );
 }

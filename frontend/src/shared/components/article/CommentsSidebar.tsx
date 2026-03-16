@@ -117,7 +117,7 @@ export function CommentsSidebar({ pageId, className }: CommentsSidebarProps) {
         onClick={() => setIsOpen((v) => !v)}
         className={cn(
           'glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5 transition-colors',
-          isOpen && 'bg-primary/10 text-primary',
+          isOpen && 'glass-pill-active text-primary',
         )}
         data-testid="comments-toggle"
         aria-label={isOpen ? 'Close comments' : 'Open comments'}
@@ -144,20 +144,20 @@ export function CommentsSidebar({ pageId, className }: CommentsSidebarProps) {
               className="fixed inset-0 z-40 bg-black/30 backdrop-blur-sm lg:hidden"
             />
 
-            {/* Panel */}
+            {/* Panel — Liquid Glass treatment */}
             <m.aside
-              initial={{ x: '100%' }}
-              animate={{ x: 0 }}
-              exit={{ x: '100%' }}
+              initial={{ x: '100%', opacity: 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              exit={{ x: '100%', opacity: 0 }}
               transition={{ type: 'spring', damping: 30, stiffness: 300 }}
               className={cn(
-                'fixed right-0 top-0 z-50 flex h-full w-full max-w-md flex-col border-l border-border/50 bg-card shadow-2xl',
+                'fixed right-2 top-2 bottom-2 z-50 flex w-full max-w-md flex-col glass-sidebar shadow-2xl',
                 className,
               )}
               data-testid="comments-sidebar"
             >
               {/* Header */}
-              <div className="flex shrink-0 items-center justify-between border-b border-border/50 px-4 py-3">
+              <div className="flex shrink-0 items-center justify-between px-4 py-3">
                 <h2 className="flex items-center gap-2 text-sm font-semibold">
                   <MessageSquare size={16} />
                   Comments
@@ -169,7 +169,7 @@ export function CommentsSidebar({ pageId, className }: CommentsSidebarProps) {
                 </h2>
                 <button
                   onClick={() => setIsOpen(false)}
-                  className="rounded-md p-1 text-muted-foreground hover:bg-foreground/5 hover:text-foreground transition-colors"
+                  className="rounded-lg p-1 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
                   aria-label="Close comments"
                   data-testid="comments-close"
                 >
@@ -177,8 +177,11 @@ export function CommentsSidebar({ pageId, className }: CommentsSidebarProps) {
                 </button>
               </div>
 
+              {/* Divider */}
+              <div className="mx-4 h-px bg-[var(--glass-sidebar-divider)]" />
+
               {/* New comment form */}
-              <div className="shrink-0 border-b border-border/50 px-4 py-3">
+              <div className="shrink-0 px-4 py-3">
                 <CommentForm
                   onSubmit={handleNewComment}
                   placeholder="Add a comment..."
@@ -186,8 +189,11 @@ export function CommentsSidebar({ pageId, className }: CommentsSidebarProps) {
                 />
               </div>
 
-              {/* Comments list */}
-              <div className="flex-1 overflow-y-auto px-4 py-3">
+              {/* Divider */}
+              <div className="mx-4 h-px bg-[var(--glass-sidebar-divider)]" />
+
+              {/* Comments list — with scroll mask */}
+              <div className="flex-1 overflow-y-auto px-4 py-3 glass-scroll-mask">
                 {isLoading ? (
                   <div className="space-y-3">
                     {Array.from({ length: 3 }).map((_, i) => (
@@ -221,7 +227,7 @@ export function CommentsSidebar({ pageId, className }: CommentsSidebarProps) {
                       <div className="pt-2">
                         <button
                           onClick={() => setShowResolved((v) => !v)}
-                          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:bg-foreground/5 transition-colors"
+                          className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-muted-foreground hover:bg-[var(--glass-pill-hover)] transition-colors"
                           data-testid="show-resolved-toggle"
                         >
                           {showResolved ? <EyeOff size={12} /> : <Eye size={12} />}

@@ -14,6 +14,7 @@ import {
   Globe,
   HardDrive,
 } from 'lucide-react';
+import { m, AnimatePresence } from 'framer-motion';
 import { DragDropProvider } from '@dnd-kit/react';
 import { useSortable, isSortable } from '@dnd-kit/react/sortable';
 import { usePageTree } from '../../hooks/use-pages';
@@ -80,6 +81,8 @@ function findAncestorIds(pages: PageTreeItem[], targetId: string): Set<string> {
   return ancestors;
 }
 
+const sidebarSpring = { type: 'spring' as const, stiffness: 400, damping: 30 };
+
 export interface SidebarTreeNodeProps {
   node: TreeNode;
   level?: number;
@@ -128,12 +131,12 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
     <div ref={enableDrag ? sortable.ref : undefined}>
       <div
         className={cn(
-          'group flex items-center gap-1.5 rounded-md py-1.5 pr-2 text-sm transition-colors cursor-pointer',
+          'group flex items-center gap-1.5 rounded-[10px] h-9 pr-2 text-sm cursor-pointer transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
           isActive
-            ? 'bg-primary/15 text-primary font-medium'
-            : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
+            ? 'glass-pill-active text-primary font-medium scale-[1.01]'
+            : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
         )}
-        style={{ paddingLeft: `${level * 16 + 8}px` }}
+        style={{ paddingLeft: `${level * 16 + 10}px` }}
         onClick={handleNavigate}
       >
         {enableDrag && (
@@ -155,11 +158,11 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         {hasChildren
           ? (
             isExpanded || isActive
-              ? <FolderOpen size={15} className="shrink-0 text-primary/80" />
-              : <Folder size={15} className="shrink-0 text-primary/70" />
+              ? <FolderOpen size={15} className={cn('shrink-0', isActive ? 'text-primary opacity-100 drop-shadow-[0_1px_2px_oklch(from_var(--color-primary)_l_c_h_/_0.2)]' : 'text-primary/80 opacity-70')} />
+              : <Folder size={15} className="shrink-0 text-primary/70 opacity-70" />
             )
           : (
-            <FileText size={15} className="shrink-0 text-muted-foreground/70" />
+            <FileText size={15} className={cn('shrink-0 opacity-70', isActive ? 'text-primary opacity-100 drop-shadow-[0_1px_2px_oklch(from_var(--color-primary)_l_c_h_/_0.2)]' : 'text-muted-foreground/70')} />
             )}
         <span className="truncate text-sm">{node.page.title}</span>
       </div>
@@ -210,6 +213,7 @@ export function SidebarTreeView() {
   const setTreeSidebarSpaceKey = useUiStore((s) => s.setTreeSidebarSpaceKey);
   const treeSidebarWidth = useUiStore((s) => s.treeSidebarWidth);
   const setTreeSidebarWidth = useUiStore((s) => s.setTreeSidebarWidth);
+  const reduceEffects = useUiStore((s) => s.reduceEffects);
 
   // Extract active page ID from pathname (useParams is unavailable here
   // because this component is rendered in AppLayout, outside the inner
@@ -354,19 +358,29 @@ export function SidebarTreeView() {
     [reorderPage],
   );
 
+  // Collapsed rail — glass pill style
   if (treeSidebarCollapsed) {
     return (
-      <div className="flex w-10 flex-col items-center border-r border-border/40 bg-card/50 backdrop-blur-md">
-        <div className="flex h-10 items-center justify-center w-full">
-          <button
-            onClick={toggleTreeSidebar}
-            className="rounded-md p-1.5 text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
-            aria-label="Expand tree sidebar"
-          >
-            <PanelLeft size={16} />
-          </button>
-        </div>
-      </div>
+      <AnimatePresence mode="wait">
+        <m.div
+          key="collapsed-rail"
+          initial={reduceEffects ? false : { width: 0, opacity: 0 }}
+          animate={{ width: 40, opacity: 1 }}
+          exit={{ width: 0, opacity: 0 }}
+          transition={reduceEffects ? { duration: 0 } : sidebarSpring}
+          className="flex flex-col items-center rounded-xl glass-sidebar overflow-hidden"
+        >
+          <div className="flex h-10 items-center justify-center w-full">
+            <button
+              onClick={toggleTreeSidebar}
+              className="rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
+              aria-label="Expand tree sidebar"
+            >
+              <PanelLeft size={16} />
+            </button>
+          </div>
+        </m.div>
+      </AnimatePresence>
     );
   }
 
@@ -375,21 +389,24 @@ export function SidebarTreeView() {
   const localOptions = allSpaces.filter((s) => s.source === 'local');
 
   return (
-    <aside
+    <m.aside
       ref={sidebarRef}
+      key="expanded-sidebar"
+      initial={reduceEffects ? false : { width: 0, opacity: 0 }}
+      animate={{ width: treeSidebarWidth, opacity: 1 }}
+      transition={reduceEffects || isResizing ? { duration: 0 } : sidebarSpring}
       className={cn(
-        'relative flex flex-col border-r border-border/40 bg-card/50 backdrop-blur-md',
+        'relative flex flex-col glass-sidebar overflow-hidden',
         isResizing && 'select-none',
       )}
-      style={{ width: `${treeSidebarWidth}px` }}
     >
       {/* Sidebar header with collapse toggle */}
-      <div className="flex h-10 shrink-0 items-center justify-between border-b border-border/40 px-3">
-        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground/70">Pages</span>
+      <div className="flex h-10 shrink-0 items-center justify-between px-3">
+        <span className="text-xs font-semibold text-muted-foreground/60">Pages</span>
         <div className="flex items-center gap-1">
           <button
             onClick={() => navigate('/spaces/new')}
-            className="rounded-md p-1 text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+            className="rounded-lg p-1 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
             aria-label="New Space"
             title="Create new space"
           >
@@ -397,7 +414,7 @@ export function SidebarTreeView() {
           </button>
           <button
             onClick={toggleTreeSidebar}
-            className="rounded-md p-1 text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+            className="rounded-lg p-1 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
             aria-label="Collapse tree sidebar"
           >
             <PanelLeftClose size={14} />
@@ -406,11 +423,11 @@ export function SidebarTreeView() {
       </div>
 
       {/* Space selector */}
-      <div className="border-b border-border/40 p-2">
+      <div className="px-2 pb-2">
         <div className="relative">
           <button
             onClick={() => setSpaceDropdownOpen(!spaceDropdownOpen)}
-            className="flex w-full items-center justify-between rounded-md bg-foreground/5 px-2.5 py-1.5 text-xs text-foreground hover:bg-foreground/10 transition-colors"
+            className="flex w-full items-center justify-between rounded-lg bg-foreground/5 px-2.5 py-1.5 text-xs text-foreground hover:bg-foreground/8 transition-colors"
           >
             <span className="flex items-center gap-1.5 truncate">
               {selectedSpaceOption ? (
@@ -426,15 +443,15 @@ export function SidebarTreeView() {
             <ChevronsUpDown size={12} className="shrink-0 text-muted-foreground" />
           </button>
           {spaceDropdownOpen && (
-            <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-64 overflow-y-auto rounded-md border border-border/50 bg-card shadow-xl backdrop-blur-xl">
+            <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-64 overflow-y-auto rounded-xl glass-sidebar p-1">
               <button
                 onClick={() => {
                   setTreeSidebarSpaceKey(undefined);
                   setSpaceDropdownOpen(false);
                 }}
                 className={cn(
-                  'flex w-full items-center px-2.5 py-1.5 text-xs hover:bg-foreground/5 transition-colors',
-                  !treeSidebarSpaceKey ? 'text-primary font-medium' : 'text-foreground',
+                  'flex w-full items-center rounded-lg px-2.5 py-1.5 text-xs transition-all duration-200',
+                  !treeSidebarSpaceKey ? 'glass-pill-active text-primary font-medium' : 'text-foreground hover:bg-[var(--glass-pill-hover)]',
                 )}
               >
                 All Spaces
@@ -443,7 +460,7 @@ export function SidebarTreeView() {
               {/* Confluence spaces */}
               {confluenceOptions.length > 0 && (
                 <>
-                  <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">
+                  <div className="px-2.5 py-1.5 text-[10px] font-semibold text-muted-foreground/50">
                     Confluence
                   </div>
                   {confluenceOptions.map((space) => (
@@ -454,10 +471,10 @@ export function SidebarTreeView() {
                         setSpaceDropdownOpen(false);
                       }}
                       className={cn(
-                        'flex w-full items-center justify-between px-2.5 py-1.5 text-xs hover:bg-foreground/5 transition-colors',
+                        'flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs transition-all duration-200',
                         treeSidebarSpaceKey === space.key
-                          ? 'text-primary font-medium'
-                          : 'text-foreground',
+                          ? 'glass-pill-active text-primary font-medium'
+                          : 'text-foreground hover:bg-[var(--glass-pill-hover)]',
                       )}
                     >
                       <span className="flex items-center gap-1.5 truncate">
@@ -473,7 +490,7 @@ export function SidebarTreeView() {
               {/* Local spaces */}
               {localOptions.length > 0 && (
                 <>
-                  <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">
+                  <div className="px-2.5 py-1.5 text-[10px] font-semibold text-muted-foreground/50">
                     Local
                   </div>
                   {localOptions.map((space) => (
@@ -484,10 +501,10 @@ export function SidebarTreeView() {
                         setSpaceDropdownOpen(false);
                       }}
                       className={cn(
-                        'flex w-full items-center justify-between px-2.5 py-1.5 text-xs hover:bg-foreground/5 transition-colors',
+                        'flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs transition-all duration-200',
                         treeSidebarSpaceKey === space.key
-                          ? 'text-primary font-medium'
-                          : 'text-foreground',
+                          ? 'glass-pill-active text-primary font-medium'
+                          : 'text-foreground hover:bg-[var(--glass-pill-hover)]',
                       )}
                     >
                       <span className="flex items-center gap-1.5 truncate">
@@ -506,7 +523,7 @@ export function SidebarTreeView() {
                   setSpaceDropdownOpen(false);
                   navigate('/spaces/new');
                 }}
-                className="flex w-full items-center gap-1.5 border-t border-border/30 px-2.5 py-1.5 text-xs text-primary hover:bg-foreground/5 transition-colors"
+                className="flex w-full items-center gap-1.5 border-t border-[var(--glass-sidebar-divider)] mt-1 pt-1 rounded-lg px-2.5 py-1.5 text-xs text-primary hover:bg-[var(--glass-pill-hover)] transition-colors"
               >
                 <Plus size={10} />
                 New Space
@@ -516,14 +533,17 @@ export function SidebarTreeView() {
         </div>
       </div>
 
-      {/* Tree content with drag-and-drop */}
-      <div className="flex-1 overflow-y-auto p-1.5">
+      {/* Divider — subtle glass edge */}
+      <div className="mx-3 h-px bg-[var(--glass-sidebar-divider)]" />
+
+      {/* Tree content with drag-and-drop + scroll mask */}
+      <div className="flex-1 overflow-y-auto p-2 glass-scroll-mask">
         {isLoading ? (
           <div className="space-y-1.5 p-2">
             {[...Array(8)].map((_, i) => (
               <div
                 key={i}
-                className="h-6 animate-pulse rounded bg-foreground/5"
+                className="h-7 animate-pulse rounded-lg bg-foreground/5"
                 style={{ width: `${60 + Math.random() * 30}%`, marginLeft: `${(i % 3) * 16}px` }}
               />
             ))}
@@ -565,8 +585,8 @@ export function SidebarTreeView() {
 
       {/* Footer stats */}
       {treeData && (
-        <div className="border-t border-border/40 px-3 py-1.5">
-          <span className="text-[10px] text-muted-foreground">
+        <div className="px-3 py-1.5">
+          <span className="text-[10px] text-muted-foreground/50">
             {treeData.total} pages{treeSidebarSpaceKey ? ` in ${treeSidebarSpaceKey}` : ''}
           </span>
         </div>
@@ -579,10 +599,10 @@ export function SidebarTreeView() {
         aria-orientation="vertical"
         onMouseDown={handleResizeStart}
         className={cn(
-          'absolute right-0 top-0 bottom-0 w-1 cursor-col-resize transition-colors hover:bg-primary/40',
+          'absolute right-0 top-2 bottom-2 w-1 cursor-col-resize rounded-full transition-colors hover:bg-primary/40',
           isResizing && 'bg-primary/60',
         )}
       />
-    </aside>
+    </m.aside>
   );
 }

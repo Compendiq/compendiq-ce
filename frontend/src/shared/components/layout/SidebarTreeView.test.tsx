@@ -157,7 +157,7 @@ describe('SidebarTreeView', () => {
   });
 
   it('applies persisted width from store', () => {
-    useUiStore.setState({ treeSidebarWidth: 320 });
+    useUiStore.setState({ treeSidebarWidth: 320, reduceEffects: true });
     render(<SidebarTreeView />, { wrapper: createWrapper() });
     const aside = screen.getByRole('separator', { name: 'Resize tree sidebar' }).parentElement!;
     expect(aside.style.width).toBe('320px');
