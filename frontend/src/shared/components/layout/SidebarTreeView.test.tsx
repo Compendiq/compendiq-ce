@@ -6,6 +6,11 @@ import { SidebarTreeView, SidebarTreeNode } from './SidebarTreeView';
 import type { TreeNode, SidebarTreeNodeProps } from './SidebarTreeView';
 import { useUiStore } from '../../../stores/ui-store';
 
+vi.mock('framer-motion', async () => {
+  const actual = await vi.importActual('framer-motion');
+  return { ...actual, useReducedMotion: () => true };
+});
+
 vi.mock('@dnd-kit/react', () => ({
   DragDropProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));

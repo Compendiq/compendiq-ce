@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { useThemeStore, THEMES, THEME_IDS, LIGHT_THEMES, THEME_CATEGORIES, isLightTheme, applyThemeToDocument, type ThemeId } from './theme-store';
+import { useThemeStore, THEMES, THEME_IDS, LIGHT_THEMES, THEME_CATEGORIES, isLightTheme, applyThemeToDocument, DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, type ThemeId } from './theme-store';
 
 describe('theme-store', () => {
   beforeEach(() => {
@@ -51,19 +51,22 @@ describe('theme-store', () => {
     expect(unique.size).toBe(THEME_IDS.length);
   });
 
-  it('LIGHT_THEMES contains only light themes', () => {
+  it('LIGHT_THEMES contains only light-category themes', () => {
     const lightIds = THEMES.filter((t) => t.category === 'light').map((t) => t.id);
     for (const id of lightIds) {
       expect(LIGHT_THEMES.has(id)).toBe(true);
     }
-    // Dark themes should not be in LIGHT_THEMES
-    expect(LIGHT_THEMES.has('void-indigo')).toBe(false);
-    expect(LIGHT_THEMES.has('obsidian-violet')).toBe(false);
+    expect(LIGHT_THEMES.size).toBe(lightIds.length);
   });
 
   it('has 2 theme categories', () => {
     expect(THEME_CATEGORIES).toHaveLength(2);
     expect(THEME_CATEGORIES.map((c) => c.key)).toEqual(['dark', 'light']);
+  });
+
+  it('exports correct default theme constants', () => {
+    expect(DEFAULT_DARK_THEME).toBe('void-indigo');
+    expect(DEFAULT_LIGHT_THEME).toBe('polar-slate');
   });
 
   it('sets light themes', () => {
@@ -126,6 +129,24 @@ describe('theme-store', () => {
       useThemeStore.getState().setTheme('parchment-glow');
       expect(document.documentElement.getAttribute('data-theme')).toBe('parchment-glow');
       expect(document.documentElement.dataset.themeType).toBe('light');
+    });
+  });
+
+  describe('validateThemeId (migration)', () => {
+    it('rejects removed theme IDs as invalid', () => {
+      const validIds = [...THEME_IDS] as string[];
+      const removedIds = ['midnight-blue', 'ocean-depth', 'catppuccin-mocha', 'cloud-white'];
+      for (const id of removedIds) {
+        expect(validIds).not.toContain(id);
+      }
+    });
+
+    it('accepts all current theme IDs as valid', () => {
+      const validIds = [...THEME_IDS] as string[];
+      expect(validIds).toContain('void-indigo');
+      expect(validIds).toContain('obsidian-violet');
+      expect(validIds).toContain('polar-slate');
+      expect(validIds).toContain('parchment-glow');
     });
   });
 });
