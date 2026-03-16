@@ -154,45 +154,47 @@ export function NewPagePage() {
         />
       </div>
 
-      <div className="glass-card space-y-4 p-4">
+      <div className="glass-card flex flex-wrap items-center gap-x-4 gap-y-2 p-3">
         {/* Article type toggle */}
-        <div>
-          <label className="mb-1 block text-sm font-medium text-foreground">Article Type</label>
-          <div className="flex gap-2" data-testid="article-type-toggle">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium text-muted-foreground">Type</span>
+          <div className="flex gap-1" data-testid="article-type-toggle">
             <button
               onClick={() => setArticleType('local')}
               className={cn(
-                'flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors',
+                'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
                 articleType === 'local'
                   ? 'bg-emerald-500/15 text-emerald-500 ring-1 ring-emerald-500/30'
                   : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
               )}
               data-testid="article-type-local"
             >
-              Local Article
+              Local
             </button>
             <button
               onClick={() => setArticleType('confluence')}
               className={cn(
-                'flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors',
+                'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
                 articleType === 'confluence'
                   ? 'bg-blue-500/15 text-blue-500 ring-1 ring-blue-500/30'
                   : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
               )}
               data-testid="article-type-confluence"
             >
-              Confluence Article
+              Confluence
             </button>
           </div>
         </div>
 
+        <div className="h-5 w-px bg-border/50" />
+
         {articleType === 'confluence' ? (
-          <div>
-            <label className="mb-1 block text-sm font-medium text-foreground">Space</label>
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium text-muted-foreground">Space</span>
             <select
               value={spaceKey}
               onChange={(e) => handleSpaceChange(e.target.value)}
-              className="glass-select w-full"
+              className="glass-select"
               data-testid="space-selector"
             >
               <option value="">Select space...</option>
@@ -202,13 +204,13 @@ export function NewPagePage() {
             </select>
           </div>
         ) : (
-          <div>
-            <label className="mb-1 block text-sm font-medium text-foreground">Visibility</label>
-            <div className="flex gap-2" data-testid="visibility-picker">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium text-muted-foreground">Visibility</span>
+            <div className="flex gap-1" data-testid="visibility-picker">
               <button
                 onClick={() => setVisibility('private')}
                 className={cn(
-                  'flex items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-sm transition-colors',
+                  'flex items-center justify-center gap-1 rounded-lg px-2.5 py-1.5 text-sm transition-colors',
                   visibility === 'private'
                     ? 'bg-amber-500/15 text-amber-500 ring-1 ring-amber-500/30'
                     : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
@@ -220,7 +222,7 @@ export function NewPagePage() {
               <button
                 onClick={() => setVisibility('shared')}
                 className={cn(
-                  'flex items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-sm transition-colors',
+                  'flex items-center justify-center gap-1 rounded-lg px-2.5 py-1.5 text-sm transition-colors',
                   visibility === 'shared'
                     ? 'bg-sky-500/15 text-sky-500 ring-1 ring-sky-500/30'
                     : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
@@ -235,14 +237,17 @@ export function NewPagePage() {
 
         {/* Location picker — select parent page within the chosen space */}
         {(articleType === 'local' || (articleType === 'confluence' && spaceKey)) && (
-          <div data-testid="location-picker-section">
-            <label className="mb-1 block text-sm font-medium text-foreground">Parent Location</label>
-            <LocationPicker
-              spaceKey={articleType === 'confluence' ? spaceKey : '__local__'}
-              parentId={parentId}
-              onSelect={handleLocationSelect}
-            />
-          </div>
+          <>
+            <div className="h-5 w-px bg-border/50" />
+            <div className="flex items-center gap-2" data-testid="location-picker-section">
+              <span className="text-xs font-medium text-muted-foreground">Location</span>
+              <LocationPicker
+                spaceKey={articleType === 'confluence' ? spaceKey : '__local__'}
+                parentId={parentId}
+                onSelect={handleLocationSelect}
+              />
+            </div>
+          </>
         )}
       </div>
 
