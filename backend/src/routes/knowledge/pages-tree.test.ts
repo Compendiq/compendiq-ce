@@ -111,14 +111,15 @@ describe('GET /api/pages/tree', () => {
     vi.clearAllMocks();
   });
 
-  it('should return all pages with minimal fields', async () => {
+  it('should return all pages with minimal fields and numeric IDs', async () => {
     mockQueryFn.mockResolvedValueOnce({
       rows: [
         {
+          id: 10,
           confluence_id: 'root-1',
           space_key: 'DEV',
           title: 'Root Page',
-          parent_id: null,
+          parent_numeric_id: null,
           labels: ['architecture'],
           last_modified_at: new Date('2026-03-01'),
           embedding_dirty: false,
@@ -126,10 +127,11 @@ describe('GET /api/pages/tree', () => {
           embedded_at: new Date('2026-03-01'),
         },
         {
+          id: 20,
           confluence_id: 'child-1',
           space_key: 'DEV',
           title: 'Child Page',
-          parent_id: 'root-1',
+          parent_numeric_id: 10,
           labels: [],
           last_modified_at: new Date('2026-03-02'),
           embedding_dirty: true,
@@ -149,7 +151,7 @@ describe('GET /api/pages/tree', () => {
     expect(body.items).toHaveLength(2);
     expect(body.total).toBe(2);
     expect(body.items[0]).toEqual({
-      id: 'root-1',
+      id: '10',
       spaceKey: 'DEV',
       title: 'Root Page',
       parentId: null,
@@ -159,7 +161,7 @@ describe('GET /api/pages/tree', () => {
       embeddingStatus: 'embedded',
       embeddedAt: '2026-03-01T00:00:00.000Z',
     });
-    expect(body.items[1].parentId).toBe('root-1');
+    expect(body.items[1].parentId).toBe('10');
   });
 
   it('should filter by spaceKey', async () => {
@@ -191,13 +193,13 @@ describe('GET /api/pages/tree', () => {
     expect(body.total).toBe(0);
   });
 
-  it('should return pages with parent-child relationships', async () => {
+  it('should return pages with parent-child relationships using numeric IDs', async () => {
     mockQueryFn.mockResolvedValueOnce({
       rows: [
-        { confluence_id: 'root', space_key: 'DEV', title: 'Root', parent_id: null, labels: [], last_modified_at: null, embedding_dirty: true, embedding_status: 'not_embedded', embedded_at: null },
-        { confluence_id: 'child-a', space_key: 'DEV', title: 'Child A', parent_id: 'root', labels: [], last_modified_at: null, embedding_dirty: true, embedding_status: 'not_embedded', embedded_at: null },
-        { confluence_id: 'child-b', space_key: 'DEV', title: 'Child B', parent_id: 'root', labels: [], last_modified_at: null, embedding_dirty: true, embedding_status: 'not_embedded', embedded_at: null },
-        { confluence_id: 'grandchild', space_key: 'DEV', title: 'Grandchild', parent_id: 'child-a', labels: [], last_modified_at: null, embedding_dirty: true, embedding_status: 'not_embedded', embedded_at: null },
+        { id: 1, confluence_id: 'root', space_key: 'DEV', title: 'Root', parent_numeric_id: null, labels: [], last_modified_at: null, embedding_dirty: true, embedding_status: 'not_embedded', embedded_at: null },
+        { id: 2, confluence_id: 'child-a', space_key: 'DEV', title: 'Child A', parent_numeric_id: 1, labels: [], last_modified_at: null, embedding_dirty: true, embedding_status: 'not_embedded', embedded_at: null },
+        { id: 3, confluence_id: 'child-b', space_key: 'DEV', title: 'Child B', parent_numeric_id: 1, labels: [], last_modified_at: null, embedding_dirty: true, embedding_status: 'not_embedded', embedded_at: null },
+        { id: 4, confluence_id: 'grandchild', space_key: 'DEV', title: 'Grandchild', parent_numeric_id: 2, labels: [], last_modified_at: null, embedding_dirty: true, embedding_status: 'not_embedded', embedded_at: null },
       ],
     });
 
@@ -209,12 +211,12 @@ describe('GET /api/pages/tree', () => {
     const body = JSON.parse(response.payload);
     expect(body.items).toHaveLength(4);
 
-    const root = body.items.find((p: { id: string }) => p.id === 'root');
-    const childA = body.items.find((p: { id: string }) => p.id === 'child-a');
-    const grandchild = body.items.find((p: { id: string }) => p.id === 'grandchild');
+    const root = body.items.find((p: { id: string }) => p.id === '1');
+    const childA = body.items.find((p: { id: string }) => p.id === '2');
+    const grandchild = body.items.find((p: { id: string }) => p.id === '4');
 
     expect(root.parentId).toBeNull();
-    expect(childA.parentId).toBe('root');
-    expect(grandchild.parentId).toBe('child-a');
+    expect(childA.parentId).toBe('1');
+    expect(grandchild.parentId).toBe('2');
   });
 });

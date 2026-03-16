@@ -84,6 +84,10 @@ function scrollArticleToTop() {
   requestAnimationFrame(() => {
     container.scrollTop = 0;
     container.scrollTo?.({ top: 0, left: 0, behavior: 'auto' });
+    // Double-rAF ensures we run after AnimatePresence exit animation completes
+    requestAnimationFrame(() => {
+      container.scrollTop = 0;
+    });
   });
 }
 

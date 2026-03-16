@@ -231,23 +231,28 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
     const result = await query<{
       id: number;
       title: string;
-      parent_id: string | null;
+      parent_numeric_id: number | null;
       depth: number;
       sort_order: number;
       source: string;
       confluence_id: string | null;
     }>(
-      `SELECT id, title, parent_id, depth, sort_order, source, confluence_id
-       FROM pages
-       WHERE space_key = $1 AND deleted_at IS NULL
-       ORDER BY sort_order, title`,
+      `SELECT p.id, p.title, parent_page.id as parent_numeric_id,
+              p.depth, p.sort_order, p.source, p.confluence_id
+       FROM pages p
+       LEFT JOIN pages parent_page ON (
+         parent_page.confluence_id = p.parent_id
+         OR CAST(parent_page.id AS TEXT) = p.parent_id
+       ) AND parent_page.deleted_at IS NULL
+       WHERE p.space_key = $1 AND p.deleted_at IS NULL
+       ORDER BY p.sort_order, p.title`,
       [key],
     );
 
     const items = result.rows.map((row) => ({
       id: row.id,
       title: row.title,
-      parentId: row.parent_id,
+      parentId: row.parent_numeric_id ? String(row.parent_numeric_id) : null,
       depth: row.depth,
       sortOrder: row.sort_order,
       source: row.source,

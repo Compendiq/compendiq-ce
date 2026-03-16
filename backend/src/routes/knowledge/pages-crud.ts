@@ -253,10 +253,11 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     }
 
     const result = await query<{
+      id: number;
       confluence_id: string;
       space_key: string;
       title: string;
-      parent_id: string | null;
+      parent_numeric_id: number | null;
       labels: string[];
       last_modified_at: Date | null;
       embedding_dirty: boolean;
@@ -264,19 +265,26 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       embedded_at: Date | null;
       embedding_error: string | null;
     }>(
-      `SELECT cp.confluence_id, cp.space_key, cp.title, cp.parent_id, cp.labels, cp.last_modified_at,
+      `SELECT cp.id, cp.confluence_id, cp.space_key, cp.title,
+              parent_page.id as parent_numeric_id,
+              cp.labels, cp.last_modified_at,
               cp.embedding_dirty, cp.embedding_status, cp.embedded_at, cp.embedding_error
-       FROM pages cp ${treeWhereClause}
+       FROM pages cp
+       LEFT JOIN pages parent_page ON (
+         parent_page.confluence_id = cp.parent_id
+         OR CAST(parent_page.id AS TEXT) = cp.parent_id
+       ) AND parent_page.deleted_at IS NULL
+       ${treeWhereClause}
        ORDER BY cp.title ASC`,
       values,
     );
 
     const response = {
       items: result.rows.map((row) => ({
-        id: row.confluence_id,
+        id: String(row.id),
         spaceKey: row.space_key,
         title: row.title,
-        parentId: row.parent_id,
+        parentId: row.parent_numeric_id ? String(row.parent_numeric_id) : null,
         labels: row.labels,
         lastModifiedAt: row.last_modified_at,
         embeddingDirty: row.embedding_dirty,

@@ -129,14 +129,14 @@ describe('Pinned Pages API', () => {
   });
 
   describe('GET /api/pages/pinned', () => {
-    it('should return pinned articles for the current user', async () => {
+    it('should return pinned articles with numeric PK as id', async () => {
       mockQueryFn.mockResolvedValueOnce({
         rows: [
           {
             page_id: 'page-1',
             pin_order: 0,
             pinned_at: new Date('2025-06-01T00:00:00Z'),
-            confluence_id: 'page-1',
+            numeric_id: 42,
             space_key: 'DEV',
             title: 'Getting Started',
             author: 'Alice',
@@ -155,7 +155,7 @@ describe('Pinned Pages API', () => {
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
       expect(body.items).toHaveLength(1);
-      expect(body.items[0].id).toBe('page-1');
+      expect(body.items[0].id).toBe('42');
       expect(body.items[0].title).toBe('Getting Started');
       expect(body.items[0].spaceKey).toBe('DEV');
       expect(body.items[0].author).toBe('Alice');
@@ -184,7 +184,7 @@ describe('Pinned Pages API', () => {
           page_id: 'page-1',
           pin_order: 0,
           pinned_at: new Date(),
-          confluence_id: 'page-1',
+          numeric_id: 42,
           space_key: 'DEV',
           title: 'Long Page',
           author: null,
@@ -288,6 +288,29 @@ describe('Pinned Pages API', () => {
       expect(body.pageId).toBe('page-1');
       // Only page-exists and already-pinned queries ran, no INSERT attempted
       expect(mockQueryFn).toHaveBeenCalledTimes(2);
+    });
+
+    it('should pin a page using numeric PK (resolves to confluence_id for storage)', async () => {
+      // page exists check — numeric ID triggers (cp.id = $2 OR cp.confluence_id = $3) lookup
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ confluence_id: 'conf-abc-123' }], rowCount: 1 });
+      // already-pinned check using resolved confluence_id
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      // atomic insert stores confluence_id
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/42/pin',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.pageId).toBe('42');
+
+      // The already-pinned check should use the resolved confluence_id
+      expect(mockQueryFn.mock.calls[1][1]).toEqual(['test-user-id', 'conf-abc-123']);
+      // The INSERT should store the confluence_id, not the numeric PK
+      expect(mockQueryFn.mock.calls[2][1]).toEqual(['test-user-id', 'conf-abc-123', 8]);
     });
 
     it('should use atomic INSERT with count subquery to prevent race conditions', async () => {
