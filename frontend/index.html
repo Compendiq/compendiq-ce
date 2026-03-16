@@ -28,13 +28,14 @@
     <meta name="twitter:card" content="summary" />
 
     <script>
-      // Prevent FOUC: read persisted theme before React loads
+      // Prevent FOUC: read persisted theme before React loads.
+      // Check new key first, fall back to legacy key for migration.
       (function() {
         var LIGHT = ['cloud-white','lavender-bloom','mint-fresh','peach-blossom',
           'sky-blue','lemon-drop','rose-garden','sage-light','sand-dune',
           'ice-crystal','catppuccin-latte'];
         try {
-          var raw = localStorage.getItem('kb-theme');
+          var raw = localStorage.getItem('atlasmind-theme') || localStorage.getItem('kb-theme');
           if (raw) {
             var parsed = JSON.parse(raw);
             var theme = parsed && parsed.state && parsed.state.theme;

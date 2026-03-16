@@ -19,7 +19,7 @@ describe('auth-store', () => {
       role: 'user',
     });
 
-    const stored = JSON.parse(localStorage.getItem('kb-auth') || '{}');
+    const stored = JSON.parse(localStorage.getItem('atlasmind-auth') || '{}');
     expect(stored.state.accessToken).toBe('test-token-123');
     expect(stored.state.isAuthenticated).toBe(true);
     expect(stored.state.user.username).toBe('alice');
@@ -34,7 +34,7 @@ describe('auth-store', () => {
 
     useAuthStore.getState().clearAuth();
 
-    const stored = JSON.parse(localStorage.getItem('kb-auth') || '{}');
+    const stored = JSON.parse(localStorage.getItem('atlasmind-auth') || '{}');
     expect(stored.state.accessToken).toBeNull();
     expect(stored.state.isAuthenticated).toBe(false);
     expect(stored.state.user).toBeNull();
@@ -53,7 +53,7 @@ describe('auth-store', () => {
     // Simulate another tab clearing localStorage (logout)
     window.dispatchEvent(
       new StorageEvent('storage', {
-        key: 'kb-auth',
+        key: 'atlasmind-auth',
         newValue: null,
       }),
     );
@@ -81,7 +81,7 @@ describe('auth-store', () => {
     };
     window.dispatchEvent(
       new StorageEvent('storage', {
-        key: 'kb-auth',
+        key: 'atlasmind-auth',
         newValue: JSON.stringify(newState),
       }),
     );
@@ -108,7 +108,7 @@ describe('auth-store', () => {
     };
     window.dispatchEvent(
       new StorageEvent('storage', {
-        key: 'kb-auth',
+        key: 'atlasmind-auth',
         newValue: JSON.stringify(loggedOutState),
       }),
     );
@@ -147,7 +147,7 @@ describe('auth-store', () => {
     // Simulate malformed JSON in storage event
     window.dispatchEvent(
       new StorageEvent('storage', {
-        key: 'kb-auth',
+        key: 'atlasmind-auth',
         newValue: 'not-valid-json{{{',
       }),
     );
