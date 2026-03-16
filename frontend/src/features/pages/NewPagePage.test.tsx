@@ -85,7 +85,8 @@ describe('NewPagePage', () => {
   it('renders the New Page title and form fields', () => {
     render(<NewPagePage />, { wrapper: createWrapper() });
     expect(screen.getByText('New Page')).toBeInTheDocument();
-    expect(screen.getByPlaceholderText('Page title...')).toBeInTheDocument();
+    expect(screen.getByTestId('title-input')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Untitled page')).toBeInTheDocument();
   });
 
   it('shows article type toggle defaulting to Local Article', () => {
@@ -155,7 +156,7 @@ describe('NewPagePage', () => {
     fireEvent.click(screen.getByText('Confirm'));
 
     // Fill in title
-    fireEvent.change(screen.getByPlaceholderText('Page title...'), { target: { value: 'Child Page' } });
+    fireEvent.change(screen.getByPlaceholderText('Untitled page'), { target: { value: 'Child Page' } });
 
     // Add editor content
     fireEvent.change(screen.getByTestId('mock-editor'), { target: { value: '<p>Content</p>' } });
