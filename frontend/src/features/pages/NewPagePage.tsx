@@ -142,10 +142,22 @@ export function NewPagePage() {
         </div>
       </div>
 
+      {/* Title input — prominent standalone field */}
+      <div>
+        <input
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder="Untitled page"
+          className="w-full bg-transparent text-2xl font-semibold text-foreground placeholder:text-muted-foreground/50 outline-none"
+          data-testid="title-input"
+          autoFocus
+        />
+      </div>
+
       <div className="glass-card space-y-4 p-4">
         {/* Article type toggle */}
         <div>
-          <label className="mb-1 block text-sm font-medium">Article Type</label>
+          <label className="mb-1 block text-sm font-medium text-foreground">Article Type</label>
           <div className="flex gap-2" data-testid="article-type-toggle">
             <button
               onClick={() => setArticleType('local')}
@@ -174,69 +186,57 @@ export function NewPagePage() {
           </div>
         </div>
 
-        <div className="flex gap-4">
-          <div className="flex-1">
-            <label className="mb-1 block text-sm font-medium">Title</label>
-            <input
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="Page title..."
-              className="glass-input"
-            />
+        {articleType === 'confluence' ? (
+          <div>
+            <label className="mb-1 block text-sm font-medium text-foreground">Space</label>
+            <select
+              value={spaceKey}
+              onChange={(e) => handleSpaceChange(e.target.value)}
+              className="glass-select w-full"
+              data-testid="space-selector"
+            >
+              <option value="">Select space...</option>
+              {spaces?.map((s) => (
+                <option key={s.key} value={s.key}>{s.name}</option>
+              ))}
+            </select>
           </div>
-
-          {articleType === 'confluence' ? (
-            <div className="w-48">
-              <label className="mb-1 block text-sm font-medium">Space</label>
-              <select
-                value={spaceKey}
-                onChange={(e) => handleSpaceChange(e.target.value)}
-                className="glass-select w-full"
-                data-testid="space-selector"
+        ) : (
+          <div>
+            <label className="mb-1 block text-sm font-medium text-foreground">Visibility</label>
+            <div className="flex gap-2" data-testid="visibility-picker">
+              <button
+                onClick={() => setVisibility('private')}
+                className={cn(
+                  'flex items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-sm transition-colors',
+                  visibility === 'private'
+                    ? 'bg-amber-500/15 text-amber-500 ring-1 ring-amber-500/30'
+                    : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
+                )}
+                data-testid="visibility-private"
               >
-                <option value="">Select space...</option>
-                {spaces?.map((s) => (
-                  <option key={s.key} value={s.key}>{s.name}</option>
-                ))}
-              </select>
+                <Lock size={12} /> Private
+              </button>
+              <button
+                onClick={() => setVisibility('shared')}
+                className={cn(
+                  'flex items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-sm transition-colors',
+                  visibility === 'shared'
+                    ? 'bg-sky-500/15 text-sky-500 ring-1 ring-sky-500/30'
+                    : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
+                )}
+                data-testid="visibility-shared"
+              >
+                <Globe size={12} /> Shared
+              </button>
             </div>
-          ) : (
-            <div className="w-48">
-              <label className="mb-1 block text-sm font-medium">Visibility</label>
-              <div className="flex gap-2" data-testid="visibility-picker">
-                <button
-                  onClick={() => setVisibility('private')}
-                  className={cn(
-                    'flex flex-1 items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-sm transition-colors',
-                    visibility === 'private'
-                      ? 'bg-amber-500/15 text-amber-500 ring-1 ring-amber-500/30'
-                      : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
-                  )}
-                  data-testid="visibility-private"
-                >
-                  <Lock size={12} /> Private
-                </button>
-                <button
-                  onClick={() => setVisibility('shared')}
-                  className={cn(
-                    'flex flex-1 items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-sm transition-colors',
-                    visibility === 'shared'
-                      ? 'bg-sky-500/15 text-sky-500 ring-1 ring-sky-500/30'
-                      : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
-                  )}
-                  data-testid="visibility-shared"
-                >
-                  <Globe size={12} /> Shared
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
+          </div>
+        )}
 
         {/* Location picker — select parent page within the chosen space */}
         {(articleType === 'local' || (articleType === 'confluence' && spaceKey)) && (
           <div data-testid="location-picker-section">
-            <label className="mb-1 block text-sm font-medium">Parent Location</label>
+            <label className="mb-1 block text-sm font-medium text-foreground">Parent Location</label>
             <LocationPicker
               spaceKey={articleType === 'confluence' ? spaceKey : '__local__'}
               parentId={parentId}
