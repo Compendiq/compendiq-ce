@@ -280,7 +280,7 @@ export function PageViewPage() {
     >
       {/* Sticky toolbar — ABOVE the card, sticks at top-0 with no movement */}
       {editing && editorInstance && (
-        <div className="sticky top-0 z-30 border border-border/25 bg-card rounded-t-xl shadow-[0_8px_32px_var(--glass-shadow)] before:absolute before:-z-10 before:-top-[100px] before:bottom-0 before:-left-[14px] before:-right-[14px] sm:before:-left-[22px] sm:before:-right-[22px] before:bg-background">
+        <div className="sticky top-0 z-30 border border-border/25 bg-card rounded-t-xl shadow-[0_8px_32px_var(--glass-shadow)]">
           <EditorToolbar editor={editorInstance} />
           <TableContextToolbar editor={editorInstance} />
         </div>
