@@ -18,7 +18,7 @@ export async function pinnedPagesRoutes(fastify: FastifyInstance) {
       page_id: string;
       pin_order: number;
       pinned_at: Date;
-      confluence_id: string;
+      numeric_id: number;
       space_key: string;
       title: string;
       author: string | null;
@@ -26,7 +26,7 @@ export async function pinnedPagesRoutes(fastify: FastifyInstance) {
       body_text: string | null;
     }>(
       `SELECT pp.page_id, pp.pin_order, pp.pinned_at,
-              cp.confluence_id, cp.space_key, cp.title, cp.author, cp.last_modified_at, cp.body_text
+              cp.id as numeric_id, cp.space_key, cp.title, cp.author, cp.last_modified_at, cp.body_text
        FROM pinned_pages pp
        JOIN pages cp ON cp.confluence_id = pp.page_id
        WHERE pp.user_id = $1
@@ -36,7 +36,7 @@ export async function pinnedPagesRoutes(fastify: FastifyInstance) {
 
     return {
       items: result.rows.map((row) => ({
-        id: row.confluence_id,
+        id: String(row.numeric_id),
         spaceKey: row.space_key,
         title: row.title,
         author: row.author,
@@ -55,21 +55,26 @@ export async function pinnedPagesRoutes(fastify: FastifyInstance) {
     const userId = request.userId;
 
     // Verify the page exists and user has access via RBAC
+    // Accept both numeric PK and confluence_id for lookup
     const pinSpaces = await getUserAccessibleSpaces(userId);
+    const isNumericId = /^\d+$/.test(id);
     const pageResult = await query<{ confluence_id: string }>(
       `SELECT cp.confluence_id FROM pages cp
        WHERE cp.space_key = ANY($1::text[])
-         AND cp.confluence_id = $2`,
-      [pinSpaces, id],
+         AND ${isNumericId ? '(cp.id = $2 OR cp.confluence_id = $3)' : 'cp.confluence_id = $2'}`,
+      isNumericId ? [pinSpaces, parseInt(id, 10), id] : [pinSpaces, id],
     );
     if (pageResult.rows.length === 0) {
       throw fastify.httpErrors.notFound('Page not found');
     }
 
+    // Always store confluence_id in pinned_pages (matches existing data format)
+    const confluenceId = pageResult.rows[0].confluence_id;
+
     // If already pinned, return 200 immediately (idempotent)
     const alreadyPinned = await query<{ page_id: string }>(
       'SELECT page_id FROM pinned_pages WHERE user_id = $1 AND page_id = $2',
-      [userId, id],
+      [userId, confluenceId],
     );
     if (alreadyPinned.rows.length > 0) {
       return { message: 'Page pinned', pageId: id };
@@ -81,7 +86,7 @@ export async function pinnedPagesRoutes(fastify: FastifyInstance) {
        SELECT $1, $2, COALESCE((SELECT MAX(pin_order) FROM pinned_pages WHERE user_id = $1), 0) + 1, NOW()
        WHERE (SELECT COUNT(*) FROM pinned_pages WHERE user_id = $1) < $3
        ON CONFLICT (user_id, page_id) DO NOTHING`,
-      [userId, id, MAX_PINS],
+      [userId, confluenceId, MAX_PINS],
     );
 
     if ((insertResult.rowCount ?? 0) === 0) {
@@ -96,9 +101,22 @@ export async function pinnedPagesRoutes(fastify: FastifyInstance) {
     const { id } = IdParamSchema.parse(request.params);
     const userId = request.userId;
 
+    // Accept both numeric PK and confluence_id — resolve to confluence_id for deletion
+    const isNumericId = /^\d+$/.test(id);
+    let confluenceId = id;
+    if (isNumericId) {
+      const pageResult = await query<{ confluence_id: string }>(
+        'SELECT confluence_id FROM pages WHERE id = $1',
+        [parseInt(id, 10)],
+      );
+      if (pageResult.rows.length > 0) {
+        confluenceId = pageResult.rows[0].confluence_id;
+      }
+    }
+
     const result = await query(
       'DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = $2',
-      [userId, id],
+      [userId, confluenceId],
     );
 
     if ((result.rowCount ?? 0) === 0) {

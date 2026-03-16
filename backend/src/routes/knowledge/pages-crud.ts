@@ -270,8 +270,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
               cp.labels, cp.last_modified_at,
               cp.embedding_dirty, cp.embedding_status, cp.embedded_at, cp.embedding_error
        FROM pages cp
-       LEFT JOIN pages parent_page ON parent_page.confluence_id = cp.parent_id
-         AND parent_page.deleted_at IS NULL
+       LEFT JOIN pages parent_page ON (
+         parent_page.confluence_id = cp.parent_id
+         OR CAST(parent_page.id AS TEXT) = cp.parent_id
+       ) AND parent_page.deleted_at IS NULL
        ${treeWhereClause}
        ORDER BY cp.title ASC`,
       values,

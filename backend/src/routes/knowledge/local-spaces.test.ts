@@ -247,9 +247,9 @@ describe('Local Spaces Routes', () => {
     // Pages
     mockQueryFn.mockResolvedValueOnce({
       rows: [
-        { id: 1, title: 'Root', parent_id: null, depth: 0, sort_order: 0, source: 'standalone', confluence_id: null },
-        { id: 2, title: 'Child A', parent_id: '1', depth: 1, sort_order: 0, source: 'standalone', confluence_id: null },
-        { id: 3, title: 'Child B', parent_id: '1', depth: 1, sort_order: 1, source: 'standalone', confluence_id: null },
+        { id: 1, title: 'Root', parent_numeric_id: null, depth: 0, sort_order: 0, source: 'standalone', confluence_id: null },
+        { id: 2, title: 'Child A', parent_numeric_id: 1, depth: 1, sort_order: 0, source: 'standalone', confluence_id: null },
+        { id: 3, title: 'Child B', parent_numeric_id: 1, depth: 1, sort_order: 1, source: 'standalone', confluence_id: null },
       ],
     });
 

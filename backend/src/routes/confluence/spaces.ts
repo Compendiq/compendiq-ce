@@ -28,7 +28,10 @@ export async function spacesRoutes(fastify: FastifyInstance) {
       `SELECT cs.space_key, cs.space_name, cs.homepage_id,
               hp.id as homepage_numeric_id, cs.last_synced
        FROM spaces cs
-       LEFT JOIN pages hp ON hp.confluence_id = cs.homepage_id AND hp.deleted_at IS NULL
+       LEFT JOIN pages hp ON (
+         hp.confluence_id = cs.homepage_id
+         OR CAST(hp.id AS TEXT) = cs.homepage_id
+       ) AND hp.deleted_at IS NULL
        WHERE cs.space_key = ANY($1::text[])
        ORDER BY cs.space_name`,
       [userSpaces],
