@@ -8,7 +8,11 @@ vi.mock('../hooks/use-is-light-theme', () => ({
 import { Editor } from './Editor';
 
 describe('Editor', () => {
-  it('sticky toolbar does not have a ::before pseudo-element that overlaps content above it', async () => {
+  it('sticky toolbar has no ::before that could overlap content above the editor', async () => {
+    // The Editor component is embedded in pages (e.g. NewPagePage) where a
+    // title input and config bar sit directly above it. A ::before pseudo on
+    // the sticky toolbar with before:bottom-full created a 200px opaque pane
+    // that covered those elements. The toolbar's own bg-card is sufficient.
     const { container } = render(
       <Editor content="<p>Hello</p>" editable={true} />,
     );
@@ -19,11 +23,8 @@ describe('Editor', () => {
 
     const toolbar = container.querySelector('[class*="sticky"]');
     const classes = toolbar?.className ?? '';
-    // The ::before pseudo-element with before:absolute before:bg-background
-    // was causing a pane to overlap the title input above the toolbar
-    expect(classes).not.toMatch(/before:absolute/);
-    expect(classes).not.toMatch(/before:bg-background/);
     expect(classes).not.toMatch(/before:bottom-full/);
+    expect(classes).not.toMatch(/before:h-\[/);
   });
 
   it('preserves Confluence image metadata attributes on mirrored images', async () => {
