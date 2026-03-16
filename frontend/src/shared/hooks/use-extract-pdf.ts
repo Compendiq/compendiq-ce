@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { useAuthStore } from '../../stores/auth-store';
-import type { ExtractPdfResponse } from '@kb-creator/contracts';
+import type { ExtractPdfResponse } from '@atlasmind/contracts';
 
 export type ExtractPdfResult = ExtractPdfResponse;
 

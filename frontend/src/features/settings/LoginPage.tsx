@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useAuthStore } from '../../stores/auth-store';
 import { apiFetch } from '../../shared/lib/api';
+import { AtlasMindLogo } from '../../shared/components/AtlasMindLogo';
 
 interface OidcConfig {
   enabled: boolean;
@@ -71,7 +72,12 @@ export function LoginPage() {
   return (
     <div className="mesh-gradient flex min-h-screen items-center justify-center p-4">
       <div className="glass-card w-full max-w-md p-8">
-        <h1 className="mb-2 text-center text-2xl font-bold">AI KB Creator</h1>
+        <div className="mb-2 flex flex-col items-center gap-3">
+          <AtlasMindLogo size={56} className="text-primary" animated />
+          <h1 className="text-center text-2xl font-bold">
+            Atlas<span className="font-extrabold">Mind</span>
+          </h1>
+        </div>
         <p className="mb-8 text-center text-sm text-muted-foreground">
           {isRegister ? 'Create your account' : 'Sign in to your account'}
         </p>

@@ -15,7 +15,7 @@
     "declarationMap": true,
     "sourceMap": true,
     "paths": {
-      "@kb-creator/contracts": ["../packages/contracts/src"]
+      "@atlasmind/contracts": ["../packages/contracts/src"]
     }
   },
   "include": ["src/**/*"],

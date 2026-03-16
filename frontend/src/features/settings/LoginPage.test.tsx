@@ -41,7 +41,7 @@ describe('LoginPage', () => {
     });
 
     renderLoginPage();
-    expect(screen.getByText('AI KB Creator')).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'AtlasMind' })).toBeInTheDocument();
     expect(screen.getByPlaceholderText('Enter username')).toBeInTheDocument();
     expect(screen.getByPlaceholderText('Enter password')).toBeInTheDocument();
   });
@@ -133,6 +133,6 @@ describe('LoginPage', () => {
 
     // Toast is rendered outside the component tree, so we just verify the page renders
     // The toast notification is handled by Sonner and would require Sonner provider in test
-    expect(screen.getByText('AI KB Creator')).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'AtlasMind' })).toBeInTheDocument();
   });
 });

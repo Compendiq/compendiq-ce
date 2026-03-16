@@ -6,7 +6,7 @@ import { query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
 import { userHasPermission } from '../services/rbac-service.js';
 
-const JWT_ISSUER = 'kb-creator';
+const JWT_ISSUER = 'atlasmind';
 const ACCESS_TOKEN_EXPIRY = process.env.ACCESS_TOKEN_EXPIRY ?? '1h';
 // Validate expiry format at startup — jose accepts: Ns, Nm, Nh, Nd
 if (!/^\d+[smhd]$/.test(ACCESS_TOKEN_EXPIRY)) {

@@ -219,7 +219,7 @@ Update all backend code to use `pages.id` (SERIAL) instead of `confluence_id` as
 - [ ] `version-tracker.ts` — version tracking
 - [ ] `duplicate-detector.ts` — duplicate queries
 - [ ] `auto-tagger.ts` — tagging queries
-- [ ] Update `@kb-creator/contracts` schemas: page responses return `id: number` instead of `id: string`
+- [ ] Update `@atlasmind/contracts` schemas: page responses return `id: number` instead of `id: string`
 - [ ] Update all frontend hooks/components that consume page `id` as string → number
 - [ ] Verify: `npm run typecheck` passes (both workspaces)
 - [ ] Verify: `npm test` passes (both workspaces)

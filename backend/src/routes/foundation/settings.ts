@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { request as undiciRequest } from 'undici';
-import { UpdateSettingsSchema, TestConfluenceSchema } from '@kb-creator/contracts';
+import { UpdateSettingsSchema, TestConfluenceSchema } from '@atlasmind/contracts';
 import { query } from '../../core/db/postgres.js';
 import { encryptPat, decryptPat } from '../../core/utils/crypto.js';
 import { validateUrl } from '../../core/utils/ssrf-guard.js';

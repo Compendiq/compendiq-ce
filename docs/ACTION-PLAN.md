@@ -1,4 +1,4 @@
-# AI KB Creator - Action Plan
+# AtlasMind - Action Plan
 
 > All technical decisions reference [ARCHITECTURE-DECISIONS.md](./ARCHITECTURE-DECISIONS.md).
 > ADR numbers (e.g. ADR-004) link to the corresponding decision record.
@@ -158,12 +158,12 @@ Full schema in ADR-006.
 - [ ] Run migrations 001-003 (extensions, users, user_settings)
 - [ ] Health check endpoint (`GET /api/health`) — checks PG + Redis + Ollama
 - [ ] Pino logger with pino-pretty for dev
-- [ ] Zod for request/response validation (from `@kb-creator/contracts`)
+- [ ] Zod for request/response validation (from `@atlasmind/contracts`)
 
 ### 1.3 Shared Contracts Package
 - [ ] `packages/contracts/` with Zod schemas for API request/response types
 - [ ] Shared TypeScript interfaces (User, Page, Space, Settings, LLM types)
-- [ ] Export as `@kb-creator/contracts`
+- [ ] Export as `@atlasmind/contracts`
 
 ### 1.4 Frontend Skeleton
 - [ ] React 19 + Vite + TailwindCSS 4
@@ -475,7 +475,7 @@ Full schema in ADR-006.
 - [ ] JWT_SECRET validation (32+ chars, fail on default in production)
 - [ ] CORS configured for frontend origin only
 - [ ] Rate limiting on auth and LLM endpoints
-- [ ] Input sanitization (Zod validation on all routes via `@kb-creator/contracts`)
+- [ ] Input sanitization (Zod validation on all routes via `@atlasmind/contracts`)
 - [ ] Prompt injection guard on LLM inputs
 - [ ] No secrets in Docker images or git
 - [ ] Redis password required

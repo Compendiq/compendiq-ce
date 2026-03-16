@@ -89,7 +89,7 @@ export async function buildApp() {
   await app.register(swagger, {
     openapi: {
       info: {
-        title: 'AI KB Creator API',
+        title: 'AtlasMind API',
         version: '1.0.0',
       },
     },

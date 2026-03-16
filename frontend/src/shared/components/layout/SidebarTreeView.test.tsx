@@ -83,8 +83,8 @@ describe('SidebarTreeView', () => {
   it('renders "Pages" label in sidebar header (title moved to top header)', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
     expect(screen.getByText('Pages')).toBeInTheDocument();
-    // "AI KB Creator" title is no longer in the sidebar -- it moved to AppLayout header
-    expect(screen.queryByText('AI KB Creator')).not.toBeInTheDocument();
+    // "AtlasMind" logo is no longer in the sidebar -- it moved to AppLayout header
+    expect(screen.queryByRole('img', { name: 'AtlasMind' })).not.toBeInTheDocument();
   });
 
   it('renders root pages', () => {

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working with this repository. AG
 
 ## Project Overview
 
-AI-powered knowledge base management web app that integrates with Confluence Data Center (on-premises) and uses a local Ollama server for LLM features: article improvement, generation, summarization, and RAG-powered Q&A. Multi-user: each user configures their own Confluence PAT and space selections. Monorepo: `backend/` (Fastify 5 + PostgreSQL + Redis) and `frontend/` (React 19 + Vite).
+**AtlasMind** — AI-powered knowledge base management web app that integrates with Confluence Data Center (on-premises) and uses a local Ollama server for LLM features: article improvement, generation, summarization, and RAG-powered Q&A. Multi-user: each user configures their own Confluence PAT and space selections. Monorepo: `backend/` (Fastify 5 + PostgreSQL + Redis) and `frontend/` (React 19 + Vite).
 
 See `@docs/ARCHITECTURE-DECISIONS.md` for all ADRs. See `@docs/ACTION-PLAN.md` for the implementation plan.
 
@@ -38,7 +38,7 @@ npm run test -w frontend   # Frontend only
 Flat monorepo with domain-based backend structure and shared contracts (ADR-001, ADR-008):
 
 ```
-ai-kb-creator/
+atlasmind/
 ├── backend/src/
 │   ├── core/                        # Shared infrastructure (no domain imports)
 │   │   ├── db/postgres.ts           # Connection pool + migration runner
@@ -74,7 +74,7 @@ ai-kb-creator/
 │   │   └── components/   # Categorized: layout/, article/, diagrams/, badges/, feedback/, effects/
 │   ├── stores/           # Zustand stores (auth, theme, ui, settings)
 │   └── providers/        # Context providers (Query, Auth, Router)
-├── packages/contracts/   # Shared Zod schemas + TypeScript types (@kb-creator/contracts)
+├── packages/contracts/   # Shared Zod schemas + TypeScript types (@atlasmind/contracts)
 └── docker/               # Docker Compose files
 ```
 
@@ -109,7 +109,7 @@ Import restrictions enforced by `eslint-plugin-boundaries`:
 1. **PAT Encryption** — Confluence PATs are encrypted with AES-256-GCM using `PAT_ENCRYPTION_KEY` env var. Never store plaintext PATs. Never send PATs to the frontend.
 2. **Zero Default Secrets** — Production (`NODE_ENV=production`) MUST fail to start if `JWT_SECRET` or `PAT_ENCRYPTION_KEY` is default or < 32 characters.
 3. **LLM Safety** — All user content must be sanitized before sending to Ollama (prompt injection guard). Sanitize LLM output before displaying.
-4. **Input Validation** — Use Zod schemas from `@kb-creator/contracts` on all API boundaries. Parameterized SQL only (no string concatenation).
+4. **Input Validation** — Use Zod schemas from `@atlasmind/contracts` on all API boundaries. Parameterized SQL only (no string concatenation).
 5. **Auth on all routes** — `fastify.authenticate` decorator on every protected endpoint. No anonymous access except `/api/health` and `/api/auth/*`.
 6. **Infrastructure Isolation** — Internal services (PostgreSQL, Redis, Ollama) must not be exposed on `0.0.0.0` in production. Use Docker internal networks.
 

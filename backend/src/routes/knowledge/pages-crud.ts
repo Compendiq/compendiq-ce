@@ -7,7 +7,7 @@ import { cleanPageAttachments } from '../../domains/confluence/services/attachme
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { processDirtyPages, isProcessingUser } from '../../domains/llm/services/embedding-service.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
-import { PageListQuerySchema, PageTreeQuerySchema, CreatePageSchema, UpdatePageSchema, SaveDraftSchema } from '@kb-creator/contracts';
+import { PageListQuerySchema, PageTreeQuerySchema, CreatePageSchema, UpdatePageSchema, SaveDraftSchema } from '@atlasmind/contracts';
 import { z } from 'zod';
 import { logger } from '../../core/utils/logger.js';
 import pLimit from 'p-limit';

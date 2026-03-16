@@ -1,5 +1,9 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { migrateStorageKey } from '../shared/lib/migrate-storage-key';
+
+// One-time migration from legacy kb-ui → atlasmind-ui localStorage key
+migrateStorageKey('kb-ui', 'atlasmind-ui');
 
 interface UiState {
   sidebarCollapsed: boolean;
@@ -51,6 +55,6 @@ export const useUiStore = create<UiState>()(
       setArticleSidebarWidth: (width) => set({ articleSidebarWidth: Math.max(200, Math.min(500, width)) }),
       setReduceEffects: (reduce) => set({ reduceEffects: reduce }),
     }),
-    { name: 'kb-ui' },
+    { name: 'atlasmind-ui' },
   ),
 );

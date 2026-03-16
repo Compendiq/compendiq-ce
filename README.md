@@ -1,6 +1,8 @@
-# AI KB Creator
+# AtlasMind
 
-<!-- TODO: Add project logo -->
+<p align="center">
+  <img src="frontend/public/logo.svg" alt="AtlasMind" width="128" height="128" />
+</p>
 
 [![Build](https://img.shields.io/badge/build-passing-brightgreen)]()
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
@@ -36,7 +38,7 @@ AI-powered knowledge base management for **Confluence Data Center** with local *
 ## Architecture
 
 ```
-ai-kb-creator/
+atlasmind/
 +-- backend/               # Fastify 5 REST API server
 |   +-- src/
 |       +-- plugins/       # Fastify plugins (auth, cors, rate-limit, swagger)
@@ -51,7 +53,7 @@ ai-kb-creator/
 |       +-- stores/        # Zustand stores (auth, theme, ui)
 |       +-- providers/     # Context providers (Query, Auth, Router)
 +-- packages/
-|   +-- contracts/         # Shared Zod schemas + TypeScript types (@kb-creator/contracts)
+|   +-- contracts/         # Shared Zod schemas + TypeScript types (@atlasmind/contracts)
 +-- docker/                # Docker Compose files (dev + production)
 +-- e2e/                   # Playwright E2E tests
 +-- docs/                  # Architecture decisions, action plan
@@ -88,7 +90,7 @@ Frontend (React 19 + Vite)
 | **AI/ML** | Ollama (local LLM server), nomic-embed-text embeddings (768 dimensions) |
 | **Auth** | JWT (jose) + bcrypt, refresh token rotation |
 | **Content** | turndown + jsdom (XHTML->Markdown), marked (Markdown->HTML) |
-| **Validation** | Zod schemas shared via @kb-creator/contracts |
+| **Validation** | Zod schemas shared via @atlasmind/contracts |
 | **Infrastructure** | Docker Compose (4 services), multi-stage Dockerfiles |
 | **Testing** | Vitest, Playwright, @testing-library/react |
 
@@ -112,8 +114,8 @@ ollama pull qwen3.5            # Or any chat model of your choice
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/your-org/ai-kb-creator.git
-cd ai-kb-creator
+git clone https://github.com/your-org/atlasmind.git
+cd atlasmind
 npm install
 ```
 
