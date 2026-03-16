@@ -39,7 +39,12 @@ export function AppLayout({ children }: { children: ReactNode }) {
   // on every navigation, including between same-pathname routes like /pages/id1 → /pages/id2)
   useEffect(() => {
     const el = scrollContainerRef.current;
-    if (el) el.scrollTop = 0;
+    if (el) {
+      el.scrollTop = 0;
+      requestAnimationFrame(() => {
+        if (el) el.scrollTop = 0;
+      });
+    }
   }, [location.key]);
 
   // Register Cmd/Ctrl+K keyboard shortcut

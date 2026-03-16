@@ -22,10 +22,13 @@ export async function spacesRoutes(fastify: FastifyInstance) {
       space_key: string;
       space_name: string;
       homepage_id: string | null;
+      homepage_numeric_id: number | null;
       last_synced: Date;
     }>(
-      `SELECT cs.space_key, cs.space_name, cs.homepage_id, cs.last_synced
+      `SELECT cs.space_key, cs.space_name, cs.homepage_id,
+              hp.id as homepage_numeric_id, cs.last_synced
        FROM spaces cs
+       LEFT JOIN pages hp ON hp.confluence_id = cs.homepage_id AND hp.deleted_at IS NULL
        WHERE cs.space_key = ANY($1::text[])
        ORDER BY cs.space_name`,
       [userSpaces],
@@ -44,7 +47,7 @@ export async function spacesRoutes(fastify: FastifyInstance) {
     const spaces = result.rows.map((row) => ({
       key: row.space_key,
       name: row.space_name,
-      homepageId: row.homepage_id,
+      homepageId: row.homepage_numeric_id ? String(row.homepage_numeric_id) : null,
       lastSynced: row.last_synced,
       pageCount: counts.get(row.space_key) ?? 0,
     }));
