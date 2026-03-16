@@ -223,4 +223,19 @@ describe('AppLayout', () => {
     expect(rootDiv.className).toContain('overflow-hidden');
     expect(rootDiv.className).toContain('h-screen');
   });
+
+  it('panel wrapper uses uniform p-2 padding (no pt-1.5 override)', () => {
+    render(
+      <AppLayout>
+        <div>content</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/') },
+    );
+    const panelWrapper = screen.getByTestId('panel-wrapper');
+    // p-2 (8px) must govern all four sides uniformly
+    expect(panelWrapper.className).toContain('p-2');
+    // pt-1.5 (6px) must NOT override the top gap — it breaks the visual alignment
+    // with the header's mx-2 mt-2 (8px) margins
+    expect(panelWrapper.className).not.toContain('pt-1.5');
+  });
 });

@@ -169,7 +169,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
       </AnimatePresence>
 
       {/* Below header: sidebar + content area with floating gaps */}
-      <div className="flex flex-1 gap-1.5 overflow-hidden p-2 pt-1.5">
+      <div data-testid="panel-wrapper" className="flex flex-1 gap-1.5 overflow-hidden p-2">
         {/* Left sidebar - below header, only on pages routes */}
         {showTreeSidebar && <SidebarTreeView />}
 
