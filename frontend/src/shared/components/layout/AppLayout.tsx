@@ -44,6 +44,11 @@ export function AppLayout({ children }: { children: ReactNode }) {
       requestAnimationFrame(() => {
         if (el) el.scrollTop = 0;
       });
+      // Safety: ensure scroll is at 0 after PageTransition exit animation (220ms)
+      const timer = setTimeout(() => {
+        if (el) el.scrollTop = 0;
+      }, 250);
+      return () => clearTimeout(timer);
     }
   }, [location.key]);
 

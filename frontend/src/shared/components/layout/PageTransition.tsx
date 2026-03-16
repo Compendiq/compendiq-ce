@@ -76,24 +76,26 @@ export function PageTransition({ children }: PageTransitionProps) {
         : 0;
 
   return (
-    <AnimatePresence mode="sync" initial={false}>
-      <m.div
-        key={location.pathname}
-        initial={{ opacity: 0, x: slideX }}
-        animate={{ opacity: 1, x: 0 }}
-        exit={{ opacity: 0, x: -slideX }}
-        transition={{
-          duration: reducedMotion ? 0.1 : DURATION,
-          ease: [0.25, 0.1, 0.25, 1], // cubic-bezier for smooth deceleration
-        }}
-        className="w-full"
-        style={animating ? { willChange: 'opacity, transform' } : undefined}
-        onAnimationStart={() => setAnimating(true)}
-        onAnimationComplete={() => setAnimating(false)}
-      >
-        {children}
-      </m.div>
-    </AnimatePresence>
+    <div style={{ position: 'relative' }}>
+      <AnimatePresence mode="sync" initial={false}>
+        <m.div
+          key={location.pathname}
+          initial={{ opacity: 0, x: slideX }}
+          animate={{ opacity: 1, x: 0 }}
+          exit={{ opacity: 0, x: -slideX, position: 'absolute', top: 0, left: 0, right: 0 }}
+          transition={{
+            duration: reducedMotion ? 0.1 : DURATION,
+            ease: [0.25, 0.1, 0.25, 1], // cubic-bezier for smooth deceleration
+          }}
+          className="w-full"
+          style={animating ? { willChange: 'opacity, transform' } : undefined}
+          onAnimationStart={() => setAnimating(true)}
+          onAnimationComplete={() => setAnimating(false)}
+        >
+          {children}
+        </m.div>
+      </AnimatePresence>
+    </div>
   );
 }
 
