@@ -4,7 +4,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { SettingsPage } from './SettingsPage';
 import { useThemeStore } from '../../stores/theme-store';
-import { useUiStore } from '../../stores/ui-store';
 
 // Mock auth store
 const authState = { user: { role: 'user' }, accessToken: 'test-token', setAuth: vi.fn(), clearAuth: vi.fn() };
@@ -21,7 +20,7 @@ const mockSettings = {
   selectedSpaces: [],
   ollamaModel: 'qwen3.5',
   embeddingModel: 'nomic-embed-text',
-  theme: 'midnight-blue',
+  theme: 'void-indigo',
   syncIntervalMin: 15,
   confluenceConnected: true,
 };
@@ -45,7 +44,7 @@ describe('ThemeTab', () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    useThemeStore.setState({ theme: 'midnight-blue' });
+    useThemeStore.setState({ theme: 'void-indigo' });
     fetchSpy = vi.spyOn(globalThis, 'fetch');
     fetchSpy.mockImplementation(async (url: string | URL | Request) => {
       const path = typeof url === 'string' ? url : url instanceof URL ? url.toString() : url.url;
@@ -85,43 +84,20 @@ describe('ThemeTab', () => {
     await navigateToThemeTab();
 
     expect(screen.getByTestId('theme-category-dark')).toBeInTheDocument();
-    expect(screen.getByTestId('theme-category-bright')).toBeInTheDocument();
-    expect(screen.getByTestId('theme-category-catppuccin')).toBeInTheDocument();
+    expect(screen.getByTestId('theme-category-light')).toBeInTheDocument();
   });
 
-  it('renders all 24 theme options across categories', async () => {
+  it('renders all 4 theme options across categories', async () => {
     render(<SettingsPage />, { wrapper: createWrapper() });
     await navigateToThemeTab();
 
     // Dark themes
-    expect(screen.getByTestId('theme-midnight-blue')).toBeInTheDocument();
-    expect(screen.getByTestId('theme-ocean-depth')).toBeInTheDocument();
-    expect(screen.getByTestId('theme-emerald-dark')).toBeInTheDocument();
-    expect(screen.getByTestId('theme-rose-noir')).toBeInTheDocument();
-    expect(screen.getByTestId('theme-amber-night')).toBeInTheDocument();
-    expect(screen.getByTestId('theme-arctic-frost')).toBeInTheDocument();
-    expect(screen.getByTestId('theme-violet-storm')).toBeInTheDocument();
-    expect(screen.getByTestId('theme-cyber-teal')).toBeInTheDocument();
-    expect(screen.getByTestId('theme-sunset-glow')).toBeInTheDocument();
-    expect(screen.getByTestId('theme-slate-minimal')).toBeInTheDocument();
+    expect(screen.getByTestId('theme-void-indigo')).toBeInTheDocument();
+    expect(screen.getByTestId('theme-obsidian-violet')).toBeInTheDocument();
 
-    // Bright themes
-    expect(screen.getByTestId('theme-cloud-white')).toBeInTheDocument();
-    expect(screen.getByTestId('theme-lavender-bloom')).toBeInTheDocument();
-    expect(screen.getByTestId('theme-mint-fresh')).toBeInTheDocument();
-    expect(screen.getByTestId('theme-peach-blossom')).toBeInTheDocument();
-    expect(screen.getByTestId('theme-sky-blue')).toBeInTheDocument();
-    expect(screen.getByTestId('theme-lemon-drop')).toBeInTheDocument();
-    expect(screen.getByTestId('theme-rose-garden')).toBeInTheDocument();
-    expect(screen.getByTestId('theme-sage-light')).toBeInTheDocument();
-    expect(screen.getByTestId('theme-sand-dune')).toBeInTheDocument();
-    expect(screen.getByTestId('theme-ice-crystal')).toBeInTheDocument();
-
-    // Catppuccin themes
-    expect(screen.getByTestId('theme-catppuccin-latte')).toBeInTheDocument();
-    expect(screen.getByTestId('theme-catppuccin-frappe')).toBeInTheDocument();
-    expect(screen.getByTestId('theme-catppuccin-macchiato')).toBeInTheDocument();
-    expect(screen.getByTestId('theme-catppuccin-mocha')).toBeInTheDocument();
+    // Light themes
+    expect(screen.getByTestId('theme-polar-slate')).toBeInTheDocument();
+    expect(screen.getByTestId('theme-parchment-glow')).toBeInTheDocument();
   });
 
   it('shows active badge on the current theme', async () => {
@@ -132,43 +108,34 @@ describe('ThemeTab', () => {
     expect(activeBadge).toBeInTheDocument();
     expect(activeBadge).toHaveTextContent('Active');
 
-    // Active badge should be within the midnight-blue theme card
-    const midnightCard = screen.getByTestId('theme-midnight-blue');
-    expect(midnightCard.querySelector('[data-testid="theme-active-badge"]')).toBeInTheDocument();
+    // Active badge should be within the void-indigo theme card
+    const voidIndigoCard = screen.getByTestId('theme-void-indigo');
+    expect(voidIndigoCard.querySelector('[data-testid="theme-active-badge"]')).toBeInTheDocument();
   });
 
   it('switches theme when clicking a different theme card', async () => {
     render(<SettingsPage />, { wrapper: createWrapper() });
     await navigateToThemeTab();
 
-    fireEvent.click(screen.getByTestId('theme-ocean-depth'));
+    fireEvent.click(screen.getByTestId('theme-obsidian-violet'));
 
-    expect(useThemeStore.getState().theme).toBe('ocean-depth');
+    expect(useThemeStore.getState().theme).toBe('obsidian-violet');
   });
 
-  it('switches to a bright theme', async () => {
+  it('switches to a light theme', async () => {
     render(<SettingsPage />, { wrapper: createWrapper() });
     await navigateToThemeTab();
 
-    fireEvent.click(screen.getByTestId('theme-cloud-white'));
+    fireEvent.click(screen.getByTestId('theme-polar-slate'));
 
-    expect(useThemeStore.getState().theme).toBe('cloud-white');
-  });
-
-  it('switches to a catppuccin theme', async () => {
-    render(<SettingsPage />, { wrapper: createWrapper() });
-    await navigateToThemeTab();
-
-    fireEvent.click(screen.getByTestId('theme-catppuccin-mocha'));
-
-    expect(useThemeStore.getState().theme).toBe('catppuccin-mocha');
+    expect(useThemeStore.getState().theme).toBe('polar-slate');
   });
 
   it('calls onSave with the selected theme id', async () => {
     render(<SettingsPage />, { wrapper: createWrapper() });
     await navigateToThemeTab();
 
-    fireEvent.click(screen.getByTestId('theme-emerald-dark'));
+    fireEvent.click(screen.getByTestId('theme-parchment-glow'));
 
     await waitFor(() => {
       // Verify fetch was called with a PUT containing the theme
@@ -178,7 +145,7 @@ describe('ThemeTab', () => {
       });
       expect(putCalls.length).toBeGreaterThan(0);
       const body = JSON.parse((putCalls[0][1] as RequestInit).body as string);
-      expect(body).toEqual({ theme: 'emerald-dark' });
+      expect(body).toEqual({ theme: 'parchment-glow' });
     });
   });
 
@@ -186,12 +153,11 @@ describe('ThemeTab', () => {
     render(<SettingsPage />, { wrapper: createWrapper() });
     await navigateToThemeTab();
 
-    expect(screen.getByText('Midnight Blue')).toBeInTheDocument();
-    expect(screen.getByText('Deep blue-violet with electric blue accents')).toBeInTheDocument();
-    expect(screen.getByText('Ocean Depth')).toBeInTheDocument();
-    expect(screen.getByText('Slate Minimal')).toBeInTheDocument();
-    expect(screen.getByText('Cloud White')).toBeInTheDocument();
-    expect(screen.getByText('Catppuccin Mocha')).toBeInTheDocument();
+    expect(screen.getByText('Void Indigo')).toBeInTheDocument();
+    expect(screen.getByText('Deep navy-black with indigo accents — Linear \u00d7 GitHub Copilot')).toBeInTheDocument();
+    expect(screen.getByText('Obsidian Violet')).toBeInTheDocument();
+    expect(screen.getByText('Polar Slate')).toBeInTheDocument();
+    expect(screen.getByText('Parchment Glow')).toBeInTheDocument();
   });
 
   it('displays category headers', async () => {
@@ -199,37 +165,6 @@ describe('ThemeTab', () => {
     await navigateToThemeTab();
 
     expect(screen.getByText('Dark')).toBeInTheDocument();
-    expect(screen.getByText('Bright')).toBeInTheDocument();
-    expect(screen.getByText('Catppuccin')).toBeInTheDocument();
-  });
-
-  it('renders the Reduce Effects toggle', async () => {
-    render(<SettingsPage />, { wrapper: createWrapper() });
-    await navigateToThemeTab();
-
-    expect(screen.getByTestId('reduce-effects-toggle')).toBeInTheDocument();
-    expect(screen.getByText('Reduce Effects')).toBeInTheDocument();
-  });
-
-  it('toggles reduceEffects state when switch is clicked', async () => {
-    useUiStore.setState({ reduceEffects: false });
-    render(<SettingsPage />, { wrapper: createWrapper() });
-    await navigateToThemeTab();
-
-    const toggle = screen.getByTestId('reduce-effects-toggle');
-    expect(toggle.getAttribute('aria-checked')).toBe('false');
-
-    fireEvent.click(toggle);
-    expect(useUiStore.getState().reduceEffects).toBe(true);
-    expect(toggle.getAttribute('aria-checked')).toBe('true');
-  });
-
-  it('reflects reduceEffects=true initial state', async () => {
-    useUiStore.setState({ reduceEffects: true });
-    render(<SettingsPage />, { wrapper: createWrapper() });
-    await navigateToThemeTab();
-
-    const toggle = screen.getByTestId('reduce-effects-toggle');
-    expect(toggle.getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByText('Light')).toBeInTheDocument();
   });
 });

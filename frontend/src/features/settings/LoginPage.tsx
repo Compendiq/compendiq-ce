@@ -70,7 +70,7 @@ export function LoginPage() {
   }
 
   return (
-    <div className="mesh-gradient flex min-h-screen items-center justify-center p-4">
+    <div className="bg-background flex min-h-screen items-center justify-center p-4">
       <div className="glass-card w-full max-w-md p-8">
         <div className="mb-2 flex flex-col items-center gap-3">
           <AtlasMindLogo size={56} className="text-primary" animated />

@@ -22,12 +22,8 @@ vi.mock('./ServiceStatus', () => ({
   ServiceStatus: () => null,
 }));
 
-vi.mock('./AuroraBackground', () => ({
-  AuroraBackground: () => <div data-testid="aurora-background" />,
-}));
-
-vi.mock('./NoiseOverlay', () => ({
-  NoiseOverlay: () => null,
+vi.mock('./ThemeToggle', () => ({
+  ThemeToggle: () => <div data-testid="theme-toggle" />,
 }));
 
 function createWrapper(initialPath = '/') {

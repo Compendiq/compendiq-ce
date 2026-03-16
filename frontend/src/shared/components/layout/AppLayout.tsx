@@ -10,8 +10,7 @@ import { Breadcrumb } from './Breadcrumb';
 import { UserMenu } from './UserMenu';
 import { SidebarTreeView } from './SidebarTreeView';
 import { ArticleRightPane } from '../article/ArticleRightPane';
-// Aurora background removed — replaced with plain background
-import { NoiseOverlay } from '../effects/NoiseOverlay';
+import { ThemeToggle } from './ThemeToggle';
 import { PageTransition } from './PageTransition';
 import { cn } from '../../lib/cn';
 
@@ -67,7 +66,6 @@ export function AppLayout({ children }: { children: ReactNode }) {
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background">
-      <NoiseOverlay />
       <CommandPalette />
 
       {/* Top navigation bar — Liquid Glass floating header */}
@@ -131,6 +129,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
               {navigator.platform?.includes('Mac') ? '\u2318' : 'Ctrl'}K
             </kbd>
           </button>
+          <ThemeToggle />
           <UserMenu />
         </div>
       </header>

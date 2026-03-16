@@ -56,7 +56,7 @@ export function OidcCallbackPage() {
 
   if (error) {
     return (
-      <div className="mesh-gradient flex min-h-screen items-center justify-center p-4">
+      <div className="bg-background flex min-h-screen items-center justify-center p-4">
         <div className="glass-card w-full max-w-md p-8 text-center">
           <h1 className="mb-4 text-xl font-bold text-destructive">SSO Login Failed</h1>
           <p className="mb-6 text-sm text-muted-foreground">{error}</p>
@@ -72,7 +72,7 @@ export function OidcCallbackPage() {
   }
 
   return (
-    <div className="mesh-gradient flex min-h-screen items-center justify-center p-4">
+    <div className="bg-background flex min-h-screen items-center justify-center p-4">
       <div className="glass-card w-full max-w-md p-8 text-center">
         <div className="mb-4 inline-block h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
         <p className="text-sm text-muted-foreground">Completing SSO sign-in...</p>

@@ -6,20 +6,20 @@ import { useThemeEffect } from './useThemeEffect';
 
 describe('useThemeEffect', () => {
   beforeEach(() => {
-    useThemeStore.setState({ theme: 'midnight-blue' });
+    useThemeStore.setState({ theme: 'void-indigo' });
     document.documentElement.removeAttribute('data-theme');
     document.documentElement.classList.add('dark');
   });
 
-  it('does not set data-theme for the default midnight-blue theme', () => {
+  it('does not set data-theme for the default void-indigo theme', () => {
     renderHook(() => useThemeEffect());
     expect(document.documentElement.getAttribute('data-theme')).toBeNull();
   });
 
   it('sets data-theme attribute when a non-default theme is selected', () => {
-    useThemeStore.setState({ theme: 'ocean-depth' });
+    useThemeStore.setState({ theme: 'obsidian-violet' });
     renderHook(() => useThemeEffect());
-    expect(document.documentElement.getAttribute('data-theme')).toBe('ocean-depth');
+    expect(document.documentElement.getAttribute('data-theme')).toBe('obsidian-violet');
   });
 
   it('updates data-theme when the theme changes', () => {
@@ -27,46 +27,40 @@ describe('useThemeEffect', () => {
     expect(document.documentElement.getAttribute('data-theme')).toBeNull();
 
     act(() => {
-      useThemeStore.getState().setTheme('rose-noir');
+      useThemeStore.getState().setTheme('parchment-glow');
     });
-    expect(document.documentElement.getAttribute('data-theme')).toBe('rose-noir');
+    expect(document.documentElement.getAttribute('data-theme')).toBe('parchment-glow');
   });
 
-  it('removes data-theme when switching back to midnight-blue', () => {
-    useThemeStore.setState({ theme: 'emerald-dark' });
+  it('removes data-theme when switching back to void-indigo', () => {
+    useThemeStore.setState({ theme: 'obsidian-violet' });
     renderHook(() => useThemeEffect());
-    expect(document.documentElement.getAttribute('data-theme')).toBe('emerald-dark');
+    expect(document.documentElement.getAttribute('data-theme')).toBe('obsidian-violet');
 
     act(() => {
-      useThemeStore.getState().setTheme('midnight-blue');
+      useThemeStore.getState().setTheme('void-indigo');
     });
     expect(document.documentElement.getAttribute('data-theme')).toBeNull();
   });
 
   it('adds dark class for dark themes', () => {
     document.documentElement.classList.remove('dark');
-    useThemeStore.setState({ theme: 'ocean-depth' });
+    useThemeStore.setState({ theme: 'obsidian-violet' });
     renderHook(() => useThemeEffect());
     expect(document.documentElement.classList.contains('dark')).toBe(true);
   });
 
-  it('removes dark class for bright themes', () => {
-    useThemeStore.setState({ theme: 'cloud-white' });
+  it('removes dark class for light themes', () => {
+    useThemeStore.setState({ theme: 'polar-slate' });
     renderHook(() => useThemeEffect());
     expect(document.documentElement.classList.contains('dark')).toBe(false);
-    expect(document.documentElement.getAttribute('data-theme')).toBe('cloud-white');
+    expect(document.documentElement.getAttribute('data-theme')).toBe('polar-slate');
   });
 
-  it('removes dark class for catppuccin-latte (light catppuccin)', () => {
-    useThemeStore.setState({ theme: 'catppuccin-latte' });
+  it('removes dark class for parchment-glow (light theme)', () => {
+    useThemeStore.setState({ theme: 'parchment-glow' });
     renderHook(() => useThemeEffect());
     expect(document.documentElement.classList.contains('dark')).toBe(false);
-  });
-
-  it('keeps dark class for catppuccin-mocha (dark catppuccin)', () => {
-    useThemeStore.setState({ theme: 'catppuccin-mocha' });
-    renderHook(() => useThemeEffect());
-    expect(document.documentElement.classList.contains('dark')).toBe(true);
   });
 
   it('toggles dark class when switching between light and dark themes', () => {
@@ -74,12 +68,12 @@ describe('useThemeEffect', () => {
     expect(document.documentElement.classList.contains('dark')).toBe(true);
 
     act(() => {
-      useThemeStore.getState().setTheme('lavender-bloom');
+      useThemeStore.getState().setTheme('polar-slate');
     });
     expect(document.documentElement.classList.contains('dark')).toBe(false);
 
     act(() => {
-      useThemeStore.getState().setTheme('catppuccin-frappe');
+      useThemeStore.getState().setTheme('obsidian-violet');
     });
     expect(document.documentElement.classList.contains('dark')).toBe(true);
   });

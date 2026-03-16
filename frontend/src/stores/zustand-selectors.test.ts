@@ -20,7 +20,6 @@ describe('Zustand selector patterns', () => {
         treeSidebarCollapsed: false,
         treeSidebarSpaceKey: undefined,
         treeSidebarWidth: 256,
-        reduceEffects: false,
       });
     });
 
@@ -29,7 +28,6 @@ describe('Zustand selector patterns', () => {
       expect(useUiStore.getState().treeSidebarCollapsed).toBe(false);
       expect(useUiStore.getState().treeSidebarSpaceKey).toBeUndefined();
       expect(useUiStore.getState().treeSidebarWidth).toBe(256);
-      expect(useUiStore.getState().reduceEffects).toBe(false);
     });
 
     it('selector returns updated value after state change', () => {
@@ -71,41 +69,34 @@ describe('Zustand selector patterns', () => {
       expect(useUiStore.getState().treeSidebarWidth).toBe(600);
     });
 
-    it('reduceEffects selector reflects setReduceEffects', () => {
-      useUiStore.getState().setReduceEffects(true);
-      expect(useUiStore.getState().reduceEffects).toBe(true);
-
-      useUiStore.getState().setReduceEffects(false);
-      expect(useUiStore.getState().reduceEffects).toBe(false);
-    });
   });
 
   describe('useThemeStore selectors', () => {
     beforeEach(() => {
-      useThemeStore.setState({ theme: 'midnight-blue' });
+      useThemeStore.setState({ theme: 'void-indigo' });
     });
 
     it('theme selector returns current theme', () => {
       const selector = (s: ReturnType<typeof useThemeStore.getState>) => s.theme;
-      expect(selector(useThemeStore.getState())).toBe('midnight-blue');
+      expect(selector(useThemeStore.getState())).toBe('void-indigo');
     });
 
     it('setTheme selector is a stable function', () => {
       const setTheme = useThemeStore.getState().setTheme;
       expect(typeof setTheme).toBe('function');
 
-      setTheme('ocean-depth');
-      expect(useThemeStore.getState().theme).toBe('ocean-depth');
+      setTheme('obsidian-violet');
+      expect(useThemeStore.getState().theme).toBe('obsidian-violet');
     });
 
     it('theme selector reflects setTheme changes', () => {
       const selector = (s: ReturnType<typeof useThemeStore.getState>) => s.theme;
 
-      useThemeStore.getState().setTheme('emerald-dark');
-      expect(selector(useThemeStore.getState())).toBe('emerald-dark');
+      useThemeStore.getState().setTheme('polar-slate');
+      expect(selector(useThemeStore.getState())).toBe('polar-slate');
 
-      useThemeStore.getState().setTheme('catppuccin-mocha');
-      expect(selector(useThemeStore.getState())).toBe('catppuccin-mocha');
+      useThemeStore.getState().setTheme('parchment-glow');
+      expect(selector(useThemeStore.getState())).toBe('parchment-glow');
     });
   });
 
@@ -154,9 +145,8 @@ describe('Zustand selector patterns', () => {
       useUiStore.setState({
         sidebarCollapsed: false,
         treeSidebarCollapsed: false,
-        reduceEffects: false,
       });
-      useThemeStore.setState({ theme: 'midnight-blue' });
+      useThemeStore.setState({ theme: 'void-indigo' });
       useCommandPaletteStore.getState().close();
     });
 
@@ -168,7 +158,7 @@ describe('Zustand selector patterns', () => {
 
     it('changing theme store does not affect ui store', () => {
       const sidebarBefore = useUiStore.getState().sidebarCollapsed;
-      useThemeStore.getState().setTheme('ocean-depth');
+      useThemeStore.getState().setTheme('obsidian-violet');
       expect(useUiStore.getState().sidebarCollapsed).toBe(sidebarBefore);
     });
 

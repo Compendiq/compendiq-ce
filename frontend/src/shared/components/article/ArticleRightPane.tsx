@@ -15,7 +15,7 @@ import {
 import { FreshnessBadge } from '../badges/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../badges/EmbeddingStatusBadge';
 import { QualityScoreBadge } from '../badges/QualityScoreBadge';
-import { m, AnimatePresence } from 'framer-motion';
+import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { toast } from 'sonner';
 import { useUiStore } from '../../../stores/ui-store';
 import { useArticleViewStore } from '../../../stores/article-view-store';
@@ -172,7 +172,7 @@ export function ArticleRightPane() {
   const toggleSidebar = useUiStore((s) => s.toggleArticleSidebar);
   const width = useUiStore((s) => s.articleSidebarWidth);
   const setWidth = useUiStore((s) => s.setArticleSidebarWidth);
-  const reduceEffects = useUiStore((s) => s.reduceEffects);
+  const reduceEffects = useReducedMotion();
 
   const headings = useArticleViewStore((s) => s.headings);
   const editing = useArticleViewStore((s) => s.editing);

@@ -66,22 +66,22 @@ body {
 }
 
 @theme {
-  /* Default theme: Midnight Blue (Linear-inspired neutral dark) */
-  --color-background: oklch(0.14 0.005 260);
-  --color-foreground: oklch(0.93 0.005 260);
-  --color-card: oklch(0.18 0.008 260);
-  --color-card-foreground: oklch(0.93 0.005 260);
-  --color-primary: oklch(0.65 0.2 260);
-  --color-primary-foreground: oklch(0.98 0.005 260);
-  --color-secondary: oklch(0.25 0.008 260);
-  --color-secondary-foreground: oklch(0.88 0.005 260);
-  --color-muted: oklch(0.22 0.005 260);
-  --color-muted-foreground: oklch(0.65 0.005 260);
-  --color-accent: oklch(0.28 0.01 260);
-  --color-accent-foreground: oklch(0.93 0.005 260);
+  /* Default theme: Void Indigo (Linear × GitHub Copilot inspired) */
+  --color-background: oklch(0.12 0.03 265);
+  --color-foreground: oklch(0.95 0.008 265);
+  --color-card: oklch(0.17 0.03 265);
+  --color-card-foreground: oklch(0.95 0.008 265);
+  --color-primary: oklch(0.62 0.18 270);
+  --color-primary-foreground: oklch(0.98 0 0);
+  --color-secondary: oklch(0.20 0.025 265);
+  --color-secondary-foreground: oklch(0.88 0.008 265);
+  --color-muted: oklch(0.18 0.02 265);
+  --color-muted-foreground: oklch(0.60 0.02 265);
+  --color-accent: oklch(0.22 0.03 270);
+  --color-accent-foreground: oklch(0.95 0.008 265);
   --color-destructive: oklch(0.55 0.2 25);
-  --color-border: oklch(0.25 0.005 260);
-  --color-ring: oklch(0.65 0.2 260);
+  --color-border: oklch(0.25 0.03 265);
+  --color-ring: oklch(0.62 0.18 270);
   --color-success: oklch(0.65 0.2 145);
   --color-warning: oklch(0.7 0.15 80);
   --color-info: oklch(0.6 0.15 240);
@@ -94,11 +94,6 @@ body {
   /* Re-anchor text-xs so 0.75rem Tailwind classes stay at 12px with the 15px base.
      Without this, text-xs (0.75rem × 15px = 11.25px) falls below the 12px minimum. */
   --font-size-xs: 0.8rem;
-
-  /* Mesh gradient colors (overridden per theme) */
-  --mesh-1: oklch(0.3 0.1 280 / 0.4);
-  --mesh-2: oklch(0.25 0.08 240 / 0.3);
-  --mesh-3: oklch(0.2 0.06 320 / 0.2);
 
   /* Glass utility colors (overridden for light themes) */
   --glass-border: oklch(1 0 0 / 0.08);
@@ -128,197 +123,27 @@ body {
    DARK THEMES
    =========================== */
 
-/* ---- Theme: Ocean Depth ---- */
-[data-theme="ocean-depth"] {
-  --color-background: oklch(0.14 0.008 200);
-  --color-foreground: oklch(0.93 0.005 200);
-  --color-card: oklch(0.18 0.01 200);
-  --color-card-foreground: oklch(0.93 0.005 200);
-  --color-primary: oklch(0.7 0.15 195);
-  --color-primary-foreground: oklch(0.15 0.02 195);
-  --color-secondary: oklch(0.25 0.008 200);
-  --color-secondary-foreground: oklch(0.88 0.005 200);
-  --color-muted: oklch(0.22 0.006 200);
-  --color-muted-foreground: oklch(0.65 0.005 200);
-  --color-accent: oklch(0.28 0.012 195);
-  --color-accent-foreground: oklch(0.93 0.005 200);
-  --color-border: oklch(0.25 0.008 200);
-  --color-ring: oklch(0.7 0.15 195);
-  --mesh-1: oklch(0.28 0.08 195 / 0.4);
-  --mesh-2: oklch(0.23 0.06 210 / 0.3);
-  --mesh-3: oklch(0.18 0.05 180 / 0.2);
+/* ---- Theme: Obsidian Violet (Arc × Raycast AI) ---- */
+[data-theme="obsidian-violet"] {
+  --color-background: oklch(0.13 0.015 285);
+  --color-foreground: oklch(0.93 0.01 285);
+  --color-card: oklch(0.19 0.018 285);
+  --color-card-foreground: oklch(0.93 0.01 285);
+  --color-primary: oklch(0.65 0.22 295);
+  --color-primary-foreground: oklch(0.99 0 0);
+  --color-secondary: oklch(0.22 0.015 285);
+  --color-secondary-foreground: oklch(0.86 0.01 285);
+  --color-muted: oklch(0.20 0.012 285);
+  --color-muted-foreground: oklch(0.58 0.025 285);
+  --color-accent: oklch(0.24 0.02 290);
+  --color-accent-foreground: oklch(0.93 0.01 285);
+  --color-border: oklch(0.26 0.018 285);
+  --color-ring: oklch(0.65 0.22 295);
 }
 
-/* ---- Theme: Emerald Dark ---- */
-[data-theme="emerald-dark"] {
-  --color-background: oklch(0.14 0.008 155);
-  --color-foreground: oklch(0.93 0.005 155);
-  --color-card: oklch(0.18 0.01 155);
-  --color-card-foreground: oklch(0.93 0.005 155);
-  --color-primary: oklch(0.65 0.2 145);
-  --color-primary-foreground: oklch(0.15 0.03 145);
-  --color-secondary: oklch(0.25 0.008 155);
-  --color-secondary-foreground: oklch(0.88 0.005 155);
-  --color-muted: oklch(0.22 0.006 155);
-  --color-muted-foreground: oklch(0.65 0.005 155);
-  --color-accent: oklch(0.28 0.012 150);
-  --color-accent-foreground: oklch(0.93 0.005 155);
-  --color-border: oklch(0.25 0.008 155);
-  --color-ring: oklch(0.65 0.2 145);
-  --mesh-1: oklch(0.28 0.08 145 / 0.4);
-  --mesh-2: oklch(0.23 0.06 160 / 0.3);
-  --mesh-3: oklch(0.18 0.05 130 / 0.2);
-}
-
-/* ---- Theme: Rose Noir ---- */
-[data-theme="rose-noir"] {
-  --color-background: oklch(0.14 0.008 350);
-  --color-foreground: oklch(0.93 0.005 350);
-  --color-card: oklch(0.18 0.01 350);
-  --color-card-foreground: oklch(0.93 0.005 350);
-  --color-primary: oklch(0.6 0.22 350);
-  --color-primary-foreground: oklch(0.98 0.005 350);
-  --color-secondary: oklch(0.25 0.008 350);
-  --color-secondary-foreground: oklch(0.88 0.005 350);
-  --color-muted: oklch(0.22 0.006 350);
-  --color-muted-foreground: oklch(0.65 0.005 350);
-  --color-accent: oklch(0.28 0.012 350);
-  --color-accent-foreground: oklch(0.93 0.005 350);
-  --color-border: oklch(0.25 0.008 350);
-  --color-ring: oklch(0.6 0.22 350);
-  --mesh-1: oklch(0.28 0.1 350 / 0.4);
-  --mesh-2: oklch(0.23 0.08 330 / 0.3);
-  --mesh-3: oklch(0.18 0.06 10 / 0.2);
-}
-
-/* ---- Theme: Amber Night ---- */
-[data-theme="amber-night"] {
-  --color-background: oklch(0.14 0.008 70);
-  --color-foreground: oklch(0.93 0.005 70);
-  --color-card: oklch(0.18 0.01 70);
-  --color-card-foreground: oklch(0.93 0.005 70);
-  --color-primary: oklch(0.75 0.18 80);
-  --color-primary-foreground: oklch(0.15 0.02 80);
-  --color-secondary: oklch(0.25 0.008 70);
-  --color-secondary-foreground: oklch(0.88 0.005 70);
-  --color-muted: oklch(0.22 0.006 70);
-  --color-muted-foreground: oklch(0.65 0.005 70);
-  --color-accent: oklch(0.28 0.012 65);
-  --color-accent-foreground: oklch(0.93 0.005 70);
-  --color-border: oklch(0.25 0.008 70);
-  --color-ring: oklch(0.75 0.18 80);
-  --mesh-1: oklch(0.28 0.08 80 / 0.4);
-  --mesh-2: oklch(0.23 0.06 60 / 0.3);
-  --mesh-3: oklch(0.18 0.05 40 / 0.2);
-}
-
-/* ---- Theme: Arctic Frost ---- */
-[data-theme="arctic-frost"] {
-  --color-background: oklch(0.14 0.005 230);
-  --color-foreground: oklch(0.93 0.005 230);
-  --color-card: oklch(0.18 0.008 230);
-  --color-card-foreground: oklch(0.93 0.005 230);
-  --color-primary: oklch(0.72 0.12 230);
-  --color-primary-foreground: oklch(0.15 0.01 230);
-  --color-secondary: oklch(0.25 0.005 230);
-  --color-secondary-foreground: oklch(0.88 0.005 230);
-  --color-muted: oklch(0.22 0.005 230);
-  --color-muted-foreground: oklch(0.65 0.005 230);
-  --color-accent: oklch(0.28 0.008 230);
-  --color-accent-foreground: oklch(0.93 0.005 230);
-  --color-border: oklch(0.25 0.005 230);
-  --color-ring: oklch(0.72 0.12 230);
-  --mesh-1: oklch(0.28 0.06 230 / 0.4);
-  --mesh-2: oklch(0.23 0.04 220 / 0.3);
-  --mesh-3: oklch(0.18 0.03 240 / 0.2);
-}
-
-/* ---- Theme: Violet Storm ---- */
-[data-theme="violet-storm"] {
-  --color-background: oklch(0.14 0.008 290);
-  --color-foreground: oklch(0.93 0.005 290);
-  --color-card: oklch(0.18 0.012 290);
-  --color-card-foreground: oklch(0.93 0.005 290);
-  --color-primary: oklch(0.65 0.2 290);
-  --color-primary-foreground: oklch(0.98 0.005 290);
-  --color-secondary: oklch(0.25 0.008 290);
-  --color-secondary-foreground: oklch(0.88 0.005 290);
-  --color-muted: oklch(0.22 0.006 290);
-  --color-muted-foreground: oklch(0.65 0.005 290);
-  --color-accent: oklch(0.28 0.015 290);
-  --color-accent-foreground: oklch(0.93 0.005 290);
-  --color-border: oklch(0.25 0.008 290);
-  --color-ring: oklch(0.65 0.2 290);
-  --mesh-1: oklch(0.28 0.12 290 / 0.4);
-  --mesh-2: oklch(0.23 0.08 310 / 0.3);
-  --mesh-3: oklch(0.18 0.06 270 / 0.2);
-}
-
-/* ---- Theme: Cyber Teal ---- */
-[data-theme="cyber-teal"] {
-  --color-background: oklch(0.14 0.008 175);
-  --color-foreground: oklch(0.93 0.005 175);
-  --color-card: oklch(0.18 0.01 175);
-  --color-card-foreground: oklch(0.93 0.005 175);
-  --color-primary: oklch(0.7 0.17 170);
-  --color-primary-foreground: oklch(0.12 0.02 170);
-  --color-secondary: oklch(0.25 0.008 175);
-  --color-secondary-foreground: oklch(0.88 0.005 175);
-  --color-muted: oklch(0.22 0.006 175);
-  --color-muted-foreground: oklch(0.65 0.005 175);
-  --color-accent: oklch(0.28 0.012 170);
-  --color-accent-foreground: oklch(0.93 0.005 175);
-  --color-border: oklch(0.25 0.008 175);
-  --color-ring: oklch(0.7 0.17 170);
-  --mesh-1: oklch(0.26 0.08 170 / 0.4);
-  --mesh-2: oklch(0.21 0.06 185 / 0.3);
-  --mesh-3: oklch(0.16 0.05 160 / 0.2);
-}
-
-/* ---- Theme: Sunset Glow ---- */
-[data-theme="sunset-glow"] {
-  --color-background: oklch(0.14 0.008 30);
-  --color-foreground: oklch(0.93 0.005 30);
-  --color-card: oklch(0.18 0.01 30);
-  --color-card-foreground: oklch(0.93 0.005 30);
-  --color-primary: oklch(0.65 0.2 25);
-  --color-primary-foreground: oklch(0.98 0.005 25);
-  --color-secondary: oklch(0.25 0.008 30);
-  --color-secondary-foreground: oklch(0.88 0.005 30);
-  --color-muted: oklch(0.22 0.006 30);
-  --color-muted-foreground: oklch(0.65 0.005 30);
-  --color-accent: oklch(0.28 0.012 45);
-  --color-accent-foreground: oklch(0.93 0.005 30);
-  --color-border: oklch(0.25 0.008 30);
-  --color-ring: oklch(0.65 0.2 25);
-  --mesh-1: oklch(0.28 0.1 25 / 0.4);
-  --mesh-2: oklch(0.23 0.08 45 / 0.3);
-  --mesh-3: oklch(0.18 0.06 10 / 0.2);
-}
-
-/* ---- Theme: Slate Minimal ---- */
-[data-theme="slate-minimal"] {
-  --color-background: oklch(0.14 0.003 260);
-  --color-foreground: oklch(0.93 0.003 260);
-  --color-card: oklch(0.18 0.004 260);
-  --color-card-foreground: oklch(0.93 0.003 260);
-  --color-primary: oklch(0.65 0.01 260);
-  --color-primary-foreground: oklch(0.98 0.003 260);
-  --color-secondary: oklch(0.25 0.004 260);
-  --color-secondary-foreground: oklch(0.88 0.003 260);
-  --color-muted: oklch(0.22 0.003 260);
-  --color-muted-foreground: oklch(0.6 0.005 260);
-  --color-accent: oklch(0.28 0.005 260);
-  --color-accent-foreground: oklch(0.93 0.003 260);
-  --color-border: oklch(0.25 0.004 260);
-  --color-ring: oklch(0.65 0.01 260);
-  --mesh-1: oklch(0.25 0.005 260 / 0.3);
-  --mesh-2: oklch(0.2 0.003 270 / 0.2);
-  --mesh-3: oklch(0.18 0.003 250 / 0.15);
-}
 
 /* ===========================
-   BRIGHT THEMES
+   LIGHT THEMES
    =========================== */
 
 /* Light theme glass overrides (shared via data-theme-type attribute) */
@@ -347,302 +172,48 @@ body {
   --glass-pill-hover: oklch(0 0 0 / 0.03);
 }
 
-/* ---- Theme: Cloud White ---- */
-[data-theme="cloud-white"] {
-  --color-background: oklch(0.985 0.003 260);
-  --color-foreground: oklch(0.15 0.01 260);
-  --color-card: oklch(0.995 0.002 260);
-  --color-card-foreground: oklch(0.15 0.01 260);
-  --color-primary: oklch(0.6 0.2 255);
-  --color-primary-foreground: oklch(0.98 0.005 255);
-  --color-secondary: oklch(0.94 0.005 260);
-  --color-secondary-foreground: oklch(0.25 0.01 260);
-  --color-muted: oklch(0.93 0.004 260);
-  --color-muted-foreground: oklch(0.45 0.005 260);
-  --color-accent: oklch(0.95 0.006 255);
-  --color-accent-foreground: oklch(0.2 0.01 260);
-  --color-border: oklch(0.88 0.005 260);
-  --color-ring: oklch(0.6 0.2 255);
-  --mesh-1: oklch(0.92 0.03 255 / 0.3);
-  --mesh-2: oklch(0.94 0.02 230 / 0.2);
-  --mesh-3: oklch(0.93 0.02 280 / 0.15);
+/* ---- Theme: Polar Slate (Vercel × Linear Light) ---- */
+[data-theme="polar-slate"] {
+  --color-background: oklch(0.97 0.008 240);
+  --color-foreground: oklch(0.15 0.012 240);
+  --color-card: oklch(1.0 0 0);
+  --color-card-foreground: oklch(0.15 0.012 240);
+  --color-primary: oklch(0.54 0.20 260);
+  --color-primary-foreground: oklch(0.99 0 0);
+  --color-secondary: oklch(0.94 0.008 240);
+  --color-secondary-foreground: oklch(0.25 0.012 240);
+  --color-muted: oklch(0.93 0.006 240);
+  --color-muted-foreground: oklch(0.50 0.015 240);
+  --color-accent: oklch(0.95 0.008 250);
+  --color-accent-foreground: oklch(0.20 0.012 240);
+  --color-destructive: oklch(0.5 0.22 25);
+  --color-border: oklch(0.91 0.010 240);
+  --color-ring: oklch(0.54 0.20 260);
+  --color-success: oklch(0.55 0.2 145);
+  --color-warning: oklch(0.6 0.18 80);
+  --color-info: oklch(0.5 0.18 240);
 }
 
-/* ---- Theme: Lavender Bloom ---- */
-[data-theme="lavender-bloom"] {
-  --color-background: oklch(0.98 0.008 300);
-  --color-foreground: oklch(0.15 0.015 290);
-  --color-card: oklch(0.995 0.004 300);
-  --color-card-foreground: oklch(0.15 0.015 290);
-  --color-primary: oklch(0.6 0.22 290);
-  --color-primary-foreground: oklch(0.98 0.005 290);
-  --color-secondary: oklch(0.94 0.008 300);
-  --color-secondary-foreground: oklch(0.25 0.015 290);
-  --color-muted: oklch(0.93 0.006 300);
-  --color-muted-foreground: oklch(0.45 0.008 290);
-  --color-accent: oklch(0.95 0.01 295);
-  --color-accent-foreground: oklch(0.2 0.015 290);
-  --color-border: oklch(0.88 0.008 300);
-  --color-ring: oklch(0.6 0.22 290);
-  --mesh-1: oklch(0.92 0.04 295 / 0.3);
-  --mesh-2: oklch(0.94 0.03 310 / 0.2);
-  --mesh-3: oklch(0.93 0.02 275 / 0.15);
-}
-
-/* ---- Theme: Mint Fresh ---- */
-[data-theme="mint-fresh"] {
-  --color-background: oklch(0.98 0.008 155);
-  --color-foreground: oklch(0.15 0.015 155);
-  --color-card: oklch(0.995 0.004 155);
-  --color-card-foreground: oklch(0.15 0.015 155);
-  --color-primary: oklch(0.6 0.2 150);
-  --color-primary-foreground: oklch(0.98 0.005 150);
-  --color-secondary: oklch(0.94 0.008 155);
-  --color-secondary-foreground: oklch(0.25 0.015 155);
-  --color-muted: oklch(0.93 0.006 155);
-  --color-muted-foreground: oklch(0.45 0.008 155);
-  --color-accent: oklch(0.95 0.01 160);
-  --color-accent-foreground: oklch(0.2 0.015 155);
-  --color-border: oklch(0.88 0.008 155);
-  --color-ring: oklch(0.6 0.2 150);
-  --mesh-1: oklch(0.92 0.04 150 / 0.3);
-  --mesh-2: oklch(0.94 0.03 170 / 0.2);
-  --mesh-3: oklch(0.93 0.02 135 / 0.15);
-}
-
-/* ---- Theme: Peach Blossom ---- */
-[data-theme="peach-blossom"] {
-  --color-background: oklch(0.98 0.008 60);
-  --color-foreground: oklch(0.15 0.015 50);
-  --color-card: oklch(0.995 0.004 60);
-  --color-card-foreground: oklch(0.15 0.015 50);
-  --color-primary: oklch(0.68 0.18 50);
-  --color-primary-foreground: oklch(0.98 0.005 50);
-  --color-secondary: oklch(0.94 0.008 60);
-  --color-secondary-foreground: oklch(0.25 0.015 50);
-  --color-muted: oklch(0.93 0.006 60);
-  --color-muted-foreground: oklch(0.45 0.008 50);
-  --color-accent: oklch(0.95 0.01 55);
-  --color-accent-foreground: oklch(0.2 0.015 50);
-  --color-border: oklch(0.88 0.008 60);
-  --color-ring: oklch(0.68 0.18 50);
-  --mesh-1: oklch(0.92 0.04 50 / 0.3);
-  --mesh-2: oklch(0.94 0.03 70 / 0.2);
-  --mesh-3: oklch(0.93 0.02 35 / 0.15);
-}
-
-/* ---- Theme: Sky Blue ---- */
-[data-theme="sky-blue"] {
-  --color-background: oklch(0.985 0.005 230);
-  --color-foreground: oklch(0.15 0.01 230);
-  --color-card: oklch(0.995 0.003 230);
-  --color-card-foreground: oklch(0.15 0.01 230);
-  --color-primary: oklch(0.65 0.17 230);
-  --color-primary-foreground: oklch(0.98 0.005 230);
-  --color-secondary: oklch(0.94 0.005 230);
-  --color-secondary-foreground: oklch(0.25 0.01 230);
-  --color-muted: oklch(0.93 0.004 230);
-  --color-muted-foreground: oklch(0.45 0.005 230);
-  --color-accent: oklch(0.95 0.008 225);
-  --color-accent-foreground: oklch(0.2 0.01 230);
-  --color-border: oklch(0.88 0.005 230);
-  --color-ring: oklch(0.65 0.17 230);
-  --mesh-1: oklch(0.92 0.03 225 / 0.3);
-  --mesh-2: oklch(0.94 0.02 245 / 0.2);
-  --mesh-3: oklch(0.93 0.02 210 / 0.15);
-}
-
-/* ---- Theme: Lemon Drop ---- */
-[data-theme="lemon-drop"] {
-  --color-background: oklch(0.98 0.01 95);
-  --color-foreground: oklch(0.15 0.015 80);
-  --color-card: oklch(0.995 0.004 95);
-  --color-card-foreground: oklch(0.15 0.015 80);
-  --color-primary: oklch(0.72 0.17 85);
-  --color-primary-foreground: oklch(0.15 0.03 85);
-  --color-secondary: oklch(0.94 0.01 95);
-  --color-secondary-foreground: oklch(0.25 0.015 80);
-  --color-muted: oklch(0.93 0.008 95);
-  --color-muted-foreground: oklch(0.45 0.008 80);
-  --color-accent: oklch(0.95 0.012 90);
-  --color-accent-foreground: oklch(0.2 0.015 80);
-  --color-border: oklch(0.88 0.01 95);
-  --color-ring: oklch(0.72 0.17 85);
-  --mesh-1: oklch(0.92 0.04 85 / 0.3);
-  --mesh-2: oklch(0.94 0.03 105 / 0.2);
-  --mesh-3: oklch(0.93 0.02 70 / 0.15);
-}
-
-/* ---- Theme: Rose Garden ---- */
-[data-theme="rose-garden"] {
-  --color-background: oklch(0.98 0.006 10);
-  --color-foreground: oklch(0.15 0.015 355);
-  --color-card: oklch(0.995 0.003 10);
-  --color-card-foreground: oklch(0.15 0.015 355);
-  --color-primary: oklch(0.6 0.22 10);
-  --color-primary-foreground: oklch(0.98 0.005 10);
-  --color-secondary: oklch(0.94 0.006 10);
-  --color-secondary-foreground: oklch(0.25 0.015 355);
-  --color-muted: oklch(0.93 0.005 10);
-  --color-muted-foreground: oklch(0.45 0.008 355);
-  --color-accent: oklch(0.95 0.01 5);
-  --color-accent-foreground: oklch(0.2 0.015 355);
-  --color-border: oklch(0.88 0.006 10);
-  --color-ring: oklch(0.6 0.22 10);
-  --mesh-1: oklch(0.92 0.04 10 / 0.3);
-  --mesh-2: oklch(0.94 0.03 350 / 0.2);
-  --mesh-3: oklch(0.93 0.02 25 / 0.15);
-}
-
-/* ---- Theme: Sage Light ---- */
-[data-theme="sage-light"] {
-  --color-background: oklch(0.98 0.005 145);
-  --color-foreground: oklch(0.15 0.01 145);
-  --color-card: oklch(0.995 0.003 145);
-  --color-card-foreground: oklch(0.15 0.01 145);
-  --color-primary: oklch(0.55 0.1 145);
-  --color-primary-foreground: oklch(0.98 0.005 145);
-  --color-secondary: oklch(0.94 0.005 145);
-  --color-secondary-foreground: oklch(0.25 0.01 145);
-  --color-muted: oklch(0.93 0.004 145);
-  --color-muted-foreground: oklch(0.45 0.005 145);
-  --color-accent: oklch(0.95 0.006 150);
-  --color-accent-foreground: oklch(0.2 0.01 145);
-  --color-border: oklch(0.88 0.005 145);
-  --color-ring: oklch(0.55 0.1 145);
-  --mesh-1: oklch(0.91 0.02 145 / 0.3);
-  --mesh-2: oklch(0.93 0.015 160 / 0.2);
-  --mesh-3: oklch(0.92 0.01 130 / 0.15);
-}
-
-/* ---- Theme: Sand Dune ---- */
-[data-theme="sand-dune"] {
-  --color-background: oklch(0.98 0.006 75);
-  --color-foreground: oklch(0.15 0.015 70);
-  --color-card: oklch(0.995 0.003 75);
-  --color-card-foreground: oklch(0.15 0.015 70);
-  --color-primary: oklch(0.6 0.12 75);
-  --color-primary-foreground: oklch(0.98 0.005 75);
-  --color-secondary: oklch(0.94 0.006 75);
-  --color-secondary-foreground: oklch(0.25 0.015 70);
-  --color-muted: oklch(0.93 0.005 75);
-  --color-muted-foreground: oklch(0.45 0.008 70);
-  --color-accent: oklch(0.95 0.008 80);
-  --color-accent-foreground: oklch(0.2 0.015 70);
-  --color-border: oklch(0.88 0.006 75);
-  --color-ring: oklch(0.6 0.12 75);
-  --mesh-1: oklch(0.91 0.02 75 / 0.3);
-  --mesh-2: oklch(0.93 0.015 60 / 0.2);
-  --mesh-3: oklch(0.92 0.01 90 / 0.15);
-}
-
-/* ---- Theme: Ice Crystal ---- */
-[data-theme="ice-crystal"] {
-  --color-background: oklch(0.985 0.003 250);
-  --color-foreground: oklch(0.15 0.008 250);
-  --color-card: oklch(0.995 0.002 250);
-  --color-card-foreground: oklch(0.15 0.008 250);
-  --color-primary: oklch(0.55 0.04 250);
-  --color-primary-foreground: oklch(0.98 0.003 250);
-  --color-secondary: oklch(0.94 0.004 250);
-  --color-secondary-foreground: oklch(0.25 0.008 250);
-  --color-muted: oklch(0.93 0.003 250);
-  --color-muted-foreground: oklch(0.45 0.005 250);
-  --color-accent: oklch(0.95 0.005 245);
-  --color-accent-foreground: oklch(0.2 0.008 250);
-  --color-border: oklch(0.88 0.004 250);
-  --color-ring: oklch(0.55 0.04 250);
-  --mesh-1: oklch(0.91 0.01 250 / 0.25);
-  --mesh-2: oklch(0.93 0.008 240 / 0.18);
-  --mesh-3: oklch(0.92 0.006 260 / 0.12);
-}
-
-/* ===========================
-   CATPPUCCIN THEMES
-   =========================== */
-
-/* ---- Theme: Catppuccin Latte (Light) ---- */
-[data-theme="catppuccin-latte"] {
-  --color-background: oklch(0.96 0.004 260);
-  --color-foreground: oklch(0.2 0.015 270);
-  --color-card: oklch(0.94 0.005 260);
-  --color-card-foreground: oklch(0.2 0.015 270);
-  --color-primary: oklch(0.5 0.22 260);
-  --color-primary-foreground: oklch(0.97 0.005 260);
-  --color-secondary: oklch(0.9 0.005 260);
-  --color-secondary-foreground: oklch(0.3 0.015 270);
-  --color-muted: oklch(0.88 0.004 260);
-  --color-muted-foreground: oklch(0.45 0.01 270);
-  --color-accent: oklch(0.9 0.008 290);
-  --color-accent-foreground: oklch(0.25 0.015 270);
-  --color-border: oklch(0.85 0.005 260);
-  --color-ring: oklch(0.5 0.22 260);
-  --mesh-1: oklch(0.9 0.03 260 / 0.3);
-  --mesh-2: oklch(0.92 0.025 290 / 0.2);
-  --mesh-3: oklch(0.91 0.02 230 / 0.15);
-}
-
-/* ---- Theme: Catppuccin Frappe (Mid-Dark) ---- */
-[data-theme="catppuccin-frappe"] {
-  --color-background: oklch(0.26 0.008 270);
-  --color-foreground: oklch(0.88 0.008 270);
-  --color-card: oklch(0.29 0.01 270);
-  --color-card-foreground: oklch(0.88 0.008 270);
-  --color-primary: oklch(0.7 0.12 260);
-  --color-primary-foreground: oklch(0.2 0.02 260);
-  --color-secondary: oklch(0.32 0.008 270);
-  --color-secondary-foreground: oklch(0.82 0.008 270);
-  --color-muted: oklch(0.3 0.006 270);
-  --color-muted-foreground: oklch(0.6 0.008 270);
-  --color-accent: oklch(0.34 0.012 290);
-  --color-accent-foreground: oklch(0.88 0.008 270);
-  --color-border: oklch(0.35 0.008 270);
-  --color-ring: oklch(0.7 0.12 260);
-  --mesh-1: oklch(0.32 0.06 260 / 0.4);
-  --mesh-2: oklch(0.3 0.05 290 / 0.3);
-  --mesh-3: oklch(0.28 0.04 240 / 0.2);
-}
-
-/* ---- Theme: Catppuccin Macchiato (Dark) ---- */
-[data-theme="catppuccin-macchiato"] {
-  --color-background: oklch(0.2 0.008 270);
-  --color-foreground: oklch(0.9 0.008 270);
-  --color-card: oklch(0.23 0.01 270);
-  --color-card-foreground: oklch(0.9 0.008 270);
-  --color-primary: oklch(0.72 0.12 255);
-  --color-primary-foreground: oklch(0.18 0.02 255);
-  --color-secondary: oklch(0.27 0.008 270);
-  --color-secondary-foreground: oklch(0.84 0.008 270);
-  --color-muted: oklch(0.25 0.006 270);
-  --color-muted-foreground: oklch(0.58 0.008 270);
-  --color-accent: oklch(0.29 0.012 295);
-  --color-accent-foreground: oklch(0.9 0.008 270);
-  --color-border: oklch(0.3 0.008 270);
-  --color-ring: oklch(0.72 0.12 255);
-  --mesh-1: oklch(0.27 0.06 255 / 0.4);
-  --mesh-2: oklch(0.25 0.05 295 / 0.3);
-  --mesh-3: oklch(0.23 0.04 235 / 0.2);
-}
-
-/* ---- Theme: Catppuccin Mocha (Darkest) ---- */
-[data-theme="catppuccin-mocha"] {
-  --color-background: oklch(0.16 0.008 275);
-  --color-foreground: oklch(0.9 0.01 270);
-  --color-card: oklch(0.19 0.01 275);
-  --color-card-foreground: oklch(0.9 0.01 270);
-  --color-primary: oklch(0.75 0.11 255);
-  --color-primary-foreground: oklch(0.15 0.02 255);
-  --color-secondary: oklch(0.23 0.008 275);
-  --color-secondary-foreground: oklch(0.84 0.01 270);
-  --color-muted: oklch(0.21 0.006 275);
-  --color-muted-foreground: oklch(0.55 0.008 270);
-  --color-accent: oklch(0.25 0.012 300);
-  --color-accent-foreground: oklch(0.9 0.01 270);
-  --color-border: oklch(0.27 0.008 275);
-  --color-ring: oklch(0.75 0.11 255);
-  --mesh-1: oklch(0.24 0.06 255 / 0.4);
-  --mesh-2: oklch(0.22 0.05 300 / 0.3);
-  --mesh-3: oklch(0.2 0.04 235 / 0.2);
+/* ---- Theme: Parchment Glow (Notion × Stripe) ---- */
+[data-theme="parchment-glow"] {
+  --color-background: oklch(0.98 0.008 75);
+  --color-foreground: oklch(0.20 0.015 60);
+  --color-card: oklch(1.0 0 0);
+  --color-card-foreground: oklch(0.20 0.015 60);
+  --color-primary: oklch(0.56 0.22 275);
+  --color-primary-foreground: oklch(0.99 0 0);
+  --color-secondary: oklch(0.94 0.008 75);
+  --color-secondary-foreground: oklch(0.28 0.015 60);
+  --color-muted: oklch(0.93 0.006 75);
+  --color-muted-foreground: oklch(0.52 0.018 60);
+  --color-accent: oklch(0.95 0.01 80);
+  --color-accent-foreground: oklch(0.22 0.015 60);
+  --color-destructive: oklch(0.5 0.22 25);
+  --color-border: oklch(0.91 0.012 75);
+  --color-ring: oklch(0.56 0.22 275);
+  --color-success: oklch(0.55 0.2 145);
+  --color-warning: oklch(0.6 0.18 80);
+  --color-info: oklch(0.5 0.18 240);
 }
 
 /* ===========================
@@ -936,71 +507,6 @@ body {
 @keyframes typing-bounce {
   0%, 60%, 100% { transform: translateY(0); }
   30% { transform: translateY(-4px); }
-}
-
-/* Gradient mesh background (static fallback for reduced effects) */
-@utility mesh-gradient {
-  background:
-    radial-gradient(ellipse at 20% 50%, var(--mesh-1) 0%, transparent 50%),
-    radial-gradient(ellipse at 80% 20%, var(--mesh-2) 0%, transparent 50%),
-    radial-gradient(ellipse at 50% 80%, var(--mesh-3) 0%, transparent 50%),
-    var(--color-background);
-}
-
-/* ===========================
-   AURORA BACKGROUND
-   Three drifting radial gradient blobs.
-   GPU-composited: uses transform/opacity only.
-   =========================== */
-
-.aurora-blob {
-  position: absolute;
-  width: 60%;
-  height: 60%;
-  border-radius: 50%;
-  filter: blur(120px);
-  mix-blend-mode: screen;
-  will-change: transform;
-  opacity: 0.7;
-}
-
-.aurora-blob-indigo {
-  background: var(--mesh-1);
-  top: -10%;
-  left: 10%;
-  animation: aurora-drift-1 25s ease-in-out infinite;
-}
-
-.aurora-blob-cyan {
-  background: var(--mesh-2);
-  top: 30%;
-  right: -5%;
-  animation: aurora-drift-2 30s ease-in-out infinite;
-}
-
-.aurora-blob-rose {
-  background: var(--mesh-3);
-  bottom: -10%;
-  left: 30%;
-  animation: aurora-drift-3 20s ease-in-out infinite;
-}
-
-@keyframes aurora-drift-1 {
-  0%, 100% { transform: translate(0, 0) scale(1); }
-  33% { transform: translate(8%, 12%) scale(1.05); }
-  66% { transform: translate(-5%, -8%) scale(0.95); }
-}
-
-@keyframes aurora-drift-2 {
-  0%, 100% { transform: translate(0, 0) scale(1); }
-  33% { transform: translate(-10%, 6%) scale(1.08); }
-  66% { transform: translate(6%, -10%) scale(0.92); }
-}
-
-@keyframes aurora-drift-3 {
-  0%, 100% { transform: translate(0, 0) scale(1); }
-  33% { transform: translate(12%, -6%) scale(0.95); }
-  66% { transform: translate(-8%, 8%) scale(1.06); }
 }
 
 /* ===========================
@@ -2014,10 +1520,6 @@ pre:hover .code-copy-btn {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
-  }
-
-  .aurora-blob {
-    animation: none !important;
   }
 }
 

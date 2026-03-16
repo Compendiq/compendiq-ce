@@ -3,33 +3,29 @@ import { useThemeStore, THEMES, THEME_IDS, LIGHT_THEMES, THEME_CATEGORIES, isLig
 
 describe('theme-store', () => {
   beforeEach(() => {
-    useThemeStore.setState({ theme: 'midnight-blue' });
+    useThemeStore.setState({ theme: 'void-indigo' });
   });
 
-  it('has midnight-blue as the default theme', () => {
-    expect(useThemeStore.getState().theme).toBe('midnight-blue');
+  it('has void-indigo as the default theme', () => {
+    expect(useThemeStore.getState().theme).toBe('void-indigo');
   });
 
   it('sets a new theme', () => {
-    useThemeStore.getState().setTheme('ocean-depth');
-    expect(useThemeStore.getState().theme).toBe('ocean-depth');
+    useThemeStore.getState().setTheme('obsidian-violet');
+    expect(useThemeStore.getState().theme).toBe('obsidian-violet');
   });
 
-  it('defines exactly 24 themes (10 dark + 10 bright + 4 catppuccin)', () => {
-    expect(THEMES).toHaveLength(24);
-    expect(THEME_IDS).toHaveLength(24);
+  it('defines exactly 4 themes (2 dark + 2 light)', () => {
+    expect(THEMES).toHaveLength(4);
+    expect(THEME_IDS).toHaveLength(4);
   });
 
-  it('has 10 dark themes', () => {
-    expect(THEMES.filter((t) => t.category === 'dark')).toHaveLength(10);
+  it('has 2 dark themes', () => {
+    expect(THEMES.filter((t) => t.category === 'dark')).toHaveLength(2);
   });
 
-  it('has 10 bright themes', () => {
-    expect(THEMES.filter((t) => t.category === 'bright')).toHaveLength(10);
-  });
-
-  it('has 4 catppuccin themes', () => {
-    expect(THEMES.filter((t) => t.category === 'catppuccin')).toHaveLength(4);
+  it('has 2 light themes', () => {
+    expect(THEMES.filter((t) => t.category === 'light')).toHaveLength(2);
   });
 
   it('each theme has required metadata', () => {
@@ -55,86 +51,80 @@ describe('theme-store', () => {
     expect(unique.size).toBe(THEME_IDS.length);
   });
 
-  it('LIGHT_THEMES contains only bright themes and catppuccin-latte', () => {
-    const brightIds = THEMES.filter((t) => t.category === 'bright').map((t) => t.id);
-    for (const id of brightIds) {
+  it('LIGHT_THEMES contains only light themes', () => {
+    const lightIds = THEMES.filter((t) => t.category === 'light').map((t) => t.id);
+    for (const id of lightIds) {
       expect(LIGHT_THEMES.has(id)).toBe(true);
     }
-    expect(LIGHT_THEMES.has('catppuccin-latte')).toBe(true);
-    // Dark catppuccin themes should not be in LIGHT_THEMES
-    expect(LIGHT_THEMES.has('catppuccin-mocha')).toBe(false);
-    expect(LIGHT_THEMES.has('catppuccin-macchiato')).toBe(false);
-    expect(LIGHT_THEMES.has('catppuccin-frappe')).toBe(false);
+    // Dark themes should not be in LIGHT_THEMES
+    expect(LIGHT_THEMES.has('void-indigo')).toBe(false);
+    expect(LIGHT_THEMES.has('obsidian-violet')).toBe(false);
   });
 
-  it('has 3 theme categories', () => {
-    expect(THEME_CATEGORIES).toHaveLength(3);
-    expect(THEME_CATEGORIES.map((c) => c.key)).toEqual(['dark', 'bright', 'catppuccin']);
+  it('has 2 theme categories', () => {
+    expect(THEME_CATEGORIES).toHaveLength(2);
+    expect(THEME_CATEGORIES.map((c) => c.key)).toEqual(['dark', 'light']);
   });
 
-  it('sets catppuccin themes', () => {
-    useThemeStore.getState().setTheme('catppuccin-mocha');
-    expect(useThemeStore.getState().theme).toBe('catppuccin-mocha');
+  it('sets light themes', () => {
+    useThemeStore.getState().setTheme('polar-slate');
+    expect(useThemeStore.getState().theme).toBe('polar-slate');
   });
 
-  it('sets bright themes', () => {
-    useThemeStore.getState().setTheme('cloud-white');
-    expect(useThemeStore.getState().theme).toBe('cloud-white');
+  it('sets dark themes', () => {
+    useThemeStore.getState().setTheme('obsidian-violet');
+    expect(useThemeStore.getState().theme).toBe('obsidian-violet');
   });
 
   describe('isLightTheme', () => {
     it('returns true for light themes', () => {
-      expect(isLightTheme('cloud-white')).toBe(true);
-      expect(isLightTheme('lavender-bloom')).toBe(true);
-      expect(isLightTheme('catppuccin-latte')).toBe(true);
-      expect(isLightTheme('ice-crystal')).toBe(true);
+      expect(isLightTheme('polar-slate')).toBe(true);
+      expect(isLightTheme('parchment-glow')).toBe(true);
     });
 
     it('returns false for dark themes', () => {
-      expect(isLightTheme('midnight-blue')).toBe(false);
-      expect(isLightTheme('ocean-depth')).toBe(false);
-      expect(isLightTheme('catppuccin-mocha')).toBe(false);
-      expect(isLightTheme('violet-storm')).toBe(false);
+      expect(isLightTheme('void-indigo')).toBe(false);
+      expect(isLightTheme('obsidian-violet')).toBe(false);
     });
   });
 
   describe('applyThemeToDocument', () => {
     it('sets data-theme attribute on document root', () => {
-      applyThemeToDocument('ocean-depth');
-      expect(document.documentElement.getAttribute('data-theme')).toBe('ocean-depth');
+      applyThemeToDocument('obsidian-violet');
+      expect(document.documentElement.getAttribute('data-theme')).toBe('obsidian-violet');
     });
 
     it('sets data-theme-type to dark for dark themes', () => {
-      applyThemeToDocument('midnight-blue');
+      applyThemeToDocument('void-indigo');
       expect(document.documentElement.dataset.themeType).toBe('dark');
     });
 
     it('sets data-theme-type to light for light themes', () => {
-      applyThemeToDocument('cloud-white');
+      applyThemeToDocument('polar-slate');
       expect(document.documentElement.dataset.themeType).toBe('light');
     });
 
-    it('sets data-theme-type to light for catppuccin-latte', () => {
-      applyThemeToDocument('catppuccin-latte');
+    it('sets data-theme-type to light for parchment-glow', () => {
+      applyThemeToDocument('parchment-glow');
       expect(document.documentElement.dataset.themeType).toBe('light');
     });
 
-    it('sets data-theme-type to dark for catppuccin-mocha', () => {
-      applyThemeToDocument('catppuccin-mocha');
+    it('sets data-theme-type to dark for obsidian-violet', () => {
+      applyThemeToDocument('obsidian-violet');
       expect(document.documentElement.dataset.themeType).toBe('dark');
     });
   });
 
   describe('setTheme applies to document', () => {
     it('updates data-theme when setTheme is called', () => {
-      useThemeStore.getState().setTheme('emerald-dark');
-      expect(document.documentElement.getAttribute('data-theme')).toBe('emerald-dark');
+      useThemeStore.getState().setTheme('obsidian-violet');
+      expect(document.documentElement.getAttribute('data-theme')).toBe('obsidian-violet');
       expect(document.documentElement.dataset.themeType).toBe('dark');
     });
 
-    it('updates data-theme-type to light for bright themes', () => {
-      useThemeStore.getState().setTheme('mint-fresh');
-      expect(document.documentElement.getAttribute('data-theme')).toBe('mint-fresh');
+    it('updates data-theme-type to light for light themes', () => {
+      useThemeStore.getState().setTheme('parchment-glow');
+      expect(document.documentElement.getAttribute('data-theme')).toBe('parchment-glow');
       expect(document.documentElement.dataset.themeType).toBe('light');
     });
   });

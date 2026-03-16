@@ -14,7 +14,7 @@ import {
   Globe,
   HardDrive,
 } from 'lucide-react';
-import { m, AnimatePresence } from 'framer-motion';
+import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { DragDropProvider } from '@dnd-kit/react';
 import { useSortable, isSortable } from '@dnd-kit/react/sortable';
 import { usePageTree } from '../../hooks/use-pages';
@@ -213,7 +213,7 @@ export function SidebarTreeView() {
   const setTreeSidebarSpaceKey = useUiStore((s) => s.setTreeSidebarSpaceKey);
   const treeSidebarWidth = useUiStore((s) => s.treeSidebarWidth);
   const setTreeSidebarWidth = useUiStore((s) => s.setTreeSidebarWidth);
-  const reduceEffects = useUiStore((s) => s.reduceEffects);
+  const reduceEffects = useReducedMotion();
 
   // Extract active page ID from pathname (useParams is unavailable here
   // because this component is rendered in AppLayout, outside the inner

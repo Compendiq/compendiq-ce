@@ -7,11 +7,11 @@ describe('migrateStorageKey', () => {
   });
 
   it('copies old key to new key and removes old key', () => {
-    localStorage.setItem('kb-theme', '{"state":{"theme":"ocean-depth"}}');
+    localStorage.setItem('kb-theme', '{"state":{"theme":"obsidian-violet"}}');
 
     migrateStorageKey('kb-theme', 'atlasmind-theme');
 
-    expect(localStorage.getItem('atlasmind-theme')).toBe('{"state":{"theme":"ocean-depth"}}');
+    expect(localStorage.getItem('atlasmind-theme')).toBe('{"state":{"theme":"obsidian-violet"}}');
     expect(localStorage.getItem('kb-theme')).toBeNull();
   });
 
