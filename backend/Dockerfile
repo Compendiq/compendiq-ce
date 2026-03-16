@@ -9,9 +9,9 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY backend/package.json ./backend/
 COPY packages/contracts/package.json ./packages/contracts/
-RUN --mount=type=cache,target=/root/.npm npm ci -w backend -w @kb-creator/contracts
+RUN --mount=type=cache,target=/root/.npm npm ci -w backend -w @atlasmind/contracts
 COPY packages/contracts/ ./packages/contracts/
-RUN npm run build -w @kb-creator/contracts
+RUN npm run build -w @atlasmind/contracts
 COPY backend/tsconfig.json backend/tsconfig.build.json ./backend/
 COPY backend/src/ backend/src/
 RUN npm run build -w backend
@@ -26,7 +26,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY backend/package.json ./backend/
 COPY packages/contracts/package.json ./packages/contracts/
-RUN --mount=type=cache,target=/root/.npm npm ci -w backend -w @kb-creator/contracts --omit=dev
+RUN --mount=type=cache,target=/root/.npm npm ci -w backend -w @atlasmind/contracts --omit=dev
 
 # Utility stage — install runtime tools and prepare filesystem
 FROM dhi.io/node:24-alpine3.23-dev AS tools
@@ -51,8 +51,8 @@ COPY --chown=node:node --from=builder /app/backend/package.json ./
 # Copy production node_modules (hoisted to root by npm workspaces)
 COPY --chown=node:node --from=prod-deps /app/node_modules ./node_modules
 # Copy built contracts package so backend can resolve it at runtime
-COPY --chown=node:node --from=builder /app/packages/contracts/dist/ ./node_modules/@kb-creator/contracts/dist/
-COPY --chown=node:node --from=builder /app/packages/contracts/package.json ./node_modules/@kb-creator/contracts/package.json
+COPY --chown=node:node --from=builder /app/packages/contracts/dist/ ./node_modules/@atlasmind/contracts/dist/
+COPY --chown=node:node --from=builder /app/packages/contracts/package.json ./node_modules/@atlasmind/contracts/package.json
 # Copy compiled backend
 COPY --chown=node:node --from=builder /app/backend/dist/ dist/
 # Copy SQL migration files (not emitted by tsc)

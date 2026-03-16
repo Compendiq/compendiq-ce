@@ -4,7 +4,7 @@ import { confluenceToHtml } from '../../core/services/content-converter.js';
 import { getEmbeddingStatus, processDirtyPages, reEmbedAll, isProcessingUser, embedPage, resetFailedEmbeddings } from '../../domains/llm/services/embedding-service.js';
 import type { EmbeddingProgressEvent } from '../../domains/llm/services/embedding-service.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
-import { ForceEmbedTreeRequestSchema } from '@kb-creator/contracts';
+import { ForceEmbedTreeRequestSchema } from '@atlasmind/contracts';
 import { logger } from '../../core/utils/logger.js';
 import { EMBEDDING_RATE_LIMIT } from './_helpers.js';
 

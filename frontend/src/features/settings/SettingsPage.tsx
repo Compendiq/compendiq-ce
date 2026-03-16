@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { m } from 'framer-motion';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import type { SettingsResponse, LlmProviderType, AdminSettings, SyncOverviewResponse, SyncOverviewSpace, CustomPrompts } from '@kb-creator/contracts';
+import type { SettingsResponse, LlmProviderType, AdminSettings, SyncOverviewResponse, SyncOverviewSpace, CustomPrompts } from '@atlasmind/contracts';
 import { apiFetch } from '../../shared/lib/api';
 import { useAuthStore } from '../../stores/auth-store';
 import { useSettings } from '../../shared/hooks/use-settings';

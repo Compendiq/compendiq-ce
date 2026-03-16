@@ -5,7 +5,7 @@ import { reEncryptPat } from '../../core/utils/crypto.js';
 import { getAuditLog, logAuditEvent } from '../../core/services/audit-service.js';
 import { listErrors, resolveError, getErrorSummary } from '../../core/services/error-tracker.js';
 import { logger } from '../../core/utils/logger.js';
-import { UpdateAdminSettingsSchema } from '@kb-creator/contracts';
+import { UpdateAdminSettingsSchema } from '@atlasmind/contracts';
 
 const AuditLogQuerySchema = z.object({
   userId: z.string().optional(),

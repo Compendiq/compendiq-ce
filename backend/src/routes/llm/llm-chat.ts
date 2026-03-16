@@ -14,7 +14,7 @@ import {
   AskRequestSchema,
   GenerateDiagramRequestSchema,
   AnalyzeQualityRequestSchema,
-} from '@kb-creator/contracts';
+} from '@atlasmind/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
 import { assembleSubPageContext, getMultiPagePromptSuffix } from '../../domains/confluence/services/subpage-context.js';

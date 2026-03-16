@@ -3,6 +3,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { m, AnimatePresence } from 'framer-motion';
 import { Search, BookOpen, Bot, Menu, X, Share2 } from 'lucide-react';
 import { useCommandPaletteStore } from '../../../stores/command-palette-store';
+import { AtlasMindLogo } from '../AtlasMindLogo';
 import { CommandPalette } from './CommandPalette';
 import { ServiceStatus } from '../badges/ServiceStatus';
 import { Breadcrumb } from './Breadcrumb';
@@ -81,8 +82,11 @@ export function AppLayout({ children }: { children: ReactNode }) {
         </button>
 
         {/* Logo - always visible in header */}
-        <Link to="/" className="flex items-center gap-2 mr-6">
-          <span className="text-sm font-semibold text-foreground">AI KB Creator</span>
+        <Link to="/" className="flex items-center gap-1.5 mr-6 group">
+          <AtlasMindLogo size={20} className="text-primary transition-transform duration-200 group-hover:scale-110" />
+          <span className="text-sm font-semibold text-foreground">
+            Atlas<span className="font-bold">Mind</span>
+          </span>
         </Link>
 
         {/* Breadcrumb */}

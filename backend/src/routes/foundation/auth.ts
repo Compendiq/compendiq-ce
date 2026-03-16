@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import bcrypt from 'bcrypt';
-import { RegisterSchema, LoginSchema } from '@kb-creator/contracts';
+import { RegisterSchema, LoginSchema } from '@atlasmind/contracts';
 import { query } from '../../core/db/postgres.js';
 import {
   generateAccessToken,

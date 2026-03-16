@@ -214,7 +214,7 @@ Knowledge is the "highest" domain — depends on both llm and confluence.
 
 | From | Can Import | Cannot Import |
 |------|-----------|---------------|
-| `core/` | npm packages, `@kb-creator/contracts` | Any domain |
+| `core/` | npm packages, `@atlasmind/contracts` | Any domain |
 | `domains/confluence/` | `core/` | `llm/`, `knowledge/` |
 | `domains/llm/` | `core/` | `confluence/`, `knowledge/` |
 | `domains/knowledge/` | `core/`, `llm/`, `confluence/` | — |
@@ -513,7 +513,7 @@ The directory-based approach works well within these bounds:
 | **Team size** | > 4 concurrent developers | Multiple people editing the same `backend/` package causes merge conflicts; separate packages give isolated build/test |
 | **Service count** | > 80 services | TypeScript compile time for single `backend/` gets painful (>30s); project references parallelize compilation |
 | **Independent deployment** | Any | If you need to deploy confluence-sync separately from the LLM service, you need real package boundaries |
-| **Shared library reuse** | Any | If another project wants `@kb-creator/core` or `@kb-creator/llm`, extract to packages |
+| **Shared library reuse** | Any | If another project wants `@atlasmind/core` or `@atlasmind/llm`, extract to packages |
 | **CI time** | > 5 minutes | Package-level caching: only rebuild/retest changed packages |
 | **ESLint boundary violations** | Frequent | If the team keeps overriding boundary rules, hard package boundaries enforce by compiler error instead of lint warning |
 
@@ -610,13 +610,13 @@ The original full-package plan is preserved here for reference.
 
 ```
 packages/
-├── contracts/             # @kb-creator/contracts (+ service interfaces)
-├── core/                  # @kb-creator/core
-├── confluence/            # @kb-creator/confluence
-├── llm/                   # @kb-creator/llm
-├── knowledge/             # @kb-creator/knowledge
-├── foundation/            # @kb-creator/foundation
-└── server/                # @kb-creator/server (composition root)
+├── contracts/             # @atlasmind/contracts (+ service interfaces)
+├── core/                  # @atlasmind/core
+├── confluence/            # @atlasmind/confluence
+├── llm/                   # @atlasmind/llm
+├── knowledge/             # @atlasmind/knowledge
+├── foundation/            # @atlasmind/foundation
+└── server/                # @atlasmind/server (composition root)
 ```
 
 ### What changes from current plan

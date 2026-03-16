@@ -1,6 +1,6 @@
 services:
   frontend:
-    image: diinlu/ai-kb-creator-frontend:dev
+    image: diinlu/atlasmind-frontend:dev
     build:
       context: ..
       dockerfile: frontend/Dockerfile
@@ -12,7 +12,7 @@ services:
     restart: unless-stopped
 
   backend:
-    image: diinlu/ai-kb-creator-backend:dev
+    image: diinlu/atlasmind-backend:dev
     build:
       context: ..
       dockerfile: backend/Dockerfile

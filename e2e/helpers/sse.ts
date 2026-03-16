@@ -76,7 +76,7 @@ export async function collectSSE(
 /**
  * Extract accumulated text content from SSE events.
  * Assumes events have a `{ content: string }` data shape (matching
- * the AI KB Creator LLM streaming format).
+ * the AtlasMind LLM streaming format).
  */
 export function getSSEContent(events: SSEEvent[]): string {
   return events

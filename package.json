@@ -1,8 +1,8 @@
 {
-  "name": "ai-kb-creator",
+  "name": "atlasmind",
   "version": "1.0.0",
   "private": true,
-  "description": "AI-powered Confluence knowledge base management with Ollama LLM backend",
+  "description": "AtlasMind - AI-powered knowledge base management with Confluence integration and Ollama LLM backend",
   "workspaces": [
     "backend",
     "frontend",
@@ -10,10 +10,10 @@
   ],
   "scripts": {
     "dev": "concurrently \"npm run dev -w backend\" \"npm run dev -w frontend\"",
-    "build": "npm run build -w @kb-creator/contracts && npm run build -w backend && npm run build -w frontend",
+    "build": "npm run build -w @atlasmind/contracts && npm run build -w backend && npm run build -w frontend",
     "lint": "npm run lint -w backend && npm run lint -w frontend",
-    "typecheck": "npm run build -w @kb-creator/contracts && npm run typecheck -w backend && npm run typecheck -w frontend",
-    "test": "npm run test -w @kb-creator/contracts && npm run test -w backend && npm run test -w frontend",
+    "typecheck": "npm run build -w @atlasmind/contracts && npm run typecheck -w backend && npm run typecheck -w frontend",
+    "test": "npm run test -w @atlasmind/contracts && npm run test -w backend && npm run test -w frontend",
     "test:e2e": "npx playwright test",
     "prepare": "husky || true"
   },
