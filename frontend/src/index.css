@@ -109,7 +109,7 @@ body {
   /* Liquid Glass sidebar variables (dark default, overridden for light themes) */
   --glass-sidebar-bg: oklch(from var(--color-card) l c h / 0.55);
   --glass-sidebar-blur: 24px;
-  --glass-sidebar-border: oklch(1 0 0 / 0.06);
+  --glass-sidebar-border: oklch(1 0 0 / 0.12);
   --glass-sidebar-shadow: 0 8px 32px oklch(0 0 0 / 0.18);
   --glass-sidebar-specular: inset 0 0.5px 0 oklch(1 0 0 / 0.08);
   --glass-sidebar-divider: oklch(1 0 0 / 0.06);
@@ -335,7 +335,7 @@ body {
 
   /* Light-mode Liquid Glass sidebar overrides */
   --glass-sidebar-bg: oklch(from var(--color-card) l c h / 0.7);
-  --glass-sidebar-border: oklch(0 0 0 / 0.06);
+  --glass-sidebar-border: oklch(0 0 0 / 0.10);
   --glass-sidebar-shadow: 0 8px 32px oklch(0 0 0 / 0.08);
   --glass-sidebar-specular: inset 0 0.5px 0 oklch(1 0 0 / 0.4);
   --glass-sidebar-divider: oklch(0 0 0 / 0.06);
@@ -705,11 +705,10 @@ body {
   border-radius: var(--radius-xl);
   background: var(--glass-sidebar-bg);
   backdrop-filter: blur(var(--glass-sidebar-blur)) saturate(1.3);
-  border: 0.5px solid var(--glass-sidebar-border);
+  border: 2px solid var(--glass-sidebar-border);
   box-shadow:
     var(--glass-sidebar-specular),
-    var(--glass-sidebar-shadow),
-    0 0 0 0.5px var(--glass-sidebar-border);
+    var(--glass-sidebar-shadow);
 }
 
 /* Liquid Glass header — floating nav bar variant. */
