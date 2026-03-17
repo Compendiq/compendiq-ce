@@ -69,7 +69,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
       <CommandPalette />
 
       {/* Top navigation bar — Liquid Glass floating header */}
-      <header className="relative z-10 mx-2 mt-2 flex h-11 shrink-0 items-center rounded-xl glass-header px-4">
+      <header className="relative z-10 mx-3 mt-3 flex h-11 shrink-0 items-center rounded-xl glass-header px-4">
         {/* Mobile hamburger */}
         <button
           onClick={() => setMobileMenuOpen((v) => !v)}
@@ -142,7 +142,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
             animate={{ height: 'auto', opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
             transition={{ duration: 0.2 }}
-            className="overflow-hidden mx-2 mt-1 rounded-xl glass-header md:hidden"
+            className="overflow-hidden mx-3 mt-1 rounded-xl glass-header md:hidden"
           >
             <div className="space-y-1 p-3">
               {navItems.map(({ icon: Icon, label, path }) => {
@@ -177,12 +177,12 @@ export function AppLayout({ children }: { children: ReactNode }) {
       </div>
 
       {/* Below header: sidebar + content area with floating gaps */}
-      <div data-testid="panel-wrapper" className="flex flex-1 gap-1.5 overflow-hidden p-2">
+      <div data-testid="panel-wrapper" className="flex flex-1 gap-2.5 overflow-hidden p-3">
         {/* Left sidebar - below header, only on pages routes */}
         {showTreeSidebar && <SidebarTreeView />}
 
         {/* Main content area + optional right sidebar */}
-        <div className="flex flex-1 gap-1.5 overflow-hidden">
+        <div className="flex flex-1 gap-2.5 overflow-hidden">
           <main className="flex flex-1 flex-col overflow-hidden bg-card/5">
             <div ref={scrollContainerRef} data-scroll-container className="min-h-0 flex-1 overflow-y-auto px-4 pb-4 sm:px-6 sm:pb-6">
               <PageTransition>

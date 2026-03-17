@@ -50,14 +50,14 @@ export const THEMES: ThemeMeta[] = [
     label: 'Void',
     description: 'Inky graphite with indigo accents — Linear × GitHub',
     category: 'dark',
-    preview: { bg: '#1e1e22', card: '#2c2c31', primary: '#6366f1', accent: '#818cf8' },
+    preview: { bg: '#2a2a2f', card: '#363640', primary: '#6366f1', accent: '#818cf8' },
   },
   {
     id: 'obsidian-violet',
     label: 'Obsidian',
     description: 'Warm graphite with violet accents — Raycast × Obsidian',
     category: 'dark',
-    preview: { bg: '#23211e', card: '#312f2b', primary: '#a855f7', accent: '#c084fc' },
+    preview: { bg: '#302e2b', card: '#3b3936', primary: '#a855f7', accent: '#c084fc' },
   },
   // -- Light themes --
   {

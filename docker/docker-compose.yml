@@ -45,7 +45,7 @@ services:
       - attachments:/app/data
       - "${HOST_CA_BUNDLE_PATH:-/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem}:${CONTAINER_CA_BUNDLE_PATH:-/etc/ssl/certs/ca-certificates.crt}:ro"
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3051/api/health || exit 1"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3051/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 10s
       timeout: 5s
       retries: 5
