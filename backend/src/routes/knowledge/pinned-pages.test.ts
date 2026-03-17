@@ -72,6 +72,8 @@ vi.mock('../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
+import { getUserAccessibleSpaces as mockGetUserAccessibleSpaces } from '../../core/services/rbac-service.js';
+
 vi.mock('../../core/services/rbac-service.js', () => ({
   getUserAccessibleSpaces: vi.fn().mockResolvedValue(['DEV', 'OPS']),
 }));
@@ -392,6 +394,53 @@ describe('Pinned Pages API', () => {
       // The insert query should use userId
       const insertCall = mockQueryFn.mock.calls[2];
       expect(insertCall[1]).toContain('test-user-id');
+    });
+  });
+
+  describe('RBAC integration (#409)', () => {
+    it('should use getUserAccessibleSpaces for page existence check when pinning', async () => {
+      // getUserAccessibleSpaces returns ['DEV', 'OPS'] by default
+      // page exists in DEV space — should succeed
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ confluence_id: 'page-1' }], rowCount: 1 });
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/page-1/pin',
+      });
+
+      expect(response.statusCode).toBe(200);
+      // The page existence query should filter by RBAC-accessible spaces
+      const pageQuery = mockQueryFn.mock.calls[0][0] as string;
+      expect(pageQuery).toContain('space_key = ANY($1::text[])');
+      expect(mockGetUserAccessibleSpaces).toHaveBeenCalledWith('test-user-id');
+    });
+
+    it('should return 404 when user has no RBAC-accessible spaces', async () => {
+      // Override the mock to return empty spaces
+      (mockGetUserAccessibleSpaces as ReturnType<typeof vi.fn>).mockResolvedValueOnce([]);
+      // No page matches empty space list
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/page-1/pin',
+      });
+
+      expect(response.statusCode).toBe(404);
+    });
+
+    it('should return 404 when page is not in users accessible spaces', async () => {
+      // getUserAccessibleSpaces returns ['DEV', 'OPS'] but page is in 'HR'
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/page-hr-only/pin',
+      });
+
+      expect(response.statusCode).toBe(404);
     });
   });
 

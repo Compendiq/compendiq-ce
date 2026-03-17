@@ -132,6 +132,20 @@ describe('RBAC service', () => {
       expect(result).toBe(false);
     });
 
+    it('should guard group-based principal_id::INTEGER cast with regex (#409)', async () => {
+      const queryMock = mockQuery as ReturnType<typeof vi.fn>;
+      queryMock.mockResolvedValueOnce({ rows: [] }); // not admin
+      queryMock.mockResolvedValueOnce({ rows: [] }); // no direct assignment
+      queryMock.mockResolvedValueOnce({ rows: [] }); // no group assignment
+
+      await userHasPermission('a1b2c3d4-e5f6-7890-abcd-ef1234567890', 'read', 'SPACE1');
+
+      // The group-based query (third call) should have the regex guard
+      const groupSql = queryMock.mock.calls[2][0] as string;
+      expect(groupSql).toContain("principal_id ~ '^\\d+$'");
+      expect(groupSql).toContain('principal_id::INTEGER');
+    });
+
     it('should fall through to space check when page inherits perms', async () => {
       const queryMock = mockQuery as ReturnType<typeof vi.fn>;
       queryMock.mockResolvedValueOnce({ rows: [] }); // not admin
@@ -158,6 +172,16 @@ describe('RBAC service', () => {
 
       const role = await getUserSpaceRole('user-id', 'SPACE1');
       expect(role).toBeNull();
+    });
+
+    it('should guard principal_id::INTEGER cast with regex (#409)', async () => {
+      const queryMock = mockQuery as ReturnType<typeof vi.fn>;
+      queryMock.mockResolvedValueOnce({ rows: [] });
+
+      await getUserSpaceRole('a1b2c3d4-e5f6-7890-abcd-ef1234567890', 'SPACE1');
+
+      const sqlArg = queryMock.mock.calls[0][0] as string;
+      expect(sqlArg).toContain("principal_id ~ '^\\d+$'");
     });
   });
 
@@ -207,6 +231,19 @@ describe('RBAC service', () => {
       const sqlArg = queryMock.mock.calls[1][0] as string;
       expect(sqlArg).toContain('space_role_assignments');
       expect(sqlArg).not.toContain('user_space_selections');
+    });
+
+    it('should guard principal_id::int cast with regex to prevent UUID cast crash (#409)', async () => {
+      const queryMock = mockQuery as ReturnType<typeof vi.fn>;
+      queryMock.mockResolvedValueOnce({ rows: [] }); // not admin
+      queryMock.mockResolvedValueOnce({ rows: [{ space_key: 'DEV' }] });
+
+      await getUserAccessibleSpaces('a1b2c3d4-e5f6-7890-abcd-ef1234567890');
+
+      // The spaces query must include a regex guard before the ::int cast
+      const sqlArg = queryMock.mock.calls[1][0] as string;
+      expect(sqlArg).toContain("principal_id ~ '^\\d+$'");
+      expect(sqlArg).toContain('principal_id::int');
     });
   });
 

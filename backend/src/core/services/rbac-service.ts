@@ -121,7 +121,8 @@ export async function userHasPermission(
          WHERE ace.resource_type = 'page' AND ace.resource_id = $1
            AND (
              (ace.principal_type = 'user' AND ace.principal_id = $2)
-             OR (ace.principal_type = 'group' AND ace.principal_id::INTEGER IN (
+             OR (ace.principal_type = 'group' AND ace.principal_id ~ '^\\d+$'
+                 AND ace.principal_id::INTEGER IN (
                SELECT group_id FROM group_memberships WHERE user_id = $2
              ))
            )`,
@@ -160,8 +161,9 @@ export async function userHasPermission(
   const groupCheck = await query<{ permissions: string[] }>(
     `SELECT r.permissions FROM space_role_assignments sra
      JOIN roles r ON r.id = sra.role_id
-     JOIN group_memberships gm ON gm.group_id = sra.principal_id::INTEGER AND sra.principal_type = 'group'
-     WHERE sra.space_key = $1 AND gm.user_id = $2`,
+     JOIN group_memberships gm ON (sra.principal_id ~ '^\\d+$' AND gm.group_id = sra.principal_id::INTEGER)
+     WHERE sra.space_key = $1 AND sra.principal_type = 'group'
+       AND gm.user_id = $2`,
     [spaceKey, userId],
   );
 
@@ -190,7 +192,8 @@ export async function getUserSpaceRole(
      JOIN roles r ON r.id = sra.role_id
      WHERE sra.space_key = $1 AND (
        (sra.principal_type = 'user' AND sra.principal_id = $2)
-       OR (sra.principal_type = 'group' AND sra.principal_id::INTEGER IN (
+       OR (sra.principal_type = 'group' AND sra.principal_id ~ '^\\d+$'
+           AND sra.principal_id::INTEGER IN (
          SELECT group_id FROM group_memberships WHERE user_id = $2
        ))
      )
@@ -227,12 +230,15 @@ export async function getUserAccessibleSpaces(userId: string): Promise<string[]>
   if (cached !== null) return cached;
 
   // Query RBAC assignments only (direct user + group-based)
+  // Guard the ::int cast with a regex check to prevent crash when
+  // principal_id contains a non-numeric value (e.g. UUID for user rows).
   const result = await query<{ space_key: string }>(
     `SELECT DISTINCT sra.space_key
      FROM space_role_assignments sra
      JOIN roles r ON sra.role_id = r.id
      WHERE (sra.principal_type = 'user' AND sra.principal_id = $1)
-        OR (sra.principal_type = 'group' AND sra.principal_id::int IN (
+        OR (sra.principal_type = 'group' AND sra.principal_id ~ '^\\d+$'
+            AND sra.principal_id::int IN (
             SELECT group_id FROM group_memberships WHERE user_id = $1::uuid
         ))`,
     [userId],
@@ -283,7 +289,8 @@ export async function userCanAccessPage(
        WHERE ace.resource_type = 'page' AND ace.resource_id = $1
          AND (
            (ace.principal_type = 'user' AND ace.principal_id = $2)
-           OR (ace.principal_type = 'group' AND ace.principal_id::INTEGER IN (
+           OR (ace.principal_type = 'group' AND ace.principal_id ~ '^\\d+$'
+               AND ace.principal_id::INTEGER IN (
              SELECT group_id FROM group_memberships WHERE user_id = $2
            ))
          )
