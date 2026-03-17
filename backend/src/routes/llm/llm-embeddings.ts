@@ -30,6 +30,7 @@ export async function llmEmbeddingRoutes(fastify: FastifyInstance) {
     const onClose = () => controller.abort();
     request.raw.on('close', onClose);
 
+    reply.hijack();
     reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -82,6 +83,7 @@ export async function llmEmbeddingRoutes(fastify: FastifyInstance) {
     const onClose = () => controller.abort();
     request.raw.on('close', onClose);
 
+    reply.hijack();
     reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -127,6 +129,7 @@ export async function llmEmbeddingRoutes(fastify: FastifyInstance) {
     const onClose = () => controller.abort();
     request.raw.on('close', onClose);
 
+    reply.hijack();
     reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',

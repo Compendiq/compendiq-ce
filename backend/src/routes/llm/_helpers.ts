@@ -116,6 +116,7 @@ export function sendCachedSSE(
   content: string,
   extras?: Record<string, unknown>,
 ): void {
+  reply.hijack();
   reply.raw.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -151,6 +152,7 @@ export async function streamSSE(
   };
   request.raw.on('close', onClose);
 
+  reply.hijack();
   reply.raw.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
