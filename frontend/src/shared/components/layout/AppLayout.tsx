@@ -178,8 +178,8 @@ export function AppLayout({ children }: { children: ReactNode }) {
 
         {/* Main content area + optional right sidebar */}
         <div className="flex flex-1 gap-1.5 overflow-hidden">
-          <main className="flex flex-1 flex-col overflow-hidden">
-            <div className="shrink-0 px-4 pt-3 sm:px-6">
+          <main className="flex flex-1 flex-col overflow-hidden pt-[2px]">
+            <div className="shrink-0 px-4 sm:px-6">
               <ServiceStatus />
             </div>
             <div ref={scrollContainerRef} data-scroll-container className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
