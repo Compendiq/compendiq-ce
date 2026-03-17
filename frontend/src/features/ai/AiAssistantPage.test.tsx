@@ -898,6 +898,62 @@ describe('AiAssistantPage', () => {
     });
   });
 
+  describe('AI context page change (#417)', () => {
+    it('shows page context badge when navigated from sidebar', () => {
+      mockPageData = {
+        data: { id: 'p1', title: 'My Article', bodyHtml: '<p>Content</p>', bodyText: 'Content' },
+      };
+
+      render(<AiAssistantPage />, {
+        wrapper: createWrapper(['/ai?pageId=p1']),
+      });
+
+      // The page title should be shown in the mode bar as context
+      expect(screen.getByText('My Article')).toBeInTheDocument();
+    });
+
+    it('starts fresh conversation when mounted with different pageId', () => {
+      // Mount with p1
+      mockPageData = {
+        data: { id: 'p1', title: 'First Article', bodyHtml: '<p>Content</p>', bodyText: 'Content' },
+      };
+
+      const { unmount } = render(<AiAssistantPage />, {
+        wrapper: createWrapper(['/ai?pageId=p1']),
+      });
+
+      expect(screen.getByText('First Article')).toBeInTheDocument();
+      unmount();
+
+      // Re-mount with p2 — should show fresh state with new page context
+      mockPageData = {
+        data: { id: 'p2', title: 'Second Article', bodyHtml: '<p>Other</p>', bodyText: 'Other' },
+      };
+
+      render(<AiAssistantPage />, {
+        wrapper: createWrapper(['/ai?pageId=p2']),
+      });
+
+      // New page title shown, no stale state from p1
+      expect(screen.getByText('Second Article')).toBeInTheDocument();
+      expect(screen.queryByText('First Article')).not.toBeInTheDocument();
+    });
+
+    it('defaults to improve mode when pageId is present', () => {
+      mockPageData = {
+        data: { id: 'p1', title: 'My Article', bodyHtml: '<p>Content</p>', bodyText: 'Content' },
+      };
+
+      render(<AiAssistantPage />, {
+        wrapper: createWrapper(['/ai?pageId=p1']),
+      });
+
+      // Improve mode tab should be active (has font-medium class)
+      const improveTab = screen.getByText('Improve');
+      expect(improveTab.closest('button')?.className).toContain('text-primary');
+    });
+  });
+
   describe('empty state messages', () => {
     it('shows only the correct empty state for improve mode without spurious messages', () => {
       render(<AiAssistantPage />, { wrapper: createWrapper() });

@@ -110,9 +110,11 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
   sortableIndex,
 }: SidebarTreeNodeProps) {
   const navigate = useNavigate();
+  const location = useLocation();
   const isExpanded = expandedSet.has(node.page.id);
   const hasChildren = node.children.length > 0;
   const isActive = node.page.id === activePageId;
+  const isAiRoute = location.pathname === '/ai';
 
   // Always call hook (React rules), but only use the ref when DnD is active
   const sortable = useSortable({
@@ -123,8 +125,13 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
 
   const handleNavigate = useCallback(() => {
     if (hasChildren) toggleExpand(node.page.id);
-    navigate(`/pages/${node.page.id}`);
-  }, [navigate, node.page.id, hasChildren, toggleExpand]);
+    if (isAiRoute) {
+      // Update AI context page instead of navigating away
+      navigate(`/ai?pageId=${node.page.id}`, { replace: true });
+    } else {
+      navigate(`/pages/${node.page.id}`);
+    }
+  }, [navigate, node.page.id, hasChildren, toggleExpand, isAiRoute]);
 
   const handleToggle = useCallback(
     (e: React.MouseEvent) => {
@@ -233,10 +240,16 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
   // Extract active page ID from pathname (useParams is unavailable here
   // because this component is rendered in AppLayout, outside the inner
   // <Routes> that defines /pages/:id).
+  // On the AI route, also highlight the article selected via ?pageId query param.
   const activePageId = useMemo(() => {
     const match = location.pathname.match(/^\/pages\/([^/]+)$/);
-    return match?.[1];
-  }, [location.pathname]);
+    if (match) return match[1];
+    if (location.pathname === '/ai') {
+      const params = new URLSearchParams(location.search);
+      return params.get('pageId') ?? undefined;
+    }
+    return undefined;
+  }, [location.pathname, location.search]);
 
   const { data: confluenceSpaces } = useSpaces();
   const { data: localSpacesData } = useLocalSpaces();

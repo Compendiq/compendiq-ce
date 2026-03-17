@@ -174,6 +174,22 @@ export function AiProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  // Clear conversation when the AI context page changes (e.g. sidebar click)
+  const prevPageIdRef = useRef(pageId);
+  useEffect(() => {
+    if (pageId !== prevPageIdRef.current) {
+      prevPageIdRef.current = pageId;
+      // Abort any in-flight stream and reset conversation state
+      abortRef.current?.abort();
+      setMessages([]);
+      setConversationId(null);
+      setInput('');
+      setShowDiffView(false);
+      setImprovedContent('');
+      setDiagramCode('');
+    }
+  }, [pageId]);
+
   // After 2 seconds of thinking, promote from TypingIndicator to ThinkingBlob
   useEffect(() => {
     if (isThinking) {

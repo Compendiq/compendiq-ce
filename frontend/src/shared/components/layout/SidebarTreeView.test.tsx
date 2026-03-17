@@ -160,6 +160,23 @@ describe('SidebarTreeView', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/pages/root-2');
   });
 
+  it('navigates to /ai?pageId= on click when on AI route (#417)', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper('/ai') });
+    fireEvent.click(screen.getByText('API Reference'));
+    expect(mockNavigate).toHaveBeenCalledWith('/ai?pageId=root-2', { replace: true });
+  });
+
+  it('highlights the article matching ?pageId on the AI route (#417)', () => {
+    // Use child-1 (Installation, under root-1/Getting Started) since auto-select
+    // scopes the tree to the DEV space homepage (root-1) and its descendants
+    render(<SidebarTreeView />, { wrapper: createWrapper('/ai?pageId=child-1') });
+    // Child nodes should be auto-expanded via findAncestorIds
+    const installRef = screen.getByText('Installation');
+    // The active node row has the glass-pill-active class
+    const row = installRef.parentElement!;
+    expect(row.className).toContain('glass-pill-active');
+  });
+
   it('shows collapsed state with nav icons when treeSidebarCollapsed is true', () => {
     useUiStore.setState({ treeSidebarCollapsed: true });
     render(<SidebarTreeView />, { wrapper: createWrapper() });
