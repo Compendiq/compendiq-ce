@@ -1,22 +1,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { m } from 'framer-motion';
 import ForceGraph2D from 'react-force-graph-2d';
-import { ZoomIn, ZoomOut, Maximize, RefreshCw, Info } from 'lucide-react';
-import { apiFetch } from '../../shared/lib/api';
+import { ZoomIn, ZoomOut, Maximize, RefreshCw, Info, Layers, Grid3x3, Filter } from 'lucide-react';
 import { cn } from '../../shared/lib/cn';
+import { useGraphData, useLocalGraphData } from './graph-hooks';
 
 // ---------- Types ----------
 
 interface GraphNode {
   id: string;
+  confluenceId?: string | null;
   spaceKey: string;
   title: string;
   labels: string[];
   embeddingStatus: string;
   embeddingCount: number;
   lastModifiedAt: string | null;
+  parentId?: string | null;
   // Force-graph internal fields
   x?: number;
   y?: number;
@@ -24,34 +25,32 @@ interface GraphNode {
   vy?: number;
 }
 
-interface GraphEdge {
-  source: string;
-  target: string;
-  type: 'embedding_similarity' | 'label_overlap' | 'explicit_link';
-  score: number;
+interface ClusterNode {
+  id: string;
+  type: 'cluster';
+  spaceKey: string;
+  title: string;
+  articleCount: number;
+  pageIds: number[];
+  // Force-graph internal fields
+  x?: number;
+  y?: number;
+  vx?: number;
+  vy?: number;
 }
 
-interface GraphData {
-  nodes: GraphNode[];
-  edges: GraphEdge[];
+type ViewMode = 'individual' | 'clustered';
+
+function isClusterNode(node: GraphNode | ClusterNode): node is ClusterNode {
+  return 'type' in node && node.type === 'cluster';
 }
 
 // ---------- Helpers ----------
 
-// Deterministic color palette for spaces (distinct hues via oklch-inspired hex palette)
 const SPACE_COLORS = [
-  '#7c8cf5', // blue-purple
-  '#5cc9a7', // teal
-  '#f59e42', // orange
-  '#e879a8', // pink
-  '#64b5f6', // sky blue
-  '#ab82e6', // violet
-  '#4dd0a1', // green
-  '#f4c84b', // yellow
-  '#e57373', // red
-  '#81d4fa', // light blue
-  '#ce93d8', // lavender
-  '#a5d6a7', // light green
+  '#7c8cf5', '#5cc9a7', '#f59e42', '#e879a8', '#64b5f6',
+  '#ab82e6', '#4dd0a1', '#f4c84b', '#e57373', '#81d4fa',
+  '#ce93d8', '#a5d6a7',
 ];
 
 function getSpaceColor(spaceKey: string, spaceKeys: string[]): string {
@@ -63,36 +62,43 @@ const EDGE_COLORS: Record<string, string> = {
   embedding_similarity: 'rgba(124, 140, 245, 0.35)',
   label_overlap: 'rgba(92, 201, 167, 0.45)',
   explicit_link: 'rgba(245, 158, 66, 0.5)',
+  cluster_relationship: 'rgba(171, 130, 230, 0.4)',
 };
 
-// ---------- Hook ----------
-
-function useGraphData() {
-  return useQuery<GraphData>({
-    queryKey: ['pages', 'graph'],
-    queryFn: () => apiFetch('/pages/graph'),
-    staleTime: 60_000,
-  });
-}
+const MAX_TOOLTIP_LABELS = 5;
 
 // ---------- Component ----------
 
 export function GraphPage() {
   const navigate = useNavigate();
-  const { data, isLoading, error, refetch } = useGraphData();
+  const [searchParams] = useSearchParams();
+
+  // Read initial state from URL search params
+  const focusPageId = searchParams.get('focus') ?? undefined;
+  const initialView = (searchParams.get('view') as ViewMode) || 'individual';
+
+  const [viewMode, setViewMode] = useState<ViewMode>(focusPageId ? 'individual' : initialView);
+  const [filterSpace, setFilterSpace] = useState<string | undefined>(searchParams.get('space') ?? undefined);
+
+  // Use local graph when focusing on a specific page
+  const globalQuery = useGraphData(viewMode, filterSpace);
+  const localQuery = useLocalGraphData(focusPageId);
+  const activeQuery = focusPageId ? localQuery : globalQuery;
+
+  const { data, isLoading, error, refetch } = activeQuery;
+
   const graphRef = useRef<{ zoom: (k: number, ms?: number) => void; zoomToFit: (ms?: number, padding?: number) => void }>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
-  const [hoveredNode, setHoveredNode] = useState<GraphNode | null>(null);
+  const [hoveredNode, setHoveredNode] = useState<(GraphNode | ClusterNode) | null>(null);
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
 
-  // Respect prefers-reduced-motion
   const prefersReducedMotion = useMemo(() => {
     if (typeof window === 'undefined') return false;
     return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   }, []);
 
-  // Resize observer for responsive dimensions
+  // Resize observer
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -107,13 +113,13 @@ export function GraphPage() {
     return () => observer.disconnect();
   }, []);
 
-  // Derive unique space keys for color assignment
+  // Derive unique space keys
   const spaceKeys = useMemo(() => {
     if (!data?.nodes) return [];
     return [...new Set(data.nodes.map((n) => n.spaceKey))].sort();
   }, [data?.nodes]);
 
-  // Build graph data in the format react-force-graph expects
+  // Build graph data for react-force-graph
   const graphData = useMemo(() => {
     if (!data) return { nodes: [], links: [] };
     return {
@@ -128,28 +134,32 @@ export function GraphPage() {
   }, [data]);
 
   const handleNodeClick = useCallback(
-    (node: GraphNode) => {
+    (node: GraphNode | ClusterNode) => {
+      if (isClusterNode(node)) {
+        // Expand cluster: switch to individual view filtered by the cluster's space
+        setViewMode('individual');
+        setFilterSpace(node.spaceKey);
+        return;
+      }
       if (node.id) navigate(`/pages/${node.id}`);
     },
     [navigate],
   );
 
   const handleNodeHover = useCallback(
-    (node: GraphNode | null, _prev: GraphNode | null) => {
+    (node: (GraphNode | ClusterNode) | null, _prev: (GraphNode | ClusterNode) | null) => {
       setHoveredNode(node);
       document.body.style.cursor = node ? 'pointer' : 'default';
     },
     [],
   );
 
-  // Reset cursor on unmount to avoid stale pointer cursor leaking to other pages
   useEffect(() => {
     return () => {
       document.body.style.cursor = 'default';
     };
   }, []);
 
-  // Track mouse position for tooltip
   useEffect(() => {
     function handleMouseMove(e: MouseEvent) {
       setTooltipPos({ x: e.clientX, y: e.clientY });
@@ -158,32 +168,70 @@ export function GraphPage() {
     return () => window.removeEventListener('mousemove', handleMouseMove);
   }, []);
 
-  // Custom node rendering with canvas
+  // Custom node rendering
   const nodeCanvasObject = useCallback(
-    (node: GraphNode, ctx: CanvasRenderingContext2D, globalScale: number) => {
+    (node: GraphNode | ClusterNode, ctx: CanvasRenderingContext2D, globalScale: number) => {
+      const x = node.x ?? 0;
+      const y = node.y ?? 0;
+      const isHovered = hoveredNode?.id === node.id;
+      const isCenter = data?.centerId === node.id;
+      const color = getSpaceColor(node.spaceKey, spaceKeys);
+
+      if (isClusterNode(node)) {
+        // Cluster node: larger rounded rect with count badge
+        const width = Math.max(40, Math.sqrt(node.articleCount) * 12);
+        const height = width * 0.7;
+        const radius = 8 / globalScale;
+
+        ctx.beginPath();
+        ctx.roundRect(x - width / 2, y - height / 2, width, height, radius);
+        ctx.fillStyle = color;
+        ctx.globalAlpha = 0.7;
+        ctx.fill();
+        ctx.globalAlpha = 1;
+
+        // Thicker border for clusters
+        ctx.strokeStyle = isHovered ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.4)';
+        ctx.lineWidth = (isHovered ? 2.5 : 1.5) / globalScale;
+        ctx.stroke();
+
+        // Title
+        const fontSize = Math.max(11 / globalScale, 1.5);
+        ctx.font = `bold ${fontSize}px Inter, system-ui, sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = 'rgba(255,255,255,0.95)';
+        const truncated = node.title.length > 20 ? node.title.slice(0, 17) + '...' : node.title;
+        ctx.fillText(truncated, x, y - 3 / globalScale);
+
+        // Count badge
+        const badgeFontSize = Math.max(9 / globalScale, 1.2);
+        ctx.font = `${badgeFontSize}px Inter, system-ui, sans-serif`;
+        ctx.fillStyle = 'rgba(255,255,255,0.7)';
+        ctx.fillText(`${node.articleCount} articles`, x, y + fontSize);
+        return;
+      }
+
+      // Individual node
       const label = node.title ?? '';
       const fontSize = Math.max(10 / globalScale, 1.5);
       const size = Math.max(3, Math.sqrt(node.embeddingCount || 1) * 2);
-      const color = getSpaceColor(node.spaceKey, spaceKeys);
-      const isHovered = hoveredNode?.id === node.id;
-      const x = node.x ?? 0;
-      const y = node.y ?? 0;
 
       // Node circle
       ctx.beginPath();
-      ctx.arc(x, y, isHovered ? size * 1.4 : size, 0, 2 * Math.PI, false);
+      ctx.arc(x, y, isHovered ? size * 1.4 : (isCenter ? size * 1.3 : size), 0, 2 * Math.PI, false);
       ctx.fillStyle = color;
       ctx.fill();
 
-      if (isHovered) {
-        ctx.strokeStyle = 'rgba(255,255,255,0.8)';
-        ctx.lineWidth = 1.5 / globalScale;
+      if (isHovered || isCenter) {
+        ctx.strokeStyle = isCenter ? 'rgba(245, 158, 66, 0.9)' : 'rgba(255,255,255,0.8)';
+        ctx.lineWidth = (isCenter ? 2 : 1.5) / globalScale;
         ctx.stroke();
       }
 
       // Label (show when zoomed in or hovered)
-      if (globalScale > 1.5 || isHovered) {
-        ctx.font = `${isHovered ? 'bold ' : ''}${fontSize}px Inter, system-ui, sans-serif`;
+      if (globalScale > 1.5 || isHovered || isCenter) {
+        ctx.font = `${isHovered || isCenter ? 'bold ' : ''}${fontSize}px Inter, system-ui, sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
         ctx.fillStyle = 'rgba(255,255,255,0.85)';
@@ -191,12 +239,23 @@ export function GraphPage() {
         ctx.fillText(truncated, x, y + size + 2 / globalScale);
       }
     },
-    [spaceKeys, hoveredNode],
+    [spaceKeys, hoveredNode, data?.centerId],
   );
 
-  // Node hit area for pointer detection
   const nodePointerAreaPaint = useCallback(
-    (node: GraphNode, paintColor: string, ctx: CanvasRenderingContext2D) => {
+    (node: GraphNode | ClusterNode, paintColor: string, ctx: CanvasRenderingContext2D) => {
+      if (isClusterNode(node)) {
+        const width = Math.max(40, Math.sqrt(node.articleCount) * 12);
+        const height = width * 0.7;
+        ctx.fillStyle = paintColor;
+        ctx.fillRect(
+          (node.x ?? 0) - width / 2 - 2,
+          (node.y ?? 0) - height / 2 - 2,
+          width + 4,
+          height + 4,
+        );
+        return;
+      }
       const size = Math.max(3, Math.sqrt(node.embeddingCount || 1) * 2);
       ctx.beginPath();
       ctx.arc(node.x ?? 0, node.y ?? 0, size + 2, 0, 2 * Math.PI, false);
@@ -210,6 +269,11 @@ export function GraphPage() {
   const zoomOut = useCallback(() => graphRef.current?.zoom(0.5, 300), []);
   const fitAll = useCallback(() => graphRef.current?.zoomToFit(400, 40), []);
 
+  // Compute clamped tooltip position
+  const tooltipMaxH = 256; // 16rem = max-h-64
+  const tooltipTop = Math.min(tooltipPos.y - 8, (typeof window !== 'undefined' ? window.innerHeight : 800) - tooltipMaxH - 16);
+  const tooltipLeft = Math.min(tooltipPos.x + 12, (typeof window !== 'undefined' ? window.innerWidth : 1200) - 280);
+
   // Loading state
   if (isLoading) {
     return (
@@ -222,13 +286,16 @@ export function GraphPage() {
     );
   }
 
-  // Error state
+  // Error state -- show the error message for better debugging
   if (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     return (
       <div className="flex h-full items-center justify-center">
-        <div className="glass-card flex flex-col items-center gap-4 p-8">
-          <p className="text-destructive">Failed to load graph data</p>
-          <button onClick={() => refetch()} className="glass-button-ghost text-sm">
+        <div className="glass-card flex flex-col items-center gap-4 p-8 text-center max-w-md">
+          <Info className="h-8 w-8 text-destructive" />
+          <p className="text-destructive font-medium">Failed to load graph data</p>
+          <p className="text-sm text-muted-foreground">{errorMessage}</p>
+          <button onClick={() => refetch()} className="glass-button-ghost text-sm" data-testid="graph-retry">
             Retry
           </button>
         </div>
@@ -260,10 +327,72 @@ export function GraphPage() {
         <div>
           <h1 className="text-xl font-semibold">Knowledge Graph</h1>
           <p className="text-sm text-muted-foreground">
-            {data.nodes.length} articles, {data.edges.length} connections
+            {data.nodes.length} {viewMode === 'clustered' ? 'clusters' : 'articles'}, {data.edges.length} connections
+            {focusPageId && ' (local view)'}
+            {filterSpace && ` in ${filterSpace}`}
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {/* View mode toggle */}
+          {!focusPageId && (
+            <>
+              <button
+                onClick={() => setViewMode('individual')}
+                className={cn(
+                  'glass-button-ghost p-2',
+                  viewMode === 'individual' && 'bg-primary/15 text-primary',
+                )}
+                aria-label="Individual view"
+                data-testid="graph-view-individual"
+                title="Individual articles"
+              >
+                <Grid3x3 size={16} />
+              </button>
+              <button
+                onClick={() => setViewMode('clustered')}
+                className={cn(
+                  'glass-button-ghost p-2',
+                  viewMode === 'clustered' && 'bg-primary/15 text-primary',
+                )}
+                aria-label="Cluster view"
+                data-testid="graph-view-clustered"
+                title="Topic clusters"
+              >
+                <Layers size={16} />
+              </button>
+            </>
+          )}
+
+          {/* Space filter */}
+          {!focusPageId && spaceKeys.length > 1 && (
+            <div className="relative">
+              <select
+                value={filterSpace ?? ''}
+                onChange={(e) => setFilterSpace(e.target.value || undefined)}
+                className="glass-button-ghost appearance-none py-2 pl-8 pr-3 text-xs"
+                data-testid="graph-space-filter"
+                aria-label="Filter by space"
+              >
+                <option value="">All spaces</option>
+                {spaceKeys.map((sk) => (
+                  <option key={sk} value={sk}>{sk}</option>
+                ))}
+              </select>
+              <Filter size={14} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
+            </div>
+          )}
+
+          {/* Clear focus */}
+          {focusPageId && (
+            <button
+              onClick={() => navigate('/graph')}
+              className="glass-button-ghost px-3 py-2 text-xs"
+              data-testid="graph-clear-focus"
+            >
+              Show all
+            </button>
+          )}
+
           <button onClick={zoomIn} className="glass-button-ghost p-2" aria-label="Zoom in" data-testid="graph-zoom-in">
             <ZoomIn size={16} />
           </button>
@@ -322,7 +451,9 @@ export function GraphPage() {
           nodeCanvasObject={nodeCanvasObject}
           nodeCanvasObjectMode={() => 'replace'}
           nodePointerAreaPaint={nodePointerAreaPaint}
-          nodeVal={(node: GraphNode) => Math.max(1, node.embeddingCount)}
+          nodeVal={(node: GraphNode | ClusterNode) =>
+            isClusterNode(node) ? Math.max(5, node.articleCount) : Math.max(1, (node as GraphNode).embeddingCount)
+          }
           linkColor={(link: { type?: string }) => EDGE_COLORS[link.type ?? 'embedding_similarity'] ?? 'rgba(255,255,255,0.1)'}
           linkWidth={(link: { score?: number }) => Math.max(0.5, (link.score ?? 0.5) * 3)}
           linkDirectionalParticles={0}
@@ -338,16 +469,17 @@ export function GraphPage() {
           backgroundColor="transparent"
         />
 
-        {/* Hover tooltip */}
+        {/* Hover tooltip -- clamped to viewport with max-height and label truncation */}
         {hoveredNode && (
           <div
             className={cn(
               'pointer-events-none fixed z-50 max-w-xs rounded-lg border border-border/50',
               'bg-card/95 px-3 py-2 text-xs shadow-lg backdrop-blur-md',
+              'max-h-64 overflow-y-auto',
             )}
             style={{
-              left: tooltipPos.x + 12,
-              top: tooltipPos.y - 8,
+              left: tooltipLeft,
+              top: tooltipTop,
             }}
             data-testid="graph-tooltip"
           >
@@ -355,14 +487,27 @@ export function GraphPage() {
             <p className="text-muted-foreground">
               Space: {hoveredNode.spaceKey}
             </p>
-            {hoveredNode.labels.length > 0 && (
+            {isClusterNode(hoveredNode) ? (
               <p className="text-muted-foreground">
-                Labels: {hoveredNode.labels.join(', ')}
+                Articles: {hoveredNode.articleCount}
               </p>
+            ) : (
+              <>
+                {(hoveredNode as GraphNode).labels.length > 0 && (
+                  <p className="text-muted-foreground">
+                    Labels: {
+                      (hoveredNode as GraphNode).labels.length > MAX_TOOLTIP_LABELS
+                        ? (hoveredNode as GraphNode).labels.slice(0, MAX_TOOLTIP_LABELS).join(', ') +
+                          ` +${(hoveredNode as GraphNode).labels.length - MAX_TOOLTIP_LABELS} more`
+                        : (hoveredNode as GraphNode).labels.join(', ')
+                    }
+                  </p>
+                )}
+                <p className="text-muted-foreground">
+                  Embeddings: {(hoveredNode as GraphNode).embeddingCount}
+                </p>
+              </>
             )}
-            <p className="text-muted-foreground">
-              Embeddings: {hoveredNode.embeddingCount}
-            </p>
           </div>
         )}
       </div>

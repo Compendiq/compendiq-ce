@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, m } from 'framer-motion';
-import { FileText, FolderOpen, X, Upload, ShieldCheck, Globe, Lock, ThumbsUp, ThumbsDown, AlertCircle } from 'lucide-react';
+import { FileText, FolderOpen, X, Upload, ShieldCheck, Globe, Lock, ThumbsUp, ThumbsDown, AlertCircle, GitGraph } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   usePage,
@@ -440,6 +440,15 @@ export function PageViewPage() {
                 )}
                 {/* Verify button */}
                 <VerifyButton pageId={id} />
+                <button
+                  onClick={() => navigate(`/graph?focus=${encodeURIComponent(id ?? '')}`)}
+                  className="rounded-md px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+                  data-testid="show-in-graph-btn"
+                  title="Show in knowledge graph"
+                >
+                  <GitGraph size={12} className="mr-1 inline" />
+                  Graph
+                </button>
                 <button
                   onClick={handleStartEditing}
                   className="rounded-md px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"

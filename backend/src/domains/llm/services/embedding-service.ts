@@ -635,22 +635,24 @@ export async function computePageRelationships(): Promise<number> {
   // Compute embedding similarity edges using pgvector <=> operator.
   // We compute average embedding per page, then find top-K nearest neighbors.
   // This is a materialized computation, not real-time.
-  const similarityResult = await query<{ page_id_1: string; page_id_2: string; score: number }>(
+  const similarityResult = await query<{ page_id_1: number; page_id_2: number; score: number }>(
     `WITH page_avg AS (
-       SELECT confluence_id, AVG(embedding) AS avg_embedding
-       FROM page_embeddings
-       GROUP BY confluence_id
+       SELECT pe.page_id, AVG(pe.embedding) AS avg_embedding
+       FROM page_embeddings pe
+       JOIN pages p ON pe.page_id = p.id
+       WHERE p.deleted_at IS NULL
+       GROUP BY pe.page_id
      ),
      neighbors AS (
        SELECT
-         a.confluence_id AS page_id_1,
-         b.confluence_id AS page_id_2,
+         a.page_id AS page_id_1,
+         b.page_id AS page_id_2,
          (1 - (a.avg_embedding <=> b.avg_embedding)) AS score
        FROM page_avg a
        CROSS JOIN LATERAL (
-         SELECT confluence_id, avg_embedding
+         SELECT page_id, avg_embedding
          FROM page_avg b
-         WHERE b.confluence_id != a.confluence_id
+         WHERE b.page_id != a.page_id
          ORDER BY a.avg_embedding <=> b.avg_embedding
          LIMIT $1
        ) b
@@ -666,11 +668,11 @@ export async function computePageRelationships(): Promise<number> {
   );
 
   // Compute label-overlap edges: pages sharing at least one label
-  const labelResult = await query<{ page_id_1: string; page_id_2: string; score: number }>(
+  const labelResult = await query<{ page_id_1: number; page_id_2: number; score: number }>(
     `WITH label_overlaps AS (
        SELECT
-         a.confluence_id AS page_id_1,
-         b.confluence_id AS page_id_2,
+         a.id AS page_id_1,
+         b.id AS page_id_2,
          CASE
            WHEN array_length(a.labels, 1) IS NULL OR array_length(b.labels, 1) IS NULL THEN 0
            ELSE (
@@ -683,7 +685,7 @@ export async function computePageRelationships(): Promise<number> {
            )
          END AS score
        FROM pages a
-       JOIN pages b ON a.confluence_id < b.confluence_id
+       JOIN pages b ON a.id < b.id
        WHERE a.deleted_at IS NULL AND b.deleted_at IS NULL
          AND a.labels IS NOT NULL AND array_length(a.labels, 1) > 0
          AND b.labels IS NOT NULL AND array_length(b.labels, 1) > 0
