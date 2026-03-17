@@ -257,6 +257,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       confluence_id: string;
       space_key: string;
       title: string;
+      page_type: string;
       parent_numeric_id: number | null;
       labels: string[];
       last_modified_at: Date | null;
@@ -265,7 +266,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       embedded_at: Date | null;
       embedding_error: string | null;
     }>(
-      `SELECT cp.id, cp.confluence_id, cp.space_key, cp.title,
+      `SELECT cp.id, cp.confluence_id, cp.space_key, cp.title, cp.page_type,
               parent_page.id as parent_numeric_id,
               cp.labels, cp.last_modified_at,
               cp.embedding_dirty, cp.embedding_status, cp.embedded_at, cp.embedding_error
@@ -284,6 +285,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         id: String(row.id),
         spaceKey: row.space_key,
         title: row.title,
+        pageType: row.page_type ?? 'page',
         parentId: row.parent_numeric_id ? String(row.parent_numeric_id) : null,
         labels: row.labels,
         lastModifiedAt: row.last_modified_at,
@@ -368,6 +370,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       confluence_id: string | null;
       space_key: string | null;
       title: string;
+      page_type: string;
       body_storage: string;
       body_html: string;
       body_text: string;
@@ -403,7 +406,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       has_draft: boolean;
       draft_updated_at: Date | null;
     }>(
-      `SELECT cp.id, cp.confluence_id, cp.space_key, cp.title, cp.body_storage, cp.body_html, cp.body_text,
+      `SELECT cp.id, cp.confluence_id, cp.space_key, cp.title, cp.page_type,
+              cp.body_storage, cp.body_html, cp.body_text,
               cp.version, cp.parent_id, cp.labels, cp.author, cp.last_modified_at, cp.last_synced,
               cp.embedding_dirty, cp.embedding_status, cp.embedded_at, cp.embedding_error,
               cp.quality_score, cp.quality_status, cp.quality_completeness, cp.quality_clarity,
@@ -444,6 +448,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       confluenceId: row.confluence_id,
       spaceKey: row.space_key,
       title: row.title,
+      pageType: row.page_type ?? 'page',
       bodyHtml: row.body_html,
       bodyText: row.body_text,
       version: row.version,
@@ -535,13 +540,16 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
   // POST /api/pages - create page (standalone local or Confluence + local cache)
   fastify.post('/pages', async (request) => {
     const body = CreatePageSchema.parse(request.body);
+    const pageType: 'page' | 'folder' = (body as Record<string, unknown>).pageType === 'folder' ? 'folder' : 'page';
     const userId = request.userId;
     const isStandalone = body.source === 'standalone' || !body.spaceKey;
 
     if (isStandalone) {
       // --- Standalone article: no Confluence call, store locally ---
+      const isFolder = pageType === 'folder';
+      const effectiveBodyHtml = isFolder ? '' : body.bodyHtml;
       const { htmlToText } = await import('../../core/services/content-converter.js');
-      const bodyText = htmlToText(body.bodyHtml);
+      const bodyText = isFolder ? '' : htmlToText(effectiveBodyHtml);
 
       // If spaceKey is provided, verify it's a local space
       let spaceKey: string | null = null;
@@ -576,12 +584,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         `INSERT INTO pages
            (title, body_html, body_text, body_storage, source, created_by_user_id,
             visibility, version, space_key, confluence_id, parent_id,
-            embedding_dirty, embedding_status, last_synced)
+            page_type, embedding_dirty, embedding_status, last_synced)
          VALUES ($1, $2, $3, NULL, 'standalone', $4, $5, 1, $6, NULL, $7,
-                 TRUE, 'not_embedded', NOW())
+                 $8, $9, 'not_embedded', NOW())
          RETURNING id, title, version`,
-        [body.title, body.bodyHtml, bodyText, userId,
-         body.visibility ?? 'shared', spaceKey, body.parentId ?? null],
+        [body.title, effectiveBodyHtml, bodyText, userId,
+         body.visibility ?? 'shared', spaceKey, body.parentId ?? null,
+         pageType, !isFolder],
       );
 
       const newPage = result.rows[0];
@@ -594,9 +603,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
       await cache.invalidate(userId, 'pages');
       await logAuditEvent(userId, 'PAGE_CREATED', 'page', String(newPage.id),
-        { source: 'standalone', title: body.title, visibility: body.visibility ?? 'shared', spaceKey }, request);
+        { source: 'standalone', title: body.title, visibility: body.visibility ?? 'shared', spaceKey, pageType }, request);
 
-      return { id: newPage.id, title: newPage.title, version: newPage.version, source: 'standalone' };
+      return { id: newPage.id, title: newPage.title, version: newPage.version, source: 'standalone', pageType };
     }
 
     // --- Confluence article: existing flow ---
@@ -651,8 +660,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       id: number; version: number; space_key: string | null;
       source: string; created_by_user_id: string | null;
       visibility: string; confluence_id: string | null; deleted_at: Date | null;
+      page_type: string;
     }>(
-      `SELECT id, version, space_key, source, created_by_user_id, visibility, confluence_id, deleted_at FROM pages WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'}`,
+      `SELECT id, version, space_key, source, created_by_user_id, visibility, confluence_id, deleted_at, page_type FROM pages WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'}`,
       [isNumericId ? parseInt(id, 10) : id],
     );
     if (existing.rows.length === 0) {
@@ -662,6 +672,11 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     if (existingPage.deleted_at) {
       throw fastify.httpErrors.badRequest('Cannot edit a page that is in the trash');
+    }
+
+    // Folders are title-only containers; reject body content updates
+    if (existingPage.page_type === 'folder' && body.bodyHtml && body.bodyHtml.trim() !== '') {
+      throw fastify.httpErrors.badRequest('Folder pages cannot have body content. Only the title can be updated.');
     }
 
     if (existingPage.source === 'standalone') {

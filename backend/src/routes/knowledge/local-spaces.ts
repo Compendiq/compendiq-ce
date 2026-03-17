@@ -231,13 +231,14 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
     const result = await query<{
       id: number;
       title: string;
+      page_type: string;
       parent_numeric_id: number | null;
       depth: number;
       sort_order: number;
       source: string;
       confluence_id: string | null;
     }>(
-      `SELECT p.id, p.title, parent_page.id as parent_numeric_id,
+      `SELECT p.id, p.title, p.page_type, parent_page.id as parent_numeric_id,
               p.depth, p.sort_order, p.source, p.confluence_id
        FROM pages p
        LEFT JOIN pages parent_page ON (
@@ -252,6 +253,7 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
     const items = result.rows.map((row) => ({
       id: row.id,
       title: row.title,
+      pageType: row.page_type ?? 'page',
       parentId: row.parent_numeric_id ? String(row.parent_numeric_id) : null,
       depth: row.depth,
       sortOrder: row.sort_order,

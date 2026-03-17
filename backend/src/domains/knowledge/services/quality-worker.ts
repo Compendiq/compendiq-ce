@@ -197,6 +197,7 @@ export async function processBatch(): Promise<number> {
      FROM pages
      WHERE quality_status = 'pending'
        AND deleted_at IS NULL
+       AND COALESCE(page_type, 'page') != 'folder'
        AND (body_text IS NOT NULL AND body_text != '')
      ORDER BY last_synced ASC
      LIMIT $1`,
@@ -217,6 +218,7 @@ export async function processBatch(): Promise<number> {
        FROM pages
        WHERE quality_status = 'analyzed'
          AND deleted_at IS NULL
+         AND COALESCE(page_type, 'page') != 'folder'
          AND last_modified_at > quality_analyzed_at
          AND (body_text IS NOT NULL AND body_text != '')
        ORDER BY last_modified_at DESC
@@ -239,6 +241,7 @@ export async function processBatch(): Promise<number> {
        FROM pages
        WHERE quality_status = 'failed'
          AND deleted_at IS NULL
+         AND COALESCE(page_type, 'page') != 'folder'
          AND quality_retry_count < $2
          AND (body_text IS NOT NULL AND body_text != '')
        ORDER BY quality_analyzed_at ASC NULLS FIRST

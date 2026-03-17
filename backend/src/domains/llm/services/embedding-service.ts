@@ -369,8 +369,9 @@ export async function processDirtyPages(
     const chunkOpts = await getAdminChunkSettings();
 
     // Get total count for logging purposes (global, not per-user)
+    // Exclude folder-type pages which have no content to embed
     const countResult = await query<{ count: string }>(
-      'SELECT COUNT(*) as count FROM pages WHERE embedding_dirty = TRUE AND body_html IS NOT NULL AND deleted_at IS NULL',
+      "SELECT COUNT(*) as count FROM pages WHERE embedding_dirty = TRUE AND body_html IS NOT NULL AND deleted_at IS NULL AND COALESCE(page_type, 'page') != 'folder'",
     );
     const totalDirty = parseInt(countResult.rows[0].count, 10);
     logger.info({ userId, dirtyPages: totalDirty }, 'Processing dirty pages for embedding');
@@ -396,6 +397,7 @@ export async function processDirtyPages(
         `SELECT confluence_id, title, space_key, body_html
          FROM pages
          WHERE embedding_dirty = TRUE AND body_html IS NOT NULL AND deleted_at IS NULL
+           AND COALESCE(page_type, 'page') != 'folder'
          ORDER BY last_modified_at DESC
          LIMIT $1 OFFSET $2`,
         [DIRTY_PAGE_BATCH_SIZE, offset],

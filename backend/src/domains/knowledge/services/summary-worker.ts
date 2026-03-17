@@ -146,6 +146,7 @@ async function findCandidates(batchSize: number): Promise<SummaryCandidate[]> {
      FROM pages
      WHERE summary_status IN ('pending', 'failed')
        AND deleted_at IS NULL
+       AND COALESCE(page_type, 'page') != 'folder'
        AND (summary_status = 'pending' OR summary_retry_count < $1)
      ORDER BY
        CASE summary_status WHEN 'pending' THEN 0 ELSE 1 END,

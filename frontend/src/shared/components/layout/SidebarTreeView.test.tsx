@@ -31,10 +31,10 @@ vi.mock('react-router-dom', async () => {
 
 const defaultTreeData = {
   items: [
-    { id: 'root-1', spaceKey: 'DEV', title: 'Getting Started', parentId: null, labels: [], lastModifiedAt: '2026-03-01T00:00:00Z' },
-    { id: 'child-1', spaceKey: 'DEV', title: 'Installation', parentId: 'root-1', labels: [], lastModifiedAt: '2026-03-01T00:00:00Z' },
-    { id: 'child-2', spaceKey: 'DEV', title: 'Configuration', parentId: 'root-1', labels: [], lastModifiedAt: '2026-03-01T00:00:00Z' },
-    { id: 'root-2', spaceKey: 'DEV', title: 'API Reference', parentId: null, labels: [], lastModifiedAt: '2026-03-01T00:00:00Z' },
+    { id: 'root-1', spaceKey: 'DEV', title: 'Getting Started', pageType: 'page' as const, parentId: null, labels: [], lastModifiedAt: '2026-03-01T00:00:00Z' },
+    { id: 'child-1', spaceKey: 'DEV', title: 'Installation', pageType: 'page' as const, parentId: 'root-1', labels: [], lastModifiedAt: '2026-03-01T00:00:00Z' },
+    { id: 'child-2', spaceKey: 'DEV', title: 'Configuration', pageType: 'page' as const, parentId: 'root-1', labels: [], lastModifiedAt: '2026-03-01T00:00:00Z' },
+    { id: 'root-2', spaceKey: 'DEV', title: 'API Reference', pageType: 'page' as const, parentId: null, labels: [], lastModifiedAt: '2026-03-01T00:00:00Z' },
   ],
   total: 4,
 };
@@ -50,8 +50,10 @@ const mockLocalSpaces = [
   { key: 'NOTES', name: 'My Notes', description: null, icon: null, pageCount: 3, createdBy: null, createdAt: '2026-03-01T00:00:00Z', source: 'local' as const },
 ];
 
+const mockCreatePageMutateAsync = vi.fn();
 vi.mock('../../hooks/use-pages', () => ({
   usePageTree: () => ({ data: mockTreeData, isLoading: false }),
+  useCreatePage: () => ({ mutateAsync: mockCreatePageMutateAsync, isPending: false }),
 }));
 
 vi.mock('../../hooks/use-spaces', () => ({
@@ -300,11 +302,12 @@ describe('SidebarTreeView', () => {
 });
 
 describe('SidebarTreeNode memoization', () => {
-  const makeNode = (id: string, title: string, children: TreeNode[] = []): TreeNode => ({
+  const makeNode = (id: string, title: string, children: TreeNode[] = [], pageType: 'page' | 'folder' = 'page'): TreeNode => ({
     page: {
       id,
       spaceKey: 'DEV',
       title,
+      pageType,
       parentId: null,
       labels: [],
       lastModifiedAt: '2026-03-01T00:00:00Z',
@@ -398,6 +401,33 @@ describe('SidebarTreeNode memoization', () => {
     expect(screen.getByText('Memoized Page')).toBeInTheDocument();
   });
 
+  it('has a New Folder button in sidebar header', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    expect(screen.getByLabelText('New Folder')).toBeInTheDocument();
+  });
+
+  it('shows new folder inline input when New Folder button is clicked', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByLabelText('New Folder'));
+    expect(screen.getByTestId('new-folder-input')).toBeInTheDocument();
+    expect(screen.getByLabelText('New folder name')).toBeInTheDocument();
+  });
+
+  it('folder nodes show folder icon and do not navigate on click', () => {
+    mockTreeData = {
+      items: [
+        { id: 'folder-1', spaceKey: 'DEV', title: 'My Folder', pageType: 'folder' as const, parentId: null, labels: [], lastModifiedAt: '2026-03-01T00:00:00Z' },
+        { id: 'child-1', spaceKey: 'DEV', title: 'Child Page', pageType: 'page' as const, parentId: 'folder-1', labels: [], lastModifiedAt: '2026-03-01T00:00:00Z' },
+      ],
+      total: 2,
+    };
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    expect(screen.getByText('My Folder')).toBeInTheDocument();
+    mockNavigate.mockClear();
+    fireEvent.click(screen.getByText('My Folder'));
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(screen.getByText('Child Page')).toBeInTheDocument();
+  });
   it('renders indent guide line for expanded node with children', () => {
     const child1 = makeNode('child-1', 'Child 1');
     const child2 = makeNode('child-2', 'Child 2');

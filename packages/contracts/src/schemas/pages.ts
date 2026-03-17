@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+export const PageTypeEnum = z.enum(['page', 'folder']);
+export type PageType = z.infer<typeof PageTypeEnum>;
+
 export const PageEmbeddingStatusEnum = z.enum(['not_embedded', 'embedding', 'embedded', 'failed']);
 export type PageEmbeddingStatus = z.infer<typeof PageEmbeddingStatusEnum>;
 
@@ -19,6 +22,7 @@ export const PageSummarySchema = z.object({
   id: z.union([z.string(), z.number()]),
   spaceKey: z.string().nullable(),
   title: z.string(),
+  pageType: PageTypeEnum.default('page'),
   author: z.string().nullable(),
   lastModifiedAt: z.coerce.date().nullable(),
   lastSynced: z.coerce.date(),
@@ -63,6 +67,7 @@ export const CreatePageSchema = z.object({
   title: z.string().min(1).max(500),
   bodyHtml: z.string(),
   parentId: z.string().optional(),
+  pageType: PageTypeEnum.optional().default('page'),
   source: PageSourceEnum.optional().default('standalone'),
   visibility: PageVisibilityEnum.optional().default('shared'),
 });
@@ -101,6 +106,7 @@ export const PageTreeItemSchema = z.object({
   id: z.union([z.string(), z.number()]),
   spaceKey: z.string().nullable(),
   title: z.string(),
+  pageType: PageTypeEnum.default('page'),
   parentId: z.string().nullable(),
   labels: z.array(z.string()),
   lastModifiedAt: z.coerce.date().nullable(),

@@ -449,12 +449,14 @@ export function PageViewPage() {
                   <GitGraph size={12} className="mr-1 inline" />
                   Graph
                 </button>
-                <button
-                  onClick={handleStartEditing}
-                  className="rounded-md px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
-                >
-                  Edit
-                </button>
+                {page.pageType !== 'folder' && (
+                  <button
+                    onClick={handleStartEditing}
+                    className="rounded-md px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+                  >
+                    Edit
+                  </button>
+                )}
               </>
             )}
           </div>
@@ -487,6 +489,27 @@ export function PageViewPage() {
               <Editor content={editHtml} onChange={setEditHtml} draftKey={draftKey} naked onEditorReady={setEditorInstance} hideToolbar />
             </FeatureErrorBoundary>
           </>
+        ) : page.pageType === 'folder' ? (
+          /* Folder view — show container info instead of article content */
+          <div
+            ref={contentRef}
+            className="px-5 pb-16 pt-10 sm:px-10 sm:pt-12"
+            data-testid="article-content-shell"
+          >
+            <h1 className="mb-6 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground sm:text-4xl">
+              {page.title}
+            </h1>
+            <div className="rounded-2xl border border-primary/15 bg-primary/6 px-5 py-4 text-sm text-muted-foreground">
+              <div className="flex items-center gap-2 mb-2">
+                <FolderOpen size={18} className="text-primary" />
+                <span className="font-medium text-foreground">Folder</span>
+              </div>
+              <p>
+                This is a folder page that acts as a container for child pages. Select a child page
+                from the sidebar tree to view its content.
+              </p>
+            </div>
+          </div>
         ) : (
           /* Reading view — constrained to 720 px reading column */
           <div

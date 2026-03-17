@@ -6,11 +6,13 @@ import { streamSSE } from '../lib/sse';
 export type EmbeddingStatus = 'not_embedded' | 'embedding' | 'embedded' | 'failed';
 export type QualityStatus = 'pending' | 'analyzing' | 'analyzed' | 'failed' | 'skipped';
 export type SummaryStatus = 'pending' | 'summarizing' | 'summarized' | 'failed' | 'skipped';
+export type PageType = 'page' | 'folder';
 
 interface PageSummary {
   id: string;
   spaceKey: string;
   title: string;
+  pageType: PageType;
   version: number;
   parentId: string | null;
   labels: string[];
@@ -110,6 +112,7 @@ export interface PageTreeItem {
   id: string;
   spaceKey: string;
   title: string;
+  pageType: PageType;
   parentId: string | null;
   labels: string[];
   lastModifiedAt: string | null;
@@ -165,7 +168,7 @@ export function usePage(id: string | undefined) {
 export function useCreatePage() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (data: { spaceKey: string; title: string; bodyHtml: string; parentId?: string }) =>
+    mutationFn: (data: { spaceKey: string; title: string; bodyHtml: string; parentId?: string; pageType?: PageType }) =>
       apiFetch<{ id: string; title: string; version: number }>('/pages', {
         method: 'POST',
         body: JSON.stringify(data),

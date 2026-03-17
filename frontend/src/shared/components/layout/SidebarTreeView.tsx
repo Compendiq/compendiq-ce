@@ -8,6 +8,7 @@ import {
   FileText,
   Folder,
   FolderOpen,
+  FolderPlus,
   ChevronsUpDown,
   GripVertical,
   Plus,
@@ -18,7 +19,7 @@ import {
 import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { DragDropProvider } from '@dnd-kit/react';
 import { useSortable, isSortable } from '@dnd-kit/react/sortable';
-import { usePageTree } from '../../hooks/use-pages';
+import { usePageTree, useCreatePage } from '../../hooks/use-pages';
 import { useSpaces } from '../../hooks/use-spaces';
 import { useLocalSpaces, useReorderPage } from '../../hooks/use-standalone';
 import { useUiStore } from '../../../stores/ui-store';
@@ -113,6 +114,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
   const location = useLocation();
   const isExpanded = expandedSet.has(node.page.id);
   const hasChildren = node.children.length > 0;
+  const isFolder = node.page.pageType === 'folder';
   const isActive = node.page.id === activePageId;
   const isAiRoute = location.pathname === '/ai';
 
@@ -124,14 +126,18 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
   });
 
   const handleNavigate = useCallback(() => {
+    if (isFolder) {
+      // Folders are pure containers: toggle expand but don't navigate to article view
+      toggleExpand(node.page.id);
+      return;
+    }
     if (hasChildren) toggleExpand(node.page.id);
     if (isAiRoute) {
-      // Update AI context page instead of navigating away
       navigate(`/ai?pageId=${node.page.id}`, { replace: true });
     } else {
       navigate(`/pages/${node.page.id}`);
     }
-  }, [navigate, node.page.id, hasChildren, toggleExpand, isAiRoute]);
+  }, [navigate, node.page.id, hasChildren, isFolder, toggleExpand, isAiRoute]);
 
   const handleToggle = useCallback(
     (e: React.MouseEvent) => {
@@ -158,7 +164,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
             <GripVertical size={12} />
           </span>
         )}
-        {hasChildren ? (
+        {(hasChildren || isFolder) ? (
           <button
             onClick={handleToggle}
             className="shrink-0 rounded p-0.5 hover:bg-foreground/10"
@@ -169,7 +175,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         ) : (
           <span className="w-[20px] shrink-0" />
         )}
-        {hasChildren
+        {(isFolder || hasChildren)
           ? (
             isExpanded || isActive
               ? <FolderOpen size={15} className={cn('shrink-0', isActive ? 'text-primary opacity-100 drop-shadow-[0_1px_2px_oklch(from_var(--color-primary)_l_c_h_/_0.2)]' : 'text-primary/80 opacity-70')} />
@@ -181,7 +187,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         <span className="truncate text-sm">{node.page.title}</span>
       </div>
 
-      {hasChildren && isExpanded && (
+      {(hasChildren || isFolder) && isExpanded && (
         <div className="relative">
           {/* Indent guide line — click to collapse parent */}
           <button
@@ -294,7 +300,36 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
 
   const [spaceDropdownOpen, setSpaceDropdownOpen] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [showNewFolderInput, setShowNewFolderInput] = useState(false);
+  const newFolderInputRef = useRef<HTMLInputElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
+  const createPage = useCreatePage();
+
+  const handleCreateFolder = useCallback(async () => {
+    const trimmed = newFolderName.trim();
+    if (!trimmed) return;
+
+    const spaceKey = treeSidebarSpaceKey || '__local__';
+    try {
+      await createPage.mutateAsync({
+        spaceKey,
+        title: trimmed,
+        bodyHtml: '',
+        pageType: 'folder',
+      });
+      setNewFolderName('');
+      setShowNewFolderInput(false);
+    } catch {
+      // error handled by mutation
+    }
+  }, [newFolderName, treeSidebarSpaceKey, createPage]);
+
+  useEffect(() => {
+    if (showNewFolderInput) {
+      newFolderInputRef.current?.focus();
+    }
+  }, [showNewFolderInput]);
 
   const handleResizeStart = useCallback(
     (e: React.MouseEvent) => {
@@ -474,6 +509,17 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
         <span className="text-xs font-semibold text-muted-foreground/60">Pages</span>
         <div className="flex items-center gap-1">
           <button
+            onClick={() => {
+              setShowNewFolderInput((v) => !v);
+              setNewFolderName('');
+            }}
+            className="rounded-lg p-1 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
+            aria-label="New Folder"
+            title="Create new folder"
+          >
+            <FolderPlus size={14} />
+          </button>
+          <button
             onClick={() => navigate('/spaces/new')}
             className="rounded-lg p-1 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
             aria-label="New Space"
@@ -597,6 +643,37 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
 
       {/* Divider — subtle glass edge */}
       <div className="mx-3 h-px bg-[var(--glass-sidebar-divider)]" />
+
+      {/* New Folder inline input */}
+      {showNewFolderInput && (
+        <div className="px-2 py-1.5" data-testid="new-folder-input">
+          <div className="flex items-center gap-1.5">
+            <FolderPlus size={14} className="shrink-0 text-primary/70" />
+            <input
+              ref={newFolderInputRef}
+              value={newFolderName}
+              onChange={(e) => setNewFolderName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleCreateFolder();
+                if (e.key === 'Escape') {
+                  setShowNewFolderInput(false);
+                  setNewFolderName('');
+                }
+              }}
+              placeholder="Folder name..."
+              className="flex-1 rounded-md bg-foreground/5 px-2 py-1 text-xs text-foreground outline-none ring-1 ring-primary/30 focus:ring-primary/60 transition-colors"
+              aria-label="New folder name"
+            />
+            <button
+              onClick={handleCreateFolder}
+              disabled={!newFolderName.trim() || createPage.isPending}
+              className="rounded-md bg-primary/15 px-2 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary/25 disabled:opacity-40"
+            >
+              {createPage.isPending ? '...' : 'Add'}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Tree content with drag-and-drop + scroll mask */}
       <div className="flex-1 overflow-y-auto p-2 glass-scroll-mask">
