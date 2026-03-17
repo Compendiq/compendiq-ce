@@ -8,6 +8,7 @@ import { toast } from 'sonner';
 import { usePages, usePageFilterOptions, usePage, useEmbeddingStatus } from '../../shared/hooks/use-pages';
 import { useSpaces, useSync, useSyncStatus } from '../../shared/hooks/use-spaces';
 import { useSettings } from '../../shared/hooks/use-settings';
+import { EmptyState } from '../../shared/components/feedback/EmptyState';
 import { FreshnessBadge } from '../../shared/components/badges/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../../shared/components/badges/EmbeddingStatusBadge';
 import { QualityScoreBadge } from '../../shared/components/badges/QualityScoreBadge';
@@ -445,13 +446,12 @@ export function PagesPage() {
           ))}
         </div>
       ) : !pagesData?.items.length ? (
-        <div className="glass-card flex flex-col items-center justify-center py-16 text-center">
-          <FolderOpen size={48} className="mb-4 text-muted-foreground" />
-          <p className="text-lg font-medium">No pages found</p>
-          <p className="text-sm text-muted-foreground">
-            {search ? 'Try a different search term' : 'Sync your Confluence spaces to see pages here'}
-          </p>
-        </div>
+        <EmptyState
+          icon={FolderOpen}
+          title="No pages found"
+          description={search ? 'Try a different search term' : 'Sync your Confluence spaces to see pages here'}
+          action={!search ? { label: 'Go to Settings', onClick: () => navigate('/settings') } : undefined}
+        />
       ) : (
         <div className="space-y-2">
           {pagesData.items.map((pageItem, i) => (

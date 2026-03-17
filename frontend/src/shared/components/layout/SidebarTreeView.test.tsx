@@ -29,7 +29,7 @@ vi.mock('react-router-dom', async () => {
   };
 });
 
-const mockTreeData = {
+const defaultTreeData = {
   items: [
     { id: 'root-1', spaceKey: 'DEV', title: 'Getting Started', parentId: null, labels: [], lastModifiedAt: '2026-03-01T00:00:00Z' },
     { id: 'child-1', spaceKey: 'DEV', title: 'Installation', parentId: 'root-1', labels: [], lastModifiedAt: '2026-03-01T00:00:00Z' },
@@ -38,6 +38,8 @@ const mockTreeData = {
   ],
   total: 4,
 };
+
+let mockTreeData = { ...defaultTreeData };
 
 const mockSpaces = [
   { key: 'DEV', name: 'Development', homepageId: 'root-1', lastSynced: '2026-03-01T00:00:00Z', pageCount: 4 },
@@ -79,6 +81,7 @@ function createWrapper(initialPath = '/pages') {
 describe('SidebarTreeView', () => {
   beforeEach(() => {
     mockNavigate.mockClear();
+    mockTreeData = { ...defaultTreeData };
     useUiStore.setState({
       treeSidebarCollapsed: false,
       treeSidebarSpaceKey: undefined,
@@ -331,5 +334,47 @@ describe('SidebarTreeNode memoization', () => {
     );
 
     expect(screen.getByText('Memoized Page')).toBeInTheDocument();
+  });
+
+  describe('empty state (no pages)', () => {
+    beforeEach(() => {
+      mockTreeData.items = [];
+      mockTreeData.total = 0;
+    });
+
+    it('shows empty state icon when no pages exist', () => {
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+      // FolderOpen icon is inside a rounded bg-muted container
+      const iconContainer = document.querySelector('.rounded-full.bg-muted');
+      expect(iconContainer).toBeInTheDocument();
+    });
+
+    it('shows "No pages synced yet" when no space is selected', () => {
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+      expect(screen.getByText('No pages synced yet')).toBeInTheDocument();
+    });
+
+    it('shows "Sync a Space" CTA button when no space is selected', () => {
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+      expect(screen.getByText('Sync a Space')).toBeInTheDocument();
+    });
+
+    it('navigates to /settings when "Sync a Space" is clicked', () => {
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByText('Sync a Space'));
+      expect(mockNavigate).toHaveBeenCalledWith('/settings');
+    });
+
+    it('shows "No pages in this space" when a space is selected', () => {
+      useUiStore.setState({ treeSidebarSpaceKey: 'DEV' });
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+      expect(screen.getByText('No pages in this space')).toBeInTheDocument();
+    });
+
+    it('does not show "Sync a Space" CTA when a space is selected', () => {
+      useUiStore.setState({ treeSidebarSpaceKey: 'DEV' });
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+      expect(screen.queryByText('Sync a Space')).not.toBeInTheDocument();
+    });
   });
 });

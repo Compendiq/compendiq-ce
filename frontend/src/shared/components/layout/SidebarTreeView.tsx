@@ -549,8 +549,25 @@ export function SidebarTreeView() {
             ))}
           </div>
         ) : tree.length === 0 ? (
-          <div className="px-3 py-6 text-center text-xs text-muted-foreground">
-            {treeSidebarSpaceKey ? 'No pages in this space.' : 'No pages synced yet.'}
+          <div className="flex flex-col items-center px-3 py-8 text-center">
+            <div className="mb-3 rounded-full bg-muted p-2.5">
+              <FolderOpen size={20} className="text-muted-foreground" />
+            </div>
+            <p className="text-xs font-medium text-foreground/70">
+              {treeSidebarSpaceKey ? 'No pages in this space' : 'No pages synced yet'}
+            </p>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              {treeSidebarSpaceKey ? 'This space has no content.' : 'Sync a Confluence space to get started.'}
+            </p>
+            {!treeSidebarSpaceKey && (
+              <button
+                onClick={() => navigate('/settings')}
+                className="mt-3 flex items-center gap-1.5 rounded-lg bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary hover:bg-primary/15 transition-colors"
+              >
+                <Plus size={12} />
+                Sync a Space
+              </button>
+            )}
           </div>
         ) : isLocalSpace ? (
           <DragDropProvider onDragEnd={handleDragEnd}>

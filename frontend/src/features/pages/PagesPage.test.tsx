@@ -331,4 +331,43 @@ describe('PagesPage', () => {
     const items = await screen.findAllByTestId(/^article-hover-/);
     expect(items.length).toBeGreaterThanOrEqual(50);
   });
+
+  describe('empty state (no pages)', () => {
+    const emptyPages = { items: [], total: 0, page: 1, limit: 50, totalPages: 0 };
+
+    it('renders EmptyState with "No pages found" title', async () => {
+      vi.restoreAllMocks();
+      mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>);
+      render(<PagesPage />, { wrapper: createWrapper() });
+      expect(await screen.findByTestId('empty-state-title')).toHaveTextContent('No pages found');
+    });
+
+    it('shows "Go to Settings" action button when no search is active', async () => {
+      vi.restoreAllMocks();
+      mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>);
+      render(<PagesPage />, { wrapper: createWrapper() });
+      expect(await screen.findByText('Go to Settings')).toBeInTheDocument();
+    });
+
+    it('shows "Try a different search term" when search is active', async () => {
+      vi.restoreAllMocks();
+      mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>);
+      render(<PagesPage />, { wrapper: createWrapper() });
+      // Type in the search box
+      const searchInput = screen.getByPlaceholderText('Search pages...');
+      fireEvent.change(searchInput, { target: { value: 'nonexistent' } });
+      expect(await screen.findByText('Try a different search term')).toBeInTheDocument();
+    });
+
+    it('hides "Go to Settings" action when search is active', async () => {
+      vi.restoreAllMocks();
+      mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>);
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const searchInput = screen.getByPlaceholderText('Search pages...');
+      fireEvent.change(searchInput, { target: { value: 'nonexistent' } });
+      // Wait for re-render
+      await screen.findByText('Try a different search term');
+      expect(screen.queryByText('Go to Settings')).not.toBeInTheDocument();
+    });
+  });
 });
