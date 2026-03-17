@@ -7,6 +7,8 @@ import { toast } from 'sonner';
 import {
   usePage,
   useUpdatePage,
+  useUpdatePageLabels,
+  usePageFilterOptions,
 } from '../../shared/hooks/use-pages';
 import { useSubmitFeedback, useVerifyPage } from '../../shared/hooks/use-standalone';
 import { useAuthenticatedSrc } from '../../shared/hooks/use-authenticated-src';
@@ -22,6 +24,7 @@ import { apiFetch } from '../../shared/lib/api';
 import { ArticleSummary } from '../../shared/components/article/ArticleSummary';
 import type { TocHeading } from '../../shared/components/article/TableOfContents';
 import { PageViewSkeleton } from '../../shared/components/feedback/Skeleton';
+import { TagEditor } from '../../shared/components/TagEditor';
 
 function ImageLightbox({
   alt,
@@ -99,6 +102,8 @@ export function PageViewPage() {
   const { data: page, isLoading } = usePage(id);
   const { data: settings } = useSettings();
   const updateMutation = useUpdatePage();
+  const labelsMutation = useUpdatePageLabels();
+  const { data: filterOptions } = usePageFilterOptions();
 
   // Fetch the configured draw.io embed URL (falls back to default inside DrawioEditor if undefined)
   const { data: drawioSettings } = useQuery({
@@ -252,6 +257,22 @@ export function PageViewPage() {
     }
   }, [id, drawioEditingDiagram, queryClient]);
 
+  const handleAddTag = useCallback((tag: string) => {
+    if (!id) return;
+    labelsMutation.mutate(
+      { id, addLabels: [tag] },
+      { onError: () => toast.error('Failed to add tag.') },
+    );
+  }, [id, labelsMutation]);
+
+  const handleRemoveTag = useCallback((tag: string) => {
+    if (!id) return;
+    labelsMutation.mutate(
+      { id, removeLabels: [tag] },
+      { onError: () => toast.error('Failed to remove tag.') },
+    );
+  }, [id, labelsMutation]);
+
   if (isLoading) {
     return (
       <m.div initial={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.16 }}>
@@ -401,6 +422,14 @@ export function PageViewPage() {
                   placeholder="Article title…"
                 />
               </div>
+              <TagEditor
+                tags={page.labels}
+                onAddTag={handleAddTag}
+                onRemoveTag={handleRemoveTag}
+                suggestions={filterOptions?.labels}
+                isLoading={labelsMutation.isPending}
+                className="mt-4"
+              />
             </div>
 
             {/* Editor — naked (no inner glass-card, we are already inside glass-card-xl) */}
@@ -415,9 +444,24 @@ export function PageViewPage() {
             className="px-5 pb-16 pt-10 sm:px-10 sm:pt-12"
             data-testid="article-content-shell"
           >
-            <h1 className="mb-10 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground sm:text-4xl">
+            <h1 className="mb-4 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground sm:text-4xl">
               {page.title}
             </h1>
+
+            {page.labels.length > 0 && (
+              <div className="mb-10 flex flex-wrap gap-2" data-testid="article-tags-readonly">
+                {page.labels.map((label) => (
+                  <span
+                    key={label}
+                    className="rounded-full border border-border/60 bg-background/45 px-3 py-1 text-xs font-medium text-muted-foreground"
+                  >
+                    {label}
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {!page.labels.length && <div className="mb-6" />}
 
             {page.summaryStatus && (
               <ArticleSummary
