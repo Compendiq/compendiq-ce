@@ -25,6 +25,13 @@ import {
   STATUS_MACRO_PAGE,
   CHILDREN_MACRO_ALL_PARAMS_PAGE,
   UI_CHILDREN_MACRO_PAGE,
+  LAYOUT_TWO_EQUAL_PAGE,
+  LAYOUT_SINGLE_PAGE,
+  LAYOUT_LEFT_SIDEBAR_PAGE,
+  LAYOUT_RIGHT_SIDEBAR_PAGE,
+  LAYOUT_THREE_EQUAL_PAGE,
+  LAYOUT_STACKED_SECTIONS_PAGE,
+  LAYOUT_NESTED_CONTENT_PAGE,
 } from './__fixtures__/confluence-xhtml.js';
 
 describe('content-converter', () => {
@@ -210,6 +217,79 @@ describe('content-converter', () => {
       expect(html).not.toContain('ac:structured-macro');
       expect(html).not.toContain('ac:task-list');
     });
+
+    // --- Layout macro tests ---
+
+    it('converts two_equal layout to grid divs', () => {
+      const html = confluenceToHtml(LAYOUT_TWO_EQUAL_PAGE);
+      expect(html).toContain('class="confluence-layout"');
+      expect(html).toContain('class="confluence-layout-section"');
+      expect(html).toContain('data-layout-type="two_equal"');
+      expect(html).toContain('class="confluence-layout-cell"');
+      expect(html).toContain('Left column content');
+      expect(html).toContain('Right column content');
+      expect(html).not.toContain('ac:layout');
+    });
+
+    it('converts single layout', () => {
+      const html = confluenceToHtml(LAYOUT_SINGLE_PAGE);
+      expect(html).toContain('data-layout-type="single"');
+      expect(html).toContain('Full width content');
+    });
+
+    it('converts two_left_sidebar layout', () => {
+      const html = confluenceToHtml(LAYOUT_LEFT_SIDEBAR_PAGE);
+      expect(html).toContain('data-layout-type="two_left_sidebar"');
+      expect(html).toContain('Sidebar navigation');
+      expect(html).toContain('Main content area');
+    });
+
+    it('converts two_right_sidebar layout', () => {
+      const html = confluenceToHtml(LAYOUT_RIGHT_SIDEBAR_PAGE);
+      expect(html).toContain('data-layout-type="two_right_sidebar"');
+      expect(html).toContain('Main content area');
+      expect(html).toContain('Sidebar widgets');
+    });
+
+    it('converts three_equal layout', () => {
+      const html = confluenceToHtml(LAYOUT_THREE_EQUAL_PAGE);
+      expect(html).toContain('data-layout-type="three_equal"');
+      expect(html).toContain('Column one');
+      expect(html).toContain('Column two');
+      expect(html).toContain('Column three');
+    });
+
+    it('converts multiple stacked layout sections', () => {
+      const html = confluenceToHtml(LAYOUT_STACKED_SECTIONS_PAGE);
+      expect(html).toContain('data-layout-type="single"');
+      expect(html).toContain('data-layout-type="two_equal"');
+      expect(html).toContain('data-layout-type="three_equal"');
+      expect(html).toContain('Introduction');
+      expect(html).toContain('Feature A');
+      expect(html).toContain('Feature C');
+      // All layout XML removed
+      expect(html).not.toContain('ac:layout');
+      expect(html).not.toContain('ac:layout-section');
+      expect(html).not.toContain('ac:layout-cell');
+    });
+
+    it('converts layout cells with nested rich content (lists, tables, macros)', () => {
+      const html = confluenceToHtml(LAYOUT_NESTED_CONTENT_PAGE);
+      expect(html).toContain('class="confluence-layout-section"');
+      // Lists preserved
+      expect(html).toContain('<li>Item 1</li>');
+      // Code block converted
+      expect(html).toContain('<pre><code class="language-bash">');
+      // Table preserved
+      expect(html).toContain('<table>');
+      expect(html).toContain('Name');
+      // Info panel converted
+      expect(html).toContain('class="panel-info"');
+      expect(html).toContain('Important note');
+      // No remaining Confluence XML
+      expect(html).not.toContain('ac:layout');
+      expect(html).not.toContain('ac:structured-macro');
+    });
   });
 
   // ========== htmlToConfluence (round-trip) ==========
@@ -327,6 +407,58 @@ describe('content-converter', () => {
       expect(xhtml).toContain('>3<');
     });
 
+    it('round-trips two_equal layout macros', () => {
+      const html = confluenceToHtml(LAYOUT_TWO_EQUAL_PAGE);
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toContain('ac:layout');
+      expect(xhtml).toContain('ac:layout-section');
+      expect(xhtml).toContain('ac:type="two_equal"');
+      expect(xhtml).toContain('ac:layout-cell');
+      expect(xhtml).toContain('Left column content');
+      expect(xhtml).toContain('Right column content');
+      expect(xhtml).not.toContain('confluence-layout');
+    });
+
+    it('round-trips all layout type variants', () => {
+      for (const { fixture, type } of [
+        { fixture: LAYOUT_SINGLE_PAGE, type: 'single' },
+        { fixture: LAYOUT_LEFT_SIDEBAR_PAGE, type: 'two_left_sidebar' },
+        { fixture: LAYOUT_RIGHT_SIDEBAR_PAGE, type: 'two_right_sidebar' },
+        { fixture: LAYOUT_THREE_EQUAL_PAGE, type: 'three_equal' },
+      ]) {
+        const html = confluenceToHtml(fixture);
+        const xhtml = htmlToConfluence(html);
+        expect(xhtml).toContain(`ac:type="${type}"`);
+        expect(xhtml).toContain('ac:layout-cell');
+        expect(xhtml).not.toContain('confluence-layout-section');
+      }
+    });
+
+    it('round-trips stacked layout sections', () => {
+      const html = confluenceToHtml(LAYOUT_STACKED_SECTIONS_PAGE);
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toContain('ac:type="single"');
+      expect(xhtml).toContain('ac:type="two_equal"');
+      expect(xhtml).toContain('ac:type="three_equal"');
+      expect(xhtml).toContain('Introduction');
+      expect(xhtml).toContain('Feature C');
+    });
+
+    it('round-trips layout with nested macros and rich content', () => {
+      const html = confluenceToHtml(LAYOUT_NESTED_CONTENT_PAGE);
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toContain('ac:layout');
+      expect(xhtml).toContain('ac:type="two_equal"');
+      // Code block restored inside cell
+      expect(xhtml).toContain('ac:name="code"');
+      expect(xhtml).toContain('<![CDATA[echo "hello"]]>');
+      // Info panel restored inside cell
+      expect(xhtml).toContain('ac:name="info"');
+      expect(xhtml).toContain('Important note');
+      // Table preserved inside cell
+      expect(xhtml).toContain('<table>');
+    });
+
     it('round-trips draw.io macros', () => {
       const html = confluenceToHtml(DRAWIO_PAGE, '99');
       const xhtml = htmlToConfluence(html);
@@ -383,6 +515,9 @@ describe('content-converter', () => {
       { name: 'panels', xhtml: PANELS_PAGE },
       { name: 'draw.io', xhtml: DRAWIO_PAGE },
       { name: 'tables', xhtml: TABLE_PAGE },
+      { name: 'layout-two-equal', xhtml: LAYOUT_TWO_EQUAL_PAGE },
+      { name: 'layout-three-equal', xhtml: LAYOUT_THREE_EQUAL_PAGE },
+      { name: 'layout-stacked', xhtml: LAYOUT_STACKED_SECTIONS_PAGE },
     ];
 
     for (const { name, xhtml } of stableFixtures) {

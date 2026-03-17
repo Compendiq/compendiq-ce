@@ -236,6 +236,85 @@ export const ConfluenceChildren = Node.create({
 });
 
 /**
+ * ConfluenceLayout node — preserves Confluence layout wrapper divs.
+ * Renders <div class="confluence-layout" data-layout-type="..."> elements.
+ */
+export const ConfluenceLayout = Node.create({
+  name: 'confluenceLayout',
+  group: 'block',
+  content: 'block+',
+  defining: true,
+
+  addAttributes() {
+    return {
+      layoutType: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-layout-type'),
+        renderHTML: (attributes) =>
+          attributes.layoutType ? { 'data-layout-type': attributes.layoutType } : {},
+      },
+    };
+  },
+
+  parseHTML() {
+    return [{ tag: 'div.confluence-layout' }];
+  },
+
+  renderHTML({ HTMLAttributes }) {
+    return ['div', mergeAttributes(HTMLAttributes, { class: 'confluence-layout' }), 0];
+  },
+});
+
+/**
+ * ConfluenceLayoutSection node — preserves Confluence layout section divs.
+ * Renders <div class="confluence-layout-section"> elements.
+ */
+export const ConfluenceLayoutSection = Node.create({
+  name: 'confluenceLayoutSection',
+  group: 'block',
+  content: 'block+',
+  defining: true,
+
+  parseHTML() {
+    return [{ tag: 'div.confluence-layout-section' }];
+  },
+
+  renderHTML({ HTMLAttributes }) {
+    return ['div', mergeAttributes(HTMLAttributes, { class: 'confluence-layout-section' }), 0];
+  },
+});
+
+/**
+ * ConfluenceLayoutCell node — preserves Confluence layout cell divs.
+ * Renders <div class="confluence-layout-cell" data-cell-width="..."> elements.
+ */
+export const ConfluenceLayoutCell = Node.create({
+  name: 'confluenceLayoutCell',
+  group: 'block',
+  content: 'block+',
+  defining: true,
+
+  addAttributes() {
+    return {
+      cellWidth: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-cell-width'),
+        renderHTML: (attributes) =>
+          attributes.cellWidth ? { 'data-cell-width': attributes.cellWidth } : {},
+      },
+    };
+  },
+
+  parseHTML() {
+    return [{ tag: 'div.confluence-layout-cell' }];
+  },
+
+  renderHTML({ HTMLAttributes }) {
+    return ['div', mergeAttributes(HTMLAttributes, { class: 'confluence-layout-cell' }), 0];
+  },
+});
+
+/**
  * UnknownMacro node — catch-all for unsupported Confluence macros.
  */
 export const UnknownMacro = Node.create({

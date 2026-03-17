@@ -18,6 +18,11 @@ import {
 import { cn } from '../../lib/cn';
 import { useIsLightTheme } from '../../hooks/use-is-light-theme';
 import { MermaidBlock } from './MermaidBlockExtension';
+import {
+  ConfluenceLayout,
+  ConfluenceLayoutSection,
+  ConfluenceLayoutCell,
+} from './article-extensions';
 import type { Editor as EditorType } from '@tiptap/react';
 
 const ConfluenceImage = Image.extend({
@@ -353,6 +358,9 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       TaskList,
       TaskItem.configure({ nested: true }),
       MermaidBlock,
+      ConfluenceLayout,
+      ConfluenceLayoutSection,
+      ConfluenceLayoutCell,
       TitledCodeBlock.configure({ lowlight }),
       ConfluenceImage.configure({ inline: false }),
       Placeholder.configure({ placeholder: placeholder ?? 'Start writing...' }),

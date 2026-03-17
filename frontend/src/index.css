@@ -1115,6 +1115,34 @@ body {
   background: oklch(from var(--color-muted) l c h / 0.08);
 }
 
+/* Confluence layout macros — multi-column grid */
+.confluence-layout-section {
+  display: grid;
+  gap: 1rem;
+  margin: 1rem 0;
+}
+.confluence-layout-section[data-layout-type="single"] {
+  grid-template-columns: 1fr;
+}
+.confluence-layout-section[data-layout-type="two_equal"] {
+  grid-template-columns: 1fr 1fr;
+}
+.confluence-layout-section[data-layout-type="two_left_sidebar"] {
+  grid-template-columns: 1fr 2fr;
+}
+.confluence-layout-section[data-layout-type="two_right_sidebar"] {
+  grid-template-columns: 2fr 1fr;
+}
+.confluence-layout-section[data-layout-type="three_equal"] {
+  grid-template-columns: 1fr 1fr 1fr;
+}
+/* Responsive: stack on mobile */
+@media (max-width: 768px) {
+  .confluence-layout-section {
+    grid-template-columns: 1fr !important;
+  }
+}
+
 /* Confluence page links — subtle badge style */
 .prose a[data-confluence-link] {
   background: oklch(from var(--color-primary) l c h / 0.1);

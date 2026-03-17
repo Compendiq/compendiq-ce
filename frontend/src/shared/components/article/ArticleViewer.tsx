@@ -15,6 +15,9 @@ import {
   ConfluenceToc,
   ConfluenceStatus,
   ConfluenceChildren,
+  ConfluenceLayout,
+  ConfluenceLayoutSection,
+  ConfluenceLayoutCell,
   UnknownMacro,
 } from './article-extensions';
 import { MermaidBlock } from './MermaidBlockExtension';
@@ -30,7 +33,9 @@ DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
     data.attrName === 'data-drawio' ||
     data.attrName === 'data-confluence-link' ||
     data.attrName === 'data-type' ||
-    data.attrName === 'data-checked'
+    data.attrName === 'data-checked' ||
+    data.attrName === 'data-layout-type' ||
+    data.attrName === 'data-cell-width'
   ) {
     data.forceKeepAttr = true;
   }
@@ -75,7 +80,7 @@ export function ArticleViewer({
   const sanitizedContent = useMemo(
     () =>
       DOMPurify.sanitize(content, {
-        ADD_ATTR: ['data-diagram-name', 'data-drawio', 'data-confluence-link', 'data-type', 'data-checked', 'data-color', 'data-title'],
+        ADD_ATTR: ['data-diagram-name', 'data-drawio', 'data-confluence-link', 'data-type', 'data-checked', 'data-color', 'data-title', 'data-layout-type', 'data-cell-width'],
       }),
     [content],
   );
@@ -117,6 +122,9 @@ export function ArticleViewer({
       ConfluenceToc,
       ConfluenceStatus,
       ConfluenceChildren,
+      ConfluenceLayout,
+      ConfluenceLayoutSection,
+      ConfluenceLayoutCell,
       MermaidBlock,
       UnknownMacro,
     ],

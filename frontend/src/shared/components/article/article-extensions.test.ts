@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { Details, DetailsSummary, Panel, DrawioDiagram, ConfluenceToc, ConfluenceStatus, ConfluenceChildren, UnknownMacro } from './article-extensions';
+import { Details, DetailsSummary, Panel, DrawioDiagram, ConfluenceToc, ConfluenceStatus, ConfluenceChildren, ConfluenceLayout, ConfluenceLayoutSection, ConfluenceLayoutCell, UnknownMacro } from './article-extensions';
 
 // Helper to extract parseHTML rules from a TipTap extension config
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -178,6 +178,61 @@ describe('article-extensions', () => {
       expect(attrs).not.toHaveProperty('data-reverse');
       expect(attrs).not.toHaveProperty('data-first');
     });
+
+  describe('ConfluenceLayout', () => {
+    it('has correct name and group', () => {
+      expect(ConfluenceLayout.name).toBe('confluenceLayout');
+      expect(ConfluenceLayout.config.group).toBe('block');
+    });
+
+    it('parses div.confluence-layout', () => {
+      const parseRules = getParseRules(ConfluenceLayout);
+      expect(parseRules).toBeDefined();
+      expect(parseRules).toContainEqual(expect.objectContaining({ tag: 'div.confluence-layout' }));
+    });
+
+    it('preserves data-layout-type attribute', () => {
+      const addAttributes = ConfluenceLayout.config.addAttributes;
+      const attrs = addAttributes?.call({ name: 'confluenceLayout', options: {}, storage: {}, parent: undefined });
+      expect(attrs).toHaveProperty('layoutType');
+      const mockEl = { getAttribute: (name: string) => name === 'data-layout-type' ? 'two-column' : null } as unknown as HTMLElement;
+      expect(attrs.layoutType.parseHTML(mockEl)).toBe('two-column');
+    });
+  });
+
+  describe('ConfluenceLayoutSection', () => {
+    it('has correct name and group', () => {
+      expect(ConfluenceLayoutSection.name).toBe('confluenceLayoutSection');
+      expect(ConfluenceLayoutSection.config.group).toBe('block');
+    });
+
+    it('parses div.confluence-layout-section', () => {
+      const parseRules = getParseRules(ConfluenceLayoutSection);
+      expect(parseRules).toBeDefined();
+      expect(parseRules).toContainEqual(expect.objectContaining({ tag: 'div.confluence-layout-section' }));
+    });
+  });
+
+  describe('ConfluenceLayoutCell', () => {
+    it('has correct name and group', () => {
+      expect(ConfluenceLayoutCell.name).toBe('confluenceLayoutCell');
+      expect(ConfluenceLayoutCell.config.group).toBe('block');
+    });
+
+    it('parses div.confluence-layout-cell', () => {
+      const parseRules = getParseRules(ConfluenceLayoutCell);
+      expect(parseRules).toBeDefined();
+      expect(parseRules).toContainEqual(expect.objectContaining({ tag: 'div.confluence-layout-cell' }));
+    });
+
+    it('preserves data-cell-width attribute', () => {
+      const addAttributes = ConfluenceLayoutCell.config.addAttributes;
+      const attrs = addAttributes?.call({ name: 'confluenceLayoutCell', options: {}, storage: {}, parent: undefined });
+      expect(attrs).toHaveProperty('cellWidth');
+      const mockEl = { getAttribute: (name: string) => name === 'data-cell-width' ? '50%' : null } as unknown as HTMLElement;
+      expect(attrs.cellWidth.parseHTML(mockEl)).toBe('50%');
+    });
+  });
 
   describe('UnknownMacro', () => {
     it('has correct name', () => {

@@ -219,6 +219,34 @@ export const CHILDREN_MACRO_ALL_PARAMS_PAGE = `<h2>Sub-pages</h2>
 export const UI_CHILDREN_MACRO_PAGE = `<h2>Sub-pages</h2>
 <ac:structured-macro ac:name="ui-children"><ac:parameter ac:name="sort">title</ac:parameter><ac:parameter ac:name="depth">3</ac:parameter></ac:structured-macro>`;
 
+/** Page with layout macros — two equal columns */
+export const LAYOUT_TWO_EQUAL_PAGE = `<h2>Two Column Layout</h2>
+<ac:layout><ac:layout-section ac:type="two_equal"><ac:layout-cell><p>Left column content</p></ac:layout-cell><ac:layout-cell><p>Right column content</p></ac:layout-cell></ac:layout-section></ac:layout>`;
+
+/** Page with layout macros — single column */
+export const LAYOUT_SINGLE_PAGE = `<h2>Single Column Layout</h2>
+<ac:layout><ac:layout-section ac:type="single"><ac:layout-cell><p>Full width content</p></ac:layout-cell></ac:layout-section></ac:layout>`;
+
+/** Page with layout macros — two_left_sidebar */
+export const LAYOUT_LEFT_SIDEBAR_PAGE = `<h2>Left Sidebar Layout</h2>
+<ac:layout><ac:layout-section ac:type="two_left_sidebar"><ac:layout-cell><p>Sidebar navigation</p></ac:layout-cell><ac:layout-cell><p>Main content area</p></ac:layout-cell></ac:layout-section></ac:layout>`;
+
+/** Page with layout macros — two_right_sidebar */
+export const LAYOUT_RIGHT_SIDEBAR_PAGE = `<h2>Right Sidebar Layout</h2>
+<ac:layout><ac:layout-section ac:type="two_right_sidebar"><ac:layout-cell><p>Main content area</p></ac:layout-cell><ac:layout-cell><p>Sidebar widgets</p></ac:layout-cell></ac:layout-section></ac:layout>`;
+
+/** Page with layout macros — three equal columns */
+export const LAYOUT_THREE_EQUAL_PAGE = `<h2>Three Column Layout</h2>
+<ac:layout><ac:layout-section ac:type="three_equal"><ac:layout-cell><p>Column one</p></ac:layout-cell><ac:layout-cell><p>Column two</p></ac:layout-cell><ac:layout-cell><p>Column three</p></ac:layout-cell></ac:layout-section></ac:layout>`;
+
+/** Page with multiple stacked layout sections */
+export const LAYOUT_STACKED_SECTIONS_PAGE = `<h2>Stacked Layouts</h2>
+<ac:layout><ac:layout-section ac:type="single"><ac:layout-cell><h3>Introduction</h3><p>Welcome to the guide.</p></ac:layout-cell></ac:layout-section><ac:layout-section ac:type="two_equal"><ac:layout-cell><p>Left details</p></ac:layout-cell><ac:layout-cell><p>Right details</p></ac:layout-cell></ac:layout-section><ac:layout-section ac:type="three_equal"><ac:layout-cell><p>Feature A</p></ac:layout-cell><ac:layout-cell><p>Feature B</p></ac:layout-cell><ac:layout-cell><p>Feature C</p></ac:layout-cell></ac:layout-section></ac:layout>`;
+
+/** Page with nested content inside layout cells (lists, tables, code) */
+export const LAYOUT_NESTED_CONTENT_PAGE = `<h2>Layout With Rich Content</h2>
+<ac:layout><ac:layout-section ac:type="two_equal"><ac:layout-cell><ul><li>Item 1</li><li>Item 2</li></ul><ac:structured-macro ac:name="code"><ac:parameter ac:name="language">bash</ac:parameter><ac:plain-text-body><![CDATA[echo "hello"]]></ac:plain-text-body></ac:structured-macro></ac:layout-cell><ac:layout-cell><table><tbody><tr><th>Key</th><th>Value</th></tr><tr><td>Name</td><td>Test</td></tr></tbody></table><ac:structured-macro ac:name="info"><ac:rich-text-body><p>Important note</p></ac:rich-text-body></ac:structured-macro></ac:layout-cell></ac:layout-section></ac:layout>`;
+
 /** Page with data-macro-name attribute variant (some Confluence versions use this) */
 export const DATA_MACRO_VARIANT_PAGE = `<h2>Code Example</h2>
 <ac:structured-macro data-macro-name="code"><ac:parameter ac:name="language">python</ac:parameter><ac:plain-text-body><![CDATA[print("hello world")]]></ac:plain-text-body></ac:structured-macro>

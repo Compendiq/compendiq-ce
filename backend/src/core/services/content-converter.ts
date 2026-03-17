@@ -261,6 +261,29 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
     macro.replaceWith(div);
   }
 
+  // Process layout macros: ac:layout / ac:layout-section / ac:layout-cell -> grid divs
+  // Process inside-out: cells first, then sections, then layout wrapper.
+  for (const cell of byTag(doc, 'ac:layout-cell')) {
+    const div = doc.createElement('div');
+    div.className = 'confluence-layout-cell';
+    div.innerHTML = cell.innerHTML;
+    cell.replaceWith(div);
+  }
+  for (const section of byTag(doc, 'ac:layout-section')) {
+    const layoutType = section.getAttribute('ac:type') ?? 'single';
+    const div = doc.createElement('div');
+    div.className = 'confluence-layout-section';
+    div.setAttribute('data-layout-type', layoutType);
+    div.innerHTML = section.innerHTML;
+    section.replaceWith(div);
+  }
+  for (const layout of byTag(doc, 'ac:layout')) {
+    const div = doc.createElement('div');
+    div.className = 'confluence-layout';
+    div.innerHTML = layout.innerHTML;
+    layout.replaceWith(div);
+  }
+
   // Remove remaining unknown macros - preserve as data attributes
   for (const macro of byTag(doc, 'ac:structured-macro')) {
     const name = getMacroName(macro) || 'unknown';
@@ -401,6 +424,26 @@ export function htmlToConfluence(html: string): string {
     macro.appendChild(colourParam);
     macro.appendChild(titleParam);
     span.replaceWith(macro);
+  }
+
+  // Convert layout divs back to ac:layout / ac:layout-section / ac:layout-cell
+  // Process outside-in: layout wrapper first, then sections, then cells.
+  for (const div of doc.querySelectorAll('div.confluence-layout')) {
+    const layout = doc.createElement('ac:layout');
+    while (div.firstChild) layout.appendChild(div.firstChild);
+    div.replaceWith(layout);
+  }
+  for (const div of doc.querySelectorAll('div.confluence-layout-section')) {
+    const layoutType = div.getAttribute('data-layout-type') ?? 'single';
+    const section = doc.createElement('ac:layout-section');
+    section.setAttribute('ac:type', layoutType);
+    while (div.firstChild) section.appendChild(div.firstChild);
+    div.replaceWith(section);
+  }
+  for (const div of doc.querySelectorAll('div.confluence-layout-cell')) {
+    const cell = doc.createElement('ac:layout-cell');
+    while (div.firstChild) cell.appendChild(div.firstChild);
+    div.replaceWith(cell);
   }
 
   // Convert draw.io divs back to macro placeholders
