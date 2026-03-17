@@ -231,7 +231,7 @@ export function PageViewPage() {
         });
       }
     } catch {
-      toast.warning('Could not load existing diagram. Opening with a blank canvas.');
+      toast.warning('Could not load existing diagram — opening a blank canvas.');
     }
     setDrawioXml(dataUri);
     setDrawioEditingDiagram(diagramName);

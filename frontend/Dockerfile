@@ -1,4 +1,13 @@
 # syntax=docker/dockerfile:1
+# Draw.io stage — download and extract static webapp for self-hosted diagram editor
+FROM dhi.io/alpine:3.23-dev AS drawio
+ARG DRAWIO_VERSION=29.6.1
+RUN apk add --no-cache curl unzip && \
+    curl -fsSL "https://github.com/jgraph/drawio/releases/download/v${DRAWIO_VERSION}/draw.war" -o /tmp/draw.war && \
+    mkdir -p /drawio && \
+    unzip -q /tmp/draw.war -d /drawio && \
+    rm /tmp/draw.war
+
 # Build stage — compile React app with Vite
 FROM dhi.io/node:24-alpine3.23-dev AS builder
 
@@ -30,10 +39,12 @@ COPY --from=tools /usr/lib/libidn2* /usr/lib/
 COPY --from=tools /usr/lib/libunistring* /usr/lib/
 
 COPY --from=builder /app/frontend/dist /usr/share/nginx/html
+COPY --from=drawio /drawio /usr/share/nginx/html/drawio
 COPY frontend/nginx.conf /etc/nginx/nginx.conf
 COPY frontend/nginx-security-headers.conf /etc/nginx/security-headers.conf
 COPY frontend/nginx-cache-nocache.conf /etc/nginx/cache-nocache.conf
 COPY frontend/nginx-cache-immutable.conf /etc/nginx/cache-immutable.conf
+COPY frontend/nginx-cache-drawio.conf /etc/nginx/cache-drawio.conf
 
 EXPOSE 8081
 

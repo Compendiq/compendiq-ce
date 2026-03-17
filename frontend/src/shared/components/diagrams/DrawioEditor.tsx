@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, Loader2 } from 'lucide-react';
+import { AlertTriangle, Loader2, RefreshCw, X } from 'lucide-react';
 
-const DRAWIO_ORIGIN = 'https://embed.diagrams.net';
-const DRAWIO_URL = `${DRAWIO_ORIGIN}/?embed=1&proto=json&spin=1&ui=atlas&saveAndExit=1`;
+/** Self-hosted draw.io served from /drawio/ by the same nginx.
+ *  offline=1&stealth=1 disables all cloud integrations (Drive, OneDrive, etc.). */
+const DRAWIO_ORIGIN = typeof window !== 'undefined' ? window.location.origin : '';
+const DRAWIO_URL = `${DRAWIO_ORIGIN}/drawio/?embed=1&proto=json&spin=1&ui=atlas&saveAndExit=1&offline=1&stealth=1`;
 
 /** Timeout in ms to wait for the draw.io iframe 'init' event before showing the error state */
 const DRAWIO_INIT_TIMEOUT_MS = 15_000;
@@ -25,7 +27,7 @@ export interface DrawioEditorProps {
 type EditorPhase = 'loading' | 'ready' | 'saving' | 'error';
 
 /**
- * Full-screen iframe overlay that loads the draw.io embed editor.
+ * Full-screen iframe overlay that loads the self-hosted draw.io embed editor.
  *
  * Protocol:
  * 1. iframe sends { event: 'init' } when ready
@@ -188,11 +190,10 @@ export function DrawioEditor({ xml, onSave, onClose, drawioUrl }: DrawioEditorPr
     };
   }, [hasUnsavedChanges, onClose]);
 
-  function handleRetry() {
-    // Increment iframeKey to force React to remount the iframe and re-run the timeout effect
-    setIframeKey((k) => k + 1);
+  const handleRetry = useCallback(() => {
     setPhase('loading');
-  }
+    setIframeKey((k) => k + 1);
+  }, []);
 
   return (
     <div
@@ -211,31 +212,34 @@ export function DrawioEditor({ xml, onSave, onClose, drawioUrl }: DrawioEditorPr
 
       {phase === 'error' && (
         <div
-          className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4"
+          className="absolute inset-0 z-10 flex items-center justify-center"
           data-testid="drawio-error"
         >
-          <AlertCircle className="h-10 w-10 text-red-400" />
-          <div className="text-center">
-            <p className="text-base font-semibold text-white">Could not connect to the diagram editor</p>
-            <p className="mt-1 max-w-sm text-sm text-white/60">
-              Check your network connection or configure a self-hosted draw.io URL in Settings.
+          <div className="mx-4 flex max-w-md flex-col items-center gap-4 rounded-xl border border-white/10 bg-black/80 p-8 text-center backdrop-blur-md">
+            <AlertTriangle className="h-10 w-10 text-amber-400" />
+            <h3 className="text-lg font-medium text-white">Could not load diagram editor</h3>
+            <p className="text-sm text-white/60">
+              The self-hosted draw.io editor did not respond. Check that the /drawio/ static files
+              are deployed correctly in the nginx container.
             </p>
-          </div>
-          <div className="flex gap-3">
-            <button
-              onClick={handleRetry}
-              className="rounded-lg bg-white/10 px-4 py-2 text-sm text-white transition hover:bg-white/20"
-              data-testid="drawio-retry-btn"
-            >
-              Retry
-            </button>
-            <button
-              onClick={onClose}
-              className="rounded-lg bg-white/5 px-4 py-2 text-sm text-white/70 transition hover:bg-white/10"
-              data-testid="drawio-close-btn"
-            >
-              Close
-            </button>
+            <div className="flex gap-3">
+              <button
+                onClick={handleRetry}
+                className="flex items-center gap-2 rounded-lg bg-white/10 px-4 py-2 text-sm text-white transition-colors hover:bg-white/20"
+                data-testid="drawio-retry-btn"
+              >
+                <RefreshCw className="h-4 w-4" />
+                Retry
+              </button>
+              <button
+                onClick={onClose}
+                className="flex items-center gap-2 rounded-lg bg-white/10 px-4 py-2 text-sm text-white transition-colors hover:bg-white/20"
+                data-testid="drawio-close-btn"
+              >
+                <X className="h-4 w-4" />
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}

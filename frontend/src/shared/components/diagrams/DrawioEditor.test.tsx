@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, act } from '@testing-library/react';
+import { render, screen, waitFor, act, fireEvent } from '@testing-library/react';
 import { DrawioEditor, DRAWIO_ORIGIN } from './DrawioEditor';
 
 describe('DrawioEditor', () => {
@@ -18,11 +18,13 @@ describe('DrawioEditor', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     // Mock window.confirm for unsaved changes dialog
     vi.spyOn(window, 'confirm').mockReturnValue(true);
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -303,15 +305,117 @@ describe('DrawioEditor', () => {
     expect(defaultOnClose).not.toHaveBeenCalled();
   });
 
-  it('renders iframe with correct src URL', () => {
+  it('renders iframe with self-hosted draw.io URL', () => {
     render(
       <DrawioEditor xml={defaultXml} onSave={defaultOnSave} onClose={defaultOnClose} />,
     );
 
     const iframe = screen.getByTestId('drawio-iframe') as HTMLIFrameElement;
-    expect(iframe.src).toContain('embed.diagrams.net');
+    expect(iframe.src).toContain('/drawio/');
     expect(iframe.src).toContain('embed=1');
     expect(iframe.src).toContain('proto=json');
+    expect(iframe.src).toContain('offline=1');
+    expect(iframe.src).toContain('stealth=1');
+  });
+
+  it('renders iframe with correct sandbox flags including allow-modals', () => {
+    render(
+      <DrawioEditor xml={defaultXml} onSave={defaultOnSave} onClose={defaultOnClose} />,
+    );
+
+    const iframe = screen.getByTestId('drawio-iframe') as HTMLIFrameElement;
+    const sandbox = iframe.getAttribute('sandbox') ?? '';
+    expect(sandbox).toContain('allow-scripts');
+    expect(sandbox).toContain('allow-same-origin');
+    expect(sandbox).toContain('allow-popups');
+    expect(sandbox).toContain('allow-forms');
+    expect(sandbox).toContain('allow-modals');
+    expect(sandbox).toContain('allow-downloads');
+  });
+
+  describe('init timeout', () => {
+    it('shows error state after 15 seconds if init event never arrives', async () => {
+      render(
+        <DrawioEditor xml={defaultXml} onSave={defaultOnSave} onClose={defaultOnClose} />,
+      );
+
+      expect(screen.getByTestId('drawio-loading')).toBeTruthy();
+      expect(screen.queryByTestId('drawio-error')).toBeNull();
+
+      // Advance past the timeout
+      await act(async () => {
+        vi.advanceTimersByTime(15_000);
+      });
+
+      expect(screen.queryByTestId('drawio-loading')).toBeNull();
+      expect(screen.getByTestId('drawio-error')).toBeTruthy();
+    });
+
+    it('does not show error if init arrives before timeout', async () => {
+      render(
+        <DrawioEditor xml={defaultXml} onSave={defaultOnSave} onClose={defaultOnClose} />,
+      );
+
+      const iframe = screen.getByTestId('drawio-iframe') as HTMLIFrameElement;
+      Object.defineProperty(iframe, 'contentWindow', {
+        value: { postMessage: vi.fn() },
+        writable: true,
+      });
+
+      // Init arrives after 5 seconds (before 15s timeout)
+      await act(async () => {
+        vi.advanceTimersByTime(5_000);
+      });
+      await act(async () => {
+        postFromDrawio({ event: 'init' });
+      });
+
+      // Advance past the timeout
+      await act(async () => {
+        vi.advanceTimersByTime(15_000);
+      });
+
+      expect(screen.queryByTestId('drawio-error')).toBeNull();
+    });
+
+    it('retry button reloads the iframe and resets to loading state', async () => {
+      render(
+        <DrawioEditor xml={defaultXml} onSave={defaultOnSave} onClose={defaultOnClose} />,
+      );
+
+      // Trigger timeout
+      await act(async () => {
+        vi.advanceTimersByTime(15_000);
+      });
+
+      expect(screen.getByTestId('drawio-error')).toBeTruthy();
+
+      // Click retry
+      await act(async () => {
+        fireEvent.click(screen.getByText('Retry'));
+      });
+
+      // Should be back in loading state
+      expect(screen.getByTestId('drawio-loading')).toBeTruthy();
+      expect(screen.queryByTestId('drawio-error')).toBeNull();
+    });
+
+    it('close button in error state calls onClose', async () => {
+      render(
+        <DrawioEditor xml={defaultXml} onSave={defaultOnSave} onClose={defaultOnClose} />,
+      );
+
+      // Trigger timeout
+      await act(async () => {
+        vi.advanceTimersByTime(15_000);
+      });
+
+      await act(async () => {
+        fireEvent.click(screen.getByText('Close'));
+      });
+
+      expect(defaultOnClose).toHaveBeenCalled();
+    });
   });
 
   // ========================
