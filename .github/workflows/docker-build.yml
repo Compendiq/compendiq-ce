@@ -51,8 +51,8 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           push: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=registry,ref=diinlu/atlasmind-backend:buildcache
+          cache-to: type=registry,ref=diinlu/atlasmind-backend:buildcache,mode=max
           sbom: true
           provenance: mode=max
 
@@ -100,7 +100,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           push: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=registry,ref=diinlu/atlasmind-frontend:buildcache
+          cache-to: type=registry,ref=diinlu/atlasmind-frontend:buildcache,mode=max
           sbom: true
           provenance: mode=max
