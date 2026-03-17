@@ -133,7 +133,8 @@ describe('SidebarTreeView', () => {
     useUiStore.setState({ treeSidebarCollapsed: true });
     render(<SidebarTreeView />, { wrapper: createWrapper() });
     // Section label hidden but nav icons still accessible
-    expect(screen.getByLabelText('Expand tree sidebar')).toBeInTheDocument();
+    // Toggle button moved to AppLayout top nav bar — no longer in sidebar
+    expect(screen.queryByLabelText('Expand tree sidebar')).not.toBeInTheDocument();
     // Nav icons shown as icon-only links in collapsed rail
     expect(screen.getByLabelText('Pages')).toBeInTheDocument();
     expect(screen.getByLabelText('Graph')).toBeInTheDocument();

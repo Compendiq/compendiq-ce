@@ -1,8 +1,9 @@
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { m, AnimatePresence } from 'framer-motion';
-import { Search, Menu, X } from 'lucide-react';
+import { Search, Menu, X, PanelLeft, PanelLeftClose } from 'lucide-react';
 import { useCommandPaletteStore } from '../../../stores/command-palette-store';
+import { useUiStore } from '../../../stores/ui-store';
 import { AtlasMindLogo } from '../AtlasMindLogo';
 import { CommandPalette } from './CommandPalette';
 import { ServiceStatus } from '../badges/ServiceStatus';
@@ -17,6 +18,8 @@ import { cn } from '../../lib/cn';
 export function AppLayout({ children }: { children: ReactNode }) {
   const location = useLocation();
   const openCommandPalette = useCommandPaletteStore((s) => s.open);
+  const treeSidebarCollapsed = useUiStore((s) => s.treeSidebarCollapsed);
+  const toggleTreeSidebar = useUiStore((s) => s.toggleTreeSidebar);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const isArticleRoute = /^\/pages\/[^/]+$/.test(location.pathname);
@@ -73,12 +76,21 @@ export function AppLayout({ children }: { children: ReactNode }) {
         </button>
 
         {/* Logo - always visible in header */}
-        <Link to="/" className="flex items-center gap-1.5 mr-6 group">
+        <Link to="/" className="flex items-center gap-1.5 mr-3 group">
           <AtlasMindLogo size={20} className="text-primary transition-transform duration-200 group-hover:scale-110" />
           <span className="text-sm font-semibold text-foreground">
             Atlas<span className="font-bold">Mind</span>
           </span>
         </Link>
+
+        {/* Sidebar toggle — visible on md+ screens */}
+        <button
+          onClick={toggleTreeSidebar}
+          className="hidden md:flex items-center rounded-lg px-1.5 py-1.5 text-muted-foreground hover:bg-foreground/5 hover:text-foreground transition-colors mr-3"
+          aria-label={treeSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        >
+          {treeSidebarCollapsed ? <PanelLeft size={16} /> : <PanelLeftClose size={16} />}
+        </button>
 
         {/* Breadcrumb — gets full width now that nav pills moved to sidebar */}
         <div className="flex min-w-0 flex-1 items-center">

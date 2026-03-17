@@ -8,8 +8,6 @@ import {
   FileText,
   Folder,
   FolderOpen,
-  PanelLeftClose,
-  PanelLeft,
   ChevronsUpDown,
   GripVertical,
   Plus,
@@ -217,7 +215,6 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
   const location = useLocation();
   const navigate = useNavigate();
   const treeSidebarCollapsed = useUiStore((s) => s.treeSidebarCollapsed);
-  const toggleTreeSidebar = useUiStore((s) => s.toggleTreeSidebar);
   const treeSidebarSpaceKey = useUiStore((s) => s.treeSidebarSpaceKey);
   const setTreeSidebarSpaceKey = useUiStore((s) => s.setTreeSidebarSpaceKey);
   const treeSidebarWidth = useUiStore((s) => s.treeSidebarWidth);
@@ -367,7 +364,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
     [reorderPage],
   );
 
-  // Collapsed rail — nav icons + expand button (VS Code activity bar style)
+  // Collapsed rail — nav icons only (toggle button lives in AppLayout header)
   if (treeSidebarCollapsed) {
     return (
       <AnimatePresence mode="wait">
@@ -404,16 +401,6 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
               );
             })}
           </nav>
-          {/* Expand button */}
-          <div className="mt-2">
-            <button
-              onClick={toggleTreeSidebar}
-              className="rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
-              aria-label="Expand tree sidebar"
-            >
-              <PanelLeft size={16} />
-            </button>
-          </div>
         </m.div>
       </AnimatePresence>
     );
@@ -471,13 +458,6 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
             title="Create new space"
           >
             <Plus size={14} />
-          </button>
-          <button
-            onClick={toggleTreeSidebar}
-            className="rounded-lg p-1 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
-            aria-label="Collapse tree sidebar"
-          >
-            <PanelLeftClose size={14} />
           </button>
         </div>
       </div>

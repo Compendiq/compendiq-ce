@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domMax } from 'framer-motion';
 import { AppLayout } from './AppLayout';
+import { useUiStore } from '../../../stores/ui-store';
 
 // Mock SidebarTreeView to isolate AppLayout tests
 vi.mock('./SidebarTreeView', () => ({
@@ -243,5 +244,39 @@ describe('AppLayout', () => {
       { wrapper: createWrapper('/') },
     );
     expect(screen.getByLabelText('Toggle sidebar')).toBeInTheDocument();
+  });
+
+  it('has sidebar toggle button in top nav bar that shows Collapse when expanded', () => {
+    useUiStore.setState({ treeSidebarCollapsed: false });
+    render(
+      <AppLayout>
+        <div>content</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/') },
+    );
+    expect(screen.getByLabelText('Collapse sidebar')).toBeInTheDocument();
+  });
+
+  it('has sidebar toggle button that shows Expand when collapsed', () => {
+    useUiStore.setState({ treeSidebarCollapsed: true });
+    render(
+      <AppLayout>
+        <div>content</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/') },
+    );
+    expect(screen.getByLabelText('Expand sidebar')).toBeInTheDocument();
+  });
+
+  it('toggles sidebar state when sidebar toggle button is clicked', () => {
+    useUiStore.setState({ treeSidebarCollapsed: false });
+    render(
+      <AppLayout>
+        <div>content</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/') },
+    );
+    fireEvent.click(screen.getByLabelText('Collapse sidebar'));
+    expect(useUiStore.getState().treeSidebarCollapsed).toBe(true);
   });
 });
