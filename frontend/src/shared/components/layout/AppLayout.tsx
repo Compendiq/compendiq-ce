@@ -1,11 +1,14 @@
-import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
-import { Link, useLocation } from 'react-router-dom';
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { m, AnimatePresence } from 'framer-motion';
 import { Search, Menu, X, PanelLeft, PanelLeftClose } from 'lucide-react';
 import { useCommandPaletteStore } from '../../../stores/command-palette-store';
+import { useKeyboardShortcutsStore } from '../../../stores/keyboard-shortcuts-store';
 import { useUiStore } from '../../../stores/ui-store';
+import { useKeyboardShortcuts, type ShortcutDefinition } from '../../hooks/use-keyboard-shortcuts';
 import { AtlasMindLogo } from '../AtlasMindLogo';
 import { CommandPalette } from './CommandPalette';
+import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 import { ServiceStatus } from '../badges/ServiceStatus';
 import { Breadcrumb } from './Breadcrumb';
 import { UserMenu } from './UserMenu';
@@ -17,14 +20,95 @@ import { cn } from '../../lib/cn';
 
 export function AppLayout({ children }: { children: ReactNode }) {
   const location = useLocation();
+  const navigate = useNavigate();
   const openCommandPalette = useCommandPaletteStore((s) => s.open);
   const treeSidebarCollapsed = useUiStore((s) => s.treeSidebarCollapsed);
+  const toggleShortcutsModal = useKeyboardShortcutsStore((s) => s.toggle);
+  const shortcutsModalOpen = useKeyboardShortcutsStore((s) => s.isOpen);
+  const closeShortcutsModal = useKeyboardShortcutsStore((s) => s.close);
   const toggleTreeSidebar = useUiStore((s) => s.toggleTreeSidebar);
+  const toggleArticleSidebar = useUiStore((s) => s.toggleArticleSidebar);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const isArticleRoute = /^\/pages\/[^/]+$/.test(location.pathname);
 
   const closeMobileSidebar = useCallback(() => setMobileSidebarOpen(false), []);
+
+  // Toggle both panels at once (zen mode)
+  const toggleBothPanels = useCallback(() => {
+    toggleTreeSidebar();
+    toggleArticleSidebar();
+  }, [toggleTreeSidebar, toggleArticleSidebar]);
+
+  // Navigate to new page
+  const navigateToNewPage = useCallback(() => {
+    navigate('/pages/new');
+  }, [navigate]);
+
+  // Global keyboard shortcuts
+  const shortcuts = useMemo<ShortcutDefinition[]>(() => [
+    {
+      key: '[',
+      keys: ['['],
+      description: 'Toggle left sidebar',
+      category: 'panels',
+      action: toggleTreeSidebar,
+    },
+    {
+      key: ']',
+      keys: [']'],
+      description: 'Toggle right panel (article outline)',
+      category: 'panels',
+      action: toggleArticleSidebar,
+    },
+    {
+      key: '\\',
+      keys: ['\\'],
+      description: 'Toggle both panels (zen mode)',
+      category: 'panels',
+      action: toggleBothPanels,
+    },
+    {
+      key: 'Ctrl+K',
+      keys: ['k'],
+      mod: true,
+      description: 'Open command palette / quick search',
+      category: 'navigation',
+      action: openCommandPalette,
+    },
+    {
+      key: 'Ctrl+N',
+      keys: ['n'],
+      mod: true,
+      description: 'Create new page',
+      category: 'navigation',
+      action: navigateToNewPage,
+    },
+    {
+      key: '?',
+      keys: ['?'],
+      description: 'Show keyboard shortcuts',
+      category: 'navigation',
+      action: toggleShortcutsModal,
+    },
+    {
+      key: 'Ctrl+/',
+      keys: ['/'],
+      mod: true,
+      description: 'Show keyboard shortcuts',
+      category: 'navigation',
+      action: toggleShortcutsModal,
+    },
+    {
+      key: 'Escape',
+      keys: ['Escape'],
+      description: 'Close modals',
+      category: 'navigation',
+      action: closeShortcutsModal,
+    },
+  ], [openCommandPalette, toggleShortcutsModal, closeShortcutsModal, toggleTreeSidebar, toggleArticleSidebar, toggleBothPanels, navigateToNewPage]);
+
+  useKeyboardShortcuts(shortcutsModalOpen ? [] : shortcuts);
 
   // Close mobile sidebar on navigation
   useEffect(() => {
@@ -48,21 +132,10 @@ export function AppLayout({ children }: { children: ReactNode }) {
     }
   }, [location.key]);
 
-  // Register Cmd/Ctrl+K keyboard shortcut
-  useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
-        e.preventDefault();
-        openCommandPalette();
-      }
-    }
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [openCommandPalette]);
-
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background">
       <CommandPalette />
+      <KeyboardShortcutsModal />
 
       {/* Top navigation bar — Liquid Glass floating header */}
       <header className="relative z-10 mx-3 mt-3 flex h-11 shrink-0 items-center rounded-xl glass-header px-4">

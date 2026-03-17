@@ -366,6 +366,7 @@ export function ArticleRightPane() {
               onClick={toggleSidebar}
               className="rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
               aria-label="Expand article sidebar"
+              title="Expand sidebar (])"
             >
               <PanelRight size={16} />
             </button>
@@ -395,6 +396,7 @@ export function ArticleRightPane() {
           onClick={toggleSidebar}
           className="rounded-lg p-1 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
           aria-label="Collapse article sidebar"
+          title="Collapse sidebar (])"
         >
           <PanelRightClose size={14} />
         </button>

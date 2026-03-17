@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, m } from 'framer-motion';
@@ -13,6 +13,7 @@ import {
 import { useSubmitFeedback, useVerifyPage } from '../../shared/hooks/use-standalone';
 import { useAuthenticatedSrc } from '../../shared/hooks/use-authenticated-src';
 import { useSettings } from '../../shared/hooks/use-settings';
+import { useKeyboardShortcuts, type ShortcutDefinition } from '../../shared/hooks/use-keyboard-shortcuts';
 import { useArticleViewStore } from '../../stores/article-view-store';
 import { FeatureErrorBoundary } from '../../shared/components/feedback/FeatureErrorBoundary';
 import { QualityScoreBadge } from '../../shared/components/badges/QualityScoreBadge';
@@ -272,6 +273,46 @@ export function PageViewPage() {
       { onError: () => toast.error('Failed to remove tag.') },
     );
   }, [id, labelsMutation]);
+
+  // Page-specific keyboard shortcuts (Ctrl+S, Ctrl+E, Escape)
+  const pageShortcuts = useMemo<ShortcutDefinition[]>(() => [
+    {
+      key: 'Ctrl+S',
+      keys: ['s'],
+      mod: true,
+      description: 'Save current article',
+      category: 'editor',
+      action: () => {
+        if (editing) handleSave();
+      },
+    },
+    {
+      key: 'Ctrl+E',
+      keys: ['e'],
+      mod: true,
+      description: 'Toggle edit / view mode',
+      category: 'editor',
+      action: () => {
+        if (editing) {
+          handleCancelEditing();
+        } else {
+          handleStartEditing();
+        }
+      },
+    },
+    {
+      key: 'Escape',
+      keys: ['Escape'],
+      description: 'Exit edit mode',
+      category: 'editor',
+      action: () => {
+        if (document.querySelector('[role="dialog"]')) return;
+        if (editing) handleCancelEditing();
+      },
+    },
+  ], [editing, handleSave, handleCancelEditing, handleStartEditing]);
+
+  useKeyboardShortcuts(pageShortcuts);
 
   if (isLoading) {
     return (
