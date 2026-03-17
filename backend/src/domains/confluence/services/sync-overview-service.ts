@@ -69,7 +69,7 @@ export async function getSyncOverview(userId: string): Promise<SyncOverviewRespo
     [overviewSpaces],
   );
 
-  const sync = getSyncStatus(userId);
+  const sync = await getSyncStatus(userId);
   const spaces = new Map<string, SyncOverviewSpace>();
   const issues: SyncOverviewIssue[] = [];
 

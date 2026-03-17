@@ -446,9 +446,33 @@ async function detectDeletedPages(
 
 /**
  * Get sync status for a user.
+ *
+ * Returns the in-memory status when available (hot path during active syncs).
+ * After a server restart the in-memory map is empty, so we fall back to the
+ * database: MAX(last_synced) across the user's RBAC-accessible spaces.
+ * The result is cached in the map so subsequent calls are fast.
  */
-export function getSyncStatus(userId: string): SyncStatus {
-  return syncStatuses.get(userId) ?? { userId, status: 'idle' };
+export async function getSyncStatus(userId: string): Promise<SyncStatus> {
+  const cached = syncStatuses.get(userId);
+  if (cached) return cached;
+
+  // Fall back to DB — find the most recent space sync for this user's spaces
+  const result = await query<{ last_synced: Date | null }>(
+    `SELECT MAX(s.last_synced) AS last_synced
+     FROM spaces s
+     INNER JOIN space_role_assignments sra
+       ON sra.space_key = s.space_key
+       AND sra.principal_type = 'user'
+       AND sra.principal_id = $1`,
+    [userId],
+  );
+
+  const lastSynced = result.rows[0]?.last_synced ?? undefined;
+  const status: SyncStatus = { userId, status: 'idle', lastSynced };
+
+  // Seed in-memory cache so subsequent calls skip the DB query
+  syncStatuses.set(userId, status);
+  return status;
 }
 
 /**

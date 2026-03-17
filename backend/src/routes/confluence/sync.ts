@@ -10,7 +10,7 @@ export async function syncRoutes(fastify: FastifyInstance) {
   fastify.post('/sync', async (request, reply) => {
     const userId = request.userId;
 
-    const status = getSyncStatus(userId);
+    const status = await getSyncStatus(userId);
     if (status.status === 'syncing') {
       return reply.status(409).send({ message: 'Sync already in progress', status });
     }
@@ -28,11 +28,11 @@ export async function syncRoutes(fastify: FastifyInstance) {
       logger.error({ err, userId }, 'Manual sync failed');
     });
 
-    return { message: 'Sync started', status: getSyncStatus(userId) };
+    return { message: 'Sync started', status: await getSyncStatus(userId) };
   });
 
   // GET /api/sync/status
   fastify.get('/sync/status', async (request) => {
-    return getSyncStatus(request.userId);
+    return await getSyncStatus(request.userId);
   });
 }

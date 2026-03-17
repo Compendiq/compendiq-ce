@@ -108,15 +108,15 @@ describe('syncUser auto-embedding', () => {
     await syncUser('user-5');
 
     // Status should be 'embedding' while processDirtyPages is still running
-    const statusDuringEmbed = getSyncStatus('user-5');
+    const statusDuringEmbed = await getSyncStatus('user-5');
     expect(statusDuringEmbed.status).toBe('embedding');
 
     // Resolve embedding
     resolveEmbedding({ processed: 3, errors: 0 });
 
     // After embedding completes, status should be 'idle'
-    await vi.waitFor(() => {
-      const statusAfter = getSyncStatus('user-5');
+    await vi.waitFor(async () => {
+      const statusAfter = await getSyncStatus('user-5');
       expect(statusAfter.status).toBe('idle');
     });
   });
@@ -128,8 +128,8 @@ describe('syncUser auto-embedding', () => {
     await syncUser('user-6');
 
     // Wait for the rejected promise to settle
-    await vi.waitFor(() => {
-      const status = getSyncStatus('user-6');
+    await vi.waitFor(async () => {
+      const status = await getSyncStatus('user-6');
       expect(status.status).toBe('idle');
     });
   });
