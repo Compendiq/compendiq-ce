@@ -111,7 +111,7 @@ describe('embedding-service', () => {
       });
     });
 
-    it('should query COUNT(DISTINCT confluence_id) for embeddedPages', async () => {
+    it('should query COUNT(DISTINCT page_id) for embeddedPages', async () => {
       mocks.query
         .mockResolvedValueOnce({ rows: [{ count: '0' }] })
         .mockResolvedValueOnce({ rows: [{ count: '0' }] })

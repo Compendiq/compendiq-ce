@@ -724,14 +724,14 @@ export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatu
     ),
     query<{ count: string }>(
       `SELECT COUNT(*) as count FROM page_embeddings pe
-       JOIN pages cp ON pe.confluence_id = cp.confluence_id
+       JOIN pages cp ON pe.page_id = cp.id
        WHERE cp.space_key = ANY($1::text[])
          AND cp.deleted_at IS NULL`,
       [statusSpaces],
     ),
     query<{ count: string }>(
-      `SELECT COUNT(DISTINCT pe.confluence_id) as count FROM page_embeddings pe
-       JOIN pages cp ON pe.confluence_id = cp.confluence_id
+      `SELECT COUNT(DISTINCT pe.page_id) as count FROM page_embeddings pe
+       JOIN pages cp ON pe.page_id = cp.id
        WHERE cp.space_key = ANY($1::text[])
          AND cp.deleted_at IS NULL`,
       [statusSpaces],
