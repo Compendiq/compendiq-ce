@@ -47,17 +47,17 @@ export const THEMES: ThemeMeta[] = [
   // -- Dark themes --
   {
     id: 'void-indigo',
-    label: 'Void Indigo',
-    description: 'Deep navy-black with indigo accents — Linear × GitHub Copilot',
+    label: 'Void',
+    description: 'Inky graphite with indigo accents — Linear × GitHub',
     category: 'dark',
-    preview: { bg: '#1a1a2e', card: '#252542', primary: '#6366f1', accent: '#818cf8' },
+    preview: { bg: '#18181b', card: '#27272a', primary: '#6366f1', accent: '#818cf8' },
   },
   {
     id: 'obsidian-violet',
-    label: 'Obsidian Violet',
-    description: 'Warm near-black with violet accents — Arc × Raycast AI',
+    label: 'Obsidian',
+    description: 'Warm graphite with violet accents — Raycast × Obsidian',
     category: 'dark',
-    preview: { bg: '#1e1a2e', card: '#2a2540', primary: '#a855f7', accent: '#c084fc' },
+    preview: { bg: '#1c1917', card: '#292524', primary: '#a855f7', accent: '#c084fc' },
   },
   // -- Light themes --
   {

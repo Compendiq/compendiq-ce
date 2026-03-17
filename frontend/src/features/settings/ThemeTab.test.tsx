@@ -153,9 +153,9 @@ describe('ThemeTab', () => {
     render(<SettingsPage />, { wrapper: createWrapper() });
     await navigateToThemeTab();
 
-    expect(screen.getByText('Void Indigo')).toBeInTheDocument();
-    expect(screen.getByText('Deep navy-black with indigo accents — Linear \u00d7 GitHub Copilot')).toBeInTheDocument();
-    expect(screen.getByText('Obsidian Violet')).toBeInTheDocument();
+    expect(screen.getByText('Void')).toBeInTheDocument();
+    expect(screen.getByText('Inky graphite with indigo accents — Linear \u00d7 GitHub')).toBeInTheDocument();
+    expect(screen.getByText('Obsidian')).toBeInTheDocument();
     expect(screen.getByText('Polar Slate')).toBeInTheDocument();
     expect(screen.getByText('Parchment Glow')).toBeInTheDocument();
   });
