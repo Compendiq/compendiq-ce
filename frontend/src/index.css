@@ -160,8 +160,8 @@ body {
 
   /* Light-mode Liquid Glass sidebar overrides */
   --glass-sidebar-bg: oklch(from var(--color-card) l c h / 0.7);
-  --glass-sidebar-border: oklch(0 0 0 / 0.10);
-  --glass-sidebar-shadow: 0 8px 32px oklch(0 0 0 / 0.08);
+  --glass-sidebar-border: oklch(0 0 0 / 0.16);
+  --glass-sidebar-shadow: 0 8px 32px oklch(0 0 0 / 0.12);
   --glass-sidebar-specular: inset 0 0.5px 0 oklch(1 0 0 / 0.4);
   --glass-sidebar-divider: oklch(0 0 0 / 0.06);
 
