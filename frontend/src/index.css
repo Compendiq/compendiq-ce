@@ -1260,6 +1260,12 @@ pre:hover .code-copy-btn {
 
 .article-viewer .tiptap {
   padding: 1.5rem 2.5rem;
+  overflow-x: auto;
+}
+
+.article-viewer .tiptap table {
+  width: max-content;
+  min-width: 100%;
 }
 
 /* TipTap editor styles */
