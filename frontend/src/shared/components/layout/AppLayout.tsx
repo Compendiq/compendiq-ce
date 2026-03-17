@@ -178,7 +178,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
 
         {/* Main content area + optional right sidebar */}
         <div className="flex flex-1 gap-1.5 overflow-hidden">
-          <main className="flex flex-1 flex-col overflow-hidden rounded-xl bg-card/40">
+          <main className="flex flex-1 flex-col overflow-hidden glass-sidebar">
             <div className="shrink-0 px-4 pt-3 sm:px-6">
               <ServiceStatus />
             </div>
