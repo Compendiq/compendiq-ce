@@ -17,11 +17,11 @@ export function ThemeToggle() {
   return (
     <button
       onClick={toggle}
-      className="glass-button-ghost"
+      className="glass-button-ghost hover:bg-foreground/10"
       aria-label={light ? 'Switch to dark mode' : 'Switch to light mode'}
       title={light ? 'Switch to dark mode' : 'Switch to light mode'}
     >
-      {light ? <Moon size={15} /> : <Sun size={15} />}
+      {light ? <Moon size={16} /> : <Sun size={16} />}
     </button>
   );
 }

@@ -463,7 +463,7 @@ export function PagesPage() {
             >
               <div
                 className={cn(
-                  'glass-card-hover flex w-full items-center gap-4 p-4 text-left',
+                  'glass-card-hover flex w-full items-center gap-3 p-4 text-left',
                   selectedIds.has(pageItem.id) && 'border-primary/40 bg-primary/5',
                 )}
                 data-testid={`article-hover-${pageItem.id}`}
