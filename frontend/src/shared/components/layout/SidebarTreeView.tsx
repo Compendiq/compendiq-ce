@@ -1,6 +1,8 @@
 import { memo, useState, useMemo, useCallback, useEffect, useRef } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
 import {
+  BookOpen,
+  Bot,
   ChevronRight,
   ChevronDown,
   FileText,
@@ -13,6 +15,7 @@ import {
   Plus,
   Globe,
   HardDrive,
+  Share2,
 } from 'lucide-react';
 import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { DragDropProvider } from '@dnd-kit/react';
@@ -23,6 +26,12 @@ import { useLocalSpaces, useReorderPage } from '../../hooks/use-standalone';
 import { useUiStore } from '../../../stores/ui-store';
 import { cn } from '../../lib/cn';
 import type { PageTreeItem } from '../../hooks/use-pages';
+
+const navItems = [
+  { icon: BookOpen, label: 'Pages', path: '/' },
+  { icon: Share2, label: 'Graph', path: '/graph' },
+  { icon: Bot, label: 'AI', path: '/ai' },
+] as const;
 
 export interface TreeNode {
   page: PageTreeItem;
@@ -204,7 +213,7 @@ interface SpaceOption {
   homepageId?: string | null;
 }
 
-export function SidebarTreeView() {
+export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}) {
   const location = useLocation();
   const navigate = useNavigate();
   const treeSidebarCollapsed = useUiStore((s) => s.treeSidebarCollapsed);
@@ -358,7 +367,7 @@ export function SidebarTreeView() {
     [reorderPage],
   );
 
-  // Collapsed rail — glass pill style
+  // Collapsed rail — nav icons + expand button (VS Code activity bar style)
   if (treeSidebarCollapsed) {
     return (
       <AnimatePresence mode="wait">
@@ -370,7 +379,33 @@ export function SidebarTreeView() {
           transition={reduceEffects ? { duration: 0 } : sidebarSpring}
           className="flex flex-col items-center rounded-xl glass-sidebar overflow-hidden"
         >
-          <div className="flex h-10 items-center justify-center w-full">
+          {/* Nav icons */}
+          <nav className="flex flex-col items-center gap-1 pt-2" aria-label="Main navigation">
+            {navItems.map(({ icon: Icon, label, path }) => {
+              const active = path === '/'
+                ? location.pathname === '/' || location.pathname.startsWith('/pages')
+                : location.pathname.startsWith(path);
+              return (
+                <Link
+                  key={path}
+                  to={path}
+                  onClick={onNavigate}
+                  className={cn(
+                    'rounded-lg p-1.5 transition-all duration-200 active:scale-[0.95]',
+                    active
+                      ? 'glass-pill-active text-primary'
+                      : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
+                  )}
+                  title={label}
+                  aria-label={label}
+                >
+                  <Icon size={16} className={cn(active && 'drop-shadow-[0_1px_2px_oklch(from_var(--color-primary)_l_c_h_/_0.3)]')} />
+                </Link>
+              );
+            })}
+          </nav>
+          {/* Expand button */}
+          <div className="mt-2">
             <button
               onClick={toggleTreeSidebar}
               className="rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
@@ -400,8 +435,33 @@ export function SidebarTreeView() {
         isResizing && 'select-none',
       )}
     >
-      {/* Sidebar header with collapse toggle */}
-      <div className="flex h-10 shrink-0 items-center justify-between px-3">
+      {/* Nav tabs — main app navigation */}
+      <nav className="flex shrink-0 items-center gap-0.5 px-2 pt-2 pb-1" aria-label="Main navigation">
+        {navItems.map(({ icon: Icon, label, path }) => {
+          const active = path === '/'
+            ? location.pathname === '/' || location.pathname.startsWith('/pages')
+            : location.pathname.startsWith(path);
+          return (
+            <Link
+              key={path}
+              to={path}
+              onClick={onNavigate}
+              className={cn(
+                'flex flex-1 items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs transition-all duration-200 active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
+                active
+                  ? 'glass-pill-active text-primary font-medium'
+                  : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
+              )}
+            >
+              <Icon size={14} className={cn(active && 'drop-shadow-[0_1px_2px_oklch(from_var(--color-primary)_l_c_h_/_0.3)]')} />
+              {label}
+            </Link>
+          );
+        })}
+      </nav>
+
+      {/* Sidebar header — title + actions */}
+      <div className="flex h-8 shrink-0 items-center justify-between px-3">
         <span className="text-xs font-semibold text-muted-foreground/60">Pages</span>
         <div className="flex items-center gap-1">
           <button

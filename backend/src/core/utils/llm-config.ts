@@ -183,6 +183,7 @@ export function buildOllamaFetch(): typeof fetch | undefined {
       mergedInit.dispatcher = llmDispatcher;
     }
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici fetch types differ from global fetch
     return undiciFetch(input as any, mergedInit as any) as unknown as Promise<Response>;
   };
 }

@@ -524,6 +524,7 @@ describe('AiAssistantPage', () => {
         return Promise.resolve([]);
       });
 
+      // eslint-disable-next-line require-yield
       async function* fakeErrorStream() {
         throw new Error('Connection lost');
       }
@@ -594,7 +595,7 @@ describe('AiAssistantPage', () => {
       // The send button should now be enabled
       await waitFor(() => {
         // Find the last button in the page (the send button)
-        const allButtons = screen.getAllByRole('button');
+        screen.getAllByRole('button');
         // The send button doesn't have text, just an icon, and is in the input area
         const sendBtnContainer = input.closest('.glass-card');
         const sendBtn = sendBtnContainer?.querySelector('button');

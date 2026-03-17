@@ -12,8 +12,6 @@ import {
   hasLocalAttachments,
   getExpectedAttachmentFilenames,
   getMissingAttachments,
-  extractImageFilenames,
-  extractDrawioDiagramNames,
   STREAM_THRESHOLD_BYTES,
   MAX_ATTACHMENT_BYTES,
 } from './attachment-handler.js';

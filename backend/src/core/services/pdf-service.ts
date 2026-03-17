@@ -14,6 +14,7 @@ async function getBrowser(): Promise<Browser> {
       throw new Error(
         'PDF generation unavailable: Chromium not installed. ' +
           'Install with: npx playwright install chromium',
+        { cause: err },
       );
     }
   }

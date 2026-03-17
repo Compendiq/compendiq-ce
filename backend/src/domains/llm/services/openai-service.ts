@@ -78,6 +78,7 @@ function llmFetch(url: string | URL, init?: RequestInit): Promise<Response> {
   return undiciFetch(url, {
     ...init,
     dispatcher: llmDispatcher,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici fetch types differ from global fetch
   } as any) as unknown as Promise<Response>;
 }
 

@@ -234,6 +234,7 @@ describe('OpenAIProvider', () => {
       mockFetch.mockResolvedValueOnce(new Response(stream, { status: 200 }));
 
       const provider = new OpenAIProvider();
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       for await (const _chunk of provider.streamChat('gpt-4o', [{ role: 'user', content: 'Hi' }])) {
         // consume
       }
@@ -258,6 +259,7 @@ describe('OpenAIProvider', () => {
       mockFetch.mockResolvedValueOnce(new Response(stream, { status: 200 }));
 
       const provider = new OpenAIProvider();
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       for await (const _chunk of provider.streamChat('gpt-4o', [{ role: 'user', content: 'Hi' }], callerSignal)) {
         // consume
       }

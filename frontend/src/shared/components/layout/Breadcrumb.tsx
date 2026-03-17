@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { ChevronRight, Home, HardDrive, Globe } from 'lucide-react';
+import { ChevronRight, HardDrive, Globe } from 'lucide-react';
 import { usePageBreadcrumb } from '../../hooks/use-standalone';
 
 const routeLabels: Record<string, string> = {
@@ -27,7 +27,6 @@ export function Breadcrumb() {
   if (pathname === '/') {
     return (
       <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-sm text-muted-foreground">
-        <Home size={14} />
         <span className="text-foreground font-medium">Pages</span>
       </nav>
     );
@@ -36,9 +35,9 @@ export function Breadcrumb() {
   // Hierarchy-aware breadcrumb for page views
   if (pageId && breadcrumbData) {
     return (
-      <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-sm">
-        <Link to="/" className="text-muted-foreground hover:text-foreground transition-colors">
-          <Home size={14} />
+      <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-sm min-w-0">
+        <Link to="/" className="shrink-0 text-muted-foreground hover:text-foreground transition-colors text-xs">
+          Pages
         </Link>
 
         {/* Space link */}
@@ -93,13 +92,25 @@ export function Breadcrumb() {
       label = segments[i].split('-').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
     }
 
+    // Skip "Pages" crumb — already shown as the home link prefix
+    if (accumulated === '/pages' && label === 'Pages') continue;
+
     crumbs.push({ label, path: accumulated, isLast });
   }
 
+  // If only the skipped /pages crumb existed, show just "Pages" as the active label
+  if (crumbs.length === 0) {
+    return (
+      <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-sm text-muted-foreground">
+        <span className="text-foreground font-medium">Pages</span>
+      </nav>
+    );
+  }
+
   return (
-    <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-sm">
-      <Link to="/" className="text-muted-foreground hover:text-foreground transition-colors">
-        <Home size={14} />
+    <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-sm min-w-0">
+      <Link to="/" className="shrink-0 text-muted-foreground hover:text-foreground transition-colors text-xs">
+        Pages
       </Link>
       {crumbs.map((crumb) => (
         <span key={crumb.path} className="flex items-center gap-1.5">

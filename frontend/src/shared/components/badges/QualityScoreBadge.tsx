@@ -25,7 +25,7 @@ interface ScoreConfig {
 function getScoreConfig(
   score: number | null,
   status: QualityStatus | null,
-  error?: string | null,
+  _error?: string | null,
 ): ScoreConfig {
   // Handle non-analyzed statuses first
   if (status === 'analyzing') {

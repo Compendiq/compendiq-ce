@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import { createContext, useContext, useState, useRef, useEffect, useCallback, type ReactNode } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
@@ -105,6 +106,7 @@ export interface AiContextValue {
   setIsInsertingDiagram: (v: boolean) => void;
 
   // Streaming helper
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   runStream: <T extends { content?: string; error?: string; done?: boolean; final?: boolean; conversationId?: string; sources?: Source[] }>(
     endpoint: string,
     body: Record<string, unknown>,

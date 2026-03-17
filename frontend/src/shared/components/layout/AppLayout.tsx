@@ -1,7 +1,7 @@
-import { type ReactNode, useEffect, useRef, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { m, AnimatePresence } from 'framer-motion';
-import { Search, BookOpen, Bot, Menu, X, Share2 } from 'lucide-react';
+import { Search, Menu, X } from 'lucide-react';
 import { useCommandPaletteStore } from '../../../stores/command-palette-store';
 import { AtlasMindLogo } from '../AtlasMindLogo';
 import { CommandPalette } from './CommandPalette';
@@ -14,25 +14,18 @@ import { ThemeToggle } from './ThemeToggle';
 import { PageTransition } from './PageTransition';
 import { cn } from '../../lib/cn';
 
-const navItems = [
-  { icon: BookOpen, label: 'Pages', path: '/' },
-  { icon: Share2, label: 'Graph', path: '/graph' },
-  { icon: Bot, label: 'AI Assistant', path: '/ai' },
-];
-
 export function AppLayout({ children }: { children: ReactNode }) {
   const location = useLocation();
   const openCommandPalette = useCommandPaletteStore((s) => s.open);
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const isArticleRoute = /^\/pages\/[^/]+$/.test(location.pathname);
 
-  // Show tree sidebar on page-related routes (/ is now the pages view)
-  const showTreeSidebar = location.pathname === '/' || location.pathname.startsWith('/pages');
+  const closeMobileSidebar = useCallback(() => setMobileSidebarOpen(false), []);
 
-  // Close mobile menu on navigation
+  // Close mobile sidebar on navigation
   useEffect(() => {
-    setMobileMenuOpen(false);
+    setMobileSidebarOpen(false);
   }, [location.pathname]);
 
   // Reset scroll to top on every route change (use location.key so it fires
@@ -70,13 +63,13 @@ export function AppLayout({ children }: { children: ReactNode }) {
 
       {/* Top navigation bar — Liquid Glass floating header */}
       <header className="relative z-10 mx-3 mt-3 flex h-11 shrink-0 items-center rounded-xl glass-header px-4">
-        {/* Mobile hamburger */}
+        {/* Mobile hamburger — opens sidebar slide-over */}
         <button
-          onClick={() => setMobileMenuOpen((v) => !v)}
+          onClick={() => setMobileSidebarOpen((v) => !v)}
           className="glass-button-ghost mr-2 md:hidden"
-          aria-label="Toggle menu"
+          aria-label="Toggle sidebar"
         >
-          {mobileMenuOpen ? <X size={18} /> : <Menu size={18} />}
+          {mobileSidebarOpen ? <X size={18} /> : <Menu size={18} />}
         </button>
 
         {/* Logo - always visible in header */}
@@ -87,35 +80,10 @@ export function AppLayout({ children }: { children: ReactNode }) {
           </span>
         </Link>
 
-        {/* Breadcrumb */}
-        <div className="flex items-center">
+        {/* Breadcrumb — gets full width now that nav pills moved to sidebar */}
+        <div className="flex min-w-0 flex-1 items-center">
           <Breadcrumb />
         </div>
-
-        {/* Main navigation — glass pill active states */}
-        <nav className="ml-auto hidden items-center gap-1 md:flex">
-          {navItems.map(({ icon: Icon, label, path }) => {
-            const active =
-              path === '/'
-                ? location.pathname === '/' || location.pathname.startsWith('/pages')
-                : location.pathname.startsWith(path);
-            return (
-              <Link
-                key={path}
-                to={path}
-                className={cn(
-                  'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
-                  active
-                    ? 'glass-pill-active text-primary font-medium'
-                    : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
-                )}
-              >
-                <Icon size={15} className={cn(active && 'drop-shadow-[0_1px_2px_oklch(from_var(--color-primary)_l_c_h_/_0.3)]')} />
-                {label}
-              </Link>
-            );
-          })}
-        </nav>
 
         {/* Right side: search + user */}
         <div className="flex items-center gap-3 ml-3">
@@ -134,40 +102,31 @@ export function AppLayout({ children }: { children: ReactNode }) {
         </div>
       </header>
 
-      {/* Mobile navigation menu */}
+      {/* Mobile sidebar slide-over */}
       <AnimatePresence>
-        {mobileMenuOpen && (
-          <m.nav
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.2 }}
-            className="overflow-hidden mx-3 mt-1 rounded-xl glass-header md:hidden"
-          >
-            <div className="space-y-1 p-3">
-              {navItems.map(({ icon: Icon, label, path }) => {
-                const active =
-                  path === '/'
-                    ? location.pathname === '/'
-                    : location.pathname.startsWith(path);
-                return (
-                  <Link
-                    key={path}
-                    to={path}
-                    className={cn(
-                      'flex items-center gap-3 rounded-lg px-4 py-3 text-sm transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
-                      active
-                        ? 'glass-pill-active text-primary font-medium'
-                        : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
-                    )}
-                  >
-                    <Icon size={18} />
-                    {label}
-                  </Link>
-                );
-              })}
-            </div>
-          </m.nav>
+        {mobileSidebarOpen && (
+          <>
+            {/* Backdrop */}
+            <m.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.2 }}
+              className="fixed inset-0 z-40 bg-black/40 backdrop-blur-[2px] md:hidden"
+              onClick={closeMobileSidebar}
+              aria-hidden="true"
+            />
+            {/* Slide-over panel */}
+            <m.div
+              initial={{ x: '-100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '-100%' }}
+              transition={{ type: 'spring', stiffness: 400, damping: 35 }}
+              className="fixed inset-y-0 left-0 z-50 w-72 md:hidden"
+            >
+              <SidebarTreeView onNavigate={closeMobileSidebar} />
+            </m.div>
+          </>
         )}
       </AnimatePresence>
 
@@ -178,8 +137,10 @@ export function AppLayout({ children }: { children: ReactNode }) {
 
       {/* Below header: sidebar + content area with floating gaps */}
       <div data-testid="panel-wrapper" className="flex flex-1 gap-2.5 overflow-hidden p-3">
-        {/* Left sidebar - below header, only on pages routes */}
-        {showTreeSidebar && <SidebarTreeView />}
+        {/* Left sidebar — always visible on desktop, hidden on mobile (slide-over instead) */}
+        <div className="hidden md:flex">
+          <SidebarTreeView />
+        </div>
 
         {/* Main content area + optional right sidebar */}
         <div className="flex flex-1 gap-2.5 overflow-hidden">

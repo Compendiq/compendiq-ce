@@ -88,11 +88,20 @@ describe('SidebarTreeView', () => {
     });
   });
 
-  it('renders "Pages" label in sidebar header (title moved to top header)', () => {
+  it('renders nav tabs (Pages, Graph, AI) at the top of the sidebar', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
-    expect(screen.getByText('Pages')).toBeInTheDocument();
-    // "AtlasMind" logo is no longer in the sidebar -- it moved to AppLayout header
-    expect(screen.queryByRole('img', { name: 'AtlasMind' })).not.toBeInTheDocument();
+    const nav = screen.getByRole('navigation', { name: 'Main navigation' });
+    expect(nav).toBeInTheDocument();
+    // Nav tabs are in the sidebar
+    expect(screen.getByRole('link', { name: /Pages/ })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Graph/ })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /AI/ })).toBeInTheDocument();
+  });
+
+  it('renders "Pages" label in sidebar header', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    // "Pages" appears both as nav tab and as the section label
+    expect(screen.getAllByText('Pages').length).toBeGreaterThanOrEqual(1);
   });
 
   it('renders root pages', () => {
@@ -120,11 +129,15 @@ describe('SidebarTreeView', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/pages/root-2');
   });
 
-  it('shows collapsed state when treeSidebarCollapsed is true', () => {
+  it('shows collapsed state with nav icons when treeSidebarCollapsed is true', () => {
     useUiStore.setState({ treeSidebarCollapsed: true });
     render(<SidebarTreeView />, { wrapper: createWrapper() });
-    expect(screen.queryByText('Pages')).not.toBeInTheDocument();
+    // Section label hidden but nav icons still accessible
     expect(screen.getByLabelText('Expand tree sidebar')).toBeInTheDocument();
+    // Nav icons shown as icon-only links in collapsed rail
+    expect(screen.getByLabelText('Pages')).toBeInTheDocument();
+    expect(screen.getByLabelText('Graph')).toBeInTheDocument();
+    expect(screen.getByLabelText('AI')).toBeInTheDocument();
   });
 
   it('shows space selector with All Spaces default', () => {

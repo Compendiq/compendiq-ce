@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import { useCallback, useRef, useState } from 'react';
 import { Wand2, Loader2 } from 'lucide-react';
 import { useAiContext } from '../AiContext';

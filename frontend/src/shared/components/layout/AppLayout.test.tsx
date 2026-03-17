@@ -7,7 +7,9 @@ import { AppLayout } from './AppLayout';
 
 // Mock SidebarTreeView to isolate AppLayout tests
 vi.mock('./SidebarTreeView', () => ({
-  SidebarTreeView: () => <div data-testid="sidebar-tree-view">Tree Sidebar</div>,
+  SidebarTreeView: ({ onNavigate: _onNavigate }: { onNavigate?: () => void }) => (
+    <div data-testid="sidebar-tree-view">Tree Sidebar</div>
+  ),
 }));
 
 vi.mock('./ArticleRightPane', () => ({
@@ -51,19 +53,20 @@ describe('AppLayout', () => {
     Element.prototype.scrollTo = vi.fn();
   });
 
-  it('renders top navigation with nav items (no Settings or Dashboard)', () => {
+  it('renders header without nav pills (nav moved to sidebar)', () => {
     render(
       <AppLayout>
         <div>content</div>
       </AppLayout>,
       { wrapper: createWrapper('/') },
     );
-    // "Pages" appears in both nav and breadcrumb on root route
-    expect(screen.getAllByText('Pages').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText('AI Assistant')).toBeInTheDocument();
-    // Settings moved to UserMenu, Dashboard merged into Pages
-    expect(screen.queryByText('Settings')).not.toBeInTheDocument();
-    expect(screen.queryByText('Dashboard')).not.toBeInTheDocument();
+    // Nav pills are no longer in the header — they live in SidebarTreeView
+    const header = document.querySelector('header');
+    expect(header).toBeTruthy();
+    // "Graph" and "AI Assistant" should NOT be in the header anymore
+    // (they're in the mocked sidebar which doesn't render them)
+    expect(header!.querySelector('a[href="/graph"]')).toBeNull();
+    expect(header!.querySelector('a[href="/ai"]')).toBeNull();
   });
 
   it('renders app logo in top header bar on all routes', () => {
@@ -113,12 +116,33 @@ describe('AppLayout', () => {
     expect(screen.getByText('Search...')).toBeInTheDocument();
   });
 
-  it('shows tree sidebar on root route (pages view)', () => {
-    render(
+  it('shows sidebar on all routes (always visible)', () => {
+    // Pages route
+    const { unmount } = render(
       <AppLayout>
         <div>page content</div>
       </AppLayout>,
       { wrapper: createWrapper('/') },
+    );
+    expect(screen.getByTestId('sidebar-tree-view')).toBeInTheDocument();
+    unmount();
+
+    // AI route — sidebar should now be visible here too
+    const { unmount: unmount2 } = render(
+      <AppLayout>
+        <div>ai page</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/ai') },
+    );
+    expect(screen.getByTestId('sidebar-tree-view')).toBeInTheDocument();
+    unmount2();
+
+    // Settings route — sidebar visible
+    render(
+      <AppLayout>
+        <div>settings</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/settings') },
     );
     expect(screen.getByTestId('sidebar-tree-view')).toBeInTheDocument();
   });
@@ -131,26 +155,6 @@ describe('AppLayout', () => {
       { wrapper: createWrapper('/pages/123') },
     );
     expect(screen.getByTestId('sidebar-tree-view')).toBeInTheDocument();
-  });
-
-  it('hides tree sidebar on /ai route', () => {
-    render(
-      <AppLayout>
-        <div>ai page</div>
-      </AppLayout>,
-      { wrapper: createWrapper('/ai') },
-    );
-    expect(screen.queryByTestId('sidebar-tree-view')).not.toBeInTheDocument();
-  });
-
-  it('hides tree sidebar on /settings route', () => {
-    render(
-      <AppLayout>
-        <div>settings</div>
-      </AppLayout>,
-      { wrapper: createWrapper('/settings') },
-    );
-    expect(screen.queryByTestId('sidebar-tree-view')).not.toBeInTheDocument();
   });
 
   it('renders children content', () => {
@@ -220,7 +224,7 @@ describe('AppLayout', () => {
     expect(rootDiv.className).toContain('h-screen');
   });
 
-  it('panel wrapper uses uniform p-2 padding (no pt-1.5 override)', () => {
+  it('panel wrapper uses uniform p-3 padding', () => {
     render(
       <AppLayout>
         <div>content</div>
@@ -228,10 +232,16 @@ describe('AppLayout', () => {
       { wrapper: createWrapper('/') },
     );
     const panelWrapper = screen.getByTestId('panel-wrapper');
-    // p-2 (8px) must govern all four sides uniformly
-    expect(panelWrapper.className).toContain('p-2');
-    // pt-1.5 (6px) must NOT override the top gap — it breaks the visual alignment
-    // with the header's mx-2 mt-2 (8px) margins
-    expect(panelWrapper.className).not.toContain('pt-1.5');
+    expect(panelWrapper.className).toContain('p-3');
+  });
+
+  it('has mobile sidebar toggle button', () => {
+    render(
+      <AppLayout>
+        <div>content</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/') },
+    );
+    expect(screen.getByLabelText('Toggle sidebar')).toBeInTheDocument();
   });
 });

@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { m } from 'framer-motion';
+
 import { Plus, LayoutGrid, FolderOpen } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
 import DOMPurify from 'dompurify';

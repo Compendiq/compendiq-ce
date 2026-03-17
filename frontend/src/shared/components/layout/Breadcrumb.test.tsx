@@ -69,10 +69,14 @@ describe('Breadcrumb', () => {
     expect(screen.getByText('AI Assistant')).toBeInTheDocument();
   });
 
-  it('has a home link on non-root paths', () => {
+  it('has a Pages text link on non-root paths (Home icon removed, nav in sidebar)', () => {
     renderAt('/pages');
     const nav = screen.getByLabelText('Breadcrumb');
     expect(nav).toBeInTheDocument();
+    // "Pages" text link instead of Home icon
+    const pagesLink = nav.querySelector('a[href="/"]');
+    expect(pagesLink).toBeInTheDocument();
+    expect(pagesLink!.textContent).toBe('Pages');
   });
 
   it('shows New Space breadcrumb', () => {

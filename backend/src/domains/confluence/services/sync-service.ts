@@ -2,7 +2,7 @@ import { query } from '../../../core/db/postgres.js';
 import { ConfluenceClient, ConfluencePage, ConfluenceSpace } from './confluence-client.js';
 import { confluenceToHtml, htmlToText } from '../../../core/services/content-converter.js';
 import { syncDrawioAttachments, syncImageAttachments, cleanPageAttachments, getMissingAttachments } from './attachment-handler.js';
-import { saveVersionSnapshot } from '../../knowledge/services/version-tracker.js';
+import { saveVersionSnapshot } from '../../../core/services/version-snapshot.js';
 import { processDirtyPages } from '../../llm/services/embedding-service.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { decryptPat } from '../../../core/utils/crypto.js';

@@ -10,7 +10,7 @@ import { toast } from 'sonner';
 export function AskModeInput() {
   const {
     input, setInput, isStreaming, model, conversationId, pageId,
-    includeSubPages, messages, setMessages, runStream,
+    includeSubPages, setMessages, runStream,
   } = useAiContext();
 
   const handleAsk = useCallback(async () => {

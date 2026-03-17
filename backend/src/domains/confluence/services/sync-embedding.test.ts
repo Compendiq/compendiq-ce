@@ -259,7 +259,7 @@ describe('incremental sync with missing attachments', () => {
       .mockResolvedValueOnce({ rows: [{ last_synced: recentDate }] });
 
     // syncPage calls for each modified page
-    for (const _page of opts.modifiedPages ?? []) {
+    for (let i = 0; i < (opts.modifiedPages ?? []).length; i++) {
       mocks.query
         // existing page version check
         .mockResolvedValueOnce({ rows: [] })

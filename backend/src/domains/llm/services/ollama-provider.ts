@@ -56,10 +56,12 @@ const ollamaFetch: typeof fetch = (input, init?) => {
     try { isStream = JSON.parse(init.body).stream === true; } catch { /* ignore */ }
   }
   const timeout = isStream ? OLLAMA_STREAM_TIMEOUT_MS : OLLAMA_REQUEST_TIMEOUT_MS;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici fetch types differ from global fetch
   return undiciFetch(input as any, {
     ...init,
     signal: hasSignal ? init!.signal : AbortSignal.timeout(timeout),
     dispatcher: llmDispatcher,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any) as unknown as ReturnType<typeof fetch>;
 };
 

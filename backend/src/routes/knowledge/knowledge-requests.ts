@@ -95,7 +95,7 @@ export async function knowledgeRequestRoutes(fastify: FastifyInstance) {
        ORDER BY
          CASE kr.priority WHEN 'high' THEN 0 WHEN 'normal' THEN 1 WHEN 'low' THEN 2 END,
          kr.created_at DESC
-       LIMIT $${paramIdx++} OFFSET $${paramIdx++}`,
+       LIMIT $${paramIdx++} OFFSET $${paramIdx}`,
       [...params, limit, offset],
     );
 

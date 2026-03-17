@@ -64,7 +64,7 @@ export function ArticleViewer({
   confluenceUrl,
   pageId,
   onHeadingsReady,
-  onRequestSync,
+  onRequestSync: _onRequestSync,
   onEditDiagram,
   className,
 }: ArticleViewerProps) {

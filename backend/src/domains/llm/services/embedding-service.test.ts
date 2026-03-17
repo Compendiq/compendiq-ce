@@ -1171,15 +1171,6 @@ describe('chunkText', () => {
   });
 
   describe('embedPage — HTTP 400 context-length continuation', () => {
-    function setupQueryMocks() {
-      // htmlToText returns non-empty text
-      mocks.htmlToText.mockReturnValue('Some content for the page');
-      // DELETE old embeddings
-      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 1 });
-      // UPDATE to mark embedded
-      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 1 });
-    }
-
     it('skips an oversized batch (HTTP 400 context-length) and continues embedding remaining batches', async () => {
       // Make htmlToText return enough text to produce multiple chunks
       const textWith3Chunks = Array.from(

@@ -69,7 +69,7 @@ export async function templateRoutes(fastify: FastifyInstance) {
     }
 
     if (category) {
-      sql += ` AND category = $${paramIdx++}`;
+      sql += ` AND category = $${paramIdx}`;
       values.push(category);
     }
 

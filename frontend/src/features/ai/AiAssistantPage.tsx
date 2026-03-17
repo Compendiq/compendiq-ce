@@ -88,7 +88,7 @@ function getEmptySubtitle(mode: Mode, page: { title: string } | undefined): stri
 function AiAssistantInner() {
   const ctx = useAiContext();
   const {
-    mode, setMode, page, pageId, pageHasChildren,
+    mode, setMode, page, pageHasChildren,
     messages, messagesEndRef, isStreaming, isThinking, thinkingElapsed,
     model, models, setModel, isLight,
     includeSubPages, setIncludeSubPages,

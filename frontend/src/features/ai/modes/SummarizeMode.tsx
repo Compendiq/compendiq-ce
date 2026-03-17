@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import { useCallback } from 'react';
 import { ListCollapse, Loader2 } from 'lucide-react';
 import { useAiContext } from '../AiContext';

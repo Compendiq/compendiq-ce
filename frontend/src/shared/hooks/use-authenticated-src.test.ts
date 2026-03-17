@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderHook, waitFor, act } from '@testing-library/react';
+import { renderHook, waitFor } from '@testing-library/react';
 import { useAuthenticatedSrc, fetchAuthenticatedBlob } from './use-authenticated-src';
 
 // Mock the auth store
@@ -112,7 +112,7 @@ describe('use-authenticated-src', () => {
     it('attempts token refresh on 401 and retries', async () => {
       const mockBlob = new Blob(['image-data'], { type: 'image/png' });
       let callCount = 0;
-      globalThis.fetch = vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
+      globalThis.fetch = vi.fn().mockImplementation((url: string, _opts?: RequestInit) => {
         // Refresh endpoint
         if (typeof url === 'string' && url.includes('/auth/refresh')) {
           return Promise.resolve({

@@ -645,7 +645,6 @@ export async function cleanPageAttachments(userId: string, pageId: string): Prom
  * Attachments are now stored in a shared directory, so this is a no-op.
  * Individual page attachments are cleaned via cleanPageAttachments when pages are deleted.
  */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 export async function cleanUserAttachments(_userId: string): Promise<void> {
   // No-op: attachments are now shared across users, keyed only by pageId.
   // Use cleanPageAttachments(userId, pageId) when a specific page is deleted.

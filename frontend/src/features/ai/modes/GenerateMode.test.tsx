@@ -190,6 +190,7 @@ describe('GenerateMode', () => {
     });
 
     it('shows error toast when stream fails', async () => {
+      // eslint-disable-next-line require-yield
       async function* fakeErrorStream() {
         throw new Error('LLM connection lost');
       }

@@ -187,6 +187,7 @@ describe('DiagramMode', () => {
         data: { id: 'p1', title: 'My Article', bodyHtml: '<p>Content</p>', bodyText: 'Content', version: 2 },
       };
 
+      // eslint-disable-next-line require-yield
       async function* fakeErrorStream() {
         throw new Error('Connection lost');
       }
