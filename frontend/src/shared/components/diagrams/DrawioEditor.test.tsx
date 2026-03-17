@@ -8,9 +8,9 @@ describe('DrawioEditor', () => {
   const defaultOnClose = vi.fn();
 
   // Helper to simulate postMessage from the draw.io iframe
-  function postFromDrawio(data: Record<string, unknown>) {
+  function postFromDrawio(data: Record<string, unknown>, origin = DRAWIO_ORIGIN) {
     const event = new MessageEvent('message', {
-      origin: DRAWIO_ORIGIN,
+      origin,
       data: JSON.stringify(data),
     });
     window.dispatchEvent(event);
@@ -312,5 +312,235 @@ describe('DrawioEditor', () => {
     expect(iframe.src).toContain('embed.diagrams.net');
     expect(iframe.src).toContain('embed=1');
     expect(iframe.src).toContain('proto=json');
+  });
+
+  // ========================
+  // Timeout / error state tests
+  // ========================
+
+  describe('init timeout and error state', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('transitions to error state after 15s with no init event', () => {
+      render(
+        <DrawioEditor xml={defaultXml} onSave={defaultOnSave} onClose={defaultOnClose} />,
+      );
+
+      // Should start in loading state
+      expect(screen.getByTestId('drawio-loading')).toBeTruthy();
+
+      act(() => {
+        vi.advanceTimersByTime(15_000);
+      });
+
+      expect(screen.getByTestId('drawio-error')).toBeTruthy();
+      expect(screen.queryByTestId('drawio-loading')).toBeNull();
+    });
+
+    it('does NOT transition to error if init event arrives before 15s', async () => {
+      const postMessageSpy = vi.fn();
+      render(
+        <DrawioEditor xml={defaultXml} onSave={defaultOnSave} onClose={defaultOnClose} />,
+      );
+
+      const iframe = screen.getByTestId('drawio-iframe') as HTMLIFrameElement;
+      Object.defineProperty(iframe, 'contentWindow', {
+        value: { postMessage: postMessageSpy },
+        writable: true,
+      });
+
+      // Receive init before the timeout fires
+      await act(async () => {
+        postFromDrawio({ event: 'init' });
+      });
+
+      // Advance past the timeout period
+      act(() => {
+        vi.advanceTimersByTime(15_000);
+      });
+
+      // Should still be in ready state, not error state
+      expect(screen.queryByTestId('drawio-error')).toBeNull();
+      expect(screen.queryByTestId('drawio-loading')).toBeNull();
+    });
+
+    it('clears the timeout when the component unmounts', () => {
+      const clearTimeoutSpy = vi.spyOn(global, 'clearTimeout');
+
+      const { unmount } = render(
+        <DrawioEditor xml={defaultXml} onSave={defaultOnSave} onClose={defaultOnClose} />,
+      );
+
+      unmount();
+
+      expect(clearTimeoutSpy).toHaveBeenCalled();
+    });
+
+    it('shows retry and close buttons in error state', () => {
+      render(
+        <DrawioEditor xml={defaultXml} onSave={defaultOnSave} onClose={defaultOnClose} />,
+      );
+
+      act(() => {
+        vi.advanceTimersByTime(15_000);
+      });
+
+      expect(screen.getByTestId('drawio-retry-btn')).toBeTruthy();
+      expect(screen.getByTestId('drawio-close-btn')).toBeTruthy();
+    });
+
+    it('clicking Retry resets from error to loading state', async () => {
+      render(
+        <DrawioEditor xml={defaultXml} onSave={defaultOnSave} onClose={defaultOnClose} />,
+      );
+
+      // Trigger error state
+      act(() => {
+        vi.advanceTimersByTime(15_000);
+      });
+
+      expect(screen.getByTestId('drawio-error')).toBeTruthy();
+
+      // Click retry
+      await act(async () => {
+        screen.getByTestId('drawio-retry-btn').click();
+      });
+
+      // Should be back in loading state
+      expect(screen.getByTestId('drawio-loading')).toBeTruthy();
+      expect(screen.queryByTestId('drawio-error')).toBeNull();
+    });
+
+    it('clicking Close in error state calls onClose', async () => {
+      render(
+        <DrawioEditor xml={defaultXml} onSave={defaultOnSave} onClose={defaultOnClose} />,
+      );
+
+      act(() => {
+        vi.advanceTimersByTime(15_000);
+      });
+
+      await act(async () => {
+        screen.getByTestId('drawio-close-btn').click();
+      });
+
+      expect(defaultOnClose).toHaveBeenCalled();
+    });
+  });
+
+  // ========================
+  // Custom drawioUrl prop tests
+  // ========================
+
+  describe('custom drawioUrl prop', () => {
+    const customOrigin = 'https://my-drawio.internal';
+    const customUrl = `${customOrigin}`;
+
+    it('renders iframe with custom URL when drawioUrl prop is provided', () => {
+      render(
+        <DrawioEditor
+          xml={defaultXml}
+          onSave={defaultOnSave}
+          onClose={defaultOnClose}
+          drawioUrl={customUrl}
+        />,
+      );
+
+      const iframe = screen.getByTestId('drawio-iframe') as HTMLIFrameElement;
+      expect(iframe.src).toContain('my-drawio.internal');
+      expect(iframe.src).toContain('embed=1');
+    });
+
+    it('accepts messages from the custom drawioUrl origin', async () => {
+      const postMessageSpy = vi.fn();
+      render(
+        <DrawioEditor
+          xml={defaultXml}
+          onSave={defaultOnSave}
+          onClose={defaultOnClose}
+          drawioUrl={customUrl}
+        />,
+      );
+
+      const iframe = screen.getByTestId('drawio-iframe') as HTMLIFrameElement;
+      Object.defineProperty(iframe, 'contentWindow', {
+        value: { postMessage: postMessageSpy },
+        writable: true,
+      });
+
+      // Simulate init from custom origin
+      await act(async () => {
+        postFromDrawio({ event: 'init' }, customOrigin);
+      });
+
+      // Should transition to ready and send load action
+      expect(postMessageSpy).toHaveBeenCalledWith(
+        JSON.stringify({ action: 'load', xml: defaultXml }),
+        customOrigin,
+      );
+      expect(screen.queryByTestId('drawio-loading')).toBeNull();
+    });
+
+    it('rejects messages from the default origin when custom drawioUrl is set', async () => {
+      const postMessageSpy = vi.fn();
+      render(
+        <DrawioEditor
+          xml={defaultXml}
+          onSave={defaultOnSave}
+          onClose={defaultOnClose}
+          drawioUrl={customUrl}
+        />,
+      );
+
+      const iframe = screen.getByTestId('drawio-iframe') as HTMLIFrameElement;
+      Object.defineProperty(iframe, 'contentWindow', {
+        value: { postMessage: postMessageSpy },
+        writable: true,
+      });
+
+      // Send init from the DEFAULT origin (should be rejected — origin spoofing)
+      await act(async () => {
+        postFromDrawio({ event: 'init' }, DRAWIO_ORIGIN);
+      });
+
+      // Should NOT have sent a load message
+      expect(postMessageSpy).not.toHaveBeenCalled();
+      // Loading spinner should still be visible
+      expect(screen.getByTestId('drawio-loading')).toBeTruthy();
+    });
+
+    it('falls back to default origin when drawioUrl is an invalid URL', async () => {
+      const postMessageSpy = vi.fn();
+      render(
+        <DrawioEditor
+          xml={defaultXml}
+          onSave={defaultOnSave}
+          onClose={defaultOnClose}
+          drawioUrl="not-a-valid-url"
+        />,
+      );
+
+      const iframe = screen.getByTestId('drawio-iframe') as HTMLIFrameElement;
+      Object.defineProperty(iframe, 'contentWindow', {
+        value: { postMessage: postMessageSpy },
+        writable: true,
+      });
+
+      // Message from default origin should be accepted (fallback)
+      await act(async () => {
+        postFromDrawio({ event: 'init' }, DRAWIO_ORIGIN);
+      });
+
+      expect(postMessageSpy).toHaveBeenCalledWith(
+        JSON.stringify({ action: 'load', xml: defaultXml }),
+        DRAWIO_ORIGIN,
+      );
+    });
   });
 });

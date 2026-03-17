@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, m } from 'framer-motion';
 import { FileText, FolderOpen, X, Upload, ShieldCheck, Globe, Lock, ThumbsUp, ThumbsDown, AlertCircle } from 'lucide-react';
 import { toast } from 'sonner';
@@ -99,6 +99,13 @@ export function PageViewPage() {
   const { data: page, isLoading } = usePage(id);
   const { data: settings } = useSettings();
   const updateMutation = useUpdatePage();
+
+  // Fetch the configured draw.io embed URL (falls back to default inside DrawioEditor if undefined)
+  const { data: drawioSettings } = useQuery({
+    queryKey: ['settings', 'drawio-url'],
+    queryFn: () => apiFetch<{ drawioEmbedUrl: string }>('/settings/drawio-url'),
+    staleTime: 10 * 60 * 1000,
+  });
 
   const contentRef = useRef<HTMLDivElement>(null);
   const draftKey = id ? `page-${id}` : undefined;
@@ -218,7 +225,7 @@ export function PageViewPage() {
         });
       }
     } catch {
-      // If we can't fetch the existing diagram, open editor empty (user can redraw)
+      toast.warning('Could not load existing diagram. Opening with a blank canvas.');
     }
     setDrawioXml(dataUri);
     setDrawioEditingDiagram(diagramName);
@@ -455,6 +462,7 @@ export function PageViewPage() {
           xml={drawioXml}
           onSave={handleDrawioSave}
           onClose={handleDrawioClose}
+          drawioUrl={drawioSettings?.drawioEmbedUrl}
         />
       )}
     </m.div>

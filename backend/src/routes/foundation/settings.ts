@@ -81,6 +81,15 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     return getSyncOverview(request.userId);
   });
 
+  // GET /api/settings/drawio-url — read the configured draw.io embed URL (any authenticated user)
+  // Auth is inherited from the onRequest hook above. No admin gating needed — all users load the editor.
+  fastify.get('/settings/drawio-url', async () => {
+    const result = await query<{ setting_value: string }>(
+      `SELECT setting_value FROM admin_settings WHERE setting_key = 'drawio_embed_url'`,
+    );
+    return { drawioEmbedUrl: result.rows[0]?.setting_value ?? 'https://embed.diagrams.net' };
+  });
+
   fastify.put('/settings', async (request) => {
     const body = UpdateSettingsSchema.parse(request.body);
 

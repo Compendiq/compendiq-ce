@@ -221,7 +221,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
   fastify.get('/admin/settings', ADMIN_RATE_LIMIT, async () => {
     const result = await query<{ setting_key: string; setting_value: string }>(
       `SELECT setting_key, setting_value FROM admin_settings
-       WHERE setting_key IN ('embedding_chunk_size', 'embedding_chunk_overlap')`,
+       WHERE setting_key IN ('embedding_chunk_size', 'embedding_chunk_overlap', 'drawio_embed_url')`,
     );
 
     const map: Record<string, string> = {};
@@ -232,6 +232,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
     return {
       embeddingChunkSize: parseInt(map['embedding_chunk_size'] ?? '500', 10),
       embeddingChunkOverlap: parseInt(map['embedding_chunk_overlap'] ?? '50', 10),
+      drawioEmbedUrl: map['drawio_embed_url'] ?? null,
     };
   });
 
@@ -243,27 +244,32 @@ export async function adminRoutes(fastify: FastifyInstance) {
       return { message: 'No changes' };
     }
 
-    // Validate chunk overlap does not exceed 25% of chunk size
-    let effectiveChunkSize = body.embeddingChunkSize;
-    let effectiveChunkOverlap = body.embeddingChunkOverlap;
+    const hasChunkChanges =
+      body.embeddingChunkSize !== undefined || body.embeddingChunkOverlap !== undefined;
 
-    if (effectiveChunkSize === undefined || effectiveChunkOverlap === undefined) {
-      const current = await query<{ setting_key: string; setting_value: string }>(
-        `SELECT setting_key, setting_value FROM admin_settings
-         WHERE setting_key IN ('embedding_chunk_size', 'embedding_chunk_overlap')`,
-      );
-      const currentMap: Record<string, number> = {};
-      for (const row of current.rows) {
-        currentMap[row.setting_key] = parseInt(row.setting_value, 10);
+    // Validate chunk overlap does not exceed 25% of chunk size (only when chunk settings change)
+    if (hasChunkChanges) {
+      let effectiveChunkSize = body.embeddingChunkSize;
+      let effectiveChunkOverlap = body.embeddingChunkOverlap;
+
+      if (effectiveChunkSize === undefined || effectiveChunkOverlap === undefined) {
+        const current = await query<{ setting_key: string; setting_value: string }>(
+          `SELECT setting_key, setting_value FROM admin_settings
+           WHERE setting_key IN ('embedding_chunk_size', 'embedding_chunk_overlap')`,
+        );
+        const currentMap: Record<string, number> = {};
+        for (const row of current.rows) {
+          currentMap[row.setting_key] = parseInt(row.setting_value, 10);
+        }
+        effectiveChunkSize ??= currentMap['embedding_chunk_size'] ?? 500;
+        effectiveChunkOverlap ??= currentMap['embedding_chunk_overlap'] ?? 50;
       }
-      effectiveChunkSize ??= currentMap['embedding_chunk_size'] ?? 500;
-      effectiveChunkOverlap ??= currentMap['embedding_chunk_overlap'] ?? 50;
-    }
 
-    if (effectiveChunkOverlap > effectiveChunkSize * 0.25) {
-      throw fastify.httpErrors.badRequest(
-        `Chunk overlap (${effectiveChunkOverlap}) must not exceed 25% of chunk size (${effectiveChunkSize}). Maximum allowed: ${Math.floor(effectiveChunkSize * 0.25)}.`,
-      );
+      if (effectiveChunkOverlap > effectiveChunkSize * 0.25) {
+        throw fastify.httpErrors.badRequest(
+          `Chunk overlap (${effectiveChunkOverlap}) must not exceed 25% of chunk size (${effectiveChunkSize}). Maximum allowed: ${Math.floor(effectiveChunkSize * 0.25)}.`,
+        );
+      }
     }
 
     // Upsert changed settings
@@ -273,6 +279,14 @@ export async function adminRoutes(fastify: FastifyInstance) {
     }
     if (body.embeddingChunkOverlap !== undefined) {
       updates.push({ key: 'embedding_chunk_overlap', value: String(body.embeddingChunkOverlap) });
+    }
+    if (body.drawioEmbedUrl !== undefined) {
+      if (body.drawioEmbedUrl) {
+        updates.push({ key: 'drawio_embed_url', value: body.drawioEmbedUrl });
+      } else {
+        // Empty string clears the setting (falls back to default)
+        await query(`DELETE FROM admin_settings WHERE setting_key = 'drawio_embed_url'`);
+      }
     }
 
     for (const { key, value } of updates) {
@@ -284,19 +298,24 @@ export async function adminRoutes(fastify: FastifyInstance) {
       );
     }
 
-    // Mark all pages dirty for re-embedding since chunk settings changed globally
-    await query('UPDATE pages SET embedding_dirty = TRUE');
-    logger.info({ userId: request.userId, updates }, 'Admin chunk settings changed, all pages marked dirty');
+    // Only mark pages dirty for re-embedding when chunk settings changed — NOT for drawioEmbedUrl
+    if (hasChunkChanges) {
+      await query('UPDATE pages SET embedding_dirty = TRUE');
+      logger.info({ userId: request.userId, updates }, 'Admin chunk settings changed, all pages marked dirty');
+    }
 
     await logAuditEvent(
       request.userId,
       'ADMIN_ACTION',
       'admin_settings',
       undefined,
-      { action: 'update_chunk_settings', embeddingChunkSize: effectiveChunkSize, embeddingChunkOverlap: effectiveChunkOverlap },
+      { action: 'update_admin_settings', ...body },
       request,
     );
 
-    return { message: 'Admin settings updated, all pages queued for re-embedding' };
+    if (hasChunkChanges) {
+      return { message: 'Admin settings updated, all pages queued for re-embedding' };
+    }
+    return { message: 'Admin settings updated' };
   });
 }

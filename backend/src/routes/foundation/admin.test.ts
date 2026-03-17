@@ -264,4 +264,110 @@ describe('Admin routes', () => {
       expect(body.affectedPages).toBe(3);
     });
   });
+
+  // ========================
+  // Admin settings routes (draw.io URL)
+  // ========================
+
+  describe('GET /api/admin/settings - drawioEmbedUrl', () => {
+    it('returns drawioEmbedUrl as null when not configured', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
+        rows: [
+          { setting_key: 'embedding_chunk_size', setting_value: '500' },
+          { setting_key: 'embedding_chunk_overlap', setting_value: '50' },
+        ],
+      });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/admin/settings',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.drawioEmbedUrl).toBeNull();
+      expect(body.embeddingChunkSize).toBe(500);
+      expect(body.embeddingChunkOverlap).toBe(50);
+    });
+
+    it('returns drawioEmbedUrl when configured', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
+        rows: [
+          { setting_key: 'embedding_chunk_size', setting_value: '500' },
+          { setting_key: 'embedding_chunk_overlap', setting_value: '50' },
+          { setting_key: 'drawio_embed_url', setting_value: 'https://my-drawio.internal' },
+        ],
+      });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/admin/settings',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.drawioEmbedUrl).toBe('https://my-drawio.internal');
+    });
+  });
+
+  describe('PUT /api/admin/settings - drawioEmbedUrl only (no re-embedding)', () => {
+    it('saves drawioEmbedUrl and does NOT trigger embedding_dirty update', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [], rowCount: 0 });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: { drawioEmbedUrl: 'https://my-drawio.internal' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.message).toBe('Admin settings updated');
+
+      // Verify that no UPDATE pages SET embedding_dirty query was made
+      const calls = (mockQuery as ReturnType<typeof vi.fn>).mock.calls as Array<[string, ...unknown[]]>;
+      const embeddingDirtyCall = calls.find(([sql]) =>
+        typeof sql === 'string' && sql.includes('embedding_dirty'),
+      );
+      expect(embeddingDirtyCall).toBeUndefined();
+    });
+
+    it('rejects invalid URL for drawioEmbedUrl', async () => {
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: { drawioEmbedUrl: 'not-a-valid-url' },
+      });
+
+      expect(response.statusCode).toBe(400);
+    });
+  });
+
+  describe('PUT /api/admin/settings - embeddingChunkSize + drawioEmbedUrl (re-embedding triggered)', () => {
+    it('triggers embedding_dirty update when chunk settings change alongside drawioEmbedUrl', async () => {
+      // Mock responses: first for the current chunk values fetch, then for the upserts, then for the dirty update
+      (mockQuery as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // upsert chunk size
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // upsert drawio url
+        .mockResolvedValueOnce({ rows: [], rowCount: 100 }); // UPDATE pages SET embedding_dirty = TRUE
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: { embeddingChunkSize: 512, drawioEmbedUrl: 'https://my-drawio.internal' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      // When chunk settings change, the re-embedding message should be returned
+      expect(body.message).toBe('Admin settings updated, all pages queued for re-embedding');
+
+      // Verify that UPDATE pages SET embedding_dirty WAS called
+      const calls = (mockQuery as ReturnType<typeof vi.fn>).mock.calls as Array<[string, ...unknown[]]>;
+      const embeddingDirtyCall = calls.find(([sql]) =>
+        typeof sql === 'string' && sql.includes('embedding_dirty'),
+      );
+      expect(embeddingDirtyCall).toBeDefined();
+    });
+  });
 });
