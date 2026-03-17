@@ -312,6 +312,45 @@ body {
   );
 }
 
+/* Indent guide lines — Obsidian / VS Code-style vertical guides for tree views.
+   Positioned absolutely inside each expanded folder's children container.
+   Clicking the line collapses the parent node.  */
+.indent-guide {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  width: 12px;                       /* generous click target */
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  z-index: 1;
+
+  /* The visible 1px line — centered inside the click target */
+  &::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: 1px;
+    background: var(--color-border);
+    opacity: 0.4;
+    transition: opacity 0.15s ease;
+  }
+
+  &:hover::before {
+    opacity: 1;
+  }
+}
+
+/* Respect prefers-reduced-motion: disable transitions on guide lines */
+@media (prefers-reduced-motion: reduce) {
+  .indent-guide::before {
+    transition: none;
+  }
+}
+
 /* ===========================
    BUTTON UTILITIES
    =========================== */

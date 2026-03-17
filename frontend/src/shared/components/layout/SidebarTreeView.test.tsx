@@ -123,6 +123,37 @@ describe('SidebarTreeView', () => {
     expect(screen.getByText('Configuration')).toBeInTheDocument();
   });
 
+  it('shows indent guide line when a folder is expanded', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const expandBtn = screen.getAllByLabelText('Expand')[0];
+    fireEvent.click(expandBtn);
+    expect(screen.getByLabelText('Collapse Getting Started')).toBeInTheDocument();
+    expect(screen.getByLabelText('Collapse Getting Started')).toHaveClass('indent-guide');
+  });
+
+  it('collapses folder when indent guide line is clicked', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    // Expand first
+    const expandBtn = screen.getAllByLabelText('Expand')[0];
+    fireEvent.click(expandBtn);
+    expect(screen.getByText('Installation')).toBeInTheDocument();
+    // Click the indent guide to collapse
+    fireEvent.click(screen.getByLabelText('Collapse Getting Started'));
+    expect(screen.queryByText('Installation')).not.toBeInTheDocument();
+  });
+
+  it('positions indent guide at correct depth for nested levels', () => {
+    useUiStore.setState({
+      treeSidebarCollapsed: false,
+      treeSidebarSpaceKey: 'DEV',
+    });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    // Homepage is auto-expanded, guide at level 0
+    const guide = screen.getByLabelText('Collapse Getting Started');
+    // level=0 => left = 0*16+14 = 14px
+    expect(guide.style.left).toBe('14px');
+  });
+
   it('navigates to page on click', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByText('API Reference'));
@@ -348,6 +379,118 @@ describe('SidebarTreeNode memoization', () => {
     );
 
     expect(screen.getByText('Memoized Page')).toBeInTheDocument();
+  });
+
+  it('renders indent guide line for expanded node with children', () => {
+    const child1 = makeNode('child-1', 'Child 1');
+    const child2 = makeNode('child-2', 'Child 2');
+    const parent = makeNode('parent', 'Parent', [child1, child2]);
+    const expandedSet = new Set<string>(['parent']);
+    const toggleExpand = vi.fn();
+
+    render(
+      <MemoryRouter>
+        <SidebarTreeNode
+          node={parent}
+          level={0}
+          expandedSet={expandedSet}
+          toggleExpand={toggleExpand}
+          activePageId={undefined}
+        />
+      </MemoryRouter>,
+    );
+
+    const guide = screen.getByLabelText('Collapse Parent');
+    expect(guide).toBeInTheDocument();
+    expect(guide).toHaveClass('indent-guide');
+    // level=0 => left = 0*16+14 = 14px
+    expect(guide.style.left).toBe('14px');
+  });
+
+  it('calls toggleExpand when indent guide is clicked', () => {
+    const child = makeNode('child-1', 'Child');
+    const parent = makeNode('parent', 'Parent', [child]);
+    const expandedSet = new Set<string>(['parent']);
+    const toggleExpand = vi.fn();
+
+    render(
+      <MemoryRouter>
+        <SidebarTreeNode
+          node={parent}
+          level={0}
+          expandedSet={expandedSet}
+          toggleExpand={toggleExpand}
+          activePageId={undefined}
+        />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByLabelText('Collapse Parent'));
+    expect(toggleExpand).toHaveBeenCalledWith('parent');
+  });
+
+  it('positions indent guide at correct offset for deeply nested nodes', () => {
+    const child = makeNode('child-1', 'Deep Child');
+    const parent = makeNode('parent', 'Deep Parent', [child]);
+    const expandedSet = new Set<string>(['parent']);
+    const toggleExpand = vi.fn();
+
+    render(
+      <MemoryRouter>
+        <SidebarTreeNode
+          node={parent}
+          level={3}
+          expandedSet={expandedSet}
+          toggleExpand={toggleExpand}
+          activePageId={undefined}
+        />
+      </MemoryRouter>,
+    );
+
+    const guide = screen.getByLabelText('Collapse Deep Parent');
+    // level=3 => left = 3*16+14 = 62px
+    expect(guide.style.left).toBe('62px');
+  });
+
+  it('does not render indent guide for expanded leaf nodes', () => {
+    const node = makeNode('leaf', 'Leaf Node');
+    const expandedSet = new Set<string>(['leaf']);
+    const toggleExpand = vi.fn();
+
+    render(
+      <MemoryRouter>
+        <SidebarTreeNode
+          node={node}
+          level={0}
+          expandedSet={expandedSet}
+          toggleExpand={toggleExpand}
+          activePageId={undefined}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByLabelText('Collapse Leaf Node')).not.toBeInTheDocument();
+  });
+
+  it('does not render indent guide for collapsed nodes with children', () => {
+    const child = makeNode('child-1', 'Child');
+    const parent = makeNode('parent', 'Collapsed Parent', [child]);
+    const expandedSet = new Set<string>(); // not expanded
+    const toggleExpand = vi.fn();
+
+    render(
+      <MemoryRouter>
+        <SidebarTreeNode
+          node={parent}
+          level={0}
+          expandedSet={expandedSet}
+          toggleExpand={toggleExpand}
+          activePageId={undefined}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByLabelText('Collapse Collapsed Parent')).not.toBeInTheDocument();
   });
 
   describe('empty state (no pages)', () => {

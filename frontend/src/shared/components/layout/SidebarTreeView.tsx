@@ -175,7 +175,16 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
       </div>
 
       {hasChildren && isExpanded && (
-        <div>
+        <div className="relative">
+          {/* Indent guide line — click to collapse parent */}
+          <button
+            type="button"
+            onClick={handleToggle}
+            className="indent-guide"
+            style={{ left: `${level * 16 + 14}px` }}
+            aria-label={`Collapse ${node.page.title}`}
+            tabIndex={-1}
+          />
           {node.children.map((child, idx) => (
             <SidebarTreeNode
               key={child.page.id}
