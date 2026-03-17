@@ -82,8 +82,8 @@ export async function llmChatRoutes(fastify: FastifyInstance) {
     let improvementId: string | undefined;
     if (body.pageId) {
       const insertResult = await query<{ id: string }>(
-        `INSERT INTO llm_improvements (user_id, confluence_id, improvement_type, model, original_content, improved_content, status)
-         VALUES ($1, $2, $3, $4, $5, '', 'streaming') RETURNING id`,
+        `INSERT INTO llm_improvements (user_id, page_id, improvement_type, model, original_content, improved_content, status)
+         SELECT $1, p.id, $3, $4, $5, '', 'streaming' FROM pages p WHERE p.confluence_id = $2 RETURNING id`,
         [userId, body.pageId, type, model, content.slice(0, 10000)],
       );
       improvementId = insertResult.rows[0]?.id;
@@ -431,6 +431,7 @@ export async function llmChatRoutes(fastify: FastifyInstance) {
       const generator = providerStreamChat(userId, model, messages, controller.signal);
       let fullAnswer = '';
 
+      reply.hijack();
       reply.raw.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',

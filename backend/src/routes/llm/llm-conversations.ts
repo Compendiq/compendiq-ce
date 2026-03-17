@@ -72,19 +72,19 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     const { pageId } = ImprovementsQuerySchema.parse(request.query);
     const userId = request.userId;
 
-    let sql = 'SELECT id, confluence_id, improvement_type, model, status, created_at FROM llm_improvements WHERE user_id = $1';
+    let sql = 'SELECT li.id, p.confluence_id, li.improvement_type, li.model, li.status, li.created_at FROM llm_improvements li LEFT JOIN pages p ON p.id = li.page_id WHERE li.user_id = $1';
     const values: unknown[] = [userId];
 
     if (pageId) {
-      sql += ' AND confluence_id = $2';
+      sql += ' AND p.confluence_id = $2';
       values.push(pageId);
     }
 
-    sql += ' ORDER BY created_at DESC LIMIT 50';
+    sql += ' ORDER BY li.created_at DESC LIMIT 50';
 
     const result = await query<{
       id: string;
-      confluence_id: string;
+      confluence_id: string | null;
       improvement_type: string;
       model: string;
       status: string;
@@ -93,7 +93,7 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
 
     return result.rows.map((r) => ({
       id: r.id,
-      confluenceId: r.confluence_id,
+      confluenceId: r.confluence_id ?? undefined,
       type: r.improvement_type,
       model: r.model,
       status: r.status,
@@ -156,9 +156,10 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     await query(
       `UPDATE llm_improvements SET status = 'applied'
        WHERE id = (
-         SELECT id FROM llm_improvements
-         WHERE user_id = $1 AND confluence_id = $2 AND status IN ('streaming', 'completed')
-         ORDER BY created_at DESC LIMIT 1
+         SELECT li.id FROM llm_improvements li
+         JOIN pages p ON p.id = li.page_id
+         WHERE li.user_id = $1 AND p.confluence_id = $2 AND li.status IN ('streaming', 'completed')
+         ORDER BY li.created_at DESC LIMIT 1
        )`,
       [userId, pageId],
     );

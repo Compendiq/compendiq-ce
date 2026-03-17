@@ -48,18 +48,24 @@ const llmDispatcher = buildLlmDispatcher();
  * means LLM_VERIFY_SSL=false had no effect.
  */
 const ollamaFetch: typeof fetch = (input, init?) => {
-  const hasSignal = init?.signal != null;
+  const callerSignal = init?.signal ?? undefined;
   // Streaming requests (large article improvements) can take several minutes;
-  // detect stream:true in the body and apply a longer timeout.
+  // always detect stream:true in the body regardless of whether a signal is present.
+  // The Ollama SDK always injects its own AbortSignal, so the old !hasSignal guard
+  // prevented the longer timeout from ever being applied for streaming requests.
   let isStream = false;
-  if (!hasSignal && typeof init?.body === 'string') {
+  if (typeof init?.body === 'string') {
     try { isStream = JSON.parse(init.body).stream === true; } catch { /* ignore */ }
   }
   const timeout = isStream ? OLLAMA_STREAM_TIMEOUT_MS : OLLAMA_REQUEST_TIMEOUT_MS;
+  const timeoutSignal = AbortSignal.timeout(timeout);
+  // Compose the caller's signal (e.g. SDK's abort controller) with our timeout signal.
+  // AbortSignal.any() is available in Node.js 20.3.0+; .nvmrc = 22.
+  const signal = callerSignal ? AbortSignal.any([callerSignal, timeoutSignal]) : timeoutSignal;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici fetch types differ from global fetch
   return undiciFetch(input as any, {
     ...init,
-    signal: hasSignal ? init!.signal : AbortSignal.timeout(timeout),
+    signal,
     dispatcher: llmDispatcher,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any) as unknown as ReturnType<typeof fetch>;
