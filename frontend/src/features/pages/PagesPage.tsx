@@ -205,11 +205,11 @@ export function PagesPage() {
             <div className="h-1.5 w-32 overflow-hidden rounded-full bg-foreground/10">
               <div
                 className="h-full rounded-full bg-primary transition-all"
-                style={{ width: `${((embeddingStatusData.totalPages - embeddingStatusData.dirtyPages) / Math.max(embeddingStatusData.totalPages, 1)) * 100}%` }}
+                style={{ width: `${(embeddingStatusData.embeddedPages / Math.max(embeddingStatusData.totalPages, 1)) * 100}%` }}
               />
             </div>
             <span className="text-xs text-muted-foreground">
-              {embeddingStatusData.totalPages - embeddingStatusData.dirtyPages}/{embeddingStatusData.totalPages}
+              {embeddingStatusData.embeddedPages}/{embeddingStatusData.totalPages}
             </span>
           </div>
         </div>

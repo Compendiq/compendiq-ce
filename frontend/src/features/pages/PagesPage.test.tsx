@@ -53,6 +53,7 @@ const mockSpaces = [
 
 const mockEmbeddingStatusIdle = {
   totalPages: 50,
+  embeddedPages: 50,
   dirtyPages: 0,
   totalEmbeddings: 50,
   isProcessing: false,
@@ -60,6 +61,7 @@ const mockEmbeddingStatusIdle = {
 
 const mockEmbeddingStatusProcessing = {
   totalPages: 50,
+  embeddedPages: 30,
   dirtyPages: 12,
   totalEmbeddings: 38,
   isProcessing: true,
@@ -301,7 +303,7 @@ describe('PagesPage', () => {
     expect(banner).toBeInTheDocument();
     expect(banner).toHaveTextContent('Embedding in progress');
     expect(banner).toHaveTextContent('12 pages remaining');
-    expect(banner).toHaveTextContent('38/50');
+    expect(banner).toHaveTextContent('30/50');
   });
 
   it('does not show embedding progress banner when embedding is idle', async () => {

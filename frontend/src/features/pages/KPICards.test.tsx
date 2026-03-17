@@ -14,6 +14,7 @@ function Wrapper({ children }: { children: React.ReactNode }) {
 
 const mockEmbeddingStatus = {
   totalPages: 100,
+  embeddedPages: 75,
   dirtyPages: 25,
   totalEmbeddings: 300,
   isProcessing: false,
@@ -59,7 +60,7 @@ describe('KPICards', () => {
     }, { timeout: 3000 });
   });
 
-  it('displays correct embedded pages count (totalPages - dirtyPages)', async () => {
+  it('displays correct embedded pages count from API embeddedPages field', async () => {
     render(
       <KPICards
         embeddingStatus={mockEmbeddingStatus}
@@ -107,10 +108,10 @@ describe('KPICards', () => {
     }, { timeout: 3000 });
   });
 
-  it('displays 100% coverage when no dirty pages', async () => {
+  it('displays 100% coverage when all pages are embedded', async () => {
     render(
       <KPICards
-        embeddingStatus={{ ...mockEmbeddingStatus, dirtyPages: 0 }}
+        embeddingStatus={{ ...mockEmbeddingStatus, embeddedPages: 100, dirtyPages: 0 }}
         spacesCount={3}
       />,
       { wrapper: Wrapper },
@@ -122,10 +123,10 @@ describe('KPICards', () => {
     }, { timeout: 3000 });
   });
 
-  it('displays 0% coverage when all pages are dirty', () => {
+  it('displays 0% coverage when no pages are embedded', () => {
     render(
       <KPICards
-        embeddingStatus={{ ...mockEmbeddingStatus, dirtyPages: 100 }}
+        embeddingStatus={{ ...mockEmbeddingStatus, embeddedPages: 0, dirtyPages: 100 }}
         spacesCount={3}
       />,
       { wrapper: Wrapper },
@@ -136,10 +137,37 @@ describe('KPICards', () => {
     expect(card).toHaveTextContent('0%');
   });
 
+  it('uses embeddedPages from API instead of deriving from totalPages - dirtyPages', async () => {
+    // Scenario: 100 total pages, 10 dirty, but only 60 actually have embeddings
+    // (30 pages had short/empty content and were skipped by embedPage)
+    // Old buggy code would show 90 embedded (100 - 10), new code shows 60.
+    render(
+      <KPICards
+        embeddingStatus={{
+          totalPages: 100,
+          embeddedPages: 60,
+          dirtyPages: 10,
+          totalEmbeddings: 200,
+          isProcessing: false,
+        }}
+        spacesCount={3}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    const embeddedCard = screen.getByTestId('kpi-embedded-pages');
+    await waitFor(() => {
+      expect(embeddedCard).toHaveTextContent('60');
+    }, { timeout: 3000 });
+
+    const coverageCard = screen.getByTestId('kpi-embedding-coverage');
+    expect(coverageCard).toHaveTextContent('60%');
+  });
+
   it('handles 0 total pages without division by zero', () => {
     render(
       <KPICards
-        embeddingStatus={{ totalPages: 0, dirtyPages: 0, totalEmbeddings: 0, isProcessing: false }}
+        embeddingStatus={{ totalPages: 0, embeddedPages: 0, dirtyPages: 0, totalEmbeddings: 0, isProcessing: false }}
         spacesCount={0}
       />,
       { wrapper: Wrapper },
@@ -217,7 +245,7 @@ describe('KPICards', () => {
   it('renders the coverage ring with correct aria-label at 100%', () => {
     render(
       <KPICards
-        embeddingStatus={{ ...mockEmbeddingStatus, dirtyPages: 0 }}
+        embeddingStatus={{ ...mockEmbeddingStatus, embeddedPages: 100, dirtyPages: 0 }}
         spacesCount={3}
       />,
       { wrapper: Wrapper },

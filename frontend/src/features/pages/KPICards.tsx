@@ -8,6 +8,7 @@ import { TiltCard } from '../../shared/components/effects/TiltCard';
 interface KPICardsProps {
   embeddingStatus?: {
     totalPages: number;
+    embeddedPages: number;
     dirtyPages: number;
     totalEmbeddings: number;
     isProcessing: boolean;
@@ -111,7 +112,7 @@ function EmbeddingCoverageRing({ percent, isProcessing }: EmbeddingCoverageRingP
 
 export function KPICards({ embeddingStatus, spacesCount, lastSynced }: KPICardsProps) {
   const totalPages = embeddingStatus?.totalPages ?? 0;
-  const embeddedPages = totalPages - (embeddingStatus?.dirtyPages ?? 0);
+  const embeddedPages = embeddingStatus?.embeddedPages ?? 0;
   const coveragePercent = totalPages > 0
     ? Math.round((embeddedPages / totalPages) * 100)
     : 0;
