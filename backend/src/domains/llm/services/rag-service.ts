@@ -43,7 +43,7 @@ async function vectorSearch(userId: string, questionEmbedding: number[], limit =
       `SELECT cp.confluence_id, pe.chunk_text, pe.metadata,
               pe.embedding <=> $2 AS distance
        FROM page_embeddings pe
-       JOIN pages cp ON pe.confluence_id = cp.confluence_id
+       JOIN pages cp ON pe.page_id = cp.id
        WHERE (
          (cp.source = 'confluence' AND cp.space_key = ANY($1::text[]))
          OR (cp.source = 'standalone' AND cp.visibility = 'shared')

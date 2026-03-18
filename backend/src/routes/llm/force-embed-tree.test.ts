@@ -180,9 +180,9 @@ describe('POST /api/embeddings/force-embed-tree', () => {
     mockGetClientForUser.mockResolvedValue(mockClient);
     mockEmbedPage.mockResolvedValue(5);
 
-    // Mock DB query for pages lookup
+    // Mock DB query for pages lookup (includes id for embedPage integer param)
     mockQuery.mockResolvedValue({
-      rows: [{ space_key: 'DEV', body_html: '<p>cached content</p>' }],
+      rows: [{ id: 101, space_key: 'DEV', body_html: '<p>cached content</p>' }],
     });
 
     const response = await app.inject({
@@ -249,7 +249,7 @@ describe('POST /api/embeddings/force-embed-tree', () => {
       .mockRejectedValueOnce(new Error('Embedding failed'));
 
     mockQuery.mockResolvedValue({
-      rows: [{ space_key: 'DEV', body_html: '<p>cached</p>' }],
+      rows: [{ id: 101, space_key: 'DEV', body_html: '<p>cached</p>' }],
     });
 
     const response = await app.inject({
@@ -269,6 +269,50 @@ describe('POST /api/embeddings/force-embed-tree', () => {
     expect(lastEvent.completed).toBe(2); // Both counted as completed
   });
 
+  it('should skip a page not in local DB (not yet synced) with a warning SSE event', async () => {
+    const mockClient = {
+      getPage: vi.fn().mockResolvedValue({
+        id: 'unsynced-1',
+        title: 'Unsynced Page',
+        body: { storage: { value: '<p>Unsynced content</p>' } },
+        ancestors: [],
+        version: { number: 1, when: '2025-01-01' },
+      }),
+      getDescendantPages: vi.fn().mockResolvedValue([]),
+    };
+
+    mockGetClientForUser.mockResolvedValue(mockClient);
+
+    // DB query returns empty rows (page not yet synced to local DB)
+    mockQuery.mockResolvedValue({ rows: [] });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/embeddings/force-embed-tree',
+      payload: { pageId: 'unsynced-1' },
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    // embedPage should NOT have been called
+    expect(mockEmbedPage).not.toHaveBeenCalled();
+
+    const lines = response.body.split('\n').filter((l: string) => l.startsWith('data: '));
+    const events = lines.map((l: string) => JSON.parse(l.replace('data: ', '')));
+
+    // Should have a warning event for the skipped page
+    const warningEvents = events.filter((e: { warning?: string }) => e.warning);
+    expect(warningEvents.length).toBeGreaterThanOrEqual(1);
+    expect(warningEvents[0].warning).toContain('not yet synced');
+
+    // Final event should be complete with 1 completed (counted even though skipped)
+    const lastEvent = events[events.length - 1];
+    expect(lastEvent.phase).toBe('complete');
+    expect(lastEvent.total).toBe(1);
+    expect(lastEvent.completed).toBe(1);
+    expect(lastEvent.errors).toBe(0);
+  });
+
   it('should embed a single page (no children) successfully', async () => {
     const mockClient = {
       getPage: vi.fn().mockResolvedValue({
@@ -285,7 +329,7 @@ describe('POST /api/embeddings/force-embed-tree', () => {
     mockEmbedPage.mockResolvedValue(3);
 
     mockQuery.mockResolvedValue({
-      rows: [{ space_key: 'DEV', body_html: '<p>leaf</p>' }],
+      rows: [{ id: 101, space_key: 'DEV', body_html: '<p>leaf</p>' }],
     });
 
     const response = await app.inject({

@@ -50,15 +50,16 @@ export async function findDuplicates(
 ): Promise<DuplicateCandidate[]> {
   const { distanceThreshold = 0.15, limit = 10 } = options;
 
-  // Get the source page title for title similarity comparison
-  const sourcePageResult = await query<{ title: string }>(
-    'SELECT title FROM pages WHERE confluence_id = $1 AND deleted_at IS NULL',
+  // Get the source page id and title for title similarity comparison
+  const sourcePageResult = await query<{ id: number; title: string }>(
+    'SELECT id, title FROM pages WHERE confluence_id = $1 AND deleted_at IS NULL',
     [confluenceId],
   );
   if (sourcePageResult.rows.length === 0) {
-    throw new Error(`Page not found: ${confluenceId}`);
+    return [];
   }
   const sourceTitle = sourcePageResult.rows[0].title;
+  const sourcePageId = sourcePageResult.rows[0].id;
 
   // Use a dedicated client for SET LOCAL
   const client = await getPool().connect();
@@ -76,19 +77,21 @@ export async function findDuplicates(
       `WITH source_avg AS (
          SELECT AVG(embedding) AS avg_embedding
          FROM page_embeddings
-         WHERE confluence_id = $1
+         WHERE page_id = $1
        )
-       SELECT DISTINCT ON (pe2.confluence_id)
-         pe2.confluence_id,
-         pe2.metadata->>'page_title' AS title,
-         pe2.metadata->>'space_key' AS space_key,
+       SELECT DISTINCT ON (cp2.confluence_id)
+         cp2.confluence_id,
+         cp2.title,
+         cp2.space_key,
          pe2.embedding <=> source_avg.avg_embedding AS distance
-       FROM page_embeddings pe2, source_avg
-       WHERE pe2.confluence_id != $1
+       FROM page_embeddings pe2
+       JOIN pages cp2 ON pe2.page_id = cp2.id,
+       source_avg
+       WHERE pe2.page_id != $1
          AND source_avg.avg_embedding IS NOT NULL
-       ORDER BY pe2.confluence_id, pe2.embedding <=> source_avg.avg_embedding
+       ORDER BY cp2.confluence_id, pe2.embedding <=> source_avg.avg_embedding
        LIMIT $2`,
-      [confluenceId, limit * 3], // Over-fetch to filter later
+      [sourcePageId, limit * 3], // Over-fetch to filter later
     );
 
     await client.query('COMMIT');
@@ -142,7 +145,7 @@ export async function scanAllDuplicates(
   const pages = await query<{ confluence_id: string; title: string }>(
     `SELECT DISTINCT cp.confluence_id, cp.title
      FROM pages cp
-     JOIN page_embeddings pe ON cp.confluence_id = pe.confluence_id
+     JOIN page_embeddings pe ON pe.page_id = cp.id
      WHERE cp.space_key = ANY($1::text[])
        AND cp.deleted_at IS NULL`,
     [dupSpaces],

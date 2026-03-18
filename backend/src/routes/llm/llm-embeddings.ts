@@ -161,17 +161,33 @@ export async function llmEmbeddingRoutes(fastify: FastifyInstance) {
           const storageXhtml = fullPage.body?.storage?.value ?? '';
 
           if (storageXhtml) {
-            // Try to get space_key and cached HTML from local DB first
-            const cachedRow = await query<{ space_key: string; body_html: string }>(
-              'SELECT space_key, body_html FROM pages WHERE confluence_id = $1',
+            // Try to get id, space_key and cached HTML from local DB first
+            const cachedRow = await query<{ id: number; space_key: string; body_html: string }>(
+              'SELECT id, space_key, body_html FROM pages WHERE confluence_id = $1',
               [page.id],
             );
 
-            const resolvedSpaceKey = cachedRow.rows[0]?.space_key ?? '';
-            const bodyHtml = confluenceToHtml(storageXhtml, page.id, resolvedSpaceKey);
-            const resolvedBodyHtml = cachedRow.rows[0]?.body_html ?? bodyHtml;
+            if (!cachedRow.rows[0]?.id) {
+              // Page not yet synced to local DB — skip with warning
+              logger.warn({ confluenceId: page.id, title: page.title }, 'Page not in local DB, skipping embedding (sync first)');
+              completed++;
+              reply.raw.write(`data: ${JSON.stringify({
+                phase: 'embedding',
+                total,
+                completed,
+                errors,
+                currentPage: page.title,
+                warning: 'Page not yet synced to local DB, skipping',
+                done: false,
+              })}\n\n`);
+              continue;
+            }
 
-            await embedPage(userId, page.id, page.title, resolvedSpaceKey, resolvedBodyHtml);
+            const resolvedSpaceKey = cachedRow.rows[0].space_key ?? '';
+            const bodyHtml = confluenceToHtml(storageXhtml, page.id, resolvedSpaceKey);
+            const resolvedBodyHtml = cachedRow.rows[0].body_html ?? bodyHtml;
+
+            await embedPage(userId, cachedRow.rows[0].id, page.title, resolvedSpaceKey, resolvedBodyHtml);
           }
 
           completed++;

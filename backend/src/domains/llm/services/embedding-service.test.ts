@@ -63,8 +63,9 @@ import {
 } from './embedding-service.js';
 
 /** Helper to create a fake dirty page row */
-function makePage(id: string) {
+function makePage(id: string, numId = 1) {
   return {
+    id: numId,
     confluence_id: id,
     title: `Page ${id}`,
     space_key: 'DEV',
@@ -393,6 +394,7 @@ describe('embedding-service', () => {
       // Batch SELECT with 1 page
       mocks.query.mockResolvedValueOnce({
         rows: [{
+          id: 1,
           confluence_id: 'page-1',
           title: 'Test Page',
           space_key: 'DEV',
@@ -427,6 +429,7 @@ describe('embedding-service', () => {
       // Batch SELECT with 1 page
       mocks.query.mockResolvedValueOnce({
         rows: [{
+          id: 1,
           confluence_id: 'page-fail',
           title: 'Failing Page',
           space_key: 'DEV',
@@ -467,6 +470,7 @@ describe('embedding-service', () => {
       // Batch SELECT with 1 page
       mocks.query.mockResolvedValueOnce({
         rows: [{
+          id: 1,
           confluence_id: 'page-long-err',
           title: 'Long Error Page',
           space_key: 'DEV',
@@ -503,6 +507,7 @@ describe('embedding-service', () => {
       // Batch SELECT with 1 page
       mocks.query.mockResolvedValueOnce({
         rows: [{
+          id: 1,
           confluence_id: 'page-recover',
           title: 'Recovering Page',
           space_key: 'DEV',
@@ -613,8 +618,8 @@ describe('embedding-service', () => {
       // Batch SELECT (2 pages)
       mocks.query.mockResolvedValueOnce({
         rows: [
-          { confluence_id: 'p1', title: 'Page One', space_key: 'DEV', body_html: '<p>Content 1</p>' },
-          { confluence_id: 'p2', title: 'Page Two', space_key: 'DEV', body_html: '<p>Content 2</p>' },
+          { id: 1, confluence_id: 'p1', title: 'Page One', space_key: 'DEV', body_html: '<p>Content 1</p>' },
+          { id: 2, confluence_id: 'p2', title: 'Page Two', space_key: 'DEV', body_html: '<p>Content 2</p>' },
         ],
       });
 
@@ -666,7 +671,7 @@ describe('embedding-service', () => {
       // Batch SELECT
       mocks.query.mockResolvedValueOnce({
         rows: [
-          { confluence_id: 'p-fail', title: 'Failing', space_key: 'DEV', body_html: '<p>Content</p>' },
+          { id: 1, confluence_id: 'p-fail', title: 'Failing', space_key: 'DEV', body_html: '<p>Content</p>' },
         ],
       });
 
@@ -705,7 +710,7 @@ describe('embedding-service', () => {
       // Batch SELECT
       mocks.query.mockResolvedValueOnce({
         rows: [
-          { confluence_id: 'cb-page', title: 'CB Page', space_key: 'DEV', body_html: '<p>Content</p>' },
+          { id: 1, confluence_id: 'cb-page', title: 'CB Page', space_key: 'DEV', body_html: '<p>Content</p>' },
         ],
       });
 
@@ -758,8 +763,8 @@ describe('embedding-service', () => {
       // Batch SELECT
       mocks.query.mockResolvedValueOnce({
         rows: [
-          { confluence_id: 'cb-p1', title: 'CB Page 1', space_key: 'DEV', body_html: '<p>Content 1</p>' },
-          { confluence_id: 'cb-p2', title: 'CB Page 2', space_key: 'DEV', body_html: '<p>Content 2</p>' },
+          { id: 1, confluence_id: 'cb-p1', title: 'CB Page 1', space_key: 'DEV', body_html: '<p>Content 1</p>' },
+          { id: 2, confluence_id: 'cb-p2', title: 'CB Page 2', space_key: 'DEV', body_html: '<p>Content 2</p>' },
         ],
       });
 
@@ -804,7 +809,7 @@ describe('embedding-service', () => {
       // Batch SELECT
       mocks.query.mockResolvedValueOnce({
         rows: [
-          { confluence_id: 'cb-wait-page', title: 'Wait Page', space_key: 'DEV', body_html: '<p>Content</p>' },
+          { id: 1, confluence_id: 'cb-wait-page', title: 'Wait Page', space_key: 'DEV', body_html: '<p>Content</p>' },
         ],
       });
 
@@ -876,7 +881,7 @@ describe('embedding-service', () => {
       mocks.query.mockResolvedValueOnce({ rows: [{ count: '1' }] });
       // Batch SELECT
       mocks.query.mockResolvedValueOnce({
-        rows: [{ confluence_id: 'cs-page', title: 'CS Page', space_key: 'DEV', body_html: '<p>Content</p>' }],
+        rows: [{ id: 1, confluence_id: 'cs-page', title: 'CS Page', space_key: 'DEV', body_html: '<p>Content</p>' }],
       });
       // mark embedding
       mocks.query.mockResolvedValueOnce({ rows: [] });
@@ -996,14 +1001,14 @@ describe('embedPage', () => {
     mocks.htmlToText.mockReturnValue('tiny');
     mocks.query.mockResolvedValue({ rows: [] });
 
-    const result = await embedPage('user-1', 'page-short', 'Short Page', 'DEV', '<p>tiny</p>');
+    const result = await embedPage('user-1', 101, 'Short Page', 'DEV', '<p>tiny</p>');
 
     expect(result).toBe(0);
-    // Should have called UPDATE to clear embedding_dirty
+    // Should have called UPDATE to clear embedding_dirty (using pages.id, not confluence_id)
     expect(mocks.query).toHaveBeenCalledTimes(1);
     expect(mocks.query).toHaveBeenCalledWith(
-      'UPDATE pages SET embedding_dirty = FALSE WHERE confluence_id = $1',
-      ['page-short'],
+      'UPDATE pages SET embedding_dirty = FALSE WHERE id = $1',
+      [101],
     );
   });
 
@@ -1011,13 +1016,13 @@ describe('embedPage', () => {
     mocks.htmlToText.mockReturnValue('');
     mocks.query.mockResolvedValue({ rows: [] });
 
-    const result = await embedPage('user-1', 'page-empty', 'Empty Page', 'DEV', '<p></p>');
+    const result = await embedPage('user-1', 102, 'Empty Page', 'DEV', '<p></p>');
 
     expect(result).toBe(0);
     expect(mocks.query).toHaveBeenCalledTimes(1);
     expect(mocks.query).toHaveBeenCalledWith(
-      'UPDATE pages SET embedding_dirty = FALSE WHERE confluence_id = $1',
-      ['page-empty'],
+      'UPDATE pages SET embedding_dirty = FALSE WHERE id = $1',
+      [102],
     );
   });
 });
@@ -1198,7 +1203,7 @@ describe('chunkText', () => {
         );
 
       // Should not throw even though first batch failed
-      const count = await embedPage('user-1', 'conf-1', 'Page', 'DEV', '<p>content</p>');
+      const count = await embedPage('user-1', 101, 'Page', 'DEV', '<p>content</p>');
       // Some chunks should have been embedded (from the successful second batch)
       expect(count).toBeGreaterThanOrEqual(0);
     });
@@ -1212,7 +1217,7 @@ describe('chunkText', () => {
       mocks.providerGenerateEmbedding.mockRejectedValueOnce(serverErr);
 
       await expect(
-        embedPage('user-1', 'conf-1', 'Page', 'DEV', '<p>content</p>'),
+        embedPage('user-1', 101, 'Page', 'DEV', '<p>content</p>'),
       ).rejects.toThrow('HTTP 500');
     });
   });

@@ -252,10 +252,11 @@ export async function getAdminChunkSettings(): Promise<{ chunkSize: number; chun
 /**
  * Embed a single page's content.
  * Tables are shared (no user_id); access control is at the query layer.
+ * @param pageId - The integer primary key of the page in the `pages` table (pages.id)
  */
 export async function embedPage(
   userId: string,
-  confluenceId: string,
+  pageId: number,
   pageTitle: string,
   spaceKey: string,
   bodyHtml: string,
@@ -263,19 +264,20 @@ export async function embedPage(
 ): Promise<number> {
   const plainText = htmlToText(bodyHtml);
   if (!plainText || plainText.length < 20) {
-    logger.debug({ confluenceId, pageTitle }, 'Skipping empty/short page for embedding');
+    logger.debug({ pageId, pageTitle }, 'Skipping empty/short page for embedding');
     await query(
-      'UPDATE pages SET embedding_dirty = FALSE WHERE confluence_id = $1',
-      [confluenceId],
+      'UPDATE pages SET embedding_dirty = FALSE WHERE id = $1',
+      [pageId],
     );
     return 0;
   }
 
-  const chunks = chunkText(plainText, pageTitle, spaceKey, confluenceId, opts?.chunkSize, opts?.chunkOverlap);
+  // Pass String(pageId) as the confluenceId metadata field (cosmetic only; never queried)
+  const chunks = chunkText(plainText, pageTitle, spaceKey, String(pageId), opts?.chunkSize, opts?.chunkOverlap);
   if (chunks.length === 0) return 0;
 
   // Delete old embeddings for this page
-  await query('DELETE FROM page_embeddings WHERE confluence_id = $1', [confluenceId]);
+  await query('DELETE FROM page_embeddings WHERE page_id = $1', [pageId]);
 
   // Generate embeddings in batches of 10
   const batchSize = 10;
@@ -290,10 +292,10 @@ export async function embedPage(
 
       for (let j = 0; j < batch.length; j++) {
         await query(
-          `INSERT INTO page_embeddings (confluence_id, chunk_index, chunk_text, embedding, metadata)
+          `INSERT INTO page_embeddings (page_id, chunk_index, chunk_text, embedding, metadata)
            VALUES ($1, $2, $3, $4, $5)`,
           [
-            confluenceId,
+            pageId,
             i + j,
             batch[j].text,
             pgvector.toSql(embeddings[j]),
@@ -307,12 +309,12 @@ export async function embedPage(
       // continue so the rest of the page's chunks are still embedded.
       if (isContextLengthError(err)) {
         logger.warn(
-          { confluenceId, batchOffset: i, batchSize: batch.length },
+          { pageId, batchOffset: i, batchSize: batch.length },
           'Skipping oversized embedding batch (context length exceeded)',
         );
         continue;
       }
-      logger.error({ err, confluenceId, batch: i }, 'Failed to embed batch');
+      logger.error({ err, pageId, batch: i }, 'Failed to embed batch');
       throw err;
     }
   }
@@ -320,11 +322,11 @@ export async function embedPage(
   // Mark page as no longer dirty + update embedding status + clear any previous error
   await query(
     `UPDATE pages SET embedding_dirty = FALSE, embedding_status = 'embedded', embedded_at = NOW(), embedding_error = NULL
-     WHERE confluence_id = $1`,
-    [confluenceId],
+     WHERE id = $1`,
+    [pageId],
   );
 
-  logger.info({ confluenceId, pageTitle, chunks: embeddedCount }, 'Page embedded');
+  logger.info({ pageId, pageTitle, chunks: embeddedCount }, 'Page embedded');
   return embeddedCount;
 }
 
@@ -389,12 +391,13 @@ export async function processDirtyPages(
       if (batchAborted) break;
 
       const batch = await query<{
+        id: number;
         confluence_id: string;
         title: string;
         space_key: string;
         body_html: string;
       }>(
-        `SELECT confluence_id, title, space_key, body_html
+        `SELECT id, confluence_id, title, space_key, body_html
          FROM pages
          WHERE embedding_dirty = TRUE AND body_html IS NOT NULL AND deleted_at IS NULL
            AND COALESCE(page_type, 'page') != 'folder'
@@ -416,7 +419,7 @@ export async function processDirtyPages(
             [page.confluence_id],
           );
 
-          await embedPage(userId, page.confluence_id, page.title, page.space_key, page.body_html, chunkOpts);
+          await embedPage(userId, page.id, page.title, page.space_key, page.body_html, chunkOpts);
           totalProcessed++;
           consecutiveFailures = 0; // Reset on success
 
@@ -468,7 +471,7 @@ export async function processDirtyPages(
 
               // Try embedding again
               try {
-                await embedPage(userId, page.confluence_id, page.title, page.space_key, page.body_html, chunkOpts);
+                await embedPage(userId, page.id, page.title, page.space_key, page.body_html, chunkOpts);
                 totalProcessed++;
                 consecutiveFailures = 0;
                 cbSuccess = true;
