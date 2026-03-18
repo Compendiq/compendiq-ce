@@ -160,6 +160,24 @@ describe('llm-config', () => {
       expect(getLlmAuthHeaders()).toEqual({ Authorization: 'Bearer my-secret-token' });
     });
 
+    it('should default to bearer auth when LLM_AUTH_TYPE is not set', async () => {
+      // Do NOT stub LLM_AUTH_TYPE — verify the default is 'bearer'
+      delete process.env.LLM_AUTH_TYPE;
+      vi.stubEnv('LLM_BEARER_TOKEN', 'default-test-token');
+      vi.stubEnv('NODE_EXTRA_CA_CERTS', '');
+
+      vi.doMock('fs', () => ({
+        readFileSync: vi.fn().mockImplementation(() => { throw new Error('ENOENT'); }),
+        existsSync: vi.fn().mockReturnValue(false),
+      }));
+      vi.doMock('undici', () => ({
+        Agent: vi.fn(),
+      }));
+
+      const { getLlmAuthHeaders } = await import('./llm-config.js');
+      expect(getLlmAuthHeaders()).toEqual({ Authorization: 'Bearer default-test-token' });
+    });
+
     it('should return empty object when bearer auth type but no token', async () => {
       vi.stubEnv('LLM_AUTH_TYPE', 'bearer');
       vi.stubEnv('LLM_BEARER_TOKEN', '');

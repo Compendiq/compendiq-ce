@@ -230,8 +230,9 @@ export function PageViewPage() {
           reader.readAsDataURL(blob);
         });
       }
-    } catch {
-      toast.warning('Could not load existing diagram — opening a blank canvas.');
+    } catch (error) {
+      console.error('draw.io edit failed:', error);
+      toast.error(`Failed to open draw.io editor: ${error instanceof Error ? error.message : 'Unknown error'}`, { duration: 8000 });
     }
     setDrawioXml(dataUri);
     setDrawioEditingDiagram(diagramName);

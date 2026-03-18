@@ -12,7 +12,7 @@ import { logger } from './logger.js';
  * Environment variables:
  *   LLM_VERIFY_SSL     - Set to 'false' to skip TLS cert verification (default: true)
  *   LLM_BEARER_TOKEN   - Bearer token for authenticated Ollama proxies
- *   LLM_AUTH_TYPE       - Auth type: 'bearer' | 'none' (default: 'none')
+ *   LLM_AUTH_TYPE       - Auth type: 'bearer' | 'none' (default: 'bearer')
  *   NODE_EXTRA_CA_CERTS - Path to a PEM CA bundle file (shared with tls-config.ts)
  *   OLLAMA_BASE_URL     - Ollama server URL (default: http://localhost:11434)
  */
@@ -71,7 +71,7 @@ function loadCaBundle(): string | undefined {
 
 const caBundleContents = loadCaBundle();
 const verifySsl = process.env.LLM_VERIFY_SSL !== 'false';
-const authType = (process.env.LLM_AUTH_TYPE ?? 'none') as 'bearer' | 'none';
+const authType = (process.env.LLM_AUTH_TYPE ?? 'bearer') as 'bearer' | 'none';
 const bearerToken = process.env.LLM_BEARER_TOKEN ?? '';
 
 if (!verifySsl) {
