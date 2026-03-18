@@ -1,7 +1,7 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { m, AnimatePresence } from 'framer-motion';
-import { Search, Menu, X, PanelLeft, PanelLeftClose } from 'lucide-react';
+import { Search, Menu, X } from 'lucide-react';
 import { useCommandPaletteStore } from '../../../stores/command-palette-store';
 import { useKeyboardShortcutsStore } from '../../../stores/keyboard-shortcuts-store';
 import { useUiStore } from '../../../stores/ui-store';
@@ -22,7 +22,6 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const location = useLocation();
   const navigate = useNavigate();
   const openCommandPalette = useCommandPaletteStore((s) => s.open);
-  const treeSidebarCollapsed = useUiStore((s) => s.treeSidebarCollapsed);
   const toggleShortcutsModal = useKeyboardShortcutsStore((s) => s.toggle);
   const shortcutsModalOpen = useKeyboardShortcutsStore((s) => s.isOpen);
   const closeShortcutsModal = useKeyboardShortcutsStore((s) => s.close);
@@ -155,16 +154,6 @@ export function AppLayout({ children }: { children: ReactNode }) {
             Atlas<span className="font-bold">Mind</span>
           </span>
         </Link>
-
-        {/* Sidebar toggle — visible on md+ screens */}
-        <button
-          onClick={toggleTreeSidebar}
-          className="hidden md:flex items-center gap-1 rounded-lg px-1.5 py-1.5 text-muted-foreground hover:bg-foreground/5 hover:text-foreground transition-colors mr-3"
-          aria-label={treeSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-        >
-          {treeSidebarCollapsed ? <PanelLeft size={16} /> : <PanelLeftClose size={16} />}
-          <kbd className="hidden lg:inline rounded border border-border/50 px-1 py-0.5 text-[10px]">,</kbd>
-        </button>
 
         {/* Breadcrumb — gets full width now that nav pills moved to sidebar */}
         <div className="flex min-w-0 flex-1 items-center">

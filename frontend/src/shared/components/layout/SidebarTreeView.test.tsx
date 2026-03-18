@@ -179,16 +179,22 @@ describe('SidebarTreeView', () => {
     expect(row.className).toContain('glass-pill-active');
   });
 
-  it('shows collapsed state with nav icons when treeSidebarCollapsed is true', () => {
+  it('shows collapsed state with expand toggle and nav icons when treeSidebarCollapsed is true', () => {
     useUiStore.setState({ treeSidebarCollapsed: true });
     render(<SidebarTreeView />, { wrapper: createWrapper() });
-    // Section label hidden but nav icons still accessible
-    // Toggle button moved to AppLayout top nav bar — no longer in sidebar
-    expect(screen.queryByLabelText('Expand tree sidebar')).not.toBeInTheDocument();
+    // Section label hidden but nav icons and expand toggle still accessible
+    expect(screen.getByLabelText('Expand sidebar')).toBeInTheDocument();
     // Nav icons shown as icon-only links in collapsed rail
     expect(screen.getByLabelText('Pages')).toBeInTheDocument();
     expect(screen.getByLabelText('Graph')).toBeInTheDocument();
     expect(screen.getByLabelText('AI')).toBeInTheDocument();
+  });
+
+  it('expands sidebar when collapsed expand button is clicked', () => {
+    useUiStore.setState({ treeSidebarCollapsed: true });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByLabelText('Expand sidebar'));
+    expect(useUiStore.getState().treeSidebarCollapsed).toBe(false);
   });
 
   it('shows space selector with All Spaces default', () => {
@@ -299,9 +305,31 @@ describe('SidebarTreeView', () => {
     fireEvent.click(screen.getByLabelText('New Space'));
     expect(mockNavigate).toHaveBeenCalledWith('/spaces/new');
   });
+
+  it('shows collapse sidebar button in expanded sidebar header', () => {
+    useUiStore.setState({ treeSidebarCollapsed: false });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    expect(screen.getByLabelText('Collapse sidebar')).toBeInTheDocument();
+  });
+
+  it('collapses sidebar when collapse button is clicked in expanded state', () => {
+    useUiStore.setState({ treeSidebarCollapsed: false });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByLabelText('Collapse sidebar'));
+    expect(useUiStore.getState().treeSidebarCollapsed).toBe(true);
+  });
 });
 
 describe('SidebarTreeNode memoization', () => {
+  beforeEach(() => {
+    mockNavigate.mockClear();
+    mockTreeData = { ...defaultTreeData };
+    useUiStore.setState({
+      treeSidebarCollapsed: false,
+      treeSidebarSpaceKey: undefined,
+    });
+  });
+
   const makeNode = (id: string, title: string, children: TreeNode[] = [], pageType: 'page' | 'folder' = 'page'): TreeNode => ({
     page: {
       id,

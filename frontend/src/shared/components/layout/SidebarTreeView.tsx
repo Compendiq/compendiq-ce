@@ -11,6 +11,8 @@ import {
   FolderPlus,
   ChevronsUpDown,
   GripVertical,
+  PanelLeft,
+  PanelLeftClose,
   Plus,
   Globe,
   HardDrive,
@@ -237,6 +239,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
   const location = useLocation();
   const navigate = useNavigate();
   const treeSidebarCollapsed = useUiStore((s) => s.treeSidebarCollapsed);
+  const toggleTreeSidebar = useUiStore((s) => s.toggleTreeSidebar);
   const treeSidebarSpaceKey = useUiStore((s) => s.treeSidebarSpaceKey);
   const setTreeSidebarSpaceKey = useUiStore((s) => s.setTreeSidebarSpaceKey);
   const treeSidebarWidth = useUiStore((s) => s.treeSidebarWidth);
@@ -421,7 +424,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
     [reorderPage],
   );
 
-  // Collapsed rail — nav icons only (toggle button lives in AppLayout header)
+  // Collapsed rail — nav icons + expand toggle
   if (treeSidebarCollapsed) {
     return (
       <AnimatePresence mode="wait">
@@ -433,8 +436,18 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
           transition={reduceEffects ? { duration: 0 } : sidebarSpring}
           className="flex flex-col items-center rounded-xl glass-sidebar overflow-hidden"
         >
+          {/* Expand toggle */}
+          <button
+            onClick={toggleTreeSidebar}
+            className="mt-2 rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
+            aria-label="Expand sidebar"
+            title="Expand sidebar (,)"
+          >
+            <PanelLeft size={16} />
+          </button>
+
           {/* Nav icons */}
-          <nav className="flex flex-col items-center gap-1 pt-2" aria-label="Main navigation">
+          <nav className="flex flex-col items-center gap-1 pt-1" aria-label="Main navigation">
             {navItems.map(({ icon: Icon, label, path }) => {
               const active = path === '/'
                 ? location.pathname === '/' || location.pathname.startsWith('/pages')
@@ -504,7 +517,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
         })}
       </nav>
 
-      {/* Sidebar header — title + actions */}
+      {/* Sidebar header — title + actions + collapse toggle */}
       <div className="flex h-8 shrink-0 items-center justify-between px-3">
         <span className="text-xs font-semibold text-muted-foreground/60">Pages</span>
         <div className="flex items-center gap-1">
@@ -526,6 +539,14 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
             title="Create new space"
           >
             <Plus size={14} />
+          </button>
+          <button
+            onClick={toggleTreeSidebar}
+            className="rounded-lg p-1 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
+            aria-label="Collapse sidebar"
+            title="Collapse sidebar (,)"
+          >
+            <PanelLeftClose size={14} />
           </button>
         </div>
       </div>

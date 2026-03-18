@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domMax } from 'framer-motion';
@@ -246,7 +246,7 @@ describe('AppLayout', () => {
     expect(screen.getByLabelText('Toggle sidebar')).toBeInTheDocument();
   });
 
-  it('has sidebar toggle button in top nav bar that shows Collapse when expanded', () => {
+  it('does not have sidebar toggle button in header (moved to sidebar panel)', () => {
     useUiStore.setState({ treeSidebarCollapsed: false });
     render(
       <AppLayout>
@@ -254,29 +254,10 @@ describe('AppLayout', () => {
       </AppLayout>,
       { wrapper: createWrapper('/') },
     );
-    expect(screen.getByLabelText('Collapse sidebar')).toBeInTheDocument();
-  });
-
-  it('has sidebar toggle button that shows Expand when collapsed', () => {
-    useUiStore.setState({ treeSidebarCollapsed: true });
-    render(
-      <AppLayout>
-        <div>content</div>
-      </AppLayout>,
-      { wrapper: createWrapper('/') },
-    );
-    expect(screen.getByLabelText('Expand sidebar')).toBeInTheDocument();
-  });
-
-  it('toggles sidebar state when sidebar toggle button is clicked', () => {
-    useUiStore.setState({ treeSidebarCollapsed: false });
-    render(
-      <AppLayout>
-        <div>content</div>
-      </AppLayout>,
-      { wrapper: createWrapper('/') },
-    );
-    fireEvent.click(screen.getByLabelText('Collapse sidebar'));
-    expect(useUiStore.getState().treeSidebarCollapsed).toBe(true);
+    const header = document.querySelector('header');
+    expect(header).toBeTruthy();
+    // Toggle button should not exist in the header — it lives in SidebarTreeView now
+    expect(header!.querySelector('[aria-label="Collapse sidebar"]')).toBeNull();
+    expect(header!.querySelector('[aria-label="Expand sidebar"]')).toBeNull();
   });
 });
