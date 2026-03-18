@@ -215,11 +215,13 @@ export function PageViewPage() {
   // Draw.io inline editing handlers
   const handleEditDiagram = useCallback(async (diagramName: string) => {
     // Fetch the diagram PNG from the attachment cache — draw.io can load PNG+XML data URIs
-    if (!id) return;
+    // Attachments are stored/served by confluence_id, not the integer PK from the route
+    const attachmentPageId = page?.confluenceId ?? id;
+    if (!attachmentPageId) return;
     let dataUri: string;
     try {
       const { accessToken } = (await import('../../stores/auth-store')).useAuthStore.getState();
-      const res = await fetch(`/api/attachments/${encodeURIComponent(id)}/${encodeURIComponent(diagramName)}.png`, {
+      const res = await fetch(`/api/attachments/${encodeURIComponent(attachmentPageId)}/${encodeURIComponent(diagramName)}.png`, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       if (!res.ok) {
@@ -237,17 +239,18 @@ export function PageViewPage() {
     }
     setDrawioXml(dataUri);
     setDrawioEditingDiagram(diagramName);
-  }, [id]);
+  }, [id, page?.confluenceId]);
 
   const handleDrawioClose = useCallback(() => {
     setDrawioEditingDiagram(null);
   }, []);
 
   const handleDrawioSave = useCallback(async (dataUri: string, _xml: string) => {
-    if (!id || !drawioEditingDiagram) return;
+    const attachmentPageId = page?.confluenceId ?? id;
+    if (!attachmentPageId || !drawioEditingDiagram) return;
     const filename = `${drawioEditingDiagram}.png`;
     try {
-      await apiFetch(`/attachments/${encodeURIComponent(id)}/${encodeURIComponent(filename)}`, {
+      await apiFetch(`/attachments/${encodeURIComponent(attachmentPageId)}/${encodeURIComponent(filename)}`, {
         method: 'PUT',
         body: JSON.stringify({ dataUri }),
       });
@@ -258,7 +261,7 @@ export function PageViewPage() {
       const message = error instanceof Error ? error.message : 'Failed to save diagram.';
       toast.error(message);
     }
-  }, [id, drawioEditingDiagram, queryClient]);
+  }, [id, page?.confluenceId, drawioEditingDiagram, queryClient]);
 
   const handleAddTag = useCallback((tag: string) => {
     if (!id) return;
