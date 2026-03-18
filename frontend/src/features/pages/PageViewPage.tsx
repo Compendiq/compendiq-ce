@@ -591,10 +591,10 @@ function FeedbackWidget({ pageId }: { pageId: string | undefined }) {
   const numericId = pageId ? Number(pageId) : 0;
   const submitFeedback = useSubmitFeedback(numericId);
 
-  const handleFeedback = async (helpful: boolean) => {
+  const handleFeedback = async (isHelpful: boolean) => {
     if (!pageId) return;
     try {
-      await submitFeedback.mutateAsync({ helpful });
+      await submitFeedback.mutateAsync({ isHelpful });
       setSubmitted(true);
       toast.success('Thank you for your feedback!');
     } catch {

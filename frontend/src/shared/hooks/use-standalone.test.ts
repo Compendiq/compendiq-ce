@@ -237,13 +237,24 @@ describe('use-standalone hooks', () => {
   // ---- Feedback ----
 
   describe('useSubmitFeedback', () => {
-    it('submits feedback', async () => {
-      const mock = mockFetch({ message: 'ok' });
+    it('submits feedback with isHelpful field', async () => {
+      const mock = mockFetch({ id: 1 });
       const { result } = renderHook(() => useSubmitFeedback(10), { wrapper: createWrapper() });
-      await result.current.mutateAsync({ helpful: true });
+      await result.current.mutateAsync({ isHelpful: true });
       const [url, opts] = mock.mock.calls[0] as [string, RequestInit];
       expect(url).toContain('/pages/10/feedback');
       expect(opts.method).toBe('POST');
+      const body = JSON.parse(opts.body as string);
+      expect(body).toEqual({ isHelpful: true });
+    });
+
+    it('submits not-helpful feedback with comment', async () => {
+      const mock = mockFetch({ id: 2 });
+      const { result } = renderHook(() => useSubmitFeedback(10), { wrapper: createWrapper() });
+      await result.current.mutateAsync({ isHelpful: false, comment: 'outdated info' });
+      const [, opts] = mock.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(opts.body as string);
+      expect(body).toEqual({ isHelpful: false, comment: 'outdated info' });
     });
   });
 

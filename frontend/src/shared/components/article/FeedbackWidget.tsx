@@ -4,11 +4,12 @@ import { ThumbsUp, ThumbsDown, Send } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
 import { cn } from '../../lib/cn';
 
+/** Matches GET /api/pages/:id/feedback backend response */
 interface FeedbackData {
-  helpfulCount: number;
-  unhelpfulCount: number;
-  /** Current user's vote: 'helpful' | 'unhelpful' | null */
-  userVote: 'helpful' | 'unhelpful' | null;
+  helpful: number;
+  notHelpful: number;
+  total: number;
+  userVote: { isHelpful: boolean; comment: string | null } | null;
 }
 
 function useFeedback(pageId: string) {
@@ -22,7 +23,7 @@ function useFeedback(pageId: string) {
 function useSubmitFeedback(pageId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (payload: { vote: 'helpful' | 'unhelpful'; comment?: string }) =>
+    mutationFn: (payload: { isHelpful: boolean; comment?: string }) =>
       apiFetch(`/pages/${pageId}/feedback`, {
         method: 'POST',
         body: JSON.stringify(payload),
@@ -33,16 +34,17 @@ function useSubmitFeedback(pageId: string) {
 
       queryClient.setQueryData<FeedbackData>(['pages', pageId, 'feedback'], (old) => {
         if (!old) return old;
-        const wasHelpful = old.userVote === 'helpful';
-        const wasUnhelpful = old.userVote === 'unhelpful';
+        const wasHelpful = old.userVote?.isHelpful === true;
+        const wasUnhelpful = old.userVote?.isHelpful === false;
         return {
-          helpfulCount: old.helpfulCount
-            + (payload.vote === 'helpful' ? 1 : 0)
+          helpful: old.helpful
+            + (payload.isHelpful ? 1 : 0)
             - (wasHelpful ? 1 : 0),
-          unhelpfulCount: old.unhelpfulCount
-            + (payload.vote === 'unhelpful' ? 1 : 0)
+          notHelpful: old.notHelpful
+            + (!payload.isHelpful ? 1 : 0)
             - (wasUnhelpful ? 1 : 0),
-          userVote: payload.vote,
+          total: old.total + (old.userVote === null ? 1 : 0),
+          userVote: { isHelpful: payload.isHelpful, comment: payload.comment ?? null },
         };
       });
 
@@ -72,11 +74,11 @@ export function FeedbackWidget({ pageId, className }: FeedbackWidgetProps) {
   const [comment, setComment] = useState('');
   const [submitted, setSubmitted] = useState(false);
 
-  const handleVote = (vote: 'helpful' | 'unhelpful') => {
-    submitMutation.mutate({ vote });
+  const handleVote = (isHelpful: boolean) => {
+    submitMutation.mutate({ isHelpful });
     setSubmitted(true);
 
-    if (vote === 'unhelpful') {
+    if (!isHelpful) {
       setShowCommentField(true);
     } else {
       setShowCommentField(false);
@@ -85,13 +87,13 @@ export function FeedbackWidget({ pageId, className }: FeedbackWidgetProps) {
 
   const handleSubmitComment = () => {
     if (!comment.trim()) return;
-    submitMutation.mutate({ vote: 'unhelpful', comment: comment.trim() });
+    submitMutation.mutate({ isHelpful: false, comment: comment.trim() });
     setComment('');
     setShowCommentField(false);
   };
 
   const userVote = data?.userVote ?? null;
-  const helpfulCount = data?.helpfulCount ?? 0;
+  const helpfulCount = data?.helpful ?? 0;
 
   return (
     <div
@@ -102,11 +104,11 @@ export function FeedbackWidget({ pageId, className }: FeedbackWidgetProps) {
         <p className="text-sm text-muted-foreground">Was this article helpful?</p>
         <div className="flex items-center gap-2">
           <button
-            onClick={() => handleVote('helpful')}
+            onClick={() => handleVote(true)}
             disabled={submitMutation.isPending}
             className={cn(
               'flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors',
-              userVote === 'helpful'
+              userVote?.isHelpful === true
                 ? 'bg-success/15 text-success'
                 : 'bg-foreground/5 text-muted-foreground hover:bg-success/10 hover:text-success',
             )}
@@ -117,11 +119,11 @@ export function FeedbackWidget({ pageId, className }: FeedbackWidgetProps) {
             Yes
           </button>
           <button
-            onClick={() => handleVote('unhelpful')}
+            onClick={() => handleVote(false)}
             disabled={submitMutation.isPending}
             className={cn(
               'flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors',
-              userVote === 'unhelpful'
+              userVote?.isHelpful === false
                 ? 'bg-destructive/15 text-destructive'
                 : 'bg-foreground/5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive',
             )}

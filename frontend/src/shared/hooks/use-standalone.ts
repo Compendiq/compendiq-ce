@@ -271,7 +271,7 @@ export function useVerificationHealth() {
 export function usePageFeedback(pageId: number) {
   return useQuery({
     queryKey: ['feedback', pageId],
-    queryFn: () => apiFetch<{ items: Feedback[]; summary: FeedbackSummary }>(`/pages/${pageId}/feedback`),
+    queryFn: () => apiFetch<PageFeedbackResponse>(`/pages/${pageId}/feedback`),
     enabled: pageId > 0,
   });
 }
@@ -279,7 +279,7 @@ export function usePageFeedback(pageId: number) {
 export function useSubmitFeedback(pageId: number) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (data: { helpful: boolean; comment?: string }) =>
+    mutationFn: (data: { isHelpful: boolean; comment?: string }) =>
       apiFetch(`/pages/${pageId}/feedback`, {
         method: 'POST',
         body: JSON.stringify(data),
@@ -620,7 +620,7 @@ export interface Feedback {
   id: number;
   pageId: number;
   userId: string;
-  helpful: boolean;
+  isHelpful: boolean;
   comment: string | null;
   createdAt: string;
 }
@@ -630,6 +630,14 @@ export interface FeedbackSummary {
   notHelpful: number;
   total: number;
   helpfulPercentage: number;
+}
+
+/** Matches the GET /api/pages/:id/feedback backend response shape */
+export interface PageFeedbackResponse {
+  helpful: number;
+  notHelpful: number;
+  total: number;
+  userVote: { isHelpful: boolean; comment: string | null } | null;
 }
 
 export interface KnowledgeRequest {

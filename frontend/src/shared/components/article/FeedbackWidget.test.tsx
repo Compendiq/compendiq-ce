@@ -20,10 +20,12 @@ function createWrapper() {
   };
 }
 
+/** Matches GET /api/pages/:id/feedback backend response */
 const mockFeedbackData = {
-  helpfulCount: 5,
-  unhelpfulCount: 1,
-  userVote: null as 'helpful' | 'unhelpful' | null,
+  helpful: 5,
+  notHelpful: 1,
+  total: 6,
+  userVote: null as { isHelpful: boolean; comment: string | null } | null,
 };
 
 function mockFetch(data = mockFeedbackData) {
@@ -35,7 +37,7 @@ function mockFetch(data = mockFeedbackData) {
       });
     }
     // POST feedback
-    return new Response(JSON.stringify({ success: true }), {
+    return new Response(JSON.stringify({ id: 1 }), {
       headers: { 'Content-Type': 'application/json' },
     });
   });
@@ -105,11 +107,66 @@ describe('FeedbackWidget', () => {
   });
 
   it('shows singular text for 1 helpful vote', async () => {
-    mockFetch({ helpfulCount: 1, unhelpfulCount: 0, userVote: null });
+    mockFetch({ helpful: 1, notHelpful: 0, total: 1, userVote: null });
     render(<FeedbackWidget pageId="page-1" />, { wrapper: createWrapper() });
 
     await waitFor(() => {
       expect(screen.getByTestId('feedback-count')).toHaveTextContent('1 person found this helpful');
+    });
+  });
+
+  it('sends isHelpful field in POST request', async () => {
+    const fetchSpy = mockFetch();
+    render(<FeedbackWidget pageId="42" />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('feedback-helpful')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('feedback-helpful'));
+
+    await waitFor(() => {
+      const postCall = fetchSpy.mock.calls.find(([, opts]) =>
+        opts && (opts as RequestInit).method === 'POST',
+      );
+      expect(postCall).toBeDefined();
+      const body = JSON.parse((postCall![1] as RequestInit).body as string);
+      expect(body).toEqual({ isHelpful: true });
+    });
+  });
+
+  it('sends isHelpful: false for unhelpful vote', async () => {
+    const fetchSpy = mockFetch();
+    render(<FeedbackWidget pageId="42" />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('feedback-unhelpful')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('feedback-unhelpful'));
+
+    await waitFor(() => {
+      const postCall = fetchSpy.mock.calls.find(([, opts]) =>
+        opts && (opts as RequestInit).method === 'POST',
+      );
+      expect(postCall).toBeDefined();
+      const body = JSON.parse((postCall![1] as RequestInit).body as string);
+      expect(body).toEqual({ isHelpful: false });
+    });
+  });
+
+  it('highlights helpful button when user previously voted helpful', async () => {
+    mockFetch({
+      helpful: 3,
+      notHelpful: 0,
+      total: 3,
+      userVote: { isHelpful: true, comment: null },
+    });
+    render(<FeedbackWidget pageId="page-1" />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      const btn = screen.getByTestId('feedback-helpful');
+      expect(btn.className).toContain('bg-success');
     });
   });
 });
