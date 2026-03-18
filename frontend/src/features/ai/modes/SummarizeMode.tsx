@@ -23,7 +23,7 @@ export function SummarizeModeInput() {
 
     await runStream(
       '/llm/summarize',
-      { content: page.bodyHtml, model, pageId, includeSubPages },
+      { content: page.bodyHtml, model, pageId: pageId ?? undefined, includeSubPages },
       { userMessage: `Summarize: ${page.title}` },
     );
   }, [page, model, isStreaming, pageId, includeSubPages, runStream]);

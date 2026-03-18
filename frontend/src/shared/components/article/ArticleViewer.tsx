@@ -313,7 +313,7 @@ export function ArticleViewer({
       const links = container.querySelectorAll('a.drawio-edit-link');
       links.forEach((link) => {
         const anchor = link as HTMLAnchorElement;
-        anchor.href = `${confluenceUrl}/pages/viewpage.action?pageId=${encodeURIComponent(confluencePageId)}`;
+        anchor.href = `${confluenceUrl.replace(/\/+$/, "")}/pages/viewpage.action?pageId=${encodeURIComponent(confluencePageId)}`;
         anchor.target = '_blank';
         anchor.rel = 'noreferrer';
       });

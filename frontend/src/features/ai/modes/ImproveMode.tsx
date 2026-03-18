@@ -116,7 +116,7 @@ export function ImproveModeInput() {
     setImprovedContent('');
 
     const body: Record<string, unknown> = {
-      content: page.bodyHtml, type: improvementType, model, pageId, includeSubPages,
+      content: page.bodyHtml, type: improvementType, model, pageId: pageId ?? undefined, includeSubPages,
     };
     if (instruction.trim()) {
       body.instruction = instruction.trim();

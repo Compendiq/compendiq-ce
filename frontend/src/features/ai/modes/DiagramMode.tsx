@@ -116,7 +116,7 @@ export function DiagramModeInput() {
 
     await runStream(
       '/llm/generate-diagram',
-      { content: page.bodyHtml, model, diagramType, pageId },
+      { content: page.bodyHtml, model, diagramType, pageId: pageId ?? undefined },
       {
         userMessage: `Generate ${diagramType} diagram: ${page.title}`,
         onComplete: (accumulated) => {

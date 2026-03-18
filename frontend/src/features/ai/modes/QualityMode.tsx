@@ -23,7 +23,7 @@ export function QualityModeInput() {
 
     await runStream(
       '/llm/analyze-quality',
-      { content: page.bodyHtml, model, pageId, includeSubPages },
+      { content: page.bodyHtml, model, pageId: pageId ?? undefined, includeSubPages },
       { userMessage: `Analyze Quality: ${page.title}` },
     );
   }, [page, model, pageId, isStreaming, includeSubPages, runStream]);
