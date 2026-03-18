@@ -276,7 +276,7 @@ body {
   border-radius: var(--radius-xl);
   background: var(--glass-sidebar-bg);
   backdrop-filter: blur(var(--glass-sidebar-blur)) saturate(1.3);
-  border: 2px solid var(--glass-sidebar-border);
+  border: none;
   box-shadow:
     var(--glass-sidebar-specular),
     var(--glass-sidebar-shadow);
