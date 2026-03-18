@@ -131,14 +131,13 @@ describe('Pinned Pages API', () => {
   });
 
   describe('GET /api/pages/pinned', () => {
-    it('should return pinned articles with numeric PK as id', async () => {
+    it('should return pinned articles using integer PK as id', async () => {
       mockQueryFn.mockResolvedValueOnce({
         rows: [
           {
-            page_id: 'page-1',
+            page_id: 42,
             pin_order: 0,
             pinned_at: new Date('2025-06-01T00:00:00Z'),
-            numeric_id: 42,
             space_key: 'DEV',
             title: 'Getting Started',
             author: 'Alice',
@@ -165,6 +164,19 @@ describe('Pinned Pages API', () => {
       expect(body.total).toBe(1);
     });
 
+    it('should JOIN on pages.id instead of confluence_id', async () => {
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+      await app.inject({
+        method: 'GET',
+        url: '/api/pages/pinned',
+      });
+
+      const sql = mockQueryFn.mock.calls[0][0] as string;
+      expect(sql).toContain('JOIN pages cp ON cp.id = pp.page_id');
+      expect(sql).not.toContain('cp.confluence_id = pp.page_id');
+    });
+
     it('should return empty list when no pins exist', async () => {
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
 
@@ -183,10 +195,9 @@ describe('Pinned Pages API', () => {
       const longText = 'A'.repeat(500);
       mockQueryFn.mockResolvedValueOnce({
         rows: [{
-          page_id: 'page-1',
+          page_id: 42,
           pin_order: 0,
           pinned_at: new Date(),
-          numeric_id: 42,
           space_key: 'DEV',
           title: 'Long Page',
           author: null,
@@ -207,9 +218,9 @@ describe('Pinned Pages API', () => {
   });
 
   describe('POST /api/pages/:id/pin', () => {
-    it('should pin a page successfully', async () => {
-      // page exists check
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ confluence_id: 'page-1' }], rowCount: 1 });
+    it('should pin a page by integer PK', async () => {
+      // page exists check (uses integer PK)
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 42 }], rowCount: 1 });
       // already-pinned check (not pinned)
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
       // atomic insert (succeeded)
@@ -217,13 +228,21 @@ describe('Pinned Pages API', () => {
 
       const response = await app.inject({
         method: 'POST',
-        url: '/api/pages/page-1/pin',
+        url: '/api/pages/42/pin',
       });
 
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
       expect(body.message).toBe('Page pinned');
-      expect(body.pageId).toBe('page-1');
+      expect(body.pageId).toBe('42');
+
+      // Verify the page existence query uses integer PK
+      const existsQuery = mockQueryFn.mock.calls[0][0] as string;
+      expect(existsQuery).toContain('cp.id = $2');
+      expect(existsQuery).not.toContain('confluence_id');
+
+      // Verify the insert stores the integer PK
+      expect(mockQueryFn.mock.calls[2][1]).toEqual(['test-user-id', 42, 8]);
     });
 
     it('should return 404 when page does not exist', async () => {
@@ -231,15 +250,24 @@ describe('Pinned Pages API', () => {
 
       const response = await app.inject({
         method: 'POST',
-        url: '/api/pages/nonexistent/pin',
+        url: '/api/pages/999/pin',
       });
 
       expect(response.statusCode).toBe(404);
     });
 
+    it('should return 400 for non-numeric page ID', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/not-a-number/pin',
+      });
+
+      expect(response.statusCode).toBe(400);
+    });
+
     it('should return 400 when max pin limit is reached', async () => {
       // page exists
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ confluence_id: 'page-1' }], rowCount: 1 });
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 42 }], rowCount: 1 });
       // already-pinned check (not pinned)
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
       // atomic insert returns 0 rows (count >= MAX_PINS in subquery)
@@ -247,7 +275,7 @@ describe('Pinned Pages API', () => {
 
       const response = await app.inject({
         method: 'POST',
-        url: '/api/pages/page-1/pin',
+        url: '/api/pages/42/pin',
       });
 
       expect(response.statusCode).toBe(400);
@@ -257,13 +285,13 @@ describe('Pinned Pages API', () => {
 
     it('should be idempotent when pinning an already-pinned page', async () => {
       // page exists
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ confluence_id: 'page-1' }], rowCount: 1 });
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 42 }], rowCount: 1 });
       // already-pinned check (already pinned — early return)
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ page_id: 'page-1' }], rowCount: 1 });
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ page_id: 42 }], rowCount: 1 });
 
       const response = await app.inject({
         method: 'POST',
-        url: '/api/pages/page-1/pin',
+        url: '/api/pages/42/pin',
       });
 
       expect(response.statusCode).toBe(200);
@@ -275,30 +303,9 @@ describe('Pinned Pages API', () => {
 
     it('should return 200 when re-pinning an already-pinned page at max capacity', async () => {
       // page exists
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ confluence_id: 'page-1' }], rowCount: 1 });
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 42 }], rowCount: 1 });
       // already-pinned check (already pinned — early return before count check)
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ page_id: 'page-1' }], rowCount: 1 });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/page-1/pin',
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.message).toBe('Page pinned');
-      expect(body.pageId).toBe('page-1');
-      // Only page-exists and already-pinned queries ran, no INSERT attempted
-      expect(mockQueryFn).toHaveBeenCalledTimes(2);
-    });
-
-    it('should pin a page using numeric PK (resolves to confluence_id for storage)', async () => {
-      // page exists check — numeric ID triggers (cp.id = $2 OR cp.confluence_id = $3) lookup
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ confluence_id: 'conf-abc-123' }], rowCount: 1 });
-      // already-pinned check using resolved confluence_id
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-      // atomic insert stores confluence_id
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ page_id: 42 }], rowCount: 1 });
 
       const response = await app.inject({
         method: 'POST',
@@ -307,17 +314,30 @@ describe('Pinned Pages API', () => {
 
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
+      expect(body.message).toBe('Page pinned');
       expect(body.pageId).toBe('42');
+      // Only page-exists and already-pinned queries ran, no INSERT attempted
+      expect(mockQueryFn).toHaveBeenCalledTimes(2);
+    });
 
-      // The already-pinned check should use the resolved confluence_id
-      expect(mockQueryFn.mock.calls[1][1]).toEqual(['test-user-id', 'conf-abc-123']);
-      // The INSERT should store the confluence_id, not the numeric PK
-      expect(mockQueryFn.mock.calls[2][1]).toEqual(['test-user-id', 'conf-abc-123', 8]);
+    it('should filter out soft-deleted pages', async () => {
+      // page exists check returns nothing (page is soft-deleted, excluded by deleted_at IS NULL)
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/42/pin',
+      });
+
+      expect(response.statusCode).toBe(404);
+      // Verify the query includes deleted_at filter
+      const sql = mockQueryFn.mock.calls[0][0] as string;
+      expect(sql).toContain('deleted_at IS NULL');
     });
 
     it('should use atomic INSERT with count subquery to prevent race conditions', async () => {
       // page exists
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ confluence_id: 'page-1' }], rowCount: 1 });
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 42 }], rowCount: 1 });
       // already-pinned check (not pinned)
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
       // atomic insert
@@ -325,30 +345,33 @@ describe('Pinned Pages API', () => {
 
       await app.inject({
         method: 'POST',
-        url: '/api/pages/page-1/pin',
+        url: '/api/pages/42/pin',
       });
 
       // The third call should be the atomic INSERT with subquery count check
       const insertCall = mockQueryFn.mock.calls[2];
       expect(insertCall[0]).toContain('SELECT $1, $2');
       expect(insertCall[0]).toContain('WHERE (SELECT COUNT(*) FROM pinned_pages WHERE user_id = $1) < $3');
-      expect(insertCall[1]).toEqual(['test-user-id', 'page-1', 8]);
+      expect(insertCall[1]).toEqual(['test-user-id', 42, 8]);
     });
   });
 
   describe('DELETE /api/pages/:id/pin', () => {
-    it('should unpin a page successfully', async () => {
+    it('should unpin a page by integer PK', async () => {
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
       const response = await app.inject({
         method: 'DELETE',
-        url: '/api/pages/page-1/pin',
+        url: '/api/pages/42/pin',
       });
 
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
       expect(body.message).toBe('Page unpinned');
-      expect(body.pageId).toBe('page-1');
+      expect(body.pageId).toBe('42');
+
+      // Verify the delete uses integer PK directly (no confluence_id resolution)
+      expect(mockQueryFn.mock.calls[0][1]).toEqual(['test-user-id', 42]);
     });
 
     it('should return 404 when pin does not exist', async () => {
@@ -356,10 +379,19 @@ describe('Pinned Pages API', () => {
 
       const response = await app.inject({
         method: 'DELETE',
-        url: '/api/pages/nonexistent/pin',
+        url: '/api/pages/999/pin',
       });
 
       expect(response.statusCode).toBe(404);
+    });
+
+    it('should return 400 for non-numeric page ID', async () => {
+      const response = await app.inject({
+        method: 'DELETE',
+        url: '/api/pages/not-a-number/pin',
+      });
+
+      expect(response.statusCode).toBe(400);
     });
   });
 
@@ -380,7 +412,7 @@ describe('Pinned Pages API', () => {
 
     it('should pass the correct userId to pin insert', async () => {
       // page exists
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ confluence_id: 'page-1' }], rowCount: 1 });
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 42 }], rowCount: 1 });
       // already-pinned check (not pinned)
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
       // atomic insert
@@ -388,7 +420,7 @@ describe('Pinned Pages API', () => {
 
       await app.inject({
         method: 'POST',
-        url: '/api/pages/page-1/pin',
+        url: '/api/pages/42/pin',
       });
 
       // The insert query should use userId
@@ -401,13 +433,13 @@ describe('Pinned Pages API', () => {
     it('should use getUserAccessibleSpaces for page existence check when pinning', async () => {
       // getUserAccessibleSpaces returns ['DEV', 'OPS'] by default
       // page exists in DEV space — should succeed
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ confluence_id: 'page-1' }], rowCount: 1 });
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 42 }], rowCount: 1 });
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
       const response = await app.inject({
         method: 'POST',
-        url: '/api/pages/page-1/pin',
+        url: '/api/pages/42/pin',
       });
 
       expect(response.statusCode).toBe(200);
@@ -425,7 +457,7 @@ describe('Pinned Pages API', () => {
 
       const response = await app.inject({
         method: 'POST',
-        url: '/api/pages/page-1/pin',
+        url: '/api/pages/42/pin',
       });
 
       expect(response.statusCode).toBe(404);
@@ -437,10 +469,47 @@ describe('Pinned Pages API', () => {
 
       const response = await app.inject({
         method: 'POST',
-        url: '/api/pages/page-hr-only/pin',
+        url: '/api/pages/42/pin',
       });
 
       expect(response.statusCode).toBe(404);
+    });
+  });
+
+  describe('Standalone page pinning (no confluence_id)', () => {
+    it('should pin a standalone page that has no confluence_id', async () => {
+      // Standalone page found by integer PK (confluence_id is NULL)
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 100 }], rowCount: 1 });
+      // Not already pinned
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      // Insert succeeds
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/100/pin',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.message).toBe('Page pinned');
+      expect(body.pageId).toBe('100');
+
+      // Verify the insert stores the integer PK
+      expect(mockQueryFn.mock.calls[2][1]).toEqual(['test-user-id', 100, 8]);
+    });
+
+    it('should unpin a standalone page that has no confluence_id', async () => {
+      // Direct delete by integer PK — no confluence_id resolution needed
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+      const response = await app.inject({
+        method: 'DELETE',
+        url: '/api/pages/100/pin',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockQueryFn.mock.calls[0][1]).toEqual(['test-user-id', 100]);
     });
   });
 
