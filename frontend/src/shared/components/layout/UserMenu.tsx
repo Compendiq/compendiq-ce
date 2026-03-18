@@ -1,12 +1,14 @@
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
-import { LogOut, Settings, User } from 'lucide-react';
+import { Keyboard, LogOut, Settings, User } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../../../stores/auth-store';
+import { useKeyboardShortcutsStore } from '../../../stores/keyboard-shortcuts-store';
 import { logoutApi } from '../../lib/api';
 
 export function UserMenu() {
   const user = useAuthStore((s) => s.user);
   const navigate = useNavigate();
+  const openShortcuts = useKeyboardShortcutsStore((s) => s.open);
 
   return (
     <DropdownMenu.Root>
@@ -36,6 +38,14 @@ export function UserMenu() {
           >
             <Settings size={14} />
             Settings
+          </DropdownMenu.Item>
+          <DropdownMenu.Item
+            onSelect={openShortcuts}
+            className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground transition-colors"
+          >
+            <Keyboard size={14} />
+            Keyboard Shortcuts
+            <kbd className="ml-auto rounded border border-border/50 px-1 py-0.5 text-[10px]">?</kbd>
           </DropdownMenu.Item>
           <DropdownMenu.Item
             onSelect={() => void logoutApi()}

@@ -14,14 +14,22 @@ vi.mock('react-router-dom', async () => {
   };
 });
 
-vi.mock('../../stores/auth-store', () => ({
+vi.mock('../../../stores/auth-store', () => ({
   useAuthStore: (selector: (s: Record<string, unknown>) => unknown) =>
     selector({
       user: { username: 'testuser' },
     }),
 }));
 
-vi.mock('../lib/api', () => ({
+const mockOpenShortcuts = vi.fn();
+vi.mock('../../../stores/keyboard-shortcuts-store', () => ({
+  useKeyboardShortcutsStore: (selector: (s: Record<string, unknown>) => unknown) =>
+    selector({
+      open: mockOpenShortcuts,
+    }),
+}));
+
+vi.mock('../../lib/api', () => ({
   logoutApi: (...args: unknown[]) => mockLogoutApi(...args),
 }));
 
@@ -37,6 +45,7 @@ describe('UserMenu', () => {
   beforeEach(() => {
     mockLogoutApi.mockClear();
     mockNavigate.mockClear();
+    mockOpenShortcuts.mockClear();
   });
 
   afterEach(() => {
@@ -90,6 +99,29 @@ describe('UserMenu', () => {
     fireEvent.click(screen.getByText('Settings'));
     await vi.waitFor(() => {
       expect(mockNavigate).toHaveBeenCalledWith('/settings');
+    });
+  });
+
+  it('shows Keyboard Shortcuts item in dropdown', async () => {
+    renderUserMenu();
+    const trigger = screen.getByRole('button');
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' });
+    await vi.waitFor(() => {
+      expect(screen.getByText('Keyboard Shortcuts')).toBeInTheDocument();
+    });
+  });
+
+  it('opens keyboard shortcuts modal when Keyboard Shortcuts is selected', async () => {
+    renderUserMenu();
+    const trigger = screen.getByRole('button');
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' });
+    await vi.waitFor(() => {
+      expect(trigger).toHaveAttribute('data-state', 'open');
+    });
+
+    fireEvent.click(screen.getByText('Keyboard Shortcuts'));
+    await vi.waitFor(() => {
+      expect(mockOpenShortcuts).toHaveBeenCalled();
     });
   });
 

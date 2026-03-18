@@ -30,21 +30,21 @@ describe('useKeyboardShortcuts', () => {
 
   it('fires action when the correct key is pressed', () => {
     const shortcuts: ShortcutDefinition[] = [
-      { key: '[', keys: ['['], description: 'Toggle left', category: 'panels', action: actionFn },
+      { key: ',', keys: [','], description: 'Toggle left', category: 'panels', action: actionFn },
     ];
 
     renderHook(() => useKeyboardShortcuts(shortcuts));
-    fireKey('[');
+    fireKey(',');
     expect(actionFn).toHaveBeenCalledTimes(1);
   });
 
   it('does not fire action for non-matching keys', () => {
     const shortcuts: ShortcutDefinition[] = [
-      { key: '[', keys: ['['], description: 'Toggle left', category: 'panels', action: actionFn },
+      { key: ',', keys: [','], description: 'Toggle left', category: 'panels', action: actionFn },
     ];
 
     renderHook(() => useKeyboardShortcuts(shortcuts));
-    fireKey(']');
+    fireKey('.');
     expect(actionFn).not.toHaveBeenCalled();
   });
 
@@ -83,7 +83,7 @@ describe('useKeyboardShortcuts', () => {
 
   it('suppresses non-modifier shortcuts when target is an input element', () => {
     const shortcuts: ShortcutDefinition[] = [
-      { key: '[', keys: ['['], description: 'Toggle left', category: 'panels', action: actionFn },
+      { key: ',', keys: [','], description: 'Toggle left', category: 'panels', action: actionFn },
     ];
 
     renderHook(() => useKeyboardShortcuts(shortcuts));
@@ -92,7 +92,7 @@ describe('useKeyboardShortcuts', () => {
     const input = document.createElement('input');
     document.body.appendChild(input);
 
-    fireKey('[', {}, input);
+    fireKey(',', {}, input);
     expect(actionFn).not.toHaveBeenCalled();
 
     document.body.removeChild(input);
@@ -116,7 +116,7 @@ describe('useKeyboardShortcuts', () => {
 
   it('suppresses non-modifier shortcuts when target is contentEditable', () => {
     const shortcuts: ShortcutDefinition[] = [
-      { key: '[', keys: ['['], description: 'Toggle left', category: 'panels', action: actionFn },
+      { key: ',', keys: [','], description: 'Toggle left', category: 'panels', action: actionFn },
     ];
 
     renderHook(() => useKeyboardShortcuts(shortcuts));
@@ -125,7 +125,7 @@ describe('useKeyboardShortcuts', () => {
     div.contentEditable = 'true';
     document.body.appendChild(div);
 
-    fireKey('[', {}, div);
+    fireKey(',', {}, div);
     expect(actionFn).not.toHaveBeenCalled();
 
     document.body.removeChild(div);
@@ -149,23 +149,23 @@ describe('useKeyboardShortcuts', () => {
 
   it('does not fire non-modifier shortcut when Ctrl is held', () => {
     const shortcuts: ShortcutDefinition[] = [
-      { key: '[', keys: ['['], description: 'Toggle left', category: 'panels', action: actionFn },
+      { key: ',', keys: [','], description: 'Toggle left', category: 'panels', action: actionFn },
     ];
 
     renderHook(() => useKeyboardShortcuts(shortcuts));
 
-    fireKey('[', { ctrlKey: true });
+    fireKey(',', { ctrlKey: true });
     expect(actionFn).not.toHaveBeenCalled();
   });
 
   it('does not fire non-modifier shortcut when Alt is held', () => {
     const shortcuts: ShortcutDefinition[] = [
-      { key: '[', keys: ['['], description: 'Toggle left', category: 'panels', action: actionFn },
+      { key: ',', keys: [','], description: 'Toggle left', category: 'panels', action: actionFn },
     ];
 
     renderHook(() => useKeyboardShortcuts(shortcuts));
 
-    fireKey('[', { altKey: true });
+    fireKey(',', { altKey: true });
     expect(actionFn).not.toHaveBeenCalled();
   });
 
@@ -182,13 +182,13 @@ describe('useKeyboardShortcuts', () => {
 
   it('cleans up event listener on unmount', () => {
     const shortcuts: ShortcutDefinition[] = [
-      { key: '[', keys: ['['], description: 'Toggle left', category: 'panels', action: actionFn },
+      { key: ',', keys: [','], description: 'Toggle left', category: 'panels', action: actionFn },
     ];
 
     const { unmount } = renderHook(() => useKeyboardShortcuts(shortcuts));
     unmount();
 
-    fireKey('[');
+    fireKey(',');
     expect(actionFn).not.toHaveBeenCalled();
   });
 
@@ -227,7 +227,7 @@ describe('useKeyboardShortcuts', () => {
 
   it('does not fire when an empty shortcuts array is passed', () => {
     renderHook(() => useKeyboardShortcuts([]));
-    fireKey('[');
+    fireKey(',');
     fireKey('k', { ctrlKey: true });
     // No error should be thrown, no action called
     expect(actionFn).not.toHaveBeenCalled();

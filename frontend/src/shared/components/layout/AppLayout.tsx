@@ -48,15 +48,15 @@ export function AppLayout({ children }: { children: ReactNode }) {
   // Global keyboard shortcuts
   const shortcuts = useMemo<ShortcutDefinition[]>(() => [
     {
-      key: '[',
-      keys: ['['],
+      key: ',',
+      keys: [','],
       description: 'Toggle left sidebar',
       category: 'panels',
       action: toggleTreeSidebar,
     },
     {
-      key: ']',
-      keys: [']'],
+      key: '.',
+      keys: ['.'],
       description: 'Toggle right panel (article outline)',
       category: 'panels',
       action: toggleArticleSidebar,
@@ -159,10 +159,11 @@ export function AppLayout({ children }: { children: ReactNode }) {
         {/* Sidebar toggle — visible on md+ screens */}
         <button
           onClick={toggleTreeSidebar}
-          className="hidden md:flex items-center rounded-lg px-1.5 py-1.5 text-muted-foreground hover:bg-foreground/5 hover:text-foreground transition-colors mr-3"
+          className="hidden md:flex items-center gap-1 rounded-lg px-1.5 py-1.5 text-muted-foreground hover:bg-foreground/5 hover:text-foreground transition-colors mr-3"
           aria-label={treeSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
         >
           {treeSidebarCollapsed ? <PanelLeft size={16} /> : <PanelLeftClose size={16} />}
+          <kbd className="hidden lg:inline rounded border border-border/50 px-1 py-0.5 text-[10px]">,</kbd>
         </button>
 
         {/* Breadcrumb — gets full width now that nav pills moved to sidebar */}

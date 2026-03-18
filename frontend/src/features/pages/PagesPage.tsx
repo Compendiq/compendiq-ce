@@ -167,6 +167,9 @@ export function PagesPage() {
           >
             <Plus size={16} />
             New Page
+            <kbd className="hidden rounded border border-primary-foreground/30 px-1 py-0.5 text-[10px] font-normal sm:inline">
+              {navigator.platform?.includes('Mac') ? '\u2318' : 'Ctrl'}N
+            </kbd>
           </button>
         </div>
       </div>

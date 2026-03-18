@@ -27,8 +27,8 @@ function getShortcutGroups(): ShortcutGroup[] {
     {
       title: 'Panels',
       shortcuts: [
-        { keys: '[', description: 'Toggle left sidebar' },
-        { keys: ']', description: 'Toggle right panel (article outline)' },
+        { keys: ',', description: 'Toggle left sidebar' },
+        { keys: '.', description: 'Toggle right panel (article outline)' },
         { keys: '\\', description: 'Toggle both panels (zen mode)' },
       ],
     },
