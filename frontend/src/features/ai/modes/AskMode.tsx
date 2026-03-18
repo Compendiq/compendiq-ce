@@ -26,7 +26,7 @@ export function AskModeInput() {
 
     await runStream(
       '/llm/ask',
-      { question, model, conversationId, pageId: pageId ?? undefined, includeSubPages },
+      { question, model, conversationId: conversationId ?? undefined, pageId: pageId ?? undefined, includeSubPages },
       {
         onComplete: () => {
           // Sources are attached by runStream automatically

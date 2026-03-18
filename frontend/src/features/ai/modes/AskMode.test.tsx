@@ -182,6 +182,52 @@ describe('AskMode', () => {
     });
   });
 
+  it('sends conversationId as undefined (not null) when no conversation is active', async () => {
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path === '/settings') {
+        return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+      }
+      if (path.startsWith('/ollama/models')) {
+        return Promise.resolve([{ name: 'llama3' }]);
+      }
+      if (path === '/llm/conversations') {
+        return Promise.resolve([]);
+      }
+      return Promise.resolve([]);
+    });
+
+    async function* fakeStream() {
+      yield { content: 'Answer' };
+    }
+    streamSSEMock.mockReturnValue(fakeStream());
+
+    render(<AskModeInput />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      // Let AiProvider settle
+    });
+
+    const input = screen.getByPlaceholderText('Ask a question...');
+    fireEvent.change(input, { target: { value: 'test question' } });
+
+    await waitFor(() => {
+      const btn = screen.getByRole('button');
+      expect(btn).not.toBeDisabled();
+    });
+
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() => {
+      expect(streamSSEMock).toHaveBeenCalled();
+    });
+
+    // Verify the body passed to streamSSE does NOT contain null for conversationId.
+    // The backend Zod schema accepts undefined but rejects null.
+    const callBody = streamSSEMock.mock.calls[0][1];
+    expect(callBody.conversationId).toBeUndefined();
+    expect(callBody).not.toHaveProperty('conversationId', null);
+  });
+
   it('clears input after submission', async () => {
     apiFetchMock.mockImplementation((path: string) => {
       if (path === '/settings') {
