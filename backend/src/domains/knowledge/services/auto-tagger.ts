@@ -123,23 +123,25 @@ export function parseTagResponse(response: string): AllowedTag[] {
 }
 
 /**
- * Auto-tag a page from the database by its confluence ID.
+ * Auto-tag a page from the database by its ID.
+ * Accepts integer PK (numeric string) or confluence_id (backward compat).
  */
 export async function autoTagPage(
   userId: string,
-  confluenceId: string,
+  pageId: string,
   model: string,
 ): Promise<{ suggestedTags: AllowedTag[]; existingLabels: string[] }> {
+  const isNumericId = /^\d+$/.test(pageId);
   const result = await query<{
     body_html: string;
     labels: string[];
   }>(
-    'SELECT body_html, labels FROM pages WHERE confluence_id = $1 AND deleted_at IS NULL',
-    [confluenceId],
+    `SELECT body_html, labels FROM pages WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'} AND deleted_at IS NULL`,
+    [isNumericId ? parseInt(pageId, 10) : pageId],
   );
 
   if (result.rows.length === 0) {
-    throw new Error(`Page not found: ${confluenceId}`);
+    throw new Error(`Page not found: ${pageId}`);
   }
 
   const { body_html, labels } = result.rows[0];
@@ -156,42 +158,47 @@ export async function autoTagPage(
 }
 
 /**
- * Apply tags to a page's pages labels column.
+ * Apply tags to a page's labels column.
+ * Accepts integer PK (numeric string) or confluence_id (backward compat).
  */
 export async function applyTags(
   userId: string,
-  confluenceId: string,
+  pageId: string,
   tags: AllowedTag[],
 ): Promise<string[]> {
   // Merge with existing labels (avoid duplicates)
-  const existing = await query<{ labels: string[] }>(
-    'SELECT labels FROM pages WHERE confluence_id = $1',
-    [confluenceId],
+  const isNumericId = /^\d+$/.test(pageId);
+  const existing = await query<{ id: number; confluence_id: string | null; labels: string[] }>(
+    `SELECT id, confluence_id, labels FROM pages WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'} AND deleted_at IS NULL`,
+    [isNumericId ? parseInt(pageId, 10) : pageId],
   );
 
   if (existing.rows.length === 0) {
-    throw new Error(`Page not found: ${confluenceId}`);
+    throw new Error(`Page not found: ${pageId}`);
   }
 
-  const existingLabels = existing.rows[0].labels ?? [];
+  const page = existing.rows[0];
+  const existingLabels = page.labels ?? [];
   const mergedLabels = Array.from(new Set([...existingLabels, ...tags]));
 
   await query(
-    'UPDATE pages SET labels = $2 WHERE confluence_id = $1',
-    [confluenceId, mergedLabels],
+    'UPDATE pages SET labels = $2 WHERE id = $1',
+    [page.id, mergedLabels],
   );
 
-  // Sync labels to Confluence
-  try {
-    const client = await getClientForUser(userId);
-    if (client) {
-      const newTags = tags.filter((t) => !existingLabels.includes(t));
-      if (newTags.length > 0) {
-        await client.addLabels(confluenceId, newTags);
+  // Sync labels to Confluence (requires the Confluence page ID)
+  if (page.confluence_id) {
+    try {
+      const client = await getClientForUser(userId);
+      if (client) {
+        const newTags = tags.filter((t) => !existingLabels.includes(t));
+        if (newTags.length > 0) {
+          await client.addLabels(page.confluence_id, newTags);
+        }
       }
+    } catch (err) {
+      logger.error({ err, pageId: page.id, confluenceId: page.confluence_id, userId }, 'Failed to sync labels to Confluence');
     }
-  } catch (err) {
-    logger.error({ err, confluenceId, userId }, 'Failed to sync labels to Confluence');
   }
 
   return mergedLabels;
@@ -205,10 +212,10 @@ export async function autoTagAllPages(
   model: string,
 ): Promise<{ tagged: number; errors: number }> {
   const pages = await query<{
-    confluence_id: string;
+    id: number;
     body_html: string;
   }>(
-    `SELECT cp.confluence_id, cp.body_html
+    `SELECT cp.id, cp.body_html
      FROM pages cp
      WHERE cp.space_key = ANY($1::text[])
        AND cp.deleted_at IS NULL
@@ -224,11 +231,11 @@ export async function autoTagAllPages(
     try {
       const suggestedTags = await autoTagContent(userId, model, page.body_html, { isHtml: true });
       if (suggestedTags.length > 0) {
-        await applyTags(userId, page.confluence_id, suggestedTags);
+        await applyTags(userId, String(page.id), suggestedTags);
         tagged++;
       }
     } catch (err) {
-      logger.error({ err, confluenceId: page.confluence_id }, 'Failed to auto-tag page');
+      logger.error({ err, pageId: page.id }, 'Failed to auto-tag page');
       errors++;
     }
   }

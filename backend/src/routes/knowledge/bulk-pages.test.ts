@@ -138,10 +138,12 @@ describe('Bulk Pages Routes (Parallelized)', () => {
     vi.clearAllMocks();
     mockConfluenceToHtml.mockReturnValue('<p>content</p>');
     // Default: batch ownership query returns both pages
+    // Note: confluence_id matches the IDs sent by delete/sync tests ('page-1', 'page-2')
+    // Tag tests override this default with their own mocks using integer PKs
     mockQueryFn.mockResolvedValue({
       rows: [
-        { confluence_id: 'page-1', space_key: 'OPS', labels: ['existing-tag'] },
-        { confluence_id: 'page-2', space_key: 'ENG', labels: ['existing-tag'] },
+        { id: 1, confluence_id: 'page-1', space_key: 'OPS', labels: ['existing-tag'] },
+        { id: 2, confluence_id: 'page-2', space_key: 'ENG', labels: ['existing-tag'] },
       ],
       rowCount: 2,
     });
@@ -450,9 +452,9 @@ describe('Bulk Pages Routes (Parallelized)', () => {
 
   describe('POST /api/pages/bulk/tag', () => {
     it('should add tags to multiple pages', async () => {
-      // Override default mock to return only page-1 for this single-ID test
+      // Override default mock to return only page 1 for this single-ID test
       mockQueryFn.mockResolvedValueOnce({
-        rows: [{ confluence_id: 'page-1', labels: ['existing-tag'] }],
+        rows: [{ id: 1, confluence_id: 'conf-1', labels: ['existing-tag'] }],
         rowCount: 1,
       });
 
@@ -460,7 +462,7 @@ describe('Bulk Pages Routes (Parallelized)', () => {
         method: 'POST',
         url: '/api/pages/bulk/tag',
         payload: {
-          ids: ['page-1'],
+          ids: ['1'],
           addTags: ['new-tag-1', 'new-tag-2'],
         },
       });
@@ -471,9 +473,9 @@ describe('Bulk Pages Routes (Parallelized)', () => {
     });
 
     it('should remove tags from multiple pages', async () => {
-      // Override default mock to return only page-1 for this single-ID test
+      // Override default mock to return only page 1 for this single-ID test
       mockQueryFn.mockResolvedValueOnce({
-        rows: [{ confluence_id: 'page-1', labels: ['existing-tag'] }],
+        rows: [{ id: 1, confluence_id: 'conf-1', labels: ['existing-tag'] }],
         rowCount: 1,
       });
 
@@ -481,7 +483,7 @@ describe('Bulk Pages Routes (Parallelized)', () => {
         method: 'POST',
         url: '/api/pages/bulk/tag',
         payload: {
-          ids: ['page-1'],
+          ids: ['1'],
           removeTags: ['existing-tag'],
         },
       });
@@ -513,7 +515,7 @@ describe('Bulk Pages Routes (Parallelized)', () => {
 
     it('should sync added tags to Confluence', async () => {
       mockQueryFn.mockResolvedValueOnce({
-        rows: [{ confluence_id: 'page-1', labels: ['existing-tag'] }],
+        rows: [{ id: 1, confluence_id: 'conf-1', labels: ['existing-tag'] }],
         rowCount: 1,
       });
 
@@ -521,19 +523,19 @@ describe('Bulk Pages Routes (Parallelized)', () => {
         method: 'POST',
         url: '/api/pages/bulk/tag',
         payload: {
-          ids: ['page-1'],
+          ids: ['1'],
           addTags: ['new-tag'],
         },
       });
 
       expect(response.statusCode).toBe(200);
       const client = await vi.mocked(getClientForUser).mock.results[0].value;
-      expect(client.addLabels).toHaveBeenCalledWith('page-1', ['new-tag']);
+      expect(client.addLabels).toHaveBeenCalledWith('conf-1', ['new-tag']);
     });
 
     it('should sync removed tags to Confluence', async () => {
       mockQueryFn.mockResolvedValueOnce({
-        rows: [{ confluence_id: 'page-1', labels: ['existing-tag'] }],
+        rows: [{ id: 1, confluence_id: 'conf-1', labels: ['existing-tag'] }],
         rowCount: 1,
       });
 
@@ -541,19 +543,19 @@ describe('Bulk Pages Routes (Parallelized)', () => {
         method: 'POST',
         url: '/api/pages/bulk/tag',
         payload: {
-          ids: ['page-1'],
+          ids: ['1'],
           removeTags: ['existing-tag'],
         },
       });
 
       expect(response.statusCode).toBe(200);
       const client = await vi.mocked(getClientForUser).mock.results[0].value;
-      expect(client.removeLabel).toHaveBeenCalledWith('page-1', 'existing-tag');
+      expect(client.removeLabel).toHaveBeenCalledWith('conf-1', 'existing-tag');
     });
 
     it('should use batch label fetch with ANY()', async () => {
       mockQueryFn.mockResolvedValueOnce({
-        rows: [{ confluence_id: 'page-1', labels: ['existing-tag'] }],
+        rows: [{ id: 1, confluence_id: 'conf-1', labels: ['existing-tag'] }],
         rowCount: 1,
       });
 
@@ -561,21 +563,21 @@ describe('Bulk Pages Routes (Parallelized)', () => {
         method: 'POST',
         url: '/api/pages/bulk/tag',
         payload: {
-          ids: ['page-1'],
+          ids: ['1'],
           addTags: ['new-tag'],
         },
       });
 
-      // First query should be the batch label fetch
+      // First query should be the batch label fetch using integer PK
       const firstCall = mockQueryFn.mock.calls[0];
-      expect(firstCall[0]).toContain('ANY($2)');
+      expect(firstCall[0]).toContain('ANY($2');
       expect(firstCall[0]).toContain('labels');
     });
 
     it('should report not-found pages in tag operation', async () => {
-      // Batch query returns only page-1 (page-999 not found)
+      // Batch query returns only page 1 (page 999 not found)
       mockQueryFn.mockResolvedValueOnce({
-        rows: [{ confluence_id: 'page-1', labels: ['existing-tag'] }],
+        rows: [{ id: 1, confluence_id: 'conf-1', labels: ['existing-tag'] }],
         rowCount: 1,
       });
 
@@ -583,7 +585,7 @@ describe('Bulk Pages Routes (Parallelized)', () => {
         method: 'POST',
         url: '/api/pages/bulk/tag',
         payload: {
-          ids: ['page-1', 'page-999'],
+          ids: ['1', '999'],
           addTags: ['new-tag'],
         },
       });
@@ -591,8 +593,38 @@ describe('Bulk Pages Routes (Parallelized)', () => {
       const body = JSON.parse(response.body);
       expect(body.succeeded).toBe(1);
       expect(body.failed).toBe(1);
-      expect(body.errors[0]).toContain('page-999');
+      expect(body.errors[0]).toContain('999');
       expect(body.errors[0]).toContain('not found');
+    });
+
+    it('should handle standalone pages (no confluence_id) without Confluence sync (#442)', async () => {
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ id: 50, confluence_id: null, labels: [] }],
+        rowCount: 1,
+      });
+      // Mock UPDATE query
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/tag',
+        payload: {
+          ids: ['50'],
+          addTags: ['standalone-tag'],
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.succeeded).toBe(1);
+      expect(body.failed).toBe(0);
+
+      // Verify UPDATE used integer PK
+      const updateCall = mockQueryFn.mock.calls.find(
+        (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('UPDATE pages SET labels'),
+      );
+      expect(updateCall).toBeDefined();
+      expect(updateCall![0]).toContain('WHERE id = $1');
     });
   });
 });

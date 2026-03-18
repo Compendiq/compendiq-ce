@@ -117,7 +117,8 @@ describe('PUT /api/pages/:id/labels', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockQueryFn.mockResolvedValue({ rows: [{ labels: ['existing-tag'] }], rowCount: 1 });
+    // Mock returns integer PK + confluence_id (required after #442 fix)
+    mockQueryFn.mockResolvedValue({ rows: [{ id: 1, confluence_id: 'page-1', labels: ['existing-tag'] }], rowCount: 1 });
   });
 
   it('should add labels to a page', async () => {

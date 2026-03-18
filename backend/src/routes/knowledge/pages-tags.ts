@@ -83,17 +83,19 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.badRequest('At least one of addLabels or removeLabels must be provided');
     }
 
-    // Fetch existing labels
-    const existing = await query<{ labels: string[] }>(
-      'SELECT labels FROM pages WHERE confluence_id = $1',
-      [id],
+    // Fetch existing labels — use integer PK for numeric IDs, confluence_id for strings
+    const isNumericId = /^\d+$/.test(id);
+    const existing = await query<{ id: number; confluence_id: string | null; labels: string[] }>(
+      `SELECT id, confluence_id, labels FROM pages WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'} AND deleted_at IS NULL`,
+      [isNumericId ? parseInt(id, 10) : id],
     );
 
     if (existing.rows.length === 0) {
       throw fastify.httpErrors.notFound('Page not found');
     }
 
-    let labels = existing.rows[0].labels || [];
+    const page = existing.rows[0];
+    let labels = page.labels || [];
 
     // Remove labels
     if (labelsToRemove.length > 0) {
@@ -111,22 +113,24 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
     }
 
     await query(
-      'UPDATE pages SET labels = $2 WHERE confluence_id = $1',
-      [id, labels],
+      'UPDATE pages SET labels = $2 WHERE id = $1',
+      [page.id, labels],
     );
 
-    // Sync to Confluence
-    const client = await getClientForUser(userId);
-    if (client) {
-      try {
-        if (labelsToAdd.length > 0) {
-          await client.addLabels(id, labelsToAdd);
+    // Sync to Confluence (requires the Confluence page ID, not the integer PK)
+    if (page.confluence_id) {
+      const client = await getClientForUser(userId);
+      if (client) {
+        try {
+          if (labelsToAdd.length > 0) {
+            await client.addLabels(page.confluence_id, labelsToAdd);
+          }
+          for (const label of labelsToRemove) {
+            await client.removeLabel(page.confluence_id, label);
+          }
+        } catch (err) {
+          logger.error({ err, pageId: page.id, confluenceId: page.confluence_id, userId }, 'Failed to sync labels to Confluence');
         }
-        for (const label of labelsToRemove) {
-          await client.removeLabel(id, label);
-        }
-      } catch (err) {
-        logger.error({ err, confluenceId: id, userId }, 'Failed to sync labels to Confluence');
       }
     }
 

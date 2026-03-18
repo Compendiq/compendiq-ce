@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
-import { parseTagResponse, ALLOWED_TAGS, autoTagContent } from './auto-tagger.js';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { parseTagResponse, ALLOWED_TAGS, autoTagContent, autoTagPage, applyTags } from './auto-tagger.js';
 
 // Mock llm-provider to avoid real API calls (provider-aware resolution)
 const mockProviderChat = vi.fn();
@@ -17,6 +17,22 @@ vi.mock('../../../core/utils/sanitize-llm-input.js', () => ({
 
 vi.mock('../../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
+}));
+
+const mockQueryFn = vi.fn();
+vi.mock('../../../core/db/postgres.js', () => ({
+  query: (...args: unknown[]) => mockQueryFn(...args),
+}));
+
+vi.mock('../../confluence/services/sync-service.js', () => ({
+  getClientForUser: vi.fn().mockResolvedValue({
+    addLabels: vi.fn().mockResolvedValue(undefined),
+    removeLabel: vi.fn().mockResolvedValue(undefined),
+  }),
+}));
+
+vi.mock('../../../core/services/rbac-service.js', () => ({
+  getUserAccessibleSpaces: vi.fn().mockResolvedValue(['DEV', 'OPS']),
 }));
 
 describe('AutoTagger', () => {
@@ -168,6 +184,119 @@ describe('AutoTagger', () => {
         expect(cause).toBe(cbError);
         expect(cause.name).toBe('CircuitBreakerOpenError');
       }
+    });
+  });
+
+  describe('autoTagPage (#442 — integer PK fix)', () => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it('should use integer PK when given a numeric string id', async () => {
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ body_html: '<p>test content</p>', labels: [] }],
+        rowCount: 1,
+      });
+      mockProviderChat.mockResolvedValueOnce('["architecture"]');
+
+      const result = await autoTagPage('test-user-id', '42', 'qwen3:32b');
+      expect(result.suggestedTags).toEqual(['architecture']);
+
+      // Verify query used id = $1 with integer value
+      const selectCall = mockQueryFn.mock.calls[0];
+      expect(selectCall[0]).toContain('id = $1');
+      expect(selectCall[1]).toEqual([42]);
+    });
+
+    it('should use confluence_id when given a non-numeric string id', async () => {
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ body_html: '<p>test content</p>', labels: [] }],
+        rowCount: 1,
+      });
+      mockProviderChat.mockResolvedValueOnce('["api"]');
+
+      const result = await autoTagPage('test-user-id', 'conf-abc', 'qwen3:32b');
+      expect(result.suggestedTags).toEqual(['api']);
+
+      // Verify query used confluence_id = $1 with string value
+      const selectCall = mockQueryFn.mock.calls[0];
+      expect(selectCall[0]).toContain('confluence_id = $1');
+      expect(selectCall[1]).toEqual(['conf-abc']);
+    });
+
+    it('should throw when page not found', async () => {
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+      await expect(autoTagPage('test-user-id', '999', 'qwen3:32b'))
+        .rejects.toThrow('Page not found: 999');
+    });
+  });
+
+  describe('applyTags (#442 — integer PK fix)', () => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it('should use integer PK for SELECT and UPDATE when given numeric id', async () => {
+      // Mock SELECT
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ id: 42, confluence_id: 'conf-42', labels: ['existing'] }],
+        rowCount: 1,
+      });
+      // Mock UPDATE
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+      const result = await applyTags('test-user-id', '42', ['architecture']);
+      expect(result).toContain('existing');
+      expect(result).toContain('architecture');
+
+      // Verify SELECT used id = $1 with integer value
+      const selectCall = mockQueryFn.mock.calls[0];
+      expect(selectCall[0]).toContain('id = $1');
+      expect(selectCall[1]).toEqual([42]);
+
+      // Verify UPDATE used WHERE id = $1
+      const updateCall = mockQueryFn.mock.calls[1];
+      expect(updateCall[0]).toContain('WHERE id = $1');
+      expect(updateCall[1][0]).toBe(42);
+    });
+
+    it('should work for standalone pages with no confluence_id (no Confluence sync)', async () => {
+      // Standalone page: confluence_id is null
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ id: 99, confluence_id: null, labels: [] }],
+        rowCount: 1,
+      });
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+      const result = await applyTags('test-user-id', '99', ['security']);
+      expect(result).toEqual(['security']);
+
+      // Should NOT attempt Confluence sync (getClientForUser not called)
+      const { getClientForUser } = await import('../../confluence/services/sync-service.js');
+      expect(getClientForUser).not.toHaveBeenCalled();
+    });
+
+    it('should sync labels to Confluence using confluence_id, not integer PK', async () => {
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ id: 42, confluence_id: 'conf-42', labels: [] }],
+        rowCount: 1,
+      });
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+      await applyTags('test-user-id', '42', ['deployment']);
+
+      const { getClientForUser } = await import('../../confluence/services/sync-service.js');
+      expect(getClientForUser).toHaveBeenCalledWith('test-user-id');
+      const client = await (getClientForUser as ReturnType<typeof vi.fn>).mock.results[0].value;
+      expect(client.addLabels).toHaveBeenCalledWith('conf-42', ['deployment']);
+    });
+
+    it('should throw when page not found', async () => {
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+      await expect(applyTags('test-user-id', '999', ['architecture']))
+        .rejects.toThrow('Page not found: 999');
     });
   });
 });

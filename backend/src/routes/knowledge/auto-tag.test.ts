@@ -116,7 +116,7 @@ describe('POST /api/pages/:id/auto-tag', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockQueryFn.mockResolvedValue({ rows: [{ labels: ['existing'] }], rowCount: 1 });
+    mockQueryFn.mockResolvedValue({ rows: [{ id: 1, confluence_id: 'conf-1', labels: ['existing'] }], rowCount: 1 });
   });
 
   it('should return suggested tags on success', async () => {
@@ -248,5 +248,156 @@ describe('POST /api/pages/:id/auto-tag', () => {
     });
 
     expect(response.statusCode).toBe(400);
+  });
+});
+
+describe('PUT /api/pages/:id/labels (#442 — integer PK fix)', () => {
+  let app: ReturnType<typeof Fastify>;
+
+  beforeAll(async () => {
+    app = Fastify({ logger: false });
+    await app.register(sensible);
+
+    app.setErrorHandler((error, _request, reply) => {
+      if (error instanceof ZodError) {
+        reply.status(400).send({
+          error: 'ValidationError',
+          message: error.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; '),
+          statusCode: 400,
+        });
+        return;
+      }
+      reply.status(error.statusCode ?? 500).send({ error: error.message, statusCode: error.statusCode ?? 500 });
+    });
+
+    app.decorate('authenticate', async (request: { userId: string; username: string; userRole: string }) => {
+      request.userId = 'test-user-id';
+      request.username = 'testuser';
+      request.userRole = 'user';
+    });
+    app.decorate('requireAdmin', async (request: { userId: string; username: string; userRole: string }) => {
+      request.userId = 'test-user-id';
+      request.username = 'testuser';
+      request.userRole = 'admin';
+    });
+    app.decorate('redis', {});
+
+    await app.register(pagesTagRoutes, { prefix: '/api' });
+    await app.ready();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('should add labels using integer PK in the URL', async () => {
+    // Mock SELECT query returning page with integer PK
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 42, confluence_id: 'conf-42', labels: ['existing'] }],
+      rowCount: 1,
+    });
+    // Mock UPDATE query
+    mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/pages/42/labels',
+      payload: { addLabels: ['new-label'] },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.labels).toContain('existing');
+    expect(body.labels).toContain('new-label');
+
+    // Verify SELECT used integer PK (id = $1) not confluence_id
+    const selectCall = mockQueryFn.mock.calls[0];
+    expect(selectCall[0]).toContain('id = $1');
+    expect(selectCall[1]).toEqual([42]);
+
+    // Verify UPDATE used integer PK (WHERE id = $1)
+    const updateCall = mockQueryFn.mock.calls[1];
+    expect(updateCall[0]).toContain('WHERE id = $1');
+    expect(updateCall[1][0]).toBe(42);
+  });
+
+  it('should work for standalone pages with no confluence_id', async () => {
+    // Standalone page: confluence_id is null
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 99, confluence_id: null, labels: [] }],
+      rowCount: 1,
+    });
+    // Mock UPDATE query
+    mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/pages/99/labels',
+      payload: { addLabels: ['standalone-tag'] },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.labels).toContain('standalone-tag');
+
+    // Should NOT attempt to sync to Confluence (no confluence_id)
+    const { getClientForUser: mockGetClient } = await import('../../domains/confluence/services/sync-service.js');
+    expect(mockGetClient).not.toHaveBeenCalled();
+  });
+
+  it('should remove labels from a page using integer PK', async () => {
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 42, confluence_id: 'conf-42', labels: ['tag-a', 'tag-b'] }],
+      rowCount: 1,
+    });
+    mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/pages/42/labels',
+      payload: { removeLabels: ['tag-a'] },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.labels).toEqual(['tag-b']);
+  });
+
+  it('should return 404 when page not found', async () => {
+    mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/pages/999/labels',
+      payload: { addLabels: ['tag'] },
+    });
+
+    expect(response.statusCode).toBe(404);
+  });
+
+  it('should sync labels to Confluence when page has confluence_id', async () => {
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 42, confluence_id: 'conf-42', labels: ['existing'] }],
+      rowCount: 1,
+    });
+    mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/pages/42/labels',
+      payload: { addLabels: ['new-tag'], removeLabels: ['existing'] },
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    // Verify Confluence sync used confluence_id, not integer PK
+    const { getClientForUser: mockGetClient } = await import('../../domains/confluence/services/sync-service.js');
+    const client = await (mockGetClient as ReturnType<typeof vi.fn>).mock.results[0].value;
+    expect(client.addLabels).toHaveBeenCalledWith('conf-42', ['new-tag']);
+    expect(client.removeLabel).toHaveBeenCalledWith('conf-42', 'existing');
   });
 });

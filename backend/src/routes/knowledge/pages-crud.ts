@@ -1188,25 +1188,29 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     const client = await getClientForUser(userId);
 
+    // Parse IDs as integers (frontend sends stringified integer PKs)
+    const numericIds = ids.map((id) => parseInt(id, 10)).filter((n) => !isNaN(n));
+
     // Batch fetch labels: single query with RBAC space-based access control
     const tagSpaces = await getUserAccessibleSpaces(userId);
-    const existing = await query<{ confluence_id: string; labels: string[] }>(
-      `SELECT cp.confluence_id, cp.labels FROM pages cp
+    const existing = await query<{ id: number; confluence_id: string | null; labels: string[] }>(
+      `SELECT cp.id, cp.confluence_id, cp.labels FROM pages cp
        WHERE cp.space_key = ANY($1::text[])
-         AND cp.confluence_id = ANY($2)`,
-      [tagSpaces, ids],
+         AND cp.id = ANY($2::int[])
+         AND cp.deleted_at IS NULL`,
+      [tagSpaces, numericIds],
     );
-    const pageLabelsMap = new Map(existing.rows.map((r) => [r.confluence_id, r.labels || []]));
-    const notFoundIds = ids.filter((id) => !pageLabelsMap.has(id));
+    const pageMap = new Map(existing.rows.map((r) => [String(r.id), { confluenceId: r.confluence_id, labels: r.labels || [] }]));
+    const notFoundIds = ids.filter((id) => !pageMap.has(id));
     const errors: string[] = notFoundIds.map((id) => `Page ${id} not found`);
     let failed = notFoundIds.length;
 
     // Process each owned page: compute new labels, update DB, sync to Confluence
     const bulkLimit = pLimit(5);
     const tagResults = await Promise.allSettled(
-      [...pageLabelsMap.entries()].map(([id, currentLabels]) =>
+      [...pageMap.entries()].map(([id, pageInfo]) =>
         bulkLimit(async () => {
-          let labels = [...currentLabels];
+          let labels = [...pageInfo.labels];
 
           // Remove tags
           if (removeTags && removeTags.length > 0) {
@@ -1223,24 +1227,24 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
             labels = [...labelSet];
           }
 
-          await query('UPDATE pages SET labels = $2 WHERE confluence_id = $1', [
-            id,
+          await query('UPDATE pages SET labels = $2 WHERE id = $1', [
+            parseInt(id, 10),
             labels,
           ]);
 
-          // Sync label changes to Confluence
-          if (client) {
+          // Sync label changes to Confluence (requires confluence_id)
+          if (client && pageInfo.confluenceId) {
             try {
               if (addTags && addTags.length > 0) {
-                await client.addLabels(id, addTags);
+                await client.addLabels(pageInfo.confluenceId, addTags);
               }
               if (removeTags && removeTags.length > 0) {
                 for (const label of removeTags) {
-                  await client.removeLabel(id, label);
+                  await client.removeLabel(pageInfo.confluenceId, label);
                 }
               }
             } catch (err) {
-              logger.error({ err, confluenceId: id, userId }, 'Failed to sync labels to Confluence');
+              logger.error({ err, pageId: id, confluenceId: pageInfo.confluenceId, userId }, 'Failed to sync labels to Confluence');
             }
           }
 
@@ -1250,7 +1254,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     );
 
     let succeeded = 0;
-    const ownedIdArray = [...pageLabelsMap.keys()];
+    const ownedIdArray = [...pageMap.keys()];
     for (let i = 0; i < tagResults.length; i++) {
       const result = tagResults[i];
       if (result.status === 'fulfilled') {
