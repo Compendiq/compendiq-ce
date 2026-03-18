@@ -597,6 +597,33 @@ describe('Bulk Pages Routes (Parallelized)', () => {
       expect(body.errors[0]).toContain('not found');
     });
 
+    it('should report non-numeric IDs as not found in bulk tag operation', async () => {
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ id: 1, confluence_id: 'conf-1', labels: ['existing-tag'] }],
+        rowCount: 1,
+      });
+      // Mock UPDATE query
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/tag',
+        payload: {
+          ids: ['1', 'abc', 'not-a-number'],
+          addTags: ['new-tag'],
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      // Non-numeric IDs are filtered out and reported as not found
+      expect(body.succeeded).toBe(1);
+      expect(body.failed).toBe(2);
+      expect(body.errors).toHaveLength(2);
+      expect(body.errors.some((e: string) => e.includes('abc'))).toBe(true);
+      expect(body.errors.some((e: string) => e.includes('not-a-number'))).toBe(true);
+    });
+
     it('should handle standalone pages (no confluence_id) without Confluence sync (#442)', async () => {
       mockQueryFn.mockResolvedValueOnce({
         rows: [{ id: 50, confluence_id: null, labels: [] }],

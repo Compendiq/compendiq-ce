@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { parseTagResponse, ALLOWED_TAGS, autoTagContent, autoTagPage, applyTags } from './auto-tagger.js';
+import { parseTagResponse, ALLOWED_TAGS, autoTagContent, autoTagPage, applyTags, autoTagAllPages } from './auto-tagger.js';
 
 // Mock llm-provider to avoid real API calls (provider-aware resolution)
 const mockProviderChat = vi.fn();
@@ -297,6 +297,47 @@ describe('AutoTagger', () => {
 
       await expect(applyTags('test-user-id', '999', ['architecture']))
         .rejects.toThrow('Page not found: 999');
+    });
+  });
+
+  describe('autoTagAllPages (standalone page inclusion)', () => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it('should include standalone pages (space_key IS NULL) in auto-tag query', async () => {
+      // Mock the SELECT query to return both a Confluence page and a standalone page
+      mockQueryFn
+        .mockResolvedValueOnce({
+          rows: [
+            { id: 1, body_html: '<p>confluence page</p>' },
+            { id: 2, body_html: '<p>standalone page</p>' },
+          ],
+          rowCount: 2,
+        })
+        // Mock applyTags SELECT queries (two pages)
+        .mockResolvedValueOnce({
+          rows: [{ id: 1, confluence_id: 'conf-1', labels: [] }],
+          rowCount: 1,
+        })
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // UPDATE for page 1
+        .mockResolvedValueOnce({
+          rows: [{ id: 2, confluence_id: null, labels: [] }],
+          rowCount: 1,
+        })
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 }); // UPDATE for page 2
+
+      mockProviderChat
+        .mockResolvedValueOnce('["architecture"]')
+        .mockResolvedValueOnce('["deployment"]');
+
+      const result = await autoTagAllPages('test-user-id', 'qwen3:32b');
+      expect(result.tagged).toBe(2);
+      expect(result.errors).toBe(0);
+
+      // Verify the SELECT query includes OR cp.space_key IS NULL
+      const selectCall = mockQueryFn.mock.calls[0];
+      expect(selectCall[0]).toContain('space_key IS NULL');
     });
   });
 });

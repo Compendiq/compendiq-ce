@@ -1189,13 +1189,17 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const client = await getClientForUser(userId);
 
     // Parse IDs as integers (frontend sends stringified integer PKs)
-    const numericIds = ids.map((id) => parseInt(id, 10)).filter((n) => !isNaN(n));
+    const invalidIds = ids.filter((id) => !/^\d+$/.test(id));
+    if (invalidIds.length > 0) {
+      request.log.warn({ invalidIds }, 'Non-numeric page IDs filtered from bulk tag operation');
+    }
+    const numericIds = ids.filter((id) => /^\d+$/.test(id)).map((id) => parseInt(id, 10));
 
     // Batch fetch labels: single query with RBAC space-based access control
     const tagSpaces = await getUserAccessibleSpaces(userId);
     const existing = await query<{ id: number; confluence_id: string | null; labels: string[] }>(
       `SELECT cp.id, cp.confluence_id, cp.labels FROM pages cp
-       WHERE cp.space_key = ANY($1::text[])
+       WHERE (cp.space_key = ANY($1::text[]) OR cp.space_key IS NULL)
          AND cp.id = ANY($2::int[])
          AND cp.deleted_at IS NULL`,
       [tagSpaces, numericIds],

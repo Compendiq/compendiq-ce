@@ -211,13 +211,16 @@ export async function autoTagAllPages(
   userId: string,
   model: string,
 ): Promise<{ tagged: number; errors: number }> {
+  // Include both Confluence pages (filtered by RBAC space access) and
+  // standalone/local pages (space_key IS NULL) so locally-created pages
+  // also get auto-tagged.
   const pages = await query<{
     id: number;
     body_html: string;
   }>(
     `SELECT cp.id, cp.body_html
      FROM pages cp
-     WHERE cp.space_key = ANY($1::text[])
+     WHERE (cp.space_key = ANY($1::text[]) OR cp.space_key IS NULL)
        AND cp.deleted_at IS NULL
        AND (cp.labels IS NULL OR array_length(cp.labels, 1) IS NULL)
        AND cp.body_html IS NOT NULL`,

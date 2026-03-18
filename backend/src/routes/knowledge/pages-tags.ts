@@ -31,7 +31,7 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
       const message = err instanceof Error ? err.message : String(err);
       const cause = err instanceof Error ? err.cause : undefined;
       const causeName = cause instanceof Error ? cause.name : '';
-      request.log.error({ err, confluenceId: id, userId, model }, 'Auto-tag failed');
+      request.log.error({ err, pageId: id, userId, model }, 'Auto-tag failed');
 
       if (message.startsWith('Page not found')) {
         throw fastify.httpErrors.notFound(message);
