@@ -5,7 +5,7 @@ interface Space {
   key: string;
   name: string;
   homepageId: string | null;
-  lastSynced: string;
+  lastSynced: string | null;
   pageCount: number;
 }
 

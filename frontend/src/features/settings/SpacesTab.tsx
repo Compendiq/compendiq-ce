@@ -14,14 +14,14 @@ interface AvailableSpace {
 interface SyncedSpace {
   key: string;
   name: string;
-  lastSynced: string;
+  lastSynced: string | null;
   pageCount: number;
 }
 
 interface SpacesTabProps {
   selectedSpaces?: string[];
   showSpaceHomeContent?: boolean;
-  onSave: (values: Record<string, unknown>) => void;
+  onSave: (values: Record<string, unknown>) => Promise<unknown>;
 }
 
 const EMPTY_SPACES: string[] = [];
@@ -54,8 +54,12 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
   });
 
   const syncMutation = useMutation({
-    mutationFn: () => apiFetch('/sync', { method: 'POST' }),
+    mutationFn: async () => {
+      await onSave({ selectedSpaces: Array.from(selected) });
+      return apiFetch('/sync', { method: 'POST' });
+    },
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings'] });
       queryClient.invalidateQueries({ queryKey: ['spaces'] });
       queryClient.invalidateQueries({ queryKey: ['pages'] });
       toast.success('Sync started');
@@ -75,12 +79,12 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
     });
   };
 
-  const handleSave = () => {
-    onSave({ selectedSpaces: Array.from(selected) });
+  const handleSave = async () => {
+    await onSave({ selectedSpaces: Array.from(selected) });
   };
 
   // Build merged list of spaces
-  const allSpaces = mergeSpaces(availableSpaces ?? [], syncedSpaces ?? []);
+  const allSpaces = mergeSpaces(availableSpaces ?? [], syncedSpaces ?? [], Array.from(selected));
 
   return (
     <div className="space-y-4">
@@ -197,12 +201,12 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
   );
 }
 
-function mergeSpaces(available: AvailableSpace[], synced: SyncedSpace[]) {
+function mergeSpaces(available: AvailableSpace[], synced: SyncedSpace[], selectedKeys: string[]) {
   const syncedMap = new Map(synced.map((s) => [s.key, s]));
   const merged: Array<{
     key: string;
     name: string;
-    lastSynced?: string;
+    lastSynced?: string | null;
     pageCount?: number;
   }> = [];
   const seen = new Set<string>();
@@ -228,7 +232,20 @@ function mergeSpaces(available: AvailableSpace[], synced: SyncedSpace[]) {
         lastSynced: space.lastSynced,
         pageCount: space.pageCount,
       });
+      seen.add(space.key);
     }
+  }
+
+  for (const key of selectedKeys) {
+    if (key.startsWith('_') || seen.has(key)) {
+      continue;
+    }
+
+    merged.push({
+      key,
+      name: key,
+    });
+    seen.add(key);
   }
 
   return merged;

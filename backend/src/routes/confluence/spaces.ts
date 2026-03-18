@@ -47,13 +47,27 @@ export async function spacesRoutes(fastify: FastifyInstance) {
     );
     const counts = new Map(countsResult.rows.map((r) => [r.space_key, parseInt(r.count, 10)]));
 
-    const spaces = result.rows.map((row) => ({
+    const syncedSpaces = result.rows.map((row) => ({
       key: row.space_key,
       name: row.space_name,
       homepageId: row.homepage_numeric_id ? String(row.homepage_numeric_id) : null,
       lastSynced: row.last_synced,
       pageCount: counts.get(row.space_key) ?? 0,
     }));
+
+    const syncedByKey = new Map(syncedSpaces.map((space) => [space.key, space]));
+    const unsyncedSelections = userSpaces
+      .filter((spaceKey) => !syncedByKey.has(spaceKey))
+      .sort((a, b) => a.localeCompare(b))
+      .map((spaceKey) => ({
+        key: spaceKey,
+        name: spaceKey,
+        homepageId: null,
+        lastSynced: null,
+        pageCount: 0,
+      }));
+
+    const spaces = [...syncedSpaces, ...unsyncedSelections];
 
     await cache.set(userId, 'spaces', 'list', spaces);
     return spaces;

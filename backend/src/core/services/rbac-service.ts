@@ -216,18 +216,12 @@ export async function getUserSpaceRole(
  * control. RBAC space access is determined solely by space_role_assignments.
  */
 export async function getUserAccessibleSpaces(userId: string): Promise<string[]> {
-  // System admin gets all spaces
-  if (await isSystemAdmin(userId)) {
-    const allSpaces = await query<{ space_key: string }>(
-      'SELECT DISTINCT space_key FROM pages WHERE deleted_at IS NULL AND space_key IS NOT NULL',
-    );
-    return allSpaces.rows.map((r) => r.space_key);
-  }
-
-  // Check cache
   const cacheKey = spacesAccessCacheKey(userId);
-  const cached = await getCached<string[]>(cacheKey);
-  if (cached !== null) return cached;
+  const admin = await isSystemAdmin(userId);
+  if (!admin) {
+    const cached = await getCached<string[]>(cacheKey);
+    if (cached !== null) return cached;
+  }
 
   // Query RBAC assignments only (direct user + group-based)
   // Guard the ::int cast with a regex check to prevent crash when
@@ -244,7 +238,25 @@ export async function getUserAccessibleSpaces(userId: string): Promise<string[]>
     [userId],
   );
 
-  const spaceKeys = result.rows.map((r) => r.space_key);
+  const assignedSpaces = result.rows.map((r) => r.space_key);
+
+  if (!admin) {
+    await setCache(cacheKey, assignedSpaces);
+    return assignedSpaces;
+  }
+
+  // Admins can access all known synced/local spaces, but must also retain
+  // explicit assignments for newly selected spaces before their first sync.
+  const allSpaces = await query<{ space_key: string }>(
+    'SELECT DISTINCT space_key FROM spaces WHERE space_key IS NOT NULL',
+  );
+  const spaceKeys = Array.from(
+    new Set([
+      ...assignedSpaces,
+      ...allSpaces.rows.map((r) => r.space_key),
+    ]),
+  );
+
   await setCache(cacheKey, spaceKeys);
   return spaceKeys;
 }

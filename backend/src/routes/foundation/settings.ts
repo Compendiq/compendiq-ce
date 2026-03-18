@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { request as undiciRequest } from 'undici';
 import { UpdateSettingsSchema, TestConfluenceSchema } from '@atlasmind/contracts';
 import { query } from '../../core/db/postgres.js';
+import { RedisCache } from '../../core/services/redis-cache.js';
 import { encryptPat, decryptPat } from '../../core/utils/crypto.js';
 import { validateUrl } from '../../core/utils/ssrf-guard.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
@@ -14,6 +15,7 @@ import { confluenceDispatcher } from '../../core/utils/tls-config.js';
 export async function settingsRoutes(fastify: FastifyInstance) {
   // All settings routes require auth
   fastify.addHook('onRequest', fastify.authenticate);
+  const cache = new RedisCache(fastify.redis);
 
   fastify.get('/settings', async (request) => {
     const result = await query<{
@@ -186,6 +188,8 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         }
 
         await invalidateRbacCache(request.userId);
+        await cache.invalidate(request.userId, 'spaces');
+        await cache.invalidate(request.userId, 'pages');
       }
     }
 

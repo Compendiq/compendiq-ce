@@ -186,9 +186,12 @@ describe('RBAC service', () => {
   });
 
   describe('getUserAccessibleSpaces', () => {
-    it('should return all spaces for admin users', async () => {
+    it('should return known spaces plus explicit assignments for admin users', async () => {
       const queryMock = mockQuery as ReturnType<typeof vi.fn>;
       queryMock.mockResolvedValueOnce({ rows: [{ id: 1 }] }); // admin check
+      queryMock.mockResolvedValueOnce({ rows: [
+        { space_key: 'NEWSPACE' },
+      ] });
       queryMock.mockResolvedValueOnce({ rows: [
         { space_key: 'DEV' },
         { space_key: 'OPS' },
@@ -196,7 +199,7 @@ describe('RBAC service', () => {
       ] });
 
       const spaces = await getUserAccessibleSpaces('admin-id');
-      expect(spaces).toEqual(['DEV', 'OPS', 'HR']);
+      expect(spaces).toEqual(['NEWSPACE', 'DEV', 'OPS', 'HR']);
     });
 
     it('should return spaces from RBAC assignments (not user_space_selections)', async () => {
