@@ -78,7 +78,10 @@ if (!verifySsl) {
   logger.warn('LLM_VERIFY_SSL=false - TLS certificate verification is disabled for LLM/Ollama connections');
 }
 
-if (authType === 'bearer' && !bearerToken) {
+// Only warn when the user explicitly set LLM_AUTH_TYPE=bearer but forgot the token.
+// The default is 'bearer' (for authenticated proxies), so we should not warn on
+// every local dev setup that runs Ollama without auth.
+if (process.env.LLM_AUTH_TYPE === 'bearer' && !bearerToken) {
   logger.warn('LLM_AUTH_TYPE=bearer but LLM_BEARER_TOKEN is empty');
 }
 

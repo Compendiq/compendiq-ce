@@ -28,6 +28,7 @@ vi.mock('../../shared/components/article/ArticleViewer', async () => {
       content,
       onHeadingsReady,
       onImageClick,
+      onEditDiagram,
       pageId,
       confluencePageId,
     }: {
@@ -36,6 +37,7 @@ vi.mock('../../shared/components/article/ArticleViewer', async () => {
       content: string;
       onHeadingsReady?: (headings: Array<{ id: string; text: string; level: number }>) => void;
       onImageClick?: (src: string, alt: string) => void;
+      onEditDiagram?: (diagramName: string) => void;
       pageId?: string | null;
       confluencePageId?: string | null;
     }) => {
@@ -50,6 +52,9 @@ vi.mock('../../shared/components/article/ArticleViewer', async () => {
         <div className={className} data-testid="article-viewer" data-confluence-url={confluenceUrl ?? ''} data-page-id={pageId ?? ''} data-confluence-page-id={confluencePageId ?? ''}>
           <button onClick={() => onImageClick?.('/api/attachments/page-1/diagram.png', 'Diagram')}>
             Preview image
+          </button>
+          <button onClick={() => onEditDiagram?.('my-diagram')} data-testid="edit-diagram-trigger">
+            Edit diagram
           </button>
           <div dangerouslySetInnerHTML={{ __html: content }} />
         </div>
@@ -320,5 +325,22 @@ describe('PageViewPage', () => {
     await waitFor(() => {
       expect(useArticleViewStore.getState().editing).toBe(true);
     });
+  });
+
+  it('shows error toast when draw.io attachment fetch returns non-OK status', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(null, { status: 404, statusText: 'Not Found' }),
+    );
+
+    render(<PageViewPage />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByTestId('edit-diagram-trigger'));
+
+    await waitFor(() => {
+      // The draw.io editor should NOT be opened on fetch failure
+      expect(screen.queryByTestId('drawio-editor')).not.toBeInTheDocument();
+    });
+
+    fetchSpy.mockRestore();
   });
 });

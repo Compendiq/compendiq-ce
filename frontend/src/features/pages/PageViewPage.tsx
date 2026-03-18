@@ -216,23 +216,24 @@ export function PageViewPage() {
   const handleEditDiagram = useCallback(async (diagramName: string) => {
     // Fetch the diagram PNG from the attachment cache — draw.io can load PNG+XML data URIs
     if (!id) return;
-    let dataUri = '';
+    let dataUri: string;
     try {
       const { accessToken } = (await import('../../stores/auth-store')).useAuthStore.getState();
       const res = await fetch(`/api/attachments/${encodeURIComponent(id)}/${encodeURIComponent(diagramName)}.png`, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
-      if (res.ok) {
-        const blob = await res.blob();
-        dataUri = await new Promise<string>((resolve) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result as string);
-          reader.readAsDataURL(blob);
-        });
+      if (!res.ok) {
+        throw new Error(`Failed to load diagram: ${res.status}`);
       }
+      const blob = await res.blob();
+      dataUri = await new Promise<string>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.readAsDataURL(blob);
+      });
     } catch (error) {
-      console.error('draw.io edit failed:', error);
       toast.error(`Failed to open draw.io editor: ${error instanceof Error ? error.message : 'Unknown error'}`, { duration: 8000 });
+      return;
     }
     setDrawioXml(dataUri);
     setDrawioEditingDiagram(diagramName);

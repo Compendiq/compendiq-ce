@@ -126,6 +126,49 @@ describe('llm-config', () => {
     expect(isLlmVerifySslEnabled()).toBe(false);
   });
 
+  describe('LLM_AUTH_TYPE startup warning', () => {
+    it('should warn when LLM_AUTH_TYPE is explicitly set to bearer without a token', async () => {
+      vi.stubEnv('LLM_AUTH_TYPE', 'bearer');
+      vi.stubEnv('LLM_BEARER_TOKEN', '');
+      vi.stubEnv('NODE_EXTRA_CA_CERTS', '');
+
+      vi.doMock('fs', () => ({
+        readFileSync: vi.fn().mockImplementation(() => { throw new Error('ENOENT'); }),
+        existsSync: vi.fn().mockReturnValue(false),
+      }));
+      vi.doMock('undici', () => ({
+        Agent: vi.fn(),
+      }));
+
+      const { logger } = await import('./logger.js');
+      await import('./llm-config.js');
+      expect(logger.warn).toHaveBeenCalledWith('LLM_AUTH_TYPE=bearer but LLM_BEARER_TOKEN is empty');
+    });
+
+    it('should NOT warn when LLM_AUTH_TYPE is not set (default bearer without token)', async () => {
+      // Do NOT set LLM_AUTH_TYPE — the default is 'bearer' but the warning
+      // should only fire when the user explicitly configured it.
+      delete process.env.LLM_AUTH_TYPE;
+      vi.stubEnv('LLM_VERIFY_SSL', 'true');
+      vi.stubEnv('LLM_BEARER_TOKEN', '');
+      vi.stubEnv('NODE_EXTRA_CA_CERTS', '');
+
+      vi.doMock('fs', () => ({
+        readFileSync: vi.fn().mockImplementation(() => { throw new Error('ENOENT'); }),
+        existsSync: vi.fn().mockReturnValue(false),
+      }));
+      vi.doMock('undici', () => ({
+        Agent: vi.fn(),
+      }));
+
+      const { logger } = await import('./logger.js');
+      // Clear accumulated calls from previous tests (module-level mock is shared)
+      vi.mocked(logger.warn).mockClear();
+      await import('./llm-config.js');
+      expect(logger.warn).not.toHaveBeenCalledWith('LLM_AUTH_TYPE=bearer but LLM_BEARER_TOKEN is empty');
+    });
+  });
+
   describe('getLlmAuthHeaders', () => {
     it('should return empty object when no auth configured', async () => {
       vi.stubEnv('LLM_AUTH_TYPE', 'none');
