@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Draw.io stage — download and extract static webapp for self-hosted diagram editor
-FROM dhi.io/node:24-alpine3.23-dev AS drawio
+FROM dhi.io/alpine-base:3.23-alpine3.23-dev AS drawio
 ARG DRAWIO_VERSION=29.6.1
 RUN apk add --no-cache curl unzip && \
     curl -fsSL "https://github.com/jgraph/drawio/releases/download/v${DRAWIO_VERSION}/draw.war" -o /tmp/draw.war && \
