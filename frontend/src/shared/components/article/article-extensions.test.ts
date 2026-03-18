@@ -211,6 +211,38 @@ describe('article-extensions', () => {
       expect(parseRules).toBeDefined();
       expect(parseRules).toContainEqual(expect.objectContaining({ tag: 'div.confluence-layout-section' }));
     });
+
+    it('defines data-layout-type attribute', () => {
+      const addAttributes = ConfluenceLayoutSection.config.addAttributes;
+      const attrs = addAttributes?.call({ name: 'confluenceLayoutSection', options: {}, storage: {}, parent: undefined });
+      expect(attrs).toBeDefined();
+      expect(attrs).toHaveProperty('data-layout-type');
+      expect(attrs['data-layout-type'].default).toBeNull();
+    });
+
+    it('parseHTML reads data-layout-type from element', () => {
+      const addAttributes = ConfluenceLayoutSection.config.addAttributes;
+      const attrs = addAttributes?.call({ name: 'confluenceLayoutSection', options: {}, storage: {}, parent: undefined });
+      const layoutTypes = ['two_equal', 'three_equal', 'two_left_sidebar', 'two_right_sidebar', 'single'];
+      for (const layoutType of layoutTypes) {
+        const mockEl = { getAttribute: (name: string) => name === 'data-layout-type' ? layoutType : null } as unknown as HTMLElement;
+        expect(attrs['data-layout-type'].parseHTML(mockEl)).toBe(layoutType);
+      }
+    });
+
+    it('renderHTML emits data-layout-type when present', () => {
+      const addAttributes = ConfluenceLayoutSection.config.addAttributes;
+      const attrs = addAttributes?.call({ name: 'confluenceLayoutSection', options: {}, storage: {}, parent: undefined });
+      const result = attrs['data-layout-type'].renderHTML({ 'data-layout-type': 'two_equal' });
+      expect(result).toEqual({ 'data-layout-type': 'two_equal' });
+    });
+
+    it('renderHTML omits data-layout-type when null', () => {
+      const addAttributes = ConfluenceLayoutSection.config.addAttributes;
+      const attrs = addAttributes?.call({ name: 'confluenceLayoutSection', options: {}, storage: {}, parent: undefined });
+      const result = attrs['data-layout-type'].renderHTML({ 'data-layout-type': null });
+      expect(result).toEqual({});
+    });
   });
 
   describe('ConfluenceLayoutCell', () => {

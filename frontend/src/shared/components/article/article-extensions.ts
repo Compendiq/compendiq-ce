@@ -267,13 +267,27 @@ export const ConfluenceLayout = Node.create({
 
 /**
  * ConfluenceLayoutSection node — preserves Confluence layout section divs.
- * Renders <div class="confluence-layout-section"> elements.
+ * Renders <div class="confluence-layout-section" data-layout-type="..."> elements.
+ * The data-layout-type attribute drives CSS grid column rules.
  */
 export const ConfluenceLayoutSection = Node.create({
   name: 'confluenceLayoutSection',
   group: 'block',
   content: 'block+',
   defining: true,
+
+  addAttributes() {
+    return {
+      'data-layout-type': {
+        default: null,
+        parseHTML: (element: HTMLElement) => element.getAttribute('data-layout-type'),
+        renderHTML: (attributes: Record<string, string>) => {
+          if (!attributes['data-layout-type']) return {};
+          return { 'data-layout-type': attributes['data-layout-type'] };
+        },
+      },
+    };
+  },
 
   parseHTML() {
     return [{ tag: 'div.confluence-layout-section' }];
