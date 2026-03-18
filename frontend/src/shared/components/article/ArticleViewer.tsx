@@ -50,8 +50,10 @@ interface ArticleViewerProps {
   onImageClick?: (src: string, alt: string) => void;
   /** Confluence base URL for draw.io edit links */
   confluenceUrl?: string | null;
-  /** Page ID for Confluence links */
+  /** Internal page ID (integer PK) — used for attachment URLs */
   pageId?: string | null;
+  /** Confluence page ID for "Open in Confluence" / draw.io edit links */
+  confluencePageId?: string | null;
   /** Callback with parsed headings for Table of Contents */
   onHeadingsReady?: (headings: TocHeading[]) => void;
   /** Callback to trigger a manual Confluence sync (e.g. refresh stale diagrams) */
@@ -67,7 +69,8 @@ export function ArticleViewer({
   content,
   onImageClick,
   confluenceUrl,
-  pageId,
+  pageId: _pageId,
+  confluencePageId,
   onHeadingsReady,
   onRequestSync: _onRequestSync,
   onEditDiagram,
@@ -301,23 +304,23 @@ export function ArticleViewer({
     };
   }, [isReady, sanitizedContent, handleImageClick, onImageClick]);
 
-  // Update draw.io edit links with real Confluence URL
+  // Update draw.io edit links with real Confluence URL (uses confluencePageId, not the internal integer PK)
   useEffect(() => {
     const container = containerRef.current;
-    if (!container || !isReady || !confluenceUrl || !pageId) return;
+    if (!container || !isReady || !confluenceUrl || !confluencePageId) return;
 
     const raf = requestAnimationFrame(() => {
       const links = container.querySelectorAll('a.drawio-edit-link');
       links.forEach((link) => {
         const anchor = link as HTMLAnchorElement;
-        anchor.href = `${confluenceUrl}/pages/viewpage.action?pageId=${encodeURIComponent(pageId)}`;
+        anchor.href = `${confluenceUrl}/pages/viewpage.action?pageId=${encodeURIComponent(confluencePageId)}`;
         anchor.target = '_blank';
         anchor.rel = 'noreferrer';
       });
     });
 
     return () => cancelAnimationFrame(raf);
-  }, [isReady, confluenceUrl, pageId]);
+  }, [isReady, confluenceUrl, confluencePageId]);
 
   // Add inline "Edit Diagram" overlay buttons on draw.io containers
   useEffect(() => {

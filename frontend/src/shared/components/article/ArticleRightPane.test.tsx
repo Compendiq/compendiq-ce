@@ -22,6 +22,7 @@ vi.mock('react-router-dom', async () => {
 
 const mockPage = {
   id: 'page-1',
+  confluenceId: '98765432',
   title: 'Engineering Handbook',
   spaceKey: 'ENG',
   bodyHtml: '<h1>Intro</h1>',
@@ -49,8 +50,10 @@ const mockPage = {
   qualityError: null,
 };
 
+let currentMockPage: typeof mockPage | (typeof mockPage & { confluenceId: null }) = mockPage;
+
 vi.mock('../../hooks/use-pages', () => ({
-  usePage: () => ({ data: mockPage, isLoading: false }),
+  usePage: () => ({ data: currentMockPage, isLoading: false }),
   useDeletePage: () => ({ mutateAsync: mockDeletePage }),
   usePinnedPages: () => ({ data: { items: [] }, isLoading: false }),
   usePinPage: () => ({ mutate: mockPinPage }),
@@ -101,6 +104,7 @@ function createWrapper() {
 
 describe('ArticleRightPane', () => {
   beforeEach(() => {
+    currentMockPage = mockPage;
     mockNavigate.mockReset();
     mockDeletePage.mockReset().mockResolvedValue(undefined);
     mockPinPage.mockReset();
@@ -202,5 +206,25 @@ describe('ArticleRightPane', () => {
 
     expect(screen.getByTestId('quality-score-badge')).toBeInTheDocument();
     expect(screen.getByTestId('quality-score-badge')).toHaveTextContent('85');
+  });
+
+  it('uses confluenceId (not internal id) in the "Open in Confluence" link', () => {
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    const link = screen.getByText('Open in Confluence').closest('a');
+    expect(link).toBeInTheDocument();
+    // Should use confluenceId '98765432', not the internal id 'page-1'
+    expect(link).toHaveAttribute(
+      'href',
+      'https://confluence.example.com/pages/viewpage.action?pageId=98765432',
+    );
+  });
+
+  it('hides the "Open in Confluence" link when confluenceId is null', () => {
+    currentMockPage = { ...mockPage, confluenceId: null };
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    expect(screen.queryByText('Open in Confluence')).not.toBeInTheDocument();
   });
 });

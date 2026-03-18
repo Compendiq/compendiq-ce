@@ -18,7 +18,7 @@ vi.mock('react-router-dom', async () => {
   };
 });
 
-vi.mock('../../shared/components/ArticleViewer', async () => {
+vi.mock('../../shared/components/article/ArticleViewer', async () => {
   const React = await vi.importActual<typeof import('react')>('react');
 
   return {
@@ -29,6 +29,7 @@ vi.mock('../../shared/components/ArticleViewer', async () => {
       onHeadingsReady,
       onImageClick,
       pageId,
+      confluencePageId,
     }: {
       className?: string;
       confluenceUrl?: string | null;
@@ -36,6 +37,7 @@ vi.mock('../../shared/components/ArticleViewer', async () => {
       onHeadingsReady?: (headings: Array<{ id: string; text: string; level: number }>) => void;
       onImageClick?: (src: string, alt: string) => void;
       pageId?: string | null;
+      confluencePageId?: string | null;
     }) => {
       React.useEffect(() => {
         onHeadingsReady?.([
@@ -45,7 +47,7 @@ vi.mock('../../shared/components/ArticleViewer', async () => {
       }, [onHeadingsReady]);
 
       return (
-        <div className={className} data-testid="article-viewer" data-confluence-url={confluenceUrl ?? ''} data-page-id={pageId ?? ''}>
+        <div className={className} data-testid="article-viewer" data-confluence-url={confluenceUrl ?? ''} data-page-id={pageId ?? ''} data-confluence-page-id={confluencePageId ?? ''}>
           <button onClick={() => onImageClick?.('/api/attachments/page-1/diagram.png', 'Diagram')}>
             Preview image
           </button>
@@ -56,7 +58,7 @@ vi.mock('../../shared/components/ArticleViewer', async () => {
   };
 });
 
-vi.mock('../../shared/components/Editor', () => ({
+vi.mock('../../shared/components/article/Editor', () => ({
   Editor: ({
     content,
     onChange,
@@ -70,26 +72,47 @@ vi.mock('../../shared/components/Editor', () => ({
       onChange={(event) => onChange(event.target.value)}
     />
   ),
+  EditorToolbar: () => null,
+  TableContextToolbar: () => null,
   getDraft: () => null,
   clearDraft: vi.fn(),
 }));
 
-vi.mock('../../shared/components/FeatureErrorBoundary', () => ({
+vi.mock('../../shared/components/feedback/FeatureErrorBoundary', () => ({
   FeatureErrorBoundary: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
-vi.mock('../../shared/components/FreshnessBadge', () => ({
-  FreshnessBadge: ({ lastModified }: { lastModified: string }) => <span>{lastModified}</span>,
+vi.mock('../../shared/components/badges/QualityScoreBadge', () => ({
+  QualityScoreBadge: () => <span data-testid="quality-score-badge" />,
 }));
 
-vi.mock('../../shared/components/EmbeddingStatusBadge', () => ({
-  EmbeddingStatusBadge: ({ embeddingStatus }: { embeddingStatus: string }) => (
-    <span data-testid="embedding-status-badge">{embeddingStatus}</span>
-  ),
+vi.mock('../../shared/components/article/ArticleSummary', () => ({
+  ArticleSummary: () => <div data-testid="article-summary" />,
 }));
 
-vi.mock('../../shared/components/Skeleton', () => ({
+vi.mock('../../shared/components/feedback/Skeleton', () => ({
   PageViewSkeleton: () => <div data-testid="page-view-skeleton" />,
+}));
+
+vi.mock('../../shared/components/TagEditor', () => ({
+  TagEditor: () => <div data-testid="tag-editor" />,
+}));
+
+vi.mock('../../shared/components/diagrams/DrawioEditor', () => ({
+  DrawioEditor: () => <div data-testid="drawio-editor" />,
+}));
+
+vi.mock('../../shared/lib/api', () => ({
+  apiFetch: vi.fn().mockResolvedValue({}),
+}));
+
+vi.mock('../../shared/hooks/use-standalone', () => ({
+  useSubmitFeedback: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useVerifyPage: () => ({ mutateAsync: vi.fn(), isPending: false }),
+}));
+
+vi.mock('../../shared/hooks/use-keyboard-shortcuts', () => ({
+  useKeyboardShortcuts: vi.fn(),
 }));
 
 vi.mock('../../shared/hooks/use-authenticated-src', () => ({
@@ -105,8 +128,10 @@ vi.mock('../../shared/hooks/use-settings', () => ({
 
 const mockPage = {
   id: 'page-1',
+  confluenceId: '98765432',
   title: 'Engineering Handbook',
   spaceKey: 'ENG',
+  pageType: 'page' as const,
   bodyHtml: '<h1 id="intro">Introduction</h1><p>Body</p>',
   bodyText: 'Body',
   version: 7,
@@ -120,6 +145,21 @@ const mockPage = {
   embeddingStatus: 'embedded',
   embeddedAt: '2026-03-01T12:00:00Z',
   embeddingError: null,
+  qualityScore: 85,
+  qualityStatus: 'analyzed' as const,
+  qualityCompleteness: 80,
+  qualityClarity: 90,
+  qualityStructure: 85,
+  qualityAccuracy: 82,
+  qualityReadability: 88,
+  qualitySummary: 'Well-written article',
+  qualityAnalyzedAt: '2026-03-01T12:00:00Z',
+  qualityError: null,
+  summaryHtml: null,
+  summaryStatus: 'pending' as const,
+  summaryGeneratedAt: null,
+  summaryModel: null,
+  summaryError: null,
 };
 
 let currentMockPage: typeof mockPage | undefined = mockPage;
@@ -128,6 +168,8 @@ let mockIsLoading = false;
 vi.mock('../../shared/hooks/use-pages', () => ({
   usePage: () => ({ data: mockIsLoading ? undefined : currentMockPage, isLoading: mockIsLoading }),
   useUpdatePage: () => ({ mutateAsync: mockUpdatePage, isPending: false }),
+  useUpdatePageLabels: () => ({ mutate: vi.fn(), isPending: false }),
+  usePageFilterOptions: () => ({ data: { authors: [], labels: [] } }),
 }));
 
 function createWrapper() {
@@ -248,12 +290,14 @@ describe('PageViewPage', () => {
     });
   });
 
-  it('passes confluenceUrl from settings to ArticleViewer for draw.io edit links', () => {
+  it('passes confluenceUrl and confluencePageId to ArticleViewer for draw.io edit links', () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
 
     const viewer = screen.getByTestId('article-viewer');
     expect(viewer).toHaveAttribute('data-confluence-url', 'https://confluence.example.com');
     expect(viewer).toHaveAttribute('data-page-id', 'page-1');
+    // confluencePageId should be the Confluence ID, not the internal page ID
+    expect(viewer).toHaveAttribute('data-confluence-page-id', '98765432');
   });
 
   it('syncs headings to article-view-store for the right pane', async () => {

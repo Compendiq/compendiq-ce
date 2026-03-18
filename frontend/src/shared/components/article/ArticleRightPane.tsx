@@ -429,9 +429,9 @@ export function ArticleRightPane() {
             <span className="truncate">{isPinned ? 'Pinned' : 'Pin'}</span>
           </button>
 
-          {settings?.confluenceUrl && (
+          {settings?.confluenceUrl && page.confluenceId && (
             <a
-              href={`${settings.confluenceUrl}/pages/viewpage.action?pageId=${encodeURIComponent(id)}`}
+              href={`${settings.confluenceUrl}/pages/viewpage.action?pageId=${encodeURIComponent(page.confluenceId)}`}
               target="_blank"
               rel="noreferrer"
               className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground"

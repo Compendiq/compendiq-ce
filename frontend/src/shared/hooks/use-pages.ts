@@ -10,6 +10,7 @@ export type PageType = 'page' | 'folder';
 
 interface PageSummary {
   id: string;
+  confluenceId: string | null;
   spaceKey: string;
   title: string;
   pageType: PageType;

@@ -556,6 +556,7 @@ export function PageViewPage() {
                 onEditDiagram={handleEditDiagram}
                 onHeadingsReady={setHeadings}
                 pageId={id}
+                confluencePageId={page.confluenceId}
               />
             </FeatureErrorBoundary>
 
