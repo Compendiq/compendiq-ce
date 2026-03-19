@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
-import { PinnedArticlesSection } from './PinnedArticlesSection';
+import { PinnedArticlesSection, MAX_VISIBLE_PINS } from './PinnedArticlesSection';
 
 function createWrapper() {
   const queryClient = new QueryClient({
@@ -161,5 +161,41 @@ describe('PinnedArticlesSection', () => {
       );
       expect(deleteCall).toBeDefined();
     });
+  });
+
+  it('renders at most MAX_VISIBLE_PINS (8) cards when API returns more', async () => {
+    const manyPins = {
+      items: Array.from({ length: 12 }, (_, i) => ({
+        id: `pin-${i + 1}`,
+        spaceKey: 'DEV',
+        title: `Pinned Article ${i + 1}`,
+        author: 'Alice',
+        lastModifiedAt: '2025-05-20T00:00:00Z',
+        excerpt: `Excerpt for article ${i + 1}`,
+        pinnedAt: new Date(Date.now() - i * 60_000).toISOString(),
+        pinOrder: i,
+      })),
+      total: 12,
+    };
+
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      return new Response(JSON.stringify(manyPins), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    render(<PinnedArticlesSection />, { wrapper: createWrapper() });
+
+    await screen.findByTestId('pinned-articles-section');
+
+    // Only the first 8 should be rendered
+    for (let i = 1; i <= MAX_VISIBLE_PINS; i++) {
+      expect(screen.getByTestId(`pinned-card-pin-${i}`)).toBeInTheDocument();
+    }
+
+    // Items beyond MAX_VISIBLE_PINS should NOT be rendered
+    for (let i = MAX_VISIBLE_PINS + 1; i <= 12; i++) {
+      expect(screen.queryByTestId(`pinned-card-pin-${i}`)).not.toBeInTheDocument();
+    }
   });
 });
