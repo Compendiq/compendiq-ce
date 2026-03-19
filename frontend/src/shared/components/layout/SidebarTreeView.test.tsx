@@ -305,6 +305,26 @@ describe('SidebarTreeView', () => {
     expect(screen.queryByRole('separator', { name: 'Resize tree sidebar' })).not.toBeInTheDocument();
   });
 
+  it('uses document icons for all pages, including parents with children (no folder icons)', () => {
+    useUiStore.setState({
+      treeSidebarCollapsed: false,
+      treeSidebarSpaceKey: 'DEV',
+    });
+    const { container } = render(<SidebarTreeView />, { wrapper: createWrapper() });
+
+    // All SVG icons in the tree items should be the same type (FileText/document)
+    // There should be no Folder or FolderOpen icons anywhere
+    const svgs = container.querySelectorAll('svg');
+    const svgClasses = Array.from(svgs).map((svg) => svg.getAttribute('class') ?? '');
+
+    // None of the icons should be Folder or FolderOpen (lucide-folder or lucide-folder-open)
+    // Note: lucide-folder-plus is allowed (it's the "New Folder" button in the header)
+    const hasFolderIcon = svgClasses.some(
+      (c) => c.includes('lucide-folder-open') || (c.includes('lucide-folder') && !c.includes('lucide-folder-plus')),
+    );
+    expect(hasFolderIcon).toBe(false);
+  });
+
   it('keeps the homepage visible and expands its children when a space with homepageId is selected', () => {
     useUiStore.setState({
       treeSidebarCollapsed: false,

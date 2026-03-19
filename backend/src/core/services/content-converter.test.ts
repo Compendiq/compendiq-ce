@@ -32,6 +32,9 @@ import {
   LAYOUT_THREE_EQUAL_PAGE,
   LAYOUT_STACKED_SECTIONS_PAGE,
   LAYOUT_NESTED_CONTENT_PAGE,
+  SECTION_COLUMN_PAGE,
+  SECTION_BORDER_PAGE,
+  SECTION_PIXEL_WIDTH_PAGE,
 } from './__fixtures__/confluence-xhtml.js';
 
 describe('content-converter', () => {
@@ -189,6 +192,43 @@ describe('content-converter', () => {
       expect(html).toContain('class="panel-info"');
       expect(html).toContain('<details>');
       expect(html).toContain('<summary>Details</summary>');
+    });
+
+    it('converts section/column macros to flex layout divs', () => {
+      const html = confluenceToHtml(SECTION_COLUMN_PAGE);
+      expect(html).toContain('class="confluence-section"');
+      expect(html).toContain('class="confluence-column"');
+      expect(html).toContain('data-cell-width="30%"');
+      expect(html).toContain('data-cell-width="70%"');
+      expect(html).toContain('Left column content');
+      expect(html).toContain('Right column content');
+      expect(html).toContain('<strong>bold</strong>');
+      expect(html).not.toContain('ac:structured-macro');
+    });
+
+    it('converts section with border parameter', () => {
+      const html = confluenceToHtml(SECTION_BORDER_PAGE);
+      expect(html).toContain('class="confluence-section"');
+      expect(html).toContain('data-border="true"');
+      expect(html).toContain('Column A');
+      expect(html).toContain('Column B');
+    });
+
+    it('preserves pixel widths on columns', () => {
+      const html = confluenceToHtml(SECTION_PIXEL_WIDTH_PAGE);
+      expect(html).toContain('data-cell-width="200px"');
+      expect(html).toContain('Fixed sidebar');
+      expect(html).toContain('Flexible main content');
+      // Column without width should not have data-cell-width
+      const columns = html.match(/class="confluence-column"/g);
+      expect(columns).toHaveLength(2);
+    });
+
+    it('does not apply section/column classes to unrelated macros', () => {
+      // Ensure other macros are not affected
+      const html = confluenceToHtml(PANELS_PAGE);
+      expect(html).not.toContain('confluence-section');
+      expect(html).not.toContain('confluence-column');
     });
 
     it('converts complex page with all macro types', () => {
@@ -373,6 +413,36 @@ describe('content-converter', () => {
       expect(xhtml).not.toContain('confluence-status');
     });
 
+    it('round-trips section/column macros', () => {
+      const html = confluenceToHtml(SECTION_COLUMN_PAGE);
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toContain('ac:name="section"');
+      expect(xhtml).toContain('ac:name="column"');
+      expect(xhtml).toContain('ac:name="width"');
+      expect(xhtml).toContain('>30%<');
+      expect(xhtml).toContain('>70%<');
+      expect(xhtml).toContain('ac:rich-text-body');
+      expect(xhtml).toContain('Left column content');
+      expect(xhtml).not.toContain('confluence-section');
+      expect(xhtml).not.toContain('confluence-column');
+    });
+
+    it('round-trips section border parameter', () => {
+      const html = confluenceToHtml(SECTION_BORDER_PAGE);
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toContain('ac:name="section"');
+      expect(xhtml).toContain('ac:name="border"');
+      expect(xhtml).toContain('>true<');
+    });
+
+    it('round-trips pixel width columns', () => {
+      const html = confluenceToHtml(SECTION_PIXEL_WIDTH_PAGE);
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toContain('>200px<');
+      // Column without width should not have width parameter
+      expect(xhtml).toContain('ac:name="column"');
+    });
+
     it('round-trips children macro with all parameters', () => {
       const html = confluenceToHtml(CHILDREN_MACRO_ALL_PARAMS_PAGE);
       expect(html).toContain('data-sort="creation"');
@@ -518,6 +588,9 @@ describe('content-converter', () => {
       { name: 'layout-two-equal', xhtml: LAYOUT_TWO_EQUAL_PAGE },
       { name: 'layout-three-equal', xhtml: LAYOUT_THREE_EQUAL_PAGE },
       { name: 'layout-stacked', xhtml: LAYOUT_STACKED_SECTIONS_PAGE },
+      { name: 'section/column', xhtml: SECTION_COLUMN_PAGE },
+      { name: 'section/column with border', xhtml: SECTION_BORDER_PAGE },
+      { name: 'section/column with pixel width', xhtml: SECTION_PIXEL_WIDTH_PAGE },
     ];
 
     for (const { name, xhtml } of stableFixtures) {
@@ -611,6 +684,16 @@ describe('content-converter', () => {
       const md = htmlToMarkdown(html);
       expect(md).toContain('[Children pages]');
       expect(md).not.toContain('confluence-children-macro');
+    });
+
+    it('converts section/column to markdown preserving column content', () => {
+      const html = confluenceToHtml(SECTION_COLUMN_PAGE);
+      const md = htmlToMarkdown(html);
+      expect(md).toContain('Left column content');
+      expect(md).toContain('Right column content');
+      expect(md).not.toMatch(/<div[^>]*>/);
+      expect(md).not.toContain('confluence-section');
+      expect(md).not.toContain('confluence-column');
     });
 
     it('produces clean markdown for LLM consumption from complex page', () => {

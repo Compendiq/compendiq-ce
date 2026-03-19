@@ -247,6 +247,26 @@ export const LAYOUT_STACKED_SECTIONS_PAGE = `<h2>Stacked Layouts</h2>
 export const LAYOUT_NESTED_CONTENT_PAGE = `<h2>Layout With Rich Content</h2>
 <ac:layout><ac:layout-section ac:type="two_equal"><ac:layout-cell><ul><li>Item 1</li><li>Item 2</li></ul><ac:structured-macro ac:name="code"><ac:parameter ac:name="language">bash</ac:parameter><ac:plain-text-body><![CDATA[echo "hello"]]></ac:plain-text-body></ac:structured-macro></ac:layout-cell><ac:layout-cell><table><tbody><tr><th>Key</th><th>Value</th></tr><tr><td>Name</td><td>Test</td></tr></tbody></table><ac:structured-macro ac:name="info"><ac:rich-text-body><p>Important note</p></ac:rich-text-body></ac:structured-macro></ac:layout-cell></ac:layout-section></ac:layout>`;
 
+/** Page with section/column layout macros (multi-column layout) */
+export const SECTION_COLUMN_PAGE = `<h2>Team Overview</h2>
+<ac:structured-macro ac:name="section"><ac:rich-text-body>
+<ac:structured-macro ac:name="column"><ac:parameter ac:name="width">30%</ac:parameter><ac:rich-text-body><p>Left column content</p></ac:rich-text-body></ac:structured-macro>
+<ac:structured-macro ac:name="column"><ac:parameter ac:name="width">70%</ac:parameter><ac:rich-text-body><p>Right column content with <strong>bold</strong> text</p></ac:rich-text-body></ac:structured-macro>
+</ac:rich-text-body></ac:structured-macro>`;
+
+/** Section with border parameter */
+export const SECTION_BORDER_PAGE = `<h2>Bordered Layout</h2>
+<ac:structured-macro ac:name="section"><ac:parameter ac:name="border">true</ac:parameter><ac:rich-text-body>
+<ac:structured-macro ac:name="column"><ac:rich-text-body><p>Column A</p></ac:rich-text-body></ac:structured-macro>
+<ac:structured-macro ac:name="column"><ac:rich-text-body><p>Column B</p></ac:rich-text-body></ac:structured-macro>
+</ac:rich-text-body></ac:structured-macro>`;
+
+/** Section with pixel-width columns */
+export const SECTION_PIXEL_WIDTH_PAGE = `<ac:structured-macro ac:name="section"><ac:rich-text-body>
+<ac:structured-macro ac:name="column"><ac:parameter ac:name="width">200px</ac:parameter><ac:rich-text-body><p>Fixed sidebar</p></ac:rich-text-body></ac:structured-macro>
+<ac:structured-macro ac:name="column"><ac:rich-text-body><p>Flexible main content</p></ac:rich-text-body></ac:structured-macro>
+</ac:rich-text-body></ac:structured-macro>`;
+
 /** Page with data-macro-name attribute variant (some Confluence versions use this) */
 export const DATA_MACRO_VARIANT_PAGE = `<h2>Code Example</h2>
 <ac:structured-macro data-macro-name="code"><ac:parameter ac:name="language">python</ac:parameter><ac:plain-text-body><![CDATA[print("hello world")]]></ac:plain-text-body></ac:structured-macro>
