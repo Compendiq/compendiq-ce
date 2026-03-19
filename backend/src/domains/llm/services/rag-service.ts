@@ -10,6 +10,7 @@ const RAG_EF_SEARCH = parseInt(process.env.RAG_EF_SEARCH ?? '100', 10);
 
 interface SearchResult {
   confluenceId: string;
+  pageId: number;
   chunkText: string;
   pageTitle: string;
   sectionTitle: string;
@@ -32,15 +33,16 @@ async function vectorSearch(userId: string, questionEmbedding: number[], limit =
   const client = await getPool().connect();
   try {
     await client.query('BEGIN');
-    await client.query('SET LOCAL hnsw.ef_search = $1', [RAG_EF_SEARCH]);
+    await client.query(`SET LOCAL hnsw.ef_search = ${Number(RAG_EF_SEARCH)}`); // PostgreSQL does not accept parameterized SET statements; Number() cast is safe because RAG_EF_SEARCH is sourced from env, never from user input
 
     const result = await client.query<{
       confluence_id: string;
+      page_id: number;
       chunk_text: string;
       metadata: { page_title: string; section_title: string; space_key: string };
       distance: number;
     }>(
-      `SELECT cp.confluence_id, pe.chunk_text, pe.metadata,
+      `SELECT cp.confluence_id, cp.id AS page_id, pe.chunk_text, pe.metadata,
               pe.embedding <=> $2 AS distance
        FROM page_embeddings pe
        JOIN pages cp ON pe.page_id = cp.id
@@ -59,6 +61,7 @@ async function vectorSearch(userId: string, questionEmbedding: number[], limit =
 
     return result.rows.map((row) => ({
       confluenceId: row.confluence_id,
+      pageId: row.page_id,
       chunkText: row.chunk_text,
       pageTitle: row.metadata.page_title,
       sectionTitle: row.metadata.section_title,
@@ -87,12 +90,13 @@ async function keywordSearch(userId: string, questionText: string, limit = 10): 
   const kwSpaces = await getUserAccessibleSpaces(userId);
   const result = await query<{
     confluence_id: string;
+    page_id: number;
     title: string;
     space_key: string;
     body_text: string;
     rank: number;
   }>(
-    `SELECT cp.confluence_id, cp.title, cp.space_key,
+    `SELECT cp.confluence_id, cp.id AS page_id, cp.title, cp.space_key,
             substring(cp.body_text, 1, 500) as body_text,
             ts_rank(to_tsvector('english', coalesce(cp.title, '') || ' ' || coalesce(cp.body_text, '')),
                     plainto_tsquery('english', $2)) AS rank
@@ -111,6 +115,7 @@ async function keywordSearch(userId: string, questionText: string, limit = 10): 
 
   return result.rows.map((row) => ({
     confluenceId: row.confluence_id,
+    pageId: row.page_id,
     chunkText: row.body_text,
     pageTitle: row.title,
     sectionTitle: row.title,
@@ -121,9 +126,10 @@ async function keywordSearch(userId: string, questionText: string, limit = 10): 
 
 /**
  * Reciprocal Rank Fusion (RRF) - combines vector and keyword results.
- * RRF score = sum(1 / (k + rank_i)) for each ranking system
+ * RRF score = sum(1 / (k + rank_i)) for each ranking system.
+ * Exported for unit testing.
  */
-function reciprocalRankFusion(
+export function reciprocalRankFusion(
   vectorResults: SearchResult[],
   keywordResults: SearchResult[],
   k = 60,
@@ -132,7 +138,7 @@ function reciprocalRankFusion(
 
   // Score from vector search
   vectorResults.forEach((result, rank) => {
-    const key = `${result.confluenceId}:${result.chunkText.slice(0, 50)}`;
+    const key = `${result.confluenceId}:${result.chunkText.slice(0, 100)}`;
     const existing = scoreMap.get(key);
     const rrf = 1 / (k + rank + 1);
     if (existing) {
@@ -144,7 +150,7 @@ function reciprocalRankFusion(
 
   // Score from keyword search
   keywordResults.forEach((result, rank) => {
-    const key = `${result.confluenceId}:${result.chunkText.slice(0, 50)}`;
+    const key = `${result.confluenceId}:${result.chunkText.slice(0, 100)}`;
     const existing = scoreMap.get(key);
     const rrf = 1 / (k + rank + 1);
     if (existing) {
@@ -185,6 +191,10 @@ async function recordSearchAnalytics(
  * Hybrid RAG search: combines vector search + keyword search using RRF.
  * Returns top results with source metadata for citations.
  * Scoped to: Confluence pages in user's selected spaces + accessible standalone articles.
+ *
+ * Graceful degradation: if embedding generation fails (e.g. circuit breaker open,
+ * Ollama unreachable), falls back to keyword-only search instead of throwing a 500.
+ * Keyword search is started before awaiting the embedding so both overlap on the happy path.
  */
 export async function hybridSearch(
   userId: string,
@@ -193,30 +203,46 @@ export async function hybridSearch(
 ): Promise<SearchResult[]> {
   logger.info({ userId, question: question.slice(0, 100) }, 'Running hybrid RAG search');
 
-  // Generate question embedding using the user's configured provider
-  const embeddings = await providerGenerateEmbedding(userId, question);
-  const questionEmbedding = embeddings[0];
+  // Start keyword search immediately — no embedding needed — so it overlaps with embedding generation
+  const keywordPromise = keywordSearch(userId, question);
 
-  // Run vector and keyword search in parallel
-  const [vectorResults, keywordResults] = await Promise.all([
-    vectorSearch(userId, questionEmbedding),
-    keywordSearch(userId, question),
-  ]);
+  // Attempt to generate question embedding; on failure fall back to keyword-only
+  let questionEmbedding: number[] | null = null;
+  try {
+    const embeddings = await providerGenerateEmbedding(userId, question);
+    questionEmbedding = embeddings[0];
+  } catch (err) {
+    logger.warn({ err, userId }, 'Embedding generation failed, falling back to keyword-only search');
+  }
 
-  logger.debug({
-    vectorHits: vectorResults.length,
-    keywordHits: keywordResults.length,
-  }, 'Search results');
+  let combined: SearchResult[];
 
-  // Combine with RRF
-  const combined = reciprocalRankFusion(vectorResults, keywordResults);
+  if (questionEmbedding !== null) {
+    // Happy path: run vector search in parallel with the already-started keyword search
+    const [vectorResults, keywordResults] = await Promise.all([
+      vectorSearch(userId, questionEmbedding),
+      keywordPromise,
+    ]);
 
-  // Deduplicate by confluence_id (take best chunk per page)
-  const seen = new Set<string>();
+    logger.debug({
+      vectorHits: vectorResults.length,
+      keywordHits: keywordResults.length,
+    }, 'Search results');
+
+    combined = reciprocalRankFusion(vectorResults, keywordResults);
+  } else {
+    // Fallback: keyword-only (embedding unavailable)
+    combined = await keywordPromise;
+    logger.debug({ keywordHits: combined.length }, 'Keyword-only fallback');
+  }
+
+  // Deduplicate by pageId (stable SERIAL PK) — handles standalone pages with NULL confluenceId
+  // where all null confluenceIds would otherwise collapse to the same dedup key
+  const seen = new Set<number>();
   const deduped: SearchResult[] = [];
   for (const result of combined) {
-    if (!seen.has(result.confluenceId)) {
-      seen.add(result.confluenceId);
+    if (!seen.has(result.pageId)) {
+      seen.add(result.pageId);
       deduped.push(result);
     }
     if (deduped.length >= topK) break;
@@ -224,7 +250,7 @@ export async function hybridSearch(
 
   // Record search analytics (non-blocking)
   const maxScore = deduped.length > 0 ? Math.max(...deduped.map((r) => r.score)) : null;
-  recordSearchAnalytics(userId, question, deduped.length, maxScore, 'hybrid').catch(() => {});
+  recordSearchAnalytics(userId, question, deduped.length, maxScore, questionEmbedding !== null ? 'hybrid' : 'keyword').catch(() => {});
 
   return deduped;
 }
