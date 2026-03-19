@@ -214,4 +214,72 @@ describe('POST /api/pages - parentId validation', () => {
     const body = JSON.parse(response.payload);
     expect(body.id).toBe(44);
   });
+
+  it('should return 400 when spaceKey does not exist in spaces table', async () => {
+    // Space lookup returns no rows (unknown space)
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages',
+      payload: {
+        title: 'Page In Unknown Space',
+        bodyHtml: '<p>Hello</p>',
+        spaceKey: 'NONEXISTENT',
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    const body = JSON.parse(response.payload);
+    expect(body.error).toContain("Space 'NONEXISTENT' not found");
+  });
+
+  it('should stay standalone when explicit source is standalone even with Confluence spaceKey', async () => {
+    // Space lookup: space exists and is confluence
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'confluence' }] });
+    // INSERT returns new page (standalone path, no Confluence API call)
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 50, title: 'Standalone Override', version: 1 }],
+    });
+    // UPDATE path
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages',
+      payload: {
+        title: 'Standalone Override',
+        bodyHtml: '<p>Hello</p>',
+        source: 'standalone',
+        spaceKey: 'CONFSPACE',
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.payload);
+    expect(body.id).toBe(50);
+    expect(body.source).toBe('standalone');
+  });
+
+  it('should use confluence when explicit source is confluence', async () => {
+    // Space lookup: space exists and is local
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'local' }] });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages',
+      payload: {
+        title: 'Confluence Override',
+        bodyHtml: '<p>Hello</p>',
+        source: 'confluence',
+        spaceKey: 'LOCALSPACE',
+      },
+    });
+
+    // This will fail with 400 because getClientForUser mock returns null (no Confluence configured)
+    // but the important thing is it did NOT go down the standalone path
+    expect(response.statusCode).toBe(400);
+    const body = JSON.parse(response.payload);
+    expect(body.error).toContain('Confluence not configured');
+  });
 });

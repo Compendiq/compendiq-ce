@@ -594,14 +594,21 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         'SELECT source FROM spaces WHERE space_key = $1',
         [body.spaceKey],
       );
-      if (spaceRow.rows.length > 0) {
-        spaceSource = spaceRow.rows[0].source;
+      if (spaceRow.rows.length === 0) {
+        throw fastify.httpErrors.badRequest(`Space '${body.spaceKey}' not found`);
       }
+      spaceSource = spaceRow.rows[0].source;
     }
-    let isStandalone = spaceSource !== 'confluence';
-    // Explicit override: if source is explicitly set to 'confluence', respect it
-    if (body.source === 'confluence') {
+
+    // Explicit source takes precedence over auto-detection
+    let isStandalone: boolean;
+    if (body.source === 'standalone') {
+      isStandalone = true;
+    } else if (body.source === 'confluence') {
       isStandalone = false;
+    } else {
+      // Auto-detect from space source
+      isStandalone = spaceSource !== 'confluence';
     }
 
     if (isStandalone) {
