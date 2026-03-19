@@ -6,8 +6,7 @@
  *
  * Also provides per-user provider resolution from user_settings (multi-user support).
  */
-
-import { query } from '../../../core/db/postgres.js';
+import { getSharedLlmSettings } from '../../../core/services/admin-settings-service.js';
 import {
   streamChat as ollamaStreamChat,
   chat as ollamaChat,
@@ -82,22 +81,12 @@ function getOpenAIProvider(): OpenAIProvider {
 }
 
 /**
- * Look up the user's configured LLM provider from user_settings.
+ * Resolve the shared LLM provider configured by admins.
  * Falls back to 'ollama' if no setting exists.
  */
-export async function resolveUserProvider(userId: string): Promise<ResolvedProvider> {
-  const result = await query<{
-    llm_provider: string;
-  }>(
-    'SELECT llm_provider FROM user_settings WHERE user_id = $1',
-    [userId],
-  );
-
-  if (result.rows.length === 0 || result.rows[0].llm_provider !== 'openai') {
-    return { type: 'ollama' };
-  }
-
-  return { type: 'openai' };
+export async function resolveUserProvider(_userId: string): Promise<ResolvedProvider> {
+  const sharedLlmSettings = await getSharedLlmSettings();
+  return { type: sharedLlmSettings.llmProvider };
 }
 
 /**

@@ -24,6 +24,17 @@ vi.mock('../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
+vi.mock('../../core/services/admin-settings-service.js', () => ({
+  getSharedLlmSettings: vi.fn().mockResolvedValue({
+    llmProvider: 'ollama',
+    ollamaModel: 'qwen3.5',
+    openaiBaseUrl: null,
+    hasOpenaiApiKey: false,
+    openaiApiKey: null,
+    openaiModel: null,
+  }),
+}));
+
 vi.mock('../../core/services/rbac-service.js', () => ({
   getUserAccessibleSpaces: vi.fn().mockResolvedValue([]),
   invalidateRbacCache: vi.fn().mockResolvedValue(undefined),
@@ -94,11 +105,6 @@ describe('Settings routes – showSpaceHomeContent', () => {
       rows: [{
         confluence_url: null,
         confluence_pat: null,
-        ollama_model: 'qwen3.5',
-        llm_provider: 'ollama',
-        openai_base_url: null,
-        openai_api_key: null,
-        openai_model: null,
         theme: 'glass-dark',
         sync_interval_min: 15,
         show_space_home_content: false,

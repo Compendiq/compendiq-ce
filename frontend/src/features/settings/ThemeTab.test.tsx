@@ -79,6 +79,11 @@ describe('ThemeTab', () => {
     expect(screen.getByTestId('tab-theme')).toHaveTextContent('Theme');
   });
 
+  it('does not render the Account tab button', () => {
+    render(<SettingsPage />, { wrapper: createWrapper() });
+    expect(screen.queryByTestId('tab-account')).not.toBeInTheDocument();
+  });
+
   it('renders theme category sections', async () => {
     render(<SettingsPage />, { wrapper: createWrapper() });
     await navigateToThemeTab();

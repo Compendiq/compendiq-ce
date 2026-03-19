@@ -46,6 +46,7 @@ const mockSettings: {
   syncIntervalMin: number;
   confluenceConnected: boolean;
   showSpaceHomeContent: boolean;
+  customPrompts?: Record<string, string>;
 } = {
   confluenceUrl: 'https://confluence.example.com',
   hasConfluencePat: true,
@@ -62,7 +63,12 @@ const mockSettings: {
   showSpaceHomeContent: true,
 };
 
-const mockAdminSettings: { embeddingChunkSize: number; embeddingChunkOverlap: number } = {
+const mockAdminSettings = {
+  llmProvider: 'ollama' as const,
+  ollamaModel: 'qwen3.5',
+  openaiBaseUrl: null,
+  hasOpenaiApiKey: false,
+  openaiModel: null,
   embeddingChunkSize: 500,
   embeddingChunkOverlap: 50,
 };
@@ -92,7 +98,7 @@ describe('LlmTab (OllamaTab)', () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    setUserRole('user');
+    setUserRole('admin');
     fetchSpy = vi.spyOn(globalThis, 'fetch');
   });
 
@@ -157,6 +163,16 @@ describe('LlmTab (OllamaTab)', () => {
     });
     fireEvent.click(screen.getByTestId('tab-ollama'));
   }
+
+  it('hides the LLM tab for non-admin users', async () => {
+    setUserRole('user');
+    mockFetchResponses();
+    render(<SettingsPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('tab-ollama')).not.toBeInTheDocument();
+    });
+  });
 
   it('displays the configured Ollama server URL', async () => {
     mockFetchResponses();
@@ -354,8 +370,8 @@ describe('LlmTab (OllamaTab)', () => {
 
   it('shows OpenAI API key configured status', async () => {
     mockFetchResponses({
-      settings: {
-        ...mockSettings,
+      adminSettings: {
+        ...mockAdminSettings,
         llmProvider: 'openai',
         hasOpenaiApiKey: true,
         openaiBaseUrl: 'https://api.openai.com/v1',

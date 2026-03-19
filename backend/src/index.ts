@@ -3,12 +3,15 @@
 import { initTelemetry, shutdownTelemetry } from './telemetry.js';
 
 import { buildApp } from './app.js';
-import { runMigrations, closePool } from './core/db/postgres.js';
+import { runMigrations, closePool, query } from './core/db/postgres.js';
 import { startSyncWorker, stopSyncWorker } from './domains/confluence/services/sync-service.js';
+import { addAllowedBaseUrl } from './core/utils/ssrf-guard.js';
 import { startQualityWorker, stopQualityWorker, triggerQualityBatch } from './domains/knowledge/services/quality-worker.js';
 import { startSummaryWorker, stopSummaryWorker, triggerSummaryBatch } from './domains/knowledge/services/summary-worker.js';
 import { markStartupComplete } from './routes/foundation/health.js';
 import { logger } from './core/utils/logger.js';
+import { getSharedLlmSettings } from './core/services/admin-settings-service.js';
+import { setActiveProvider } from './domains/llm/services/ollama-service.js';
 
 const PORT = parseInt(process.env.BACKEND_PORT ?? '3051', 10);
 const HOST = process.env.NODE_ENV === 'production' ? '0.0.0.0' : '127.0.0.1';
@@ -33,6 +36,26 @@ async function start() {
   logger.info('Running database migrations...');
   await runMigrations();
   logger.info('Migrations complete');
+
+  // Pre-register all user-configured Confluence URLs so the SSRF guard
+  // allows requests to on-premises instances on private networks (#480).
+  try {
+    const urlRows = await query<{ confluence_url: string }>(
+      'SELECT DISTINCT confluence_url FROM user_settings WHERE confluence_url IS NOT NULL',
+      [],
+    );
+    for (const row of urlRows.rows) {
+      addAllowedBaseUrl(row.confluence_url);
+    }
+    if (urlRows.rows.length > 0) {
+      logger.info({ count: urlRows.rows.length }, 'Registered Confluence URLs in SSRF allowlist');
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Failed to pre-register Confluence URLs in SSRF allowlist');
+  }
+
+  const sharedLlmSettings = await getSharedLlmSettings();
+  setActiveProvider(sharedLlmSettings.llmProvider);
 
   // Build and start the app
   const app = await buildApp();
