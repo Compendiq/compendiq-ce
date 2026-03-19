@@ -24,6 +24,7 @@ import { useSortable, isSortable } from '@dnd-kit/react/sortable';
 import { usePageTree, useCreatePage } from '../../hooks/use-pages';
 import { useSpaces } from '../../hooks/use-spaces';
 import { useLocalSpaces, useReorderPage } from '../../hooks/use-standalone';
+import { useClickOutside } from '../../hooks/use-click-outside';
 import { useUiStore } from '../../../stores/ui-store';
 import { cn } from '../../lib/cn';
 import type { PageTreeItem } from '../../hooks/use-pages';
@@ -307,6 +308,9 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
   const [showNewFolderInput, setShowNewFolderInput] = useState(false);
   const newFolderInputRef = useRef<HTMLInputElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
+
+  const closeSpaceDropdown = useCallback(() => setSpaceDropdownOpen(false), []);
+  const spaceDropdownRef = useClickOutside<HTMLDivElement>(closeSpaceDropdown, spaceDropdownOpen);
   const createPage = useCreatePage();
 
   const handleCreateFolder = useCallback(async () => {
@@ -553,7 +557,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
 
       {/* Space selector */}
       <div className="px-2 pb-2">
-        <div className="relative">
+        <div ref={spaceDropdownRef} className="relative">
           <button
             onClick={() => setSpaceDropdownOpen(!spaceDropdownOpen)}
             className="flex w-full items-center justify-between rounded-lg bg-foreground/5 px-2.5 py-1.5 text-xs text-foreground hover:bg-foreground/8 transition-colors"

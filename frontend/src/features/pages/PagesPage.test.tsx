@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { PagesPage } from './PagesPage';
@@ -131,6 +131,34 @@ function makeManyPages(n: number) {
   };
 }
 
+const mockPinnedResponse = {
+  items: [
+    {
+      id: 'pinned-1',
+      spaceKey: 'DEV',
+      title: 'Getting Started Guide',
+      author: 'Alice',
+      lastModifiedAt: '2025-05-20T00:00:00Z',
+      excerpt: 'A guide for new developers.',
+      pinnedAt: '2025-06-01T00:00:00Z',
+      pinOrder: 0,
+    },
+    {
+      id: 'pinned-2',
+      spaceKey: 'OPS',
+      title: 'Deployment Runbook',
+      author: 'Bob',
+      lastModifiedAt: '2025-05-25T00:00:00Z',
+      excerpt: 'Step-by-step deployment instructions.',
+      pinnedAt: '2025-06-02T00:00:00Z',
+      pinOrder: 1,
+    },
+  ],
+  total: 2,
+};
+
+const emptyPinnedResponse = { items: [], total: 0 };
+
 function mockFetchWithPages(pagesResponse: ReturnType<typeof makeManyPages>) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
     const url = typeof input === 'string' ? input : (input as Request).url;
@@ -165,6 +193,45 @@ function mockFetchWithPages(pagesResponse: ReturnType<typeof makeManyPages>) {
       });
     }
     return new Response(JSON.stringify(pagesResponse), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  });
+}
+
+function mockFetchWithPinnedPages(pinnedResponse: typeof mockPinnedResponse | typeof emptyPinnedResponse) {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+    const url = typeof input === 'string' ? input : (input as Request).url;
+    if (url.includes('/embeddings/status')) {
+      return new Response(JSON.stringify(mockEmbeddingStatusIdle), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.includes('/pages/filters')) {
+      return new Response(JSON.stringify(mockFilterOptions), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.includes('/spaces')) {
+      return new Response(JSON.stringify(mockSpaces), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.includes('/sync/status')) {
+      return new Response(JSON.stringify({ status: 'idle' }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.includes('/pages/pinned')) {
+      return new Response(JSON.stringify(pinnedResponse), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.includes('/settings')) {
+      return new Response(JSON.stringify({}), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify(mockPagesResponse), {
       headers: { 'Content-Type': 'application/json' },
     });
   });
@@ -332,6 +399,44 @@ describe('PagesPage', () => {
     // Each item renders an article-hover wrapper with its id
     const items = await screen.findAllByTestId(/^article-hover-/);
     expect(items.length).toBeGreaterThanOrEqual(50);
+  });
+
+  // --- Pinned articles section tests ---
+
+  it('renders pinned articles section when user has pinned pages', async () => {
+    vi.restoreAllMocks();
+    mockFetchWithPinnedPages(mockPinnedResponse);
+    render(<PagesPage />, { wrapper: createWrapper() });
+
+    const section = await screen.findByTestId('pinned-articles-section');
+    expect(section).toBeInTheDocument();
+    expect(screen.getByText('Pinned Articles')).toBeInTheDocument();
+    expect(screen.getByText('Getting Started Guide')).toBeInTheDocument();
+    expect(screen.getByText('Deployment Runbook')).toBeInTheDocument();
+  });
+
+  it('does not render pinned articles section when user has no pinned pages', async () => {
+    vi.restoreAllMocks();
+    mockFetchWithPinnedPages(emptyPinnedResponse);
+    render(<PagesPage />, { wrapper: createWrapper() });
+
+    // Wait for page list to render so all queries are settled
+    await screen.findByText('Test Page');
+    expect(screen.queryByTestId('pinned-articles-section')).not.toBeInTheDocument();
+  });
+
+  it('renders pinned articles section before the filters section', async () => {
+    vi.restoreAllMocks();
+    mockFetchWithPinnedPages(mockPinnedResponse);
+    render(<PagesPage />, { wrapper: createWrapper() });
+
+    const section = await screen.findByTestId('pinned-articles-section');
+    const filtersToggle = screen.getByTestId('advanced-filters-toggle');
+
+    // Pinned section should appear before the filters in the DOM
+    const comparison = section.compareDocumentPosition(filtersToggle);
+    // Node.DOCUMENT_POSITION_FOLLOWING = 4 means filtersToggle follows section
+    expect(comparison & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   describe('empty state (no pages)', () => {

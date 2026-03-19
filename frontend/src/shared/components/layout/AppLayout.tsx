@@ -160,18 +160,32 @@ export function AppLayout({ children }: { children: ReactNode }) {
           <Breadcrumb />
         </div>
 
-        {/* Right side: search + user */}
-        <div className="flex items-center gap-3 ml-3">
+        {/* Center: search bar */}
+        <div className="mx-4 hidden min-w-0 flex-1 justify-center sm:flex" role="search">
           <button
             onClick={openCommandPalette}
-            className="flex items-center gap-1.5 rounded-lg bg-foreground/5 px-2.5 py-1 text-xs text-muted-foreground hover:bg-foreground/8 transition-colors"
+            aria-label="Search knowledge base"
+            className="flex w-full max-w-xl items-center gap-2 rounded-lg border border-border/50 bg-foreground/5 px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-foreground/10 hover:border-border"
           >
-            <Search size={12} />
-            <span className="hidden sm:inline">Search...</span>
-            <kbd className="hidden rounded border border-border/50 px-1 py-0.5 text-[10px] sm:inline">
+            <Search size={16} className="shrink-0" />
+            <span className="truncate">Search pages, articles, commands...</span>
+            <kbd className="ml-auto shrink-0 rounded border border-border/50 px-1.5 py-0.5 text-[10px]">
               {navigator.platform?.includes('Mac') ? '\u2318' : 'Ctrl'}K
             </kbd>
           </button>
+        </div>
+
+        {/* Mobile search button (visible on small screens only) */}
+        <button
+          onClick={openCommandPalette}
+          aria-label="Search knowledge base"
+          className="ml-auto mr-2 flex items-center rounded-md bg-foreground/5 p-1.5 text-muted-foreground transition-colors hover:bg-foreground/10 sm:hidden"
+        >
+          <Search size={16} />
+        </button>
+
+        {/* Right side: theme + user */}
+        <div className="flex items-center gap-3 sm:ml-auto">
           <ThemeToggle />
           <UserMenu />
         </div>

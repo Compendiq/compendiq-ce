@@ -69,7 +69,7 @@ export interface PageFilters {
   dateTo?: string;
   page?: number;
   limit?: number;
-  sort?: 'title' | 'modified' | 'author' | 'quality';
+  sort?: 'title' | 'modified' | 'author' | 'quality' | 'relevance';
 }
 
 export function usePages(params: PageFilters = {}) {

@@ -15,6 +15,7 @@ import { QualityScoreBadge } from '../../shared/components/badges/QualityScoreBa
 import { SummaryStatusBadge } from '../../shared/components/badges/SummaryStatusBadge';
 import { BulkOperations } from './BulkOperations';
 import { KPICards } from './KPICards';
+import { PinnedArticlesSection } from './PinnedArticlesSection';
 import { cn } from '../../shared/lib/cn';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 
@@ -32,7 +33,7 @@ export function PagesPage() {
   const [dateTo, setDateTo] = useState<string>('');
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [page, setPage] = useState(1);
-  const [sort, setSort] = useState<'title' | 'modified' | 'author' | 'quality'>('modified');
+  const [sort, setSort] = useState<'title' | 'modified' | 'author' | 'quality' | 'relevance'>('modified');
   const [sourceFilter, setSourceFilter] = useState<string>('');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
@@ -218,6 +219,9 @@ export function PagesPage() {
         </div>
       )}
 
+      {/* Pinned Articles */}
+      <PinnedArticlesSection />
+
       {/* Filters */}
       <div className="glass-card space-y-3 p-4">
         <div className="flex flex-wrap items-center gap-3">
@@ -228,7 +232,16 @@ export function PagesPage() {
               type="text"
               placeholder="Search pages..."
               value={search}
-              onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+              onChange={(e) => {
+                const val = e.target.value;
+                setSearch(val);
+                setPage(1);
+                if (val.trim()) {
+                  setSort('relevance');
+                } else if (sort === 'relevance') {
+                  setSort('modified');
+                }
+              }}
               className="glass-input pl-10 pr-4"
             />
           </div>
@@ -264,6 +277,7 @@ export function PagesPage() {
             <option value="title">Title</option>
             <option value="author">Author</option>
             <option value="quality">Quality Score</option>
+            <option value="relevance">Relevance</option>
           </select>
 
           {/* Advanced filters toggle */}

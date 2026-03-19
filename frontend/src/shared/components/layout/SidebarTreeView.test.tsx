@@ -229,6 +229,28 @@ describe('SidebarTreeView', () => {
     expect(screen.getByText('New Space')).toBeInTheDocument();
   });
 
+  it('closes space dropdown on outside click', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    // Open the dropdown
+    fireEvent.click(screen.getByText('All Spaces'));
+    expect(screen.getByText('Development')).toBeInTheDocument();
+
+    // Click outside (mousedown on the document body)
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByText('Development')).not.toBeInTheDocument();
+  });
+
+  it('closes space dropdown on Escape key', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    // Open the dropdown
+    fireEvent.click(screen.getByText('All Spaces'));
+    expect(screen.getByText('Development')).toBeInTheDocument();
+
+    // Press Escape
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByText('Development')).not.toBeInTheDocument();
+  });
+
   it('renders resize handle', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
     expect(screen.getByRole('separator', { name: 'Resize tree sidebar' })).toBeInTheDocument();

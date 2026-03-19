@@ -79,12 +79,16 @@ vi.mock('../../core/db/postgres.js', () => ({
   closePool: vi.fn(),
 }));
 
-/** Stub DB responses for a page list query (count + rows) */
+/** Stub DB responses for a page list query (count + rows).
+ *  When total=0 the route skips the data query (performance optimisation),
+ *  so we only stub the count response to avoid leaking stubs into the next test. */
 function stubPageListQuery(rows: Record<string, unknown>[] = [], total = 0) {
   // First call: COUNT query
   mockQueryFn.mockResolvedValueOnce({ rows: [{ count: String(total) }] });
-  // Second call: SELECT query
-  mockQueryFn.mockResolvedValueOnce({ rows });
+  // Second call: SELECT query (only when total > 0)
+  if (total > 0) {
+    mockQueryFn.mockResolvedValueOnce({ rows });
+  }
 }
 
 const sampleRow = {
@@ -324,12 +328,14 @@ describe('GET /api/pages — filtered query caching (#195)', () => {
   // ---------- Cache key differentiation ----------
 
   it('should produce different cache keys for different filter combinations', async () => {
-    // First: search=foo
-    stubPageListQuery([], 0);
+    // First: search=foo — FTS returns 0, then ILIKE fallback also returns 0
+    stubPageListQuery([], 0); // FTS count
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // ILIKE fallback count
     await app.inject({ method: 'GET', url: '/api/pages?search=foo' });
 
-    // Second: search=bar
-    stubPageListQuery([], 0);
+    // Second: search=bar — same pattern
+    stubPageListQuery([], 0); // FTS count
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // ILIKE fallback count
     await app.inject({ method: 'GET', url: '/api/pages?search=bar' });
 
     expect(mockCacheSet).toHaveBeenCalledTimes(2);
