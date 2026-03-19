@@ -6,8 +6,6 @@ import {
   ChevronRight,
   ChevronDown,
   FileText,
-  Folder,
-  FolderOpen,
   FolderPlus,
   ChevronsUpDown,
   GripVertical,
@@ -24,6 +22,7 @@ import { useSortable, isSortable } from '@dnd-kit/react/sortable';
 import { usePageTree, useCreatePage } from '../../hooks/use-pages';
 import { useSpaces } from '../../hooks/use-spaces';
 import { useLocalSpaces, useReorderPage } from '../../hooks/use-standalone';
+import { useClickOutside } from '../../hooks/use-click-outside';
 import { useUiStore } from '../../../stores/ui-store';
 import { cn } from '../../lib/cn';
 import type { PageTreeItem } from '../../hooks/use-pages';
@@ -64,7 +63,7 @@ function buildTree(pages: PageTreeItem[], homepageId?: string | null): TreeNode[
   sortChildren(roots);
 
   // If homepageId is provided, keep the homepage itself as the visible root
-  // so it remains clickable as a folder/article entry.
+  // so it remains clickable as a tree entry.
   if (homepageId) {
     const homepageNode = nodeMap.get(homepageId);
     if (homepageNode) {
@@ -177,15 +176,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         ) : (
           <span className="w-[20px] shrink-0" />
         )}
-        {(isFolder || hasChildren)
-          ? (
-            isExpanded || isActive
-              ? <FolderOpen size={15} className={cn('shrink-0', isActive ? 'text-primary opacity-100 drop-shadow-[0_1px_2px_oklch(from_var(--color-primary)_l_c_h_/_0.2)]' : 'text-primary/80 opacity-70')} />
-              : <Folder size={15} className="shrink-0 text-primary/70 opacity-70" />
-            )
-          : (
-            <FileText size={15} className={cn('shrink-0 opacity-70', isActive ? 'text-primary opacity-100 drop-shadow-[0_1px_2px_oklch(from_var(--color-primary)_l_c_h_/_0.2)]' : 'text-muted-foreground/70')} />
-            )}
+        <FileText size={15} className={cn('shrink-0', isActive ? 'text-primary/80' : 'text-muted-foreground/70')} />
         <span className="truncate text-sm">{node.page.title}</span>
       </div>
 
@@ -307,6 +298,9 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
   const [showNewFolderInput, setShowNewFolderInput] = useState(false);
   const newFolderInputRef = useRef<HTMLInputElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
+
+  const closeSpaceDropdown = useCallback(() => setSpaceDropdownOpen(false), []);
+  const spaceDropdownRef = useClickOutside<HTMLDivElement>(closeSpaceDropdown, spaceDropdownOpen);
   const createPage = useCreatePage();
 
   const handleCreateFolder = useCallback(async () => {
@@ -553,7 +547,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
 
       {/* Space selector */}
       <div className="px-2 pb-2">
-        <div className="relative">
+        <div ref={spaceDropdownRef} className="relative">
           <button
             onClick={() => setSpaceDropdownOpen(!spaceDropdownOpen)}
             className="flex w-full items-center justify-between rounded-lg bg-foreground/5 px-2.5 py-1.5 text-xs text-foreground hover:bg-foreground/8 transition-colors"
@@ -711,7 +705,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
         ) : tree.length === 0 ? (
           <div className="flex flex-col items-center px-3 py-8 text-center">
             <div className="mb-3 rounded-full bg-muted p-2.5">
-              <FolderOpen size={20} className="text-muted-foreground" />
+              <FileText size={20} className="text-muted-foreground" />
             </div>
             <p className="text-xs font-medium text-foreground/70">
               {treeSidebarSpaceKey ? 'No pages in this space' : 'No pages synced yet'}

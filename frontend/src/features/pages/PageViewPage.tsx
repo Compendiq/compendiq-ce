@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, m } from 'framer-motion';
-import { FileText, FolderOpen, X, Upload, ShieldCheck, Globe, Lock, ThumbsUp, ThumbsDown, AlertCircle, GitGraph } from 'lucide-react';
+import { FileText, X, Upload, ShieldCheck, Globe, Lock, ThumbsUp, ThumbsDown, AlertCircle, GitGraph } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   usePage,
@@ -367,9 +367,7 @@ export function PageViewPage() {
         {/* Breadcrumb / action strip */}
         <div className="flex items-center justify-between gap-4 border-b border-border/25 px-5 py-2 sm:px-7">
           <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground/60">
-            {page.hasChildren
-              ? <FolderOpen size={12} className="shrink-0" />
-              : <FileText size={12} className="shrink-0" />}
+            <FileText size={12} className="shrink-0" />
             {page.spaceKey !== '__local__' && <span className="truncate">{page.spaceKey}</span>}
             {/* Source badge */}
             {page.spaceKey === '__local__' ? (
@@ -506,7 +504,7 @@ export function PageViewPage() {
             </h1>
             <div className="rounded-2xl border border-primary/15 bg-primary/6 px-5 py-4 text-sm text-muted-foreground">
               <div className="flex items-center gap-2 mb-2">
-                <FolderOpen size={18} className="text-primary" />
+                <FileText size={18} className="text-primary" />
                 <span className="font-medium text-foreground">Folder</span>
               </div>
               <p>
