@@ -95,7 +95,7 @@ export const PageListQuerySchema = z.object({
   dateTo: z.string().optional(),   // ISO date string
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(50),
-  sort: z.enum(['title', 'modified', 'author', 'quality']).default('title'),
+  sort: z.enum(['title', 'modified', 'author', 'quality', 'relevance']).default('title'),
 });
 
 export type PageSummary = z.infer<typeof PageSummarySchema>;
