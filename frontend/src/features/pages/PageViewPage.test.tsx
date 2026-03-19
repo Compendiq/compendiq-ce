@@ -343,4 +343,24 @@ describe('PageViewPage', () => {
 
     fetchSpy.mockRestore();
   });
+
+  it('shows Edit button for pages with pageType "folder" (folder concept removed)', () => {
+    currentMockPage = { ...mockPage, pageType: 'folder' as const };
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    expect(screen.getByText('Edit')).toBeInTheDocument();
+  });
+
+  it('shows empty page placeholder when bodyHtml is empty', () => {
+    currentMockPage = { ...mockPage, bodyHtml: '' };
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    expect(screen.getByText('This page has no content yet.')).toBeInTheDocument();
+    expect(screen.getByTestId('add-content-btn')).toBeInTheDocument();
+  });
+
+  it('shows article content when bodyHtml has content', () => {
+    currentMockPage = { ...mockPage, bodyHtml: '<p>Some content</p>' };
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    expect(screen.queryByText('This page has no content yet.')).not.toBeInTheDocument();
+    expect(screen.getByTestId('article-viewer')).toBeInTheDocument();
+  });
 });
