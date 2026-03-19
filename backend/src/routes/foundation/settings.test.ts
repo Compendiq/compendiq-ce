@@ -15,6 +15,21 @@ vi.mock('../../core/utils/tls-config.js', () => ({
   buildConnectOptions: vi.fn().mockReturnValue(undefined),
 }));
 
+// Mock SSRF guard — allows tests to control validateUrl behaviour and assert
+// that addAllowedBaseUrl is called at the right points in the route handlers.
+const mockValidateUrl = vi.fn();
+const mockAddAllowedBaseUrl = vi.fn();
+vi.mock('../../core/utils/ssrf-guard.js', () => ({
+  validateUrl: (...args: unknown[]) => mockValidateUrl(...args),
+  addAllowedBaseUrl: (...args: unknown[]) => mockAddAllowedBaseUrl(...args),
+  SsrfError: class SsrfError extends Error {
+    constructor(msg: string) {
+      super(msg);
+      this.name = 'SsrfError';
+    }
+  },
+}));
+
 // Hoisted query mock so we can reference it in tests
 const mockQuery = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 });
 
@@ -173,6 +188,11 @@ describe('Settings routes – test-confluence', () => {
   });
 
   it('should block SSRF attempts to private networks', async () => {
+    // Simulate the SSRF guard throwing when validateUrl is called with a private IP
+    mockValidateUrl.mockImplementationOnce(() => {
+      throw new Error('SSRF blocked: cannot connect to internal/private network');
+    });
+
     const response = await app.inject({
       method: 'POST',
       url: '/api/settings/test-confluence',
@@ -184,6 +204,26 @@ describe('Settings routes – test-confluence', () => {
     expect(body.success).toBe(false);
     expect(body.message).toContain('URL blocked');
     expect(mockUndiciRequest).not.toHaveBeenCalled();
+  });
+
+  it('should register the Confluence URL in the SSRF allowlist before validating', async () => {
+    mockUndiciRequest.mockResolvedValue({
+      statusCode: 200,
+      body: { dump: vi.fn().mockResolvedValue(undefined) },
+    });
+
+    const testUrl = 'https://confluence.example.com';
+    await app.inject({
+      method: 'POST',
+      url: '/api/settings/test-confluence',
+      payload: { url: testUrl, pat: 'test-pat' },
+    });
+
+    expect(mockAddAllowedBaseUrl).toHaveBeenCalledWith(testUrl);
+    // addAllowedBaseUrl must be called before validateUrl
+    const addCallOrder = mockAddAllowedBaseUrl.mock.invocationCallOrder[0];
+    const validateCallOrder = mockValidateUrl.mock.invocationCallOrder[0];
+    expect(addCallOrder).toBeLessThan(validateCallOrder);
   });
 
   it('should reject invalid payload (missing url)', async () => {
@@ -478,5 +518,43 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     );
     expect(updateCalls).toHaveLength(1);
     expect(updateCalls[0][1]).toContain(JSON.stringify({ improve_clarity: 'Be clear!' }));
+  });
+
+  it('should register Confluence URL in allowlist on PUT /settings when confluenceUrl is provided', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 }); // UPDATE
+
+    const confluenceUrl = 'https://confluence.internal.corp:8090';
+    await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { confluenceUrl },
+    });
+
+    expect(mockAddAllowedBaseUrl).toHaveBeenCalledOnce();
+    expect(mockAddAllowedBaseUrl).toHaveBeenCalledWith(confluenceUrl);
+  });
+
+  it('should NOT call addAllowedBaseUrl when PUT /settings has no confluenceUrl', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 }); // UPDATE
+
+    await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { ollamaModel: 'llama3' },
+    });
+
+    expect(mockAddAllowedBaseUrl).not.toHaveBeenCalled();
+  });
+
+  it('should NOT call addAllowedBaseUrl when PUT /settings has null confluenceUrl', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 }); // UPDATE
+
+    await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { confluenceUrl: null },
+    });
+
+    expect(mockAddAllowedBaseUrl).not.toHaveBeenCalled();
   });
 });

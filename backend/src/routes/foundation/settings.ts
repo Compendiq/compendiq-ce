@@ -4,7 +4,7 @@ import { UpdateSettingsSchema, TestConfluenceSchema } from '@atlasmind/contracts
 import { query } from '../../core/db/postgres.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { encryptPat, decryptPat } from '../../core/utils/crypto.js';
-import { validateUrl } from '../../core/utils/ssrf-guard.js';
+import { validateUrl, addAllowedBaseUrl } from '../../core/utils/ssrf-guard.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { getUserAccessibleSpaces, invalidateRbacCache } from '../../core/services/rbac-service.js';
 import { setActiveProvider } from '../../domains/llm/services/ollama-service.js';
@@ -102,6 +102,10 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     if (body.confluenceUrl !== undefined) {
       updates.push(`confluence_url = $${paramIdx++}`);
       values.push(body.confluenceUrl);
+      // Register the URL in the SSRF allowlist so sync can reach private-network Confluence instances
+      if (typeof body.confluenceUrl === 'string' && body.confluenceUrl !== null) {
+        addAllowedBaseUrl(body.confluenceUrl);
+      }
     }
 
     if (body.confluencePat !== undefined && body.confluencePat !== null) {
@@ -247,7 +251,11 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       }
     }
 
-    // SSRF protection: use centralized validator
+    // Register the URL in the allowlist so that private-network Confluence instances
+    // can be tested. The user is explicitly naming this URL as their Confluence endpoint.
+    addAllowedBaseUrl(url);
+
+    // SSRF protection: use centralized validator (allowlist check is now included)
     try {
       validateUrl(url);
     } catch {

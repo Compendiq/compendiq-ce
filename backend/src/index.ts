@@ -4,7 +4,7 @@ import { initTelemetry, shutdownTelemetry } from './telemetry.js';
 
 import { buildApp } from './app.js';
 import { runMigrations, closePool } from './core/db/postgres.js';
-import { startSyncWorker, stopSyncWorker } from './domains/confluence/services/sync-service.js';
+import { startSyncWorker, stopSyncWorker, bootstrapSsrfAllowlist } from './domains/confluence/services/sync-service.js';
 import { startQualityWorker, stopQualityWorker, triggerQualityBatch } from './domains/knowledge/services/quality-worker.js';
 import { startSummaryWorker, stopSummaryWorker, triggerSummaryBatch } from './domains/knowledge/services/summary-worker.js';
 import { markStartupComplete } from './routes/foundation/health.js';
@@ -33,6 +33,12 @@ async function start() {
   logger.info('Running database migrations...');
   await runMigrations();
   logger.info('Migrations complete');
+
+  // Pre-populate the SSRF allowlist with all Confluence URLs from user_settings
+  // so that private-network Confluence instances are accessible from the first sync.
+  // Best-effort: failure logs a warning but does not prevent startup.
+  logger.info('Bootstrapping SSRF allowlist...');
+  await bootstrapSsrfAllowlist();
 
   // Build and start the app
   const app = await buildApp();

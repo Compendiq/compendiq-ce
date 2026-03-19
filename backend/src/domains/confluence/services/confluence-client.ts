@@ -2,7 +2,7 @@ import { request } from 'undici';
 import { createWriteStream } from 'fs';
 import { pipeline } from 'stream/promises';
 import { unlink } from 'fs/promises';
-import { validateUrl } from '../../../core/utils/ssrf-guard.js';
+import { validateUrl, addAllowedBaseUrl } from '../../../core/utils/ssrf-guard.js';
 import { logger } from '../../../core/utils/logger.js';
 import { confluenceDispatcher } from '../../../core/utils/tls-config.js';
 
@@ -68,6 +68,9 @@ export class ConfluenceClient {
     this.baseUrl = baseUrl.replace(/\/+$/, '');
     this.pat = pat;
     this.retryOpts = options?.retry ?? {};
+    // Self-register this Confluence base URL so that validateUrl() allows requests
+    // to private/internal networks that the user has explicitly configured.
+    addAllowedBaseUrl(this.baseUrl);
   }
 
   /**
