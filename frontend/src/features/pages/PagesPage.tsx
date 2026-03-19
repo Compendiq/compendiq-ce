@@ -98,7 +98,35 @@ export function PagesPage() {
     }
   }, [embeddingStatusData, queryClient]);
 
-  const activeFilterCount = [author, labels, freshness, embeddingStatus, qualityFilter, dateFrom, dateTo, sourceFilter].filter(Boolean).length;
+  const activeFilters = useMemo(() => {
+    const filters: { key: string; label: string }[] = [];
+    if (author) filters.push({ key: 'author', label: `Author: ${author}` });
+    if (labels) filters.push({ key: 'labels', label: `Label: ${labels}` });
+    if (freshness) filters.push({ key: 'freshness', label: `Freshness: ${freshness}` });
+    if (embeddingStatus) filters.push({ key: 'embeddingStatus', label: `Embedding: ${embeddingStatus}` });
+    if (qualityFilter) filters.push({ key: 'qualityFilter', label: `Quality: ${qualityFilter}` });
+    if (dateFrom) filters.push({ key: 'dateFrom', label: `From: ${dateFrom}` });
+    if (dateTo) filters.push({ key: 'dateTo', label: `To: ${dateTo}` });
+    if (sourceFilter) filters.push({ key: 'sourceFilter', label: `Source: ${sourceFilter}` });
+    return filters;
+  }, [author, labels, freshness, embeddingStatus, qualityFilter, dateFrom, dateTo, sourceFilter]);
+
+  const activeFilterCount = activeFilters.length;
+
+  const clearFilter = useCallback((key: string) => {
+    const setters: Record<string, (v: string) => void> = {
+      author: setAuthor,
+      labels: setLabels,
+      freshness: setFreshness,
+      embeddingStatus: setEmbeddingStatus,
+      qualityFilter: setQualityFilter,
+      dateFrom: setDateFrom,
+      dateTo: setDateTo,
+      sourceFilter: setSourceFilter,
+    };
+    setters[key]?.('');
+    setPage(1);
+  }, []);
 
   const clearAllFilters = useCallback(() => {
     setAuthor('');
@@ -242,8 +270,18 @@ export function PagesPage() {
                   setSort('modified');
                 }
               }}
-              className="glass-input pl-10 pr-4"
+              className="glass-input pl-10 pr-10"
             />
+            {search && (
+              <button
+                onClick={() => { setSearch(''); setPage(1); if (sort === 'relevance') setSort('modified'); }}
+                className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full p-0.5 text-muted-foreground hover:text-foreground"
+                data-testid="search-clear"
+                aria-label="Clear search"
+              >
+                <X size={14} />
+              </button>
+            )}
           </div>
 
           <select
@@ -280,6 +318,9 @@ export function PagesPage() {
             <option value="relevance">Relevance</option>
           </select>
 
+          {/* Divider between sort and filters */}
+          <div className="hidden h-6 w-px bg-border/60 sm:block" aria-hidden="true" data-testid="sort-filter-divider" />
+
           {/* Advanced filters toggle */}
           <button
             onClick={() => setShowAdvancedFilters((v) => !v)}
@@ -304,7 +345,7 @@ export function PagesPage() {
 
         {/* Advanced filters panel */}
         {showAdvancedFilters && (
-          <div className="flex flex-wrap items-end gap-3 border-t border-border/40 pt-3" data-testid="advanced-filters-panel">
+          <div className="grid grid-cols-2 items-end gap-3 border-t border-border/40 pt-3 sm:grid-cols-3 lg:grid-cols-4" data-testid="advanced-filters-panel">
             {/* Author filter */}
             <div className="min-w-40">
               <label className="mb-1 block text-xs text-muted-foreground">Author</label>
@@ -419,6 +460,36 @@ export function PagesPage() {
                 Clear filters
               </button>
             )}
+          </div>
+        )}
+
+        {/* Active filter pills */}
+        {activeFilters.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 border-t border-border/50 pt-3" data-testid="active-filter-pills">
+            {activeFilters.map((f) => (
+              <span
+                key={f.key}
+                className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-3 py-1 text-xs font-medium text-primary"
+                data-testid={`filter-pill-${f.key}`}
+              >
+                {f.label}
+                <button
+                  onClick={() => clearFilter(f.key)}
+                  className="ml-0.5 rounded-full p-0.5 hover:bg-primary/20"
+                  aria-label={`Remove ${f.label} filter`}
+                  data-testid={`filter-pill-remove-${f.key}`}
+                >
+                  <X size={12} />
+                </button>
+              </span>
+            ))}
+            <button
+              onClick={clearAllFilters}
+              className="text-xs text-muted-foreground hover:text-foreground"
+              data-testid="clear-all-pill-filters"
+            >
+              Clear all
+            </button>
           </div>
         )}
       </div>

@@ -14,6 +14,7 @@ import { Breadcrumb } from './Breadcrumb';
 import { UserMenu } from './UserMenu';
 import { SidebarTreeView } from './SidebarTreeView';
 import { ArticleRightPane } from '../article/ArticleRightPane';
+import { ShortcutHint } from '../ShortcutHint';
 import { ThemeToggle } from './ThemeToggle';
 import { PageTransition } from './PageTransition';
 import { cn } from '../../lib/cn';
@@ -169,9 +170,9 @@ export function AppLayout({ children }: { children: ReactNode }) {
           >
             <Search size={16} className="shrink-0" />
             <span className="truncate">Search pages, articles, commands...</span>
-            <kbd className="ml-auto shrink-0 rounded border border-border/50 px-1.5 py-0.5 text-[10px]">
-              {navigator.platform?.includes('Mac') ? '\u2318' : 'Ctrl'}K
-            </kbd>
+            <span className="ml-auto shrink-0">
+              <ShortcutHint shortcutId="search" />
+            </span>
           </button>
         </div>
 

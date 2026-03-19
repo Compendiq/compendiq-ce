@@ -477,4 +477,104 @@ describe('PagesPage', () => {
       expect(screen.queryByText('Go to Settings')).not.toBeInTheDocument();
     });
   });
+
+  // --- Search clear button tests ---
+
+  it('does not show search clear button when search is empty', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    expect(screen.queryByTestId('search-clear')).not.toBeInTheDocument();
+  });
+
+  it('shows search clear button when search has text', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    const input = screen.getByPlaceholderText('Search pages...');
+    fireEvent.change(input, { target: { value: 'test query' } });
+    expect(screen.getByTestId('search-clear')).toBeInTheDocument();
+  });
+
+  it('clears search when clear button is clicked', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    const input = screen.getByPlaceholderText('Search pages...') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'test query' } });
+    expect(input.value).toBe('test query');
+
+    fireEvent.click(screen.getByTestId('search-clear'));
+    expect(input.value).toBe('');
+    expect(screen.queryByTestId('search-clear')).not.toBeInTheDocument();
+  });
+
+  // --- Active filter pills tests ---
+
+  it('shows active filter pills when filters are set', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+    fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+
+    expect(screen.getByTestId('active-filter-pills')).toBeInTheDocument();
+    expect(screen.getByTestId('filter-pill-freshness')).toHaveTextContent('Freshness: stale');
+  });
+
+  it('does not show active filter pills when no filters are active', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    expect(screen.queryByTestId('active-filter-pills')).not.toBeInTheDocument();
+  });
+
+  it('shows multiple filter pills when multiple filters are set', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+    fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'fresh' } });
+    fireEvent.change(screen.getByTestId('filter-embedding'), { target: { value: 'pending' } });
+
+    expect(screen.getByTestId('filter-pill-freshness')).toHaveTextContent('Freshness: fresh');
+    expect(screen.getByTestId('filter-pill-embeddingStatus')).toHaveTextContent('Embedding: pending');
+  });
+
+  it('removes individual filter when pill dismiss button is clicked', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+    fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+    fireEvent.change(screen.getByTestId('filter-embedding'), { target: { value: 'done' } });
+
+    // Remove freshness pill
+    fireEvent.click(screen.getByTestId('filter-pill-remove-freshness'));
+
+    // Freshness pill gone, embedding pill remains
+    expect(screen.queryByTestId('filter-pill-freshness')).not.toBeInTheDocument();
+    expect(screen.getByTestId('filter-pill-embeddingStatus')).toBeInTheDocument();
+
+    // Freshness select reset to empty
+    expect((screen.getByTestId('filter-freshness') as HTMLSelectElement).value).toBe('');
+  });
+
+  it('removes all filter pills when "Clear all" is clicked', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+    fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'aging' } });
+    fireEvent.change(screen.getByTestId('filter-embedding'), { target: { value: 'pending' } });
+
+    expect(screen.getByTestId('active-filter-pills')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('clear-all-pill-filters'));
+
+    expect(screen.queryByTestId('active-filter-pills')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('filter-pill-freshness')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('filter-pill-embeddingStatus')).not.toBeInTheDocument();
+  });
+
+  // --- Visual divider test ---
+
+  it('renders a visual divider between sort and filters toggle', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    expect(screen.getByTestId('sort-filter-divider')).toBeInTheDocument();
+  });
+
+  // --- Grid layout test ---
+
+  it('renders advanced filters in a grid layout', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+    const panel = screen.getByTestId('advanced-filters-panel');
+    expect(panel.className).toContain('grid');
+    expect(panel.className).toContain('grid-cols-2');
+  });
 });
