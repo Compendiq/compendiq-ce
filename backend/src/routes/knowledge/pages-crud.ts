@@ -584,7 +584,25 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const body = CreatePageSchema.parse(request.body);
     const pageType: 'page' | 'folder' = (body as Record<string, unknown>).pageType === 'folder' ? 'folder' : 'page';
     const userId = request.userId;
-    const isStandalone = body.source === 'standalone' || !body.spaceKey;
+
+    // Auto-detect whether this is a Confluence or standalone page based on the
+    // space source. This fixes #468 where the frontend defaults source to
+    // 'standalone' but the user selected a Confluence space.
+    let spaceSource: string | null = null;
+    if (body.spaceKey) {
+      const spaceRow = await query<{ source: string }>(
+        'SELECT source FROM spaces WHERE space_key = $1',
+        [body.spaceKey],
+      );
+      if (spaceRow.rows.length > 0) {
+        spaceSource = spaceRow.rows[0].source;
+      }
+    }
+    let isStandalone = spaceSource !== 'confluence';
+    // Explicit override: if source is explicitly set to 'confluence', respect it
+    if (body.source === 'confluence') {
+      isStandalone = false;
+    }
 
     if (isStandalone) {
       // --- Standalone article: no Confluence call, store locally ---
@@ -593,17 +611,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       const { htmlToText } = await import('../../core/services/content-converter.js');
       const bodyText = isFolder ? '' : htmlToText(effectiveBodyHtml);
 
-      // If spaceKey is provided, verify it's a local space
-      let spaceKey: string | null = null;
-      if (body.spaceKey) {
-        const spaceCheck = await query<{ source: string }>(
-          'SELECT source FROM spaces WHERE space_key = $1',
-          [body.spaceKey],
-        );
-        if (spaceCheck.rows.length > 0 && spaceCheck.rows[0].source === 'local') {
-          spaceKey = body.spaceKey;
-        }
-      }
+      // Use space key only for local spaces (already looked up above)
+      const spaceKey: string | null = spaceSource === 'local' ? body.spaceKey! : null;
 
       // Validate and compute path if parentId is provided
       let parentPath: string | null = null;
