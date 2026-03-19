@@ -44,7 +44,6 @@ const mockGetSharedLlmSettings = vi.fn().mockResolvedValue({
   ollamaModel: 'qwen3.5',
   openaiBaseUrl: null,
   hasOpenaiApiKey: false,
-  openaiApiKey: null,
   openaiModel: null,
 });
 const mockUpsertSharedLlmSettings = vi.fn().mockResolvedValue(undefined);
@@ -108,7 +107,6 @@ describe('Admin routes', () => {
       ollamaModel: 'qwen3.5',
       openaiBaseUrl: null,
       hasOpenaiApiKey: false,
-      openaiApiKey: null,
       openaiModel: null,
     });
   });
@@ -423,5 +421,61 @@ describe('Admin routes', () => {
       );
       expect(embeddingDirtyCall).toBeDefined();
     });
+  });
+});
+
+describe('Admin routes - non-admin access guard', () => {
+  let nonAdminApp: ReturnType<typeof Fastify>;
+
+  beforeAll(async () => {
+    nonAdminApp = Fastify({ logger: false });
+    await nonAdminApp.register(sensible);
+
+    nonAdminApp.setErrorHandler((error, _request, reply) => {
+      reply.status(error.statusCode ?? 500).send({ error: error.message, statusCode: error.statusCode ?? 500 });
+    });
+
+    // Simulate a non-admin user: authenticate populates the request, requireAdmin rejects
+    nonAdminApp.decorate('authenticate', async (request: { userId: string; username: string; userRole: string }) => {
+      request.userId = 'regular-user-id';
+      request.username = 'regular';
+      request.userRole = 'user';
+    });
+    nonAdminApp.decorate('requireAdmin', async (request: { userId: string; username: string; userRole: string }, reply: { code: (n: number) => { send: (body: unknown) => void } }) => {
+      request.userId = 'regular-user-id';
+      request.username = 'regular';
+      request.userRole = 'user';
+      reply.code(403).send({ error: 'Admin access required', statusCode: 403 });
+    });
+
+    await nonAdminApp.register(adminRoutes, { prefix: '/api' });
+    await nonAdminApp.ready();
+  });
+
+  afterAll(async () => {
+    await nonAdminApp.close();
+  });
+
+  it('should reject non-admin users on GET /api/admin/settings with 403', async () => {
+    const response = await nonAdminApp.inject({
+      method: 'GET',
+      url: '/api/admin/settings',
+    });
+
+    expect(response.statusCode).toBe(403);
+    const body = JSON.parse(response.body);
+    expect(body.error).toBe('Admin access required');
+  });
+
+  it('should reject non-admin users on PUT /api/admin/settings with 403', async () => {
+    const response = await nonAdminApp.inject({
+      method: 'PUT',
+      url: '/api/admin/settings',
+      payload: { llmProvider: 'openai' },
+    });
+
+    expect(response.statusCode).toBe(403);
+    const body = JSON.parse(response.body);
+    expect(body.error).toBe('Admin access required');
   });
 });

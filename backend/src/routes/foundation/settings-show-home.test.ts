@@ -30,7 +30,6 @@ vi.mock('../../core/services/admin-settings-service.js', () => ({
     ollamaModel: 'qwen3.5',
     openaiBaseUrl: null,
     hasOpenaiApiKey: false,
-    openaiApiKey: null,
     openaiModel: null,
   }),
 }));

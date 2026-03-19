@@ -54,7 +54,6 @@ const mockGetSharedLlmSettings = vi.fn().mockResolvedValue({
   ollamaModel: 'qwen3.5',
   openaiBaseUrl: null,
   hasOpenaiApiKey: false,
-  openaiApiKey: null,
   openaiModel: null,
 });
 vi.mock('../../core/services/admin-settings-service.js', () => ({
@@ -109,7 +108,6 @@ describe('Settings routes – test-confluence', () => {
       ollamaModel: 'qwen3.5',
       openaiBaseUrl: null,
       hasOpenaiApiKey: false,
-      openaiApiKey: null,
       openaiModel: null,
     });
   });
@@ -431,7 +429,6 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
       ollamaModel: 'qwen3.5',
       openaiBaseUrl: 'https://api.openai.com/v1',
       hasOpenaiApiKey: true,
-      openaiApiKey: 'secret',
       openaiModel: 'gpt-4o-mini',
     });
     mockQuery.mockResolvedValueOnce({
