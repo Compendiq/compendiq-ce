@@ -24,6 +24,18 @@ vi.mock('../../../core/utils/logger.js', () => ({
   logger: { debug: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn() },
 }));
 
+const mockGetSharedLlmSettings = vi.fn().mockResolvedValue({
+  llmProvider: 'openai',
+  ollamaModel: 'qwen3.5',
+  openaiBaseUrl: 'https://api.test.com/v1',
+  hasOpenaiApiKey: true,
+  openaiApiKey: 'test-key-123',
+  openaiModel: 'gpt-4o',
+});
+vi.mock('../../../core/services/admin-settings-service.js', () => ({
+  getSharedLlmSettings: (...args: unknown[]) => mockGetSharedLlmSettings(...args),
+}));
+
 import { OpenAIProvider } from './openai-service.js';
 
 /** Create a mock embedding array of exactly 768 dimensions. */
@@ -38,6 +50,14 @@ describe('OpenAIProvider', () => {
     mockFetch.mockReset();
     process.env.OPENAI_BASE_URL = 'https://api.test.com/v1';
     process.env.OPENAI_API_KEY = 'test-key-123';
+    mockGetSharedLlmSettings.mockResolvedValue({
+      llmProvider: 'openai',
+      ollamaModel: 'qwen3.5',
+      openaiBaseUrl: 'https://api.test.com/v1',
+      hasOpenaiApiKey: true,
+      openaiApiKey: 'test-key-123',
+      openaiModel: 'gpt-4o',
+    });
   });
 
   afterEach(() => {
@@ -273,6 +293,14 @@ describe('OpenAIProvider', () => {
 
   describe('configuration', () => {
     it('should use default base URL when env var is not set', async () => {
+      mockGetSharedLlmSettings.mockResolvedValueOnce({
+        llmProvider: 'openai',
+        ollamaModel: 'qwen3.5',
+        openaiBaseUrl: null,
+        hasOpenaiApiKey: true,
+        openaiApiKey: 'test-key-123',
+        openaiModel: 'gpt-4o',
+      });
       delete process.env.OPENAI_BASE_URL;
 
       mockFetch.mockResolvedValueOnce(
@@ -289,6 +317,14 @@ describe('OpenAIProvider', () => {
     });
 
     it('should not set Authorization header when API key is empty', async () => {
+      mockGetSharedLlmSettings.mockResolvedValueOnce({
+        llmProvider: 'openai',
+        ollamaModel: 'qwen3.5',
+        openaiBaseUrl: 'https://api.test.com/v1',
+        hasOpenaiApiKey: false,
+        openaiApiKey: null,
+        openaiModel: 'gpt-4o',
+      });
       delete process.env.OPENAI_API_KEY;
       delete process.env.LLM_BEARER_TOKEN;
 

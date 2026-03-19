@@ -15,6 +15,7 @@ import { Agent, fetch as undiciFetch } from 'undici';
 import { logger } from '../../../core/utils/logger.js';
 import { openaiBreakers } from '../../../core/services/circuit-breaker.js';
 import pLimit from 'p-limit';
+import { getSharedLlmSettings } from '../../../core/services/admin-settings-service.js';
 import type {
   LlmProvider,
   ChatMessage,
@@ -52,10 +53,11 @@ export interface OpenAIConfig {
   apiKey: string;
 }
 
-function getConfig(): OpenAIConfig {
+async function getConfig(): Promise<OpenAIConfig> {
+  const sharedLlmSettings = await getSharedLlmSettings();
   return {
-    baseUrl: (process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1').replace(/\/+$/, ''),
-    apiKey: process.env.LLM_BEARER_TOKEN ?? process.env.OPENAI_API_KEY ?? '',
+    baseUrl: (sharedLlmSettings.openaiBaseUrl ?? process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1').replace(/\/+$/, ''),
+    apiKey: sharedLlmSettings.openaiApiKey ?? process.env.LLM_BEARER_TOKEN ?? process.env.OPENAI_API_KEY ?? '',
   };
 }
 
@@ -87,7 +89,7 @@ async function openaiRequest(
   body?: unknown,
   signal?: AbortSignal,
 ): Promise<Response> {
-  const config = getConfig();
+  const config = await getConfig();
   const url = `${config.baseUrl}${path}`;
   const headers = makeHeaders(config);
 

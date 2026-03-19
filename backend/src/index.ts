@@ -9,6 +9,8 @@ import { startQualityWorker, stopQualityWorker, triggerQualityBatch } from './do
 import { startSummaryWorker, stopSummaryWorker, triggerSummaryBatch } from './domains/knowledge/services/summary-worker.js';
 import { markStartupComplete } from './routes/foundation/health.js';
 import { logger } from './core/utils/logger.js';
+import { getSharedLlmSettings } from './core/services/admin-settings-service.js';
+import { setActiveProvider } from './domains/llm/services/ollama-service.js';
 
 const PORT = parseInt(process.env.BACKEND_PORT ?? '3051', 10);
 const HOST = process.env.NODE_ENV === 'production' ? '0.0.0.0' : '127.0.0.1';
@@ -39,6 +41,9 @@ async function start() {
   // Best-effort: failure logs a warning but does not prevent startup.
   logger.info('Bootstrapping SSRF allowlist...');
   await bootstrapSsrfAllowlist();
+
+  const sharedLlmSettings = await getSharedLlmSettings();
+  setActiveProvider(sharedLlmSettings.llmProvider);
 
   // Build and start the app
   const app = await buildApp();

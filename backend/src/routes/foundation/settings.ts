@@ -7,10 +7,10 @@ import { encryptPat, decryptPat } from '../../core/utils/crypto.js';
 import { validateUrl, addAllowedBaseUrl } from '../../core/utils/ssrf-guard.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { getUserAccessibleSpaces, invalidateRbacCache } from '../../core/services/rbac-service.js';
-import { setActiveProvider } from '../../domains/llm/services/ollama-service.js';
 import { getSyncOverview } from '../../domains/confluence/services/sync-overview-service.js';
 import { logger } from '../../core/utils/logger.js';
 import { confluenceDispatcher } from '../../core/utils/tls-config.js';
+import { getSharedLlmSettings } from '../../core/services/admin-settings-service.js';
 
 export async function settingsRoutes(fastify: FastifyInstance) {
   // All settings routes require auth
@@ -21,19 +21,15 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     const result = await query<{
       confluence_url: string | null;
       confluence_pat: string | null;
-      ollama_model: string;
-      llm_provider: string;
-      openai_base_url: string | null;
-      openai_api_key: string | null;
-      openai_model: string | null;
       theme: string;
       sync_interval_min: number;
       show_space_home_content: boolean;
       custom_prompts: Record<string, string>;
     }>(
-      'SELECT confluence_url, confluence_pat, ollama_model, llm_provider, openai_base_url, openai_api_key, openai_model, theme, sync_interval_min, show_space_home_content, custom_prompts FROM user_settings WHERE user_id = $1',
+      'SELECT confluence_url, confluence_pat, theme, sync_interval_min, show_space_home_content, custom_prompts FROM user_settings WHERE user_id = $1',
       [request.userId],
     );
+    const sharedLlmSettings = await getSharedLlmSettings();
 
     // Fetch accessible spaces from RBAC
     const selectedSpaces = await getUserAccessibleSpaces(request.userId);
@@ -46,11 +42,11 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         confluenceUrl: null,
         hasConfluencePat: false,
         selectedSpaces,
-        ollamaModel: 'qwen3.5',
-        llmProvider: 'ollama' as const,
-        openaiBaseUrl: null,
-        hasOpenaiApiKey: false,
-        openaiModel: null,
+        ollamaModel: sharedLlmSettings.ollamaModel,
+        llmProvider: sharedLlmSettings.llmProvider,
+        openaiBaseUrl: sharedLlmSettings.openaiBaseUrl,
+        hasOpenaiApiKey: sharedLlmSettings.hasOpenaiApiKey,
+        openaiModel: sharedLlmSettings.openaiModel,
         embeddingModel: process.env.EMBEDDING_MODEL ?? 'nomic-embed-text',
         theme: 'glass-dark',
         syncIntervalMin: 15,
@@ -65,11 +61,11 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       confluenceUrl: row.confluence_url,
       hasConfluencePat: !!row.confluence_pat,
       selectedSpaces,
-      ollamaModel: row.ollama_model,
-      llmProvider: (row.llm_provider ?? 'ollama') as 'ollama' | 'openai',
-      openaiBaseUrl: row.openai_base_url,
-      hasOpenaiApiKey: !!row.openai_api_key,
-      openaiModel: row.openai_model,
+      ollamaModel: sharedLlmSettings.ollamaModel,
+      llmProvider: sharedLlmSettings.llmProvider,
+      openaiBaseUrl: sharedLlmSettings.openaiBaseUrl,
+      hasOpenaiApiKey: sharedLlmSettings.hasOpenaiApiKey,
+      openaiModel: sharedLlmSettings.openaiModel,
       embeddingModel: process.env.EMBEDDING_MODEL ?? 'nomic-embed-text',
       theme: row.theme,
       syncIntervalMin: row.sync_interval_min,
@@ -113,11 +109,6 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       values.push(encryptPat(body.confluencePat));
     }
 
-    if (body.ollamaModel !== undefined) {
-      updates.push(`ollama_model = $${paramIdx++}`);
-      values.push(body.ollamaModel);
-    }
-
     if (body.theme !== undefined) {
       updates.push(`theme = $${paramIdx++}`);
       values.push(body.theme);
@@ -131,26 +122,6 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     if (body.showSpaceHomeContent !== undefined) {
       updates.push(`show_space_home_content = $${paramIdx++}`);
       values.push(body.showSpaceHomeContent);
-    }
-
-    if (body.llmProvider !== undefined) {
-      updates.push(`llm_provider = $${paramIdx++}`);
-      values.push(body.llmProvider);
-    }
-
-    if (body.openaiBaseUrl !== undefined) {
-      updates.push(`openai_base_url = $${paramIdx++}`);
-      values.push(body.openaiBaseUrl);
-    }
-
-    if (body.openaiApiKey !== undefined && body.openaiApiKey !== null) {
-      updates.push(`openai_api_key = $${paramIdx++}`);
-      values.push(encryptPat(body.openaiApiKey));
-    }
-
-    if (body.openaiModel !== undefined) {
-      updates.push(`openai_model = $${paramIdx++}`);
-      values.push(body.openaiModel);
     }
 
     if (body.customPrompts !== undefined) {
@@ -205,11 +176,6 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         `UPDATE user_settings SET ${updates.join(', ')} WHERE user_id = $${paramIdx}`,
         values,
       );
-    }
-
-    // If LLM provider changed, update the active in-memory provider
-    if (body.llmProvider !== undefined) {
-      setActiveProvider(body.llmProvider as 'ollama' | 'openai');
     }
 
     // If PAT or URL changed, invalidate user-specific cached data (ADR-017)

@@ -24,18 +24,21 @@ export const UserSettingsSchema = z.object({
   confluenceUrl: z.string().url().nullable(),
   confluencePat: z.string().nullable(), // Only sent on update, never returned
   selectedSpaces: z.array(z.string()),
-  ollamaModel: z.string(),
-  llmProvider: LlmProviderSchema,
-  openaiBaseUrl: z.string().nullable(),
-  openaiApiKey: z.string().nullable(), // Only sent on update, never returned
-  openaiModel: z.string().nullable(),
   theme: z.string(),
   syncIntervalMin: z.number().int().min(1).max(1440),
   showSpaceHomeContent: z.boolean(),
   customPrompts: CustomPromptsSchema.optional(),
 });
 
-export const UpdateSettingsSchema = UserSettingsSchema.partial();
+export const UpdateSettingsSchema = z.object({
+  confluenceUrl: z.string().url().nullable().optional(),
+  confluencePat: z.string().nullable().optional(),
+  selectedSpaces: z.array(z.string()).optional(),
+  theme: z.string().optional(),
+  syncIntervalMin: z.number().int().min(1).max(1440).optional(),
+  showSpaceHomeContent: z.boolean().optional(),
+  customPrompts: CustomPromptsSchema.optional(),
+});
 
 export const SettingsResponseSchema = z.object({
   confluenceUrl: z.string().url().nullable(),

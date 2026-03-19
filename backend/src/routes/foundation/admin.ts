@@ -6,6 +6,8 @@ import { getAuditLog, logAuditEvent } from '../../core/services/audit-service.js
 import { listErrors, resolveError, getErrorSummary } from '../../core/services/error-tracker.js';
 import { logger } from '../../core/utils/logger.js';
 import { UpdateAdminSettingsSchema } from '@atlasmind/contracts';
+import { getSharedLlmSettings, upsertSharedLlmSettings } from '../../core/services/admin-settings-service.js';
+import { setActiveProvider } from '../../domains/llm/services/ollama-service.js';
 
 const AuditLogQuerySchema = z.object({
   userId: z.string().optional(),
@@ -219,6 +221,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
 
   // GET /api/admin/settings - retrieve shared admin settings
   fastify.get('/admin/settings', ADMIN_RATE_LIMIT, async () => {
+    const sharedLlmSettings = await getSharedLlmSettings();
     const result = await query<{ setting_key: string; setting_value: string }>(
       `SELECT setting_key, setting_value FROM admin_settings
        WHERE setting_key IN ('embedding_chunk_size', 'embedding_chunk_overlap', 'drawio_embed_url')`,
@@ -230,6 +233,11 @@ export async function adminRoutes(fastify: FastifyInstance) {
     }
 
     return {
+      llmProvider: sharedLlmSettings.llmProvider,
+      ollamaModel: sharedLlmSettings.ollamaModel,
+      openaiBaseUrl: sharedLlmSettings.openaiBaseUrl,
+      hasOpenaiApiKey: sharedLlmSettings.hasOpenaiApiKey,
+      openaiModel: sharedLlmSettings.openaiModel,
       embeddingChunkSize: parseInt(map['embedding_chunk_size'] ?? '500', 10),
       embeddingChunkOverlap: parseInt(map['embedding_chunk_overlap'] ?? '50', 10),
       drawioEmbedUrl: map['drawio_embed_url'] ?? null,
@@ -246,6 +254,12 @@ export async function adminRoutes(fastify: FastifyInstance) {
 
     const hasChunkChanges =
       body.embeddingChunkSize !== undefined || body.embeddingChunkOverlap !== undefined;
+    const hasLlmChanges =
+      body.llmProvider !== undefined
+      || body.ollamaModel !== undefined
+      || body.openaiBaseUrl !== undefined
+      || body.openaiApiKey !== undefined
+      || body.openaiModel !== undefined;
 
     // Validate chunk overlap does not exceed 25% of chunk size (only when chunk settings change)
     if (hasChunkChanges) {
@@ -270,6 +284,16 @@ export async function adminRoutes(fastify: FastifyInstance) {
           `Chunk overlap (${effectiveChunkOverlap}) must not exceed 25% of chunk size (${effectiveChunkSize}). Maximum allowed: ${Math.floor(effectiveChunkSize * 0.25)}.`,
         );
       }
+    }
+
+    if (hasLlmChanges) {
+      await upsertSharedLlmSettings({
+        llmProvider: body.llmProvider,
+        ollamaModel: body.ollamaModel,
+        openaiBaseUrl: body.openaiBaseUrl,
+        openaiApiKey: body.openaiApiKey,
+        openaiModel: body.openaiModel,
+      });
     }
 
     // Upsert changed settings
@@ -298,18 +322,27 @@ export async function adminRoutes(fastify: FastifyInstance) {
       );
     }
 
+    if (body.llmProvider !== undefined) {
+      setActiveProvider(body.llmProvider);
+    }
+
     // Only mark pages dirty for re-embedding when chunk settings changed — NOT for drawioEmbedUrl
     if (hasChunkChanges) {
       await query('UPDATE pages SET embedding_dirty = TRUE');
       logger.info({ userId: request.userId, updates }, 'Admin chunk settings changed, all pages marked dirty');
     }
 
+    const auditDetails = {
+      ...body,
+      ...(body.openaiApiKey !== undefined ? { openaiApiKey: '[REDACTED]' } : {}),
+    };
+
     await logAuditEvent(
       request.userId,
       'ADMIN_ACTION',
       'admin_settings',
       undefined,
-      { action: 'update_admin_settings', ...body },
+      { action: 'update_admin_settings', ...auditDetails },
       request,
     );
 
