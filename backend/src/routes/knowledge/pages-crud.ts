@@ -682,7 +682,19 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // Convert TipTap HTML to Confluence storage format
     const storageBody = htmlToConfluence(body.bodyHtml);
 
-    const page = await client.createPage(body.spaceKey!, body.title, storageBody, body.parentId);
+    // Resolve parentId: frontend may send internal DB id (numeric) instead of confluence_id
+    let confluenceParentId = body.parentId;
+    if (confluenceParentId && /^\d+$/.test(confluenceParentId)) {
+      const parentLookup = await query<{ confluence_id: string | null }>(
+        'SELECT confluence_id FROM pages WHERE id = $1::int OR confluence_id = $2',
+        [confluenceParentId, confluenceParentId],
+      );
+      if (parentLookup.rows[0]?.confluence_id) {
+        confluenceParentId = parentLookup.rows[0].confluence_id;
+      }
+    }
+
+    const page = await client.createPage(body.spaceKey!, body.title, storageBody, confluenceParentId);
 
     // Convert back to clean HTML for local cache
     const bodyHtml = confluenceToHtml(page.body?.storage?.value ?? storageBody, page.id, body.spaceKey!);
