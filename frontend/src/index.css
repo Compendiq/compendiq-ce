@@ -1102,6 +1102,35 @@ body {
   border-color: oklch(0.7 0.15 240 / 0.3);
 }
 
+/* Section/Column layout (multi-column) */
+.prose .confluence-section,
+.tiptap .confluence-section {
+  display: flex;
+  gap: 1rem;
+  margin: 1rem 0;
+}
+
+.prose .confluence-section[data-border="true"],
+.tiptap .confluence-section[data-border="true"] {
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  padding: 1rem;
+}
+
+.prose .confluence-column,
+.tiptap .confluence-column {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Responsive stacking for narrow viewports */
+@media (max-width: 640px) {
+  .prose .confluence-section,
+  .tiptap .confluence-section {
+    flex-direction: column;
+  }
+}
+
 /* Children macro placeholder */
 .prose .confluence-children-macro,
 .tiptap .confluence-children-macro {

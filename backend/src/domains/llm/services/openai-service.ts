@@ -58,8 +58,14 @@ async function getConfig(): Promise<OpenAIConfig> {
     getSharedLlmSettings(),
     getSharedOpenaiApiKey(),
   ]);
+  let baseUrl = (sharedLlmSettings.openaiBaseUrl ?? process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1').replace(/\/+$/, '');
+  // Ensure the base URL includes the /v1 path required by the OpenAI API.
+  // Users commonly enter just the host (e.g. http://host:1234) without it.
+  if (!baseUrl.endsWith('/v1')) {
+    baseUrl += '/v1';
+  }
   return {
-    baseUrl: (sharedLlmSettings.openaiBaseUrl ?? process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1').replace(/\/+$/, ''),
+    baseUrl,
     apiKey: sharedApiKey ?? process.env.LLM_BEARER_TOKEN ?? process.env.OPENAI_API_KEY ?? '',
   };
 }
@@ -268,8 +274,10 @@ export class OpenAIProvider implements LlmProvider {
         const input = Array.isArray(text) ? text : [text];
 
         const REQUIRED_DIMS = 768;
+        const sharedSettings = await getSharedLlmSettings();
+        const embeddingModel = sharedSettings.embeddingModel;
         const response = await openaiRequest('/embeddings', {
-          model: process.env.EMBEDDING_MODEL ?? 'text-embedding-3-small',
+          model: embeddingModel,
           input,
           dimensions: REQUIRED_DIMS,
         });

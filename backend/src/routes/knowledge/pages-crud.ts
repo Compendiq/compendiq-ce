@@ -20,6 +20,11 @@ const BulkTagSchema = z.object({
 });
 const IdParamSchema = z.object({ id: z.string().min(1) });
 
+/** Escape ILIKE metacharacters so user input is matched literally. */
+function escapeIlikeTerm(term: string): string {
+  return term.replace(/[%_\\]/g, '\\$&');
+}
+
 export async function pagesCrudRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
   const cache = new RedisCache(fastify.redis);
@@ -63,8 +68,12 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       values.push(spaceKey);
     }
 
+    // Track search clause index so we can swap FTS for ILIKE fallback later
+    let searchClauseParamIdx = -1;
+    let usedIlikeFallback = false;
     if (search && search.trim()) {
       // Full-text search using plainto_tsquery for safe handling of arbitrary user input
+      searchClauseParamIdx = paramIdx;
       whereClause += ` AND to_tsvector('english', coalesce(cp.title, '') || ' ' || coalesce(cp.body_text, '')) @@ plainto_tsquery('english', $${paramIdx++})`;
       values.push(search.trim());
     }
@@ -130,39 +139,24 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       values.push(dateTo);
     }
 
-    // Sort
+    // Sort — 'relevance' uses ts_rank when a search term is present, falls back to 'title'
     const sortMap: Record<string, string> = {
       title: 'cp.title ASC',
       modified: 'cp.last_modified_at DESC NULLS LAST',
       author: 'cp.author ASC NULLS LAST',
       quality: 'cp.quality_score DESC NULLS LAST',
     };
-    const orderBy = sortMap[sort] ?? sortMap.title;
+    let orderBy: string;
+    if (sort === 'relevance' && search && search.trim()) {
+      orderBy = `ts_rank(to_tsvector('english', coalesce(cp.title, '') || ' ' || coalesce(cp.body_text, '')), plainto_tsquery('english', $${paramIdx++})) DESC`;
+      values.push(search.trim());
+    } else {
+      orderBy = sortMap[sort] ?? sortMap.title;
+    }
 
-    // Count total (uses same WHERE clause, no fragile regex replacement)
-    // When whereClause is a JOIN, it already scopes the count
-    const countSql = `SELECT COUNT(*) as count FROM pages cp ${whereClause}`;
-    const countResult = await query<{ count: string }>(countSql, values);
-    const total = parseInt(countResult.rows[0].count, 10);
+    // --- Execute count + data query (with ILIKE fallback) ---
 
-    // Build full SELECT with pagination
-    const offset = (page - 1) * limit;
-    const sql = `
-      SELECT cp.id, cp.confluence_id, cp.space_key, cp.title, cp.version,
-             cp.parent_id, cp.labels, cp.author, cp.last_modified_at, cp.last_synced,
-             cp.embedding_dirty, cp.embedding_status, cp.embedded_at, cp.embedding_error,
-             cp.quality_score, cp.quality_status, cp.quality_completeness, cp.quality_clarity,
-             cp.quality_structure, cp.quality_accuracy, cp.quality_readability,
-             cp.quality_summary, cp.quality_analyzed_at, cp.quality_error,
-             cp.summary_status, cp.source, cp.visibility
-      FROM pages cp
-      ${whereClause}
-      ORDER BY ${orderBy}
-      LIMIT $${paramIdx++} OFFSET $${paramIdx}
-    `;
-    values.push(limit, offset);
-
-    const result = await query<{
+    type PageRow = {
       id: number;
       confluence_id: string | null;
       space_key: string | null;
@@ -190,10 +184,62 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       summary_status: string;
       source: string;
       visibility: string;
-    }>(sql, values);
+    };
+
+    async function executeSearchQuery(wc: string, vals: unknown[], ob: string, pi: number) {
+      const countSql = `SELECT COUNT(*) as count FROM pages cp ${wc}`;
+      const countResult = await query<{ count: string }>(countSql, [...vals]);
+      const total = parseInt(countResult.rows[0].count, 10);
+
+      if (total === 0) {
+        return { total: 0, rows: [] as PageRow[] };
+      }
+
+      const offset = (page - 1) * limit;
+      const dataSql = `
+        SELECT cp.id, cp.confluence_id, cp.space_key, cp.title, cp.version,
+               cp.parent_id, cp.labels, cp.author, cp.last_modified_at, cp.last_synced,
+               cp.embedding_dirty, cp.embedding_status, cp.embedded_at, cp.embedding_error,
+               cp.quality_score, cp.quality_status, cp.quality_completeness, cp.quality_clarity,
+               cp.quality_structure, cp.quality_accuracy, cp.quality_readability,
+               cp.quality_summary, cp.quality_analyzed_at, cp.quality_error,
+               cp.summary_status, cp.source, cp.visibility
+        FROM pages cp
+        ${wc}
+        ORDER BY ${ob}
+        LIMIT $${pi} OFFSET $${pi + 1}
+      `;
+      const dataVals = [...vals, limit, offset];
+      const result = await query<PageRow>(dataSql, dataVals);
+      return { total, rows: result.rows };
+    }
+
+    // First attempt: FTS query
+    let { total, rows } = await executeSearchQuery(whereClause, values, orderBy, paramIdx);
+
+    // ILIKE fallback: when FTS returns 0 results and search term >= 3 chars,
+    // retry with a broader ILIKE match on title + body_text
+    if (total === 0 && search && search.trim().length >= 3 && searchClauseParamIdx > 0) {
+      const ilikeTerm = `%${escapeIlikeTerm(search.trim())}%`;
+      const ftsCondition = ` AND to_tsvector('english', coalesce(cp.title, '') || ' ' || coalesce(cp.body_text, '')) @@ plainto_tsquery('english', $${searchClauseParamIdx})`;
+      const ilikeWhereClause = whereClause.replace(
+        ftsCondition,
+        ` AND (cp.title ILIKE $${searchClauseParamIdx} OR cp.body_text ILIKE $${searchClauseParamIdx})`,
+      );
+      const ilikeValues = [...values];
+      ilikeValues[searchClauseParamIdx - 1] = ilikeTerm;
+      let ilikeOrderBy = orderBy;
+      if (sort === 'relevance') {
+        ilikeOrderBy = 'cp.last_modified_at DESC NULLS LAST';
+      }
+      const fallbackResult = await executeSearchQuery(ilikeWhereClause, ilikeValues, ilikeOrderBy, paramIdx);
+      total = fallbackResult.total;
+      rows = fallbackResult.rows;
+      usedIlikeFallback = true;
+    }
 
     const response = {
-      items: result.rows.map((row) => ({
+      items: rows.map((row) => ({
         id: row.id,
         confluenceId: row.confluence_id,
         spaceKey: row.space_key,
@@ -226,6 +272,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       page,
       limit,
       totalPages: Math.ceil(total / limit),
+      ...(usedIlikeFallback ? { fuzzyMatch: true } : {}),
     };
 
     await cache.set(userId, 'pages', cacheKey, response, cacheTtl);
@@ -542,7 +589,34 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const body = CreatePageSchema.parse(request.body);
     const pageType: 'page' | 'folder' = (body as Record<string, unknown>).pageType === 'folder' ? 'folder' : 'page';
     const userId = request.userId;
-    const isStandalone = body.source === 'standalone' || !body.spaceKey;
+
+    // Auto-detect whether this is a Confluence or standalone page based on the
+    // space source. This fixes #468 where the frontend defaults source to
+    // 'standalone' but the user selected a Confluence space.
+    // The frontend sends '__local__' as a sentinel for local articles (e.g.
+    // NewPagePage, SidebarTreeView). Skip the space lookup for sentinels.
+    let spaceSource: string | null = null;
+    if (body.spaceKey && body.spaceKey !== '__local__') {
+      const spaceRow = await query<{ source: string }>(
+        'SELECT source FROM spaces WHERE space_key = $1',
+        [body.spaceKey],
+      );
+      if (spaceRow.rows.length === 0) {
+        throw fastify.httpErrors.badRequest(`Space '${body.spaceKey}' not found`);
+      }
+      spaceSource = spaceRow.rows[0].source;
+    }
+
+    // Explicit source takes precedence over auto-detection
+    let isStandalone: boolean;
+    if (body.source === 'standalone') {
+      isStandalone = true;
+    } else if (body.source === 'confluence') {
+      isStandalone = false;
+    } else {
+      // Auto-detect from space source
+      isStandalone = spaceSource !== 'confluence';
+    }
 
     if (isStandalone) {
       // --- Standalone article: no Confluence call, store locally ---
@@ -551,17 +625,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       const { htmlToText } = await import('../../core/services/content-converter.js');
       const bodyText = isFolder ? '' : htmlToText(effectiveBodyHtml);
 
-      // If spaceKey is provided, verify it's a local space
-      let spaceKey: string | null = null;
-      if (body.spaceKey) {
-        const spaceCheck = await query<{ source: string }>(
-          'SELECT source FROM spaces WHERE space_key = $1',
-          [body.spaceKey],
-        );
-        if (spaceCheck.rows.length > 0 && spaceCheck.rows[0].source === 'local') {
-          spaceKey = body.spaceKey;
-        }
-      }
+      // Use space key only for local spaces (already looked up above)
+      const spaceKey: string | null = spaceSource === 'local' ? body.spaceKey! : null;
 
       // Validate and compute path if parentId is provided
       let parentPath: string | null = null;
@@ -630,7 +695,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
          (confluence_id, space_key, title, body_storage, body_html, body_text,
           version, parent_id, source, embedding_dirty, embedding_status)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'confluence', TRUE, 'not_embedded')
-       ON CONFLICT (confluence_id) DO UPDATE SET
+       ON CONFLICT (confluence_id) WHERE confluence_id IS NOT NULL DO UPDATE SET
          title = EXCLUDED.title, body_storage = EXCLUDED.body_storage, body_html = EXCLUDED.body_html,
          body_text = EXCLUDED.body_text, version = EXCLUDED.version, last_synced = NOW()`,
       [page.id, body.spaceKey, body.title, page.body?.storage?.value ?? storageBody,

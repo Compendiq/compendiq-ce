@@ -2,7 +2,7 @@ import { request } from 'undici';
 import { createWriteStream } from 'fs';
 import { pipeline } from 'stream/promises';
 import { unlink } from 'fs/promises';
-import { validateUrl } from '../../../core/utils/ssrf-guard.js';
+import { validateUrl, addAllowedBaseUrl, resolveConfluenceUrl } from '../../../core/utils/ssrf-guard.js';
 import { logger } from '../../../core/utils/logger.js';
 import { confluenceDispatcher } from '../../../core/utils/tls-config.js';
 
@@ -64,10 +64,14 @@ export class ConfluenceClient {
   private retryOpts: RetryOptions;
 
   constructor(baseUrl: string, pat: string, options?: ConfluenceClientOptions) {
-    // Remove trailing slash
-    this.baseUrl = baseUrl.replace(/\/+$/, '');
+    // Remove trailing slash; rewrite localhost for Docker networking
+    this.baseUrl = resolveConfluenceUrl(baseUrl).replace(/\/+$/, '');
     this.pat = pat;
     this.retryOpts = options?.retry ?? {};
+
+    // Register the base URL so the SSRF guard allows requests to this
+    // Confluence instance even when it lives on a private network (#480).
+    addAllowedBaseUrl(this.baseUrl);
   }
 
   /**

@@ -9,6 +9,7 @@ export interface SharedLlmSettings {
   openaiBaseUrl: string | null;
   hasOpenaiApiKey: boolean;
   openaiModel: string | null;
+  embeddingModel: string;
 }
 
 const DEFAULTS: SharedLlmSettings = {
@@ -17,6 +18,7 @@ const DEFAULTS: SharedLlmSettings = {
   openaiBaseUrl: null,
   hasOpenaiApiKey: false,
   openaiModel: null,
+  embeddingModel: process.env.EMBEDDING_MODEL ?? 'nomic-embed-text',
 };
 
 const LLM_SETTING_KEYS = [
@@ -25,6 +27,7 @@ const LLM_SETTING_KEYS = [
   'openai_base_url',
   'openai_api_key',
   'openai_model',
+  'embedding_model',
 ] as const;
 
 type AdminSettingKey = (typeof LLM_SETTING_KEYS)[number];
@@ -54,6 +57,7 @@ export async function getSharedLlmSettings(): Promise<SharedLlmSettings> {
     openaiBaseUrl: settings['openai_base_url'] ?? DEFAULTS.openaiBaseUrl,
     hasOpenaiApiKey: !!encryptedOpenaiApiKey,
     openaiModel: settings['openai_model'] ?? DEFAULTS.openaiModel,
+    embeddingModel: settings['embedding_model'] ?? DEFAULTS.embeddingModel,
   };
 }
 
@@ -73,7 +77,7 @@ export async function getSharedOpenaiApiKey(): Promise<string | null> {
 }
 
 export async function upsertSharedLlmSettings(
-  updates: Partial<Pick<SharedLlmSettings & { openaiApiKey: string | null }, 'llmProvider' | 'ollamaModel' | 'openaiBaseUrl' | 'openaiApiKey' | 'openaiModel'>>,
+  updates: Partial<Pick<SharedLlmSettings & { openaiApiKey: string | null }, 'llmProvider' | 'ollamaModel' | 'openaiBaseUrl' | 'openaiApiKey' | 'openaiModel' | 'embeddingModel'>>,
 ): Promise<void> {
   const client = await getPool().connect();
   try {
@@ -106,6 +110,14 @@ export async function upsertSharedLlmSettings(
         rows.push({ key: 'openai_model', value: updates.openaiModel });
       } else {
         await client.query(`DELETE FROM admin_settings WHERE setting_key = 'openai_model'`);
+      }
+    }
+
+    if (updates.embeddingModel !== undefined) {
+      if (updates.embeddingModel) {
+        rows.push({ key: 'embedding_model', value: updates.embeddingModel });
+      } else {
+        await client.query(`DELETE FROM admin_settings WHERE setting_key = 'embedding_model'`);
       }
     }
 

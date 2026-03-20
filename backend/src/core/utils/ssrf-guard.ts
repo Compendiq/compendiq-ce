@@ -1,7 +1,54 @@
 /**
  * SSRF (Server-Side Request Forgery) validation.
  * Blocks requests to private/internal networks and non-HTTP(S) protocols.
+ *
+ * Supports an allowlist of trusted origins (e.g., user-configured Confluence
+ * base URLs) that bypass private-network checks while still enforcing
+ * protocol restrictions.
  */
+
+// ---------------------------------------------------------------------------
+// Allowlist of trusted origins (populated from user_settings.confluence_url)
+// ---------------------------------------------------------------------------
+
+const allowedOrigins = new Set<string>();
+
+/**
+ * Register a base URL whose origin should bypass private-network checks.
+ * Only the origin (protocol + host + port) is stored -- path is ignored.
+ */
+export function addAllowedBaseUrl(baseUrl: string): void {
+  try {
+    const parsed = new URL(baseUrl);
+    allowedOrigins.add(parsed.origin.toLowerCase());
+  } catch { /* ignore invalid URLs */ }
+}
+
+/** Remove a previously-allowed base URL origin from the allowlist. */
+export function removeAllowedBaseUrl(baseUrl: string): void {
+  try {
+    const parsed = new URL(baseUrl);
+    allowedOrigins.delete(parsed.origin.toLowerCase());
+  } catch { /* ignore invalid URLs */ }
+}
+
+/** Replace all allowed origins with a fresh set (reconciliation). */
+export function replaceAllowedBaseUrls(baseUrls: string[]): void {
+  allowedOrigins.clear();
+  for (const url of baseUrls) {
+    addAllowedBaseUrl(url);
+  }
+}
+
+/** Clear all allowed origins (useful in tests). */
+export function clearAllowedBaseUrls(): void {
+  allowedOrigins.clear();
+}
+
+/** Return current allowlist size (useful in tests). */
+export function getAllowedBaseUrlCount(): number {
+  return allowedOrigins.size;
+}
 
 /**
  * Private/internal IPv4 ranges as CIDR.
@@ -48,6 +95,12 @@ export class SsrfError extends Error {
  * Validates a URL to prevent SSRF attacks.
  * Blocks private IPs, internal hostnames, and non-HTTP(S) protocols.
  *
+ * LIMITATION: The allowlist validates the hostname/origin, not the resolved IP.
+ * DNS rebinding attacks (hostname resolves to public IP during validation, then
+ * to private IP during the actual request) are NOT prevented. This is acceptable
+ * because allowlisted URLs are sourced from authenticated user settings stored in
+ * the database, not from untrusted user input in request bodies.
+ *
  * @throws SsrfError if the URL targets a private/internal address
  */
 export function validateUrl(urlString: string): void {
@@ -61,6 +114,11 @@ export function validateUrl(urlString: string): void {
   // Block non-HTTP(S) protocols
   if (!ALLOWED_PROTOCOLS.includes(parsed.protocol)) {
     throw new SsrfError(`SSRF blocked: protocol '${parsed.protocol}' is not allowed. Only HTTP(S) permitted.`);
+  }
+
+  // Allow explicitly trusted origins (e.g., user-configured Confluence URLs)
+  if (allowedOrigins.has(parsed.origin.toLowerCase())) {
+    return;
   }
 
   const hostname = parsed.hostname.toLowerCase();
@@ -125,4 +183,32 @@ function isBlockedIpv6(hostname: string): boolean {
   }
 
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// Docker-aware URL rewriting
+// ---------------------------------------------------------------------------
+
+const LOCALHOST_PATTERNS = ['localhost', '127.0.0.1', '::1', '[::1]'];
+
+/**
+ * When the backend runs inside Docker, user-entered `localhost` / `127.0.0.1`
+ * URLs point at the container itself — not the host or a sibling container.
+ *
+ * If `CONFLUENCE_DOCKER_HOST` is set (e.g. `confluence`), rewrite the hostname
+ * so outbound requests reach the correct container on the Docker network.
+ * The original user-facing URL is stored unchanged in the database.
+ */
+export function resolveConfluenceUrl(url: string): string {
+  const dockerHost = process.env.CONFLUENCE_DOCKER_HOST;
+  if (!dockerHost) return url;
+
+  try {
+    const parsed = new URL(url);
+    if (LOCALHOST_PATTERNS.includes(parsed.hostname.toLowerCase())) {
+      parsed.hostname = dockerHost;
+      return parsed.toString().replace(/\/$/, '');
+    }
+  } catch { /* invalid URL — let callers deal with it */ }
+  return url;
 }

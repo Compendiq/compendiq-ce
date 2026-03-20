@@ -79,12 +79,16 @@ vi.mock('../../core/db/postgres.js', () => ({
   closePool: vi.fn(),
 }));
 
-/** Stub DB responses for a page list query (count + rows) */
+/** Stub DB responses for a page list query (count + rows).
+ *  When total=0 the route skips the data query (performance optimisation),
+ *  so we only stub the count response to avoid leaking stubs into the next test. */
 function stubPageListQuery(rows: Record<string, unknown>[] = [], total = 0) {
   // First call: COUNT query
   mockQueryFn.mockResolvedValueOnce({ rows: [{ count: String(total) }] });
-  // Second call: SELECT query
-  mockQueryFn.mockResolvedValueOnce({ rows });
+  // Second call: SELECT query (only when total > 0)
+  if (total > 0) {
+    mockQueryFn.mockResolvedValueOnce({ rows });
+  }
 }
 
 const sampleRow = {
@@ -324,12 +328,14 @@ describe('GET /api/pages — filtered query caching (#195)', () => {
   // ---------- Cache key differentiation ----------
 
   it('should produce different cache keys for different filter combinations', async () => {
-    // First: search=foo
-    stubPageListQuery([], 0);
+    // First: search=foo — FTS returns 0, then ILIKE fallback also returns 0
+    stubPageListQuery([], 0); // FTS count
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // ILIKE fallback count
     await app.inject({ method: 'GET', url: '/api/pages?search=foo' });
 
-    // Second: search=bar
-    stubPageListQuery([], 0);
+    // Second: search=bar — same pattern
+    stubPageListQuery([], 0); // FTS count
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // ILIKE fallback count
     await app.inject({ method: 'GET', url: '/api/pages?search=bar' });
 
     expect(mockCacheSet).toHaveBeenCalledTimes(2);
@@ -349,6 +355,39 @@ describe('GET /api/pages — filtered query caching (#195)', () => {
     const key1 = mockCacheSet.mock.calls[0][2];
     const key2 = mockCacheSet.mock.calls[1][2];
     expect(key1).not.toBe(key2);
+  });
+
+  // ---------- ILIKE metacharacter escaping ----------
+
+  it('should escape ILIKE metacharacters (%, _, \\) in the fallback search', async () => {
+    // Reset to avoid leaked stubs from prior tests that may have thrown
+    mockQueryFn.mockReset();
+    // FTS COUNT returns 0 → triggers ILIKE fallback (no SELECT because total=0)
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '0' }] });
+    // ILIKE fallback COUNT also returns 0 (we just inspect the query params)
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '0' }] });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/pages?search=100%25_done',
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    // The ILIKE fallback is the second COUNT call.
+    // The search param in the ILIKE call should have metacharacters escaped.
+    const ilikeCalls = mockQueryFn.mock.calls.filter(
+      (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('ILIKE'),
+    );
+
+    expect(ilikeCalls.length).toBeGreaterThan(0);
+    // Find the ILIKE parameter value — it should have escaped % and _
+    const params = ilikeCalls[0][1] as unknown[];
+    const searchParam = params.find((p) => typeof p === 'string' && (p as string).includes('done'));
+    expect(searchParam).toBeDefined();
+    // The wrapped ILIKE term should be %100\%\_done% (metacharacters escaped)
+    expect(searchParam).toContain('\\%');
+    expect(searchParam).toContain('\\_');
   });
 
   // ---------- spaceKey-only is not a "filter" ----------

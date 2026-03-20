@@ -1,5 +1,13 @@
-import { describe, it, expect } from 'vitest';
-import { validateUrl, SsrfError } from './ssrf-guard.js';
+import { describe, it, expect, afterEach } from 'vitest';
+import {
+  validateUrl,
+  SsrfError,
+  addAllowedBaseUrl,
+  removeAllowedBaseUrl,
+  replaceAllowedBaseUrls,
+  clearAllowedBaseUrls,
+  getAllowedBaseUrlCount,
+} from './ssrf-guard.js';
 
 describe('SSRF Guard', () => {
   describe('valid URLs (should pass)', () => {
@@ -160,6 +168,97 @@ describe('SSRF Guard', () => {
         expect(e).toBeInstanceOf(SsrfError);
         expect((e as SsrfError).name).toBe('SsrfError');
       }
+    });
+  });
+
+  describe('allowlist mechanism (#480)', () => {
+    afterEach(() => {
+      clearAllowedBaseUrls();
+    });
+
+    it('should allow a private IP URL after adding its base URL to the allowlist', () => {
+      expect(() => validateUrl('http://10.0.0.5:8090/rest/api/space')).toThrow(SsrfError);
+      addAllowedBaseUrl('http://10.0.0.5:8090');
+      expect(() => validateUrl('http://10.0.0.5:8090/rest/api/space')).not.toThrow();
+      expect(() => validateUrl('http://10.0.0.5:8090/rest/api/content?limit=50')).not.toThrow();
+    });
+
+    it('should still block non-allowlisted private IPs', () => {
+      addAllowedBaseUrl('http://10.0.0.5:8090');
+      expect(() => validateUrl('http://10.0.0.6:8090/rest/api')).toThrow(SsrfError);
+      expect(() => validateUrl('http://10.0.0.5:9090/rest/api')).toThrow(SsrfError);
+    });
+
+    it('should only exempt the exact origin (protocol + host + port)', () => {
+      addAllowedBaseUrl('http://192.168.1.100:8090');
+      expect(() => validateUrl('https://192.168.1.100:8090/api')).toThrow(SsrfError);
+      expect(() => validateUrl('http://192.168.1.100/api')).toThrow(SsrfError);
+    });
+
+    it('should handle base URLs with trailing slashes and paths', () => {
+      addAllowedBaseUrl('http://172.16.0.10:8090/confluence/');
+      expect(() => validateUrl('http://172.16.0.10:8090/rest/api/space')).not.toThrow();
+    });
+
+    it('should re-enable blocking after removeAllowedBaseUrl', () => {
+      addAllowedBaseUrl('http://10.0.0.5:8090');
+      expect(() => validateUrl('http://10.0.0.5:8090/rest/api')).not.toThrow();
+      removeAllowedBaseUrl('http://10.0.0.5:8090');
+      expect(() => validateUrl('http://10.0.0.5:8090/rest/api')).toThrow(SsrfError);
+    });
+
+    it('should clear all allowed URLs with clearAllowedBaseUrls', () => {
+      addAllowedBaseUrl('http://10.0.0.5:8090');
+      addAllowedBaseUrl('http://192.168.1.100:8443');
+      expect(getAllowedBaseUrlCount()).toBe(2);
+      clearAllowedBaseUrls();
+      expect(getAllowedBaseUrlCount()).toBe(0);
+      expect(() => validateUrl('http://10.0.0.5:8090/api')).toThrow(SsrfError);
+    });
+
+    it('should still block disallowed protocols even for allowlisted origins', () => {
+      addAllowedBaseUrl('http://10.0.0.5:8090');
+      expect(() => validateUrl('ftp://10.0.0.5:8090/file')).toThrow(SsrfError);
+      expect(() => validateUrl('ftp://10.0.0.5:8090/file')).toThrow(/protocol.*not allowed/);
+    });
+
+    it('should allow internal TLD hostnames when allowlisted', () => {
+      expect(() => validateUrl('http://confluence.corp:8090/rest/api')).toThrow(SsrfError);
+      addAllowedBaseUrl('http://confluence.corp:8090');
+      expect(() => validateUrl('http://confluence.corp:8090/rest/api')).not.toThrow();
+    });
+
+    it('should gracefully handle invalid URLs passed to addAllowedBaseUrl', () => {
+      addAllowedBaseUrl('not-a-url');
+      addAllowedBaseUrl('');
+      expect(getAllowedBaseUrlCount()).toBe(0);
+    });
+
+    it('should replace all allowed URLs with replaceAllowedBaseUrls', () => {
+      addAllowedBaseUrl('http://10.0.0.5:8090');
+      addAllowedBaseUrl('http://192.168.1.100:8443');
+      expect(getAllowedBaseUrlCount()).toBe(2);
+
+      // Replace with a completely different set
+      replaceAllowedBaseUrls(['http://172.16.0.10:8090', 'http://10.0.0.99:8090']);
+      expect(getAllowedBaseUrlCount()).toBe(2);
+
+      // Old origins are gone
+      expect(() => validateUrl('http://10.0.0.5:8090/api')).toThrow(SsrfError);
+      expect(() => validateUrl('http://192.168.1.100:8443/api')).toThrow(SsrfError);
+
+      // New origins work
+      expect(() => validateUrl('http://172.16.0.10:8090/api')).not.toThrow();
+      expect(() => validateUrl('http://10.0.0.99:8090/api')).not.toThrow();
+    });
+
+    it('should handle empty array in replaceAllowedBaseUrls (clears all)', () => {
+      addAllowedBaseUrl('http://10.0.0.5:8090');
+      expect(getAllowedBaseUrlCount()).toBe(1);
+
+      replaceAllowedBaseUrls([]);
+      expect(getAllowedBaseUrlCount()).toBe(0);
+      expect(() => validateUrl('http://10.0.0.5:8090/api')).toThrow(SsrfError);
     });
   });
 });

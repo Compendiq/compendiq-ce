@@ -65,6 +65,18 @@ vi.mock('../../domains/confluence/services/sync-overview-service.js', () => ({
   getSyncOverview: (...args: unknown[]) => mockGetSyncOverview(...args),
 }));
 
+// Spy on ssrf-guard functions to verify allowlist management
+const mockAddAllowedBaseUrl = vi.fn();
+const mockRemoveAllowedBaseUrl = vi.fn();
+const mockValidateUrl = vi.fn();
+const mockResolveConfluenceUrl = vi.fn().mockImplementation((url: string) => url);
+vi.mock('../../core/utils/ssrf-guard.js', () => ({
+  addAllowedBaseUrl: (...args: unknown[]) => mockAddAllowedBaseUrl(...args),
+  removeAllowedBaseUrl: (...args: unknown[]) => mockRemoveAllowedBaseUrl(...args),
+  validateUrl: (...args: unknown[]) => mockValidateUrl(...args),
+  resolveConfluenceUrl: (...args: unknown[]) => mockResolveConfluenceUrl(...args),
+}));
+
 import { settingsRoutes } from './settings.js';
 
 describe('Settings routes – test-confluence', () => {
@@ -190,8 +202,14 @@ describe('Settings routes – test-confluence', () => {
     expect(body.message).toBe('Connection refused');
   });
 
-  it('should block private network URLs for Confluence (allowlist is separate PR #481)', async () => {
-    // Without the SSRF allowlist (PR #481), private-network URLs are blocked.
+  it('should allow private network URLs for Confluence (SSRF allowlisted per #480)', async () => {
+    // Private-network Confluence URLs are now allowlisted by the test-confluence
+    // route before validation, so the SSRF check passes and the request proceeds.
+    mockUndiciRequest.mockResolvedValue({
+      statusCode: 200,
+      body: { dump: vi.fn().mockResolvedValue(undefined) },
+    });
+
     const response = await app.inject({
       method: 'POST',
       url: '/api/settings/test-confluence',
@@ -200,9 +218,83 @@ describe('Settings routes – test-confluence', () => {
 
     expect(response.statusCode).toBe(200);
     const body = JSON.parse(response.body);
+    expect(body.success).toBe(true);
+    expect(mockUndiciRequest).toHaveBeenCalled();
+  });
+
+  it('should still block non-HTTP protocols even for Confluence URLs', async () => {
+    mockValidateUrl.mockImplementationOnce(() => {
+      throw new Error('SSRF blocked');
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/settings/test-confluence',
+      payload: { url: 'ftp://192.168.1.1', pat: 'test-pat' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
     expect(body.success).toBe(false);
     expect(body.message).toContain('URL blocked');
     expect(mockUndiciRequest).not.toHaveBeenCalled();
+    // URL should be removed from allowlist after SSRF validation failure (#481)
+    expect(mockRemoveAllowedBaseUrl).toHaveBeenCalledWith('ftp://192.168.1.1');
+  });
+
+  it('should remove URL from SSRF allowlist on connection failure (#481)', async () => {
+    mockUndiciRequest.mockRejectedValue(new Error('Connection refused'));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/settings/test-confluence',
+      payload: { url: 'https://confluence.example.com', pat: 'test-pat' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.success).toBe(false);
+    // URL was added before validation, then removed after failure
+    expect(mockAddAllowedBaseUrl).toHaveBeenCalledWith('https://confluence.example.com');
+    expect(mockRemoveAllowedBaseUrl).toHaveBeenCalledWith('https://confluence.example.com');
+  });
+
+  it('should remove URL from SSRF allowlist on non-2xx response (#481)', async () => {
+    mockUndiciRequest.mockResolvedValue({
+      statusCode: 401,
+      body: { dump: vi.fn().mockResolvedValue(undefined) },
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/settings/test-confluence',
+      payload: { url: 'https://confluence.example.com', pat: 'bad-pat' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.success).toBe(false);
+    expect(mockRemoveAllowedBaseUrl).toHaveBeenCalledWith('https://confluence.example.com');
+  });
+
+  it('should keep URL in SSRF allowlist on successful connection (#481)', async () => {
+    mockUndiciRequest.mockResolvedValue({
+      statusCode: 200,
+      body: { dump: vi.fn().mockResolvedValue(undefined) },
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/settings/test-confluence',
+      payload: { url: 'https://confluence.example.com', pat: 'test-pat' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.success).toBe(true);
+    // URL should have been added but NOT removed
+    expect(mockAddAllowedBaseUrl).toHaveBeenCalledWith('https://confluence.example.com');
+    expect(mockRemoveAllowedBaseUrl).not.toHaveBeenCalled();
   });
 
   it('should still block non-HTTP protocols even for Confluence URLs', async () => {
@@ -532,5 +624,65 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     );
     expect(updateCalls).toHaveLength(1);
     expect(updateCalls[0][1]).toContain(JSON.stringify({ improve_clarity: 'Be clear!' }));
+  });
+
+  it('PUT /settings removes old Confluence URL from SSRF allowlist when URL changes (#481)', async () => {
+    // Query 1: SELECT old confluence_url
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ confluence_url: 'https://old-confluence.example.com' }],
+    });
+    // Query 2: UPDATE user_settings
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { confluenceUrl: 'https://new-confluence.example.com' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockRemoveAllowedBaseUrl).toHaveBeenCalledWith('https://old-confluence.example.com');
+    expect(mockAddAllowedBaseUrl).toHaveBeenCalledWith('https://new-confluence.example.com');
+  });
+
+  it('PUT /settings removes old Confluence URL from SSRF allowlist when URL is cleared (#481)', async () => {
+    // Query 1: SELECT old confluence_url
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ confluence_url: 'https://old-confluence.example.com' }],
+    });
+    // Query 2: UPDATE user_settings
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { confluenceUrl: null },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockRemoveAllowedBaseUrl).toHaveBeenCalledWith('https://old-confluence.example.com');
+    // Should NOT add null to the allowlist
+    expect(mockAddAllowedBaseUrl).not.toHaveBeenCalled();
+  });
+
+  it('PUT /settings does not remove from allowlist when URL is unchanged (#481)', async () => {
+    // Query 1: SELECT old confluence_url (same as new)
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ confluence_url: 'https://confluence.example.com' }],
+    });
+    // Query 2: UPDATE user_settings
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { confluenceUrl: 'https://confluence.example.com' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    // Same URL -- no removal needed
+    expect(mockRemoveAllowedBaseUrl).not.toHaveBeenCalled();
+    // But still re-register it (idempotent)
+    expect(mockAddAllowedBaseUrl).toHaveBeenCalledWith('https://confluence.example.com');
   });
 });

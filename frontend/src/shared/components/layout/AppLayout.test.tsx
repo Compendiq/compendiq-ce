@@ -107,14 +107,41 @@ describe('AppLayout', () => {
     expect(header!.parentElement).toBe(rootDiv);
   });
 
-  it('renders search button in top bar', () => {
+  it('renders centered search bar with input-like appearance', () => {
     render(
       <AppLayout>
         <div>content</div>
       </AppLayout>,
       { wrapper: createWrapper('/') },
     );
-    expect(screen.getByText('Search...')).toBeInTheDocument();
+    expect(screen.getByText('Search pages, articles, commands...')).toBeInTheDocument();
+  });
+
+  it('search bar has role="search" landmark and aria-label', () => {
+    render(
+      <AppLayout>
+        <div>content</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/') },
+    );
+    const searchRegion = screen.getByRole('search');
+    expect(searchRegion).toBeInTheDocument();
+
+    // Both desktop and mobile search buttons share the same aria-label
+    const searchButtons = screen.getAllByLabelText('Search knowledge base');
+    expect(searchButtons.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('search bar is centered via flex-1 container', () => {
+    render(
+      <AppLayout>
+        <div>content</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/') },
+    );
+    const searchRegion = screen.getByRole('search');
+    expect(searchRegion.className).toContain('flex-1');
+    expect(searchRegion.className).toContain('justify-center');
   });
 
   it('shows sidebar on all routes (always visible)', () => {

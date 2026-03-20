@@ -245,6 +245,30 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
     macro.replaceWith(div);
   }
 
+  // Process column macros FIRST (inside-out: children before parents)
+  for (const macro of byTag(doc, 'ac:structured-macro')) {
+    if (getMacroName(macro) !== 'column') continue;
+    const width = getParamValue(macro, 'width');
+    const bodyEl = byTag(macro, 'ac:rich-text-body')[0];
+    const div = doc.createElement('div');
+    div.className = 'confluence-column';
+    if (width) div.setAttribute('data-cell-width', width);
+    div.innerHTML = bodyEl?.innerHTML ?? '';
+    macro.replaceWith(div);
+  }
+
+  // Process section macros AFTER columns (outside wrapper)
+  for (const macro of byTag(doc, 'ac:structured-macro')) {
+    if (getMacroName(macro) !== 'section') continue;
+    const border = getParamValue(macro, 'border');
+    const bodyEl = byTag(macro, 'ac:rich-text-body')[0];
+    const div = doc.createElement('div');
+    div.className = 'confluence-section';
+    if (border) div.setAttribute('data-border', border);
+    div.innerHTML = bodyEl?.innerHTML ?? '';
+    macro.replaceWith(div);
+  }
+
   // Process children / ui-children display macro -> placeholder div, preserving all params
   const childrenParamNames = ['sort', 'reverse', 'depth', 'first', 'page', 'style', 'excerptType'];
   for (const macro of byTag(doc, 'ac:structured-macro')) {
@@ -389,6 +413,40 @@ export function htmlToConfluence(html: string): string {
     body.innerHTML = details.innerHTML;
     macro.appendChild(body);
     details.replaceWith(macro);
+  }
+
+  // Convert section divs back to ac:structured-macro[name=section] (outside-in: sections first)
+  for (const div of doc.querySelectorAll('div.confluence-section')) {
+    const macro = doc.createElement('ac:structured-macro');
+    macro.setAttribute('ac:name', 'section');
+    const border = div.getAttribute('data-border');
+    if (border) {
+      const param = doc.createElement('ac:parameter');
+      param.setAttribute('ac:name', 'border');
+      param.textContent = border;
+      macro.appendChild(param);
+    }
+    const body = doc.createElement('ac:rich-text-body');
+    body.innerHTML = div.innerHTML;
+    macro.appendChild(body);
+    div.replaceWith(macro);
+  }
+
+  // Convert column divs back to ac:structured-macro[name=column] (after sections)
+  for (const div of doc.querySelectorAll('div.confluence-column')) {
+    const macro = doc.createElement('ac:structured-macro');
+    macro.setAttribute('ac:name', 'column');
+    const width = div.getAttribute('data-cell-width');
+    if (width) {
+      const param = doc.createElement('ac:parameter');
+      param.setAttribute('ac:name', 'width');
+      param.textContent = width;
+      macro.appendChild(param);
+    }
+    const body = doc.createElement('ac:rich-text-body');
+    body.innerHTML = div.innerHTML;
+    macro.appendChild(body);
+    div.replaceWith(macro);
   }
 
   // Convert children / ui-children macro placeholders back to ac:structured-macro
@@ -558,6 +616,20 @@ export function htmlToMarkdown(html: string): string {
       const title = (node as HTMLElement).textContent?.trim() ?? '';
       return title ? `[STATUS: ${title}]` : '';
     },
+  });
+
+  // Custom rule for section containers — render content inline
+  turndownService.addRule('confluenceSection', {
+    filter: (node) =>
+      node.nodeName === 'DIV' && node.classList.contains('confluence-section'),
+    replacement: (content) => `\n${content.trim()}\n\n`,
+  });
+
+  // Custom rule for column containers — separate with divider
+  turndownService.addRule('confluenceColumn', {
+    filter: (node) =>
+      node.nodeName === 'DIV' && node.classList.contains('confluence-column'),
+    replacement: (content) => `\n${content.trim()}\n`,
   });
 
   // Custom rule for children macro placeholder

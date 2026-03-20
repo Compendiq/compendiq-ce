@@ -357,6 +357,7 @@ describe('Admin routes', () => {
         openaiBaseUrl: 'https://api.openai.com/v1',
         openaiApiKey: 'secret-key',
         openaiModel: 'gpt-4o-mini',
+        embeddingModel: undefined,
       });
       expect(mockSetActiveProvider).toHaveBeenCalledWith('openai');
     });

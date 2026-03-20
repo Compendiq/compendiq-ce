@@ -69,7 +69,7 @@ export interface PageFilters {
   dateTo?: string;
   page?: number;
   limit?: number;
-  sort?: 'title' | 'modified' | 'author' | 'quality';
+  sort?: 'title' | 'modified' | 'author' | 'quality' | 'relevance';
 }
 
 export function usePages(params: PageFilters = {}) {
@@ -169,7 +169,7 @@ export function usePage(id: string | undefined) {
 export function useCreatePage() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (data: { spaceKey: string; title: string; bodyHtml: string; parentId?: string; pageType?: PageType }) =>
+    mutationFn: (data: { spaceKey: string; title: string; bodyHtml: string; parentId?: string; pageType?: PageType; source?: string }) =>
       apiFetch<{ id: string; title: string; version: number }>('/pages', {
         method: 'POST',
         body: JSON.stringify(data),
