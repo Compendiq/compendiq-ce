@@ -4,7 +4,7 @@ import { UpdateSettingsSchema, TestConfluenceSchema } from '@atlasmind/contracts
 import { query } from '../../core/db/postgres.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { encryptPat, decryptPat } from '../../core/utils/crypto.js';
-import { validateUrl, addAllowedBaseUrl, removeAllowedBaseUrl } from '../../core/utils/ssrf-guard.js';
+import { validateUrl, addAllowedBaseUrl, removeAllowedBaseUrl, resolveConfluenceUrl } from '../../core/utils/ssrf-guard.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { getUserAccessibleSpaces, invalidateRbacCache } from '../../core/services/rbac-service.js';
 import { getSyncOverview } from '../../domains/confluence/services/sync-overview-service.js';
@@ -248,6 +248,9 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       return { success: false, message: 'URL blocked: cannot connect to internal/private network addresses' };
     }
 
+    // Rewrite localhost URLs for Docker networking (CONFLUENCE_DOCKER_HOST)
+    const effectiveUrl = resolveConfluenceUrl(url);
+
     try {
       const opts: Record<string, unknown> = {
         method: 'GET',
@@ -257,7 +260,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       };
 
       const { statusCode, body: responseBody } = await undiciRequest(
-        `${url}/rest/api/space?limit=1`,
+        `${effectiveUrl}/rest/api/space?limit=1`,
         opts as Parameters<typeof undiciRequest>[1],
       );
       // Drain response body to avoid memory leak
@@ -274,7 +277,13 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       // Connection failed — remove from allowlist so stale entries don't
       // accumulate (#481).
       removeAllowedBaseUrl(url);
-      const message = err instanceof Error ? err.message : 'Connection failed';
+      // Node.js AggregateError (e.g. ECONNREFUSED trying both IPv6+IPv4) has
+      // an empty .message but carries detail in .errors[] sub-errors.
+      let message = err instanceof Error ? err.message : 'Connection failed';
+      if (!message && err instanceof AggregateError && err.errors.length > 0) {
+        message = err.errors[0].message;
+      }
+      if (!message) message = 'Connection failed';
       const cause = err instanceof Error && err.cause instanceof Error ? err.cause.message : '';
       const detail = cause && cause !== message ? `${message}: ${cause}` : message;
       logger.warn({ err, url }, 'Confluence test connection failed');

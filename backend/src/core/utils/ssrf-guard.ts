@@ -184,3 +184,31 @@ function isBlockedIpv6(hostname: string): boolean {
 
   return false;
 }
+
+// ---------------------------------------------------------------------------
+// Docker-aware URL rewriting
+// ---------------------------------------------------------------------------
+
+const LOCALHOST_PATTERNS = ['localhost', '127.0.0.1', '::1', '[::1]'];
+
+/**
+ * When the backend runs inside Docker, user-entered `localhost` / `127.0.0.1`
+ * URLs point at the container itself — not the host or a sibling container.
+ *
+ * If `CONFLUENCE_DOCKER_HOST` is set (e.g. `confluence`), rewrite the hostname
+ * so outbound requests reach the correct container on the Docker network.
+ * The original user-facing URL is stored unchanged in the database.
+ */
+export function resolveConfluenceUrl(url: string): string {
+  const dockerHost = process.env.CONFLUENCE_DOCKER_HOST;
+  if (!dockerHost) return url;
+
+  try {
+    const parsed = new URL(url);
+    if (LOCALHOST_PATTERNS.includes(parsed.hostname.toLowerCase())) {
+      parsed.hostname = dockerHost;
+      return parsed.toString().replace(/\/$/, '');
+    }
+  } catch { /* invalid URL — let callers deal with it */ }
+  return url;
+}
