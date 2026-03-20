@@ -177,12 +177,15 @@ describe('Attachment routes', () => {
       expect(response.headers['content-type']).toBe('image/png');
       expect(response.body).toBe('fetched-from-confluence');
       expect(mockFetchAndCachePageImage).toHaveBeenCalledWith(
-        expect.anything(), // the client
-        'test-user',
-        'page-456',
-        'screenshot.png',
-        '<ac:image><ri:attachment ri:filename="screenshot.png" /></ac:image>',
-        'OPS',
+        expect.objectContaining({
+          client: expect.anything(),
+          userId: 'test-user',
+          pageId: 'page-456',
+          localFilename: 'screenshot.png',
+          bodyStorage: '<ac:image><ri:attachment ri:filename="screenshot.png" /></ac:image>',
+          currentSpaceKey: 'OPS',
+          redis: mockRedisClient,
+        }),
       );
     });
 
@@ -267,6 +270,47 @@ describe('Attachment routes', () => {
       expect(response.statusCode).toBe(404);
       expect(response.json()).toMatchObject({ reason: 'no_confluence_client' });
       expect(mockFetchAndCachePageImage).not.toHaveBeenCalled();
+    });
+
+    it('should return 404 with reason not_found_in_confluence when attachment failure cap is reached (fetchAndCachePageImage returns null)', async () => {
+      // When the attachment has persistently failed, fetchAndCachePageImage returns null
+      // (because fetchAndCacheAttachment short-circuits). Route maps null → 404.
+      mockReadAttachment.mockResolvedValue(null);
+      mockGetClientForUser.mockResolvedValue({ /* mock client */ });
+      mockFetchAndCachePageImage.mockResolvedValue(null);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/attachments/page-456/cap-reached.png',
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.json()).toMatchObject({ reason: 'not_found_in_confluence' });
+    });
+
+    it('should pass getRedisClient() to fetchAndCachePageImage for failure tracking', async () => {
+      const imageData = Buffer.from('image-after-recovery');
+      mockReadAttachment.mockResolvedValue(null);
+      mockGetClientForUser.mockResolvedValue({ /* mock client */ });
+      mockFetchAndCachePageImage.mockResolvedValue(imageData);
+      mockGetMimeType.mockReturnValue('image/png');
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/attachments/page-456/recovered.png',
+      });
+
+      expect(response.statusCode).toBe(200);
+      // The route should pass an options object to fetchAndCachePageImage
+      expect(mockFetchAndCachePageImage).toHaveBeenCalledWith({
+        client: expect.anything(),
+        userId: 'test-user',
+        pageId: 'page-456',
+        localFilename: 'recovered.png',
+        bodyStorage: expect.any(String),
+        currentSpaceKey: 'OPS',
+        redis: mockRedisClient,
+      });
     });
   });
 

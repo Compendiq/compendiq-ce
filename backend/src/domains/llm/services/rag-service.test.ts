@@ -47,7 +47,7 @@ vi.mock('../../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
-import { buildRagContext, hybridSearch, RAG_EF_SEARCH, reciprocalRankFusion } from './rag-service.js';
+import { buildRagContext, hybridSearch, RAG_EF_SEARCH, reciprocalRankFusion, vectorSearch, keywordSearch, recordSearchAnalytics } from './rag-service.js';
 import type { SearchResult } from './rag-service.js';
 import { CircuitBreakerOpenError } from '../../../core/services/circuit-breaker.js';
 
@@ -485,6 +485,152 @@ describe('RAG Service', () => {
       const combined = reciprocalRankFusion([], [standalone1, standalone2]);
       // Both should survive because RRF key uses pageId, not confluenceId
       expect(combined).toHaveLength(2);
+    });
+  });
+
+  // ── Newly exported functions ────────────────────────────────────────────────
+
+  describe('keywordSearch (exported)', () => {
+    beforeEach(() => {
+      vi.resetAllMocks();
+      mocks.mockPool.connect.mockResolvedValue(mocks.mockClient);
+      mocks.mockToSql.mockReturnValue('[0.1,0.2]');
+    });
+
+    it('returns empty array when query is empty', async () => {
+      mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
+      const results = await keywordSearch('user-1', '   ');
+      expect(results).toEqual([]);
+      // query() should NOT have been called
+      expect(mocks.mockQuery).not.toHaveBeenCalled();
+    });
+
+    it('calls query() with plainto_tsquery parameterized SQL', async () => {
+      mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
+      mocks.mockQuery.mockResolvedValueOnce({ rows: [] });
+
+      await keywordSearch('user-1', 'redis caching', 5);
+
+      expect(mocks.mockQuery).toHaveBeenCalledTimes(1);
+      const [sql, params] = mocks.mockQuery.mock.calls[0] as [string, unknown[]];
+      expect(sql).toContain('plainto_tsquery');
+      expect(sql).toContain('pages cp');
+      expect(params).toContain('redis caching');
+      expect(params).toContain(5);
+    });
+
+    it('maps result rows to SearchResult shape', async () => {
+      mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
+      mocks.mockQuery.mockResolvedValueOnce({
+        rows: [
+          {
+            page_id: 42,
+            confluence_id: 'PAGE-42',
+            title: 'Redis Overview',
+            space_key: 'DEV',
+            body_text: 'First 500 chars of body text here.',
+            rank: 0.75,
+          },
+        ],
+      });
+
+      const results = await keywordSearch('user-1', 'redis', 10);
+      expect(results).toHaveLength(1);
+      expect(results[0]).toMatchObject({
+        pageId: 42,
+        confluenceId: 'PAGE-42',
+        pageTitle: 'Redis Overview',
+        spaceKey: 'DEV',
+        score: 0.75,
+      });
+      expect(results[0].chunkText).toBe('First 500 chars of body text here.');
+    });
+  });
+
+  describe('vectorSearch (exported)', () => {
+    beforeEach(() => {
+      vi.resetAllMocks();
+      mocks.mockPool.connect.mockResolvedValue(mocks.mockClient);
+      mocks.mockClient.release.mockResolvedValue(undefined);
+      mocks.mockToSql.mockReturnValue('[0.1,0.2]');
+    });
+
+    it('uses BEGIN/SET LOCAL/COMMIT transaction pattern', async () => {
+      mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
+      mocks.mockClientQuery.mockResolvedValueOnce(undefined); // BEGIN
+      mocks.mockClientQuery.mockResolvedValueOnce(undefined); // SET LOCAL
+      mocks.mockClientQuery.mockResolvedValueOnce({ rows: [] }); // SELECT
+      mocks.mockClientQuery.mockResolvedValueOnce(undefined); // COMMIT
+
+      await vectorSearch('user-1', new Array(768).fill(0.1), 5);
+
+      const queries = mocks.mockClientQuery.mock.calls.map((c: unknown[]) => c[0]);
+      expect(queries[0]).toBe('BEGIN');
+      expect(queries[1]).toMatch(/SET LOCAL hnsw.ef_search/);
+      expect(queries[3]).toBe('COMMIT');
+    });
+
+    it('maps result rows to SearchResult shape with similarity score', async () => {
+      mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
+      mocks.mockClientQuery.mockResolvedValueOnce(undefined); // BEGIN
+      mocks.mockClientQuery.mockResolvedValueOnce(undefined); // SET LOCAL
+      mocks.mockClientQuery.mockResolvedValueOnce({
+        rows: [
+          {
+            page_id: 7,
+            confluence_id: 'PAGE-7',
+            chunk_text: 'Sample chunk content',
+            metadata: { page_title: 'Vector Page', section_title: 'Intro', space_key: 'DEV' },
+            distance: 0.3,
+          },
+        ],
+      }); // SELECT
+      mocks.mockClientQuery.mockResolvedValueOnce(undefined); // COMMIT
+
+      const results = await vectorSearch('user-1', new Array(768).fill(0.1), 5);
+      expect(results).toHaveLength(1);
+      expect(results[0].pageId).toBe(7);
+      expect(results[0].score).toBeCloseTo(0.7); // 1 - 0.3
+      expect(results[0].chunkText).toBe('Sample chunk content');
+    });
+
+    it('calls client.release() even on error', async () => {
+      mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
+      mocks.mockClientQuery.mockResolvedValueOnce(undefined); // BEGIN
+      mocks.mockClientQuery.mockResolvedValueOnce(undefined); // SET LOCAL
+      mocks.mockClientQuery.mockRejectedValueOnce(new Error('DB exploded')); // SELECT
+      // ROLLBACK
+      mocks.mockClientQuery.mockResolvedValueOnce(undefined);
+
+      await expect(vectorSearch('user-1', new Array(768).fill(0.1))).rejects.toThrow('DB exploded');
+      expect(mocks.mockClient.release).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('recordSearchAnalytics (exported)', () => {
+    beforeEach(() => {
+      vi.resetAllMocks();
+    });
+
+    it('calls query() with INSERT INTO search_analytics', async () => {
+      mocks.mockQuery.mockResolvedValueOnce({ rows: [] });
+
+      await recordSearchAnalytics('user-1', 'my query', 5, 0.9, 'keyword');
+
+      expect(mocks.mockQuery).toHaveBeenCalledTimes(1);
+      const [sql, params] = mocks.mockQuery.mock.calls[0] as [string, unknown[]];
+      expect(sql).toContain('INSERT INTO search_analytics');
+      expect(params).toContain('user-1');
+      expect(params).toContain('my query');
+      expect(params).toContain(5);
+      expect(params).toContain('keyword');
+    });
+
+    it('swallows errors without throwing', async () => {
+      mocks.mockQuery.mockRejectedValueOnce(new Error('analytics table gone'));
+
+      // Should NOT throw
+      await expect(recordSearchAnalytics('user-1', 'test', 0, null, 'hybrid')).resolves.toBeUndefined();
     });
   });
 });

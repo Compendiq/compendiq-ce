@@ -109,6 +109,89 @@ export async function isEmbeddingLocked(userId: string): Promise<boolean> {
   }
 }
 
+// ── Attachment download-failure tracking (persisted in Redis) ──────────────
+// Tracks per-attachment download failures so we can skip Confluence calls
+// for attachments that have persistently failed, even across container restarts.
+// Uses a simple INCR + EXPIRE pattern (non-atomic: TTL is reset on every call,
+// which is the intended mitigation — keys with no TTL after a crash are
+// eventually corrected on the next failure record).
+
+/** Maximum consecutive download failures before an attachment is skipped on-demand */
+export const MAX_ATTACHMENT_FAILURES = 3;
+
+/** 7-day TTL for failure counters (allows recovery after Confluence fix) */
+const ATTACHMENT_FAILURE_TTL = 7 * 24 * 3600;
+
+function attachmentFailureKey(pageId: string, filename: string): string {
+  // Encode filename to prevent Redis glob chars (*, ?, [, ]) from causing
+  // false matches during SCAN pattern matching in clearAttachmentFailures.
+  return `attach:fail:${pageId}:${encodeURIComponent(filename)}`;
+}
+
+/**
+ * Increment the failure counter for an attachment.
+ * Safe to call when Redis is null (no-op).
+ */
+export async function recordAttachmentFailure(
+  redis: RedisClientType | null,
+  pageId: string,
+  filename: string,
+): Promise<void> {
+  if (!redis) return;
+  try {
+    const k = attachmentFailureKey(pageId, filename);
+    await redis.incr(k);
+    await redis.expire(k, ATTACHMENT_FAILURE_TTL);
+  } catch (err) {
+    logger.error({ err, pageId, filename }, 'Failed to record attachment failure');
+  }
+}
+
+/**
+ * Get the current failure count for an attachment.
+ * Returns 0 when Redis is unavailable or the key does not exist.
+ */
+export async function getAttachmentFailureCount(
+  redis: RedisClientType | null,
+  pageId: string,
+  filename: string,
+): Promise<number> {
+  if (!redis) return 0;
+  try {
+    const val = await redis.get(attachmentFailureKey(pageId, filename));
+    if (val === null) return 0;
+    const n = parseInt(val, 10);
+    return Number.isNaN(n) ? 0 : n;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Clear all failure counters for a page (e.g. after a successful sync).
+ * Uses a SCAN cursor loop to avoid blocking Redis with KEYS.
+ * Safe to call when Redis is null (no-op).
+ */
+export async function clearAttachmentFailures(
+  redis: RedisClientType | null,
+  pageId: string,
+): Promise<void> {
+  if (!redis) return;
+  try {
+    const pattern = `attach:fail:${pageId}:*`;
+    let cursor = '0';
+    do {
+      const result = await redis.scan(cursor, { MATCH: pattern, COUNT: 100 });
+      cursor = String(result.cursor);
+      if (result.keys.length > 0) {
+        await redis.del(result.keys);
+      }
+    } while (cursor !== '0');
+  } catch (err) {
+    logger.error({ err, pageId }, 'Failed to clear attachment failure counters');
+  }
+}
+
 const TTL = {
   pages: 900,      // 15 minutes
   spaces: 900,     // 15 minutes

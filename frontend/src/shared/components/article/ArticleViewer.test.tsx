@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, waitFor } from '@testing-library/react';
+import { render, waitFor, fireEvent } from '@testing-library/react';
 
 // Mock mermaid (must be before component import)
 const mockMermaidRender = vi.fn().mockResolvedValue({ svg: '<svg data-testid="mermaid-svg">diagram</svg>' });
@@ -11,12 +11,12 @@ vi.mock('mermaid', () => ({
 }));
 
 // Mock useIsLightTheme hook
-vi.mock('../hooks/use-is-light-theme', () => ({
+vi.mock('../../hooks/use-is-light-theme', () => ({
   useIsLightTheme: () => false,
 }));
 
 const mockFetchAuthenticatedBlob = vi.fn();
-vi.mock('../hooks/use-authenticated-src', () => ({
+vi.mock('../../hooks/use-authenticated-src', () => ({
   fetchAuthenticatedBlob: (...args: unknown[]) => mockFetchAuthenticatedBlob(...args),
 }));
 
@@ -41,20 +41,87 @@ describe('ArticleViewer', () => {
     expect(mockFetchAuthenticatedBlob).toHaveBeenCalledWith('/api/attachments/page-1/dashboard.png');
   });
 
-  it('adds error placeholder class when image fetch fails', async () => {
+  it('replaces failed image with error placeholder containing a Retry button', async () => {
     mockFetchAuthenticatedBlob.mockResolvedValueOnce(null);
 
     const html = '<p><img src="/api/attachments/page-1/missing.png" alt="Missing" /></p>';
     const { container } = render(<ArticleViewer content={html} />);
 
     await waitFor(() => {
-      const img = container.querySelector('img');
-      expect(img?.classList.contains('image-load-error')).toBe(true);
+      const placeholder = container.querySelector('.image-error-placeholder');
+      expect(placeholder).toBeTruthy();
     });
 
-    // Should have a helpful title tooltip
-    const img = container.querySelector('img')!;
-    expect(img.title).toContain('could not be loaded');
+    // Should have image-load-error class for CSS backward compatibility
+    const placeholder = container.querySelector('.image-error-placeholder')!;
+    expect(placeholder.classList.contains('image-load-error')).toBe(true);
+
+    // Should contain a Retry button
+    const retryBtn = placeholder.querySelector('button');
+    expect(retryBtn).toBeTruthy();
+    expect(retryBtn?.textContent).toContain('Retry');
+
+    // Should contain error text
+    expect(placeholder.textContent).toContain('could not be loaded');
+  });
+
+  it('clicking Retry re-fetches the image and replaces placeholder with img on success', async () => {
+    // First call: fails; second call (retry): succeeds
+    mockFetchAuthenticatedBlob
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce('blob:retry-success');
+
+    const html = '<p><img src="/api/attachments/page-1/retry.png" alt="Retry test" /></p>';
+    const { container } = render(<ArticleViewer content={html} />);
+
+    // Wait for error placeholder to appear
+    await waitFor(() => {
+      expect(container.querySelector('.image-error-placeholder')).toBeTruthy();
+    });
+
+    // Click Retry
+    const retryBtn = container.querySelector('.image-error-placeholder button')!;
+    fireEvent.click(retryBtn);
+
+    // After successful retry, image should be back with blob URL
+    await waitFor(() => {
+      const img = container.querySelector('img');
+      expect(img).toBeTruthy();
+      expect(img?.getAttribute('src')).toBe('blob:retry-success');
+    });
+
+    // Error placeholder should be gone
+    expect(container.querySelector('.image-error-placeholder')).toBeNull();
+    expect(mockFetchAuthenticatedBlob).toHaveBeenCalledTimes(2);
+    expect(mockFetchAuthenticatedBlob).toHaveBeenLastCalledWith('/api/attachments/page-1/retry.png');
+  });
+
+  it('clicking Retry shows error placeholder again when retry also fails', async () => {
+    // Both calls fail
+    mockFetchAuthenticatedBlob
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null);
+
+    const html = '<p><img src="/api/attachments/page-1/persistent-fail.png" alt="Fail" /></p>';
+    const { container } = render(<ArticleViewer content={html} />);
+
+    // Wait for first error placeholder
+    await waitFor(() => {
+      expect(container.querySelector('.image-error-placeholder')).toBeTruthy();
+    });
+
+    // Click Retry
+    const retryBtn = container.querySelector('.image-error-placeholder button')!;
+    fireEvent.click(retryBtn);
+
+    // Should show error placeholder again after second failure
+    await waitFor(() => {
+      expect(container.querySelector('.image-error-placeholder')).toBeTruthy();
+    });
+
+    const newPlaceholder = container.querySelector('.image-error-placeholder')!;
+    expect(newPlaceholder.querySelector('button')).toBeTruthy();
+    expect(mockFetchAuthenticatedBlob).toHaveBeenCalledTimes(2);
   });
 
   it('does not rewrite external images through the authenticated attachment fetcher', async () => {

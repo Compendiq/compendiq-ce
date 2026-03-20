@@ -2,6 +2,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { JSDOM } from 'jsdom';
 import { request } from 'undici';
+import type { RedisClientType } from 'redis';
 import { ConfluenceClient, ConfluenceAttachment } from './confluence-client.js';
 import { logger } from '../../../core/utils/logger.js';
 import { validateUrl } from '../../../core/utils/ssrf-guard.js';
@@ -11,6 +12,13 @@ import {
   type AttachmentImageSource,
   type ImageReference,
 } from '../../../core/services/image-references.js';
+import {
+  getAttachmentFailureCount,
+  recordAttachmentFailure,
+  clearAttachmentFailures,
+  MAX_ATTACHMENT_FAILURES,
+  getRedisClient,
+} from '../../../core/services/redis-cache.js';
 
 const ATTACHMENTS_BASE = process.env.ATTACHMENTS_DIR ?? 'data/attachments';
 
@@ -439,14 +447,28 @@ async function downloadExternalImage(url: string): Promise<ExternalImageDownload
  * during the download phase.
  *
  * Returns null if the attachment cannot be found or downloaded.
+ * Tracks persistent download failures in Redis so that attachments which repeatedly
+ * fail are skipped (short-circuited) after MAX_ATTACHMENT_FAILURES attempts, even
+ * across container restarts.
+ *
+ * @param redis - Optional Redis client for failure tracking. When null, tracking is skipped.
  */
 export async function fetchAndCacheAttachment(
   client: ConfluenceClient,
   userId: string,
   pageId: string,
   filename: string,
+  redis?: RedisClientType | null,
 ): Promise<Buffer | null> {
   const safe = path.basename(filename);
+
+  // Short-circuit: skip Confluence API call if this attachment has failed too many times.
+  // Prevents repeated hammering of Confluence for known-broken attachments across restarts.
+  const failureCount = await getAttachmentFailureCount(redis ?? null, pageId, safe);
+  if (failureCount >= MAX_ATTACHMENT_FAILURES) {
+    logger.debug({ userId, pageId, filename: safe, failureCount }, 'Attachment skipped: failure cap reached');
+    return null;
+  }
 
   // Fetch the page's attachment list from Confluence
   const { results: attachments } = await client.getPageAttachments(pageId);
@@ -466,6 +488,8 @@ export async function fetchAndCacheAttachment(
 
   if (!attachment?._links?.download) {
     logger.debug({ userId, pageId, filename: safe }, 'Attachment not found in Confluence');
+    // Record failure so repeated misses are tracked (not on infrastructure errors — see throw below)
+    await recordAttachmentFailure(redis ?? null, pageId, safe);
     return null;
   }
 
@@ -494,14 +518,20 @@ export async function fetchAndCacheAttachment(
   return data;
 }
 
+export interface FetchAndCachePageImageOptions {
+  client: ConfluenceClient;
+  userId: string;
+  pageId: string;
+  localFilename: string;
+  bodyStorage: string;
+  currentSpaceKey?: string;
+  redis?: ReturnType<typeof getRedisClient>;
+}
+
 export async function fetchAndCachePageImage(
-  client: ConfluenceClient,
-  userId: string,
-  pageId: string,
-  localFilename: string,
-  bodyStorage: string,
-  currentSpaceKey?: string,
+  options: FetchAndCachePageImageOptions,
 ): Promise<Buffer | null> {
+  const { client, userId, pageId, localFilename, bodyStorage, currentSpaceKey, redis } = options;
   const safe = path.basename(localFilename);
   const refs = extractImageReferences(bodyStorage, currentSpaceKey);
   let ref = refs.find((candidate) => candidate.localFilename === safe);
@@ -517,7 +547,7 @@ export async function fetchAndCachePageImage(
   }
 
   if (!ref) {
-    return fetchAndCacheAttachment(client, userId, pageId, safe);
+    return fetchAndCacheAttachment(client, userId, pageId, safe, redis);
   }
 
   if (ref.source.kind === 'external-url') {
@@ -630,6 +660,7 @@ export async function getMissingAttachments(
 
 /**
  * Clean up all attachments for a page.
+ * Also clears any Redis failure counters so re-synced attachments get a fresh start.
  */
 export async function cleanPageAttachments(userId: string, pageId: string): Promise<void> {
   const dir = attachmentDir(userId, pageId);
@@ -638,6 +669,8 @@ export async function cleanPageAttachments(userId: string, pageId: string): Prom
   } catch {
     // Directory may not exist
   }
+  // Clear Redis failure counters — after a sync the failures are stale
+  await clearAttachmentFailures(getRedisClient(), pageId);
 }
 
 /**

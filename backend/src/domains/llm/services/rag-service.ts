@@ -29,7 +29,7 @@ interface SearchResult {
  * Tradeoff: higher ef_search = better recall but slower query.
  * Default PostgreSQL ef_search is 40; we use 100 for better RAG recall.
  */
-async function vectorSearch(userId: string, questionEmbedding: number[], limit = 10): Promise<SearchResult[]> {
+export async function vectorSearch(userId: string, questionEmbedding: number[], limit = 10): Promise<SearchResult[]> {
   const vecSpaces = await getUserAccessibleSpaces(userId);
   // Use a dedicated client so SET LOCAL applies to our query
   const client = await getPool().connect();
@@ -83,7 +83,7 @@ async function vectorSearch(userId: string, questionEmbedding: number[], limit =
  * Scoped to: Confluence pages in user's selected spaces + standalone articles
  * the user can access (shared, or private and owned by the user).
  */
-async function keywordSearch(userId: string, questionText: string, limit = 10): Promise<SearchResult[]> {
+export async function keywordSearch(userId: string, questionText: string, limit = 10): Promise<SearchResult[]> {
   // Use plainto_tsquery which safely handles arbitrary user input
   // (no need to manually sanitize or construct tsquery syntax)
   const trimmed = questionText.trim();
@@ -169,7 +169,7 @@ function reciprocalRankFusion(
 /**
  * Record a search analytics event.
  */
-async function recordSearchAnalytics(
+export async function recordSearchAnalytics(
   userId: string,
   queryText: string,
   resultCount: number,

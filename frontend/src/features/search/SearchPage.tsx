@@ -5,35 +5,13 @@ import { m } from 'framer-motion';
 import DOMPurify from 'dompurify';
 import {
   Search, FileText, ChevronLeft, ChevronRight,
-  Filter, X, SlidersHorizontal, Inbox,
+  Filter, X, SlidersHorizontal, Inbox, Loader2, AlertTriangle,
 } from 'lucide-react';
 import { apiFetch } from '../../shared/lib/api';
-import { FreshnessBadge } from '../../shared/components/badges/FreshnessBadge';
 import { cn } from '../../shared/lib/cn';
+import { useSearch, type SearchResultItem } from '../../shared/hooks/use-search';
 
-interface SearchResult {
-  id: string;
-  spaceKey: string;
-  title: string;
-  author: string | null;
-  lastModifiedAt: string | null;
-  labels: string[];
-  /** Plain-text excerpt with potential highlights */
-  excerpt?: string;
-  /** Quality score 0-100 if available */
-  qualityScore?: number | null;
-  /** Source: confluence or local */
-  source?: 'confluence' | 'local';
-}
-
-interface SearchResponse {
-  items: SearchResult[];
-  total: number;
-  page: number;
-  limit: number;
-  totalPages: number;
-}
-
+type SearchMode = 'keyword' | 'semantic' | 'hybrid';
 type SortOption = 'relevance' | 'modified' | 'title';
 
 interface SearchFilters {
@@ -43,36 +21,6 @@ interface SearchFilters {
   dateFrom?: string;
   dateTo?: string;
   labels?: string;
-}
-
-function useSearchResults(params: {
-  query: string;
-  filters: SearchFilters;
-  sort: SortOption;
-  page: number;
-}) {
-  const { query, filters, sort, page } = params;
-
-  const qs = useMemo(() => {
-    const sp = new URLSearchParams();
-    if (query) sp.set('search', query);
-    if (filters.source) sp.set('source', filters.source);
-    if (filters.spaceKey) sp.set('spaceKey', filters.spaceKey);
-    if (filters.author) sp.set('author', filters.author);
-    if (filters.dateFrom) sp.set('dateFrom', filters.dateFrom);
-    if (filters.dateTo) sp.set('dateTo', filters.dateTo);
-    if (filters.labels) sp.set('labels', filters.labels);
-    if (sort) sp.set('sort', sort === 'relevance' ? 'modified' : sort);
-    sp.set('page', String(page));
-    return sp.toString();
-  }, [query, filters, sort, page]);
-
-  return useQuery<SearchResponse>({
-    queryKey: ['search', { query, ...filters, sort, page }],
-    queryFn: () => apiFetch(`/pages?${qs}`),
-    enabled: query.length > 0,
-    placeholderData: (prev) => prev,
-  });
 }
 
 function useFilterOptions() {
@@ -92,13 +40,35 @@ function useSpacesForFilter() {
 }
 
 /**
+ * Escape HTML special characters to prevent injection when building
+ * highlight markup. DOMPurify provides a second safety net, but escaping
+ * at the source avoids relying solely on the sanitizer.
+ */
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/\//g, '&#x2F;');
+}
+
+/**
  * Highlight search terms in text by wrapping matches in <mark> tags.
  * Uses case-insensitive string splitting instead of RegExp to avoid ReDoS.
- * Output is sanitized with DOMPurify before rendering.
+ * All segments are HTML-escaped before assembly; output is then sanitized
+ * with DOMPurify as a secondary defense.
  */
 function highlightText(text: string, query: string): string {
   const trimmed = query.trim();
-  if (!trimmed) return DOMPurify.sanitize(text);
+  if (!trimmed) return DOMPurify.sanitize(escapeHtml(text));
+
+  // If the text already contains server-side <mark> tags (e.g. from ts_headline),
+  // return it sanitized as-is to avoid double-escaping the existing markup.
+  if (/<mark\b[^>]*>/.test(text)) {
+    return DOMPurify.sanitize(text, { ALLOWED_TAGS: ['mark'], ALLOWED_ATTR: ['class'] });
+  }
 
   const lowerText = text.toLowerCase();
   const lowerQuery = trimmed.toLowerCase();
@@ -108,18 +78,71 @@ function highlightText(text: string, query: string): string {
   while (cursor < text.length) {
     const idx = lowerText.indexOf(lowerQuery, cursor);
     if (idx === -1) {
-      parts.push(text.slice(cursor));
+      parts.push(escapeHtml(text.slice(cursor)));
       break;
     }
     if (idx > cursor) {
-      parts.push(text.slice(cursor, idx));
+      parts.push(escapeHtml(text.slice(cursor, idx)));
     }
     const matched = text.slice(idx, idx + trimmed.length);
-    parts.push(`<mark class="bg-primary/20 text-foreground rounded px-0.5">${matched}</mark>`);
+    parts.push(`<mark class="bg-primary/20 text-foreground rounded px-0.5">${escapeHtml(matched)}</mark>`);
     cursor = idx + trimmed.length;
   }
 
   return DOMPurify.sanitize(parts.join(''), { ALLOWED_TAGS: ['mark'], ALLOWED_ATTR: ['class'] });
+}
+
+function SearchResultCard({ item, query, navigate }: {
+  item: SearchResultItem;
+  query: string;
+  navigate: (path: string) => void;
+}) {
+  return (
+    <button
+      onClick={() => navigate(`/pages/${item.id}`)}
+      className="glass-card-hover w-full p-4 text-left"
+      data-testid={`search-result-${item.id}`}
+    >
+      <div className="flex items-start gap-3">
+        <FileText size={18} className="mt-0.5 shrink-0 text-muted-foreground" />
+        <div className="min-w-0 flex-1">
+          <p
+            className="font-medium"
+            dangerouslySetInnerHTML={{
+              __html: DOMPurify.sanitize(
+                highlightText(item.title, query),
+                { ALLOWED_TAGS: ['mark'], ALLOWED_ATTR: ['class'] },
+              ),
+            }}
+          />
+          {item.excerpt && (
+            <p
+              className="mt-1 line-clamp-2 text-sm text-muted-foreground"
+              dangerouslySetInnerHTML={{
+                __html: DOMPurify.sanitize(
+                  highlightText(item.excerpt.slice(0, 200), query),
+                  { ALLOWED_TAGS: ['mark'], ALLOWED_ATTR: ['class'] },
+                ),
+              }}
+            />
+          )}
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            {item.spaceKey && (
+              <span className="rounded bg-foreground/5 px-1.5 py-0.5">
+                {item.spaceKey}
+              </span>
+            )}
+          </div>
+        </div>
+        {/* Score badge for semantic/hybrid modes */}
+        {item.score > 0 && (
+          <span className="shrink-0 rounded-full bg-foreground/5 px-2 py-0.5 text-xs text-muted-foreground">
+            {(item.score * 100).toFixed(0)}%
+          </span>
+        )}
+      </div>
+    </button>
+  );
 }
 
 export function SearchPage() {
@@ -130,19 +153,18 @@ export function SearchPage() {
   // Initialize from URL params
   const initialQuery = searchParams.get('q') ?? '';
   const [query, setQuery] = useState(initialQuery);
-  const [debouncedQuery, setDebouncedQuery] = useState(initialQuery);
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState<SortOption>('relevance');
   const [showFilters, setShowFilters] = useState(false);
   const [filters, setFilters] = useState<SearchFilters>({});
+  const [searchMode, setSearchMode] = useState<SearchMode>('keyword');
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Debounce search input
+  // Debounce only for URL sync — useSearch handles its own debounce for API calls.
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
-      setDebouncedQuery(query);
       setPage(1);
       if (query) {
         setSearchParams({ q: query }, { replace: true });
@@ -155,17 +177,32 @@ export function SearchPage() {
     };
   }, [query, setSearchParams]);
 
+  // Use raw query for display decisions so results appear immediately
+  // without waiting for the URL-sync debounce.
+  const activeQuery = query.trim();
+
   // Focus input on mount
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
 
-  const { data, isLoading, isFetching } = useSearchResults({
-    query: debouncedQuery,
-    filters,
-    sort,
+  // ── Two-phase progressive search ──────────────────────────────────────────
+  const { immediateResults, enhancedResults, isLoadingImmediate, isLoadingEnhanced, hasEmbeddings, total, totalPages } = useSearch({
+    query,
+    mode: searchMode,
+    spaceKey: filters.spaceKey,
     page,
   });
+
+  // Display enhanced results if available; fall back to immediate results.
+  const displayResults: SearchResultItem[] = useMemo(() => {
+    if (searchMode !== 'keyword' && enhancedResults !== undefined) {
+      return enhancedResults;
+    }
+    return immediateResults;
+  }, [searchMode, immediateResults, enhancedResults]);
+
+  const isLoading = isLoadingImmediate && immediateResults.length === 0;
 
   const { data: filterOptions } = useFilterOptions();
   const { data: spaces } = useSpacesForFilter();
@@ -185,6 +222,8 @@ export function SearchPage() {
     setPage(1);
   }, []);
 
+  const showNoEmbeddingsWarning = (searchMode === 'semantic' || searchMode === 'hybrid') && !hasEmbeddings && !!activeQuery;
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -203,7 +242,7 @@ export function SearchPage() {
               size={18}
               className={cn(
                 'absolute left-3 top-1/2 -translate-y-1/2',
-                isFetching ? 'text-primary animate-pulse' : 'text-muted-foreground',
+                (isLoadingImmediate || isLoadingEnhanced) ? 'text-primary animate-pulse' : 'text-muted-foreground',
               )}
             />
             <input
@@ -257,6 +296,35 @@ export function SearchPage() {
               </span>
             )}
           </button>
+        </div>
+
+        {/* Mode toggle — keyword / semantic / hybrid */}
+        <div className="mt-3 flex items-center gap-1.5">
+          {(['keyword', 'semantic', 'hybrid'] as const).map((m) => (
+            <button
+              key={m}
+              data-testid={`mode-toggle-${m}`}
+              disabled={!query}
+              onClick={() => setSearchMode(m)}
+              className={cn(
+                'rounded-full px-3 py-1 text-xs font-medium transition-colors capitalize',
+                'disabled:cursor-not-allowed disabled:opacity-40',
+                searchMode === m
+                  ? 'bg-primary text-primary-foreground'
+                  : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
+              )}
+            >
+              {m}
+            </button>
+          ))}
+          {/* Subtle enhanced-loading indicator — shown whenever the enhanced query is in-flight */}
+          {isLoadingEnhanced && (
+            <Loader2
+              size={14}
+              className="ml-1 animate-spin text-primary"
+              data-testid="enhanced-loading-indicator"
+            />
+          )}
         </div>
 
         {/* Filter panel */}
@@ -365,15 +433,34 @@ export function SearchPage() {
         )}
       </div>
 
+      {/* No-embeddings warning banner */}
+      {showNoEmbeddingsWarning && (
+        <div
+          className="flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-warning"
+          data-testid="no-embeddings-warning"
+        >
+          <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+          <span>
+            No embeddings found — falling back to keyword search.
+            Embed your pages to enable semantic search.
+          </span>
+        </div>
+      )}
+
       {/* Results count */}
-      {debouncedQuery && data && (
+      {activeQuery && displayResults.length > 0 && (
         <p className="text-sm text-muted-foreground" data-testid="search-results-count">
-          {data.total} {data.total === 1 ? 'result' : 'results'} for &ldquo;{debouncedQuery}&rdquo;
+          {total} {total === 1 ? 'result' : 'results'} for &ldquo;{activeQuery}&rdquo;
+          {searchMode !== 'keyword' && (
+            <span className="ml-2 text-xs capitalize text-muted-foreground/60">
+              ({searchMode})
+            </span>
+          )}
         </p>
       )}
 
       {/* Results */}
-      {!debouncedQuery ? (
+      {!activeQuery ? (
         <div className="glass-card flex flex-col items-center justify-center py-16 text-center">
           <div className="mb-4 rounded-full bg-muted p-3">
             <Search size={32} className="text-muted-foreground" />
@@ -394,17 +481,17 @@ export function SearchPage() {
             <div key={i} className="glass-card h-24 animate-pulse" />
           ))}
         </div>
-      ) : !data?.items.length ? (
+      ) : displayResults.length === 0 ? (
         <div className="glass-card flex flex-col items-center justify-center py-16 text-center">
           <div className="mb-4 rounded-full bg-muted p-3">
             <Inbox size={32} className="text-muted-foreground" />
           </div>
           <p className="text-lg font-medium" data-testid="no-results-title">No results found</p>
           <p className="mt-1 text-sm text-muted-foreground">
-            No articles match &ldquo;{debouncedQuery}&rdquo;
+            No articles match &ldquo;{activeQuery}&rdquo;
           </p>
           <button
-            onClick={() => navigate(`/knowledge-requests?title=${encodeURIComponent(debouncedQuery)}`)}
+            onClick={() => navigate(`/knowledge-requests?title=${encodeURIComponent(activeQuery)}`)}
             className="mt-4 flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
             data-testid="request-content-cta"
           >
@@ -414,81 +501,21 @@ export function SearchPage() {
         </div>
       ) : (
         <div className="space-y-3">
-          {data.items.map((item, i) => (
+          {displayResults.map((item, i) => (
             <m.div
               key={item.id}
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: i * 0.03 }}
             >
-              <button
-                onClick={() => navigate(`/pages/${item.id}`)}
-                className="glass-card-hover w-full p-4 text-left"
-                data-testid={`search-result-${item.id}`}
-              >
-                <div className="flex items-start gap-3">
-                  <FileText size={18} className="mt-0.5 shrink-0 text-muted-foreground" />
-                  <div className="min-w-0 flex-1">
-                    <p
-                      className="font-medium"
-                      dangerouslySetInnerHTML={{
-                        __html: DOMPurify.sanitize(highlightText(item.title, debouncedQuery), { ALLOWED_TAGS: ['mark'], ALLOWED_ATTR: ['class'] }),
-                      }}
-                    />
-                    {item.excerpt && (
-                      <p
-                        className="mt-1 line-clamp-2 text-sm text-muted-foreground"
-                        dangerouslySetInnerHTML={{
-                          __html: DOMPurify.sanitize(highlightText(item.excerpt, debouncedQuery), { ALLOWED_TAGS: ['mark'], ALLOWED_ATTR: ['class'] }),
-                        }}
-                      />
-                    )}
-                    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                      <span className="rounded bg-foreground/5 px-1.5 py-0.5">
-                        {item.spaceKey}
-                      </span>
-                      {item.source && (
-                        <span className={cn(
-                          'rounded px-1.5 py-0.5',
-                          item.source === 'confluence' ? 'bg-info/10 text-info' : 'bg-primary/10 text-primary',
-                        )}>
-                          {item.source === 'confluence' ? 'Confluence' : 'Local'}
-                        </span>
-                      )}
-                      {item.author && <span>{item.author}</span>}
-                      {item.labels.slice(0, 3).map((label) => (
-                        <span key={label} className="rounded bg-primary/10 px-1.5 py-0.5 text-primary">
-                          {label}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-2">
-                    {item.qualityScore != null && (
-                      <span
-                        className={cn(
-                          'rounded-full px-2 py-0.5 text-xs font-medium',
-                          item.qualityScore >= 80 ? 'bg-success/15 text-success' :
-                          item.qualityScore >= 50 ? 'bg-warning/15 text-warning' :
-                          'bg-destructive/15 text-destructive',
-                        )}
-                      >
-                        Q:{item.qualityScore}
-                      </span>
-                    )}
-                    {item.lastModifiedAt && (
-                      <FreshnessBadge lastModified={item.lastModifiedAt} />
-                    )}
-                  </div>
-                </div>
-              </button>
+              <SearchResultCard item={item} query={activeQuery} navigate={navigate} />
             </m.div>
           ))}
         </div>
       )}
 
-      {/* Pagination */}
-      {data && data.totalPages > 1 && (
+      {/* Pagination (only for keyword mode with multiple pages) */}
+      {searchMode === 'keyword' && totalPages > 1 && (
         <div className="flex items-center justify-center gap-4">
           <button
             onClick={() => setPage((p) => Math.max(1, p - 1))}
@@ -499,11 +526,11 @@ export function SearchPage() {
             <ChevronLeft size={18} />
           </button>
           <span className="text-sm text-muted-foreground">
-            Page {page} of {data.totalPages}
+            Page {page} of {totalPages}
           </span>
           <button
-            onClick={() => setPage((p) => Math.min(data.totalPages, p + 1))}
-            disabled={page >= data.totalPages}
+            onClick={() => setPage((p) => p + 1)}
+            disabled={page >= totalPages}
             className="glass-card p-2 disabled:opacity-30"
             data-testid="search-next-page"
           >

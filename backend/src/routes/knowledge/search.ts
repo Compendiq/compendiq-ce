@@ -1,18 +1,34 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { SearchHybridQuerySchema } from '@atlasmind/contracts';
 import { query } from '../../core/db/postgres.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
+import {
+  vectorSearch,
+  hybridSearch,
+  recordSearchAnalytics,
+} from '../../domains/llm/services/rag-service.js';
+import { providerGenerateEmbedding } from '../../domains/llm/services/llm-provider.js';
+import { logger } from '../../core/utils/logger.js';
 
-const SearchQuerySchema = z.object({
-  q: z.string().min(1).max(500),
-  spaceKey: z.string().optional(),
+/**
+ * Fuzzy title similarity threshold for pg_trgm.
+ * 0.3 (30%) provides a useful recall without excessive false positives.
+ * Named constant makes it easy to tune for specific corpora.
+ */
+const TRGM_SIMILARITY_THRESHOLD = 0.3;
+
+/**
+ * Full search query schema — extends the shared SearchHybridQuerySchema from
+ * contracts with keyword-mode specific filter/pagination fields.
+ */
+const SearchQuerySchema = SearchHybridQuerySchema.extend({
   author: z.string().optional(),
   dateFrom: z.string().optional(),
   dateTo: z.string().optional(),
   tags: z.string().optional(),
   sort: z.enum(['relevance', 'modified', 'title']).default('relevance'),
   page: z.coerce.number().int().positive().default(1),
-  limit: z.coerce.number().int().positive().max(100).default(20),
 });
 
 const LogSearchSchema = z.object({
@@ -24,19 +40,159 @@ const SuggestionsQuerySchema = z.object({
   q: z.string().min(1).max(200),
 });
 
+/**
+ * Generate a query embedding, returning a 502 error response on failure.
+ * Shared by semantic and hybrid search modes to avoid duplicating the
+ * try/catch + error-formatting logic.
+ */
+async function generateSearchEmbedding(
+  userId: string,
+  q: string,
+  modeName: string,
+  reply: import('fastify').FastifyReply,
+): Promise<number[] | null> {
+  try {
+    const embeddings = await providerGenerateEmbedding(userId, q);
+    return embeddings[0];
+  } catch (err) {
+    logger.warn({ err }, `Embedding generation failed for ${modeName} search`);
+    reply.status(502).send({
+      error: 'EmbeddingFailed',
+      message: `Embedding generation failed: ${err instanceof Error ? err.message : String(err)}`,
+      statusCode: 502,
+    });
+    return null;
+  }
+}
+
 export async function searchRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
 
-  // GET /api/search — Enhanced full-text search with facets
-  fastify.get('/search', async (request) => {
+  // GET /api/search — Enhanced full-text search with facets, plus semantic/hybrid mode support.
+  fastify.get('/search', async (request, reply) => {
     const params = SearchQuerySchema.parse(request.query);
-    const { q, spaceKey, author, dateFrom, dateTo, tags, sort, page, limit } = params;
+    const { q, mode, spaceKey, author, dateFrom, dateTo, tags, sort, page, limit } = params;
     const userId = request.userId;
 
+    const searchSpaces = await getUserAccessibleSpaces(userId);
+
+    // ── Embeddings availability check (only needed for semantic/hybrid) ──────
+    let hasEmbeddings = true;
+    let effectiveMode = mode;
+    let warning: string | undefined;
+
+    if (mode !== 'keyword') {
+      const embResult = await query<{ count: string }>(
+        `SELECT COUNT(*) AS count
+         FROM page_embeddings pe
+         JOIN pages cp ON pe.page_id = cp.id
+         WHERE (
+           (cp.source = 'confluence' AND cp.space_key = ANY($1::text[]))
+           OR (cp.source = 'standalone' AND cp.visibility = 'shared')
+           OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $2)
+         )
+         AND cp.deleted_at IS NULL`,
+        [searchSpaces, userId],
+      );
+      const embCount = parseInt(embResult.rows[0].count, 10);
+      if (embCount === 0) {
+        hasEmbeddings = false;
+        effectiveMode = 'keyword';
+        warning = 'No embeddings found — falling back to keyword search. Embed your pages to enable semantic search.';
+      }
+    }
+
+    // ── Semantic mode ─────────────────────────────────────────────────────────
+    if (effectiveMode === 'semantic') {
+      const questionEmbedding = await generateSearchEmbedding(userId, q, 'semantic', reply);
+      if (!questionEmbedding) return;
+
+      const vectorResults = await vectorSearch(userId, questionEmbedding, limit);
+
+      // Deduplicate by pageId (take best chunk per page)
+      const seen = new Set<number>();
+      const deduped = vectorResults.filter((r) => {
+        if (seen.has(r.pageId)) return false;
+        seen.add(r.pageId);
+        return true;
+      });
+
+      const maxScore = deduped.length > 0 ? Math.max(...deduped.map((r) => r.score)) : null;
+      recordSearchAnalytics(userId, q, deduped.length, maxScore, 'semantic').catch(() => {});
+
+      const items = deduped.map((r) => ({
+        id: r.pageId,
+        confluenceId: r.confluenceId,
+        title: r.pageTitle,
+        spaceKey: r.spaceKey,
+        author: null as string | null,
+        lastModifiedAt: null as Date | null,
+        labels: [] as string[],
+        rank: r.score,
+        snippet: r.chunkText.slice(0, 300),
+        score: r.score,
+      }));
+
+      return {
+        items,
+        total: items.length,
+        page: 1,
+        limit,
+        totalPages: 1,
+        facets: { spaces: [], authors: [], tags: [] },
+        mode: effectiveMode,
+        hasEmbeddings,
+        warning,
+      };
+    }
+
+    // ── Hybrid mode ───────────────────────────────────────────────────────────
+    // Delegates to rag-service's hybridSearch which handles embedding generation,
+    // parallel vector + keyword search, RRF fusion, and deduplication internally.
+    if (effectiveMode === 'hybrid') {
+      let deduped;
+      try {
+        deduped = await hybridSearch(userId, q, limit);
+      } catch (err) {
+        logger.warn({ err }, 'Hybrid search failed (embedding generation error)');
+        reply.status(502).send({
+          error: 'EmbeddingFailed',
+          message: `Embedding generation failed: ${err instanceof Error ? err.message : String(err)}`,
+          statusCode: 502,
+        });
+        return;
+      }
+
+      const items = deduped.map((r) => ({
+        id: r.pageId,
+        confluenceId: r.confluenceId,
+        title: r.pageTitle,
+        spaceKey: r.spaceKey,
+        author: null as string | null,
+        lastModifiedAt: null as Date | null,
+        labels: [] as string[],
+        rank: r.score,
+        snippet: r.chunkText.slice(0, 300),
+        score: r.score,
+      }));
+
+      return {
+        items,
+        total: items.length,
+        page: 1,
+        limit,
+        totalPages: 1,
+        facets: { spaces: [], authors: [], tags: [] },
+        mode: effectiveMode,
+        hasEmbeddings,
+        warning,
+      };
+    }
+
+    // ── Keyword mode (default) ────────────────────────────────────────────────
     const offset = (page - 1) * limit;
     const conditions: string[] = [];
     // $1 = search query, $2 = accessible space keys, $3 = userId for standalone access
-    const searchSpaces = await getUserAccessibleSpaces(userId);
     const values: unknown[] = [q, searchSpaces, userId];
     let paramIndex = 4;
 
@@ -118,7 +274,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
     );
     const total = parseInt(countResult.rows[0].count, 10);
 
-    // Fetch paginated results with rank and snippet
+    // Fetch paginated FTS results with rank and snippet
     const limitParamIndex = paramIndex;
     const offsetParamIndex = paramIndex + 1;
 
@@ -145,6 +301,71 @@ export async function searchRoutes(fastify: FastifyInstance) {
        LIMIT $${limitParamIndex} OFFSET $${offsetParamIndex}`,
       [...values, limit, offset],
     );
+
+    // Path B: Fuzzy title matching via pg_trgm (separate from FTS)
+    // Merges additional title-match results that the FTS query may have missed.
+    const trgmResult = await query<{
+      id: number;
+      confluence_id: string;
+      title: string;
+      space_key: string;
+      body_text: string;
+      rank: number;
+    }>(
+      `SELECT cp.id, cp.confluence_id, cp.title, cp.space_key,
+              substring(cp.body_text, 1, 300) AS body_text,
+              similarity(cp.title, $1) AS rank
+       FROM pages cp
+       WHERE similarity(cp.title, $1) > $4
+         AND cp.title IS NOT NULL
+         AND (
+           (cp.source = 'confluence' AND cp.space_key = ANY($2::text[]))
+           OR (cp.source = 'standalone' AND cp.visibility = 'shared')
+           OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $3)
+         )
+         AND cp.deleted_at IS NULL
+       ORDER BY rank DESC
+       LIMIT $5`,
+      [q, searchSpaces, userId, TRGM_SIMILARITY_THRESHOLD, limit],
+    );
+
+    // Merge: start with FTS results (higher weight), add trgm-only hits
+    const ftsItems = dataResult.rows.map((row) => ({
+      id: row.id,
+      confluenceId: row.confluence_id,
+      title: row.title,
+      spaceKey: row.space_key,
+      author: row.author,
+      lastModifiedAt: row.last_modified_at,
+      labels: row.labels,
+      rank: row.rank,
+      snippet: row.snippet,
+    }));
+
+    const ftsIds = new Set(ftsItems.map((r) => r.id));
+    for (const trgmRow of trgmResult.rows) {
+      if (!ftsIds.has(trgmRow.id)) {
+        ftsItems.push({
+          id: trgmRow.id,
+          confluenceId: trgmRow.confluence_id,
+          title: trgmRow.title,
+          spaceKey: trgmRow.space_key,
+          author: null,
+          lastModifiedAt: null,
+          labels: [],
+          rank: trgmRow.rank,
+          snippet: trgmRow.body_text,
+        });
+      }
+    }
+
+    // After merging trgm results, the actual item count may exceed the FTS-only
+    // total. Adjust so that `total` is never less than the items returned.
+    const adjustedTotal = Math.max(total, ftsItems.length);
+    const totalPages = Math.ceil(adjustedTotal / limit);
+
+    const maxFtsScore = ftsItems.length > 0 ? Math.max(...ftsItems.map((r) => r.rank)) : null;
+    recordSearchAnalytics(userId, q, ftsItems.length, maxFtsScore, 'keyword').catch(() => {});
 
     // Facet aggregation — get available filter values with counts
     // Uses the same RBAC access control + deleted_at filter
@@ -216,25 +437,16 @@ export async function searchRoutes(fastify: FastifyInstance) {
       }
     }
 
-    const totalPages = Math.ceil(total / limit);
-
     return {
-      items: dataResult.rows.map((row) => ({
-        id: row.id,
-        confluenceId: row.confluence_id,
-        title: row.title,
-        spaceKey: row.space_key,
-        author: row.author,
-        lastModifiedAt: row.last_modified_at,
-        labels: row.labels,
-        rank: row.rank,
-        snippet: row.snippet,
-      })),
-      total,
+      items: ftsItems,
+      total: adjustedTotal,
       page,
       limit,
       totalPages,
       facets,
+      mode: effectiveMode,
+      hasEmbeddings,
+      warning,
     };
   });
 
@@ -255,17 +467,20 @@ export async function searchRoutes(fastify: FastifyInstance) {
   fastify.get('/search/suggestions', async (request) => {
     const { q } = SuggestionsQuerySchema.parse(request.query);
 
+    // Escape LIKE metacharacters (%, _, \) to prevent pattern injection
+    const escapedQ = q.replace(/[%_\\]/g, '\\$&');
+
     const result = await query<{
       query_text: string;
       frequency: string;
     }>(
       `SELECT LOWER(TRIM(query)) AS query_text, COUNT(*) AS frequency
        FROM search_analytics
-       WHERE LOWER(TRIM(query)) LIKE LOWER($1) || '%'
+       WHERE LOWER(TRIM(query)) LIKE LOWER($1) || '%' ESCAPE '\\'
        GROUP BY LOWER(TRIM(query))
        ORDER BY COUNT(*) DESC
        LIMIT 10`,
-      [q],
+      [escapedQ],
     );
 
     return {

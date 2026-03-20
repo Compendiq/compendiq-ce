@@ -85,14 +85,15 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
 
       try {
         if (cachedPage.body_storage) {
-          data = await fetchAndCachePageImage(
+          data = await fetchAndCachePageImage({
             client,
             userId,
             pageId,
-            filename,
-            cachedPage.body_storage,
-            cachedPage.space_key,
-          );
+            localFilename: filename,
+            bodyStorage: cachedPage.body_storage,
+            currentSpaceKey: cachedPage.space_key,
+            redis: getRedisClient(),
+          });
         } else {
           data = null;
         }
