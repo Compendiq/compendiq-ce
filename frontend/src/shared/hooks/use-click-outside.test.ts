@@ -100,6 +100,74 @@ describe('useClickOutside', () => {
     expect(removeSpy).toHaveBeenCalledWith('keydown', expect.any(Function));
   });
 
+  it('does not re-register listeners when callback identity changes (inline fn stability)', () => {
+    const addSpy = vi.spyOn(document, 'addEventListener');
+    const removeSpy = vi.spyOn(document, 'removeEventListener');
+
+    // First render with one callback
+    const { rerender } = renderHook(
+      ({ cb }) => useClickOutside<HTMLDivElement>(cb),
+      { initialProps: { cb: vi.fn() } },
+    );
+
+    // Record initial listener registrations (mousedown + keydown = 2 calls)
+    const addCountAfterMount = addSpy.mock.calls.filter(
+      ([evt]) => evt === 'mousedown' || evt === 'keydown',
+    ).length;
+    expect(addCountAfterMount).toBe(2);
+
+    const removeCountAfterMount = removeSpy.mock.calls.filter(
+      ([evt]) => evt === 'mousedown' || evt === 'keydown',
+    ).length;
+    expect(removeCountAfterMount).toBe(0);
+
+    // Re-render with a NEW inline callback (different identity)
+    rerender({ cb: vi.fn() });
+
+    // Listeners should NOT have been removed and re-added
+    const addCountAfterRerender = addSpy.mock.calls.filter(
+      ([evt]) => evt === 'mousedown' || evt === 'keydown',
+    ).length;
+    const removeCountAfterRerender = removeSpy.mock.calls.filter(
+      ([evt]) => evt === 'mousedown' || evt === 'keydown',
+    ).length;
+
+    expect(addCountAfterRerender).toBe(2); // Still only the initial 2
+    expect(removeCountAfterRerender).toBe(0); // No cleanup triggered
+  });
+
+  it('uses the latest callback even when callback identity changes', () => {
+    const firstCallback = vi.fn();
+    const secondCallback = vi.fn();
+
+    const { result, rerender } = renderHook(
+      ({ cb }) => useClickOutside<HTMLDivElement>(cb),
+      { initialProps: { cb: firstCallback } },
+    );
+
+    // Attach a container to the ref so the mousedown guard passes
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    Object.defineProperty(result.current, 'current', {
+      value: container,
+      writable: true,
+    });
+
+    // Re-render with a new callback
+    rerender({ cb: secondCallback });
+
+    // Click outside the container — should call the LATEST callback
+    const outsideEl = document.createElement('div');
+    document.body.appendChild(outsideEl);
+    outsideEl.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+
+    expect(firstCallback).not.toHaveBeenCalled();
+    expect(secondCallback).toHaveBeenCalledTimes(1);
+
+    document.body.removeChild(container);
+    document.body.removeChild(outsideEl);
+  });
+
   it('re-enables listeners when enabled changes from false to true', () => {
     const callback = vi.fn();
     const { rerender } = renderHook(

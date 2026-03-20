@@ -509,24 +509,9 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
             </Link>
           );
         })}
-        {/* Subtle vertical divider before collapse button */}
-        <div className="mx-0.5 h-4 w-px shrink-0 bg-border/30" />
-        {/* Collapse button — positioned next to AI tab */}
-        <button
-          onClick={toggleTreeSidebar}
-          className={cn(
-            'flex items-center rounded-lg px-1.5 py-1.5 transition-all duration-200 active:scale-[0.97]',
-            'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
-          )}
-          aria-label="Collapse sidebar"
-          title="Collapse sidebar (,)"
-        >
-          <PanelLeftClose size={14} />
-        </button>
       </nav>
 
-      {/* Sidebar header — title + actions */}
+      {/* Sidebar header — title + actions + collapse toggle */}
       <div className="flex h-8 shrink-0 items-center justify-between px-3">
         <span className="text-xs font-semibold text-muted-foreground/60">Pages</span>
         <div className="flex items-center gap-1">
@@ -548,6 +533,14 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
             title="Create new space"
           >
             <Plus size={14} />
+          </button>
+          <button
+            onClick={toggleTreeSidebar}
+            className="rounded-lg p-1 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
+            aria-label="Collapse sidebar"
+            title="Collapse sidebar (,)"
+          >
+            <PanelLeftClose size={14} />
           </button>
         </div>
       </div>
