@@ -490,7 +490,7 @@ export function PageViewPage() {
               <Editor content={editHtml} onChange={setEditHtml} draftKey={draftKey} naked onEditorReady={setEditorInstance} hideToolbar />
             </FeatureErrorBoundary>
           </>
-        ) : !page.bodyHtml ? (
+        ) : !page.bodyHtml?.trim() || page.bodyHtml.trim() === '<p></p>' ? (
           /* Empty page — no content yet */
           <div
             ref={contentRef}
@@ -504,7 +504,7 @@ export function PageViewPage() {
               <FileText size={48} className="text-muted-foreground/30" />
               <p className="text-muted-foreground">This page has no content yet.</p>
               <button
-                onClick={() => navigate(`/pages/${page.id}/edit`)}
+                onClick={handleStartEditing}
                 className="rounded-xl bg-primary/15 px-4 py-2 text-sm font-medium text-primary transition-colors hover:bg-primary/25"
                 data-testid="add-content-btn"
               >
