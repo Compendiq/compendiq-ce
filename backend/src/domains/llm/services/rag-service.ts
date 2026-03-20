@@ -201,7 +201,6 @@ export async function hybridSearch(
   logger.info({ userId, question: question.slice(0, 100) }, 'Running hybrid RAG search');
 
   let vectorResults: SearchResult[] = [];
-  let keywordResults: SearchResult[];
 
   // Start keyword search outside the try block so DB errors in keyword
   // search are not silently caught as "embedding failures".
@@ -220,7 +219,7 @@ export async function hybridSearch(
     logger.warn({ err }, 'Embedding failed, falling back to keyword-only');
   }
 
-  keywordResults = await keywordPromise;
+  const keywordResults = await keywordPromise;
 
   logger.debug({
     vectorHits: vectorResults.length,
