@@ -160,9 +160,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       quality: 'cp.quality_score DESC NULLS LAST',
     };
     let orderBy: string;
+    // For relevance sorting, ts_rank needs the search term as a parameter.
+    // We track it separately so the count query (which doesn't use ORDER BY)
+    // doesn't receive extra parameters that cause a bind mismatch.
+    const orderByValues: unknown[] = [];
     if (sort === 'relevance' && search && search.trim()) {
       orderBy = `ts_rank(to_tsvector('english', coalesce(cp.title, '') || ' ' || coalesce(cp.body_text, '')), plainto_tsquery('english', $${paramIdx++})) DESC`;
-      values.push(search.trim());
+      orderByValues.push(search.trim());
     } else {
       orderBy = sortMap[sort] ?? sortMap.title;
     }
@@ -199,7 +203,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       visibility: string;
     };
 
-    async function executeSearchQuery(wc: string, vals: unknown[], ob: string, pi: number) {
+    async function executeSearchQuery(wc: string, vals: unknown[], ob: string, pi: number, obVals: unknown[] = []) {
+      // Count query uses only WHERE params (no ORDER BY params)
       const countSql = `SELECT COUNT(*) as count FROM pages cp ${wc}`;
       const countResult = await query<{ count: string }>(countSql, [...vals]);
       const total = parseInt(countResult.rows[0].count, 10);
@@ -222,13 +227,14 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         ORDER BY ${ob}
         LIMIT $${pi} OFFSET $${pi + 1}
       `;
-      const dataVals = [...vals, limit, offset];
+      // Data query includes WHERE params + ORDER BY params + LIMIT/OFFSET
+      const dataVals = [...vals, ...obVals, limit, offset];
       const result = await query<PageRow>(dataSql, dataVals);
       return { total, rows: result.rows };
     }
 
     // First attempt: FTS query
-    let { total, rows } = await executeSearchQuery(whereClause, values, orderBy, paramIdx);
+    let { total, rows } = await executeSearchQuery(whereClause, values, orderBy, paramIdx, orderByValues);
 
     // ILIKE fallback: when FTS returns 0 results and search term >= 3 chars,
     // retry with a broader ILIKE match on title + body_text.
@@ -241,10 +247,12 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       const ilikeValues = [...values];
       ilikeValues[searchClauseParamIdx - 1] = ilikeTerm;
       let ilikeOrderBy = orderBy;
+      let ilikeObVals = orderByValues;
       if (sort === 'relevance') {
         ilikeOrderBy = 'cp.last_modified_at DESC NULLS LAST';
+        ilikeObVals = [];
       }
-      const fallbackResult = await executeSearchQuery(ilikeWhereClause, ilikeValues, ilikeOrderBy, paramIdx);
+      const fallbackResult = await executeSearchQuery(ilikeWhereClause, ilikeValues, ilikeOrderBy, paramIdx, ilikeObVals);
       total = fallbackResult.total;
       rows = fallbackResult.rows;
       usedIlikeFallback = true;
