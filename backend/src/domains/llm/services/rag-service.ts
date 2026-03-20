@@ -196,7 +196,7 @@ export async function hybridSearch(
   logger.info({ userId, question: question.slice(0, 100) }, 'Running hybrid RAG search');
 
   let vectorResults: SearchResult[] = [];
-  let keywordResults: SearchResult[] = [];
+  let keywordResults: SearchResult[];
 
   try {
     // Generate question embedding using the user's configured provider
