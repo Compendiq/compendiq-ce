@@ -55,8 +55,14 @@ export interface OpenAIConfig {
 
 async function getConfig(): Promise<OpenAIConfig> {
   const sharedLlmSettings = await getSharedLlmSettings();
+  let baseUrl = (sharedLlmSettings.openaiBaseUrl ?? process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1').replace(/\/+$/, '');
+  // Ensure the base URL includes the /v1 path required by the OpenAI API.
+  // Users commonly enter just the host (e.g. http://host:1234) without it.
+  if (!baseUrl.endsWith('/v1')) {
+    baseUrl += '/v1';
+  }
   return {
-    baseUrl: (sharedLlmSettings.openaiBaseUrl ?? process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1').replace(/\/+$/, ''),
+    baseUrl,
     apiKey: sharedLlmSettings.openaiApiKey ?? process.env.LLM_BEARER_TOKEN ?? process.env.OPENAI_API_KEY ?? '',
   };
 }
