@@ -659,7 +659,7 @@ function LlmTab({ settings }: { settings: SettingsResponse }) {
     setOpenaiModel(adminSettings.openaiModel ?? '');
     setEmbeddingModel(adminSettings.embeddingModel ?? settings.embeddingModel);
     setOpenaiApiKey('');
-  }, [adminSettings, settings.ollamaModel]);
+  }, [adminSettings, settings.ollamaModel, settings.embeddingModel]);
 
   const updateAdminSettings = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
