@@ -245,19 +245,26 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
     macro.replaceWith(div);
   }
 
-  // Process column macros FIRST (inside-out: children before parents)
+  // Process column macros FIRST (inside-out: columns before sections)
   for (const macro of byTag(doc, 'ac:structured-macro')) {
     if (getMacroName(macro) !== 'column') continue;
     const width = getParamValue(macro, 'width');
     const bodyEl = byTag(macro, 'ac:rich-text-body')[0];
     const div = doc.createElement('div');
     div.className = 'confluence-column';
-    if (width) div.setAttribute('data-cell-width', width);
+    if (width) {
+      div.setAttribute('data-cell-width', width);
+      // Only allow safe CSS width values (digits + unit) to prevent style injection
+      const safeWidth = /^\d+(%|px|em|rem)$/.test(width) ? width : undefined;
+      if (safeWidth) {
+        div.setAttribute('style', `flex: 0 0 ${safeWidth}`);
+      }
+    }
     div.innerHTML = bodyEl?.innerHTML ?? '';
     macro.replaceWith(div);
   }
 
-  // Process section macros AFTER columns (outside wrapper)
+  // Process section macros AFTER columns (outside-in: sections wrap columns)
   for (const macro of byTag(doc, 'ac:structured-macro')) {
     if (getMacroName(macro) !== 'section') continue;
     const border = getParamValue(macro, 'border');
@@ -415,7 +422,7 @@ export function htmlToConfluence(html: string): string {
     details.replaceWith(macro);
   }
 
-  // Convert section divs back to ac:structured-macro[name=section] (outside-in: sections first)
+  // Convert section divs back to ac:structured-macro[name=section] (outside-in: sections before columns)
   for (const div of doc.querySelectorAll('div.confluence-section')) {
     const macro = doc.createElement('ac:structured-macro');
     macro.setAttribute('ac:name', 'section');
@@ -432,11 +439,17 @@ export function htmlToConfluence(html: string): string {
     div.replaceWith(macro);
   }
 
-  // Convert column divs back to ac:structured-macro[name=column] (after sections)
+  // Convert column divs back to ac:structured-macro[name=column] (inside sections)
   for (const div of doc.querySelectorAll('div.confluence-column')) {
     const macro = doc.createElement('ac:structured-macro');
     macro.setAttribute('ac:name', 'column');
-    const width = div.getAttribute('data-cell-width');
+    // Prefer data-cell-width; fall back to extracting width from inline style
+    let width = div.getAttribute('data-cell-width');
+    if (!width) {
+      const styleAttr = div.getAttribute('style') ?? '';
+      const m = styleAttr.match(/flex:\s*0\s+0\s+(\S+)/);
+      if (m) width = m[1];
+    }
     if (width) {
       const param = doc.createElement('ac:parameter');
       param.setAttribute('ac:name', 'width');

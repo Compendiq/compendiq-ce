@@ -47,5 +47,11 @@ temp/
 # Research
 research/
 
+# Java/binary artifacts
+*.war
+*.jar
+*.ear
+
 # Claude Code
 .claude/
+frontend/vendor/

@@ -1,0 +1,39 @@
+services:
+  confluence-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: confluence
+      POSTGRES_PASSWORD: confluence-dev-password
+      POSTGRES_DB: confluence
+    volumes:
+      - confluence-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U confluence"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  confluence:
+    image: atlassian/confluence:9.2.14-ubuntu-jdk17
+    depends_on:
+      confluence-postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8090:8090"
+      - "127.0.0.1:8091:8091"
+    environment:
+      JVM_MINIMUM_MEMORY: 1024m
+      JVM_MAXIMUM_MEMORY: 2048m
+      ATL_DB_TYPE: postgresql
+      ATL_JDBC_URL: jdbc:postgresql://confluence-postgres:5432/confluence
+      ATL_JDBC_USER: confluence
+      ATL_JDBC_PASSWORD: confluence-dev-password
+      ATL_TOMCAT_SCHEME: http
+      ATL_TOMCAT_SECURE: "false"
+      CONFLUENCE_LOG_STDOUT: "true"
+    volumes:
+      - confluence-home:/var/atlassian/application-data/confluence
+
+volumes:
+  confluence-postgres-data:
+  confluence-home:

@@ -43,7 +43,7 @@ export async function llmModelRoutes(fastify: FastifyInstance) {
       provider: providerType,
       ollamaBaseUrl: process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434',
       openaiBaseUrl: sharedLlmSettings.openaiBaseUrl ?? process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1',
-      embeddingModel: process.env.EMBEDDING_MODEL ?? 'nomic-embed-text',
+      embeddingModel: sharedLlmSettings.embeddingModel,
       authConfigured: providerType === 'ollama'
         ? !!process.env.LLM_BEARER_TOKEN
         : !!(sharedLlmSettings.hasOpenaiApiKey || process.env.LLM_BEARER_TOKEN || process.env.OPENAI_API_KEY),
