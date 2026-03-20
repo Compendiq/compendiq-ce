@@ -9,7 +9,7 @@
 [![Node.js](https://img.shields.io/badge/node-%3E%3D22.0.0-brightgreen)]()
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue)]()
 
-AI-powered knowledge base management for **Confluence Data Center** with local **Ollama** LLM integration. Sync your Confluence spaces, improve articles with AI, generate new content from templates, and ask questions across your entire knowledge base using RAG-powered semantic search.
+AI-powered knowledge base management for **Confluence Data Center** with multi-provider LLM support (**Ollama**, **OpenAI-compatible APIs**). Sync your Confluence spaces, improve articles with AI, generate new content from templates, and ask questions across your entire knowledge base using RAG-powered semantic search.
 
 ---
 
@@ -27,6 +27,16 @@ AI-powered knowledge base management for **Confluence Data Center** with local *
 - **Multi-user with encrypted credentials** -- per-user Confluence PAT storage with AES-256-GCM encryption
 - **Rich text editing** -- TipTap v3 editor with full Confluence macro round-trip support
 - **Draw.io diagram display** -- read-only rendering of draw.io diagrams with "Edit in Confluence" links
+- **Multi-provider LLM** -- Ollama (default) or OpenAI-compatible APIs (OpenAI, Azure, LM Studio, vLLM)
+- **PDF import/export** -- extract content from PDFs, export pages as PDF
+- **RBAC** -- role-based access control with granular permissions
+- **OIDC/SSO** -- integrate with external identity providers (configured via Admin UI)
+- **Page verification workflow** -- review and verify knowledge base articles
+- **Knowledge requests** -- request new documentation topics, track knowledge gaps
+- **Notifications** -- in-app notification system for updates and reviews
+- **Content analytics** -- track page views, engagement, and search patterns
+- **Knowledge graph** -- visual relationship map between pages
+- **OpenTelemetry** -- optional distributed tracing support
 
 ## Screenshots
 
@@ -39,24 +49,35 @@ AI-powered knowledge base management for **Confluence Data Center** with local *
 
 ```
 atlasmind/
-+-- backend/               # Fastify 5 REST API server
-|   +-- src/
-|       +-- plugins/       # Fastify plugins (auth, cors, rate-limit, swagger)
-|       +-- routes/        # REST API routes (auth, pages, spaces, llm, settings, sync, admin)
-|       +-- services/      # Business logic (confluence-client, ollama, embedding, rag, sync)
-|       +-- db/            # PostgreSQL connection + SQL migrations
-|       +-- utils/         # Logger, crypto helpers
-+-- frontend/              # React 19 SPA
-|   +-- src/
-|       +-- features/      # Domain-grouped UI (dashboard, pages, ai-assistant, settings)
-|       +-- shared/        # Reusable components, hooks, lib
-|       +-- stores/        # Zustand stores (auth, theme, ui)
-|       +-- providers/     # Context providers (Query, Auth, Router)
-+-- packages/
-|   +-- contracts/         # Shared Zod schemas + TypeScript types (@atlasmind/contracts)
-+-- docker/                # Docker Compose files (dev + production)
-+-- e2e/                   # Playwright E2E tests
-+-- docs/                  # Architecture decisions, action plan
++-- backend/src/
+|   +-- core/                  # Shared infrastructure (no domain imports)
+|   |   +-- db/                # PostgreSQL connection pool + SQL migrations (001-045)
+|   |   +-- plugins/           # Fastify plugins (auth, correlation-id, redis)
+|   |   +-- services/          # Cross-cutting services (redis-cache, audit, error-tracker,
+|   |   |                      #   content-converter, circuit-breaker, pdf-service, oidc, rbac,
+|   |   |                      #   notification-service, admin-settings-service, etc.)
+|   |   +-- utils/             # crypto, logger, sanitize, ssrf-guard, tls/llm config
+|   +-- domains/
+|   |   +-- confluence/        # confluence-client, sync-service, attachment-handler
+|   |   +-- llm/               # ollama-service, openai-service, llm-provider, embedding, rag, llm-cache
+|   |   +-- knowledge/         # auto-tagger, quality-worker, summary-worker, duplicate-detector
+|   +-- routes/
+|   |   +-- foundation/        # health, auth, settings, admin, oidc, rbac, notifications
+|   |   +-- confluence/        # spaces, sync, attachments
+|   |   +-- llm/               # llm-chat (SSE), llm-conversations, llm-embeddings, llm-models, llm-admin, llm-pdf
+|   |   +-- knowledge/         # pages-crud, pages-versions, pages-tags, pages-embeddings, pages-duplicates,
+|   |                          #   pinned-pages, analytics, templates, comments, content-analytics,
+|   |                          #   verification, knowledge-requests, search, pages-export, pages-import, local-spaces
++-- frontend/src/
+|   +-- features/              # Domain-grouped UI (admin, ai, analytics, auth, dashboard, graph,
+|   |                          #   knowledge-requests, pages, search, settings, spaces, templates)
+|   +-- shared/                # Reusable components, hooks, lib
+|   +-- stores/                # Zustand stores (auth, theme, ui, article-view, command-palette, keyboard-shortcuts)
+|   +-- providers/             # Context providers (Query, Auth, Router)
++-- packages/contracts/        # Shared Zod schemas + TypeScript types (@atlasmind/contracts)
++-- docker/                    # Docker Compose files (dev + production)
++-- e2e/                       # Playwright E2E tests
++-- docs/                      # Architecture decisions, action plan
 ```
 
 ### Data Flow
@@ -87,7 +108,8 @@ Frontend (React 19 + Vite)
 | **Editor** | TipTap v3 (ProseMirror-based) |
 | **Database** | PostgreSQL 17 with pgvector extension |
 | **Cache** | Redis 8 |
-| **AI/ML** | Ollama (local LLM server), nomic-embed-text embeddings (768 dimensions) |
+| **AI/ML** | Ollama (local LLM server) + OpenAI-compatible APIs, nomic-embed-text embeddings (768 dims) |
+| **PDF** | pdf-lib (export/import processing) |
 | **Auth** | JWT (jose) + bcrypt, refresh token rotation |
 | **Content** | turndown + jsdom (XHTML->Markdown), marked (Markdown->HTML) |
 | **Validation** | Zod schemas shared via @atlasmind/contracts |
@@ -204,6 +226,22 @@ Ollama is expected to run on the host machine. The backend connects via `OLLAMA_
 | `NODE_ENV` | `development` | No | Environment (`development` or `production`) |
 | `BACKEND_PORT` | `3051` | No | Backend server port |
 | `FRONTEND_PORT` | `5273` | No | Frontend dev server port |
+| `LLM_PROVIDER` | `ollama` | No | LLM provider: `ollama` or `openai` (server-wide default) |
+| `LLM_BEARER_TOKEN` | -- | No | Bearer token for authenticated Ollama/LLM proxies |
+| `LLM_AUTH_TYPE` | `bearer` | No | Auth type for LLM connections: `bearer` or `none` |
+| `LLM_VERIFY_SSL` | `true` | No | Set to `false` to disable TLS verification for LLM |
+| `LLM_STREAM_TIMEOUT_MS` | `300000` | No | Streaming request timeout in ms |
+| `LLM_CACHE_TTL` | `3600` | No | Redis TTL (seconds) for LLM response cache |
+| `OPENAI_BASE_URL` | -- | No | OpenAI-compatible API base URL |
+| `OPENAI_API_KEY` | -- | No | API key (required when using openai provider) |
+| `DEFAULT_LLM_MODEL` | -- | No | Fallback model for background workers |
+| `SYNC_INTERVAL_MIN` | `15` | No | Sync scheduler polling interval (minutes) |
+| `CONFLUENCE_VERIFY_SSL` | `true` | No | Set to `false` for self-signed Confluence certs |
+| `ATTACHMENTS_DIR` | `data/attachments` | No | Attachment cache directory |
+| `NODE_EXTRA_CA_CERTS` | -- | No | PEM CA bundle path for self-signed certificates |
+| `OTEL_ENABLED` | `false` | No | Set to `true` for OpenTelemetry tracing |
+| `OTEL_SERVICE_NAME` | `atlasmind-backend` | No | Service name for OTLP collector |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | -- | No | OTLP collector endpoint |
 
 ## API Documentation
 
@@ -220,12 +258,18 @@ http://localhost:3051/api/docs
 | `GET /api/health` | Health checks (live, ready, start probes) |
 | `POST /api/auth/*` | Authentication (register, login, refresh, logout) |
 | `GET/PUT /api/settings` | User settings (Confluence URL, PAT, model selection) |
-| `GET/POST/PUT/DELETE /api/pages/*` | Page CRUD with Confluence sync |
+| `GET/POST/PUT/DELETE /api/pages/*` | Page CRUD, versions, tags, embeddings, duplicates, export/import |
 | `GET /api/spaces` | Confluence space listing and selection |
 | `POST /api/sync` | Manual sync trigger |
-| `POST /api/llm/*` | LLM operations (improve, generate, summarize, ask) |
+| `POST /api/llm/*` | LLM operations (improve, generate, summarize, ask, PDF extract) |
 | `GET /api/embeddings/status` | Embedding pipeline status |
-| `POST /api/admin/*` | Admin operations (key rotation, audit log) |
+| `GET/POST /api/templates/*` | Knowledge base templates |
+| `GET/POST /api/comments/*` | Page comments |
+| `GET /api/analytics/*` | Content analytics and search analytics |
+| `GET/POST /api/verification/*` | Page verification/review workflow |
+| `GET/POST /api/knowledge-requests/*` | Knowledge gap requests |
+| `GET/POST /api/notifications/*` | User notifications |
+| `GET/POST /api/admin/*` | Admin operations (key rotation, audit log, LLM settings, OIDC, RBAC) |
 
 All endpoints except `/api/health` and `/api/auth/*` require a valid JWT Bearer token.
 
@@ -261,10 +305,11 @@ npm run typecheck   # TypeScript strict mode check
 
 ### Project Structure
 
-- **Backend routes** are in `backend/src/routes/` -- one file per domain
-- **Backend services** are in `backend/src/services/` -- business logic
-- **Database migrations** are in `backend/src/db/migrations/` -- sequential SQL files, auto-run on startup
-- **Frontend features** are in `frontend/src/features/` -- domain-grouped UI components
+- **Backend routes** are in `backend/src/routes/` -- grouped by domain (foundation, confluence, llm, knowledge)
+- **Core services** are in `backend/src/core/services/` -- cross-cutting infrastructure
+- **Domain services** are in `backend/src/domains/` -- domain-specific business logic (confluence, llm, knowledge)
+- **Database migrations** are in `backend/src/core/db/migrations/` -- sequential SQL files (001-045), auto-run on startup
+- **Frontend features** are in `frontend/src/features/` -- domain-grouped UI (12 feature domains)
 - **Shared hooks** are in `frontend/src/shared/hooks/` -- TanStack Query hooks
 - **Shared contracts** are in `packages/contracts/` -- Zod schemas used by both backend and frontend
 
@@ -292,9 +337,9 @@ docker compose -f docker/docker-compose.dev.yml logs -f
 
 ## Contributing
 
-1. Branch from `main` as `feature/<description>`
-2. Every change needs tests (backend: `*.test.ts`, frontend: `*.test.tsx`)
-3. Never push directly to `main` -- open a PR from your feature branch
+1. Branch from `dev` as `feature/<description>` -- PRs must target `dev`, never `main` directly
+2. Only `dev -> main` merges are allowed to target `main`
+3. Every change needs tests (backend: `*.test.ts`, frontend: `*.test.tsx`)
 4. Never commit secrets (`.env`, API keys, PATs, passwords)
 5. Follow the architectural decisions in `docs/ARCHITECTURE-DECISIONS.md`
 6. Run `npm test`, `npm run lint`, and `npm run typecheck` before submitting
