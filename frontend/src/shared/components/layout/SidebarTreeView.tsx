@@ -17,6 +17,7 @@ import {
   Share2,
 } from 'lucide-react';
 import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
+import { ShortcutHint } from '../ShortcutHint';
 import { DragDropProvider } from '@dnd-kit/react';
 import { useSortable, isSortable } from '@dnd-kit/react/sortable';
 import { usePageTree, useCreatePage } from '../../hooks/use-pages';
@@ -115,7 +116,6 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
   const location = useLocation();
   const isExpanded = expandedSet.has(node.page.id);
   const hasChildren = node.children.length > 0;
-  const isFolder = node.page.pageType === 'folder';
   const isActive = node.page.id === activePageId;
   const isAiRoute = location.pathname === '/ai';
 
@@ -127,18 +127,13 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
   });
 
   const handleNavigate = useCallback(() => {
-    if (isFolder) {
-      // Folders are pure containers: toggle expand but don't navigate to article view
-      toggleExpand(node.page.id);
-      return;
-    }
     if (hasChildren) toggleExpand(node.page.id);
     if (isAiRoute) {
       navigate(`/ai?pageId=${node.page.id}`, { replace: true });
     } else {
       navigate(`/pages/${node.page.id}`);
     }
-  }, [navigate, node.page.id, hasChildren, isFolder, toggleExpand, isAiRoute]);
+  }, [navigate, node.page.id, hasChildren, toggleExpand, isAiRoute]);
 
   const handleToggle = useCallback(
     (e: React.MouseEvent) => {
@@ -165,7 +160,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
             <GripVertical size={12} />
           </span>
         )}
-        {(hasChildren || isFolder) ? (
+        {hasChildren ? (
           <button
             onClick={handleToggle}
             className="shrink-0 rounded p-0.5 hover:bg-foreground/10"
@@ -180,7 +175,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         <span className="truncate text-sm">{node.page.title}</span>
       </div>
 
-      {(hasChildren || isFolder) && isExpanded && (
+      {hasChildren && isExpanded && (
         <div className="relative">
           {/* Indent guide line — click to collapse parent */}
           <button
@@ -313,7 +308,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
         spaceKey,
         title: trimmed,
         bodyHtml: '',
-        pageType: 'folder',
+        pageType: 'page',
       });
       setNewFolderName('');
       setShowNewFolderInput(false);
@@ -433,11 +428,12 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
           {/* Expand toggle */}
           <button
             onClick={toggleTreeSidebar}
-            className="mt-2 rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
+            className="mt-2 flex items-center gap-0.5 rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
             aria-label="Expand sidebar"
             title="Expand sidebar (,)"
           >
             <PanelLeft size={16} />
+            <ShortcutHint shortcutId="toggle-sidebar" />
           </button>
 
           {/* Nav icons */}
@@ -509,24 +505,9 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
             </Link>
           );
         })}
-        {/* Subtle vertical divider before collapse button */}
-        <div className="mx-0.5 h-4 w-px shrink-0 bg-border/30" />
-        {/* Collapse button — positioned next to AI tab */}
-        <button
-          onClick={toggleTreeSidebar}
-          className={cn(
-            'flex items-center rounded-lg px-1.5 py-1.5 transition-all duration-200 active:scale-[0.97]',
-            'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
-          )}
-          aria-label="Collapse sidebar"
-          title="Collapse sidebar (,)"
-        >
-          <PanelLeftClose size={14} />
-        </button>
       </nav>
 
-      {/* Sidebar header — title + actions */}
+      {/* Sidebar header — title + actions + collapse toggle */}
       <div className="flex h-8 shrink-0 items-center justify-between px-3">
         <span className="text-xs font-semibold text-muted-foreground/60">Pages</span>
         <div className="flex items-center gap-1">
@@ -548,6 +529,15 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
             title="Create new space"
           >
             <Plus size={14} />
+          </button>
+          <button
+            onClick={toggleTreeSidebar}
+            className="flex items-center gap-0.5 rounded-lg p-1 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
+            aria-label="Collapse sidebar"
+            title="Collapse sidebar (,)"
+          >
+            <PanelLeftClose size={14} />
+            <ShortcutHint shortcutId="toggle-sidebar" />
           </button>
         </div>
       </div>

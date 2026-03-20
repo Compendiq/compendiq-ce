@@ -7,6 +7,8 @@ export interface ShortcutDefinition {
   keys: string[];
   /** Require Ctrl (Windows/Linux) or Cmd (Mac). */
   mod?: boolean;
+  /** Require Alt (Option on Mac). */
+  alt?: boolean;
   /** Description shown in the shortcuts modal. */
   description: string;
   /** Category for grouping in the modal. */
@@ -35,11 +37,17 @@ function isEditableTarget(event: KeyboardEvent): boolean {
 
 /**
  * Detect whether the OS is macOS (to choose Cmd vs Ctrl).
+ * Uses `navigator.userAgentData` when available, with a `navigator.userAgent` fallback.
  */
 function isMac(): boolean {
   if (typeof navigator === 'undefined') return false;
-  // navigator.platform is deprecated but still the most reliable sync check
-  return /Mac|iPhone|iPad|iPod/.test(navigator.platform ?? '');
+  // Modern API (Chromium 90+)
+  if ('userAgentData' in navigator && (navigator as Record<string, unknown>).userAgentData) {
+    const uad = (navigator as Record<string, unknown>).userAgentData as { platform?: string };
+    if (uad.platform) return uad.platform === 'macOS';
+  }
+  // Fallback to userAgent (works in all browsers)
+  return /Mac|iPhone|iPad|iPod/.test(navigator.userAgent);
 }
 
 /**
@@ -60,17 +68,19 @@ export function useKeyboardShortcuts(shortcuts: ShortcutDefinition[]): void {
 
     for (const shortcut of shortcutsRef.current) {
       const modRequired = !!shortcut.mod;
+      const altRequired = !!shortcut.alt;
       const modPressed = mac ? event.metaKey : event.ctrlKey;
 
       // If modifier is required, check it; if not required, make sure no modifier is pressed
       if (modRequired && !modPressed) continue;
-      if (!modRequired && (event.metaKey || event.ctrlKey || event.altKey)) continue;
+      if (altRequired && !event.altKey) continue;
+      if (!modRequired && !altRequired && (event.metaKey || event.ctrlKey || event.altKey)) continue;
 
       // Match against any of the defined key values
       if (!shortcut.keys.includes(event.key)) continue;
 
       // Suppress non-modifier shortcuts when inside editable elements
-      if (!modRequired && isEditableTarget(event)) continue;
+      if (!modRequired && !altRequired && isEditableTarget(event)) continue;
 
       event.preventDefault();
       shortcut.action();

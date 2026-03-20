@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, within } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SidebarTreeView, SidebarTreeNode } from './SidebarTreeView';
@@ -348,20 +348,10 @@ describe('SidebarTreeView', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/spaces/new');
   });
 
-  it('renders collapse sidebar button inside the main navigation (next to AI tab)', () => {
+  it('shows collapse sidebar button in expanded sidebar header', () => {
     useUiStore.setState({ treeSidebarCollapsed: false });
     render(<SidebarTreeView />, { wrapper: createWrapper() });
-    const nav = screen.getByRole('navigation', { name: 'Main navigation' });
-    expect(within(nav).getByLabelText('Collapse sidebar')).toBeInTheDocument();
-  });
-
-  it('does not render collapse sidebar button inside the sidebar header section', () => {
-    useUiStore.setState({ treeSidebarCollapsed: false });
-    render(<SidebarTreeView />, { wrapper: createWrapper() });
-    // "Pages" label text identifies the sidebar header span (distinct from the nav "Pages" link)
-    const pagesHeaderSpan = screen.getByText('Pages', { selector: 'span' });
-    const sidebarHeader = pagesHeaderSpan.parentElement!;
-    expect(sidebarHeader.querySelector('[aria-label="Collapse sidebar"]')).toBeNull();
+    expect(screen.getByLabelText('Collapse sidebar')).toBeInTheDocument();
   });
 
   it('collapses sidebar when collapse button is clicked in expanded state', () => {
@@ -493,7 +483,19 @@ describe('SidebarTreeNode memoization', () => {
     expect(screen.getByLabelText('New folder name')).toBeInTheDocument();
   });
 
-  it('folder nodes show folder icon and do not navigate on click', () => {
+  it('creates new folder as pageType "page" (not "folder")', async () => {
+    mockCreatePageMutateAsync.mockResolvedValue({ id: 'new-1' });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByLabelText('New Folder'));
+    const input = screen.getByLabelText('New folder name');
+    fireEvent.change(input, { target: { value: 'My Container' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(mockCreatePageMutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ pageType: 'page', title: 'My Container', bodyHtml: '' }),
+    );
+  });
+
+  it('pages with pageType folder navigate on click like normal pages', () => {
     mockTreeData = {
       items: [
         { id: 'folder-1', spaceKey: 'DEV', title: 'My Folder', pageType: 'folder' as const, parentId: null, labels: [], lastModifiedAt: '2026-03-01T00:00:00Z' },
@@ -505,7 +507,9 @@ describe('SidebarTreeNode memoization', () => {
     expect(screen.getByText('My Folder')).toBeInTheDocument();
     mockNavigate.mockClear();
     fireEvent.click(screen.getByText('My Folder'));
-    expect(mockNavigate).not.toHaveBeenCalled();
+    // Folder-type pages now navigate like regular pages
+    expect(mockNavigate).toHaveBeenCalledWith('/pages/folder-1');
+    // Clicking also expands children since it has children
     expect(screen.getByText('Child Page')).toBeInTheDocument();
   });
   it('renders indent guide line for expanded node with children', () => {
