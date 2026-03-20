@@ -236,6 +236,62 @@ export function ArticleViewer({
     const blobUrls: string[] = [];
     let cancelled = false;
 
+    /**
+     * Replace a failed image with an error placeholder containing a Retry button.
+     * Idempotent: replaceWith on a detached node is a no-op per the DOM spec.
+     */
+    function createImageErrorPlaceholder(
+      img: HTMLImageElement,
+      originalSrc: string,
+    ): void {
+      const wrapper = document.createElement('div');
+      // image-load-error kept for CSS backward compatibility; image-error-placeholder for targeting
+      wrapper.className = 'image-error-placeholder image-load-error';
+
+      const icon = document.createElement('span');
+      icon.className = 'image-error-icon';
+      icon.setAttribute('aria-hidden', 'true');
+      icon.textContent = '⚠';
+
+      const text = document.createElement('span');
+      text.className = 'image-error-text';
+      text.textContent = 'Image could not be loaded from Confluence';
+
+      const retryBtn = document.createElement('button');
+      retryBtn.className = 'image-retry-btn';
+      retryBtn.textContent = 'Retry';
+      retryBtn.setAttribute('type', 'button');
+      retryBtn.addEventListener('click', async () => {
+        if (cancelled) return;
+        // Restore original image node (idempotent if already detached)
+        try {
+          wrapper.replaceWith(img);
+        } catch {
+          // Already detached — no-op
+        }
+        img.removeAttribute('src');
+
+        const blobUrl = await fetchAuthenticatedBlob(originalSrc);
+        if (cancelled) {
+          if (blobUrl) URL.revokeObjectURL(blobUrl);
+          return;
+        }
+        if (blobUrl) {
+          blobUrls.push(blobUrl);
+          img.src = blobUrl;
+        } else {
+          // Re-show the error placeholder on repeated failure
+          img.replaceWith(wrapper);
+        }
+      });
+
+      wrapper.appendChild(icon);
+      wrapper.appendChild(text);
+      wrapper.appendChild(retryBtn);
+
+      img.replaceWith(wrapper);
+    }
+
     const raf = requestAnimationFrame(() => {
       const images = container.querySelectorAll<HTMLImageElement>('img[src^="/api/attachments/"]');
       if (images.length === 0) return;
@@ -259,10 +315,8 @@ export function ArticleViewer({
           blobUrls.push(blobUrl);
           img.src = blobUrl;
         } else {
-          // Show an error placeholder instead of a broken image icon
-          img.alt = img.alt || 'Image failed to load';
-          img.classList.add('image-load-error');
-          img.title = 'Image could not be loaded from Confluence. Try syncing the page.';
+          // Show an error placeholder with a Retry button
+          createImageErrorPlaceholder(img, originalSrc);
         }
       });
     });

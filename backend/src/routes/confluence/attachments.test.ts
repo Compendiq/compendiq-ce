@@ -183,6 +183,7 @@ describe('Attachment routes', () => {
         'screenshot.png',
         '<ac:image><ri:attachment ri:filename="screenshot.png" /></ac:image>',
         'OPS',
+        mockRedisClient, // redis client for failure tracking
       );
     });
 
@@ -267,6 +268,47 @@ describe('Attachment routes', () => {
       expect(response.statusCode).toBe(404);
       expect(response.json()).toMatchObject({ reason: 'no_confluence_client' });
       expect(mockFetchAndCachePageImage).not.toHaveBeenCalled();
+    });
+
+    it('should return 404 with reason not_found_in_confluence when attachment failure cap is reached (fetchAndCachePageImage returns null)', async () => {
+      // When the attachment has persistently failed, fetchAndCachePageImage returns null
+      // (because fetchAndCacheAttachment short-circuits). Route maps null → 404.
+      mockReadAttachment.mockResolvedValue(null);
+      mockGetClientForUser.mockResolvedValue({ /* mock client */ });
+      mockFetchAndCachePageImage.mockResolvedValue(null);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/attachments/page-456/cap-reached.png',
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.json()).toMatchObject({ reason: 'not_found_in_confluence' });
+    });
+
+    it('should pass getRedisClient() to fetchAndCachePageImage for failure tracking', async () => {
+      const imageData = Buffer.from('image-after-recovery');
+      mockReadAttachment.mockResolvedValue(null);
+      mockGetClientForUser.mockResolvedValue({ /* mock client */ });
+      mockFetchAndCachePageImage.mockResolvedValue(imageData);
+      mockGetMimeType.mockReturnValue('image/png');
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/attachments/page-456/recovered.png',
+      });
+
+      expect(response.statusCode).toBe(200);
+      // The route should pass the redis client (7th arg) to fetchAndCachePageImage
+      expect(mockFetchAndCachePageImage).toHaveBeenCalledWith(
+        expect.anything(), // client
+        'test-user',
+        'page-456',
+        'recovered.png',
+        expect.any(String), // body_storage
+        'OPS',             // space_key
+        mockRedisClient,   // redis client
+      );
     });
   });
 

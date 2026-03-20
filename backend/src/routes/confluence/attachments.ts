@@ -92,6 +92,7 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
             filename,
             cachedPage.body_storage,
             cachedPage.space_key,
+            getRedisClient(),
           );
         } else {
           data = null;

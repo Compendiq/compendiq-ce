@@ -17,6 +17,19 @@ import {
 } from './attachment-handler.js';
 import type { ConfluenceClient, ConfluenceAttachment } from './confluence-client.js';
 import { getLocalFilenameForImageSource } from '../../../core/services/image-references.js';
+import { MAX_ATTACHMENT_FAILURES } from '../../../core/services/redis-cache.js';
+
+// Mock redis-cache to allow injection of failure tracking mocks
+const mockRecordAttachmentFailure = vi.fn().mockResolvedValue(undefined);
+const mockGetAttachmentFailureCount = vi.fn().mockResolvedValue(0);
+const mockClearAttachmentFailures = vi.fn().mockResolvedValue(undefined);
+vi.mock('../../../core/services/redis-cache.js', () => ({
+  recordAttachmentFailure: (...args: unknown[]) => mockRecordAttachmentFailure(...args),
+  getAttachmentFailureCount: (...args: unknown[]) => mockGetAttachmentFailureCount(...args),
+  clearAttachmentFailures: (...args: unknown[]) => mockClearAttachmentFailures(...args),
+  MAX_ATTACHMENT_FAILURES: 3,
+  getRedisClient: vi.fn().mockReturnValue(null),
+}));
 
 vi.mock('undici', () => ({
   request: vi.fn(),
@@ -80,6 +93,10 @@ describe('attachment-handler', () => {
     vi.mocked(fs.rm).mockResolvedValue(undefined);
     vi.mocked(fs.readdir as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([]);
     mockRequest.mockReset();
+    // Default: no prior failures
+    mockGetAttachmentFailureCount.mockResolvedValue(0);
+    mockRecordAttachmentFailure.mockResolvedValue(undefined);
+    mockClearAttachmentFailures.mockResolvedValue(undefined);
   });
 
   describe('getMimeType', () => {
@@ -1051,6 +1068,79 @@ describe('attachment-handler', () => {
       const result = await readAttachment('user-1', 'page-1', 'logo.png');
 
       expect(result).toBeNull();
+    });
+  });
+
+  describe('fetchAndCacheAttachment with Redis failure tracking', () => {
+    beforeEach(() => {
+      mockRecordAttachmentFailure.mockClear();
+      mockGetAttachmentFailureCount.mockClear();
+      mockGetAttachmentFailureCount.mockResolvedValue(0);
+    });
+
+    it('short-circuits (returns null without calling getPageAttachments) when failure count >= MAX_ATTACHMENT_FAILURES', async () => {
+      mockGetAttachmentFailureCount.mockResolvedValue(MAX_ATTACHMENT_FAILURES);
+      const client = createMockClient();
+
+      const result = await fetchAndCacheAttachment(client, 'user-1', 'page-1', 'logo.png', null);
+
+      expect(result).toBeNull();
+      expect(client.getPageAttachments).not.toHaveBeenCalled();
+    });
+
+    it('records a failure when getPageAttachments returns empty results (attachment not found)', async () => {
+      const client = createMockClient();
+      (client.getPageAttachments as ReturnType<typeof vi.fn>).mockResolvedValue({ results: [] });
+
+      await fetchAndCacheAttachment(client, 'user-1', 'page-1', 'missing.png', null);
+
+      expect(mockRecordAttachmentFailure).toHaveBeenCalledWith(null, 'page-1', 'missing.png');
+    });
+
+    it('records a failure when attachment has no download link', async () => {
+      const client = createMockClient();
+      (client.getPageAttachments as ReturnType<typeof vi.fn>).mockResolvedValue({
+        results: [{ id: 'att-1', title: 'nolink.png', mediaType: 'image/png' }],
+      });
+
+      await fetchAndCacheAttachment(client, 'user-1', 'page-1', 'nolink.png', null);
+
+      expect(mockRecordAttachmentFailure).toHaveBeenCalledWith(null, 'page-1', 'nolink.png');
+    });
+
+    it('skips Confluence API entirely when failure count >= MAX_ATTACHMENT_FAILURES', async () => {
+      mockGetAttachmentFailureCount.mockResolvedValue(MAX_ATTACHMENT_FAILURES);
+      const client = createMockClient();
+
+      await fetchAndCacheAttachment(client, 'user-1', 'page-1', 'logo.png', null);
+
+      // Confluence API must not be called
+      expect(client.getPageAttachments).not.toHaveBeenCalled();
+      expect(client.downloadAttachment).not.toHaveBeenCalled();
+    });
+
+    it('does not record a failure when download succeeds', async () => {
+      const client = createMockClient();
+      (client.getPageAttachments as ReturnType<typeof vi.fn>).mockResolvedValue({
+        results: makeAttachments([{ title: 'logo.png', download: '/download/logo.png' }]),
+      });
+      (client.downloadAttachment as ReturnType<typeof vi.fn>).mockResolvedValue(Buffer.from('data'));
+
+      await fetchAndCacheAttachment(client, 'user-1', 'page-1', 'logo.png', null);
+
+      expect(mockRecordAttachmentFailure).not.toHaveBeenCalled();
+    });
+
+    it('does not record a failure on infrastructure error (throws propagated)', async () => {
+      const client = createMockClient();
+      (client.getPageAttachments as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Network error'));
+
+      await expect(
+        fetchAndCacheAttachment(client, 'user-1', 'page-1', 'logo.png', null),
+      ).rejects.toThrow('Network error');
+
+      // Throw path must NOT record a failure (preserves 500 vs 404 semantics)
+      expect(mockRecordAttachmentFailure).not.toHaveBeenCalled();
     });
   });
 
