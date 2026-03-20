@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
+import { useState, useCallback, useMemo, useRef, useEffect, type RefObject } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { m } from 'framer-motion';
@@ -87,6 +87,7 @@ export function PagesPage() {
   const { data: embeddingStatusData } = useEmbeddingStatus();
   const queryClient = useQueryClient();
   const wasProcessingRef = useRef(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (embeddingStatusData?.isProcessing) {
@@ -257,6 +258,7 @@ export function PagesPage() {
           <div className="relative flex-1 min-w-48">
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
             <input
+              ref={searchInputRef as RefObject<HTMLInputElement>}
               type="text"
               placeholder="Search pages..."
               value={search}
@@ -274,7 +276,7 @@ export function PagesPage() {
             />
             {search && (
               <button
-                onClick={() => { setSearch(''); setPage(1); if (sort === 'relevance') setSort('modified'); }}
+                onClick={() => { setSearch(''); setPage(1); if (sort === 'relevance') setSort('modified'); searchInputRef.current?.focus(); }}
                 className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full p-0.5 text-muted-foreground hover:text-foreground"
                 data-testid="search-clear"
                 aria-label="Clear search"
@@ -434,7 +436,7 @@ export function PagesPage() {
                 type="date"
                 value={dateFrom}
                 onChange={(e) => { setDateFrom(e.target.value); setPage(1); }}
-                className="glass-select w-full"
+                className="glass-input w-full"
                 data-testid="filter-date-from"
               />
             </div>
@@ -444,7 +446,7 @@ export function PagesPage() {
                 type="date"
                 value={dateTo}
                 onChange={(e) => { setDateTo(e.target.value); setPage(1); }}
-                className="glass-select w-full"
+                className="glass-input w-full"
                 data-testid="filter-date-to"
               />
             </div>
@@ -467,21 +469,16 @@ export function PagesPage() {
         {activeFilters.length > 0 && (
           <div className="flex flex-wrap items-center gap-2 border-t border-border/50 pt-3" data-testid="active-filter-pills">
             {activeFilters.map((f) => (
-              <span
+              <button
                 key={f.key}
-                className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-3 py-1 text-xs font-medium text-primary"
+                onClick={() => clearFilter(f.key)}
+                className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary"
+                aria-label={`Remove ${f.label} filter`}
                 data-testid={`filter-pill-${f.key}`}
               >
                 {f.label}
-                <button
-                  onClick={() => clearFilter(f.key)}
-                  className="ml-0.5 rounded-full p-0.5 hover:bg-primary/20"
-                  aria-label={`Remove ${f.label} filter`}
-                  data-testid={`filter-pill-remove-${f.key}`}
-                >
-                  <X size={12} />
-                </button>
-              </span>
+                <X size={12} aria-hidden="true" data-testid={`filter-pill-remove-${f.key}`} />
+              </button>
             ))}
             <button
               onClick={clearAllFilters}
