@@ -43,6 +43,9 @@ export const SHORTCUTS: ShortcutDefinition[] = [
   { id: 'zen-mode', keys: '\\', label: 'Zen Mode', category: 'panels' },
   { id: 'close-modal', keys: 'esc', label: 'Close dialog / modal', category: 'panels' },
 
+  // -- Editor --
+  { id: 'toggle-edit', keys: 'ctrl+e', label: 'Toggle Edit Mode', category: 'editor' },
+
   // -- Editor (diagram lightbox) --
   { id: 'diagram-zoom-in', keys: '+', label: 'Zoom in', category: 'editor' },
   { id: 'diagram-zoom-out', keys: '-', label: 'Zoom out', category: 'editor' },

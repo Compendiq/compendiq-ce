@@ -26,6 +26,7 @@ import { ArticleSummary } from '../../shared/components/article/ArticleSummary';
 import type { TocHeading } from '../../shared/components/article/TableOfContents';
 import { PageViewSkeleton } from '../../shared/components/feedback/Skeleton';
 import { TagEditor } from '../../shared/components/TagEditor';
+import { ShortcutHint } from '../../shared/components/ShortcutHint';
 
 function ImageLightbox({
   alt,
@@ -455,9 +456,10 @@ export function PageViewPage() {
                 {page.pageType !== 'folder' && (
                   <button
                     onClick={handleStartEditing}
-                    className="rounded-md px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+                    className="flex items-center gap-1 rounded-md px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
                   >
                     Edit
+                    <ShortcutHint shortcutId="toggle-edit" />
                   </button>
                 )}
               </>

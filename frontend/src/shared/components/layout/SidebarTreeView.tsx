@@ -17,6 +17,7 @@ import {
   Share2,
 } from 'lucide-react';
 import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
+import { ShortcutHint } from '../ShortcutHint';
 import { DragDropProvider } from '@dnd-kit/react';
 import { useSortable, isSortable } from '@dnd-kit/react/sortable';
 import { usePageTree, useCreatePage } from '../../hooks/use-pages';
@@ -433,11 +434,12 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
           {/* Expand toggle */}
           <button
             onClick={toggleTreeSidebar}
-            className="mt-2 rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
+            className="mt-2 flex items-center gap-0.5 rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
             aria-label="Expand sidebar"
             title="Expand sidebar (,)"
           >
             <PanelLeft size={16} />
+            <ShortcutHint shortcutId="toggle-sidebar" />
           </button>
 
           {/* Nav icons */}
@@ -515,7 +517,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
         <button
           onClick={toggleTreeSidebar}
           className={cn(
-            'flex items-center rounded-lg px-1.5 py-1.5 transition-all duration-200 active:scale-[0.97]',
+            'flex items-center gap-0.5 rounded-lg px-1.5 py-1.5 transition-all duration-200 active:scale-[0.97]',
             'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
           )}
@@ -523,6 +525,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
           title="Collapse sidebar (,)"
         >
           <PanelLeftClose size={14} />
+          <ShortcutHint shortcutId="toggle-sidebar" />
         </button>
       </nav>
 

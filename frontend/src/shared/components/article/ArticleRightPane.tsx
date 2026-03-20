@@ -16,6 +16,7 @@ import { FreshnessBadge } from '../badges/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../badges/EmbeddingStatusBadge';
 import { QualityScoreBadge } from '../badges/QualityScoreBadge';
 import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
+import { ShortcutHint } from '../ShortcutHint';
 import { toast } from 'sonner';
 import { useUiStore } from '../../../stores/ui-store';
 import { useArticleViewStore } from '../../../stores/article-view-store';
@@ -361,15 +362,16 @@ export function ArticleRightPane() {
           className="flex flex-col items-center rounded-xl glass-sidebar overflow-hidden"
           data-testid="article-right-pane-rail"
         >
-          <div className="flex h-12 w-full items-center justify-center">
+          <div className="flex h-12 w-full flex-col items-center justify-center gap-0.5">
             <button
               onClick={toggleSidebar}
               className="rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
               aria-label="Expand article sidebar"
-              title="Expand sidebar (])"
+              title="Expand sidebar (.)"
             >
               <PanelRight size={16} />
             </button>
+            <ShortcutHint shortcutId="toggle-right-panel" />
           </div>
         </m.div>
       </AnimatePresence>
@@ -394,11 +396,12 @@ export function ArticleRightPane() {
         <span className="text-xs font-semibold text-muted-foreground/60">Properties</span>
         <button
           onClick={toggleSidebar}
-          className="rounded-lg p-1 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
+          className="flex items-center gap-0.5 rounded-lg p-1 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
           aria-label="Collapse article sidebar"
-          title="Collapse sidebar (])"
+          title="Collapse sidebar (.)"
         >
           <PanelRightClose size={14} />
+          <ShortcutHint shortcutId="toggle-right-panel" />
         </button>
       </div>
 
