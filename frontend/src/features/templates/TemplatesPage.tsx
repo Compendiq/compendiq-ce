@@ -73,7 +73,7 @@ export function TemplatesPage() {
     () =>
       previewTemplate
         ? DOMPurify.sanitize(previewTemplate.bodyHtml, {
-            ADD_ATTR: ['data-diagram-name', 'data-drawio', 'data-color', 'data-layout-type', 'data-cell-width'],
+            ADD_ATTR: ['data-diagram-name', 'data-drawio', 'data-color', 'data-layout-type', 'data-cell-width', 'data-border'],
           })
         : '',
     [previewTemplate],

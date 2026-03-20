@@ -10,6 +10,7 @@ import { Agent, fetch as undiciFetch } from 'undici';
 import pLimit from 'p-limit';
 import { logger } from '../../../core/utils/logger.js';
 import { ollamaBreakers } from '../../../core/services/circuit-breaker.js';
+import { getSharedLlmSettings } from '../../../core/services/admin-settings-service.js';
 import type {
   LlmProvider,
   ChatMessage,
@@ -166,7 +167,8 @@ export class OllamaProvider implements LlmProvider {
 
   async generateEmbedding(text: string | string[]): Promise<number[][]> {
     return ollamaBreakers.embed.execute(async () => {
-      const model = process.env.EMBEDDING_MODEL ?? 'nomic-embed-text';
+      const sharedSettings = await getSharedLlmSettings();
+      const model = sharedSettings.embeddingModel;
       const input = Array.isArray(text) ? text : [text];
 
       const response = await llmLimit(() =>

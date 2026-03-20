@@ -357,6 +357,59 @@ describe('GET /api/pages — filtered query caching (#195)', () => {
     expect(key1).not.toBe(key2);
   });
 
+  // ---------- ILIKE metacharacter escaping ----------
+
+  it('should escape ILIKE metacharacters in fallback search so "100%" does not match all rows', async () => {
+    // FTS returns 0 results, triggering ILIKE fallback
+    stubPageListQuery([], 0);
+    // ILIKE fallback count query
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '0' }] });
+
+    await app.inject({
+      method: 'GET',
+      url: '/api/pages?search=100%25',  // URL-encoded "100%"
+    });
+
+    // The ILIKE fallback query should have been issued (3rd call: FTS count, ILIKE count)
+    // Find the ILIKE count query — it contains 'ILIKE' in the SQL
+    const ilikeCalls = mockQueryFn.mock.calls.filter(
+      (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('ILIKE'),
+    );
+    expect(ilikeCalls.length).toBeGreaterThanOrEqual(1);
+
+    // The parameter value should have escaped the '%' character
+    const ilikeCall = ilikeCalls[0];
+    const params = ilikeCall[1] as unknown[];
+    // Find the ILIKE term parameter (contains the search pattern)
+    const ilikeTerm = params.find((p) => typeof p === 'string' && (p as string).includes('100'));
+    expect(ilikeTerm).toBeDefined();
+    // "100%" should become "%100\%%" — the user's % is escaped with backslash
+    expect(ilikeTerm).toBe('%100\\%%');
+  });
+
+  it('should escape underscore in ILIKE fallback search', async () => {
+    // FTS returns 0 results, triggering ILIKE fallback
+    stubPageListQuery([], 0);
+    // ILIKE fallback count query
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '0' }] });
+
+    await app.inject({
+      method: 'GET',
+      url: '/api/pages?search=my_var',
+    });
+
+    const ilikeCalls = mockQueryFn.mock.calls.filter(
+      (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('ILIKE'),
+    );
+    expect(ilikeCalls.length).toBeGreaterThanOrEqual(1);
+
+    const params = ilikeCalls[0][1] as unknown[];
+    const ilikeTerm = params.find((p) => typeof p === 'string' && (p as string).includes('my'));
+    expect(ilikeTerm).toBeDefined();
+    // "my_var" should become "%my\_var%" — the underscore is escaped
+    expect(ilikeTerm).toBe('%my\\_var%');
+  });
+
   // ---------- spaceKey-only is not a "filter" ----------
 
   it('should use 15-minute TTL when only spaceKey is provided (not a filter)', async () => {

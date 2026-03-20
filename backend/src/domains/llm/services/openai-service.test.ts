@@ -29,11 +29,12 @@ const mockGetSharedLlmSettings = vi.fn().mockResolvedValue({
   ollamaModel: 'qwen3.5',
   openaiBaseUrl: 'https://api.test.com/v1',
   hasOpenaiApiKey: true,
-  openaiApiKey: 'test-key-123',
   openaiModel: 'gpt-4o',
 });
+const mockGetSharedOpenaiApiKey = vi.fn().mockResolvedValue('test-key-123');
 vi.mock('../../../core/services/admin-settings-service.js', () => ({
   getSharedLlmSettings: (...args: unknown[]) => mockGetSharedLlmSettings(...args),
+  getSharedOpenaiApiKey: (...args: unknown[]) => mockGetSharedOpenaiApiKey(...args),
 }));
 
 import { OpenAIProvider } from './openai-service.js';
@@ -55,9 +56,9 @@ describe('OpenAIProvider', () => {
       ollamaModel: 'qwen3.5',
       openaiBaseUrl: 'https://api.test.com/v1',
       hasOpenaiApiKey: true,
-      openaiApiKey: 'test-key-123',
       openaiModel: 'gpt-4o',
     });
+    mockGetSharedOpenaiApiKey.mockResolvedValue('test-key-123');
   });
 
   afterEach(() => {
@@ -298,9 +299,9 @@ describe('OpenAIProvider', () => {
         ollamaModel: 'qwen3.5',
         openaiBaseUrl: null,
         hasOpenaiApiKey: true,
-        openaiApiKey: 'test-key-123',
         openaiModel: 'gpt-4o',
       });
+      mockGetSharedOpenaiApiKey.mockResolvedValueOnce('test-key-123');
       delete process.env.OPENAI_BASE_URL;
 
       mockFetch.mockResolvedValueOnce(
@@ -322,9 +323,9 @@ describe('OpenAIProvider', () => {
         ollamaModel: 'qwen3.5',
         openaiBaseUrl: 'https://api.test.com/v1',
         hasOpenaiApiKey: false,
-        openaiApiKey: null,
         openaiModel: 'gpt-4o',
       });
+      mockGetSharedOpenaiApiKey.mockResolvedValueOnce(null);
       delete process.env.OPENAI_API_KEY;
       delete process.env.LLM_BEARER_TOKEN;
 
