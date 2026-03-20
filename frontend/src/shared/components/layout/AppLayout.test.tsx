@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domMax } from 'framer-motion';
 import { AppLayout } from './AppLayout';
+import { useCommandPaletteStore } from '../../../stores/command-palette-store';
 import { useUiStore } from '../../../stores/ui-store';
 
 // Mock SidebarTreeView to isolate AppLayout tests
@@ -49,6 +50,7 @@ function createWrapper(initialPath = '/') {
 describe('AppLayout', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    useCommandPaletteStore.setState({ isOpen: false });
     // jsdom does not implement Element.scrollTo — stub it so the scroll-reset
     // useEffect in AppLayout does not throw
     Element.prototype.scrollTo = vi.fn();
@@ -117,7 +119,7 @@ describe('AppLayout', () => {
     expect(screen.getByText('Search pages, articles, commands...')).toBeInTheDocument();
   });
 
-  it('search bar has role="search" landmark and aria-label', () => {
+  it('search bar has role="search" landmark and distinct aria-labels', () => {
     render(
       <AppLayout>
         <div>content</div>
@@ -127,9 +129,32 @@ describe('AppLayout', () => {
     const searchRegion = screen.getByRole('search');
     expect(searchRegion).toBeInTheDocument();
 
-    // Both desktop and mobile search buttons share the same aria-label
-    const searchButtons = screen.getAllByLabelText('Search knowledge base');
-    expect(searchButtons.length).toBeGreaterThanOrEqual(1);
+    // Desktop and mobile search buttons have distinct aria-labels
+    const desktopBtn = screen.getByLabelText('Search knowledge base');
+    const mobileBtn = screen.getByLabelText('Search');
+    expect(desktopBtn).toBeInTheDocument();
+    expect(mobileBtn).toBeInTheDocument();
+  });
+
+  it('search buttons have dynamic aria-expanded reflecting command palette state', () => {
+    useCommandPaletteStore.setState({ isOpen: false });
+    render(
+      <AppLayout>
+        <div>content</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/') },
+    );
+    const desktopBtn = screen.getByLabelText('Search knowledge base');
+    const mobileBtn = screen.getByLabelText('Search');
+    expect(desktopBtn).toHaveAttribute('aria-expanded', 'false');
+    expect(mobileBtn).toHaveAttribute('aria-expanded', 'false');
+
+    // When command palette is open, aria-expanded should be true
+    act(() => {
+      useCommandPaletteStore.setState({ isOpen: true });
+    });
+    expect(desktopBtn).toHaveAttribute('aria-expanded', 'true');
+    expect(mobileBtn).toHaveAttribute('aria-expanded', 'true');
   });
 
   it('search bar is centered via flex-1 container', () => {
@@ -286,5 +311,49 @@ describe('AppLayout', () => {
     // Toggle button should not exist in the header — it lives in SidebarTreeView now
     expect(header!.querySelector('[aria-label="Collapse sidebar"]')).toBeNull();
     expect(header!.querySelector('[aria-label="Expand sidebar"]')).toBeNull();
+  });
+
+  it('clicking the desktop search button opens the command palette', () => {
+    useCommandPaletteStore.setState({ isOpen: false });
+    render(
+      <AppLayout>
+        <div>content</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/') },
+    );
+    const desktopBtn = screen.getByLabelText('Search knowledge base');
+    fireEvent.click(desktopBtn);
+    expect(useCommandPaletteStore.getState().isOpen).toBe(true);
+  });
+
+  it('clicking the mobile search button opens the command palette', () => {
+    useCommandPaletteStore.setState({ isOpen: false });
+    render(
+      <AppLayout>
+        <div>content</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/') },
+    );
+    const mobileBtn = screen.getByLabelText('Search');
+    fireEvent.click(mobileBtn);
+    expect(useCommandPaletteStore.getState().isOpen).toBe(true);
+  });
+
+  it('search controls are native button elements (keyboard accessible via Enter/Space)', () => {
+    render(
+      <AppLayout>
+        <div>content</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/') },
+    );
+    // Native <button> elements are keyboard-accessible by default:
+    // browsers fire click on Enter and Space without extra JS.
+    const desktopBtn = screen.getByLabelText('Search knowledge base');
+    const mobileBtn = screen.getByLabelText('Search');
+    expect(desktopBtn.tagName).toBe('BUTTON');
+    expect(mobileBtn.tagName).toBe('BUTTON');
+    // Neither button has tabIndex=-1 which would remove keyboard focus
+    expect(desktopBtn).not.toHaveAttribute('tabindex', '-1');
+    expect(mobileBtn).not.toHaveAttribute('tabindex', '-1');
   });
 });
