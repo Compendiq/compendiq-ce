@@ -131,6 +131,34 @@ function makeManyPages(n: number) {
   };
 }
 
+const mockPinnedResponse = {
+  items: [
+    {
+      id: 'pinned-1',
+      spaceKey: 'DEV',
+      title: 'Getting Started Guide',
+      author: 'Alice',
+      lastModifiedAt: '2025-05-20T00:00:00Z',
+      excerpt: 'A guide for new developers.',
+      pinnedAt: '2025-06-01T00:00:00Z',
+      pinOrder: 0,
+    },
+    {
+      id: 'pinned-2',
+      spaceKey: 'OPS',
+      title: 'Deployment Runbook',
+      author: 'Bob',
+      lastModifiedAt: '2025-05-25T00:00:00Z',
+      excerpt: 'Step-by-step deployment instructions.',
+      pinnedAt: '2025-06-02T00:00:00Z',
+      pinOrder: 1,
+    },
+  ],
+  total: 2,
+};
+
+const emptyPinnedResponse = { items: [], total: 0 };
+
 function mockFetchWithPages(pagesResponse: ReturnType<typeof makeManyPages>) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
     const url = typeof input === 'string' ? input : (input as Request).url;
@@ -165,6 +193,45 @@ function mockFetchWithPages(pagesResponse: ReturnType<typeof makeManyPages>) {
       });
     }
     return new Response(JSON.stringify(pagesResponse), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  });
+}
+
+function mockFetchWithPinnedPages(pinnedResponse: typeof mockPinnedResponse | typeof emptyPinnedResponse) {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+    const url = typeof input === 'string' ? input : (input as Request).url;
+    if (url.includes('/embeddings/status')) {
+      return new Response(JSON.stringify(mockEmbeddingStatusIdle), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.includes('/pages/filters')) {
+      return new Response(JSON.stringify(mockFilterOptions), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.includes('/spaces')) {
+      return new Response(JSON.stringify(mockSpaces), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.includes('/sync/status')) {
+      return new Response(JSON.stringify({ status: 'idle' }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.includes('/pages/pinned')) {
+      return new Response(JSON.stringify(pinnedResponse), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.includes('/settings')) {
+      return new Response(JSON.stringify({}), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify(mockPagesResponse), {
       headers: { 'Content-Type': 'application/json' },
     });
   });
@@ -334,6 +401,44 @@ describe('PagesPage', () => {
     expect(items.length).toBeGreaterThanOrEqual(50);
   });
 
+  // --- Pinned articles section tests ---
+
+  it('renders pinned articles section when user has pinned pages', async () => {
+    vi.restoreAllMocks();
+    mockFetchWithPinnedPages(mockPinnedResponse);
+    render(<PagesPage />, { wrapper: createWrapper() });
+
+    const section = await screen.findByTestId('pinned-articles-section');
+    expect(section).toBeInTheDocument();
+    expect(screen.getByText('Pinned Articles')).toBeInTheDocument();
+    expect(screen.getByText('Getting Started Guide')).toBeInTheDocument();
+    expect(screen.getByText('Deployment Runbook')).toBeInTheDocument();
+  });
+
+  it('does not render pinned articles section when user has no pinned pages', async () => {
+    vi.restoreAllMocks();
+    mockFetchWithPinnedPages(emptyPinnedResponse);
+    render(<PagesPage />, { wrapper: createWrapper() });
+
+    // Wait for page list to render so all queries are settled
+    await screen.findByText('Test Page');
+    expect(screen.queryByTestId('pinned-articles-section')).not.toBeInTheDocument();
+  });
+
+  it('renders pinned articles section before the filters section', async () => {
+    vi.restoreAllMocks();
+    mockFetchWithPinnedPages(mockPinnedResponse);
+    render(<PagesPage />, { wrapper: createWrapper() });
+
+    const section = await screen.findByTestId('pinned-articles-section');
+    const filtersToggle = screen.getByTestId('advanced-filters-toggle');
+
+    // Pinned section should appear before the filters in the DOM
+    const comparison = section.compareDocumentPosition(filtersToggle);
+    // Node.DOCUMENT_POSITION_FOLLOWING = 4 means filtersToggle follows section
+    expect(comparison & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   describe('empty state (no pages)', () => {
     const emptyPages = { items: [], total: 0, page: 1, limit: 50, totalPages: 0 };
 
@@ -371,5 +476,105 @@ describe('PagesPage', () => {
       await screen.findByText('Try a different search term');
       expect(screen.queryByText('Go to Settings')).not.toBeInTheDocument();
     });
+  });
+
+  // --- Search clear button tests ---
+
+  it('does not show search clear button when search is empty', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    expect(screen.queryByTestId('search-clear')).not.toBeInTheDocument();
+  });
+
+  it('shows search clear button when search has text', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    const input = screen.getByPlaceholderText('Search pages...');
+    fireEvent.change(input, { target: { value: 'test query' } });
+    expect(screen.getByTestId('search-clear')).toBeInTheDocument();
+  });
+
+  it('clears search when clear button is clicked', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    const input = screen.getByPlaceholderText('Search pages...') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'test query' } });
+    expect(input.value).toBe('test query');
+
+    fireEvent.click(screen.getByTestId('search-clear'));
+    expect(input.value).toBe('');
+    expect(screen.queryByTestId('search-clear')).not.toBeInTheDocument();
+  });
+
+  // --- Active filter pills tests ---
+
+  it('shows active filter pills when filters are set', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+    fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+
+    expect(screen.getByTestId('active-filter-pills')).toBeInTheDocument();
+    expect(screen.getByTestId('filter-pill-freshness')).toHaveTextContent('Freshness: stale');
+  });
+
+  it('does not show active filter pills when no filters are active', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    expect(screen.queryByTestId('active-filter-pills')).not.toBeInTheDocument();
+  });
+
+  it('shows multiple filter pills when multiple filters are set', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+    fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'fresh' } });
+    fireEvent.change(screen.getByTestId('filter-embedding'), { target: { value: 'pending' } });
+
+    expect(screen.getByTestId('filter-pill-freshness')).toHaveTextContent('Freshness: fresh');
+    expect(screen.getByTestId('filter-pill-embeddingStatus')).toHaveTextContent('Embedding: pending');
+  });
+
+  it('removes individual filter when pill dismiss button is clicked', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+    fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+    fireEvent.change(screen.getByTestId('filter-embedding'), { target: { value: 'done' } });
+
+    // Remove freshness pill
+    fireEvent.click(screen.getByTestId('filter-pill-remove-freshness'));
+
+    // Freshness pill gone, embedding pill remains
+    expect(screen.queryByTestId('filter-pill-freshness')).not.toBeInTheDocument();
+    expect(screen.getByTestId('filter-pill-embeddingStatus')).toBeInTheDocument();
+
+    // Freshness select reset to empty
+    expect((screen.getByTestId('filter-freshness') as HTMLSelectElement).value).toBe('');
+  });
+
+  it('removes all filter pills when "Clear all" is clicked', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+    fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'aging' } });
+    fireEvent.change(screen.getByTestId('filter-embedding'), { target: { value: 'pending' } });
+
+    expect(screen.getByTestId('active-filter-pills')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('clear-all-pill-filters'));
+
+    expect(screen.queryByTestId('active-filter-pills')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('filter-pill-freshness')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('filter-pill-embeddingStatus')).not.toBeInTheDocument();
+  });
+
+  // --- Visual divider test ---
+
+  it('renders a visual divider between sort and filters toggle', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    expect(screen.getByTestId('sort-filter-divider')).toBeInTheDocument();
+  });
+
+  // --- Grid layout test ---
+
+  it('renders advanced filters in a grid layout', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+    const panel = screen.getByTestId('advanced-filters-panel');
+    expect(panel.className).toContain('grid');
+    expect(panel.className).toContain('grid-cols-2');
   });
 });

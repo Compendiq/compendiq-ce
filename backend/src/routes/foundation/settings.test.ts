@@ -15,6 +15,21 @@ vi.mock('../../core/utils/tls-config.js', () => ({
   buildConnectOptions: vi.fn().mockReturnValue(undefined),
 }));
 
+// Mock SSRF guard — allows tests to control validateUrl behaviour and assert
+// that addAllowedBaseUrl is called at the right points in the route handlers.
+const mockValidateUrl = vi.fn();
+const mockAddAllowedBaseUrl = vi.fn();
+vi.mock('../../core/utils/ssrf-guard.js', () => ({
+  validateUrl: (...args: unknown[]) => mockValidateUrl(...args),
+  addAllowedBaseUrl: (...args: unknown[]) => mockAddAllowedBaseUrl(...args),
+  SsrfError: class SsrfError extends Error {
+    constructor(msg: string) {
+      super(msg);
+      this.name = 'SsrfError';
+    }
+  },
+}));
+
 // Hoisted query mock so we can reference it in tests
 const mockQuery = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 });
 
@@ -47,6 +62,18 @@ vi.mock('../../core/services/rbac-service.js', () => ({
 
 vi.mock('../../domains/llm/services/ollama-service.js', () => ({
   setActiveProvider: vi.fn(),
+}));
+
+const mockGetSharedLlmSettings = vi.fn().mockResolvedValue({
+  llmProvider: 'ollama',
+  ollamaModel: 'qwen3.5',
+  openaiBaseUrl: null,
+  hasOpenaiApiKey: false,
+  openaiApiKey: null,
+  openaiModel: null,
+});
+vi.mock('../../core/services/admin-settings-service.js', () => ({
+  getSharedLlmSettings: (...args: unknown[]) => mockGetSharedLlmSettings(...args),
 }));
 
 const mockGetSyncOverview = vi.fn();
@@ -92,6 +119,14 @@ describe('Settings routes – test-confluence', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetSharedLlmSettings.mockResolvedValue({
+      llmProvider: 'ollama',
+      ollamaModel: 'qwen3.5',
+      openaiBaseUrl: null,
+      hasOpenaiApiKey: false,
+      openaiApiKey: null,
+      openaiModel: null,
+    });
   });
 
   it('should return success when Confluence responds OK', async () => {
@@ -173,6 +208,11 @@ describe('Settings routes – test-confluence', () => {
   });
 
   it('should block SSRF attempts to private networks', async () => {
+    // Simulate the SSRF guard throwing when validateUrl is called with a private IP
+    mockValidateUrl.mockImplementationOnce(() => {
+      throw new Error('SSRF blocked: cannot connect to internal/private network');
+    });
+
     const response = await app.inject({
       method: 'POST',
       url: '/api/settings/test-confluence',
@@ -184,6 +224,26 @@ describe('Settings routes – test-confluence', () => {
     expect(body.success).toBe(false);
     expect(body.message).toContain('URL blocked');
     expect(mockUndiciRequest).not.toHaveBeenCalled();
+  });
+
+  it('should register the Confluence URL in the SSRF allowlist before validating', async () => {
+    mockUndiciRequest.mockResolvedValue({
+      statusCode: 200,
+      body: { dump: vi.fn().mockResolvedValue(undefined) },
+    });
+
+    const testUrl = 'https://confluence.example.com';
+    await app.inject({
+      method: 'POST',
+      url: '/api/settings/test-confluence',
+      payload: { url: testUrl, pat: 'test-pat' },
+    });
+
+    expect(mockAddAllowedBaseUrl).toHaveBeenCalledWith(testUrl);
+    // addAllowedBaseUrl must be called before validateUrl
+    const addCallOrder = mockAddAllowedBaseUrl.mock.invocationCallOrder[0];
+    const validateCallOrder = mockValidateUrl.mock.invocationCallOrder[0];
+    expect(addCallOrder).toBeLessThan(validateCallOrder);
   });
 
   it('should reject invalid payload (missing url)', async () => {
@@ -291,11 +351,6 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
       rows: [{
         confluence_url: 'https://confluence.example.com',
         confluence_pat: 'encrypted',
-        ollama_model: 'qwen3.5',
-        llm_provider: 'ollama',
-        openai_base_url: null,
-        openai_api_key: null,
-        openai_model: null,
         theme: 'glass-dark',
         sync_interval_min: 15,
         show_space_home_content: true,
@@ -375,19 +430,48 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     expect(body.theme).toBe('glass-dark');
   });
 
-  it('PUT /settings does not mark pages dirty when only unrelated settings change', async () => {
+  it('PUT /settings does not mark pages dirty when only unrelated user settings change', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 }); // UPDATE user_settings
 
     await app.inject({
       method: 'PUT',
       url: '/api/settings',
-      payload: { ollamaModel: 'llama3' },
+      payload: { theme: 'polar-slate' },
     });
 
     const dirtyCalls = mockQuery.mock.calls.filter(
       (call) => typeof call[0] === 'string' && (call[0] as string).includes('embedding_dirty = TRUE') && (call[0] as string).includes('pages'),
     );
     expect(dirtyCalls).toHaveLength(0);
+  });
+
+  it('GET /settings returns shared admin LLM settings for all users', async () => {
+    mockGetSharedLlmSettings.mockResolvedValueOnce({
+      llmProvider: 'openai',
+      ollamaModel: 'qwen3.5',
+      openaiBaseUrl: 'https://api.openai.com/v1',
+      hasOpenaiApiKey: true,
+      openaiApiKey: 'secret',
+      openaiModel: 'gpt-4o-mini',
+    });
+    mockQuery.mockResolvedValueOnce({
+      rows: [{
+        confluence_url: null,
+        confluence_pat: null,
+        theme: 'glass-dark',
+        sync_interval_min: 15,
+        show_space_home_content: true,
+        custom_prompts: {},
+      }],
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/api/settings' });
+    const body = JSON.parse(response.body);
+
+    expect(body.llmProvider).toBe('openai');
+    expect(body.openaiBaseUrl).toBe('https://api.openai.com/v1');
+    expect(body.hasOpenaiApiKey).toBe(true);
+    expect(body.openaiModel).toBe('gpt-4o-mini');
   });
 
   it('PUT /settings updates selectedSpaces via RBAC space_role_assignments', async () => {
@@ -416,9 +500,7 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
   it('GET /settings returns customPrompts from DB', async () => {
     mockQuery.mockResolvedValueOnce({
       rows: [{
-        confluence_url: null, confluence_pat: null, ollama_model: 'qwen3.5',
-        llm_provider: 'ollama', openai_base_url: null, openai_api_key: null,
-        openai_model: null, theme: 'glass-dark', sync_interval_min: 15,
+        confluence_url: null, confluence_pat: null, theme: 'glass-dark', sync_interval_min: 15,
         show_space_home_content: true,
         custom_prompts: { improve_grammar: 'Fix grammar pls' },
       }],
@@ -478,5 +560,43 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     );
     expect(updateCalls).toHaveLength(1);
     expect(updateCalls[0][1]).toContain(JSON.stringify({ improve_clarity: 'Be clear!' }));
+  });
+
+  it('should register Confluence URL in allowlist on PUT /settings when confluenceUrl is provided', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 }); // UPDATE
+
+    const confluenceUrl = 'https://confluence.internal.corp:8090';
+    await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { confluenceUrl },
+    });
+
+    expect(mockAddAllowedBaseUrl).toHaveBeenCalledOnce();
+    expect(mockAddAllowedBaseUrl).toHaveBeenCalledWith(confluenceUrl);
+  });
+
+  it('should NOT call addAllowedBaseUrl when PUT /settings has no confluenceUrl', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 }); // UPDATE
+
+    await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { ollamaModel: 'llama3' },
+    });
+
+    expect(mockAddAllowedBaseUrl).not.toHaveBeenCalled();
+  });
+
+  it('should NOT call addAllowedBaseUrl when PUT /settings has null confluenceUrl', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 }); // UPDATE
+
+    await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { confluenceUrl: null },
+    });
+
+    expect(mockAddAllowedBaseUrl).not.toHaveBeenCalled();
   });
 });

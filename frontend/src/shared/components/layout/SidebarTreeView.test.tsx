@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SidebarTreeView, SidebarTreeNode } from './SidebarTreeView';
@@ -229,6 +229,28 @@ describe('SidebarTreeView', () => {
     expect(screen.getByText('New Space')).toBeInTheDocument();
   });
 
+  it('closes space dropdown on outside click', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    // Open the dropdown
+    fireEvent.click(screen.getByText('All Spaces'));
+    expect(screen.getByText('Development')).toBeInTheDocument();
+
+    // Click outside (mousedown on the document body)
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByText('Development')).not.toBeInTheDocument();
+  });
+
+  it('closes space dropdown on Escape key', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    // Open the dropdown
+    fireEvent.click(screen.getByText('All Spaces'));
+    expect(screen.getByText('Development')).toBeInTheDocument();
+
+    // Press Escape
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByText('Development')).not.toBeInTheDocument();
+  });
+
   it('renders resize handle', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
     expect(screen.getByRole('separator', { name: 'Resize tree sidebar' })).toBeInTheDocument();
@@ -283,6 +305,26 @@ describe('SidebarTreeView', () => {
     expect(screen.queryByRole('separator', { name: 'Resize tree sidebar' })).not.toBeInTheDocument();
   });
 
+  it('uses document icons for all pages, including parents with children (no folder icons)', () => {
+    useUiStore.setState({
+      treeSidebarCollapsed: false,
+      treeSidebarSpaceKey: 'DEV',
+    });
+    const { container } = render(<SidebarTreeView />, { wrapper: createWrapper() });
+
+    // All SVG icons in the tree items should be the same type (FileText/document)
+    // There should be no Folder or FolderOpen icons anywhere
+    const svgs = container.querySelectorAll('svg');
+    const svgClasses = Array.from(svgs).map((svg) => svg.getAttribute('class') ?? '');
+
+    // None of the icons should be Folder or FolderOpen (lucide-folder or lucide-folder-open)
+    // Note: lucide-folder-plus is allowed (it's the "New Folder" button in the header)
+    const hasFolderIcon = svgClasses.some(
+      (c) => c.includes('lucide-folder-open') || (c.includes('lucide-folder') && !c.includes('lucide-folder-plus')),
+    );
+    expect(hasFolderIcon).toBe(false);
+  });
+
   it('keeps the homepage visible and expands its children when a space with homepageId is selected', () => {
     useUiStore.setState({
       treeSidebarCollapsed: false,
@@ -306,10 +348,20 @@ describe('SidebarTreeView', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/spaces/new');
   });
 
-  it('shows collapse sidebar button in expanded sidebar header', () => {
+  it('renders collapse sidebar button inside the main navigation (next to AI tab)', () => {
     useUiStore.setState({ treeSidebarCollapsed: false });
     render(<SidebarTreeView />, { wrapper: createWrapper() });
-    expect(screen.getByLabelText('Collapse sidebar')).toBeInTheDocument();
+    const nav = screen.getByRole('navigation', { name: 'Main navigation' });
+    expect(within(nav).getByLabelText('Collapse sidebar')).toBeInTheDocument();
+  });
+
+  it('does not render collapse sidebar button inside the sidebar header section', () => {
+    useUiStore.setState({ treeSidebarCollapsed: false });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    // "Pages" label text identifies the sidebar header span (distinct from the nav "Pages" link)
+    const pagesHeaderSpan = screen.getByText('Pages', { selector: 'span' });
+    const sidebarHeader = pagesHeaderSpan.parentElement!;
+    expect(sidebarHeader.querySelector('[aria-label="Collapse sidebar"]')).toBeNull();
   });
 
   it('collapses sidebar when collapse button is clicked in expanded state', () => {

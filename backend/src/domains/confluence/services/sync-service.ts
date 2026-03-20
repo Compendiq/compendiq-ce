@@ -6,6 +6,7 @@ import { saveVersionSnapshot } from '../../../core/services/version-snapshot.js'
 import { processDirtyPages } from '../../llm/services/embedding-service.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { decryptPat } from '../../../core/utils/crypto.js';
+import { addAllowedBaseUrl } from '../../../core/utils/ssrf-guard.js';
 import { logger } from '../../../core/utils/logger.js';
 
 interface SyncStatus {
@@ -530,5 +531,34 @@ export function stopSyncWorker(): void {
     clearInterval(syncIntervalHandle);
     syncIntervalHandle = null;
     logger.info('Background sync worker stopped');
+  }
+}
+
+/**
+ * Server-startup bootstrap: pre-populate the SSRF allowlist with all
+ * Confluence URLs already stored in user_settings.
+ *
+ * This is best-effort — a database failure is logged as a warning and
+ * startup continues. The ConfluenceClient constructor self-registers its
+ * base URL on every sync cycle, so each sync will still work even if this
+ * bootstrap query fails.
+ *
+ * Placed here for co-location with other Confluence credential queries;
+ * it is not sync logic but startup sequence logic.
+ */
+export async function bootstrapSsrfAllowlist(): Promise<void> {
+  try {
+    const result = await query<{ confluence_url: string }>(
+      'SELECT DISTINCT confluence_url FROM user_settings WHERE confluence_url IS NOT NULL',
+    );
+    for (const row of result.rows) {
+      addAllowedBaseUrl(row.confluence_url);
+    }
+    logger.info({ count: result.rows.length }, 'SSRF allowlist bootstrapped from user_settings');
+  } catch (err) {
+    logger.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      'Failed to bootstrap SSRF allowlist from user_settings — allowlist will be populated lazily on first sync',
+    );
   }
 }

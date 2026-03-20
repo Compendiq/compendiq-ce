@@ -39,6 +39,25 @@ vi.mock('../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
+const mockGetSharedLlmSettings = vi.fn().mockResolvedValue({
+  llmProvider: 'ollama',
+  ollamaModel: 'qwen3.5',
+  openaiBaseUrl: null,
+  hasOpenaiApiKey: false,
+  openaiApiKey: null,
+  openaiModel: null,
+});
+const mockUpsertSharedLlmSettings = vi.fn().mockResolvedValue(undefined);
+vi.mock('../../core/services/admin-settings-service.js', () => ({
+  getSharedLlmSettings: (...args: unknown[]) => mockGetSharedLlmSettings(...args),
+  upsertSharedLlmSettings: (...args: unknown[]) => mockUpsertSharedLlmSettings(...args),
+}));
+
+const mockSetActiveProvider = vi.fn();
+vi.mock('../../domains/llm/services/ollama-service.js', () => ({
+  setActiveProvider: (...args: unknown[]) => mockSetActiveProvider(...args),
+}));
+
 import { listErrors, resolveError, getErrorSummary } from '../../core/services/error-tracker.js';
 import { query as mockQuery } from '../../core/db/postgres.js';
 
@@ -84,6 +103,14 @@ describe('Admin routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetSharedLlmSettings.mockResolvedValue({
+      llmProvider: 'ollama',
+      ollamaModel: 'qwen3.5',
+      openaiBaseUrl: null,
+      hasOpenaiApiKey: false,
+      openaiApiKey: null,
+      openaiModel: null,
+    });
   });
 
   // ========================
@@ -288,6 +315,8 @@ describe('Admin routes', () => {
       expect(body.drawioEmbedUrl).toBeNull();
       expect(body.embeddingChunkSize).toBe(500);
       expect(body.embeddingChunkOverlap).toBe(50);
+      expect(body.llmProvider).toBe('ollama');
+      expect(body.ollamaModel).toBe('qwen3.5');
     });
 
     it('returns drawioEmbedUrl when configured', async () => {
@@ -307,6 +336,31 @@ describe('Admin routes', () => {
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
       expect(body.drawioEmbedUrl).toBe('https://my-drawio.internal');
+    });
+  });
+
+  describe('PUT /api/admin/settings - shared LLM settings', () => {
+    it('saves shared LLM settings via admin-settings service', async () => {
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: {
+          llmProvider: 'openai',
+          openaiBaseUrl: 'https://api.openai.com/v1',
+          openaiApiKey: 'secret-key',
+          openaiModel: 'gpt-4o-mini',
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockUpsertSharedLlmSettings).toHaveBeenCalledWith({
+        llmProvider: 'openai',
+        ollamaModel: undefined,
+        openaiBaseUrl: 'https://api.openai.com/v1',
+        openaiApiKey: 'secret-key',
+        openaiModel: 'gpt-4o-mini',
+      });
+      expect(mockSetActiveProvider).toHaveBeenCalledWith('openai');
     });
   });
 

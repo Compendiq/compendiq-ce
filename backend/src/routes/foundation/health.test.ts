@@ -33,11 +33,17 @@ vi.mock('../../core/services/circuit-breaker.js', () => {
 
 // Mock the LLM service (provider-aware health check)
 const mockCheckHealth = vi.fn().mockResolvedValue({ connected: true });
-const mockGetActiveProviderType = vi.fn().mockReturnValue('ollama');
+const mockGetProvider = vi.fn().mockReturnValue({ checkHealth: (...args: unknown[]) => mockCheckHealth(...args) });
 
 vi.mock('../../domains/llm/services/ollama-service.js', () => ({
-  checkHealth: (...args: unknown[]) => mockCheckHealth(...args),
-  getActiveProviderType: () => mockGetActiveProviderType(),
+  getProvider: (...args: unknown[]) => mockGetProvider(...args),
+}));
+
+const mockGetSharedLlmSettings = vi.fn().mockResolvedValue({
+  llmProvider: 'ollama',
+});
+vi.mock('../../core/services/admin-settings-service.js', () => ({
+  getSharedLlmSettings: (...args: unknown[]) => mockGetSharedLlmSettings(...args),
 }));
 
 vi.mock('../../core/utils/logger.js', () => ({
@@ -67,7 +73,8 @@ describe('Health routes', () => {
     (mockCheckPg as ReturnType<typeof vi.fn>).mockResolvedValue(true);
     (mockCheckRedis as ReturnType<typeof vi.fn>).mockResolvedValue(true);
     mockCheckHealth.mockResolvedValue({ connected: true });
-    mockGetActiveProviderType.mockReturnValue('ollama');
+    mockGetSharedLlmSettings.mockResolvedValue({ llmProvider: 'ollama' });
+    mockGetProvider.mockReturnValue({ checkHealth: (...args: unknown[]) => mockCheckHealth(...args) });
   });
 
   describe('GET /api/health/live', () => {
@@ -146,7 +153,7 @@ describe('Health routes', () => {
     });
 
     it('should report correct llmProvider', async () => {
-      mockGetActiveProviderType.mockReturnValue('openai');
+      mockGetSharedLlmSettings.mockResolvedValueOnce({ llmProvider: 'openai' });
       const response = await app.inject({ method: 'GET', url: '/api/health/start' });
       const body = JSON.parse(response.body);
       expect(body.checks.llmProvider).toBe('openai');
@@ -177,14 +184,14 @@ describe('Health routes', () => {
     });
 
     it('should use active provider for health check', async () => {
-      mockGetActiveProviderType.mockReturnValue('openai');
+      mockGetSharedLlmSettings.mockResolvedValue({ llmProvider: 'openai' });
       mockCheckHealth.mockResolvedValue({ connected: true });
 
       const response = await app.inject({ method: 'GET', url: '/api/health' });
       const body = JSON.parse(response.body);
       expect(body.services.llm).toBe(true);
       expect(body.llmProvider).toBe('openai');
-      expect(mockCheckHealth).toHaveBeenCalled();
+      expect(mockGetProvider).toHaveBeenCalledWith('openai');
     });
   });
 });

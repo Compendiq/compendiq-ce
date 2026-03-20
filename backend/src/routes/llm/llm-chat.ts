@@ -368,6 +368,7 @@ export async function llmChatRoutes(fastify: FastifyInstance) {
       pageTitle: r.pageTitle,
       spaceKey: r.spaceKey,
       confluenceId: r.confluenceId,
+      pageId: r.pageId,
       sectionTitle: r.sectionTitle,
       score: r.score,
     }));
