@@ -109,64 +109,54 @@ export function NewPagePage() {
         data-testid="new-page-sticky-header"
         className="sticky top-0 z-30 relative bg-background space-y-2 before:absolute before:-z-10 before:-top-[100px] before:bottom-0 before:-left-[14px] before:-right-[14px] sm:before:-left-[22px] sm:before:-right-[22px] before:bg-background"
       >
-        {/* Action bar */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <button onClick={() => navigate('/pages')} className="glass-button-ghost">
-              <ArrowLeft size={18} />
-            </button>
-            <h1 className="text-xl font-bold">New Page</h1>
+        {/* Panel 1: Actions + Settings */}
+        <div className="glass-card space-y-3 p-3">
+          {/* Action bar */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <button onClick={() => navigate('/pages')} className="glass-button-ghost">
+                <ArrowLeft size={18} />
+              </button>
+              <h1 className="text-xl font-bold">New Page</h1>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={importMarkdownMutation.isPending}
+                className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm bg-foreground/5 hover:bg-foreground/10 disabled:opacity-50 transition-colors"
+                data-testid="import-markdown-btn"
+              >
+                <Upload size={14} />
+                {importMarkdownMutation.isPending ? 'Importing...' : 'Import Markdown'}
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".md,.markdown"
+                onChange={handleImportMarkdown}
+                className="hidden"
+                data-testid="import-markdown-input"
+              />
+              <button
+                onClick={() => setShowTemplateGallery(true)}
+                className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm bg-foreground/5 hover:bg-foreground/10 transition-colors"
+                data-testid="use-template-btn"
+              >
+                <LayoutTemplate size={14} />
+                Use Template
+              </button>
+              <button
+                onClick={handleCreate}
+                disabled={isCreateDisabled}
+                className="glass-button-primary"
+              >
+                <Save size={14} /> {createMutation.isPending ? 'Creating...' : 'Create Page'}
+              </button>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={importMarkdownMutation.isPending}
-              className="glass-card flex items-center gap-2 px-3 py-2 text-sm hover:bg-foreground/5 disabled:opacity-50"
-              data-testid="import-markdown-btn"
-            >
-              <Upload size={14} />
-              {importMarkdownMutation.isPending ? 'Importing...' : 'Import Markdown'}
-            </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".md,.markdown"
-              onChange={handleImportMarkdown}
-              className="hidden"
-              data-testid="import-markdown-input"
-            />
-            <button
-              onClick={() => setShowTemplateGallery(true)}
-              className="glass-card flex items-center gap-2 px-3 py-2 text-sm hover:bg-foreground/5"
-              data-testid="use-template-btn"
-            >
-              <LayoutTemplate size={14} />
-              Use Template
-            </button>
-            <button
-              onClick={handleCreate}
-              disabled={isCreateDisabled}
-              className="glass-button-primary"
-            >
-              <Save size={14} /> {createMutation.isPending ? 'Creating...' : 'Create Page'}
-            </button>
-          </div>
-        </div>
 
-        {/* Title input */}
-        <div>
-          <input
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            placeholder="Untitled page"
-            className="w-full bg-transparent text-2xl font-semibold text-foreground placeholder:text-muted-foreground/50 outline-none"
-            data-testid="title-input"
-            autoFocus
-          />
-        </div>
-
-        {/* Metadata bar */}
-        <div className="glass-card flex flex-wrap items-center gap-x-4 gap-y-2 p-3">
+          {/* Metadata bar */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
           {/* Article type toggle */}
           <div className="flex items-center gap-2">
             <span className="text-xs font-medium text-muted-foreground">Type</span>
@@ -262,37 +252,45 @@ export function NewPagePage() {
             </>
           )}
         </div>
-
-        {/* Editor toolbar — rendered externally so it lives inside the sticky group */}
-        {editorInstance && (
-          <div className="border border-border/25 bg-card rounded-t-xl shadow-[0_8px_32px_var(--glass-shadow)]">
-            <EditorToolbar editor={editorInstance} />
-            <TableContextToolbar editor={editorInstance} />
-          </div>
-        )}
-      </div>
-
-      {/* ── Editor body ───────────────────────────────────────────────────────────
-          Connects flush to the toolbar above: rounded-t-none removes top radius,
-          -mt-px merges the card's top border with the toolbar's bottom border.
-          The clipPath allows box-shadow/blur to overflow left/right/bottom while
-          keeping the top edge square where it meets the toolbar.               */}
-      <FeatureErrorBoundary featureName="Editor">
-        <div
-          className={cn('glass-card', editorInstance ? 'rounded-t-none -mt-px' : 'mt-2')}
-          style={editorInstance ? { clipPath: 'inset(0 -100px -100px -100px round 0 0 var(--radius-lg) var(--radius-lg))' } : undefined}
-        >
-          <Editor
-            content=""
-            onChange={setBodyHtml}
-            placeholder="Start writing your article..."
-            draftKey={NEW_PAGE_DRAFT_KEY}
-            naked
-            hideToolbar
-            onEditorReady={setEditorInstance}
-          />
+        {/* Close Panel 1 */}
         </div>
-      </FeatureErrorBoundary>
+
+        {/* Panel 2: Toolbar + Title + Editor */}
+        <div className="glass-card overflow-hidden">
+          {/* Editor toolbar */}
+          {editorInstance && (
+            <div className="border-b border-border/25 px-1">
+              <EditorToolbar editor={editorInstance} />
+              <TableContextToolbar editor={editorInstance} />
+            </div>
+          )}
+
+          {/* Title input */}
+          <div className="px-5 pt-5 sm:px-10 sm:pt-8">
+            <input
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="Untitled page"
+              className="w-full bg-transparent text-2xl font-semibold text-foreground placeholder:text-muted-foreground/50 outline-none"
+              data-testid="title-input"
+              autoFocus
+            />
+          </div>
+
+          {/* Editor body */}
+          <FeatureErrorBoundary featureName="Editor">
+            <Editor
+              content=""
+              onChange={setBodyHtml}
+              placeholder="Start writing your article..."
+              draftKey={NEW_PAGE_DRAFT_KEY}
+              naked
+              hideToolbar
+              onEditorReady={setEditorInstance}
+            />
+          </FeatureErrorBoundary>
+        </div>
+      </div>
 
       {/* Template Gallery Modal */}
       {showTemplateGallery && (

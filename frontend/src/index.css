@@ -286,11 +286,10 @@ body {
 @utility glass-header {
   background: var(--glass-sidebar-bg);
   backdrop-filter: blur(var(--glass-sidebar-blur)) saturate(1.3);
-  border: 0.5px solid var(--glass-sidebar-border);
+  border: none;
   box-shadow:
     var(--glass-sidebar-specular),
-    0 4px 20px oklch(0 0 0 / 0.1),
-    0 0 0 0.5px var(--glass-sidebar-border);
+    0 4px 20px oklch(0 0 0 / 0.1);
 }
 
 /* Liquid Pill — selected state for sidebar/nav items (Tahoe-style glass lens). */
