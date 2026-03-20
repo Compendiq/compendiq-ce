@@ -518,15 +518,20 @@ export async function fetchAndCacheAttachment(
   return data;
 }
 
+export interface FetchAndCachePageImageOptions {
+  client: ConfluenceClient;
+  userId: string;
+  pageId: string;
+  localFilename: string;
+  bodyStorage: string;
+  currentSpaceKey?: string;
+  redis?: ReturnType<typeof getRedisClient>;
+}
+
 export async function fetchAndCachePageImage(
-  client: ConfluenceClient,
-  userId: string,
-  pageId: string,
-  localFilename: string,
-  bodyStorage: string,
-  currentSpaceKey?: string,
-  redis?: ReturnType<typeof getRedisClient>,
+  options: FetchAndCachePageImageOptions,
 ): Promise<Buffer | null> {
+  const { client, userId, pageId, localFilename, bodyStorage, currentSpaceKey, redis } = options;
   const safe = path.basename(localFilename);
   const refs = extractImageReferences(bodyStorage, currentSpaceKey);
   let ref = refs.find((candidate) => candidate.localFilename === safe);

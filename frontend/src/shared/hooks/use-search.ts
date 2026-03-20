@@ -109,11 +109,16 @@ export function useSearch({ query, mode, spaceKey, page: requestedPage = 1 }: Us
   }
 
   // ── Phase 1: Immediate keyword results ──────────────────────────────────
+  // Once enhanced results arrive, disable the immediate query so it stops
+  // refetching (the enhanced results supersede it).
+  const enhancedHasData = useRef(false);
+
   const immediateQuery = useQuery<SearchApiResponse>({
     queryKey: ['search', 'immediate', trimmedQuery, spaceKey, requestedPage],
     queryFn: () => apiFetch<SearchApiResponse>(buildUrl('keyword', requestedPage)),
-    enabled: isQueryEnabled,
-    staleTime: 0,
+    enabled: isQueryEnabled && !enhancedHasData.current,
+    staleTime: 30_000,
+    placeholderData: (prev) => prev,
   });
 
   // ── Phase 2: Enhanced semantic/hybrid results ────────────────────────────
@@ -124,6 +129,10 @@ export function useSearch({ query, mode, spaceKey, page: requestedPage = 1 }: Us
     enabled: isQueryEnabled && mode !== 'keyword',
     staleTime: 0,
   });
+
+  // Track whether enhanced results have arrived so the immediate query
+  // can be disabled on the next render cycle.
+  enhancedHasData.current = mode !== 'keyword' && !!enhancedQuery.data && !enhancedQuery.isLoading;
 
   // Derive hasEmbeddings from the immediate response (optimistic: true before first response)
   const hasEmbeddings = immediateQuery.data?.hasEmbeddings ?? true;

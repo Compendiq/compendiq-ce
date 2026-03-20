@@ -5,8 +5,7 @@ import { query } from '../../core/db/postgres.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 import {
   vectorSearch,
-  keywordSearch,
-  reciprocalRankFusion,
+  hybridSearch,
   recordSearchAnalytics,
 } from '../../domains/llm/services/rag-service.js';
 import { providerGenerateEmbedding } from '../../domains/llm/services/llm-provider.js';
@@ -148,27 +147,21 @@ export async function searchRoutes(fastify: FastifyInstance) {
     }
 
     // ── Hybrid mode ───────────────────────────────────────────────────────────
+    // Delegates to rag-service's hybridSearch which handles embedding generation,
+    // parallel vector + keyword search, RRF fusion, and deduplication internally.
     if (effectiveMode === 'hybrid') {
-      const questionEmbedding = await generateSearchEmbedding(userId, q, 'hybrid', reply);
-      if (!questionEmbedding) return;
-
-      const [vectorResults, kwResults] = await Promise.all([
-        vectorSearch(userId, questionEmbedding, limit),
-        keywordSearch(userId, q, limit),
-      ]);
-
-      const combined = reciprocalRankFusion(vectorResults, kwResults);
-
-      // Deduplicate by pageId (take best chunk per page)
-      const seen = new Set<number>();
-      const deduped = combined.filter((r) => {
-        if (seen.has(r.pageId)) return false;
-        seen.add(r.pageId);
-        return true;
-      }).slice(0, limit);
-
-      const maxScore = deduped.length > 0 ? Math.max(...deduped.map((r) => r.score)) : null;
-      recordSearchAnalytics(userId, q, deduped.length, maxScore, 'hybrid').catch(() => {});
+      let deduped;
+      try {
+        deduped = await hybridSearch(userId, q, limit);
+      } catch (err) {
+        logger.warn({ err }, 'Hybrid search failed (embedding generation error)');
+        reply.status(502).send({
+          error: 'EmbeddingFailed',
+          message: `Embedding generation failed: ${err instanceof Error ? err.message : String(err)}`,
+          statusCode: 502,
+        });
+        return;
+      }
 
       const items = deduped.map((r) => ({
         id: r.pageId,
@@ -366,6 +359,11 @@ export async function searchRoutes(fastify: FastifyInstance) {
       }
     }
 
+    // After merging trgm results, the actual item count may exceed the FTS-only
+    // total. Adjust so that `total` is never less than the items returned.
+    const adjustedTotal = Math.max(total, ftsItems.length);
+    const totalPages = Math.ceil(adjustedTotal / limit);
+
     const maxFtsScore = ftsItems.length > 0 ? Math.max(...ftsItems.map((r) => r.rank)) : null;
     recordSearchAnalytics(userId, q, ftsItems.length, maxFtsScore, 'keyword').catch(() => {});
 
@@ -439,11 +437,9 @@ export async function searchRoutes(fastify: FastifyInstance) {
       }
     }
 
-    const totalPages = Math.ceil(total / limit);
-
     return {
       items: ftsItems,
-      total,
+      total: adjustedTotal,
       page,
       limit,
       totalPages,

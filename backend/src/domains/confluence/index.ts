@@ -12,6 +12,7 @@ export {
   attachmentExists,
   extractDrawioDiagramNames,
 } from './services/attachment-handler.js';
+export type { FetchAndCachePageImageOptions } from './services/attachment-handler.js';
 export {
   syncUser,
   getClientForUser,

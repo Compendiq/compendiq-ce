@@ -375,13 +375,13 @@ describe('attachment-handler', () => {
       } as never);
       (fs.readFile as ReturnType<typeof vi.fn>).mockResolvedValue(Buffer.from('external-image'));
 
-      const result = await fetchAndCachePageImage(
+      const result = await fetchAndCachePageImage({
         client,
-        'user-1',
-        'page-1',
-        getLocalFilenameForImageSource({ kind: 'external-url', url: 'https://example.com/img.png' }),
-        '<ac:image><ri:url ri:value="https://example.com/img.png" /></ac:image>',
-      );
+        userId: 'user-1',
+        pageId: 'page-1',
+        localFilename: getLocalFilenameForImageSource({ kind: 'external-url', url: 'https://example.com/img.png' }),
+        bodyStorage: '<ac:image><ri:url ri:value="https://example.com/img.png" /></ac:image>',
+      });
 
       expect(result).toEqual(Buffer.from('external-image'));
       expect(mockRequest).toHaveBeenCalled();
@@ -397,19 +397,19 @@ describe('attachment-handler', () => {
       });
       (client.downloadAttachment as ReturnType<typeof vi.fn>).mockResolvedValue(Buffer.from('shared-image'));
 
-      const result = await fetchAndCachePageImage(
+      const result = await fetchAndCachePageImage({
         client,
-        'user-1',
-        'page-1',
-        getLocalFilenameForImageSource({
+        userId: 'user-1',
+        pageId: 'page-1',
+        localFilename: getLocalFilenameForImageSource({
           kind: 'attachment',
           attachmentFilename: 'shared.png',
           sourcePageTitle: 'Shared Assets',
           sourceSpaceKey: 'OPS',
         }),
-        '<ac:image><ri:attachment ri:filename="shared.png"><ri:page ri:content-title="Shared Assets" ri:space-key="OPS" /></ri:attachment></ac:image>',
-        'OPS',
-      );
+        bodyStorage: '<ac:image><ri:attachment ri:filename="shared.png"><ri:page ri:content-title="Shared Assets" ri:space-key="OPS" /></ri:attachment></ac:image>',
+        currentSpaceKey: 'OPS',
+      });
 
       expect(result).toEqual(Buffer.from('test'));
       expect(client.findPageByTitle).toHaveBeenCalledWith('OPS', 'Shared Assets');
@@ -1163,14 +1163,14 @@ describe('attachment-handler', () => {
       const cachedData = Buffer.from('cached-shared');
       vi.mocked(fs.readFile).mockResolvedValue(cachedData);
 
-      const result = await fetchAndCachePageImage(
+      const result = await fetchAndCachePageImage({
         client,
-        'user-1',
-        'page-1',
-        'shared.png',  // Plain name from stale HTML
+        userId: 'user-1',
+        pageId: 'page-1',
+        localFilename: 'shared.png',  // Plain name from stale HTML
         bodyStorage,
-        'OPS',
-      );
+        currentSpaceKey: 'OPS',
+      });
 
       expect(result).toEqual(cachedData);
       expect(client.findPageByTitle).toHaveBeenCalledWith('OPS', 'Shared Assets');

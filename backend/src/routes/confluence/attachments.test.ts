@@ -299,16 +299,16 @@ describe('Attachment routes', () => {
       });
 
       expect(response.statusCode).toBe(200);
-      // The route should pass the redis client (7th arg) to fetchAndCachePageImage
-      expect(mockFetchAndCachePageImage).toHaveBeenCalledWith(
-        expect.anything(), // client
-        'test-user',
-        'page-456',
-        'recovered.png',
-        expect.any(String), // body_storage
-        'OPS',             // space_key
-        mockRedisClient,   // redis client
-      );
+      // The route should pass an options object to fetchAndCachePageImage
+      expect(mockFetchAndCachePageImage).toHaveBeenCalledWith({
+        client: expect.anything(),
+        userId: 'test-user',
+        pageId: 'page-456',
+        localFilename: 'recovered.png',
+        bodyStorage: expect.any(String),
+        currentSpaceKey: 'OPS',
+        redis: mockRedisClient,
+      });
     });
   });
 
