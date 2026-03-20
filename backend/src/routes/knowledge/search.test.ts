@@ -20,6 +20,34 @@ vi.mock('../../core/db/postgres.js', () => ({
   closePool: vi.fn(),
 }));
 
+// Mocks for rag-service functions used in semantic/hybrid modes
+const mockVectorSearch = vi.fn();
+const mockKeywordSearchFn = vi.fn();
+const mockRrfFn = vi.fn();
+const mockRecordAnalytics = vi.fn();
+vi.mock('../../domains/llm/services/rag-service.js', () => ({
+  vectorSearch: (...args: unknown[]) => mockVectorSearch(...args),
+  keywordSearch: (...args: unknown[]) => mockKeywordSearchFn(...args),
+  reciprocalRankFusion: (...args: unknown[]) => mockRrfFn(...args),
+  recordSearchAnalytics: (...args: unknown[]) => mockRecordAnalytics(...args),
+}));
+
+const mockProviderGenerateEmbedding = vi.fn();
+vi.mock('../../domains/llm/services/llm-provider.js', () => ({
+  providerGenerateEmbedding: (...args: unknown[]) => mockProviderGenerateEmbedding(...args),
+}));
+
+// Shared SearchResult shape from rag-service
+const makeSearchResult = (pageId: number, title: string) => ({
+  pageId,
+  confluenceId: `page-${pageId}`,
+  chunkText: `Excerpt for ${title}`,
+  pageTitle: title,
+  sectionTitle: title,
+  spaceKey: 'TEST',
+  score: 0.8,
+});
+
 describe('Search Routes', () => {
   let app: ReturnType<typeof Fastify>;
 
@@ -60,6 +88,8 @@ describe('Search Routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Default: recordAnalytics is a no-op
+    mockRecordAnalytics.mockResolvedValue(undefined);
   });
 
   describe('GET /api/search', () => {
@@ -108,6 +138,10 @@ describe('Search Routes', () => {
             ],
           };
         }
+        // trgm title query
+        if (typeof sql === 'string' && sql.includes('similarity')) {
+          return { rows: [] };
+        }
         return { rows: [], rowCount: 0 };
       });
 
@@ -128,6 +162,9 @@ describe('Search Routes', () => {
       expect(body.facets.tags).toHaveLength(2);
       expect(body.items[0].title).toBe('Redis Guide');
       expect(body.items[0].snippet).toContain('<mark>');
+      // New fields
+      expect(body.mode).toBe('keyword');
+      expect(body.hasEmbeddings).toBeDefined();
     });
 
     it('should require query parameter', async () => {
@@ -273,6 +310,203 @@ describe('Search Routes', () => {
       // Last two params should be limit and offset
       expect(params[params.length - 2]).toBe(10); // limit
       expect(params[params.length - 1]).toBe(10); // offset = (2-1)*10
+    });
+
+    // ── keyword mode: trgm title merge ──────────────────────────────────────
+
+    it('keyword mode runs trgm title query separately from FTS', async () => {
+      mockQueryFn.mockImplementation((sql: string) => {
+        if (typeof sql === 'string' && sql.includes('similarity')) {
+          return {
+            rows: [
+              {
+                id: 99,
+                confluence_id: 'page-99',
+                title: 'Redis Tuning',
+                space_key: 'DEV',
+                body_text: 'Tuning advice',
+                rank: 0.8,
+              },
+            ],
+          };
+        }
+        if (typeof sql === 'string' && sql.includes('COUNT(*)')) {
+          return { rows: [{ count: '1' }] };
+        }
+        if (typeof sql === 'string' && sql.includes('ts_rank')) {
+          return {
+            rows: [{
+              id: 1,
+              confluence_id: 'page-1',
+              title: 'Redis Guide',
+              space_key: 'DEV',
+              author: 'Alice',
+              last_modified_at: null,
+              labels: [],
+              rank: 0.9,
+              snippet: 'Redis intro',
+            }],
+          };
+        }
+        if (typeof sql === 'string' && sql.includes('UNION ALL')) {
+          return { rows: [] };
+        }
+        return { rows: [] };
+      });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/search?q=Redis&mode=keyword',
+      });
+
+      expect(response.statusCode).toBe(200);
+
+      // Verify both FTS and trgm queries were called
+      const trgmCall = mockQueryFn.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('similarity'),
+      );
+      expect(trgmCall).toBeDefined();
+
+      const ftsCall = mockQueryFn.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('ts_rank'),
+      );
+      expect(ftsCall).toBeDefined();
+    });
+
+    // ── semantic mode ────────────────────────────────────────────────────────
+
+    it('semantic mode calls providerGenerateEmbedding + vectorSearch', async () => {
+      // Embeddings exist check → count > 0
+      mockQueryFn.mockResolvedValue({ rows: [{ count: '5' }] });
+
+      const fakeEmbedding = new Array(768).fill(0.1);
+      mockProviderGenerateEmbedding.mockResolvedValue([[...fakeEmbedding]]);
+      mockVectorSearch.mockResolvedValue([makeSearchResult(1, 'Vector Result')]);
+      mockRrfFn.mockReturnValue([makeSearchResult(1, 'Vector Result')]);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/search?q=test&mode=semantic',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockProviderGenerateEmbedding).toHaveBeenCalledWith('test-user-id', 'test');
+      expect(mockVectorSearch).toHaveBeenCalledTimes(1);
+      const body = response.json();
+      expect(body.mode).toBe('semantic');
+      expect(body.hasEmbeddings).toBe(true);
+      expect(body.items).toHaveLength(1);
+      expect(body.items[0].title).toBe('Vector Result');
+    });
+
+    it('semantic mode with no embeddings → falls back to keyword', async () => {
+      // Embeddings exist check → count = 0
+      mockQueryFn.mockImplementation((sql: string) => {
+        if (typeof sql === 'string' && sql.includes('page_embeddings')) {
+          return { rows: [{ count: '0' }] };
+        }
+        if (typeof sql === 'string' && sql.includes('COUNT(*)')) {
+          return { rows: [{ count: '1' }] };
+        }
+        if (typeof sql === 'string' && sql.includes('ts_rank')) {
+          return {
+            rows: [{
+              id: 1,
+              confluence_id: 'page-1',
+              title: 'Keyword Result',
+              space_key: 'DEV',
+              author: null,
+              last_modified_at: null,
+              labels: [],
+              rank: 0.5,
+              snippet: 'result snippet',
+            }],
+          };
+        }
+        if (typeof sql === 'string' && sql.includes('UNION ALL')) {
+          return { rows: [] };
+        }
+        if (typeof sql === 'string' && sql.includes('similarity')) {
+          return { rows: [] };
+        }
+        return { rows: [] };
+      });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/search?q=test&mode=semantic',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.hasEmbeddings).toBe(false);
+      expect(body.mode).toBe('keyword');
+      expect(body.warning).toBeDefined();
+      expect(body.warning).toContain('No embeddings');
+      // Should NOT have called vector search
+      expect(mockVectorSearch).not.toHaveBeenCalled();
+      expect(mockProviderGenerateEmbedding).not.toHaveBeenCalled();
+    });
+
+    // ── hybrid mode ──────────────────────────────────────────────────────────
+
+    it('hybrid mode calls providerGenerateEmbedding + vectorSearch + keywordSearch + reciprocalRankFusion', async () => {
+      mockQueryFn.mockResolvedValue({ rows: [{ count: '10' }] }); // embeddings exist
+
+      const fakeEmbedding = new Array(768).fill(0.1);
+      mockProviderGenerateEmbedding.mockResolvedValue([[...fakeEmbedding]]);
+      mockVectorSearch.mockResolvedValue([makeSearchResult(1, 'Vector Result')]);
+      mockKeywordSearchFn.mockResolvedValue([makeSearchResult(2, 'Keyword Result')]);
+      mockRrfFn.mockReturnValue([
+        makeSearchResult(1, 'Vector Result'),
+        makeSearchResult(2, 'Keyword Result'),
+      ]);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/search?q=test&mode=hybrid',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockProviderGenerateEmbedding).toHaveBeenCalledWith('test-user-id', 'test');
+      expect(mockVectorSearch).toHaveBeenCalledTimes(1);
+      expect(mockKeywordSearchFn).toHaveBeenCalledTimes(1);
+      expect(mockRrfFn).toHaveBeenCalledTimes(1);
+      const body = response.json();
+      expect(body.mode).toBe('hybrid');
+      expect(body.hasEmbeddings).toBe(true);
+      expect(body.items).toHaveLength(2);
+    });
+
+    it('semantic mode: providerGenerateEmbedding failure → 502', async () => {
+      mockQueryFn.mockResolvedValue({ rows: [{ count: '5' }] }); // embeddings exist
+      mockProviderGenerateEmbedding.mockRejectedValue(new Error('Ollama unreachable'));
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/search?q=test&mode=semantic',
+      });
+
+      expect(response.statusCode).toBe(502);
+    });
+
+    it('recordSearchAnalytics is called once per request for semantic mode', async () => {
+      mockQueryFn.mockResolvedValue({ rows: [{ count: '5' }] }); // embeddings exist
+      mockProviderGenerateEmbedding.mockResolvedValue([[new Array(768).fill(0.1)]]);
+      mockVectorSearch.mockResolvedValue([]);
+      mockRrfFn.mockReturnValue([]);
+
+      await app.inject({
+        method: 'GET',
+        url: '/api/search?q=analytics-test&mode=semantic',
+      });
+
+      expect(mockRecordAnalytics).toHaveBeenCalledTimes(1);
+      const [calledUserId, calledQuery, , , calledType] =
+        mockRecordAnalytics.mock.calls[0] as [string, string, number, number | null, string];
+      expect(calledUserId).toBe('test-user-id');
+      expect(calledQuery).toBe('analytics-test');
+      expect(calledType).toBe('semantic');
     });
   });
 

@@ -79,6 +79,30 @@ export const UpdatePageSchema = z.object({
   visibility: PageVisibilityEnum.optional(),
 });
 
+// ── Hybrid / semantic search ──────────────────────────────────────────────────
+
+export const SearchModeEnum = z.enum(['keyword', 'semantic', 'hybrid']);
+export type SearchMode = z.infer<typeof SearchModeEnum>;
+
+/** Shared query schema for the GET /api/search endpoint's mode parameter. */
+export const SearchHybridQuerySchema = z.object({
+  q: z.string().min(1).max(500),
+  mode: SearchModeEnum.default('keyword'),
+  spaceKey: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(20).default(10),
+});
+export type SearchHybridQuery = z.infer<typeof SearchHybridQuerySchema>;
+
+/** Shape of a single search result returned by the hybrid endpoint. */
+export const SearchResultItemSchema = z.object({
+  id: z.union([z.string(), z.number()]),
+  title: z.string(),
+  spaceKey: z.string().nullable(),
+  excerpt: z.string(),
+  score: z.number(),
+});
+export type SearchResultItem = z.infer<typeof SearchResultItemSchema>;
+
 export const PageListQuerySchema = z.object({
   spaceKey: z.string().optional(),
   search: z.string().optional(),
