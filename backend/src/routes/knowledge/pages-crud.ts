@@ -20,6 +20,11 @@ const BulkTagSchema = z.object({
 });
 const IdParamSchema = z.object({ id: z.string().min(1) });
 
+/** Escape ILIKE metacharacters so user input is matched literally. */
+function escapeIlikeTerm(term: string): string {
+  return term.replace(/[%_\\]/g, '\\$&');
+}
+
 export async function pagesCrudRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
   const cache = new RedisCache(fastify.redis);
@@ -215,7 +220,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // ILIKE fallback: when FTS returns 0 results and search term >= 3 chars,
     // retry with a broader ILIKE match on title + body_text
     if (total === 0 && search && search.trim().length >= 3 && searchClauseParamIdx > 0) {
-      const ilikeTerm = `%${search.trim()}%`;
+      const ilikeTerm = `%${escapeIlikeTerm(search.trim())}%`;
       const ftsCondition = ` AND to_tsvector('english', coalesce(cp.title, '') || ' ' || coalesce(cp.body_text, '')) @@ plainto_tsquery('english', $${searchClauseParamIdx})`;
       const ilikeWhereClause = whereClause.replace(
         ftsCondition,
