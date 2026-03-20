@@ -78,6 +78,7 @@ describe('RAG Service', () => {
     it('should format a single result', () => {
       const results: SearchResult[] = [
         {
+          pageId: 1,
           confluenceId: 'page-1',
           chunkText: 'Some chunk text here.',
           pageTitle: 'Getting Started Guide',
@@ -98,6 +99,7 @@ describe('RAG Service', () => {
     it('should format multiple results separated by ---', () => {
       const results: SearchResult[] = [
         {
+          pageId: 1,
           confluenceId: 'page-1',
           chunkText: 'First chunk.',
           pageTitle: 'Page 1',
@@ -106,6 +108,7 @@ describe('RAG Service', () => {
           score: 0.9,
         },
         {
+          pageId: 2,
           confluenceId: 'page-2',
           chunkText: 'Second chunk.',
           pageTitle: 'Page 2',
@@ -125,6 +128,7 @@ describe('RAG Service', () => {
 
     it('should number sources sequentially', () => {
       const results: SearchResult[] = Array.from({ length: 5 }, (_, i) => ({
+        pageId: i + 1,
         confluenceId: `page-${i}`,
         chunkText: `Chunk ${i}`,
         pageTitle: `Page ${i}`,
@@ -142,6 +146,7 @@ describe('RAG Service', () => {
     it('should show "Local" for standalone articles with null spaceKey', () => {
       const results: SearchResult[] = [
         {
+          pageId: 10,
           confluenceId: 'standalone-1',
           chunkText: 'Standalone article content.',
           pageTitle: 'My Local Article',
@@ -160,6 +165,7 @@ describe('RAG Service', () => {
     it('should handle mixed confluence and standalone results', () => {
       const results: SearchResult[] = [
         {
+          pageId: 1,
           confluenceId: 'page-1',
           chunkText: 'Confluence content.',
           pageTitle: 'Confluence Page',
@@ -168,6 +174,7 @@ describe('RAG Service', () => {
           score: 0.9,
         },
         {
+          pageId: 11,
           confluenceId: 'standalone-1',
           chunkText: 'Standalone content.',
           pageTitle: 'Local Article',
@@ -248,13 +255,13 @@ describe('RAG Service', () => {
       // getUserAccessibleSpaces
       mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
 
-      // vectorSearch uses pool.connect → BEGIN → SET LOCAL → main SELECT
+      // vectorSearch uses pool.connect -> BEGIN -> SET LOCAL -> main SELECT
       mocks.mockClientQuery.mockResolvedValueOnce(undefined); // BEGIN
       mocks.mockClientQuery.mockResolvedValueOnce(undefined); // SET LOCAL
       mocks.mockClientQuery.mockResolvedValueOnce({ rows: [] }); // main vector SELECT (empty)
       mocks.mockClientQuery.mockResolvedValueOnce(undefined); // COMMIT
 
-      // keywordSearch uses query() — return empty
+      // keywordSearch uses query() -- return empty
       mocks.mockQuery.mockResolvedValue({ rows: [] });
 
       await hybridSearch('user-1', 'test query about embeddings');
@@ -295,6 +302,7 @@ describe('RAG Service', () => {
       // keyword search returns results
       mocks.mockQuery.mockResolvedValueOnce({
         rows: [{
+          page_id: 1,
           confluence_id: 'page-1',
           title: 'Test Page',
           space_key: 'DEV',
@@ -315,11 +323,12 @@ describe('RAG Service', () => {
       mocks.mockProviderGenerateEmbedding.mockRejectedValue(cbError);
       mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
 
+      // keyword search is started concurrently but the CB error should still propagate
+      mocks.mockQuery.mockResolvedValue({ rows: [] });
+
       await expect(hybridSearch('user-1', 'test query')).rejects.toThrow(
         'LLM server temporarily unavailable',
       );
-      // Verify keyword fallback was NOT called
-      expect(mocks.mockQuery).not.toHaveBeenCalled();
     });
 
     it('should record keyword_fallback search type when embedding fails', async () => {
@@ -329,6 +338,7 @@ describe('RAG Service', () => {
       // keyword search returns results
       mocks.mockQuery.mockResolvedValueOnce({
         rows: [{
+          page_id: 1,
           confluence_id: 'page-1',
           title: 'Fallback Page',
           space_key: 'DEV',
@@ -362,6 +372,7 @@ describe('RAG Service', () => {
       mocks.mockClientQuery.mockResolvedValueOnce(undefined); // SET LOCAL
       mocks.mockClientQuery.mockResolvedValueOnce({
         rows: [{
+          page_id: 1,
           confluence_id: 'page-1',
           chunk_text: 'Vector result content',
           metadata: { page_title: 'Vector Page', section_title: 'Intro', space_key: 'DEV' },
@@ -373,6 +384,7 @@ describe('RAG Service', () => {
       // keyword search returns results
       mocks.mockQuery.mockResolvedValueOnce({
         rows: [{
+          page_id: 2,
           confluence_id: 'page-2',
           title: 'Keyword Page',
           space_key: 'DEV',
@@ -398,7 +410,16 @@ describe('RAG Service', () => {
   });
 
   describe('reciprocalRankFusion', () => {
+    // Deterministic pageId from confluence id string so the same id always
+    // produces the same pageId (needed for RRF merge key).
+    const idMap = new Map<string, number>();
+    let nextId = 1;
+    const stablePageId = (id: string): number => {
+      if (!idMap.has(id)) idMap.set(id, nextId++);
+      return idMap.get(id)!;
+    };
     const makeResult = (id: string, chunk: string, overrides?: Partial<SearchResult>): SearchResult => ({
+      pageId: stablePageId(id),
       confluenceId: id,
       chunkText: chunk,
       pageTitle: `Page ${id}`,
@@ -439,6 +460,31 @@ describe('RAG Service', () => {
       for (let i = 1; i < combined.length; i++) {
         expect(combined[i - 1].score).toBeGreaterThanOrEqual(combined[i].score);
       }
+    });
+
+    it('should not collapse standalone pages that share NULL confluenceId', () => {
+      // Two standalone pages both have null confluenceId but distinct pageIds
+      const standalone1: SearchResult = {
+        pageId: 100,
+        confluenceId: '',   // NULL from DB becomes empty string
+        chunkText: 'Standalone article one',
+        pageTitle: 'Article One',
+        sectionTitle: 'Article One',
+        spaceKey: null,
+        score: 0.5,
+      };
+      const standalone2: SearchResult = {
+        pageId: 200,
+        confluenceId: '',   // same empty confluenceId
+        chunkText: 'Standalone article two',
+        pageTitle: 'Article Two',
+        sectionTitle: 'Article Two',
+        spaceKey: null,
+        score: 0.5,
+      };
+      const combined = reciprocalRankFusion([], [standalone1, standalone2]);
+      // Both should survive because RRF key uses pageId, not confluenceId
+      expect(combined).toHaveLength(2);
     });
   });
 });

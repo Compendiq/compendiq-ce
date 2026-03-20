@@ -11,6 +11,7 @@ const parsed = parseInt(process.env.RAG_EF_SEARCH ?? '100', 10);
 const RAG_EF_SEARCH = Number.isFinite(parsed) && parsed > 0 && parsed <= 10000 ? parsed : 100;
 
 interface SearchResult {
+  pageId: number;           // integer PK from pages table — used for dedup
   confluenceId: string;
   chunkText: string;
   pageTitle: string;
@@ -37,12 +38,13 @@ async function vectorSearch(userId: string, questionEmbedding: number[], limit =
     await client.query(`SET LOCAL hnsw.ef_search = ${Number(RAG_EF_SEARCH)}`);
 
     const result = await client.query<{
+      page_id: number;
       confluence_id: string;
       chunk_text: string;
       metadata: { page_title: string; section_title: string; space_key: string };
       distance: number;
     }>(
-      `SELECT cp.confluence_id, pe.chunk_text, pe.metadata,
+      `SELECT cp.id AS page_id, cp.confluence_id, pe.chunk_text, pe.metadata,
               pe.embedding <=> $2 AS distance
        FROM page_embeddings pe
        JOIN pages cp ON pe.page_id = cp.id
@@ -60,6 +62,7 @@ async function vectorSearch(userId: string, questionEmbedding: number[], limit =
     await client.query('COMMIT');
 
     return result.rows.map((row) => ({
+      pageId: row.page_id,
       confluenceId: row.confluence_id,
       chunkText: row.chunk_text,
       pageTitle: row.metadata.page_title,
@@ -88,13 +91,14 @@ async function keywordSearch(userId: string, questionText: string, limit = 10): 
 
   const kwSpaces = await getUserAccessibleSpaces(userId);
   const result = await query<{
+    page_id: number;
     confluence_id: string;
     title: string;
     space_key: string;
     body_text: string;
     rank: number;
   }>(
-    `SELECT cp.confluence_id, cp.title, cp.space_key,
+    `SELECT cp.id AS page_id, cp.confluence_id, cp.title, cp.space_key,
             substring(cp.body_text, 1, 500) as body_text,
             ts_rank(to_tsvector('english', coalesce(cp.title, '') || ' ' || coalesce(cp.body_text, '')),
                     plainto_tsquery('english', $2)) AS rank
@@ -112,6 +116,7 @@ async function keywordSearch(userId: string, questionText: string, limit = 10): 
   );
 
   return result.rows.map((row) => ({
+    pageId: row.page_id,
     confluenceId: row.confluence_id,
     chunkText: row.body_text,
     pageTitle: row.title,
@@ -134,7 +139,7 @@ function reciprocalRankFusion(
 
   // Score from vector search
   vectorResults.forEach((result, rank) => {
-    const key = `${result.confluenceId}:${result.chunkText.slice(0, 50)}`;
+    const key = `${result.pageId}:${result.chunkText.slice(0, 50)}`;
     const existing = scoreMap.get(key);
     const rrf = 1 / (k + rank + 1);
     if (existing) {
@@ -146,7 +151,7 @@ function reciprocalRankFusion(
 
   // Score from keyword search
   keywordResults.forEach((result, rank) => {
-    const key = `${result.confluenceId}:${result.chunkText.slice(0, 50)}`;
+    const key = `${result.pageId}:${result.chunkText.slice(0, 50)}`;
     const existing = scoreMap.get(key);
     const rrf = 1 / (k + rank + 1);
     if (existing) {
@@ -198,24 +203,24 @@ export async function hybridSearch(
   let vectorResults: SearchResult[] = [];
   let keywordResults: SearchResult[];
 
+  // Start keyword search outside the try block so DB errors in keyword
+  // search are not silently caught as "embedding failures".
+  const keywordPromise = keywordSearch(userId, question);
+
   try {
     // Generate question embedding using the user's configured provider
     const embeddings = await providerGenerateEmbedding(userId, question);
     const questionEmbedding = embeddings[0];
-
-    // Run vector and keyword search in parallel
-    [vectorResults, keywordResults] = await Promise.all([
-      vectorSearch(userId, questionEmbedding),
-      keywordSearch(userId, question),
-    ]);
+    vectorResults = await vectorSearch(userId, questionEmbedding);
   } catch (err) {
     // Let circuit breaker errors propagate for proper 503 handling
     if (err instanceof CircuitBreakerOpenError) {
       throw err;
     }
-    logger.warn({ err }, 'Embedding generation failed, falling back to keyword-only search');
-    keywordResults = await keywordSearch(userId, question);
+    logger.warn({ err }, 'Embedding failed, falling back to keyword-only');
   }
+
+  keywordResults = await keywordPromise;
 
   logger.debug({
     vectorHits: vectorResults.length,
@@ -225,12 +230,14 @@ export async function hybridSearch(
   // Combine with RRF
   const combined = reciprocalRankFusion(vectorResults, keywordResults);
 
-  // Deduplicate by confluence_id (take best chunk per page)
-  const seen = new Set<string>();
+  // Deduplicate by page PK (take best chunk per page).
+  // Using pageId instead of confluenceId avoids collapsing standalone
+  // pages that share a NULL confluence_id.
+  const seen = new Set<number>();
   const deduped: SearchResult[] = [];
   for (const result of combined) {
-    if (!seen.has(result.confluenceId)) {
-      seen.add(result.confluenceId);
+    if (!seen.has(result.pageId)) {
+      seen.add(result.pageId);
       deduped.push(result);
     }
     if (deduped.length >= topK) break;

@@ -375,6 +375,7 @@ export async function llmChatRoutes(fastify: FastifyInstance) {
     });
 
     const sources = searchResults.map((r) => ({
+      pageId: r.pageId,
       pageTitle: r.pageTitle,
       spaceKey: r.spaceKey,
       confluenceId: r.confluenceId,
