@@ -206,6 +206,23 @@ describe('content-converter', () => {
       expect(html).not.toContain('ac:structured-macro');
     });
 
+    it('adds inline flex style for visual column widths', () => {
+      const html = confluenceToHtml(SECTION_COLUMN_PAGE);
+      expect(html).toContain('style="flex: 0 0 30%"');
+      expect(html).toContain('style="flex: 0 0 70%"');
+    });
+
+    it('adds inline flex style for pixel-width columns', () => {
+      const html = confluenceToHtml(SECTION_PIXEL_WIDTH_PAGE);
+      expect(html).toContain('style="flex: 0 0 200px"');
+    });
+
+    it('does not add inline style for columns without width', () => {
+      const html = confluenceToHtml(SECTION_BORDER_PAGE);
+      // Columns in SECTION_BORDER_PAGE have no width parameter
+      expect(html).not.toContain('style="flex:');
+    });
+
     it('converts section with border parameter', () => {
       const html = confluenceToHtml(SECTION_BORDER_PAGE);
       expect(html).toContain('class="confluence-section"');

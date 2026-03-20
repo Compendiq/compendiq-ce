@@ -1121,6 +1121,8 @@ body {
 .tiptap .confluence-column {
   flex: 1;
   min-width: 0;
+  /* When an explicit width is set via inline style (e.g. style="flex: 0 0 30%"),
+     the inline style overrides flex: 1 automatically. */
 }
 
 /* Responsive stacking for narrow viewports */
