@@ -13,6 +13,7 @@ export const AdminSettingsSchema = z.object({
   openaiBaseUrl: z.string().nullable(),
   hasOpenaiApiKey: z.boolean(),
   openaiModel: z.string().nullable(),
+  embeddingModel: z.string(),
   embeddingChunkSize: z.number().int().min(128).max(2048),
   embeddingChunkOverlap: z.number().int().min(0).max(512),
   /**
@@ -29,6 +30,7 @@ export const UpdateAdminSettingsSchema = z.object({
   openaiBaseUrl: z.string().url().nullable().optional(),
   openaiApiKey: z.string().min(1).optional(),
   openaiModel: z.string().nullable().optional(),
+  embeddingModel: z.string().min(1).optional(),
   embeddingChunkSize: z.number().int().min(128).max(2048).optional(),
   embeddingChunkOverlap: z.number().int().min(0).max(512).optional(),
   drawioEmbedUrl: z.string().url().optional(),

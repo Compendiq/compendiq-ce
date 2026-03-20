@@ -315,7 +315,7 @@ async function syncPage(
         version, parent_id, labels, author, last_modified_at, embedding_dirty,
         summary_status)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, TRUE, 'pending')
-     ON CONFLICT (confluence_id) DO UPDATE SET
+     ON CONFLICT (confluence_id) WHERE confluence_id IS NOT NULL DO UPDATE SET
        title = EXCLUDED.title,
        body_storage = EXCLUDED.body_storage,
        body_html = EXCLUDED.body_html,

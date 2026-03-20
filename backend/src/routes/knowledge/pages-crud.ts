@@ -605,8 +605,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // Auto-detect whether this is a Confluence or standalone page based on the
     // space source. This fixes #468 where the frontend defaults source to
     // 'standalone' but the user selected a Confluence space.
+    // The frontend sends '__local__' as a sentinel for local articles (e.g.
+    // NewPagePage, SidebarTreeView). Skip the space lookup for sentinels.
     let spaceSource: string | null = null;
-    if (body.spaceKey) {
+    if (body.spaceKey && body.spaceKey !== '__local__') {
       const spaceRow = await query<{ source: string }>(
         'SELECT source FROM spaces WHERE space_key = $1',
         [body.spaceKey],
@@ -615,10 +617,16 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         spaceSource = spaceRow.rows[0].source;
       }
     }
-    let isStandalone = spaceSource !== 'confluence';
-    // Explicit override: if source is explicitly set to 'confluence', respect it
-    if (body.source === 'confluence') {
+
+    // Explicit source takes precedence over auto-detection
+    let isStandalone: boolean;
+    if (body.source === 'standalone') {
+      isStandalone = true;
+    } else if (body.source === 'confluence') {
       isStandalone = false;
+    } else {
+      // Auto-detect from space source
+      isStandalone = spaceSource !== 'confluence';
     }
 
     if (isStandalone) {
@@ -685,7 +693,19 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // Convert TipTap HTML to Confluence storage format
     const storageBody = htmlToConfluence(body.bodyHtml);
 
-    const page = await client.createPage(body.spaceKey!, body.title, storageBody, body.parentId);
+    // Resolve parentId: frontend may send internal DB id (numeric) instead of confluence_id
+    let confluenceParentId = body.parentId;
+    if (confluenceParentId && /^\d+$/.test(confluenceParentId)) {
+      const parentLookup = await query<{ confluence_id: string | null }>(
+        'SELECT confluence_id FROM pages WHERE id = $1::int OR confluence_id = $2',
+        [confluenceParentId, confluenceParentId],
+      );
+      if (parentLookup.rows[0]?.confluence_id) {
+        confluenceParentId = parentLookup.rows[0].confluence_id;
+      }
+    }
+
+    const page = await client.createPage(body.spaceKey!, body.title, storageBody, confluenceParentId);
 
     // Convert back to clean HTML for local cache
     const bodyHtml = confluenceToHtml(page.body?.storage?.value ?? storageBody, page.id, body.spaceKey!);
@@ -698,7 +718,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
          (confluence_id, space_key, title, body_storage, body_html, body_text,
           version, parent_id, source, embedding_dirty, embedding_status)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'confluence', TRUE, 'not_embedded')
-       ON CONFLICT (confluence_id) DO UPDATE SET
+       ON CONFLICT (confluence_id) WHERE confluence_id IS NOT NULL DO UPDATE SET
          title = EXCLUDED.title, body_storage = EXCLUDED.body_storage, body_html = EXCLUDED.body_html,
          body_text = EXCLUDED.body_text, version = EXCLUDED.version, last_synced = NOW()`,
       [page.id, body.spaceKey, body.title, page.body?.storage?.value ?? storageBody,

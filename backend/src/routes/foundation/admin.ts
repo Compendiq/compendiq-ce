@@ -238,6 +238,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
       openaiBaseUrl: sharedLlmSettings.openaiBaseUrl,
       hasOpenaiApiKey: sharedLlmSettings.hasOpenaiApiKey,
       openaiModel: sharedLlmSettings.openaiModel,
+      embeddingModel: sharedLlmSettings.embeddingModel,
       embeddingChunkSize: parseInt(map['embedding_chunk_size'] ?? '500', 10),
       embeddingChunkOverlap: parseInt(map['embedding_chunk_overlap'] ?? '50', 10),
       drawioEmbedUrl: map['drawio_embed_url'] ?? null,
@@ -259,7 +260,8 @@ export async function adminRoutes(fastify: FastifyInstance) {
       || body.ollamaModel !== undefined
       || body.openaiBaseUrl !== undefined
       || body.openaiApiKey !== undefined
-      || body.openaiModel !== undefined;
+      || body.openaiModel !== undefined
+      || body.embeddingModel !== undefined;
 
     // Validate chunk overlap does not exceed 25% of chunk size (only when chunk settings change)
     if (hasChunkChanges) {
@@ -293,6 +295,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
         openaiBaseUrl: body.openaiBaseUrl,
         openaiApiKey: body.openaiApiKey,
         openaiModel: body.openaiModel,
+        embeddingModel: body.embeddingModel,
       });
     }
 

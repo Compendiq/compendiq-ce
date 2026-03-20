@@ -2,60 +2,52 @@
  * SSRF (Server-Side Request Forgery) validation.
  * Blocks requests to private/internal networks and non-HTTP(S) protocols.
  *
- * Allowlist: URLs the user has explicitly configured (e.g. Confluence on a private network)
- * can be registered via {@link addAllowedBaseUrl} so that validateUrl permits them.
- * The allowlist check runs after the protocol check, so file:// and other dangerous
- * protocols are always blocked regardless of any allowlist entries.
+ * Supports an allowlist of trusted origins (e.g., user-configured Confluence
+ * base URLs) that bypass private-network checks while still enforcing
+ * protocol restrictions.
  */
 
-/**
- * In-memory set of allowed origins (lowercased protocol+hostname+explicit-port).
- * Populated at startup from user_settings.confluence_url and kept updated whenever
- * a user saves or tests a Confluence URL.
- *
- * Stored as normalised origins, e.g. "http://192.168.1.50:8090" or
- * "https://confluence.internal.corp" (no trailing slash, no path).
- */
+// ---------------------------------------------------------------------------
+// Allowlist of trusted origins (populated from user_settings.confluence_url)
+// ---------------------------------------------------------------------------
+
 const allowedOrigins = new Set<string>();
 
 /**
- * Register a base URL as explicitly trusted for SSRF validation.
- *
- * Call this ONLY with URLs the user has deliberately configured, never with
- * arbitrary user-supplied data that has not been validated for intent.
- *
- * The origin is normalised to lowercase and stored without default ports
- * (port 80 for http, port 443 for https), so that
- * "https://confluence.internal.corp:443" and "https://confluence.internal.corp"
- * are treated as the same entry.
- *
- * Invalid URLs are silently ignored (no throw, no entry added).
+ * Register a base URL whose origin should bypass private-network checks.
+ * Only the origin (protocol + host + port) is stored -- path is ignored.
  */
-export function addAllowedBaseUrl(rawUrl: string): void {
+export function addAllowedBaseUrl(baseUrl: string): void {
   try {
-    const parsed = new URL(rawUrl);
-    // Only accept http/https — adding file:// or other protocols must be a no-op
-    if (!ALLOWED_PROTOCOLS.includes(parsed.protocol)) return;
-    // Normalise: drop explicit port when it equals the default for the protocol
-    const isDefaultPort =
-      (parsed.protocol === 'http:' && (parsed.port === '80' || parsed.port === '')) ||
-      (parsed.protocol === 'https:' && (parsed.port === '443' || parsed.port === ''));
-    const normalisedOrigin = isDefaultPort
-      ? `${parsed.protocol}//${parsed.hostname}`.toLowerCase()
-      : `${parsed.protocol}//${parsed.hostname}:${parsed.port}`.toLowerCase();
-    allowedOrigins.add(normalisedOrigin);
-  } catch {
-    // Ignore invalid URLs
+    const parsed = new URL(baseUrl);
+    allowedOrigins.add(parsed.origin.toLowerCase());
+  } catch { /* ignore invalid URLs */ }
+}
+
+/** Remove a previously-allowed base URL origin from the allowlist. */
+export function removeAllowedBaseUrl(baseUrl: string): void {
+  try {
+    const parsed = new URL(baseUrl);
+    allowedOrigins.delete(parsed.origin.toLowerCase());
+  } catch { /* ignore invalid URLs */ }
+}
+
+/** Replace all allowed origins with a fresh set (reconciliation). */
+export function replaceAllowedBaseUrls(baseUrls: string[]): void {
+  allowedOrigins.clear();
+  for (const url of baseUrls) {
+    addAllowedBaseUrl(url);
   }
 }
 
-/**
- * Remove all entries from the allowlist.
- *
- * FOR TEST ISOLATION ONLY — must never be called in production code paths.
- */
+/** Clear all allowed origins (useful in tests). */
 export function clearAllowedBaseUrls(): void {
   allowedOrigins.clear();
+}
+
+/** Return current allowlist size (useful in tests). */
+export function getAllowedBaseUrlCount(): number {
+  return allowedOrigins.size;
 }
 
 /**
@@ -103,10 +95,11 @@ export class SsrfError extends Error {
  * Validates a URL to prevent SSRF attacks.
  * Blocks private IPs, internal hostnames, and non-HTTP(S) protocols.
  *
- * Allowlist: if the URL's origin matches an entry registered via
- * {@link addAllowedBaseUrl}, the URL passes without further IP/hostname checks.
- * The protocol check always runs first — non-HTTP(S) URLs are blocked regardless
- * of allowlist entries.
+ * LIMITATION: The allowlist validates the hostname/origin, not the resolved IP.
+ * DNS rebinding attacks (hostname resolves to public IP during validation, then
+ * to private IP during the actual request) are NOT prevented. This is acceptable
+ * because allowlisted URLs are sourced from authenticated user settings stored in
+ * the database, not from untrusted user input in request bodies.
  *
  * @throws SsrfError if the URL targets a private/internal address
  */
@@ -118,22 +111,14 @@ export function validateUrl(urlString: string): void {
     throw new SsrfError('SSRF blocked: invalid URL');
   }
 
-  // Block non-HTTP(S) protocols — always runs before allowlist check
+  // Block non-HTTP(S) protocols
   if (!ALLOWED_PROTOCOLS.includes(parsed.protocol)) {
     throw new SsrfError(`SSRF blocked: protocol '${parsed.protocol}' is not allowed. Only HTTP(S) permitted.`);
   }
 
-  // Check allowlist: if this origin was explicitly registered by the user, allow it
-  if (allowedOrigins.size > 0) {
-    const isDefaultPort =
-      (parsed.protocol === 'http:' && (parsed.port === '80' || parsed.port === '')) ||
-      (parsed.protocol === 'https:' && (parsed.port === '443' || parsed.port === ''));
-    const requestOrigin = isDefaultPort
-      ? `${parsed.protocol}//${parsed.hostname}`.toLowerCase()
-      : `${parsed.protocol}//${parsed.hostname}:${parsed.port}`.toLowerCase();
-    if (allowedOrigins.has(requestOrigin)) {
-      return;
-    }
+  // Allow explicitly trusted origins (e.g., user-configured Confluence URLs)
+  if (allowedOrigins.has(parsed.origin.toLowerCase())) {
+    return;
   }
 
   const hostname = parsed.hostname.toLowerCase();
@@ -198,4 +183,32 @@ function isBlockedIpv6(hostname: string): boolean {
   }
 
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// Docker-aware URL rewriting
+// ---------------------------------------------------------------------------
+
+const LOCALHOST_PATTERNS = ['localhost', '127.0.0.1', '::1', '[::1]'];
+
+/**
+ * When the backend runs inside Docker, user-entered `localhost` / `127.0.0.1`
+ * URLs point at the container itself — not the host or a sibling container.
+ *
+ * If `CONFLUENCE_DOCKER_HOST` is set (e.g. `confluence`), rewrite the hostname
+ * so outbound requests reach the correct container on the Docker network.
+ * The original user-facing URL is stored unchanged in the database.
+ */
+export function resolveConfluenceUrl(url: string): string {
+  const dockerHost = process.env.CONFLUENCE_DOCKER_HOST;
+  if (!dockerHost) return url;
+
+  try {
+    const parsed = new URL(url);
+    if (LOCALHOST_PATTERNS.includes(parsed.hostname.toLowerCase())) {
+      parsed.hostname = dockerHost;
+      return parsed.toString().replace(/\/$/, '');
+    }
+  } catch { /* invalid URL — let callers deal with it */ }
+  return url;
 }
