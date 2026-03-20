@@ -483,7 +483,19 @@ describe('SidebarTreeNode memoization', () => {
     expect(screen.getByLabelText('New folder name')).toBeInTheDocument();
   });
 
-  it('folder nodes show folder icon and do not navigate on click', () => {
+  it('creates new folder as pageType "page" (not "folder")', async () => {
+    mockCreatePageMutateAsync.mockResolvedValue({ id: 'new-1' });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByLabelText('New Folder'));
+    const input = screen.getByLabelText('New folder name');
+    fireEvent.change(input, { target: { value: 'My Container' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(mockCreatePageMutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ pageType: 'page', title: 'My Container', bodyHtml: '' }),
+    );
+  });
+
+  it('pages with pageType folder navigate on click like normal pages', () => {
     mockTreeData = {
       items: [
         { id: 'folder-1', spaceKey: 'DEV', title: 'My Folder', pageType: 'folder' as const, parentId: null, labels: [], lastModifiedAt: '2026-03-01T00:00:00Z' },
@@ -495,7 +507,9 @@ describe('SidebarTreeNode memoization', () => {
     expect(screen.getByText('My Folder')).toBeInTheDocument();
     mockNavigate.mockClear();
     fireEvent.click(screen.getByText('My Folder'));
-    expect(mockNavigate).not.toHaveBeenCalled();
+    // Folder-type pages now navigate like regular pages
+    expect(mockNavigate).toHaveBeenCalledWith('/pages/folder-1');
+    // Clicking also expands children since it has children
     expect(screen.getByText('Child Page')).toBeInTheDocument();
   });
   it('renders indent guide line for expanded node with children', () => {

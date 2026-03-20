@@ -116,7 +116,6 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
   const location = useLocation();
   const isExpanded = expandedSet.has(node.page.id);
   const hasChildren = node.children.length > 0;
-  const isFolder = node.page.pageType === 'folder';
   const isActive = node.page.id === activePageId;
   const isAiRoute = location.pathname === '/ai';
 
@@ -128,18 +127,13 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
   });
 
   const handleNavigate = useCallback(() => {
-    if (isFolder) {
-      // Folders are pure containers: toggle expand but don't navigate to article view
-      toggleExpand(node.page.id);
-      return;
-    }
     if (hasChildren) toggleExpand(node.page.id);
     if (isAiRoute) {
       navigate(`/ai?pageId=${node.page.id}`, { replace: true });
     } else {
       navigate(`/pages/${node.page.id}`);
     }
-  }, [navigate, node.page.id, hasChildren, isFolder, toggleExpand, isAiRoute]);
+  }, [navigate, node.page.id, hasChildren, toggleExpand, isAiRoute]);
 
   const handleToggle = useCallback(
     (e: React.MouseEvent) => {
@@ -166,7 +160,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
             <GripVertical size={12} />
           </span>
         )}
-        {(hasChildren || isFolder) ? (
+        {hasChildren ? (
           <button
             onClick={handleToggle}
             className="shrink-0 rounded p-0.5 hover:bg-foreground/10"
@@ -181,7 +175,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         <span className="truncate text-sm">{node.page.title}</span>
       </div>
 
-      {(hasChildren || isFolder) && isExpanded && (
+      {hasChildren && isExpanded && (
         <div className="relative">
           {/* Indent guide line — click to collapse parent */}
           <button
@@ -314,7 +308,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
         spaceKey,
         title: trimmed,
         bodyHtml: '',
-        pageType: 'folder',
+        pageType: 'page',
       });
       setNewFolderName('');
       setShowNewFolderInput(false);

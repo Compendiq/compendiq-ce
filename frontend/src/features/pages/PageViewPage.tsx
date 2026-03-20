@@ -453,15 +453,13 @@ export function PageViewPage() {
                   <GitGraph size={12} className="mr-1 inline" />
                   Graph
                 </button>
-                {page.pageType !== 'folder' && (
-                  <button
-                    onClick={handleStartEditing}
-                    className="flex items-center gap-1 rounded-md px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
-                  >
-                    Edit
-                    <ShortcutHint shortcutId="toggle-edit" />
-                  </button>
-                )}
+                <button
+                  onClick={handleStartEditing}
+                  className="flex items-center gap-1 rounded-md px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+                >
+                  Edit
+                  <ShortcutHint shortcutId="toggle-edit" />
+                </button>
               </>
             )}
           </div>
@@ -494,8 +492,8 @@ export function PageViewPage() {
               <Editor content={editHtml} onChange={setEditHtml} draftKey={draftKey} naked onEditorReady={setEditorInstance} hideToolbar />
             </FeatureErrorBoundary>
           </>
-        ) : page.pageType === 'folder' ? (
-          /* Folder view — show container info instead of article content */
+        ) : !page.bodyHtml?.trim() || page.bodyHtml.trim() === '<p></p>' ? (
+          /* Empty page — no content yet */
           <div
             ref={contentRef}
             className="px-5 pb-16 pt-10 sm:px-10 sm:pt-12"
@@ -504,15 +502,16 @@ export function PageViewPage() {
             <h1 className="mb-6 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground sm:text-4xl">
               {page.title}
             </h1>
-            <div className="rounded-2xl border border-primary/15 bg-primary/6 px-5 py-4 text-sm text-muted-foreground">
-              <div className="flex items-center gap-2 mb-2">
-                <FileText size={18} className="text-primary" />
-                <span className="font-medium text-foreground">Folder</span>
-              </div>
-              <p>
-                This is a folder page that acts as a container for child pages. Select a child page
-                from the sidebar tree to view its content.
-              </p>
+            <div className="flex flex-col items-center gap-4 py-12 text-center">
+              <FileText size={48} className="text-muted-foreground/30" />
+              <p className="text-muted-foreground">This page has no content yet.</p>
+              <button
+                onClick={handleStartEditing}
+                className="rounded-xl bg-primary/15 px-4 py-2 text-sm font-medium text-primary transition-colors hover:bg-primary/25"
+                data-testid="add-content-btn"
+              >
+                Add content
+              </button>
             </div>
           </div>
         ) : (
