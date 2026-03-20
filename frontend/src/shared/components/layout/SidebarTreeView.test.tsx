@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SidebarTreeView, SidebarTreeNode } from './SidebarTreeView';
@@ -348,10 +348,20 @@ describe('SidebarTreeView', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/spaces/new');
   });
 
-  it('shows collapse sidebar button in expanded sidebar header', () => {
+  it('renders collapse sidebar button inside the main navigation (next to AI tab)', () => {
     useUiStore.setState({ treeSidebarCollapsed: false });
     render(<SidebarTreeView />, { wrapper: createWrapper() });
-    expect(screen.getByLabelText('Collapse sidebar')).toBeInTheDocument();
+    const nav = screen.getByRole('navigation', { name: 'Main navigation' });
+    expect(within(nav).getByLabelText('Collapse sidebar')).toBeInTheDocument();
+  });
+
+  it('does not render collapse sidebar button inside the sidebar header section', () => {
+    useUiStore.setState({ treeSidebarCollapsed: false });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    // "Pages" label text identifies the sidebar header span (distinct from the nav "Pages" link)
+    const pagesHeaderSpan = screen.getByText('Pages', { selector: 'span' });
+    const sidebarHeader = pagesHeaderSpan.parentElement!;
+    expect(sidebarHeader.querySelector('[aria-label="Collapse sidebar"]')).toBeNull();
   });
 
   it('collapses sidebar when collapse button is clicked in expanded state', () => {
