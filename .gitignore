@@ -49,3 +49,4 @@ research/
 
 # Claude Code
 .claude/
+frontend/vendor/
