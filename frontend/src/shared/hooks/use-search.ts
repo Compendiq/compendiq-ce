@@ -22,6 +22,9 @@ interface SearchApiResponse {
     score?: number;
   }>;
   total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
   mode: string;
   hasEmbeddings: boolean;
   warning?: string;
@@ -41,6 +44,7 @@ export interface UseSearchParams {
   query: string;
   mode: 'keyword' | 'semantic' | 'hybrid';
   spaceKey?: string;
+  page?: number;
 }
 
 export interface UseSearchResult {
@@ -52,6 +56,12 @@ export interface UseSearchResult {
   isLoadingEnhanced: boolean;
   /** Whether the user has any page embeddings (derived from the immediate query response) */
   hasEmbeddings: boolean;
+  /** Server-provided total number of matching results */
+  total: number;
+  /** Current page number (1-based) */
+  page: number;
+  /** Total number of pages */
+  totalPages: number;
 }
 
 const DEBOUNCE_MS = 300;
@@ -71,7 +81,7 @@ const MIN_QUERY_LENGTH = 1;
  * staleTime: 0 on both — search results are query-specific and must not be
  * served from the TanStack Query cache between different search terms.
  */
-export function useSearch({ query, mode, spaceKey }: UseSearchParams): UseSearchResult {
+export function useSearch({ query, mode, spaceKey, page: requestedPage = 1 }: UseSearchParams): UseSearchResult {
   // Debounce the query string
   const [debouncedQuery, setDebouncedQuery] = useState(query);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -88,19 +98,20 @@ export function useSearch({ query, mode, spaceKey }: UseSearchParams): UseSearch
   const isQueryEnabled = trimmedQuery.length >= MIN_QUERY_LENGTH;
 
   // Build the base URL params shared by both queries
-  function buildUrl(searchMode: 'keyword' | 'semantic' | 'hybrid') {
+  function buildUrl(searchMode: 'keyword' | 'semantic' | 'hybrid', pageNum: number = 1) {
     const sp = new URLSearchParams();
     sp.set('q', trimmedQuery);
     sp.set('mode', searchMode);
     sp.set('limit', '10');
+    if (pageNum > 1) sp.set('page', String(pageNum));
     if (spaceKey) sp.set('spaceKey', spaceKey);
     return `/search?${sp.toString()}`;
   }
 
   // ── Phase 1: Immediate keyword results ──────────────────────────────────
   const immediateQuery = useQuery<SearchApiResponse>({
-    queryKey: ['search', 'immediate', trimmedQuery, spaceKey],
-    queryFn: () => apiFetch<SearchApiResponse>(buildUrl('keyword')),
+    queryKey: ['search', 'immediate', trimmedQuery, spaceKey, requestedPage],
+    queryFn: () => apiFetch<SearchApiResponse>(buildUrl('keyword', requestedPage)),
     enabled: isQueryEnabled,
     staleTime: 0,
   });
@@ -117,11 +128,17 @@ export function useSearch({ query, mode, spaceKey }: UseSearchParams): UseSearch
   // Derive hasEmbeddings from the immediate response (optimistic: true before first response)
   const hasEmbeddings = immediateQuery.data?.hasEmbeddings ?? true;
 
+  // Use the active response for pagination metadata
+  const activeResponse = (mode !== 'keyword' && enhancedQuery.data) ? enhancedQuery.data : immediateQuery.data;
+
   return {
     immediateResults: immediateQuery.data ? mapItems(immediateQuery.data) : [],
     enhancedResults: enhancedQuery.data ? mapItems(enhancedQuery.data) : undefined,
     isLoadingImmediate: immediateQuery.isLoading,
     isLoadingEnhanced: enhancedQuery.isLoading,
     hasEmbeddings,
+    total: activeResponse?.total ?? 0,
+    page: activeResponse?.page ?? 1,
+    totalPages: activeResponse?.totalPages ?? 1,
   };
 }

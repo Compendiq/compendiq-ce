@@ -123,7 +123,9 @@ export const MAX_ATTACHMENT_FAILURES = 3;
 const ATTACHMENT_FAILURE_TTL = 7 * 24 * 3600;
 
 function attachmentFailureKey(pageId: string, filename: string): string {
-  return `attach:fail:${pageId}:${filename}`;
+  // Encode filename to prevent Redis glob chars (*, ?, [, ]) from causing
+  // false matches during SCAN pattern matching in clearAttachmentFailures.
+  return `attach:fail:${pageId}:${encodeURIComponent(filename)}`;
 }
 
 /**
@@ -175,15 +177,19 @@ export async function clearAttachmentFailures(
   pageId: string,
 ): Promise<void> {
   if (!redis) return;
-  const pattern = `attach:fail:${pageId}:*`;
-  let cursor = '0';
-  do {
-    const result = await redis.scan(cursor, { MATCH: pattern, COUNT: 100 });
-    cursor = String(result.cursor);
-    if (result.keys.length > 0) {
-      await redis.del(result.keys);
-    }
-  } while (cursor !== '0');
+  try {
+    const pattern = `attach:fail:${pageId}:*`;
+    let cursor = '0';
+    do {
+      const result = await redis.scan(cursor, { MATCH: pattern, COUNT: 100 });
+      cursor = String(result.cursor);
+      if (result.keys.length > 0) {
+        await redis.del(result.keys);
+      }
+    } while (cursor !== '0');
+  } catch (err) {
+    logger.error({ err, pageId }, 'Failed to clear attachment failure counters');
+  }
 }
 
 const TTL = {

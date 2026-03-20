@@ -40,13 +40,29 @@ function useSpacesForFilter() {
 }
 
 /**
+ * Escape HTML special characters to prevent injection when building
+ * highlight markup. DOMPurify provides a second safety net, but escaping
+ * at the source avoids relying solely on the sanitizer.
+ */
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/\//g, '&#x2F;');
+}
+
+/**
  * Highlight search terms in text by wrapping matches in <mark> tags.
  * Uses case-insensitive string splitting instead of RegExp to avoid ReDoS.
- * Output is sanitized with DOMPurify before rendering.
+ * All segments are HTML-escaped before assembly; output is then sanitized
+ * with DOMPurify as a secondary defense.
  */
 function highlightText(text: string, query: string): string {
   const trimmed = query.trim();
-  if (!trimmed) return DOMPurify.sanitize(text);
+  if (!trimmed) return DOMPurify.sanitize(escapeHtml(text));
 
   const lowerText = text.toLowerCase();
   const lowerQuery = trimmed.toLowerCase();
@@ -56,14 +72,14 @@ function highlightText(text: string, query: string): string {
   while (cursor < text.length) {
     const idx = lowerText.indexOf(lowerQuery, cursor);
     if (idx === -1) {
-      parts.push(text.slice(cursor));
+      parts.push(escapeHtml(text.slice(cursor)));
       break;
     }
     if (idx > cursor) {
-      parts.push(text.slice(cursor, idx));
+      parts.push(escapeHtml(text.slice(cursor, idx)));
     }
     const matched = text.slice(idx, idx + trimmed.length);
-    parts.push(`<mark class="bg-primary/20 text-foreground rounded px-0.5">${matched}</mark>`);
+    parts.push(`<mark class="bg-primary/20 text-foreground rounded px-0.5">${escapeHtml(matched)}</mark>`);
     cursor = idx + trimmed.length;
   }
 
@@ -165,10 +181,11 @@ export function SearchPage() {
   }, []);
 
   // ── Two-phase progressive search ──────────────────────────────────────────
-  const { immediateResults, enhancedResults, isLoadingImmediate, isLoadingEnhanced, hasEmbeddings } = useSearch({
+  const { immediateResults, enhancedResults, isLoadingImmediate, isLoadingEnhanced, hasEmbeddings, total, totalPages } = useSearch({
     query,
     mode: searchMode,
     spaceKey: filters.spaceKey,
+    page,
   });
 
   // Display enhanced results if available; fall back to immediate results.
@@ -427,7 +444,7 @@ export function SearchPage() {
       {/* Results count */}
       {activeQuery && displayResults.length > 0 && (
         <p className="text-sm text-muted-foreground" data-testid="search-results-count">
-          {displayResults.length} {displayResults.length === 1 ? 'result' : 'results'} for &ldquo;{activeQuery}&rdquo;
+          {total} {total === 1 ? 'result' : 'results'} for &ldquo;{activeQuery}&rdquo;
           {searchMode !== 'keyword' && (
             <span className="ml-2 text-xs capitalize text-muted-foreground/60">
               ({searchMode})
@@ -491,8 +508,8 @@ export function SearchPage() {
         </div>
       )}
 
-      {/* Pagination (only for keyword mode with many results) */}
-      {searchMode === 'keyword' && displayResults.length >= 20 && (
+      {/* Pagination (only for keyword mode with multiple pages) */}
+      {searchMode === 'keyword' && totalPages > 1 && (
         <div className="flex items-center justify-center gap-4">
           <button
             onClick={() => setPage((p) => Math.max(1, p - 1))}
@@ -503,11 +520,11 @@ export function SearchPage() {
             <ChevronLeft size={18} />
           </button>
           <span className="text-sm text-muted-foreground">
-            Page {page}
+            Page {page} of {totalPages}
           </span>
           <button
             onClick={() => setPage((p) => p + 1)}
-            disabled={displayResults.length < 20}
+            disabled={page >= totalPages}
             className="glass-card p-2 disabled:opacity-30"
             data-testid="search-next-page"
           >

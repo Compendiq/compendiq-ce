@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { SearchHybridQuerySchema } from '@atlasmind/contracts';
 import { query } from '../../core/db/postgres.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 import {
@@ -18,17 +19,17 @@ import { logger } from '../../core/utils/logger.js';
  */
 const TRGM_SIMILARITY_THRESHOLD = 0.3;
 
-const SearchQuerySchema = z.object({
-  q: z.string().min(1).max(500),
-  mode: z.enum(['keyword', 'semantic', 'hybrid']).default('keyword'),
-  spaceKey: z.string().optional(),
+/**
+ * Full search query schema — extends the shared SearchHybridQuerySchema from
+ * contracts with keyword-mode specific filter/pagination fields.
+ */
+const SearchQuerySchema = SearchHybridQuerySchema.extend({
   author: z.string().optional(),
   dateFrom: z.string().optional(),
   dateTo: z.string().optional(),
   tags: z.string().optional(),
   sort: z.enum(['relevance', 'modified', 'title']).default('relevance'),
   page: z.coerce.number().int().positive().default(1),
-  limit: z.coerce.number().int().positive().max(100).default(20),
 });
 
 const LogSearchSchema = z.object({
@@ -39,6 +40,31 @@ const LogSearchSchema = z.object({
 const SuggestionsQuerySchema = z.object({
   q: z.string().min(1).max(200),
 });
+
+/**
+ * Generate a query embedding, returning a 502 error response on failure.
+ * Shared by semantic and hybrid search modes to avoid duplicating the
+ * try/catch + error-formatting logic.
+ */
+async function generateSearchEmbedding(
+  userId: string,
+  q: string,
+  modeName: string,
+  reply: import('fastify').FastifyReply,
+): Promise<number[] | null> {
+  try {
+    const embeddings = await providerGenerateEmbedding(userId, q);
+    return embeddings[0];
+  } catch (err) {
+    logger.warn({ err }, `Embedding generation failed for ${modeName} search`);
+    reply.status(502).send({
+      error: 'EmbeddingFailed',
+      message: `Embedding generation failed: ${err instanceof Error ? err.message : String(err)}`,
+      statusCode: 502,
+    });
+    return null;
+  }
+}
 
 export async function searchRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -79,18 +105,8 @@ export async function searchRoutes(fastify: FastifyInstance) {
 
     // ── Semantic mode ─────────────────────────────────────────────────────────
     if (effectiveMode === 'semantic') {
-      let questionEmbedding: number[];
-      try {
-        const embeddings = await providerGenerateEmbedding(userId, q);
-        questionEmbedding = embeddings[0];
-      } catch (err) {
-        logger.warn({ err }, 'Embedding generation failed for search query');
-        return reply.status(502).send({
-          error: 'EmbeddingFailed',
-          message: `Embedding generation failed: ${err instanceof Error ? err.message : String(err)}`,
-          statusCode: 502,
-        });
-      }
+      const questionEmbedding = await generateSearchEmbedding(userId, q, 'semantic', reply);
+      if (!questionEmbedding) return;
 
       const vectorResults = await vectorSearch(userId, questionEmbedding, limit);
 
@@ -133,18 +149,8 @@ export async function searchRoutes(fastify: FastifyInstance) {
 
     // ── Hybrid mode ───────────────────────────────────────────────────────────
     if (effectiveMode === 'hybrid') {
-      let questionEmbedding: number[];
-      try {
-        const embeddings = await providerGenerateEmbedding(userId, q);
-        questionEmbedding = embeddings[0];
-      } catch (err) {
-        logger.warn({ err }, 'Embedding generation failed for hybrid search');
-        return reply.status(502).send({
-          error: 'EmbeddingFailed',
-          message: `Embedding generation failed: ${err instanceof Error ? err.message : String(err)}`,
-          statusCode: 502,
-        });
-      }
+      const questionEmbedding = await generateSearchEmbedding(userId, q, 'hybrid', reply);
+      if (!questionEmbedding) return;
 
       const [vectorResults, kwResults] = await Promise.all([
         vectorSearch(userId, questionEmbedding, limit),
