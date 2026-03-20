@@ -77,9 +77,9 @@ export function AppLayout({ children }: { children: ReactNode }) {
       action: openCommandPalette,
     },
     {
-      key: 'Ctrl+N',
+      key: 'Alt+N',
       keys: ['n'],
-      mod: true,
+      alt: true,
       description: 'Create new page',
       category: 'navigation',
       action: navigateToNewPage,

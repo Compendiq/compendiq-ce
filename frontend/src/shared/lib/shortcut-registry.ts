@@ -31,10 +31,16 @@ export const SHORTCUTS: ShortcutDefinition[] = [
   { id: 'search', keys: 'ctrl+k', label: 'Search / Command Palette', category: 'navigation' },
   { id: 'ai-mode', keys: '/ai', label: 'AI mode (inside palette)', category: 'navigation' },
 
+  { id: 'shortcuts-help', keys: '?', label: 'Keyboard Shortcuts', category: 'navigation' },
+  { id: 'shortcuts-help-alt', keys: 'ctrl+/', label: 'Keyboard Shortcuts', category: 'navigation' },
+
   // -- Actions --
   { id: 'new-page', keys: 'alt+n', label: 'New Page', category: 'actions' },
 
   // -- Panels --
+  { id: 'toggle-sidebar', keys: ',', label: 'Toggle Left Sidebar', category: 'panels' },
+  { id: 'toggle-right-panel', keys: '.', label: 'Toggle Right Panel', category: 'panels' },
+  { id: 'zen-mode', keys: '\\', label: 'Zen Mode', category: 'panels' },
   { id: 'close-modal', keys: 'esc', label: 'Close dialog / modal', category: 'panels' },
 
   // -- Editor (diagram lightbox) --
@@ -90,6 +96,9 @@ export function getShortcutHint(id: string): string | undefined {
  * - Keys are title-cased and joined with a separator.
  */
 export function formatKeysForPlatform(keys: string, isMac: boolean): string {
+  // Handle literal single-char keys that would be mangled by split('+')
+  if (keys === '+') return '+';
+  if (keys === '-') return '-';
   const parts = keys.split('+');
   return parts
     .map((part) => {

@@ -8,6 +8,21 @@ interface ShortcutHintProps {
 }
 
 /**
+ * Detect whether the current platform is macOS using the modern
+ * `navigator.userAgentData` API with a `navigator.userAgent` fallback.
+ */
+function isMacPlatform(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  // Modern API (Chromium 90+)
+  if ('userAgentData' in navigator && (navigator as Record<string, unknown>).userAgentData) {
+    const uad = (navigator as Record<string, unknown>).userAgentData as { platform?: string };
+    if (uad.platform) return uad.platform === 'macOS';
+  }
+  // Fallback to userAgent (works in all browsers)
+  return /Mac|iPhone|iPad|iPod/.test(navigator.userAgent);
+}
+
+/**
  * Renders a small platform-aware keyboard hint badge.
  *
  * Looks up the `keys` string from the centralized shortcut registry and
@@ -18,8 +33,7 @@ export function ShortcutHint({ shortcutId, className = '' }: ShortcutHintProps) 
   const keys = getShortcutHint(shortcutId);
   if (!keys) return null;
 
-  const isMac =
-    typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/.test(navigator.platform ?? '');
+  const isMac = isMacPlatform();
   const formatted = formatKeysForPlatform(keys, isMac);
 
   return (

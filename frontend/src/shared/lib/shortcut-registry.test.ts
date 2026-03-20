@@ -38,6 +38,41 @@ describe('shortcut-registry', () => {
       expect(search).toBeDefined();
       expect(search!.keys).toBe('ctrl+k');
     });
+
+    it('includes toggle-sidebar shortcut mapped to ","', () => {
+      const shortcut = SHORTCUTS.find((s) => s.id === 'toggle-sidebar');
+      expect(shortcut).toBeDefined();
+      expect(shortcut!.keys).toBe(',');
+      expect(shortcut!.category).toBe('panels');
+    });
+
+    it('includes toggle-right-panel shortcut mapped to "."', () => {
+      const shortcut = SHORTCUTS.find((s) => s.id === 'toggle-right-panel');
+      expect(shortcut).toBeDefined();
+      expect(shortcut!.keys).toBe('.');
+      expect(shortcut!.category).toBe('panels');
+    });
+
+    it('includes zen-mode shortcut mapped to "\\"', () => {
+      const shortcut = SHORTCUTS.find((s) => s.id === 'zen-mode');
+      expect(shortcut).toBeDefined();
+      expect(shortcut!.keys).toBe('\\');
+      expect(shortcut!.category).toBe('panels');
+    });
+
+    it('includes shortcuts-help shortcut mapped to "?"', () => {
+      const shortcut = SHORTCUTS.find((s) => s.id === 'shortcuts-help');
+      expect(shortcut).toBeDefined();
+      expect(shortcut!.keys).toBe('?');
+      expect(shortcut!.category).toBe('navigation');
+    });
+
+    it('includes shortcuts-help-alt shortcut mapped to "ctrl+/"', () => {
+      const shortcut = SHORTCUTS.find((s) => s.id === 'shortcuts-help-alt');
+      expect(shortcut).toBeDefined();
+      expect(shortcut!.keys).toBe('ctrl+/');
+      expect(shortcut!.category).toBe('navigation');
+    });
   });
 
   describe('getShortcutsByCategory', () => {
@@ -106,8 +141,17 @@ describe('shortcut-registry', () => {
     });
 
     it('formats single-char keys as uppercase', () => {
-      expect(formatKeysForPlatform('+', false)).toBe('+');
       expect(formatKeysForPlatform('k', false)).toBe('K');
+    });
+
+    it('handles literal "+" without mangling via split', () => {
+      expect(formatKeysForPlatform('+', false)).toBe('+');
+      expect(formatKeysForPlatform('+', true)).toBe('+');
+    });
+
+    it('handles literal "-" as a standalone key', () => {
+      expect(formatKeysForPlatform('-', false)).toBe('-');
+      expect(formatKeysForPlatform('-', true)).toBe('-');
     });
 
     it('formats esc and enter with labels', () => {

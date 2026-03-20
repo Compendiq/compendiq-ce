@@ -65,8 +65,9 @@ describe('useKeyboardShortcuts', () => {
   });
 
   it('accepts metaKey as modifier on Mac-like environments', () => {
-    // Mock navigator.platform to simulate Mac
-    Object.defineProperty(navigator, 'platform', { value: 'MacIntel', configurable: true });
+    // Mock navigator.userAgent to simulate Mac (isMac() uses userAgent fallback)
+    const originalUA = navigator.userAgent;
+    Object.defineProperty(navigator, 'userAgent', { value: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', configurable: true });
 
     const shortcuts: ShortcutDefinition[] = [
       { key: 'Cmd+K', keys: ['k'], mod: true, description: 'Search', category: 'navigation', action: actionFn },
@@ -77,8 +78,8 @@ describe('useKeyboardShortcuts', () => {
     fireKey('k', { metaKey: true });
     expect(actionFn).toHaveBeenCalledTimes(1);
 
-    // Restore platform
-    Object.defineProperty(navigator, 'platform', { value: 'Linux x86_64', configurable: true });
+    // Restore userAgent
+    Object.defineProperty(navigator, 'userAgent', { value: originalUA, configurable: true });
   });
 
   it('suppresses non-modifier shortcuts when target is an input element', () => {
