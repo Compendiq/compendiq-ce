@@ -261,6 +261,83 @@ describe('POST /api/pages - parentId validation', () => {
     expect(body.source).toBe('standalone');
   });
 
+  it('should auto-detect confluence when source is omitted and space is confluence', async () => {
+    // Space lookup: space exists and is confluence
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'confluence' }] });
+
+    // Ensure getClientForUser returns null (no Confluence configured)
+    const { getClientForUser } = await import('../../domains/confluence/services/sync-service.js');
+    vi.mocked(getClientForUser).mockResolvedValueOnce(null);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages',
+      payload: {
+        title: 'Auto Detect Confluence',
+        bodyHtml: '<p>Hello</p>',
+        // source intentionally omitted — should auto-detect from space
+        spaceKey: 'CONFSPACE',
+      },
+    });
+
+    // Goes down confluence path; getClientForUser returns null → 400
+    expect(response.statusCode).toBe(400);
+    const body = JSON.parse(response.payload);
+    expect(body.error).toContain('Confluence not configured');
+  });
+
+  it('should auto-detect standalone when source is omitted and space is local', async () => {
+    // Space lookup: space exists and is local
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'local' }] });
+    // INSERT returns new page (standalone path)
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 60, title: 'Auto Detect Local', version: 1 }],
+    });
+    // UPDATE path
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages',
+      payload: {
+        title: 'Auto Detect Local',
+        bodyHtml: '<p>Hello</p>',
+        // source intentionally omitted — should auto-detect from space
+        spaceKey: 'LOCALSPACE',
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.payload);
+    expect(body.id).toBe(60);
+    expect(body.source).toBe('standalone');
+  });
+
+  it('should auto-detect standalone when source is omitted and no spaceKey', async () => {
+    // No space lookup needed (no spaceKey)
+    // INSERT returns new page (standalone path)
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 61, title: 'No Space Auto', version: 1 }],
+    });
+    // UPDATE path
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages',
+      payload: {
+        title: 'No Space Auto',
+        bodyHtml: '<p>Hello</p>',
+        // source AND spaceKey both omitted — defaults to standalone
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.payload);
+    expect(body.id).toBe(61);
+    expect(body.source).toBe('standalone');
+  });
+
   it('should use confluence when explicit source is confluence', async () => {
     // Space lookup: space exists and is local
     mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'local' }] });
