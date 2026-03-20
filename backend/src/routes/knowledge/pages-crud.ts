@@ -150,7 +150,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const buildWhereClause = (parts: string[]) =>
       parts.length > 0 ? `${whereBase} AND ${parts.join(' AND ')}` : whereBase;
 
-    let whereClause = buildWhereClause(whereParts);
+    const whereClause = buildWhereClause(whereParts);
 
     // Sort — 'relevance' uses ts_rank when a search term is present, falls back to 'title'
     const sortMap: Record<string, string> = {
