@@ -404,6 +404,7 @@ export function usePinnedPages() {
   return useQuery<PinnedPagesResponse>({
     queryKey: ['pages', 'pinned'],
     queryFn: () => apiFetch('/pages/pinned'),
+    staleTime: 60_000, // lightweight query (max 8 items) — avoid refetching on every mount
   });
 }
 

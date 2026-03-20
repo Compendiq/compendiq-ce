@@ -5,14 +5,22 @@ import { toast } from 'sonner';
 import { usePinnedPages, useUnpinPage } from '../../shared/hooks/use-pages';
 import { TiltCard } from '../../shared/components/effects/TiltCard';
 
+/** Maximum number of pinned articles displayed in the section (issue spec: 8). */
+export const MAX_VISIBLE_PINS = 8;
+
 export function PinnedArticlesSection() {
   const navigate = useNavigate();
   const { data: pinnedData } = usePinnedPages();
   const unpinMutation = useUnpinPage();
 
+  // Intentionally return null while loading rather than showing a skeleton —
+  // the section is small (max 8 cards) so any layout shift is minimal and
+  // a skeleton flash would be more distracting than the brief shift.
   if (!pinnedData || pinnedData.items.length === 0) {
     return null;
   }
+
+  const visiblePins = pinnedData.items.slice(0, MAX_VISIBLE_PINS);
 
   const handleUnpin = (e: React.MouseEvent, pageId: string, title: string) => {
     e.stopPropagation();
@@ -31,7 +39,7 @@ export function PinnedArticlesSection() {
         </h2>
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-        {pinnedData.items.map((item, i) => (
+        {visiblePins.map((item, i) => (
           <m.div
             key={item.id}
             initial={{ opacity: 0, y: 12 }}
