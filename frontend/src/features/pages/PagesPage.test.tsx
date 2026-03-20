@@ -529,14 +529,14 @@ describe('PagesPage', () => {
     expect(screen.getByTestId('filter-pill-embeddingStatus')).toHaveTextContent('Embedding: pending');
   });
 
-  it('removes individual filter when pill dismiss button is clicked', () => {
+  it('removes individual filter when pill is clicked', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
     fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
     fireEvent.change(screen.getByTestId('filter-embedding'), { target: { value: 'done' } });
 
-    // Remove freshness pill
-    fireEvent.click(screen.getByTestId('filter-pill-remove-freshness'));
+    // Remove freshness pill by clicking the pill button itself
+    fireEvent.click(screen.getByTestId('filter-pill-freshness'));
 
     // Freshness pill gone, embedding pill remains
     expect(screen.queryByTestId('filter-pill-freshness')).not.toBeInTheDocument();
@@ -576,5 +576,40 @@ describe('PagesPage', () => {
     const panel = screen.getByTestId('advanced-filters-panel');
     expect(panel.className).toContain('grid');
     expect(panel.className).toContain('grid-cols-2');
+  });
+
+  // --- Accessibility: filter pills as focusable buttons ---
+
+  it('renders filter pills as <button> elements (keyboard navigable)', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+    fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+
+    const pill = screen.getByTestId('filter-pill-freshness');
+    expect(pill.tagName).toBe('BUTTON');
+    expect(pill).toHaveAttribute('aria-label', 'Remove Freshness: stale filter');
+  });
+
+  it('filter pills do not contain nested interactive elements', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+    fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'fresh' } });
+
+    const pill = screen.getByTestId('filter-pill-freshness');
+    // No nested <button> or <a> elements inside the pill
+    expect(pill.querySelectorAll('button, a')).toHaveLength(0);
+  });
+
+  // --- Accessibility: search clear button focuses input ---
+
+  it('focuses the search input after clearing search', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    const input = screen.getByPlaceholderText('Search pages...') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'test query' } });
+
+    fireEvent.click(screen.getByTestId('search-clear'));
+
+    expect(input.value).toBe('');
+    expect(document.activeElement).toBe(input);
   });
 });
