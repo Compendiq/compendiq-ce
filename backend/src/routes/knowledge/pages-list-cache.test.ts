@@ -359,35 +359,55 @@ describe('GET /api/pages — filtered query caching (#195)', () => {
 
   // ---------- ILIKE metacharacter escaping ----------
 
-  it('should escape ILIKE metacharacters (%, _, \\) in the fallback search', async () => {
-    // Reset to avoid leaked stubs from prior tests that may have thrown
-    mockQueryFn.mockReset();
-    // FTS COUNT returns 0 → triggers ILIKE fallback (no SELECT because total=0)
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '0' }] });
-    // ILIKE fallback COUNT also returns 0 (we just inspect the query params)
+  it('should escape ILIKE metacharacters in fallback search so "100%" does not match all rows', async () => {
+    // FTS returns 0 results, triggering ILIKE fallback
+    stubPageListQuery([], 0);
+    // ILIKE fallback count query
     mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '0' }] });
 
-    const response = await app.inject({
+    await app.inject({
       method: 'GET',
-      url: '/api/pages?search=100%25_done',
+      url: '/api/pages?search=100%25',  // URL-encoded "100%"
     });
 
-    expect(response.statusCode).toBe(200);
-
-    // The ILIKE fallback is the second COUNT call.
-    // The search param in the ILIKE call should have metacharacters escaped.
+    // The ILIKE fallback query should have been issued (3rd call: FTS count, ILIKE count)
+    // Find the ILIKE count query — it contains 'ILIKE' in the SQL
     const ilikeCalls = mockQueryFn.mock.calls.filter(
-      (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('ILIKE'),
+      (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('ILIKE'),
     );
+    expect(ilikeCalls.length).toBeGreaterThanOrEqual(1);
 
-    expect(ilikeCalls.length).toBeGreaterThan(0);
-    // Find the ILIKE parameter value — it should have escaped % and _
+    // The parameter value should have escaped the '%' character
+    const ilikeCall = ilikeCalls[0];
+    const params = ilikeCall[1] as unknown[];
+    // Find the ILIKE term parameter (contains the search pattern)
+    const ilikeTerm = params.find((p) => typeof p === 'string' && (p as string).includes('100'));
+    expect(ilikeTerm).toBeDefined();
+    // "100%" should become "%100\%%" — the user's % is escaped with backslash
+    expect(ilikeTerm).toBe('%100\\%%');
+  });
+
+  it('should escape underscore in ILIKE fallback search', async () => {
+    // FTS returns 0 results, triggering ILIKE fallback
+    stubPageListQuery([], 0);
+    // ILIKE fallback count query
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '0' }] });
+
+    await app.inject({
+      method: 'GET',
+      url: '/api/pages?search=my_var',
+    });
+
+    const ilikeCalls = mockQueryFn.mock.calls.filter(
+      (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('ILIKE'),
+    );
+    expect(ilikeCalls.length).toBeGreaterThanOrEqual(1);
+
     const params = ilikeCalls[0][1] as unknown[];
-    const searchParam = params.find((p) => typeof p === 'string' && (p as string).includes('done'));
-    expect(searchParam).toBeDefined();
-    // The wrapped ILIKE term should be %100\%\_done% (metacharacters escaped)
-    expect(searchParam).toContain('\\%');
-    expect(searchParam).toContain('\\_');
+    const ilikeTerm = params.find((p) => typeof p === 'string' && (p as string).includes('my'));
+    expect(ilikeTerm).toBeDefined();
+    // "my_var" should become "%my\_var%" — the underscore is escaped
+    expect(ilikeTerm).toBe('%my\\_var%');
   });
 
   // ---------- spaceKey-only is not a "filter" ----------
