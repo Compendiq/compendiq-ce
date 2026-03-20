@@ -15,7 +15,7 @@ import { Agent, fetch as undiciFetch } from 'undici';
 import { logger } from '../../../core/utils/logger.js';
 import { openaiBreakers } from '../../../core/services/circuit-breaker.js';
 import pLimit from 'p-limit';
-import { getSharedLlmSettings } from '../../../core/services/admin-settings-service.js';
+import { getSharedLlmSettings, getSharedOpenaiApiKey } from '../../../core/services/admin-settings-service.js';
 import type {
   LlmProvider,
   ChatMessage,
@@ -54,7 +54,10 @@ export interface OpenAIConfig {
 }
 
 async function getConfig(): Promise<OpenAIConfig> {
-  const sharedLlmSettings = await getSharedLlmSettings();
+  const [sharedLlmSettings, sharedApiKey] = await Promise.all([
+    getSharedLlmSettings(),
+    getSharedOpenaiApiKey(),
+  ]);
   let baseUrl = (sharedLlmSettings.openaiBaseUrl ?? process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1').replace(/\/+$/, '');
   // Ensure the base URL includes the /v1 path required by the OpenAI API.
   // Users commonly enter just the host (e.g. http://host:1234) without it.
@@ -63,7 +66,7 @@ async function getConfig(): Promise<OpenAIConfig> {
   }
   return {
     baseUrl,
-    apiKey: sharedLlmSettings.openaiApiKey ?? process.env.LLM_BEARER_TOKEN ?? process.env.OPENAI_API_KEY ?? '',
+    apiKey: sharedApiKey ?? process.env.LLM_BEARER_TOKEN ?? process.env.OPENAI_API_KEY ?? '',
   };
 }
 

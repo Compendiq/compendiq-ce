@@ -2,8 +2,9 @@ import { FastifyInstance } from 'fastify';
 import { checkConnection as checkPg } from '../../core/db/postgres.js';
 import { checkRedisConnection } from '../../core/plugins/redis.js';
 import { getOllamaCircuitBreakerStatus, getOpenaiCircuitBreakerStatus } from '../../core/services/circuit-breaker.js';
-import { checkHealth as checkLlmHealth, getActiveProviderType } from '../../domains/llm/services/ollama-service.js';
+import { getProvider } from '../../domains/llm/services/ollama-service.js';
 import { logger } from '../../core/utils/logger.js';
+import { getSharedLlmSettings } from '../../core/services/admin-settings-service.js';
 
 // Track whether startup checks have passed
 let startupComplete = false;
@@ -15,7 +16,8 @@ export function markStartupComplete(): void {
 /** Check LLM connectivity using the active provider's health check. */
 async function checkLlm(): Promise<boolean> {
   try {
-    const result = await checkLlmHealth();
+    const sharedLlmSettings = await getSharedLlmSettings();
+    const result = await getProvider(sharedLlmSettings.llmProvider).checkHealth();
     return result.connected;
   } catch {
     logger.debug('LLM health check failed');
@@ -59,6 +61,7 @@ export async function healthRoutes(fastify: FastifyInstance) {
   // Checks migrations ran + LLM provider reachable.
   // Used by k8s startup probe.
   fastify.get('/health/start', async (_request, reply) => {
+    const sharedLlmSettings = await getSharedLlmSettings();
     const [postgres, llmReady] = await Promise.all([
       checkPg(),
       checkLlm(),
@@ -72,7 +75,7 @@ export async function healthRoutes(fastify: FastifyInstance) {
         startupComplete,
         postgres,
         llmAvailable: llmReady,
-        llmProvider: getActiveProviderType(),
+        llmProvider: sharedLlmSettings.llmProvider,
       },
       version: '1.0.0',
     });
@@ -81,6 +84,7 @@ export async function healthRoutes(fastify: FastifyInstance) {
   // GET /api/health - backward compatibility alias for /api/health/ready
   // Also includes LLM status for full picture.
   fastify.get('/health', async (_request, reply) => {
+    const sharedLlmSettings = await getSharedLlmSettings();
     const [postgres, redis, llm] = await Promise.all([
       checkPg(),
       checkRedisConnection(fastify.redis),
@@ -89,7 +93,7 @@ export async function healthRoutes(fastify: FastifyInstance) {
 
     const allHealthy = postgres && redis;
     const status = allHealthy ? 'ok' : (postgres || redis) ? 'degraded' : 'error';
-    const providerType = getActiveProviderType();
+    const providerType = sharedLlmSettings.llmProvider;
 
     reply.status(allHealthy ? 200 : 503).send({
       status,

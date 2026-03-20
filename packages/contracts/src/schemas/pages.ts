@@ -66,7 +66,7 @@ export const CreatePageSchema = z.object({
   spaceKey: z.string().min(1).optional(),
   title: z.string().min(1).max(500),
   bodyHtml: z.string(),
-  parentId: z.string().optional(),
+  parentId: z.union([z.string(), z.number()]).transform(String).optional(),
   pageType: PageTypeEnum.optional().default('page'),
   source: PageSourceEnum.optional(),
   visibility: PageVisibilityEnum.optional().default('shared'),

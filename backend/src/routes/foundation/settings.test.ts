@@ -54,7 +54,6 @@ const mockGetSharedLlmSettings = vi.fn().mockResolvedValue({
   ollamaModel: 'qwen3.5',
   openaiBaseUrl: null,
   hasOpenaiApiKey: false,
-  openaiApiKey: null,
   openaiModel: null,
 });
 vi.mock('../../core/services/admin-settings-service.js', () => ({
@@ -70,10 +69,12 @@ vi.mock('../../domains/confluence/services/sync-overview-service.js', () => ({
 const mockAddAllowedBaseUrl = vi.fn();
 const mockRemoveAllowedBaseUrl = vi.fn();
 const mockValidateUrl = vi.fn();
+const mockResolveConfluenceUrl = vi.fn().mockImplementation((url: string) => url);
 vi.mock('../../core/utils/ssrf-guard.js', () => ({
   addAllowedBaseUrl: (...args: unknown[]) => mockAddAllowedBaseUrl(...args),
   removeAllowedBaseUrl: (...args: unknown[]) => mockRemoveAllowedBaseUrl(...args),
   validateUrl: (...args: unknown[]) => mockValidateUrl(...args),
+  resolveConfluenceUrl: (...args: unknown[]) => mockResolveConfluenceUrl(...args),
 }));
 
 import { settingsRoutes } from './settings.js';
@@ -119,7 +120,6 @@ describe('Settings routes – test-confluence', () => {
       ollamaModel: 'qwen3.5',
       openaiBaseUrl: null,
       hasOpenaiApiKey: false,
-      openaiApiKey: null,
       openaiModel: null,
     });
   });
@@ -295,6 +295,20 @@ describe('Settings routes – test-confluence', () => {
     // URL should have been added but NOT removed
     expect(mockAddAllowedBaseUrl).toHaveBeenCalledWith('https://confluence.example.com');
     expect(mockRemoveAllowedBaseUrl).not.toHaveBeenCalled();
+  });
+
+  it('should still block non-HTTP protocols even for Confluence URLs', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/settings/test-confluence',
+      payload: { url: 'ftp://192.168.1.1', pat: 'test-pat' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.success).toBe(false);
+    expect(body.message).toContain('URL blocked');
+    expect(mockUndiciRequest).not.toHaveBeenCalled();
   });
 
   it('should reject invalid payload (missing url)', async () => {
@@ -502,7 +516,6 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
       ollamaModel: 'qwen3.5',
       openaiBaseUrl: 'https://api.openai.com/v1',
       hasOpenaiApiKey: true,
-      openaiApiKey: 'secret',
       openaiModel: 'gpt-4o-mini',
     });
     mockQuery.mockResolvedValueOnce({
