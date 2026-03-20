@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { LlmProviderSchema } from './settings.js';
 
 export const ReEmbedRequestSchema = z.object({
   model: z.string().optional(), // New embedding model (requires env var change + restart)
@@ -7,6 +8,11 @@ export const ReEmbedRequestSchema = z.object({
 export type ReEmbedRequest = z.infer<typeof ReEmbedRequestSchema>;
 
 export const AdminSettingsSchema = z.object({
+  llmProvider: LlmProviderSchema,
+  ollamaModel: z.string(),
+  openaiBaseUrl: z.string().nullable(),
+  hasOpenaiApiKey: z.boolean(),
+  openaiModel: z.string().nullable(),
   embeddingChunkSize: z.number().int().min(128).max(2048),
   embeddingChunkOverlap: z.number().int().min(0).max(512),
   /**
@@ -17,7 +23,16 @@ export const AdminSettingsSchema = z.object({
   drawioEmbedUrl: z.string().url().optional(),
 });
 
-export const UpdateAdminSettingsSchema = AdminSettingsSchema.partial();
+export const UpdateAdminSettingsSchema = z.object({
+  llmProvider: LlmProviderSchema.optional(),
+  ollamaModel: z.string().optional(),
+  openaiBaseUrl: z.string().url().nullable().optional(),
+  openaiApiKey: z.string().min(1).optional(),
+  openaiModel: z.string().nullable().optional(),
+  embeddingChunkSize: z.number().int().min(128).max(2048).optional(),
+  embeddingChunkOverlap: z.number().int().min(0).max(512).optional(),
+  drawioEmbedUrl: z.string().url().optional(),
+});
 
 export type AdminSettings = z.infer<typeof AdminSettingsSchema>;
 export type UpdateAdminSettingsInput = z.infer<typeof UpdateAdminSettingsSchema>;

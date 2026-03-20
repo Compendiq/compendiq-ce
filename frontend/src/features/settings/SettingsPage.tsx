@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { m } from 'framer-motion';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
@@ -13,7 +13,7 @@ import { ErrorDashboard } from './ErrorDashboard';
 import { ThemeTab } from './ThemeTab';
 import { SkeletonFormFields } from '../../shared/components/feedback/Skeleton';
 
-type TabId = 'confluence' | 'sync' | 'ollama' | 'ai-prompts' | 'spaces' | 'theme' | 'account' | 'labels' | 'errors' | 'embedding';
+type TabId = 'confluence' | 'sync' | 'ollama' | 'ai-prompts' | 'spaces' | 'theme' | 'labels' | 'errors' | 'embedding';
 
 export function SettingsPage() {
   const queryClient = useQueryClient();
@@ -37,10 +37,9 @@ export function SettingsPage() {
     { id: 'confluence', label: 'Confluence' },
     { id: 'sync', label: 'Sync' },
     { id: 'spaces', label: 'Spaces' },
-    { id: 'ollama', label: 'LLM' },
+    { id: 'ollama', label: 'LLM', adminOnly: true },
     { id: 'ai-prompts', label: 'AI Prompts' },
     { id: 'theme', label: 'Theme' },
-    { id: 'account', label: 'Account' },
     { id: 'labels', label: 'Labels', adminOnly: true },
     { id: 'errors', label: 'Errors', adminOnly: true },
     { id: 'embedding', label: 'Embedding', adminOnly: true },
@@ -89,7 +88,7 @@ export function SettingsPage() {
               onSave={(v) => updateSettings.mutateAsync(v)}
             />
           ) : activeTab === 'ollama' ? (
-            <LlmTab settings={settings!} onSave={(v) => updateSettings.mutate(v)} />
+            <LlmTab settings={settings!} />
           ) : activeTab === 'ai-prompts' ? (
             <AiPromptsTab settings={settings!} onSave={(v) => updateSettings.mutate(v)} />
           ) : activeTab === 'theme' ? (
@@ -101,7 +100,7 @@ export function SettingsPage() {
           ) : activeTab === 'embedding' && isAdmin ? (
             <EmbeddingTab />
           ) : (
-            <AccountTab />
+            null
           )}
         </div>
       </div>
@@ -636,14 +635,42 @@ interface LlmStatusResponse {
   embeddingModel: string;
 }
 
-function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: Record<string, unknown>) => void }) {
-  const [provider, setProvider] = useState<LlmProviderType>(settings.llmProvider ?? 'ollama');
-  const [ollamaModel, setOllamaModel] = useState(settings.ollamaModel);
-  const [openaiBaseUrl, setOpenaiBaseUrl] = useState(settings.openaiBaseUrl ?? '');
+function LlmTab({ settings }: { settings: SettingsResponse }) {
+  const queryClient = useQueryClient();
+  const { data: adminSettings, isLoading: adminSettingsLoading } = useQuery<AdminSettings>({
+    queryKey: ['admin-settings'],
+    queryFn: () => apiFetch('/admin/settings'),
+  });
+
+  const [provider, setProvider] = useState<LlmProviderType>('ollama');
+  const [ollamaModel, setOllamaModel] = useState('');
+  const [openaiBaseUrl, setOpenaiBaseUrl] = useState('');
   const [openaiApiKey, setOpenaiApiKey] = useState('');
-  const [openaiModel, setOpenaiModel] = useState(settings.openaiModel ?? '');
+  const [openaiModel, setOpenaiModel] = useState('');
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+
+  useEffect(() => {
+    if (!adminSettings) return;
+    setProvider(adminSettings.llmProvider ?? 'ollama');
+    setOllamaModel(adminSettings.ollamaModel ?? settings.ollamaModel);
+    setOpenaiBaseUrl(adminSettings.openaiBaseUrl ?? '');
+    setOpenaiModel(adminSettings.openaiModel ?? '');
+    setOpenaiApiKey('');
+  }, [adminSettings, settings.ollamaModel]);
+
+  const updateAdminSettings = useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      apiFetch('/admin/settings', { method: 'PUT', body: JSON.stringify(body) }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
+      queryClient.invalidateQueries({ queryKey: ['settings'] });
+      queryClient.invalidateQueries({ queryKey: ['ollama-status'] });
+      queryClient.invalidateQueries({ queryKey: ['ollama-models'] });
+      toast.success('LLM settings saved for all users');
+    },
+    onError: (err) => toast.error(err.message),
+  });
 
   const { data: ollamaStatus } = useQuery({
     queryKey: ['ollama-status', 'ollama'],
@@ -677,6 +704,10 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
   const currentModel = provider === 'ollama' ? ollamaModel : openaiModel;
   const setCurrentModel = provider === 'ollama' ? setOllamaModel : setOpenaiModel;
 
+  if (adminSettingsLoading || !adminSettings) {
+    return <SkeletonFormFields />;
+  }
+
   async function testConnection() {
     setTesting(true);
     setTestResult(null);
@@ -699,15 +730,19 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
     if (provider === 'ollama') {
       updates.ollamaModel = ollamaModel;
     } else {
-      updates.openaiModel = openaiModel;
-      if (openaiBaseUrl) updates.openaiBaseUrl = openaiBaseUrl;
+      updates.openaiModel = openaiModel || null;
+      updates.openaiBaseUrl = openaiBaseUrl.trim() || null;
       if (openaiApiKey) updates.openaiApiKey = openaiApiKey;
     }
-    onSave(updates);
+    updateAdminSettings.mutate(updates);
   }
 
   return (
     <div className="space-y-6">
+      <div className="glass-card border-yellow-500/30 p-3 text-sm text-yellow-400">
+        These LLM settings are shared across all users. Only admins can change them here.
+      </div>
+
       {/* Provider selector */}
       <div>
         <label className="mb-1.5 block text-sm font-medium">LLM Provider</label>
@@ -771,7 +806,7 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
           <div>
             <label className="mb-1.5 block text-sm font-medium">
               API Key
-              {settings.hasOpenaiApiKey && (
+              {adminSettings.hasOpenaiApiKey && (
                 <span className="ml-2 text-xs text-success">Configured</span>
               )}
             </label>
@@ -780,7 +815,7 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
               value={openaiApiKey}
               onChange={(e) => setOpenaiApiKey(e.target.value)}
               className="glass-input"
-              placeholder={settings.hasOpenaiApiKey ? '••••••••••' : 'Enter API key'}
+              placeholder={adminSettings.hasOpenaiApiKey ? '••••••••••' : 'Enter API key'}
               data-testid="openai-api-key-input"
             />
           </div>
@@ -861,9 +896,10 @@ function LlmTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: 
         </button>
         <button
           onClick={handleSave}
+          disabled={updateAdminSettings.isPending}
           className="glass-button-primary"
         >
-          Save
+          {updateAdminSettings.isPending ? 'Saving...' : 'Save'}
         </button>
       </div>
     </div>
@@ -1131,14 +1167,6 @@ function AiPromptsTab({ settings, onSave }: { settings: SettingsResponse; onSave
           Save
         </button>
       </div>
-    </div>
-  );
-}
-
-function AccountTab() {
-  return (
-    <div className="space-y-4">
-      <p className="text-sm text-muted-foreground">Account settings coming soon.</p>
     </div>
   );
 }

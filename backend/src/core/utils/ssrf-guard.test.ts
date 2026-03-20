@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { validateUrl, SsrfError } from './ssrf-guard.js';
+import { describe, it, expect, beforeEach } from 'vitest';
+import { validateUrl, SsrfError, addAllowedBaseUrl, clearAllowedBaseUrls } from './ssrf-guard.js';
 
 describe('SSRF Guard', () => {
   describe('valid URLs (should pass)', () => {
@@ -160,6 +160,68 @@ describe('SSRF Guard', () => {
         expect(e).toBeInstanceOf(SsrfError);
         expect((e as SsrfError).name).toBe('SsrfError');
       }
+    });
+  });
+
+  describe('allowlist behaviour', () => {
+    // Isolate tests — clear the allowlist before each test in this describe block
+    beforeEach(() => {
+      clearAllowedBaseUrls();
+    });
+
+    it('should allow a private IPv4 URL after addAllowedBaseUrl registers its origin', () => {
+      addAllowedBaseUrl('http://192.168.1.50:8090');
+      expect(() => validateUrl('http://192.168.1.50:8090/rest/api')).not.toThrow();
+    });
+
+    it('should allow only the registered origin, not other private IPs', () => {
+      addAllowedBaseUrl('http://10.0.1.5');
+      // The registered host is allowed
+      expect(() => validateUrl('http://10.0.1.5/rest/api/content')).not.toThrow();
+      // A different private IP is still blocked
+      expect(() => validateUrl('http://10.0.1.6/rest/api/content')).toThrow(SsrfError);
+    });
+
+    it('should block the URL again after clearAllowedBaseUrls removes the entry', () => {
+      addAllowedBaseUrl('http://192.168.1.50:8090');
+      expect(() => validateUrl('http://192.168.1.50:8090/rest/api')).not.toThrow();
+      clearAllowedBaseUrls();
+      expect(() => validateUrl('http://192.168.1.50:8090/rest/api')).toThrow(SsrfError);
+    });
+
+    it('should normalise ports — https on :443 and without explicit port are the same entry', () => {
+      addAllowedBaseUrl('https://confluence.internal.corp:443');
+      // Both forms should be allowed (same normalised origin)
+      expect(() => validateUrl('https://confluence.internal.corp/rest/api')).not.toThrow();
+      expect(() => validateUrl('https://confluence.internal.corp:443/rest/api')).not.toThrow();
+    });
+
+    it('should normalise ports — http on :80 and without explicit port are the same entry', () => {
+      addAllowedBaseUrl('http://confluence.internal.corp');
+      expect(() => validateUrl('http://confluence.internal.corp:80/rest/api')).not.toThrow();
+      expect(() => validateUrl('http://confluence.internal.corp/rest/api')).not.toThrow();
+    });
+
+    it('should NOT bypass the protocol check — file:// is still blocked even if somehow called with such a URL', () => {
+      // addAllowedBaseUrl silently ignores non-http(s) protocols, so no entry is added
+      addAllowedBaseUrl('file:///etc/passwd');
+      // file:// URL is blocked at protocol check, before allowlist lookup
+      expect(() => validateUrl('file:///etc/passwd')).toThrow(SsrfError);
+      expect(() => validateUrl('file:///etc/passwd')).toThrow(/protocol.*not allowed/);
+    });
+
+    it('should silently ignore an invalid URL passed to addAllowedBaseUrl (no throw, no entry)', () => {
+      // Should not throw
+      expect(() => addAllowedBaseUrl('not-a-valid-url')).not.toThrow();
+      // Private IP still blocked because no valid entry was added
+      expect(() => validateUrl('http://192.168.1.1/api')).toThrow(SsrfError);
+    });
+
+    it('should be origin-scoped: path/query/fragment do not affect the match', () => {
+      addAllowedBaseUrl('http://10.0.1.5:9090');
+      // Different paths under the same origin are all allowed
+      expect(() => validateUrl('http://10.0.1.5:9090/rest/api/content?limit=50&start=0')).not.toThrow();
+      expect(() => validateUrl('http://10.0.1.5:9090/wiki/spaces')).not.toThrow();
     });
   });
 });

@@ -91,6 +91,18 @@ vi.mock('../../core/services/audit-service.js', () => ({
   logAuditEvent: vi.fn(),
 }));
 
+const mockGetSharedLlmSettings = vi.fn().mockResolvedValue({
+  llmProvider: 'ollama',
+  ollamaModel: 'qwen3.5',
+  openaiBaseUrl: null,
+  hasOpenaiApiKey: false,
+  openaiApiKey: null,
+  openaiModel: null,
+});
+vi.mock('../../core/services/admin-settings-service.js', () => ({
+  getSharedLlmSettings: (...args: unknown[]) => mockGetSharedLlmSettings(...args),
+}));
+
 vi.mock('../../core/utils/sanitize-llm-input.js', () => ({
   sanitizeLlmInput: vi.fn((input: string) => ({ sanitized: input, warnings: [] })),
 }));
@@ -123,6 +135,14 @@ describe('Ollama status and models routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetSharedLlmSettings.mockResolvedValue({
+      llmProvider: 'ollama',
+      ollamaModel: 'qwen3.5',
+      openaiBaseUrl: null,
+      hasOpenaiApiKey: false,
+      openaiApiKey: null,
+      openaiModel: null,
+    });
   });
 
   describe('GET /api/ollama/status', () => {
@@ -253,6 +273,28 @@ describe('Ollama status and models routes', () => {
 
       const body = JSON.parse(response.body);
       expect(body.authType).toBe('none');
+    });
+
+    it('should return shared OpenAI base URL and auth state for OpenAI provider', async () => {
+      mockGetSharedLlmSettings.mockResolvedValueOnce({
+        llmProvider: 'openai',
+        ollamaModel: 'qwen3.5',
+        openaiBaseUrl: 'https://api.openai.com/v1',
+        hasOpenaiApiKey: true,
+        openaiApiKey: 'secret',
+        openaiModel: 'gpt-4o',
+      });
+      mockCheckHealth.mockResolvedValue({ connected: true });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/ollama/status',
+      });
+
+      const body = JSON.parse(response.body);
+      expect(body.provider).toBe('openai');
+      expect(body.openaiBaseUrl).toBe('https://api.openai.com/v1');
+      expect(body.authConfigured).toBe(true);
     });
   });
 
