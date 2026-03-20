@@ -177,13 +177,15 @@ describe('Attachment routes', () => {
       expect(response.headers['content-type']).toBe('image/png');
       expect(response.body).toBe('fetched-from-confluence');
       expect(mockFetchAndCachePageImage).toHaveBeenCalledWith(
-        expect.anything(), // the client
-        'test-user',
-        'page-456',
-        'screenshot.png',
-        '<ac:image><ri:attachment ri:filename="screenshot.png" /></ac:image>',
-        'OPS',
-        mockRedisClient, // redis client for failure tracking
+        expect.objectContaining({
+          client: expect.anything(),
+          userId: 'test-user',
+          pageId: 'page-456',
+          localFilename: 'screenshot.png',
+          bodyStorage: '<ac:image><ri:attachment ri:filename="screenshot.png" /></ac:image>',
+          currentSpaceKey: 'OPS',
+          redis: mockRedisClient,
+        }),
       );
     });
 

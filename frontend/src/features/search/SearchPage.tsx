@@ -64,6 +64,12 @@ function highlightText(text: string, query: string): string {
   const trimmed = query.trim();
   if (!trimmed) return DOMPurify.sanitize(escapeHtml(text));
 
+  // If the text already contains server-side <mark> tags (e.g. from ts_headline),
+  // return it sanitized as-is to avoid double-escaping the existing markup.
+  if (/<mark\b[^>]*>/.test(text)) {
+    return DOMPurify.sanitize(text, { ALLOWED_TAGS: ['mark'], ALLOWED_ATTR: ['class'] });
+  }
+
   const lowerText = text.toLowerCase();
   const lowerQuery = trimmed.toLowerCase();
   const parts: string[] = [];

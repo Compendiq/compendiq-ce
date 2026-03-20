@@ -467,17 +467,20 @@ export async function searchRoutes(fastify: FastifyInstance) {
   fastify.get('/search/suggestions', async (request) => {
     const { q } = SuggestionsQuerySchema.parse(request.query);
 
+    // Escape LIKE metacharacters (%, _, \) to prevent pattern injection
+    const escapedQ = q.replace(/[%_\\]/g, '\\$&');
+
     const result = await query<{
       query_text: string;
       frequency: string;
     }>(
       `SELECT LOWER(TRIM(query)) AS query_text, COUNT(*) AS frequency
        FROM search_analytics
-       WHERE LOWER(TRIM(query)) LIKE LOWER($1) || '%'
+       WHERE LOWER(TRIM(query)) LIKE LOWER($1) || '%' ESCAPE '\\'
        GROUP BY LOWER(TRIM(query))
        ORDER BY COUNT(*) DESC
        LIMIT 10`,
-      [q],
+      [escapedQ],
     );
 
     return {

@@ -22,13 +22,11 @@ vi.mock('../../core/db/postgres.js', () => ({
 
 // Mocks for rag-service functions used in semantic/hybrid modes
 const mockVectorSearch = vi.fn();
-const mockKeywordSearchFn = vi.fn();
-const mockRrfFn = vi.fn();
+const mockHybridSearch = vi.fn();
 const mockRecordAnalytics = vi.fn();
 vi.mock('../../domains/llm/services/rag-service.js', () => ({
   vectorSearch: (...args: unknown[]) => mockVectorSearch(...args),
-  keywordSearch: (...args: unknown[]) => mockKeywordSearchFn(...args),
-  reciprocalRankFusion: (...args: unknown[]) => mockRrfFn(...args),
+  hybridSearch: (...args: unknown[]) => mockHybridSearch(...args),
   recordSearchAnalytics: (...args: unknown[]) => mockRecordAnalytics(...args),
 }));
 
@@ -155,7 +153,7 @@ describe('Search Routes', () => {
       expect(body.items).toHaveLength(2);
       expect(body.total).toBe(2);
       expect(body.page).toBe(1);
-      expect(body.limit).toBe(20);
+      expect(body.limit).toBe(10);
       expect(body.totalPages).toBe(1);
       expect(body.facets.spaces).toHaveLength(2);
       expect(body.facets.authors).toHaveLength(2);
@@ -382,7 +380,6 @@ describe('Search Routes', () => {
       const fakeEmbedding = new Array(768).fill(0.1);
       mockProviderGenerateEmbedding.mockResolvedValue([[...fakeEmbedding]]);
       mockVectorSearch.mockResolvedValue([makeSearchResult(1, 'Vector Result')]);
-      mockRrfFn.mockReturnValue([makeSearchResult(1, 'Vector Result')]);
 
       const response = await app.inject({
         method: 'GET',
@@ -450,14 +447,10 @@ describe('Search Routes', () => {
 
     // ── hybrid mode ──────────────────────────────────────────────────────────
 
-    it('hybrid mode calls providerGenerateEmbedding + vectorSearch + keywordSearch + reciprocalRankFusion', async () => {
+    it('hybrid mode calls hybridSearch from rag-service', async () => {
       mockQueryFn.mockResolvedValue({ rows: [{ count: '10' }] }); // embeddings exist
 
-      const fakeEmbedding = new Array(768).fill(0.1);
-      mockProviderGenerateEmbedding.mockResolvedValue([[...fakeEmbedding]]);
-      mockVectorSearch.mockResolvedValue([makeSearchResult(1, 'Vector Result')]);
-      mockKeywordSearchFn.mockResolvedValue([makeSearchResult(2, 'Keyword Result')]);
-      mockRrfFn.mockReturnValue([
+      mockHybridSearch.mockResolvedValue([
         makeSearchResult(1, 'Vector Result'),
         makeSearchResult(2, 'Keyword Result'),
       ]);
@@ -468,10 +461,7 @@ describe('Search Routes', () => {
       });
 
       expect(response.statusCode).toBe(200);
-      expect(mockProviderGenerateEmbedding).toHaveBeenCalledWith('test-user-id', 'test');
-      expect(mockVectorSearch).toHaveBeenCalledTimes(1);
-      expect(mockKeywordSearchFn).toHaveBeenCalledTimes(1);
-      expect(mockRrfFn).toHaveBeenCalledTimes(1);
+      expect(mockHybridSearch).toHaveBeenCalledWith('test-user-id', 'test', 10);
       const body = response.json();
       expect(body.mode).toBe('hybrid');
       expect(body.hasEmbeddings).toBe(true);
@@ -494,7 +484,6 @@ describe('Search Routes', () => {
       mockQueryFn.mockResolvedValue({ rows: [{ count: '5' }] }); // embeddings exist
       mockProviderGenerateEmbedding.mockResolvedValue([[new Array(768).fill(0.1)]]);
       mockVectorSearch.mockResolvedValue([]);
-      mockRrfFn.mockReturnValue([]);
 
       await app.inject({
         method: 'GET',
