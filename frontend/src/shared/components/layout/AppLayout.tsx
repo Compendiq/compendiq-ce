@@ -23,6 +23,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const location = useLocation();
   const navigate = useNavigate();
   const openCommandPalette = useCommandPaletteStore((s) => s.open);
+  const isCommandPaletteOpen = useCommandPaletteStore((s) => s.isOpen);
   const toggleShortcutsModal = useKeyboardShortcutsStore((s) => s.toggle);
   const shortcutsModalOpen = useKeyboardShortcutsStore((s) => s.isOpen);
   const closeShortcutsModal = useKeyboardShortcutsStore((s) => s.close);
@@ -166,6 +167,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
           <button
             onClick={openCommandPalette}
             aria-label="Search knowledge base"
+            aria-expanded={isCommandPaletteOpen}
             className="flex w-full max-w-xl items-center gap-2 rounded-lg border border-border/50 bg-foreground/5 px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-foreground/10 hover:border-border"
           >
             <Search size={16} className="shrink-0" />
@@ -179,7 +181,8 @@ export function AppLayout({ children }: { children: ReactNode }) {
         {/* Mobile search button (visible on small screens only) */}
         <button
           onClick={openCommandPalette}
-          aria-label="Search knowledge base"
+          aria-label="Search"
+          aria-expanded={isCommandPaletteOpen}
           className="ml-auto mr-2 flex items-center rounded-md bg-foreground/5 p-1.5 text-muted-foreground transition-colors hover:bg-foreground/10 sm:hidden"
         >
           <Search size={16} />
