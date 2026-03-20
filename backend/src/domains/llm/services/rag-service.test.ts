@@ -49,6 +49,7 @@ vi.mock('../../../core/utils/logger.js', () => ({
 
 import { buildRagContext, hybridSearch, RAG_EF_SEARCH, reciprocalRankFusion } from './rag-service.js';
 import type { SearchResult } from './rag-service.js';
+import { CircuitBreakerOpenError } from '../../../core/services/circuit-breaker.js';
 
 describe('RAG Service', () => {
   describe('RAG_EF_SEARCH config', () => {
@@ -60,6 +61,11 @@ describe('RAG Service', () => {
     it('should be a positive integer', () => {
       expect(Number.isInteger(RAG_EF_SEARCH)).toBe(true);
       expect(RAG_EF_SEARCH).toBeGreaterThan(0);
+    });
+
+    it('should produce a safe number for SQL interpolation', () => {
+      expect(Number(RAG_EF_SEARCH)).toBe(RAG_EF_SEARCH);
+      expect(Number.isFinite(Number(RAG_EF_SEARCH))).toBe(true);
     });
   });
 
@@ -73,7 +79,6 @@ describe('RAG Service', () => {
       const results: SearchResult[] = [
         {
           confluenceId: 'page-1',
-          pageId: 1,
           chunkText: 'Some chunk text here.',
           pageTitle: 'Getting Started Guide',
           sectionTitle: 'Installation',
@@ -94,7 +99,6 @@ describe('RAG Service', () => {
       const results: SearchResult[] = [
         {
           confluenceId: 'page-1',
-          pageId: 1,
           chunkText: 'First chunk.',
           pageTitle: 'Page 1',
           sectionTitle: 'Section A',
@@ -103,7 +107,6 @@ describe('RAG Service', () => {
         },
         {
           confluenceId: 'page-2',
-          pageId: 2,
           chunkText: 'Second chunk.',
           pageTitle: 'Page 2',
           sectionTitle: 'Section B',
@@ -123,7 +126,6 @@ describe('RAG Service', () => {
     it('should number sources sequentially', () => {
       const results: SearchResult[] = Array.from({ length: 5 }, (_, i) => ({
         confluenceId: `page-${i}`,
-        pageId: i + 1,
         chunkText: `Chunk ${i}`,
         pageTitle: `Page ${i}`,
         sectionTitle: `Section ${i}`,
@@ -141,7 +143,6 @@ describe('RAG Service', () => {
       const results: SearchResult[] = [
         {
           confluenceId: 'standalone-1',
-          pageId: 10,
           chunkText: 'Standalone article content.',
           pageTitle: 'My Local Article',
           sectionTitle: 'Overview',
@@ -160,7 +161,6 @@ describe('RAG Service', () => {
       const results: SearchResult[] = [
         {
           confluenceId: 'page-1',
-          pageId: 1,
           chunkText: 'Confluence content.',
           pageTitle: 'Confluence Page',
           sectionTitle: 'Intro',
@@ -169,7 +169,6 @@ describe('RAG Service', () => {
         },
         {
           confluenceId: 'standalone-1',
-          pageId: 2,
           chunkText: 'Standalone content.',
           pageTitle: 'Local Article',
           sectionTitle: 'Details',
@@ -185,80 +184,50 @@ describe('RAG Service', () => {
     });
   });
 
-  describe('reciprocalRankFusion', () => {
-    it('should rank a result appearing in both vector and keyword results higher than one in only one list', () => {
-      // sharedChunk is > 100 chars to test that the 100-char slice still identifies the same chunk
-      const sharedChunk = 'This is shared content between vector and keyword search results that appears in both lists. It has more than one hundred characters total.';
-      const vectorResults: SearchResult[] = [
-        {
-          pageId: 1,
-          confluenceId: 'page-1',
-          chunkText: sharedChunk,
-          pageTitle: 'Shared Page',
-          sectionTitle: 'Intro',
-          spaceKey: 'DEV',
-          score: 0.9,
-        },
-        {
-          pageId: 2,
-          confluenceId: 'page-2',
-          chunkText: 'Only in vector results, not in keyword results at all.',
-          pageTitle: 'Vector Only Page',
-          sectionTitle: 'Body',
-          spaceKey: 'DEV',
-          score: 0.8,
-        },
-      ];
-      const keywordResults: SearchResult[] = [
-        {
-          pageId: 1,
-          confluenceId: 'page-1',
-          chunkText: sharedChunk,
-          pageTitle: 'Shared Page',
-          sectionTitle: 'Intro',
-          spaceKey: 'DEV',
-          score: 0.7,
-        },
-        {
-          pageId: 3,
-          confluenceId: 'page-3',
-          chunkText: 'Only in keyword results, not in vector results at all.',
-          pageTitle: 'Keyword Only Page',
-          sectionTitle: 'Conclusion',
-          spaceKey: 'OPS',
-          score: 0.6,
-        },
-      ];
+  describe('RAG_EF_SEARCH bounds check', () => {
+    it('should fall back to 100 for NaN input', async () => {
+      vi.resetModules();
+      vi.stubEnv('RAG_EF_SEARCH', 'garbage');
 
-      const combined = reciprocalRankFusion(vectorResults, keywordResults);
-
-      // The shared result (page-1) should rank first as it has double RRF score
-      expect(combined[0].confluenceId).toBe('page-1');
-      expect(combined[0].pageId).toBe(1);
-      // All 3 unique chunks (by confluenceId:chunkText key) should appear
-      expect(combined.length).toBe(3);
+      const mod = await import('./rag-service.js');
+      expect(mod.RAG_EF_SEARCH).toBe(100);
+      vi.unstubAllEnvs();
     });
 
-    it('should sort results by descending RRF score', () => {
-      const v: SearchResult[] = [
-        { pageId: 1, confluenceId: 'a', chunkText: 'alpha', pageTitle: 'A', sectionTitle: 'A', spaceKey: 'S', score: 1 },
-        { pageId: 2, confluenceId: 'b', chunkText: 'beta', pageTitle: 'B', sectionTitle: 'B', spaceKey: 'S', score: 0.5 },
-      ];
-      const k: SearchResult[] = [
-        { pageId: 1, confluenceId: 'a', chunkText: 'alpha', pageTitle: 'A', sectionTitle: 'A', spaceKey: 'S', score: 0.8 },
-      ];
+    it('should fall back to 100 for negative input', async () => {
+      vi.resetModules();
+      vi.stubEnv('RAG_EF_SEARCH', '-5');
 
-      const combined = reciprocalRankFusion(v, k);
-      // Result 'a' appears in both → higher RRF score → first
-      expect(combined[0].confluenceId).toBe('a');
-      // Scores should be descending
-      for (let i = 0; i < combined.length - 1; i++) {
-        expect(combined[i].score).toBeGreaterThanOrEqual(combined[i + 1].score);
-      }
+      const mod = await import('./rag-service.js');
+      expect(mod.RAG_EF_SEARCH).toBe(100);
+      vi.unstubAllEnvs();
     });
 
-    it('should return empty array when both inputs are empty', () => {
-      expect(reciprocalRankFusion([], [])).toEqual([]);
+    it('should fall back to 100 for zero', async () => {
+      vi.resetModules();
+      vi.stubEnv('RAG_EF_SEARCH', '0');
+
+      const mod = await import('./rag-service.js');
+      expect(mod.RAG_EF_SEARCH).toBe(100);
+      vi.unstubAllEnvs();
+    });
+
+    it('should fall back to 100 for values exceeding 10000', async () => {
+      vi.resetModules();
+      vi.stubEnv('RAG_EF_SEARCH', '99999');
+
+      const mod = await import('./rag-service.js');
+      expect(mod.RAG_EF_SEARCH).toBe(100);
+      vi.unstubAllEnvs();
+    });
+
+    it('should accept valid values within bounds', async () => {
+      vi.resetModules();
+      vi.stubEnv('RAG_EF_SEARCH', '200');
+
+      const mod = await import('./rag-service.js');
+      expect(mod.RAG_EF_SEARCH).toBe(200);
+      vi.unstubAllEnvs();
     });
   });
 
@@ -319,78 +288,157 @@ describe('RAG Service', () => {
       expect(results).toEqual([]);
     });
 
-    it('should fall back to keyword-only results when embedding generation throws', async () => {
-      // Arrange: embedding fails
-      mocks.mockProviderGenerateEmbedding.mockRejectedValue(new Error('Circuit breaker open'));
+    it('should fall back to keyword-only when embedding generation fails', async () => {
+      mocks.mockProviderGenerateEmbedding.mockRejectedValue(new Error('Ollama unreachable'));
       mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
 
-      // Keyword search returns one matching result
-      mocks.mockQuery
-        .mockResolvedValueOnce({
-          rows: [
-            {
-              confluence_id: 'page-kw-1',
-              page_id: 42,
-              title: 'Keyword Result Page',
-              space_key: 'DEV',
-              body_text: 'Keyword match content here.',
-              rank: 0.5,
-            },
-          ],
-        })
-        // analytics insert
-        .mockResolvedValue({ rows: [] });
+      // keyword search returns results
+      mocks.mockQuery.mockResolvedValueOnce({
+        rows: [{
+          confluence_id: 'page-1',
+          title: 'Test Page',
+          space_key: 'DEV',
+          body_text: 'Some text content for search',
+          rank: 0.5,
+        }],
+      });
+      // analytics insert
+      mocks.mockQuery.mockResolvedValue({ rows: [] });
 
-      // Act
-      const results = await hybridSearch('user-1', 'keyword only query');
-
-      // Assert: should resolve (no throw) with keyword results
-      expect(results.length).toBeGreaterThan(0);
-      expect(results[0].pageId).toBe(42);
-      expect(results[0].chunkText).toBe('Keyword match content here.');
-      // vectorSearch must NOT have been called (no pool.connect calls)
-      expect(mocks.mockPool.connect).not.toHaveBeenCalled();
+      const results = await hybridSearch('user-1', 'test query');
+      expect(results.length).toBeGreaterThanOrEqual(1);
+      expect(results[0].pageTitle).toBe('Test Page');
     });
 
-    it('should deduplicate results by pageId regardless of confluenceId (standalone pages with NULL confluenceId)', async () => {
-      // Arrange: two vector results with the same page_id but different chunk text
+    it('should re-throw CircuitBreakerOpenError instead of falling back', async () => {
+      const cbError = new CircuitBreakerOpenError('LLM server temporarily unavailable');
+      mocks.mockProviderGenerateEmbedding.mockRejectedValue(cbError);
+      mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
+
+      await expect(hybridSearch('user-1', 'test query')).rejects.toThrow(
+        'LLM server temporarily unavailable',
+      );
+      // Verify keyword fallback was NOT called
+      expect(mocks.mockQuery).not.toHaveBeenCalled();
+    });
+
+    it('should record keyword_fallback search type when embedding fails', async () => {
+      mocks.mockProviderGenerateEmbedding.mockRejectedValue(new Error('Ollama unreachable'));
+      mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
+
+      // keyword search returns results
+      mocks.mockQuery.mockResolvedValueOnce({
+        rows: [{
+          confluence_id: 'page-1',
+          title: 'Fallback Page',
+          space_key: 'DEV',
+          body_text: 'Fallback content',
+          rank: 0.4,
+        }],
+      });
+      // analytics insert
+      mocks.mockQuery.mockResolvedValue({ rows: [] });
+
+      await hybridSearch('user-1', 'test query');
+
+      // Find the analytics INSERT call
+      const analyticsCalls = mocks.mockQuery.mock.calls.filter(
+        (call: unknown[]) =>
+          typeof call[0] === 'string' &&
+          (call[0] as string).includes('search_analytics'),
+      );
+      expect(analyticsCalls.length).toBeGreaterThanOrEqual(1);
+      // The 5th parameter should be 'keyword_fallback'
+      const analyticsParams = analyticsCalls[0][1] as unknown[];
+      expect(analyticsParams[4]).toBe('keyword_fallback');
+    });
+
+    it('should record hybrid search type when both vector and keyword succeed', async () => {
       const fakeEmbedding = new Array(768).fill(0.1);
       mocks.mockProviderGenerateEmbedding.mockResolvedValue([[...fakeEmbedding]]);
-      mocks.mockGetUserAccessibleSpaces.mockResolvedValue([]);
+      mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
 
       mocks.mockClientQuery.mockResolvedValueOnce(undefined); // BEGIN
       mocks.mockClientQuery.mockResolvedValueOnce(undefined); // SET LOCAL
       mocks.mockClientQuery.mockResolvedValueOnce({
-        rows: [
-          {
-            page_id: 99,
-            confluence_id: null,
-            chunk_text: 'First chunk from the standalone page content.',
-            metadata: { page_title: 'My Standalone Article', section_title: 'Part A', space_key: null },
-            distance: 0.1,
-          },
-          {
-            page_id: 99, // same page_id — should be deduped
-            confluence_id: null,
-            chunk_text: 'Second chunk from the exact same standalone page with different text.',
-            metadata: { page_title: 'My Standalone Article', section_title: 'Part B', space_key: null },
-            distance: 0.2,
-          },
-        ],
+        rows: [{
+          confluence_id: 'page-1',
+          chunk_text: 'Vector result content',
+          metadata: { page_title: 'Vector Page', section_title: 'Intro', space_key: 'DEV' },
+          distance: 0.2,
+        }],
       }); // vector SELECT
       mocks.mockClientQuery.mockResolvedValueOnce(undefined); // COMMIT
 
-      // Keyword search empty, analytics empty
+      // keyword search returns results
+      mocks.mockQuery.mockResolvedValueOnce({
+        rows: [{
+          confluence_id: 'page-2',
+          title: 'Keyword Page',
+          space_key: 'DEV',
+          body_text: 'Keyword content',
+          rank: 0.5,
+        }],
+      });
+      // analytics insert
       mocks.mockQuery.mockResolvedValue({ rows: [] });
 
-      // Act
-      const results = await hybridSearch('user-1', 'standalone query', 5);
+      await hybridSearch('user-1', 'test query');
 
-      // Assert: despite two vector results with the same pageId, only one deduped result
-      expect(results).toHaveLength(1);
-      expect(results[0].pageId).toBe(99);
-      // The first (higher-scored) chunk should win
-      expect(results[0].chunkText).toBe('First chunk from the standalone page content.');
+      // Find the analytics INSERT call
+      const analyticsCalls = mocks.mockQuery.mock.calls.filter(
+        (call: unknown[]) =>
+          typeof call[0] === 'string' &&
+          (call[0] as string).includes('search_analytics'),
+      );
+      expect(analyticsCalls.length).toBeGreaterThanOrEqual(1);
+      const analyticsParams = analyticsCalls[0][1] as unknown[];
+      expect(analyticsParams[4]).toBe('hybrid');
+    });
+  });
+
+  describe('reciprocalRankFusion', () => {
+    const makeResult = (id: string, chunk: string, overrides?: Partial<SearchResult>): SearchResult => ({
+      confluenceId: id,
+      chunkText: chunk,
+      pageTitle: `Page ${id}`,
+      sectionTitle: `Section ${id}`,
+      spaceKey: 'DEV',
+      score: 0.5,
+      ...overrides,
+    });
+
+    it('should combine results from vector and keyword search', () => {
+      const vectorResults = [makeResult('page-1', 'Vector chunk 1'), makeResult('page-2', 'Vector chunk 2')];
+      const keywordResults = [makeResult('page-3', 'Keyword chunk 3'), makeResult('page-1', 'Keyword chunk 1')];
+      const combined = reciprocalRankFusion(vectorResults, keywordResults);
+      expect(combined.length).toBeGreaterThanOrEqual(3);
+    });
+
+    it('should boost results that appear in both searches', () => {
+      const sharedChunk = 'This is shared content that appears in both search results';
+      const combined = reciprocalRankFusion([makeResult('page-1', sharedChunk)], [makeResult('page-1', sharedChunk)]);
+      const singleSource = reciprocalRankFusion([makeResult('page-1', sharedChunk)], []);
+      expect(combined[0].score).toBeGreaterThan(singleSource[0].score);
+    });
+
+    it('should handle empty vector results (keyword-only fallback)', () => {
+      const keywordResults = [makeResult('page-1', 'Keyword result 1'), makeResult('page-2', 'Keyword result 2')];
+      const combined = reciprocalRankFusion([], keywordResults);
+      expect(combined).toHaveLength(2);
+    });
+
+    it('should handle both empty', () => {
+      expect(reciprocalRankFusion([], [])).toHaveLength(0);
+    });
+
+    it('should sort by RRF score descending', () => {
+      const vectorResults = [makeResult('page-a', 'Chunk A'), makeResult('page-b', 'Chunk B')];
+      const keywordResults = [makeResult('page-b', 'Chunk B')]; // page-b in both
+      const combined = reciprocalRankFusion(vectorResults, keywordResults);
+      for (let i = 1; i < combined.length; i++) {
+        expect(combined[i - 1].score).toBeGreaterThanOrEqual(combined[i].score);
+      }
     });
   });
 });

@@ -7,6 +7,7 @@ import { providerStreamChat } from '../../domains/llm/services/llm-provider.js';
 import { hybridSearch, buildRagContext } from '../../domains/llm/services/rag-service.js';
 import { htmlToMarkdown } from '../../core/services/content-converter.js';
 import { LlmCache, buildLlmCacheKey, buildRagCacheKey } from '../../domains/llm/services/llm-cache.js';
+import { CircuitBreakerOpenError } from '../../core/services/circuit-breaker.js';
 import {
   ImproveRequestSchema,
   GenerateRequestSchema,
@@ -336,8 +337,17 @@ export async function llmChatRoutes(fastify: FastifyInstance) {
       }
     }
 
-    // Perform hybrid RAG search
-    const searchResults = await hybridSearch(userId, question);
+    // Perform hybrid RAG search — falls back to keyword-only if embedding fails
+    let searchResults;
+    try {
+      searchResults = await hybridSearch(userId, question);
+    } catch (err) {
+      if (err instanceof CircuitBreakerOpenError) {
+        reply.code(503);
+        return { error: 'LLM service temporarily unavailable', message: 'The AI service circuit breaker is open. Please try again later.' };
+      }
+      throw err;
+    }
     let ragContext = buildRagContext(searchResults);
 
     // If includeSubPages is enabled and a pageId is provided, augment the RAG context
@@ -368,7 +378,6 @@ export async function llmChatRoutes(fastify: FastifyInstance) {
       pageTitle: r.pageTitle,
       spaceKey: r.spaceKey,
       confluenceId: r.confluenceId,
-      pageId: r.pageId,
       sectionTitle: r.sectionTitle,
       score: r.score,
     }));
