@@ -35,7 +35,8 @@ DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
     data.attrName === 'data-type' ||
     data.attrName === 'data-checked' ||
     data.attrName === 'data-layout-type' ||
-    data.attrName === 'data-cell-width'
+    data.attrName === 'data-cell-width' ||
+    data.attrName === 'data-border'
   ) {
     data.forceKeepAttr = true;
   }
@@ -83,7 +84,7 @@ export function ArticleViewer({
   const sanitizedContent = useMemo(
     () =>
       DOMPurify.sanitize(content, {
-        ADD_ATTR: ['data-diagram-name', 'data-drawio', 'data-confluence-link', 'data-type', 'data-checked', 'data-color', 'data-title', 'data-layout-type', 'data-cell-width'],
+        ADD_ATTR: ['data-diagram-name', 'data-drawio', 'data-confluence-link', 'data-type', 'data-checked', 'data-color', 'data-title', 'data-layout-type', 'data-cell-width', 'data-border'],
       }),
     [content],
   );
