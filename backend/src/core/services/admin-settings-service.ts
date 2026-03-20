@@ -10,6 +10,7 @@ export interface SharedLlmSettings {
   hasOpenaiApiKey: boolean;
   openaiApiKey: string | null;
   openaiModel: string | null;
+  embeddingModel: string;
 }
 
 const DEFAULTS: SharedLlmSettings = {
@@ -19,6 +20,7 @@ const DEFAULTS: SharedLlmSettings = {
   hasOpenaiApiKey: false,
   openaiApiKey: null,
   openaiModel: null,
+  embeddingModel: process.env.EMBEDDING_MODEL ?? 'nomic-embed-text',
 };
 
 const LLM_SETTING_KEYS = [
@@ -27,6 +29,7 @@ const LLM_SETTING_KEYS = [
   'openai_base_url',
   'openai_api_key',
   'openai_model',
+  'embedding_model',
 ] as const;
 
 type AdminSettingKey = (typeof LLM_SETTING_KEYS)[number];
@@ -66,11 +69,12 @@ export async function getSharedLlmSettings(): Promise<SharedLlmSettings> {
     hasOpenaiApiKey: !!encryptedOpenaiApiKey,
     openaiApiKey,
     openaiModel: settings['openai_model'] ?? DEFAULTS.openaiModel,
+    embeddingModel: settings['embedding_model'] ?? DEFAULTS.embeddingModel,
   };
 }
 
 export async function upsertSharedLlmSettings(
-  updates: Partial<Pick<SharedLlmSettings, 'llmProvider' | 'ollamaModel' | 'openaiBaseUrl' | 'openaiApiKey' | 'openaiModel'>>,
+  updates: Partial<Pick<SharedLlmSettings, 'llmProvider' | 'ollamaModel' | 'openaiBaseUrl' | 'openaiApiKey' | 'openaiModel' | 'embeddingModel'>>,
 ): Promise<void> {
   const rows: Array<{ key: string; value: string }> = [];
 
@@ -99,6 +103,14 @@ export async function upsertSharedLlmSettings(
       rows.push({ key: 'openai_model', value: updates.openaiModel });
     } else {
       await query(`DELETE FROM admin_settings WHERE setting_key = 'openai_model'`);
+    }
+  }
+
+  if (updates.embeddingModel !== undefined) {
+    if (updates.embeddingModel) {
+      rows.push({ key: 'embedding_model', value: updates.embeddingModel });
+    } else {
+      await query(`DELETE FROM admin_settings WHERE setting_key = 'embedding_model'`);
     }
   }
 

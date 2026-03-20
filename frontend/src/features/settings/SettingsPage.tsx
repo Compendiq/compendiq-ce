@@ -647,6 +647,7 @@ function LlmTab({ settings }: { settings: SettingsResponse }) {
   const [openaiBaseUrl, setOpenaiBaseUrl] = useState('');
   const [openaiApiKey, setOpenaiApiKey] = useState('');
   const [openaiModel, setOpenaiModel] = useState('');
+  const [embeddingModel, setEmbeddingModel] = useState('');
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
 
@@ -656,6 +657,7 @@ function LlmTab({ settings }: { settings: SettingsResponse }) {
     setOllamaModel(adminSettings.ollamaModel ?? settings.ollamaModel);
     setOpenaiBaseUrl(adminSettings.openaiBaseUrl ?? '');
     setOpenaiModel(adminSettings.openaiModel ?? '');
+    setEmbeddingModel(adminSettings.embeddingModel ?? settings.embeddingModel);
     setOpenaiApiKey('');
   }, [adminSettings, settings.ollamaModel]);
 
@@ -734,6 +736,7 @@ function LlmTab({ settings }: { settings: SettingsResponse }) {
       updates.openaiBaseUrl = openaiBaseUrl.trim() || null;
       if (openaiApiKey) updates.openaiApiKey = openaiApiKey;
     }
+    if (embeddingModel) updates.embeddingModel = embeddingModel;
     updateAdminSettings.mutate(updates);
   }
 
@@ -874,9 +877,31 @@ function LlmTab({ settings }: { settings: SettingsResponse }) {
       {/* Embedding model */}
       <div>
         <label className="mb-1.5 block text-sm font-medium">Embedding Model</label>
-        <div className="rounded-md border border-border/50 bg-foreground/5 px-3 py-2 text-sm text-muted-foreground">
-          {settings.embeddingModel} (server-wide, read-only)
-        </div>
+        {models && models.length > 0 ? (
+          <select
+            value={embeddingModel}
+            onChange={(e) => setEmbeddingModel(e.target.value)}
+            className="glass-input"
+          >
+            {!models.some((m: { name: string }) => m.name === embeddingModel) && embeddingModel && (
+              <option value={embeddingModel}>{embeddingModel}</option>
+            )}
+            {models.map((m: { name: string }) => (
+              <option key={m.name} value={m.name}>{m.name}</option>
+            ))}
+          </select>
+        ) : (
+          <input
+            type="text"
+            value={embeddingModel}
+            onChange={(e) => setEmbeddingModel(e.target.value)}
+            className="glass-input"
+            placeholder="e.g. nomic-embed-text or text-embedding-nomic-embed-text-v1.5"
+          />
+        )}
+        <p className="mt-1 text-xs text-muted-foreground">
+          Shared across all users. Changing this requires re-embedding existing pages.
+        </p>
       </div>
 
       {testResult && (

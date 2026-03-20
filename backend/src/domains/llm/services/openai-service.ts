@@ -271,8 +271,10 @@ export class OpenAIProvider implements LlmProvider {
         const input = Array.isArray(text) ? text : [text];
 
         const REQUIRED_DIMS = 768;
+        const sharedSettings = await getSharedLlmSettings();
+        const embeddingModel = sharedSettings.embeddingModel;
         const response = await openaiRequest('/embeddings', {
-          model: process.env.EMBEDDING_MODEL ?? 'text-embedding-3-small',
+          model: embeddingModel,
           input,
           dimensions: REQUIRED_DIMS,
         });
