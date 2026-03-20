@@ -237,7 +237,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
 
         {/* Main content area + optional right sidebar */}
         <div className="flex flex-1 gap-2.5 overflow-hidden">
-          <main className="flex flex-1 flex-col overflow-hidden bg-card/5">
+          <main className="flex flex-1 flex-col overflow-hidden">
             <div ref={scrollContainerRef} data-scroll-container className="min-h-0 flex-1 overflow-y-auto px-3 pb-3 [scrollbar-gutter:stable_both-edges]">
               <PageTransition>
                 <div className={cn('mx-auto w-full', isArticleRoute ? 'max-w-[1400px]' : 'max-w-7xl')}>
