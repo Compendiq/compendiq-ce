@@ -672,7 +672,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
          (confluence_id, space_key, title, body_storage, body_html, body_text,
           version, parent_id, source, embedding_dirty, embedding_status)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'confluence', TRUE, 'not_embedded')
-       ON CONFLICT (confluence_id) DO UPDATE SET
+       ON CONFLICT (confluence_id) WHERE confluence_id IS NOT NULL DO UPDATE SET
          title = EXCLUDED.title, body_storage = EXCLUDED.body_storage, body_html = EXCLUDED.body_html,
          body_text = EXCLUDED.body_text, version = EXCLUDED.version, last_synced = NOW()`,
       [page.id, body.spaceKey, body.title, page.body?.storage?.value ?? storageBody,
