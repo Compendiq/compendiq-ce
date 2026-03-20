@@ -4,7 +4,7 @@ import { UpdateSettingsSchema, TestConfluenceSchema } from '@atlasmind/contracts
 import { query } from '../../core/db/postgres.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { encryptPat, decryptPat } from '../../core/utils/crypto.js';
-import { validateUrl, addAllowedBaseUrl } from '../../core/utils/ssrf-guard.js';
+import { validateUrl } from '../../core/utils/ssrf-guard.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { getUserAccessibleSpaces, invalidateRbacCache } from '../../core/services/rbac-service.js';
 import { getSyncOverview } from '../../domains/confluence/services/sync-overview-service.js';
@@ -98,12 +98,6 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     if (body.confluenceUrl !== undefined) {
       updates.push(`confluence_url = $${paramIdx++}`);
       values.push(body.confluenceUrl);
-
-      // Register the new Confluence URL so the SSRF guard allows requests
-      // to it even when it lives on a private network (#480).
-      if (body.confluenceUrl) {
-        addAllowedBaseUrl(body.confluenceUrl);
-      }
     }
 
     if (body.confluencePat !== undefined && body.confluencePat !== null) {
@@ -218,10 +212,6 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         return { success: false, message: 'Stored PAT could not be decrypted' };
       }
     }
-
-    // Register the Confluence URL as an allowed origin so that on-premises
-    // instances on private networks are not blocked by the SSRF guard (#480).
-    addAllowedBaseUrl(url);
 
     // SSRF protection: validate protocol and non-allowlisted checks
     try {

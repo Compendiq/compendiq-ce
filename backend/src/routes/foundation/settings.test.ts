@@ -190,14 +190,8 @@ describe('Settings routes – test-confluence', () => {
     expect(body.message).toBe('Connection refused');
   });
 
-  it('should allow private network URLs for Confluence (SSRF allowlisted per #480)', async () => {
-    // Private-network Confluence URLs are now allowlisted by the test-confluence
-    // route before validation, so the SSRF check passes and the request proceeds.
-    mockUndiciRequest.mockResolvedValue({
-      statusCode: 200,
-      body: { dump: vi.fn().mockResolvedValue(undefined) },
-    });
-
+  it('should block private network URLs for Confluence (allowlist is separate PR #481)', async () => {
+    // Without the SSRF allowlist (PR #481), private-network URLs are blocked.
     const response = await app.inject({
       method: 'POST',
       url: '/api/settings/test-confluence',
@@ -206,8 +200,9 @@ describe('Settings routes – test-confluence', () => {
 
     expect(response.statusCode).toBe(200);
     const body = JSON.parse(response.body);
-    expect(body.success).toBe(true);
-    expect(mockUndiciRequest).toHaveBeenCalled();
+    expect(body.success).toBe(false);
+    expect(body.message).toContain('URL blocked');
+    expect(mockUndiciRequest).not.toHaveBeenCalled();
   });
 
   it('should still block non-HTTP protocols even for Confluence URLs', async () => {
