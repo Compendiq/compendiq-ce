@@ -4,7 +4,7 @@ import { UpdateSettingsSchema, TestConfluenceSchema } from '@atlasmind/contracts
 import { query } from '../../core/db/postgres.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { encryptPat, decryptPat } from '../../core/utils/crypto.js';
-import { validateUrl, addAllowedBaseUrl } from '../../core/utils/ssrf-guard.js';
+import { validateUrl, addAllowedBaseUrl, removeAllowedBaseUrl } from '../../core/utils/ssrf-guard.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { getUserAccessibleSpaces, invalidateRbacCache } from '../../core/services/rbac-service.js';
 import { getSyncOverview } from '../../domains/confluence/services/sync-overview-service.js';
@@ -96,10 +96,23 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     let paramIdx = 1;
 
     if (body.confluenceUrl !== undefined) {
+      // When the Confluence URL changes, remove the old origin from the SSRF
+      // allowlist so stale entries don't accumulate (#481).
+      const oldUrlResult = await query<{ confluence_url: string | null }>(
+        'SELECT confluence_url FROM user_settings WHERE user_id = $1',
+        [request.userId],
+      );
+      const oldUrl = oldUrlResult.rows[0]?.confluence_url;
+      if (oldUrl && oldUrl !== body.confluenceUrl) {
+        removeAllowedBaseUrl(oldUrl);
+      }
+
       updates.push(`confluence_url = $${paramIdx++}`);
       values.push(body.confluenceUrl);
-      // Register the URL in the SSRF allowlist so sync can reach private-network Confluence instances
-      if (typeof body.confluenceUrl === 'string' && body.confluenceUrl !== null) {
+
+      // Register the new Confluence URL so the SSRF guard allows requests
+      // to it even when it lives on a private network (#480).
+      if (body.confluenceUrl) {
         addAllowedBaseUrl(body.confluenceUrl);
       }
     }
@@ -217,14 +230,21 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       }
     }
 
-    // Register the URL in the allowlist so that private-network Confluence instances
-    // can be tested. The user is explicitly naming this URL as their Confluence endpoint.
+    // Register the Confluence URL as an allowed origin so that on-premises
+    // instances on private networks are not blocked by the SSRF guard (#480).
+    // NOTE: This MUST happen BEFORE validateUrl() because the whole purpose of
+    // the allowlist is to permit private-network Confluence instances. If we
+    // validated first, private IPs would be rejected before we could allowlist
+    // them.  The URL is user-provided but the user is authenticated, and
+    // protocol restrictions (HTTP/S only) still apply even for allowlisted
+    // origins.
     addAllowedBaseUrl(url);
 
-    // SSRF protection: use centralized validator (allowlist check is now included)
+    // SSRF protection: validate protocol and non-allowlisted checks
     try {
       validateUrl(url);
     } catch {
+      removeAllowedBaseUrl(url);
       return { success: false, message: 'URL blocked: cannot connect to internal/private network addresses' };
     }
 
@@ -246,8 +266,14 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       if (statusCode >= 200 && statusCode < 300) {
         return { success: true, message: 'Connection successful' };
       }
+      // Non-2xx: URL is reachable but auth/config is wrong — remove from
+      // allowlist so it doesn't persist without a successful validation.
+      removeAllowedBaseUrl(url);
       return { success: false, message: `HTTP ${statusCode}` };
     } catch (err) {
+      // Connection failed — remove from allowlist so stale entries don't
+      // accumulate (#481).
+      removeAllowedBaseUrl(url);
       const message = err instanceof Error ? err.message : 'Connection failed';
       const cause = err instanceof Error && err.cause instanceof Error ? err.cause.message : '';
       const detail = cause && cause !== message ? `${message}: ${cause}` : message;

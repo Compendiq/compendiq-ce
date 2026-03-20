@@ -68,8 +68,9 @@ export class ConfluenceClient {
     this.baseUrl = baseUrl.replace(/\/+$/, '');
     this.pat = pat;
     this.retryOpts = options?.retry ?? {};
-    // Self-register this Confluence base URL so that validateUrl() allows requests
-    // to private/internal networks that the user has explicitly configured.
+
+    // Register the base URL so the SSRF guard allows requests to this
+    // Confluence instance even when it lives on a private network (#480).
     addAllowedBaseUrl(this.baseUrl);
   }
 
