@@ -20,6 +20,11 @@ const BulkTagSchema = z.object({
 });
 const IdParamSchema = z.object({ id: z.string().min(1) });
 
+/** Escape ILIKE metacharacters so user input is matched literally. */
+function escapeIlikeTerm(term: string): string {
+  return term.replace(/[%_\\]/g, '\\$&');
+}
+
 export async function pagesCrudRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
   const cache = new RedisCache(fastify.redis);
@@ -215,7 +220,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // ILIKE fallback: when FTS returns 0 results and search term >= 3 chars,
     // retry with a broader ILIKE match on title + body_text
     if (total === 0 && search && search.trim().length >= 3 && searchClauseParamIdx > 0) {
-      const ilikeTerm = `%${search.trim()}%`;
+      const ilikeTerm = `%${escapeIlikeTerm(search.trim())}%`;
       const ftsCondition = ` AND to_tsvector('english', coalesce(cp.title, '') || ' ' || coalesce(cp.body_text, '')) @@ plainto_tsquery('english', $${searchClauseParamIdx})`;
       const ilikeWhereClause = whereClause.replace(
         ftsCondition,
@@ -584,7 +589,34 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const body = CreatePageSchema.parse(request.body);
     const pageType: 'page' | 'folder' = (body as Record<string, unknown>).pageType === 'folder' ? 'folder' : 'page';
     const userId = request.userId;
-    const isStandalone = body.source === 'standalone' || !body.spaceKey;
+
+    // Auto-detect whether this is a Confluence or standalone page based on the
+    // space source. This fixes #468 where the frontend defaults source to
+    // 'standalone' but the user selected a Confluence space.
+    // The frontend sends '__local__' as a sentinel for local articles (e.g.
+    // NewPagePage, SidebarTreeView). Skip the space lookup for sentinels.
+    let spaceSource: string | null = null;
+    if (body.spaceKey && body.spaceKey !== '__local__') {
+      const spaceRow = await query<{ source: string }>(
+        'SELECT source FROM spaces WHERE space_key = $1',
+        [body.spaceKey],
+      );
+      if (spaceRow.rows.length === 0) {
+        throw fastify.httpErrors.badRequest(`Space '${body.spaceKey}' not found`);
+      }
+      spaceSource = spaceRow.rows[0].source;
+    }
+
+    // Explicit source takes precedence over auto-detection
+    let isStandalone: boolean;
+    if (body.source === 'standalone') {
+      isStandalone = true;
+    } else if (body.source === 'confluence') {
+      isStandalone = false;
+    } else {
+      // Auto-detect from space source
+      isStandalone = spaceSource !== 'confluence';
+    }
 
     if (isStandalone) {
       // --- Standalone article: no Confluence call, store locally ---
@@ -593,17 +625,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       const { htmlToText } = await import('../../core/services/content-converter.js');
       const bodyText = isFolder ? '' : htmlToText(effectiveBodyHtml);
 
-      // If spaceKey is provided, verify it's a local space
-      let spaceKey: string | null = null;
-      if (body.spaceKey) {
-        const spaceCheck = await query<{ source: string }>(
-          'SELECT source FROM spaces WHERE space_key = $1',
-          [body.spaceKey],
-        );
-        if (spaceCheck.rows.length > 0 && spaceCheck.rows[0].source === 'local') {
-          spaceKey = body.spaceKey;
-        }
-      }
+      // Use space key only for local spaces (already looked up above)
+      const spaceKey: string | null = spaceSource === 'local' ? body.spaceKey! : null;
 
       // Validate and compute path if parentId is provided
       let parentPath: string | null = null;

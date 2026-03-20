@@ -68,7 +68,7 @@ export const CreatePageSchema = z.object({
   bodyHtml: z.string(),
   parentId: z.string().optional(),
   pageType: PageTypeEnum.optional().default('page'),
-  source: PageSourceEnum.optional().default('standalone'),
+  source: PageSourceEnum.optional(),
   visibility: PageVisibilityEnum.optional().default('shared'),
 });
 
