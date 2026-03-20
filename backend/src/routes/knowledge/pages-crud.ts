@@ -588,8 +588,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // Auto-detect whether this is a Confluence or standalone page based on the
     // space source. This fixes #468 where the frontend defaults source to
     // 'standalone' but the user selected a Confluence space.
+    // The frontend sends '__local__' as a sentinel for local articles (e.g.
+    // NewPagePage, SidebarTreeView). Skip the space lookup for sentinels.
     let spaceSource: string | null = null;
-    if (body.spaceKey) {
+    if (body.spaceKey && body.spaceKey !== '__local__') {
       const spaceRow = await query<{ source: string }>(
         'SELECT source FROM spaces WHERE space_key = $1',
         [body.spaceKey],

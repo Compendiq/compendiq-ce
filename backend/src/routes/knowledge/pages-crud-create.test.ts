@@ -338,6 +338,39 @@ describe('POST /api/pages - parentId validation', () => {
     expect(body.source).toBe('standalone');
   });
 
+  it('should treat __local__ sentinel as standalone and skip space lookup', async () => {
+    // No space lookup — __local__ is a sentinel, not a real space key.
+    // INSERT returns new page (standalone path)
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 70, title: 'Local Sentinel Page', version: 1 }],
+    });
+    // UPDATE path
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages',
+      payload: {
+        title: 'Local Sentinel Page',
+        bodyHtml: '<p>Hello from local</p>',
+        spaceKey: '__local__',
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.payload);
+    expect(body.id).toBe(70);
+    expect(body.source).toBe('standalone');
+
+    // Verify the INSERT was called with null space_key (6th param)
+    const insertCall = mockQueryFn.mock.calls.find(
+      (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('INSERT INTO pages'),
+    );
+    expect(insertCall).toBeDefined();
+    // space_key is the 6th parameter ($6) in the INSERT
+    expect(insertCall![1][5]).toBeNull();
+  });
+
   it('should use confluence when explicit source is confluence', async () => {
     // Space lookup: space exists and is local
     mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'local' }] });
