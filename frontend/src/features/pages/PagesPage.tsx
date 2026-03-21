@@ -1,6 +1,7 @@
 import { useState, useCallback, useMemo, useRef, useEffect, memo, type RefObject } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { m } from 'framer-motion';
 import { Search, FileText, Plus, RefreshCw, ChevronLeft, ChevronRight, FolderOpen, Filter, X, List, Loader2, Trash2, Lock, Globe, AlertTriangle } from 'lucide-react';
 import DOMPurify from 'dompurify';
@@ -54,13 +55,13 @@ interface PageListItemProps {
 }
 
 const PageListItem = memo(function PageListItem({
-  pageItem, index, isSelected, onToggleSelection, onNavigate,
+  pageItem, index: _index, isSelected, onToggleSelection, onNavigate,
 }: PageListItemProps) {
   return (
     <m.div
-      initial={{ opacity: 0, y: 8 }}
+      initial={{ opacity: 0, y: 4 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ delay: index * 0.03 }}
+      transition={{ duration: 0.15 }}
     >
       <div
         className={cn(
@@ -244,6 +245,14 @@ export function PagesPage() {
   const queryClient = useQueryClient();
   const wasProcessingRef = useRef(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const listContainerRef = useRef<HTMLDivElement>(null);
+  const [scrollElement, setScrollElement] = useState<HTMLElement | null>(null);
+
+  // Locate the app-level scroll container on mount
+  useEffect(() => {
+    const el = document.querySelector<HTMLElement>('[data-scroll-container]');
+    if (el) setScrollElement(el);
+  }, []);
 
   useEffect(() => {
     if (embeddingStatusData?.isProcessing) {
@@ -323,6 +332,19 @@ export function PagesPage() {
   const deselectAll = useCallback(() => {
     setSelectedIds(new Set());
   }, []);
+
+  // Virtual scrolling for the keyword/browse page list
+  const pageItems = pagesData?.items ?? [];
+  const scrollMargin = listContainerRef.current?.offsetTop ?? 0;
+
+  const virtualizer = useVirtualizer({
+    count: pageItems.length,
+    getScrollElement: () => scrollElement,
+    estimateSize: () => 80,
+    overscan: 5,
+    scrollMargin,
+    useFlushSync: false, // Required for React 19
+  });
 
   return (
     <div className="space-y-6">
@@ -818,17 +840,38 @@ export function PagesPage() {
               action={!search ? { label: 'Go to Settings', onClick: () => navigate('/settings') } : undefined}
             />
           ) : (
-            <div className="space-y-2">
-              {pagesData.items.map((pageItem, i) => (
-                <PageListItem
-                  key={pageItem.id}
-                  pageItem={pageItem}
-                  index={i}
-                  isSelected={selectedIds.has(pageItem.id)}
-                  onToggleSelection={toggleSelection}
-                  onNavigate={navigateToPage}
-                />
-              ))}
+            <div
+              ref={listContainerRef}
+              data-testid="virtual-list-container"
+              style={{ position: 'relative', height: virtualizer.getTotalSize() }}
+            >
+              {virtualizer.getVirtualItems().map((virtualRow) => {
+                const pageItem = pageItems[virtualRow.index];
+                return (
+                  <div
+                    key={pageItem.id}
+                    data-index={virtualRow.index}
+                    ref={virtualizer.measureElement}
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      width: '100%',
+                      transform: `translateY(${virtualRow.start - virtualizer.options.scrollMargin}px)`,
+                    }}
+                  >
+                    <div className="pb-2">
+                      <PageListItem
+                        pageItem={pageItem}
+                        index={virtualRow.index}
+                        isSelected={selectedIds.has(pageItem.id)}
+                        onToggleSelection={toggleSelection}
+                        onNavigate={navigateToPage}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
 

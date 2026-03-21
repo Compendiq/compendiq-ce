@@ -12,7 +12,11 @@ function createWrapper() {
     return (
       <QueryClientProvider client={queryClient}>
         <MemoryRouter>
-          {children}
+          {/* Provide the scroll container that PagesPage looks for via
+              document.querySelector('[data-scroll-container]') */}
+          <div data-scroll-container style={{ height: 800, overflow: 'auto' }}>
+            {children}
+          </div>
         </MemoryRouter>
       </QueryClientProvider>
     );
@@ -238,12 +242,28 @@ function mockFetchWithPinnedPages(pinnedResponse: typeof mockPinnedResponse | ty
 }
 
 describe('PagesPage', () => {
+  // Mock element dimensions so @tanstack/react-virtual can compute visible items in jsdom
+  const originalGetBCR = Element.prototype.getBoundingClientRect;
+
   beforeEach(() => {
     mockFetchWithEmbeddingStatus(mockEmbeddingStatusIdle);
+
+    // Give the scroll container a usable height for the virtualizer
+    Element.prototype.getBoundingClientRect = function () {
+      if (this.hasAttribute?.('data-scroll-container')) {
+        return { top: 0, left: 0, bottom: 800, right: 1024, width: 1024, height: 800, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+      }
+      // For virtual list items measured by the virtualizer
+      if (this.hasAttribute?.('data-index')) {
+        return { top: 0, left: 0, bottom: 80, right: 1024, width: 1024, height: 80, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+      }
+      return originalGetBCR.call(this);
+    };
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    Element.prototype.getBoundingClientRect = originalGetBCR;
   });
 
   it('renders KPI cards at the top of the page', () => {
@@ -380,25 +400,22 @@ describe('PagesPage', () => {
     expect(screen.queryByTestId('embedding-progress-banner')).not.toBeInTheDocument();
   });
 
-  // --- Scroll behaviour tests ---
+  // --- Virtual scrolling tests (#511) ---
 
-  it('never renders a nested scroll container — single page scroll for all list sizes', async () => {
+  it('renders a virtual list container for the page list', async () => {
     render(<PagesPage />, { wrapper: createWrapper() });
-    await screen.findByText('Test Page');
-    // No element with overflow-auto should exist for the page list
-    expect(screen.queryByTestId('virtual-scroll-container')).not.toBeInTheDocument();
+    await screen.findByTestId('virtual-list-container');
+    expect(screen.getByTestId('virtual-list-container')).toBeInTheDocument();
   });
 
-  it('renders all items in a plain list for large page counts (>20)', async () => {
-    vi.restoreAllMocks();
-    mockFetchWithPages(makeManyPages(50));
+  it('uses the app-level scroll container (no nested overflow)', async () => {
     render(<PagesPage />, { wrapper: createWrapper() });
-
-    // All 50 items should render in a simple div, no separate scroll container
-    expect(screen.queryByTestId('virtual-scroll-container')).not.toBeInTheDocument();
-    // Each item renders an article-hover wrapper with its id
-    const items = await screen.findAllByTestId(/^article-hover-/);
-    expect(items.length).toBeGreaterThanOrEqual(50);
+    await screen.findByTestId('virtual-list-container');
+    const container = screen.getByTestId('virtual-list-container');
+    // The virtual list container should not have its own overflow scrolling
+    const style = container.style;
+    expect(style.overflow).not.toBe('auto');
+    expect(style.overflow).not.toBe('scroll');
   });
 
   // --- Pinned articles section tests ---
@@ -634,22 +651,25 @@ describe('PagesPage', () => {
     expect(container.className).toContain('flex-wrap');
   });
 
-  describe('performance: memoized page list items (#521)', () => {
-    it('renders page list items with stable keys (by id, not index)', async () => {
+  describe('performance: virtual scrolling + memoized items (#511, #521)', () => {
+    it('renders visible page list items with stable keys (by id, not index)', async () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       const item = await screen.findByTestId('article-hover-page-1');
       expect(item).toBeInTheDocument();
-      // Verify the item renders correctly within the memoized component
       expect(screen.getByText('Test Page')).toBeInTheDocument();
     });
 
-    it('renders all items correctly when there are many pages', async () => {
+    it('renders only a subset of items for large page counts (virtual scrolling)', async () => {
       vi.restoreAllMocks();
-      mockFetchWithPages(makeManyPages(20));
+      mockFetchWithPages(makeManyPages(200));
       render(<PagesPage />, { wrapper: createWrapper() });
 
-      const items = await screen.findAllByTestId(/^article-hover-/);
-      expect(items.length).toBe(20);
+      // Wait for at least one item to appear
+      await screen.findByTestId('virtual-list-container');
+      const items = screen.queryAllByTestId(/^article-hover-/);
+      // Virtual scrolling should render fewer items than total (only visible + overscan)
+      // In jsdom the exact count depends on mocked dimensions; just verify fewer than 200
+      expect(items.length).toBeLessThan(200);
     });
 
     it('renders selection state correctly in memoized items', async () => {
