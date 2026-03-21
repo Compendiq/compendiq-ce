@@ -3,6 +3,7 @@ import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 import { ZodError } from 'zod';
 import { pagesVersionRoutes } from './pages-versions.js';
+import * as versionTracker from '../../domains/knowledge/services/version-tracker.js';
 
 // --- Mocks ---
 
@@ -105,7 +106,7 @@ describe('pages-versions RBAC space access checks', () => {
       expect(body.pageId).toBe('page-123');
     });
 
-    it('returns 404 when user lacks RBAC access to the page space', async () => {
+    it('returns 403 when user lacks RBAC access to the page space', async () => {
       mockPageInSpace('HR'); // user only has DEV, OPS
 
       const response = await app.inject({
@@ -153,7 +154,7 @@ describe('pages-versions RBAC space access checks', () => {
       expect(response.statusCode).toBe(200);
     });
 
-    it('returns 404 for private standalone page owned by another user', async () => {
+    it('returns 403 for private standalone page owned by another user', async () => {
       mockQueryFn.mockImplementation((sql: string) => {
         if (typeof sql === 'string' && sql.includes('space_key, source, visibility')) {
           return Promise.resolve({
@@ -189,7 +190,7 @@ describe('pages-versions RBAC space access checks', () => {
       expect(body.isCurrent).toBe(true);
     });
 
-    it('returns 404 when user lacks RBAC access to the page space', async () => {
+    it('returns 403 when user lacks RBAC access to the page space', async () => {
       mockPageInSpace('SECRET');
 
       const response = await app.inject({
@@ -218,7 +219,7 @@ describe('pages-versions RBAC space access checks', () => {
       expect(body.pageId).toBe('page-123');
     });
 
-    it('returns 404 when user lacks RBAC access to the page space', async () => {
+    it('returns 403 (NOT 500) when user lacks RBAC access, and neither saveVersionSnapshot nor getSemanticDiff are called', async () => {
       mockPageInSpace('FINANCE');
 
       const response = await app.inject({
@@ -227,7 +228,10 @@ describe('pages-versions RBAC space access checks', () => {
         payload: { v1: 1, v2: 2 },
       });
 
+      // Critical security assertion: RBAC guard fires before any service call
       expect(response.statusCode).toBe(403);
+      expect(versionTracker.saveVersionSnapshot).not.toHaveBeenCalled();
+      expect(versionTracker.getSemanticDiff).not.toHaveBeenCalled();
     });
   });
 });

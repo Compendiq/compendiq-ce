@@ -97,7 +97,10 @@ describe('DELETE /api/pages/:id RBAC space access checks', () => {
     mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
   });
 
-  it('returns 404 when Confluence page is in a space the user cannot access', async () => {
+  it('returns 403 when Confluence page is in a space the user cannot access, and deletePage is not called', async () => {
+    const mockDeletePage = vi.fn().mockResolvedValue(undefined);
+    mockGetClientForUser.mockResolvedValue({ deletePage: mockDeletePage });
+
     // Page exists in HR space (user only has DEV, OPS)
     mockQueryFn.mockImplementation((sql: string) => {
       if (typeof sql === 'string' && sql.includes('id, source, created_by_user_id')) {
@@ -122,6 +125,8 @@ describe('DELETE /api/pages/:id RBAC space access checks', () => {
     expect(response.statusCode).toBe(403);
     // getUserAccessibleSpaces should have been called
     expect(mockGetUserAccessibleSpaces).toHaveBeenCalledWith(TEST_USER);
+    // Critical security assertion: deletePage must NOT be called for unauthorized spaces
+    expect(mockDeletePage).not.toHaveBeenCalled();
   });
 
   it('allows delete when Confluence page is in an accessible space', async () => {
