@@ -25,6 +25,11 @@ function ThemedToaster() {
   );
 }
 
+// StrictMode intentionally double-renders components in development to surface
+// side-effect bugs early. This causes 2x DOM nodes in the React accessibility
+// tree during dev (visible in Playwright snapshots), but does NOT affect
+// production builds — React strips StrictMode entirely in production.
+// See: https://react.dev/reference/react/StrictMode
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>

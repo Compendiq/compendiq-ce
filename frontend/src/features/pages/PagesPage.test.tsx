@@ -651,6 +651,59 @@ describe('PagesPage', () => {
     expect(container.className).toContain('flex-wrap');
   });
 
+  // --- Search mode toggle visual differentiation (#506) ---
+
+  describe('search mode toggle (#506)', () => {
+    it('renders three search mode buttons (keyword, semantic, hybrid)', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      expect(screen.getByTestId('search-mode-keyword')).toBeInTheDocument();
+      expect(screen.getByTestId('search-mode-semantic')).toBeInTheDocument();
+      expect(screen.getByTestId('search-mode-hybrid')).toBeInTheDocument();
+    });
+
+    it('defaults to keyword mode as active', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const keyword = screen.getByTestId('search-mode-keyword');
+      expect(keyword).toHaveAttribute('aria-pressed', 'true');
+      expect(keyword.className).toContain('bg-primary');
+      expect(keyword.className).toContain('shadow-md');
+      expect(keyword.className).toContain('ring-1');
+    });
+
+    it('marks inactive buttons with aria-pressed=false', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const semantic = screen.getByTestId('search-mode-semantic');
+      const hybrid = screen.getByTestId('search-mode-hybrid');
+      expect(semantic).toHaveAttribute('aria-pressed', 'false');
+      expect(hybrid).toHaveAttribute('aria-pressed', 'false');
+    });
+
+    it('switches active mode on click', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const semantic = screen.getByTestId('search-mode-semantic');
+      fireEvent.click(semantic);
+
+      expect(semantic).toHaveAttribute('aria-pressed', 'true');
+      expect(semantic.className).toContain('bg-primary');
+      expect(semantic.className).toContain('shadow-md');
+
+      const keyword = screen.getByTestId('search-mode-keyword');
+      expect(keyword).toHaveAttribute('aria-pressed', 'false');
+      expect(keyword.className).not.toContain('shadow-md');
+    });
+
+    it('active button has stronger visual weight (shadow + ring) vs inactive', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const active = screen.getByTestId('search-mode-keyword');
+      const inactive = screen.getByTestId('search-mode-semantic');
+
+      expect(active.className).toContain('shadow-md');
+      expect(active.className).toContain('ring-1');
+      expect(inactive.className).not.toContain('shadow-md');
+      expect(inactive.className).not.toContain('ring-1');
+    });
+  });
+
   describe('performance: virtual scrolling + memoized items (#511, #521)', () => {
     it('renders visible page list items with stable keys (by id, not index)', async () => {
       render(<PagesPage />, { wrapper: createWrapper() });

@@ -475,11 +475,12 @@ export function PagesPage() {
                   key={m}
                   data-testid={`search-mode-${m}`}
                   onClick={() => { setSearchMode(m); setPage(1); }}
+                  aria-pressed={searchMode === m}
                   className={cn(
-                    'rounded-full px-3 py-1 text-xs font-medium transition-colors capitalize',
+                    'rounded-full px-3 py-1 text-xs font-medium transition-all capitalize',
                     searchMode === m
-                      ? 'bg-primary text-primary-foreground'
-                      : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
+                      ? 'bg-primary text-primary-foreground shadow-md shadow-primary/25 ring-1 ring-primary/50'
+                      : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10 border border-transparent hover:border-border/40',
                   )}
                 >
                   {m}
