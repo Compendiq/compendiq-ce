@@ -3,9 +3,16 @@ import { CircuitBreakerOpenError } from '../../../core/services/circuit-breaker.
 
 const FAKE_LOCK_ID = 'fake-lock-id-for-tests';
 
-// Hoisted mocks must be declared before any vi.mock() calls
+// Hoisted mocks must be declared before any vi.mock() calls.
+// mockClient is a dedicated pg.PoolClient mock used by transaction tests.
+const mockClient = vi.hoisted(() => ({
+  query: vi.fn(),
+  release: vi.fn(),
+}));
+
 const mocks = vi.hoisted(() => ({
   query: vi.fn(),
+  getPool: vi.fn(),
   providerGenerateEmbedding: vi.fn(),
   htmlToText: vi.fn(),
   toSql: vi.fn().mockReturnValue('[0.1,0.2]'),
@@ -17,6 +24,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mocks.query(...args),
+  getPool: () => mocks.getPool(),
 }));
 
 vi.mock('./llm-provider.js', () => ({
@@ -91,6 +99,11 @@ describe('embedding-service', () => {
     mocks.providerGenerateEmbedding.mockImplementation((_userId: string, texts: string[]) =>
       Promise.resolve(texts.map(() => new Array(768).fill(0.1))),
     );
+    // Default: mockClient handles all transaction queries (BEGIN/DELETE/INSERT/UPDATE/COMMIT)
+    // for embedPage (Phase 2) and computePageRelationships.
+    mockClient.query.mockResolvedValue({ rows: [], rowCount: 0 });
+    mockClient.release.mockResolvedValue(undefined);
+    mocks.getPool.mockReturnValue({ connect: vi.fn().mockResolvedValue(mockClient) });
   });
 
   describe('getEmbeddingStatus', () => {
@@ -216,74 +229,88 @@ describe('embedding-service', () => {
   });
 
   describe('computePageRelationships', () => {
+    // Transaction call order on mockClient: [0]=BEGIN, [1]=DELETE, [2]=similarity CTE, [3]=label CTE, [4]=COMMIT
+
     it('should delete existing relationships then compute new ones', async () => {
-      // DELETE existing relationships
-      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-      // INSERT embedding_similarity edges (CTE query)
-      mocks.query.mockResolvedValueOnce({
-        rows: [
-          { page_id_1: 'page-1', page_id_2: 'page-2', score: 0.85 },
-        ],
-        rowCount: 1,
-      });
-      // INSERT label_overlap edges (CTE query)
-      mocks.query.mockResolvedValueOnce({
-        rows: [
-          { page_id_1: 'page-1', page_id_2: 'page-3', score: 0.5 },
-        ],
-        rowCount: 1,
-      });
+      // Set up 5 specific client.query responses matching the transaction order
+      mockClient.query
+        .mockResolvedValueOnce({ rows: [] })                                           // BEGIN
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 })                             // DELETE
+        .mockResolvedValueOnce({ rows: [{ page_id_1: 'page-1', page_id_2: 'page-2', score: 0.85 }], rowCount: 1 })  // similarity INSERT
+        .mockResolvedValueOnce({ rows: [{ page_id_1: 'page-1', page_id_2: 'page-3', score: 0.5 }], rowCount: 1 })   // label INSERT
+        .mockResolvedValueOnce({ rows: [] });                                          // COMMIT
 
       const totalEdges = await computePageRelationships();
 
       expect(totalEdges).toBe(2);
-      expect(mocks.query).toHaveBeenCalledTimes(3);
+      expect(mockClient.query).toHaveBeenCalledTimes(5);
+      expect(mocks.query).not.toHaveBeenCalled();
 
-      // First call should be DELETE (global, no userId)
-      const deleteCall = mocks.query.mock.calls[0][0] as string;
+      // calls[0] = BEGIN
+      expect(mockClient.query.mock.calls[0][0]).toBe('BEGIN');
+      // calls[1] = DELETE (global, no params)
+      const deleteCall = mockClient.query.mock.calls[1][0] as string;
       expect(deleteCall).toContain('DELETE FROM page_relationships');
-      expect(mocks.query.mock.calls[0][1]).toBeUndefined();
+      expect(mockClient.query.mock.calls[1][1]).toBeUndefined();
+      // calls[4] = COMMIT
+      expect(mockClient.query.mock.calls[4][0]).toBe('COMMIT');
     });
 
     it('should not use userId (global shared tables)', async () => {
-      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // DELETE
-      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // embedding similarity
-      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // label overlap
-
+      // Use default catch-all from beforeEach
       await computePageRelationships();
 
-      // DELETE has no params (global clear)
-      expect(mocks.query.mock.calls[0][1]).toBeUndefined();
-      // Similarity INSERT uses $1 (TOP_K) and $2 (SIMILARITY_THRESHOLD)
-      expect(mocks.query.mock.calls[1][1]).toBeDefined();
-      // Label overlap has no user params
-      expect(mocks.query.mock.calls[2][1]).toBeUndefined();
+      // calls[1] = DELETE has no params (global clear)
+      expect(mockClient.query.mock.calls[1][1]).toBeUndefined();
+      // calls[2] = similarity INSERT uses $1 (TOP_K) and $2 (SIMILARITY_THRESHOLD)
+      expect(mockClient.query.mock.calls[2][1]).toBeDefined();
+      // calls[3] = label overlap has no user params
+      expect(mockClient.query.mock.calls[3][1]).toBeUndefined();
+      // pool query() is NOT used
+      expect(mocks.query).not.toHaveBeenCalled();
     });
 
     it('should return 0 when no relationships found', async () => {
-      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // DELETE
-      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // embedding similarity
-      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // label overlap
-
+      // Default catch-all returns { rows: [], rowCount: 0 } for all calls
       const totalEdges = await computePageRelationships();
 
       expect(totalEdges).toBe(0);
     });
 
     it('should use parameterized SQL (no string concatenation)', async () => {
-      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-
       await computePageRelationships();
 
-      // Embedding similarity INSERT uses $1 (TOP_K) and $2 (SIMILARITY_THRESHOLD)
-      const similarityCall = mocks.query.mock.calls.find(
+      // Embedding similarity INSERT uses $1 (TOP_K) and $2 (SIMILARITY_THRESHOLD) — calls[2]
+      const similarityCall = mockClient.query.mock.calls.find(
         (call) => typeof call[0] === 'string' && (call[0] as string).includes('embedding_similarity'),
       );
       expect(similarityCall).toBeDefined();
       expect(similarityCall![0]).toContain('$1');
       expect(similarityCall![1]).toBeDefined();
+      expect(mocks.query).not.toHaveBeenCalled();
+    });
+
+    it('ROLLBACK when similarity INSERT fails: client released, error propagates', async () => {
+      mockClient.query
+        .mockResolvedValueOnce({ rows: [] })                                     // BEGIN
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 })                       // DELETE
+        .mockRejectedValueOnce(new Error('pgvector error'))                     // similarity INSERT fails
+        .mockResolvedValueOnce({ rows: [] });                                    // ROLLBACK
+
+      await expect(computePageRelationships()).rejects.toThrow('pgvector error');
+
+      // ROLLBACK was called
+      const rollbackCall = mockClient.query.mock.calls.find(
+        (call) => call[0] === 'ROLLBACK',
+      );
+      expect(rollbackCall).toBeDefined();
+      // COMMIT was NOT called
+      const commitCall = mockClient.query.mock.calls.find(
+        (call) => call[0] === 'COMMIT',
+      );
+      expect(commitCall).toBeUndefined();
+      // client was released
+      expect(mockClient.release).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -350,18 +377,13 @@ describe('embedding-service', () => {
       // Batch SELECT returns 3 pages
       const pages = [makePage('p1'), makePage('p2'), makePage('p3')];
       mocks.query.mockResolvedValueOnce({ rows: pages });
-      // For each page: mark embedding, DELETE old, INSERT, UPDATE dirty=false
+      // For each page: only mark embedding goes through pool query()
+      // Phase 2 (BEGIN/DELETE/INSERT×N/UPDATE/COMMIT) handled by mockClient.query default
       for (let i = 0; i < 3; i++) {
         mocks.query.mockResolvedValueOnce({ rows: [] }); // UPDATE embedding_status='embedding'
-        mocks.query.mockResolvedValueOnce({ rows: [] }); // DELETE old embeddings
-        mocks.query.mockResolvedValueOnce({ rows: [] }); // INSERT embedding chunk
-        mocks.query.mockResolvedValueOnce({ rows: [] }); // UPDATE embedding_dirty=FALSE
       }
-      // Empty batch -> break (batch was < DIRTY_PAGE_BATCH_SIZE so no more needed)
-      // computePageRelationships (post-embed hook)
-      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // DELETE relationships
-      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // embedding similarity
-      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // label overlap
+      // computePageRelationships (post-embed hook) handled by mockClient.query default
+      // Batch was < DIRTY_PAGE_BATCH_SIZE so loop breaks after first batch
 
       const result = await processDirtyPages('user-1');
 
@@ -401,18 +423,10 @@ describe('embedding-service', () => {
           body_html: '<p>Some content for embedding</p>',
         }],
       });
-      // Mark page as 'embedding' + clear error
+      // Mark page as 'embedding' + clear error (pool query)
       mocks.query.mockResolvedValueOnce({ rows: [] });
-      // embedPage calls: delete old embeddings
-      mocks.query.mockResolvedValueOnce({ rows: [] });
-      // embedPage calls: insert embedding
-      mocks.query.mockResolvedValueOnce({ rows: [] });
-      // embedPage calls: mark page as embedded + clear error
-      mocks.query.mockResolvedValueOnce({ rows: [] });
-      // computePageRelationships calls (post-embed hook):
-      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // DELETE existing relationships
-      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // INSERT embedding_similarity edges
-      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // INSERT label_overlap edges
+      // Phase 2 (BEGIN/DELETE/INSERT/UPDATE embedded/COMMIT) + computePageRelationships
+      // all handled by mockClient.query default from beforeEach
 
       const result = await processDirtyPages('process-user');
       expect(result.processed).toBe(1);
@@ -436,13 +450,11 @@ describe('embedding-service', () => {
           body_html: '<p>Content that will fail</p>',
         }],
       });
-      // Mark page as 'embedding' + clear error
+      // Mark page as 'embedding' + clear error (pool query)
       mocks.query.mockResolvedValueOnce({ rows: [] });
-      // embedPage calls: delete old embeddings
-      mocks.query.mockResolvedValueOnce({ rows: [] });
-      // embedPage calls: providerGenerateEmbedding throws
+      // Phase 1: providerGenerateEmbedding throws — no DB transaction is opened
       mocks.providerGenerateEmbedding.mockRejectedValueOnce(embeddingError);
-      // Update embedding_status to 'failed' with error message
+      // Update embedding_status to 'failed' with error message (pool query in processDirtyPages catch)
       mocks.query.mockResolvedValueOnce({ rows: [] });
       // Next batch: offset advanced by 1 (batchErrors), returns empty -> break
       mocks.query.mockResolvedValueOnce({ rows: [] });
@@ -477,13 +489,11 @@ describe('embedding-service', () => {
           body_html: '<p>Content</p>',
         }],
       });
-      // Mark page as 'embedding' + clear error
+      // Mark page as 'embedding' + clear error (pool query)
       mocks.query.mockResolvedValueOnce({ rows: [] });
-      // embedPage calls: delete old embeddings
-      mocks.query.mockResolvedValueOnce({ rows: [] });
-      // embedPage calls: providerGenerateEmbedding throws
+      // Phase 1: providerGenerateEmbedding throws — no DB transaction is opened
       mocks.providerGenerateEmbedding.mockRejectedValueOnce(longError);
-      // Update embedding_status to 'failed' with truncated error
+      // Update embedding_status to 'failed' with truncated error (pool query)
       mocks.query.mockResolvedValueOnce({ rows: [] });
       // Empty batch -> break (offset advanced past this page)
       mocks.query.mockResolvedValueOnce({ rows: [] });
@@ -514,26 +524,16 @@ describe('embedding-service', () => {
           body_html: '<p>Content that will succeed this time</p>',
         }],
       });
-      // Mark page as 'embedding' + clear error
+      // Mark page as 'embedding' + clear error (pool query)
       mocks.query.mockResolvedValueOnce({ rows: [] });
-      // embedPage calls: delete old embeddings
-      mocks.query.mockResolvedValueOnce({ rows: [] });
-      // embedPage calls: insert embedding
-      mocks.query.mockResolvedValueOnce({ rows: [] });
-      // embedPage calls: mark page as embedded + clear error
-      mocks.query.mockResolvedValueOnce({ rows: [] });
-      // computePageRelationships
-      mocks.query.mockResolvedValue({ rows: [], rowCount: 0 });
-
-      // computePageRelationships (post-embed hook)
-      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // DELETE
-      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // similarity
-      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // label overlap
+      // Phase 2 (BEGIN/DELETE/INSERT/UPDATE embedded/COMMIT) + computePageRelationships
+      // all handled by mockClient.query default from beforeEach
 
       await processDirtyPages('recover-user');
 
-      // Verify the success update clears embedding_error
-      const successUpdateCall = mocks.query.mock.calls.find(
+      // The UPDATE that sets embedding_status='embedded' is now inside Phase 2 transaction
+      // on the client — search mockClient.query.mock.calls
+      const successUpdateCall = mockClient.query.mock.calls.find(
         (call) => typeof call[0] === 'string' && (call[0] as string).includes("embedding_status = 'embedded'"),
       );
       expect(successUpdateCall).toBeDefined();
@@ -548,22 +548,14 @@ describe('embedding-service', () => {
       mocks.query.mockResolvedValueOnce({ rows: [{ count: '3' }] });
       // Batch SELECT (all 3 pages, < batch size so only one batch)
       mocks.query.mockResolvedValueOnce({ rows: pages });
-      // embedPage for p1: mark embedding + DELETE + INSERT + UPDATE
+      // embedPage for p1: mark embedding (pool); Phase 2 handled by mockClient default
       mocks.query.mockResolvedValueOnce({ rows: [] }); // mark embedding
-      mocks.query.mockResolvedValueOnce({ rows: [] }); // DELETE
-      mocks.query.mockResolvedValueOnce({ rows: [] }); // INSERT
-      mocks.query.mockResolvedValueOnce({ rows: [] }); // UPDATE
-      // embedPage for fail-1: mark embedding + DELETE, then throw; failed update
+      // embedPage for fail-1: mark embedding (pool); Phase 1 throws (no client opened); failed update (pool)
       mocks.query.mockResolvedValueOnce({ rows: [] }); // mark embedding
-      mocks.query.mockResolvedValueOnce({ rows: [] }); // DELETE
       mocks.query.mockResolvedValueOnce({ rows: [] }); // failed update
-      // embedPage for p3: mark embedding + DELETE + INSERT + UPDATE
+      // embedPage for p3: mark embedding (pool); Phase 2 handled by mockClient default
       mocks.query.mockResolvedValueOnce({ rows: [] }); // mark embedding
-      mocks.query.mockResolvedValueOnce({ rows: [] }); // DELETE
-      mocks.query.mockResolvedValueOnce({ rows: [] }); // INSERT
-      mocks.query.mockResolvedValueOnce({ rows: [] }); // UPDATE
-      // computePageRelationships (post-embed hook)
-      mocks.query.mockResolvedValue({ rows: [], rowCount: 0 });
+      // computePageRelationships (post-embed hook) handled by mockClient default
 
       // Make embedPage fail for fail-1 by failing the embedding generation
       let embedCallCount = 0;
@@ -589,13 +581,11 @@ describe('embedding-service', () => {
       mocks.query.mockResolvedValueOnce({ rows: [{ count: '2' }] });
       // Batch 1: 2 pages
       mocks.query.mockResolvedValueOnce({ rows: [makePage('f1'), makePage('f2')] });
-      // embedPage for f1: mark embedding + DELETE then throw; failed update
+      // embedPage for f1: mark embedding (pool); Phase 1 throws (no client opened); failed update (pool)
       mocks.query.mockResolvedValueOnce({ rows: [] }); // mark embedding
-      mocks.query.mockResolvedValueOnce({ rows: [] }); // DELETE
       mocks.query.mockResolvedValueOnce({ rows: [] }); // failed update
-      // embedPage for f2: mark embedding + DELETE then throw; failed update
+      // embedPage for f2: mark embedding (pool); Phase 1 throws (no client opened); failed update (pool)
       mocks.query.mockResolvedValueOnce({ rows: [] }); // mark embedding
-      mocks.query.mockResolvedValueOnce({ rows: [] }); // DELETE
       mocks.query.mockResolvedValueOnce({ rows: [] }); // failed update
       // Next batch query: offset=2 (both errored), returns empty -> done
       mocks.query.mockResolvedValueOnce({ rows: [] });
@@ -623,24 +613,14 @@ describe('embedding-service', () => {
         ],
       });
 
-      // Page 1: mark embedding, delete old, generate, insert, mark embedded
+      // Page 1: mark embedding (pool); Phase 1 generate; Phase 2 + computePageRelationships via mockClient
       mocks.query.mockResolvedValueOnce({ rows: [] }); // mark embedding
-      mocks.query.mockResolvedValueOnce({ rows: [] }); // delete old
       mocks.providerGenerateEmbedding.mockResolvedValueOnce([new Array(768).fill(0)]);
-      mocks.query.mockResolvedValueOnce({ rows: [] }); // insert
-      mocks.query.mockResolvedValueOnce({ rows: [] }); // mark embedded
 
-      // Page 2: mark embedding, delete old, generate, insert, mark embedded
+      // Page 2: mark embedding (pool); Phase 1 generate; Phase 2 via mockClient
       mocks.query.mockResolvedValueOnce({ rows: [] }); // mark embedding
-      mocks.query.mockResolvedValueOnce({ rows: [] }); // delete old
       mocks.providerGenerateEmbedding.mockResolvedValueOnce([new Array(768).fill(0)]);
-      mocks.query.mockResolvedValueOnce({ rows: [] }); // insert
-      mocks.query.mockResolvedValueOnce({ rows: [] }); // mark embedded
-
-      // computePageRelationships
-      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      // computePageRelationships handled by mockClient.query default
 
       const result = await processDirtyPages('progress-user', (event) => {
         progressEvents.push(event);
@@ -675,13 +655,11 @@ describe('embedding-service', () => {
         ],
       });
 
-      // mark embedding
+      // mark embedding (pool)
       mocks.query.mockResolvedValueOnce({ rows: [] });
-      // delete old
-      mocks.query.mockResolvedValueOnce({ rows: [] });
-      // generate fails
+      // Phase 1: generate fails — no client is opened, no DELETE fires
       mocks.providerGenerateEmbedding.mockRejectedValueOnce(new Error('Network timeout'));
-      // mark failed
+      // mark failed (pool — processDirtyPages catch block)
       mocks.query.mockResolvedValueOnce({ rows: [] });
       // Next batch SELECT (offset advanced past the 1 failed page) -> empty -> done
       mocks.query.mockResolvedValueOnce({ rows: [] });
@@ -714,24 +692,14 @@ describe('embedding-service', () => {
         ],
       });
 
-      // mark embedding
+      // mark embedding (pool)
       mocks.query.mockResolvedValueOnce({ rows: [] });
-      // delete old (first attempt)
-      mocks.query.mockResolvedValueOnce({ rows: [] });
-      // First embed attempt: circuit breaker open
+      // First embed attempt: Phase 1 throws CB error — no client opened, no DELETE fires
       mocks.providerGenerateEmbedding.mockRejectedValueOnce(cbError);
 
-      // Second attempt after wait: succeeds
-      // delete old (retry)
-      mocks.query.mockResolvedValueOnce({ rows: [] });
+      // Second attempt after wait: Phase 1 succeeds, Phase 2 handled by mockClient default
       mocks.providerGenerateEmbedding.mockResolvedValueOnce([new Array(768).fill(0)]);
-      mocks.query.mockResolvedValueOnce({ rows: [] }); // insert
-      mocks.query.mockResolvedValueOnce({ rows: [] }); // mark embedded
-
-      // computePageRelationships
-      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      // computePageRelationships handled by mockClient.query default
 
       const promise = processDirtyPages('cb-user');
 
@@ -768,12 +736,10 @@ describe('embedding-service', () => {
         ],
       });
 
-      // mark embedding for page 1
+      // mark embedding for page 1 (pool)
       mocks.query.mockResolvedValueOnce({ rows: [] });
-      // delete old for page 1
-      mocks.query.mockResolvedValueOnce({ rows: [] });
-
-      // All embed attempts fail with circuit breaker (first attempt + 3 retries = 4 total)
+      // All embed attempts fail with circuit breaker in Phase 1 (first attempt + 3 retries = 4 total)
+      // Phase 1 throws before any client is acquired — no DELETE fires
       mocks.providerGenerateEmbedding.mockRejectedValue(cbError);
 
       // Reset status for remaining pages (page 1 and page 2)
@@ -813,23 +779,14 @@ describe('embedding-service', () => {
         ],
       });
 
-      // mark embedding
+      // mark embedding (pool)
       mocks.query.mockResolvedValueOnce({ rows: [] });
-      // delete old
-      mocks.query.mockResolvedValueOnce({ rows: [] });
-      // First attempt: CB open
+      // First attempt: Phase 1 throws CB error — no client opened, no DELETE fires
       mocks.providerGenerateEmbedding.mockRejectedValueOnce(cbError);
 
-      // Retry succeeds
-      mocks.query.mockResolvedValueOnce({ rows: [] }); // delete old on retry
+      // Retry: Phase 1 succeeds, Phase 2 handled by mockClient default
       mocks.providerGenerateEmbedding.mockResolvedValueOnce([new Array(768).fill(0)]);
-      mocks.query.mockResolvedValueOnce({ rows: [] }); // insert
-      mocks.query.mockResolvedValueOnce({ rows: [] }); // mark embedded
-
-      // computePageRelationships
-      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-      mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      // computePageRelationships handled by mockClient.query default
 
       const promise = processDirtyPages('cb-wait-user', (event) => {
         progressEvents.push(event);
@@ -883,16 +840,10 @@ describe('embedding-service', () => {
       mocks.query.mockResolvedValueOnce({
         rows: [{ id: 1, confluence_id: 'cs-page', title: 'CS Page', space_key: 'DEV', body_html: '<p>Content</p>' }],
       });
-      // mark embedding
+      // mark embedding (pool)
       mocks.query.mockResolvedValueOnce({ rows: [] });
-      // DELETE old embeddings
-      mocks.query.mockResolvedValueOnce({ rows: [] });
-      // INSERT embedding
-      mocks.query.mockResolvedValueOnce({ rows: [] });
-      // UPDATE dirty=false
-      mocks.query.mockResolvedValueOnce({ rows: [] });
-      // computePageRelationships
-      mocks.query.mockResolvedValue({ rows: [], rowCount: 0 });
+      // Phase 2 (BEGIN/DELETE/INSERT/UPDATE/COMMIT) + computePageRelationships
+      // all handled by mockClient.query default from beforeEach
 
       const result = await processDirtyPages('custom-chunk-user');
       // The page was processed; custom chunk settings propagated without error
@@ -994,7 +945,19 @@ describe('embedding-service', () => {
 
 describe('embedPage', () => {
   beforeEach(() => {
+    // vi.clearAllMocks() only clears call history, not implementations.
+    // The outer describe('embedding-service').beforeEach called vi.resetAllMocks() which
+    // resets ALL implementations. This nested beforeEach re-applies everything embedPage
+    // tests need so that atomicity tests are isolated from each other.
     vi.clearAllMocks();
+    mockClient.query.mockResolvedValue({ rows: [], rowCount: 0 });
+    mockClient.release.mockResolvedValue(undefined);
+    mocks.getPool.mockReturnValue({ connect: vi.fn().mockResolvedValue(mockClient) });
+    mocks.toSql.mockReturnValue('[0.1,0.2]');
+    mocks.htmlToText.mockReturnValue('Some substantial page content for embedding that is long enough');
+    mocks.providerGenerateEmbedding.mockImplementation((_userId: string, texts: string[]) =>
+      Promise.resolve(texts.map(() => new Array(768).fill(0.1))),
+    );
   });
 
   it('should mark page as not dirty when text is too short', async () => {
@@ -1024,6 +987,84 @@ describe('embedPage', () => {
       'UPDATE pages SET embedding_dirty = FALSE WHERE id = $1',
       [102],
     );
+  });
+
+  // ── Atomicity tests ──────────────────────────────────────────────────────────
+
+  it('Phase 1 LLM failure: no BEGIN, no DELETE, old embeddings remain intact', async () => {
+    // Phase 1 throws before any client is acquired
+    mocks.providerGenerateEmbedding.mockRejectedValueOnce(new Error('LLM down'));
+
+    await expect(embedPage('u1', 1, 'Title', 'DEV', '<p>Content</p>')).rejects.toThrow('LLM down');
+
+    // No client interaction at all — old embeddings are untouched
+    expect(mockClient.query).not.toHaveBeenCalled();
+    expect(mockClient.release).not.toHaveBeenCalled();
+  });
+
+  it('Phase 2 INSERT failure: ROLLBACK called, client released', async () => {
+    // Phase 1 succeeds (default mock provides embeddings)
+    // Phase 2: BEGIN ok, DELETE ok, INSERT throws
+    mockClient.query
+      .mockResolvedValueOnce({ rows: [] })          // BEGIN
+      .mockResolvedValueOnce({ rows: [] })          // DELETE
+      .mockRejectedValueOnce(new Error('constraint violation'))  // INSERT fails
+      .mockResolvedValueOnce({ rows: [] });          // ROLLBACK
+
+    await expect(embedPage('u1', 1, 'Title', 'DEV', '<p>Content</p>')).rejects.toThrow('constraint violation');
+
+    // ROLLBACK was called
+    const rollbackCall = mockClient.query.mock.calls.find((call) => call[0] === 'ROLLBACK');
+    expect(rollbackCall).toBeDefined();
+    // COMMIT was NOT called
+    const commitCall = mockClient.query.mock.calls.find((call) => call[0] === 'COMMIT');
+    expect(commitCall).toBeUndefined();
+    // client was released despite the error
+    expect(mockClient.release).toHaveBeenCalledTimes(1);
+  });
+
+  it('Phase 2 UPDATE failure: ROLLBACK called, client released', async () => {
+    // Phase 1 succeeds; Phase 2: BEGIN ok, DELETE ok, INSERT ok, UPDATE throws
+    let callIndex = 0;
+    mockClient.query.mockImplementation((sql: string) => {
+      callIndex++;
+      if (sql === 'BEGIN') return Promise.resolve({ rows: [] });
+      if (typeof sql === 'string' && sql.includes('DELETE FROM page_embeddings')) return Promise.resolve({ rows: [] });
+      if (typeof sql === 'string' && sql.includes('INSERT INTO page_embeddings')) return Promise.resolve({ rows: [] });
+      if (typeof sql === 'string' && sql.includes('UPDATE pages')) return Promise.reject(new Error('UPDATE failed'));
+      return Promise.resolve({ rows: [] }); // ROLLBACK
+    });
+
+    await expect(embedPage('u1', 1, 'Title', 'DEV', '<p>Content</p>')).rejects.toThrow('UPDATE failed');
+
+    const rollbackCall = mockClient.query.mock.calls.find((call) => call[0] === 'ROLLBACK');
+    expect(rollbackCall).toBeDefined();
+    const commitCall = mockClient.query.mock.calls.find((call) => call[0] === 'COMMIT');
+    expect(commitCall).toBeUndefined();
+    expect(mockClient.release).toHaveBeenCalledTimes(1);
+    void callIndex; // suppress unused var warning
+  });
+
+  it('Phase 2 full success: BEGIN DELETE INSERTs UPDATE COMMIT in order, client released', async () => {
+    // Phase 1 + Phase 2 both succeed via default mocks
+    const count = await embedPage('u1', 1, 'Title', 'DEV', '<p>Content</p>');
+
+    expect(count).toBeGreaterThan(0);
+
+    const calls = mockClient.query.mock.calls.map((c) => c[0] as string);
+
+    // First call must be BEGIN
+    expect(calls[0]).toBe('BEGIN');
+    // Must include DELETE
+    expect(calls.some((sql) => sql.includes('DELETE FROM page_embeddings'))).toBe(true);
+    // Must include INSERT
+    expect(calls.some((sql) => sql.includes('INSERT INTO page_embeddings'))).toBe(true);
+    // Must include UPDATE with embedding_status = 'embedded'
+    expect(calls.some((sql) => sql.includes("embedding_status = 'embedded'"))).toBe(true);
+    // Last meaningful call must be COMMIT
+    expect(calls[calls.length - 1]).toBe('COMMIT');
+    // Client released exactly once
+    expect(mockClient.release).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -1176,6 +1217,27 @@ describe('chunkText', () => {
   });
 
   describe('embedPage — HTTP 400 context-length continuation', () => {
+    beforeEach(() => {
+      // Re-apply mockClient and getPool defaults since this describe block does not inherit
+      // from describe('embedding-service').beforeEach (it's in a separate top-level describe).
+      // Clear call history first so tests don't see calls from prior tests.
+      mockClient.query.mockReset();
+      mockClient.release.mockReset();
+      mocks.getPool.mockReset();
+      mocks.query.mockReset();
+      mocks.providerGenerateEmbedding.mockReset();
+      mocks.toSql.mockReset();
+      mocks.htmlToText.mockReset();
+      // Re-apply defaults
+      mockClient.query.mockResolvedValue({ rows: [], rowCount: 0 });
+      mockClient.release.mockResolvedValue(undefined);
+      mocks.getPool.mockReturnValue({ connect: vi.fn().mockResolvedValue(mockClient) });
+      mocks.toSql.mockReturnValue('[0.1,0.2]');
+      mocks.providerGenerateEmbedding.mockImplementation((_userId: string, texts: string[]) =>
+        Promise.resolve(texts.map(() => new Array(768).fill(0.1))),
+      );
+    });
+
     it('skips an oversized batch (HTTP 400 context-length) and continues embedding remaining batches', async () => {
       // Make htmlToText return enough text to produce multiple chunks
       const textWith3Chunks = Array.from(
@@ -1184,18 +1246,13 @@ describe('chunkText', () => {
       ).join('\n');
       mocks.htmlToText.mockReturnValue(textWith3Chunks);
 
-      // DELETE + (INSERT per chunk or error) + UPDATE embedded
-      mocks.query
-        .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // DELETE
-        .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT chunk 0
-        .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT chunk 1
-        .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT chunk 2
-        .mockResolvedValueOnce({ rows: [], rowCount: 1 }); // UPDATE embedded
+      // Phase 2 (BEGIN/DELETE/INSERT×N/UPDATE/COMMIT) handled by mockClient.query default
+      // Pool query is NOT used in Phase 2
 
       const contextErr = new Error('HTTP 400 - input length exceeds context length');
 
-      // First batch (chunks 0..9) throws a context-length error
-      // Second batch succeeds (remaining chunks)
+      // First batch (chunks 0..9) throws a context-length error in Phase 1
+      // Second batch succeeds in Phase 1 — then Phase 2 runs atomically
       mocks.providerGenerateEmbedding
         .mockRejectedValueOnce(contextErr)
         .mockImplementation((_userId: string, texts: string[]) =>
@@ -1210,15 +1267,16 @@ describe('chunkText', () => {
 
     it('rethrows non-context-length errors from embedPage', async () => {
       mocks.htmlToText.mockReturnValue('Some content for the page that is long enough');
-      mocks.query
-        .mockResolvedValueOnce({ rows: [], rowCount: 1 }); // DELETE
-
+      // Phase 1 throws a server error — no client is opened, no pool query needed
       const serverErr = new Error('HTTP 500 - internal server error');
       mocks.providerGenerateEmbedding.mockRejectedValueOnce(serverErr);
 
       await expect(
         embedPage('user-1', 101, 'Page', 'DEV', '<p>content</p>'),
       ).rejects.toThrow('HTTP 500');
+
+      // No DB interaction at all since Phase 1 throws
+      expect(mockClient.query).not.toHaveBeenCalled();
     });
   });
 });

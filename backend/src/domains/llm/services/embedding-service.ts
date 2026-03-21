@@ -1,4 +1,4 @@
-import { query } from '../../../core/db/postgres.js';
+import { query, getPool } from '../../../core/db/postgres.js';
 import { providerGenerateEmbedding } from './llm-provider.js';
 import { htmlToText } from '../../../core/services/content-converter.js';
 import { logger } from '../../../core/utils/logger.js';
@@ -276,12 +276,11 @@ export async function embedPage(
   const chunks = chunkText(plainText, pageTitle, spaceKey, String(pageId), opts?.chunkSize, opts?.chunkOverlap);
   if (chunks.length === 0) return 0;
 
-  // Delete old embeddings for this page
-  await query('DELETE FROM page_embeddings WHERE page_id = $1', [pageId]);
-
-  // Generate embeddings in batches of 10
+  // ── Phase 1: Generate all embeddings in memory (no DB connection held) ──────
+  // If the LLM call fails here, no transaction is opened and the old embeddings
+  // remain intact in the database.
   const batchSize = 10;
-  let embeddedCount = 0;
+  const allEmbeddings: Array<{ chunkIndex: number; text: string; embedding: number[]; metadata: ChunkMetadata }> = [];
 
   for (let i = 0; i < chunks.length; i += batchSize) {
     const batch = chunks.slice(i, i + batchSize);
@@ -291,18 +290,12 @@ export async function embedPage(
       const embeddings = await providerGenerateEmbedding(userId, texts);
 
       for (let j = 0; j < batch.length; j++) {
-        await query(
-          `INSERT INTO page_embeddings (page_id, chunk_index, chunk_text, embedding, metadata)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [
-            pageId,
-            i + j,
-            batch[j].text,
-            pgvector.toSql(embeddings[j]),
-            JSON.stringify(batch[j].metadata),
-          ],
-        );
-        embeddedCount++;
+        allEmbeddings.push({
+          chunkIndex: i + j,
+          text: batch[j].text,
+          embedding: embeddings[j],
+          metadata: batch[j].metadata,
+        });
       }
     } catch (err) {
       // HTTP 400 "input length exceeds context length" — skip this batch and
@@ -319,15 +312,44 @@ export async function embedPage(
     }
   }
 
-  // Mark page as no longer dirty + update embedding status + clear any previous error
-  await query(
-    `UPDATE pages SET embedding_dirty = FALSE, embedding_status = 'embedded', embedded_at = NOW(), embedding_error = NULL
-     WHERE id = $1`,
-    [pageId],
-  );
+  // ── Phase 2: Atomically replace old embeddings with new ones ─────────────────
+  // All LLM work is done; now open a short-lived transaction so that concurrent
+  // RAG queries never see an empty page_embeddings window.
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM page_embeddings WHERE page_id = $1', [pageId]);
 
-  logger.info({ pageId, pageTitle, chunks: embeddedCount }, 'Page embedded');
-  return embeddedCount;
+    for (const item of allEmbeddings) {
+      await client.query(
+        `INSERT INTO page_embeddings (page_id, chunk_index, chunk_text, embedding, metadata)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [
+          pageId,
+          item.chunkIndex,
+          item.text,
+          pgvector.toSql(item.embedding),
+          JSON.stringify(item.metadata),
+        ],
+      );
+    }
+
+    await client.query(
+      `UPDATE pages SET embedding_dirty = FALSE, embedding_status = 'embedded', embedded_at = NOW(), embedding_error = NULL
+       WHERE id = $1`,
+      [pageId],
+    );
+
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  logger.info({ pageId, pageTitle, chunks: allEmbeddings.length }, 'Page embedded');
+  return allEmbeddings.length;
 }
 
 export const DIRTY_PAGE_BATCH_SIZE = 100;
@@ -634,81 +656,95 @@ export async function computePageRelationships(): Promise<number> {
   const TOP_K = 5;
   const SIMILARITY_THRESHOLD = 0.7; // cosine similarity (1 - cosine_distance)
 
-  // Clear all existing relationships
-  await query('DELETE FROM page_relationships');
+  // Wrap all three queries in a single transaction so the graph is never
+  // visible as empty during the window between DELETE and INSERT.
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
 
-  // Compute embedding similarity edges using pgvector <=> operator.
-  // We compute average embedding per page, then find top-K nearest neighbors.
-  // This is a materialized computation, not real-time.
-  const similarityResult = await query<{ page_id_1: number; page_id_2: number; score: number }>(
-    `WITH page_avg AS (
-       SELECT pe.page_id, AVG(pe.embedding) AS avg_embedding
-       FROM page_embeddings pe
-       JOIN pages p ON pe.page_id = p.id
-       WHERE p.deleted_at IS NULL
-       GROUP BY pe.page_id
-     ),
-     neighbors AS (
-       SELECT
-         a.page_id AS page_id_1,
-         b.page_id AS page_id_2,
-         (1 - (a.avg_embedding <=> b.avg_embedding)) AS score
-       FROM page_avg a
-       CROSS JOIN LATERAL (
-         SELECT page_id, avg_embedding
-         FROM page_avg b
-         WHERE b.page_id != a.page_id
-         ORDER BY a.avg_embedding <=> b.avg_embedding
-         LIMIT $1
-       ) b
-       WHERE (1 - (a.avg_embedding <=> b.avg_embedding)) >= $2
-     )
-     INSERT INTO page_relationships (page_id_1, page_id_2, relationship_type, score)
-     SELECT page_id_1, page_id_2, 'embedding_similarity', score
-     FROM neighbors
-     ON CONFLICT (page_id_1, page_id_2, relationship_type) DO UPDATE
-       SET score = EXCLUDED.score, created_at = NOW()
-     RETURNING page_id_1, page_id_2, score`,
-    [TOP_K, SIMILARITY_THRESHOLD],
-  );
+    // Clear all existing relationships
+    await client.query('DELETE FROM page_relationships');
 
-  // Compute label-overlap edges: pages sharing at least one label
-  const labelResult = await query<{ page_id_1: number; page_id_2: number; score: number }>(
-    `WITH label_overlaps AS (
-       SELECT
-         a.id AS page_id_1,
-         b.id AS page_id_2,
-         CASE
-           WHEN array_length(a.labels, 1) IS NULL OR array_length(b.labels, 1) IS NULL THEN 0
-           ELSE (
-             SELECT COUNT(*)::real FROM (
-               SELECT unnest(a.labels) INTERSECT SELECT unnest(b.labels)
-             ) x
-           ) / GREATEST(
-             array_length(a.labels, 1)::real,
-             array_length(b.labels, 1)::real
-           )
-         END AS score
-       FROM pages a
-       JOIN pages b ON a.id < b.id
-       WHERE a.deleted_at IS NULL AND b.deleted_at IS NULL
-         AND a.labels IS NOT NULL AND array_length(a.labels, 1) > 0
-         AND b.labels IS NOT NULL AND array_length(b.labels, 1) > 0
-         AND a.labels && b.labels
-     )
-     INSERT INTO page_relationships (page_id_1, page_id_2, relationship_type, score)
-     SELECT page_id_1, page_id_2, 'label_overlap', score
-     FROM label_overlaps
-     WHERE score > 0
-     ON CONFLICT (page_id_1, page_id_2, relationship_type) DO UPDATE
-       SET score = EXCLUDED.score, created_at = NOW()
-     RETURNING page_id_1, page_id_2, score`,
-  );
+    // Compute embedding similarity edges using pgvector <=> operator.
+    // We compute average embedding per page, then find top-K nearest neighbors.
+    // This is a materialized computation, not real-time.
+    const similarityResult = await client.query<{ page_id_1: number; page_id_2: number; score: number }>(
+      `WITH page_avg AS (
+         SELECT pe.page_id, AVG(pe.embedding) AS avg_embedding
+         FROM page_embeddings pe
+         JOIN pages p ON pe.page_id = p.id
+         WHERE p.deleted_at IS NULL
+         GROUP BY pe.page_id
+       ),
+       neighbors AS (
+         SELECT
+           a.page_id AS page_id_1,
+           b.page_id AS page_id_2,
+           (1 - (a.avg_embedding <=> b.avg_embedding)) AS score
+         FROM page_avg a
+         CROSS JOIN LATERAL (
+           SELECT page_id, avg_embedding
+           FROM page_avg b
+           WHERE b.page_id != a.page_id
+           ORDER BY a.avg_embedding <=> b.avg_embedding
+           LIMIT $1
+         ) b
+         WHERE (1 - (a.avg_embedding <=> b.avg_embedding)) >= $2
+       )
+       INSERT INTO page_relationships (page_id_1, page_id_2, relationship_type, score)
+       SELECT page_id_1, page_id_2, 'embedding_similarity', score
+       FROM neighbors
+       ON CONFLICT (page_id_1, page_id_2, relationship_type) DO UPDATE
+         SET score = EXCLUDED.score, created_at = NOW()
+       RETURNING page_id_1, page_id_2, score`,
+      [TOP_K, SIMILARITY_THRESHOLD],
+    );
 
-  const totalEdges = similarityResult.rows.length + labelResult.rows.length;
-  logger.info({ embeddingSimilarity: similarityResult.rows.length, labelOverlap: labelResult.rows.length },
-    'Page relationships computed');
-  return totalEdges;
+    // Compute label-overlap edges: pages sharing at least one label
+    const labelResult = await client.query<{ page_id_1: number; page_id_2: number; score: number }>(
+      `WITH label_overlaps AS (
+         SELECT
+           a.id AS page_id_1,
+           b.id AS page_id_2,
+           CASE
+             WHEN array_length(a.labels, 1) IS NULL OR array_length(b.labels, 1) IS NULL THEN 0
+             ELSE (
+               SELECT COUNT(*)::real FROM (
+                 SELECT unnest(a.labels) INTERSECT SELECT unnest(b.labels)
+               ) x
+             ) / GREATEST(
+               array_length(a.labels, 1)::real,
+               array_length(b.labels, 1)::real
+             )
+           END AS score
+         FROM pages a
+         JOIN pages b ON a.id < b.id
+         WHERE a.deleted_at IS NULL AND b.deleted_at IS NULL
+           AND a.labels IS NOT NULL AND array_length(a.labels, 1) > 0
+           AND b.labels IS NOT NULL AND array_length(b.labels, 1) > 0
+           AND a.labels && b.labels
+       )
+       INSERT INTO page_relationships (page_id_1, page_id_2, relationship_type, score)
+       SELECT page_id_1, page_id_2, 'label_overlap', score
+       FROM label_overlaps
+       WHERE score > 0
+       ON CONFLICT (page_id_1, page_id_2, relationship_type) DO UPDATE
+         SET score = EXCLUDED.score, created_at = NOW()
+       RETURNING page_id_1, page_id_2, score`,
+    );
+
+    await client.query('COMMIT');
+
+    const totalEdges = similarityResult.rows.length + labelResult.rows.length;
+    logger.info({ embeddingSimilarity: similarityResult.rows.length, labelOverlap: labelResult.rows.length },
+      'Page relationships computed');
+    return totalEdges;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 /**
