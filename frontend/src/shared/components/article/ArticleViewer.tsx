@@ -18,6 +18,8 @@ import {
   ConfluenceLayout,
   ConfluenceLayoutSection,
   ConfluenceLayoutCell,
+  ConfluenceSection,
+  ConfluenceColumn,
   UnknownMacro,
 } from './article-extensions';
 import { MermaidBlock } from './MermaidBlockExtension';
@@ -129,6 +131,8 @@ export function ArticleViewer({
       ConfluenceLayout,
       ConfluenceLayoutSection,
       ConfluenceLayoutCell,
+      ConfluenceSection,
+      ConfluenceColumn,
       MermaidBlock,
       UnknownMacro,
     ],

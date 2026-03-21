@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback, useState } from 'react';
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
@@ -10,10 +10,10 @@ import { lowlight } from '../../lib/lowlight';
 import {
   Bold, Italic, Strikethrough, Code, Heading1, Heading2, Heading3,
   List, ListOrdered, CheckSquare, Quote, Minus, Undo2, Redo2,
-  Table as TableIcon, Image as ImageIcon, CodeSquare,
+  Table as TableIcon, Image as ImageIcon, CodeSquare, Columns2,
   ArrowUpFromLine, ArrowDownFromLine, ArrowLeftFromLine, ArrowRightFromLine,
-  Trash2, Columns3, Rows3, Merge, SplitSquareHorizontal,
-  ToggleLeft, PanelTop,
+  Trash2, Columns3, Rows3, Merge, SplitSquareHorizontal, Square,
+  ToggleLeft, PanelTop, Workflow,
 } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { useIsLightTheme } from '../../hooks/use-is-light-theme';
@@ -22,6 +22,12 @@ import {
   ConfluenceLayout,
   ConfluenceLayoutSection,
   ConfluenceLayoutCell,
+  ConfluenceSection,
+  ConfluenceColumn,
+  DrawioDiagram,
+  isInConfluenceSection,
+  isInConfluenceLayout,
+  LAYOUT_PRESETS,
 } from './article-extensions';
 import type { Editor as EditorType } from '@tiptap/react';
 
@@ -185,6 +191,13 @@ export function EditorToolbar({ editor }: { editor: EditorType }) {
       >
         <ImageIcon size={16} />
       </ToolbarButton>
+      <ToolbarButton
+        onClick={() => editor.chain().focus().insertDrawioDiagram().run()}
+        title="Insert Draw.io Diagram"
+      >
+        <Workflow size={16} />
+      </ToolbarButton>
+      <LayoutPresetPicker editor={editor} />
 
       <div className="flex-1" />
 
@@ -309,6 +322,161 @@ export function TableContextToolbar({ editor }: { editor: EditorType }) {
   );
 }
 
+function LayoutPreview({ bars, size = 'sm' }: { bars: readonly number[]; size?: 'sm' | 'md' }) {
+  const h = size === 'sm' ? 'h-4' : 'h-5';
+  const w = size === 'sm' ? 'w-10' : 'w-12';
+  return (
+    <div className={`flex gap-0.5 ${h} ${w}`}>
+      {bars.map((flex, i) => (
+        <div key={i} style={{ flex }} className="rounded-[2px] bg-current opacity-25" />
+      ))}
+    </div>
+  );
+}
+
+function LayoutPresetPicker({ editor }: { editor: EditorType }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative">
+      <ToolbarButton onClick={() => setOpen(!open)} active={open} title="Insert Layout">
+        <Columns2 size={16} />
+      </ToolbarButton>
+      {open && (
+        <div className="absolute top-full left-0 z-50 mt-1 rounded-lg border border-border/50 bg-card p-2 shadow-lg min-w-max">
+          <p className="mb-1.5 px-1 text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Page Layout</p>
+          <div className="flex gap-1">
+            {LAYOUT_PRESETS.map((preset) => (
+              <button
+                key={preset.type}
+                onClick={() => {
+                  editor.chain().focus().insertLayout({ layoutType: preset.type }).run();
+                  setOpen(false);
+                }}
+                title={preset.label}
+                className="flex flex-col items-center gap-1 rounded-md px-2 py-1.5 hover:bg-foreground/5 transition-colors"
+              >
+                <LayoutPreview bars={preset.bars} size="md" />
+                <span className="text-[10px] text-muted-foreground whitespace-nowrap">{preset.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function LayoutContextToolbar({ editor }: { editor: EditorType }) {
+  if (!isInConfluenceLayout(editor)) return null;
+
+  const currentType = editor.getAttributes('confluenceLayoutSection')['data-layout-type'] ?? '';
+
+  return (
+    <div
+      data-testid="layout-context-toolbar"
+      className="flex flex-wrap items-center gap-0.5 border-t border-border/50 px-2 py-1.5"
+    >
+      <span className="mr-1 text-xs font-medium text-muted-foreground select-none">Layout</span>
+
+      <ToolbarSeparator />
+
+      {LAYOUT_PRESETS.map((preset) => (
+        <ToolbarButton
+          key={preset.type}
+          onClick={() => editor.chain().focus().changeLayoutType({ layoutType: preset.type }).run()}
+          active={currentType === preset.type}
+          title={preset.label}
+        >
+          <LayoutPreview bars={preset.bars} />
+        </ToolbarButton>
+      ))}
+
+      <div className="flex-1" />
+
+      <ToolbarButton
+        onClick={() => editor.chain().focus().deleteLayout().run()}
+        title="Delete layout"
+      >
+        <Trash2 size={15} className="text-destructive/70" />
+      </ToolbarButton>
+    </div>
+  );
+}
+
+export function ColumnContextToolbar({ editor }: { editor: EditorType }) {
+  if (!isInConfluenceSection(editor)) return null;
+
+  const sectionAttrs = editor.getAttributes('confluenceSection');
+  const hasBorder = sectionAttrs.border === 'true';
+
+  return (
+    <div
+      data-testid="column-context-toolbar"
+      className="flex flex-wrap items-center gap-0.5 border-t border-border/50 px-2 py-1.5"
+    >
+      <span className="mr-1 text-xs font-medium text-muted-foreground select-none">Columns</span>
+
+      <ToolbarSeparator />
+
+      {/* Add/remove columns */}
+      <ToolbarButton
+        onClick={() => editor.chain().focus().addSectionColumnBefore().run()}
+        disabled={!editor.can().addSectionColumnBefore()}
+        title="Add column before"
+      >
+        <ArrowLeftFromLine size={15} />
+      </ToolbarButton>
+      <ToolbarButton
+        onClick={() => editor.chain().focus().addSectionColumnAfter().run()}
+        disabled={!editor.can().addSectionColumnAfter()}
+        title="Add column after"
+      >
+        <ArrowRightFromLine size={15} />
+      </ToolbarButton>
+      <ToolbarButton
+        onClick={() => editor.chain().focus().removeSectionColumn().run()}
+        disabled={!editor.can().removeSectionColumn()}
+        title="Remove column"
+      >
+        <Columns3 size={15} className="text-destructive/70" />
+      </ToolbarButton>
+
+      <ToolbarSeparator />
+
+      {/* Toggle border */}
+      <ToolbarButton
+        onClick={() => editor.chain().focus().toggleSectionBorder().run()}
+        active={hasBorder}
+        title="Toggle border"
+      >
+        <Square size={15} />
+      </ToolbarButton>
+
+      <div className="flex-1" />
+
+      {/* Delete section */}
+      <ToolbarButton
+        onClick={() => editor.chain().focus().deleteSection().run()}
+        disabled={!editor.can().deleteSection()}
+        title="Delete section"
+      >
+        <Trash2 size={15} className="text-destructive/70" />
+      </ToolbarButton>
+    </div>
+  );
+}
+
 const AUTO_SAVE_DELAY = 2000;
 
 // eslint-disable-next-line react-refresh/only-export-components
@@ -361,6 +529,9 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       ConfluenceLayout,
       ConfluenceLayoutSection,
       ConfluenceLayoutCell,
+      ConfluenceSection,
+      ConfluenceColumn,
+      DrawioDiagram,
       TitledCodeBlock.configure({ lowlight }),
       ConfluenceImage.configure({ inline: false }),
       Placeholder.configure({ placeholder: placeholder ?? 'Start writing...' }),
@@ -387,6 +558,8 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
         <div className="sticky top-0 z-30 rounded-t-xl border-b border-border/50 bg-card before:absolute before:-z-10 before:-top-[100px] before:bottom-0 before:left-0 before:right-0 before:bg-background">
           <EditorToolbar editor={editor} />
           <TableContextToolbar editor={editor} />
+          <LayoutContextToolbar editor={editor} />
+          <ColumnContextToolbar editor={editor} />
         </div>
       )}
       <EditorContent

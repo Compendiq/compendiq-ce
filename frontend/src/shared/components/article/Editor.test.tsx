@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, waitFor } from '@testing-library/react';
+import { render, waitFor, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 
 vi.mock('../hooks/use-is-light-theme', () => ({
   useIsLightTheme: () => false,
@@ -31,6 +32,52 @@ describe('Editor', () => {
     // Must use the safe behind-content mask with an upward extension
     expect(classes).toMatch(/before:-z-10/);
     expect(classes).toMatch(/before:-top-\[/);
+  });
+
+  it('renders Insert Layout toolbar button', async () => {
+    const { container } = render(
+      <Editor content="<p>Hello</p>" editable={true} />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector('[title="Insert Layout"]')).toBeTruthy();
+    });
+  });
+
+  it('preserves Confluence page layout structure in read-only mode', async () => {
+    const layoutHtml = '<div class="confluence-layout"><div class="confluence-layout-section" data-layout-type="two_equal"><div class="confluence-layout-cell"><p>Left</p></div><div class="confluence-layout-cell"><p>Right</p></div></div></div>';
+    const { container } = render(
+      <Editor content={layoutHtml} editable={false} />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector('.confluence-layout')).toBeTruthy();
+    });
+
+    const section = container.querySelector('.confluence-layout-section');
+    expect(section).toHaveAttribute('data-layout-type', 'two_equal');
+
+    const cells = container.querySelectorAll('.confluence-layout-cell');
+    expect(cells).toHaveLength(2);
+  });
+
+  it('preserves Confluence column structure in read-only mode', async () => {
+    const columnHtml = '<div class="confluence-section" data-border="true"><div class="confluence-column" data-cell-width="30%"><p>Left</p></div><div class="confluence-column" data-cell-width="70%"><p>Right</p></div></div>';
+    const { container } = render(
+      <Editor content={columnHtml} editable={false} />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector('.confluence-section')).toBeTruthy();
+    });
+
+    const section = container.querySelector('.confluence-section');
+    expect(section).toHaveAttribute('data-border', 'true');
+
+    const columns = container.querySelectorAll('.confluence-column');
+    expect(columns).toHaveLength(2);
+    expect(columns[0]).toHaveAttribute('data-cell-width', '30%');
+    expect(columns[1]).toHaveAttribute('data-cell-width', '70%');
   });
 
   it('preserves Confluence image metadata attributes on mirrored images', async () => {
