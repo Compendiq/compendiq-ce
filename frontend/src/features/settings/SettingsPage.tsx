@@ -572,8 +572,13 @@ function ConfluenceTab({ settings, onSave }: { settings: SettingsResponse; onSav
     }
   }
 
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    onSave({ confluenceUrl: url, ...(pat ? { confluencePat: pat } : {}) });
+  }
+
   return (
-    <div className="space-y-4">
+    <form onSubmit={handleSubmit} className="space-y-4">
       <div>
         <label className="mb-1.5 block text-sm font-medium">Confluence URL</label>
         <input
@@ -609,6 +614,7 @@ function ConfluenceTab({ settings, onSave }: { settings: SettingsResponse; onSav
 
       <div className="flex gap-3">
         <button
+          type="button"
           onClick={testConnection}
           disabled={testing || !url}
           className="glass-button-secondary"
@@ -616,13 +622,13 @@ function ConfluenceTab({ settings, onSave }: { settings: SettingsResponse; onSav
           {testing ? 'Testing...' : 'Test Connection'}
         </button>
         <button
-          onClick={() => onSave({ confluenceUrl: url, ...(pat ? { confluencePat: pat } : {}) })}
+          type="submit"
           className="glass-button-primary"
         >
           Save
         </button>
       </div>
-    </div>
+    </form>
   );
 }
 

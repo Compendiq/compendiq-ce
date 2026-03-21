@@ -510,6 +510,19 @@ describe('ArticleViewer', () => {
     expect(editorContent.classList.contains('prose-invert')).toBe(true);
   });
 
+  it('sets role="document" and aria-readonly="true" on the TipTap editor element', async () => {
+    const html = '<p>Read only content</p>';
+    const { container } = render(<ArticleViewer content={html} />);
+
+    await waitFor(() => {
+      expect(container.querySelector('.tiptap')).toBeTruthy();
+    });
+
+    const tiptap = container.querySelector('.tiptap')!;
+    expect(tiptap.getAttribute('role')).toBe('document');
+    expect(tiptap.getAttribute('aria-readonly')).toBe('true');
+  });
+
   it('renders empty mermaid code blocks with empty state placeholder', async () => {
     const html = '<pre><code class="language-mermaid">   </code></pre>';
 

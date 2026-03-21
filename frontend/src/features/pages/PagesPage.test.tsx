@@ -615,6 +615,25 @@ describe('PagesPage', () => {
 
   // --- Performance: memoized page list items (#521) ---
 
+  // --- Mobile responsive header buttons (#499) ---
+
+  it('wraps header action button text in hidden sm:inline spans for mobile', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    const trashBtn = screen.getByTestId('trash-link');
+    // The button text "Trash" should be in a span with responsive classes
+    const span = trashBtn.querySelector('span');
+    expect(span).toBeTruthy();
+    expect(span?.className).toContain('hidden');
+    expect(span?.className).toContain('sm:inline');
+  });
+
+  it('uses flex-wrap on the header button container', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    const trashBtn = screen.getByTestId('trash-link');
+    const container = trashBtn.parentElement!;
+    expect(container.className).toContain('flex-wrap');
+  });
+
   describe('performance: memoized page list items (#521)', () => {
     it('renders page list items with stable keys (by id, not index)', async () => {
       render(<PagesPage />, { wrapper: createWrapper() });

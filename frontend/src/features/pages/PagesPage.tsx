@@ -334,14 +334,14 @@ export function PagesPage() {
             Browse and manage your knowledge base
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <button
             onClick={() => navigate('/trash')}
             className="glass-card flex items-center gap-2 px-4 py-2 text-sm hover:bg-foreground/5"
             data-testid="trash-link"
           >
             <Trash2 size={16} />
-            Trash
+            <span className="hidden sm:inline">Trash</span>
           </button>
           <button
             onClick={() => syncMutation.mutate()}
@@ -349,14 +349,14 @@ export function PagesPage() {
             className="glass-card flex items-center gap-2 px-4 py-2 text-sm hover:bg-foreground/5 disabled:opacity-50"
           >
             <RefreshCw size={16} className={cn(syncStatus?.status === 'syncing' && 'animate-spin')} />
-            {syncStatus?.status === 'syncing' ? 'Syncing...' : 'Sync'}
+            <span className="hidden sm:inline">{syncStatus?.status === 'syncing' ? 'Syncing...' : 'Sync'}</span>
           </button>
           <button
             onClick={() => navigate('/pages/new')}
             className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
           >
             <Plus size={16} />
-            New Page
+            <span className="hidden sm:inline">New Page</span>
             <kbd className="hidden rounded border border-primary-foreground/30 px-1 py-0.5 text-[10px] font-normal sm:inline">
               {navigator.platform?.includes('Mac') ? '\u2325' : 'Alt'}+N
             </kbd>

@@ -230,7 +230,7 @@ export function GraphPage() {
       }
 
       // Label (show when zoomed in or hovered)
-      if (globalScale > 1.5 || isHovered || isCenter) {
+      if (globalScale > 0.3 || isHovered || isCenter) {
         ctx.font = `${isHovered || isCenter ? 'bold ' : ''}${fontSize}px Inter, system-ui, sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
