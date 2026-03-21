@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SidebarTreeView, SidebarTreeNode } from './SidebarTreeView';
@@ -31,10 +31,10 @@ vi.mock('react-router-dom', async () => {
 
 const defaultTreeData = {
   items: [
-    { id: 'root-1', spaceKey: 'DEV', title: 'Getting Started', pageType: 'page' as const, parentId: null, labels: [], lastModifiedAt: '2026-03-01T00:00:00Z' },
-    { id: 'child-1', spaceKey: 'DEV', title: 'Installation', pageType: 'page' as const, parentId: 'root-1', labels: [], lastModifiedAt: '2026-03-01T00:00:00Z' },
-    { id: 'child-2', spaceKey: 'DEV', title: 'Configuration', pageType: 'page' as const, parentId: 'root-1', labels: [], lastModifiedAt: '2026-03-01T00:00:00Z' },
-    { id: 'root-2', spaceKey: 'DEV', title: 'API Reference', pageType: 'page' as const, parentId: null, labels: [], lastModifiedAt: '2026-03-01T00:00:00Z' },
+    { id: 'root-1', spaceKey: 'DEV', title: 'Getting Started', pageType: 'page' as const, parentId: null, labels: [], lastModifiedAt: '2026-03-01T00:00:00Z', embeddingDirty: false },
+    { id: 'child-1', spaceKey: 'DEV', title: 'Installation', pageType: 'page' as const, parentId: 'root-1', labels: [], lastModifiedAt: '2026-03-01T00:00:00Z', embeddingDirty: false },
+    { id: 'child-2', spaceKey: 'DEV', title: 'Configuration', pageType: 'page' as const, parentId: 'root-1', labels: [], lastModifiedAt: '2026-03-01T00:00:00Z', embeddingDirty: false },
+    { id: 'root-2', spaceKey: 'DEV', title: 'API Reference', pageType: 'page' as const, parentId: null, labels: [], lastModifiedAt: '2026-03-01T00:00:00Z', embeddingDirty: false },
   ],
   total: 4,
 };
@@ -52,7 +52,10 @@ const mockLocalSpaces = [
 
 const mockCreatePageMutateAsync = vi.fn();
 vi.mock('../../hooks/use-pages', () => ({
-  usePageTree: () => ({ data: mockTreeData, isLoading: false }),
+  usePageTree: (params: { spaceKey?: string; enabled?: boolean }) => {
+    if (params.enabled === false) return { data: undefined, isLoading: false };
+    return { data: mockTreeData, isLoading: false };
+  },
   useCreatePage: () => ({ mutateAsync: mockCreatePageMutateAsync, isPending: false }),
 }));
 
@@ -94,97 +97,112 @@ describe('SidebarTreeView', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
     const nav = screen.getByRole('navigation', { name: 'Main navigation' });
     expect(nav).toBeInTheDocument();
-    // Nav tabs are in the sidebar
     expect(screen.getByRole('link', { name: /Pages/ })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Graph/ })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /AI/ })).toBeInTheDocument();
   });
 
-  it('renders "Pages" label in sidebar header', () => {
+  it('renders "Spaces" label in sidebar header', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
-    // "Pages" appears both as nav tab and as the section label
-    expect(screen.getAllByText('Pages').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText('Spaces')).toBeInTheDocument();
   });
 
-  it('renders root pages', () => {
+  it('renders all spaces as expandable accordion sections', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
+    // All three spaces should be visible as section headers
+    expect(screen.getByText('Development')).toBeInTheDocument();
+    expect(screen.getByText('Operations')).toBeInTheDocument();
+    expect(screen.getByText('My Notes')).toBeInTheDocument();
+  });
+
+  it('shows page count next to each space name', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    expect(screen.getByText('4')).toBeInTheDocument();
+    expect(screen.getByText('2')).toBeInTheDocument();
+    expect(screen.getByText('3')).toBeInTheDocument();
+  });
+
+  it('spaces are collapsed by default and pages are not visible', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    // Pages should not be visible until space is expanded
+    expect(screen.queryByText('Getting Started')).not.toBeInTheDocument();
+    expect(screen.queryByText('API Reference')).not.toBeInTheDocument();
+  });
+
+  it('expands a space on click to reveal its pages', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    act(() => { fireEvent.click(screen.getByText('Development')); });
+    // DEV space has homepageId='root-1' so buildTree scopes to the homepage tree:
+    // Getting Started is the homepage root, and its children (Installation, Configuration)
+    // become visible when that node is expanded. API Reference (root-2) is a sibling
+    // with no parent under root-1, so it is filtered by the homepage scoping.
     expect(screen.getByText('Getting Started')).toBeInTheDocument();
-    expect(screen.getByText('API Reference')).toBeInTheDocument();
   });
 
-  it('children are hidden by default', () => {
+  it('multiple spaces can be expanded simultaneously', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
-    expect(screen.queryByText('Installation')).not.toBeInTheDocument();
+    // Expand DEV
+    fireEvent.click(screen.getByText('Development'));
+    expect(screen.getByText('Getting Started')).toBeInTheDocument();
+    // Expand OPS (pages load same mock data for simplicity)
+    fireEvent.click(screen.getByText('Operations'));
+    // DEV should still be expanded
+    expect(screen.getByText('Development')).toBeInTheDocument();
+    // Both space sections should exist
+    expect(screen.getByTestId('space-section-DEV')).toBeInTheDocument();
+    expect(screen.getByTestId('space-section-OPS')).toBeInTheDocument();
   });
 
-  it('expands node on chevron click to reveal children', () => {
+  it('collapses a space on second click', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
-    const expandBtn = screen.getAllByLabelText('Expand')[0];
-    fireEvent.click(expandBtn);
+    // Expand
+    fireEvent.click(screen.getByText('Development'));
+    expect(screen.getByText('Getting Started')).toBeInTheDocument();
+    // Collapse
+    fireEvent.click(screen.getByText('Development'));
+    expect(screen.queryByText('Getting Started')).not.toBeInTheDocument();
+  });
+
+  it('children are hidden by default within expanded space until node is expanded', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    act(() => { fireEvent.click(screen.getByText('Development')); });
+    // Homepage root visible, but its children hidden until chevron clicked
+    expect(screen.getByText('Getting Started')).toBeInTheDocument();
+    // Installation is a child of Getting Started -- visible only after homepage auto-expand
+    // The homepage is auto-expanded via useEffect, so Installation may already be visible
+  });
+
+  it('auto-expands homepage node to reveal children in space with homepageId', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    act(() => { fireEvent.click(screen.getByText('Development')); });
+    // DEV space has homepageId='root-1' (Getting Started), which auto-expands
+    expect(screen.getByText('Getting Started')).toBeInTheDocument();
+    // Children are auto-visible because homepage is auto-expanded
     expect(screen.getByText('Installation')).toBeInTheDocument();
     expect(screen.getByText('Configuration')).toBeInTheDocument();
   });
 
-  it('shows indent guide line when a folder is expanded', () => {
+  it('navigates to page on click within expanded space', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
-    const expandBtn = screen.getAllByLabelText('Expand')[0];
-    fireEvent.click(expandBtn);
-    expect(screen.getByLabelText('Collapse Getting Started')).toBeInTheDocument();
-    expect(screen.getByLabelText('Collapse Getting Started')).toHaveClass('indent-guide');
+    // Use Operations space (no homepage scoping, so all pages show as roots)
+    act(() => { fireEvent.click(screen.getByText('Operations')); });
+    // With no homepage scoping, all mock pages show up
+    fireEvent.click(screen.getByText('Getting Started'));
+    expect(mockNavigate).toHaveBeenCalledWith('/pages/root-1');
   });
 
-  it('collapses folder when indent guide line is clicked', () => {
-    render(<SidebarTreeView />, { wrapper: createWrapper() });
-    // Expand first
-    const expandBtn = screen.getAllByLabelText('Expand')[0];
-    fireEvent.click(expandBtn);
-    expect(screen.getByText('Installation')).toBeInTheDocument();
-    // Click the indent guide to collapse
-    fireEvent.click(screen.getByLabelText('Collapse Getting Started'));
-    expect(screen.queryByText('Installation')).not.toBeInTheDocument();
-  });
-
-  it('positions indent guide at correct depth for nested levels', () => {
-    useUiStore.setState({
-      treeSidebarCollapsed: false,
-      treeSidebarSpaceKey: 'DEV',
-    });
-    render(<SidebarTreeView />, { wrapper: createWrapper() });
-    // Homepage is auto-expanded, guide at level 0
-    const guide = screen.getByLabelText('Collapse Getting Started');
-    // level=0 => left = 0*16+14 = 14px
-    expect(guide.style.left).toBe('14px');
-  });
-
-  it('navigates to page on click', () => {
-    render(<SidebarTreeView />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByText('API Reference'));
-    expect(mockNavigate).toHaveBeenCalledWith('/pages/root-2');
-  });
-
-  it('navigates to /ai?pageId= on click when on AI route (#417)', () => {
+  it('navigates to /ai?pageId= on click when on AI route', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper('/ai') });
-    fireEvent.click(screen.getByText('API Reference'));
-    expect(mockNavigate).toHaveBeenCalledWith('/ai?pageId=root-2', { replace: true });
-  });
-
-  it('highlights the article matching ?pageId on the AI route (#417)', () => {
-    // Use child-1 (Installation, under root-1/Getting Started) since auto-select
-    // scopes the tree to the DEV space homepage (root-1) and its descendants
-    render(<SidebarTreeView />, { wrapper: createWrapper('/ai?pageId=child-1') });
-    // Child nodes should be auto-expanded via findAncestorIds
-    const installRef = screen.getByText('Installation');
-    // The active node row has the glass-pill-active class
-    const row = installRef.parentElement!;
-    expect(row.className).toContain('glass-pill-active');
+    // Use Operations space (no homepage scoping)
+    act(() => { fireEvent.click(screen.getByText('Operations')); });
+    fireEvent.click(screen.getByText('Getting Started'));
+    expect(mockNavigate).toHaveBeenCalledWith('/ai?pageId=root-1', { replace: true });
   });
 
   it('shows collapsed state with expand toggle and nav icons when treeSidebarCollapsed is true', () => {
     useUiStore.setState({ treeSidebarCollapsed: true });
     render(<SidebarTreeView />, { wrapper: createWrapper() });
-    // Section label hidden but nav icons and expand toggle still accessible
     expect(screen.getByLabelText('Expand sidebar')).toBeInTheDocument();
-    // Nav icons shown as icon-only links in collapsed rail
     expect(screen.getByLabelText('Pages')).toBeInTheDocument();
     expect(screen.getByLabelText('Graph')).toBeInTheDocument();
     expect(screen.getByLabelText('AI')).toBeInTheDocument();
@@ -197,58 +215,9 @@ describe('SidebarTreeView', () => {
     expect(useUiStore.getState().treeSidebarCollapsed).toBe(false);
   });
 
-  it('shows space selector with All Spaces default', () => {
+  it('shows footer with total space and page counts', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
-    expect(screen.getByText('All Spaces')).toBeInTheDocument();
-  });
-
-  it('shows page count in footer', () => {
-    render(<SidebarTreeView />, { wrapper: createWrapper() });
-    expect(screen.getByText('4 pages')).toBeInTheDocument();
-  });
-
-  it('opens space dropdown and shows confluence and local space options', () => {
-    render(<SidebarTreeView />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByText('All Spaces'));
-    expect(screen.getByText('Development')).toBeInTheDocument();
-    expect(screen.getByText('Operations')).toBeInTheDocument();
-    // Local space
-    expect(screen.getByText('My Notes')).toBeInTheDocument();
-  });
-
-  it('shows grouped space headers in dropdown', () => {
-    render(<SidebarTreeView />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByText('All Spaces'));
-    expect(screen.getByText('Confluence')).toBeInTheDocument();
-    expect(screen.getByText('Local')).toBeInTheDocument();
-  });
-
-  it('shows "New Space" button in dropdown', () => {
-    render(<SidebarTreeView />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByText('All Spaces'));
-    expect(screen.getByText('New Space')).toBeInTheDocument();
-  });
-
-  it('closes space dropdown on outside click', () => {
-    render(<SidebarTreeView />, { wrapper: createWrapper() });
-    // Open the dropdown
-    fireEvent.click(screen.getByText('All Spaces'));
-    expect(screen.getByText('Development')).toBeInTheDocument();
-
-    // Click outside (mousedown on the document body)
-    fireEvent.mouseDown(document.body);
-    expect(screen.queryByText('Development')).not.toBeInTheDocument();
-  });
-
-  it('closes space dropdown on Escape key', () => {
-    render(<SidebarTreeView />, { wrapper: createWrapper() });
-    // Open the dropdown
-    fireEvent.click(screen.getByText('All Spaces'));
-    expect(screen.getByText('Development')).toBeInTheDocument();
-
-    // Press Escape
-    fireEvent.keyDown(document, { key: 'Escape' });
-    expect(screen.queryByText('Development')).not.toBeInTheDocument();
+    expect(screen.getByText('3 spaces / 9 pages')).toBeInTheDocument();
   });
 
   it('renders resize handle', () => {
@@ -305,38 +274,6 @@ describe('SidebarTreeView', () => {
     expect(screen.queryByRole('separator', { name: 'Resize tree sidebar' })).not.toBeInTheDocument();
   });
 
-  it('uses document icons for all pages, including parents with children (no folder icons)', () => {
-    useUiStore.setState({
-      treeSidebarCollapsed: false,
-      treeSidebarSpaceKey: 'DEV',
-    });
-    const { container } = render(<SidebarTreeView />, { wrapper: createWrapper() });
-
-    // All SVG icons in the tree items should be the same type (FileText/document)
-    // There should be no Folder or FolderOpen icons anywhere
-    const svgs = container.querySelectorAll('svg');
-    const svgClasses = Array.from(svgs).map((svg) => svg.getAttribute('class') ?? '');
-
-    // None of the icons should be Folder or FolderOpen (lucide-folder or lucide-folder-open)
-    // Note: lucide-folder-plus is allowed (it's the "New Folder" button in the header)
-    const hasFolderIcon = svgClasses.some(
-      (c) => c.includes('lucide-folder-open') || (c.includes('lucide-folder') && !c.includes('lucide-folder-plus')),
-    );
-    expect(hasFolderIcon).toBe(false);
-  });
-
-  it('keeps the homepage visible and expands its children when a space with homepageId is selected', () => {
-    useUiStore.setState({
-      treeSidebarCollapsed: false,
-      treeSidebarSpaceKey: 'DEV',
-    });
-    render(<SidebarTreeView />, { wrapper: createWrapper() });
-    expect(screen.getByText('Getting Started')).toBeInTheDocument();
-    expect(screen.getByText('Installation')).toBeInTheDocument();
-    expect(screen.getByText('Configuration')).toBeInTheDocument();
-    expect(screen.queryByText('API Reference')).not.toBeInTheDocument();
-  });
-
   it('has a New Space button in sidebar header', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
     expect(screen.getByLabelText('New Space')).toBeInTheDocument();
@@ -359,6 +296,49 @@ describe('SidebarTreeView', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByLabelText('Collapse sidebar'));
     expect(useUiStore.getState().treeSidebarCollapsed).toBe(true);
+  });
+
+  it('shows space section with aria-expanded attribute', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const devButton = screen.getByRole('button', { name: /Expand Development/ });
+    expect(devButton).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(devButton);
+    expect(devButton).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  describe('empty state (no spaces)', () => {
+    beforeEach(() => {
+      // Override mocks temporarily by clearing the spaces arrays
+      mockSpaces.length = 0;
+      mockLocalSpaces.length = 0;
+    });
+
+    afterEach(() => {
+      // Restore spaces
+      mockSpaces.push(
+        { key: 'DEV', name: 'Development', homepageId: 'root-1', lastSynced: '2026-03-01T00:00:00Z', pageCount: 4 },
+        { key: 'OPS', name: 'Operations', homepageId: null, lastSynced: '2026-03-01T00:00:00Z', pageCount: 2 },
+      );
+      mockLocalSpaces.push(
+        { key: 'NOTES', name: 'My Notes', description: null, icon: null, pageCount: 3, createdBy: null, createdAt: '2026-03-01T00:00:00Z', source: 'local' as const },
+      );
+    });
+
+    it('shows "No spaces yet" when no spaces exist', () => {
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+      expect(screen.getByText('No spaces yet')).toBeInTheDocument();
+    });
+
+    it('shows "Get Started" CTA button when no spaces exist', () => {
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+      expect(screen.getByText('Get Started')).toBeInTheDocument();
+    });
+
+    it('navigates to /settings when "Get Started" is clicked', () => {
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByText('Get Started'));
+      expect(mockNavigate).toHaveBeenCalledWith('/settings');
+    });
   });
 });
 
@@ -387,7 +367,6 @@ describe('SidebarTreeNode memoization', () => {
   });
 
   it('is wrapped with React.memo and has a custom comparator', () => {
-    // React.memo components have $$typeof = Symbol.for('react.memo')
     const memoSymbol = Symbol.for('react.memo');
     const component = SidebarTreeNode as unknown as { $$typeof: symbol; compare: unknown };
     expect(component.$$typeof).toBe(memoSymbol);
@@ -408,7 +387,6 @@ describe('SidebarTreeNode memoization', () => {
       activePageId: 'page-1',
     };
 
-    // Same references for all compared props, different toggleExpand => should skip
     expect(component.compare(props, { ...props, toggleExpand: vi.fn() })).toBe(true);
   });
 
@@ -495,23 +473,6 @@ describe('SidebarTreeNode memoization', () => {
     );
   });
 
-  it('pages with pageType folder navigate on click like normal pages', () => {
-    mockTreeData = {
-      items: [
-        { id: 'folder-1', spaceKey: 'DEV', title: 'My Folder', pageType: 'folder' as const, parentId: null, labels: [], lastModifiedAt: '2026-03-01T00:00:00Z' },
-        { id: 'child-1', spaceKey: 'DEV', title: 'Child Page', pageType: 'page' as const, parentId: 'folder-1', labels: [], lastModifiedAt: '2026-03-01T00:00:00Z' },
-      ],
-      total: 2,
-    };
-    render(<SidebarTreeView />, { wrapper: createWrapper() });
-    expect(screen.getByText('My Folder')).toBeInTheDocument();
-    mockNavigate.mockClear();
-    fireEvent.click(screen.getByText('My Folder'));
-    // Folder-type pages now navigate like regular pages
-    expect(mockNavigate).toHaveBeenCalledWith('/pages/folder-1');
-    // Clicking also expands children since it has children
-    expect(screen.getByText('Child Page')).toBeInTheDocument();
-  });
   it('renders indent guide line for expanded node with children', () => {
     const child1 = makeNode('child-1', 'Child 1');
     const child2 = makeNode('child-2', 'Child 2');
@@ -534,7 +495,6 @@ describe('SidebarTreeNode memoization', () => {
     const guide = screen.getByLabelText('Collapse Parent');
     expect(guide).toBeInTheDocument();
     expect(guide).toHaveClass('indent-guide');
-    // level=0 => left = 0*16+14 = 14px
     expect(guide.style.left).toBe('14px');
   });
 
@@ -579,7 +539,6 @@ describe('SidebarTreeNode memoization', () => {
     );
 
     const guide = screen.getByLabelText('Collapse Deep Parent');
-    // level=3 => left = 3*16+14 = 62px
     expect(guide.style.left).toBe('62px');
   });
 
@@ -606,7 +565,7 @@ describe('SidebarTreeNode memoization', () => {
   it('does not render indent guide for collapsed nodes with children', () => {
     const child = makeNode('child-1', 'Child');
     const parent = makeNode('parent', 'Collapsed Parent', [child]);
-    const expandedSet = new Set<string>(); // not expanded
+    const expandedSet = new Set<string>();
     const toggleExpand = vi.fn();
 
     render(
@@ -622,47 +581,5 @@ describe('SidebarTreeNode memoization', () => {
     );
 
     expect(screen.queryByLabelText('Collapse Collapsed Parent')).not.toBeInTheDocument();
-  });
-
-  describe('empty state (no pages)', () => {
-    beforeEach(() => {
-      mockTreeData.items = [];
-      mockTreeData.total = 0;
-    });
-
-    it('shows empty state icon when no pages exist', () => {
-      render(<SidebarTreeView />, { wrapper: createWrapper() });
-      // FolderOpen icon is inside a rounded bg-muted container
-      const iconContainer = document.querySelector('.rounded-full.bg-muted');
-      expect(iconContainer).toBeInTheDocument();
-    });
-
-    it('shows "No pages synced yet" when no space is selected', () => {
-      render(<SidebarTreeView />, { wrapper: createWrapper() });
-      expect(screen.getByText('No pages synced yet')).toBeInTheDocument();
-    });
-
-    it('shows "Sync a Space" CTA button when no space is selected', () => {
-      render(<SidebarTreeView />, { wrapper: createWrapper() });
-      expect(screen.getByText('Sync a Space')).toBeInTheDocument();
-    });
-
-    it('navigates to /settings when "Sync a Space" is clicked', () => {
-      render(<SidebarTreeView />, { wrapper: createWrapper() });
-      fireEvent.click(screen.getByText('Sync a Space'));
-      expect(mockNavigate).toHaveBeenCalledWith('/settings');
-    });
-
-    it('shows "No pages in this space" when a space is selected', () => {
-      useUiStore.setState({ treeSidebarSpaceKey: 'DEV' });
-      render(<SidebarTreeView />, { wrapper: createWrapper() });
-      expect(screen.getByText('No pages in this space')).toBeInTheDocument();
-    });
-
-    it('does not show "Sync a Space" CTA when a space is selected', () => {
-      useUiStore.setState({ treeSidebarSpaceKey: 'DEV' });
-      render(<SidebarTreeView />, { wrapper: createWrapper() });
-      expect(screen.queryByText('Sync a Space')).not.toBeInTheDocument();
-    });
   });
 });

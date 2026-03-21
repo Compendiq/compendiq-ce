@@ -127,8 +127,8 @@ interface PageTreeResponse {
   total: number;
 }
 
-export function usePageTree(params: { spaceKey?: string } = {}) {
-  const { spaceKey } = params;
+export function usePageTree(params: { spaceKey?: string; enabled?: boolean } = {}) {
+  const { spaceKey, enabled = true } = params;
 
   const queryKey = useMemo(
     () => ['pages', 'tree', { spaceKey }] as const,
@@ -144,6 +144,7 @@ export function usePageTree(params: { spaceKey?: string } = {}) {
   return useQuery<PageTreeResponse>({
     queryKey,
     queryFn: () => apiFetch(`/pages/tree${qs ? `?${qs}` : ''}`),
+    enabled,
   });
 }
 

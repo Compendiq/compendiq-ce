@@ -312,6 +312,18 @@ describe('embedding-service', () => {
       // client was released
       expect(mockClient.release).toHaveBeenCalledTimes(1);
     });
+
+    it('should pass SIMILARITY_THRESHOLD=0.4 to the similarity query', async () => {
+      await computePageRelationships();
+
+      // calls[2] = similarity CTE INSERT with params [TOP_K, SIMILARITY_THRESHOLD]
+      const similarityCall = mockClient.query.mock.calls.find(
+        (call) => typeof call[0] === 'string' && (call[0] as string).includes('embedding_similarity'),
+      );
+      expect(similarityCall).toBeDefined();
+      // $2 is the similarity threshold
+      expect(similarityCall![1][1]).toBe(0.4);
+    });
   });
 
   describe('processDirtyPages', () => {

@@ -654,7 +654,7 @@ export async function resetFailedEmbeddings(): Promise<number> {
  */
 export async function computePageRelationships(): Promise<number> {
   const TOP_K = 5;
-  const SIMILARITY_THRESHOLD = 0.7; // cosine similarity (1 - cosine_distance)
+  const SIMILARITY_THRESHOLD = 0.4; // cosine similarity (1 - cosine_distance) — lowered from 0.7 to surface more connections in small corpora
 
   // Wrap all three queries in a single transaction so the graph is never
   // visible as empty during the window between DELETE and INSERT.
