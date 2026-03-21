@@ -105,20 +105,40 @@ function AiAssistantInner() {
     >
       {/* Mode selector — Obsidian-like: minimal, no heavy glass */}
       <div className="flex flex-wrap items-center gap-1 rounded-xl border border-border/40 bg-card/50 px-3 py-2 backdrop-blur-sm">
-        {MODE_BUTTONS.map(({ key, icon: Icon, label }) => (
-          <button
-            key={key}
-            onClick={() => setMode(key)}
-            className={cn(
-              'flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs transition-colors',
-              mode === key
-                ? 'bg-primary/12 font-medium text-primary'
-                : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
-            )}
-          >
-            <Icon size={13} /> {label}
-          </button>
-        ))}
+        <div
+          role="tablist"
+          aria-label="AI mode"
+          className="flex items-center gap-1"
+          onKeyDown={(e) => {
+            if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+              e.preventDefault();
+              const keys = MODE_BUTTONS.map((b) => b.key);
+              const idx = keys.indexOf(mode);
+              const next = e.key === 'ArrowRight'
+                ? (idx + 1) % keys.length
+                : (idx - 1 + keys.length) % keys.length;
+              setMode(keys[next]);
+            }
+          }}
+        >
+          {MODE_BUTTONS.map(({ key, icon: Icon, label }) => (
+            <button
+              key={key}
+              role="tab"
+              aria-selected={mode === key}
+              tabIndex={mode === key ? 0 : -1}
+              onClick={() => setMode(key)}
+              className={cn(
+                'flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs transition-colors',
+                mode === key
+                  ? 'bg-primary/12 font-medium text-primary'
+                  : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
+              )}
+            >
+              <Icon size={13} /> {label}
+            </button>
+          ))}
+        </div>
 
         <div className="flex-1" />
 
