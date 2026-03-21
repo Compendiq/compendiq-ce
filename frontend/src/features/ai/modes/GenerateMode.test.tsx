@@ -44,6 +44,11 @@ vi.mock('../../../shared/hooks/use-spaces', () => ({
   useSpaces: () => mockSpacesData,
 }));
 
+let mockLocalSpacesData: { data: unknown[] | undefined } = { data: undefined };
+vi.mock('../../../shared/hooks/use-standalone', () => ({
+  useLocalSpaces: () => mockLocalSpacesData,
+}));
+
 const toastErrorMock = vi.fn();
 const toastSuccessMock = vi.fn();
 vi.mock('sonner', () => ({
@@ -86,8 +91,13 @@ describe('GenerateMode', () => {
     mockIsExtracting.value = false;
     mockSpacesData = {
       data: [
-        { key: 'DEV', name: 'Development', homepageId: null, lastSynced: '', pageCount: 10 },
-        { key: 'OPS', name: 'Operations', homepageId: null, lastSynced: '', pageCount: 5 },
+        { key: 'DEV', name: 'Development', homepageId: null, lastSynced: '', pageCount: 10, source: 'confluence' },
+        { key: 'OPS', name: 'Operations', homepageId: null, lastSynced: '', pageCount: 5, source: 'confluence' },
+      ],
+    };
+    mockLocalSpacesData = {
+      data: [
+        { key: 'MY_NOTES', name: 'My Notes', pageCount: 3, source: 'local' },
       ],
     };
     useAuthStore.getState().setAuth('test-token', {
@@ -453,7 +463,7 @@ describe('GenerateMode', () => {
       expect(titleInput.value).toBe('Getting Started');
     });
 
-    it('renders space selector with available spaces', () => {
+    it('renders space selector with available spaces including local (#527)', () => {
       render(
         <GenerateSavePanel generatedContent={sampleMarkdown} onSaved={onSavedMock} />,
         { wrapper: createWrapper() },
@@ -462,12 +472,13 @@ describe('GenerateMode', () => {
       const spaceSelect = screen.getByTestId('generate-space-select');
       expect(spaceSelect).toBeInTheDocument();
 
-      // Should have the placeholder + 2 spaces
+      // Should have the placeholder + 2 confluence + 1 local space
       const options = within(spaceSelect).getAllByRole('option');
-      expect(options).toHaveLength(3);
+      expect(options).toHaveLength(4);
       expect(options[0].textContent).toBe('Select space...');
       expect(options[1].textContent).toBe('Development');
       expect(options[2].textContent).toBe('Operations');
+      expect(options[3].textContent).toBe('My Notes');
     });
 
     it('disables save button when title is empty', () => {
@@ -564,7 +575,7 @@ describe('GenerateMode', () => {
         expect(body.bodyHtml).toContain('Getting Started');
       });
 
-      // Success toast
+      // Success toast (Confluence space)
       await waitFor(() => {
         expect(toastSuccessMock).toHaveBeenCalledWith('Page "Getting Started" created in Confluence');
       });
@@ -733,6 +744,70 @@ describe('GenerateMode', () => {
         expect(body.bodyHtml).toContain('<strong>Bold</strong>');
         expect(body.bodyHtml).toContain('<em>italic</em>');
         expect(body.bodyHtml).toContain('<li>Item 1</li>');
+      });
+    });
+
+    it('shows "Save Locally" button when a local space is selected (#528)', () => {
+      render(
+        <GenerateSavePanel generatedContent={sampleMarkdown} onSaved={onSavedMock} />,
+        { wrapper: createWrapper() },
+      );
+
+      // Select a local space
+      const spaceSelect = screen.getByTestId('generate-space-select');
+      fireEvent.change(spaceSelect, { target: { value: 'MY_NOTES' } });
+
+      // Button should say "Save Locally"
+      const saveBtn = screen.getByTestId('generate-save-button');
+      expect(saveBtn.textContent).toContain('Save Locally');
+    });
+
+    it('shows "Save to Confluence" button when a confluence space is selected (#528)', () => {
+      render(
+        <GenerateSavePanel generatedContent={sampleMarkdown} onSaved={onSavedMock} />,
+        { wrapper: createWrapper() },
+      );
+
+      // Select a Confluence space
+      const spaceSelect = screen.getByTestId('generate-space-select');
+      fireEvent.change(spaceSelect, { target: { value: 'DEV' } });
+
+      // Button should say "Save to Confluence"
+      const saveBtn = screen.getByTestId('generate-save-button');
+      expect(saveBtn.textContent).toContain('Save to Confluence');
+    });
+
+    it('shows correct toast when saving to a local space (#528)', async () => {
+      apiFetchMock.mockImplementation((path: string, opts?: RequestInit) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'llama3' }]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        if (path === '/pages' && opts?.method === 'POST') {
+          return Promise.resolve({ id: 'new-page-local', title: 'Getting Started', version: 1 });
+        }
+        return Promise.resolve([]);
+      });
+
+      render(
+        <GenerateSavePanel generatedContent={sampleMarkdown} onSaved={onSavedMock} />,
+        { wrapper: createWrapper() },
+      );
+
+      // Select local space
+      const spaceSelect = screen.getByTestId('generate-space-select');
+      fireEvent.change(spaceSelect, { target: { value: 'MY_NOTES' } });
+
+      // Click save
+      fireEvent.click(screen.getByTestId('generate-save-button'));
+
+      await waitFor(() => {
+        expect(toastSuccessMock).toHaveBeenCalledWith('Page "Getting Started" created locally');
       });
     });
   });

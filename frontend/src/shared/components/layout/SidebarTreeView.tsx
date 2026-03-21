@@ -261,7 +261,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
         key: s.key,
         name: s.name,
         pageCount: s.pageCount,
-        source: 'confluence',
+        source: s.source ?? 'confluence',
         homepageId: s.homepageId,
       }));
     }

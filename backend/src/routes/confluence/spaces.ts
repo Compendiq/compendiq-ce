@@ -24,9 +24,10 @@ export async function spacesRoutes(fastify: FastifyInstance) {
       homepage_id: string | null;
       homepage_numeric_id: number | null;
       last_synced: Date;
+      source: string;
     }>(
       `SELECT cs.space_key, cs.space_name, cs.homepage_id,
-              hp.id as homepage_numeric_id, cs.last_synced
+              hp.id as homepage_numeric_id, cs.last_synced, cs.source
        FROM spaces cs
        LEFT JOIN pages hp ON (
          hp.confluence_id = cs.homepage_id
@@ -53,6 +54,7 @@ export async function spacesRoutes(fastify: FastifyInstance) {
       homepageId: row.homepage_numeric_id ? String(row.homepage_numeric_id) : null,
       lastSynced: row.last_synced,
       pageCount: counts.get(row.space_key) ?? 0,
+      source: row.source as 'confluence' | 'local',
     }));
 
     const syncedByKey = new Map(syncedSpaces.map((space) => [space.key, space]));
@@ -65,6 +67,7 @@ export async function spacesRoutes(fastify: FastifyInstance) {
         homepageId: null,
         lastSynced: null,
         pageCount: 0,
+        source: 'confluence' as const,
       }));
 
     const spaces = [...syncedSpaces, ...unsyncedSelections];

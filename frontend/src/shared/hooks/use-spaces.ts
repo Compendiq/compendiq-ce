@@ -7,6 +7,7 @@ interface Space {
   homepageId: string | null;
   lastSynced: string | null;
   pageCount: number;
+  source: 'confluence' | 'local';
 }
 
 interface AvailableSpace {

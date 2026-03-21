@@ -112,6 +112,9 @@ describe('GET /api/pages/tree', () => {
   });
 
   it('should return all pages with minimal fields and numeric IDs', async () => {
+    // First query: local spaces lookup
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
+    // Second query: tree pages
     mockQueryFn.mockResolvedValueOnce({
       rows: [
         {
@@ -166,6 +169,9 @@ describe('GET /api/pages/tree', () => {
   });
 
   it('should filter by spaceKey', async () => {
+    // Local spaces lookup
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
+    // Tree pages
     mockQueryFn.mockResolvedValueOnce({ rows: [] });
 
     const response = await app.inject({
@@ -174,13 +180,16 @@ describe('GET /api/pages/tree', () => {
     });
 
     expect(response.statusCode).toBe(200);
-    // Verify the SQL includes space_key filter
-    const sqlArg = mockQueryFn.mock.calls[0][0] as string;
+    // Verify the SQL includes space_key filter (second query after local spaces lookup)
+    const sqlArg = mockQueryFn.mock.calls[1][0] as string;
     expect(sqlArg).toContain('space_key');
-    expect(mockQueryFn.mock.calls[0][1]).toContain('DEV');
+    expect(mockQueryFn.mock.calls[1][1]).toContain('DEV');
   });
 
   it('should return empty items when no pages exist', async () => {
+    // Local spaces lookup
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
+    // Tree pages
     mockQueryFn.mockResolvedValueOnce({ rows: [] });
 
     const response = await app.inject({
@@ -195,6 +204,9 @@ describe('GET /api/pages/tree', () => {
   });
 
   it('should return pages with parent-child relationships using numeric IDs', async () => {
+    // Local spaces lookup
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
+    // Tree pages
     mockQueryFn.mockResolvedValueOnce({
       rows: [
         { id: 1, confluence_id: 'root', space_key: 'DEV', title: 'Root', parent_numeric_id: null, labels: [], last_modified_at: null, embedding_dirty: true, embedding_status: 'not_embedded', embedded_at: null },
@@ -219,5 +231,39 @@ describe('GET /api/pages/tree', () => {
     expect(root.parentId).toBeNull();
     expect(childA.parentId).toBe('1');
     expect(grandchild.parentId).toBe('2');
+  });
+
+  it('should include local space pages in the tree (#527/#528)', async () => {
+    // Local spaces lookup returns a local space
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ space_key: 'MY_NOTES' }],
+    });
+    // Tree pages (includes pages from both RBAC spaces and local spaces)
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [
+        { id: 1, confluence_id: null, space_key: 'MY_NOTES', title: 'Local Note', page_type: 'page', parent_numeric_id: null, labels: [], last_modified_at: null, embedding_dirty: false, embedding_status: 'not_embedded', embedded_at: null, embedding_error: null },
+        { id: 2, confluence_id: 'conf-1', space_key: 'DEV', title: 'Dev Page', page_type: 'page', parent_numeric_id: null, labels: [], last_modified_at: null, embedding_dirty: false, embedding_status: 'not_embedded', embedded_at: null, embedding_error: null },
+      ],
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/pages/tree',
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.payload);
+    expect(body.items).toHaveLength(2);
+
+    const spaceKeys = body.items.map((p: { spaceKey: string }) => p.spaceKey);
+    expect(spaceKeys).toContain('MY_NOTES');
+    expect(spaceKeys).toContain('DEV');
+
+    // Verify the tree query received merged space keys (RBAC + local)
+    const treeQueryArgs = mockQueryFn.mock.calls[1][1] as unknown[];
+    const spaceKeysArg = treeQueryArgs[0] as string[];
+    expect(spaceKeysArg).toContain('MY_NOTES');
+    expect(spaceKeysArg).toContain('DEV');
+    expect(spaceKeysArg).toContain('OPS');
   });
 });

@@ -62,6 +62,7 @@ describe('Spaces routes', () => {
           homepage_id: 'home-1',
           homepage_numeric_id: 101,
           last_synced: '2026-03-18T10:00:00.000Z',
+          source: 'confluence',
         }],
       })
       .mockResolvedValueOnce({
@@ -81,6 +82,7 @@ describe('Spaces routes', () => {
         homepageId: '101',
         lastSynced: '2026-03-18T10:00:00.000Z',
         pageCount: 7,
+        source: 'confluence',
       },
       {
         key: 'NEWSPACE',
@@ -88,7 +90,55 @@ describe('Spaces routes', () => {
         homepageId: null,
         lastSynced: null,
         pageCount: 0,
+        source: 'confluence',
       },
     ]);
+  });
+
+  it('GET /spaces returns source field for local spaces (#527)', async () => {
+    mockGetUserAccessibleSpaces.mockResolvedValueOnce(['DEV', 'MY_NOTES']);
+
+    mockQuery
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            space_key: 'DEV',
+            space_name: 'Development',
+            homepage_id: null,
+            homepage_numeric_id: null,
+            last_synced: '2026-03-18T10:00:00.000Z',
+            source: 'confluence',
+          },
+          {
+            space_key: 'MY_NOTES',
+            space_name: 'My Notes',
+            homepage_id: null,
+            homepage_numeric_id: null,
+            last_synced: '2026-03-19T10:00:00.000Z',
+            source: 'local',
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        rows: [
+          { space_key: 'DEV', count: '3' },
+          { space_key: 'MY_NOTES', count: '5' },
+        ],
+      });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/spaces',
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+
+    const devSpace = body.find((s: { key: string }) => s.key === 'DEV');
+    const localSpace = body.find((s: { key: string }) => s.key === 'MY_NOTES');
+
+    expect(devSpace.source).toBe('confluence');
+    expect(localSpace.source).toBe('local');
+    expect(localSpace.pageCount).toBe(5);
   });
 });

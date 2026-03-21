@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useMemo } from 'react';
 import { Send, Loader2, Save, Search, ChevronDown, X, FolderOpen, Upload, FileText, AlertTriangle } from 'lucide-react';
 import { useAiContext, nextMessageId } from '../AiContext';
 import { useSpaces } from '../../../shared/hooks/use-spaces';
+import { useLocalSpaces } from '../../../shared/hooks/use-standalone';
 import { usePages, useCreatePage, type PageFilters } from '../../../shared/hooks/use-pages';
 import { useExtractPdf, type ExtractPdfResult } from '../../../shared/hooks/use-extract-pdf';
 import { toast } from 'sonner';
@@ -321,12 +322,35 @@ export function GenerateSavePanel({
   onSaved: () => void;
 }) {
   const { data: spaces } = useSpaces();
+  const { data: localSpacesData } = useLocalSpaces();
   const createPage = useCreatePage();
 
   const [spaceKey, setSpaceKey] = useState('');
   const [parentId, setParentId] = useState<string | null>(null);
   const [title, setTitle] = useState(() => extractTitleFromMarkdown(generatedContent));
   const [isSaving, setIsSaving] = useState(false);
+
+  // Merge Confluence + local spaces for the selector
+  const allSpaces = useMemo(() => {
+    const merged: { key: string; name: string; source: 'confluence' | 'local' }[] = [];
+    const confluenceSpaces = spaces ?? [];
+    confluenceSpaces.forEach((s) => merged.push({
+      key: s.key,
+      name: s.name,
+      source: s.source ?? 'confluence',
+    }));
+    const localArr = Array.isArray(localSpacesData) ? localSpacesData : [];
+    localArr.forEach((s) => {
+      // Avoid duplicates if a local space already appeared via /api/spaces
+      if (!merged.some((m) => m.key === s.key)) {
+        merged.push({ key: s.key, name: s.name, source: 'local' });
+      }
+    });
+    return merged;
+  }, [spaces, localSpacesData]);
+
+  const selectedSpace = allSpaces.find((s) => s.key === spaceKey);
+  const isLocalSpace = selectedSpace?.source === 'local';
 
   const handleSave = useCallback(async () => {
     if (!title.trim()) {
@@ -348,14 +372,18 @@ export function GenerateSavePanel({
         ...(parentId ? { parentId } : {}),
       });
 
-      toast.success(`Page "${result.title}" created in Confluence`);
+      const label = isLocalSpace ? 'locally' : 'in Confluence';
+      toast.success(`Page "${result.title}" created ${label}`);
       onSaved();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to save page');
     } finally {
       setIsSaving(false);
     }
-  }, [title, spaceKey, parentId, generatedContent, createPage, onSaved]);
+  }, [title, spaceKey, parentId, generatedContent, createPage, onSaved, isLocalSpace]);
+
+  const confluenceOptions = allSpaces.filter((s) => s.source === 'confluence');
+  const localOptions = allSpaces.filter((s) => s.source === 'local');
 
   return (
     <div
@@ -364,7 +392,7 @@ export function GenerateSavePanel({
     >
       <div className="flex items-center gap-2 text-sm font-medium text-primary">
         <FolderOpen size={16} />
-        Save to Confluence
+        Save Article
       </div>
 
       <div className="space-y-3">
@@ -392,9 +420,20 @@ export function GenerateSavePanel({
               data-testid="generate-space-select"
             >
               <option value="">Select space...</option>
-              {spaces?.map((s) => (
-                <option key={s.key} value={s.key}>{s.name}</option>
-              ))}
+              {confluenceOptions.length > 0 && (
+                <optgroup label="Confluence">
+                  {confluenceOptions.map((s) => (
+                    <option key={s.key} value={s.key}>{s.name}</option>
+                  ))}
+                </optgroup>
+              )}
+              {localOptions.length > 0 && (
+                <optgroup label="Local">
+                  {localOptions.map((s) => (
+                    <option key={s.key} value={s.key}>{s.name}</option>
+                  ))}
+                </optgroup>
+              )}
             </select>
           </div>
 
@@ -418,7 +457,7 @@ export function GenerateSavePanel({
           ) : (
             <Save size={14} />
           )}
-          {isSaving ? 'Saving...' : 'Save to Confluence'}
+          {isSaving ? 'Saving...' : isLocalSpace ? 'Save Locally' : 'Save to Confluence'}
         </button>
       </div>
     </div>

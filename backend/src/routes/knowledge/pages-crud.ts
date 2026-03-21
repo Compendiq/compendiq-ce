@@ -314,10 +314,15 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const cached = await cache.get(userId, 'pages', cacheKey);
     if (cached) return cached;
 
-    // Access control via RBAC
-    const treeSpaces = await getUserAccessibleSpaces(userId);
+    // Access control via RBAC + local spaces (local spaces bypass RBAC)
+    const rbacSpaces = await getUserAccessibleSpaces(userId);
+    const localSpacesResult = await query<{ space_key: string }>(
+      `SELECT space_key FROM spaces WHERE source = 'local'`,
+    );
+    const localSpaceKeys = localSpacesResult.rows.map((r) => r.space_key);
+    const treeSpaces = Array.from(new Set([...rbacSpaces, ...localSpaceKeys]));
     const values: unknown[] = [treeSpaces];
-    let treeWhereClause = 'WHERE cp.space_key = ANY($1::text[])';
+    let treeWhereClause = 'WHERE cp.space_key = ANY($1::text[]) AND cp.deleted_at IS NULL';
 
     if (params.spaceKey) {
       treeWhereClause += ' AND cp.space_key = $2';
