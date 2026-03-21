@@ -15,9 +15,11 @@
     "typecheck": "npm run build -w @atlasmind/contracts && npm run typecheck -w backend && npm run typecheck -w frontend",
     "test": "npm run test -w @atlasmind/contracts && npm run test -w backend && npm run test -w frontend",
     "test:e2e": "npx playwright test",
+    "lighthouse": "lhci autorun",
     "prepare": "husky || true"
   },
   "devDependencies": {
+    "@lhci/cli": "^0.15.1",
     "@playwright/test": "^1.58.2",
     "concurrently": "^9.1.0",
     "husky": "^9.1.7"
