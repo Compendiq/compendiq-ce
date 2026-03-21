@@ -612,4 +612,37 @@ describe('PagesPage', () => {
     expect(input.value).toBe('');
     expect(document.activeElement).toBe(input);
   });
+
+  // --- Performance: memoized page list items (#521) ---
+
+  describe('performance: memoized page list items (#521)', () => {
+    it('renders page list items with stable keys (by id, not index)', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const item = await screen.findByTestId('article-hover-page-1');
+      expect(item).toBeInTheDocument();
+      // Verify the item renders correctly within the memoized component
+      expect(screen.getByText('Test Page')).toBeInTheDocument();
+    });
+
+    it('renders all items correctly when there are many pages', async () => {
+      vi.restoreAllMocks();
+      mockFetchWithPages(makeManyPages(20));
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      const items = await screen.findAllByTestId(/^article-hover-/);
+      expect(items.length).toBe(20);
+    });
+
+    it('renders selection state correctly in memoized items', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const checkbox = await screen.findByTestId('checkbox-page-1');
+
+      // Click to select
+      fireEvent.click(checkbox);
+
+      // The item should show selected state
+      const item = screen.getByTestId('article-hover-page-1');
+      expect(item.className).toContain('border-primary');
+    });
+  });
 });

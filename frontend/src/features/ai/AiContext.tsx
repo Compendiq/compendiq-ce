@@ -13,7 +13,14 @@ import { toast } from 'sonner';
 // Types
 // ---------------------------------------------------------------------------
 
+let messageIdCounter = 0;
+/** Generate a stable, unique ID for each message. */
+export function nextMessageId(): string {
+  return `msg-${++messageIdCounter}`;
+}
+
 export interface Message {
+  id: string;
   role: 'user' | 'assistant';
   content: string;
   sources?: Source[];
@@ -271,8 +278,12 @@ export function AiProvider({ children }: { children: ReactNode }) {
 
   const loadConversation = useCallback(async (id: string) => {
     try {
-      const conv = await apiFetch<{ messages: Message[]; model: string; id: string }>(`/llm/conversations/${id}`);
-      setMessages(conv.messages.filter((m: { role: string }) => m.role !== 'system') as Message[]);
+      const conv = await apiFetch<{ messages: Array<{ role: string; content: string; sources?: Source[] }>; model: string; id: string }>(`/llm/conversations/${id}`);
+      setMessages(
+        conv.messages
+          .filter((m) => m.role !== 'system')
+          .map((m) => ({ id: nextMessageId(), role: m.role as 'user' | 'assistant', content: m.content, sources: m.sources })),
+      );
       setConversationId(conv.id);
       setModel(conv.model);
       setMode('ask');
@@ -312,7 +323,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
     abortRef.current = controller;
 
     if (opts?.userMessage) {
-      setMessages([{ role: 'user', content: opts.userMessage }]);
+      setMessages([{ id: nextMessageId(), role: 'user', content: opts.userMessage }]);
     }
 
     opts?.onBeforeStream?.();
@@ -323,8 +334,9 @@ export function AiProvider({ children }: { children: ReactNode }) {
     let accumulated = '';
     let finalSources: Source[] = [];
 
-    // Add the placeholder assistant message
-    setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
+    // Add the placeholder assistant message with a stable ID
+    const assistantMsgId = nextMessageId();
+    setMessages((prev) => [...prev, { id: assistantMsgId, role: 'assistant', content: '' }]);
 
     try {
       for await (const chunk of streamSSE<T>(endpoint, body, controller.signal)) {
@@ -337,7 +349,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
           accumulated += chunk.content;
           setMessages((prev) => {
             const updated = [...prev];
-            updated[updated.length - 1] = { role: 'assistant', content: accumulated };
+            updated[updated.length - 1] = { ...updated[updated.length - 1], content: accumulated };
             return updated;
           });
           opts?.onContent?.(accumulated);

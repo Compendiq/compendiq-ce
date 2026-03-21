@@ -1,6 +1,6 @@
 import { useCallback } from 'react';
 import { Send, Loader2 } from 'lucide-react';
-import { useAiContext } from '../AiContext';
+import { useAiContext, nextMessageId } from '../AiContext';
 import { toast } from 'sonner';
 
 /**
@@ -22,7 +22,7 @@ export function AskModeInput() {
 
     const question = input.trim();
     setInput('');
-    setMessages((prev) => [...prev, { role: 'user', content: question }]);
+    setMessages((prev) => [...prev, { id: nextMessageId(), role: 'user', content: question }]);
 
     await runStream(
       '/llm/ask',

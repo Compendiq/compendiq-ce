@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useMemo } from 'react';
 import { Send, Loader2, Save, Search, ChevronDown, X, FolderOpen, Upload, FileText, AlertTriangle } from 'lucide-react';
-import { useAiContext } from '../AiContext';
+import { useAiContext, nextMessageId } from '../AiContext';
 import { useSpaces } from '../../../shared/hooks/use-spaces';
 import { usePages, useCreatePage, type PageFilters } from '../../../shared/hooks/use-pages';
 import { useExtractPdf, type ExtractPdfResult } from '../../../shared/hooks/use-extract-pdf';
@@ -467,7 +467,7 @@ export function GenerateModeInput() {
     const displayMessage = pdfData
       ? `Generate from PDF (${pdfFilename}): ${prompt}`
       : `Generate: ${prompt}`;
-    setMessages([{ role: 'user', content: displayMessage }]);
+    setMessages([{ id: nextMessageId(), role: 'user', content: displayMessage }]);
     setGeneratedContent('');
     setShowSavePanel(false);
 

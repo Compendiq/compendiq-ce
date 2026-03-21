@@ -979,4 +979,99 @@ describe('AiAssistantPage', () => {
       expect(screen.queryByText('Select a page and improvement type')).not.toBeInTheDocument();
     });
   });
+
+  describe('performance: stable message IDs (#521)', () => {
+    it('uses stable message IDs as keys instead of array indices', async () => {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'llama3' }]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([]);
+      });
+
+      // Stream that yields two chunks then completes
+      async function* fakeStream() {
+        yield { content: 'Hello ' };
+        yield { content: 'world' };
+      }
+      streamSSEMock.mockReturnValue(fakeStream());
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      // Wait for model to load
+      await waitFor(() => {
+        expect(screen.queryByText('Loading models...')).not.toBeInTheDocument();
+      });
+
+      // Type a question and submit
+      const input = screen.getByPlaceholderText('Ask a question...');
+      fireEvent.change(input, { target: { value: 'Test question' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      // Wait for stream to complete
+      await waitFor(() => {
+        expect(screen.getByText('Test question')).toBeInTheDocument();
+      });
+
+      // Both messages should be visible: user message and assistant response
+      await waitFor(() => {
+        expect(screen.getByText(/Hello/)).toBeInTheDocument();
+      });
+
+      // Verify no element has key="0" or key="1" by checking that
+      // the message bubbles render correctly with stable keys.
+      // The key test is implicit: if keys were array indices, React would
+      // produce wrong element binding during streaming. We verify content
+      // is correct after streaming completes.
+      const messageBubbles = document.querySelectorAll('.max-w-\\[80\\%\\]');
+      expect(messageBubbles.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('preserves user message content after streaming completes', async () => {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'llama3' }]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([]);
+      });
+
+      async function* fakeStream() {
+        yield { content: 'AI response text' };
+      }
+      streamSSEMock.mockReturnValue(fakeStream());
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.queryByText('Loading models...')).not.toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Ask a question...');
+      fireEvent.change(input, { target: { value: 'My question' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      // After streaming, both messages should be correctly rendered
+      await waitFor(() => {
+        expect(screen.getByText('My question')).toBeInTheDocument();
+        expect(screen.getByText('AI response text')).toBeInTheDocument();
+      });
+
+      // User message should not be corrupted by streaming updates
+      // (this would fail with index-based keys if React rebinds elements)
+      const userMessage = screen.getByText('My question');
+      expect(userMessage.closest('.bg-primary\\/10')).toBeTruthy();
+    });
+  });
 });

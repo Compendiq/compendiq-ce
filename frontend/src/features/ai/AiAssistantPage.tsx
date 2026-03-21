@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { m, useReducedMotion } from 'framer-motion';
 import {
   Bot, User, Loader2, MessageSquare,
@@ -11,7 +12,7 @@ import { StreamingCursor } from '../../shared/components/feedback/StreamingCurso
 import { AIThinkingBlob } from '../../shared/components/feedback/AIThinkingBlob';
 import { SourceCitations } from './SourceCitations';
 import { CitationChips } from './CitationChips';
-import { AiProvider, useAiContext, type Mode } from './AiContext';
+import { AiProvider, useAiContext, type Mode, type Message } from './AiContext';
 import {
   AskModeInput, ASK_EMPTY_TITLE, ASK_EMPTY_SUBTITLE,
   ImproveTypeSelector, ImproveDiffView, ImproveModeInput, IMPROVE_EMPTY_TITLE, improveEmptySubtitle,
@@ -41,6 +42,104 @@ function TypingIndicator() {
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Memoized message bubble: skips re-render for completed (non-streaming) messages
+// ---------------------------------------------------------------------------
+
+interface MessageBubbleProps {
+  msg: Message;
+  index: number;
+  isLast: boolean;
+  isStreaming: boolean;
+  isThinking: boolean;
+  thinkingElapsed: boolean;
+  isLight: boolean;
+  shouldReduceMotion: boolean | null;
+}
+
+const MessageBubble = memo(function MessageBubble({
+  msg, index, isLast, isStreaming, isThinking, thinkingElapsed, isLight, shouldReduceMotion,
+}: MessageBubbleProps) {
+  const isLastAssistant = msg.role === 'assistant' && isLast;
+  const isStreamingThis = isStreaming && isLastAssistant;
+  const effectiveContent = msg.content;
+  const showStreamingCursor = isStreamingThis && !!effectiveContent;
+  const showThinkingBlob = isThinking && isLastAssistant && !effectiveContent && thinkingElapsed;
+  const showTypingIndicator = isThinking && isLastAssistant && !effectiveContent && !thinkingElapsed;
+
+  return (
+    <m.div
+      initial={shouldReduceMotion ? false : { opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{
+        delay: shouldReduceMotion ? 0 : Math.min(index * 0.05, 0.3),
+        type: 'spring',
+        stiffness: 300,
+        damping: 25,
+      }}
+      className={cn('flex gap-3', msg.role === 'user' && 'justify-end')}
+    >
+      {msg.role === 'assistant' && (
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/15">
+          <Bot size={16} className="text-primary" />
+        </div>
+      )}
+      <div
+        className={cn(
+          'max-w-[80%] rounded-2xl px-4 py-3 text-sm xl:max-w-2xl',
+          msg.role === 'user'
+            ? 'bg-primary/10 text-foreground'
+            : 'bg-foreground/5',
+        )}
+      >
+        {showThinkingBlob && <AIThinkingBlob active />}
+        {showTypingIndicator && <TypingIndicator />}
+        <div className={cn('prose prose-sm max-w-none', !isLight && 'prose-invert')}>
+          {msg.content ? (
+            <>
+              <Markdown remarkPlugins={[remarkGfm]}>{msg.content}</Markdown>
+              {showStreamingCursor && <StreamingCursor />}
+            </>
+          ) : (!showThinkingBlob && !showTypingIndicator && isStreamingThis ? (
+            <TypingIndicator />
+          ) : null)}
+        </div>
+        {msg.role === 'assistant' && msg.sources && msg.sources.length > 0 && (
+          <div className="mt-3 space-y-2">
+            <div className="flex items-center gap-2">
+              {(() => {
+                const scores = msg.sources!.filter((s) => s.score != null).map((s) => s.score!);
+                if (scores.length === 0) return null;
+                const avgScore = scores.reduce((a, b) => a + b, 0) / scores.length;
+                return <ConfidenceBadge score={avgScore} />;
+              })()}
+              <CitationChips sources={msg.sources!} />
+            </div>
+            <SourceCitations sources={msg.sources} />
+          </div>
+        )}
+      </div>
+      {msg.role === 'user' && (
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-foreground/8">
+          <User size={16} className="text-muted-foreground" />
+        </div>
+      )}
+    </m.div>
+  );
+}, (prev, next) => {
+  // Custom comparator: skip re-render if message content and streaming state haven't changed.
+  // Completed messages (not last or not streaming) will never re-render.
+  if (prev.msg.id !== next.msg.id) return false;
+  if (prev.msg.content !== next.msg.content) return false;
+  if (prev.msg.sources !== next.msg.sources) return false;
+  if (prev.isLast !== next.isLast) return false;
+  if (prev.isStreaming !== next.isStreaming) return false;
+  if (prev.isThinking !== next.isThinking) return false;
+  if (prev.thinkingElapsed !== next.thinkingElapsed) return false;
+  if (prev.isLight !== next.isLight) return false;
+  return true;
+});
 
 // ---------------------------------------------------------------------------
 // Mode button definitions
@@ -202,75 +301,19 @@ function AiAssistantInner() {
             </div>
           )}
 
-          {messages.map((msg, i) => {
-            const isLastAssistant = msg.role === 'assistant' && i === messages.length - 1;
-            const isStreamingThis = isStreaming && isLastAssistant;
-            const effectiveContent = msg.content;
-            const showStreamingCursor = isStreamingThis && !!effectiveContent;
-            const showThinkingBlob = isThinking && isLastAssistant && !effectiveContent && thinkingElapsed;
-            const showTypingIndicator = isThinking && isLastAssistant && !effectiveContent && !thinkingElapsed;
-
-            return (
-              <m.div
-                key={i}
-                initial={shouldReduceMotion ? false : { opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{
-                  delay: shouldReduceMotion ? 0 : Math.min(i * 0.05, 0.3),
-                  type: 'spring',
-                  stiffness: 300,
-                  damping: 25,
-                }}
-                className={cn('flex gap-3', msg.role === 'user' && 'justify-end')}
-              >
-                {msg.role === 'assistant' && (
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/15">
-                    <Bot size={16} className="text-primary" />
-                  </div>
-                )}
-                <div
-                  className={cn(
-                    'max-w-[80%] rounded-2xl px-4 py-3 text-sm xl:max-w-2xl',
-                    msg.role === 'user'
-                      ? 'bg-primary/10 text-foreground'
-                      : 'bg-foreground/5',
-                  )}
-                >
-                  {showThinkingBlob && <AIThinkingBlob active />}
-                  {showTypingIndicator && <TypingIndicator />}
-                  <div className={cn('prose prose-sm max-w-none', !isLight && 'prose-invert')}>
-                    {msg.content ? (
-                      <>
-                        <Markdown remarkPlugins={[remarkGfm]}>{msg.content}</Markdown>
-                        {showStreamingCursor && <StreamingCursor />}
-                      </>
-                    ) : (!showThinkingBlob && !showTypingIndicator && isStreamingThis ? (
-                      <TypingIndicator />
-                    ) : null)}
-                  </div>
-                  {msg.role === 'assistant' && msg.sources && msg.sources.length > 0 && (
-                    <div className="mt-3 space-y-2">
-                      <div className="flex items-center gap-2">
-                        {(() => {
-                          const scores = msg.sources!.filter((s) => s.score != null).map((s) => s.score!);
-                          if (scores.length === 0) return null;
-                          const avgScore = scores.reduce((a, b) => a + b, 0) / scores.length;
-                          return <ConfidenceBadge score={avgScore} />;
-                        })()}
-                        <CitationChips sources={msg.sources!} />
-                      </div>
-                      <SourceCitations sources={msg.sources} />
-                    </div>
-                  )}
-                </div>
-                {msg.role === 'user' && (
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-foreground/8">
-                    <User size={16} className="text-muted-foreground" />
-                  </div>
-                )}
-              </m.div>
-            );
-          })}
+          {messages.map((msg, i) => (
+            <MessageBubble
+              key={msg.id}
+              msg={msg}
+              index={i}
+              isLast={i === messages.length - 1}
+              isStreaming={isStreaming}
+              isThinking={isThinking}
+              thinkingElapsed={thinkingElapsed}
+              isLight={isLight}
+              shouldReduceMotion={shouldReduceMotion}
+            />
+          ))}
           <div ref={messagesEndRef} />
 
           {/* Mode-specific post-message content */}

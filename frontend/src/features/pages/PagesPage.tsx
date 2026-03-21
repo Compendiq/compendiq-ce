@@ -1,11 +1,11 @@
-import { useState, useCallback, useMemo, useRef, useEffect, type RefObject } from 'react';
+import { useState, useCallback, useMemo, useRef, useEffect, memo, type RefObject } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { m } from 'framer-motion';
 import { Search, FileText, Plus, RefreshCw, ChevronLeft, ChevronRight, FolderOpen, Filter, X, List, Loader2, Trash2, Lock, Globe, AlertTriangle } from 'lucide-react';
 import DOMPurify from 'dompurify';
 import { toast } from 'sonner';
-import { usePages, usePageFilterOptions, usePage, useEmbeddingStatus } from '../../shared/hooks/use-pages';
+import { usePages, usePageFilterOptions, usePage, useEmbeddingStatus, type QualityStatus, type SummaryStatus } from '../../shared/hooks/use-pages';
 import { useSpaces, useSync, useSyncStatus } from '../../shared/hooks/use-spaces';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { useSearch } from '../../shared/hooks/use-search';
@@ -19,6 +19,150 @@ import { KPICards } from './KPICards';
 import { PinnedArticlesSection } from './PinnedArticlesSection';
 import { cn } from '../../shared/lib/cn';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
+
+// ---------------------------------------------------------------------------
+// Memoized page list item: prevents re-render from embedding-status polling
+// ---------------------------------------------------------------------------
+
+interface PageListItemProps {
+  pageItem: {
+    id: string;
+    spaceKey: string;
+    title: string;
+    version: number;
+    author: string | null;
+    lastModifiedAt: string | null;
+    labels: string[];
+    embeddingDirty: boolean;
+    qualityScore: number | null;
+    qualityStatus: QualityStatus | null;
+    qualityCompleteness: number | null;
+    qualityClarity: number | null;
+    qualityStructure: number | null;
+    qualityAccuracy: number | null;
+    qualityReadability: number | null;
+    qualitySummary: string | null;
+    qualityAnalyzedAt: string | null;
+    qualityError: string | null;
+    summaryStatus?: SummaryStatus;
+    visibility?: string;
+  };
+  index: number;
+  isSelected: boolean;
+  onToggleSelection: (id: string, e: React.MouseEvent) => void;
+  onNavigate: (id: string) => void;
+}
+
+const PageListItem = memo(function PageListItem({
+  pageItem, index, isSelected, onToggleSelection, onNavigate,
+}: PageListItemProps) {
+  return (
+    <m.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: index * 0.03 }}
+    >
+      <div
+        className={cn(
+          'glass-card-hover flex w-full items-center gap-3 p-4 text-left',
+          isSelected && 'border-primary/40 bg-primary/5',
+        )}
+        data-testid={`article-hover-${pageItem.id}`}
+      >
+        {/* Checkbox for bulk selection */}
+        <button
+          onClick={(e) => onToggleSelection(pageItem.id, e)}
+          className="shrink-0 flex h-5 w-5 items-center justify-center rounded border border-border hover:border-primary/50"
+          data-testid={`checkbox-${pageItem.id}`}
+          aria-label={`Select ${pageItem.title}`}
+        >
+          {isSelected && (
+            <div className="h-3 w-3 rounded-sm bg-primary" />
+          )}
+        </button>
+
+        <button
+          onClick={() => onNavigate(pageItem.id)}
+          className="flex min-w-0 flex-1 items-center gap-4"
+        >
+          <div className="min-w-0 flex-1 text-left">
+            <div className="flex items-center gap-2">
+              <p className="truncate font-medium">{pageItem.title}</p>
+              {/* Source badge */}
+              {pageItem.spaceKey === '__local__' ? (
+                <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-500" data-testid={`source-badge-${pageItem.id}`}>
+                  Local
+                </span>
+              ) : (
+                <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-blue-500/15 px-2 py-0.5 text-[10px] font-medium text-blue-500" data-testid={`source-badge-${pageItem.id}`}>
+                  Confluence
+                </span>
+              )}
+              {/* Visibility badge for standalone articles */}
+              {pageItem.spaceKey === '__local__' && (
+                (pageItem.visibility === 'shared') ? (
+                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-sky-500/15 px-2 py-0.5 text-[10px] font-medium text-sky-500" data-testid={`visibility-badge-${pageItem.id}`}>
+                    <Globe size={10} /> Shared
+                  </span>
+                ) : (
+                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-500" data-testid={`visibility-badge-${pageItem.id}`}>
+                    <Lock size={10} /> Private
+                  </span>
+                )
+              )}
+            </div>
+            <div className="flex items-center gap-3 text-xs text-muted-foreground">
+              {pageItem.spaceKey !== '__local__' && <span>{pageItem.spaceKey}</span>}
+              {pageItem.author && <span>{pageItem.author}</span>}
+              {pageItem.lastModifiedAt && (
+                <span>{new Date(pageItem.lastModifiedAt).toLocaleDateString()}</span>
+              )}
+            </div>
+          </div>
+          <QualityScoreBadge
+            qualityScore={pageItem.qualityScore}
+            qualityStatus={pageItem.qualityStatus}
+            qualityCompleteness={pageItem.qualityCompleteness}
+            qualityClarity={pageItem.qualityClarity}
+            qualityStructure={pageItem.qualityStructure}
+            qualityAccuracy={pageItem.qualityAccuracy}
+            qualityReadability={pageItem.qualityReadability}
+            qualitySummary={pageItem.qualitySummary}
+            qualityAnalyzedAt={pageItem.qualityAnalyzedAt}
+            qualityError={pageItem.qualityError}
+          />
+          <SummaryStatusBadge status={pageItem.summaryStatus} />
+          <EmbeddingStatusBadge embeddingDirty={pageItem.embeddingDirty} />
+          {pageItem.lastModifiedAt && (
+            <FreshnessBadge lastModified={pageItem.lastModifiedAt} />
+          )}
+          {pageItem.labels.length > 0 && (
+            <div className="flex gap-1">
+              {pageItem.labels.slice(0, 3).map((label) => (
+                <span key={label} className="rounded bg-primary/10 px-2 py-0.5 text-xs text-primary">
+                  {label}
+                </span>
+              ))}
+            </div>
+          )}
+        </button>
+      </div>
+    </m.div>
+  );
+}, (prev, next) => {
+  // Only re-render if the page item data or selection state changed
+  if (prev.pageItem.id !== next.pageItem.id) return false;
+  if (prev.pageItem.version !== next.pageItem.version) return false;
+  if (prev.pageItem.embeddingDirty !== next.pageItem.embeddingDirty) return false;
+  if (prev.pageItem.qualityScore !== next.pageItem.qualityScore) return false;
+  if (prev.pageItem.qualityStatus !== next.pageItem.qualityStatus) return false;
+  if (prev.pageItem.summaryStatus !== next.pageItem.summaryStatus) return false;
+  if (prev.isSelected !== next.isSelected) return false;
+  if (prev.index !== next.index) return false;
+  return true;
+});
+
+// ---------------------------------------------------------------------------
 
 export function PagesPage() {
   const navigate = useNavigate();
@@ -165,6 +309,10 @@ export function PagesPage() {
       return next;
     });
   }, []);
+
+  const navigateToPage = useCallback((id: string) => {
+    navigate(`/pages/${id}`);
+  }, [navigate]);
 
   const selectAll = useCallback(() => {
     if (pagesData?.items) {
@@ -672,98 +820,14 @@ export function PagesPage() {
           ) : (
             <div className="space-y-2">
               {pagesData.items.map((pageItem, i) => (
-                <m.div
+                <PageListItem
                   key={pageItem.id}
-                  initial={{ opacity: 0, y: 8 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: i * 0.03 }}
-                >
-                  <div
-                    className={cn(
-                      'glass-card-hover flex w-full items-center gap-3 p-4 text-left',
-                      selectedIds.has(pageItem.id) && 'border-primary/40 bg-primary/5',
-                    )}
-                    data-testid={`article-hover-${pageItem.id}`}
-                  >
-                    {/* Checkbox for bulk selection */}
-                    <button
-                      onClick={(e) => toggleSelection(pageItem.id, e)}
-                      className="shrink-0 flex h-5 w-5 items-center justify-center rounded border border-border hover:border-primary/50"
-                      data-testid={`checkbox-${pageItem.id}`}
-                      aria-label={`Select ${pageItem.title}`}
-                    >
-                      {selectedIds.has(pageItem.id) && (
-                        <div className="h-3 w-3 rounded-sm bg-primary" />
-                      )}
-                    </button>
-
-                    <button
-                      onClick={() => navigate(`/pages/${pageItem.id}`)}
-                      className="flex min-w-0 flex-1 items-center gap-4"
-                    >
-                      <div className="min-w-0 flex-1 text-left">
-                        <div className="flex items-center gap-2">
-                          <p className="truncate font-medium">{pageItem.title}</p>
-                          {/* Source badge */}
-                          {pageItem.spaceKey === '__local__' ? (
-                            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-500" data-testid={`source-badge-${pageItem.id}`}>
-                              Local
-                            </span>
-                          ) : (
-                            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-blue-500/15 px-2 py-0.5 text-[10px] font-medium text-blue-500" data-testid={`source-badge-${pageItem.id}`}>
-                              Confluence
-                            </span>
-                          )}
-                          {/* Visibility badge for standalone articles */}
-                          {pageItem.spaceKey === '__local__' && (
-                            ('visibility' in pageItem && (pageItem as Record<string, unknown>).visibility === 'shared') ? (
-                              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-sky-500/15 px-2 py-0.5 text-[10px] font-medium text-sky-500" data-testid={`visibility-badge-${pageItem.id}`}>
-                                <Globe size={10} /> Shared
-                              </span>
-                            ) : (
-                              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-500" data-testid={`visibility-badge-${pageItem.id}`}>
-                                <Lock size={10} /> Private
-                              </span>
-                            )
-                          )}
-                        </div>
-                        <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                          {pageItem.spaceKey !== '__local__' && <span>{pageItem.spaceKey}</span>}
-                          {pageItem.author && <span>{pageItem.author}</span>}
-                          {pageItem.lastModifiedAt && (
-                            <span>{new Date(pageItem.lastModifiedAt).toLocaleDateString()}</span>
-                          )}
-                        </div>
-                      </div>
-                      <QualityScoreBadge
-                        qualityScore={pageItem.qualityScore}
-                        qualityStatus={pageItem.qualityStatus}
-                        qualityCompleteness={pageItem.qualityCompleteness}
-                        qualityClarity={pageItem.qualityClarity}
-                        qualityStructure={pageItem.qualityStructure}
-                        qualityAccuracy={pageItem.qualityAccuracy}
-                        qualityReadability={pageItem.qualityReadability}
-                        qualitySummary={pageItem.qualitySummary}
-                        qualityAnalyzedAt={pageItem.qualityAnalyzedAt}
-                        qualityError={pageItem.qualityError}
-                      />
-                      <SummaryStatusBadge status={pageItem.summaryStatus} />
-                      <EmbeddingStatusBadge embeddingDirty={pageItem.embeddingDirty} />
-                      {pageItem.lastModifiedAt && (
-                        <FreshnessBadge lastModified={pageItem.lastModifiedAt} />
-                      )}
-                      {pageItem.labels.length > 0 && (
-                        <div className="flex gap-1">
-                          {pageItem.labels.slice(0, 3).map((label) => (
-                            <span key={label} className="rounded bg-primary/10 px-2 py-0.5 text-xs text-primary">
-                              {label}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                    </button>
-                  </div>
-                </m.div>
+                  pageItem={pageItem}
+                  index={i}
+                  isSelected={selectedIds.has(pageItem.id)}
+                  onToggleSelection={toggleSelection}
+                  onNavigate={navigateToPage}
+                />
               ))}
             </div>
           )}
