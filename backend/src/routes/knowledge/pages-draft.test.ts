@@ -5,6 +5,8 @@ import { ZodError } from 'zod';
 import { pagesCrudRoutes } from './pages-crud.js';
 
 const mockQuery = vi.fn();
+const mockTxQuery = vi.fn();
+const mockTxClient = { query: (...args: unknown[]) => mockTxQuery(...args), release: vi.fn() };
 const mockGetClientForUser = vi.fn();
 const mockHtmlToConfluence = vi.fn().mockReturnValue('<p>storage</p>');
 const mockConfluenceToHtml = vi.fn().mockReturnValue('<p>converted</p>');
@@ -13,6 +15,7 @@ const mockLogAuditEvent = vi.fn();
 
 vi.mock('../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
+  getPool: () => ({ connect: () => Promise.resolve(mockTxClient) }),
 }));
 
 vi.mock('../../domains/confluence/services/sync-service.js', () => ({
@@ -272,10 +275,8 @@ describe('Draft-while-published routes', () => {
 
   describe('POST /api/pages/:id/draft/publish', () => {
     it('publishes a draft: saves version, swaps content, clears draft', async () => {
-      const queryCalls: string[] = [];
+      const txCalls: string[] = [];
       mockQuery.mockImplementation((sql: string) => {
-        queryCalls.push(sql.trim().substring(0, 30));
-
         if (sql.includes('SELECT id, version, title')) {
           return Promise.resolve({
             rows: [{
@@ -288,7 +289,10 @@ describe('Draft-while-published routes', () => {
             }],
           });
         }
-        // BEGIN, INSERT, UPDATE, COMMIT — all succeed
+        return Promise.resolve({ rows: [], rowCount: 1 });
+      });
+      mockTxQuery.mockImplementation((sql: string) => {
+        txCalls.push(sql.trim().substring(0, 30));
         return Promise.resolve({ rows: [], rowCount: 1 });
       });
 
@@ -303,11 +307,12 @@ describe('Draft-while-published routes', () => {
       expect(body.version).toBe(4);
       expect(body.published).toBe(true);
 
-      // Verify transaction flow: BEGIN, INSERT page_versions, UPDATE pages, COMMIT
-      expect(queryCalls).toContain('BEGIN');
-      expect(queryCalls.some(c => c.includes('INSERT INTO page_version'))).toBe(true);
-      expect(queryCalls.some(c => c.includes('UPDATE pages SET'))).toBe(true);
-      expect(queryCalls).toContain('COMMIT');
+      // Verify transaction on dedicated client: BEGIN, INSERT, UPDATE, COMMIT
+      expect(txCalls).toContain('BEGIN');
+      expect(txCalls.some(c => c.includes('INSERT INTO page_version'))).toBe(true);
+      expect(txCalls.some(c => c.includes('UPDATE pages SET'))).toBe(true);
+      expect(txCalls).toContain('COMMIT');
+      expect(mockTxClient.release).toHaveBeenCalled();
     });
 
     it('returns 400 when no draft exists', async () => {
@@ -375,6 +380,9 @@ describe('Draft-while-published routes', () => {
             }],
           });
         }
+        return Promise.resolve({ rows: [] });
+      });
+      mockTxQuery.mockImplementation((sql: string) => {
         if (sql === 'BEGIN') return Promise.resolve({ rows: [] });
         if (sql.includes('INSERT INTO page_versions')) {
           insertCalled = true;
@@ -393,8 +401,8 @@ describe('Draft-while-published routes', () => {
       });
 
       expect(response.statusCode).toBe(500);
-      // Verify ROLLBACK was called
-      expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+      expect(mockTxQuery).toHaveBeenCalledWith('ROLLBACK');
+      expect(mockTxClient.release).toHaveBeenCalled();
     });
 
     it('pushes to Confluence for confluence-sourced pages (best-effort)', async () => {
@@ -419,6 +427,7 @@ describe('Draft-while-published routes', () => {
         }
         return Promise.resolve({ rows: [], rowCount: 1 });
       });
+      mockTxQuery.mockResolvedValue({ rows: [], rowCount: 1 });
 
       const response = await app.inject({
         method: 'POST',

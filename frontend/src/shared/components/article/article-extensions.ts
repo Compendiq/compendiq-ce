@@ -399,7 +399,7 @@ export const ConfluenceLayout = Node.create({
           // Build target cells — last cell absorbs excess cells' content
           const newCells = [];
           for (let i = 0; i < targetCells; i++) {
-            let blocks = existingContent[i] ? [...existingContent[i]] : [schema.nodes.paragraph.create()];
+            const blocks = existingContent[i] ? [...existingContent[i]] : [schema.nodes.paragraph.create()];
             if (i === targetCells - 1 && currentCells > targetCells) {
               for (let j = i + 1; j < currentCells; j++) {
                 if (existingContent[j]) blocks.push(...existingContent[j]);

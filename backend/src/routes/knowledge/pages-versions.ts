@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
 import { getVersionHistory, getVersion, getSemanticDiff, saveVersionSnapshot } from '../../domains/knowledge/services/version-tracker.js';
+import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 import { z } from 'zod';
 
 const IdParamSchema = z.object({ id: z.string().min(1) });
@@ -14,10 +15,34 @@ const SemanticDiffSchema = z.object({
 export async function pagesVersionRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
 
+  // Verify user has RBAC access to the page's space before returning version data
+  async function verifyPageAccess(userId: string, confluenceId: string): Promise<void> {
+    const pageResult = await query<{ space_key: string | null; source: string; visibility: string; created_by_user_id: string | null }>(
+      'SELECT space_key, source, visibility, created_by_user_id FROM pages WHERE confluence_id = $1',
+      [confluenceId],
+    );
+    if (pageResult.rows.length === 0) return; // page not found — let downstream handle 404
+    const page = pageResult.rows[0];
+    if (page.source === 'standalone') {
+      if (page.visibility === 'private' && page.created_by_user_id !== userId) {
+        throw fastify.httpErrors.forbidden('Access denied');
+      }
+      return; // shared standalone pages are accessible to all
+    }
+    if (page.space_key) {
+      const accessibleSpaces = await getUserAccessibleSpaces(userId);
+      if (!accessibleSpaces.includes(page.space_key)) {
+        throw fastify.httpErrors.forbidden('Access denied to this space');
+      }
+    }
+  }
+
   // GET /api/pages/:id/versions - list version history
   fastify.get('/pages/:id/versions', async (request) => {
     const { id } = IdParamSchema.parse(request.params);
     const userId = request.userId;
+
+    await verifyPageAccess(userId, id);
 
     const versions = await getVersionHistory(userId, id);
 
@@ -53,6 +78,8 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
   fastify.get('/pages/:id/versions/:version', async (request) => {
     const { id, version: versionNum } = VersionParamSchema.parse(request.params);
     const userId = request.userId;
+
+    await verifyPageAccess(userId, id);
 
     // Check if requesting current version
     const currentResult = await query<{
@@ -98,6 +125,8 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
     const { id } = IdParamSchema.parse(request.params);
     const userId = request.userId;
     const { v1, v2, model = 'qwen3:32b' } = SemanticDiffSchema.parse(request.body);
+
+    await verifyPageAccess(userId, id);
 
     // For the current version, save a snapshot first so getSemanticDiff can find it
     const current = await query<{

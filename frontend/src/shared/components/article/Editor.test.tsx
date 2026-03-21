@@ -1,6 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, waitFor, screen } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
+import { render, waitFor } from '@testing-library/react';
 
 vi.mock('../hooks/use-is-light-theme', () => ({
   useIsLightTheme: () => false,

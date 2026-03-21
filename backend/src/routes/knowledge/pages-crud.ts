@@ -1,5 +1,5 @@
 import { FastifyInstance } from 'fastify';
-import { query } from '../../core/db/postgres.js';
+import { query, getPool } from '../../core/db/postgres.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { htmlToConfluence, confluenceToHtml } from '../../core/services/content-converter.js';
@@ -33,13 +33,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
   fastify.get('/pages', async (request) => {
     const userId = request.userId;
     const params = PageListQuerySchema.parse(request.query);
-    const { spaceKey, search, author, labels, freshness, embeddingStatus, qualityMin, qualityMax, qualityStatus, dateFrom, dateTo, page = 1, limit = 50, sort = 'title' } = params;
+    const { spaceKey, search, author, labels, freshness, embeddingStatus, qualityMin, qualityMax, qualityStatus, source, dateFrom, dateTo, page = 1, limit = 50, sort = 'title' } = params;
 
     // Cache all page list queries. Filtered queries use a shorter TTL (2 min) vs
     // unfiltered (15 min) since filter results change more frequently (e.g. search
     // results after edits, embedding status during processing).
-    const hasFilters = !!(search || author || labels || freshness || embeddingStatus || qualityMin !== undefined || qualityMax !== undefined || qualityStatus || dateFrom || dateTo);
-    const filterParts = [spaceKey ?? '', search ?? '', author ?? '', labels ?? '', freshness ?? '', embeddingStatus ?? '', qualityMin ?? '', qualityMax ?? '', qualityStatus ?? '', dateFrom ?? '', dateTo ?? '', page, limit, sort].join(':');
+    const hasFilters = !!(search || author || labels || freshness || embeddingStatus || qualityMin !== undefined || qualityMax !== undefined || qualityStatus || source || dateFrom || dateTo);
+    const filterParts = [spaceKey ?? '', search ?? '', author ?? '', labels ?? '', freshness ?? '', embeddingStatus ?? '', qualityMin ?? '', qualityMax ?? '', qualityStatus ?? '', source ?? '', dateFrom ?? '', dateTo ?? '', page, limit, sort].join(':');
     const cacheKey = `list:${filterParts}`;
     const cacheTtl = hasFilters ? 120 : 900; // 2 min for filtered, 15 min for unfiltered
 
@@ -134,6 +134,11 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     if (qualityStatus) {
       whereParts.push(`cp.quality_status = $${paramIdx++}`);
       values.push(qualityStatus);
+    }
+
+    if (source) {
+      whereParts.push(`cp.source = $${paramIdx++}`);
+      values.push(source);
     }
 
     if (dateFrom) {
@@ -866,9 +871,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // Load the page to determine source
     const existing = await query<{
       id: number; source: string; created_by_user_id: string | null;
-      confluence_id: string | null;
+      confluence_id: string | null; space_key: string | null;
     }>(
-      `SELECT id, source, created_by_user_id, confluence_id FROM pages WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'}`,
+      `SELECT id, source, created_by_user_id, confluence_id, space_key FROM pages WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'}`,
       [isNumericId ? parseInt(id, 10) : id],
     );
     if (existing.rows.length === 0) {
@@ -900,6 +905,14 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     }
 
     // --- Confluence article: existing flow ---
+    // RBAC: verify user has access to this page's space before allowing delete
+    if (existingPage.space_key) {
+      const accessibleSpaces = await getUserAccessibleSpaces(userId);
+      if (!accessibleSpaces.includes(existingPage.space_key)) {
+        throw fastify.httpErrors.forbidden('Access denied to this space');
+      }
+    }
+
     const client = await getClientForUser(userId);
     if (!client) {
       throw fastify.httpErrors.badRequest('Confluence not configured');
@@ -1021,11 +1034,15 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     if (!page.draft_body_html) throw fastify.httpErrors.badRequest('No draft to publish');
 
-    // Atomically: save current live to page_versions, swap draft -> live, clear draft
-    await query('BEGIN');
+    // Atomically: save current live to page_versions, swap draft -> live, clear draft.
+    // Must use a dedicated client — pool.query() draws random connections per call,
+    // so BEGIN/COMMIT would run on different connections (non-atomic).
+    const txClient = await getPool().connect();
     try {
+      await txClient.query('BEGIN');
+
       // Save current live version to page_versions
-      await query(
+      await txClient.query(
         `INSERT INTO page_versions (page_id, version_number, title, body_html, body_text, synced_at)
          VALUES ($1, $2, $3, $4, $5, NOW())
          ON CONFLICT DO NOTHING`,
@@ -1033,7 +1050,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       );
 
       // Swap draft -> live, increment version, mark embedding dirty, clear draft
-      await query(
+      await txClient.query(
         `UPDATE pages SET
           body_html = draft_body_html, body_text = draft_body_text,
           body_storage = COALESCE(draft_body_storage, body_storage),
@@ -1046,10 +1063,12 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         [page.id],
       );
 
-      await query('COMMIT');
+      await txClient.query('COMMIT');
     } catch (err) {
-      await query('ROLLBACK');
+      await txClient.query('ROLLBACK');
       throw err;
+    } finally {
+      txClient.release();
     }
 
     // For Confluence articles, push updated content upstream (best-effort)

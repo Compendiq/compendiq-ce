@@ -23,6 +23,7 @@ RUN --mount=type=cache,target=/root/.npm npm ci -w frontend -w @atlasmind/contra
 COPY packages/contracts/ ./packages/contracts/
 RUN npm run build -w @atlasmind/contracts
 COPY frontend/index.html frontend/vite.config.ts frontend/tsconfig.json frontend/tsconfig.node.json ./frontend/
+COPY frontend/public/ frontend/public/
 COPY frontend/src/ frontend/src/
 ENV VITE_API_URL=$VITE_API_URL
 RUN npm run build -w frontend

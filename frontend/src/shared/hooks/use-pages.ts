@@ -65,6 +65,7 @@ export interface PageFilters {
   qualityMin?: number;
   qualityMax?: number;
   qualityStatus?: QualityStatus;
+  source?: 'confluence' | 'standalone';
   dateFrom?: string;
   dateTo?: string;
   page?: number;
@@ -76,12 +77,12 @@ export function usePages(params: PageFilters = {}) {
   const {
     spaceKey, search, author, labels, freshness,
     embeddingStatus, qualityMin, qualityMax, qualityStatus,
-    dateFrom, dateTo, page, limit, sort,
+    source, dateFrom, dateTo, page, limit, sort,
   } = params;
 
   const queryKey = useMemo(
-    () => ['pages', { spaceKey, search, author, labels, freshness, embeddingStatus, qualityMin, qualityMax, qualityStatus, dateFrom, dateTo, page, limit, sort }] as const,
-    [spaceKey, search, author, labels, freshness, embeddingStatus, qualityMin, qualityMax, qualityStatus, dateFrom, dateTo, page, limit, sort],
+    () => ['pages', { spaceKey, search, author, labels, freshness, embeddingStatus, qualityMin, qualityMax, qualityStatus, source, dateFrom, dateTo, page, limit, sort }] as const,
+    [spaceKey, search, author, labels, freshness, embeddingStatus, qualityMin, qualityMax, qualityStatus, source, dateFrom, dateTo, page, limit, sort],
   );
 
   const qs = useMemo(() => {
@@ -95,13 +96,14 @@ export function usePages(params: PageFilters = {}) {
     if (qualityMin !== undefined) sp.set('qualityMin', String(qualityMin));
     if (qualityMax !== undefined) sp.set('qualityMax', String(qualityMax));
     if (qualityStatus) sp.set('qualityStatus', qualityStatus);
+    if (source) sp.set('source', source);
     if (dateFrom) sp.set('dateFrom', dateFrom);
     if (dateTo) sp.set('dateTo', dateTo);
     if (page) sp.set('page', String(page));
     if (limit) sp.set('limit', String(limit));
     if (sort) sp.set('sort', sort);
     return sp.toString();
-  }, [spaceKey, search, author, labels, freshness, embeddingStatus, qualityMin, qualityMax, qualityStatus, dateFrom, dateTo, page, limit, sort]);
+  }, [spaceKey, search, author, labels, freshness, embeddingStatus, qualityMin, qualityMax, qualityStatus, source, dateFrom, dateTo, page, limit, sort]);
 
   return useQuery<PaginatedPages>({
     queryKey,

@@ -132,9 +132,11 @@ function AiAssistantInner() {
             onChange={(e) => setModel(e.target.value)}
             className="rounded bg-foreground/5 px-2 py-0.5 text-xs outline-none"
           >
-            {models.map((m) => (
-              <option key={m.name} value={m.name}>{m.name}</option>
-            ))}
+            {models
+              .filter((m) => !m.name.includes('embed'))
+              .map((m) => (
+                <option key={m.name} value={m.name}>{m.name}</option>
+              ))}
           </select>
         )}
 

@@ -79,6 +79,7 @@ export function PagesPage() {
     freshness: (freshness || undefined) as 'fresh' | 'recent' | 'aging' | 'stale' | undefined,
     embeddingStatus: (embeddingStatus || undefined) as 'pending' | 'done' | undefined,
     ...qualityRange,
+    source: (sourceFilter || undefined) as 'confluence' | 'standalone' | undefined,
     dateFrom: dateFrom || undefined,
     dateTo: dateTo || undefined,
     page,

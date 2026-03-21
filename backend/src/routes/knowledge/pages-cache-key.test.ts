@@ -155,14 +155,14 @@ describe('Pages cache key format', () => {
     expect(mockCacheGet).toHaveBeenCalledWith(
       'test-user-id',
       'pages',
-      'list::::::::::::1:50:title',
+      'list:::::::::::::1:50:title',
     );
 
     // Verify cache.set was also called with the same key format (unfiltered TTL = 900s)
     expect(mockCacheSet).toHaveBeenCalledWith(
       'test-user-id',
       'pages',
-      'list::::::::::::1:50:title',
+      'list:::::::::::::1:50:title',
       expect.any(Object),
       900,
     );
@@ -176,7 +176,7 @@ describe('Pages cache key format', () => {
     expect(mockCacheGet).toHaveBeenCalledWith(
       'test-user-id',
       'pages',
-      'list:DEV:::::::::::1:50:title',
+      'list:DEV::::::::::::1:50:title',
     );
   });
 
@@ -188,7 +188,7 @@ describe('Pages cache key format', () => {
     expect(mockCacheGet).toHaveBeenCalledWith(
       'test-user-id',
       'pages',
-      'list::::::::::::3:25:title',
+      'list:::::::::::::3:25:title',
     );
   });
 
@@ -200,16 +200,16 @@ describe('Pages cache key format', () => {
     expect(mockCacheGet).toHaveBeenCalledWith(
       'test-user-id',
       'pages',
-      'list::::::::::::1:50:modified',
+      'list:::::::::::::1:50:modified',
     );
   });
 
   it('should produce distinct cache keys for different parameters', () => {
     // This test verifies the old bug is fixed: previously "all:1:50:title"
     // could collide if spaceKey literally was "all" vs. no spaceKey.
-    const keyNoSpace = `list:${''}:::::::::::1:50:title`;
-    const keySpaceAll = `list:${'all'}:::::::::::1:50:title`;
-    const keySpaceDev = `list:${'DEV'}:::::::::::1:50:title`;
+    const keyNoSpace = `list:${''}::::::::::::1:50:title`;
+    const keySpaceAll = `list:${'all'}::::::::::::1:50:title`;
+    const keySpaceDev = `list:${'DEV'}::::::::::::1:50:title`;
 
     expect(keyNoSpace).not.toBe(keySpaceAll);
     expect(keyNoSpace).not.toBe(keySpaceDev);
