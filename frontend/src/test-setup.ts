@@ -48,6 +48,24 @@ class MockResizeObserver {
 }
 globalThis.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver;
 
+// Mock localStorage for jsdom (Vitest 4 may not initialise it correctly when
+// --localstorage-file is provided without a path; zustand persist middleware
+// requires a functional setItem/getItem implementation).
+if (typeof window !== 'undefined' && typeof window.localStorage?.setItem !== 'function') {
+  const store: Record<string, string> = {};
+  Object.defineProperty(window, 'localStorage', {
+    writable: true,
+    value: {
+      getItem: (key: string) => store[key] ?? null,
+      setItem: (key: string, value: string) => { store[key] = value; },
+      removeItem: (key: string) => { delete store[key]; },
+      clear: () => { Object.keys(store).forEach((k) => delete store[k]); },
+      get length() { return Object.keys(store).length; },
+      key: (index: number) => Object.keys(store)[index] ?? null,
+    },
+  });
+}
+
 // Mock matchMedia for jsdom (used by useCanHover, prefers-reduced-motion checks, and media query listeners)
 // Default: hover-capable device, no reduced motion
 if (!window.matchMedia) {
