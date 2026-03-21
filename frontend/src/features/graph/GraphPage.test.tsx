@@ -232,6 +232,55 @@ describe('GraphPage', () => {
     });
   });
 
+  it('uses a low globalScale threshold (0.3) for showing node labels', async () => {
+    const ForceGraph2DMock = (await import('react-force-graph-2d')).default as unknown as ReturnType<typeof vi.fn>;
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => mockGraphData,
+    } as Response);
+
+    render(<GraphPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mock-force-graph')).toBeInTheDocument();
+    });
+
+    // Get the nodeCanvasObject callback passed to ForceGraph2D
+    const lastCall = ForceGraph2DMock.mock.calls[ForceGraph2DMock.mock.calls.length - 1];
+    const props = lastCall[0];
+    const nodeCanvasObject = props.nodeCanvasObject;
+    expect(nodeCanvasObject).toBeDefined();
+
+    // Create a mock canvas context
+    const fillTextCalls: string[] = [];
+    const mockCtx = {
+      beginPath: vi.fn(),
+      arc: vi.fn(),
+      fill: vi.fn(),
+      stroke: vi.fn(),
+      roundRect: vi.fn(),
+      fillText: vi.fn((...args: unknown[]) => fillTextCalls.push(args[0] as string)),
+      set fillStyle(_v: string) { /* noop */ },
+      set strokeStyle(_v: string) { /* noop */ },
+      set lineWidth(_v: number) { /* noop */ },
+      set font(_v: string) { /* noop */ },
+      set textAlign(_v: string) { /* noop */ },
+      set textBaseline(_v: string) { /* noop */ },
+      set globalAlpha(_v: number) { /* noop */ },
+    };
+
+    // Call with globalScale=0.5 (above 0.3 threshold, below old 1.5 threshold)
+    const testNode = { ...mockGraphData.nodes[0], x: 0, y: 0 };
+    nodeCanvasObject(testNode, mockCtx, 0.5);
+
+    // fillText should have been called for the label (in addition to the node circle)
+    expect(fillTextCalls.length).toBeGreaterThan(0);
+    // The label text should contain the node title (possibly truncated)
+    expect(fillTextCalls.some((t: string) => t.includes('Getting Started'))).toBe(true);
+  });
+
   it('switches to clustered view when toggle is clicked', async () => {
     // First fetch for individual view
     vi.spyOn(globalThis, 'fetch')

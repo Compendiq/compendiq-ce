@@ -139,6 +139,12 @@ export function ArticleViewer({
     content: sanitizedContent,
     editable: false,
     immediatelyRender: false,
+    editorProps: {
+      attributes: {
+        role: 'document',
+        'aria-readonly': 'true',
+      },
+    },
     onCreate: () => setIsReady(true),
   });
 
