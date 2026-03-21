@@ -245,7 +245,11 @@ async function summarizePage(
 export async function runSummaryBatch(model?: string): Promise<{ processed: number; errors: number }> {
   const resolvedModel = model || SUMMARY_MODEL;
   if (!resolvedModel) {
-    logger.warn('No summary model configured (SUMMARY_MODEL or DEFAULT_LLM_MODEL). Skipping batch.');
+    logger.warn('No summary model configured (SUMMARY_MODEL or DEFAULT_LLM_MODEL). Marking pending pages as disabled.');
+    await query(
+      `UPDATE pages SET summary_status = 'disabled'
+       WHERE summary_status = 'pending' AND deleted_at IS NULL`,
+    );
     return { processed: 0, errors: 0 };
   }
 

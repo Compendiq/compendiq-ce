@@ -161,7 +161,12 @@ async function analyzePageQuality(
 
     logger.info({ confluenceId, score: scores.overall }, 'Quality analysis complete');
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unknown error';
+    const rawMessage = err instanceof Error ? err.message : 'Unknown error';
+    // Replace raw network errors with user-friendly messages
+    const isTransient = /fetch failed|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|socket hang up/i.test(rawMessage);
+    const message = isTransient
+      ? 'Could not reach AI service — will retry on next cycle'
+      : rawMessage;
     logger.error({ err, confluenceId }, 'Quality analysis failed for page');
     await query(
       `UPDATE pages
