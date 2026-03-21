@@ -257,7 +257,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
   const allSpaces = useMemo<SpaceOption[]>(() => {
     const result: SpaceOption[] = [];
     if (confluenceSpaces) {
-      confluenceSpaces.forEach((s) => result.push({
+      confluenceSpaces.filter((s) => s.source === 'confluence').forEach((s) => result.push({
         key: s.key,
         name: s.name,
         pageCount: s.pageCount,

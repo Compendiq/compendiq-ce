@@ -1,9 +1,9 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, Save, Upload, LayoutTemplate, Globe, Lock } from 'lucide-react';
 import { useCreatePage } from '../../shared/hooks/use-pages';
 import { useSpaces } from '../../shared/hooks/use-spaces';
-import { useTemplates, useUseTemplate, useImportMarkdown } from '../../shared/hooks/use-standalone';
+import { useTemplates, useUseTemplate, useImportMarkdown, useLocalSpaces } from '../../shared/hooks/use-standalone';
 import { Editor, EditorToolbar, TableContextToolbar, clearDraft } from '../../shared/components/article/Editor';
 import { FeatureErrorBoundary } from '../../shared/components/feedback/FeatureErrorBoundary';
 import { LocationPicker } from '../../shared/components/LocationPicker';
@@ -32,6 +32,22 @@ export function NewPagePage() {
   const [showTemplateGallery, setShowTemplateGallery] = useState(false);
   const [editorInstance, setEditorInstance] = useState<EditorType | null>(null);
 
+  const { data: localSpacesData } = useLocalSpaces();
+
+  const allSpaces = useMemo(() => {
+    const merged: { key: string; name: string; source: 'confluence' | 'local' }[] = [];
+    (spaces ?? []).forEach((s) => merged.push({ key: s.key, name: s.name, source: s.source ?? 'confluence' }));
+    const localArr = Array.isArray(localSpacesData) ? localSpacesData : [];
+    localArr.forEach((s) => {
+      if (!merged.some((m) => m.key === s.key)) {
+        merged.push({ key: s.key, name: s.name, source: 'local' });
+      }
+    });
+    return merged;
+  }, [spaces, localSpacesData]);
+
+  const selectedSpace = allSpaces.find((s) => s.key === spaceKey);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleSpaceChange = useCallback((newSpaceKey: string) => {
@@ -43,9 +59,10 @@ export function NewPagePage() {
     setParentId(selection.parentId);
   }, []);
 
-  // Reset parentId when switching article types to avoid sending
-  // a parent selected in one context to the wrong context
+  // Reset spaceKey and parentId when switching article types to avoid sending
+  // a selection made in one context to the wrong context
   useEffect(() => {
+    setSpaceKey('');
     setParentId(undefined);
   }, [articleType]);
 
@@ -54,17 +71,17 @@ export function NewPagePage() {
       toast.error('Title is required');
       return;
     }
-    if (articleType === 'confluence' && !spaceKey) {
-      toast.error('Space is required for Confluence articles');
+    if (!spaceKey) {
+      toast.error('Space is required');
       return;
     }
     try {
       const result = await createMutation.mutateAsync({
-        spaceKey: articleType === 'confluence' ? spaceKey : '__local__',
+        spaceKey: spaceKey,
         title: title.trim(),
         bodyHtml,
         ...(parentId ? { parentId } : {}),
-        ...(articleType === 'local' ? { visibility } : {}),
+        ...(selectedSpace?.source === 'local' ? { visibility } : {}),
       } as Parameters<typeof createMutation.mutateAsync>[0]);
       clearDraft(NEW_PAGE_DRAFT_KEY);
       navigate(`/pages/${result.id}`);
@@ -84,7 +101,7 @@ export function NewPagePage() {
       const result = await importMarkdownMutation.mutateAsync({
         markdown,
         title: fileTitle,
-        spaceKey: articleType === 'confluence' ? spaceKey : undefined,
+        spaceKey: spaceKey || undefined,
       });
       navigate(`/pages/${result.id}`);
       toast.success('Markdown imported successfully');
@@ -93,11 +110,11 @@ export function NewPagePage() {
     }
     // Reset file input so the same file can be re-selected
     if (fileInputRef.current) fileInputRef.current.value = '';
-  }, [articleType, spaceKey, importMarkdownMutation, navigate]);
+  }, [spaceKey, importMarkdownMutation, navigate]);
 
   const isCreateDisabled = createMutation.isPending
     || !title.trim()
-    || (articleType === 'confluence' && !spaceKey);
+    || !spaceKey;
 
   return (
     <div>
@@ -190,22 +207,27 @@ export function NewPagePage() {
 
           <div className="h-5 w-px bg-border/50" />
 
-          {articleType === 'confluence' ? (
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-medium text-muted-foreground">Space</span>
-              <select
-                value={spaceKey}
-                onChange={(e) => handleSpaceChange(e.target.value)}
-                className="glass-select"
-                data-testid="space-selector"
-              >
-                <option value="">Select space...</option>
-                {spaces?.map((s) => (
-                  <option key={s.key} value={s.key}>{s.name}</option>
-                ))}
-              </select>
-            </div>
-          ) : (
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium text-muted-foreground">Space</span>
+            <select
+              value={spaceKey}
+              onChange={(e) => handleSpaceChange(e.target.value)}
+              className="glass-select"
+              data-testid="space-selector"
+            >
+              <option value="">Select space...</option>
+              {articleType === 'confluence'
+                ? allSpaces.filter((s) => s.source === 'confluence').map((s) => (
+                    <option key={s.key} value={s.key}>{s.name}</option>
+                  ))
+                : allSpaces.filter((s) => s.source === 'local').map((s) => (
+                    <option key={s.key} value={s.key}>{s.name}</option>
+                  ))
+              }
+            </select>
+          </div>
+
+          {selectedSpace?.source === 'local' && (
             <div className="flex items-center gap-2">
               <span className="text-xs font-medium text-muted-foreground">Visibility</span>
               <div className="flex gap-1" data-testid="visibility-picker">
@@ -238,13 +260,13 @@ export function NewPagePage() {
           )}
 
           {/* Location picker — select parent page within the chosen space */}
-          {(articleType === 'local' || (articleType === 'confluence' && spaceKey)) && (
+          {!!spaceKey && (
             <>
               <div className="h-5 w-px bg-border/50" />
               <div className="flex items-center gap-2" data-testid="location-picker-section">
                 <span className="text-xs font-medium text-muted-foreground">Location</span>
                 <LocationPicker
-                  spaceKey={articleType === 'confluence' ? spaceKey : '__local__'}
+                  spaceKey={spaceKey}
                   parentId={parentId}
                   onSelect={handleLocationSelect}
                 />

@@ -44,6 +44,12 @@ vi.mock('../../shared/hooks/use-standalone', () => ({
   useTemplates: () => ({ data: { items: [] }, isLoading: false }),
   useUseTemplate: () => ({ mutateAsync: vi.fn() }),
   useImportMarkdown: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useLocalSpaces: () => ({
+    data: [
+      { key: '__local__', name: 'Default Local Space', source: 'local', description: null, icon: null, pageCount: 0, createdBy: null, createdAt: '2026-01-01T00:00:00Z' },
+      { key: 'notes', name: 'My Notes', source: 'local', description: null, icon: null, pageCount: 3, createdBy: null, createdAt: '2026-01-01T00:00:00Z' },
+    ],
+  }),
 }));
 
 // Mock Editor to avoid complex TipTap setup
@@ -95,10 +101,32 @@ describe('NewPagePage', () => {
     expect(screen.getByTestId('article-type-confluence')).toBeInTheDocument();
   });
 
+  it('shows space selector always visible', () => {
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    // Space selector is always shown regardless of article type
+    expect(screen.getByTestId('space-selector')).toBeInTheDocument();
+  });
+
   it('shows space selector when Confluence article type is selected', () => {
     render(<NewPagePage />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByTestId('article-type-confluence'));
     expect(screen.getByTestId('space-selector')).toBeInTheDocument();
+  });
+
+  it('shows local space options when Local type is active', () => {
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    // Default is local — local spaces should appear as options
+    const selector = screen.getByTestId('space-selector');
+    expect(selector).toContainElement(screen.getByRole('option', { name: 'Default Local Space' }));
+    expect(selector).toContainElement(screen.getByRole('option', { name: 'My Notes' }));
+  });
+
+  it('shows confluence space options when Confluence type is active', () => {
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('article-type-confluence'));
+    const selector = screen.getByTestId('space-selector');
+    expect(selector).toContainElement(screen.getByRole('option', { name: 'Development' }));
+    expect(selector).toContainElement(screen.getByRole('option', { name: 'Operations' }));
   });
 
   it('shows location picker when a Confluence space is selected', async () => {
@@ -123,10 +151,91 @@ describe('NewPagePage', () => {
     expect(screen.queryByTestId('location-picker-section')).not.toBeInTheDocument();
   });
 
-  it('shows location picker for local articles', () => {
+  it('does not show location picker for local articles until a space is selected', () => {
     render(<NewPagePage />, { wrapper: createWrapper() });
-    // Default is local - location picker should show for organizing local pages
-    expect(screen.getByTestId('location-picker-section')).toBeInTheDocument();
+    // Default is local — no space selected yet, so no location picker
+    expect(screen.queryByTestId('location-picker-section')).not.toBeInTheDocument();
+  });
+
+  it('shows location picker for local articles after selecting a local space', async () => {
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    // Default is local — select a local space
+    fireEvent.change(screen.getByTestId('space-selector'), { target: { value: '__local__' } });
+    await waitFor(() => {
+      expect(screen.getByTestId('location-picker-section')).toBeInTheDocument();
+    });
+  });
+
+  it('shows visibility picker when a local space is selected', async () => {
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    fireEvent.change(screen.getByTestId('space-selector'), { target: { value: '__local__' } });
+    await waitFor(() => {
+      expect(screen.getByTestId('visibility-picker')).toBeInTheDocument();
+    });
+  });
+
+  it('does not show visibility picker when a confluence space is selected', async () => {
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('article-type-confluence'));
+    fireEvent.change(screen.getByTestId('space-selector'), { target: { value: 'DEV' } });
+    await waitFor(() => {
+      expect(screen.queryByTestId('visibility-picker')).not.toBeInTheDocument();
+    });
+  });
+
+  it('switching article type resets spaceKey (location picker disappears)', async () => {
+    render(<NewPagePage />, { wrapper: createWrapper() });
+
+    // Select a local space
+    fireEvent.change(screen.getByTestId('space-selector'), { target: { value: '__local__' } });
+    await waitFor(() => {
+      expect(screen.getByTestId('location-picker-section')).toBeInTheDocument();
+    });
+
+    // Switch to confluence — spaceKey should reset
+    fireEvent.click(screen.getByTestId('article-type-confluence'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('location-picker-section')).not.toBeInTheDocument();
+    });
+  });
+
+  it('create button is disabled when no space selected', () => {
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    // Enter a title but no space selected
+    fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'My Page' } });
+    const createBtn = screen.getByText('Create Page');
+    expect(createBtn.closest('button')).toBeDisabled();
+  });
+
+  it('create button is enabled after title and space are both set', async () => {
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'My Page' } });
+    fireEvent.change(screen.getByTestId('space-selector'), { target: { value: '__local__' } });
+    await waitFor(() => {
+      const createBtn = screen.getByText('Create Page');
+      expect(createBtn.closest('button')).not.toBeDisabled();
+    });
+  });
+
+  it('submit uses the selected local spaceKey (not hardcoded __local__)', async () => {
+    mockCreateMutateAsync.mockResolvedValueOnce({ id: 'new-page-id', title: 'My Notes Page', version: 1 });
+
+    render(<NewPagePage />, { wrapper: createWrapper() });
+
+    // Select the "My Notes" local space
+    fireEvent.change(screen.getByTestId('space-selector'), { target: { value: 'notes' } });
+    fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'My Notes Page' } });
+
+    fireEvent.click(screen.getByText('Create Page'));
+
+    await waitFor(() => {
+      expect(mockCreateMutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          spaceKey: 'notes',
+          title: 'My Notes Page',
+        }),
+      );
+    });
   });
 
   it('creates a page with parentId when location is selected', async () => {

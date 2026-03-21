@@ -427,7 +427,7 @@ export function useImportMarkdown() {
 export function useLocalSpaces() {
   return useQuery({
     queryKey: ['local-spaces'],
-    queryFn: () => apiFetch<{ items: LocalSpace[] }>('/spaces/local'),
+    queryFn: () => apiFetch<LocalSpace[]>('/spaces/local'),
   });
 }
 
