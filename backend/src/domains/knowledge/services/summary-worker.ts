@@ -40,6 +40,7 @@ const MIN_BODY_LENGTH = 100;
 let workerIntervalHandle: ReturnType<typeof setInterval> | null = null;
 let workerLock = false;
 let isProcessing = false;
+let lastRunAt: Date | null = null;
 
 // ---------------------------------------------------------------------------
 // Public status
@@ -48,38 +49,60 @@ let isProcessing = false;
 export interface SummaryStatus {
   totalPages: number;
   summarizedPages: number;
+  summarizingPages: number;
   pendingPages: number;
   failedPages: number;
   skippedPages: number;
   isProcessing: boolean;
+  lastRunAt: string | null;
+  intervalMinutes: number;
+  model: string;
+}
+
+/**
+ * Resolve the summary model at runtime: env var > admin settings > empty.
+ */
+async function resolveSummaryModel(): Promise<string> {
+  if (SUMMARY_MODEL) return SUMMARY_MODEL;
+  const sharedSettings = await getSharedLlmSettings();
+  return sharedSettings.ollamaModel || '';
 }
 
 export async function getSummaryStatus(): Promise<SummaryStatus> {
-  const result = await query<{
-    total: string;
-    summarized: string;
-    pending: string;
-    failed: string;
-    skipped: string;
-  }>(`
-    SELECT
-      COUNT(*)                                        AS total,
-      COUNT(*) FILTER (WHERE summary_status = 'summarized')  AS summarized,
-      COUNT(*) FILTER (WHERE summary_status = 'pending')     AS pending,
-      COUNT(*) FILTER (WHERE summary_status = 'failed')      AS failed,
-      COUNT(*) FILTER (WHERE summary_status = 'skipped')     AS skipped
-    FROM pages
-    WHERE deleted_at IS NULL
-  `);
+  const [result, model] = await Promise.all([
+    query<{
+      total: string;
+      summarized: string;
+      summarizing: string;
+      pending: string;
+      failed: string;
+      skipped: string;
+    }>(`
+      SELECT
+        COUNT(*)                                                 AS total,
+        COUNT(*) FILTER (WHERE summary_status = 'summarized')    AS summarized,
+        COUNT(*) FILTER (WHERE summary_status = 'summarizing')   AS summarizing,
+        COUNT(*) FILTER (WHERE summary_status = 'pending')       AS pending,
+        COUNT(*) FILTER (WHERE summary_status = 'failed')        AS failed,
+        COUNT(*) FILTER (WHERE summary_status = 'skipped')       AS skipped
+      FROM pages
+      WHERE deleted_at IS NULL
+    `),
+    resolveSummaryModel(),
+  ]);
 
   const row = result.rows[0];
   return {
     totalPages: parseInt(row.total, 10),
     summarizedPages: parseInt(row.summarized, 10),
+    summarizingPages: parseInt(row.summarizing, 10),
     pendingPages: parseInt(row.pending, 10),
     failedPages: parseInt(row.failed, 10),
     skippedPages: parseInt(row.skipped, 10),
     isProcessing,
+    lastRunAt: lastRunAt ? lastRunAt.toISOString() : null,
+    intervalMinutes: SUMMARY_CHECK_INTERVAL_MINUTES,
+    model,
   };
 }
 
@@ -244,6 +267,7 @@ async function summarizePage(
  * Run one batch cycle: detect stale hashes, then process candidates.
  */
 export async function runSummaryBatch(model?: string): Promise<{ processed: number; errors: number }> {
+  lastRunAt = new Date();
   let resolvedModel = model || SUMMARY_MODEL;
   // Fall back to admin settings if no model from env vars or explicit parameter
   if (!resolvedModel) {

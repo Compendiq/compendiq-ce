@@ -5,6 +5,7 @@ import { logger } from '../../../core/utils/logger.js';
 import { invalidateGraphCache, acquireEmbeddingLock, releaseEmbeddingLock, isEmbeddingLocked } from '../../../core/services/redis-cache.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { CircuitBreakerOpenError, ollamaBreakers, openaiBreakers } from '../../../core/services/circuit-breaker.js';
+import { getSharedLlmSettings } from '../../../core/services/admin-settings-service.js';
 import pgvector from 'pgvector';
 
 const CHUNK_SIZE = 500;          // ~500 tokens target
@@ -40,7 +41,12 @@ interface EmbeddingStatus {
   dirtyPages: number;
   totalEmbeddings: number;
   isProcessing: boolean;
+  lastRunAt: string | null;
+  model: string;
 }
+
+/** Tracks the last time embedding processing started (any user). */
+let lastEmbeddingRunAt: Date | null = null;
 
 /** Progress event emitted during embedding processing. */
 export interface EmbeddingProgressEvent {
@@ -382,6 +388,8 @@ export async function processDirtyPages(
     logger.warn({ userId }, 'Embedding processing already in progress for user');
     return { processed: 0, errors: 0, alreadyProcessing: true };
   }
+
+  lastEmbeddingRunAt = new Date();
 
   let totalProcessed = 0;
   let totalErrors = 0;
@@ -752,7 +760,7 @@ export async function computePageRelationships(): Promise<number> {
  */
 export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatus> {
   const statusSpaces = await getUserAccessibleSpaces(userId);
-  const [totalResult, dirtyResult, embeddingResult, embeddedPagesResult, isProcessing] = await Promise.all([
+  const [totalResult, dirtyResult, embeddingResult, embeddedPagesResult, isProcessing, sharedSettings] = await Promise.all([
     query<{ count: string }>(
       `SELECT COUNT(*) as count FROM pages cp
        WHERE cp.space_key = ANY($1::text[])
@@ -780,6 +788,7 @@ export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatu
       [statusSpaces],
     ),
     isEmbeddingLocked(userId),
+    getSharedLlmSettings(),
   ]);
 
   return {
@@ -788,6 +797,8 @@ export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatu
     dirtyPages: parseInt(dirtyResult.rows[0].count, 10),
     totalEmbeddings: parseInt(embeddingResult.rows[0].count, 10),
     isProcessing,
+    lastRunAt: lastEmbeddingRunAt ? lastEmbeddingRunAt.toISOString() : null,
+    model: sharedSettings.embeddingModel,
   };
 }
 

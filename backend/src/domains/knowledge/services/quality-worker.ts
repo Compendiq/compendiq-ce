@@ -33,6 +33,7 @@ async function resolveQualityModel(): Promise<string> {
 let qualityIntervalHandle: ReturnType<typeof setInterval> | null = null;
 let qualityLock = false;
 let isProcessing = false;
+let lastRunAt: Date | null = null;
 
 // ─── Score parsing ────────────────────────────────────────────────────────────
 
@@ -202,6 +203,7 @@ async function analyzePageQuality(
  *   3. Previously failed (quality_status = 'failed'), oldest failure first
  */
 export async function processBatch(): Promise<number> {
+  lastRunAt = new Date();
   // Resolve model at runtime: env var > admin settings > hardcoded fallback
   const model = await resolveQualityModel();
 
@@ -374,39 +376,54 @@ export async function forceQualityRescan(): Promise<number> {
 export async function getQualityStatus(): Promise<{
   totalPages: number;
   analyzedPages: number;
+  analyzingPages: number;
   pendingPages: number;
   failedPages: number;
   skippedPages: number;
   averageScore: number | null;
   isProcessing: boolean;
+  lastRunAt: string | null;
+  intervalMinutes: number;
+  model: string;
 }> {
-  const result = await query<{
-    total: string;
-    analyzed: string;
-    pending: string;
-    failed: string;
-    skipped: string;
-    avg_score: string | null;
-  }>(
-    `SELECT
-       COUNT(*) AS total,
-       COUNT(*) FILTER (WHERE quality_status = 'analyzed') AS analyzed,
-       COUNT(*) FILTER (WHERE quality_status = 'pending') AS pending,
-       COUNT(*) FILTER (WHERE quality_status = 'failed') AS failed,
-       COUNT(*) FILTER (WHERE quality_status = 'skipped') AS skipped,
-       ROUND(AVG(quality_score) FILTER (WHERE quality_status = 'analyzed'))::TEXT AS avg_score
-     FROM pages
-     WHERE deleted_at IS NULL`,
-  );
+  const [result, model] = await Promise.all([
+    query<{
+      total: string;
+      analyzed: string;
+      analyzing: string;
+      pending: string;
+      failed: string;
+      skipped: string;
+      avg_score: string | null;
+    }>(
+      `SELECT
+         COUNT(*) AS total,
+         COUNT(*) FILTER (WHERE quality_status = 'analyzed') AS analyzed,
+         COUNT(*) FILTER (WHERE quality_status = 'analyzing') AS analyzing,
+         COUNT(*) FILTER (WHERE quality_status = 'pending') AS pending,
+         COUNT(*) FILTER (WHERE quality_status = 'failed') AS failed,
+         COUNT(*) FILTER (WHERE quality_status = 'skipped') AS skipped,
+         ROUND(AVG(quality_score) FILTER (WHERE quality_status = 'analyzed'))::TEXT AS avg_score
+       FROM pages
+       WHERE deleted_at IS NULL`,
+    ),
+    resolveQualityModel(),
+  ]);
 
   const row = result.rows[0];
+  const intervalMinutes = parseInt(process.env.QUALITY_CHECK_INTERVAL_MINUTES ?? '60', 10);
+
   return {
     totalPages: parseInt(row.total, 10),
     analyzedPages: parseInt(row.analyzed, 10),
+    analyzingPages: parseInt(row.analyzing, 10),
     pendingPages: parseInt(row.pending, 10),
     failedPages: parseInt(row.failed, 10),
     skippedPages: parseInt(row.skipped, 10),
     averageScore: row.avg_score ? parseInt(row.avg_score, 10) : null,
     isProcessing,
+    lastRunAt: lastRunAt ? lastRunAt.toISOString() : null,
+    intervalMinutes,
+    model,
   };
 }
