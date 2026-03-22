@@ -65,7 +65,10 @@ export interface SummaryStatus {
 async function resolveSummaryModel(): Promise<string> {
   if (SUMMARY_MODEL) return SUMMARY_MODEL;
   const sharedSettings = await getSharedLlmSettings();
-  return sharedSettings.ollamaModel || '';
+  const model = sharedSettings.llmProvider === 'openai'
+    ? sharedSettings.openaiModel
+    : sharedSettings.ollamaModel;
+  return model || '';
 }
 
 export async function getSummaryStatus(): Promise<SummaryStatus> {
@@ -272,7 +275,9 @@ export async function runSummaryBatch(model?: string): Promise<{ processed: numb
   // Fall back to admin settings if no model from env vars or explicit parameter
   if (!resolvedModel) {
     const sharedSettings = await getSharedLlmSettings();
-    resolvedModel = sharedSettings.ollamaModel || '';
+    resolvedModel = (sharedSettings.llmProvider === 'openai'
+      ? sharedSettings.openaiModel
+      : sharedSettings.ollamaModel) || '';
   }
   if (!resolvedModel) {
     logger.warn('No summary model configured (SUMMARY_MODEL, DEFAULT_LLM_MODEL, or admin settings). Marking pending pages as skipped.');

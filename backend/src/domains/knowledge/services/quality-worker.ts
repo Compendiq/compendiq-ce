@@ -25,7 +25,10 @@ const MAX_RETRIES = 3;
 async function resolveQualityModel(): Promise<string> {
   if (QUALITY_MODEL_ENV) return QUALITY_MODEL_ENV;
   const sharedSettings = await getSharedLlmSettings();
-  return sharedSettings.ollamaModel || 'qwen3:4b';
+  const model = sharedSettings.llmProvider === 'openai'
+    ? sharedSettings.openaiModel
+    : sharedSettings.ollamaModel;
+  return model || 'qwen3:4b';
 }
 
 // ─── State ────────────────────────────────────────────────────────────────────
