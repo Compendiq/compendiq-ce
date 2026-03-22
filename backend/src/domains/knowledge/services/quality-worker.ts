@@ -62,19 +62,22 @@ export interface QualityScores {
  *   [text]
  */
 export function parseQualityScores(text: string): QualityScores | null {
-  const overallMatch = text.match(/##\s*Overall\s+Quality\s+Score:\s*(\d+)\s*\/\s*100/i);
-  const completenessMatch = text.match(/##\s*Completeness:\s*(\d+)\s*\/\s*100/i);
-  const clarityMatch = text.match(/##\s*Clarity:\s*(\d+)\s*\/\s*100/i);
-  const structureMatch = text.match(/##\s*Structure:\s*(\d+)\s*\/\s*100/i);
-  const accuracyMatch = text.match(/##\s*Accuracy:\s*(\d+)\s*\/\s*100/i);
-  const readabilityMatch = text.match(/##\s*Readability:\s*(\d+)\s*\/\s*100/i);
+  // Strip <think>...</think> blocks from thinking models (e.g., qwen3, deepseek-r1)
+  const cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+
+  const overallMatch = cleaned.match(/##?\s*Overall\s+Quality\s+Score:\s*(\d+)\s*\/\s*100/i);
+  const completenessMatch = cleaned.match(/##?\s*Completeness:\s*(\d+)\s*\/\s*100/i);
+  const clarityMatch = cleaned.match(/##?\s*Clarity:\s*(\d+)\s*\/\s*100/i);
+  const structureMatch = cleaned.match(/##?\s*Structure:\s*(\d+)\s*\/\s*100/i);
+  const accuracyMatch = cleaned.match(/##?\s*Accuracy:\s*(\d+)\s*\/\s*100/i);
+  const readabilityMatch = cleaned.match(/##?\s*Readability:\s*(\d+)\s*\/\s*100/i);
 
   if (!overallMatch || !completenessMatch || !clarityMatch || !structureMatch || !accuracyMatch || !readabilityMatch) {
     return null;
   }
 
   // Extract summary section
-  const summaryMatch = text.match(/##\s*Summary\s*\n([\s\S]*?)(?:\n##|$)/i);
+  const summaryMatch = cleaned.match(/##?\s*Summary\s*\n([\s\S]*?)(?:\n##|$)/i);
   const summary = summaryMatch ? summaryMatch[1].trim() : '';
 
   const clamp = (n: number) => Math.max(0, Math.min(100, n));
@@ -130,6 +133,16 @@ async function analyzePageQuality(
   try {
     // Convert to markdown for LLM consumption (prefer bodyHtml for richer content)
     const markdown = bodyHtml ? htmlToMarkdown(bodyHtml) : bodyText;
+
+    // Skip pages with insufficient content for meaningful analysis
+    if (!markdown || markdown.trim().length < 50) {
+      logger.debug({ pageId, contentLength: markdown?.length ?? 0 }, 'Skipping quality analysis — content too short');
+      await query(
+        `UPDATE pages SET quality_status = 'skipped' WHERE id = $1`,
+        [pageId],
+      );
+      return;
+    }
 
     const response = await collectStreamedResponse(model, markdown);
     const scores = parseQualityScores(response);
