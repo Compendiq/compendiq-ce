@@ -31,7 +31,8 @@ export function ServiceStatus() {
 
   const checkHealth = useCallback(async () => {
     try {
-      const res = await fetch('/api/health');
+      // /api/health/ready only checks postgres+redis — stable even when LLM is down
+      const res = await fetch('/api/health/ready');
       if (!res.ok) {
         setAlerts([{
           id: 'api',
@@ -44,32 +45,38 @@ export function ServiceStatus() {
         return;
       }
 
-      const data: HealthStatus = await res.json();
+      // Separately fetch full health for LLM status (best-effort, ignore errors)
       const newAlerts: ServiceAlert[] = [];
-
-      if (data.services?.llm === false) {
-        const label = data.llmProvider === 'openai'
-          ? 'LLM server is unreachable'
-          : 'Ollama server is down';
-        newAlerts.push({
-          id: 'ollama',
-          service: 'ollama',
-          label,
-          icon: Server,
-          colorClass: 'text-warning',
-          bgClass: 'bg-warning/15 border-warning/30',
-        });
-      }
-
-      if (data.services?.redis === false) {
-        newAlerts.push({
-          id: 'redis',
-          service: 'redis',
-          label: 'Redis is unavailable',
-          icon: AlertTriangle,
-          colorClass: 'text-warning',
-          bgClass: 'bg-warning/15 border-warning/30',
-        });
+      try {
+        const fullRes = await fetch('/api/health');
+        if (fullRes.ok) {
+          const data: HealthStatus = await fullRes.json();
+          if (data.services?.llm === false) {
+            const label = data.llmProvider === 'openai'
+              ? 'LLM server is unreachable'
+              : 'Ollama server is down';
+            newAlerts.push({
+              id: 'ollama',
+              service: 'ollama',
+              label,
+              icon: Server,
+              colorClass: 'text-warning',
+              bgClass: 'bg-warning/15 border-warning/30',
+            });
+          }
+          if (data.services?.redis === false) {
+            newAlerts.push({
+              id: 'redis',
+              service: 'redis',
+              label: 'Redis is unavailable',
+              icon: AlertTriangle,
+              colorClass: 'text-warning',
+              bgClass: 'bg-warning/15 border-warning/30',
+            });
+          }
+        }
+      } catch {
+        // full health check failed — don't show LLM alert, API is still up
       }
 
       setAlerts(newAlerts);

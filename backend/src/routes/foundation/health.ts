@@ -17,7 +17,12 @@ export function markStartupComplete(): void {
 async function checkLlm(): Promise<boolean> {
   try {
     const sharedLlmSettings = await getSharedLlmSettings();
-    const result = await getProvider(sharedLlmSettings.llmProvider).checkHealth();
+    const result = await Promise.race([
+      getProvider(sharedLlmSettings.llmProvider).checkHealth(),
+      new Promise<{ connected: false }>((_resolve, reject) =>
+        setTimeout(() => reject(new Error('LLM health check timed out')), 5000),
+      ),
+    ]);
     return result.connected;
   } catch {
     logger.debug('LLM health check failed');
@@ -84,27 +89,38 @@ export async function healthRoutes(fastify: FastifyInstance) {
   // GET /api/health - backward compatibility alias for /api/health/ready
   // Also includes LLM status for full picture.
   fastify.get('/health', async (_request, reply) => {
-    const sharedLlmSettings = await getSharedLlmSettings();
-    const [postgres, redis, llm] = await Promise.all([
-      checkPg(),
-      checkRedisConnection(fastify.redis),
-      checkLlm(),
-    ]);
+    try {
+      const [sharedLlmSettings, postgres, redis, llm] = await Promise.all([
+        getSharedLlmSettings(),
+        checkPg(),
+        checkRedisConnection(fastify.redis),
+        checkLlm(),
+      ]);
 
-    const allHealthy = postgres && redis;
-    const status = allHealthy ? 'ok' : (postgres || redis) ? 'degraded' : 'error';
-    const providerType = sharedLlmSettings.llmProvider;
+      const allHealthy = postgres && redis;
+      const status = allHealthy ? 'ok' : (postgres || redis) ? 'degraded' : 'error';
 
-    reply.status(allHealthy ? 200 : 503).send({
-      status,
-      services: { postgres, redis, llm },
-      llmProvider: providerType,
-      circuitBreakers: {
-        ollama: getOllamaCircuitBreakerStatus(),
-        openai: getOpenaiCircuitBreakerStatus(),
-      },
-      version: '1.0.0',
-      uptime: process.uptime(),
-    });
+      reply.status(allHealthy ? 200 : 503).send({
+        status,
+        services: { postgres, redis, llm },
+        llmProvider: sharedLlmSettings.llmProvider,
+        circuitBreakers: {
+          ollama: getOllamaCircuitBreakerStatus(),
+          openai: getOpenaiCircuitBreakerStatus(),
+        },
+        version: '1.0.0',
+        uptime: process.uptime(),
+      });
+    } catch {
+      // Fallback: if any check throws unexpectedly, report partial status
+      const [postgres, redis] = await Promise.all([checkPg(), checkRedisConnection(fastify.redis)]).catch(() => [false, false]);
+      const allHealthy = postgres && redis;
+      reply.status(allHealthy ? 200 : 503).send({
+        status: allHealthy ? 'ok' : 'degraded',
+        services: { postgres, redis, llm: false },
+        version: '1.0.0',
+        uptime: process.uptime(),
+      });
+    }
   });
 }
