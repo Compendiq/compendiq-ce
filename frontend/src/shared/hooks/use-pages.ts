@@ -35,6 +35,8 @@ interface PageSummary {
   qualityAnalyzedAt: string | null;
   qualityError: string | null;
   summaryStatus?: SummaryStatus;
+  source: 'confluence' | 'standalone';
+  visibility: 'private' | 'shared';
 }
 
 interface PageDetail extends PageSummary {
