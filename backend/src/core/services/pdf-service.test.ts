@@ -116,6 +116,33 @@ describe('pdf-service', () => {
       await generatePdf('<p>Second</p>', {});
       expect(chromium.launch).toHaveBeenCalledTimes(2);
     });
+
+    it('should pass executablePath from PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH env var', async () => {
+      const { chromium } = await import('playwright-core');
+
+      process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH = '/usr/lib/chromium/chromium';
+      try {
+        await generatePdf('<p>Content</p>', {});
+
+        expect(chromium.launch).toHaveBeenCalledWith(
+          expect.objectContaining({
+            executablePath: '/usr/lib/chromium/chromium',
+          }),
+        );
+      } finally {
+        delete process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
+      }
+    });
+
+    it('should not set executablePath when env var is not set', async () => {
+      const { chromium } = await import('playwright-core');
+      delete process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
+
+      await generatePdf('<p>Content</p>', {});
+
+      const launchCall = (chromium.launch as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(launchCall.executablePath).toBeUndefined();
+    });
   });
 
   describe('closeBrowser', () => {

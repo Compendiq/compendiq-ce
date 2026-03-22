@@ -36,6 +36,20 @@ RUN apk add --no-cache dumb-init wget
 # Prepare the app directory with correct ownership for node (uid 1000)
 RUN mkdir -p /opt/app/data && chown -R 1000:1000 /opt/app
 
+# Chromium stage — install Chromium into a standard Alpine base.
+# The DHI runtime image is distroless (no shell, no apk, no /usr/lib beyond
+# musl) so we install Chromium here and copy the entire /usr/lib tree to
+# guarantee every transitive shared library dependency is present.
+FROM alpine:3.23 AS chromium
+
+RUN apk add --no-cache \
+    chromium \
+    nss \
+    freetype \
+    harfbuzz \
+    ca-certificates \
+    ttf-freefont
+
 ###########################################################
 # Runtime stage — minimal DHI image with only what's needed
 FROM dhi.io/node:24-alpine3.23 AS runtime
@@ -45,6 +59,18 @@ COPY --from=tools /usr/bin/dumb-init /usr/bin/dumb-init
 COPY --from=tools /usr/bin/wget /usr/bin/wget
 # Copy pre-created data directory with correct ownership
 COPY --from=tools --chown=node:node /opt/app/data /app/data
+
+# Copy Chromium and ALL shared libraries from the chromium stage.
+# Chromium transitively depends on hundreds of .so files (NSS, glib, X11,
+# fontconfig, ffmpeg, etc.).  Copying /usr/lib wholesale is the only reliable
+# approach for a distroless target image.
+COPY --from=chromium /usr/lib/ /usr/lib/
+COPY --from=chromium /usr/share/fonts/ /usr/share/fonts/
+COPY --from=chromium /etc/fonts/ /etc/fonts/
+
+# Tell playwright-core to use the system Chromium binary directly
+# (not the /usr/bin/chromium-browser shell wrapper, since this image has no shell)
+ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/lib/chromium/chromium
 
 WORKDIR /app
 COPY --chown=node:node --from=builder /app/backend/package.json ./
