@@ -15,6 +15,7 @@ import crypto from 'node:crypto';
 import { query } from '../../../core/db/postgres.js';
 import { summarizeContent } from '../../llm/services/ollama-service.js';
 import { logger } from '../../../core/utils/logger.js';
+import { getSharedLlmSettings } from '../../../core/services/admin-settings-service.js';
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -127,7 +128,7 @@ function stripHtml(html: string): string {
 // ---------------------------------------------------------------------------
 
 interface SummaryCandidate {
-  confluence_id: string;
+  id: number;
   body_text: string;
   summary_content_hash: string | null;
   summary_retry_count: number;
@@ -142,7 +143,7 @@ interface SummaryCandidate {
  */
 async function findCandidates(batchSize: number): Promise<SummaryCandidate[]> {
   const result = await query<SummaryCandidate>(
-    `SELECT confluence_id, body_text, summary_content_hash, summary_retry_count, title
+    `SELECT id, body_text, summary_content_hash, summary_retry_count, title
      FROM pages
      WHERE summary_status IN ('pending', 'failed')
        AND deleted_at IS NULL
@@ -164,7 +165,7 @@ async function summarizePage(
   candidate: SummaryCandidate,
   model: string,
 ): Promise<void> {
-  const { confluence_id, body_text, title } = candidate;
+  const { id, body_text, title } = candidate;
 
   // Skip empty/short content
   if (!body_text || body_text.length < MIN_BODY_LENGTH) {
@@ -172,10 +173,10 @@ async function summarizePage(
       `UPDATE pages
        SET summary_status = 'skipped',
            summary_error = 'Content too short for summarization'
-       WHERE confluence_id = $1`,
-      [confluence_id],
+       WHERE id = $1`,
+      [id],
     );
-    logger.info({ pageId: confluence_id, title }, 'Page skipped — content too short');
+    logger.info({ pageId: id, title }, 'Page skipped — content too short');
     return;
   }
 
@@ -183,8 +184,8 @@ async function summarizePage(
 
   // Mark as summarizing
   await query(
-    `UPDATE pages SET summary_status = 'summarizing' WHERE confluence_id = $1`,
-    [confluence_id],
+    `UPDATE pages SET summary_status = 'summarizing' WHERE id = $1`,
+    [id],
   );
 
   try {
@@ -211,11 +212,11 @@ async function summarizePage(
            summary_content_hash = $3,
            summary_model = $4,
            summary_retry_count = 0
-       WHERE confluence_id = $5`,
-      [summaryText, summaryHtml, contentHash, model, confluence_id],
+       WHERE id = $5`,
+      [summaryText, summaryHtml, contentHash, model, id],
     );
 
-    logger.info({ pageId: confluence_id, title, model }, 'Summary generated');
+    logger.info({ pageId: id, title, model }, 'Summary generated');
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
     const newRetryCount = candidate.summary_retry_count + 1;
@@ -228,12 +229,12 @@ async function summarizePage(
        SET summary_status = $1,
            summary_error = $2,
            summary_retry_count = $3
-       WHERE confluence_id = $4`,
-      [newStatus, message, newRetryCount, confluence_id],
+       WHERE id = $4`,
+      [newStatus, message, newRetryCount, id],
     );
 
     logger.error(
-      { err, pageId: confluence_id, title, retryCount: newRetryCount },
+      { err, pageId: id, title, retryCount: newRetryCount },
       'Summary generation failed',
     );
   }
@@ -243,11 +244,16 @@ async function summarizePage(
  * Run one batch cycle: detect stale hashes, then process candidates.
  */
 export async function runSummaryBatch(model?: string): Promise<{ processed: number; errors: number }> {
-  const resolvedModel = model || SUMMARY_MODEL;
+  let resolvedModel = model || SUMMARY_MODEL;
+  // Fall back to admin settings if no model from env vars or explicit parameter
   if (!resolvedModel) {
-    logger.warn('No summary model configured (SUMMARY_MODEL or DEFAULT_LLM_MODEL). Marking pending pages as disabled.');
+    const sharedSettings = await getSharedLlmSettings();
+    resolvedModel = sharedSettings.ollamaModel || '';
+  }
+  if (!resolvedModel) {
+    logger.warn('No summary model configured (SUMMARY_MODEL, DEFAULT_LLM_MODEL, or admin settings). Marking pending pages as skipped.');
     await query(
-      `UPDATE pages SET summary_status = 'disabled'
+      `UPDATE pages SET summary_status = 'skipped'
        WHERE summary_status = 'pending' AND deleted_at IS NULL`,
     );
     return { processed: 0, errors: 0 };
@@ -277,7 +283,7 @@ export async function runSummaryBatch(model?: string): Promise<{ processed: numb
       processed++;
     } catch (err) {
       errors++;
-      logger.error({ err, pageId: candidate.confluence_id }, 'Unexpected error in summary batch');
+      logger.error({ err, pageId: candidate.id }, 'Unexpected error in summary batch');
     }
   }
 

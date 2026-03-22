@@ -11,12 +11,22 @@ import { getSystemPrompt, streamChat } from '../../llm/services/ollama-service.j
 import { sanitizeLlmInput } from '../../../core/utils/sanitize-llm-input.js';
 import { htmlToMarkdown } from '../../../core/services/content-converter.js';
 import { logger } from '../../../core/utils/logger.js';
+import { getSharedLlmSettings } from '../../../core/services/admin-settings-service.js';
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 
 const QUALITY_BATCH_SIZE = parseInt(process.env.QUALITY_BATCH_SIZE ?? '5', 10);
-const QUALITY_MODEL = process.env.QUALITY_MODEL ?? process.env.DEFAULT_LLM_MODEL ?? 'qwen3:4b';
+const QUALITY_MODEL_ENV = process.env.QUALITY_MODEL ?? process.env.DEFAULT_LLM_MODEL ?? '';
 const MAX_RETRIES = 3;
+
+/**
+ * Resolve the quality model at runtime: env var > admin settings > hardcoded fallback.
+ */
+async function resolveQualityModel(): Promise<string> {
+  if (QUALITY_MODEL_ENV) return QUALITY_MODEL_ENV;
+  const sharedSettings = await getSharedLlmSettings();
+  return sharedSettings.ollamaModel || 'qwen3:4b';
+}
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
@@ -82,10 +92,10 @@ export function parseQualityScores(text: string): QualityScores | null {
  * Collect the full streamed response from the quality analysis LLM call.
  * This is an internal batch job — no SSE, just accumulate chunks.
  */
-async function collectStreamedResponse(content: string): Promise<string> {
+async function collectStreamedResponse(model: string, content: string): Promise<string> {
   const { sanitized } = sanitizeLlmInput(content);
   const systemPrompt = getSystemPrompt('analyze_quality');
-  const generator = streamChat(QUALITY_MODEL, [
+  const generator = streamChat(model, [
     { role: 'system', content: systemPrompt },
     { role: 'user', content: sanitized },
   ]);
@@ -101,34 +111,35 @@ async function collectStreamedResponse(content: string): Promise<string> {
  * Analyze a single page's quality.
  */
 async function analyzePageQuality(
-  confluenceId: string,
+  pageId: number,
+  model: string,
   bodyHtml: string,
   bodyText: string,
   currentRetryCount: number = 0,
 ): Promise<void> {
   // Mark as analyzing
   await query(
-    `UPDATE pages SET quality_status = 'analyzing' WHERE confluence_id = $1`,
-    [confluenceId],
+    `UPDATE pages SET quality_status = 'analyzing' WHERE id = $1`,
+    [pageId],
   );
 
   try {
     // Convert to markdown for LLM consumption (prefer bodyHtml for richer content)
     const markdown = bodyHtml ? htmlToMarkdown(bodyHtml) : bodyText;
 
-    const response = await collectStreamedResponse(markdown);
+    const response = await collectStreamedResponse(model, markdown);
     const scores = parseQualityScores(response);
 
     if (!scores) {
-      logger.warn({ confluenceId }, 'Failed to parse quality scores from LLM response');
+      logger.warn({ pageId }, 'Failed to parse quality scores from LLM response');
       await query(
         `UPDATE pages
          SET quality_status = 'failed',
              quality_error = $2,
              quality_retry_count = $3,
              quality_analyzed_at = NOW()
-         WHERE confluence_id = $1`,
-        [confluenceId, 'Failed to parse structured quality scores from LLM output', currentRetryCount + 1],
+         WHERE id = $1`,
+        [pageId, 'Failed to parse structured quality scores from LLM output', currentRetryCount + 1],
       );
       return;
     }
@@ -146,9 +157,9 @@ async function analyzePageQuality(
            quality_error = NULL,
            quality_retry_count = 0,
            quality_analyzed_at = NOW()
-       WHERE confluence_id = $1`,
+       WHERE id = $1`,
       [
-        confluenceId,
+        pageId,
         scores.overall,
         scores.completeness,
         scores.clarity,
@@ -159,7 +170,7 @@ async function analyzePageQuality(
       ],
     );
 
-    logger.info({ confluenceId, score: scores.overall }, 'Quality analysis complete');
+    logger.info({ pageId, score: scores.overall }, 'Quality analysis complete');
   } catch (err) {
     const rawMessage = err instanceof Error ? err.message : 'Unknown error';
     // Replace raw network errors with user-friendly messages
@@ -167,15 +178,15 @@ async function analyzePageQuality(
     const message = isTransient
       ? 'Could not reach AI service — will retry on next cycle'
       : rawMessage;
-    logger.error({ err, confluenceId }, 'Quality analysis failed for page');
+    logger.error({ err, pageId }, 'Quality analysis failed for page');
     await query(
       `UPDATE pages
        SET quality_status = 'failed',
            quality_error = $2,
            quality_retry_count = $3,
            quality_analyzed_at = NOW()
-       WHERE confluence_id = $1`,
-      [confluenceId, message.slice(0, 1000), currentRetryCount + 1],
+       WHERE id = $1`,
+      [pageId, message.slice(0, 1000), currentRetryCount + 1],
     );
   }
 }
@@ -191,14 +202,17 @@ async function analyzePageQuality(
  *   3. Previously failed (quality_status = 'failed'), oldest failure first
  */
 export async function processBatch(): Promise<number> {
+  // Resolve model at runtime: env var > admin settings > hardcoded fallback
+  const model = await resolveQualityModel();
+
   // Priority 1: Unscored pages (status = 'pending')
   const pendingResult = await query<{
-    confluence_id: string;
+    id: number;
     body_html: string;
     body_text: string;
     quality_retry_count: number;
   }>(
-    `SELECT confluence_id, COALESCE(body_html, '') AS body_html, COALESCE(body_text, '') AS body_text, quality_retry_count
+    `SELECT id, COALESCE(body_html, '') AS body_html, COALESCE(body_text, '') AS body_text, quality_retry_count
      FROM pages
      WHERE quality_status = 'pending'
        AND deleted_at IS NULL
@@ -214,12 +228,12 @@ export async function processBatch(): Promise<number> {
   if (pages.length < QUALITY_BATCH_SIZE) {
     const remaining = QUALITY_BATCH_SIZE - pages.length;
     const staleResult = await query<{
-      confluence_id: string;
+      id: number;
       body_html: string;
       body_text: string;
       quality_retry_count: number;
     }>(
-      `SELECT confluence_id, COALESCE(body_html, '') AS body_html, COALESCE(body_text, '') AS body_text, quality_retry_count
+      `SELECT id, COALESCE(body_html, '') AS body_html, COALESCE(body_text, '') AS body_text, quality_retry_count
        FROM pages
        WHERE quality_status = 'analyzed'
          AND deleted_at IS NULL
@@ -237,12 +251,12 @@ export async function processBatch(): Promise<number> {
   if (pages.length < QUALITY_BATCH_SIZE) {
     const remaining = QUALITY_BATCH_SIZE - pages.length;
     const failedResult = await query<{
-      confluence_id: string;
+      id: number;
       body_html: string;
       body_text: string;
       quality_retry_count: number;
     }>(
-      `SELECT confluence_id, COALESCE(body_html, '') AS body_html, COALESCE(body_text, '') AS body_text, quality_retry_count
+      `SELECT id, COALESCE(body_html, '') AS body_html, COALESCE(body_text, '') AS body_text, quality_retry_count
        FROM pages
        WHERE quality_status = 'failed'
          AND deleted_at IS NULL
@@ -270,7 +284,7 @@ export async function processBatch(): Promise<number> {
 
   // Process each page sequentially (LLM calls are resource-intensive)
   for (const page of pages) {
-    await analyzePageQuality(page.confluence_id, page.body_html, page.body_text, page.quality_retry_count);
+    await analyzePageQuality(page.id, model, page.body_html, page.body_text, page.quality_retry_count);
   }
 
   return pages.length;
@@ -305,7 +319,7 @@ export function startQualityWorker(intervalMinutes?: number): void {
     }
   }, intervalMs);
 
-  logger.info({ intervalMinutes: interval, batchSize: QUALITY_BATCH_SIZE, model: QUALITY_MODEL }, 'Background quality analysis worker started');
+  logger.info({ intervalMinutes: interval, batchSize: QUALITY_BATCH_SIZE, model: QUALITY_MODEL_ENV || '(from admin settings)' }, 'Background quality analysis worker started');
 }
 
 /**

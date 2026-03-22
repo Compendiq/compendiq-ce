@@ -24,6 +24,17 @@ vi.mock('../../llm/services/ollama-service.js', () => ({
   }),
 }));
 
+vi.mock('../../../core/services/admin-settings-service.js', () => ({
+  getSharedLlmSettings: vi.fn().mockResolvedValue({
+    llmProvider: 'ollama',
+    ollamaModel: 'qwen3.5',
+    openaiBaseUrl: null,
+    hasOpenaiApiKey: false,
+    openaiModel: null,
+    embeddingModel: 'nomic-embed-text',
+  }),
+}));
+
 describe.skipIf(!dbAvailable)('Summary Worker', () => {
   let testUserId: string;
   const testSpaceKey = 'TEST';
@@ -257,11 +268,72 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
       expect(processed).toBe(0);
     });
 
-    it('should return 0 processed when no model is configured', async () => {
-      // runSummaryBatch with empty model and env vars not set
+    it('should fall back to admin settings model when empty string is passed', async () => {
+      // When empty model is passed, the worker should read from admin settings (mocked as 'qwen3.5')
+      // and process normally rather than marking pages as skipped
+      const longContent = 'D'.repeat(200);
+      await query(
+        `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status)
+         VALUES ('fallback1', $1, 'Fallback Page', $2, 'pending')`,
+        [testSpaceKey, longContent],
+      );
+
+      const result = await runSummaryBatch('');
+      // Admin settings mock returns 'qwen3.5', so the page should be processed
+      expect(result.processed).toBe(1);
+      expect(result.errors).toBe(0);
+    });
+
+    it('should mark pages as skipped (not disabled) when no model is available anywhere', async () => {
+      // Override the admin settings mock to return empty model
+      const { getSharedLlmSettings } = await import('../../../core/services/admin-settings-service.js');
+      vi.mocked(getSharedLlmSettings).mockResolvedValueOnce({
+        llmProvider: 'ollama',
+        ollamaModel: '',
+        openaiBaseUrl: null,
+        hasOpenaiApiKey: false,
+        openaiModel: null,
+        embeddingModel: 'nomic-embed-text',
+      });
+
+      await query(
+        `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status)
+         VALUES ('noskip1', $1, 'No Model Page', 'Some content', 'pending')`,
+        [testSpaceKey],
+      );
+
       const result = await runSummaryBatch('');
       expect(result.processed).toBe(0);
-      expect(result.errors).toBe(0);
+
+      // Verify status is 'skipped' (not 'disabled' which would violate DB constraint)
+      const pageResult = await query<{ summary_status: string }>(
+        "SELECT summary_status FROM pages WHERE confluence_id = 'noskip1'",
+      );
+      expect(pageResult.rows[0].summary_status).toBe('skipped');
+    });
+
+    it('should summarize standalone pages with NULL confluence_id', async () => {
+      const longContent = 'E'.repeat(200);
+      const insertResult = await query<{ id: number }>(
+        `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status)
+         VALUES (NULL, $1, 'Standalone Summary Page', $2, 'pending')
+         RETURNING id`,
+        [testSpaceKey, longContent],
+      );
+      const pageId = insertResult.rows[0].id;
+
+      const { processed, errors } = await runSummaryBatch('test-model');
+      expect(processed).toBe(1);
+      expect(errors).toBe(0);
+
+      // Verify using id since confluence_id is NULL
+      const result = await query<{ summary_status: string; summary_text: string; summary_model: string }>(
+        'SELECT summary_status, summary_text, summary_model FROM pages WHERE id = $1',
+        [pageId],
+      );
+      expect(result.rows[0].summary_status).toBe('summarized');
+      expect(result.rows[0].summary_text).toBeTruthy();
+      expect(result.rows[0].summary_model).toBe('test-model');
     });
   });
 

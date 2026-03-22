@@ -437,8 +437,8 @@ export async function processDirtyPages(
         try {
           // Mark page as currently embedding and clear any previous error
           await query(
-            `UPDATE pages SET embedding_status = 'embedding', embedding_error = NULL WHERE confluence_id = $1`,
-            [page.confluence_id],
+            `UPDATE pages SET embedding_status = 'embedding', embedding_error = NULL WHERE id = $1`,
+            [page.id],
           );
 
           await embedPage(userId, page.id, page.title, page.space_key, page.body_html, chunkOpts);
@@ -472,7 +472,7 @@ export async function processDirtyPages(
                 : CIRCUIT_BREAKER_WAIT_BUFFER_MS;
 
               logger.warn(
-                { userId, confluenceId: page.confluence_id, waitMs, attempt: cbRetries + 1 },
+                { userId, pageId: page.id, waitMs, attempt: cbRetries + 1 },
                 'Circuit breaker open, waiting for recovery...',
               );
 
@@ -515,10 +515,10 @@ export async function processDirtyPages(
                 if (!isCircuitBreakerError(retryErr)) {
                   // Different error, mark as failed and move on
                   const errorMessage = retryErr instanceof Error ? retryErr.message : String(retryErr);
-                  logger.error({ err: retryErr, confluenceId: page.confluence_id }, 'Failed to embed page after circuit breaker recovery');
+                  logger.error({ err: retryErr, pageId: page.id }, 'Failed to embed page after circuit breaker recovery');
                   await query(
-                    `UPDATE pages SET embedding_status = 'failed', embedding_error = $2 WHERE confluence_id = $1`,
-                    [page.confluence_id, errorMessage.slice(0, 1000)],
+                    `UPDATE pages SET embedding_status = 'failed', embedding_error = $2 WHERE id = $1`,
+                    [page.id, errorMessage.slice(0, 1000)],
                   ).catch((updateErr) => logger.error({ err: updateErr }, 'Failed to update embedding_status to failed'));
                   totalErrors++;
                   batchErrors++;
@@ -545,11 +545,11 @@ export async function processDirtyPages(
           }
 
           // Non-circuit-breaker error: mark page as failed
-          logger.error({ err, confluenceId: page.confluence_id }, 'Failed to embed page');
+          logger.error({ err, pageId: page.id }, 'Failed to embed page');
           const errorMessage = err instanceof Error ? err.message : String(err);
           await query(
-            `UPDATE pages SET embedding_status = 'failed', embedding_error = $2 WHERE confluence_id = $1`,
-            [page.confluence_id, errorMessage.slice(0, 1000)],
+            `UPDATE pages SET embedding_status = 'failed', embedding_error = $2 WHERE id = $1`,
+            [page.id, errorMessage.slice(0, 1000)],
           ).catch((updateErr) => logger.error({ err: updateErr }, 'Failed to update embedding_status to failed'));
           totalErrors++;
           batchErrors++;

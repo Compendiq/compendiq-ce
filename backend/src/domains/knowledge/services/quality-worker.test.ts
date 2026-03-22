@@ -34,6 +34,17 @@ vi.mock('../../../core/services/content-converter.js', () => ({
   htmlToMarkdown: vi.fn().mockImplementation((html: string) => html),
 }));
 
+vi.mock('../../../core/services/admin-settings-service.js', () => ({
+  getSharedLlmSettings: vi.fn().mockResolvedValue({
+    llmProvider: 'ollama',
+    ollamaModel: 'qwen3.5',
+    openaiBaseUrl: null,
+    hasOpenaiApiKey: false,
+    openaiModel: null,
+    embeddingModel: 'nomic-embed-text',
+  }),
+}));
+
 describe('parseQualityScores', () => {
   it('parses a complete well-formed quality report', () => {
     const text = `
@@ -280,6 +291,28 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
       // LLM mock returns valid scores, so page should be analyzed
       expect(result.rows[0].quality_status).toBe('analyzed');
       expect(result.rows[0].quality_retry_count).toBe(0); // reset on success
+    });
+
+    it('should analyze standalone pages with NULL confluence_id', async () => {
+      // Standalone/local pages have confluence_id = NULL — this must not prevent updates
+      const insertResult = await query<{ id: number }>(
+        `INSERT INTO pages (confluence_id, space_key, title, body_text, body_html, quality_status)
+         VALUES (NULL, $1, 'Standalone Page', 'Local content for analysis', '<p>Local content for analysis</p>', 'pending')
+         RETURNING id`,
+        [testSpaceKey],
+      );
+      const pageId = insertResult.rows[0].id;
+
+      const processed = await processBatch();
+      expect(processed).toBe(1);
+
+      const result = await query<{ quality_status: string; quality_score: number; quality_retry_count: number }>(
+        'SELECT quality_status, quality_score, quality_retry_count FROM pages WHERE id = $1',
+        [pageId],
+      );
+      expect(result.rows[0].quality_status).toBe('analyzed');
+      expect(result.rows[0].quality_score).toBe(75);
+      expect(result.rows[0].quality_retry_count).toBe(0);
     });
   });
 
