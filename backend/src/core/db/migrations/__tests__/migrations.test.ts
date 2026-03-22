@@ -38,11 +38,13 @@ describe.skipIf(!dbAvailable)('Database migrations', () => {
   });
 
   describe('performance indexes (migration 021, updated by 023)', () => {
-    it('should have idx_pages_dirty_modified composite index', async () => {
+    it('should have idx_cached_pages_dirty_modified composite index on pages table', async () => {
+      // Index was created on cached_pages (migration 023) and kept its name
+      // after the table was renamed to pages (migration 028)
       const result = await query<{ indexname: string; indexdef: string }>(
         `SELECT indexname, indexdef FROM pg_indexes
          WHERE tablename = 'pages'
-         AND indexname = 'idx_pages_dirty_modified'`,
+         AND indexname = 'idx_cached_pages_dirty_modified'`,
       );
       expect(result.rows).toHaveLength(1);
       // After migration 023 (shared tables), user_id was dropped from pages
@@ -50,11 +52,13 @@ describe.skipIf(!dbAvailable)('Database migrations', () => {
       expect(result.rows[0].indexdef).toContain('last_modified_at');
     });
 
-    it('should have idx_pages_space_modified composite index', async () => {
+    it('should have idx_cached_pages_space_modified composite index on pages table', async () => {
+      // Index was created on cached_pages (migration 023) and kept its name
+      // after the table was renamed to pages (migration 028)
       const result = await query<{ indexname: string; indexdef: string }>(
         `SELECT indexname, indexdef FROM pg_indexes
          WHERE tablename = 'pages'
-         AND indexname = 'idx_pages_space_modified'`,
+         AND indexname = 'idx_cached_pages_space_modified'`,
       );
       expect(result.rows).toHaveLength(1);
       expect(result.rows[0].indexdef).toContain('space_key');

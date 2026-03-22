@@ -46,6 +46,17 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
   beforeEach(async () => {
     await truncateAllTables();
 
+    // Re-seed system roles (truncateAllTables clears them)
+    await query(
+      `INSERT INTO roles (name, display_name, is_system, permissions) VALUES
+        ('system_admin', 'System Administrator', TRUE, ARRAY['read','comment','edit','delete','manage','admin']),
+        ('space_admin', 'Space Administrator', TRUE, ARRAY['read','comment','edit','delete','manage']),
+        ('editor', 'Editor', TRUE, ARRAY['read','comment','edit','delete']),
+        ('commenter', 'Commenter', TRUE, ARRAY['read','comment']),
+        ('viewer', 'Viewer', TRUE, ARRAY['read'])
+       ON CONFLICT (name) DO NOTHING`,
+    );
+
     // Create a test user with settings
     const userResult = await query<{ id: string }>(
       "INSERT INTO users (username, password_hash, role) VALUES ('summaryuser', 'fakehash', 'admin') RETURNING id",

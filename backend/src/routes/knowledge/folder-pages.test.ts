@@ -281,6 +281,9 @@ describe('Folder pages (#414)', () => {
 
   describe('GET /api/pages/tree - folder type in tree', () => {
     it('should include pageType in tree response items', async () => {
+      // First query: local spaces lookup
+      mockQueryFn.mockResolvedValueOnce({ rows: [] });
+      // Second query: tree data
       mockQueryFn.mockResolvedValueOnce({
         rows: [
           { id: 100, confluence_id: null, space_key: 'DEV', title: 'My Folder', page_type: 'folder', parent_numeric_id: null, labels: [], last_modified_at: null, embedding_dirty: false, embedding_status: 'not_embedded', embedded_at: null, embedding_error: null },

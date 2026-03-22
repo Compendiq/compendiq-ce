@@ -164,8 +164,8 @@ describe('Page list vs detail response shapes (#179)', () => {
       expect(item).not.toHaveProperty('body_text');
       expect(item).not.toHaveProperty('body_storage');
 
-      // Summary fields MUST be present
-      expect(item).toHaveProperty('id', 1);
+      // Summary fields MUST be present (id is stringified by the route)
+      expect(item).toHaveProperty('id', '1');
       expect(item).toHaveProperty('confluenceId', 'page-1');
       expect(item).toHaveProperty('spaceKey', 'DEV');
       expect(item).toHaveProperty('title', 'Test Page');
@@ -276,8 +276,8 @@ describe('Page list vs detail response shapes (#179)', () => {
       expect(body).toHaveProperty('bodyHtml', '<p>Clean HTML content</p>');
       expect(body).toHaveProperty('bodyText', 'Plain text content');
 
-      // And also include summary fields
-      expect(body).toHaveProperty('id', 1);
+      // And also include summary fields (id is stringified by the route)
+      expect(body).toHaveProperty('id', '1');
       expect(body).toHaveProperty('confluenceId', 'page-1');
       expect(body).toHaveProperty('spaceKey', 'DEV');
       expect(body).toHaveProperty('title', 'Test Page');

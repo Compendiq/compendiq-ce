@@ -54,6 +54,17 @@ vi.mock('../../../core/services/rbac-service.js', () => ({
   getUserAccessibleSpaces: vi.fn().mockResolvedValue(['TEST']),
 }));
 
+vi.mock('../../../core/services/admin-settings-service.js', () => ({
+  getSharedLlmSettings: vi.fn().mockResolvedValue({
+    llmProvider: 'ollama',
+    ollamaModel: 'qwen3.5',
+    openaiBaseUrl: null,
+    hasOpenaiApiKey: false,
+    openaiModel: null,
+    embeddingModel: 'nomic-embed-text',
+  }),
+}));
+
 import {
   getEmbeddingStatus,
   chunkText,
@@ -69,6 +80,7 @@ import {
   DIRTY_PAGE_BATCH_SIZE,
   type EmbeddingProgressEvent,
 } from './embedding-service.js';
+import { getSharedLlmSettings } from '../../../core/services/admin-settings-service.js';
 
 /** Helper to create a fake dirty page row */
 function makePage(id: string, numId = 1) {
@@ -95,6 +107,15 @@ describe('embedding-service', () => {
     mocks.invalidateGraphCache.mockResolvedValue(undefined);
     // Default: htmlToText returns non-trivial text so embedPage proceeds
     mocks.htmlToText.mockReturnValue('Some substantial page content for embedding that is long enough');
+    // Default: getSharedLlmSettings returns standard Ollama settings
+    vi.mocked(getSharedLlmSettings).mockResolvedValue({
+      llmProvider: 'ollama',
+      ollamaModel: 'qwen3.5',
+      openaiBaseUrl: null,
+      hasOpenaiApiKey: false,
+      openaiModel: null,
+      embeddingModel: 'nomic-embed-text',
+    });
     // Default: providerGenerateEmbedding returns one embedding vector per text
     mocks.providerGenerateEmbedding.mockImplementation((_userId: string, texts: string[]) =>
       Promise.resolve(texts.map(() => new Array(768).fill(0.1))),
@@ -122,6 +143,8 @@ describe('embedding-service', () => {
         dirtyPages: 3,
         totalEmbeddings: 200,
         isProcessing: false,
+        lastRunAt: null,
+        model: 'nomic-embed-text',
       });
     });
 

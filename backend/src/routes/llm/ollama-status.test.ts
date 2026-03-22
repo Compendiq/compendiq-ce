@@ -97,6 +97,7 @@ const mockGetSharedLlmSettings = vi.fn().mockResolvedValue({
   openaiBaseUrl: null,
   hasOpenaiApiKey: false,
   openaiModel: null,
+  embeddingModel: 'nomic-embed-text',
 });
 vi.mock('../../core/services/admin-settings-service.js', () => ({
   getSharedLlmSettings: (...args: unknown[]) => mockGetSharedLlmSettings(...args),
@@ -140,6 +141,7 @@ describe('Ollama status and models routes', () => {
       openaiBaseUrl: null,
       hasOpenaiApiKey: false,
       openaiModel: null,
+      embeddingModel: 'nomic-embed-text',
     });
   });
 

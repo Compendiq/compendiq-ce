@@ -9,6 +9,7 @@ vi.mock('undici', () => ({
 vi.mock('../../../core/utils/ssrf-guard.js', () => ({
   validateUrl: vi.fn(),
   addAllowedBaseUrl: vi.fn(),
+  resolveConfluenceUrl: vi.fn((url: string) => url),
 }));
 
 // Mock logger

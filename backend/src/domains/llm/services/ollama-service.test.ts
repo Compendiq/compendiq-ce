@@ -338,7 +338,7 @@ describe('ollama-provider ollamaFetch streaming timeout detection', () => {
     timeoutSpy.mockRestore();
   });
 
-  it('should not override a caller-provided signal', async () => {
+  it('should compose caller-provided signal with timeout signal via AbortSignal.any', async () => {
     delete process.env.LLM_BEARER_TOKEN;
     const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
 
@@ -352,9 +352,12 @@ describe('ollama-provider ollamaFetch streaming timeout detection', () => {
       signal: callerSignal,
     });
 
-    // The fetch should have been called with the caller's signal, not a new timeout
+    // The fetch should have been called with a composite signal (AbortSignal.any)
+    // that combines the caller's signal with the timeout signal
     const passedSignal = mockUndiciFetch.mock.calls[0][1]?.signal;
-    expect(passedSignal).toBe(callerSignal);
+    expect(passedSignal).toBeInstanceOf(AbortSignal);
+    // A new timeout signal should still have been created for the streaming timeout
+    expect(timeoutSpy).toHaveBeenCalledWith(300_000);
     timeoutSpy.mockRestore();
   });
 });

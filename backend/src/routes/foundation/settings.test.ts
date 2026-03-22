@@ -55,6 +55,7 @@ const mockGetSharedLlmSettings = vi.fn().mockResolvedValue({
   openaiBaseUrl: null,
   hasOpenaiApiKey: false,
   openaiModel: null,
+  embeddingModel: 'nomic-embed-text',
 });
 vi.mock('../../core/services/admin-settings-service.js', () => ({
   getSharedLlmSettings: (...args: unknown[]) => mockGetSharedLlmSettings(...args),
@@ -121,6 +122,7 @@ describe('Settings routes – test-confluence', () => {
       openaiBaseUrl: null,
       hasOpenaiApiKey: false,
       openaiModel: null,
+      embeddingModel: 'nomic-embed-text',
     });
   });
 
@@ -297,7 +299,11 @@ describe('Settings routes – test-confluence', () => {
     expect(mockRemoveAllowedBaseUrl).not.toHaveBeenCalled();
   });
 
-  it('should still block non-HTTP protocols even for Confluence URLs', async () => {
+  it('should still block non-HTTP protocols even for Confluence URLs (SSRF allowlist flow)', async () => {
+    mockValidateUrl.mockImplementationOnce(() => {
+      throw new Error('SSRF blocked');
+    });
+
     const response = await app.inject({
       method: 'POST',
       url: '/api/settings/test-confluence',

@@ -539,8 +539,8 @@ describe('Pinned Pages API', () => {
     it('should delete pinned_pages row when bulk-deleting pages', async () => {
       // Bulk delete uses batched queries: ownership check, then parallel cleanup (pinned_pages, pages)
       // page_embeddings are cascade-deleted via FK on pages
-      // batch ownership check via RBAC space access
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ confluence_id: 'page-1', space_key: 'DEV' }], rowCount: 1 });
+      // batch ownership check via RBAC space access (route selects id, source, confluence_id, space_key)
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 42, source: 'confluence', confluence_id: 'page-1', space_key: 'DEV' }], rowCount: 1 });
       // batched pinned_pages delete via ANY($2)
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
       // batched pages delete via ANY($1)
@@ -556,9 +556,14 @@ describe('Pinned Pages API', () => {
       const body = JSON.parse(response.body);
       expect(body.succeeded).toBe(1);
 
-      // Second query (index 1) should be batched pinned_pages cleanup (after ownership check at index 0)
-      expect(mockQueryFn.mock.calls[1][0]).toContain('DELETE FROM pinned_pages');
-      expect(mockQueryFn.mock.calls[1][1]).toEqual(['test-user-id', ['page-1']]);
+      // After the ownership check (index 0), the Confluence client.deletePage is
+      // called (mocked), then the batch cleanup queries run in parallel.
+      // Find the pinned_pages DELETE among the subsequent queries.
+      const pinnedDeleteCall = mockQueryFn.mock.calls.find(
+        (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('DELETE FROM pinned_pages'),
+      );
+      expect(pinnedDeleteCall).toBeDefined();
+      expect(pinnedDeleteCall![1]).toEqual(['test-user-id', [42]]);
     });
   });
 });

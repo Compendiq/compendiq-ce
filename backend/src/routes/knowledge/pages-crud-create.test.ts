@@ -215,8 +215,14 @@ describe('POST /api/pages - parentId validation', () => {
     expect(body.id).toBe(44);
   });
 
-  it('should return 400 when spaceKey does not exist in spaces table', async () => {
-    // Space lookup returns no rows (unknown space)
+  it('should fall back to standalone when spaceKey does not exist in spaces table', async () => {
+    // Space lookup returns no rows (unknown space) -> auto-detects as standalone
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
+    // INSERT returns new page (standalone path, no Confluence API call)
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 99, title: 'Page In Unknown Space', version: 1 }],
+    });
+    // UPDATE path
     mockQueryFn.mockResolvedValueOnce({ rows: [] });
 
     const response = await app.inject({
@@ -229,9 +235,10 @@ describe('POST /api/pages - parentId validation', () => {
       },
     });
 
-    expect(response.statusCode).toBe(400);
+    expect(response.statusCode).toBe(200);
     const body = JSON.parse(response.payload);
-    expect(body.error).toContain("Space 'NONEXISTENT' not found");
+    expect(body.id).toBe(99);
+    expect(body.source).toBe('standalone');
   });
 
   it('should stay standalone when explicit source is standalone even with Confluence spaceKey', async () => {
