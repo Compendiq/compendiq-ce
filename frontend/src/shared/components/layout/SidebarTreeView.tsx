@@ -480,7 +480,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
         isResizing && 'select-none',
       )}
     >
-      {/* Nav tabs — main app navigation */}
+      {/* Nav tabs — main app navigation + collapse toggle */}
       <nav className="flex shrink-0 items-center gap-0.5 px-2 pt-2 pb-1" aria-label="Main navigation">
         {navItems.map(({ icon: Icon, label, path }) => {
           const active = path === '/'
@@ -503,9 +503,18 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
             </Link>
           );
         })}
+        <button
+          onClick={toggleTreeSidebar}
+          className="flex shrink-0 items-center gap-0.5 rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
+          aria-label="Collapse sidebar"
+          title="Collapse sidebar (,)"
+        >
+          <PanelLeftClose size={14} />
+          <ShortcutHint shortcutId="toggle-sidebar" />
+        </button>
       </nav>
 
-      {/* Sidebar header — title + actions + collapse toggle */}
+      {/* Sidebar header — title + actions */}
       <div className="flex h-8 shrink-0 items-center justify-between px-3">
         <span className="text-xs font-semibold text-muted-foreground/60">Pages</span>
         <div className="flex items-center gap-1">
@@ -527,15 +536,6 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
             title="Create new space"
           >
             <Plus size={14} />
-          </button>
-          <button
-            onClick={toggleTreeSidebar}
-            className="flex items-center gap-0.5 rounded-lg p-1 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
-            aria-label="Collapse sidebar"
-            title="Collapse sidebar (,)"
-          >
-            <PanelLeftClose size={14} />
-            <ShortcutHint shortcutId="toggle-sidebar" />
           </button>
         </div>
       </div>
