@@ -11,9 +11,10 @@ import { SpacesTab } from './SpacesTab';
 import { LabelManager } from './LabelManager';
 import { ErrorDashboard } from './ErrorDashboard';
 import { ThemeTab } from './ThemeTab';
+import { WorkersTab } from './WorkersTab';
 import { SkeletonFormFields } from '../../shared/components/feedback/Skeleton';
 
-type TabId = 'confluence' | 'sync' | 'ollama' | 'ai-prompts' | 'spaces' | 'theme' | 'labels' | 'errors' | 'embedding';
+type TabId = 'confluence' | 'sync' | 'ollama' | 'ai-prompts' | 'spaces' | 'theme' | 'labels' | 'errors' | 'embedding' | 'workers';
 
 export function SettingsPage() {
   const queryClient = useQueryClient();
@@ -43,6 +44,7 @@ export function SettingsPage() {
     { id: 'labels', label: 'Labels', adminOnly: true },
     { id: 'errors', label: 'Errors', adminOnly: true },
     { id: 'embedding', label: 'Embedding', adminOnly: true },
+    { id: 'workers', label: 'Workers', adminOnly: true },
   ];
 
   const visibleTabs = tabs.filter((t) => !t.adminOnly || isAdmin);
@@ -99,6 +101,8 @@ export function SettingsPage() {
             <ErrorDashboard />
           ) : activeTab === 'embedding' && isAdmin ? (
             <EmbeddingTab />
+          ) : activeTab === 'workers' && isAdmin ? (
+            <WorkersTab />
           ) : (
             null
           )}

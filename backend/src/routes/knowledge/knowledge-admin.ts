@@ -1,8 +1,9 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { query } from '../../core/db/postgres.js';
-import { getQualityStatus, forceQualityRescan } from '../../domains/knowledge/services/quality-worker.js';
-import { getSummaryStatus, rescanAllSummaries, regenerateSummary, runSummaryBatch } from '../../domains/knowledge/services/summary-worker.js';
+import { getQualityStatus, forceQualityRescan, triggerQualityBatch } from '../../domains/knowledge/services/quality-worker.js';
+import { getSummaryStatus, rescanAllSummaries, regenerateSummary, runSummaryBatch, triggerSummaryBatch } from '../../domains/knowledge/services/summary-worker.js';
+import { getEmbeddingStatus, processDirtyPages, reEmbedAll, resetFailedEmbeddings } from '../../domains/llm/services/embedding-service.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
 
@@ -50,9 +51,9 @@ export async function knowledgeAdminRoutes(fastify: FastifyInstance) {
   fastify.post('/llm/summary-regenerate/:pageId', async (request) => {
     const { pageId } = z.object({ pageId: z.string().min(1) }).parse(request.params);
 
-    // Verify page exists
-    const pageResult = await query<{ confluence_id: string }>(
-      'SELECT confluence_id FROM pages WHERE confluence_id = $1',
+    // Verify page exists — use id (works for both standalone and Confluence pages)
+    const pageResult = await query<{ id: number }>(
+      'SELECT id FROM pages WHERE id = $1 OR confluence_id = $1',
       [pageId],
     );
     if (pageResult.rows.length === 0) {
@@ -67,5 +68,76 @@ export async function knowledgeAdminRoutes(fastify: FastifyInstance) {
     });
 
     return { message: 'Summary regeneration queued', pageId };
+  });
+
+  // ======== Run Now — Trigger immediate batch processing ========
+
+  // POST /api/llm/quality-run-now - admin: trigger immediate quality batch
+  fastify.post('/llm/quality-run-now', {
+    preHandler: fastify.requireAdmin,
+    config: { rateLimit: { max: 3, timeWindow: '1 minute' } },
+  }, async (request) => {
+    await logAuditEvent(request.userId, 'QUALITY_RUN_NOW', 'llm', undefined, {}, request);
+    triggerQualityBatch().catch((err) => {
+      logger.error({ err }, 'Manual quality batch trigger failed');
+    });
+    return { message: 'Quality analysis batch triggered' };
+  });
+
+  // POST /api/llm/summary-run-now - admin: trigger immediate summary batch
+  fastify.post('/llm/summary-run-now', {
+    preHandler: fastify.requireAdmin,
+    config: { rateLimit: { max: 3, timeWindow: '1 minute' } },
+  }, async (request) => {
+    await logAuditEvent(request.userId, 'SUMMARY_RUN_NOW', 'llm', undefined, {}, request);
+    triggerSummaryBatch().catch((err) => {
+      logger.error({ err }, 'Manual summary batch trigger failed');
+    });
+    return { message: 'Summary generation batch triggered' };
+  });
+
+  // ======== Embedding Status & Actions ========
+
+  // GET /api/llm/embedding-status - get embedding processing stats
+  fastify.get('/llm/embedding-status', async (request) => {
+    return getEmbeddingStatus(request.userId);
+  });
+
+  // POST /api/llm/embedding-run-now - admin: trigger immediate embedding processing
+  fastify.post('/llm/embedding-run-now', {
+    preHandler: fastify.requireAdmin,
+    config: { rateLimit: { max: 3, timeWindow: '1 minute' } },
+  }, async (request) => {
+    await logAuditEvent(request.userId, 'EMBEDDING_RUN_NOW', 'llm', undefined, {}, request);
+    processDirtyPages(request.userId).catch((err) => {
+      logger.error({ err }, 'Manual embedding batch trigger failed');
+    });
+    return { message: 'Embedding processing triggered' };
+  });
+
+  // POST /api/llm/embedding-rescan - admin: reset all pages for re-embedding
+  fastify.post('/llm/embedding-rescan', {
+    preHandler: fastify.requireAdmin,
+    config: { rateLimit: { max: 3, timeWindow: '1 minute' } },
+  }, async (request) => {
+    await reEmbedAll();
+    await logAuditEvent(request.userId, 'EMBEDDING_RESCAN', 'llm', undefined, {}, request);
+    processDirtyPages(request.userId).catch((err) => {
+      logger.error({ err }, 'Embedding rescan immediate batch failed');
+    });
+    return { message: 'All pages reset for re-embedding' };
+  });
+
+  // POST /api/llm/embedding-reset-failed - admin: retry failed embeddings
+  fastify.post('/llm/embedding-reset-failed', {
+    preHandler: fastify.requireAdmin,
+    config: { rateLimit: { max: 5, timeWindow: '1 minute' } },
+  }, async (request) => {
+    const count = await resetFailedEmbeddings();
+    await logAuditEvent(request.userId, 'EMBEDDING_RESET_FAILED', 'llm', undefined, { count }, request);
+    processDirtyPages(request.userId).catch((err) => {
+      logger.error({ err }, 'Embedding reset-failed immediate batch failed');
+    });
+    return { message: `${count} failed embeddings reset to pending`, count };
   });
 }
