@@ -255,6 +255,11 @@ export function PagesPage() {
     if (el) setScrollElement(el);
   }, []);
 
+  // Focus search input on mount
+  useEffect(() => {
+    searchInputRef.current?.focus();
+  }, []);
+
   useEffect(() => {
     if (embeddingStatusData?.isProcessing) {
       wasProcessingRef.current = true;
