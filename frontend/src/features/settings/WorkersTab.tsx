@@ -229,9 +229,8 @@ function WorkerCard({ title, statusKey, statusEndpoint, runEndpoint, rescanEndpo
   const { data: status, isLoading } = useWorkerStatus(statusKey, statusEndpoint, normalize);
   const runNow = useWorkerAction(runEndpoint, `${title} batch triggered`);
   const rescan = useWorkerAction(rescanEndpoint, `${title} rescan started`);
-  const resetFailed = resetFailedEndpoint
-    ? useWorkerAction(resetFailedEndpoint, 'Failed items reset to pending')
-    : null;
+  const resetFailed = useWorkerAction(resetFailedEndpoint ?? '', 'Failed items reset to pending');
+  const hasResetFailed = !!resetFailedEndpoint;
 
   const workerState = status ? deriveWorkerState(status) : 'idle';
 
@@ -268,7 +267,7 @@ function WorkerCard({ title, statusKey, statusEndpoint, runEndpoint, rescanEndpo
             {rescan.isPending ? <Loader2 size={12} className="animate-spin" /> : <RotateCcw size={12} />}
             Rescan All
           </button>
-          {resetFailed && status && status.failed > 0 && (
+          {hasResetFailed && status && status.failed > 0 && (
             <button
               onClick={() => resetFailed.mutate()}
               disabled={resetFailed.isPending}
