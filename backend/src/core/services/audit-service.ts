@@ -32,7 +32,12 @@ export type AuditAction =
   | 'PAGE_MOVED'
   | 'PAGE_REORDERED'
   | 'OIDC_LOGIN'
-  | 'OIDC_LOGIN_FAILED';
+  | 'OIDC_LOGIN_FAILED'
+  | 'QUALITY_RUN_NOW'
+  | 'SUMMARY_RUN_NOW'
+  | 'EMBEDDING_RUN_NOW'
+  | 'EMBEDDING_RESCAN'
+  | 'EMBEDDING_RESET_FAILED';
 
 export interface AuditLogEntry {
   id: string;
