@@ -9,6 +9,10 @@ import {
   useUpdatePage,
   useUpdatePageLabels,
   usePageFilterOptions,
+  usePinnedPages,
+  usePinPage,
+  useUnpinPage,
+  useDeletePage,
 } from '../../shared/hooks/use-pages';
 import { useSubmitFeedback, useVerifyPage } from '../../shared/hooks/use-standalone';
 import { useAuthenticatedSrc } from '../../shared/hooks/use-authenticated-src';
@@ -106,6 +110,12 @@ export function PageViewPage() {
   const updateMutation = useUpdatePage();
   const labelsMutation = useUpdatePageLabels();
   const { data: filterOptions } = usePageFilterOptions();
+  const { data: pinnedData } = usePinnedPages();
+  const pinMutation = usePinPage();
+  const unpinMutation = useUnpinPage();
+  const deleteMutation_page = useDeletePage();
+
+  const isPinned = pinnedData?.items.some((item) => item.id === id) ?? false;
 
   // Fetch the configured draw.io embed URL (falls back to default inside DrawioEditor if undefined)
   const { data: drawioSettings } = useQuery({
@@ -280,7 +290,27 @@ export function PageViewPage() {
     );
   }, [id, labelsMutation]);
 
-  // Page-specific keyboard shortcuts (Ctrl+S, Ctrl+E, Escape)
+  const handlePinToggle = useCallback(() => {
+    if (!id || !page) return;
+    const mutation = isPinned ? unpinMutation : pinMutation;
+    mutation.mutate(id, {
+      onSuccess: () => toast.success(isPinned ? 'Unpinned.' : 'Pinned.'),
+      onError: (error: unknown) => toast.error(error instanceof Error ? error.message : 'Pin update failed.'),
+    });
+  }, [id, isPinned, page, pinMutation, unpinMutation]);
+
+  const handleDeletePage = useCallback(async () => {
+    if (!id || !window.confirm('Delete this article? This cannot be undone.')) return;
+    try {
+      await deleteMutation_page.mutateAsync(id);
+      navigate('/');
+      toast.success('Article deleted.');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to delete article.');
+    }
+  }, [deleteMutation_page, id, navigate]);
+
+  // Page-specific keyboard shortcuts (Ctrl+S, Ctrl+E, Escape, Alt+P, Alt+Shift+D, Alt+I)
   const pageShortcuts = useMemo<ShortcutDefinition[]>(() => [
     {
       key: 'Ctrl+S',
@@ -316,7 +346,34 @@ export function PageViewPage() {
         if (editing) handleCancelEditing();
       },
     },
-  ], [editing, handleSave, handleCancelEditing, handleStartEditing]);
+    {
+      key: 'Alt+P',
+      keys: ['p'],
+      alt: true,
+      description: 'Pin/Unpin page',
+      category: 'actions',
+      action: handlePinToggle,
+    },
+    {
+      key: 'Alt+Shift+D',
+      keys: ['D', 'd'],
+      alt: true,
+      shift: true,
+      description: 'Delete page',
+      category: 'actions',
+      action: handleDeletePage,
+    },
+    {
+      key: 'Alt+I',
+      keys: ['i'],
+      alt: true,
+      description: 'AI Improve',
+      category: 'actions',
+      action: () => {
+        if (id) navigate(`/ai?mode=improve&pageId=${encodeURIComponent(id)}`);
+      },
+    },
+  ], [editing, handleSave, handleCancelEditing, handleStartEditing, handlePinToggle, handleDeletePage, id, navigate]);
 
   useKeyboardShortcuts(pageShortcuts);
 
@@ -424,9 +481,10 @@ export function PageViewPage() {
                 <button
                   onClick={handleSave}
                   disabled={updateMutation.isPending}
-                  className="rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-60"
+                  className="flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-60"
                 >
                   {updateMutation.isPending ? 'Saving…' : 'Save'}
+                  {!updateMutation.isPending && <ShortcutHint shortcutId="save" />}
                 </button>
               </>
             ) : (

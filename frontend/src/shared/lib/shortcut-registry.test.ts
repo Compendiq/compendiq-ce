@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   SHORTCUTS,
+  TIPTAP_SHORTCUTS,
   getShortcutsByCategory,
   getShortcutHint,
   formatKeysForPlatform,
@@ -73,6 +74,78 @@ describe('shortcut-registry', () => {
       expect(shortcut!.keys).toBe('ctrl+/');
       expect(shortcut!.category).toBe('navigation');
     });
+
+    it('includes go-pages navigation sequence shortcut', () => {
+      const shortcut = SHORTCUTS.find((s) => s.id === 'go-pages');
+      expect(shortcut).toBeDefined();
+      expect(shortcut!.keys).toBe('g p');
+      expect(shortcut!.label).toBe('Go to Pages');
+      expect(shortcut!.category).toBe('navigation');
+    });
+
+    it('includes go-graph navigation sequence shortcut', () => {
+      const shortcut = SHORTCUTS.find((s) => s.id === 'go-graph');
+      expect(shortcut).toBeDefined();
+      expect(shortcut!.keys).toBe('g g');
+      expect(shortcut!.label).toBe('Go to Graph');
+      expect(shortcut!.category).toBe('navigation');
+    });
+
+    it('includes go-ai navigation sequence shortcut', () => {
+      const shortcut = SHORTCUTS.find((s) => s.id === 'go-ai');
+      expect(shortcut).toBeDefined();
+      expect(shortcut!.keys).toBe('g a');
+      expect(shortcut!.label).toBe('Go to AI');
+      expect(shortcut!.category).toBe('navigation');
+    });
+
+    it('includes go-settings navigation sequence shortcut', () => {
+      const shortcut = SHORTCUTS.find((s) => s.id === 'go-settings');
+      expect(shortcut).toBeDefined();
+      expect(shortcut!.keys).toBe('g s');
+      expect(shortcut!.label).toBe('Go to Settings');
+      expect(shortcut!.category).toBe('navigation');
+    });
+
+    it('includes go-trash navigation sequence shortcut', () => {
+      const shortcut = SHORTCUTS.find((s) => s.id === 'go-trash');
+      expect(shortcut).toBeDefined();
+      expect(shortcut!.keys).toBe('g t');
+      expect(shortcut!.label).toBe('Go to Trash');
+      expect(shortcut!.category).toBe('navigation');
+    });
+
+    it('includes save shortcut mapped to ctrl+s in editor category', () => {
+      const shortcut = SHORTCUTS.find((s) => s.id === 'save');
+      expect(shortcut).toBeDefined();
+      expect(shortcut!.keys).toBe('ctrl+s');
+      expect(shortcut!.label).toBe('Save article');
+      expect(shortcut!.category).toBe('editor');
+    });
+
+    it('includes pin-page shortcut mapped to alt+p in actions category', () => {
+      const shortcut = SHORTCUTS.find((s) => s.id === 'pin-page');
+      expect(shortcut).toBeDefined();
+      expect(shortcut!.keys).toBe('alt+p');
+      expect(shortcut!.label).toBe('Pin/Unpin page');
+      expect(shortcut!.category).toBe('actions');
+    });
+
+    it('includes delete-page shortcut mapped to alt+shift+d in actions category', () => {
+      const shortcut = SHORTCUTS.find((s) => s.id === 'delete-page');
+      expect(shortcut).toBeDefined();
+      expect(shortcut!.keys).toBe('alt+shift+d');
+      expect(shortcut!.label).toBe('Delete page');
+      expect(shortcut!.category).toBe('actions');
+    });
+
+    it('includes ai-improve shortcut mapped to alt+i in actions category', () => {
+      const shortcut = SHORTCUTS.find((s) => s.id === 'ai-improve');
+      expect(shortcut).toBeDefined();
+      expect(shortcut!.keys).toBe('alt+i');
+      expect(shortcut!.label).toBe('AI Improve');
+      expect(shortcut!.category).toBe('actions');
+    });
   });
 
   describe('getShortcutsByCategory', () => {
@@ -110,6 +183,42 @@ describe('shortcut-registry', () => {
       expect(getCategoryLabel('actions')).toBe('Actions');
       expect(getCategoryLabel('editor')).toBe('Editor');
       expect(getCategoryLabel('panels')).toBe('Panels');
+      expect(getCategoryLabel('formatting')).toBe('Formatting (Editor)');
+    });
+  });
+
+  describe('TIPTAP_SHORTCUTS', () => {
+    it('contains at least one shortcut', () => {
+      expect(TIPTAP_SHORTCUTS.length).toBeGreaterThan(0);
+    });
+
+    it('has unique ids', () => {
+      const ids = TIPTAP_SHORTCUTS.map((s) => s.id);
+      expect(new Set(ids).size).toBe(ids.length);
+    });
+
+    it('every entry has the formatting category', () => {
+      for (const s of TIPTAP_SHORTCUTS) {
+        expect(s.category).toBe('formatting');
+      }
+    });
+
+    it('includes bold, italic, and underline shortcuts', () => {
+      expect(TIPTAP_SHORTCUTS.find((s) => s.id === 'format-bold')).toBeDefined();
+      expect(TIPTAP_SHORTCUTS.find((s) => s.id === 'format-italic')).toBeDefined();
+      expect(TIPTAP_SHORTCUTS.find((s) => s.id === 'format-underline')).toBeDefined();
+    });
+
+    it('includes undo and redo shortcuts', () => {
+      expect(TIPTAP_SHORTCUTS.find((s) => s.id === 'format-undo')).toBeDefined();
+      expect(TIPTAP_SHORTCUTS.find((s) => s.id === 'format-redo')).toBeDefined();
+    });
+
+    it('does not duplicate ids with the main SHORTCUTS array', () => {
+      const mainIds = new Set(SHORTCUTS.map((s) => s.id));
+      for (const s of TIPTAP_SHORTCUTS) {
+        expect(mainIds.has(s.id)).toBe(false);
+      }
     });
   });
 
@@ -162,6 +271,15 @@ describe('shortcut-registry', () => {
     it('handles multi-word keys like /ai as-is', () => {
       // "/ai" splits into ["/ai"] (no + separator) so it stays as-is
       expect(formatKeysForPlatform('/ai', false)).toBe('/ai');
+    });
+
+    it('formats space-separated sequence keys as "X then Y"', () => {
+      expect(formatKeysForPlatform('g p', false)).toBe('G then P');
+      expect(formatKeysForPlatform('g p', true)).toBe('G then P');
+    });
+
+    it('formats multi-key sequences with more than two keys', () => {
+      expect(formatKeysForPlatform('g g', false)).toBe('G then G');
     });
   });
 });

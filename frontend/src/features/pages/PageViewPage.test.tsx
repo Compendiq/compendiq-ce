@@ -116,8 +116,11 @@ vi.mock('../../shared/hooks/use-standalone', () => ({
   useVerifyPage: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 
+let capturedShortcuts: Array<{ key: string; keys: string[]; mod?: boolean; alt?: boolean; shift?: boolean; description: string; category: string; action: () => void }> = [];
 vi.mock('../../shared/hooks/use-keyboard-shortcuts', () => ({
-  useKeyboardShortcuts: vi.fn(),
+  useKeyboardShortcuts: (shortcuts: typeof capturedShortcuts) => {
+    capturedShortcuts = shortcuts;
+  },
 }));
 
 vi.mock('../../shared/hooks/use-authenticated-src', () => ({
@@ -170,11 +173,19 @@ const mockPage = {
 let currentMockPage: typeof mockPage | undefined = mockPage;
 let mockIsLoading = false;
 
+const mockPinMutate = vi.fn();
+const mockUnpinMutate = vi.fn();
+const mockDeleteMutateAsync = vi.fn().mockResolvedValue(undefined);
+
 vi.mock('../../shared/hooks/use-pages', () => ({
   usePage: () => ({ data: mockIsLoading ? undefined : currentMockPage, isLoading: mockIsLoading }),
   useUpdatePage: () => ({ mutateAsync: mockUpdatePage, isPending: false }),
   useUpdatePageLabels: () => ({ mutate: vi.fn(), isPending: false }),
   usePageFilterOptions: () => ({ data: { authors: [], labels: [] } }),
+  usePinnedPages: () => ({ data: { items: [] } }),
+  usePinPage: () => ({ mutate: mockPinMutate, isPending: false }),
+  useUnpinPage: () => ({ mutate: mockUnpinMutate, isPending: false }),
+  useDeletePage: () => ({ mutateAsync: mockDeleteMutateAsync, isPending: false }),
 }));
 
 function createWrapper() {
@@ -201,8 +212,12 @@ describe('PageViewPage', () => {
   beforeEach(() => {
     currentMockPage = mockPage;
     mockIsLoading = false;
+    capturedShortcuts = [];
     mockNavigate.mockReset();
     mockUpdatePage.mockReset().mockResolvedValue(undefined);
+    mockPinMutate.mockReset();
+    mockUnpinMutate.mockReset();
+    mockDeleteMutateAsync.mockReset().mockResolvedValue(undefined);
     localStorage.clear();
     Element.prototype.scrollTo = vi.fn();
 
@@ -390,5 +405,59 @@ describe('PageViewPage', () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
     expect(screen.queryByText('This page has no content yet.')).not.toBeInTheDocument();
     expect(screen.getByTestId('article-viewer')).toBeInTheDocument();
+  });
+
+  // --- Phase 5: Action shortcuts ---
+  it('registers an Alt+P shortcut for pin/unpin', () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    const pinShortcut = capturedShortcuts.find((s) => s.key === 'Alt+P');
+    expect(pinShortcut).toBeDefined();
+    expect(pinShortcut!.alt).toBe(true);
+    expect(pinShortcut!.keys).toContain('p');
+    expect(pinShortcut!.category).toBe('actions');
+  });
+
+  it('Alt+P action calls pin mutation', () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    const pinShortcut = capturedShortcuts.find((s) => s.key === 'Alt+P');
+    expect(pinShortcut).toBeDefined();
+    pinShortcut!.action();
+    expect(mockPinMutate).toHaveBeenCalledWith('page-1', expect.any(Object));
+  });
+
+  it('registers an Alt+Shift+D shortcut for delete', () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    const deleteShortcut = capturedShortcuts.find((s) => s.key === 'Alt+Shift+D');
+    expect(deleteShortcut).toBeDefined();
+    expect(deleteShortcut!.alt).toBe(true);
+    expect(deleteShortcut!.shift).toBe(true);
+    expect(deleteShortcut!.category).toBe('actions');
+  });
+
+  it('Alt+Shift+D action triggers delete confirmation', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValueOnce(true);
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    const deleteShortcut = capturedShortcuts.find((s) => s.key === 'Alt+Shift+D');
+    expect(deleteShortcut).toBeDefined();
+    await deleteShortcut!.action();
+    expect(window.confirm).toHaveBeenCalledWith('Delete this article? This cannot be undone.');
+    expect(mockDeleteMutateAsync).toHaveBeenCalledWith('page-1');
+  });
+
+  it('registers an Alt+I shortcut for AI Improve', () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    const aiShortcut = capturedShortcuts.find((s) => s.key === 'Alt+I');
+    expect(aiShortcut).toBeDefined();
+    expect(aiShortcut!.alt).toBe(true);
+    expect(aiShortcut!.keys).toContain('i');
+    expect(aiShortcut!.category).toBe('actions');
+  });
+
+  it('Alt+I action navigates to AI improve page', () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    const aiShortcut = capturedShortcuts.find((s) => s.key === 'Alt+I');
+    expect(aiShortcut).toBeDefined();
+    aiShortcut!.action();
+    expect(mockNavigate).toHaveBeenCalledWith('/ai?mode=improve&pageId=page-1');
   });
 });

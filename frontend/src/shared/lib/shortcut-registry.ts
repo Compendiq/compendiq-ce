@@ -7,9 +7,9 @@
  * a single source of truth.
  */
 
-export type ShortcutCategory = 'navigation' | 'actions' | 'editor' | 'panels';
+export type ShortcutCategory = 'navigation' | 'actions' | 'editor' | 'panels' | 'formatting';
 
-export interface ShortcutDefinition {
+export interface ShortcutRegistryEntry {
   /** Unique identifier used by ShortcutHint to look up a shortcut. */
   id: string;
   /** Human-readable key combo, e.g. "ctrl+k", "alt+n", "esc". */
@@ -26,7 +26,7 @@ export interface ShortcutDefinition {
  * Keep this array in sync with the actual keydown handlers throughout the app.
  * Order within each category determines display order in the modal.
  */
-export const SHORTCUTS: ShortcutDefinition[] = [
+export const SHORTCUTS: ShortcutRegistryEntry[] = [
   // -- Navigation --
   { id: 'search', keys: 'ctrl+k', label: 'Search / Command Palette', category: 'navigation' },
   { id: 'ai-mode', keys: '/ai', label: 'AI mode (inside palette)', category: 'navigation' },
@@ -34,8 +34,18 @@ export const SHORTCUTS: ShortcutDefinition[] = [
   { id: 'shortcuts-help', keys: '?', label: 'Keyboard Shortcuts', category: 'navigation' },
   { id: 'shortcuts-help-alt', keys: 'ctrl+/', label: 'Keyboard Shortcuts', category: 'navigation' },
 
+  // -- Navigation sequences (G then X) --
+  { id: 'go-pages', keys: 'g p', label: 'Go to Pages', category: 'navigation' },
+  { id: 'go-graph', keys: 'g g', label: 'Go to Graph', category: 'navigation' },
+  { id: 'go-ai', keys: 'g a', label: 'Go to AI', category: 'navigation' },
+  { id: 'go-settings', keys: 'g s', label: 'Go to Settings', category: 'navigation' },
+  { id: 'go-trash', keys: 'g t', label: 'Go to Trash', category: 'navigation' },
+
   // -- Actions --
   { id: 'new-page', keys: 'alt+n', label: 'New Page', category: 'actions' },
+  { id: 'pin-page', keys: 'alt+p', label: 'Pin/Unpin page', category: 'actions' },
+  { id: 'delete-page', keys: 'alt+shift+d', label: 'Delete page', category: 'actions' },
+  { id: 'ai-improve', keys: 'alt+i', label: 'AI Improve', category: 'actions' },
 
   // -- Panels --
   { id: 'toggle-sidebar', keys: ',', label: 'Toggle Left Sidebar', category: 'panels' },
@@ -44,6 +54,7 @@ export const SHORTCUTS: ShortcutDefinition[] = [
   { id: 'close-modal', keys: 'esc', label: 'Close dialog / modal', category: 'panels' },
 
   // -- Editor --
+  { id: 'save', keys: 'ctrl+s', label: 'Save article', category: 'editor' },
   { id: 'toggle-edit', keys: 'ctrl+e', label: 'Toggle Edit Mode', category: 'editor' },
 
   // -- Editor (diagram lightbox) --
@@ -58,6 +69,7 @@ const CATEGORY_LABELS: Record<ShortcutCategory, string> = {
   actions: 'Actions',
   editor: 'Editor',
   panels: 'Panels',
+  formatting: 'Formatting (Editor)',
 };
 
 /** Return human-friendly category label. */
@@ -71,8 +83,8 @@ export function getCategoryLabel(category: ShortcutCategory): string {
  * Returns a `Map` so iteration order matches the first occurrence of each
  * category in `SHORTCUTS`.
  */
-export function getShortcutsByCategory(): Map<ShortcutCategory, ShortcutDefinition[]> {
-  const map = new Map<ShortcutCategory, ShortcutDefinition[]>();
+export function getShortcutsByCategory(): Map<ShortcutCategory, ShortcutRegistryEntry[]> {
+  const map = new Map<ShortcutCategory, ShortcutRegistryEntry[]>();
   for (const shortcut of SHORTCUTS) {
     const list = map.get(shortcut.category);
     if (list) {
@@ -102,6 +114,15 @@ export function formatKeysForPlatform(keys: string, isMac: boolean): string {
   // Handle literal single-char keys that would be mangled by split('+')
   if (keys === '+') return '+';
   if (keys === '-') return '-';
+
+  // Handle space-separated sequence keys (e.g. 'g p' → 'G then P')
+  if (keys.includes(' ') && !keys.includes('+')) {
+    return keys
+      .split(' ')
+      .map((k) => k.toUpperCase())
+      .join(' then ');
+  }
+
   const parts = keys.split('+');
   return parts
     .map((part) => {
@@ -118,3 +139,24 @@ export function formatKeysForPlatform(keys: string, isMac: boolean): string {
     })
     .join(isMac ? '' : '+');
 }
+
+/**
+ * TipTap editor formatting shortcuts (display-only).
+ *
+ * These are handled natively by TipTap/ProseMirror and are NOT registered
+ * in our keyboard shortcut hook. They are listed here so the shortcuts
+ * modal can display them for discoverability.
+ */
+export const TIPTAP_SHORTCUTS: ShortcutRegistryEntry[] = [
+  { id: 'format-bold', keys: 'ctrl+b', label: 'Bold', category: 'formatting' },
+  { id: 'format-italic', keys: 'ctrl+i', label: 'Italic', category: 'formatting' },
+  { id: 'format-underline', keys: 'ctrl+u', label: 'Underline', category: 'formatting' },
+  { id: 'format-undo', keys: 'ctrl+z', label: 'Undo', category: 'formatting' },
+  { id: 'format-redo', keys: 'ctrl+shift+z', label: 'Redo', category: 'formatting' },
+  { id: 'format-strikethrough', keys: 'ctrl+shift+x', label: 'Strikethrough', category: 'formatting' },
+  { id: 'format-code', keys: 'ctrl+`', label: 'Inline code', category: 'formatting' },
+  { id: 'format-indent', keys: 'tab', label: 'Indent list', category: 'formatting' },
+  { id: 'format-outdent', keys: 'shift+tab', label: 'Outdent list', category: 'formatting' },
+  { id: 'format-ol', keys: 'ctrl+shift+7', label: 'Ordered list', category: 'formatting' },
+  { id: 'format-ul', keys: 'ctrl+shift+8', label: 'Bullet list', category: 'formatting' },
+];

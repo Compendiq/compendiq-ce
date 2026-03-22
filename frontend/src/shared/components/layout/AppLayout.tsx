@@ -26,9 +26,11 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const isCommandPaletteOpen = useCommandPaletteStore((s) => s.isOpen);
   const toggleShortcutsModal = useKeyboardShortcutsStore((s) => s.toggle);
   const shortcutsModalOpen = useKeyboardShortcutsStore((s) => s.isOpen);
-  const closeShortcutsModal = useKeyboardShortcutsStore((s) => s.close);
+  const pendingSequence = useKeyboardShortcutsStore((s) => s.pendingSequence);
+  const setPendingSequence = useKeyboardShortcutsStore((s) => s.setPendingSequence);
   const toggleTreeSidebar = useUiStore((s) => s.toggleTreeSidebar);
   const toggleArticleSidebar = useUiStore((s) => s.toggleArticleSidebar);
+  const singleKeyShortcutsEnabled = useUiStore((s) => s.singleKeyShortcutsEnabled);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const isArticleRoute = /^\/pages\/[^/]+$/.test(location.pathname);
@@ -45,6 +47,13 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const navigateToNewPage = useCallback(() => {
     navigate('/pages/new');
   }, [navigate]);
+
+  // Navigation sequence callbacks
+  const goToPages = useCallback(() => navigate('/'), [navigate]);
+  const goToGraph = useCallback(() => navigate('/graph'), [navigate]);
+  const goToAi = useCallback(() => navigate('/ai'), [navigate]);
+  const goToSettings = useCallback(() => navigate('/settings'), [navigate]);
+  const goToTrash = useCallback(() => navigate('/trash'), [navigate]);
 
   // Global keyboard shortcuts
   const shortcuts = useMemo<ShortcutDefinition[]>(() => [
@@ -100,16 +109,53 @@ export function AppLayout({ children }: { children: ReactNode }) {
       category: 'navigation',
       action: toggleShortcutsModal,
     },
+    // Navigation sequences (G then X)
     {
-      key: 'Escape',
-      keys: ['Escape'],
-      description: 'Close modals',
+      key: 'g p',
+      keys: [],
+      sequence: 'g p',
+      description: 'Go to Pages',
       category: 'navigation',
-      action: closeShortcutsModal,
+      action: goToPages,
     },
-  ], [openCommandPalette, toggleShortcutsModal, closeShortcutsModal, toggleTreeSidebar, toggleArticleSidebar, toggleBothPanels, navigateToNewPage]);
+    {
+      key: 'g g',
+      keys: [],
+      sequence: 'g g',
+      description: 'Go to Graph',
+      category: 'navigation',
+      action: goToGraph,
+    },
+    {
+      key: 'g a',
+      keys: [],
+      sequence: 'g a',
+      description: 'Go to AI',
+      category: 'navigation',
+      action: goToAi,
+    },
+    {
+      key: 'g s',
+      keys: [],
+      sequence: 'g s',
+      description: 'Go to Settings',
+      category: 'navigation',
+      action: goToSettings,
+    },
+    {
+      key: 'g t',
+      keys: [],
+      sequence: 'g t',
+      description: 'Go to Trash',
+      category: 'navigation',
+      action: goToTrash,
+    },
+  ], [openCommandPalette, toggleShortcutsModal, toggleTreeSidebar, toggleArticleSidebar, toggleBothPanels, navigateToNewPage, goToPages, goToGraph, goToAi, goToSettings, goToTrash]);
 
-  useKeyboardShortcuts(shortcutsModalOpen ? [] : shortcuts);
+  useKeyboardShortcuts(
+    shortcutsModalOpen ? [] : shortcuts,
+    { singleKeyEnabled: singleKeyShortcutsEnabled, onSequenceChange: setPendingSequence },
+  );
 
   // Close mobile sidebar on navigation
   useEffect(() => {
@@ -250,6 +296,26 @@ export function AppLayout({ children }: { children: ReactNode }) {
           {isArticleRoute && <ArticleRightPane />}
         </div>
       </div>
+
+      {/* Pending sequence indicator (bottom-right) */}
+      <AnimatePresence>
+        {pendingSequence && (
+          <m.div
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 8 }}
+            transition={{ duration: 0.15 }}
+            className="fixed bottom-4 right-4 z-50 flex items-center gap-1.5 rounded-lg bg-card/90 backdrop-blur-md border border-border/50 px-3 py-1.5 shadow-lg"
+            role="status"
+            aria-live="polite"
+          >
+            <kbd className="inline-flex h-5 min-w-[20px] items-center justify-center rounded border border-border bg-muted px-1.5 text-xs font-medium text-muted-foreground">
+              {pendingSequence.toUpperCase()}
+            </kbd>
+            <span className="text-xs text-muted-foreground">...</span>
+          </m.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

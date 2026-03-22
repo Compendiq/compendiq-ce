@@ -1,25 +1,11 @@
 import { getShortcutHint, formatKeysForPlatform } from '../lib/shortcut-registry';
+import { isMac } from '../lib/platform';
 
 interface ShortcutHintProps {
   /** Shortcut id from the registry (e.g. "search", "new-page"). */
   shortcutId: string;
   /** Extra CSS classes applied to the outer <kbd>. */
   className?: string;
-}
-
-/**
- * Detect whether the current platform is macOS using the modern
- * `navigator.userAgentData` API with a `navigator.userAgent` fallback.
- */
-function isMacPlatform(): boolean {
-  if (typeof navigator === 'undefined') return false;
-  // Modern API (Chromium 90+)
-  if ('userAgentData' in navigator && (navigator as Record<string, unknown>).userAgentData) {
-    const uad = (navigator as Record<string, unknown>).userAgentData as { platform?: string };
-    if (uad.platform) return uad.platform === 'macOS';
-  }
-  // Fallback to userAgent (works in all browsers)
-  return /Mac|iPhone|iPad|iPod/.test(navigator.userAgent);
 }
 
 /**
@@ -33,8 +19,8 @@ export function ShortcutHint({ shortcutId, className = '' }: ShortcutHintProps) 
   const keys = getShortcutHint(shortcutId);
   if (!keys) return null;
 
-  const isMac = isMacPlatform();
-  const formatted = formatKeysForPlatform(keys, isMac);
+  const mac = isMac();
+  const formatted = formatKeysForPlatform(keys, mac);
 
   return (
     <kbd

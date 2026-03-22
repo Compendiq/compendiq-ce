@@ -29,9 +29,9 @@ import { cn } from '../../lib/cn';
 import type { PageTreeItem } from '../../hooks/use-pages';
 
 const navItems = [
-  { icon: BookOpen, label: 'Pages', path: '/' },
-  { icon: Share2, label: 'Graph', path: '/graph' },
-  { icon: Bot, label: 'AI', path: '/ai' },
+  { icon: BookOpen, label: 'Pages', path: '/', shortcut: 'G then P' },
+  { icon: Share2, label: 'Graph', path: '/graph', shortcut: 'G then G' },
+  { icon: Bot, label: 'AI', path: '/ai', shortcut: 'G then A' },
 ] as const;
 
 export interface TreeNode {
@@ -436,7 +436,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
 
           {/* Nav icons */}
           <nav className="flex flex-col items-center gap-1 pt-1" aria-label="Main navigation">
-            {navItems.map(({ icon: Icon, label, path }) => {
+            {navItems.map(({ icon: Icon, label, path, shortcut }) => {
               const active = path === '/'
                 ? location.pathname === '/' || location.pathname.startsWith('/pages')
                 : location.pathname.startsWith(path);
@@ -451,7 +451,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
                       ? 'glass-pill-active text-primary'
                       : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
                   )}
-                  title={label}
+                  title={`${label} (${shortcut})`}
                   aria-label={label}
                 >
                   <Icon size={16} className={cn(active && 'drop-shadow-[0_1px_2px_oklch(from_var(--color-primary)_l_c_h_/_0.3)]')} />
@@ -482,7 +482,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
     >
       {/* Nav tabs — main app navigation + collapse toggle */}
       <nav className="flex shrink-0 items-center gap-0.5 px-2 pt-2 pb-1" aria-label="Main navigation">
-        {navItems.map(({ icon: Icon, label, path }) => {
+        {navItems.map(({ icon: Icon, label, path, shortcut }) => {
           const active = path === '/'
             ? location.pathname === '/' || location.pathname.startsWith('/pages')
             : location.pathname.startsWith(path);
@@ -491,6 +491,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
               key={path}
               to={path}
               onClick={onNavigate}
+              title={`${label} (${shortcut})`}
               className={cn(
                 'flex flex-1 items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs transition-all duration-200 active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
                 active

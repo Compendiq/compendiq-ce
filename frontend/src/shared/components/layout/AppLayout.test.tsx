@@ -6,6 +6,7 @@ import { LazyMotion, domMax } from 'framer-motion';
 import { AppLayout } from './AppLayout';
 import { useCommandPaletteStore } from '../../../stores/command-palette-store';
 import { useUiStore } from '../../../stores/ui-store';
+import * as keyboardShortcutsModule from '../../hooks/use-keyboard-shortcuts';
 
 // Mock SidebarTreeView to isolate AppLayout tests
 vi.mock('./SidebarTreeView', () => ({
@@ -355,5 +356,29 @@ describe('AppLayout', () => {
     // Neither button has tabIndex=-1 which would remove keyboard focus
     expect(desktopBtn).not.toHaveAttribute('tabindex', '-1');
     expect(mobileBtn).not.toHaveAttribute('tabindex', '-1');
+  });
+
+  it('does not register an Escape shortcut (Radix Dialog handles Escape natively)', () => {
+    // Spy on the hook to capture the shortcuts array passed from AppLayout
+    let capturedShortcuts: keyboardShortcutsModule.ShortcutDefinition[] = [];
+    const spy = vi.spyOn(keyboardShortcutsModule, 'useKeyboardShortcuts').mockImplementation((shortcuts) => {
+      capturedShortcuts = shortcuts;
+    });
+
+    render(
+      <AppLayout>
+        <div>content</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/') },
+    );
+
+    // The shortcuts array should NOT contain an Escape entry — Radix Dialog
+    // in KeyboardShortcutsModal handles Escape via onOpenChange natively.
+    const escapeShortcut = capturedShortcuts.find(
+      (s) => s.keys.includes('Escape') || s.key === 'Escape',
+    );
+    expect(escapeShortcut).toBeUndefined();
+
+    spy.mockRestore();
   });
 });

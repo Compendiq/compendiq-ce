@@ -17,6 +17,8 @@ import { EmbeddingStatusBadge } from '../badges/EmbeddingStatusBadge';
 import { QualityScoreBadge } from '../badges/QualityScoreBadge';
 import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { ShortcutHint } from '../ShortcutHint';
+import { getShortcutHint, formatKeysForPlatform } from '../../lib/shortcut-registry';
+import { isMac as detectMac } from '../../lib/platform';
 import { toast } from 'sonner';
 import { useUiStore } from '../../../stores/ui-store';
 import { useArticleViewStore } from '../../../stores/article-view-store';
@@ -414,6 +416,7 @@ export function ArticleRightPane() {
           <button
             onClick={() => navigate(`/ai?mode=improve&pageId=${encodeURIComponent(id)}`)}
             className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+            title={`AI Improve (${formatKeysForPlatform(getShortcutHint('ai-improve') ?? '', detectMac())})`}
           >
             <Wand2 size={15} className="shrink-0 opacity-70" />
             <span className="truncate">AI Improve</span>
@@ -427,6 +430,7 @@ export function ArticleRightPane() {
                 ? 'glass-pill-active text-primary font-medium'
                 : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
             )}
+            title={`${isPinned ? 'Unpin' : 'Pin'} (${formatKeysForPlatform(getShortcutHint('pin-page') ?? '', detectMac())})`}
           >
             <Pin size={15} className={cn('shrink-0 opacity-70', isPinned && 'fill-current opacity-100')} />
             <span className="truncate">{isPinned ? 'Pinned' : 'Pin'}</span>
@@ -447,6 +451,7 @@ export function ArticleRightPane() {
           <button
             onClick={handleDelete}
             className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-destructive/80 transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-destructive/8 hover:text-destructive"
+            title={`Delete (${formatKeysForPlatform(getShortcutHint('delete-page') ?? '', detectMac())})`}
           >
             <Trash2 size={15} className="shrink-0 opacity-70" />
             <span className="truncate">Delete</span>

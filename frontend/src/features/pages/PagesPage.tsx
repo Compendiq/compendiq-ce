@@ -20,6 +20,7 @@ import { KPICards } from './KPICards';
 import { PinnedArticlesSection } from './PinnedArticlesSection';
 import { cn } from '../../shared/lib/cn';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
+import { ShortcutHint } from '../../shared/components/ShortcutHint';
 
 // ---------------------------------------------------------------------------
 // Memoized page list item: prevents re-render from embedding-status polling
@@ -385,9 +386,7 @@ export function PagesPage() {
           >
             <Plus size={16} />
             <span className="hidden sm:inline">New Page</span>
-            <kbd className="hidden rounded border border-primary-foreground/30 px-1 py-0.5 text-[10px] font-normal sm:inline">
-              {navigator.platform?.includes('Mac') ? '\u2325' : 'Alt'}+N
-            </kbd>
+            <span className="hidden sm:inline"><ShortcutHint shortcutId="new-page" className="border-primary-foreground/30 text-primary-foreground/80" /></span>
           </button>
         </div>
       </div>

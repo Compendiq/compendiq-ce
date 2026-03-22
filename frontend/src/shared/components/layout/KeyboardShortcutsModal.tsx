@@ -1,56 +1,10 @@
 import * as Dialog from '@radix-ui/react-dialog';
+import * as Switch from '@radix-ui/react-switch';
 import { Keyboard, X } from 'lucide-react';
 import { useKeyboardShortcutsStore } from '../../../stores/keyboard-shortcuts-store';
-
-function isMac(): boolean {
-  if (typeof navigator === 'undefined') return false;
-  return /Mac|iPhone|iPad|iPod/.test(navigator.platform ?? '');
-}
-
-function modLabel(): string {
-  return isMac() ? '\u2318' : 'Ctrl';
-}
-
-interface ShortcutRow {
-  keys: string;
-  description: string;
-}
-
-interface ShortcutGroup {
-  title: string;
-  shortcuts: ShortcutRow[];
-}
-
-function getShortcutGroups(): ShortcutGroup[] {
-  const mod = modLabel();
-  return [
-    {
-      title: 'Panels',
-      shortcuts: [
-        { keys: ',', description: 'Toggle left sidebar' },
-        { keys: '.', description: 'Toggle right panel (article outline)' },
-        { keys: '\\', description: 'Toggle both panels (zen mode)' },
-      ],
-    },
-    {
-      title: 'Navigation',
-      shortcuts: [
-        { keys: `${mod}+K`, description: 'Open command palette / quick search' },
-        { keys: `${mod}+N`, description: 'Create new page' },
-        { keys: '?', description: 'Show keyboard shortcuts' },
-        { keys: `${mod}+/`, description: 'Show keyboard shortcuts' },
-      ],
-    },
-    {
-      title: 'Editor',
-      shortcuts: [
-        { keys: `${mod}+S`, description: 'Save current article' },
-        { keys: `${mod}+E`, description: 'Toggle edit / view mode' },
-        { keys: 'Esc', description: 'Exit edit mode / close modal' },
-      ],
-    },
-  ];
-}
+import { useUiStore } from '../../../stores/ui-store';
+import { getShortcutsByCategory, getCategoryLabel, formatKeysForPlatform, TIPTAP_SHORTCUTS } from '../../lib/shortcut-registry';
+import { isMac } from '../../lib/platform';
 
 function Kbd({ children }: { children: string }) {
   return (
@@ -61,12 +15,21 @@ function Kbd({ children }: { children: string }) {
 }
 
 function ShortcutKeysDisplay({ keys }: { keys: string }) {
-  const parts = keys.split('+');
+  const mac = isMac();
+  const formatted = formatKeysForPlatform(keys, mac);
+
+  // Split formatted string into individual key tokens for styled display.
+  // On Mac, modifier symbols are single characters without separators.
+  // On non-Mac, keys are separated by "+".
+  const parts = mac
+    ? formatted.split(/(?<=.)(?=[A-Z0-9/\\,.<>?;:'"[\]{}|`~!@#$%^&*()\-_=+])/u).filter(Boolean)
+    : formatted.split('+');
+
   return (
     <span className="inline-flex items-center gap-0.5">
       {parts.map((part, i) => (
         <span key={i} className="inline-flex items-center gap-0.5">
-          {i > 0 && <span className="text-muted-foreground/50 text-[10px]">+</span>}
+          {i > 0 && !mac && <span className="text-muted-foreground/50 text-[10px]">+</span>}
           <Kbd>{part}</Kbd>
         </span>
       ))}
@@ -77,7 +40,9 @@ function ShortcutKeysDisplay({ keys }: { keys: string }) {
 export function KeyboardShortcutsModal() {
   const isOpen = useKeyboardShortcutsStore((s) => s.isOpen);
   const close = useKeyboardShortcutsStore((s) => s.close);
-  const groups = getShortcutGroups();
+  const singleKeyEnabled = useUiStore((s) => s.singleKeyShortcutsEnabled);
+  const setSingleKeyEnabled = useUiStore((s) => s.setSingleKeyShortcutsEnabled);
+  const categories = getShortcutsByCategory();
 
   return (
     <Dialog.Root open={isOpen} onOpenChange={(open) => { if (!open) close(); }}>
@@ -106,29 +71,67 @@ export function KeyboardShortcutsModal() {
           {/* Content */}
           <div className="max-h-[60vh] overflow-y-auto p-5">
             <div className="space-y-5">
-              {groups.map((group) => (
-                <div key={group.title}>
+              {[...categories.entries()].map(([category, shortcuts]) => (
+                <div key={category}>
                   <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
-                    {group.title}
+                    {getCategoryLabel(category)}
                   </h3>
                   <div className="space-y-1.5">
-                    {group.shortcuts.map((shortcut) => (
+                    {shortcuts.map((shortcut) => (
                       <div
-                        key={shortcut.keys}
+                        key={shortcut.id}
                         className="flex items-center justify-between rounded-lg px-2.5 py-1.5 text-sm transition-colors hover:bg-foreground/3"
                       >
-                        <span className="text-foreground">{shortcut.description}</span>
+                        <span className="text-foreground">{shortcut.label}</span>
                         <ShortcutKeysDisplay keys={shortcut.keys} />
                       </div>
                     ))}
                   </div>
                 </div>
               ))}
+
+              {/* TipTap formatting shortcuts — display only */}
+              <div>
+                <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
+                  {getCategoryLabel('formatting')}
+                </h3>
+                <p className="mb-2 text-[10px] text-muted-foreground/60">Active when editing an article</p>
+                <div className="space-y-1.5">
+                  {TIPTAP_SHORTCUTS.map((shortcut) => (
+                    <div
+                      key={shortcut.id}
+                      className="flex items-center justify-between rounded-lg px-2.5 py-1.5 text-sm transition-colors hover:bg-foreground/3"
+                    >
+                      <span className="text-foreground">{shortcut.label}</span>
+                      <ShortcutKeysDisplay keys={shortcut.keys} />
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
 
           {/* Footer */}
-          <div className="border-t border-border/50 px-5 py-3">
+          <div className="border-t border-border/50 px-5 py-3 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <label htmlFor="single-key-toggle" className="text-sm font-medium text-foreground cursor-pointer">
+                  Single-key shortcuts
+                </label>
+                <p className="text-[11px] text-muted-foreground">
+                  Enable shortcuts like <Kbd>,</Kbd> <Kbd>.</Kbd> <Kbd>\</Kbd> and <Kbd>?</Kbd> that use a single key without Ctrl/Alt
+                </p>
+              </div>
+              <Switch.Root
+                id="single-key-toggle"
+                checked={singleKeyEnabled}
+                onCheckedChange={setSingleKeyEnabled}
+                aria-label="Single-key shortcuts"
+                className="relative h-5 w-9 shrink-0 rounded-full bg-foreground/10 transition-colors data-[state=checked]:bg-primary outline-none"
+              >
+                <Switch.Thumb className="block h-4 w-4 translate-x-0.5 rounded-full bg-white transition-transform data-[state=checked]:translate-x-4" />
+              </Switch.Root>
+            </div>
             <p className="text-[11px] text-muted-foreground">
               Shortcuts are disabled when typing in an input, textarea, or the article editor.
             </p>

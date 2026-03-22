@@ -1,14 +1,19 @@
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
+import * as Switch from '@radix-ui/react-switch';
 import { Keyboard, LogOut, Settings, User } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../../../stores/auth-store';
 import { useKeyboardShortcutsStore } from '../../../stores/keyboard-shortcuts-store';
+import { useUiStore } from '../../../stores/ui-store';
 import { logoutApi } from '../../lib/api';
+import { ShortcutHint } from '../ShortcutHint';
 
 export function UserMenu() {
   const user = useAuthStore((s) => s.user);
   const navigate = useNavigate();
   const openShortcuts = useKeyboardShortcutsStore((s) => s.open);
+  const singleKeyEnabled = useUiStore((s) => s.singleKeyShortcutsEnabled);
+  const setSingleKeyEnabled = useUiStore((s) => s.setSingleKeyShortcutsEnabled);
 
   return (
     <DropdownMenu.Root>
@@ -45,8 +50,29 @@ export function UserMenu() {
           >
             <Keyboard size={14} />
             Keyboard Shortcuts
-            <kbd className="ml-auto rounded border border-border/50 px-1 py-0.5 text-[10px]">?</kbd>
+            <ShortcutHint shortcutId="shortcuts-help" className="ml-auto" />
           </DropdownMenu.Item>
+          <DropdownMenu.Item
+            onSelect={(e) => {
+              // Prevent closing the dropdown when toggling
+              e.preventDefault();
+              setSingleKeyEnabled(!singleKeyEnabled);
+            }}
+            className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground transition-colors"
+          >
+            <span className="flex-1">Single-key shortcuts</span>
+            <Switch.Root
+              checked={singleKeyEnabled}
+              onCheckedChange={setSingleKeyEnabled}
+              aria-label="Single-key shortcuts"
+              className="relative h-4 w-7 shrink-0 rounded-full bg-foreground/10 transition-colors data-[state=checked]:bg-primary outline-none"
+              tabIndex={-1}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <Switch.Thumb className="block h-3 w-3 translate-x-0.5 rounded-full bg-white transition-transform data-[state=checked]:translate-x-3" />
+            </Switch.Root>
+          </DropdownMenu.Item>
+          <DropdownMenu.Separator className="my-1 h-px bg-foreground/10" />
           <DropdownMenu.Item
             onSelect={() => void logoutApi()}
             className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground transition-colors"
