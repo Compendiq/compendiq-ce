@@ -142,8 +142,8 @@ describe('Bulk Pages Routes (Parallelized)', () => {
     // Tag tests override this default with their own mocks using integer PKs
     mockQueryFn.mockResolvedValue({
       rows: [
-        { id: 1, confluence_id: 'page-1', space_key: 'OPS', labels: ['existing-tag'] },
-        { id: 2, confluence_id: 'page-2', space_key: 'ENG', labels: ['existing-tag'] },
+        { id: 1, confluence_id: 'page-1', space_key: 'OPS', source: 'confluence', labels: ['existing-tag'] },
+        { id: 2, confluence_id: 'page-2', space_key: 'ENG', source: 'confluence', labels: ['existing-tag'] },
       ],
       rowCount: 2,
     });
@@ -177,7 +177,7 @@ describe('Bulk Pages Routes (Parallelized)', () => {
     it('should report not-found pages from batch ownership check', async () => {
       // Batch query returns only page-2 (not-found is missing)
       mockQueryFn.mockResolvedValueOnce({
-        rows: [{ confluence_id: 'page-2' }],
+        rows: [{ id: 2, confluence_id: 'page-2', source: 'confluence' }],
         rowCount: 1,
       });
 
@@ -194,8 +194,12 @@ describe('Bulk Pages Routes (Parallelized)', () => {
       expect(body.errors[0]).toContain('not found');
     });
 
-    it('should return 400 when Confluence not configured', async () => {
+    it('should report Confluence pages as failed when Confluence not configured', async () => {
       (getClientForUser as ReturnType<typeof vi.fn>).mockResolvedValueOnce(null);
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ id: 1, confluence_id: 'page-1', source: 'confluence', space_key: 'DEV' }],
+        rowCount: 1,
+      });
 
       const response = await app.inject({
         method: 'POST',
@@ -203,13 +207,36 @@ describe('Bulk Pages Routes (Parallelized)', () => {
         payload: { ids: ['page-1'] },
       });
 
-      expect(response.statusCode).toBe(400);
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.succeeded).toBe(0);
+      expect(body.failed).toBe(1);
+      expect(body.errors[0]).toContain('Confluence not configured');
+    });
+
+    it('should delete standalone pages without Confluence configured', async () => {
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ id: 42, confluence_id: null, source: 'standalone', space_key: null }],
+        rowCount: 1,
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/delete',
+        payload: { ids: ['42'] },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.succeeded).toBe(1);
+      expect(body.failed).toBe(0);
+      expect(getClientForUser).not.toHaveBeenCalled();
     });
 
     it('should use batch DELETE queries with ANY()', async () => {
       // Single page owned
       mockQueryFn.mockResolvedValueOnce({
-        rows: [{ confluence_id: 'page-1' }],
+        rows: [{ id: 1, confluence_id: 'page-1', source: 'confluence', space_key: 'OPS' }],
         rowCount: 1,
       });
 
@@ -235,12 +262,12 @@ describe('Bulk Pages Routes (Parallelized)', () => {
           (call[0] as string).includes('DELETE FROM pinned_pages'),
       );
       expect(pinnedDelete).toBeDefined();
-      expect(pinnedDelete![0]).toContain('ANY($2)');
+      expect(pinnedDelete![0]).toContain('page_id = ANY($2');
     });
 
     it('should call cleanPageAttachments for each deleted page', async () => {
       mockQueryFn.mockResolvedValueOnce({
-        rows: [{ confluence_id: 'page-1' }, { confluence_id: 'page-2' }],
+        rows: [{ id: 1, confluence_id: 'page-1', source: 'confluence' }, { id: 2, confluence_id: 'page-2', source: 'confluence' }],
         rowCount: 2,
       });
 
@@ -256,9 +283,42 @@ describe('Bulk Pages Routes (Parallelized)', () => {
       expect(cleanPageAttachments).toHaveBeenCalledWith('test-user-id', 'page-2');
     });
 
+    it('should delete mixed standalone and Confluence pages in one request', async () => {
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [
+          { id: 42, confluence_id: null, source: 'standalone', space_key: null },
+          { id: 1, confluence_id: 'page-1', source: 'confluence', space_key: 'OPS' },
+        ],
+        rowCount: 2,
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/delete',
+        payload: { ids: ['42', 'page-1'] },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.succeeded).toBe(2);
+      expect(body.failed).toBe(0);
+
+      // Standalone page should be soft-deleted
+      const softDelete = mockQueryFn.mock.calls.find(
+        (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('UPDATE pages SET deleted_at'),
+      );
+      expect(softDelete).toBeDefined();
+
+      // Confluence page should be hard-deleted
+      const hardDelete = mockQueryFn.mock.calls.find(
+        (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('DELETE FROM pages'),
+      );
+      expect(hardDelete).toBeDefined();
+    });
+
     it('should handle partial Confluence delete failures', async () => {
       mockQueryFn.mockResolvedValueOnce({
-        rows: [{ confluence_id: 'page-1' }, { confluence_id: 'page-2' }],
+        rows: [{ id: 1, confluence_id: 'page-1', source: 'confluence' }, { id: 2, confluence_id: 'page-2', source: 'confluence' }],
         rowCount: 2,
       });
 

@@ -265,7 +265,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     const response = {
       items: rows.map((row) => ({
-        id: row.id,
+        id: String(row.id),
         confluenceId: row.confluence_id,
         spaceKey: row.space_key,
         title: row.title,
@@ -422,7 +422,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     return {
       items: result.rows.map((row) => ({
-        id: row.id,
+        id: String(row.id),
         title: row.title,
         source: row.source,
         visibility: row.visibility,
@@ -521,7 +521,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     }
 
     return {
-      id: row.id,
+      id: String(row.id),
       confluenceId: row.confluence_id,
       spaceKey: row.space_key,
       title: row.title,
@@ -1134,54 +1134,90 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const { ids } = BulkIdsSchema.parse(request.body);
     const userId = request.userId;
 
-    const client = await getClientForUser(userId);
-    if (!client) {
-      throw fastify.httpErrors.badRequest('Confluence not configured');
-    }
+    // Separate numeric IDs (standalone pages use DB PK) from Confluence string IDs
+    const numericIds = ids.filter((id) => /^\d+$/.test(id)).map(Number);
+    const confluenceStringIds = ids.filter((id) => !/^\d+$/.test(id));
 
-    // Batch verify access: pages in user's accessible spaces (RBAC)
+    // Fetch all requested pages with source info; RBAC: standalone owned by user OR in accessible spaces
     const bulkAccessSpaces = await getUserAccessibleSpaces(userId);
-    const existing = await query<{ confluence_id: string; space_key: string }>(
-      `SELECT cp.confluence_id, cp.space_key FROM pages cp
-       WHERE cp.space_key = ANY($1::text[])
-         AND cp.confluence_id = ANY($2)`,
-      [bulkAccessSpaces, ids],
+    const existing = await query<{
+      id: number; source: string; confluence_id: string | null; space_key: string | null;
+    }>(
+      `SELECT p.id, p.source, p.confluence_id, p.space_key
+       FROM pages p
+       WHERE (p.id = ANY($1::int[]) OR p.confluence_id = ANY($2::text[]))
+         AND ((p.source = 'standalone' AND p.created_by_user_id = $3)
+              OR p.space_key = ANY($4::text[]))`,
+      [numericIds, confluenceStringIds, userId, bulkAccessSpaces],
     );
-    const ownedIds = new Set(existing.rows.map((r) => r.confluence_id));
-    const notFoundIds = ids.filter((id) => !ownedIds.has(id));
+
+    // Map found rows back to the original string IDs supplied by the caller
+    const foundOriginalIds = new Set<string>(
+      existing.rows.map((row) =>
+        row.source === 'standalone' ? String(row.id) : (row.confluence_id ?? String(row.id)),
+      ),
+    );
+    const notFoundIds = ids.filter((id) => !foundOriginalIds.has(id));
     const errors: string[] = notFoundIds.map((id) => `Page ${id} not found`);
     let failed = notFoundIds.length;
 
-    // Delete from Confluence in parallel with concurrency control
-    const bulkLimit = pLimit(5);
-    const deleteResults = await Promise.allSettled(
-      [...ownedIds].map((id) => bulkLimit(() => client.deletePage(id))),
-    );
+    // --- Partition by source ---
+    const standalonePages = existing.rows.filter((r) => r.source === 'standalone');
+    const confluencePages = existing.rows.filter((r) => r.source !== 'standalone');
 
-    const ownedIdArray = [...ownedIds];
-    const deletedIds: string[] = [];
-    for (let i = 0; i < deleteResults.length; i++) {
-      const result = deleteResults[i];
-      if (result.status === 'fulfilled') {
-        deletedIds.push(ownedIdArray[i]);
+    // Soft-delete standalone pages (move to trash)
+    const standaloneNumericIds = standalonePages.map((r) => r.id);
+    if (standaloneNumericIds.length > 0) {
+      await Promise.all([
+        query('UPDATE pages SET deleted_at = NOW() WHERE id = ANY($1::int[])', [standaloneNumericIds]),
+        query('DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = ANY($2::int[])', [userId, standaloneNumericIds]),
+      ]);
+    }
+    const standaloneSucceeded = standaloneNumericIds.length;
+
+    // Delete Confluence pages via API
+    const bulkLimit = pLimit(5);
+    let confluenceSucceeded = 0;
+    if (confluencePages.length > 0) {
+      const client = await getClientForUser(userId);
+      if (!client) {
+        confluencePages.forEach((p) => {
+          failed++;
+          errors.push(`Page ${p.confluence_id ?? p.id}: Confluence not configured`);
+        });
       } else {
-        failed++;
-        errors.push(
-          `Page ${ownedIdArray[i]}: ${result.reason instanceof Error ? result.reason.message : 'Unknown error'}`,
+        const deleteResults = await Promise.allSettled(
+          confluencePages.map((p) => bulkLimit(() => client.deletePage(p.confluence_id!))),
         );
+
+        const deletedConfluenceIds: string[] = [];
+        const deletedConfluenceNumericIds: number[] = [];
+        for (let i = 0; i < deleteResults.length; i++) {
+          const result = deleteResults[i];
+          if (result.status === 'fulfilled') {
+            deletedConfluenceIds.push(confluencePages[i].confluence_id!);
+            deletedConfluenceNumericIds.push(confluencePages[i].id);
+            confluenceSucceeded++;
+          } else {
+            failed++;
+            errors.push(
+              `Page ${confluencePages[i].confluence_id}: ${result.reason instanceof Error ? result.reason.message : 'Unknown error'}`,
+            );
+          }
+        }
+
+        // Batch cleanup: page_embeddings cascade-deleted via FK
+        if (deletedConfluenceNumericIds.length > 0) {
+          await Promise.all([
+            query('DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = ANY($2::int[])', [userId, deletedConfluenceNumericIds]),
+            query('DELETE FROM pages WHERE confluence_id = ANY($1)', [deletedConfluenceIds]),
+          ]);
+          await Promise.allSettled(deletedConfluenceIds.map((id) => bulkLimit(() => cleanPageAttachments(userId, id))));
+        }
       }
     }
 
-    // Batch cleanup: page_embeddings cascade-deleted via FK
-    if (deletedIds.length > 0) {
-      await Promise.all([
-        query('DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = ANY($2)', [userId, deletedIds]),
-        query('DELETE FROM pages WHERE confluence_id = ANY($1)', [deletedIds]),
-      ]);
-      await Promise.allSettled(deletedIds.map((id) => bulkLimit(() => cleanPageAttachments(userId, id))));
-    }
-    const succeeded = deletedIds.length;
-
+    const succeeded = standaloneSucceeded + confluenceSucceeded;
     await cache.invalidate(userId, 'pages');
     await cache.invalidate(userId, 'spaces');
     await logAuditEvent(userId, 'PAGE_DELETED', 'page', undefined, { bulkIds: ids, succeeded, failed }, request);
