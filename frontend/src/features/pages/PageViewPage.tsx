@@ -371,7 +371,7 @@ export function PageViewPage() {
             <FileText size={12} className="shrink-0" />
             {page.spaceKey !== '__local__' && <span className="truncate">{page.spaceKey}</span>}
             {/* Source badge */}
-            {page.spaceKey === '__local__' ? (
+            {page.source === 'standalone' ? (
               <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-500" data-testid="source-badge">
                 Local
               </span>
@@ -381,8 +381,8 @@ export function PageViewPage() {
               </span>
             )}
             {/* Visibility badge for standalone articles */}
-            {page.spaceKey === '__local__' && (
-              'visibility' in page && (page as Record<string, unknown>).visibility === 'shared' ? (
+            {page.source === 'standalone' && (
+              page.visibility === 'shared' ? (
                 <span className="inline-flex items-center gap-1 rounded-full bg-sky-500/15 px-2 py-0.5 text-[10px] font-medium text-sky-500" data-testid="visibility-badge">
                   <Globe size={10} /> Shared
                 </span>

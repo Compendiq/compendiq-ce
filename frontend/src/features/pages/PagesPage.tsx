@@ -46,6 +46,7 @@ interface PageListItemProps {
     qualityAnalyzedAt: string | null;
     qualityError: string | null;
     summaryStatus?: SummaryStatus;
+    source: 'confluence' | 'standalone';
     visibility?: string;
   };
   index: number;
