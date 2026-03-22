@@ -90,7 +90,7 @@ const PageListItem = memo(function PageListItem({
             <div className="flex items-center gap-2">
               <p className="truncate font-medium">{pageItem.title}</p>
               {/* Source badge */}
-              {pageItem.spaceKey === '__local__' ? (
+              {pageItem.source === 'standalone' ? (
                 <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-500" data-testid={`source-badge-${pageItem.id}`}>
                   Local
                 </span>
@@ -100,7 +100,7 @@ const PageListItem = memo(function PageListItem({
                 </span>
               )}
               {/* Visibility badge for standalone articles */}
-              {pageItem.spaceKey === '__local__' && (
+              {pageItem.source === 'standalone' && (
                 (pageItem.visibility === 'shared') ? (
                   <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-sky-500/15 px-2 py-0.5 text-[10px] font-medium text-sky-500" data-testid={`visibility-badge-${pageItem.id}`}>
                     <Globe size={10} /> Shared
