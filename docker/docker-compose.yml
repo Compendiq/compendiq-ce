@@ -20,7 +20,7 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       NODE_ENV: production
-      PORT: "3051"
+      BACKEND_PORT: "3051"
       POSTGRES_URL: postgresql://${POSTGRES_USER:-kb_user}:${POSTGRES_PASSWORD:-changeme-postgres}@postgres:5432/${POSTGRES_DB:-kb_creator}
       REDIS_URL: redis://:${REDIS_PASSWORD:-changeme-redis}@redis:6379
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
@@ -32,6 +32,17 @@ services:
       LLM_BEARER_TOKEN: ${LLM_BEARER_TOKEN:-}
       LLM_AUTH_TYPE: ${LLM_AUTH_TYPE:-bearer}
       LLM_VERIFY_SSL: ${LLM_VERIFY_SSL:-true}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:8081}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      DEFAULT_LLM_MODEL: ${DEFAULT_LLM_MODEL:-}
+      QUALITY_MODEL: ${QUALITY_MODEL:-}
+      QUALITY_CHECK_INTERVAL_MINUTES: ${QUALITY_CHECK_INTERVAL_MINUTES:-60}
+      QUALITY_BATCH_SIZE: ${QUALITY_BATCH_SIZE:-5}
+      SUMMARY_MODEL: ${SUMMARY_MODEL:-}
+      SUMMARY_CHECK_INTERVAL_MINUTES: ${SUMMARY_CHECK_INTERVAL_MINUTES:-60}
+      SUMMARY_BATCH_SIZE: ${SUMMARY_BATCH_SIZE:-5}
+      SYNC_INTERVAL_MIN: ${SYNC_INTERVAL_MIN:-15}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
       CONFLUENCE_VERIFY_SSL: ${CONFLUENCE_VERIFY_SSL:-true}
       CONFLUENCE_DOCKER_HOST: ${CONFLUENCE_DOCKER_HOST:-confluence}
       ATTACHMENTS_DIR: /app/data/attachments
@@ -75,7 +86,7 @@ services:
       --maxmemory-policy allkeys-lru
       --requirepass ${REDIS_PASSWORD:-changeme-redis}
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-changeme-redis}", "ping"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=${REDIS_PASSWORD:-changeme-redis} redis-cli ping"]
       interval: 5s
       timeout: 5s
       retries: 5
