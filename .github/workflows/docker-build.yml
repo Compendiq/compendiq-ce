@@ -11,16 +11,15 @@ jobs:
     name: Backend Image
     if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
+    # packages:write is required for pushing to ghcr.io with GITHUB_TOKEN.
+    # If repository Settings > Actions > Workflow permissions is set to
+    # "Read repository contents and packages permissions", this job-level
+    # declaration ensures the token has the necessary scope.
+    permissions:
+      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-
-      - name: Log in to DHI registry (base images)
-        uses: docker/login-action@v3
-        with:
-          registry: dhi.io
-          username: ${{ vars.DHI_USER }}
-          password: ${{ secrets.DHI_PAT }}
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
@@ -28,17 +27,29 @@ jobs:
           username: ${{ vars.DHI_USER }}
           password: ${{ secrets.DHI_PAT }}
 
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Extract metadata for backend
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: diinlu/atlasmind-backend
+          images: |
+            diinlu/atlasmind-backend
+            ghcr.io/laboef1900/atlasmind-backend
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=branch,enable=${{ github.ref != 'refs/heads/main' }}
             type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' && !startsWith(github.ref, 'refs/tags/') }}
+
+      - name: Set up QEMU (cross-platform emulation for arm64)
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -48,6 +59,7 @@ jobs:
         with:
           context: .
           file: ./backend/Dockerfile
+          platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           push: true
@@ -60,16 +72,12 @@ jobs:
     name: Frontend Image
     if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
+    # packages:write is required for pushing to ghcr.io with GITHUB_TOKEN.
+    permissions:
+      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-
-      - name: Log in to DHI registry (base images)
-        uses: docker/login-action@v3
-        with:
-          registry: dhi.io
-          username: ${{ vars.DHI_USER }}
-          password: ${{ secrets.DHI_PAT }}
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
@@ -77,17 +85,29 @@ jobs:
           username: ${{ vars.DHI_USER }}
           password: ${{ secrets.DHI_PAT }}
 
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Extract metadata for frontend
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: diinlu/atlasmind-frontend
+          images: |
+            diinlu/atlasmind-frontend
+            ghcr.io/laboef1900/atlasmind-frontend
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=branch,enable=${{ github.ref != 'refs/heads/main' }}
             type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' && !startsWith(github.ref, 'refs/tags/') }}
+
+      - name: Set up QEMU (cross-platform emulation for arm64)
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -97,6 +117,7 @@ jobs:
         with:
           context: .
           file: ./frontend/Dockerfile
+          platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           push: true
