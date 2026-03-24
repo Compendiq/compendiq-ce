@@ -78,7 +78,7 @@ export async function setupRoutes(fastify: FastifyInstance) {
     }
 
     return {
-      setupComplete: adminExists && llmConnected,
+      setupComplete: adminExists,
       steps: {
         admin: adminExists,
         llm: llmConnected,

@@ -160,20 +160,20 @@ describe('Setup routes', () => {
       expect(body.steps.confluence).toBe(true);
     });
 
-    it('should return setupComplete=true only when admin and llm are both true', async () => {
+    it('should return setupComplete=true when admin exists (regardless of LLM status)', async () => {
       mockQuery.mockResolvedValueOnce({ rows: [{ count: '1' }] }); // admin count
       mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // confluence count
-      mockCheckHealth.mockResolvedValue({ connected: true });
+      mockCheckHealth.mockResolvedValue({ connected: false });
 
       const response = await app.inject({ method: 'GET', url: '/api/health/setup-status' });
       const body = JSON.parse(response.body);
       expect(body.setupComplete).toBe(true);
     });
 
-    it('should return setupComplete=false when admin exists but LLM is down', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [{ count: '1' }] }); // admin count
+    it('should return setupComplete=false when no admin exists even if LLM is up', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // admin count
       mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // confluence count
-      mockCheckHealth.mockResolvedValue({ connected: false });
+      mockCheckHealth.mockResolvedValue({ connected: true });
 
       const response = await app.inject({ method: 'GET', url: '/api/health/setup-status' });
       const body = JSON.parse(response.body);
