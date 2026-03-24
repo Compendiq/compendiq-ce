@@ -1,9 +1,9 @@
 FROM node:22-alpine AS builder
 WORKDIR /build
-COPY package.json package-lock.json* ./
+COPY mcp-docs/package.json mcp-docs/package-lock.json* ./
 RUN npm ci --ignore-scripts
-COPY tsconfig.json tsconfig.build.json ./
-COPY src/ src/
+COPY mcp-docs/tsconfig.json mcp-docs/tsconfig.build.json ./
+COPY mcp-docs/src/ src/
 RUN npx tsc -p tsconfig.build.json
 
 FROM node:22-alpine
