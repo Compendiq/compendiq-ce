@@ -6,6 +6,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { logger } from '../utils/logger.js';
+import { APP_VERSION } from '../utils/version.js';
 import { getMcpDocsSettings } from './mcp-docs-settings.js';
 
 let client: Client | null = null;
@@ -28,7 +29,7 @@ async function ensureConnected(): Promise<Client> {
 
   try {
     transport = new StreamableHTTPClientTransport(new URL(settings.url));
-    client = new Client({ name: 'atlasmind-backend', version: '1.0.0' });
+    client = new Client({ name: 'atlasmind-backend', version: APP_VERSION });
     await client.connect(transport);
     connectedUrl = settings.url;
     logger.info({ url: settings.url }, 'MCP Docs client connected');

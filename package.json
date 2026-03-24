@@ -1,6 +1,6 @@
 {
   "name": "atlasmind",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "AtlasMind - AI-powered knowledge base management with Confluence integration and Ollama LLM backend",
   "workspaces": [

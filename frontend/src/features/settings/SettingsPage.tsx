@@ -1245,7 +1245,7 @@ function SystemTab() {
         <div className="mt-3 space-y-2 text-sm text-muted-foreground">
           <div className="flex items-center justify-between">
             <span>Version</span>
-            <span className="font-mono">1.0.0</span>
+            <span className="font-mono">{__APP_VERSION__}</span>
           </div>
         </div>
       </div>

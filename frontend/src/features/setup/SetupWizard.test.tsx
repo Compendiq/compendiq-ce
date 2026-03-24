@@ -82,7 +82,7 @@ describe('SetupWizard', () => {
   it('displays version on welcome step', () => {
     renderWizard();
 
-    expect(screen.getByText('v1.0.0')).toBeInTheDocument();
+    expect(screen.getByText(`v${__APP_VERSION__}`)).toBeInTheDocument();
   });
 
   it('advances to admin step when "Start Setup" is clicked', async () => {

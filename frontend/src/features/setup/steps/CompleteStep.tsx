@@ -55,7 +55,7 @@ export function CompleteStep() {
         className="mt-4 flex items-center gap-2 text-xs text-muted-foreground/60"
       >
         <AtlasMindLogo size={14} className="text-primary" />
-        <span>Powered by AtlasMind v1.0.0</span>
+        <span>Powered by AtlasMind v{__APP_VERSION__}</span>
       </m.div>
 
       <m.div

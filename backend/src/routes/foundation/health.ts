@@ -5,6 +5,7 @@ import { getOllamaCircuitBreakerStatus, getOpenaiCircuitBreakerStatus } from '..
 import { getProvider } from '../../domains/llm/services/ollama-service.js';
 import { logger } from '../../core/utils/logger.js';
 import { getSharedLlmSettings } from '../../core/services/admin-settings-service.js';
+import { APP_VERSION } from '../../core/utils/version.js';
 
 // Track whether startup checks have passed
 let startupComplete = false;
@@ -56,7 +57,7 @@ export async function healthRoutes(fastify: FastifyInstance) {
         postgres,
         redis,
       },
-      version: '1.0.0',
+      version: APP_VERSION,
       uptime: process.uptime(),
     });
   });
@@ -82,7 +83,7 @@ export async function healthRoutes(fastify: FastifyInstance) {
         llmAvailable: llmReady,
         llmProvider: sharedLlmSettings.llmProvider,
       },
-      version: '1.0.0',
+      version: APP_VERSION,
     });
   });
 
@@ -108,7 +109,7 @@ export async function healthRoutes(fastify: FastifyInstance) {
           ollama: getOllamaCircuitBreakerStatus(),
           openai: getOpenaiCircuitBreakerStatus(),
         },
-        version: '1.0.0',
+        version: APP_VERSION,
         uptime: process.uptime(),
       });
     } catch {
@@ -118,7 +119,7 @@ export async function healthRoutes(fastify: FastifyInstance) {
       reply.status(allHealthy ? 200 : 503).send({
         status: allHealthy ? 'ok' : 'degraded',
         services: { postgres, redis, llm: false },
-        version: '1.0.0',
+        version: APP_VERSION,
         uptime: process.uptime(),
       });
     }

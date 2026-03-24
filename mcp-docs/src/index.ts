@@ -18,6 +18,14 @@ import { fetchUrl } from './tools/fetch-url.js';
 import { searchWeb } from './tools/search-web.js';
 import { listCached } from './tools/list-cached.js';
 import { logger } from './logger.js';
+import { readFileSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const APP_VERSION: string = JSON.parse(
+  readFileSync(resolve(__dirname, '../package.json'), 'utf-8'),
+).version;
 
 const PORT = parseInt(process.env.PORT ?? '3100', 10);
 const HOST = process.env.MCP_DOCS_HOST ?? '127.0.0.1';
@@ -44,7 +52,7 @@ async function connectRedis(): Promise<void> {
 
 function createMcpServerInstance(): McpServer {
   const server = new McpServer(
-    { name: 'atlasmind-mcp-docs', version: '1.0.0' },
+    { name: 'atlasmind-mcp-docs', version: APP_VERSION },
     { capabilities: { tools: { listChanged: true } } },
   );
 

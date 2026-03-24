@@ -53,6 +53,7 @@ import { localSpacesRoutes } from './routes/knowledge/local-spaces.js';
 import { ZodError } from 'zod';
 import { trackError } from './core/services/error-tracker.js';
 import { logger } from './core/utils/logger.js';
+import { APP_VERSION } from './core/utils/version.js';
 
 export async function buildApp() {
   const app = Fastify({
@@ -94,7 +95,7 @@ export async function buildApp() {
       openapi: {
         info: {
           title: 'AtlasMind API',
-          version: '1.0.0',
+          version: APP_VERSION,
         },
       },
     });

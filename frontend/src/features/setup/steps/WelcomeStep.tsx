@@ -46,7 +46,7 @@ export function WelcomeStep({ onNext }: WelcomeStepProps) {
         transition={{ delay: 0.35, duration: 0.25 }}
         className="mt-3 text-xs text-muted-foreground/60"
       >
-        v1.0.0
+        v{__APP_VERSION__}
       </m.div>
 
       <m.button
