@@ -165,6 +165,23 @@ Key conversion: `turndown` + `jsdom` with custom rules per Confluence macro type
 - ESLint flat config in each workspace. TypeScript strict mode. No over-engineering.
 - Every PR must include doc updates: `docs/`, `.env.example`, and this file if relevant.
 
+## Versioning
+
+Semantic Versioning (`MAJOR.MINOR.PATCH`), currently pre-1.0. Single source of truth: **root `package.json`** → `"version"` field.
+
+**How it flows:**
+- **Backend**: `backend/src/core/utils/version.ts` reads root `package.json` at startup → exports `APP_VERSION` → used by health routes, Swagger, MCP client
+- **Frontend**: `frontend/vite.config.ts` reads root `package.json` and injects `__APP_VERSION__` via Vite `define` at build time → used in UI components. Type declared in `frontend/src/vite-env.d.ts`
+- **Tests**: `frontend/vitest.config.ts` also defines `__APP_VERSION__` so tests can reference it
+- **MCP docs**: `mcp-docs/src/index.ts` reads its own `package.json` at startup
+
+**When to bump:**
+- Feature PRs → `dev`: **no version change**
+- Release (`dev → main`): bump `"version"` in all 5 `package.json` files (root, backend, frontend, packages/contracts, mcp-docs), then merge and tag `main` with `vX.Y.Z`
+- Patch (bug fix): `0.1.0 → 0.1.1`
+- Minor (new feature or pre-1.0 breaking change): `0.1.0 → 0.2.0`
+- Major (stable + breaking): `1.0.0` when production-ready
+
 ## Git Workflow
 
 **CRITICAL — never violate:**
