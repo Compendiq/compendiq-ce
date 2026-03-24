@@ -51,6 +51,7 @@ services:
       CONFLUENCE_DOCKER_HOST: ${CONFLUENCE_DOCKER_HOST:-confluence}
       ATTACHMENTS_DIR: /app/data/attachments
       NODE_EXTRA_CA_CERTS: ${CONTAINER_CA_BUNDLE_PATH:-/etc/ssl/certs/ca-certificates.crt}
+      MCP_DOCS_URL: ${MCP_DOCS_URL:-http://mcp-docs:3100/mcp}
     depends_on:
       postgres:
         condition: service_healthy
@@ -81,6 +82,28 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+
+  mcp-docs:
+    image: diinlu/atlasmind-mcp-docs:dev
+    build:
+      context: ..
+      dockerfile: mcp-docs/Dockerfile
+    environment:
+      PORT: "3100"
+      MCP_DOCS_HOST: "0.0.0.0"
+      REDIS_URL: redis://:${REDIS_PASSWORD:-changeme-redis}@redis:6379
+      LOG_LEVEL: ${MCP_LOG_LEVEL:-info}
+      CACHE_TTL_SECONDS: ${MCP_CACHE_TTL:-3600}
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3100/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
   redis:
     image: redis:8-alpine

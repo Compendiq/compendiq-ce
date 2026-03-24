@@ -13,6 +13,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@atlasmind/contracts": "*",
     "@fastify/compress": "^8.3.1",
     "@fastify/cookie": "^11.0.2",
     "@fastify/cors": "^11.0.0",
@@ -22,7 +23,7 @@
     "@fastify/static": "^9.0.0",
     "@fastify/swagger": "^9.7.0",
     "@fastify/swagger-ui": "^5.2.1",
-    "@atlasmind/contracts": "*",
+    "@modelcontextprotocol/sdk": "^1.27.1",
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/auto-instrumentations-node": "^0.71.0",
     "@opentelemetry/sdk-node": "^0.213.0",

@@ -13,9 +13,10 @@ import { LabelManager } from './LabelManager';
 import { ErrorDashboard } from './ErrorDashboard';
 import { ThemeTab } from './ThemeTab';
 import { WorkersTab } from './WorkersTab';
+import { McpDocsTab } from './McpDocsTab';
 import { SkeletonFormFields } from '../../shared/components/feedback/Skeleton';
 
-type TabId = 'confluence' | 'sync' | 'ollama' | 'ai-prompts' | 'spaces' | 'theme' | 'labels' | 'errors' | 'embedding' | 'workers' | 'system';
+type TabId = 'confluence' | 'sync' | 'ollama' | 'ai-prompts' | 'spaces' | 'theme' | 'labels' | 'errors' | 'embedding' | 'workers' | 'mcp-docs' | 'system';
 
 export function SettingsPage() {
   const queryClient = useQueryClient();
@@ -46,6 +47,7 @@ export function SettingsPage() {
     { id: 'errors', label: 'Errors', adminOnly: true },
     { id: 'embedding', label: 'Embedding', adminOnly: true },
     { id: 'workers', label: 'Workers', adminOnly: true },
+    { id: 'mcp-docs', label: 'MCP Docs', adminOnly: true },
     { id: 'system', label: 'System', adminOnly: true },
   ];
 
@@ -79,7 +81,7 @@ export function SettingsPage() {
         </div>
 
         <div className="p-6">
-          {(isLoading || !settings) && activeTab !== 'labels' && activeTab !== 'errors' && activeTab !== 'theme' && activeTab !== 'embedding' && activeTab !== 'sync' && activeTab !== 'workers' ? (
+          {(isLoading || !settings) && activeTab !== 'labels' && activeTab !== 'errors' && activeTab !== 'theme' && activeTab !== 'embedding' && activeTab !== 'sync' && activeTab !== 'workers' && activeTab !== 'mcp-docs' ? (
             <SkeletonFormFields />
           ) : activeTab === 'confluence' ? (
             <ConfluenceTab settings={settings!} onSave={(v) => updateSettings.mutate(v)} />
@@ -105,6 +107,8 @@ export function SettingsPage() {
             <EmbeddingTab />
           ) : activeTab === 'workers' && isAdmin ? (
             <WorkersTab />
+          ) : activeTab === 'mcp-docs' && isAdmin ? (
+            <McpDocsTab />
           ) : activeTab === 'system' && isAdmin ? (
             <SystemTab />
           ) : (

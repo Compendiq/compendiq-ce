@@ -47,6 +47,7 @@ export const AskRequestSchema = z.object({
   conversationId: z.string().uuid().optional(),
   pageId: z.string().optional(),
   includeSubPages: z.boolean().optional(),
+  externalUrls: z.array(z.string().url()).max(5).optional(),
 });
 
 export const GenerateDiagramRequestSchema = z.object({

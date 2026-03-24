@@ -105,9 +105,15 @@ describe('SSRF Guard', () => {
       expect(() => validateUrl('http://169.254.169.254/latest/meta-data')).toThrow(SsrfError);
     });
 
-    it('should block CGNAT range 100.64.x.x', () => {
+    it('should block CGNAT range 100.64.0.0/10 (100.64-127.x.x)', () => {
       expect(() => validateUrl('http://100.64.0.1/api')).toThrow(SsrfError);
       expect(() => validateUrl('http://100.127.255.255/api')).toThrow(SsrfError);
+    });
+
+    it('should NOT block IPs just above CGNAT range (100.128+)', () => {
+      expect(() => validateUrl('http://100.128.0.1/api')).not.toThrow();
+      expect(() => validateUrl('http://100.129.0.1/api')).not.toThrow();
+      expect(() => validateUrl('http://100.200.0.1/api')).not.toThrow();
     });
   });
 

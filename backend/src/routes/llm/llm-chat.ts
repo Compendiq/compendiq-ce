@@ -8,6 +8,7 @@ import { hybridSearch, buildRagContext } from '../../domains/llm/services/rag-se
 import { htmlToMarkdown } from '../../core/services/content-converter.js';
 import { LlmCache, buildLlmCacheKey, buildRagCacheKey } from '../../domains/llm/services/llm-cache.js';
 import { CircuitBreakerOpenError } from '../../core/services/circuit-breaker.js';
+import { isEnabled as isMcpDocsEnabled, fetchDocumentation } from '../../core/services/mcp-docs-client.js';
 import {
   ImproveRequestSchema,
   GenerateRequestSchema,
@@ -36,6 +37,13 @@ export async function llmChatRoutes(fastify: FastifyInstance) {
 
   // Create LLM cache instance
   const llmCache = new LlmCache(fastify.redis);
+
+  // GET /api/mcp-docs/status - public (authenticated) check for MCP docs availability
+  // Non-admin users need this to show/hide the external URL attachment button in AskMode.
+  fastify.get('/mcp-docs/status', async () => {
+    const enabled = await isMcpDocsEnabled();
+    return { enabled };
+  });
 
   // POST /api/llm/improve - stream improved content
   fastify.post('/llm/improve', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
@@ -310,7 +318,7 @@ export async function llmChatRoutes(fastify: FastifyInstance) {
   // POST /api/llm/ask - RAG-powered Q&A with streaming
   fastify.post('/llm/ask', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
     const body = AskRequestSchema.parse(request.body);
-    const { question, model, conversationId, includeSubPages } = body;
+    const { question, model, conversationId, includeSubPages, externalUrls } = body;
     const userId = request.userId;
 
     if (question.length > MAX_INPUT_LENGTH) {
@@ -367,21 +375,54 @@ export async function llmChatRoutes(fastify: FastifyInstance) {
       }
     }
 
+    // Fetch external documentation URLs via MCP sidecar (if provided and enabled)
+    const externalDocs: Array<{ url: string; title: string; markdown: string }> = [];
+    if (externalUrls && externalUrls.length > 0 && await isMcpDocsEnabled()) {
+      for (const extUrl of externalUrls) {
+        try {
+          const doc = await fetchDocumentation(extUrl, userId);
+          // Sanitize fetched content before injecting into LLM prompt
+          const { sanitized: sanitizedDoc } = sanitizeLlmInput(doc.markdown);
+          externalDocs.push({ url: doc.url, title: doc.title, markdown: sanitizedDoc });
+        } catch (err) {
+          logger.warn({ err, url: extUrl }, 'Failed to fetch external doc via MCP');
+        }
+      }
+
+      if (externalDocs.length > 0) {
+        const externalContext = externalDocs.map((d, i) =>
+          `[External Source ${i + 1}: "${d.title}" (${d.url})]\n${d.markdown}`
+        ).join('\n\n---\n\n');
+        ragContext += `\n\n---\n\nExternal documentation:\n\n${externalContext}`;
+      }
+    }
+
     // Check RAG cache with stampede protection (only for new conversations without history)
     const docIds = searchResults.map((r) => r.confluenceId);
     const ragCacheKey = buildRagCacheKey(model, question, docIds, {
       includeSubPages,
       pageId: body.pageId,
+      externalUrls,
     });
 
-    const sources = searchResults.map((r) => ({
-      pageId: r.pageId,
-      pageTitle: r.pageTitle,
-      spaceKey: r.spaceKey,
-      confluenceId: r.confluenceId,
-      sectionTitle: r.sectionTitle,
-      score: r.score,
-    }));
+    const sources = [
+      ...searchResults.map((r) => ({
+        pageId: r.pageId,
+        pageTitle: r.pageTitle,
+        spaceKey: r.spaceKey,
+        confluenceId: r.confluenceId,
+        sectionTitle: r.sectionTitle,
+        score: r.score,
+      })),
+      ...externalDocs.map((d) => ({
+        pageId: 0,
+        pageTitle: d.title,
+        spaceKey: 'External',
+        confluenceId: d.url,
+        sectionTitle: d.title,
+        score: 1,
+      })),
+    ];
 
     // Helper to save/create conversation from a cached answer
     const saveConversation = async (answer: string) => {

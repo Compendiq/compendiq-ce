@@ -48,13 +48,16 @@ export function buildRagCacheKey(
   model: string,
   question: string,
   docIds: string[],
-  options?: { includeSubPages?: boolean; pageId?: string },
+  options?: { includeSubPages?: boolean; pageId?: string; externalUrls?: string[] },
 ): string {
   const sortedIds = [...docIds].sort().join(',');
   const subPageSuffix = options?.includeSubPages && options?.pageId
     ? `subpages:${options.pageId}`
     : '';
-  return KEY_PREFIX + hashLlmInputs(model, question, sortedIds, subPageSuffix);
+  const externalSuffix = options?.externalUrls?.length
+    ? `ext:${[...options.externalUrls].sort().join(',')}`
+    : '';
+  return KEY_PREFIX + hashLlmInputs(model, question, sortedIds, subPageSuffix, externalSuffix);
 }
 
 export class LlmCache {
