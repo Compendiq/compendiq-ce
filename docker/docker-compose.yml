@@ -18,6 +18,8 @@ services:
       dockerfile: backend/Dockerfile
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    ports:
+      - "${BACKEND_HOST_PORT:-3052}:3051"
     environment:
       NODE_ENV: production
       BACKEND_PORT: "3051"
