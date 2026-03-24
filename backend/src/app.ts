@@ -86,18 +86,22 @@ export async function buildApp() {
     timeWindow: '1 minute',
   });
 
-  await app.register(swagger, {
-    openapi: {
-      info: {
-        title: 'AtlasMind API',
-        version: '1.0.0',
+  // Only register Swagger/OpenAPI docs in non-production environments.
+  // Exposing the full API schema in production is an information disclosure risk.
+  if (process.env.NODE_ENV !== 'production') {
+    await app.register(swagger, {
+      openapi: {
+        info: {
+          title: 'AtlasMind API',
+          version: '1.0.0',
+        },
       },
-    },
-  });
+    });
 
-  await app.register(swaggerUi, {
-    routePrefix: '/api/docs',
-  });
+    await app.register(swaggerUi, {
+      routePrefix: '/api/docs',
+    });
+  }
 
   // Custom plugins (correlation-id first so all subsequent requests have it)
   await app.register(correlationIdPlugin);
