@@ -45,6 +45,7 @@ import { pagesImportRoutes } from './routes/knowledge/pages-import.js';
 import { contentAnalyticsRoutes } from './routes/knowledge/content-analytics.js';
 import { verificationRoutes } from './routes/knowledge/verification.js';
 import { notificationRoutes } from './routes/foundation/notifications.js';
+import { setupRoutes } from './routes/foundation/setup.js';
 import { knowledgeRequestRoutes } from './routes/knowledge/knowledge-requests.js';
 import { searchRoutes } from './routes/knowledge/search.js';
 import { localSpacesRoutes } from './routes/knowledge/local-spaces.js';
@@ -183,6 +184,7 @@ export async function buildApp() {
   await app.register(contentAnalyticsRoutes, { prefix: '/api' });
   await app.register(verificationRoutes, { prefix: '/api' });
   await app.register(notificationRoutes, { prefix: '/api' });
+  await app.register(setupRoutes, { prefix: '/api' });
   await app.register(knowledgeRequestRoutes, { prefix: '/api' });
   await app.register(searchRoutes, { prefix: '/api' });
   await app.register(localSpacesRoutes, { prefix: '/api' });

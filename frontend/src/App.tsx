@@ -1,14 +1,16 @@
 import { lazy, Suspense } from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, useSearchParams } from 'react-router-dom';
 import { LazyMotion, domMax } from 'framer-motion';
 import { useAuthStore } from './stores/auth-store';
 import { useSessionInit } from './shared/hooks/useSessionInit';
 import { useThemeEffect } from './shared/hooks/useThemeEffect';
 import { useTokenRefreshTimer } from './shared/hooks/useTokenRefreshTimer';
+import { useSetupStatus } from './shared/hooks/useSetupStatus';
 import { AppLayout } from './shared/components/layout/AppLayout';
 import { ErrorBoundary } from './shared/components/feedback/ErrorBoundary';
 
 import { LoginPage } from './features/settings/LoginPage';
+import { SetupWizard } from './features/setup/SetupWizard';
 import { OidcCallbackPage } from './features/auth/OidcCallbackPage';
 
 // Route-based code splitting: lazy-load all page components (#186)
@@ -76,8 +78,28 @@ export function PageLoadingFallback() {
   );
 }
 
+/**
+ * SetupRoute — only accessible when setup is NOT complete.
+ * Redirects to "/" once setup has been finished.
+ */
+function SetupRoute({ children }: { children: React.ReactNode }) {
+  const { setupComplete, isLoading } = useSetupStatus();
+  const [searchParams] = useSearchParams();
+  const isRerun = searchParams.get('rerun') === 'true';
+  if (isLoading) return <PageLoadingFallback />;
+  if (setupComplete && !isRerun) return <Navigate to="/" replace />;
+  return <>{children}</>;
+}
+
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const { setupComplete, isLoading } = useSetupStatus();
+
+  // While checking setup status, show loading
+  if (isLoading) return <PageLoadingFallback />;
+
+  // Redirect to setup wizard if setup is not complete
+  if (!setupComplete) return <Navigate to="/setup" replace />;
 
   // accessToken is now persisted in localStorage, so new tabs have it
   // immediately. If the token expired, apiFetch's 401 interceptor or
@@ -102,6 +124,7 @@ export function App() {
       <ErrorBoundary>
         <Suspense fallback={<PageLoadingFallback />}>
           <Routes>
+            <Route path="/setup" element={<SetupRoute><SetupWizard /></SetupRoute>} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/auth/oidc/callback" element={<OidcCallbackPage />} />
             <Route
