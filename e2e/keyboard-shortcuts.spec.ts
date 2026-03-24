@@ -134,7 +134,7 @@ test.describe('Keyboard shortcuts', () => {
       // Close with Escape
       await page.keyboard.press('Escape');
       // Allow UI transition to settle
-    await page.waitForLoadState('domcontentloaded');
+      await page.waitForLoadState('domcontentloaded');
     }
   });
 

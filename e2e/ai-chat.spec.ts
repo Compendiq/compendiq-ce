@@ -155,17 +155,9 @@ test.describe('AI Chat', () => {
       // (since LLM might not be available in the test environment)
       await page.waitForLoadState('networkidle');
 
-      // Check for either a response message, loading state, or error toast
-      const hasResponse = await page
-        .locator('[data-testid="chat-message"]')
-        .or(page.locator('.message'))
-        .or(page.getByText(/error|failed|could not|try again/i))
-        .first()
-        .isVisible({ timeout: 5_000 })
-        .catch(() => false);
-
-      // We just verify the app does not crash — any visible state is acceptable
-      expect(page.url()).toContain('/ai');
+      // Verify the app does not crash — any visible state is acceptable
+      // (response message, loading indicator, or error toast)
+      await expect(page).toHaveURL(/\/ai/);
     }
   });
 });
