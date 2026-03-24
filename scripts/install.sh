@@ -1,157 +1,261 @@
 #!/usr/bin/env bash
-# AtlasMind One-Command Docker Installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/laboef1900/ai-kb-creator/main/scripts/install.sh | bash
-# Custom install dir: INSTALL_DIR=~/mydir bash <(curl -fsSL ...)
-# Custom version:     ATLASMIND_VERSION=1.0.0 bash <(curl -fsSL ...)
+# =============================================================================
+# AtlasMind — One-Command Docker Installer
+# https://github.com/diinlu/atlasmind
 #
-# Tested on Linux (GNU coreutils) and WSL2 (GNU sed required for port removal step).
-# macOS: sed -i '' differs from GNU sed -i; this script targets Linux/WSL2.
-
+# Usage:
+#   curl -fsSL https://raw.githubusercontent.com/diinlu/atlasmind/main/scripts/install.sh | bash
+#   curl ... | bash -s -- --dir /opt/atlasmind --port 9090
+#   bash install.sh --dir /opt/atlasmind --port 9090 --version 1.2.0
+#
+# Options:
+#   --dir DIR          Installation directory  (default: $HOME/atlasmind)
+#   --port PORT        Frontend port           (default: 8080)
+#   --version TAG      Image tag               (default: latest)
+#   --help             Show this help message
+#
+# Environment variables (all optional, overridden by CLI flags):
+#   INSTALL_DIR        Installation directory  (default: $HOME/atlasmind)
+#   ATLASMIND_PORT     Frontend port           (default: 8080)
+#   ATLASMIND_VERSION  Image tag               (default: latest)
+# =============================================================================
 set -euo pipefail
 
-# ─── Colour helpers ───────────────────────────────────────────────────────────
-if [ -t 1 ] && command -v tput >/dev/null 2>&1; then
-  BOLD=$(tput bold 2>/dev/null || printf '')
-  RED=$(tput setaf 1 2>/dev/null || printf '')
-  GREEN=$(tput setaf 2 2>/dev/null || printf '')
-  YELLOW=$(tput setaf 3 2>/dev/null || printf '')
-  CYAN=$(tput setaf 6 2>/dev/null || printf '')
-  RESET=$(tput sgr0 2>/dev/null || printf '')
-else
-  BOLD='' RED='' GREEN='' YELLOW='' CYAN='' RESET=''
-fi
-
-info()    { printf '%s  %s%s\n'    "${CYAN}ℹ${RESET}"  "$*" "${RESET}"; }
-success() { printf '%s  %s%s\n'    "${GREEN}✓${RESET}" "$*" "${RESET}"; }
-warn()    { printf '%s  %s%s\n'    "${YELLOW}⚠${RESET}" "$*" "${RESET}"; }
-error()   { printf '%s  %s%s\n'    "${RED}✗${RESET}"  "$*" "${RESET}" >&2; }
-step()    { printf '\n%s==>%s %s%s%s\n' "${BOLD}${CYAN}" "${RESET}" "${BOLD}" "$*" "${RESET}"; }
-
-# ─── Configuration ────────────────────────────────────────────────────────────
-ATLASMIND_VERSION="${ATLASMIND_VERSION:-latest}"
-INSTALL_DIR="${INSTALL_DIR:-$HOME/atlasmind}"
-HEALTH_URL="http://localhost:3051/api/health/ready"
-FRONTEND_URL="http://localhost:8081"
-MAX_RETRIES=36   # 36 × 5s = 3 minutes
-
-# ─── Prerequisite checks ─────────────────────────────────────────────────────
-step "Checking prerequisites"
-
-if ! docker info >/dev/null 2>&1; then
-  error "Docker is not running or not installed."
-  error "Install Docker: https://docs.docker.com/engine/install/"
-  exit 1
-fi
-success "Docker daemon is running"
-
-if ! docker compose version >/dev/null 2>&1; then
-  error "Docker Compose v2 is required (docker compose, not docker-compose)."
-  error "Install: https://docs.docker.com/compose/install/"
-  exit 1
-fi
-success "Docker Compose v2 found"
-
-# Check port availability
-for port in 8081 3051; do
-  if ss -tlnp 2>/dev/null | grep -q ":${port} " || \
-     netstat -tlnp 2>/dev/null | grep -q ":${port} "; then
-    error "Port ${port} is already in use. Free it and re-run the installer."
-    exit 1
+# ---------------------------------------------------------------------------
+# Color helpers — disabled when stdout is not a terminal or NO_COLOR is set
+# ---------------------------------------------------------------------------
+setup_colors() {
+  if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    BLUE='\033[0;34m'
+    CYAN='\033[0;36m'
+    BOLD='\033[1m'
+    DIM='\033[2m'
+    RESET='\033[0m'
+  else
+    RED='' GREEN='' YELLOW='' BLUE='' CYAN='' BOLD='' DIM='' RESET=''
   fi
-done
-success "Ports 8081 and 3051 are available"
-
-# ─── Secret generation ────────────────────────────────────────────────────────
-# Bug-1 fix: use openssl rand -hex to produce exactly N hex characters.
-# openssl rand -hex 32 → 64 lowercase hex chars (no filtering, no truncation).
-# openssl rand -hex 16 → 32 lowercase hex chars.
-# od fallback produces the same deterministic hex output from /dev/urandom.
-
-gen64() {
-  openssl rand -hex 32 2>/dev/null \
-    || dd if=/dev/urandom bs=32 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n' | head -c 64
 }
 
-gen32() {
-  openssl rand -hex 16 2>/dev/null \
-    || dd if=/dev/urandom bs=16 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n' | head -c 32
+# ---------------------------------------------------------------------------
+# Logging — use %b to interpret escape sequences from color variables
+# ---------------------------------------------------------------------------
+info()  { printf '%b[info]%b  %s\n' "$BLUE" "$RESET" "$*"; }
+ok()    { printf '%b[ok]%b    %s\n' "$GREEN" "$RESET" "$*"; }
+warn()  { printf '%b[warn]%b  %s\n' "$YELLOW" "$RESET" "$*" >&2; }
+err()   { printf '%b[error]%b %s\n' "$RED" "$RESET" "$*" >&2; }
+die()   { err "$@"; exit 1; }
+
+# ---------------------------------------------------------------------------
+# Banner
+# ---------------------------------------------------------------------------
+banner() {
+  printf '\n'
+  printf '%b%b' "$CYAN" "$BOLD"
+  printf '    _   _   _           __  __ _           _\n'
+  printf '   / \\ | |_| | __ _ ___|  \\/  (_)_ __   __| |\n'
+  printf '  / _ \\| __| |/ _` / __| |\\/| | | '"'"'_ \\ / _` |\n'
+  printf ' / ___ \\ |_| | (_| \\__ \\ |  | | | | | | (_| |\n'
+  printf '/_/   \\_\\__|_|\\__,_|___/_|  |_|_|_| |_|\\__,_|\n'
+  printf '%b\n' "$RESET"
+  printf '%b  AI-powered knowledge base management%b\n\n' "$DIM" "$RESET"
 }
 
-step "Generating cryptographic secrets"
-JWT_SECRET=$(gen64)
-PAT_ENCRYPTION_KEY=$(gen64)
-POSTGRES_PASSWORD=$(gen32)
-REDIS_PASSWORD=$(gen32)
-OLLAMA_BASE_URL="${OLLAMA_BASE_URL:-http://host.docker.internal:11434}"
+# ---------------------------------------------------------------------------
+# Pre-flight checks
+# ---------------------------------------------------------------------------
+check_docker() {
+  if ! command -v docker >/dev/null 2>&1; then
+    die "Docker is not installed. Install it from https://docs.docker.com/get-docker/"
+  fi
 
-success "Secrets generated (64-char hex keys, not logged)"
+  if ! docker info >/dev/null 2>&1; then
+    die "Docker daemon is not running. Please start Docker and try again."
+  fi
 
-# ─── Create install directory ─────────────────────────────────────────────────
-step "Creating install directory: ${INSTALL_DIR}"
-mkdir -p "${INSTALL_DIR}"
+  ok "Docker is installed and running"
+}
 
-# ─── Write .env ───────────────────────────────────────────────────────────────
-# Bug-2 fix: UNQUOTED heredoc delimiter (<< EOF, not << 'EOF') so all shell
-# variables are expanded to their runtime values at write time.
-step "Writing configuration"
+check_docker_compose() {
+  if ! docker compose version >/dev/null 2>&1; then
+    die "Docker Compose v2 is required (docker compose, not docker-compose). Update Docker or install the compose plugin."
+  fi
 
-cat > "${INSTALL_DIR}/.env" << EOF
-# AtlasMind - generated by install.sh on $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Keep this file secret — it contains your encryption keys and passwords.
-JWT_SECRET=$JWT_SECRET
-PAT_ENCRYPTION_KEY=$PAT_ENCRYPTION_KEY
-POSTGRES_PASSWORD=$POSTGRES_PASSWORD
-REDIS_PASSWORD=$REDIS_PASSWORD
-ATLASMIND_VERSION=$ATLASMIND_VERSION
-OLLAMA_BASE_URL=$OLLAMA_BASE_URL
-EOF
+  ok "Docker Compose v2 is available"
+}
 
-success ".env written to ${INSTALL_DIR}/.env"
+check_openssl() {
+  if ! command -v openssl >/dev/null 2>&1; then
+    die "openssl is required to generate secrets. Install it and try again."
+  fi
+}
 
-# ─── Write docker-compose.yml ─────────────────────────────────────────────────
-# All secrets and version tags are embedded as literal values (not \${VAR}
-# references) so docker-compose itself needs no variable substitution at runtime.
-# SECURITY NOTE (port 3051): the backend port is exposed here only so the host
-# health poll can reach it. After health is confirmed the port mapping is removed
-# via sed and the container is force-recreated (see health-poll section below).
+# ---------------------------------------------------------------------------
+# Secret generation
+# ---------------------------------------------------------------------------
+generate_secret() {
+  local length="$1"
+  openssl rand -base64 "$length" | tr -d '/+=' | head -c "$length"
+}
 
-cat > "${INSTALL_DIR}/docker-compose.yml" << EOF
-# AtlasMind - generated by install.sh on $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Do not edit the secrets directly; re-run install.sh to regenerate.
+# ---------------------------------------------------------------------------
+# Detect WSL
+# ---------------------------------------------------------------------------
+is_wsl() {
+  if [ -f /proc/version ]; then
+    grep -qi microsoft /proc/version 2>/dev/null && return 0
+  fi
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# Try to open a URL in the user's browser
+# ---------------------------------------------------------------------------
+try_open_browser() {
+  local url="$1"
+
+  # Skip on WSL — the browser is on the Windows side and xdg-open often fails
+  if is_wsl; then
+    return 0
+  fi
+
+  if command -v open >/dev/null 2>&1; then
+    open "$url" 2>/dev/null || true
+  elif command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "$url" 2>/dev/null || true
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Write .env file
+# ---------------------------------------------------------------------------
+write_env() {
+  local env_file="$1"
+
+  # Only generate secrets on first install — preserve existing .env
+  if [ -f "$env_file" ]; then
+    warn ".env already exists — keeping existing secrets"
+    return 0
+  fi
+
+  check_openssl
+
+  local jwt_secret
+  local pat_key
+  local pg_password
+  local redis_password
+  local timestamp
+
+  jwt_secret="$(generate_secret 48)"
+  pat_key="$(generate_secret 48)"
+  pg_password="$(generate_secret 24)"
+  redis_password="$(generate_secret 24)"
+  timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+  info "Generating cryptographically secure secrets..."
+
+  cat > "$env_file" <<ENVEOF
+# =============================================================================
+# AtlasMind — Auto-generated environment file
+# Generated on ${timestamp}
+# =============================================================================
+
+# --- Required Secrets (auto-generated, do NOT share) ---
+JWT_SECRET=${jwt_secret}
+PAT_ENCRYPTION_KEY=${pat_key}
+
+# --- PostgreSQL ---
+POSTGRES_USER=kb_user
+POSTGRES_PASSWORD=${pg_password}
+POSTGRES_DB=kb_creator
+
+# --- Redis ---
+REDIS_PASSWORD=${redis_password}
+
+# --- LLM Provider (configure after install via Setup Wizard) ---
+# LLM_PROVIDER=ollama
+# OLLAMA_BASE_URL=http://host.docker.internal:11434
+# OPENAI_BASE_URL=https://api.openai.com/v1
+# OPENAI_API_KEY=
+
+# --- Misc ---
+# LOG_LEVEL=info
+ENVEOF
+
+  chmod 600 "$env_file"
+  ok "Secrets generated and written to .env"
+}
+
+# ---------------------------------------------------------------------------
+# Write docker-compose.yml
+# ---------------------------------------------------------------------------
+write_compose() {
+  local compose_file="$1"
+  local version="${ATLASMIND_VERSION:-latest}"
+  local port="${ATLASMIND_PORT:-8080}"
+
+  # Always overwrite compose file — it is declarative and versioned
+  info "Writing docker-compose.yml (frontend on port ${port})..."
+
+  # Use quoted heredoc to prevent shell expansion — the compose file uses
+  # ${VAR} syntax for Docker Compose variable interpolation, not shell.
+  # We inject version/port via sed afterwards.
+  cat > "$compose_file" <<'COMPOSEEOF'
+# =============================================================================
+# AtlasMind — Production Docker Compose
+# Generated by install.sh — safe to regenerate (secrets are in .env)
+# =============================================================================
 
 services:
   frontend:
-    image: diinlu/atlasmind-frontend:$ATLASMIND_VERSION
+    image: diinlu/atlasmind-frontend:__VERSION__
     ports:
-      - "8081:8081"
+      - "__PORT__:8081"
     depends_on:
       backend:
         condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8081/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - frontend
 
   backend:
-    image: diinlu/atlasmind-backend:$ATLASMIND_VERSION
+    image: diinlu/atlasmind-backend:__VERSION__
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
       NODE_ENV: production
       BACKEND_PORT: "3051"
-      POSTGRES_URL: postgresql://kb_user:$POSTGRES_PASSWORD@postgres:5432/kb_creator
-      REDIS_URL: redis://:$REDIS_PASSWORD@redis:6379
-      JWT_SECRET: $JWT_SECRET
-      PAT_ENCRYPTION_KEY: $PAT_ENCRYPTION_KEY
-      OLLAMA_BASE_URL: $OLLAMA_BASE_URL
-      LLM_PROVIDER: ollama
-      LLM_AUTH_TYPE: none
-      LLM_VERIFY_SSL: "true"
-      EMBEDDING_MODEL: nomic-embed-text
-      FRONTEND_URL: http://localhost:8081
+      POSTGRES_URL: postgresql://${POSTGRES_USER:-kb_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-kb_creator}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      PAT_ENCRYPTION_KEY: ${PAT_ENCRYPTION_KEY:?PAT_ENCRYPTION_KEY is required}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-nomic-embed-text}
+      LLM_BEARER_TOKEN: ${LLM_BEARER_TOKEN:-}
+      LLM_AUTH_TYPE: ${LLM_AUTH_TYPE:-bearer}
+      LLM_VERIFY_SSL: ${LLM_VERIFY_SSL:-true}
+      FRONTEND_URL: http://localhost:__PORT__
+      DEFAULT_LLM_MODEL: ${DEFAULT_LLM_MODEL:-}
+      QUALITY_MODEL: ${QUALITY_MODEL:-}
+      QUALITY_CHECK_INTERVAL_MINUTES: ${QUALITY_CHECK_INTERVAL_MINUTES:-60}
+      QUALITY_BATCH_SIZE: ${QUALITY_BATCH_SIZE:-5}
+      SUMMARY_MODEL: ${SUMMARY_MODEL:-}
+      SUMMARY_CHECK_INTERVAL_MINUTES: ${SUMMARY_CHECK_INTERVAL_MINUTES:-60}
+      SUMMARY_BATCH_SIZE: ${SUMMARY_BATCH_SIZE:-5}
+      SYNC_INTERVAL_MIN: ${SYNC_INTERVAL_MIN:-15}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      CONFLUENCE_VERIFY_SSL: ${CONFLUENCE_VERIFY_SSL:-true}
       ATTACHMENTS_DIR: /app/data/attachments
-    # TEMPORARY: port 3051 is exposed only during the health poll in install.sh.
-    # install.sh removes this mapping via sed after health is confirmed and
-    # force-recreates the backend container to close the host port binding.
-    ports:
-      - "3051:3051"
     depends_on:
       postgres:
         condition: service_healthy
@@ -159,28 +263,33 @@ services:
         condition: service_healthy
     restart: unless-stopped
     volumes:
-      - attachments:/app/data
+      - attachments-data:/app/data
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3051/api/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 15s
+    networks:
+      - frontend
+      - backend
 
   postgres:
     image: pgvector/pgvector:pg17
     environment:
-      POSTGRES_USER: kb_user
-      POSTGRES_PASSWORD: $POSTGRES_PASSWORD
-      POSTGRES_DB: kb_creator
+      POSTGRES_USER: ${POSTGRES_USER:-kb_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-kb_creator}
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U kb_user -d kb_creator"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kb_user} -d ${POSTGRES_DB:-kb_creator}"]
       interval: 5s
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    networks:
+      - backend
 
   redis:
     image: redis:8-alpine
@@ -188,93 +297,178 @@ services:
       redis-server
       --maxmemory 256mb
       --maxmemory-policy allkeys-lru
-      --requirepass $REDIS_PASSWORD
+      --requirepass ${REDIS_PASSWORD}
     healthcheck:
-      test: ["CMD-SHELL", "REDISCLI_AUTH=$REDIS_PASSWORD redis-cli ping"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=${REDIS_PASSWORD} redis-cli ping"]
       interval: 5s
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    networks:
+      - backend
 
 volumes:
   postgres-data:
-  attachments:
-EOF
+  attachments-data:
 
-success "docker-compose.yml written to ${INSTALL_DIR}/docker-compose.yml"
+networks:
+  frontend:
+  backend:
+    internal: true
+COMPOSEEOF
 
-# ─── Pull images ──────────────────────────────────────────────────────────────
-step "Pulling Docker images (this may take a few minutes on first run)"
-docker compose -f "${INSTALL_DIR}/docker-compose.yml" pull
-success "Images pulled"
+  # Replace placeholders with actual values
+  sed "s|__VERSION__|${version}|g; s|__PORT__|${port}|g" "$compose_file" > "${compose_file}.tmp"
+  mv "${compose_file}.tmp" "$compose_file"
 
-# ─── Start containers ─────────────────────────────────────────────────────────
-step "Starting AtlasMind containers"
-docker compose -f "${INSTALL_DIR}/docker-compose.yml" up -d
-success "Containers started"
+  ok "docker-compose.yml written"
+}
 
-# ─── Health poll ──────────────────────────────────────────────────────────────
-# Bug-3 fix: wrap every curl call in an if-conditional so non-zero exit codes
-# are consumed and do not trigger 'set -e'.
-# 'sleep 5 || true' prevents SIGINT from killing the script mid-sleep.
-step "Waiting for AtlasMind to be ready (up to 3 minutes)"
-HEALTHY=0
-RETRIES=0
+# ---------------------------------------------------------------------------
+# Pull images
+# ---------------------------------------------------------------------------
+pull_images() {
+  info "Pulling latest images (this may take a few minutes)..."
+  docker compose pull
+  ok "Images pulled"
+}
 
-while [ "$RETRIES" -lt "$MAX_RETRIES" ]; do
-  if curl -sf "${HEALTH_URL}" 2>/dev/null; then
-    HEALTHY=1
-    break
+# ---------------------------------------------------------------------------
+# Start services
+# ---------------------------------------------------------------------------
+start_services() {
+  info "Starting AtlasMind..."
+  docker compose up -d
+  ok "Containers started"
+}
+
+# ---------------------------------------------------------------------------
+# Wait for the backend health check
+# ---------------------------------------------------------------------------
+wait_for_health() {
+  local max_wait=60
+  local waited=0
+  local check_interval=3
+
+  info "Waiting for AtlasMind to become healthy (max ${max_wait}s)..."
+
+  # The backend is on an internal network — use docker compose exec to reach it
+  while [ "$waited" -lt "$max_wait" ]; do
+    if docker compose exec -T backend node -e \
+      "fetch('http://127.0.0.1:3051/api/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))" \
+      >/dev/null 2>&1; then
+      printf '\n'
+      ok "AtlasMind is healthy"
+      return 0
+    fi
+    sleep "$check_interval"
+    waited=$((waited + check_interval))
+    printf '%b.%b' "$DIM" "$RESET"
+  done
+
+  printf '\n'
+  warn "Health check timed out after ${max_wait}s — the service may still be starting."
+  warn "Check logs with: cd ${INSTALL_DIR} && docker compose logs -f"
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# Success banner
+# ---------------------------------------------------------------------------
+success_banner() {
+  local port="${ATLASMIND_PORT:-8080}"
+  local dir="${INSTALL_DIR}"
+
+  printf '\n'
+  printf '%b%bAtlasMind is ready!%b\n\n' "$GREEN" "$BOLD" "$RESET"
+  printf '  Open %b%bhttp://localhost:%s%b to start the setup wizard.\n\n' "$CYAN" "$BOLD" "$port" "$RESET"
+  printf '  %bInstallation directory:%b %s\n' "$DIM" "$RESET" "$dir"
+  printf '  %bStop:%b    cd %s && docker compose down\n' "$DIM" "$RESET" "$dir"
+  printf '  %bUpdate:%b  cd %s && docker compose pull && docker compose up -d\n' "$DIM" "$RESET" "$dir"
+  printf '  %bLogs:%b    cd %s && docker compose logs -f\n' "$DIM" "$RESET" "$dir"
+  printf '  %bRemove:%b  curl -fsSL https://raw.githubusercontent.com/diinlu/atlasmind/main/scripts/uninstall.sh | bash\n' "$DIM" "$RESET"
+  printf '\n'
+}
+
+# ---------------------------------------------------------------------------
+# Usage / help
+# ---------------------------------------------------------------------------
+usage() {
+  setup_colors
+  printf '%bUsage:%b\n' "$BOLD" "$RESET"
+  printf '  bash install.sh [OPTIONS]\n'
+  printf '  curl -fsSL .../install.sh | bash -s -- [OPTIONS]\n\n'
+  printf '%bOptions:%b\n' "$BOLD" "$RESET"
+  printf '  --dir DIR          Installation directory  (default: $HOME/atlasmind)\n'
+  printf '  --port PORT        Frontend port           (default: 8080)\n'
+  printf '  --version TAG      Docker image tag        (default: latest)\n'
+  printf '  --help             Show this help message\n\n'
+  printf '%bEnvironment variables (overridden by CLI flags):%b\n' "$BOLD" "$RESET"
+  printf '  INSTALL_DIR        Installation directory\n'
+  printf '  ATLASMIND_PORT     Frontend port\n'
+  printf '  ATLASMIND_VERSION  Image tag\n'
+  exit 0
+}
+
+# ---------------------------------------------------------------------------
+# Argument parsing — CLI flags override environment variables
+# ---------------------------------------------------------------------------
+parse_args() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dir)
+        [ -n "${2:-}" ] || die "--dir requires a value"
+        INSTALL_DIR="$2"; shift 2 ;;
+      --port)
+        [ -n "${2:-}" ] || die "--port requires a value"
+        ATLASMIND_PORT="$2"; shift 2 ;;
+      --version)
+        [ -n "${2:-}" ] || die "--version requires a value"
+        ATLASMIND_VERSION="$2"; shift 2 ;;
+      --help|-h)
+        usage ;;
+      *)
+        die "Unknown option: $1 (use --help for usage)" ;;
+    esac
+  done
+}
+
+# =============================================================================
+# Main
+# =============================================================================
+main() {
+  setup_colors
+  parse_args "$@"
+  banner
+
+  # ---- Pre-flight ----
+  check_docker
+  check_docker_compose
+
+  # ---- Install directory (CLI flag > env var > default) ----
+  INSTALL_DIR="${INSTALL_DIR:-${HOME}/atlasmind}"
+  info "Install directory: ${INSTALL_DIR}"
+  mkdir -p "$INSTALL_DIR"
+  cd "$INSTALL_DIR"
+
+  # ---- Generate config ----
+  write_env "${INSTALL_DIR}/.env"
+  write_compose "${INSTALL_DIR}/docker-compose.yml"
+
+  # ---- Pull & start ----
+  pull_images
+  start_services
+
+  # ---- Health check ----
+  if wait_for_health; then
+    success_banner
+    try_open_browser "http://localhost:${ATLASMIND_PORT:-8080}"
+  else
+    printf '\n'
+    info "AtlasMind containers are running but the health check timed out."
+    info "Try visiting http://localhost:${ATLASMIND_PORT:-8080} in a minute."
+    printf '\n'
   fi
-  RETRIES=$((RETRIES + 1))
-  printf '.'
-  sleep 5 || true
-done
-printf '\n'
+}
 
-if [ "$HEALTHY" -eq 0 ]; then
-  error "AtlasMind did not become healthy within 3 minutes."
-  error "Check container logs: docker compose -f ${INSTALL_DIR}/docker-compose.yml logs --tail=50"
-  exit 1
-fi
-success "AtlasMind is healthy"
-
-# ─── Remove port 3051 (Security fix — Option A) ──────────────────────────────
-# The backend port was exposed only for the health poll above.
-# Now we remove the host port binding and force-recreate the backend container
-# so port 3051 is no longer accessible from the host.
-# NOTE: GNU sed (Linux/WSL2) uses 'sed -i' without a suffix argument.
-#       macOS requires 'sed -i ""' — this installer targets Linux/WSL2 only.
-step "Removing temporary backend port exposure (port 3051)"
-sed -i '/- "3051:3051"/d' "${INSTALL_DIR}/docker-compose.yml"
-docker compose -f "${INSTALL_DIR}/docker-compose.yml" up -d --no-deps --force-recreate backend
-success "Port 3051 removed from host and container restarted"
-
-# ─── Print success ────────────────────────────────────────────────────────────
-printf '\n'
-printf '%s╔══════════════════════════════════════════════════════╗%s\n' "${GREEN}${BOLD}" "${RESET}"
-printf '%s║  AtlasMind installed successfully!                   ║%s\n' "${GREEN}${BOLD}" "${RESET}"
-printf '%s╚══════════════════════════════════════════════════════╝%s\n' "${GREEN}${BOLD}" "${RESET}"
-printf '\n'
-info "Setup wizard: ${BOLD}${FRONTEND_URL}${RESET}"
-info "Install dir:  ${BOLD}${INSTALL_DIR}${RESET}"
-info "Logs:         docker compose -f ${INSTALL_DIR}/docker-compose.yml logs -f"
-info "Stop:         docker compose -f ${INSTALL_DIR}/docker-compose.yml down"
-info "Uninstall:    bash ${INSTALL_DIR}/uninstall.sh"
-printf '\n'
-warn "Ollama must be running on your host at port 11434."
-warn "Pull models:  ollama pull nomic-embed-text && ollama pull qwen3:4b"
-printf '\n'
-
-# ─── Open browser ────────────────────────────────────────────────────────────
-# Bug-7 fix: guard the entire browser-launch block with || true so its exit
-# code cannot propagate under set -e.
-BROWSER_CMD=''
-if command -v open >/dev/null 2>&1; then
-  BROWSER_CMD='open'
-elif command -v xdg-open >/dev/null 2>&1; then
-  BROWSER_CMD='xdg-open'
-fi
-if [ -n "$BROWSER_CMD" ]; then
-  $BROWSER_CMD "$FRONTEND_URL" 2>/dev/null || true
-fi
+main "$@"

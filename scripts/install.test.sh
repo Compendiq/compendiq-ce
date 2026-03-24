@@ -1,294 +1,342 @@
 #!/usr/bin/env bash
-# install.test.sh — DRY_RUN test suite for install.sh
-# Tests run without Docker or any external dependencies.
-# Run: bash scripts/install.test.sh
+# =============================================================================
+# Tests for install.sh and uninstall.sh
 #
-# Exit codes: 0 = all tests passed, non-zero = failure
-
+# These tests source the scripts' functions and validate:
+#   - Secret generation produces correct-length output
+#   - .env file is written with all required variables
+#   - docker-compose.yml is generated correctly
+#   - Idempotent behavior (existing .env is preserved)
+#   - Color detection works
+#
+# Usage:  bash scripts/install.test.sh
+# =============================================================================
 set -euo pipefail
 
-# ─── Test framework ───────────────────────────────────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PASS=0
 FAIL=0
-ERRORS=()
+TEST_DIR=""
+
+# ---------------------------------------------------------------------------
+# Test helpers
+# ---------------------------------------------------------------------------
+setup() {
+  TEST_DIR="$(mktemp -d)"
+}
+
+teardown() {
+  if [ -n "$TEST_DIR" ] && [ -d "$TEST_DIR" ]; then
+    rm -rf "$TEST_DIR"
+  fi
+}
 
 assert_eq() {
   local desc="$1" expected="$2" actual="$3"
   if [ "$expected" = "$actual" ]; then
-    printf '[PASS] %s\n' "$desc"
+    printf '  PASS: %s\n' "$desc"
     PASS=$((PASS + 1))
   else
-    printf '[FAIL] %s\n' "$desc"
-    printf '       expected: %s\n' "$expected"
-    printf '       actual:   %s\n' "$actual"
+    printf '  FAIL: %s (expected "%s", got "%s")\n' "$desc" "$expected" "$actual"
     FAIL=$((FAIL + 1))
-    ERRORS+=("$desc")
-  fi
-}
-
-assert_ne() {
-  local desc="$1" val_a="$2" val_b="$3"
-  if [ "$val_a" != "$val_b" ]; then
-    printf '[PASS] %s\n' "$desc"
-    PASS=$((PASS + 1))
-  else
-    printf '[FAIL] %s — values were identical: %s\n' "$desc" "$val_a"
-    FAIL=$((FAIL + 1))
-    ERRORS+=("$desc")
-  fi
-}
-
-assert_len() {
-  local desc="$1" expected_len="$2" actual_val="$3"
-  local actual_len=${#actual_val}
-  if [ "$actual_len" -eq "$expected_len" ]; then
-    printf '[PASS] %s (len=%d)\n' "$desc" "$actual_len"
-    PASS=$((PASS + 1))
-  else
-    printf '[FAIL] %s — expected length %d, got %d (value: %s)\n' \
-      "$desc" "$expected_len" "$actual_len" "$actual_val"
-    FAIL=$((FAIL + 1))
-    ERRORS+=("$desc")
-  fi
-}
-
-assert_not_contains() {
-  local desc="$1" pattern="$2" file="$3"
-  # Use '--' to separate grep options from the pattern so patterns starting
-  # with '-' (like '- "3051:3051"') are not misinterpreted as option flags.
-  if grep -qF -- "$pattern" "$file" 2>/dev/null; then
-    printf '[FAIL] %s — pattern still found in %s: %s\n' "$desc" "$file" "$pattern"
-    FAIL=$((FAIL + 1))
-    ERRORS+=("$desc")
-  else
-    printf '[PASS] %s\n' "$desc"
-    PASS=$((PASS + 1))
   fi
 }
 
 assert_contains() {
-  local desc="$1" pattern="$2" file="$3"
-  # Use '--' to separate grep options from the pattern so patterns starting
-  # with '-' (like '- "3051:3051"') are not misinterpreted as option flags.
-  if grep -qF -- "$pattern" "$file" 2>/dev/null; then
-    printf '[PASS] %s\n' "$desc"
+  local desc="$1" haystack="$2" needle="$3"
+  if printf '%s' "$haystack" | grep -qF "$needle"; then
+    printf '  PASS: %s\n' "$desc"
     PASS=$((PASS + 1))
   else
-    printf '[FAIL] %s — pattern not found in %s: %s\n' "$desc" "$file" "$pattern"
+    printf '  FAIL: %s (expected to contain "%s")\n' "$desc" "$needle"
     FAIL=$((FAIL + 1))
-    ERRORS+=("$desc")
   fi
 }
 
-assert_exits_nonzero() {
-  local desc="$1"
-  shift
-  local exit_code=0
-  "$@" >/dev/null 2>&1 || exit_code=$?
-  if [ "$exit_code" -ne 0 ]; then
-    printf '[PASS] %s (exit code: %d)\n' "$desc" "$exit_code"
+assert_file_exists() {
+  local desc="$1" path="$2"
+  if [ -f "$path" ]; then
+    printf '  PASS: %s\n' "$desc"
     PASS=$((PASS + 1))
   else
-    printf '[FAIL] %s — expected non-zero exit, got 0\n' "$desc"
+    printf '  FAIL: %s (file not found: %s)\n' "$desc" "$path"
     FAIL=$((FAIL + 1))
-    ERRORS+=("$desc")
   fi
 }
 
-# ─── Secret generation helpers (extracted from install.sh) ────────────────────
-gen64() {
-  openssl rand -hex 32 2>/dev/null \
-    || dd if=/dev/urandom bs=32 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n' | head -c 64
+assert_file_not_exists() {
+  local desc="$1" path="$2"
+  if [ ! -f "$path" ]; then
+    printf '  PASS: %s\n' "$desc"
+    PASS=$((PASS + 1))
+  else
+    printf '  FAIL: %s (file should not exist: %s)\n' "$desc" "$path"
+    FAIL=$((FAIL + 1))
+  fi
 }
 
-gen32() {
-  openssl rand -hex 16 2>/dev/null \
-    || dd if=/dev/urandom bs=16 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n' | head -c 32
+assert_file_permission() {
+  local desc="$1" path="$2" expected_perm="$3"
+  local actual_perm
+  if [ "$(uname)" = "Darwin" ]; then
+    actual_perm="$(stat -f '%A' "$path")"
+  else
+    actual_perm="$(stat -c '%a' "$path")"
+  fi
+  assert_eq "$desc" "$expected_perm" "$actual_perm"
 }
 
-# ─── Temporary workspace ─────────────────────────────────────────────────────
-TMPDIR_TEST=$(mktemp -d)
-trap 'rm -rf "${TMPDIR_TEST}"' EXIT
+# ---------------------------------------------------------------------------
+# Source install.sh functions (mock docker commands)
+# ---------------------------------------------------------------------------
+source_install() {
+  # Override docker commands so we don't need Docker running
+  docker() { return 0; }
+  export -f docker
 
-# ─── Test 1: SECRET LENGTH ───────────────────────────────────────────────────
-printf '\n=== Test group: Secret generation length ===\n'
+  # Source the functions from install.sh by extracting them
+  # We cannot source directly because main() would run, so we override main
+  eval "$(sed 's/^main "\$@"//' "$SCRIPT_DIR/install.sh")"
+  setup_colors
+}
 
-S64=$(gen64)
-assert_len "gen64 produces exactly 64 characters" 64 "$S64"
+# =============================================================================
+# Test: Secret generation
+# =============================================================================
+test_secret_generation() {
+  printf 'Test: Secret generation\n'
+  source_install
 
-S32=$(gen32)
-assert_len "gen32 produces exactly 32 characters" 32 "$S32"
+  local secret_48
+  secret_48="$(generate_secret 48)"
+  local len=${#secret_48}
+  assert_eq "generate_secret 48 produces 48 characters" "48" "$len"
 
-# JWT_SECRET and PAT_ENCRYPTION_KEY meet the 32-char minimum requirement
-assert_len "JWT_SECRET candidate is 64 chars" 64 "$S64"
+  local secret_24
+  secret_24="$(generate_secret 24)"
+  len=${#secret_24}
+  assert_eq "generate_secret 24 produces 24 characters" "24" "$len"
 
-# ─── Test 2: SECRET UNIQUENESS ───────────────────────────────────────────────
-printf '\n=== Test group: Secret uniqueness ===\n'
+  # Secret should only contain URL-safe base64 characters (alphanumeric)
+  if printf '%s' "$secret_48" | grep -qE '^[A-Za-z0-9]+$'; then
+    printf '  PASS: Secret contains only URL-safe characters\n'
+    PASS=$((PASS + 1))
+  else
+    printf '  FAIL: Secret contains non-URL-safe characters: %s\n' "$secret_48"
+    FAIL=$((FAIL + 1))
+  fi
 
-A=$(gen64)
-B=$(gen64)
-assert_ne "Two gen64 calls produce different values" "$A" "$B"
+  # Two secrets should be different
+  local secret_a secret_b
+  secret_a="$(generate_secret 48)"
+  secret_b="$(generate_secret 48)"
+  if [ "$secret_a" != "$secret_b" ]; then
+    printf '  PASS: Two generated secrets are unique\n'
+    PASS=$((PASS + 1))
+  else
+    printf '  FAIL: Two generated secrets are identical\n'
+    FAIL=$((FAIL + 1))
+  fi
+}
 
-C=$(gen32)
-D=$(gen32)
-assert_ne "Two gen32 calls produce different values" "$C" "$D"
+# =============================================================================
+# Test: .env file generation
+# =============================================================================
+test_env_generation() {
+  printf 'Test: .env file generation\n'
+  setup
+  source_install
 
-# ─── Test 3: .ENV WRITE (variable expansion) ─────────────────────────────────
-printf '\n=== Test group: .env heredoc variable expansion ===\n'
+  write_env "${TEST_DIR}/.env"
 
-JWT_SECRET=$(gen64)
-PAT_ENCRYPTION_KEY=$(gen64)
-POSTGRES_PASSWORD=$(gen32)
-REDIS_PASSWORD=$(gen32)
-ATLASMIND_VERSION="test-1.2.3"
-OLLAMA_BASE_URL="http://host.docker.internal:11434"
-ENV_FILE="${TMPDIR_TEST}/.env"
+  assert_file_exists ".env file is created" "${TEST_DIR}/.env"
+  assert_file_permission ".env has 600 permissions" "${TEST_DIR}/.env" "600"
 
-# Write .env using the same unquoted heredoc as install.sh
-cat > "${ENV_FILE}" << EOF
-JWT_SECRET=$JWT_SECRET
-PAT_ENCRYPTION_KEY=$PAT_ENCRYPTION_KEY
-POSTGRES_PASSWORD=$POSTGRES_PASSWORD
-REDIS_PASSWORD=$REDIS_PASSWORD
-ATLASMIND_VERSION=$ATLASMIND_VERSION
-OLLAMA_BASE_URL=$OLLAMA_BASE_URL
-EOF
+  local env_content
+  env_content="$(cat "${TEST_DIR}/.env")"
 
-# The file must contain the actual secret value, NOT the shell template string
-assert_contains  ".env contains expanded JWT_SECRET value"    "JWT_SECRET=${JWT_SECRET}"    "${ENV_FILE}"
-# SC2016: single quotes are intentional — we're testing that the literal
-# unexpanded shell template string '$JWT_SECRET' is NOT present in the file.
-# shellcheck disable=SC2016
-assert_not_contains ".env does not contain literal \$JWT_SECRET"  'JWT_SECRET=$JWT_SECRET'    "${ENV_FILE}"
-assert_contains  ".env contains expanded PAT_ENCRYPTION_KEY"  "PAT_ENCRYPTION_KEY=${PAT_ENCRYPTION_KEY}" "${ENV_FILE}"
-assert_contains  ".env contains expanded ATLASMIND_VERSION"   "ATLASMIND_VERSION=${ATLASMIND_VERSION}"   "${ENV_FILE}"
-assert_contains  ".env contains expanded POSTGRES_PASSWORD"   "POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"   "${ENV_FILE}"
-assert_contains  ".env contains expanded REDIS_PASSWORD"      "REDIS_PASSWORD=${REDIS_PASSWORD}"         "${ENV_FILE}"
+  assert_contains ".env contains JWT_SECRET" "$env_content" "JWT_SECRET="
+  assert_contains ".env contains PAT_ENCRYPTION_KEY" "$env_content" "PAT_ENCRYPTION_KEY="
+  assert_contains ".env contains POSTGRES_USER" "$env_content" "POSTGRES_USER=kb_user"
+  assert_contains ".env contains POSTGRES_PASSWORD" "$env_content" "POSTGRES_PASSWORD="
+  assert_contains ".env contains POSTGRES_DB" "$env_content" "POSTGRES_DB=kb_creator"
+  assert_contains ".env contains REDIS_PASSWORD" "$env_content" "REDIS_PASSWORD="
 
-# ─── Test 4: COMPOSE WRITE (variable expansion) ──────────────────────────────
-printf '\n=== Test group: docker-compose.yml heredoc variable expansion ===\n'
+  teardown
+}
 
-COMPOSE_FILE="${TMPDIR_TEST}/docker-compose.yml"
+# =============================================================================
+# Test: .env idempotency — existing file is preserved
+# =============================================================================
+test_env_idempotency() {
+  printf 'Test: .env idempotency\n'
+  setup
+  source_install
 
-cat > "${COMPOSE_FILE}" << EOF
-services:
-  frontend:
-    image: diinlu/atlasmind-frontend:$ATLASMIND_VERSION
-  backend:
-    image: diinlu/atlasmind-backend:$ATLASMIND_VERSION
-    environment:
-      JWT_SECRET: $JWT_SECRET
-      PAT_ENCRYPTION_KEY: $PAT_ENCRYPTION_KEY
-      POSTGRES_URL: postgresql://kb_user:$POSTGRES_PASSWORD@postgres:5432/kb_creator
-      REDIS_URL: redis://:$REDIS_PASSWORD@redis:6379
-    ports:
-      - "3051:3051"
-EOF
+  printf 'EXISTING=true\n' > "${TEST_DIR}/.env"
+  write_env "${TEST_DIR}/.env"
 
-# Image tags must contain the literal version value, not the template string
-assert_contains     "compose contains expanded image tag (frontend)" \
-  "diinlu/atlasmind-frontend:${ATLASMIND_VERSION}" "${COMPOSE_FILE}"
-# SC2016: single quotes are intentional — we're testing that the literal
-# unexpanded shell template string '${ATLASMIND_VERSION}' is NOT present in the file.
-# shellcheck disable=SC2016
-assert_not_contains "compose does not contain literal \${ATLASMIND_VERSION}" \
-  '${ATLASMIND_VERSION}' "${COMPOSE_FILE}"
-assert_contains     "compose contains expanded JWT_SECRET" \
-  "JWT_SECRET: ${JWT_SECRET}" "${COMPOSE_FILE}"
-assert_contains     "compose contains expanded REDIS_URL" \
-  "REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379" "${COMPOSE_FILE}"
-assert_contains     "compose contains expanded POSTGRES_URL with password" \
-  "postgresql://kb_user:${POSTGRES_PASSWORD}@postgres:5432/kb_creator" "${COMPOSE_FILE}"
+  local env_content
+  env_content="$(cat "${TEST_DIR}/.env")"
 
-# ─── Test 5: PORT 3051 REMOVAL ───────────────────────────────────────────────
-printf '\n=== Test group: Port 3051 removal (Option A security fix) ===\n'
+  assert_contains "Existing .env is preserved" "$env_content" "EXISTING=true"
 
-PORT_COMPOSE="${TMPDIR_TEST}/compose-port-test.yml"
-cat > "${PORT_COMPOSE}" << 'HEREDOC'
-services:
-  backend:
-    image: diinlu/atlasmind-backend:latest
-    ports:
-      - "3051:3051"
-    environment:
-      NODE_ENV: production
-HEREDOC
+  teardown
+}
 
-# Verify port mapping is present before removal
-assert_contains "port 3051 mapping present before sed" '- "3051:3051"' "${PORT_COMPOSE}"
+# =============================================================================
+# Test: docker-compose.yml generation
+# =============================================================================
+test_compose_generation() {
+  printf 'Test: docker-compose.yml generation\n'
+  setup
+  source_install
 
-# Run the same sed command used in install.sh
-sed -i '/- "3051:3051"/d' "${PORT_COMPOSE}"
+  ATLASMIND_VERSION="1.2.3"
+  ATLASMIND_PORT="9090"
+  write_compose "${TEST_DIR}/docker-compose.yml"
 
-# Verify port mapping is gone after sed
-assert_not_contains "port 3051 mapping removed after sed" '- "3051:3051"' "${PORT_COMPOSE}"
+  assert_file_exists "docker-compose.yml is created" "${TEST_DIR}/docker-compose.yml"
 
-# Other content must still be present
-assert_contains "other compose content preserved after sed" 'NODE_ENV: production' "${PORT_COMPOSE}"
-assert_contains "image tag preserved after sed" 'diinlu/atlasmind-backend:latest' "${PORT_COMPOSE}"
+  local compose_content
+  compose_content="$(cat "${TEST_DIR}/docker-compose.yml")"
 
-# ─── Test 6: DOCKER PREREQUISITE CHECK ───────────────────────────────────────
-printf '\n=== Test group: Docker prerequisite check failure ===\n'
+  assert_contains "Uses specified image version" "$compose_content" "diinlu/atlasmind-backend:1.2.3"
+  assert_contains "Uses specified frontend version" "$compose_content" "diinlu/atlasmind-frontend:1.2.3"
+  assert_contains "Maps specified port" "$compose_content" "9090:8081"
+  assert_contains "Sets FRONTEND_URL with port" "$compose_content" "http://localhost:9090"
+  assert_contains "Has postgres service" "$compose_content" "pgvector/pgvector:pg17"
+  assert_contains "Has redis service" "$compose_content" "redis:8-alpine"
+  assert_contains "Has postgres-data volume" "$compose_content" "postgres-data:"
+  assert_contains "Has attachments-data volume" "$compose_content" "attachments-data:"
+  assert_contains "Has internal backend network" "$compose_content" "internal: true"
+  assert_contains "Backend has healthcheck" "$compose_content" "health/ready"
+  assert_contains "Postgres has healthcheck" "$compose_content" "pg_isready"
+  assert_contains "Redis has healthcheck" "$compose_content" "redis-cli ping"
 
-PREREQ_SCRIPT="${TMPDIR_TEST}/prereq-check.sh"
-cat > "${PREREQ_SCRIPT}" << 'HEREDOC'
-#!/usr/bin/env bash
-set -euo pipefail
-if ! docker info >/dev/null 2>&1; then
-  echo "ERROR: Docker is not running" >&2
+  teardown
+}
+
+# =============================================================================
+# Test: docker-compose.yml default values
+# =============================================================================
+test_compose_defaults() {
+  printf 'Test: docker-compose.yml default values\n'
+  setup
+  source_install
+
+  unset ATLASMIND_VERSION 2>/dev/null || true
+  unset ATLASMIND_PORT 2>/dev/null || true
+  write_compose "${TEST_DIR}/docker-compose.yml"
+
+  local compose_content
+  compose_content="$(cat "${TEST_DIR}/docker-compose.yml")"
+
+  assert_contains "Defaults to latest tag" "$compose_content" "diinlu/atlasmind-backend:latest"
+  assert_contains "Defaults to port 8080" "$compose_content" "8080:8081"
+
+  teardown
+}
+
+# =============================================================================
+# Test: Color setup
+# =============================================================================
+test_color_setup() {
+  printf 'Test: Color setup\n'
+
+  # With NO_COLOR set, colors should be empty
+  NO_COLOR=1 setup_colors
+  assert_eq "NO_COLOR disables RED" "" "$RED"
+  assert_eq "NO_COLOR disables GREEN" "" "$GREEN"
+  assert_eq "NO_COLOR disables RESET" "" "$RESET"
+  unset NO_COLOR
+
+  # Re-source for further tests
+  setup_colors
+}
+
+# =============================================================================
+# Test: WSL detection
+# =============================================================================
+test_wsl_detection() {
+  printf 'Test: WSL detection\n'
+  source_install
+
+  # On a non-WSL system (macOS), is_wsl should return 1
+  if [ "$(uname)" = "Darwin" ]; then
+    if ! is_wsl; then
+      printf '  PASS: macOS correctly detected as non-WSL\n'
+      PASS=$((PASS + 1))
+    else
+      printf '  FAIL: macOS incorrectly detected as WSL\n'
+      FAIL=$((FAIL + 1))
+    fi
+  else
+    printf '  SKIP: WSL detection test only runs on macOS\n'
+  fi
+}
+
+# =============================================================================
+# Test: CLI argument parsing
+# =============================================================================
+test_cli_args() {
+  printf 'Test: CLI argument parsing\n'
+  source_install
+
+  # --dir sets INSTALL_DIR
+  unset INSTALL_DIR 2>/dev/null || true
+  parse_args --dir /tmp/custom-dir
+  assert_eq "--dir sets INSTALL_DIR" "/tmp/custom-dir" "$INSTALL_DIR"
+
+  # --port sets ATLASMIND_PORT
+  unset ATLASMIND_PORT 2>/dev/null || true
+  parse_args --port 9999
+  assert_eq "--port sets ATLASMIND_PORT" "9999" "$ATLASMIND_PORT"
+
+  # --version sets ATLASMIND_VERSION
+  unset ATLASMIND_VERSION 2>/dev/null || true
+  parse_args --version 2.0.0
+  assert_eq "--version sets ATLASMIND_VERSION" "2.0.0" "$ATLASMIND_VERSION"
+
+  # Multiple flags combined
+  unset INSTALL_DIR ATLASMIND_PORT ATLASMIND_VERSION 2>/dev/null || true
+  parse_args --dir /opt/atlasmind --port 3000 --version 1.5.0
+  assert_eq "Combined: --dir" "/opt/atlasmind" "$INSTALL_DIR"
+  assert_eq "Combined: --port" "3000" "$ATLASMIND_PORT"
+  assert_eq "Combined: --version" "1.5.0" "$ATLASMIND_VERSION"
+
+  # CLI flag overrides env var
+  INSTALL_DIR="/from/env"
+  parse_args --dir /from/flag
+  assert_eq "CLI flag overrides env var" "/from/flag" "$INSTALL_DIR"
+
+  # Clean up
+  unset INSTALL_DIR ATLASMIND_PORT ATLASMIND_VERSION 2>/dev/null || true
+}
+
+# =============================================================================
+# Run all tests
+# =============================================================================
+printf '=== AtlasMind Installer Tests ===\n\n'
+
+test_secret_generation
+printf '\n'
+test_env_generation
+printf '\n'
+test_env_idempotency
+printf '\n'
+test_compose_generation
+printf '\n'
+test_compose_defaults
+printf '\n'
+test_color_setup
+printf '\n'
+test_wsl_detection
+printf '\n'
+test_cli_args
+
+printf '\n=== Results: %d passed, %d failed ===\n' "$PASS" "$FAIL"
+
+if [ "$FAIL" -gt 0 ]; then
   exit 1
 fi
-echo "Docker OK"
-HEREDOC
-chmod +x "${PREREQ_SCRIPT}"
-
-# Mock docker to return non-zero by overriding PATH with a fake docker
-FAKE_BIN="${TMPDIR_TEST}/fake-bin"
-mkdir -p "${FAKE_BIN}"
-cat > "${FAKE_BIN}/docker" << 'HEREDOC'
-#!/bin/sh
-exit 1
-HEREDOC
-chmod +x "${FAKE_BIN}/docker"
-
-PATH="${FAKE_BIN}:${PATH}" assert_exits_nonzero \
-  "prereq check exits non-zero when docker info fails" \
-  bash "${PREREQ_SCRIPT}"
-
-# ─── Test 7: SECRET CHARACTER SET (hex-only) ─────────────────────────────────
-printf '\n=== Test group: Secret character set ===\n'
-
-HEX64=$(gen64)
-# openssl rand -hex produces only lowercase hex [0-9a-f]
-if printf '%s' "$HEX64" | grep -qE '^[0-9a-f]+$'; then
-  printf '[PASS] gen64 produces only hex characters\n'
-  PASS=$((PASS + 1))
-else
-  printf '[FAIL] gen64 produced non-hex characters: %s\n' "$HEX64"
-  FAIL=$((FAIL + 1))
-  ERRORS+=("gen64 produces only hex characters")
-fi
-
-HEX32=$(gen32)
-if printf '%s' "$HEX32" | grep -qE '^[0-9a-f]+$'; then
-  printf '[PASS] gen32 produces only hex characters\n'
-  PASS=$((PASS + 1))
-else
-  printf '[FAIL] gen32 produced non-hex characters: %s\n' "$HEX32"
-  FAIL=$((FAIL + 1))
-  ERRORS+=("gen32 produces only hex characters")
-fi
-
-# ─── Summary ─────────────────────────────────────────────────────────────────
-printf '\n════════════════════════════════════════\n'
-printf 'Results: %d passed, %d failed\n' "$PASS" "$FAIL"
-
-if [ "${#ERRORS[@]}" -gt 0 ]; then
-  printf 'Failed tests:\n'
-  for e in "${ERRORS[@]}"; do
-    printf '  - %s\n' "$e"
-  done
-fi
-printf '════════════════════════════════════════\n'
-
-[ "$FAIL" -eq 0 ]
