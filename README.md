@@ -4,8 +4,10 @@
   <img src="frontend/public/logo.svg" alt="AtlasMind" width="128" height="128" />
 </p>
 
-[![Build](https://img.shields.io/badge/build-passing-brightgreen)]()
+[![CI](https://github.com/laboef1900/ai-kb-creator/actions/workflows/pr-check.yml/badge.svg)](https://github.com/laboef1900/ai-kb-creator/actions/workflows/pr-check.yml)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
+[![Docker Backend](https://img.shields.io/docker/pulls/diinlu/atlasmind-backend?label=Docker%20pulls%20%28backend%29)](https://hub.docker.com/r/diinlu/atlasmind-backend)
+[![Docker Frontend](https://img.shields.io/docker/pulls/diinlu/atlasmind-frontend?label=Docker%20pulls%20%28frontend%29)](https://hub.docker.com/r/diinlu/atlasmind-frontend)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D22.0.0-brightgreen)]()
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue)]()
 

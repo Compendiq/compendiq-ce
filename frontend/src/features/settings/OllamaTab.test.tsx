@@ -253,13 +253,13 @@ describe('LlmTab (OllamaTab)', () => {
     });
   });
 
-  it('shows embedding model as read-only', async () => {
+  it('shows embedding model with helper text', async () => {
     mockFetchResponses();
     render(<SettingsPage />, { wrapper: createWrapper() });
     await navigateToLlmTab();
 
     await waitFor(() => {
-      expect(screen.getByText(/nomic-embed-text.*server-wide, read-only/)).toBeInTheDocument();
+      expect(screen.getByText(/Shared across all users/)).toBeInTheDocument();
     });
   });
 

@@ -249,10 +249,11 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
 
   describe('processBatch', () => {
     it('should analyze pending pages', async () => {
+      const longContent = 'This is a sufficiently long article body that exceeds the fifty character minimum threshold for quality analysis processing.';
       await query(
         `INSERT INTO pages (confluence_id, space_key, title, body_text, body_html, quality_status)
-         VALUES ('q1', $1, 'Quality Page', 'Some content for analysis', '<p>Some content for analysis</p>', 'pending')`,
-        [testSpaceKey],
+         VALUES ('q1', $1, 'Quality Page', $2, $3, 'pending')`,
+        [testSpaceKey, longContent, `<p>${longContent}</p>`],
       );
 
       const processed = await processBatch();
@@ -287,10 +288,11 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
 
     it('should pick up failed pages that have retries remaining', async () => {
       // Insert a failed page with retry count below MAX_RETRIES
+      const retryContent = 'This is a sufficiently long article body that exceeds the fifty character minimum threshold for quality analysis processing.';
       await query(
         `INSERT INTO pages (confluence_id, space_key, title, body_text, body_html, quality_status, quality_retry_count, quality_analyzed_at)
-         VALUES ('retry1', $1, 'Retryable Page', 'Some content for retry', '<p>Some content for retry</p>', 'failed', 1, NOW())`,
-        [testSpaceKey],
+         VALUES ('retry1', $1, 'Retryable Page', $2, $3, 'failed', 1, NOW())`,
+        [testSpaceKey, retryContent, `<p>${retryContent}</p>`],
       );
 
       const processed = await processBatch();
@@ -306,11 +308,12 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
 
     it('should analyze standalone pages with NULL confluence_id', async () => {
       // Standalone/local pages have confluence_id = NULL — this must not prevent updates
+      const standaloneContent = 'This is a sufficiently long article body that exceeds the fifty character minimum threshold for quality analysis processing.';
       const insertResult = await query<{ id: number }>(
         `INSERT INTO pages (confluence_id, space_key, title, body_text, body_html, quality_status)
-         VALUES (NULL, $1, 'Standalone Page', 'Local content for analysis', '<p>Local content for analysis</p>', 'pending')
+         VALUES (NULL, $1, 'Standalone Page', $2, $3, 'pending')
          RETURNING id`,
-        [testSpaceKey],
+        [testSpaceKey, standaloneContent, `<p>${standaloneContent}</p>`],
       );
       const pageId = insertResult.rows[0].id;
 

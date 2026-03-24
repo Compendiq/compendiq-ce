@@ -69,14 +69,16 @@ describe('Breadcrumb', () => {
     expect(screen.getByText('AI Assistant')).toBeInTheDocument();
   });
 
-  it('has a Pages text link on non-root paths (Home icon removed, nav in sidebar)', () => {
+  it('has a Pages text on the /pages path (no link, shown as active label)', () => {
     renderAt('/pages');
     const nav = screen.getByLabelText('Breadcrumb');
     expect(nav).toBeInTheDocument();
-    // "Pages" text link instead of Home icon
+    // At /pages the "Pages" crumb is the only segment and is shown as a
+    // plain text label (not a link) because it's the current location.
+    expect(screen.getByText('Pages')).toBeInTheDocument();
+    // No anchor link since /pages is the current route
     const pagesLink = nav.querySelector('a[href="/"]');
-    expect(pagesLink).toBeInTheDocument();
-    expect(pagesLink!.textContent).toBe('Pages');
+    expect(pagesLink).toBeNull();
   });
 
   it('shows New Space breadcrumb', () => {

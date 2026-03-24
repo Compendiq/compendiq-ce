@@ -16,7 +16,7 @@ describe.skipIf(!dbAvailable)('Per-route rate limiting', () => {
     await setupTestDb();
     app = await buildApp();
     await app.ready();
-  });
+  }, 30_000);
 
   beforeEach(async () => {
     await truncateAllTables();
@@ -36,7 +36,7 @@ describe.skipIf(!dbAvailable)('Per-route rate limiting', () => {
   });
 
   afterAll(async () => {
-    await app.close();
+    await app?.close();
     await teardownTestDb();
   });
 

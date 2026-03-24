@@ -9,7 +9,8 @@ export { saveVersionSnapshot } from '../../../core/services/version-snapshot.js'
 
 export interface PageVersion {
   id: string;
-  confluenceId: string;
+  pageId: number;
+  confluenceId: string | null;
   versionNumber: number;
   title: string;
   bodyHtml: string | null;
@@ -28,23 +29,25 @@ export async function getVersionHistory(
   const vhSpaces = await getUserAccessibleSpaces(userId);
   const result = await query<{
     id: string;
-    confluence_id: string;
+    page_id: number;
+    confluence_id: string | null;
     version_number: number;
     title: string;
     synced_at: Date;
   }>(
-    `SELECT pv.id, pv.confluence_id, pv.version_number, pv.title, pv.synced_at
+    `SELECT pv.id, pv.page_id, p.confluence_id, pv.version_number, pv.title, pv.synced_at
      FROM page_versions pv
-     JOIN pages cp ON pv.confluence_id = cp.confluence_id
-     WHERE cp.space_key = ANY($1::text[])
-       AND cp.deleted_at IS NULL
-       AND pv.confluence_id = $2
+     JOIN pages p ON pv.page_id = p.id
+     WHERE p.space_key = ANY($1::text[])
+       AND p.deleted_at IS NULL
+       AND p.confluence_id = $2
      ORDER BY pv.version_number DESC`,
     [vhSpaces, confluenceId],
   );
 
   return result.rows.map((row) => ({
     id: row.id,
+    pageId: row.page_id,
     confluenceId: row.confluence_id,
     versionNumber: row.version_number,
     title: row.title,
@@ -62,19 +65,20 @@ export async function getVersion(
 ): Promise<PageVersion | null> {
   const result = await query<{
     id: string;
-    confluence_id: string;
+    page_id: number;
+    confluence_id: string | null;
     version_number: number;
     title: string;
     body_html: string | null;
     body_text: string | null;
     synced_at: Date;
   }>(
-    `SELECT pv.id, pv.confluence_id, pv.version_number, pv.title, pv.body_html, pv.body_text, pv.synced_at
+    `SELECT pv.id, pv.page_id, p.confluence_id, pv.version_number, pv.title, pv.body_html, pv.body_text, pv.synced_at
      FROM page_versions pv
-     JOIN pages cp ON pv.confluence_id = cp.confluence_id
-     WHERE cp.space_key = ANY($1::text[])
-       AND cp.deleted_at IS NULL
-       AND pv.confluence_id = $2 AND pv.version_number = $3`,
+     JOIN pages p ON pv.page_id = p.id
+     WHERE p.space_key = ANY($1::text[])
+       AND p.deleted_at IS NULL
+       AND p.confluence_id = $2 AND pv.version_number = $3`,
     [await getUserAccessibleSpaces(userId), confluenceId, versionNumber],
   );
 
@@ -83,6 +87,7 @@ export async function getVersion(
   const row = result.rows[0];
   return {
     id: row.id,
+    pageId: row.page_id,
     confluenceId: row.confluence_id,
     versionNumber: row.version_number,
     title: row.title,

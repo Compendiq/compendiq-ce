@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security Vulnerability
+    url: https://github.com/laboef1900/ai-kb-creator/blob/dev/SECURITY.md
+    about: Please report security vulnerabilities responsibly. Do NOT open a public issue.

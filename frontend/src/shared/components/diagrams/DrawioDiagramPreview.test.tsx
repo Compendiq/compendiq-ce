@@ -5,7 +5,7 @@ import { DrawioDiagramPreview } from './DrawioDiagramPreview';
 // Mock the authenticated src hook — by default, return the src as a blob URL
 // immediately (simulating a successful authenticated fetch).
 const mockUseAuthenticatedSrc = vi.fn();
-vi.mock('../hooks/use-authenticated-src', () => ({
+vi.mock('../../hooks/use-authenticated-src', () => ({
   useAuthenticatedSrc: (...args: unknown[]) => mockUseAuthenticatedSrc(...args),
 }));
 

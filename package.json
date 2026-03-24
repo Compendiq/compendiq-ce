@@ -13,7 +13,7 @@
     "build": "npm run build -w @atlasmind/contracts && npm run build -w backend && npm run build -w frontend",
     "lint": "npm run lint -w backend && npm run lint -w frontend",
     "typecheck": "npm run build -w @atlasmind/contracts && npm run typecheck -w backend && npm run typecheck -w frontend",
-    "test": "npm run test -w @atlasmind/contracts && npm run test -w backend && npm run test -w frontend",
+    "test": "npm run build -w @atlasmind/contracts && npm run test -w @atlasmind/contracts && npm run test -w backend && npm run test -w frontend",
     "test:e2e": "npx playwright test",
     "lighthouse": "lhci autorun",
     "prepare": "husky || true"

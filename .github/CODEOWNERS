@@ -1,0 +1,18 @@
+# Default owner for everything in the repo
+* @laboef1900
+
+# Backend
+/backend/ @laboef1900
+
+# Frontend
+/frontend/ @laboef1900
+
+# Shared contracts
+/packages/contracts/ @laboef1900
+
+# Infrastructure & CI
+/docker/ @laboef1900
+/.github/ @laboef1900
+
+# Documentation
+/docs/ @laboef1900

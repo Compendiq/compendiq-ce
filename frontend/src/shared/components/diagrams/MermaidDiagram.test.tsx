@@ -19,7 +19,7 @@ const { mockIsLight } = vi.hoisted(() => ({
   mockIsLight: vi.fn().mockReturnValue(false),
 }));
 
-vi.mock('../hooks/use-is-light-theme', () => ({
+vi.mock('../../hooks/use-is-light-theme', () => ({
   useIsLightTheme: () => mockIsLight(),
 }));
 
