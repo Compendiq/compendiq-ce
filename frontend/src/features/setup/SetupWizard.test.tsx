@@ -5,13 +5,13 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useAuthStore } from '../../stores/auth-store';
 import { SetupWizard } from './SetupWizard';
 
-function renderWizard() {
+function renderWizard(initialEntries = ['/setup']) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={initialEntries}>
         <SetupWizard />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -23,42 +23,57 @@ function typeInto(element: HTMLElement, value: string) {
   fireEvent.change(element, { target: { value } });
 }
 
+const fetchSpy = vi.spyOn(globalThis, 'fetch');
+
+function mockFetchForSetup({ adminExists }: { adminExists: boolean }) {
+  fetchSpy.mockImplementation(async (input) => {
+    const url = typeof input === 'string' ? input : (input as Request).url;
+
+    if (url.includes('/health/setup-status')) {
+      return new Response(JSON.stringify({
+        setupComplete: false,
+        steps: { admin: adminExists, llm: false, confluence: false },
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+
+    if (url.includes('/setup/llm-test')) {
+      return new Response(JSON.stringify({
+        success: true,
+        models: [{ name: 'llama3.2:latest', size: 2000000000 }],
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+
+    if (url.includes('/setup/admin')) {
+      return new Response(JSON.stringify({
+        accessToken: 'setup-token',
+        user: { id: '1', username: 'admin', role: 'admin' },
+      }), {
+        status: 201,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+
+    return new Response(JSON.stringify({}), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  });
+}
+
 describe('SetupWizard', () => {
-  const fetchSpy = vi.spyOn(globalThis, 'fetch');
 
   beforeEach(() => {
     vi.clearAllMocks();
     useAuthStore.getState().clearAuth();
 
-    // Default: mock all API calls to return success
-    fetchSpy.mockImplementation(async (input) => {
-      const url = typeof input === 'string' ? input : (input as Request).url;
-
-      if (url.includes('/setup/llm-test')) {
-        return new Response(JSON.stringify({
-          success: true,
-          models: [{ name: 'llama3.2:latest', size: 2000000000 }],
-        }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-
-      if (url.includes('/setup/admin')) {
-        return new Response(JSON.stringify({
-          accessToken: 'setup-token',
-          user: { id: '1', username: 'admin', role: 'admin' },
-        }), {
-          status: 201,
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-
-      return new Response(JSON.stringify({}), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    });
+    // Default: mock all API calls to return success (no admin exists)
+    mockFetchForSetup({ adminExists: false });
   });
 
   afterEach(() => {
@@ -247,6 +262,38 @@ describe('SetupWizard', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('llm-test-result')).toBeInTheDocument();
+    });
+  });
+
+  it('skips admin step when admin already exists', async () => {
+    mockFetchForSetup({ adminExists: true });
+    renderWizard();
+
+    // Step 1: Welcome
+    expect(screen.getByText(/Welcome to/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('start-setup-btn'));
+
+    // Should skip Admin and go directly to LLM
+    await waitFor(() => {
+      expect(screen.getByText('Configure LLM Provider')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('Create Admin Account')).not.toBeInTheDocument();
+  });
+
+  it('skips admin step going back from LLM when admin exists', async () => {
+    mockFetchForSetup({ adminExists: true });
+    renderWizard();
+
+    // Go to LLM step
+    fireEvent.click(screen.getByTestId('start-setup-btn'));
+    await waitFor(() => {
+      expect(screen.getByText('Configure LLM Provider')).toBeInTheDocument();
+    });
+
+    // Go back should skip admin and return to welcome
+    fireEvent.click(screen.getByTestId('llm-back-btn'));
+    await waitFor(() => {
+      expect(screen.getByText(/Welcome to/i)).toBeInTheDocument();
     });
   });
 

@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { m, AnimatePresence } from 'framer-motion';
 import { AtlasMindLogo } from '../../shared/components/AtlasMindLogo';
+import { useSetupStatus } from '../../shared/hooks/useSetupStatus';
 import { WelcomeStep } from './steps/WelcomeStep';
 import { AdminStep } from './steps/AdminStep';
 import { LlmStep } from './steps/LlmStep';
@@ -19,15 +20,37 @@ const STEPS = [
 export function SetupWizard() {
   const [searchParams] = useSearchParams();
   const isRerun = searchParams.get('rerun') === 'true';
-  const [currentStep, setCurrentStep] = useState(isRerun ? 2 : 0);
+  const { steps } = useSetupStatus();
+  const adminExists = steps.admin;
+
+  // Skip admin step when admin already exists; on rerun always start at LLM
+  const initialStep = isRerun ? 2 : 0;
+  const [currentStep, setCurrentStep] = useState(initialStep);
 
   function goNext() {
-    setCurrentStep((prev) => Math.min(prev + 1, STEPS.length - 1));
+    setCurrentStep((prev) => {
+      let next = prev + 1;
+      // Skip admin step if admin already exists
+      if (next === 1 && adminExists) next = 2;
+      return Math.min(next, STEPS.length - 1);
+    });
   }
 
   function goBack() {
-    setCurrentStep((prev) => Math.max(prev - 1, 0));
+    setCurrentStep((prev) => {
+      let back = prev - 1;
+      // Skip admin step going back if admin already exists
+      if (back === 1 && adminExists) back = 0;
+      return Math.max(back, 0);
+    });
   }
+
+  // Auto-advance past admin step if setup-status query resolves while on it
+  useEffect(() => {
+    if (currentStep === 1 && adminExists) {
+      setCurrentStep(2);
+    }
+  }, [currentStep, adminExists]);
 
   return (
     <div className="bg-background flex min-h-screen items-center justify-center p-4">
