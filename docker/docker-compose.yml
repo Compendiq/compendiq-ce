@@ -1,3 +1,5 @@
+name: atlasmind
+
 services:
   frontend:
     image: diinlu/atlasmind-frontend:dev

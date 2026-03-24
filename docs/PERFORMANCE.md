@@ -91,7 +91,7 @@ Performance is measured at three layers:
 
 1. Start the development environment:
    ```bash
-   docker compose -f docker/docker-compose.dev.yml up -d
+   docker compose -f docker/docker-compose.yml up -d
    npm run dev
    ```
 

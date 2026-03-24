@@ -242,7 +242,7 @@ EMBEDDING_MODEL=nomic-embed-text
 Using the development Docker Compose:
 
 ```bash
-docker compose -f docker/docker-compose.dev.yml up -d
+docker compose -f docker/docker-compose.yml up -d
 ```
 
 This starts PostgreSQL (with pgvector) and Redis. Ollama runs on your host machine.
@@ -385,10 +385,10 @@ npm run typecheck   # TypeScript strict mode check
 
 ```bash
 # Start PostgreSQL + Redis for local development
-docker compose -f docker/docker-compose.dev.yml up -d
+docker compose -f docker/docker-compose.yml up -d
 
 # View logs
-docker compose -f docker/docker-compose.dev.yml logs -f
+docker compose -f docker/docker-compose.yml logs -f
 ```
 
 ## Security

@@ -182,8 +182,8 @@ Full schema in ADR-006.
 - [ ] Vitest config for frontend (`frontend/vitest.config.ts`) with jsdom environment
 - [ ] Verify test DB helper works: write a smoke test that runs a migration + inserts a row
 
-### 1.6 Docker Compose (Dev)
-- [ ] `docker/docker-compose.dev.yml`: `pgvector/pgvector:pg17` + Redis 8 + backend + frontend — ADR-011
+### 1.6 Docker Compose
+- [x] `docker/docker-compose.yml`: `pgvector/pgvector:pg17` + Redis 8 + backend + frontend — ADR-011
 - [ ] Volumes for hot reload (backend/src, frontend/src)
 - [ ] `.env` loading with dev defaults
 - [ ] Health checks for postgres and redis

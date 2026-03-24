@@ -67,7 +67,7 @@ atlasmind/
 │           └── types/        # Shared TypeScript interfaces
 ├── docker/
 │   ├── docker-compose.yml
-│   └── docker-compose.dev.yml
+│   └── docker-compose.test.yml
 └── docs/
 ```
 

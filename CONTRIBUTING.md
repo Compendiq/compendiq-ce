@@ -38,7 +38,7 @@ Edit `.env` and set `JWT_SECRET` and `PAT_ENCRYPTION_KEY` to random strings of a
 ### 4. Start infrastructure services
 
 ```bash
-docker compose -f docker/docker-compose.dev.yml up -d
+docker compose -f docker/docker-compose.yml up -d
 ```
 
 This starts PostgreSQL 17 (with pgvector, port 5432) and Redis 8 (port 6379). Database migrations run automatically when the backend starts.

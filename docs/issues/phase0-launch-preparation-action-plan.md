@@ -145,7 +145,7 @@ Files to sample from:
 
 Contents:
 - Prerequisites (Node 24, Docker, PostgreSQL 17)
-- Local dev setup (`npm install`, `docker compose -f docker/docker-compose.dev.yml up -d`, `npm run dev`)
+- Local dev setup (`npm install`, `docker compose -f docker/docker-compose.yml up -d`, `npm run dev`)
 - Branch workflow (`feature/* → dev → main`)
 - Testing expectations (every change needs tests)
 - PR checklist (tests pass, typecheck clean, docs updated)

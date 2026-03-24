@@ -30,7 +30,7 @@ npm run test -w frontend   # Frontend only
 # Single file: cd backend && npx vitest run src/path/file.test.ts
 # Backend tests use real PostgreSQL (POSTGRES_TEST_URL env var, default: localhost:5433)
 # E2E: npx playwright test (requires running backend + frontend)
-# Docker: docker compose -f docker/docker-compose.dev.yml up -d
+# Docker: docker compose -f docker/docker-compose.yml up -d
 ```
 
 ## Architecture
