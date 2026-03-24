@@ -1,6 +1,9 @@
 # syntax=docker/dockerfile:1
 # Build stage — compile TypeScript to JavaScript
-FROM dhi.io/node:24-alpine3.23-dev AS builder
+# NOTE: node:24-alpine is the floating tag for Node 24 on Alpine Linux.
+# Both linux/amd64 and linux/arm64 variants are published by the Node.js Docker
+# team. The floating tag always resolves to the current stable Alpine pairing.
+FROM node:24-alpine AS builder
 
 # Install build dependencies for native modules (bcrypt)
 RUN apk add --no-cache python3 make g++
@@ -17,7 +20,7 @@ COPY backend/src/ backend/src/
 RUN npm run build -w backend
 
 # Separate stage to build production dependencies with native bindings
-FROM dhi.io/node:24-alpine3.23-dev AS prod-deps
+FROM node:24-alpine AS prod-deps
 
 # Install build dependencies for native modules (bcrypt)
 RUN apk add --no-cache python3 make g++
@@ -29,7 +32,7 @@ COPY packages/contracts/package.json ./packages/contracts/
 RUN --mount=type=cache,target=/root/.npm npm ci -w backend -w @atlasmind/contracts --omit=dev
 
 # Utility stage — install runtime tools and prepare filesystem
-FROM dhi.io/node:24-alpine3.23-dev AS tools
+FROM node:24-alpine AS tools
 
 RUN apk add --no-cache dumb-init wget
 
@@ -51,8 +54,13 @@ RUN apk add --no-cache \
     ttf-freefont
 
 ###########################################################
-# Runtime stage — minimal DHI image with only what's needed
-FROM dhi.io/node:24-alpine3.23 AS runtime
+# Runtime stage — node:24-alpine with only what's needed
+# node:24-alpine is a multi-arch image (linux/amd64 + linux/arm64).
+# Unlike the previous distroless DHI image, node:24-alpine includes a shell
+# (/bin/sh), which slightly changes the container's security posture.
+# The ENTRYPOINT uses exec form (dumb-init) so there is no behavioural change;
+# the shell is not used at runtime.
+FROM node:24-alpine AS runtime
 
 # Copy runtime utilities from tools stage
 COPY --from=tools /usr/bin/dumb-init /usr/bin/dumb-init

@@ -131,7 +131,73 @@ ollama pull nomic-embed-text   # Required for embeddings (768 dimensions)
 ollama pull qwen3.5            # Or any chat model of your choice
 ```
 
-## Quick Start
+## One-Command Installation (Docker)
+
+Get from zero to the AtlasMind setup wizard in under 3 minutes — no cloning, no manual config:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/laboef1900/ai-kb-creator/main/scripts/install.sh | bash
+```
+
+### System requirements
+
+- Docker Engine 24+ with Docker Compose v2 (`docker compose`, not `docker-compose`)
+- 4 GB RAM available for containers
+- Ports **8081** (frontend) free — the installer checks this before starting
+
+### What the installer does
+
+1. Generates cryptographically secure secrets (AES-256 keys, passwords)
+2. Writes a self-contained `~/atlasmind/docker-compose.yml` with all secrets embedded as literal values
+3. Pulls images from Docker Hub (`diinlu/atlasmind-backend`, `diinlu/atlasmind-frontend`)
+4. Starts all four containers (frontend, backend, postgres, redis)
+5. Polls the backend health endpoint until ready (up to 3 minutes)
+6. Removes the temporary backend port binding (port 3051 is never permanently exposed to the host)
+7. Opens the setup wizard in your default browser
+
+### Custom install directory
+
+```bash
+INSTALL_DIR=~/mydir curl -fsSL https://raw.githubusercontent.com/laboef1900/ai-kb-creator/main/scripts/install.sh | bash
+```
+
+### Uninstall
+
+```bash
+bash ~/atlasmind/uninstall.sh
+```
+
+This stops all containers, removes all data volumes, and deletes the install directory.
+
+### Image registries
+
+Images are published to two registries on every release:
+
+| Registry | Image |
+|----------|-------|
+| Docker Hub | `diinlu/atlasmind-backend:latest` · `diinlu/atlasmind-frontend:latest` |
+| GHCR | `ghcr.io/laboef1900/atlasmind-backend:latest` · `ghcr.io/laboef1900/atlasmind-frontend:latest` |
+
+Both registries publish `linux/amd64` and `linux/arm64` variants.
+
+### Ollama requirement
+
+AtlasMind uses Ollama for local LLM inference. Ollama must be running on your host machine **before** you start the containers. The installer defaults to `http://host.docker.internal:11434`; override with:
+
+```bash
+OLLAMA_BASE_URL=http://my-ollama-host:11434 curl -fsSL ... | bash
+```
+
+Pull the required models before or after installation:
+
+```bash
+ollama pull nomic-embed-text   # Required for RAG embeddings (768 dimensions)
+ollama pull qwen3:4b           # Or any chat model of your choice
+```
+
+---
+
+## Developer Quick Start
 
 ### 1. Clone and install
 

@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1
 # Draw.io stage — download and extract static webapp for self-hosted diagram editor
-FROM dhi.io/alpine-base:3.23-alpine3.23-dev AS drawio
+# alpine:3.23 is already a public multi-arch image; no change required.
+FROM alpine:3.23 AS drawio
 ARG DRAWIO_VERSION=29.6.4
 RUN apk add --no-cache unzip wget
 RUN wget -q "https://github.com/jgraph/drawio/releases/download/v${DRAWIO_VERSION}/draw.war" -O /tmp/draw.war
@@ -10,7 +11,8 @@ RUN \
     rm /tmp/draw.war
 
 # Build stage — compile React app with Vite
-FROM dhi.io/node:24-alpine3.23-dev AS builder
+# node:24-alpine is the public multi-arch (amd64 + arm64) floating tag.
+FROM node:24-alpine AS builder
 
 ARG VITE_API_URL=""
 
@@ -29,11 +31,18 @@ ENV VITE_API_URL=$VITE_API_URL
 RUN npm run build -w frontend
 
 # Tools stage — grab wget for healthcheck
-FROM dhi.io/nginx:1.29-alpine3.23-dev AS tools
+# nginx:alpine is the official multi-arch (amd64 + arm64) floating tag.
+# The floating tag guarantees availability across platforms.
+FROM nginx:alpine AS tools
 RUN apk add --no-cache wget
 
-# Runtime stage — hardened nginx serves static files
-FROM dhi.io/nginx:1.29-alpine3.23 AS runtime
+# Runtime stage — nginx serves static files
+# nginx:alpine is the public multi-arch floating tag.
+# NOTE: The official nginx:alpine image uses ENTRYPOINT ["/docker-entrypoint.sh"]
+# which expects "nginx" as the first CMD argument.  We override ENTRYPOINT to
+# "nginx" directly so that CMD ["-g", "daemon off;"] is passed correctly,
+# matching the behaviour of the previous DHI image which used ENTRYPOINT ["nginx"].
+FROM nginx:alpine AS runtime
 
 # Copy wget + shared libraries needed on the minimal runtime image
 COPY --from=tools /usr/bin/wget /usr/bin/wget
@@ -54,4 +63,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
   CMD ["/usr/bin/wget", "--spider", "--quiet", "http://127.0.0.1:8081/"]
 
 USER nginx
+# Override the docker-entrypoint.sh from nginx:alpine so CMD ["-g", "daemon off;"]
+# is passed directly to nginx (matching the DHI image behaviour).
+ENTRYPOINT ["nginx"]
 CMD ["-g", "daemon off;"]
