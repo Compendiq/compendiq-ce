@@ -16,6 +16,7 @@ jobs:
     # "Read repository contents and packages permissions", this job-level
     # declaration ensures the token has the necessary scope.
     permissions:
+      contents: read
       packages: write
     steps:
       - name: Checkout
@@ -74,6 +75,7 @@ jobs:
     runs-on: ubuntu-latest
     # packages:write is required for pushing to ghcr.io with GITHUB_TOKEN.
     permissions:
+      contents: read
       packages: write
     steps:
       - name: Checkout
