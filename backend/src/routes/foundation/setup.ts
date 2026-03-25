@@ -54,7 +54,10 @@ export async function setupRoutes(fastify: FastifyInstance) {
    */
   fastify.get('/health/setup-status', async () => {
     const [adminResult, confluenceResult] = await Promise.all([
-      query<{ count: string }>('SELECT COUNT(*) AS count FROM users WHERE role = $1', ['admin']),
+      query<{ count: string }>(
+        `SELECT COUNT(*) AS count FROM users WHERE role = $1 AND id != '00000000-0000-0000-0000-000000000000'`,
+        ['admin'],
+      ),
       query<{ count: string }>('SELECT COUNT(*) AS count FROM pages WHERE source = $1 LIMIT 1', ['confluence']),
     ]);
 
@@ -103,7 +106,7 @@ export async function setupRoutes(fastify: FastifyInstance) {
       const result = await query<{ id: string; username: string; role: string }>(
         `INSERT INTO users (username, password_hash, role)
          SELECT $1, $2, 'admin'
-         WHERE NOT EXISTS (SELECT 1 FROM users WHERE role = 'admin')
+         WHERE NOT EXISTS (SELECT 1 FROM users WHERE role = 'admin' AND id != '00000000-0000-0000-0000-000000000000')
          RETURNING id, username, role`,
         [body.username, passwordHash],
       );
