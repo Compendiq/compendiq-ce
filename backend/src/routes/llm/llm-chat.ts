@@ -28,6 +28,7 @@ import {
   streamSSE,
   sanitizeLlmInput,
   buildOutputPostProcessor,
+  getSearxngMaxResults,
   LLM_STREAM_RATE_LIMIT,
   MAX_INPUT_LENGTH,
   MAX_PDF_TEXT_FOR_LLM,
@@ -80,7 +81,7 @@ export async function llmChatRoutes(fastify: FastifyInstance) {
     if (body.searchWeb && await isMcpDocsEnabled()) {
       try {
         const searchQuery = body.searchQuery || sanitizedInstruction?.slice(0, 200) || `improve ${type} technical documentation`;
-        const searchResults = await searchDocumentation(searchQuery, userId, 3);
+        const searchResults = await searchDocumentation(searchQuery, userId, await getSearxngMaxResults());
 
         for (const result of searchResults.slice(0, 2)) {
           try {
@@ -209,7 +210,7 @@ export async function llmChatRoutes(fastify: FastifyInstance) {
     if (body.searchWeb && await isMcpDocsEnabled()) {
       try {
         const searchQuery = body.searchQuery || sanitized.slice(0, 200);
-        const searchResults = await searchDocumentation(searchQuery, userId, 3);
+        const searchResults = await searchDocumentation(searchQuery, userId, await getSearxngMaxResults());
 
         for (const result of searchResults.slice(0, 2)) {
           try {
@@ -286,11 +287,37 @@ export async function llmChatRoutes(fastify: FastifyInstance) {
       detailed: 'Provide a detailed summary covering all important points, decisions, and action items.',
     };
 
+    // Web search for reference material
+    const sumWebSources: Array<{ url: string; title: string; snippet: string }> = [];
+    if (body.searchWeb && await isMcpDocsEnabled()) {
+      try {
+        const sq = body.searchQuery || sanitizedMarkdown.slice(0, 200);
+        const sr = await searchDocumentation(sq, userId, await getSearxngMaxResults());
+        for (const r of sr.slice(0, 2)) {
+          try {
+            const doc = await fetchDocumentation(r.url, userId, 5000);
+            const { sanitized: cd } = sanitizeLlmInput(doc.markdown);
+            sumWebSources.push({ url: r.url, title: r.title, snippet: cd });
+          } catch { sumWebSources.push({ url: r.url, title: r.title, snippet: r.snippet }); }
+        }
+      } catch (err) { logger.warn({ err }, 'Web search failed for summarize, continuing without'); }
+    }
+
+    let summarizeContent = sanitizedMarkdown;
+    if (sumWebSources.length > 0) {
+      const wc = sumWebSources.map((s, i) => `[Reference ${i + 1}: "${s.title}" (${s.url})]\n${s.snippet}`).join('\n\n---\n\n');
+      summarizeContent = `${sanitizedMarkdown}\n\n---\n\nReference material:\n\n${wc}`;
+    }
+
+    const sumExtras = sumWebSources.length > 0 ? {
+      sources: sumWebSources.map((s) => ({ pageTitle: s.title, spaceKey: 'Web', confluenceId: s.url, score: 1 })),
+    } : undefined;
+
     const basePrompt = await resolveSystemPrompt(userId, 'summarize');
     const systemPrompt = `${basePrompt} ${lengthInstructions[length]}${multiPageSuffix}`;
 
     // Check LLM cache with stampede protection
-    const cacheKey = buildLlmCacheKey(model, systemPrompt, sanitizedMarkdown);
+    const cacheKey = buildLlmCacheKey(model, systemPrompt, summarizeContent);
     const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
       sendCachedSSE(reply, cached.content);
@@ -298,15 +325,14 @@ export async function llmChatRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      const postProcess = await buildOutputPostProcessor();
+      const postProcess = await buildOutputPostProcessor(sumWebSources.map((s) => s.url));
 
-      // Resolve per-user LLM provider and stream
       const generator = providerStreamChat(userId, model, [
         { role: 'system', content: systemPrompt },
-        { role: 'user', content: sanitizedMarkdown },
+        { role: 'user', content: summarizeContent },
       ]);
 
-      await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey, postProcess });
+      await streamSSE(request, reply, generator, sumExtras, { llmCache, cacheKey, postProcess });
     } finally {
       if (lockAcquired) await llmCache.releaseLock(cacheKey);
     }
@@ -474,12 +500,34 @@ export async function llmChatRoutes(fastify: FastifyInstance) {
       }
     }
 
+    // Web search for reference material (consistent with generate/improve)
+    const askWebSources: Array<{ url: string; title: string; snippet: string }> = [];
+    if (body.searchWeb && await isMcpDocsEnabled()) {
+      try {
+        const wq = body.searchQuery || sanitizedQuestion.slice(0, 200);
+        const wr = await searchDocumentation(wq, userId, await getSearxngMaxResults());
+        for (const r of wr.slice(0, 2)) {
+          try {
+            const doc = await fetchDocumentation(r.url, userId, 5000);
+            const { sanitized: cd } = sanitizeLlmInput(doc.markdown);
+            askWebSources.push({ url: r.url, title: r.title, snippet: cd });
+          } catch { askWebSources.push({ url: r.url, title: r.title, snippet: r.snippet }); }
+        }
+      } catch (err) { logger.warn({ err }, 'Web search failed for ask, continuing without'); }
+    }
+
+    if (askWebSources.length > 0) {
+      const wc = askWebSources.map((s, i) => `[Web Source ${i + 1}: "${s.title}" (${s.url})]\n${s.snippet}`).join('\n\n---\n\n');
+      ragContext += `\n\n---\n\nWeb search results:\n\n${wc}`;
+    }
+
     // Check RAG cache with stampede protection (only for new conversations without history)
     const docIds = searchResults.map((r) => r.confluenceId);
     const ragCacheKey = buildRagCacheKey(model, question, docIds, {
       includeSubPages,
       pageId: body.pageId,
       externalUrls,
+      searchWeb: body.searchWeb,
     });
 
     const sources = [
@@ -497,6 +545,14 @@ export async function llmChatRoutes(fastify: FastifyInstance) {
         spaceKey: 'External',
         confluenceId: d.url,
         sectionTitle: d.title,
+        score: 1,
+      })),
+      ...askWebSources.map((s) => ({
+        pageId: 0,
+        pageTitle: s.title,
+        spaceKey: 'Web',
+        confluenceId: s.url,
+        sectionTitle: s.title,
         score: 1,
       })),
     ];

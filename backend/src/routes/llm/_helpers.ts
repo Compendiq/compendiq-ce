@@ -229,6 +229,16 @@ export async function streamSSE(
  * Returns undefined if output processing is disabled, so callers can pass it
  * directly to `streamSSE` options.
  */
+/**
+ * Get admin-configured SearXNG max results (reads from admin_settings, defaults to 5).
+ */
+export async function getSearxngMaxResults(): Promise<number> {
+  const result = await query<{ setting_value: string }>(
+    `SELECT setting_value FROM admin_settings WHERE setting_key = 'searxng_max_results'`,
+  );
+  return parseInt(result.rows[0]?.setting_value ?? '5', 10);
+}
+
 export async function buildOutputPostProcessor(
   verifiedSources?: string[],
 ): Promise<((content: string) => OutputSanitizeResult) | undefined> {

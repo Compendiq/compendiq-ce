@@ -43,6 +43,8 @@ export const SummarizeRequestSchema = z.object({
   length: z.enum(['short', 'medium', 'detailed']).default('medium'),
   pageId: z.string().optional(),
   includeSubPages: z.boolean().optional(),
+  searchWeb: z.boolean().optional(),
+  searchQuery: z.string().max(500).optional(),
 });
 
 export const AskRequestSchema = z.object({
@@ -52,6 +54,8 @@ export const AskRequestSchema = z.object({
   pageId: z.string().optional(),
   includeSubPages: z.boolean().optional(),
   externalUrls: z.array(z.string().url()).max(5).optional(),
+  searchWeb: z.boolean().optional(),
+  searchQuery: z.string().max(500).optional(),
 });
 
 export const GenerateDiagramRequestSchema = z.object({

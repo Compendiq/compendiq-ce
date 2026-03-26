@@ -48,7 +48,7 @@ export function buildRagCacheKey(
   model: string,
   question: string,
   docIds: string[],
-  options?: { includeSubPages?: boolean; pageId?: string; externalUrls?: string[] },
+  options?: { includeSubPages?: boolean; pageId?: string; externalUrls?: string[]; searchWeb?: boolean },
 ): string {
   const sortedIds = [...docIds].sort().join(',');
   const subPageSuffix = options?.includeSubPages && options?.pageId
@@ -57,7 +57,8 @@ export function buildRagCacheKey(
   const externalSuffix = options?.externalUrls?.length
     ? `ext:${[...options.externalUrls].sort().join(',')}`
     : '';
-  return KEY_PREFIX + hashLlmInputs(model, question, sortedIds, subPageSuffix, externalSuffix);
+  const webSuffix = options?.searchWeb ? 'web:1' : '';
+  return KEY_PREFIX + hashLlmInputs(model, question, sortedIds, subPageSuffix, externalSuffix, webSuffix);
 }
 
 export class LlmCache {
