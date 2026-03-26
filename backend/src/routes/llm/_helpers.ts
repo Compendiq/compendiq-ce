@@ -18,9 +18,11 @@ export { sanitizeLlmInput };
 export const IdParamSchema = z.object({ id: z.string().min(1) });
 export const ImprovementsQuerySchema = z.object({ pageId: z.string().optional() });
 
-// Rate limit configs for LLM endpoints
-export const LLM_STREAM_RATE_LIMIT = { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } };
-export const EMBEDDING_RATE_LIMIT = { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } };
+// Rate limit configs for LLM endpoints (dynamic via admin settings, 60s cache)
+import { getRateLimits } from '../../core/services/rate-limit-service.js';
+
+export const LLM_STREAM_RATE_LIMIT = { config: { rateLimit: { max: async () => (await getRateLimits()).llmStream.max, timeWindow: '1 minute' } } };
+export const EMBEDDING_RATE_LIMIT = { config: { rateLimit: { max: async () => (await getRateLimits()).llmEmbedding.max, timeWindow: '1 minute' } } };
 
 // Maximum input size to prevent abuse (100KB)
 export const MAX_INPUT_LENGTH = 100_000;

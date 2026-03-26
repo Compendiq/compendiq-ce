@@ -7,6 +7,7 @@ import { getClientForUser } from '../../domains/confluence/services/sync-service
 import { ForceEmbedTreeRequestSchema } from '@atlasmind/contracts';
 import { logger } from '../../core/utils/logger.js';
 import { EMBEDDING_RATE_LIMIT } from './_helpers.js';
+import { getRateLimits } from '../../core/services/rate-limit-service.js';
 
 export async function llmEmbeddingRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -233,7 +234,7 @@ export async function llmEmbeddingRoutes(fastify: FastifyInstance) {
   // POST /api/admin/re-embed - admin only: re-embed all pages
   fastify.post('/admin/re-embed', {
     preHandler: fastify.requireAdmin,
-    config: { rateLimit: { max: 20, timeWindow: '1 minute' } },
+    config: { rateLimit: { max: async () => (await getRateLimits()).admin.max, timeWindow: '1 minute' } },
   }, async (_request, _reply) => {
     reEmbedAll().catch((err) => {
       logger.error({ err }, 'Re-embed all failed');

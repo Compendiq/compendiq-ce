@@ -72,8 +72,9 @@ const PageInheritPermsBodySchema = z.object({
   inheritPerms: z.boolean(),
 });
 
-// Rate limit config for RBAC admin endpoints
-const RBAC_RATE_LIMIT = { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } };
+import { getRateLimits } from '../../core/services/rate-limit-service.js';
+// Rate limit config for RBAC admin endpoints (uses admin category)
+const RBAC_RATE_LIMIT = { config: { rateLimit: { max: async () => (await getRateLimits()).admin.max, timeWindow: '1 minute' } } };
 
 export async function rbacRoutes(fastify: FastifyInstance) {
   // ========================

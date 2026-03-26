@@ -30,6 +30,13 @@ export const AdminSettingsSchema = z.object({
   aiGuardrailNoFabricationEnabled: z.boolean().optional(),
   aiOutputRuleStripReferences: z.boolean().optional(),
   aiOutputRuleReferenceAction: ReferenceActionSchema.optional(),
+  // Rate limits (requests per minute)
+  rateLimitGlobal: z.number().int().min(10).max(10000).optional(),
+  rateLimitAuth: z.number().int().min(3).max(1000).optional(),
+  rateLimitAdmin: z.number().int().min(5).max(1000).optional(),
+  rateLimitLlmStream: z.number().int().min(1).max(1000).optional(),
+  rateLimitLlmEmbedding: z.number().int().min(1).max(1000).optional(),
+  rateLimitOidc: z.number().int().min(3).max(1000).optional(),
 });
 
 export const UpdateAdminSettingsSchema = z.object({
@@ -47,6 +54,13 @@ export const UpdateAdminSettingsSchema = z.object({
   aiGuardrailNoFabricationEnabled: z.boolean().optional(),
   aiOutputRuleStripReferences: z.boolean().optional(),
   aiOutputRuleReferenceAction: ReferenceActionSchema.optional(),
+  // Rate limits (requests per minute)
+  rateLimitGlobal: z.number().int().min(10).max(10000).optional(),
+  rateLimitAuth: z.number().int().min(3).max(1000).optional(),
+  rateLimitAdmin: z.number().int().min(5).max(1000).optional(),
+  rateLimitLlmStream: z.number().int().min(1).max(1000).optional(),
+  rateLimitLlmEmbedding: z.number().int().min(1).max(1000).optional(),
+  rateLimitOidc: z.number().int().min(3).max(1000).optional(),
 });
 
 export type AdminSettings = z.infer<typeof AdminSettingsSchema>;

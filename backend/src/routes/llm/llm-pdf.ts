@@ -3,6 +3,7 @@ import { getDocumentProxy, extractText } from 'unpdf';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
 import { sanitizeLlmInput } from '../../core/utils/sanitize-llm-input.js';
+import { getRateLimits } from '../../core/services/rate-limit-service.js';
 
 /** PDF magic bytes: %PDF- */
 const PDF_MAGIC = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x2d]);
@@ -18,7 +19,7 @@ export async function llmPdfRoutes(fastify: FastifyInstance) {
 
   // POST /api/llm/extract-pdf — extract text from uploaded PDF
   fastify.post('/llm/extract-pdf', {
-    config: { rateLimit: { max: 5, timeWindow: '1 minute' } },
+    config: { rateLimit: { max: async () => (await getRateLimits()).llmEmbedding.max, timeWindow: '1 minute' } },
   }, async (request, reply) => {
     const userId = request.userId;
 

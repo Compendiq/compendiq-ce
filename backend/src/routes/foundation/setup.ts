@@ -25,8 +25,9 @@ const SALT_ROUNDS = 12;
 const REFRESH_COOKIE = 'kb_refresh';
 const REFRESH_MAX_AGE = 7 * 24 * 60 * 60; // 7 days in seconds
 
-// Rate limit config for setup endpoints (5 requests per minute)
-const SETUP_RATE_LIMIT = { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } };
+import { getRateLimits } from '../../core/services/rate-limit-service.js';
+// Rate limit config for setup endpoints (uses auth category — both are security-sensitive)
+const SETUP_RATE_LIMIT = { config: { rateLimit: { max: async () => (await getRateLimits()).auth.max, timeWindow: '1 minute' } } };
 
 // ─── Validation schemas ───────────────────────────────────────────────────
 

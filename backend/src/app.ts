@@ -82,9 +82,11 @@ export async function buildApp() {
     },
   });
 
+  // Global rate limit — max is dynamic via admin settings (60s cache)
+  const { getRateLimits: getRateLimitsForGlobal } = await import('./core/services/rate-limit-service.js');
   await app.register(rateLimit, {
     global: true,
-    max: 100,
+    max: async () => (await getRateLimitsForGlobal()).global.max,
     timeWindow: '1 minute',
   });
 

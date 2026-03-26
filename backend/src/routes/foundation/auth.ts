@@ -17,8 +17,10 @@ const SALT_ROUNDS = 12;
 const REFRESH_COOKIE = 'kb_refresh';
 const REFRESH_MAX_AGE = 7 * 24 * 60 * 60; // 7 days in seconds
 
-// Rate limit config for auth endpoints (5 requests per minute)
-const AUTH_RATE_LIMIT = { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } };
+import { getRateLimits } from '../../core/services/rate-limit-service.js';
+
+// Rate limit config for auth endpoints (dynamic via admin settings, default 5/min)
+const AUTH_RATE_LIMIT = { config: { rateLimit: { max: async () => (await getRateLimits()).auth.max, timeWindow: '1 minute' } } };
 
 export async function authRoutes(fastify: FastifyInstance) {
   fastify.post('/register', AUTH_RATE_LIMIT, async (request, reply) => {

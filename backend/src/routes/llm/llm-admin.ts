@@ -4,7 +4,8 @@ import { LlmCache } from '../../domains/llm/services/llm-cache.js';
 import { getMcpDocsSettings, upsertMcpDocsSettings } from '../../core/services/mcp-docs-settings.js';
 import { testConnection as testMcpConnection, fetchDocumentation } from '../../core/services/mcp-docs-client.js';
 
-const ADMIN_RATE_LIMIT = { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } };
+import { getRateLimits } from '../../core/services/rate-limit-service.js';
+const ADMIN_RATE_LIMIT = { config: { rateLimit: { max: async () => (await getRateLimits()).admin.max, timeWindow: '1 minute' } } };
 
 const UpdateMcpDocsSchema = z.object({
   enabled: z.boolean().optional(),
@@ -29,7 +30,7 @@ export async function llmAdminRoutes(fastify: FastifyInstance) {
   // POST /api/admin/clear-llm-cache - admin only: clear all LLM response cache
   fastify.post('/admin/clear-llm-cache', {
     preHandler: fastify.requireAdmin,
-    config: { rateLimit: { max: 20, timeWindow: '1 minute' } },
+    config: { rateLimit: { max: async () => (await getRateLimits()).admin.max, timeWindow: '1 minute' } },
   }, async () => {
     const deleted = await llmCache.clearAll();
     return { message: `LLM cache cleared`, entriesDeleted: deleted };

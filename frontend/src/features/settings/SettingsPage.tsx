@@ -15,9 +15,10 @@ import { ThemeTab } from './ThemeTab';
 import { WorkersTab } from './WorkersTab';
 import { McpDocsTab } from './McpDocsTab';
 import { AiSafetyTab } from './AiSafetyTab';
+import { RateLimitsTab } from './RateLimitsTab';
 import { SkeletonFormFields } from '../../shared/components/feedback/Skeleton';
 
-type TabId = 'confluence' | 'sync' | 'ollama' | 'ai-prompts' | 'ai-safety' | 'spaces' | 'theme' | 'labels' | 'errors' | 'embedding' | 'workers' | 'mcp-docs' | 'system';
+type TabId = 'confluence' | 'sync' | 'ollama' | 'ai-prompts' | 'ai-safety' | 'rate-limits' | 'spaces' | 'theme' | 'labels' | 'errors' | 'embedding' | 'workers' | 'mcp-docs' | 'system';
 
 export function SettingsPage() {
   const queryClient = useQueryClient();
@@ -44,6 +45,7 @@ export function SettingsPage() {
     { id: 'ollama', label: 'LLM', adminOnly: true },
     { id: 'ai-prompts', label: 'AI Prompts' },
     { id: 'ai-safety', label: 'AI Safety', adminOnly: true },
+    { id: 'rate-limits', label: 'Rate Limits', adminOnly: true },
     { id: 'theme', label: 'Theme' },
     { id: 'labels', label: 'Labels', adminOnly: true },
     { id: 'errors', label: 'Errors', adminOnly: true },
@@ -83,7 +85,7 @@ export function SettingsPage() {
         </div>
 
         <div className="p-6">
-          {(isLoading || !settings) && activeTab !== 'labels' && activeTab !== 'errors' && activeTab !== 'theme' && activeTab !== 'embedding' && activeTab !== 'sync' && activeTab !== 'workers' && activeTab !== 'mcp-docs' && activeTab !== 'ai-safety' ? (
+          {(isLoading || !settings) && activeTab !== 'labels' && activeTab !== 'errors' && activeTab !== 'theme' && activeTab !== 'embedding' && activeTab !== 'sync' && activeTab !== 'workers' && activeTab !== 'mcp-docs' && activeTab !== 'ai-safety' && activeTab !== 'rate-limits' ? (
             <SkeletonFormFields />
           ) : activeTab === 'confluence' ? (
             <ConfluenceTab settings={settings!} onSave={(v) => updateSettings.mutate(v)} />
@@ -101,6 +103,8 @@ export function SettingsPage() {
             <AiPromptsTab settings={settings!} onSave={(v) => updateSettings.mutate(v)} isAdmin={isAdmin} />
           ) : activeTab === 'ai-safety' && isAdmin ? (
             <AiSafetyTab />
+          ) : activeTab === 'rate-limits' && isAdmin ? (
+            <RateLimitsTab />
           ) : activeTab === 'theme' ? (
             <ThemeTab onSave={(v) => updateSettings.mutate(v)} />
           ) : activeTab === 'labels' && isAdmin ? (

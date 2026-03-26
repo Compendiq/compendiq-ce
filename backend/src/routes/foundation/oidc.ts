@@ -43,9 +43,10 @@ const LOGIN_CODE_TTL = 60; // 1 minute — must be exchanged quickly
 const CALLBACK_PATH = '/auth/oidc/callback';
 const LOGIN_PATH = '/login';
 
-// Rate limit for OIDC endpoints
-const OIDC_RATE_LIMIT = { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } };
-const OIDC_ADMIN_RATE_LIMIT = { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } };
+// Rate limit for OIDC endpoints (dynamic via admin settings)
+import { getRateLimits } from '../../core/services/rate-limit-service.js';
+const OIDC_RATE_LIMIT = { config: { rateLimit: { max: async () => (await getRateLimits()).oidc.max, timeWindow: '1 minute' } } };
+const OIDC_ADMIN_RATE_LIMIT = { config: { rateLimit: { max: async () => (await getRateLimits()).admin.max, timeWindow: '1 minute' } } };
 
 // ── Zod schemas ────────────────────────────────────────────────────────────────
 

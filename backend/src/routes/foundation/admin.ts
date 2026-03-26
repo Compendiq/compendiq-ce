@@ -8,6 +8,7 @@ import { logger } from '../../core/utils/logger.js';
 import { UpdateAdminSettingsSchema } from '@atlasmind/contracts';
 import { getSharedLlmSettings, upsertSharedLlmSettings } from '../../core/services/admin-settings-service.js';
 import { getAiGuardrails, getAiOutputRules, upsertAiGuardrails, upsertAiOutputRules } from '../../core/services/ai-safety-service.js';
+import { getRateLimits, upsertRateLimits } from '../../core/services/rate-limit-service.js';
 import { sanitizeLlmInput } from '../../core/utils/sanitize-llm-input.js';
 import { setActiveProvider } from '../../domains/llm/services/ollama-service.js';
 
@@ -38,7 +39,8 @@ const LabelRenameSchema = z.object({
 const LabelNameParamSchema = z.object({ name: z.string().min(1) });
 
 // Rate limit config for admin endpoints (20 requests per minute)
-const ADMIN_RATE_LIMIT = { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } };
+// Rate limit for admin endpoints (dynamic via admin settings, default 20/min)
+const ADMIN_RATE_LIMIT = { config: { rateLimit: { max: async () => (await getRateLimits()).admin.max, timeWindow: '1 minute' } } };
 
 export async function adminRoutes(fastify: FastifyInstance) {
   // All admin routes require admin role
@@ -223,10 +225,11 @@ export async function adminRoutes(fastify: FastifyInstance) {
 
   // GET /api/admin/settings - retrieve shared admin settings
   fastify.get('/admin/settings', ADMIN_RATE_LIMIT, async () => {
-    const [sharedLlmSettings, guardrails, outputRules] = await Promise.all([
+    const [sharedLlmSettings, guardrails, outputRules, rateLimits] = await Promise.all([
       getSharedLlmSettings(),
       getAiGuardrails(),
       getAiOutputRules(),
+      getRateLimits(),
     ]);
     const result = await query<{ setting_key: string; setting_value: string }>(
       `SELECT setting_key, setting_value FROM admin_settings
@@ -253,6 +256,13 @@ export async function adminRoutes(fastify: FastifyInstance) {
       aiGuardrailNoFabricationEnabled: guardrails.noFabricationEnabled,
       aiOutputRuleStripReferences: outputRules.stripReferences,
       aiOutputRuleReferenceAction: outputRules.referenceAction,
+      // Rate limits
+      rateLimitGlobal: rateLimits.global.max,
+      rateLimitAuth: rateLimits.auth.max,
+      rateLimitAdmin: rateLimits.admin.max,
+      rateLimitLlmStream: rateLimits.llmStream.max,
+      rateLimitLlmEmbedding: rateLimits.llmEmbedding.max,
+      rateLimitOidc: rateLimits.oidc.max,
     };
   });
 
@@ -370,6 +380,20 @@ export async function adminRoutes(fastify: FastifyInstance) {
         },
         request.userId,
       );
+    }
+
+    // Rate limit updates
+    const rateLimitUpdates: Record<string, number> = {};
+    if (body.rateLimitGlobal !== undefined) rateLimitUpdates.global = body.rateLimitGlobal;
+    if (body.rateLimitAuth !== undefined) rateLimitUpdates.auth = body.rateLimitAuth;
+    if (body.rateLimitAdmin !== undefined) rateLimitUpdates.admin = body.rateLimitAdmin;
+    if (body.rateLimitLlmStream !== undefined) rateLimitUpdates.llmStream = body.rateLimitLlmStream;
+    if (body.rateLimitLlmEmbedding !== undefined) rateLimitUpdates.llmEmbedding = body.rateLimitLlmEmbedding;
+    if (body.rateLimitOidc !== undefined) rateLimitUpdates.oidc = body.rateLimitOidc;
+
+    if (Object.keys(rateLimitUpdates).length > 0) {
+      await upsertRateLimits(rateLimitUpdates, request.userId);
+      logger.info({ userId: request.userId, rateLimitUpdates }, 'Admin rate limits updated (takes effect within 60s)');
     }
 
     // Only mark pages dirty for re-embedding when chunk settings changed — NOT for drawioEmbedUrl
