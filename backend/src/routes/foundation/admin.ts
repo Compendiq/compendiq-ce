@@ -7,6 +7,8 @@ import { listErrors, resolveError, getErrorSummary } from '../../core/services/e
 import { logger } from '../../core/utils/logger.js';
 import { UpdateAdminSettingsSchema } from '@atlasmind/contracts';
 import { getSharedLlmSettings, upsertSharedLlmSettings } from '../../core/services/admin-settings-service.js';
+import { getAiGuardrails, getAiOutputRules, upsertAiGuardrails, upsertAiOutputRules } from '../../core/services/ai-safety-service.js';
+import { sanitizeLlmInput } from '../../core/utils/sanitize-llm-input.js';
 import { setActiveProvider } from '../../domains/llm/services/ollama-service.js';
 
 const AuditLogQuerySchema = z.object({
@@ -221,7 +223,11 @@ export async function adminRoutes(fastify: FastifyInstance) {
 
   // GET /api/admin/settings - retrieve shared admin settings
   fastify.get('/admin/settings', ADMIN_RATE_LIMIT, async () => {
-    const sharedLlmSettings = await getSharedLlmSettings();
+    const [sharedLlmSettings, guardrails, outputRules] = await Promise.all([
+      getSharedLlmSettings(),
+      getAiGuardrails(),
+      getAiOutputRules(),
+    ]);
     const result = await query<{ setting_key: string; setting_value: string }>(
       `SELECT setting_key, setting_value FROM admin_settings
        WHERE setting_key IN ('embedding_chunk_size', 'embedding_chunk_overlap', 'drawio_embed_url')`,
@@ -242,6 +248,11 @@ export async function adminRoutes(fastify: FastifyInstance) {
       embeddingChunkSize: parseInt(map['embedding_chunk_size'] ?? '500', 10),
       embeddingChunkOverlap: parseInt(map['embedding_chunk_overlap'] ?? '50', 10),
       drawioEmbedUrl: map['drawio_embed_url'] ?? null,
+      // AI Safety
+      aiGuardrailNoFabrication: guardrails.noFabricationInstruction,
+      aiGuardrailNoFabricationEnabled: guardrails.noFabricationEnabled,
+      aiOutputRuleStripReferences: outputRules.stripReferences,
+      aiOutputRuleReferenceAction: outputRules.referenceAction,
     };
   });
 
@@ -327,6 +338,38 @@ export async function adminRoutes(fastify: FastifyInstance) {
 
     if (body.llmProvider !== undefined) {
       setActiveProvider(body.llmProvider);
+    }
+
+    // AI Safety settings
+    const hasAiGuardrailChanges =
+      body.aiGuardrailNoFabrication !== undefined || body.aiGuardrailNoFabricationEnabled !== undefined;
+    const hasAiOutputRuleChanges =
+      body.aiOutputRuleStripReferences !== undefined || body.aiOutputRuleReferenceAction !== undefined;
+
+    if (hasAiGuardrailChanges) {
+      // Sanitize admin-supplied guardrail text to prevent prompt injection (critic fix #6)
+      let sanitizedInstruction = body.aiGuardrailNoFabrication;
+      if (sanitizedInstruction !== undefined) {
+        const { sanitized } = sanitizeLlmInput(sanitizedInstruction);
+        sanitizedInstruction = sanitized;
+      }
+      await upsertAiGuardrails(
+        {
+          noFabricationInstruction: sanitizedInstruction,
+          noFabricationEnabled: body.aiGuardrailNoFabricationEnabled,
+        },
+        request.userId,
+      );
+    }
+
+    if (hasAiOutputRuleChanges) {
+      await upsertAiOutputRules(
+        {
+          stripReferences: body.aiOutputRuleStripReferences,
+          referenceAction: body.aiOutputRuleReferenceAction,
+        },
+        request.userId,
+      );
     }
 
     // Only mark pages dirty for re-embedding when chunk settings changed — NOT for drawioEmbedUrl

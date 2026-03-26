@@ -344,6 +344,16 @@ export function AiProvider({ children }: { children: ReactNode }) {
           toast.error(chunk.error);
           break;
         }
+        // Handle finalContent from output post-processing (cleaned content replaces accumulated)
+        if ((chunk as Record<string, unknown>).finalContent) {
+          accumulated = (chunk as Record<string, unknown>).finalContent as string;
+          setMessages((prev) => {
+            const updated = [...prev];
+            updated[updated.length - 1] = { ...updated[updated.length - 1], content: accumulated };
+            return updated;
+          });
+          opts?.onContent?.(accumulated);
+        }
         if (chunk.content) {
           setIsThinking(false);
           accumulated += chunk.content;

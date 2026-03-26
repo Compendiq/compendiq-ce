@@ -14,9 +14,10 @@ import { ErrorDashboard } from './ErrorDashboard';
 import { ThemeTab } from './ThemeTab';
 import { WorkersTab } from './WorkersTab';
 import { McpDocsTab } from './McpDocsTab';
+import { AiSafetyTab } from './AiSafetyTab';
 import { SkeletonFormFields } from '../../shared/components/feedback/Skeleton';
 
-type TabId = 'confluence' | 'sync' | 'ollama' | 'ai-prompts' | 'spaces' | 'theme' | 'labels' | 'errors' | 'embedding' | 'workers' | 'mcp-docs' | 'system';
+type TabId = 'confluence' | 'sync' | 'ollama' | 'ai-prompts' | 'ai-safety' | 'spaces' | 'theme' | 'labels' | 'errors' | 'embedding' | 'workers' | 'mcp-docs' | 'system';
 
 export function SettingsPage() {
   const queryClient = useQueryClient();
@@ -42,6 +43,7 @@ export function SettingsPage() {
     { id: 'spaces', label: 'Spaces' },
     { id: 'ollama', label: 'LLM', adminOnly: true },
     { id: 'ai-prompts', label: 'AI Prompts' },
+    { id: 'ai-safety', label: 'AI Safety', adminOnly: true },
     { id: 'theme', label: 'Theme' },
     { id: 'labels', label: 'Labels', adminOnly: true },
     { id: 'errors', label: 'Errors', adminOnly: true },
@@ -81,7 +83,7 @@ export function SettingsPage() {
         </div>
 
         <div className="p-6">
-          {(isLoading || !settings) && activeTab !== 'labels' && activeTab !== 'errors' && activeTab !== 'theme' && activeTab !== 'embedding' && activeTab !== 'sync' && activeTab !== 'workers' && activeTab !== 'mcp-docs' ? (
+          {(isLoading || !settings) && activeTab !== 'labels' && activeTab !== 'errors' && activeTab !== 'theme' && activeTab !== 'embedding' && activeTab !== 'sync' && activeTab !== 'workers' && activeTab !== 'mcp-docs' && activeTab !== 'ai-safety' ? (
             <SkeletonFormFields />
           ) : activeTab === 'confluence' ? (
             <ConfluenceTab settings={settings!} onSave={(v) => updateSettings.mutate(v)} />
@@ -96,7 +98,9 @@ export function SettingsPage() {
           ) : activeTab === 'ollama' ? (
             <LlmTab settings={settings!} />
           ) : activeTab === 'ai-prompts' ? (
-            <AiPromptsTab settings={settings!} onSave={(v) => updateSettings.mutate(v)} />
+            <AiPromptsTab settings={settings!} onSave={(v) => updateSettings.mutate(v)} isAdmin={isAdmin} />
+          ) : activeTab === 'ai-safety' && isAdmin ? (
+            <AiSafetyTab />
           ) : activeTab === 'theme' ? (
             <ThemeTab onSave={(v) => updateSettings.mutate(v)} />
           ) : activeTab === 'labels' && isAdmin ? (
@@ -1151,9 +1155,19 @@ const PROMPT_TYPES = [
   },
 ];
 
-function AiPromptsTab({ settings, onSave }: { settings: SettingsResponse; onSave: (v: Record<string, unknown>) => void }) {
+function AiPromptsTab({ settings, onSave, isAdmin }: { settings: SettingsResponse; onSave: (v: Record<string, unknown>) => void; isAdmin: boolean }) {
   const [prompts, setPrompts] = useState<CustomPrompts>(settings.customPrompts ?? {});
   const saved = settings.customPrompts ?? {};
+
+  // Fetch AI safety status for info banner
+  const { data: aiSafety } = useQuery<{
+    guardrails: { noFabricationEnabled: boolean };
+    outputRules: { stripReferences: boolean; referenceAction: string };
+  }>({
+    queryKey: ['settings', 'ai-safety'],
+    queryFn: () => apiFetch('/settings/ai-safety'),
+    staleTime: 60_000,
+  });
   const hasChanges = JSON.stringify(prompts) !== JSON.stringify(saved);
 
   function handleChange(key: string, value: string) {
@@ -1170,6 +1184,26 @@ function AiPromptsTab({ settings, onSave }: { settings: SettingsResponse; onSave
 
   return (
     <div className="space-y-6">
+      {/* Active AI Safety rules info banner */}
+      {aiSafety && (aiSafety.guardrails.noFabricationEnabled || aiSafety.outputRules.stripReferences) && (
+        <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-3 text-sm" data-testid="ai-safety-banner">
+          <p className="font-medium text-sky-300">Active AI Safety Rules</p>
+          <ul className="mt-1 list-disc pl-5 text-xs text-sky-300/80">
+            {aiSafety.guardrails.noFabricationEnabled && (
+              <li>No-fabrication guardrail active (prevents hallucinated references)</li>
+            )}
+            {aiSafety.outputRules.stripReferences && (
+              <li>Reference detection active (action: {aiSafety.outputRules.referenceAction})</li>
+            )}
+          </ul>
+          {isAdmin && (
+            <p className="mt-1 text-xs text-sky-400/70">
+              Manage these rules in the AI Safety tab.
+            </p>
+          )}
+        </div>
+      )}
+
       <div>
         <p className="text-sm text-muted-foreground">
           Customize the system prompts used by the AI Improver. Leave empty to use the built-in default.

@@ -1,10 +1,12 @@
 import { useState, useCallback, useRef, useMemo } from 'react';
-import { Send, Loader2, Save, Search, ChevronDown, X, FolderOpen, Upload, FileText, AlertTriangle } from 'lucide-react';
+import { Send, Loader2, Save, Search, ChevronDown, X, FolderOpen, Upload, FileText, AlertTriangle, Globe } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
 import { useAiContext, nextMessageId } from '../AiContext';
 import { useSpaces } from '../../../shared/hooks/use-spaces';
 import { useLocalSpaces } from '../../../shared/hooks/use-standalone';
 import { usePages, useCreatePage, type PageFilters } from '../../../shared/hooks/use-pages';
 import { useExtractPdf, type ExtractPdfResult } from '../../../shared/hooks/use-extract-pdf';
+import { apiFetch } from '../../../shared/lib/api';
 import { toast } from 'sonner';
 import { marked } from 'marked';
 import { cn } from '../../../shared/lib/cn';
@@ -477,6 +479,16 @@ export function GenerateModeInput() {
   const { input, setInput, isStreaming, model, setMessages, runStream } = useAiContext();
   const [generatedContent, setGeneratedContent] = useState('');
   const [showSavePanel, setShowSavePanel] = useState(false);
+  const [searchWeb, setSearchWeb] = useState(false);
+
+  // Check if MCP docs sidecar is available (for web search toggle)
+  const { data: mcpSettings } = useQuery<{ enabled: boolean }>({
+    queryKey: ['mcp-docs', 'status'],
+    queryFn: () => apiFetch('/mcp-docs/status'),
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+  const mcpEnabled = mcpSettings?.enabled ?? false;
 
   // PDF upload state
   const { isExtracting } = useExtractPdf();
@@ -514,6 +526,9 @@ export function GenerateModeInput() {
     if (pdfData) {
       body.pdfText = pdfData.text;
     }
+    if (searchWeb) {
+      body.searchWeb = true;
+    }
 
     await runStream('/llm/generate', body, {
       onComplete: (accumulated) => {
@@ -523,7 +538,7 @@ export function GenerateModeInput() {
         }
       },
     });
-  }, [input, model, isStreaming, pdfData, pdfFilename, setInput, setMessages, runStream]);
+  }, [input, model, isStreaming, pdfData, pdfFilename, searchWeb, setInput, setMessages, runStream]);
 
   const handleSubmit = () => handleGenerate();
 
@@ -552,6 +567,20 @@ export function GenerateModeInput() {
           isExtracting={isExtracting}
           disabled={isStreaming}
         />
+
+        {mcpEnabled && (
+          <label className="flex items-center gap-2 text-sm text-muted-foreground" data-testid="generate-search-web-toggle">
+            <input
+              type="checkbox"
+              checked={searchWeb}
+              onChange={(e) => setSearchWeb(e.target.checked)}
+              disabled={isStreaming}
+              className="rounded border-border/40"
+            />
+            <Globe size={14} />
+            Search web for reference material
+          </label>
+        )}
 
         <div className="flex items-center gap-3">
           <input

@@ -8,7 +8,7 @@ import { hybridSearch, buildRagContext } from '../../domains/llm/services/rag-se
 import { htmlToMarkdown } from '../../core/services/content-converter.js';
 import { LlmCache, buildLlmCacheKey, buildRagCacheKey } from '../../domains/llm/services/llm-cache.js';
 import { CircuitBreakerOpenError } from '../../core/services/circuit-breaker.js';
-import { isEnabled as isMcpDocsEnabled, fetchDocumentation } from '../../core/services/mcp-docs-client.js';
+import { isEnabled as isMcpDocsEnabled, fetchDocumentation, searchDocumentation } from '../../core/services/mcp-docs-client.js';
 import {
   ImproveRequestSchema,
   GenerateRequestSchema,
@@ -27,6 +27,7 @@ import {
   sendCachedSSE,
   streamSSE,
   sanitizeLlmInput,
+  buildOutputPostProcessor,
   LLM_STREAM_RATE_LIMIT,
   MAX_INPUT_LENGTH,
   MAX_PDF_TEXT_FOR_LLM,
@@ -74,13 +75,43 @@ export async function llmChatRoutes(fastify: FastifyInstance) {
       }
     }
 
+    // Web search for reference material (Phase 3 — #564)
+    const webSources: Array<{ url: string; title: string; snippet: string }> = [];
+    if (body.searchWeb && await isMcpDocsEnabled()) {
+      try {
+        const searchQuery = body.searchQuery || sanitizedInstruction?.slice(0, 200) || `improve ${type} technical documentation`;
+        const searchResults = await searchDocumentation(searchQuery, userId, 3);
+
+        for (const result of searchResults.slice(0, 2)) {
+          try {
+            const doc = await fetchDocumentation(result.url, userId, 5000);
+            const { sanitized: cleanDoc } = sanitizeLlmInput(doc.markdown);
+            webSources.push({ url: result.url, title: result.title, snippet: cleanDoc });
+          } catch (fetchErr) {
+            logger.warn({ err: fetchErr, url: result.url }, 'Failed to fetch full doc for improve web search, using snippet');
+            webSources.push({ url: result.url, title: result.title, snippet: result.snippet });
+          }
+        }
+      } catch (err) {
+        logger.warn({ err }, 'Web search failed for improve route, continuing without');
+      }
+    }
+
+    let improveContent = sanitized;
+    if (webSources.length > 0) {
+      const webContext = webSources.map((s, i) =>
+        `[Reference ${i + 1}: "${s.title}" (${s.url})]\n${s.snippet}`
+      ).join('\n\n---\n\n');
+      improveContent = `${sanitized}\n\n---\n\nVerified reference material from web search:\n\n${webContext}`;
+    }
+
     let systemPrompt = await resolveSystemPrompt(userId, `improve_${type}` as SystemPromptKey) + multiPageSuffix;
     if (sanitizedInstruction) {
       systemPrompt += `\n\nADDITIONAL USER INSTRUCTIONS:\n${sanitizedInstruction}`;
     }
 
     // Check LLM cache with stampede protection
-    const cacheKey = buildLlmCacheKey(model, systemPrompt, sanitized);
+    const cacheKey = buildLlmCacheKey(model, systemPrompt, improveContent);
     const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
       sendCachedSSE(reply, cached.content);
@@ -98,14 +129,22 @@ export async function llmChatRoutes(fastify: FastifyInstance) {
       improvementId = insertResult.rows[0]?.id;
     }
 
+    const improveExtras = webSources.length > 0 ? {
+      sources: webSources.map((s) => ({
+        pageTitle: s.title, spaceKey: 'Web', confluenceId: s.url, score: 1,
+      })),
+    } : undefined;
+
     try {
+      const postProcess = await buildOutputPostProcessor(webSources.map((s) => s.url));
+
       // Resolve per-user LLM provider and stream
       const generator = providerStreamChat(userId, model, [
         { role: 'system', content: systemPrompt },
-        { role: 'user', content: sanitized },
+        { role: 'user', content: improveContent },
       ]);
 
-      const accumulated = await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
+      const accumulated = await streamSSE(request, reply, generator, improveExtras, { llmCache, cacheKey, postProcess });
 
       // Persist the full improved content now that streaming is done
       if (improvementId && accumulated) {
@@ -155,17 +194,50 @@ export async function llmChatRoutes(fastify: FastifyInstance) {
         logger.info({ original: sanitizedPdf.length, truncated: MAX_PDF_TEXT_FOR_LLM }, 'PDF text truncated for LLM context window');
       }
 
-      // Use template-specific prompt or generate_from_pdf
-      systemPrompt = template
-        ? getSystemPrompt(`generate_${template}` as SystemPromptKey)
-        : getSystemPrompt('generate_from_pdf' as SystemPromptKey);
+      // Use template-specific prompt or generate_from_pdf (via resolveSystemPrompt for guardrails)
+      const promptKey = template ? `generate_${template}` : 'generate_from_pdf';
+      systemPrompt = await resolveSystemPrompt(userId, promptKey as SystemPromptKey);
 
       userContent = `## Source Document\n${pdfForLlm}\n\n## Instructions\n${sanitized}`;
     } else {
-      systemPrompt = template
-        ? getSystemPrompt(`generate_${template}` as SystemPromptKey)
-        : getSystemPrompt('generate');
+      const promptKey = template ? `generate_${template}` : 'generate';
+      systemPrompt = await resolveSystemPrompt(userId, promptKey as SystemPromptKey);
     }
+
+    // Web search for reference material (Phase 3 — #564)
+    const genWebSources: Array<{ url: string; title: string; snippet: string }> = [];
+    if (body.searchWeb && await isMcpDocsEnabled()) {
+      try {
+        const searchQuery = body.searchQuery || sanitized.slice(0, 200);
+        const searchResults = await searchDocumentation(searchQuery, userId, 3);
+
+        for (const result of searchResults.slice(0, 2)) {
+          try {
+            const doc = await fetchDocumentation(result.url, userId, 5000);
+            const { sanitized: cleanDoc } = sanitizeLlmInput(doc.markdown);
+            genWebSources.push({ url: result.url, title: result.title, snippet: cleanDoc });
+          } catch (fetchErr) {
+            logger.warn({ err: fetchErr, url: result.url }, 'Failed to fetch full doc for generate web search, using snippet');
+            genWebSources.push({ url: result.url, title: result.title, snippet: result.snippet });
+          }
+        }
+      } catch (err) {
+        logger.warn({ err }, 'Web search failed for generate route, continuing without');
+      }
+    }
+
+    if (genWebSources.length > 0) {
+      const webContext = genWebSources.map((s, i) =>
+        `[Web Source ${i + 1}: "${s.title}" (${s.url})]\n${s.snippet}`
+      ).join('\n\n---\n\n');
+      userContent = `${userContent}\n\n---\n\nVerified reference material from web search:\n\n${webContext}`;
+    }
+
+    const genExtras = genWebSources.length > 0 ? {
+      sources: genWebSources.map((s) => ({
+        pageTitle: s.title, spaceKey: 'Web', confluenceId: s.url, score: 1,
+      })),
+    } : undefined;
 
     // Check LLM cache with stampede protection
     const cacheKey = buildLlmCacheKey(model, systemPrompt, userContent);
@@ -176,13 +248,15 @@ export async function llmChatRoutes(fastify: FastifyInstance) {
     }
 
     try {
+      const postProcess = await buildOutputPostProcessor(genWebSources.map((s) => s.url));
+
       // Resolve per-user LLM provider and stream
       const generator = providerStreamChat(userId, model, [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userContent },
       ]);
 
-      await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
+      await streamSSE(request, reply, generator, genExtras, { llmCache, cacheKey, postProcess });
     } finally {
       if (lockAcquired) await llmCache.releaseLock(cacheKey);
     }
@@ -212,7 +286,8 @@ export async function llmChatRoutes(fastify: FastifyInstance) {
       detailed: 'Provide a detailed summary covering all important points, decisions, and action items.',
     };
 
-    const systemPrompt = `${getSystemPrompt('summarize')} ${lengthInstructions[length]}${multiPageSuffix}`;
+    const basePrompt = await resolveSystemPrompt(userId, 'summarize');
+    const systemPrompt = `${basePrompt} ${lengthInstructions[length]}${multiPageSuffix}`;
 
     // Check LLM cache with stampede protection
     const cacheKey = buildLlmCacheKey(model, systemPrompt, sanitizedMarkdown);
@@ -223,13 +298,15 @@ export async function llmChatRoutes(fastify: FastifyInstance) {
     }
 
     try {
+      const postProcess = await buildOutputPostProcessor();
+
       // Resolve per-user LLM provider and stream
       const generator = providerStreamChat(userId, model, [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: sanitizedMarkdown },
       ]);
 
-      await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
+      await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey, postProcess });
     } finally {
       if (lockAcquired) await llmCache.releaseLock(cacheKey);
     }
@@ -464,9 +541,10 @@ export async function llmChatRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      // Build messages
+      // Build messages (use resolveSystemPrompt so guardrails are appended)
+      const askPrompt = await resolveSystemPrompt(userId, 'ask');
       const messages: ChatMessage[] = [
-        { role: 'system', content: getSystemPrompt('ask') + multiPageSuffix },
+        { role: 'system', content: askPrompt + multiPageSuffix },
         ...conversationHistory,
         {
           role: 'user',

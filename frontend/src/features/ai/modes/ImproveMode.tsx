@@ -1,6 +1,7 @@
 /* eslint-disable react-refresh/only-export-components */
 import { useCallback, useRef, useState } from 'react';
-import { Wand2, Loader2 } from 'lucide-react';
+import { Wand2, Loader2, Globe } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
 import { useAiContext } from '../AiContext';
 import { DiffView } from '../../../shared/components/article/DiffView';
 import { cn } from '../../../shared/lib/cn';
@@ -99,7 +100,17 @@ export function ImproveModeInput() {
     improvementType, setShowDiffView, setImprovedContent,
   } = useAiContext();
   const [instruction, setInstruction] = useState('');
+  const [searchWeb, setSearchWeb] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Check if MCP docs sidecar is available (for web search toggle)
+  const { data: mcpSettings } = useQuery<{ enabled: boolean }>({
+    queryKey: ['mcp-docs', 'status'],
+    queryFn: () => apiFetch('/mcp-docs/status'),
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+  const mcpEnabled = mcpSettings?.enabled ?? false;
 
   const handleImprove = useCallback(async () => {
     if (isStreaming) return;
@@ -121,6 +132,9 @@ export function ImproveModeInput() {
     if (instruction.trim()) {
       body.instruction = instruction.trim();
     }
+    if (searchWeb) {
+      body.searchWeb = true;
+    }
 
     await runStream(
       '/llm/improve',
@@ -133,7 +147,7 @@ export function ImproveModeInput() {
         },
       },
     );
-  }, [page, model, improvementType, pageId, isStreaming, includeSubPages, instruction, runStream, setShowDiffView, setImprovedContent]);
+  }, [page, model, improvementType, pageId, isStreaming, includeSubPages, instruction, searchWeb, runStream, setShowDiffView, setImprovedContent]);
 
   return (
     <div className="mt-3 flex flex-col gap-3 border-t border-border/40 pt-3">
@@ -147,6 +161,19 @@ export function ImproveModeInput() {
         disabled={isStreaming}
         className="w-full resize-y rounded-lg border border-border/40 bg-background/50 px-3 py-2 text-sm placeholder:text-muted-foreground/60 focus:border-primary/50 focus:outline-none disabled:opacity-50"
       />
+      {mcpEnabled && (
+        <label className="flex items-center gap-2 text-sm text-muted-foreground" data-testid="improve-search-web-toggle">
+          <input
+            type="checkbox"
+            checked={searchWeb}
+            onChange={(e) => setSearchWeb(e.target.checked)}
+            disabled={isStreaming}
+            className="rounded border-border/40"
+          />
+          <Globe size={14} />
+          Search web for reference material
+        </label>
+      )}
       <button
         onClick={handleImprove}
         disabled={isStreaming || !page || isPageLoading || !model}

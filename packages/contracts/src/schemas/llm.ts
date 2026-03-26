@@ -15,6 +15,8 @@ export const ImproveRequestSchema = z.object({
   pageId: z.string().optional(),
   includeSubPages: z.boolean().optional(),
   instruction: z.string().max(10000).optional(),
+  searchWeb: z.boolean().optional(),
+  searchQuery: z.string().max(500).optional(),
 });
 
 export const GenerateRequestSchema = z.object({
@@ -24,6 +26,8 @@ export const GenerateRequestSchema = z.object({
   spaceKey: z.string().optional(),
   parentId: z.string().optional(),
   pdfText: z.string().max(200_000).optional(),
+  searchWeb: z.boolean().optional(),
+  searchQuery: z.string().max(500).optional(),
 });
 
 export const ExtractPdfResponseSchema = z.object({

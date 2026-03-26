@@ -8,6 +8,8 @@ import {
   LANGUAGE_PRESERVATION_INSTRUCTION,
 } from '../../domains/llm/services/ollama-service.js';
 import { LlmCache, type CachedLlmResponse } from '../../domains/llm/services/llm-cache.js';
+import { getAiGuardrails, getAiOutputRules } from '../../core/services/ai-safety-service.js';
+import { sanitizeLlmOutput, type OutputSanitizeResult } from '../../core/utils/sanitize-llm-output.js';
 import { assembleSubPageContext, getMultiPagePromptSuffix } from '../../domains/confluence/services/subpage-context.js';
 import { htmlToMarkdown } from '../../core/services/content-converter.js';
 
@@ -70,11 +72,21 @@ export async function resolveSystemPrompt(userId: string, key: SystemPromptKey):
     [userId],
   );
   const custom = result.rows[0]?.custom_prompts?.[key];
+  let prompt: string;
   if (custom && custom.trim()) {
     // Always append language preservation instruction to custom prompts
-    return `${custom} ${LANGUAGE_PRESERVATION_INSTRUCTION}`;
+    prompt = `${custom} ${LANGUAGE_PRESERVATION_INSTRUCTION}`;
+  } else {
+    prompt = getSystemPrompt(key);
   }
-  return getSystemPrompt(key);
+
+  // Append admin-configured guardrails (cached with 60s TTL)
+  const guardrails = await getAiGuardrails();
+  if (guardrails.noFabricationEnabled && guardrails.noFabricationInstruction) {
+    prompt += ` ${guardrails.noFabricationInstruction}`;
+  }
+
+  return prompt;
 }
 
 /**
@@ -142,6 +154,7 @@ export async function streamSSE(
   options?: {
     llmCache?: LlmCache;
     cacheKey?: string;
+    postProcess?: (content: string) => OutputSanitizeResult;
   },
 ): Promise<string> {
   const controller = new AbortController();
@@ -172,7 +185,21 @@ export async function streamSSE(
       reply.raw.write(`data: ${JSON.stringify({ content: chunk.content, done: chunk.done })}\n\n`);
     }
 
-    // Cache the full response if caching is configured
+    // Post-process before caching (critic fix #1 + #2 — clean content before cache)
+    if (options?.postProcess && fullContent && !controller.signal.aborted) {
+      const result = options.postProcess(fullContent);
+      if (result.wasModified) {
+        fullContent = result.content;
+        // Send final cleaned content so frontend can replace accumulated text
+        reply.raw.write(`data: ${JSON.stringify({
+          content: '', done: true,
+          finalContent: result.content,
+          referencesStripped: result.strippedSections,
+        })}\n\n`);
+      }
+    }
+
+    // Cache the (possibly cleaned) response
     if (options?.llmCache && options?.cacheKey && fullContent && !controller.signal.aborted) {
       await options.llmCache.setCachedResponse(options.cacheKey, fullContent);
     }
@@ -193,4 +220,22 @@ export async function streamSSE(
   }
 
   return fullContent;
+}
+
+/**
+ * Build an output post-processor using the current admin AI output rules.
+ * Returns undefined if output processing is disabled, so callers can pass it
+ * directly to `streamSSE` options.
+ */
+export async function buildOutputPostProcessor(
+  verifiedSources?: string[],
+): Promise<((content: string) => OutputSanitizeResult) | undefined> {
+  const rules = await getAiOutputRules();
+  if (!rules.stripReferences || rules.referenceAction === 'off') return undefined;
+
+  return (content: string) =>
+    sanitizeLlmOutput(content, {
+      ...rules,
+      verifiedSources,
+    });
 }

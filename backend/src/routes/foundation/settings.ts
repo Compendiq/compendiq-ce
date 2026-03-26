@@ -11,6 +11,7 @@ import { getSyncOverview } from '../../domains/confluence/services/sync-overview
 import { logger } from '../../core/utils/logger.js';
 import { confluenceDispatcher } from '../../core/utils/tls-config.js';
 import { getSharedLlmSettings } from '../../core/services/admin-settings-service.js';
+import { getAiGuardrails, getAiOutputRules } from '../../core/services/ai-safety-service.js';
 
 export async function settingsRoutes(fastify: FastifyInstance) {
   // All settings routes require auth
@@ -86,6 +87,22 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       `SELECT setting_value FROM admin_settings WHERE setting_key = 'drawio_embed_url'`,
     );
     return { drawioEmbedUrl: result.rows[0]?.setting_value ?? 'https://embed.diagrams.net' };
+  });
+
+  // GET /api/settings/ai-safety — returns active AI safety configuration for info banners.
+  // Any authenticated user can see which guardrails/rules are active, but NOT the full instruction text.
+  fastify.get('/settings/ai-safety', async () => {
+    const [guardrails, outputRules] = await Promise.all([
+      getAiGuardrails(),
+      getAiOutputRules(),
+    ]);
+    return {
+      guardrails: { noFabricationEnabled: guardrails.noFabricationEnabled },
+      outputRules: {
+        stripReferences: outputRules.stripReferences,
+        referenceAction: outputRules.referenceAction,
+      },
+    };
   });
 
   fastify.put('/settings', async (request) => {
