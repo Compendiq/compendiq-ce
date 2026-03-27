@@ -24,7 +24,12 @@ import { spacesRoutes } from './routes/confluence/spaces.js';
 import { syncRoutes } from './routes/confluence/sync.js';
 import { attachmentRoutes } from './routes/confluence/attachments.js';
 // LLM routes
-import { llmChatRoutes } from './routes/llm/llm-chat.js';
+import { llmImproveRoutes } from './routes/llm/llm-improve.js';
+import { llmGenerateRoutes } from './routes/llm/llm-generate.js';
+import { llmSummarizeRoutes } from './routes/llm/llm-summarize.js';
+import { llmDiagramRoutes } from './routes/llm/llm-diagram.js';
+import { llmQualityRoutes } from './routes/llm/llm-quality.js';
+import { llmAskRoutes } from './routes/llm/llm-ask.js';
 import { llmConversationRoutes } from './routes/llm/llm-conversations.js';
 import { llmEmbeddingRoutes } from './routes/llm/llm-embeddings.js';
 import { llmModelRoutes } from './routes/llm/llm-models.js';
@@ -173,7 +178,12 @@ export async function buildApp() {
   await app.register(attachmentRoutes, { prefix: '/api' });
 
   // LLM routes
-  await app.register(llmChatRoutes, { prefix: '/api' });
+  await app.register(llmImproveRoutes, { prefix: '/api' });
+  await app.register(llmGenerateRoutes, { prefix: '/api' });
+  await app.register(llmSummarizeRoutes, { prefix: '/api' });
+  await app.register(llmDiagramRoutes, { prefix: '/api' });
+  await app.register(llmQualityRoutes, { prefix: '/api' });
+  await app.register(llmAskRoutes, { prefix: '/api' });
   await app.register(llmConversationRoutes, { prefix: '/api' });
   await app.register(llmEmbeddingRoutes, { prefix: '/api' });
   await app.register(llmModelRoutes, { prefix: '/api' });

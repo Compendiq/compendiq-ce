@@ -132,7 +132,10 @@ vi.mock('../../domains/confluence/services/sync-service.js', () => ({
   getClientForUser: vi.fn(),
 }));
 
-import { llmChatRoutes } from './llm-chat.js';
+import { llmAskRoutes } from './llm-ask.js';
+import { llmImproveRoutes } from './llm-improve.js';
+import { llmSummarizeRoutes } from './llm-summarize.js';
+import { llmGenerateRoutes } from './llm-generate.js';
 
 /** Parse SSE body into an array of parsed JSON objects from `data:` lines. */
 function parseSseBody(body: string): unknown[] {
@@ -166,7 +169,10 @@ describe('POST /api/llm/ask - auth required', () => {
     app.decorate('redis', {});
     app.decorateRequest('userId', '');
 
-    await app.register(llmChatRoutes, { prefix: '/api' });
+    await app.register(llmAskRoutes, { prefix: '/api' });
+    await app.register(llmImproveRoutes, { prefix: '/api' });
+    await app.register(llmSummarizeRoutes, { prefix: '/api' });
+    await app.register(llmGenerateRoutes, { prefix: '/api' });
     await app.ready();
   });
 
@@ -234,7 +240,7 @@ describe('POST /api/llm/ask - SSE streaming', () => {
       request.userId = 'test-user-123';
     });
 
-    await app.register(llmChatRoutes, { prefix: '/api' });
+    await app.register(llmAskRoutes, { prefix: '/api' });
     await app.ready();
   });
 

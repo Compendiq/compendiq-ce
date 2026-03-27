@@ -79,7 +79,7 @@ vi.mock('../../core/utils/sanitize-llm-input.js', () => ({
   sanitizeLlmInput: vi.fn((input: string) => ({ sanitized: input, warnings: [] })),
 }));
 
-import { llmChatRoutes } from './llm-chat.js';
+import { llmQualityRoutes } from './llm-quality.js';
 
 describe('POST /api/llm/analyze-quality', () => {
   let app: ReturnType<typeof Fastify>;
@@ -97,7 +97,7 @@ describe('POST /api/llm/analyze-quality', () => {
       request.userId = 'test-user-123';
     });
 
-    await app.register(llmChatRoutes, { prefix: '/api' });
+    await app.register(llmQualityRoutes, { prefix: '/api' });
     await app.ready();
   });
 

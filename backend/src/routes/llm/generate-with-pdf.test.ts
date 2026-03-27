@@ -90,7 +90,7 @@ vi.mock('../../domains/confluence/services/subpage-context.js', () => ({
   getMultiPagePromptSuffix: vi.fn().mockReturnValue(''),
 }));
 
-import { llmChatRoutes } from './llm-chat.js';
+import { llmGenerateRoutes } from './llm-generate.js';
 
 describe('POST /api/llm/generate with pdfText', () => {
   let app: ReturnType<typeof Fastify>;
@@ -107,7 +107,7 @@ describe('POST /api/llm/generate with pdfText', () => {
       request.userId = 'test-user-123';
     });
 
-    await app.register(llmChatRoutes, { prefix: '/api' });
+    await app.register(llmGenerateRoutes, { prefix: '/api' });
     await app.ready();
   });
 

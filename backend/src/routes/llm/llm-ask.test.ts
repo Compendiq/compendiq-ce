@@ -96,7 +96,7 @@ vi.mock('../../core/utils/sanitize-llm-input.js', () => ({
 }));
 
 // Import the route after all mocks are registered
-import { llmChatRoutes } from './llm-chat.js';
+import { llmAskRoutes } from './llm-ask.js';
 
 // --- Helpers ---
 
@@ -129,7 +129,7 @@ describe('POST /api/llm/ask', () => {
       request.userId = 'test-user-123';
     });
 
-    await app.register(llmChatRoutes, { prefix: '/api' });
+    await app.register(llmAskRoutes, { prefix: '/api' });
     await app.ready();
   });
 
