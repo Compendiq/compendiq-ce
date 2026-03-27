@@ -113,11 +113,12 @@ services:
       start_period: 10s
 
   searxng:
-    image: searxng/searxng:2024.12.26-18d61765e
+    image: diinlu/atlasmind-searxng:dev
+    build:
+      context: .
+      dockerfile: searxng/Dockerfile
     environment:
       SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://localhost:8080}
-    volumes:
-      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/healthz"]
       interval: 10s
