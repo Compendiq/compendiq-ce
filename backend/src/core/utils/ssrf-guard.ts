@@ -7,6 +7,8 @@
  * protocol restrictions.
  */
 
+import { lookup } from 'node:dns/promises';
+
 // ---------------------------------------------------------------------------
 // Allowlist of trusted origins (populated from user_settings.confluence_url)
 // ---------------------------------------------------------------------------
@@ -183,6 +185,49 @@ function isBlockedIpv6(hostname: string): boolean {
   }
 
   return false;
+}
+
+/**
+ * Check whether a resolved IP address belongs to a blocked (private/internal) range.
+ * Works on both IPv4 and IPv6 addresses returned by dns.lookup().
+ */
+function isBlockedIp(ip: string): boolean {
+  return isBlockedIpv4(ip) || isBlockedIpv6(ip);
+}
+
+/**
+ * DNS rebinding mitigation: resolve hostname and verify the IP is not private.
+ * NOTE: This narrows the rebinding window but does not fully prevent it --
+ * there is a TOCTOU gap between DNS lookup and TCP connect.
+ */
+async function resolveAndValidateIp(hostname: string): Promise<void> {
+  try {
+    const { address } = await lookup(hostname);
+    if (isBlockedIp(address)) {
+      throw new SsrfError(`SSRF blocked: DNS resolved to blocked IP: ${hostname} -> ${address}`);
+    }
+  } catch (err) {
+    // Re-throw our own SsrfError
+    if (err instanceof SsrfError) throw err;
+    // DNS lookup failures (ENOTFOUND, etc.) are handled by the HTTP client later
+  }
+}
+
+/**
+ * Async URL validation with DNS rebinding mitigation.
+ * Performs all sync checks from validateUrl(), then resolves the hostname
+ * and verifies the IP is not private (for non-allowlisted URLs).
+ *
+ * Use this in async contexts (OIDC, etc.) where DNS rebinding protection
+ * is desired. Existing sync callers keep using validateUrl().
+ */
+export async function validateUrlWithDns(urlString: string): Promise<void> {
+  validateUrl(urlString); // all sync checks first
+
+  const parsed = new URL(urlString);
+  if (!allowedOrigins.has(parsed.origin.toLowerCase())) {
+    await resolveAndValidateIp(parsed.hostname);
+  }
 }
 
 // ---------------------------------------------------------------------------

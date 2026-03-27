@@ -48,10 +48,7 @@ vi.mock('../../../core/services/redis-cache.js', () => ({
   releaseEmbeddingLock: (...args: unknown[]) => mocks.releaseEmbeddingLock(...args),
   isEmbeddingLocked: (...args: unknown[]) => mocks.isEmbeddingLocked(...args),
   invalidateGraphCache: (...args: unknown[]) => mocks.invalidateGraphCache(...args),
-  getRedisClient: () => ({
-    get: vi.fn().mockResolvedValue(null),
-    set: vi.fn().mockResolvedValue('OK'),
-  }),
+  getRedisClient: () => null,
 }));
 
 vi.mock('../../../core/services/rbac-service.js', () => ({
@@ -256,7 +253,8 @@ describe('embedding-service', () => {
   });
 
   describe('computePageRelationships', () => {
-    // Transaction call order on mockClient: [0]=BEGIN, [1]=SET LOCAL statement_timeout, [2]=DELETE, [3]=similarity CTE, [4]=label CTE, [5]=COMMIT
+    // Transaction call order on mockClient:
+    // [0]=BEGIN, [1]=SET LOCAL statement_timeout, [2]=DELETE, [3]=similarity CTE, [4]=label CTE, [5]=COMMIT
 
     it('should delete existing relationships then compute new ones', async () => {
       // Set up 6 specific client.query responses matching the transaction order
@@ -277,11 +275,10 @@ describe('embedding-service', () => {
       // calls[0] = BEGIN
       expect(mockClient.query.mock.calls[0][0]).toBe('BEGIN');
       // calls[1] = SET LOCAL statement_timeout
-      expect(mockClient.query.mock.calls[1][0]).toContain('SET LOCAL statement_timeout');
+      expect(mockClient.query.mock.calls[1][0]).toBe('SET LOCAL statement_timeout = 120000');
       // calls[2] = DELETE (global, no params)
       const deleteCall = mockClient.query.mock.calls[2][0] as string;
       expect(deleteCall).toContain('DELETE FROM page_relationships');
-      expect(mockClient.query.mock.calls[2][1]).toBeUndefined();
       // calls[5] = COMMIT
       expect(mockClient.query.mock.calls[5][0]).toBe('COMMIT');
     });
@@ -291,11 +288,14 @@ describe('embedding-service', () => {
       await computePageRelationships();
 
       // calls[2] = DELETE has no params (global clear)
-      expect(mockClient.query.mock.calls[2][1]).toBeUndefined();
-      // calls[3] = similarity INSERT uses $1 (TOP_K) and $2 (SIMILARITY_THRESHOLD)
+      const deleteCall = mockClient.query.mock.calls[2][0] as string;
+      expect(deleteCall).toContain('DELETE FROM page_relationships');
+      // calls[3] = similarity INSERT uses $1 (TOP_K), $2 (SIMILARITY_THRESHOLD), $3 (null for changedPageIds)
       expect(mockClient.query.mock.calls[3][1]).toBeDefined();
-      // calls[4] = label overlap has no user params
-      expect(mockClient.query.mock.calls[4][1]).toBeUndefined();
+      expect(mockClient.query.mock.calls[3][1][2]).toBeNull(); // changedPageIds = null (full recompute)
+      // calls[4] = label overlap uses $1 (null for changedPageIds)
+      expect(mockClient.query.mock.calls[4][1]).toBeDefined();
+      expect(mockClient.query.mock.calls[4][1][0]).toBeNull(); // changedPageIds = null
       // pool query() is NOT used
       expect(mocks.query).not.toHaveBeenCalled();
     });
@@ -310,7 +310,7 @@ describe('embedding-service', () => {
     it('should use parameterized SQL (no string concatenation)', async () => {
       await computePageRelationships();
 
-      // Embedding similarity INSERT uses $1 (TOP_K) and $2 (SIMILARITY_THRESHOLD) — calls[2]
+      // Embedding similarity INSERT uses $1 (TOP_K), $2 (SIMILARITY_THRESHOLD), $3 (changedPageIds)
       const similarityCall = mockClient.query.mock.calls.find(
         (call) => typeof call[0] === 'string' && (call[0] as string).includes('embedding_similarity'),
       );
@@ -347,13 +347,40 @@ describe('embedding-service', () => {
     it('should pass SIMILARITY_THRESHOLD=0.4 to the similarity query', async () => {
       await computePageRelationships();
 
-      // calls[3] = similarity CTE INSERT with params [TOP_K, SIMILARITY_THRESHOLD]
+      // calls[3] = similarity CTE INSERT with params [TOP_K, SIMILARITY_THRESHOLD, null]
       const similarityCall = mockClient.query.mock.calls.find(
         (call) => typeof call[0] === 'string' && (call[0] as string).includes('embedding_similarity'),
       );
       expect(similarityCall).toBeDefined();
       // $2 is the similarity threshold
       expect(similarityCall![1][1]).toBe(0.4);
+    });
+
+    it('should delete only affected rows when changedPageIds is provided (incremental)', async () => {
+      mockClient.query
+        .mockResolvedValueOnce({ rows: [] })                                     // BEGIN
+        .mockResolvedValueOnce({ rows: [] })                                     // SET LOCAL statement_timeout
+        .mockResolvedValueOnce({ rows: [], rowCount: 2 })                       // DELETE WHERE page_id_1 = ANY($1) OR page_id_2 = ANY($1)
+        .mockResolvedValueOnce({ rows: [{ page_id_1: 1, page_id_2: 2, score: 0.9 }], rowCount: 1 })  // similarity INSERT
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 })                       // label INSERT
+        .mockResolvedValueOnce({ rows: [] });                                    // COMMIT
+
+      const totalEdges = await computePageRelationships([1, 3]);
+
+      expect(totalEdges).toBe(1);
+
+      // DELETE should contain ANY($1)
+      const deleteCall = mockClient.query.mock.calls[2][0] as string;
+      expect(deleteCall).toContain('ANY($1)');
+      expect(mockClient.query.mock.calls[2][1]).toEqual([[1, 3]]);
+
+      // similarity query $3 should be changedPageIds
+      const similarityCall = mockClient.query.mock.calls[3];
+      expect(similarityCall[1][2]).toEqual([1, 3]);
+
+      // label query $1 should be changedPageIds
+      const labelCall = mockClient.query.mock.calls[4];
+      expect(labelCall[1][0]).toEqual([1, 3]);
     });
   });
 

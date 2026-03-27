@@ -1,6 +1,14 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+
+const mockLookup = vi.hoisted(() => vi.fn());
+
+vi.mock('node:dns/promises', () => ({
+  lookup: mockLookup,
+}));
+
 import {
   validateUrl,
+  validateUrlWithDns,
   SsrfError,
   addAllowedBaseUrl,
   removeAllowedBaseUrl,
@@ -265,6 +273,61 @@ describe('SSRF Guard', () => {
       replaceAllowedBaseUrls([]);
       expect(getAllowedBaseUrlCount()).toBe(0);
       expect(() => validateUrl('http://10.0.0.5:8090/api')).toThrow(SsrfError);
+    });
+  });
+
+  describe('validateUrlWithDns (#583 DNS rebinding mitigation)', () => {
+    afterEach(() => {
+      clearAllowedBaseUrls();
+      mockLookup.mockReset();
+    });
+
+    it('should pass for public URLs that resolve to public IPs', async () => {
+      mockLookup.mockResolvedValue({ address: '93.184.216.34', family: 4 });
+
+      await expect(validateUrlWithDns('https://example.com/api')).resolves.toBeUndefined();
+    });
+
+    it('should reject when DNS resolves to a private IP (127.x.x.x)', async () => {
+      mockLookup.mockResolvedValue({ address: '127.0.0.1', family: 4 });
+
+      await expect(validateUrlWithDns('https://evil-rebind.example.com/api')).rejects.toThrow(SsrfError);
+      await expect(validateUrlWithDns('https://evil-rebind.example.com/api')).rejects.toThrow(/DNS resolved to blocked IP/);
+    });
+
+    it('should reject when DNS resolves to a private IP (10.x.x.x)', async () => {
+      mockLookup.mockResolvedValue({ address: '10.0.0.1', family: 4 });
+
+      await expect(validateUrlWithDns('https://rebind.example.com/api')).rejects.toThrow(SsrfError);
+    });
+
+    it('should reject when DNS resolves to 169.254.x.x (link-local)', async () => {
+      mockLookup.mockResolvedValue({ address: '169.254.169.254', family: 4 });
+
+      await expect(validateUrlWithDns('https://metadata.example.com')).rejects.toThrow(SsrfError);
+    });
+
+    it('should skip DNS check for allowlisted origins', async () => {
+      mockLookup.mockResolvedValue({ address: '10.0.0.5', family: 4 });
+
+      addAllowedBaseUrl('http://10.0.0.5:8090');
+      await expect(validateUrlWithDns('http://10.0.0.5:8090/rest/api')).resolves.toBeUndefined();
+
+      // dns.lookup should NOT have been called for allowlisted URL
+      expect(mockLookup).not.toHaveBeenCalled();
+    });
+
+    it('should still enforce sync checks (protocol, hostname patterns)', async () => {
+      // file:// should be caught by the sync validateUrl() before DNS check
+      await expect(validateUrlWithDns('file:///etc/passwd')).rejects.toThrow(SsrfError);
+      await expect(validateUrlWithDns('file:///etc/passwd')).rejects.toThrow(/protocol.*not allowed/);
+    });
+
+    it('should gracefully handle DNS lookup failures (ENOTFOUND)', async () => {
+      mockLookup.mockRejectedValue(new Error('ENOTFOUND'));
+
+      // DNS failure should not throw — the HTTP client handles it later
+      await expect(validateUrlWithDns('https://nonexistent.example.com/api')).resolves.toBeUndefined();
     });
   });
 });

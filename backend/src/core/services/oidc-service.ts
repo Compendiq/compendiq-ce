@@ -1,10 +1,15 @@
 import { randomBytes, createHash } from 'crypto';
 import * as jose from 'jose';
+import { request as undiciRequest } from 'undici';
 import { query } from '../db/postgres.js';
 import { encryptPat, decryptPat } from '../utils/crypto.js';
 import { logger } from '../utils/logger.js';
-import { validateUrl } from '../utils/ssrf-guard.js';
+import { validateUrlWithDns } from '../utils/ssrf-guard.js';
+import { createTlsDispatcher } from '../utils/tls-config.js';
 import { getRedisClient } from './redis-cache.js';
+
+/** Dispatcher for OIDC HTTP calls — respects NODE_EXTRA_CA_CERTS but always verifies TLS. */
+const oidcDispatcher = createTlsDispatcher();
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -118,19 +123,22 @@ export async function getDiscoveryDocument(
 
   // Fetch from IdP — validate URL to prevent SSRF attacks
   const discoveryUrl = issuerUrl.replace(/\/$/, '') + '/.well-known/openid-configuration';
-  validateUrl(discoveryUrl);
-  const response = await fetch(discoveryUrl, {
-    headers: { Accept: 'application/json' },
+  await validateUrlWithDns(discoveryUrl);
+  const { statusCode, body: responseBody } = await undiciRequest(discoveryUrl, {
+    method: 'GET',
+    headers: { accept: 'application/json' },
+    dispatcher: oidcDispatcher,
     signal: AbortSignal.timeout(10_000),
   });
 
-  if (!response.ok) {
+  if (statusCode !== 200) {
+    const text = await responseBody.text();
     throw new Error(
-      `OIDC discovery failed: ${response.status} ${response.statusText} from ${discoveryUrl}`,
+      `OIDC discovery failed: ${statusCode} from ${discoveryUrl}: ${text.slice(0, 200)}`,
     );
   }
 
-  const doc = (await response.json()) as OidcDiscoveryDocument;
+  const doc = (await responseBody.json()) as OidcDiscoveryDocument;
 
   // Validate required fields
   if (!doc.issuer || !doc.authorization_endpoint || !doc.token_endpoint || !doc.jwks_uri) {
@@ -406,20 +414,21 @@ export async function exchangeCodeForTokens(
     code_verifier: codeVerifier,
   });
 
-  const response = await fetch(discovery.token_endpoint, {
+  const { statusCode: tokenStatus, body: tokenBody } = await undiciRequest(discovery.token_endpoint, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: body.toString(),
-    signal: AbortSignal.timeout(10_000),
+    dispatcher: oidcDispatcher,
+    signal: AbortSignal.timeout(15_000),
   });
 
-  if (!response.ok) {
-    const errorBody = await response.text().catch(() => 'unknown');
-    logger.error({ status: response.status, body: errorBody }, 'OIDC token exchange failed');
-    throw new Error(`Token exchange failed: ${response.status}`);
+  if (tokenStatus !== 200) {
+    const errorText = await tokenBody.text().catch(() => 'unknown');
+    logger.error({ status: tokenStatus, body: errorText }, 'OIDC token exchange failed');
+    throw new Error(`Token exchange failed: ${tokenStatus}`);
   }
 
-  return (await response.json()) as OidcTokenResponse;
+  return (await tokenBody.json()) as OidcTokenResponse;
 }
 
 // ── ID Token Verification ──────────────────────────────────────────────────────

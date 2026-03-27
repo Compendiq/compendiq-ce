@@ -350,17 +350,25 @@ export async function embedPage(
     await client.query('BEGIN');
     await client.query('DELETE FROM page_embeddings WHERE page_id = $1', [pageId]);
 
-    for (const item of allEmbeddings) {
+    // Batch insert embeddings (50 rows per INSERT) instead of one-at-a-time.
+    // 5 params per row x 50 = 250, well within PostgreSQL's 65535 parameter limit.
+    const INSERT_BATCH_SIZE = 50;
+    for (let batchStart = 0; batchStart < allEmbeddings.length; batchStart += INSERT_BATCH_SIZE) {
+      const batch = allEmbeddings.slice(batchStart, batchStart + INSERT_BATCH_SIZE);
+      const values: unknown[] = [];
+      const placeholders: string[] = [];
+      let paramIdx = 1;
+
+      for (const item of batch) {
+        placeholders.push(`($${paramIdx}, $${paramIdx + 1}, $${paramIdx + 2}, $${paramIdx + 3}, $${paramIdx + 4})`);
+        values.push(pageId, item.chunkIndex, item.text, pgvector.toSql(item.embedding), JSON.stringify(item.metadata));
+        paramIdx += 5;
+      }
+
       await client.query(
         `INSERT INTO page_embeddings (page_id, chunk_index, chunk_text, embedding, metadata)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [
-          pageId,
-          item.chunkIndex,
-          item.text,
-          pgvector.toSql(item.embedding),
-          JSON.stringify(item.metadata),
-        ],
+         VALUES ${placeholders.join(', ')}`,
+        values,
       );
     }
 
@@ -419,6 +427,7 @@ export async function processDirtyPages(
   let totalErrors = 0;
   let consecutiveFailures = 0;
   const errorList: string[] = [];
+  const processedPageIds: number[] = [];
 
   try {
     // Fetch global chunk settings from admin_settings
@@ -475,6 +484,7 @@ export async function processDirtyPages(
 
           await embedPage(userId, page.id, page.title, page.space_key, page.body_html, chunkOpts);
           totalProcessed++;
+          processedPageIds.push(page.id);
           consecutiveFailures = 0; // Reset on success
 
           // Report progress
@@ -527,6 +537,7 @@ export async function processDirtyPages(
               try {
                 await embedPage(userId, page.id, page.title, page.space_key, page.body_html, chunkOpts);
                 totalProcessed++;
+                processedPageIds.push(page.id);
                 consecutiveFailures = 0;
                 cbSuccess = true;
 
@@ -648,10 +659,10 @@ export async function processDirtyPages(
     await releaseEmbeddingLock(userId, lockId);
   }
 
-  // Post-embed hook: recompute nearest-neighbor relationships
+  // Post-embed hook: recompute nearest-neighbor relationships (incremental)
   if (totalProcessed > 0) {
     try {
-      await computePageRelationships();
+      await computePageRelationships(processedPageIds);
       // Invalidate cached graph data so the next request reflects new relationships
       await invalidateGraphCache(userId);
     } catch (err) {
@@ -684,7 +695,7 @@ export async function resetFailedEmbeddings(): Promise<number> {
  * Also computes label-overlap edges.
  * Tables are shared (no user_id).
  */
-export async function computePageRelationships(): Promise<number> {
+export async function computePageRelationships(changedPageIds?: number[]): Promise<number> {
   const TOP_K = 5;
   const SIMILARITY_THRESHOLD = 0.4; // cosine similarity (1 - cosine_distance) — lowered from 0.7 to surface more connections in small corpora
 
@@ -695,12 +706,20 @@ export async function computePageRelationships(): Promise<number> {
     await client.query('BEGIN');
     await client.query('SET LOCAL statement_timeout = 120000'); // 2 min max for relationship computation
 
-    // Clear all existing relationships
-    await client.query('DELETE FROM page_relationships');
+    // Delete only affected relationships when changedPageIds provided, otherwise full recompute
+    if (changedPageIds && changedPageIds.length > 0) {
+      await client.query(
+        'DELETE FROM page_relationships WHERE page_id_1 = ANY($1) OR page_id_2 = ANY($1)',
+        [changedPageIds],
+      );
+    } else {
+      await client.query('DELETE FROM page_relationships');
+    }
 
     // Compute embedding similarity edges using pgvector <=> operator.
     // We compute average embedding per page, then find top-K nearest neighbors.
-    // This is a materialized computation, not real-time.
+    // When changedPageIds is provided, only use those pages as sources in the LATERAL join.
+    const useIncremental = changedPageIds && changedPageIds.length > 0;
     const similarityResult = await client.query<{ page_id_1: number; page_id_2: number; score: number }>(
       `WITH page_avg AS (
          SELECT pe.page_id, AVG(pe.embedding) AS avg_embedding
@@ -723,6 +742,7 @@ export async function computePageRelationships(): Promise<number> {
            LIMIT $1
          ) b
          WHERE (1 - (a.avg_embedding <=> b.avg_embedding)) >= $2
+           AND ($3::int[] IS NULL OR a.page_id = ANY($3))
        )
        INSERT INTO page_relationships (page_id_1, page_id_2, relationship_type, score)
        SELECT page_id_1, page_id_2, 'embedding_similarity', score
@@ -730,10 +750,11 @@ export async function computePageRelationships(): Promise<number> {
        ON CONFLICT (page_id_1, page_id_2, relationship_type) DO UPDATE
          SET score = EXCLUDED.score, created_at = NOW()
        RETURNING page_id_1, page_id_2, score`,
-      [TOP_K, SIMILARITY_THRESHOLD],
+      [TOP_K, SIMILARITY_THRESHOLD, useIncremental ? changedPageIds : null],
     );
 
-    // Compute label-overlap edges: pages sharing at least one label
+    // Compute label-overlap edges: pages sharing at least one label.
+    // When changedPageIds is provided, only compute for pairs involving at least one changed page.
     const labelResult = await client.query<{ page_id_1: number; page_id_2: number; score: number }>(
       `WITH label_overlaps AS (
          SELECT
@@ -756,6 +777,7 @@ export async function computePageRelationships(): Promise<number> {
            AND a.labels IS NOT NULL AND array_length(a.labels, 1) > 0
            AND b.labels IS NOT NULL AND array_length(b.labels, 1) > 0
            AND a.labels && b.labels
+           AND ($1::int[] IS NULL OR a.id = ANY($1) OR b.id = ANY($1))
        )
        INSERT INTO page_relationships (page_id_1, page_id_2, relationship_type, score)
        SELECT page_id_1, page_id_2, 'label_overlap', score
@@ -764,6 +786,7 @@ export async function computePageRelationships(): Promise<number> {
        ON CONFLICT (page_id_1, page_id_2, relationship_type) DO UPDATE
          SET score = EXCLUDED.score, created_at = NOW()
        RETURNING page_id_1, page_id_2, score`,
+      [useIncremental ? changedPageIds : null],
     );
 
     await client.query('COMMIT');
