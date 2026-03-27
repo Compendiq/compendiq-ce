@@ -48,6 +48,10 @@ vi.mock('../../../core/services/redis-cache.js', () => ({
   releaseEmbeddingLock: (...args: unknown[]) => mocks.releaseEmbeddingLock(...args),
   isEmbeddingLocked: (...args: unknown[]) => mocks.isEmbeddingLocked(...args),
   invalidateGraphCache: (...args: unknown[]) => mocks.invalidateGraphCache(...args),
+  getRedisClient: () => ({
+    get: vi.fn().mockResolvedValue(null),
+    set: vi.fn().mockResolvedValue('OK'),
+  }),
 }));
 
 vi.mock('../../../core/services/rbac-service.js', () => ({

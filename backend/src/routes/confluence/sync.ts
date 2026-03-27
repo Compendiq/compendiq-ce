@@ -17,7 +17,7 @@ export async function syncRoutes(fastify: FastifyInstance) {
 
     // Set status to syncing immediately so the response reflects it
     // and the frontend can start polling right away
-    setSyncStatus(userId, { userId, status: 'syncing' });
+    await setSyncStatus(userId, { userId, status: 'syncing' });
 
     await logAuditEvent(userId, 'SYNC_STARTED', 'sync', undefined, {}, request);
 

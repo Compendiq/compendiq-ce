@@ -2,7 +2,7 @@ import { query, getPool } from '../../../core/db/postgres.js';
 import { providerGenerateEmbedding } from './llm-provider.js';
 import { htmlToText } from '../../../core/services/content-converter.js';
 import { logger } from '../../../core/utils/logger.js';
-import { invalidateGraphCache, acquireEmbeddingLock, releaseEmbeddingLock, isEmbeddingLocked } from '../../../core/services/redis-cache.js';
+import { invalidateGraphCache, acquireEmbeddingLock, releaseEmbeddingLock, isEmbeddingLocked, getRedisClient } from '../../../core/services/redis-cache.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { CircuitBreakerOpenError, ollamaBreakers, openaiBreakers } from '../../../core/services/circuit-breaker.js';
 import { getSharedLlmSettings } from '../../../core/services/admin-settings-service.js';
@@ -45,8 +45,32 @@ interface EmbeddingStatus {
   model: string;
 }
 
-/** Tracks the last time embedding processing started (any user). */
-let lastEmbeddingRunAt: Date | null = null;
+/** Redis key for the last time embedding processing started (any user). */
+const EMBEDDING_LAST_RUN_KEY = 'embedding:last_run_at';
+
+/** Read the last embedding run timestamp from Redis. Returns null if unavailable. */
+async function getLastEmbeddingRunAt(): Promise<Date | null> {
+  const redis = getRedisClient();
+  if (!redis) return null;
+  try {
+    const val = await redis.get(EMBEDDING_LAST_RUN_KEY);
+    return val ? new Date(val) : null;
+  } catch (err) {
+    logger.error({ err }, 'Failed to read lastEmbeddingRunAt from Redis');
+    return null;
+  }
+}
+
+/** Store the last embedding run timestamp in Redis. */
+async function setLastEmbeddingRunAt(date: Date): Promise<void> {
+  const redis = getRedisClient();
+  if (!redis) return;
+  try {
+    await redis.set(EMBEDDING_LAST_RUN_KEY, date.toISOString());
+  } catch (err) {
+    logger.error({ err }, 'Failed to write lastEmbeddingRunAt to Redis');
+  }
+}
 
 /** Progress event emitted during embedding processing. */
 export interface EmbeddingProgressEvent {
@@ -389,7 +413,7 @@ export async function processDirtyPages(
     return { processed: 0, errors: 0, alreadyProcessing: true };
   }
 
-  lastEmbeddingRunAt = new Date();
+  await setLastEmbeddingRunAt(new Date());
 
   let totalProcessed = 0;
   let totalErrors = 0;
@@ -760,7 +784,7 @@ export async function computePageRelationships(): Promise<number> {
  */
 export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatus> {
   const statusSpaces = await getUserAccessibleSpaces(userId);
-  const [totalResult, dirtyResult, embeddingResult, embeddedPagesResult, isProcessing, sharedSettings] = await Promise.all([
+  const [totalResult, dirtyResult, embeddingResult, embeddedPagesResult, isProcessing, sharedSettings, lastRunAt] = await Promise.all([
     query<{ count: string }>(
       `SELECT COUNT(*) as count FROM pages cp
        WHERE cp.space_key = ANY($1::text[])
@@ -789,6 +813,7 @@ export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatu
     ),
     isEmbeddingLocked(userId),
     getSharedLlmSettings(),
+    getLastEmbeddingRunAt(),
   ]);
 
   return {
@@ -797,7 +822,7 @@ export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatu
     dirtyPages: parseInt(dirtyResult.rows[0].count, 10),
     totalEmbeddings: parseInt(embeddingResult.rows[0].count, 10),
     isProcessing,
-    lastRunAt: lastEmbeddingRunAt ? lastEmbeddingRunAt.toISOString() : null,
+    lastRunAt: lastRunAt ? lastRunAt.toISOString() : null,
     model: sharedSettings.embeddingModel,
   };
 }

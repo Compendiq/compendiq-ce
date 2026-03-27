@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { query } from '../../../core/db/postgres.js';
 import { ConfluenceClient, ConfluencePage, ConfluenceSpace } from './confluence-client.js';
 import { confluenceToHtml, htmlToText } from '../../../core/services/content-converter.js';
@@ -8,6 +9,13 @@ import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js'
 import { decryptPat } from '../../../core/utils/crypto.js';
 import { addAllowedBaseUrl } from '../../../core/utils/ssrf-guard.js';
 import { logger } from '../../../core/utils/logger.js';
+import {
+  getRedisClient,
+  recordAttachmentFailure,
+  getAttachmentFailureCount,
+  clearAttachmentFailures,
+  MAX_ATTACHMENT_FAILURES as REDIS_MAX_ATTACHMENT_FAILURES,
+} from '../../../core/services/redis-cache.js';
 
 interface SyncStatus {
   userId: string;
@@ -17,27 +25,57 @@ interface SyncStatus {
   error?: string;
 }
 
-const syncStatuses = new Map<string, SyncStatus>();
+/** In-memory cache for sync statuses; Redis is the source of truth when available. */
+const syncStatusesLocal = new Map<string, SyncStatus>();
 let syncIntervalHandle: ReturnType<typeof setInterval> | null = null;
-let syncLock = false;
+
+// ── Redis keys ────────────────────────────────────────────────────────────────
+const SYNC_LOCK_KEY = 'sync:worker:lock';
+const SYNC_LOCK_TTL = 600; // 10 min safety TTL
+const SYNC_STATUS_PREFIX = 'sync:status:';
+const SYNC_STATUS_TTL = 86_400; // 24 h
+
+/** Lua script: only delete the lock if the caller owns it (value matches). */
+const RELEASE_LOCK_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`;
 
 /**
- * Tracks persistent attachment download failures to avoid retrying
- * permanently broken attachments on every sync cycle.
- * Key: `${pageId}:${filename}`, Value: consecutive failure count.
- * Resets on process restart.
+ * Attempt to acquire the sync worker lock via Redis SET NX EX.
+ * Returns a unique lock id if acquired, or null if already held.
+ * Falls back to a generated id when Redis is unavailable.
  */
-const attachmentFailures = new Map<string, number>();
-const MAX_ATTACHMENT_FAILURES = 3;
-
-/** Remove all failure-tracking entries for a page (e.g. on new version or deletion). */
-function clearPageFailures(pageId: string): void {
-  const prefix = `${pageId}:`;
-  for (const key of attachmentFailures.keys()) {
-    if (key.startsWith(prefix)) {
-      attachmentFailures.delete(key);
-    }
+async function acquireSyncLock(): Promise<string | null> {
+  const lockId = randomUUID();
+  const redis = getRedisClient();
+  if (!redis) {
+    logger.warn('Redis not available for sync lock, proceeding without lock');
+    return lockId;
   }
+  try {
+    const result = await redis.set(SYNC_LOCK_KEY, lockId, { NX: true, EX: SYNC_LOCK_TTL });
+    return result !== null ? lockId : null;
+  } catch (err) {
+    logger.error({ err }, 'Failed to acquire sync lock');
+    return null;
+  }
+}
+
+/** Release the sync worker lock using Lua ownership check. */
+async function releaseSyncLock(lockId: string): Promise<void> {
+  const redis = getRedisClient();
+  if (!redis) return;
+  try {
+    await redis.eval(RELEASE_LOCK_SCRIPT, { keys: [SYNC_LOCK_KEY], arguments: [lockId] });
+  } catch (err) {
+    logger.error({ err }, 'Failed to release sync lock');
+  }
+}
+
+const MAX_ATTACHMENT_FAILURES = REDIS_MAX_ATTACHMENT_FAILURES;
+
+/** Clear all attachment failure counters for a page (delegates to Redis). */
+async function clearPageFailures(pageId: string): Promise<void> {
+  const redis = getRedisClient();
+  await clearAttachmentFailures(redis, pageId);
 }
 
 /**
@@ -63,7 +101,7 @@ export async function syncUser(userId: string): Promise<void> {
   const client = await getClientForUser(userId);
   if (!client) {
     logger.warn({ userId }, 'No Confluence credentials configured, skipping sync');
-    syncStatuses.set(userId, { userId, status: 'idle' });
+    await setSyncStatus(userId, { userId, status: 'idle' });
     return;
   }
 
@@ -71,11 +109,11 @@ export async function syncUser(userId: string): Promise<void> {
   const spaces = await getUserAccessibleSpaces(userId);
   if (spaces.length === 0) {
     logger.info({ userId }, 'No spaces selected, skipping sync');
-    syncStatuses.set(userId, { userId, status: 'idle' });
+    await setSyncStatus(userId, { userId, status: 'idle' });
     return;
   }
 
-  syncStatuses.set(userId, { userId, status: 'syncing' });
+  await setSyncStatus(userId, { userId, status: 'syncing' });
 
   try {
     // Fetch all spaces once to avoid redundant API calls per space
@@ -87,25 +125,25 @@ export async function syncUser(userId: string): Promise<void> {
     }
 
     // Set status to 'embedding' while processing dirty pages
-    syncStatuses.set(userId, {
+    await setSyncStatus(userId, {
       userId,
       status: 'embedding',
       lastSynced: new Date(),
     });
 
     // Trigger embedding for dirty pages; update status when complete
-    processDirtyPages(userId).then(({ processed, errors }) => {
+    processDirtyPages(userId).then(async ({ processed, errors }) => {
       if (processed > 0 || errors > 0) {
         logger.info({ userId, processed, errors }, 'Post-sync embedding completed');
       }
-      syncStatuses.set(userId, {
+      await setSyncStatus(userId, {
         userId,
         status: 'idle',
         lastSynced: new Date(),
       });
-    }).catch((err) => {
+    }).catch(async (err) => {
       logger.error({ err, userId }, 'Post-sync embedding failed');
-      syncStatuses.set(userId, {
+      await setSyncStatus(userId, {
         userId,
         status: 'idle',
         lastSynced: new Date(),
@@ -114,7 +152,7 @@ export async function syncUser(userId: string): Promise<void> {
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
     logger.error({ err, userId }, 'Sync failed');
-    syncStatuses.set(userId, { userId, status: 'error', error: message });
+    await setSyncStatus(userId, { userId, status: 'error', error: message });
     throw err;
   }
 }
@@ -155,7 +193,7 @@ async function syncSpace(client: ConfluenceClient, userId: string, spaceKey: str
   // Track progress
   const total = pages.length;
   for (let i = 0; i < pages.length; i++) {
-    syncStatuses.set(userId, {
+    await setSyncStatus(userId, {
       userId,
       status: 'syncing',
       progress: { current: i + 1, total, space: spaceKey },
@@ -222,11 +260,17 @@ async function syncPage(
     }
 
     if (missing.length > 0) {
+      const redis = getRedisClient();
       // Filter out attachments that have exceeded the failure threshold
-      const retriable = missing.filter((f) => {
-        const key = `${page.id}:${f}`;
-        return (attachmentFailures.get(key) ?? 0) < MAX_ATTACHMENT_FAILURES;
-      });
+      const retriableChecks = await Promise.all(
+        missing.map(async (f) => ({
+          filename: f,
+          count: await getAttachmentFailureCount(redis, page.id, f),
+        })),
+      );
+      const retriable = retriableChecks
+        .filter((c) => c.count < MAX_ATTACHMENT_FAILURES)
+        .map((c) => c.filename);
 
       if (retriable.length > 0) {
         logger.info({ pageId: page.id, missing: retriable.length }, 'Page unchanged but some attachments missing — re-syncing');
@@ -239,19 +283,17 @@ async function syncPage(
           await getMissingAttachments(userId, page.id, bodyStorage, spaceKey),
         );
         for (const f of retriable) {
-          const key = `${page.id}:${f}`;
           if (stillMissing.has(f)) {
-            const count = (attachmentFailures.get(key) ?? 0) + 1;
-            attachmentFailures.set(key, count);
+            await recordAttachmentFailure(redis, page.id, f);
+            const count = await getAttachmentFailureCount(redis, page.id, f);
             if (count >= MAX_ATTACHMENT_FAILURES) {
               logger.warn(
                 { pageId: page.id, filename: f, failures: count },
-                'Attachment permanently failed — skipping until restart',
+                'Attachment permanently failed — skipping until TTL expiry',
               );
             }
-          } else {
-            attachmentFailures.delete(key);
           }
+          // No explicit delete needed: Redis keys expire via TTL
         }
       }
     }
@@ -289,7 +331,7 @@ async function syncPage(
   if (existing.rows.length > 0) {
     await cleanPageAttachments(userId, page.id);
     // Reset failure tracking — new version may have fixed broken attachments
-    clearPageFailures(page.id);
+    await clearPageFailures(page.id);
   }
 
   // Fetch attachments once and sync after version guard to avoid API calls for unchanged pages
@@ -339,7 +381,7 @@ async function syncPage(
  * attachment downloads previously failed.
  *
  * Attachments that fail repeatedly (e.g. Confluence returns 500 for old files
- * with problematic filenames) are tracked in `attachmentFailures` and skipped
+ * with problematic filenames) are tracked via Redis and skipped
  * after MAX_ATTACHMENT_FAILURES consecutive failures to avoid log noise.
  */
 async function syncMissingAttachments(
@@ -347,6 +389,8 @@ async function syncMissingAttachments(
   userId: string,
   spaceKey: string,
 ): Promise<void> {
+  const redis = getRedisClient();
+
   // Query pages in this space that have XHTML content (body_storage)
   const pagesResult = await query<{ confluence_id: string; body_storage: string }>(
     'SELECT confluence_id, body_storage FROM pages WHERE space_key = $1 AND body_storage IS NOT NULL',
@@ -359,10 +403,15 @@ async function syncMissingAttachments(
     if (allMissing.length === 0) continue;
 
     // Filter out attachments that have exceeded the failure threshold
-    const retriable = allMissing.filter((f) => {
-      const key = `${row.confluence_id}:${f}`;
-      return (attachmentFailures.get(key) ?? 0) < MAX_ATTACHMENT_FAILURES;
-    });
+    const retriableChecks = await Promise.all(
+      allMissing.map(async (f) => ({
+        filename: f,
+        count: await getAttachmentFailureCount(redis, row.confluence_id, f),
+      })),
+    );
+    const retriable = retriableChecks
+      .filter((c) => c.count < MAX_ATTACHMENT_FAILURES)
+      .map((c) => c.filename);
 
     if (retriable.length === 0) continue;
 
@@ -382,19 +431,17 @@ async function syncMissingAttachments(
       );
 
       for (const f of retriable) {
-        const key = `${row.confluence_id}:${f}`;
         if (stillMissing.has(f)) {
-          const count = (attachmentFailures.get(key) ?? 0) + 1;
-          attachmentFailures.set(key, count);
+          await recordAttachmentFailure(redis, row.confluence_id, f);
+          const count = await getAttachmentFailureCount(redis, row.confluence_id, f);
           if (count >= MAX_ATTACHMENT_FAILURES) {
             logger.warn(
               { pageId: row.confluence_id, filename: f, failures: count },
-              'Attachment permanently failed — skipping until restart',
+              'Attachment permanently failed — skipping until TTL expiry',
             );
           }
-        } else {
-          attachmentFailures.delete(key);
         }
+        // No explicit delete needed: Redis keys expire via TTL
       }
 
       retried++;
@@ -440,7 +487,7 @@ async function detectDeletedPages(
       // page_embeddings are deleted by CASCADE on pages
       await query('DELETE FROM pages WHERE confluence_id = $1', [confluence_id]);
       await cleanPageAttachments('', confluence_id);
-      clearPageFailures(confluence_id);
+      await clearPageFailures(confluence_id);
     }
   }
 }
@@ -448,16 +495,35 @@ async function detectDeletedPages(
 /**
  * Get sync status for a user.
  *
- * Returns the in-memory status when available (hot path during active syncs).
- * After a server restart the in-memory map is empty, so we fall back to the
- * database: MAX(last_synced) across the user's RBAC-accessible spaces.
- * The result is cached in the map so subsequent calls are fast.
+ * Reads from Redis first, then falls back to the in-memory cache, and finally
+ * to the database (MAX(last_synced) across the user's RBAC-accessible spaces).
+ * The result is always stored in both Redis and the in-memory cache.
  */
 export async function getSyncStatus(userId: string): Promise<SyncStatus> {
-  const cached = syncStatuses.get(userId);
+  // 1. Try Redis
+  const redis = getRedisClient();
+  if (redis) {
+    try {
+      const raw = await redis.get(`${SYNC_STATUS_PREFIX}${userId}`);
+      if (raw) {
+        const parsed = JSON.parse(raw) as SyncStatus;
+        // Revive lastSynced from string to Date
+        if (parsed.lastSynced && typeof parsed.lastSynced === 'string') {
+          parsed.lastSynced = new Date(parsed.lastSynced as string);
+        }
+        syncStatusesLocal.set(userId, parsed);
+        return parsed;
+      }
+    } catch (err) {
+      logger.error({ err, userId }, 'Failed to read sync status from Redis');
+    }
+  }
+
+  // 2. Try in-memory cache
+  const cached = syncStatusesLocal.get(userId);
   if (cached) return cached;
 
-  // Fall back to DB — find the most recent space sync for this user's spaces
+  // 3. Fall back to DB — find the most recent space sync for this user's spaces
   const result = await query<{ last_synced: Date | null }>(
     `SELECT MAX(s.last_synced) AS last_synced
      FROM spaces s
@@ -471,16 +537,25 @@ export async function getSyncStatus(userId: string): Promise<SyncStatus> {
   const lastSynced = result.rows[0]?.last_synced ?? undefined;
   const status: SyncStatus = { userId, status: 'idle', lastSynced };
 
-  // Seed in-memory cache so subsequent calls skip the DB query
-  syncStatuses.set(userId, status);
+  // Seed both caches
+  syncStatusesLocal.set(userId, status);
+  await setSyncStatus(userId, status);
   return status;
 }
 
 /**
- * Set sync status for a user (used by route handler to set 'syncing' before dispatch).
+ * Set sync status for a user.
+ * Writes to both Redis (source of truth) and in-memory cache (fast reads).
  */
-export function setSyncStatus(userId: string, status: SyncStatus): void {
-  syncStatuses.set(userId, status);
+export async function setSyncStatus(userId: string, status: SyncStatus): Promise<void> {
+  syncStatusesLocal.set(userId, status);
+  const redis = getRedisClient();
+  if (!redis) return;
+  try {
+    await redis.set(`${SYNC_STATUS_PREFIX}${userId}`, JSON.stringify(status), { EX: SYNC_STATUS_TTL });
+  } catch (err) {
+    logger.error({ err, userId }, 'Failed to write sync status to Redis');
+  }
 }
 
 /**
@@ -492,8 +567,8 @@ export function startSyncWorker(intervalMinutes = 15): void {
   const intervalMs = intervalMinutes * 60 * 1000;
 
   syncIntervalHandle = setInterval(async () => {
-    if (syncLock) return;
-    syncLock = true;
+    const lockId = await acquireSyncLock();
+    if (!lockId) return; // another process holds the lock
 
     try {
       // Get all users with configured connections and RBAC space assignments
@@ -516,7 +591,7 @@ export function startSyncWorker(intervalMinutes = 15): void {
     } catch (err) {
       logger.error({ err }, 'Background sync worker error');
     } finally {
-      syncLock = false;
+      await releaseSyncLock(lockId);
     }
   }, intervalMs);
 
