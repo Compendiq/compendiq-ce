@@ -175,10 +175,10 @@ This stops all containers, removes all data volumes, and deletes the install dir
 
 Images are published to two registries on every release:
 
-| Registry | Image |
-|----------|-------|
-| Docker Hub | `diinlu/atlasmind-backend:latest` · `diinlu/atlasmind-frontend:latest` |
-| GHCR | `ghcr.io/laboef1900/atlasmind-backend:latest` · `ghcr.io/laboef1900/atlasmind-frontend:latest` |
+| Registry | Images |
+|----------|--------|
+| Docker Hub | `diinlu/atlasmind-backend` · `diinlu/atlasmind-frontend` · `diinlu/atlasmind-mcp-docs` · `diinlu/atlasmind-searxng` |
+| GHCR | `ghcr.io/laboef1900/atlasmind-backend` · `ghcr.io/laboef1900/atlasmind-frontend` · `ghcr.io/laboef1900/atlasmind-mcp-docs` · `ghcr.io/laboef1900/atlasmind-searxng` |
 
 Both registries publish `linux/amd64` and `linux/arm64` variants.
 
