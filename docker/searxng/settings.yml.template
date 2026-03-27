@@ -1,0 +1,11 @@
+use_default_settings: true
+
+search:
+  formats:
+    - html
+    - json
+
+server:
+  limiter: ${SEARXNG_LIMITER}
+  image_proxy: ${SEARXNG_IMAGE_PROXY}
+  secret_key: "${SEARXNG_SECRET_KEY}"

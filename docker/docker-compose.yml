@@ -12,6 +12,7 @@ services:
       backend:
         condition: service_healthy
     restart: unless-stopped
+    networks: [frontend-net, backend-net]
 
   backend:
     image: diinlu/atlasmind-backend:dev
@@ -71,6 +72,7 @@ services:
       timeout: 5s
       retries: 5
       start_period: 15s
+    networks: [backend-net, data-net]
 
   postgres:
     image: pgvector/pgvector:pg17
@@ -86,6 +88,7 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    networks: [data-net]
 
   mcp-docs:
     image: diinlu/atlasmind-mcp-docs:dev
@@ -111,6 +114,7 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
+    networks: [backend-net]
 
   searxng:
     image: diinlu/atlasmind-searxng:dev
@@ -119,6 +123,9 @@ services:
       dockerfile: Dockerfile
     environment:
       SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://localhost:8080}
+      SEARXNG_LIMITER: ${SEARXNG_LIMITER:-false}
+      SEARXNG_IMAGE_PROXY: ${SEARXNG_IMAGE_PROXY:-false}
+      SEARXNG_SECRET_KEY: ${SEARXNG_SECRET_KEY:-}
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/healthz"]
       interval: 10s
@@ -126,6 +133,7 @@ services:
       retries: 5
       start_period: 10s
     restart: unless-stopped
+    networks: [backend-net]
 
   redis:
     image: redis:8-alpine
@@ -140,7 +148,17 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    networks: [data-net, backend-net]
 
 volumes:
   postgres-data:
   attachments:
+
+networks:
+  frontend-net:
+    driver: bridge
+  backend-net:
+    driver: bridge
+  data-net:
+    driver: bridge
+    internal: true
