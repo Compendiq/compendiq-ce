@@ -110,18 +110,3 @@ export function _resetLicenseCache(): void {
   cachedLicense = null;
 }
 
-/** Generate a license key (for tooling/admin use) */
-export function generateLicenseKey(tier: Exclude<LicenseTier, 'community'>, seats: number, expiry: Date): string {
-  const secret = getSigningSecret();
-  if (!secret) throw new Error('No signing secret configured');
-
-  const expiryStr = [
-    expiry.getFullYear().toString(),
-    (expiry.getMonth() + 1).toString().padStart(2, '0'),
-    expiry.getDate().toString().padStart(2, '0'),
-  ].join('');
-
-  const data = `ATM-${tier}-${seats}-${expiryStr}`;
-  const signature = createHmac('sha256', secret).update(data).digest('hex');
-  return `${data}-${signature}`;
-}

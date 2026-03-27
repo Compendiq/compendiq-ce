@@ -14,7 +14,6 @@ vi.mock('../core/utils/logger.js', () => ({
 import {
   getLicenseInfo,
   isEnterprise,
-  generateLicenseKey,
   _resetLicenseCache,
 } from './license-service.js';
 import { logger } from '../core/utils/logger.js';
@@ -335,41 +334,4 @@ describe('license-service', () => {
     });
   });
 
-  // ── generateLicenseKey ───────────────────────────────────────────────────
-
-  describe('generateLicenseKey', () => {
-    it('generates a valid key that can be verified', () => {
-      process.env.ATLASMIND_LICENSE_SECRET = TEST_SECRET;
-
-      const expiry = new Date(2030, 11, 31); // Dec 31 2030
-      const key = generateLicenseKey('enterprise', 100, expiry);
-
-      expect(key).toMatch(/^ATM-enterprise-100-20301231-[0-9a-f]{64}$/);
-
-      // Parse the generated key to verify round-trip
-      _resetLicenseCache();
-      process.env.ATLASMIND_LICENSE_KEY = key;
-      const info = getLicenseInfo();
-
-      expect(info.tier).toBe('enterprise');
-      expect(info.seats).toBe(100);
-      expect(info.isValid).toBe(true);
-    });
-
-    it('pads month and day correctly', () => {
-      process.env.ATLASMIND_LICENSE_SECRET = TEST_SECRET;
-
-      const expiry = new Date(2030, 0, 5); // Jan 5 2030
-      const key = generateLicenseKey('team', 5, expiry);
-
-      expect(key).toContain('ATM-team-5-20300105-');
-    });
-
-    it('throws when no signing secret is configured', () => {
-      // No ATLASMIND_LICENSE_SECRET or PAT_ENCRYPTION_KEY
-      expect(() => generateLicenseKey('team', 5, new Date(2030, 0, 1))).toThrow(
-        'No signing secret configured',
-      );
-    });
-  });
 });
