@@ -11,8 +11,6 @@ import { ErrorBoundary } from './shared/components/feedback/ErrorBoundary';
 
 import { LoginPage } from './features/settings/LoginPage';
 import { SetupWizard } from './features/setup/SetupWizard';
-import { OidcCallbackPage } from './features/auth/OidcCallbackPage';
-
 // Route-based code splitting: lazy-load all page components (#186)
 // LoginPage is statically imported — it's the first screen for
 // unauthenticated users and lazy-loading it causes a "Loading..." flash.
@@ -62,12 +60,6 @@ const SpaceSettingsPage = lazy(() =>
     default: m.SpaceSettingsPage,
   })),
 );
-const OidcSettingsPage = lazy(() =>
-  import('./features/admin/OidcSettingsPage').then((m) => ({
-    default: m.OidcSettingsPage,
-  })),
-);
-
 export function PageLoadingFallback() {
   return (
     <div className="flex items-center justify-center h-64">
@@ -108,12 +100,6 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-function AdminRoute({ children }: { children: React.ReactNode }) {
-  const user = useAuthStore((s) => s.user);
-  if (user?.role !== 'admin') return <Navigate to="/" replace />;
-  return <>{children}</>;
-}
-
 export function App() {
   useSessionInit();
   useTokenRefreshTimer();
@@ -126,7 +112,6 @@ export function App() {
           <Routes>
             <Route path="/setup" element={<SetupRoute><SetupWizard /></SetupRoute>} />
             <Route path="/login" element={<LoginPage />} />
-            <Route path="/auth/oidc/callback" element={<OidcCallbackPage />} />
             <Route
               path="/*"
               element={
@@ -156,10 +141,6 @@ export function App() {
                           <Route
                             path="/settings"
                             element={<SettingsPage />}
-                          />
-                          <Route
-                            path="/settings/oidc"
-                            element={<AdminRoute><OidcSettingsPage /></AdminRoute>}
                           />
                           <Route
                             path="*"

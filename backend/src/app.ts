@@ -12,15 +12,12 @@ import { serializerCompiler, validatorCompiler } from 'fastify-type-provider-zod
 import correlationIdPlugin from './core/plugins/correlation-id.js';
 import authPlugin from './core/plugins/auth.js';
 import redisPlugin from './core/plugins/redis.js';
-import licensePlugin from './enterprise/license-middleware.js';
 // Foundation routes
 import { healthRoutes } from './routes/foundation/health.js';
 import { authRoutes } from './routes/foundation/auth.js';
 import { settingsRoutes } from './routes/foundation/settings.js';
 import { adminRoutes } from './routes/foundation/admin.js';
 import { rbacRoutes } from './routes/foundation/rbac.js';
-import { oidcRoutes, oidcAdminRoutes } from './routes/foundation/oidc.js';
-import { licenseRoutes } from './routes/foundation/license.js';
 // Confluence routes
 import { spacesRoutes } from './routes/confluence/spaces.js';
 import { syncRoutes } from './routes/confluence/sync.js';
@@ -127,7 +124,6 @@ export async function buildApp() {
   await app.register(correlationIdPlugin);
   await app.register(redisPlugin);
   await app.register(authPlugin);
-  await app.register(licensePlugin);
 
   // Error handler
   app.setErrorHandler((error: Error & { statusCode?: number }, request, reply) => {
@@ -172,9 +168,6 @@ export async function buildApp() {
   await app.register(settingsRoutes, { prefix: '/api' });
   await app.register(adminRoutes, { prefix: '/api' });
   await app.register(rbacRoutes, { prefix: '/api' });
-  await app.register(oidcRoutes, { prefix: '/api' });
-  await app.register(oidcAdminRoutes, { prefix: '/api' });
-  await app.register(licenseRoutes, { prefix: '/api' });
 
   // Confluence routes
   await app.register(spacesRoutes, { prefix: '/api' });

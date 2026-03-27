@@ -28,7 +28,6 @@ const defaultSettings = {
   rateLimitAdmin: 20,
   rateLimitLlmStream: 10,
   rateLimitLlmEmbedding: 5,
-  rateLimitOidc: 10,
 };
 
 function mockFetchWith(settings: Record<string, unknown>) {
@@ -73,7 +72,6 @@ describe('RateLimitsTab', () => {
     expect(screen.getByText('Admin operations')).toBeInTheDocument();
     expect(screen.getByText('LLM streaming')).toBeInTheDocument();
     expect(screen.getByText('Embedding & PDF')).toBeInTheDocument();
-    expect(screen.getByText('OIDC / SSO')).toBeInTheDocument();
   });
 
   it('initializes inputs from settings', async () => {

@@ -14,7 +14,6 @@ export interface RateLimits {
   admin: RateLimitConfig;
   llmStream: RateLimitConfig;
   llmEmbedding: RateLimitConfig;
-  oidc: RateLimitConfig;
 }
 
 // ─── Defaults (hardcoded fallbacks) ───────────────────────────────────────────
@@ -25,7 +24,6 @@ const DEFAULTS: RateLimits = {
   admin:        { max: 20,  timeWindow: '1 minute' },
   llmStream:    { max: 10,  timeWindow: '1 minute' },
   llmEmbedding: { max: 5,   timeWindow: '1 minute' },
-  oidc:         { max: 10,  timeWindow: '1 minute' },
 };
 
 // Security floor: auth rate limits cannot go below this to prevent brute-force
@@ -39,7 +37,6 @@ const RATE_LIMIT_KEYS = [
   'rate_limit_admin_max',
   'rate_limit_llm_stream_max',
   'rate_limit_llm_embedding_max',
-  'rate_limit_oidc_max',
 ] as const;
 
 // ─── In-process TTL cache ─────────────────────────────────────────────────────
@@ -70,7 +67,6 @@ export async function getRateLimits(): Promise<RateLimits> {
     admin:        { max: parseInt(map['rate_limit_admin_max'] ?? '', 10) || DEFAULTS.admin.max, timeWindow: '1 minute' },
     llmStream:    { max: parseInt(map['rate_limit_llm_stream_max'] ?? '', 10) || DEFAULTS.llmStream.max, timeWindow: '1 minute' },
     llmEmbedding: { max: parseInt(map['rate_limit_llm_embedding_max'] ?? '', 10) || DEFAULTS.llmEmbedding.max, timeWindow: '1 minute' },
-    oidc:         { max: parseInt(map['rate_limit_oidc_max'] ?? '', 10) || DEFAULTS.oidc.max, timeWindow: '1 minute' },
   };
 
   cache = { value, expiresAt: Date.now() + CACHE_TTL_MS };
@@ -87,7 +83,6 @@ const KEY_MAP: Record<keyof RateLimits, string> = {
   admin: 'rate_limit_admin_max',
   llmStream: 'rate_limit_llm_stream_max',
   llmEmbedding: 'rate_limit_llm_embedding_max',
-  oidc: 'rate_limit_oidc_max',
 };
 
 export async function upsertRateLimits(updates: RateLimitUpdate, userId?: string): Promise<void> {

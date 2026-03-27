@@ -46,7 +46,7 @@ atlasmind/
 │   │   ├── plugins/                 # Fastify plugins (auth, correlation-id, redis)
 │   │   ├── services/                # Cross-cutting: redis-cache, audit-service, error-tracker,
 │   │   │                            #   content-converter, circuit-breaker, image-references,
-│   │   │                            #   oidc-service, rbac-service, notification-service,
+│   │   │                            #   rbac-service, notification-service,
 │   │   │                            #   pdf-service, admin-settings-service, version-snapshot
 │   │   └── utils/                   # crypto, logger, sanitize-llm-input, ssrf-guard, tls-config, llm-config
 │   ├── domains/
@@ -57,7 +57,7 @@ atlasmind/
 │   │   └── knowledge/services/      # auto-tagger, quality-worker, summary-worker,
 │   │                                #   version-tracker, duplicate-detector
 │   ├── routes/
-│   │   ├── foundation/              # health, auth, settings, admin, oidc, rbac, notifications
+│   │   ├── foundation/              # health, auth, settings, admin, rbac, notifications
 │   │   ├── confluence/              # spaces, sync, attachments
 │   │   ├── llm/                     # llm-chat (SSE streaming), llm-conversations,
 │   │   │                            #   llm-embeddings, llm-models, llm-admin, llm-pdf
@@ -223,7 +223,4 @@ Copy `.env.example` to `.env`. Key vars:
 - `OTEL_SERVICE_NAME` (optional, default: `atlasmind-backend`)
 - `OTEL_EXPORTER_OTLP_ENDPOINT` (optional, OTLP collector endpoint)
 
-- `ATLASMIND_LICENSE_KEY` (optional, enterprise license key — absent = Community mode)
-- `ATLASMIND_LICENSE_SECRET` (optional, license signing secret, falls back to `PAT_ENCRYPTION_KEY`)
-
-OIDC/SSO is configured entirely via the Admin UI — no environment variables required. OIDC requires an active enterprise license (`ATLASMIND_LICENSE_KEY`).
+OIDC/SSO is available in the Enterprise Edition only.

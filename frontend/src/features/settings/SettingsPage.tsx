@@ -17,10 +17,9 @@ import { McpDocsTab } from './McpDocsTab';
 import { AiSafetyTab } from './AiSafetyTab';
 import { RateLimitsTab } from './RateLimitsTab';
 import { SearxngTab } from './SearxngTab';
-import { LicenseStatusCard } from '../admin/LicenseStatusCard';
 import { SkeletonFormFields } from '../../shared/components/feedback/Skeleton';
 
-type TabId = 'confluence' | 'sync' | 'ollama' | 'ai-prompts' | 'ai-safety' | 'rate-limits' | 'spaces' | 'theme' | 'labels' | 'errors' | 'embedding' | 'workers' | 'mcp-docs' | 'searxng' | 'license' | 'system';
+type TabId = 'confluence' | 'sync' | 'ollama' | 'ai-prompts' | 'ai-safety' | 'rate-limits' | 'spaces' | 'theme' | 'labels' | 'errors' | 'embedding' | 'workers' | 'mcp-docs' | 'searxng' | 'system';
 
 export function SettingsPage() {
   const queryClient = useQueryClient();
@@ -55,7 +54,6 @@ export function SettingsPage() {
     { id: 'workers', label: 'Workers', adminOnly: true },
     { id: 'mcp-docs', label: 'MCP Docs', adminOnly: true },
     { id: 'searxng', label: 'SearXNG', adminOnly: true },
-    { id: 'license', label: 'License', adminOnly: true },
     { id: 'system', label: 'System', adminOnly: true },
   ];
 
@@ -89,7 +87,7 @@ export function SettingsPage() {
         </div>
 
         <div className="p-6">
-          {(isLoading || !settings) && activeTab !== 'labels' && activeTab !== 'errors' && activeTab !== 'theme' && activeTab !== 'embedding' && activeTab !== 'sync' && activeTab !== 'workers' && activeTab !== 'mcp-docs' && activeTab !== 'ai-safety' && activeTab !== 'rate-limits' && activeTab !== 'searxng' && activeTab !== 'license' ? (
+          {(isLoading || !settings) && activeTab !== 'labels' && activeTab !== 'errors' && activeTab !== 'theme' && activeTab !== 'embedding' && activeTab !== 'sync' && activeTab !== 'workers' && activeTab !== 'mcp-docs' && activeTab !== 'ai-safety' && activeTab !== 'rate-limits' && activeTab !== 'searxng' ? (
             <SkeletonFormFields />
           ) : activeTab === 'confluence' ? (
             <ConfluenceTab settings={settings!} onSave={(v) => updateSettings.mutate(v)} />
@@ -123,8 +121,6 @@ export function SettingsPage() {
             <McpDocsTab />
           ) : activeTab === 'searxng' && isAdmin ? (
             <SearxngTab />
-          ) : activeTab === 'license' && isAdmin ? (
-            <LicenseStatusCard />
           ) : activeTab === 'system' && isAdmin ? (
             <SystemTab />
           ) : (

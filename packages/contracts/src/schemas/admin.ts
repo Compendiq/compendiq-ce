@@ -36,7 +36,6 @@ export const AdminSettingsSchema = z.object({
   rateLimitAdmin: z.number().int().min(5).max(1000).optional(),
   rateLimitLlmStream: z.number().int().min(1).max(1000).optional(),
   rateLimitLlmEmbedding: z.number().int().min(1).max(1000).optional(),
-  rateLimitOidc: z.number().int().min(3).max(1000).optional(),
 });
 
 export const UpdateAdminSettingsSchema = z.object({
@@ -60,7 +59,6 @@ export const UpdateAdminSettingsSchema = z.object({
   rateLimitAdmin: z.number().int().min(5).max(1000).optional(),
   rateLimitLlmStream: z.number().int().min(1).max(1000).optional(),
   rateLimitLlmEmbedding: z.number().int().min(1).max(1000).optional(),
-  rateLimitOidc: z.number().int().min(3).max(1000).optional(),
 });
 
 export type AdminSettings = z.infer<typeof AdminSettingsSchema>;

@@ -36,12 +36,6 @@ vi.mock('./core/plugins/correlation-id.js', () => ({
   default: vi.fn(async () => {}),
 }));
 
-vi.mock('./enterprise/license-middleware.js', () => ({
-  default: vi.fn(async (fastify: FastifyInstance) => {
-    fastify.decorate('checkEnterpriseLicense', vi.fn());
-  }),
-}));
-
 vi.mock('./core/utils/logger.js', () => ({
   logger: { debug: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn(), fatal: vi.fn() },
 }));
@@ -60,8 +54,6 @@ vi.mock('./routes/foundation/auth.js', () => ({ authRoutes: noopRoute }));
 vi.mock('./routes/foundation/settings.js', () => ({ settingsRoutes: noopRoute }));
 vi.mock('./routes/foundation/admin.js', () => ({ adminRoutes: noopRoute }));
 vi.mock('./routes/foundation/rbac.js', () => ({ rbacRoutes: noopRoute }));
-vi.mock('./routes/foundation/oidc.js', () => ({ oidcRoutes: noopRoute, oidcAdminRoutes: noopRoute }));
-vi.mock('./routes/foundation/license.js', () => ({ licenseRoutes: noopRoute }));
 vi.mock('./routes/foundation/notifications.js', () => ({ notificationRoutes: noopRoute }));
 vi.mock('./routes/confluence/spaces.js', () => ({ spacesRoutes: noopRoute }));
 vi.mock('./routes/confluence/sync.js', () => ({ syncRoutes: noopRoute }));

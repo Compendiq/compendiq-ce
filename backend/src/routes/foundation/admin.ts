@@ -262,7 +262,6 @@ export async function adminRoutes(fastify: FastifyInstance) {
       rateLimitAdmin: rateLimits.admin.max,
       rateLimitLlmStream: rateLimits.llmStream.max,
       rateLimitLlmEmbedding: rateLimits.llmEmbedding.max,
-      rateLimitOidc: rateLimits.oidc.max,
     };
   });
 
@@ -389,7 +388,6 @@ export async function adminRoutes(fastify: FastifyInstance) {
     if (body.rateLimitAdmin !== undefined) rateLimitUpdates.admin = body.rateLimitAdmin;
     if (body.rateLimitLlmStream !== undefined) rateLimitUpdates.llmStream = body.rateLimitLlmStream;
     if (body.rateLimitLlmEmbedding !== undefined) rateLimitUpdates.llmEmbedding = body.rateLimitLlmEmbedding;
-    if (body.rateLimitOidc !== undefined) rateLimitUpdates.oidc = body.rateLimitOidc;
 
     if (Object.keys(rateLimitUpdates).length > 0) {
       await upsertRateLimits(rateLimitUpdates, request.userId);

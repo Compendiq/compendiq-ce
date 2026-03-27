@@ -94,7 +94,7 @@ if (connectOpts) {
 
 /**
  * Create a dispatcher that respects NODE_EXTRA_CA_CERTS but always verifies TLS.
- * For non-Confluence external services (OIDC IdPs, etc.) that may use internal CAs.
+ * For non-Confluence external services that may use internal CAs.
  */
 export function createTlsDispatcher(): Dispatcher {
   const connectOpts = caBundleContents ? { ca: caBundleContents } : undefined;

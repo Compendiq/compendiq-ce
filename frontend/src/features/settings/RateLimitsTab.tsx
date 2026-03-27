@@ -9,7 +9,6 @@ interface AdminSettings {
   rateLimitAdmin?: number;
   rateLimitLlmStream?: number;
   rateLimitLlmEmbedding?: number;
-  rateLimitOidc?: number;
   [key: string]: unknown;
 }
 
@@ -53,14 +52,6 @@ const CATEGORIES = [
     description: 'Embedding processing, PDF extraction, and re-embed operations.',
     default: 5,
     min: 1,
-    max: 1000,
-  },
-  {
-    key: 'rateLimitOidc' as const,
-    label: 'OIDC / SSO',
-    description: 'OIDC authorization, callback, and token exchange.',
-    default: 10,
-    min: 3,
     max: 1000,
   },
 ] as const;

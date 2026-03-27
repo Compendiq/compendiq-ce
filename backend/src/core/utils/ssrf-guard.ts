@@ -218,7 +218,7 @@ async function resolveAndValidateIp(hostname: string): Promise<void> {
  * Performs all sync checks from validateUrl(), then resolves the hostname
  * and verifies the IP is not private (for non-allowlisted URLs).
  *
- * Use this in async contexts (OIDC, etc.) where DNS rebinding protection
+ * Use this in async contexts where DNS rebinding protection
  * is desired. Existing sync callers keep using validateUrl().
  */
 export async function validateUrlWithDns(urlString: string): Promise<void> {

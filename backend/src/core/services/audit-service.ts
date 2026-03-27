@@ -31,8 +31,6 @@ export type AuditAction =
   | 'LOCAL_SPACE_DELETED'
   | 'PAGE_MOVED'
   | 'PAGE_REORDERED'
-  | 'OIDC_LOGIN'
-  | 'OIDC_LOGIN_FAILED'
   | 'QUALITY_RUN_NOW'
   | 'SUMMARY_RUN_NOW'
   | 'EMBEDDING_RUN_NOW'
