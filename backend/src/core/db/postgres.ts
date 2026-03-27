@@ -12,9 +12,12 @@ export function getPool(): pg.Pool {
   if (!pool) {
     pool = new pg.Pool({
       connectionString: process.env.POSTGRES_URL,
-      max: 20,
+      max: parseInt(process.env.PG_POOL_MAX || '20', 10),
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 5_000,
+      ...(process.env.PG_STATEMENT_TIMEOUT
+        ? { options: `--statement_timeout=${process.env.PG_STATEMENT_TIMEOUT}` }
+        : {}),
     });
     pool.on('error', (err) => {
       logger.error({ err }, 'Unexpected PostgreSQL pool error');

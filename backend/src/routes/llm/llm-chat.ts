@@ -8,7 +8,8 @@ import { hybridSearch, buildRagContext } from '../../domains/llm/services/rag-se
 import { htmlToMarkdown } from '../../core/services/content-converter.js';
 import { LlmCache, buildLlmCacheKey, buildRagCacheKey } from '../../domains/llm/services/llm-cache.js';
 import { CircuitBreakerOpenError } from '../../core/services/circuit-breaker.js';
-import { isEnabled as isMcpDocsEnabled, fetchDocumentation, searchDocumentation } from '../../core/services/mcp-docs-client.js';
+import { isEnabled as isMcpDocsEnabled, fetchDocumentation } from '../../core/services/mcp-docs-client.js';
+import { fetchWebSources, formatWebContext, type WebSource } from './_web-search-helper.js';
 import {
   ImproveRequestSchema,
   GenerateRequestSchema,
@@ -28,7 +29,6 @@ import {
   streamSSE,
   sanitizeLlmInput,
   buildOutputPostProcessor,
-  getSearxngMaxResults,
   LLM_STREAM_RATE_LIMIT,
   MAX_INPUT_LENGTH,
   MAX_PDF_TEXT_FOR_LLM,
@@ -77,33 +77,18 @@ export async function llmChatRoutes(fastify: FastifyInstance) {
     }
 
     // Web search for reference material (Phase 3 — #564)
-    const webSources: Array<{ url: string; title: string; snippet: string }> = [];
-    if (body.searchWeb && await isMcpDocsEnabled()) {
-      try {
-        const searchQuery = body.searchQuery || sanitizedInstruction?.slice(0, 200) || `improve ${type} technical documentation`;
-        const searchResults = await searchDocumentation(searchQuery, userId, await getSearxngMaxResults());
-
-        for (const result of searchResults.slice(0, 2)) {
-          try {
-            const doc = await fetchDocumentation(result.url, userId, 5000);
-            const { sanitized: cleanDoc } = sanitizeLlmInput(doc.markdown);
-            webSources.push({ url: result.url, title: result.title, snippet: cleanDoc });
-          } catch (fetchErr) {
-            logger.warn({ err: fetchErr, url: result.url }, 'Failed to fetch full doc for improve web search, using snippet');
-            webSources.push({ url: result.url, title: result.title, snippet: result.snippet });
-          }
-        }
-      } catch (err) {
-        logger.warn({ err }, 'Web search failed for improve route, continuing without');
-      }
+    const webSources: WebSource[] = [];
+    if (body.searchWeb) {
+      const sq = body.searchQuery || sanitizedInstruction?.slice(0, 200) || `improve ${type} technical documentation`;
+      webSources.push(...await fetchWebSources(sq, userId));
     }
 
     let improveContent = sanitized;
     if (webSources.length > 0) {
-      const webContext = webSources.map((s, i) =>
-        `[Reference ${i + 1}: "${s.title}" (${s.url})]\n${s.snippet}`
-      ).join('\n\n---\n\n');
-      improveContent = `${sanitized}\n\n---\n\nVerified reference material from web search:\n\n${webContext}`;
+      improveContent += formatWebContext(webSources, {
+        sourceLabel: 'Reference',
+        sectionHeader: 'Verified reference material from web search',
+      });
     }
 
     let systemPrompt = await resolveSystemPrompt(userId, `improve_${type}` as SystemPromptKey) + multiPageSuffix;
@@ -206,32 +191,17 @@ export async function llmChatRoutes(fastify: FastifyInstance) {
     }
 
     // Web search for reference material (Phase 3 — #564)
-    const genWebSources: Array<{ url: string; title: string; snippet: string }> = [];
-    if (body.searchWeb && await isMcpDocsEnabled()) {
-      try {
-        const searchQuery = body.searchQuery || sanitized.slice(0, 200);
-        const searchResults = await searchDocumentation(searchQuery, userId, await getSearxngMaxResults());
-
-        for (const result of searchResults.slice(0, 2)) {
-          try {
-            const doc = await fetchDocumentation(result.url, userId, 5000);
-            const { sanitized: cleanDoc } = sanitizeLlmInput(doc.markdown);
-            genWebSources.push({ url: result.url, title: result.title, snippet: cleanDoc });
-          } catch (fetchErr) {
-            logger.warn({ err: fetchErr, url: result.url }, 'Failed to fetch full doc for generate web search, using snippet');
-            genWebSources.push({ url: result.url, title: result.title, snippet: result.snippet });
-          }
-        }
-      } catch (err) {
-        logger.warn({ err }, 'Web search failed for generate route, continuing without');
-      }
+    const genWebSources: WebSource[] = [];
+    if (body.searchWeb) {
+      const sq = body.searchQuery || sanitized.slice(0, 200);
+      genWebSources.push(...await fetchWebSources(sq, userId));
     }
 
     if (genWebSources.length > 0) {
-      const webContext = genWebSources.map((s, i) =>
-        `[Web Source ${i + 1}: "${s.title}" (${s.url})]\n${s.snippet}`
-      ).join('\n\n---\n\n');
-      userContent = `${userContent}\n\n---\n\nVerified reference material from web search:\n\n${webContext}`;
+      userContent += formatWebContext(genWebSources, {
+        sourceLabel: 'Web Source',
+        sectionHeader: 'Verified reference material from web search',
+      });
     }
 
     const genExtras = genWebSources.length > 0 ? {
@@ -288,25 +258,18 @@ export async function llmChatRoutes(fastify: FastifyInstance) {
     };
 
     // Web search for reference material
-    const sumWebSources: Array<{ url: string; title: string; snippet: string }> = [];
-    if (body.searchWeb && await isMcpDocsEnabled()) {
-      try {
-        const sq = body.searchQuery || sanitizedMarkdown.slice(0, 200);
-        const sr = await searchDocumentation(sq, userId, await getSearxngMaxResults());
-        for (const r of sr.slice(0, 2)) {
-          try {
-            const doc = await fetchDocumentation(r.url, userId, 5000);
-            const { sanitized: cd } = sanitizeLlmInput(doc.markdown);
-            sumWebSources.push({ url: r.url, title: r.title, snippet: cd });
-          } catch { sumWebSources.push({ url: r.url, title: r.title, snippet: r.snippet }); }
-        }
-      } catch (err) { logger.warn({ err }, 'Web search failed for summarize, continuing without'); }
+    const sumWebSources: WebSource[] = [];
+    if (body.searchWeb) {
+      const sq = body.searchQuery || sanitizedMarkdown.slice(0, 200);
+      sumWebSources.push(...await fetchWebSources(sq, userId));
     }
 
     let summarizeContent = sanitizedMarkdown;
     if (sumWebSources.length > 0) {
-      const wc = sumWebSources.map((s, i) => `[Reference ${i + 1}: "${s.title}" (${s.url})]\n${s.snippet}`).join('\n\n---\n\n');
-      summarizeContent = `${sanitizedMarkdown}\n\n---\n\nReference material:\n\n${wc}`;
+      summarizeContent += formatWebContext(sumWebSources, {
+        sourceLabel: 'Reference',
+        sectionHeader: 'Reference material',
+      });
     }
 
     const sumExtras = sumWebSources.length > 0 ? {
@@ -501,24 +464,17 @@ export async function llmChatRoutes(fastify: FastifyInstance) {
     }
 
     // Web search for reference material (consistent with generate/improve)
-    const askWebSources: Array<{ url: string; title: string; snippet: string }> = [];
-    if (body.searchWeb && await isMcpDocsEnabled()) {
-      try {
-        const wq = body.searchQuery || sanitizedQuestion.slice(0, 200);
-        const wr = await searchDocumentation(wq, userId, await getSearxngMaxResults());
-        for (const r of wr.slice(0, 2)) {
-          try {
-            const doc = await fetchDocumentation(r.url, userId, 5000);
-            const { sanitized: cd } = sanitizeLlmInput(doc.markdown);
-            askWebSources.push({ url: r.url, title: r.title, snippet: cd });
-          } catch { askWebSources.push({ url: r.url, title: r.title, snippet: r.snippet }); }
-        }
-      } catch (err) { logger.warn({ err }, 'Web search failed for ask, continuing without'); }
+    const askWebSources: WebSource[] = [];
+    if (body.searchWeb) {
+      const wq = body.searchQuery || sanitizedQuestion.slice(0, 200);
+      askWebSources.push(...await fetchWebSources(wq, userId));
     }
 
     if (askWebSources.length > 0) {
-      const wc = askWebSources.map((s, i) => `[Web Source ${i + 1}: "${s.title}" (${s.url})]\n${s.snippet}`).join('\n\n---\n\n');
-      ragContext += `\n\n---\n\nWeb search results:\n\n${wc}`;
+      ragContext += formatWebContext(askWebSources, {
+        sourceLabel: 'Web Source',
+        sectionHeader: 'Web search results',
+      });
     }
 
     // Check RAG cache with stampede protection (only for new conversations without history)

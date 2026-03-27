@@ -693,6 +693,7 @@ export async function computePageRelationships(): Promise<number> {
   const client = await getPool().connect();
   try {
     await client.query('BEGIN');
+    await client.query('SET LOCAL statement_timeout = 120000'); // 2 min max for relationship computation
 
     // Clear all existing relationships
     await client.query('DELETE FROM page_relationships');

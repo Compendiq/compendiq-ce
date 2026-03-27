@@ -256,12 +256,13 @@ describe('embedding-service', () => {
   });
 
   describe('computePageRelationships', () => {
-    // Transaction call order on mockClient: [0]=BEGIN, [1]=DELETE, [2]=similarity CTE, [3]=label CTE, [4]=COMMIT
+    // Transaction call order on mockClient: [0]=BEGIN, [1]=SET LOCAL statement_timeout, [2]=DELETE, [3]=similarity CTE, [4]=label CTE, [5]=COMMIT
 
     it('should delete existing relationships then compute new ones', async () => {
-      // Set up 5 specific client.query responses matching the transaction order
+      // Set up 6 specific client.query responses matching the transaction order
       mockClient.query
         .mockResolvedValueOnce({ rows: [] })                                           // BEGIN
+        .mockResolvedValueOnce({ rows: [] })                                           // SET LOCAL statement_timeout
         .mockResolvedValueOnce({ rows: [], rowCount: 0 })                             // DELETE
         .mockResolvedValueOnce({ rows: [{ page_id_1: 'page-1', page_id_2: 'page-2', score: 0.85 }], rowCount: 1 })  // similarity INSERT
         .mockResolvedValueOnce({ rows: [{ page_id_1: 'page-1', page_id_2: 'page-3', score: 0.5 }], rowCount: 1 })   // label INSERT
@@ -270,29 +271,31 @@ describe('embedding-service', () => {
       const totalEdges = await computePageRelationships();
 
       expect(totalEdges).toBe(2);
-      expect(mockClient.query).toHaveBeenCalledTimes(5);
+      expect(mockClient.query).toHaveBeenCalledTimes(6);
       expect(mocks.query).not.toHaveBeenCalled();
 
       // calls[0] = BEGIN
       expect(mockClient.query.mock.calls[0][0]).toBe('BEGIN');
-      // calls[1] = DELETE (global, no params)
-      const deleteCall = mockClient.query.mock.calls[1][0] as string;
+      // calls[1] = SET LOCAL statement_timeout
+      expect(mockClient.query.mock.calls[1][0]).toContain('SET LOCAL statement_timeout');
+      // calls[2] = DELETE (global, no params)
+      const deleteCall = mockClient.query.mock.calls[2][0] as string;
       expect(deleteCall).toContain('DELETE FROM page_relationships');
-      expect(mockClient.query.mock.calls[1][1]).toBeUndefined();
-      // calls[4] = COMMIT
-      expect(mockClient.query.mock.calls[4][0]).toBe('COMMIT');
+      expect(mockClient.query.mock.calls[2][1]).toBeUndefined();
+      // calls[5] = COMMIT
+      expect(mockClient.query.mock.calls[5][0]).toBe('COMMIT');
     });
 
     it('should not use userId (global shared tables)', async () => {
       // Use default catch-all from beforeEach
       await computePageRelationships();
 
-      // calls[1] = DELETE has no params (global clear)
-      expect(mockClient.query.mock.calls[1][1]).toBeUndefined();
-      // calls[2] = similarity INSERT uses $1 (TOP_K) and $2 (SIMILARITY_THRESHOLD)
-      expect(mockClient.query.mock.calls[2][1]).toBeDefined();
-      // calls[3] = label overlap has no user params
-      expect(mockClient.query.mock.calls[3][1]).toBeUndefined();
+      // calls[2] = DELETE has no params (global clear)
+      expect(mockClient.query.mock.calls[2][1]).toBeUndefined();
+      // calls[3] = similarity INSERT uses $1 (TOP_K) and $2 (SIMILARITY_THRESHOLD)
+      expect(mockClient.query.mock.calls[3][1]).toBeDefined();
+      // calls[4] = label overlap has no user params
+      expect(mockClient.query.mock.calls[4][1]).toBeUndefined();
       // pool query() is NOT used
       expect(mocks.query).not.toHaveBeenCalled();
     });
@@ -320,6 +323,7 @@ describe('embedding-service', () => {
     it('ROLLBACK when similarity INSERT fails: client released, error propagates', async () => {
       mockClient.query
         .mockResolvedValueOnce({ rows: [] })                                     // BEGIN
+        .mockResolvedValueOnce({ rows: [] })                                     // SET LOCAL statement_timeout
         .mockResolvedValueOnce({ rows: [], rowCount: 0 })                       // DELETE
         .mockRejectedValueOnce(new Error('pgvector error'))                     // similarity INSERT fails
         .mockResolvedValueOnce({ rows: [] });                                    // ROLLBACK
@@ -343,7 +347,7 @@ describe('embedding-service', () => {
     it('should pass SIMILARITY_THRESHOLD=0.4 to the similarity query', async () => {
       await computePageRelationships();
 
-      // calls[2] = similarity CTE INSERT with params [TOP_K, SIMILARITY_THRESHOLD]
+      // calls[3] = similarity CTE INSERT with params [TOP_K, SIMILARITY_THRESHOLD]
       const similarityCall = mockClient.query.mock.calls.find(
         (call) => typeof call[0] === 'string' && (call[0] as string).includes('embedding_similarity'),
       );
