@@ -16,9 +16,10 @@ import { WorkersTab } from './WorkersTab';
 import { McpDocsTab } from './McpDocsTab';
 import { AiSafetyTab } from './AiSafetyTab';
 import { RateLimitsTab } from './RateLimitsTab';
+import { SearxngTab } from './SearxngTab';
 import { SkeletonFormFields } from '../../shared/components/feedback/Skeleton';
 
-type TabId = 'confluence' | 'sync' | 'ollama' | 'ai-prompts' | 'ai-safety' | 'rate-limits' | 'spaces' | 'theme' | 'labels' | 'errors' | 'embedding' | 'workers' | 'mcp-docs' | 'system';
+type TabId = 'confluence' | 'sync' | 'ollama' | 'ai-prompts' | 'ai-safety' | 'rate-limits' | 'spaces' | 'theme' | 'labels' | 'errors' | 'embedding' | 'workers' | 'mcp-docs' | 'searxng' | 'system';
 
 export function SettingsPage() {
   const queryClient = useQueryClient();
@@ -52,6 +53,7 @@ export function SettingsPage() {
     { id: 'embedding', label: 'Embedding', adminOnly: true },
     { id: 'workers', label: 'Workers', adminOnly: true },
     { id: 'mcp-docs', label: 'MCP Docs', adminOnly: true },
+    { id: 'searxng', label: 'SearXNG', adminOnly: true },
     { id: 'system', label: 'System', adminOnly: true },
   ];
 
@@ -85,7 +87,7 @@ export function SettingsPage() {
         </div>
 
         <div className="p-6">
-          {(isLoading || !settings) && activeTab !== 'labels' && activeTab !== 'errors' && activeTab !== 'theme' && activeTab !== 'embedding' && activeTab !== 'sync' && activeTab !== 'workers' && activeTab !== 'mcp-docs' && activeTab !== 'ai-safety' && activeTab !== 'rate-limits' ? (
+          {(isLoading || !settings) && activeTab !== 'labels' && activeTab !== 'errors' && activeTab !== 'theme' && activeTab !== 'embedding' && activeTab !== 'sync' && activeTab !== 'workers' && activeTab !== 'mcp-docs' && activeTab !== 'ai-safety' && activeTab !== 'rate-limits' && activeTab !== 'searxng' ? (
             <SkeletonFormFields />
           ) : activeTab === 'confluence' ? (
             <ConfluenceTab settings={settings!} onSave={(v) => updateSettings.mutate(v)} />
@@ -117,6 +119,8 @@ export function SettingsPage() {
             <WorkersTab />
           ) : activeTab === 'mcp-docs' && isAdmin ? (
             <McpDocsTab />
+          ) : activeTab === 'searxng' && isAdmin ? (
+            <SearxngTab />
           ) : activeTab === 'system' && isAdmin ? (
             <SystemTab />
           ) : (
