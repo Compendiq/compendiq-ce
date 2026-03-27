@@ -223,4 +223,7 @@ Copy `.env.example` to `.env`. Key vars:
 - `OTEL_SERVICE_NAME` (optional, default: `atlasmind-backend`)
 - `OTEL_EXPORTER_OTLP_ENDPOINT` (optional, OTLP collector endpoint)
 
-OIDC/SSO is configured entirely via the Admin UI — no environment variables required.
+- `ATLASMIND_LICENSE_KEY` (optional, enterprise license key — absent = Community mode)
+- `ATLASMIND_LICENSE_SECRET` (optional, license signing secret, falls back to `PAT_ENCRYPTION_KEY`)
+
+OIDC/SSO is configured entirely via the Admin UI — no environment variables required. OIDC requires an active enterprise license (`ATLASMIND_LICENSE_KEY`).

@@ -14,6 +14,7 @@ export default tseslint.config(
         { type: 'confluence', pattern: 'src/domains/confluence/*', mode: 'folder' },
         { type: 'llm', pattern: 'src/domains/llm/*', mode: 'folder' },
         { type: 'knowledge', pattern: 'src/domains/knowledge/*', mode: 'folder' },
+        { type: 'enterprise', pattern: 'src/enterprise/*', mode: 'folder' },
         { type: 'routes-foundation', pattern: 'src/routes/foundation/*', mode: 'folder' },
         { type: 'routes-confluence', pattern: 'src/routes/confluence/*', mode: 'folder' },
         { type: 'routes-llm', pattern: 'src/routes/llm/*', mode: 'folder' },
@@ -36,27 +37,32 @@ export default tseslint.config(
         {
           default: 'allow',
           rules: [
-            // Core cannot import from any domain or route
+            // Core cannot import from any domain, enterprise, or route
             {
               from: 'core',
+              disallow: ['confluence', 'llm', 'knowledge', 'enterprise', 'routes-foundation', 'routes-confluence', 'routes-llm', 'routes-knowledge'],
+            },
+            // Enterprise: only core (same level as domains)
+            {
+              from: 'enterprise',
               disallow: ['confluence', 'llm', 'knowledge', 'routes-foundation', 'routes-confluence', 'routes-llm', 'routes-knowledge'],
             },
             // Confluence domain: core + llm (for sync-embedding cross-domain)
             {
               from: 'confluence',
-              disallow: ['knowledge', 'routes-foundation', 'routes-confluence', 'routes-llm', 'routes-knowledge'],
+              disallow: ['knowledge', 'enterprise', 'routes-foundation', 'routes-confluence', 'routes-llm', 'routes-knowledge'],
             },
             // LLM domain: only core
             {
               from: 'llm',
-              disallow: ['confluence', 'knowledge', 'routes-foundation', 'routes-confluence', 'routes-llm', 'routes-knowledge'],
+              disallow: ['confluence', 'knowledge', 'enterprise', 'routes-foundation', 'routes-confluence', 'routes-llm', 'routes-knowledge'],
             },
             // Knowledge domain: core + llm + confluence
             {
               from: 'knowledge',
-              disallow: ['routes-foundation', 'routes-confluence', 'routes-llm', 'routes-knowledge'],
+              disallow: ['enterprise', 'routes-foundation', 'routes-confluence', 'routes-llm', 'routes-knowledge'],
             },
-            // Foundation routes: only core
+            // Foundation routes: core + enterprise
             {
               from: 'routes-foundation',
               disallow: ['confluence', 'llm', 'knowledge', 'routes-confluence', 'routes-llm', 'routes-knowledge'],
@@ -64,17 +70,17 @@ export default tseslint.config(
             // Confluence routes: core + confluence domain
             {
               from: 'routes-confluence',
-              disallow: ['llm', 'knowledge', 'routes-foundation', 'routes-llm', 'routes-knowledge'],
+              disallow: ['llm', 'knowledge', 'enterprise', 'routes-foundation', 'routes-llm', 'routes-knowledge'],
             },
             // LLM routes: core + llm domain + confluence (for subpage-context, sync-service)
             {
               from: 'routes-llm',
-              disallow: ['knowledge', 'routes-foundation', 'routes-confluence', 'routes-knowledge'],
+              disallow: ['knowledge', 'enterprise', 'routes-foundation', 'routes-confluence', 'routes-knowledge'],
             },
             // Knowledge routes: core + all domains (highest level)
             {
               from: 'routes-knowledge',
-              disallow: ['routes-foundation', 'routes-confluence', 'routes-llm'],
+              disallow: ['enterprise', 'routes-foundation', 'routes-confluence', 'routes-llm'],
             },
           ],
         },

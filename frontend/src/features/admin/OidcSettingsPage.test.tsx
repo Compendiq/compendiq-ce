@@ -53,6 +53,12 @@ function mockFetch(options?: { configured?: boolean; enabled?: boolean }) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
     const url = typeof input === 'string' ? input : (input as Request).url;
 
+    if (url.includes('/admin/license')) {
+      return new Response(
+        JSON.stringify({ tier: 'enterprise', seats: 50, expiry: '2027-12-31T23:59:59Z', features: ['oidc'], isValid: true }),
+        { headers: { 'Content-Type': 'application/json' } },
+      );
+    }
     if (url.includes('/admin/oidc/mappings')) {
       return new Response(JSON.stringify(mockMappings), {
         headers: { 'Content-Type': 'application/json' },
@@ -177,6 +183,42 @@ describe('OidcSettingsPage', () => {
     });
     expect(screen.getByText('editor')).toBeInTheDocument();
     expect(screen.getByText('DEV')).toBeInTheDocument();
+  });
+
+  it('shows enterprise-required banner in community mode', async () => {
+    // Override fetch to return community license
+    vi.restoreAllMocks();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      if (url.includes('/admin/license')) {
+        return new Response(
+          JSON.stringify({ tier: 'community', seats: 0, expiry: null, features: [], isValid: false }),
+          { headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      if (url.includes('/admin/oidc/mappings')) {
+        return new Response(JSON.stringify([]), { headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.includes('/admin/oidc')) {
+        return new Response(
+          JSON.stringify({ configured: false, provider: null }),
+          { headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      if (url.includes('/roles')) {
+        return new Response(JSON.stringify([]), { headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({}), { headers: { 'Content-Type': 'application/json' } });
+    });
+
+    render(<OidcSettingsPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('enterprise-required-banner')).toBeInTheDocument();
+    });
+    expect(screen.getByText('Enterprise License Required')).toBeInTheDocument();
+    // Save button should be disabled
+    expect(screen.getByTestId('oidc-save-btn')).toBeDisabled();
   });
 
   it('shows create mapping form when button clicked', async () => {

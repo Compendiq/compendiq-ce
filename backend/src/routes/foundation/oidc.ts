@@ -23,6 +23,7 @@ import {
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { getRedisClient } from '../../core/services/redis-cache.js';
 import { logger } from '../../core/utils/logger.js';
+import { isEnterprise } from '../../enterprise/license-service.js';
 
 const REFRESH_COOKIE = 'kb_refresh';
 const REFRESH_MAX_AGE = 7 * 24 * 60 * 60; // 7 days in seconds
@@ -106,10 +107,12 @@ export async function oidcRoutes(fastify: FastifyInstance) {
    */
   fastify.get('/auth/oidc/config', OIDC_RATE_LIMIT, async () => {
     const provider = await getEnabledProvider();
+    const hasEnterprise = isEnterprise();
     return {
-      enabled: !!provider,
+      enabled: !!provider && hasEnterprise,
       issuer: provider?.issuerUrl ?? null,
       name: provider?.name ?? null,
+      enterpriseRequired: !hasEnterprise,
     };
   });
 
@@ -118,7 +121,7 @@ export async function oidcRoutes(fastify: FastifyInstance) {
    * Generates the authorization URL and redirects the user to the IdP.
    * Stores state/nonce/PKCE verifier in Redis for callback validation.
    */
-  fastify.get('/auth/oidc/authorize', OIDC_RATE_LIMIT, async (request, reply) => {
+  fastify.get('/auth/oidc/authorize', { ...OIDC_RATE_LIMIT, preHandler: [fastify.checkEnterpriseLicense] }, async (request, reply) => {
     const provider = await getEnabledProvider();
     if (!provider) {
       throw fastify.httpErrors.serviceUnavailable('OIDC is not configured or not enabled');
@@ -137,7 +140,7 @@ export async function oidcRoutes(fastify: FastifyInstance) {
    * Security: does NOT put tokens in the redirect URL. Instead, stores them in
    * Redis with a one-time code. The frontend exchanges the code via POST /exchange.
    */
-  fastify.get('/auth/oidc/callback', OIDC_RATE_LIMIT, async (request, reply) => {
+  fastify.get('/auth/oidc/callback', { ...OIDC_RATE_LIMIT, preHandler: [fastify.checkEnterpriseLicense] }, async (request, reply) => {
     try {
       const { code, state } = OidcCallbackQuerySchema.parse(request.query);
 
@@ -228,7 +231,7 @@ export async function oidcRoutes(fastify: FastifyInstance) {
    * Exchanges a one-time login code (from the callback redirect) for tokens.
    * The code is consumed (deleted from Redis) on first use.
    */
-  fastify.post('/auth/oidc/exchange', OIDC_RATE_LIMIT, async (request) => {
+  fastify.post('/auth/oidc/exchange', { ...OIDC_RATE_LIMIT, preHandler: [fastify.checkEnterpriseLicense] }, async (request) => {
     const { code } = OidcExchangeBodySchema.parse(request.body);
 
     const redis = getRedisClient();
@@ -289,8 +292,9 @@ export async function oidcRoutes(fastify: FastifyInstance) {
 // ── Admin OIDC routes (require admin) ──────────────────────────────────────────
 
 export async function oidcAdminRoutes(fastify: FastifyInstance) {
-  // All admin OIDC routes require admin role
+  // All admin OIDC routes require admin role + enterprise license
   fastify.addHook('onRequest', fastify.requireAdmin);
+  fastify.addHook('onRequest', fastify.checkEnterpriseLicense);
 
   /**
    * GET /api/admin/oidc

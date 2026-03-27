@@ -4,7 +4,7 @@ import { m } from 'framer-motion';
 import { toast } from 'sonner';
 import {
   Shield, Globe, Key, Link2, Plus, Trash2,
-  Loader2, CheckCircle2, XCircle, TestTube2,
+  Loader2, CheckCircle2, XCircle, TestTube2, AlertTriangle,
 } from 'lucide-react';
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
@@ -79,9 +79,17 @@ function useRoles() {
   });
 }
 
+function useLicenseStatus() {
+  return useQuery<{ tier: string; isValid: boolean }>({
+    queryKey: ['admin', 'license'],
+    queryFn: () => apiFetch('/admin/license'),
+    staleTime: 60_000,
+  });
+}
+
 // ── Provider Configuration Tab ─────────────────────────────────────────────────
 
-function ProviderTab() {
+function ProviderTab({ disabled }: { disabled?: boolean }) {
   const queryClient = useQueryClient();
   const { data, isLoading } = useOidcConfig();
 
@@ -202,6 +210,7 @@ function ProviderTab() {
                 checked={enabled}
                 onChange={(e) => setEnabled(e.target.checked)}
                 className="h-4 w-4 rounded border-border accent-primary"
+                disabled={disabled}
               />
               Enabled
             </label>
@@ -222,12 +231,13 @@ function ProviderTab() {
               value={issuerUrl}
               onChange={(e) => setIssuerUrl(e.target.value)}
               placeholder="https://idp.example.com/realms/main"
-              className="flex-1 rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+              className="flex-1 rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary disabled:opacity-60 disabled:cursor-not-allowed"
               data-testid="oidc-issuer-url"
+              disabled={disabled}
             />
             <button
               onClick={handleTest}
-              disabled={!issuerUrl || testMutation.isPending}
+              disabled={disabled || !issuerUrl || testMutation.isPending}
               className="flex items-center gap-1.5 rounded-md bg-foreground/5 px-3 py-2 text-sm hover:bg-foreground/10 disabled:opacity-50"
               data-testid="oidc-test-btn"
             >
@@ -285,8 +295,9 @@ function ProviderTab() {
             value={clientId}
             onChange={(e) => setClientId(e.target.value)}
             placeholder="my-app-client-id"
-            className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+            className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary disabled:opacity-60 disabled:cursor-not-allowed"
             data-testid="oidc-client-id"
+            disabled={disabled}
           />
         </div>
 
@@ -300,8 +311,9 @@ function ProviderTab() {
             value={clientSecret}
             onChange={(e) => setClientSecret(e.target.value)}
             placeholder={data?.configured ? '(unchanged — enter new value to rotate)' : 'Enter client secret'}
-            className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+            className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary disabled:opacity-60 disabled:cursor-not-allowed"
             data-testid="oidc-client-secret"
+            disabled={disabled}
           />
           <p className="mt-1 text-xs text-muted-foreground">
             Encrypted at rest with AES-256-GCM. Never exposed in API responses.
@@ -318,8 +330,9 @@ function ProviderTab() {
             value={redirectUri}
             onChange={(e) => setRedirectUri(e.target.value)}
             placeholder="http://localhost:3000/api/auth/oidc/callback"
-            className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+            className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary disabled:opacity-60 disabled:cursor-not-allowed"
             data-testid="oidc-redirect-uri"
+            disabled={disabled}
           />
           <p className="mt-1 text-xs text-muted-foreground">
             Must match the redirect URI registered with your identity provider.
@@ -336,8 +349,9 @@ function ProviderTab() {
             value={groupsClaim}
             onChange={(e) => setGroupsClaim(e.target.value)}
             placeholder="groups"
-            className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+            className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary disabled:opacity-60 disabled:cursor-not-allowed"
             data-testid="oidc-groups-claim"
+            disabled={disabled}
           />
           <p className="mt-1 text-xs text-muted-foreground">
             The claim name in the ID token that contains the user's group memberships.
@@ -353,12 +367,13 @@ function ProviderTab() {
             onChange={(e) => setEnabled(e.target.checked)}
             className="h-4 w-4 rounded border-border accent-primary"
             data-testid="oidc-enabled"
+            disabled={disabled}
           />
           Enable SSO
         </label>
         <button
           onClick={handleSave}
-          disabled={saveMutation.isPending}
+          disabled={disabled || saveMutation.isPending}
           className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           data-testid="oidc-save-btn"
         >
@@ -372,7 +387,7 @@ function ProviderTab() {
 
 // ── Group Mappings Tab ─────────────────────────────────────────────────────────
 
-function MappingsTab() {
+function MappingsTab({ disabled }: { disabled?: boolean }) {
   const queryClient = useQueryClient();
   const { data: mappings, isLoading } = useOidcMappings();
   const { data: roles } = useRoles();
@@ -439,7 +454,8 @@ function MappingsTab() {
       {!showForm ? (
         <button
           onClick={() => setShowForm(true)}
-          className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          disabled={disabled}
+          className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           data-testid="create-mapping-btn"
         >
           <Plus size={16} />
@@ -557,7 +573,7 @@ function MappingsTab() {
                   <td className="px-4 py-2.5">
                     <button
                       onClick={() => deleteMutation.mutate(mapping.id)}
-                      disabled={deleteMutation.isPending}
+                      disabled={disabled || deleteMutation.isPending}
                       className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
                       aria-label={`Delete mapping for ${mapping.oidcGroup}`}
                       data-testid={`delete-mapping-${mapping.id}`}
@@ -584,9 +600,30 @@ const TAB_CONFIG: Array<{ key: OidcTab; label: string; icon: typeof Shield }> = 
 
 export function OidcSettingsPage() {
   const [activeTab, setActiveTab] = useState<OidcTab>('provider');
+  const { data: license, isLoading: licenseLoading } = useLicenseStatus();
+  const isCommunity = !licenseLoading && (!license?.isValid || license?.tier === 'community');
 
   return (
     <div className="space-y-6">
+      {/* Enterprise license banner */}
+      {isCommunity && (
+        <m.div
+          initial={{ opacity: 0, y: -8 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="flex items-start gap-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-4"
+          data-testid="enterprise-required-banner"
+        >
+          <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-500" />
+          <div>
+            <div className="text-sm font-medium text-amber-200">Enterprise License Required</div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              SSO / OIDC authentication requires an active enterprise license. The configuration below is read-only.
+              Set the <code className="rounded bg-foreground/10 px-1.5 py-0.5">ATLASMIND_LICENSE_KEY</code> environment variable to enable this feature.
+            </div>
+          </div>
+        </m.div>
+      )}
+
       {/* Header */}
       <div>
         <h1 className="text-2xl font-bold">SSO / OIDC</h1>
@@ -618,8 +655,8 @@ export function OidcSettingsPage() {
       </div>
 
       {/* Tab content */}
-      {activeTab === 'provider' && <ProviderTab />}
-      {activeTab === 'mappings' && <MappingsTab />}
+      {activeTab === 'provider' && <ProviderTab disabled={isCommunity} />}
+      {activeTab === 'mappings' && <MappingsTab disabled={isCommunity} />}
     </div>
   );
 }

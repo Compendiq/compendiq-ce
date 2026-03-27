@@ -57,10 +57,26 @@ vi.mock('../../core/utils/logger.js', () => ({
   },
 }));
 
+// Mock enterprise license-service — default to valid enterprise license
+const mockIsEnterprise = vi.fn().mockReturnValue(true);
+const mockGetLicenseInfo = vi.fn().mockReturnValue({
+  tier: 'enterprise',
+  seats: 100,
+  expiry: new Date(2030, 11, 31),
+  isValid: true,
+  isExpired: false,
+  raw: 'ATM-enterprise-100-20301231-fakesig',
+});
+vi.mock('../../enterprise/license-service.js', () => ({
+  isEnterprise: (...args: unknown[]) => mockIsEnterprise(...args),
+  getLicenseInfo: (...args: unknown[]) => mockGetLicenseInfo(...args),
+}));
+
 import Fastify, { type FastifyRequest } from 'fastify';
 import sensible from '@fastify/sensible';
 import cookie from '@fastify/cookie';
 import { ZodError } from 'zod';
+import licensePlugin from '../../enterprise/license-middleware.js';
 import { oidcRoutes, oidcAdminRoutes } from './oidc.js';
 import {
   getEnabledProvider,
@@ -108,6 +124,9 @@ async function buildApp() {
     request.userRole = 'admin' as const;
   });
 
+  // Register license plugin (provides checkEnterpriseLicense decorator + licenseTier)
+  await app.register(licensePlugin);
+
   // Zod error handler (same as app.ts)
   app.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) => {
     if (error instanceof ZodError) {
@@ -136,6 +155,16 @@ describe('OIDC Routes', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    // Reset enterprise license mocks to valid enterprise (default for OIDC tests)
+    mockIsEnterprise.mockReturnValue(true);
+    mockGetLicenseInfo.mockReturnValue({
+      tier: 'enterprise',
+      seats: 100,
+      expiry: new Date(2030, 11, 31),
+      isValid: true,
+      isExpired: false,
+      raw: 'ATM-enterprise-100-20301231-fakesig',
+    });
     app = await buildApp();
   });
 
@@ -146,8 +175,9 @@ describe('OIDC Routes', () => {
   // ── Public endpoints ──────────────────────────────────────────────────────
 
   describe('GET /api/auth/oidc/config', () => {
-    it('returns enabled=true when provider is configured and enabled', async () => {
+    it('returns enabled=true when provider is configured and enterprise license is valid', async () => {
       vi.mocked(getEnabledProvider).mockResolvedValue(MOCK_PROVIDER);
+      mockIsEnterprise.mockReturnValue(true);
 
       const res = await app.inject({
         method: 'GET',
@@ -158,10 +188,12 @@ describe('OIDC Routes', () => {
       const body = JSON.parse(res.body);
       expect(body.enabled).toBe(true);
       expect(body.issuer).toBe('https://idp.example.com');
+      expect(body.enterpriseRequired).toBe(false);
     });
 
     it('returns enabled=false when no provider is configured', async () => {
       vi.mocked(getEnabledProvider).mockResolvedValue(null);
+      mockIsEnterprise.mockReturnValue(true);
 
       const res = await app.inject({
         method: 'GET',
@@ -172,6 +204,32 @@ describe('OIDC Routes', () => {
       const body = JSON.parse(res.body);
       expect(body.enabled).toBe(false);
       expect(body.issuer).toBeNull();
+      expect(body.enterpriseRequired).toBe(false);
+    });
+
+    it('returns enabled=false and enterpriseRequired=true when no enterprise license', async () => {
+      vi.mocked(getEnabledProvider).mockResolvedValue(MOCK_PROVIDER);
+      mockIsEnterprise.mockReturnValue(false);
+      mockGetLicenseInfo.mockReturnValue({
+        tier: 'community',
+        seats: 0,
+        expiry: new Date(0),
+        isValid: false,
+        isExpired: false,
+        raw: null,
+      });
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/auth/oidc/config',
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.enabled).toBe(false);
+      expect(body.enterpriseRequired).toBe(true);
+      // Provider info is still returned so frontend knows OIDC is configured
+      expect(body.issuer).toBe('https://idp.example.com');
     });
   });
 
@@ -365,6 +423,7 @@ describe('OIDC Routes', () => {
         throw strictApp.httpErrors.unauthorized('Not authenticated');
       });
       strictApp.decorate('requireAdmin', async () => { /* no-op */ });
+      await strictApp.register(licensePlugin);
       strictApp.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) => {
         const statusCode = error.statusCode ?? 500;
         reply.status(statusCode).send({ error: error.message, statusCode });
