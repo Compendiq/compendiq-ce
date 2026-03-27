@@ -178,7 +178,6 @@ Images are published to two registries on every release:
 | Registry | Images |
 |----------|--------|
 | Docker Hub | `diinlu/atlasmind-backend` · `diinlu/atlasmind-frontend` · `diinlu/atlasmind-mcp-docs` · `diinlu/atlasmind-searxng` |
-| GHCR | `ghcr.io/laboef1900/atlasmind-backend` · `ghcr.io/laboef1900/atlasmind-frontend` · `ghcr.io/laboef1900/atlasmind-mcp-docs` · `ghcr.io/laboef1900/atlasmind-searxng` |
 
 Both registries publish `linux/amd64` and `linux/arm64` variants.
 

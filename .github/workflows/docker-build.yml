@@ -11,13 +11,8 @@ jobs:
     name: Backend Image
     if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
-    # packages:write is required for pushing to ghcr.io with GITHUB_TOKEN.
-    # If repository Settings > Actions > Workflow permissions is set to
-    # "Read repository contents and packages permissions", this job-level
-    # declaration ensures the token has the necessary scope.
     permissions:
       contents: read
-      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -28,20 +23,11 @@ jobs:
           username: ${{ vars.DHI_USER }}
           password: ${{ secrets.DHI_PAT }}
 
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Extract metadata for backend
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: |
-            diinlu/atlasmind-backend
-            ghcr.io/laboef1900/atlasmind-backend
+          images: diinlu/atlasmind-backend
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -73,10 +59,8 @@ jobs:
     name: Frontend Image
     if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
-    # packages:write is required for pushing to ghcr.io with GITHUB_TOKEN.
     permissions:
       contents: read
-      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -87,20 +71,11 @@ jobs:
           username: ${{ vars.DHI_USER }}
           password: ${{ secrets.DHI_PAT }}
 
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Extract metadata for frontend
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: |
-            diinlu/atlasmind-frontend
-            ghcr.io/laboef1900/atlasmind-frontend
+          images: diinlu/atlasmind-frontend
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -134,7 +109,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -145,20 +119,11 @@ jobs:
           username: ${{ vars.DHI_USER }}
           password: ${{ secrets.DHI_PAT }}
 
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Extract metadata for searxng
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: |
-            diinlu/atlasmind-searxng
-            ghcr.io/laboef1900/atlasmind-searxng
+          images: diinlu/atlasmind-searxng
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -190,7 +155,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -201,20 +165,11 @@ jobs:
           username: ${{ vars.DHI_USER }}
           password: ${{ secrets.DHI_PAT }}
 
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Extract metadata for mcp-docs
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: |
-            diinlu/atlasmind-mcp-docs
-            ghcr.io/laboef1900/atlasmind-mcp-docs
+          images: diinlu/atlasmind-mcp-docs
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
