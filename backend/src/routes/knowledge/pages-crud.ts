@@ -81,7 +81,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       // Full-text search using plainto_tsquery for safe handling of arbitrary user input
       searchClauseParamIdx = paramIdx;
       ftsWhereIndex = whereParts.length;
-      whereParts.push(`to_tsvector('english', coalesce(cp.title, '') || ' ' || coalesce(cp.body_text, '')) @@ plainto_tsquery('english', $${paramIdx++})`);
+      whereParts.push(`cp.tsv @@ plainto_tsquery('english', $${paramIdx++})`);
       values.push(search.trim());
     }
 
@@ -170,7 +170,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // doesn't receive extra parameters that cause a bind mismatch.
     const orderByValues: unknown[] = [];
     if (sort === 'relevance' && search && search.trim()) {
-      orderBy = `ts_rank(to_tsvector('english', coalesce(cp.title, '') || ' ' || coalesce(cp.body_text, '')), plainto_tsquery('english', $${paramIdx++})) DESC`;
+      orderBy = `ts_rank(cp.tsv, plainto_tsquery('english', $${paramIdx++})) DESC`;
       orderByValues.push(search.trim());
     } else {
       orderBy = sortMap[sort] ?? sortMap.title;

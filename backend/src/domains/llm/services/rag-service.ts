@@ -100,10 +100,9 @@ export async function keywordSearch(userId: string, questionText: string, limit 
   }>(
     `SELECT cp.id AS page_id, cp.confluence_id, cp.title, cp.space_key,
             substring(cp.body_text, 1, 500) as body_text,
-            ts_rank(to_tsvector('english', coalesce(cp.title, '') || ' ' || coalesce(cp.body_text, '')),
-                    plainto_tsquery('english', $2)) AS rank
+            ts_rank(cp.tsv, plainto_tsquery('english', $2)) AS rank
      FROM pages cp
-     WHERE to_tsvector('english', coalesce(cp.title, '') || ' ' || coalesce(cp.body_text, '')) @@ plainto_tsquery('english', $2)
+     WHERE cp.tsv @@ plainto_tsquery('english', $2)
        AND (
          (cp.source = 'confluence' AND cp.space_key = ANY($1::text[]))
          OR (cp.source = 'standalone' AND cp.visibility = 'shared')

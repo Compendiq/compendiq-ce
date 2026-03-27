@@ -499,6 +499,137 @@ describe('Search Routes', () => {
     });
   });
 
+  describe('GET /api/search — includeFacets parameter', () => {
+    it('should skip facet query when includeFacets=false', async () => {
+      mockQueryFn.mockImplementation((sql: string) => {
+        if (typeof sql === 'string' && sql.includes('COUNT(*)')) {
+          return { rows: [{ count: '1' }] };
+        }
+        if (typeof sql === 'string' && sql.includes('ts_rank')) {
+          return {
+            rows: [{
+              id: 1,
+              confluence_id: 'page-1',
+              title: 'Redis Guide',
+              space_key: 'DEV',
+              author: 'Alice',
+              last_modified_at: null,
+              labels: [],
+              rank: 0.8,
+              snippet: 'Redis snippet',
+            }],
+          };
+        }
+        if (typeof sql === 'string' && sql.includes('similarity')) {
+          return { rows: [] };
+        }
+        return { rows: [] };
+      });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/search?q=Redis&includeFacets=false',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+
+      // Facets should be an empty object with empty arrays
+      expect(body.facets).toEqual({ spaces: [], authors: [], tags: [] });
+
+      // The UNION ALL facet query should NOT have been called
+      const facetCall = mockQueryFn.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('UNION ALL'),
+      );
+      expect(facetCall).toBeUndefined();
+    });
+
+    it('should include facets by default (includeFacets omitted)', async () => {
+      mockQueryFn.mockImplementation((sql: string) => {
+        if (typeof sql === 'string' && sql.includes('UNION ALL')) {
+          return {
+            rows: [
+              { facet: 'space', value: 'DEV', count: '3' },
+              { facet: 'author', value: 'Alice', count: '2' },
+            ],
+          };
+        }
+        if (typeof sql === 'string' && sql.includes('COUNT(*)')) {
+          return { rows: [{ count: '1' }] };
+        }
+        if (typeof sql === 'string' && sql.includes('ts_rank')) {
+          return {
+            rows: [{
+              id: 1,
+              confluence_id: 'page-1',
+              title: 'Test',
+              space_key: 'DEV',
+              author: 'Alice',
+              last_modified_at: null,
+              labels: [],
+              rank: 0.5,
+              snippet: 'snippet',
+            }],
+          };
+        }
+        if (typeof sql === 'string' && sql.includes('similarity')) {
+          return { rows: [] };
+        }
+        return { rows: [] };
+      });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/search?q=test',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+
+      // Facets should be populated
+      expect(body.facets.spaces).toHaveLength(1);
+      expect(body.facets.authors).toHaveLength(1);
+
+      // The UNION ALL facet query should have been called
+      const facetCall = mockQueryFn.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('UNION ALL'),
+      );
+      expect(facetCall).toBeDefined();
+    });
+
+    it('should include facets when includeFacets=true', async () => {
+      mockQueryFn.mockImplementation((sql: string) => {
+        if (typeof sql === 'string' && sql.includes('UNION ALL')) {
+          return {
+            rows: [
+              { facet: 'tag', value: 'howto', count: '5' },
+            ],
+          };
+        }
+        if (typeof sql === 'string' && sql.includes('COUNT(*)')) {
+          return { rows: [{ count: '0' }] };
+        }
+        if (typeof sql === 'string' && sql.includes('ts_rank')) {
+          return { rows: [] };
+        }
+        if (typeof sql === 'string' && sql.includes('similarity')) {
+          return { rows: [] };
+        }
+        return { rows: [] };
+      });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/search?q=test&includeFacets=true',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.facets.tags).toHaveLength(1);
+      expect(body.facets.tags[0].value).toBe('howto');
+    });
+  });
+
   describe('POST /api/search/log', () => {
     it('should log a search query', async () => {
       mockQueryFn.mockResolvedValue({ rows: [], rowCount: 1 });

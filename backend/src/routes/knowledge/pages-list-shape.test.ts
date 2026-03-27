@@ -228,9 +228,9 @@ describe('Page list vs detail response shapes (#179)', () => {
       expect(selectClause).not.toContain('body_text');
       expect(selectClause).not.toContain('body_storage');
 
-      // Confirm the WHERE does reference body_text for search
+      // Confirm the WHERE uses the stored tsvector column for search
       const whereClause = sql.substring(sql.indexOf('WHERE'));
-      expect(whereClause).toContain('body_text');
+      expect(whereClause).toContain('cp.tsv');
     });
 
     it('should include pagination metadata', async () => {
