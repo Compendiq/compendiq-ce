@@ -115,8 +115,8 @@ services:
   searxng:
     image: diinlu/atlasmind-searxng:dev
     build:
-      context: .
-      dockerfile: searxng/Dockerfile
+      context: ./searxng
+      dockerfile: Dockerfile
     environment:
       SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://localhost:8080}
     healthcheck:
