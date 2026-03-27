@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { findDuplicates, scanAllDuplicates } from '../../domains/knowledge/services/duplicate-detector.js';
+import { DuplicatesQuerySchema, AdminDuplicatesQuerySchema } from '@atlasmind/contracts';
 import { z } from 'zod';
 
 const IdParamSchema = z.object({ id: z.string().min(1) });
@@ -11,11 +12,11 @@ export async function pagesDuplicateRoutes(fastify: FastifyInstance) {
   fastify.get('/pages/:id/duplicates', async (request) => {
     const { id } = IdParamSchema.parse(request.params);
     const userId = request.userId;
-    const { threshold = '0.15', limit = '10' } = request.query as Record<string, string>;
+    const { threshold, limit } = DuplicatesQuerySchema.parse(request.query);
 
     const duplicates = await findDuplicates(userId, id, {
-      distanceThreshold: parseFloat(threshold) || 0.15,
-      limit: Math.min(parseInt(limit, 10) || 10, 50),
+      distanceThreshold: threshold,
+      limit,
     });
 
     return { duplicates, pageId: id };
@@ -26,10 +27,10 @@ export async function pagesDuplicateRoutes(fastify: FastifyInstance) {
     preHandler: fastify.requireAdmin,
   }, async (request) => {
     const userId = request.userId;
-    const { threshold = '0.15' } = request.query as Record<string, string>;
+    const { threshold } = AdminDuplicatesQuerySchema.parse(request.query);
 
     const pairs = await scanAllDuplicates(userId, {
-      distanceThreshold: parseFloat(threshold) || 0.15,
+      distanceThreshold: threshold,
     });
 
     return { pairs, total: pairs.length };

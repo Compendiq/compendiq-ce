@@ -197,12 +197,51 @@ describe('GET /api/pages/:id/duplicates', () => {
     );
   });
 
-  it('should cap limit at 50 even if higher value is provided', async () => {
+  it('should reject limit above 50 with 400', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/pages/page-1/duplicates?limit=100',
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
+  it('should return 400 when threshold is not a valid number', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/pages/page-1/duplicates?threshold=notanumber',
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(mockFindDuplicates).not.toHaveBeenCalled();
+  });
+
+  it('should return 400 when threshold is out of range (> 1)', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/pages/page-1/duplicates?threshold=1.5',
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(mockFindDuplicates).not.toHaveBeenCalled();
+  });
+
+  it('should return 400 when limit is 0', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/pages/page-1/duplicates?limit=0',
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(mockFindDuplicates).not.toHaveBeenCalled();
+  });
+
+  it('should coerce string threshold to number', async () => {
     mockFindDuplicates.mockResolvedValueOnce([]);
 
     const response = await app.inject({
       method: 'GET',
-      url: '/api/pages/page-1/duplicates?limit=100',
+      url: '/api/pages/page-1/duplicates?threshold=0.25',
     });
 
     expect(response.statusCode).toBe(200);
@@ -210,17 +249,17 @@ describe('GET /api/pages/:id/duplicates', () => {
       'test-user-id',
       'page-1',
       expect.objectContaining({
-        limit: 50,
+        distanceThreshold: 0.25,
       }),
     );
   });
 
-  it('should use default threshold when invalid value provided', async () => {
+  it('should use defaults when no query params provided', async () => {
     mockFindDuplicates.mockResolvedValueOnce([]);
 
     const response = await app.inject({
       method: 'GET',
-      url: '/api/pages/page-1/duplicates?threshold=notanumber',
+      url: '/api/pages/page-1/duplicates',
     });
 
     expect(response.statusCode).toBe(200);
@@ -229,8 +268,19 @@ describe('GET /api/pages/:id/duplicates', () => {
       'page-1',
       expect.objectContaining({
         distanceThreshold: 0.15,
+        limit: 10,
       }),
     );
+  });
+
+  it('should return 400 for admin endpoint when threshold is invalid', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/admin/duplicates?threshold=abc',
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(mockScanAllDuplicates).not.toHaveBeenCalled();
   });
 
   // --- GET /api/admin/duplicates (admin endpoint) ---

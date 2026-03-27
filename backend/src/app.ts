@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import helmet from '@fastify/helmet';
 import compress from '@fastify/compress';
 import rateLimit from '@fastify/rate-limit';
 import swagger from '@fastify/swagger';
@@ -69,6 +70,14 @@ export async function buildApp() {
   await app.register(cors, {
     origin: process.env.FRONTEND_URL ?? 'http://localhost:5273',
     credentials: true,
+  });
+
+  // Security headers (CSP handled by nginx in production)
+  await app.register(helmet, {
+    contentSecurityPolicy: false,
+    crossOriginResourcePolicy: { policy: 'same-origin' },
+    crossOriginOpenerPolicy: { policy: 'same-origin' },
+    hsts: process.env.NODE_ENV === 'production',
   });
 
   await app.register(sensible);

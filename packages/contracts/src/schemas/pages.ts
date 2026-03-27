@@ -150,6 +150,25 @@ export const PublishDraftSchema = z.object({
   bodyHtml: z.string().optional(),
 });
 
+// -- Duplicates & Export validation schemas (Issue #580) --
+
+export const DuplicatesQuerySchema = z.object({
+  threshold: z.coerce.number().min(0).max(1).default(0.15),
+  limit: z.coerce.number().int().min(1).max(50).default(10),
+});
+
+export const AdminDuplicatesQuerySchema = z.object({
+  threshold: z.coerce.number().min(0).max(1).default(0.15),
+});
+
+export const BatchExportBodySchema = z.object({
+  pageIds: z.array(z.coerce.number().int().positive()).min(1).max(50),
+});
+
+export type DuplicatesQuery = z.infer<typeof DuplicatesQuerySchema>;
+export type AdminDuplicatesQuery = z.infer<typeof AdminDuplicatesQuerySchema>;
+export type BatchExportBody = z.infer<typeof BatchExportBodySchema>;
+
 export type PageListQuery = z.infer<typeof PageListQuerySchema>;
 export type PageTreeItem = z.infer<typeof PageTreeItemSchema>;
 export type SaveDraftInput = z.infer<typeof SaveDraftSchema>;
