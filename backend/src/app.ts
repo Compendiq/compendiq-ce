@@ -59,6 +59,8 @@ import { ZodError } from 'zod';
 import { trackError } from './core/services/error-tracker.js';
 import { logger } from './core/utils/logger.js';
 import { APP_VERSION } from './core/utils/version.js';
+import { loadEnterprisePlugin } from './core/enterprise/loader.js';
+import { ENTERPRISE_FEATURES } from './core/enterprise/features.js';
 
 export async function buildApp() {
   const app = Fastify({
@@ -125,6 +127,17 @@ export async function buildApp() {
   await app.register(redisPlugin);
   await app.register(authPlugin);
 
+  // ── Enterprise Plugin Bootstrap ──────────────────────────────────
+  const enterprise = await loadEnterprisePlugin();
+  const licenseKey = process.env.ATLASMIND_LICENSE_KEY;
+  const license = enterprise.validateLicense(licenseKey);
+
+  app.decorate('license', license);
+  app.decorate('enterprise', enterprise);
+
+  // Let the enterprise plugin register its own routes (e.g., full license endpoint)
+  await enterprise.registerRoutes(app, license);
+
   // Error handler
   app.setErrorHandler((error: Error & { statusCode?: number }, request, reply) => {
     // Zod validation errors → 400
@@ -168,6 +181,27 @@ export async function buildApp() {
   await app.register(settingsRoutes, { prefix: '/api' });
   await app.register(adminRoutes, { prefix: '/api' });
   await app.register(rbacRoutes, { prefix: '/api' });
+
+  // Community-mode license endpoint fallback.
+  // The enterprise plugin may register a richer version via registerRoutes().
+  // This ensures GET /api/admin/license always returns something.
+  app.get('/api/admin/license', { onRequest: [app.requireAdmin] }, async () => ({
+    edition: 'community',
+    tier: 'community',
+    features: [],
+  }));
+
+  // ── Conditional Enterprise Route Registration ────────────────────
+  // OIDC routes would be registered here when the enterprise plugin
+  // enables the OIDC_SSO feature. The OIDC code itself lives in the
+  // open repo but is only activated with a valid enterprise license.
+  //
+  // if (enterprise.isFeatureEnabled(ENTERPRISE_FEATURES.OIDC_SSO, license)) {
+  //   const { oidcRoutes } = await import('./routes/foundation/oidc.js');
+  //   await app.register(oidcRoutes, { prefix: '/api' });
+  //   logger.info('OIDC routes registered (enterprise license active)');
+  // }
+  void ENTERPRISE_FEATURES; // referenced to prevent unused-import lint error
 
   // Confluence routes
   await app.register(spacesRoutes, { prefix: '/api' });
