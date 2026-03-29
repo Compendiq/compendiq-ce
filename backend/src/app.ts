@@ -183,13 +183,14 @@ export async function buildApp() {
   await app.register(rbacRoutes, { prefix: '/api' });
 
   // Community-mode license endpoint fallback.
-  // The enterprise plugin may register a richer version via registerRoutes().
-  // This ensures GET /api/admin/license always returns something.
-  app.get('/api/admin/license', { onRequest: [app.requireAdmin] }, async () => ({
-    edition: 'community',
-    tier: 'community',
-    features: [],
-  }));
+  // Skip if the enterprise plugin registered its own richer version via registerRoutes().
+  if (enterprise.version === 'community') {
+    app.get('/api/admin/license', { onRequest: [app.requireAdmin] }, async () => ({
+      edition: 'community',
+      tier: 'community',
+      features: [],
+    }));
+  }
 
   // ── Conditional Enterprise Route Registration ────────────────────
   // OIDC routes would be registered here when the enterprise plugin

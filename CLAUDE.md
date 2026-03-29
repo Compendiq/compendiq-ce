@@ -135,7 +135,7 @@ AtlasMind uses an open-core model. The CE (Community Edition) is this repo. The 
 - CE defines types, loader, noop stub, and feature constants only. No enterprise logic.
 - The noop plugin must be completely inert (zero dependencies, zero side effects).
 - `app.ts` calls `loadEnterprisePlugin()` during bootstrap and decorates Fastify with `license` and `enterprise`.
-- `GET /api/admin/license` always returns `{ edition: 'community', tier: 'community', features: [] }` in CE mode.
+- `GET /api/admin/license` returns `{ edition: 'community', tier: 'community', features: [] }` in CE mode. The fallback route is only registered when `enterprise.version === 'community'` (noop plugin) to avoid duplicate-route errors when the EE plugin registers its own version via `registerRoutes()`.
 - OIDC routes are conditionally registered only when the enterprise plugin enables `ENTERPRISE_FEATURES.OIDC_SSO`.
 - Frontend `loadEnterpriseUI()` uses `@vite-ignore` to prevent Vite from resolving the missing package at build time.
 - License format: `ATM-{tier}-{seats}-{expiryYYYYMMDD}.{ed25519SignatureBase64url}` via `ATLASMIND_LICENSE_KEY` env var.
