@@ -23,14 +23,15 @@ vi.mock('./core/plugins/redis.js', () => ({
   checkRedisConnection: vi.fn().mockResolvedValue(true),
 }));
 
-vi.mock('./core/plugins/auth.js', () => ({
-  default: vi.fn(async (fastify: FastifyInstance) => {
-    const authFn = vi.fn();
-    const adminFn = vi.fn();
-    fastify.decorate('authenticate', authFn);
-    fastify.decorate('requireAdmin', adminFn);
-  }),
-}));
+vi.mock('./core/plugins/auth.js', async () => {
+  const { default: fp } = await import('fastify-plugin');
+  return {
+    default: fp(async (fastify: FastifyInstance) => {
+      fastify.decorate('authenticate', vi.fn());
+      fastify.decorate('requireAdmin', vi.fn());
+    }),
+  };
+});
 
 vi.mock('./core/plugins/correlation-id.js', () => ({
   default: vi.fn(async () => {}),

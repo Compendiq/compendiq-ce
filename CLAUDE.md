@@ -41,6 +41,7 @@ Flat monorepo with domain-based backend structure and shared contracts (ADR-001,
 atlasmind/
 ├── backend/src/
 │   ├── core/                        # Shared infrastructure (no domain imports)
+│   │   ├── enterprise/              # Enterprise plugin loader (types, noop, loader, features)
 │   │   ├── db/postgres.ts           # Connection pool + migration runner
 │   │   ├── db/migrations/           # Sequential SQL files (001-045)
 │   │   ├── plugins/                 # Fastify plugins (auth, correlation-id, redis)
@@ -72,6 +73,7 @@ atlasmind/
 │   ├── features/         # Domain-grouped UI (admin, ai, analytics, auth, dashboard,
 │   │                     #   graph, knowledge-requests, pages, search, settings, spaces, templates)
 │   ├── shared/           # Reusable components, hooks, lib
+│   │   ├── enterprise/   # Enterprise plugin loader (context, types, loader, hook)
 │   │   └── components/   # Categorized: layout/, article/, diagrams/, badges/, feedback/, effects/
 │   ├── stores/           # Zustand stores (auth, theme, ui, article-view, command-palette, keyboard-shortcuts)
 │   └── providers/        # Context providers (Query, Auth, Router)
@@ -107,6 +109,36 @@ Import restrictions enforced by `eslint-plugin-boundaries`:
 | OpenAI-compatible | `OPENAI_BASE_URL` env var (works with OpenAI, Azure OpenAI, LM Studio, vLLM, etc.) | `OPENAI_API_KEY` env var |
 | PostgreSQL | `POSTGRES_URL` env var | Password via env |
 | Redis | `REDIS_URL` env var | Password via env |
+
+## Enterprise Plugin Architecture (Open-Core)
+
+AtlasMind uses an open-core model. The CE (Community Edition) is this repo. The EE (Enterprise Edition) is a separate private repo (`atlasmind-enterprise`) that publishes `@atlasmind/enterprise` via GitHub Packages. See `docs/ENTERPRISE-ARCHITECTURE.md` for the full design.
+
+**Key files in the CE codebase:**
+
+| File | Purpose |
+|------|---------|
+| `backend/src/core/enterprise/types.ts` | `EnterprisePlugin` interface, `LicenseInfo`, `LicenseTier`, Fastify augmentation (`app.license`, `app.enterprise`) |
+| `backend/src/core/enterprise/features.ts` | `ENTERPRISE_FEATURES` constants (24+ feature flags) |
+| `backend/src/core/enterprise/noop.ts` | Community-mode stub (all features disabled, zero side effects) |
+| `backend/src/core/enterprise/loader.ts` | Dynamic `import('@atlasmind/enterprise')` with fallback to noop |
+| `backend/src/core/types/atlasmind-enterprise.d.ts` | TypeScript declaration for the optional EE package |
+| `frontend/src/shared/enterprise/types.ts` | `EnterpriseUI` interface, `LicenseInfo`, `EnterpriseContextValue` |
+| `frontend/src/shared/enterprise/loader.ts` | Dynamic `import('@atlasmind/enterprise/frontend')` with `@vite-ignore` |
+| `frontend/src/shared/enterprise/enterprise-context.ts` | React context object |
+| `frontend/src/shared/enterprise/context.tsx` | `EnterpriseProvider` component |
+| `frontend/src/shared/enterprise/use-enterprise.ts` | `useEnterprise()` hook |
+| `docker/Dockerfile.enterprise` | Multi-stage Dockerfile template for EE builds (Layer 2+3 protection) |
+| `scripts/build-enterprise.sh` | Template script documenting the EE overlay merge process |
+
+**Rules for the enterprise extension points:**
+- CE defines types, loader, noop stub, and feature constants only. No enterprise logic.
+- The noop plugin must be completely inert (zero dependencies, zero side effects).
+- `app.ts` calls `loadEnterprisePlugin()` during bootstrap and decorates Fastify with `license` and `enterprise`.
+- `GET /api/admin/license` always returns `{ edition: 'community', tier: 'community', features: [] }` in CE mode.
+- OIDC routes are conditionally registered only when the enterprise plugin enables `ENTERPRISE_FEATURES.OIDC_SSO`.
+- Frontend `loadEnterpriseUI()` uses `@vite-ignore` to prevent Vite from resolving the missing package at build time.
+- License format: `ATM-{tier}-{seats}-{expiryYYYYMMDD}.{ed25519SignatureBase64url}` via `ATLASMIND_LICENSE_KEY` env var.
 
 ## Security (Mandatory)
 
@@ -222,5 +254,7 @@ Copy `.env.example` to `.env`. Key vars:
 - `OTEL_ENABLED` (optional, set to `true` to enable OpenTelemetry tracing)
 - `OTEL_SERVICE_NAME` (optional, default: `atlasmind-backend`)
 - `OTEL_EXPORTER_OTLP_ENDPOINT` (optional, OTLP collector endpoint)
+
+- `ATLASMIND_LICENSE_KEY` (optional, enterprise license key, format: `ATM-{tier}-{seats}-{expiryYYYYMMDD}.{signature}`)
 
 OIDC/SSO is available in the Enterprise Edition only.

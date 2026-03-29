@@ -95,10 +95,10 @@ Performance is measured at three layers:
    npm run dev
    ```
 
-2. Seed test data (if needed):
+2. Seed 1,000 test pages for benchmarking:
    ```bash
-   # Create test pages via the API
-   node scripts/seed-test-data.js  # (if available)
+   POSTGRES_URL=postgresql://kb_user:changeme-postgres@localhost:5432/kb_creator \
+     npx tsx scripts/seed-perf-data.ts
    ```
 
 ### API Latency Tests
