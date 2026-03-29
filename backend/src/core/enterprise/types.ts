@@ -23,6 +23,8 @@ export interface LicenseInfo {
   isValid: boolean;
   /** Displayable key (payload only, no signature). */
   displayKey: string;
+  /** Short license ID (e.g. CPQ1a2b3c4d) for support lookups, or null for legacy keys. */
+  licenseId?: string | null;
   /** List of enabled feature flag strings. */
   features?: string[];
 }
