@@ -18,6 +18,7 @@ import {
   ArrowUpFromLine, ArrowDownFromLine, ArrowLeftFromLine, ArrowRightFromLine,
   Trash2, Columns3, Rows3, Merge, SplitSquareHorizontal, Square,
   ToggleLeft, PanelTop, Workflow, Underline, Highlighter, Palette,
+  Badge, ChevronsUpDown,
 } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { useIsLightTheme } from '../../hooks/use-is-light-theme';
@@ -28,6 +29,9 @@ import {
   ConfluenceLayoutCell,
   ConfluenceSection,
   ConfluenceColumn,
+  ConfluenceStatus,
+  Details,
+  DetailsSummary,
   DrawioDiagram,
   isInConfluenceSection,
   isInConfluenceLayout,
@@ -301,6 +305,32 @@ export function EditorToolbar({ editor }: { editor: EditorType }) {
       >
         <Workflow size={16} />
       </ToolbarButton>
+
+      {/* Confluence-compatible content blocks (#6 #7) */}
+      <ToolbarButton
+        onClick={() => {
+          const label = window.prompt('Status label:', 'IN PROGRESS');
+          if (label) editor.chain().focus().insertContent({ type: 'confluenceStatus', attrs: { color: 'blue', label } }).run();
+        }}
+        title="Insert Status Label"
+      >
+        <Badge size={16} />
+      </ToolbarButton>
+      <ToolbarButton
+        onClick={() => {
+          editor.chain().focus().insertContent({
+            type: 'details',
+            content: [
+              { type: 'detailsSummary', content: [{ type: 'text', text: 'Click to expand' }] },
+              { type: 'paragraph', content: [{ type: 'text', text: 'Content here...' }] },
+            ],
+          }).run();
+        }}
+        title="Insert Expand/Collapse Section"
+      >
+        <ChevronsUpDown size={16} />
+      </ToolbarButton>
+
       <LayoutPresetPicker editor={editor} />
 
       <div className="flex-1" />
@@ -634,6 +664,9 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       TaskList,
       TaskItem.configure({ nested: true }),
       MermaidBlock,
+      Details,
+      DetailsSummary,
+      ConfluenceStatus,
       ConfluenceLayout,
       ConfluenceLayoutSection,
       ConfluenceLayoutCell,
