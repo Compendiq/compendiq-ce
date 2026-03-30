@@ -10,14 +10,14 @@ interface AIThinkingBlobProps {
 }
 
 /**
- * Morphing organic shape with purple gradient glow.
- * Replaces spinner while Ollama processes a request.
+ * Compact inline indicator with morphing blob + status text.
+ * Replaces the previous large centered blob (#21 redesign).
  * Uses CSS animations on transform (GPU-composited).
  * Respects prefers-reduced-motion.
  */
 export function AIThinkingBlob({
   active = true,
-  label = 'Synthesizing knowledge...',
+  label = 'Thinking...',
   className,
 }: AIThinkingBlobProps) {
   const shouldReduceMotion = useReducedMotion();
@@ -27,24 +27,24 @@ export function AIThinkingBlob({
   return (
     <div
       data-testid="ai-thinking-blob"
-      className={cn('flex flex-col items-center gap-3', className)}
+      className={cn('flex items-center gap-2', className)}
       role="status"
       aria-label={label}
     >
-      <div className="relative h-16 w-16">
+      <div className="relative h-5 w-5 shrink-0">
         {/* Glow layer */}
         <div
           className={cn(
             'absolute inset-0 rounded-full',
-            'bg-gradient-to-br from-purple-500/40 to-violet-600/40',
-            'blur-xl',
+            'bg-gradient-to-br from-purple-500/30 to-violet-600/30',
+            'blur-md',
             !shouldReduceMotion && 'animate-[blob-pulse_3s_ease-in-out_infinite]',
           )}
         />
         {/* Morphing blob */}
         <div
           className={cn(
-            'absolute inset-1 will-change-transform',
+            'absolute inset-0.5 will-change-transform',
             'bg-gradient-to-br from-purple-500 to-violet-600',
             !shouldReduceMotion
               ? 'animate-[blob-morph_4s_ease-in-out_infinite]'
@@ -52,7 +52,7 @@ export function AIThinkingBlob({
           )}
         />
       </div>
-      <span className="text-sm text-muted-foreground">{label}</span>
+      <span className="text-xs text-muted-foreground">{label}</span>
     </div>
   );
 }

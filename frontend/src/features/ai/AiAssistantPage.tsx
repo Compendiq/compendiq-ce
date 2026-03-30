@@ -1,7 +1,7 @@
 import { memo } from 'react';
 import { m, useReducedMotion } from 'framer-motion';
 import {
-  Bot, User, Loader2, MessageSquare,
+  Bot, User, Loader2, MessageSquare, Brain,
   Wand2, ListCollapse, Sparkles, GitBranch, FileText, ShieldCheck, Network,
 } from 'lucide-react';
 import Markdown from 'react-markdown';
@@ -191,6 +191,7 @@ function AiAssistantInner() {
     messages, messagesEndRef, isStreaming, isThinking, thinkingElapsed,
     model, models, setModel, isLight,
     includeSubPages, setIncludeSubPages,
+    thinkingMode, setThinkingMode,
   } = ctx;
 
   const shouldReduceMotion = useReducedMotion();
@@ -284,6 +285,25 @@ function AiAssistantInner() {
             <span>+ Sub-pages</span>
           </label>
         )}
+
+        {/* Thinking mode toggle (#20) */}
+        <label
+          className={cn(
+            'flex cursor-pointer items-center gap-1 rounded-md px-2 py-0.5 text-xs transition-colors',
+            thinkingMode ? 'bg-purple-500/12 text-purple-500' : 'text-muted-foreground hover:bg-foreground/5',
+          )}
+          title="Enable extended thinking for more thorough responses"
+        >
+          <input
+            type="checkbox"
+            checked={thinkingMode}
+            onChange={(e) => setThinkingMode(e.target.checked)}
+            className="sr-only"
+            aria-label="Thinking mode"
+          />
+          <Brain size={12} />
+          <span>Think</span>
+        </label>
       </div>
 
       {/* Mode-specific type selectors */}
