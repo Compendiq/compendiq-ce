@@ -21,7 +21,7 @@ import { useKeyboardShortcuts, type ShortcutDefinition } from '../../shared/hook
 import { useArticleViewStore } from '../../stores/article-view-store';
 import { FeatureErrorBoundary } from '../../shared/components/feedback/FeatureErrorBoundary';
 import { QualityScoreBadge } from '../../shared/components/badges/QualityScoreBadge';
-import { Editor, EditorToolbar, TableContextToolbar, clearDraft, getDraft } from '../../shared/components/article/Editor';
+import { Editor, EditorToolbar, TableContextToolbar, LayoutContextToolbar, ColumnContextToolbar, clearDraft, getDraft } from '../../shared/components/article/Editor';
 import type { Editor as EditorType } from '@tiptap/core';
 import { ArticleViewer } from '../../shared/components/article/ArticleViewer';
 import { DrawioEditor } from '../../shared/components/diagrams/DrawioEditor';
@@ -415,6 +415,8 @@ export function PageViewPage() {
         <div className="sticky top-0 z-30 border border-border/25 bg-card rounded-xl shadow-[0_8px_32px_var(--glass-shadow)] before:absolute before:-z-10 before:-top-[100px] before:bottom-0 before:-left-[14px] before:-right-[14px] sm:before:-left-[22px] sm:before:-right-[22px] before:bg-background">
           <EditorToolbar editor={editorInstance} />
           <TableContextToolbar editor={editorInstance} />
+          <LayoutContextToolbar editor={editorInstance} />
+          <ColumnContextToolbar editor={editorInstance} />
         </div>
       )}
       {/* Single unified document card */}

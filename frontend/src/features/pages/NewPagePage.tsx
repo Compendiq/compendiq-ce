@@ -4,7 +4,7 @@ import { ArrowLeft, Save, Upload, LayoutTemplate, Globe, Lock } from 'lucide-rea
 import { useCreatePage } from '../../shared/hooks/use-pages';
 import { useSpaces } from '../../shared/hooks/use-spaces';
 import { useTemplates, useUseTemplate, useImportMarkdown, useLocalSpaces } from '../../shared/hooks/use-standalone';
-import { Editor, EditorToolbar, TableContextToolbar, clearDraft } from '../../shared/components/article/Editor';
+import { Editor, EditorToolbar, TableContextToolbar, LayoutContextToolbar, ColumnContextToolbar, clearDraft } from '../../shared/components/article/Editor';
 import { FeatureErrorBoundary } from '../../shared/components/feedback/FeatureErrorBoundary';
 import { LocationPicker } from '../../shared/components/LocationPicker';
 import type { LocationSelection } from '../../shared/components/LocationPicker';
@@ -284,6 +284,8 @@ export function NewPagePage() {
             <div className="border-b border-border/25 px-1">
               <EditorToolbar editor={editorInstance} />
               <TableContextToolbar editor={editorInstance} />
+              <LayoutContextToolbar editor={editorInstance} />
+              <ColumnContextToolbar editor={editorInstance} />
             </div>
           )}
 
