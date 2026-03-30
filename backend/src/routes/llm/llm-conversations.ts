@@ -149,17 +149,21 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
       );
     } else {
       // --- Confluence page: sync to Confluence ---
+      if (!existingPage.confluence_id) {
+        throw fastify.httpErrors.badRequest('Page is missing confluence_id');
+      }
       const client = await getClientForUser(userId);
       if (!client) {
         throw fastify.httpErrors.badRequest('Confluence not configured');
       }
 
+      const confluenceId = existingPage.confluence_id;
       const storageBody = htmlToConfluence(bodyHtml);
-      const page = await client.updatePage(existingPage.confluence_id!, pageTitle, storageBody, currentVersion);
+      const page = await client.updatePage(confluenceId, pageTitle, storageBody, currentVersion);
 
       const updatedBodyHtml = confluenceToHtml(
         page.body?.storage?.value ?? storageBody,
-        existingPage.confluence_id!,
+        confluenceId,
         existingPage.space_key,
       );
       const updatedBodyText = htmlToText(updatedBodyHtml);

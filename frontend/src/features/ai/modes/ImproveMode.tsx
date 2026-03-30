@@ -96,7 +96,7 @@ export function ImproveDiffView() {
  */
 export function ImproveModeInput() {
   const {
-    isStreaming, page, isPageLoading, model, pageId, includeSubPages, runStream,
+    isStreaming, page, isPageLoading, model, pageId, includeSubPages, thinkingMode, runStream,
     improvementType, setShowDiffView, setImprovedContent,
   } = useAiContext();
   const [instruction, setInstruction] = useState('');
@@ -128,6 +128,7 @@ export function ImproveModeInput() {
 
     const body: Record<string, unknown> = {
       content: page.bodyHtml, type: improvementType, model, pageId: pageId ?? undefined, includeSubPages,
+      ...(thinkingMode && { thinking: true }),
     };
     if (instruction.trim()) {
       body.instruction = instruction.trim();
@@ -147,7 +148,7 @@ export function ImproveModeInput() {
         },
       },
     );
-  }, [page, model, improvementType, pageId, isStreaming, includeSubPages, instruction, searchWeb, runStream, setShowDiffView, setImprovedContent]);
+  }, [page, model, improvementType, pageId, isStreaming, includeSubPages, thinkingMode, instruction, searchWeb, runStream, setShowDiffView, setImprovedContent]);
 
   return (
     <div className="mt-3 flex flex-col gap-3 border-t border-border/40 pt-3">

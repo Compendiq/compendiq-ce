@@ -16,7 +16,7 @@ interface McpDocsSettings {
 export function AskModeInput() {
   const {
     input, setInput, isStreaming, model, conversationId, pageId,
-    includeSubPages, setMessages, runStream,
+    includeSubPages, thinkingMode, setMessages, runStream,
   } = useAiContext();
 
   const [externalUrls, setExternalUrls] = useState<string[]>([]);
@@ -73,6 +73,7 @@ export function AskModeInput() {
       conversationId: conversationId ?? undefined,
       pageId: pageId ?? undefined,
       includeSubPages,
+      ...(thinkingMode && { thinking: true }),
     };
 
     if (externalUrls.length > 0) {
@@ -88,7 +89,7 @@ export function AskModeInput() {
     // Clear external URLs after sending
     setExternalUrls([]);
     setShowUrlInput(false);
-  }, [input, model, isStreaming, conversationId, pageId, includeSubPages, externalUrls, setInput, setMessages, runStream]);
+  }, [input, model, isStreaming, conversationId, pageId, includeSubPages, thinkingMode, externalUrls, setInput, setMessages, runStream]);
 
   const handleSubmit = () => handleAsk();
 
