@@ -44,7 +44,7 @@ test.describe('Pages CRUD', () => {
           },
           version: 0,
         };
-        localStorage.setItem('auth-storage', JSON.stringify(authState));
+        localStorage.setItem('atlasmind-auth', JSON.stringify(authState));
       },
       {
         accessToken: token,
@@ -97,7 +97,7 @@ test.describe('Pages CRUD', () => {
   test('edit an existing page title', async ({ page }) => {
     // Create a page via API first
     const token = JSON.parse(
-      await page.evaluate(() => localStorage.getItem('auth-storage') ?? '{}'),
+      await page.evaluate(() => localStorage.getItem('atlasmind-auth') ?? '{}'),
     ).state?.accessToken;
 
     const createRes = await page.request.post('/api/pages', {
@@ -148,7 +148,7 @@ test.describe('Pages CRUD', () => {
   test('add a tag to a page', async ({ page }) => {
     // Create a page via API first
     const token = JSON.parse(
-      await page.evaluate(() => localStorage.getItem('auth-storage') ?? '{}'),
+      await page.evaluate(() => localStorage.getItem('atlasmind-auth') ?? '{}'),
     ).state?.accessToken;
 
     const createRes = await page.request.post('/api/pages', {
@@ -192,7 +192,7 @@ test.describe('Pages CRUD', () => {
   test('delete a page', async ({ page }) => {
     // Create a page via API first
     const token = JSON.parse(
-      await page.evaluate(() => localStorage.getItem('auth-storage') ?? '{}'),
+      await page.evaluate(() => localStorage.getItem('atlasmind-auth') ?? '{}'),
     ).state?.accessToken;
 
     const createRes = await page.request.post('/api/pages', {

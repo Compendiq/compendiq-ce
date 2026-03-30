@@ -33,7 +33,7 @@ test.describe('AI Chat', () => {
           state: { accessToken, user, isAuthenticated: true },
           version: 0,
         };
-        localStorage.setItem('auth-storage', JSON.stringify(authState));
+        localStorage.setItem('atlasmind-auth', JSON.stringify(authState));
       },
       { accessToken: data.accessToken, user: data.user },
     );
