@@ -208,13 +208,13 @@ export function AppLayout({ children }: { children: ReactNode }) {
           <Breadcrumb />
         </div>
 
-        {/* Center: search bar */}
-        <div className="mx-4 hidden min-w-0 flex-1 justify-center sm:flex" role="search">
+        {/* Center: search bar — absolutely centered in header */}
+        <div className="pointer-events-none absolute inset-x-0 hidden justify-center sm:flex" role="search">
           <button
             onClick={openCommandPalette}
             aria-label="Search knowledge base"
             aria-expanded={isCommandPaletteOpen}
-            className="flex w-full max-w-xl items-center gap-2 rounded-lg border border-border/50 bg-foreground/5 px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-foreground/10 hover:border-border"
+            className="pointer-events-auto flex w-full max-w-xl items-center gap-2 rounded-lg border border-border/50 bg-foreground/5 px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-foreground/10 hover:border-border"
           >
             <Search size={16} className="shrink-0" />
             <span className="truncate">Search pages, articles, commands...</span>

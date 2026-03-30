@@ -19,7 +19,7 @@ test.describe('Authentication flow', () => {
 
     // The login page should render
     await expect(
-      page.getByRole('heading', { name: /AtlasMind/i }).or(page.getByText('Sign in to your account')),
+      page.getByText('Sign in to your account'),
     ).toBeVisible({ timeout: 10_000 });
 
     // 2. Switch to registration mode

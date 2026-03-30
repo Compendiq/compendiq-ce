@@ -87,6 +87,10 @@ export interface AiContextValue {
   includeSubPages: boolean;
   setIncludeSubPages: (v: boolean) => void;
 
+  // Thinking mode (#20)
+  thinkingMode: boolean;
+  setThinkingMode: (v: boolean) => void;
+
   // Page loading
   isPageLoading: boolean;
 
@@ -160,6 +164,11 @@ export function AiProvider({ children }: { children: ReactNode }) {
   const [model, setModel] = useState('');
   const [models, setModels] = useState<Array<{ name: string }>>([]);
   const [includeSubPages, setIncludeSubPages] = useState(false);
+  const [thinkingMode, setThinkingModeState] = useState(() => localStorage.getItem('ai-thinking-mode') === 'true');
+  const handleSetThinkingMode = useCallback((v: boolean) => {
+    setThinkingModeState(v);
+    localStorage.setItem('ai-thinking-mode', String(v));
+  }, []);
   const [improvementType, setImprovementType] = useState('grammar');
   const [showDiffView, setShowDiffView] = useState(false);
   const [improvedContent, setImprovedContent] = useState('');
@@ -424,6 +433,8 @@ export function AiProvider({ children }: { children: ReactNode }) {
     messagesEndRef,
     includeSubPages,
     setIncludeSubPages,
+    thinkingMode,
+    setThinkingMode: handleSetThinkingMode,
     isPageLoading,
     embeddingStatus,
     isLight,

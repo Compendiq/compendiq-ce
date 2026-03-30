@@ -20,7 +20,7 @@ describe('AIThinkingBlob', () => {
 
   it('shows default label text', () => {
     render(<AIThinkingBlob />, { wrapper: Wrapper });
-    expect(screen.getByText('Synthesizing knowledge...')).toBeInTheDocument();
+    expect(screen.getByText('Thinking...')).toBeInTheDocument();
   });
 
   it('shows custom label text', () => {

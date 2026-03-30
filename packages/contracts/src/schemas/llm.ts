@@ -15,6 +15,7 @@ export const ImproveRequestSchema = z.object({
   pageId: z.string().optional(),
   includeSubPages: z.boolean().optional(),
   instruction: z.string().max(10000).optional(),
+  thinking: z.boolean().optional(),
   searchWeb: z.boolean().optional(),
   searchQuery: z.string().max(500).optional(),
 });
@@ -43,6 +44,7 @@ export const SummarizeRequestSchema = z.object({
   length: z.enum(['short', 'medium', 'detailed']).default('medium'),
   pageId: z.string().optional(),
   includeSubPages: z.boolean().optional(),
+  thinking: z.boolean().optional(),
   searchWeb: z.boolean().optional(),
   searchQuery: z.string().max(500).optional(),
 });
@@ -53,6 +55,7 @@ export const AskRequestSchema = z.object({
   conversationId: z.string().uuid().optional(),
   pageId: z.string().optional(),
   includeSubPages: z.boolean().optional(),
+  thinking: z.boolean().optional(),
   externalUrls: z.array(z.string().url()).max(5).optional(),
   searchWeb: z.boolean().optional(),
   searchQuery: z.string().max(500).optional(),

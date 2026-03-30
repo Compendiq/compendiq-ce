@@ -8,7 +8,7 @@ import { toast } from 'sonner';
  * Summarize mode: one-click summarization of the selected page.
  */
 export function SummarizeModeInput() {
-  const { isStreaming, page, model, pageId, includeSubPages, runStream } = useAiContext();
+  const { isStreaming, page, model, pageId, includeSubPages, thinkingMode, runStream } = useAiContext();
 
   const handleSummarize = useCallback(async () => {
     if (isStreaming) return;
@@ -23,10 +23,10 @@ export function SummarizeModeInput() {
 
     await runStream(
       '/llm/summarize',
-      { content: page.bodyHtml, model, pageId: pageId ?? undefined, includeSubPages },
+      { content: page.bodyHtml, model, pageId: pageId ?? undefined, includeSubPages, ...(thinkingMode && { thinking: true }) },
       { userMessage: `Summarize: ${page.title}` },
     );
-  }, [page, model, isStreaming, pageId, includeSubPages, runStream]);
+  }, [page, model, isStreaming, pageId, includeSubPages, thinkingMode, runStream]);
 
   return (
     <div className="mt-3 flex items-center gap-3 border-t border-border/40 pt-3">

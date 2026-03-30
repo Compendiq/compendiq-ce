@@ -6,6 +6,9 @@ import { TaskList, TaskItem } from '@tiptap/extension-list';
 import { Image } from '@tiptap/extension-image';
 import { TitledCodeBlock } from './TitledCodeBlock';
 import { Placeholder } from '@tiptap/extensions';
+import { Highlight } from '@tiptap/extension-highlight';
+import { TextStyle } from '@tiptap/extension-text-style';
+import { Color } from '@tiptap/extension-color';
 import { lowlight } from '../../lib/lowlight';
 import {
   Bold, Italic, Strikethrough, Code, Heading1, Heading2, Heading3,
@@ -13,7 +16,8 @@ import {
   Table as TableIcon, Image as ImageIcon, CodeSquare, Columns2,
   ArrowUpFromLine, ArrowDownFromLine, ArrowLeftFromLine, ArrowRightFromLine,
   Trash2, Columns3, Rows3, Merge, SplitSquareHorizontal, Square,
-  ToggleLeft, PanelTop, Workflow,
+  ToggleLeft, PanelTop, Workflow, Underline, Highlighter, Palette,
+  Badge, ChevronsUpDown,
 } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { useIsLightTheme } from '../../hooks/use-is-light-theme';
@@ -24,6 +28,9 @@ import {
   ConfluenceLayoutCell,
   ConfluenceSection,
   ConfluenceColumn,
+  ConfluenceStatus,
+  Details,
+  DetailsSummary,
   DrawioDiagram,
   isInConfluenceSection,
   isInConfluenceLayout,
@@ -109,7 +116,7 @@ function ToolbarButton({
       title={title}
       className={cn(
         'rounded p-1.5 transition-colors',
-        active ? 'bg-primary/20 text-primary' : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
+        active ? 'bg-primary/20 text-primary ring-1 ring-primary/30' : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
         disabled && 'opacity-30 cursor-not-allowed',
       )}
     >
@@ -122,40 +129,212 @@ function ToolbarSeparator() {
   return <div className="mx-1 h-5 w-px bg-foreground/10" />;
 }
 
+const STATUS_COLORS = [
+  { label: 'Grey', value: 'grey', bg: '#6b7280' },
+  { label: 'Blue', value: 'blue', bg: '#3b82f6' },
+  { label: 'Green', value: 'green', bg: '#22c55e' },
+  { label: 'Yellow', value: 'yellow', bg: '#eab308' },
+  { label: 'Red', value: 'red', bg: '#ef4444' },
+];
+
+function StatusLabelInsert({ editor }: { editor: EditorType }) {
+  const [open, setOpen] = useState(false);
+  const [selectedColor, setSelectedColor] = useState('blue');
+  const [labelText, setLabelText] = useState('');
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  const handleInsert = () => {
+    const text = labelText.trim() || 'STATUS';
+    editor.chain().focus().insertContent({ type: 'confluenceStatus', attrs: { color: selectedColor, label: text } }).run();
+    setLabelText('');
+    setOpen(false);
+  };
+
+  return (
+    <div className="relative" ref={ref}>
+      <ToolbarButton onClick={() => setOpen(!open)} title="Insert Status Label">
+        <Badge size={16} />
+      </ToolbarButton>
+      {open && (
+        <div className="absolute top-full left-0 z-50 mt-1 w-52 rounded-lg border border-border bg-card p-3 shadow-lg">
+          <div className="mb-2 flex gap-1">
+            {STATUS_COLORS.map((c) => (
+              <button
+                key={c.value}
+                title={c.label}
+                onClick={() => setSelectedColor(c.value)}
+                className={cn(
+                  'h-5 w-5 rounded-full border-2 transition-transform',
+                  selectedColor === c.value ? 'border-foreground scale-110' : 'border-transparent',
+                )}
+                style={{ backgroundColor: c.bg }}
+              />
+            ))}
+          </div>
+          <input
+            type="text"
+            value={labelText}
+            onChange={(e) => setLabelText(e.target.value.toUpperCase())}
+            onKeyDown={(e) => e.key === 'Enter' && handleInsert()}
+            placeholder="IN PROGRESS"
+            className="mb-2 w-full rounded-md border border-border bg-background px-2 py-1 text-xs uppercase"
+            autoFocus
+          />
+          <button
+            onClick={handleInsert}
+            className="w-full rounded-md bg-primary/20 px-2 py-1 text-xs text-primary hover:bg-primary/30"
+          >
+            Insert
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const PRESET_COLORS = [
+  { label: 'Red', value: '#ef4444' },
+  { label: 'Orange', value: '#f97316' },
+  { label: 'Yellow', value: '#eab308' },
+  { label: 'Green', value: '#22c55e' },
+  { label: 'Blue', value: '#3b82f6' },
+  { label: 'Purple', value: '#a855f7' },
+  { label: 'Pink', value: '#ec4899' },
+  { label: 'Grey', value: '#6b7280' },
+];
+
+function ColorPickerDropdown({
+  onSelect,
+  onReset,
+  activeColor,
+  icon,
+  title,
+}: {
+  onSelect: (color: string) => void;
+  onReset: () => void;
+  activeColor: string | undefined;
+  icon: React.ReactNode;
+  title: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen(!open)}
+        title={title}
+        className={cn(
+          'rounded p-1.5 transition-colors',
+          activeColor ? 'ring-1 ring-primary/30' : '',
+          'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
+        )}
+      >
+        <div className="relative">
+          {icon}
+          {activeColor && (
+            <div className="absolute -bottom-0.5 left-0.5 right-0.5 h-0.5 rounded-full" style={{ backgroundColor: activeColor }} />
+          )}
+        </div>
+      </button>
+      {open && (
+        <div className="absolute top-full left-0 z-50 mt-1 rounded-lg border border-border bg-card p-2 shadow-lg">
+          <div className="grid grid-cols-4 gap-1">
+            {PRESET_COLORS.map((c) => (
+              <button
+                key={c.value}
+                title={c.label}
+                onClick={() => { onSelect(c.value); setOpen(false); }}
+                className="h-6 w-6 rounded-md border border-border/50 transition-transform hover:scale-110"
+                style={{ backgroundColor: c.value }}
+              />
+            ))}
+          </div>
+          <button
+            onClick={() => { onReset(); setOpen(false); }}
+            className="mt-1.5 w-full rounded-md px-2 py-0.5 text-xs text-muted-foreground hover:bg-foreground/5"
+          >
+            Reset
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function EditorToolbar({ editor }: { editor: EditorType }) {
   return (
     <div className="flex flex-wrap items-center gap-0.5 px-2 py-1.5">
-      <ToolbarButton onClick={() => editor.chain().focus().toggleBold().run()} active={editor.isActive('bold')} title="Bold">
+      <ToolbarButton onClick={() => editor.chain().focus().toggleBold().run()} active={editor.isActive('bold')} title="Bold (Ctrl+B)">
         <Bold size={16} />
       </ToolbarButton>
-      <ToolbarButton onClick={() => editor.chain().focus().toggleItalic().run()} active={editor.isActive('italic')} title="Italic">
+      <ToolbarButton onClick={() => editor.chain().focus().toggleItalic().run()} active={editor.isActive('italic')} title="Italic (Ctrl+I)">
         <Italic size={16} />
       </ToolbarButton>
-      <ToolbarButton onClick={() => editor.chain().focus().toggleStrike().run()} active={editor.isActive('strike')} title="Strikethrough">
+      <ToolbarButton onClick={() => editor.chain().focus().toggleStrike().run()} active={editor.isActive('strike')} title="Strikethrough (Ctrl+Shift+X)">
         <Strikethrough size={16} />
       </ToolbarButton>
-      <ToolbarButton onClick={() => editor.chain().focus().toggleCode().run()} active={editor.isActive('code')} title="Inline Code">
+      <ToolbarButton onClick={() => editor.chain().focus().toggleUnderline().run()} active={editor.isActive('underline')} title="Underline (Ctrl+U)">
+        <Underline size={16} />
+      </ToolbarButton>
+      <ToolbarButton onClick={() => editor.chain().focus().toggleCode().run()} active={editor.isActive('code')} title="Inline Code (Ctrl+E)">
         <Code size={16} />
       </ToolbarButton>
 
       <ToolbarSeparator />
 
-      <ToolbarButton onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()} active={editor.isActive('heading', { level: 1 })} title="Heading 1">
+      {/* Text color & highlight (#14 #15) */}
+      <ColorPickerDropdown
+        icon={<Palette size={16} />}
+        title="Text Color"
+        activeColor={editor.getAttributes('textStyle').color}
+        onSelect={(color) => editor.chain().focus().setColor(color).run()}
+        onReset={() => editor.chain().focus().unsetColor().run()}
+      />
+      <ColorPickerDropdown
+        icon={<Highlighter size={16} />}
+        title="Highlight (Ctrl+Shift+H)"
+        activeColor={editor.getAttributes('highlight').color}
+        onSelect={(color) => editor.chain().focus().toggleHighlight({ color }).run()}
+        onReset={() => editor.chain().focus().unsetHighlight().run()}
+      />
+
+      <ToolbarSeparator />
+
+      <ToolbarButton onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()} active={editor.isActive('heading', { level: 1 })} title="Heading 1 (Ctrl+Alt+1)">
         <Heading1 size={16} />
       </ToolbarButton>
-      <ToolbarButton onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()} active={editor.isActive('heading', { level: 2 })} title="Heading 2">
+      <ToolbarButton onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()} active={editor.isActive('heading', { level: 2 })} title="Heading 2 (Ctrl+Alt+2)">
         <Heading2 size={16} />
       </ToolbarButton>
-      <ToolbarButton onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()} active={editor.isActive('heading', { level: 3 })} title="Heading 3">
+      <ToolbarButton onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()} active={editor.isActive('heading', { level: 3 })} title="Heading 3 (Ctrl+Alt+3)">
         <Heading3 size={16} />
       </ToolbarButton>
 
       <ToolbarSeparator />
 
-      <ToolbarButton onClick={() => editor.chain().focus().toggleBulletList().run()} active={editor.isActive('bulletList')} title="Bullet List">
+      <ToolbarButton onClick={() => editor.chain().focus().toggleBulletList().run()} active={editor.isActive('bulletList')} title="Bullet List (Ctrl+Shift+8)">
         <List size={16} />
       </ToolbarButton>
-      <ToolbarButton onClick={() => editor.chain().focus().toggleOrderedList().run()} active={editor.isActive('orderedList')} title="Ordered List">
+      <ToolbarButton onClick={() => editor.chain().focus().toggleOrderedList().run()} active={editor.isActive('orderedList')} title="Ordered List (Ctrl+Shift+7)">
         <ListOrdered size={16} />
       </ToolbarButton>
       <ToolbarButton onClick={() => editor.chain().focus().toggleTaskList().run()} active={editor.isActive('taskList')} title="Task List">
@@ -197,6 +376,24 @@ export function EditorToolbar({ editor }: { editor: EditorType }) {
       >
         <Workflow size={16} />
       </ToolbarButton>
+
+      {/* Confluence-compatible content blocks (#6 #7) */}
+      <StatusLabelInsert editor={editor} />
+      <ToolbarButton
+        onClick={() => {
+          editor.chain().focus().insertContent({
+            type: 'details',
+            content: [
+              { type: 'detailsSummary', content: [{ type: 'text', text: 'Click to expand' }] },
+              { type: 'paragraph', content: [{ type: 'text', text: 'Content here...' }] },
+            ],
+          }).run();
+        }}
+        title="Insert Expand/Collapse Section"
+      >
+        <ChevronsUpDown size={16} />
+      </ToolbarButton>
+
       <LayoutPresetPicker editor={editor} />
 
       <div className="flex-1" />
@@ -217,9 +414,9 @@ export function TableContextToolbar({ editor }: { editor: EditorType }) {
   return (
     <div
       data-testid="table-context-toolbar"
-      className="flex flex-wrap items-center gap-0.5 border-t border-border/50 px-2 py-1.5"
+      className="flex flex-wrap items-center gap-0.5 border-t border-primary/20 bg-primary/5 px-2 py-1.5"
     >
-      <span className="mr-1 text-xs font-medium text-muted-foreground select-none">Table</span>
+      <span className="mr-1 text-xs font-semibold text-primary/70 select-none">Table</span>
 
       <ToolbarSeparator />
 
@@ -385,9 +582,9 @@ export function LayoutContextToolbar({ editor }: { editor: EditorType }) {
   return (
     <div
       data-testid="layout-context-toolbar"
-      className="flex flex-wrap items-center gap-0.5 border-t border-border/50 px-2 py-1.5"
+      className="flex flex-wrap items-center gap-0.5 border-t border-primary/20 bg-primary/5 px-2 py-1.5"
     >
-      <span className="mr-1 text-xs font-medium text-muted-foreground select-none">Layout</span>
+      <span className="mr-1 text-xs font-semibold text-primary/70 select-none">Layout</span>
 
       <ToolbarSeparator />
 
@@ -423,9 +620,9 @@ export function ColumnContextToolbar({ editor }: { editor: EditorType }) {
   return (
     <div
       data-testid="column-context-toolbar"
-      className="flex flex-wrap items-center gap-0.5 border-t border-border/50 px-2 py-1.5"
+      className="flex flex-wrap items-center gap-0.5 border-t border-primary/20 bg-primary/5 px-2 py-1.5"
     >
-      <span className="mr-1 text-xs font-medium text-muted-foreground select-none">Columns</span>
+      <span className="mr-1 text-xs font-semibold text-primary/70 select-none">Columns</span>
 
       <ToolbarSeparator />
 
@@ -465,11 +662,11 @@ export function ColumnContextToolbar({ editor }: { editor: EditorType }) {
 
       <div className="flex-1" />
 
-      {/* Delete section */}
+      {/* Delete row (section = row in Confluence layout model) */}
       <ToolbarButton
         onClick={() => editor.chain().focus().deleteSection().run()}
         disabled={!editor.can().deleteSection()}
-        title="Delete section"
+        title="Delete row"
       >
         <Trash2 size={15} className="text-destructive/70" />
       </ToolbarButton>
@@ -519,6 +716,9 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       StarterKit.configure({
         codeBlock: false,
       }),
+      TextStyle,
+      Color,
+      Highlight.configure({ multicolor: true }),
       Table.configure({ resizable: true }),
       TableRow,
       TableCell,
@@ -526,6 +726,9 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       TaskList,
       TaskItem.configure({ nested: true }),
       MermaidBlock,
+      Details,
+      DetailsSummary,
+      ConfluenceStatus,
       ConfluenceLayout,
       ConfluenceLayoutSection,
       ConfluenceLayoutCell,

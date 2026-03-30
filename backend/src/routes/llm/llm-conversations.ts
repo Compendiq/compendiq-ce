@@ -107,69 +107,92 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     const { pageId, improvedMarkdown, version, title } = body;
     const userId = request.userId;
 
-    const client = await getClientForUser(userId);
-    if (!client) {
-      throw fastify.httpErrors.badRequest('Confluence not configured');
-    }
-
-    // Fetch current page metadata from local cache
-    const existing = await query<{ version: number; title: string; space_key: string }>(
-      'SELECT version, title, space_key FROM pages WHERE confluence_id = $1',
-      [pageId],
+    // Resolve page by confluenceId or internal id (standalone pages use numeric id)
+    const isNumericId = /^\d+$/.test(pageId);
+    const existing = await query<{
+      id: number; version: number; title: string; space_key: string;
+      source: string; confluence_id: string | null;
+    }>(
+      `SELECT id, version, title, space_key, source, confluence_id FROM pages
+       WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'} AND deleted_at IS NULL`,
+      [isNumericId ? parseInt(pageId, 10) : pageId],
     );
     if (existing.rows.length === 0) {
       throw fastify.httpErrors.notFound('Page not found');
     }
 
-    const currentVersion = existing.rows[0].version;
-    const pageTitle = title ?? existing.rows[0].title;
+    const existingPage = existing.rows[0];
+    const currentVersion = existingPage.version;
+    const pageTitle = title ?? existingPage.title;
 
     if (version !== undefined && version < currentVersion) {
       throw fastify.httpErrors.conflict('Page has been modified since you loaded it. Please refresh and try again.');
     }
 
-    // Convert improved Markdown → HTML → Confluence XHTML
+    // Convert improved Markdown → HTML
     const bodyHtml = await markdownToHtml(improvedMarkdown);
-    const storageBody = htmlToConfluence(bodyHtml);
+    const bodyText = htmlToText(bodyHtml);
 
-    // Push update to Confluence and get back the new version
-    const page = await client.updatePage(pageId, pageTitle, storageBody, currentVersion);
+    const cache = new RedisCache(fastify.redis);
+    let newVersion: number;
 
-    // Update local cache
-    const updatedBodyHtml = confluenceToHtml(
-      page.body?.storage?.value ?? storageBody,
-      pageId,
-      existing.rows[0]?.space_key,
-    );
-    const bodyText = htmlToText(updatedBodyHtml);
+    if (existingPage.source === 'standalone') {
+      // --- Standalone page: update local DB only (no Confluence sync) ---
+      newVersion = currentVersion + 1;
+      await query(
+        `UPDATE pages SET
+           title = $2, body_html = $3, body_text = $4,
+           version = $5, last_modified_at = NOW(), embedding_dirty = TRUE,
+           embedding_status = 'not_embedded', embedded_at = NULL
+         WHERE id = $1`,
+        [existingPage.id, pageTitle, bodyHtml, bodyText, newVersion],
+      );
+    } else {
+      // --- Confluence page: sync to Confluence ---
+      if (!existingPage.confluence_id) {
+        throw fastify.httpErrors.badRequest('Page is missing confluence_id');
+      }
+      const client = await getClientForUser(userId);
+      if (!client) {
+        throw fastify.httpErrors.badRequest('Confluence not configured');
+      }
 
-    await query(
-      `UPDATE pages SET
-         title = $2, body_storage = $3, body_html = $4, body_text = $5,
-         version = $6, last_synced = NOW(), embedding_dirty = TRUE,
-         embedding_status = 'not_embedded', embedded_at = NULL
-       WHERE confluence_id = $1`,
-      [pageId, pageTitle, page.body?.storage?.value ?? storageBody, updatedBodyHtml, bodyText, page.version.number],
-    );
+      const confluenceId = existingPage.confluence_id;
+      const storageBody = htmlToConfluence(bodyHtml);
+      const page = await client.updatePage(confluenceId, pageTitle, storageBody, currentVersion);
+
+      const updatedBodyHtml = confluenceToHtml(
+        page.body?.storage?.value ?? storageBody,
+        confluenceId,
+        existingPage.space_key,
+      );
+      const updatedBodyText = htmlToText(updatedBodyHtml);
+      newVersion = page.version.number;
+
+      await query(
+        `UPDATE pages SET
+           title = $2, body_storage = $3, body_html = $4, body_text = $5,
+           version = $6, last_synced = NOW(), embedding_dirty = TRUE,
+           embedding_status = 'not_embedded', embedded_at = NULL
+         WHERE id = $1`,
+        [existingPage.id, pageTitle, page.body?.storage?.value ?? storageBody, updatedBodyHtml, updatedBodyText, newVersion],
+      );
+    }
 
     // Mark the most recent improvement record for this page as applied
     await query(
       `UPDATE llm_improvements SET status = 'applied'
        WHERE id = (
          SELECT li.id FROM llm_improvements li
-         JOIN pages p ON p.id = li.page_id
-         WHERE li.user_id = $1 AND p.confluence_id = $2 AND li.status IN ('streaming', 'completed')
+         WHERE li.user_id = $1 AND li.page_id = $2 AND li.status IN ('streaming', 'completed')
          ORDER BY li.created_at DESC LIMIT 1
        )`,
-      [userId, pageId],
+      [userId, existingPage.id],
     );
 
-    // Invalidate page list cache
-    const cache = new RedisCache(fastify.redis);
     await cache.invalidate(userId, 'pages');
+    await logAuditEvent(userId, 'PAGE_UPDATED', 'page', String(existingPage.id), { title: pageTitle, source: 'ai_improvement' }, request);
 
-    await logAuditEvent(userId, 'PAGE_UPDATED', 'page', pageId, { title: pageTitle, source: 'ai_improvement' }, request);
-
-    return { id: pageId, title: pageTitle, version: page.version.number };
+    return { id: existingPage.id, title: pageTitle, version: newVersion };
   });
 }

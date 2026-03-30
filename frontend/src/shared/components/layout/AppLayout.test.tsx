@@ -158,7 +158,7 @@ describe('AppLayout', () => {
     expect(mobileBtn).toHaveAttribute('aria-expanded', 'true');
   });
 
-  it('search bar is centered via flex-1 container', () => {
+  it('search bar is absolutely centered in header', () => {
     render(
       <AppLayout>
         <div>content</div>
@@ -166,7 +166,7 @@ describe('AppLayout', () => {
       { wrapper: createWrapper('/') },
     );
     const searchRegion = screen.getByRole('search');
-    expect(searchRegion.className).toContain('flex-1');
+    expect(searchRegion.className).toContain('absolute');
     expect(searchRegion.className).toContain('justify-center');
   });
 

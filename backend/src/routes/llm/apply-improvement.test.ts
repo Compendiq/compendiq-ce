@@ -147,10 +147,10 @@ describe('POST /api/llm/improvements/apply', () => {
     // Default: Confluence client available
     mockGetClientForUser.mockResolvedValue(mockClient);
 
-    // Default: page exists in DB with version 5
+    // Default: page exists in DB with version 5 (Confluence source)
     mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('SELECT version, title, space_key FROM pages')) {
-        return Promise.resolve({ rows: [{ version: 5, title: 'My Article', space_key: 'OPS' }] });
+      if (sql.includes('SELECT id, version, title, space_key, source, confluence_id FROM pages')) {
+        return Promise.resolve({ rows: [{ id: 42, version: 5, title: 'My Article', space_key: 'OPS', source: 'confluence', confluence_id: 'page-1' }] });
       }
       return Promise.resolve({ rows: [] });
     });
@@ -168,7 +168,7 @@ describe('POST /api/llm/improvements/apply', () => {
     });
   });
 
-  it('returns 400 when Confluence is not configured', async () => {
+  it('returns 400 when Confluence is not configured for Confluence pages', async () => {
     mockGetClientForUser.mockResolvedValue(null);
 
     const response = await app.inject({
@@ -187,7 +187,7 @@ describe('POST /api/llm/improvements/apply', () => {
 
   it('returns 404 when page does not exist in local cache', async () => {
     mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('SELECT version, title, space_key FROM pages')) {
+      if (sql.includes('SELECT id, version, title, space_key, source, confluence_id FROM pages')) {
         return Promise.resolve({ rows: [] });
       }
       return Promise.resolve({ rows: [] });
@@ -207,8 +207,8 @@ describe('POST /api/llm/improvements/apply', () => {
 
   it('returns 409 on version conflict', async () => {
     mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('SELECT version, title, space_key FROM pages')) {
-        return Promise.resolve({ rows: [{ version: 10, title: 'My Article', space_key: 'OPS' }] });
+      if (sql.includes('SELECT id, version, title, space_key, source, confluence_id FROM pages')) {
+        return Promise.resolve({ rows: [{ id: 42, version: 10, title: 'My Article', space_key: 'OPS', source: 'confluence', confluence_id: 'page-1' }] });
       }
       return Promise.resolve({ rows: [] });
     });
@@ -270,7 +270,7 @@ describe('POST /api/llm/improvements/apply', () => {
 
     // Response shape
     const body = JSON.parse(response.body);
-    expect(body.id).toBe('page-1');
+    expect(body.id).toBe(42);
     expect(body.title).toBe('My Article');
     expect(body.version).toBe(6);
   });
@@ -288,8 +288,8 @@ describe('POST /api/llm/improvements/apply', () => {
 
     expect(response.statusCode).toBe(200);
     expect(mockClient.updatePage).toHaveBeenCalledWith(
-      'page-1',
-      'My Article', // from pages
+      'page-1', // uses confluence_id from DB, not the raw pageId param
+      'My Article',
       expect.any(String),
       5,
     );
@@ -327,7 +327,7 @@ describe('POST /api/llm/improvements/apply', () => {
       'user-123',
       'PAGE_UPDATED',
       'page',
-      'page-1',
+      '42',
       expect.objectContaining({ source: 'ai_improvement' }),
       expect.any(Object),
     );
