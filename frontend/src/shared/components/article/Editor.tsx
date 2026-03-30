@@ -109,7 +109,7 @@ function ToolbarButton({
       title={title}
       className={cn(
         'rounded p-1.5 transition-colors',
-        active ? 'bg-primary/20 text-primary' : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
+        active ? 'bg-primary/20 text-primary ring-1 ring-primary/30' : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
         disabled && 'opacity-30 cursor-not-allowed',
       )}
     >
@@ -125,37 +125,37 @@ function ToolbarSeparator() {
 export function EditorToolbar({ editor }: { editor: EditorType }) {
   return (
     <div className="flex flex-wrap items-center gap-0.5 px-2 py-1.5">
-      <ToolbarButton onClick={() => editor.chain().focus().toggleBold().run()} active={editor.isActive('bold')} title="Bold">
+      <ToolbarButton onClick={() => editor.chain().focus().toggleBold().run()} active={editor.isActive('bold')} title="Bold (Ctrl+B)">
         <Bold size={16} />
       </ToolbarButton>
-      <ToolbarButton onClick={() => editor.chain().focus().toggleItalic().run()} active={editor.isActive('italic')} title="Italic">
+      <ToolbarButton onClick={() => editor.chain().focus().toggleItalic().run()} active={editor.isActive('italic')} title="Italic (Ctrl+I)">
         <Italic size={16} />
       </ToolbarButton>
-      <ToolbarButton onClick={() => editor.chain().focus().toggleStrike().run()} active={editor.isActive('strike')} title="Strikethrough">
+      <ToolbarButton onClick={() => editor.chain().focus().toggleStrike().run()} active={editor.isActive('strike')} title="Strikethrough (Ctrl+Shift+X)">
         <Strikethrough size={16} />
       </ToolbarButton>
-      <ToolbarButton onClick={() => editor.chain().focus().toggleCode().run()} active={editor.isActive('code')} title="Inline Code">
+      <ToolbarButton onClick={() => editor.chain().focus().toggleCode().run()} active={editor.isActive('code')} title="Inline Code (Ctrl+E)">
         <Code size={16} />
       </ToolbarButton>
 
       <ToolbarSeparator />
 
-      <ToolbarButton onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()} active={editor.isActive('heading', { level: 1 })} title="Heading 1">
+      <ToolbarButton onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()} active={editor.isActive('heading', { level: 1 })} title="Heading 1 (Ctrl+Alt+1)">
         <Heading1 size={16} />
       </ToolbarButton>
-      <ToolbarButton onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()} active={editor.isActive('heading', { level: 2 })} title="Heading 2">
+      <ToolbarButton onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()} active={editor.isActive('heading', { level: 2 })} title="Heading 2 (Ctrl+Alt+2)">
         <Heading2 size={16} />
       </ToolbarButton>
-      <ToolbarButton onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()} active={editor.isActive('heading', { level: 3 })} title="Heading 3">
+      <ToolbarButton onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()} active={editor.isActive('heading', { level: 3 })} title="Heading 3 (Ctrl+Alt+3)">
         <Heading3 size={16} />
       </ToolbarButton>
 
       <ToolbarSeparator />
 
-      <ToolbarButton onClick={() => editor.chain().focus().toggleBulletList().run()} active={editor.isActive('bulletList')} title="Bullet List">
+      <ToolbarButton onClick={() => editor.chain().focus().toggleBulletList().run()} active={editor.isActive('bulletList')} title="Bullet List (Ctrl+Shift+8)">
         <List size={16} />
       </ToolbarButton>
-      <ToolbarButton onClick={() => editor.chain().focus().toggleOrderedList().run()} active={editor.isActive('orderedList')} title="Ordered List">
+      <ToolbarButton onClick={() => editor.chain().focus().toggleOrderedList().run()} active={editor.isActive('orderedList')} title="Ordered List (Ctrl+Shift+7)">
         <ListOrdered size={16} />
       </ToolbarButton>
       <ToolbarButton onClick={() => editor.chain().focus().toggleTaskList().run()} active={editor.isActive('taskList')} title="Task List">
@@ -217,9 +217,9 @@ export function TableContextToolbar({ editor }: { editor: EditorType }) {
   return (
     <div
       data-testid="table-context-toolbar"
-      className="flex flex-wrap items-center gap-0.5 border-t border-border/50 px-2 py-1.5"
+      className="flex flex-wrap items-center gap-0.5 border-t border-primary/20 bg-primary/5 px-2 py-1.5"
     >
-      <span className="mr-1 text-xs font-medium text-muted-foreground select-none">Table</span>
+      <span className="mr-1 text-xs font-semibold text-primary/70 select-none">Table</span>
 
       <ToolbarSeparator />
 
@@ -385,9 +385,9 @@ export function LayoutContextToolbar({ editor }: { editor: EditorType }) {
   return (
     <div
       data-testid="layout-context-toolbar"
-      className="flex flex-wrap items-center gap-0.5 border-t border-border/50 px-2 py-1.5"
+      className="flex flex-wrap items-center gap-0.5 border-t border-primary/20 bg-primary/5 px-2 py-1.5"
     >
-      <span className="mr-1 text-xs font-medium text-muted-foreground select-none">Layout</span>
+      <span className="mr-1 text-xs font-semibold text-primary/70 select-none">Layout</span>
 
       <ToolbarSeparator />
 
@@ -423,9 +423,9 @@ export function ColumnContextToolbar({ editor }: { editor: EditorType }) {
   return (
     <div
       data-testid="column-context-toolbar"
-      className="flex flex-wrap items-center gap-0.5 border-t border-border/50 px-2 py-1.5"
+      className="flex flex-wrap items-center gap-0.5 border-t border-primary/20 bg-primary/5 px-2 py-1.5"
     >
-      <span className="mr-1 text-xs font-medium text-muted-foreground select-none">Columns</span>
+      <span className="mr-1 text-xs font-semibold text-primary/70 select-none">Columns</span>
 
       <ToolbarSeparator />
 
@@ -465,11 +465,11 @@ export function ColumnContextToolbar({ editor }: { editor: EditorType }) {
 
       <div className="flex-1" />
 
-      {/* Delete section */}
+      {/* Delete row (section = row in Confluence layout model) */}
       <ToolbarButton
         onClick={() => editor.chain().focus().deleteSection().run()}
         disabled={!editor.can().deleteSection()}
-        title="Delete section"
+        title="Delete row"
       >
         <Trash2 size={15} className="text-destructive/70" />
       </ToolbarButton>
