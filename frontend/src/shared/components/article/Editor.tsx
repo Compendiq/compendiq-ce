@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
-import { useEditor, EditorContent } from '@tiptap/react';
+import { useEditor, useEditorState, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
 import { TaskList, TaskItem } from '@tiptap/extension-list';
@@ -281,21 +281,43 @@ function ColorPickerDropdown({
 }
 
 export function EditorToolbar({ editor }: { editor: EditorType }) {
+  // Subscribe to editor state changes so toolbar re-renders on selection/formatting changes (#16)
+  const activeState = useEditorState({
+    editor,
+    selector: ({ editor: e }) => ({
+      bold: e.isActive('bold'),
+      italic: e.isActive('italic'),
+      strike: e.isActive('strike'),
+      underline: e.isActive('underline'),
+      code: e.isActive('code'),
+      h1: e.isActive('heading', { level: 1 }),
+      h2: e.isActive('heading', { level: 2 }),
+      h3: e.isActive('heading', { level: 3 }),
+      bulletList: e.isActive('bulletList'),
+      orderedList: e.isActive('orderedList'),
+      taskList: e.isActive('taskList'),
+      blockquote: e.isActive('blockquote'),
+      codeBlock: e.isActive('codeBlock'),
+      textColor: e.getAttributes('textStyle').color as string | undefined,
+      highlightColor: e.getAttributes('highlight').color as string | undefined,
+    }),
+  });
+
   return (
     <div className="flex flex-wrap items-center gap-0.5 px-2 py-1.5">
-      <ToolbarButton onClick={() => editor.chain().focus().toggleBold().run()} active={editor.isActive('bold')} title="Bold (Ctrl+B)">
+      <ToolbarButton onClick={() => editor.chain().focus().toggleBold().run()} active={activeState.bold} title="Bold (Ctrl+B)">
         <Bold size={16} />
       </ToolbarButton>
-      <ToolbarButton onClick={() => editor.chain().focus().toggleItalic().run()} active={editor.isActive('italic')} title="Italic (Ctrl+I)">
+      <ToolbarButton onClick={() => editor.chain().focus().toggleItalic().run()} active={activeState.italic} title="Italic (Ctrl+I)">
         <Italic size={16} />
       </ToolbarButton>
-      <ToolbarButton onClick={() => editor.chain().focus().toggleStrike().run()} active={editor.isActive('strike')} title="Strikethrough (Ctrl+Shift+X)">
+      <ToolbarButton onClick={() => editor.chain().focus().toggleStrike().run()} active={activeState.strike} title="Strikethrough (Ctrl+Shift+X)">
         <Strikethrough size={16} />
       </ToolbarButton>
-      <ToolbarButton onClick={() => editor.chain().focus().toggleUnderline().run()} active={editor.isActive('underline')} title="Underline (Ctrl+U)">
+      <ToolbarButton onClick={() => editor.chain().focus().toggleUnderline().run()} active={activeState.underline} title="Underline (Ctrl+U)">
         <Underline size={16} />
       </ToolbarButton>
-      <ToolbarButton onClick={() => editor.chain().focus().toggleCode().run()} active={editor.isActive('code')} title="Inline Code (Ctrl+E)">
+      <ToolbarButton onClick={() => editor.chain().focus().toggleCode().run()} active={activeState.code} title="Inline Code (Ctrl+E)">
         <Code size={16} />
       </ToolbarButton>
 
@@ -305,48 +327,48 @@ export function EditorToolbar({ editor }: { editor: EditorType }) {
       <ColorPickerDropdown
         icon={<Palette size={16} />}
         title="Text Color"
-        activeColor={editor.getAttributes('textStyle').color}
+        activeColor={activeState.textColor}
         onSelect={(color) => editor.chain().focus().setColor(color).run()}
         onReset={() => editor.chain().focus().unsetColor().run()}
       />
       <ColorPickerDropdown
         icon={<Highlighter size={16} />}
         title="Highlight (Ctrl+Shift+H)"
-        activeColor={editor.getAttributes('highlight').color}
+        activeColor={activeState.highlightColor}
         onSelect={(color) => editor.chain().focus().toggleHighlight({ color }).run()}
         onReset={() => editor.chain().focus().unsetHighlight().run()}
       />
 
       <ToolbarSeparator />
 
-      <ToolbarButton onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()} active={editor.isActive('heading', { level: 1 })} title="Heading 1 (Ctrl+Alt+1)">
+      <ToolbarButton onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()} active={activeState.h1} title="Heading 1 (Ctrl+Alt+1)">
         <Heading1 size={16} />
       </ToolbarButton>
-      <ToolbarButton onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()} active={editor.isActive('heading', { level: 2 })} title="Heading 2 (Ctrl+Alt+2)">
+      <ToolbarButton onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()} active={activeState.h2} title="Heading 2 (Ctrl+Alt+2)">
         <Heading2 size={16} />
       </ToolbarButton>
-      <ToolbarButton onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()} active={editor.isActive('heading', { level: 3 })} title="Heading 3 (Ctrl+Alt+3)">
+      <ToolbarButton onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()} active={activeState.h3} title="Heading 3 (Ctrl+Alt+3)">
         <Heading3 size={16} />
       </ToolbarButton>
 
       <ToolbarSeparator />
 
-      <ToolbarButton onClick={() => editor.chain().focus().toggleBulletList().run()} active={editor.isActive('bulletList')} title="Bullet List (Ctrl+Shift+8)">
+      <ToolbarButton onClick={() => editor.chain().focus().toggleBulletList().run()} active={activeState.bulletList} title="Bullet List (Ctrl+Shift+8)">
         <List size={16} />
       </ToolbarButton>
-      <ToolbarButton onClick={() => editor.chain().focus().toggleOrderedList().run()} active={editor.isActive('orderedList')} title="Ordered List (Ctrl+Shift+7)">
+      <ToolbarButton onClick={() => editor.chain().focus().toggleOrderedList().run()} active={activeState.orderedList} title="Ordered List (Ctrl+Shift+7)">
         <ListOrdered size={16} />
       </ToolbarButton>
-      <ToolbarButton onClick={() => editor.chain().focus().toggleTaskList().run()} active={editor.isActive('taskList')} title="Task List">
+      <ToolbarButton onClick={() => editor.chain().focus().toggleTaskList().run()} active={activeState.taskList} title="Task List">
         <CheckSquare size={16} />
       </ToolbarButton>
 
       <ToolbarSeparator />
 
-      <ToolbarButton onClick={() => editor.chain().focus().toggleBlockquote().run()} active={editor.isActive('blockquote')} title="Blockquote">
+      <ToolbarButton onClick={() => editor.chain().focus().toggleBlockquote().run()} active={activeState.blockquote} title="Blockquote">
         <Quote size={16} />
       </ToolbarButton>
-      <ToolbarButton onClick={() => editor.chain().focus().toggleCodeBlock().run()} active={editor.isActive('codeBlock')} title="Code Block">
+      <ToolbarButton onClick={() => editor.chain().focus().toggleCodeBlock().run()} active={activeState.codeBlock} title="Code Block">
         <CodeSquare size={16} />
       </ToolbarButton>
       <ToolbarButton onClick={() => editor.chain().focus().setHorizontalRule().run()} title="Horizontal Rule">
@@ -409,7 +431,11 @@ export function EditorToolbar({ editor }: { editor: EditorType }) {
 }
 
 export function TableContextToolbar({ editor }: { editor: EditorType }) {
-  if (!editor.isActive('table')) return null;
+  const { isTable } = useEditorState({
+    editor,
+    selector: ({ editor: e }) => ({ isTable: e.isActive('table') }),
+  });
+  if (!isTable) return null;
 
   return (
     <div
@@ -575,9 +601,14 @@ function LayoutPresetPicker({ editor }: { editor: EditorType }) {
 }
 
 export function LayoutContextToolbar({ editor }: { editor: EditorType }) {
-  if (!isInConfluenceLayout(editor)) return null;
-
-  const currentType = editor.getAttributes('confluenceLayoutSection')['data-layout-type'] ?? '';
+  const { inLayout, currentType } = useEditorState({
+    editor,
+    selector: ({ editor: e }) => ({
+      inLayout: isInConfluenceLayout(e),
+      currentType: (e.getAttributes('confluenceLayoutSection')['data-layout-type'] ?? '') as string,
+    }),
+  });
+  if (!inLayout) return null;
 
   return (
     <div
@@ -612,10 +643,14 @@ export function LayoutContextToolbar({ editor }: { editor: EditorType }) {
 }
 
 export function ColumnContextToolbar({ editor }: { editor: EditorType }) {
-  if (!isInConfluenceSection(editor)) return null;
-
-  const sectionAttrs = editor.getAttributes('confluenceSection');
-  const hasBorder = sectionAttrs.border === 'true';
+  const { inSection, hasBorder } = useEditorState({
+    editor,
+    selector: ({ editor: e }) => ({
+      inSection: isInConfluenceSection(e),
+      hasBorder: e.getAttributes('confluenceSection').border === 'true',
+    }),
+  });
+  if (!inSection) return null;
 
   return (
     <div

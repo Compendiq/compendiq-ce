@@ -711,13 +711,41 @@ export const ConfluenceColumn = Node.create({
 });
 
 /** Helper: check if the editor cursor is inside a ConfluenceSection (old-style section/column macros). */
+/** Helper: check if the editor cursor is inside a ConfluenceSection (column system).
+ *  Uses $pos.node() walk because isolating cells prevent isActive() from detecting parents. */
 export function isInConfluenceSection(editor: Editor): boolean {
-  return editor.isActive('confluenceSection') || editor.isActive('confluenceColumn');
+  if (editor.isActive('confluenceSection') || editor.isActive('confluenceColumn')) {
+    return true;
+  }
+  try {
+    const { $from } = editor.state.selection;
+    for (let d = $from.depth; d >= 0; d--) {
+      const node = $from.node(d);
+      if (node.type.name === 'confluenceSection' || node.type.name === 'confluenceColumn') {
+        return true;
+      }
+    }
+  } catch { /* selection not in doc */ }
+  return false;
 }
 
-/** Helper: check if the editor cursor is inside a ConfluenceLayout (page layout system). */
+/** Helper: check if the editor cursor is inside a ConfluenceLayout (page layout system).
+ *  Uses $pos.node() walk because isolating cells prevent isActive() from detecting parents. */
 export function isInConfluenceLayout(editor: Editor): boolean {
-  return editor.isActive('confluenceLayout') || editor.isActive('confluenceLayoutSection') || editor.isActive('confluenceLayoutCell');
+  if (editor.isActive('confluenceLayout') || editor.isActive('confluenceLayoutSection') || editor.isActive('confluenceLayoutCell')) {
+    return true;
+  }
+  // Fallback: walk up the node tree from cursor position
+  try {
+    const { $from } = editor.state.selection;
+    for (let d = $from.depth; d >= 0; d--) {
+      const node = $from.node(d);
+      if (node.type.name === 'confluenceLayout' || node.type.name === 'confluenceLayoutSection' || node.type.name === 'confluenceLayoutCell') {
+        return true;
+      }
+    }
+  } catch { /* selection not in doc */ }
+  return false;
 }
 
 /**
