@@ -6,6 +6,10 @@ import { TaskList, TaskItem } from '@tiptap/extension-list';
 import { Image } from '@tiptap/extension-image';
 import { TitledCodeBlock } from './TitledCodeBlock';
 import { Placeholder } from '@tiptap/extensions';
+import { Highlight } from '@tiptap/extension-highlight';
+import { TextStyle } from '@tiptap/extension-text-style';
+import { Color } from '@tiptap/extension-color';
+import { Underline as UnderlineExt } from '@tiptap/extension-underline';
 import { lowlight } from '../../lib/lowlight';
 import {
   Bold, Italic, Strikethrough, Code, Heading1, Heading2, Heading3,
@@ -13,7 +17,7 @@ import {
   Table as TableIcon, Image as ImageIcon, CodeSquare, Columns2,
   ArrowUpFromLine, ArrowDownFromLine, ArrowLeftFromLine, ArrowRightFromLine,
   Trash2, Columns3, Rows3, Merge, SplitSquareHorizontal, Square,
-  ToggleLeft, PanelTop, Workflow,
+  ToggleLeft, PanelTop, Workflow, Underline, Highlighter, Palette,
 } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { useIsLightTheme } from '../../hooks/use-is-light-theme';
@@ -122,6 +126,85 @@ function ToolbarSeparator() {
   return <div className="mx-1 h-5 w-px bg-foreground/10" />;
 }
 
+const PRESET_COLORS = [
+  { label: 'Red', value: '#ef4444' },
+  { label: 'Orange', value: '#f97316' },
+  { label: 'Yellow', value: '#eab308' },
+  { label: 'Green', value: '#22c55e' },
+  { label: 'Blue', value: '#3b82f6' },
+  { label: 'Purple', value: '#a855f7' },
+  { label: 'Pink', value: '#ec4899' },
+  { label: 'Grey', value: '#6b7280' },
+];
+
+function ColorPickerDropdown({
+  onSelect,
+  onReset,
+  activeColor,
+  icon,
+  title,
+}: {
+  onSelect: (color: string) => void;
+  onReset: () => void;
+  activeColor: string | undefined;
+  icon: React.ReactNode;
+  title: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen(!open)}
+        title={title}
+        className={cn(
+          'rounded p-1.5 transition-colors',
+          activeColor ? 'ring-1 ring-primary/30' : '',
+          'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
+        )}
+      >
+        <div className="relative">
+          {icon}
+          {activeColor && (
+            <div className="absolute -bottom-0.5 left-0.5 right-0.5 h-0.5 rounded-full" style={{ backgroundColor: activeColor }} />
+          )}
+        </div>
+      </button>
+      {open && (
+        <div className="absolute top-full left-0 z-50 mt-1 rounded-lg border border-border bg-card p-2 shadow-lg">
+          <div className="grid grid-cols-4 gap-1">
+            {PRESET_COLORS.map((c) => (
+              <button
+                key={c.value}
+                title={c.label}
+                onClick={() => { onSelect(c.value); setOpen(false); }}
+                className="h-6 w-6 rounded-md border border-border/50 transition-transform hover:scale-110"
+                style={{ backgroundColor: c.value }}
+              />
+            ))}
+          </div>
+          <button
+            onClick={() => { onReset(); setOpen(false); }}
+            className="mt-1.5 w-full rounded-md px-2 py-0.5 text-xs text-muted-foreground hover:bg-foreground/5"
+          >
+            Reset
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function EditorToolbar({ editor }: { editor: EditorType }) {
   return (
     <div className="flex flex-wrap items-center gap-0.5 px-2 py-1.5">
@@ -134,9 +217,30 @@ export function EditorToolbar({ editor }: { editor: EditorType }) {
       <ToolbarButton onClick={() => editor.chain().focus().toggleStrike().run()} active={editor.isActive('strike')} title="Strikethrough (Ctrl+Shift+X)">
         <Strikethrough size={16} />
       </ToolbarButton>
+      <ToolbarButton onClick={() => editor.chain().focus().toggleUnderline().run()} active={editor.isActive('underline')} title="Underline (Ctrl+U)">
+        <Underline size={16} />
+      </ToolbarButton>
       <ToolbarButton onClick={() => editor.chain().focus().toggleCode().run()} active={editor.isActive('code')} title="Inline Code (Ctrl+E)">
         <Code size={16} />
       </ToolbarButton>
+
+      <ToolbarSeparator />
+
+      {/* Text color & highlight (#14 #15) */}
+      <ColorPickerDropdown
+        icon={<Palette size={16} />}
+        title="Text Color"
+        activeColor={editor.getAttributes('textStyle').color}
+        onSelect={(color) => editor.chain().focus().setColor(color).run()}
+        onReset={() => editor.chain().focus().unsetColor().run()}
+      />
+      <ColorPickerDropdown
+        icon={<Highlighter size={16} />}
+        title="Highlight (Ctrl+Shift+H)"
+        activeColor={editor.getAttributes('highlight').color}
+        onSelect={(color) => editor.chain().focus().toggleHighlight({ color }).run()}
+        onReset={() => editor.chain().focus().unsetHighlight().run()}
+      />
 
       <ToolbarSeparator />
 
@@ -519,6 +623,10 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       StarterKit.configure({
         codeBlock: false,
       }),
+      TextStyle,
+      Color,
+      Highlight.configure({ multicolor: true }),
+      UnderlineExt,
       Table.configure({ resizable: true }),
       TableRow,
       TableCell,
