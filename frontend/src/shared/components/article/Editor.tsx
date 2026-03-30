@@ -129,6 +129,78 @@ function ToolbarSeparator() {
   return <div className="mx-1 h-5 w-px bg-foreground/10" />;
 }
 
+const STATUS_COLORS = [
+  { label: 'Grey', value: 'grey', bg: '#6b7280' },
+  { label: 'Blue', value: 'blue', bg: '#3b82f6' },
+  { label: 'Green', value: 'green', bg: '#22c55e' },
+  { label: 'Yellow', value: 'yellow', bg: '#eab308' },
+  { label: 'Red', value: 'red', bg: '#ef4444' },
+];
+
+function StatusLabelInsert({ editor }: { editor: EditorType }) {
+  const [open, setOpen] = useState(false);
+  const [selectedColor, setSelectedColor] = useState('blue');
+  const [labelText, setLabelText] = useState('');
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  const handleInsert = () => {
+    const text = labelText.trim() || 'STATUS';
+    editor.chain().focus().insertContent({ type: 'confluenceStatus', attrs: { color: selectedColor, label: text } }).run();
+    setLabelText('');
+    setOpen(false);
+  };
+
+  return (
+    <div className="relative" ref={ref}>
+      <ToolbarButton onClick={() => setOpen(!open)} title="Insert Status Label">
+        <Badge size={16} />
+      </ToolbarButton>
+      {open && (
+        <div className="absolute top-full left-0 z-50 mt-1 w-52 rounded-lg border border-border bg-card p-3 shadow-lg">
+          <div className="mb-2 flex gap-1">
+            {STATUS_COLORS.map((c) => (
+              <button
+                key={c.value}
+                title={c.label}
+                onClick={() => setSelectedColor(c.value)}
+                className={cn(
+                  'h-5 w-5 rounded-full border-2 transition-transform',
+                  selectedColor === c.value ? 'border-foreground scale-110' : 'border-transparent',
+                )}
+                style={{ backgroundColor: c.bg }}
+              />
+            ))}
+          </div>
+          <input
+            type="text"
+            value={labelText}
+            onChange={(e) => setLabelText(e.target.value.toUpperCase())}
+            onKeyDown={(e) => e.key === 'Enter' && handleInsert()}
+            placeholder="IN PROGRESS"
+            className="mb-2 w-full rounded-md border border-border bg-background px-2 py-1 text-xs uppercase"
+            autoFocus
+          />
+          <button
+            onClick={handleInsert}
+            className="w-full rounded-md bg-primary/20 px-2 py-1 text-xs text-primary hover:bg-primary/30"
+          >
+            Insert
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const PRESET_COLORS = [
   { label: 'Red', value: '#ef4444' },
   { label: 'Orange', value: '#f97316' },
@@ -306,15 +378,7 @@ export function EditorToolbar({ editor }: { editor: EditorType }) {
       </ToolbarButton>
 
       {/* Confluence-compatible content blocks (#6 #7) */}
-      <ToolbarButton
-        onClick={() => {
-          const label = window.prompt('Status label:', 'IN PROGRESS');
-          if (label) editor.chain().focus().insertContent({ type: 'confluenceStatus', attrs: { color: 'blue', label } }).run();
-        }}
-        title="Insert Status Label"
-      >
-        <Badge size={16} />
-      </ToolbarButton>
+      <StatusLabelInsert editor={editor} />
       <ToolbarButton
         onClick={() => {
           editor.chain().focus().insertContent({

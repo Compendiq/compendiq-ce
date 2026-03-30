@@ -164,7 +164,11 @@ export function AiProvider({ children }: { children: ReactNode }) {
   const [model, setModel] = useState('');
   const [models, setModels] = useState<Array<{ name: string }>>([]);
   const [includeSubPages, setIncludeSubPages] = useState(false);
-  const [thinkingMode, setThinkingMode] = useState(() => localStorage.getItem('ai-thinking-mode') === 'true');
+  const [thinkingMode, setThinkingModeState] = useState(() => localStorage.getItem('ai-thinking-mode') === 'true');
+  const handleSetThinkingMode = useCallback((v: boolean) => {
+    setThinkingModeState(v);
+    localStorage.setItem('ai-thinking-mode', String(v));
+  }, []);
   const [improvementType, setImprovementType] = useState('grammar');
   const [showDiffView, setShowDiffView] = useState(false);
   const [improvedContent, setImprovedContent] = useState('');
@@ -430,7 +434,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
     includeSubPages,
     setIncludeSubPages,
     thinkingMode,
-    setThinkingMode: (v: boolean) => { setThinkingMode(v); localStorage.setItem('ai-thinking-mode', String(v)); },
+    setThinkingMode: handleSetThinkingMode,
     isPageLoading,
     embeddingStatus,
     isLight,
