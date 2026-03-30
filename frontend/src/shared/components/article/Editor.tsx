@@ -9,7 +9,6 @@ import { Placeholder } from '@tiptap/extensions';
 import { Highlight } from '@tiptap/extension-highlight';
 import { TextStyle } from '@tiptap/extension-text-style';
 import { Color } from '@tiptap/extension-color';
-import { Underline as UnderlineExt } from '@tiptap/extension-underline';
 import { lowlight } from '../../lib/lowlight';
 import {
   Bold, Italic, Strikethrough, Code, Heading1, Heading2, Heading3,
@@ -656,7 +655,6 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       TextStyle,
       Color,
       Highlight.configure({ multicolor: true }),
-      UnderlineExt,
       Table.configure({ resizable: true }),
       TableRow,
       TableCell,
