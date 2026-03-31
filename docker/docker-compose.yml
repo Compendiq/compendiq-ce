@@ -1,8 +1,8 @@
-name: atlasmind
+name: compendiq
 
 services:
   frontend:
-    image: diinlu/atlasmind-frontend:dev
+    image: diinlu/compendiq-ce-frontend:dev
     build:
       context: ..
       dockerfile: frontend/Dockerfile
@@ -15,7 +15,7 @@ services:
     networks: [frontend-net, backend-net]
 
   backend:
-    image: diinlu/atlasmind-backend:dev
+    image: diinlu/compendiq-ce-backend:dev
     build:
       context: ..
       dockerfile: backend/Dockerfile
@@ -91,7 +91,7 @@ services:
     networks: [data-net]
 
   mcp-docs:
-    image: diinlu/atlasmind-mcp-docs:dev
+    image: diinlu/compendiq-ce-mcp-docs:dev
     build:
       context: ..
       dockerfile: mcp-docs/Dockerfile
@@ -117,7 +117,7 @@ services:
     networks: [backend-net]
 
   searxng:
-    image: diinlu/atlasmind-searxng:dev
+    image: diinlu/compendiq-ce-searxng:dev
     build:
       context: ./searxng
       dockerfile: Dockerfile

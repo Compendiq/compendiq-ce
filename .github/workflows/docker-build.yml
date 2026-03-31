@@ -27,7 +27,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: diinlu/atlasmind-backend
+          images: diinlu/compendiq-ce-backend
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -50,8 +50,8 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           push: true
-          cache-from: type=registry,ref=diinlu/atlasmind-backend:buildcache
-          cache-to: type=registry,ref=diinlu/atlasmind-backend:buildcache,mode=max
+          cache-from: type=registry,ref=diinlu/compendiq-ce-backend:buildcache
+          cache-to: type=registry,ref=diinlu/compendiq-ce-backend:buildcache,mode=max
           sbom: true
           provenance: mode=max
 
@@ -75,7 +75,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: diinlu/atlasmind-frontend
+          images: diinlu/compendiq-ce-frontend
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -98,8 +98,8 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           push: true
-          cache-from: type=registry,ref=diinlu/atlasmind-frontend:buildcache
-          cache-to: type=registry,ref=diinlu/atlasmind-frontend:buildcache,mode=max
+          cache-from: type=registry,ref=diinlu/compendiq-ce-frontend:buildcache
+          cache-to: type=registry,ref=diinlu/compendiq-ce-frontend:buildcache,mode=max
           sbom: true
           provenance: mode=max
 
@@ -123,7 +123,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: diinlu/atlasmind-searxng
+          images: diinlu/compendiq-ce-searxng
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -146,8 +146,8 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           push: true
-          cache-from: type=registry,ref=diinlu/atlasmind-searxng:buildcache
-          cache-to: type=registry,ref=diinlu/atlasmind-searxng:buildcache,mode=max
+          cache-from: type=registry,ref=diinlu/compendiq-ce-searxng:buildcache
+          cache-to: type=registry,ref=diinlu/compendiq-ce-searxng:buildcache,mode=max
 
   docker-mcp-docs:
     name: MCP Docs Image
@@ -169,7 +169,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: diinlu/atlasmind-mcp-docs
+          images: diinlu/compendiq-ce-mcp-docs
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -192,7 +192,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           push: true
-          cache-from: type=registry,ref=diinlu/atlasmind-mcp-docs:buildcache
-          cache-to: type=registry,ref=diinlu/atlasmind-mcp-docs:buildcache,mode=max
+          cache-from: type=registry,ref=diinlu/compendiq-ce-mcp-docs:buildcache
+          cache-to: type=registry,ref=diinlu/compendiq-ce-mcp-docs:buildcache,mode=max
           sbom: true
           provenance: mode=max
