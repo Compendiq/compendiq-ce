@@ -549,7 +549,7 @@ export function PageViewPage() {
 
             {/* Editor — naked (no inner glass-card, we are already inside glass-card-xl) */}
             <FeatureErrorBoundary featureName="Editor">
-              <Editor content={editHtml} onChange={setEditHtml} draftKey={draftKey} naked onEditorReady={setEditorInstance} hideToolbar />
+              <Editor content={editHtml} onChange={setEditHtml} draftKey={draftKey} naked onEditorReady={setEditorInstance} hideToolbar pageId={id} />
             </FeatureErrorBoundary>
           </>
         ) : !page.bodyHtml?.trim() || page.bodyHtml.trim() === '<p></p>' ? (

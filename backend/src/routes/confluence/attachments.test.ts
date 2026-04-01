@@ -78,7 +78,7 @@ describe('Attachment routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockQuery.mockResolvedValue({
-      rows: [{ body_storage: '<ac:image><ri:attachment ri:filename="screenshot.png" /></ac:image>', space_key: 'OPS' }],
+      rows: [{ body_storage: '<ac:image><ri:attachment ri:filename="screenshot.png" /></ac:image>', space_key: 'OPS', source: 'confluence' }],
     });
     mockRedisGet.mockResolvedValue(null);
     mockRedisSetEx.mockResolvedValue('OK');
@@ -311,6 +311,44 @@ describe('Attachment routes', () => {
         currentSpaceKey: 'OPS',
         redis: mockRedisClient,
       });
+    });
+  });
+
+  describe('GET /api/attachments/:pageId/:filename (standalone pages)', () => {
+    it('should serve attachment from local cache for standalone page looked up by integer ID', async () => {
+      // First query (by confluence_id) returns nothing; second query (by integer ID) finds the standalone page
+      mockQuery
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [{ body_storage: null, space_key: null, source: 'standalone' }] });
+
+      mockReadAttachment.mockResolvedValueOnce(Buffer.from('image data'));
+      mockGetMimeType.mockReturnValueOnce('image/png');
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/attachments/42/paste-123-abcd.png',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['content-type']).toBe('image/png');
+    });
+
+    it('should return 404 for standalone page attachment not in local cache (no Confluence fallback)', async () => {
+      // First query (by confluence_id) returns nothing; second query (by integer ID) finds the standalone page
+      mockQuery
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [{ body_storage: null, space_key: null, source: 'standalone' }] });
+
+      mockReadAttachment.mockResolvedValueOnce(null);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/attachments/42/missing.png',
+      });
+
+      // Standalone pages skip Confluence on-demand fetch; missing file should 404
+      expect(response.statusCode).toBe(404);
+      expect(mockGetClientForUser).not.toHaveBeenCalled();
     });
   });
 

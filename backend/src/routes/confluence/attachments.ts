@@ -24,13 +24,26 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
     const userId = request.userId;
 
     const attachSpaces = await getUserAccessibleSpaces(userId);
-    const pageResult = await query<{ body_storage: string | null; space_key: string }>(
-      `SELECT cp.body_storage, cp.space_key
+    // Look up by confluence_id (Confluence pages) in accessible spaces
+    let pageResult = await query<{ body_storage: string | null; space_key: string; source: string }>(
+      `SELECT cp.body_storage, cp.space_key, cp.source
        FROM pages cp
        WHERE cp.space_key = ANY($1::text[])
          AND cp.confluence_id = $2`,
       [attachSpaces, pageId],
     );
+    // Fallback: standalone pages use integer PK as their attachment pageId
+    if (pageResult.rows.length === 0 && /^\d+$/.test(pageId)) {
+      pageResult = await query<{ body_storage: string | null; space_key: string; source: string }>(
+        `SELECT cp.body_storage, cp.space_key, cp.source
+         FROM pages cp
+         WHERE cp.id = $1
+           AND cp.source = 'standalone'
+           AND (cp.visibility = 'shared' OR cp.created_by_user_id = $2)
+           AND cp.deleted_at IS NULL`,
+        [Number(pageId), userId],
+      );
+    }
     const cachedPage = pageResult.rows[0];
     if (!cachedPage) {
       logger.warn({ userId, pageId, filename }, 'Attachment 404: page not found in user accessible spaces');
@@ -48,8 +61,8 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
       logger.debug({ pageId, filename, size: data.length }, 'Serving attachment from local cache');
     }
 
-    // On cache miss, fetch from Confluence on-demand
-    if (!data) {
+    // On cache miss, fetch from Confluence on-demand (skip for standalone pages — no Confluence source)
+    if (!data && cachedPage.source !== 'standalone') {
       logger.debug({ pageId, filename }, 'Attachment cache miss — attempting on-demand fetch');
 
       // Check for a cached failure sentinel — avoids hammering Confluence for known-broken attachments
@@ -131,6 +144,15 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
           reason: 'not_found_in_confluence',
         });
       }
+    }
+
+    // If data is still null after all lookup attempts, return 404
+    if (!data) {
+      return reply.status(404).send({
+        statusCode: 404,
+        error: 'Not Found',
+        message: 'Attachment not found',
+      });
     }
 
     const mimeType = getMimeType(filename);

@@ -3,7 +3,7 @@ import { query, getPool } from '../../core/db/postgres.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { htmlToConfluence, confluenceToHtml } from '../../core/services/content-converter.js';
-import { cleanPageAttachments } from '../../domains/confluence/services/attachment-handler.js';
+import { cleanPageAttachments, writeAttachmentCache } from '../../domains/confluence/services/attachment-handler.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { processDirtyPages, isProcessingUser } from '../../domains/llm/services/embedding-service.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
@@ -24,6 +24,20 @@ const BulkTagSchema = z.object({
   removeTags: z.array(z.string()).default([]),
 });
 const IdParamSchema = z.object({ id: z.string().min(1) });
+
+const ImageUploadSchema = z.object({
+  dataUri: z.string().max(15_000_000), // ~10MB in base64
+  filename: z.string().regex(/^[\w.-]+$/).max(255),
+});
+
+/** Allowed MIME types for pasted/dropped image uploads */
+const ALLOWED_IMAGE_MIMES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/jpg',
+  'image/gif',
+  'image/webp',
+]);
 
 export async function pagesCrudRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -1430,5 +1444,136 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     await cache.invalidate(userId, 'pages');
 
     return { succeeded, failed, errors };
+  });
+
+  // POST /api/pages/:id/images - upload a pasted/dropped image for a page
+  // Accepts JSON body: { dataUri: "data:image/png;base64,...", filename: "paste-123-abcd.png" }
+  // Stores the image in the local attachment cache and returns the serving URL.
+  fastify.post('/pages/:id/images', { bodyLimit: 15_000_000 }, async (request, reply) => {
+    const { id } = IdParamSchema.parse(request.params);
+    const userId = request.userId;
+
+    // Validate request body
+    const parseResult = ImageUploadSchema.safeParse(request.body);
+    if (!parseResult.success) {
+      return reply.status(400).send({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: parseResult.error.issues[0]?.message ?? 'Invalid request body',
+      });
+    }
+    const { dataUri, filename } = parseResult.data;
+
+    // Validate data URI format: must be data:image/<type>;base64,<data>
+    const dataUriMatch = dataUri.match(/^data:(image\/[\w+.-]+);base64,(.+)$/s);
+    if (!dataUriMatch) {
+      return reply.status(400).send({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: 'Invalid data URI format. Expected data:image/<type>;base64,<data>',
+      });
+    }
+
+    const mimeType = dataUriMatch[1];
+    const base64Data = dataUriMatch[2];
+
+    // Validate MIME type
+    if (!ALLOWED_IMAGE_MIMES.has(mimeType)) {
+      return reply.status(400).send({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: `Unsupported image type: ${mimeType}. Allowed: png, jpg, gif, webp`,
+      });
+    }
+
+    // Decode base64 and validate size (10MB max)
+    let imageBuffer: Buffer;
+    try {
+      imageBuffer = Buffer.from(base64Data, 'base64');
+    } catch {
+      return reply.status(400).send({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: 'Invalid base64 data in dataUri',
+      });
+    }
+
+    const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+    if (imageBuffer.length > MAX_IMAGE_BYTES) {
+      return reply.status(413).send({
+        statusCode: 413,
+        error: 'Payload Too Large',
+        message: `Image exceeds maximum size of ${MAX_IMAGE_BYTES / (1024 * 1024)} MB`,
+      });
+    }
+
+    // Verify the page exists and the user has access
+    // Support both integer PK (standalone pages) and confluence_id (Confluence pages)
+    const isNumericId = /^\d+$/.test(id);
+    const pageResult = await query<{
+      id: number; source: string; confluence_id: string | null;
+      created_by_user_id: string | null; space_key: string | null;
+    }>(
+      `SELECT p.id, p.source, p.confluence_id, p.created_by_user_id, p.space_key
+       FROM pages p
+       WHERE ${isNumericId ? 'p.id = $1' : 'p.confluence_id = $1'}
+         AND p.deleted_at IS NULL`,
+      [isNumericId ? Number(id) : id],
+    );
+
+    if (pageResult.rows.length === 0) {
+      return reply.status(404).send({
+        statusCode: 404,
+        error: 'Not Found',
+        message: 'Page not found',
+      });
+    }
+
+    const page = pageResult.rows[0];
+
+    // Access control: standalone pages require ownership; Confluence pages require space access
+    if (page.source === 'standalone') {
+      if (page.created_by_user_id !== userId) {
+        return reply.status(403).send({
+          statusCode: 403,
+          error: 'Forbidden',
+          message: 'Not authorized to upload images to this page',
+        });
+      }
+    } else if (page.space_key) {
+      const accessibleSpaces = await getUserAccessibleSpaces(userId);
+      if (!accessibleSpaces.includes(page.space_key)) {
+        return reply.status(403).send({
+          statusCode: 403,
+          error: 'Forbidden',
+          message: 'Not authorized to upload images to this page',
+        });
+      }
+    } else {
+      // No space_key and not standalone — deny access
+      return reply.status(403).send({
+        statusCode: 403,
+        error: 'Forbidden',
+        message: 'Access denied',
+      });
+    }
+
+    // Determine the attachment directory key:
+    // Standalone pages use integer id (string); Confluence pages use confluence_id
+    const attachmentPageId = page.source === 'standalone'
+      ? String(page.id)
+      : (page.confluence_id ?? String(page.id));
+
+    try {
+      await writeAttachmentCache(userId, attachmentPageId, filename, imageBuffer);
+
+      const url = `/api/attachments/${encodeURIComponent(attachmentPageId)}/${encodeURIComponent(filename)}`;
+      logger.info({ userId, pageId: id, attachmentPageId, filename, size: imageBuffer.length }, 'Image uploaded via paste/drop');
+
+      return { url };
+    } catch (err) {
+      logger.error({ err, userId, pageId: id, filename }, 'Failed to save pasted image');
+      throw fastify.httpErrors.internalServerError('Failed to save image');
+    }
   });
 }

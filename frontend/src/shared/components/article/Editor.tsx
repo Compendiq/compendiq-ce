@@ -19,7 +19,9 @@ import {
   ToggleLeft, PanelTop, Workflow, Underline, Highlighter, Palette,
   Badge, ChevronsUpDown,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { cn } from '../../lib/cn';
+import { apiFetch } from '../../lib/api';
 import { useIsLightTheme } from '../../hooks/use-is-light-theme';
 import { MermaidBlock } from './MermaidBlockExtension';
 import {
@@ -94,6 +96,8 @@ interface EditorProps {
   onEditorReady?: (editor: EditorType | null) => void;
   /** Hide built-in toolbar. Default false. */
   hideToolbar?: boolean;
+  /** Page ID for image paste/drop uploads. When set, clipboard images are uploaded to this page. */
+  pageId?: string;
 }
 
 function ToolbarButton({
@@ -709,6 +713,51 @@ export function ColumnContextToolbar({ editor }: { editor: EditorType }) {
   );
 }
 
+/** Map MIME type to file extension for pasted images */
+const MIME_TO_EXT: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+};
+
+/**
+ * Upload a pasted/dropped image file to the server.
+ * Returns the served URL on success, or null on failure (shows a toast).
+ */
+async function uploadPastedImage(file: File, pageId: string): Promise<string | null> {
+  const ext = MIME_TO_EXT[file.type];
+  if (!ext) {
+    toast.error(`Unsupported image type: ${file.type}`);
+    return null;
+  }
+
+  const hex = Math.floor(Math.random() * 0xffff).toString(16).padStart(4, '0');
+  const filename = `paste-${Date.now()}-${hex}.${ext}`;
+
+  const dataUri = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+
+  try {
+    const result = await apiFetch<{ url: string }>(
+      `/pages/${encodeURIComponent(pageId)}/images`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ dataUri, filename }),
+      },
+    );
+    return result.url;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to upload image';
+    toast.error(message);
+    return null;
+  }
+}
+
 const AUTO_SAVE_DELAY = 2000;
 
 // eslint-disable-next-line react-refresh/only-export-components
@@ -727,9 +776,14 @@ export function clearDraft(key: string): void {
   } catch { /* ignore */ }
 }
 
-export function Editor({ content, onChange, editable = true, placeholder, draftKey, naked = false, onEditorReady, hideToolbar = false }: EditorProps) {
+export function Editor({ content, onChange, editable = true, placeholder, draftKey, naked = false, onEditorReady, hideToolbar = false, pageId }: EditorProps) {
   const isLight = useIsLightTheme();
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  // Ref for the editor instance so async paste/drop handlers can insert images
+  const editorRef = useRef<EditorType | null>(null);
+  // Keep pageId in a ref so editorProps closures see the latest value
+  const pageIdRef = useRef(pageId);
+  pageIdRef.current = pageId;
 
   const saveDraft = useCallback((html: string) => {
     if (!draftKey) return;
@@ -744,6 +798,29 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
   // Cleanup timer on unmount
   useEffect(() => () => {
     if (timerRef.current) clearTimeout(timerRef.current);
+  }, []);
+
+  /**
+   * Handle pasted or dropped image files: upload to server, insert as image node.
+   * Returns true if an image was handled, false to let TipTap process normally.
+   */
+  const handleImageFiles = useCallback((files: File[]): boolean => {
+    const imageFile = files.find((f) => f.type.startsWith('image/'));
+    if (!imageFile) return false;
+
+    const currentPageId = pageIdRef.current;
+    if (!currentPageId) {
+      toast.error('Save the page first to paste images.');
+      return true; // Prevent default paste of raw data
+    }
+
+    uploadPastedImage(imageFile, currentPageId).then((url) => {
+      if (url && editorRef.current) {
+        editorRef.current.chain().focus().setImage({ src: url }).run();
+      }
+    });
+
+    return true;
   }, []);
 
   const editor = useEditor({
@@ -774,6 +851,27 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       ConfluenceImage.configure({ inline: false }),
       Placeholder.configure({ placeholder: placeholder ?? 'Start writing...' }),
     ],
+    editorProps: {
+      handlePaste(_view, event) {
+        const items = Array.from(event.clipboardData?.items ?? []);
+        const imageItem = items.find((i) => i.type.startsWith('image/'));
+        if (!imageItem) return false;
+        event.preventDefault();
+        const file = imageItem.getAsFile();
+        if (!file) return false;
+        return handleImageFiles([file]);
+      },
+      handleDrop(_view, event, _slice, moved) {
+        // Only handle external drops (not internal drag-and-drop of existing content)
+        if (moved) return false;
+        const files = Array.from(event.dataTransfer?.files ?? []);
+        if (files.length === 0) return false;
+        const hasImage = files.some((f) => f.type.startsWith('image/'));
+        if (!hasImage) return false;
+        event.preventDefault();
+        return handleImageFiles(files);
+      },
+    },
     content,
     editable,
     immediatelyRender: false,
@@ -783,6 +881,9 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       saveDraft(html);
     },
   });
+
+  // Keep the editor ref in sync
+  editorRef.current = editor;
 
   // Notify parent when editor instance is ready (triggers re-render via setState)
   useEffect(() => {
