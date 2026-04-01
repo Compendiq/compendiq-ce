@@ -10,6 +10,8 @@ import { Highlight } from '@tiptap/extension-highlight';
 import { TextStyle } from '@tiptap/extension-text-style';
 import { Color } from '@tiptap/extension-color';
 import { lowlight } from '../../lib/lowlight';
+import { SearchAndReplaceExtension } from './search-extension';
+import { SearchAndReplace } from './SearchAndReplace';
 import {
   Bold, Italic, Strikethrough, Code, Heading1, Heading2, Heading3,
   List, ListOrdered, CheckSquare, Quote, Minus, Undo2, Redo2,
@@ -963,6 +965,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       TitledCodeBlock.configure({ lowlight }),
       ConfluenceImage.configure({ inline: false }),
       Placeholder.configure({ placeholder: placeholder ?? 'Start writing...' }),
+      SearchAndReplaceExtension,
     ],
     editorProps: {
       handlePaste(_view, event) {
@@ -1005,7 +1008,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
   }, [editor, onEditorReady]);
 
   return (
-    <div className={cn(naked ? '' : 'glass-card', headerNumbering && 'header-numbering')}>
+    <div className={cn('relative', naked ? '' : 'glass-card', headerNumbering && 'header-numbering')}>
       {editable && editor && !hideToolbar && (
         <div className="sticky top-0 z-30 rounded-t-xl border-b border-border/50 bg-card before:absolute before:-z-10 before:-top-[100px] before:bottom-0 before:left-0 before:right-0 before:bg-background">
           <EditorToolbar editor={editor} headerNumbering={headerNumbering} onToggleHeaderNumbering={toggleHeaderNumbering} />
@@ -1014,6 +1017,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
           <ColumnContextToolbar editor={editor} />
         </div>
       )}
+      {editable && editor && <SearchAndReplace editor={editor} />}
       <EditorContent
         editor={editor}
         className={cn(

@@ -1994,3 +1994,15 @@ pre:hover .code-copy-btn {
   content: "Table " counter(table-counter) ": ";
   font-weight: 600;
 }
+
+/* ============================================
+   Search & Replace - match highlighting
+   ============================================ */
+.ProseMirror-search-match {
+  background-color: rgba(255, 213, 0, 0.4);
+  border-radius: 2px;
+}
+.ProseMirror-search-match-current {
+  background-color: rgba(255, 130, 0, 0.6);
+  border-radius: 2px;
+}

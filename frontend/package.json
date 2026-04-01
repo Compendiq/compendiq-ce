@@ -50,6 +50,7 @@
     "lucide-react": "^0.575.0",
     "marked": "^17.0.4",
     "mermaid": "^11.12.3",
+    "prosemirror-search": "^1.1.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-force-graph-2d": "^1.29.1",
