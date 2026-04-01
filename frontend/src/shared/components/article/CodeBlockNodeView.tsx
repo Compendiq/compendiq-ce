@@ -34,9 +34,13 @@ export function CodeBlockNodeView({ node, updateAttributes, editor }: NodeViewPr
     }
   }, [node, updateAttributes]);
 
-  const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(node.textContent);
-    setCopied(true);
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(node.textContent);
+      setCopied(true);
+    } catch {
+      // Clipboard API can throw in non-secure contexts or when page is not focused
+    }
   }, [node]);
 
   // Reset "Copied!" feedback after a short delay

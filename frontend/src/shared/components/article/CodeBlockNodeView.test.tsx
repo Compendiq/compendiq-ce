@@ -150,6 +150,29 @@ describe('CodeBlockNodeView', () => {
     });
   });
 
+  it('"Copy" button handles clipboard failure gracefully', async () => {
+    const html = '<pre><code class="language-javascript">const x = 1;</code></pre>';
+    mockWriteText.mockRejectedValueOnce(new Error('Clipboard API not available'));
+
+    render(<TestEditor content={html} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('code-block-copy-btn')).toBeInTheDocument();
+    });
+
+    const copyBtn = screen.getByTestId('code-block-copy-btn');
+    fireEvent.click(copyBtn);
+
+    // Should not show "Copied!" since clipboard write failed
+    // Wait a tick for the async handler to settle
+    await waitFor(() => {
+      expect(copyBtn.textContent).toBe('Copy');
+    });
+
+    // Should not throw or crash the component
+    expect(screen.getByTestId('code-block-node-view')).toBeInTheDocument();
+  });
+
   it('read-only mode shows language label instead of dropdown', async () => {
     const html = '<pre><code class="language-javascript">const x = 1;</code></pre>';
 
