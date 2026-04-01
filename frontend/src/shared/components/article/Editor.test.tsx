@@ -5,6 +5,14 @@ vi.mock('../hooks/use-is-light-theme', () => ({
   useIsLightTheme: () => false,
 }));
 
+vi.mock('../../lib/api', () => ({
+  apiFetch: vi.fn(),
+}));
+
+vi.mock('sonner', () => ({
+  toast: { error: vi.fn(), success: vi.fn() },
+}));
+
 import { Editor } from './Editor';
 
 describe('Editor', () => {
@@ -97,5 +105,32 @@ describe('Editor', () => {
     expect(img).toHaveAttribute('data-confluence-filename', 'original.png');
     expect(img).toHaveAttribute('data-confluence-owner-page-title', 'Shared Assets');
     expect(img).toHaveAttribute('data-confluence-owner-space-key', 'OPS');
+  });
+
+  describe('clipboard image paste (#17)', () => {
+    it('renders and accepts the pageId prop', async () => {
+      const { container } = render(
+        <Editor content="" editable={true} pageId="42" />,
+      );
+
+      await waitFor(() => {
+        expect(container.querySelector('[class*="tiptap"]')).toBeTruthy();
+      });
+
+      // Verify the editor renders successfully with pageId
+      expect(container.querySelector('[class*="tiptap"]')).toBeTruthy();
+    });
+
+    it('renders without pageId (backward compatible)', async () => {
+      const { container } = render(
+        <Editor content="" editable={true} />,
+      );
+
+      await waitFor(() => {
+        expect(container.querySelector('[class*="tiptap"]')).toBeTruthy();
+      });
+
+      expect(container.querySelector('[class*="tiptap"]')).toBeTruthy();
+    });
   });
 });
