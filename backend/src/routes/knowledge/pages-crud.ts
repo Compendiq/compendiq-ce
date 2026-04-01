@@ -602,13 +602,14 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
   fastify.get('/pages/:id/children', async (request) => {
     const { id } = IdParamSchema.parse(request.params);
+    const userId = request.userId;
     const params = ChildrenQuerySchema.parse(request.query);
     const { sort, order, depth, limit } = params;
 
     // Resolve page: try confluence_id first, then integer id
     const isNumericId = /^\d+$/.test(id);
-    const pageResult = await query<{ id: number; confluence_id: string | null }>(
-      `SELECT id, confluence_id FROM pages
+    const pageResult = await query<{ id: number; confluence_id: string | null; space_key: string | null; source: string; visibility: string; created_by_user_id: string | null }>(
+      `SELECT id, confluence_id, space_key, source, visibility, created_by_user_id FROM pages
        WHERE ${isNumericId ? '(confluence_id = $1 OR id = $1::int)' : 'confluence_id = $1'}
          AND deleted_at IS NULL
        LIMIT 1`,
@@ -620,6 +621,19 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     }
 
     const page = pageResult.rows[0];
+
+    // Access control: same pattern as GET /pages/:id
+    if (page.source === 'confluence') {
+      const spaces = await getUserAccessibleSpaces(userId);
+      if (!page.space_key || !spaces.includes(page.space_key)) {
+        throw fastify.httpErrors.notFound('Page not found');
+      }
+    } else {
+      if (page.created_by_user_id !== userId && page.visibility !== 'shared') {
+        throw fastify.httpErrors.notFound('Page not found');
+      }
+    }
+
     // Children are linked via parent_id which stores the confluence_id string
     const parentLookupId = page.confluence_id ?? String(page.id);
 
@@ -627,17 +641,25 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const sortColumn = sort === 'created_at' ? 'created_at' : 'title';
     const sortOrder = order === 'desc' ? 'DESC' : 'ASC';
 
+    // Cap total nodes to prevent unbounded recursive N+1 queries (DoS protection)
+    const MAX_TOTAL_NODES = 200;
+    let totalFetched = 0;
+
     type ChildRow = { id: number; confluence_id: string | null; title: string; space_key: string | null };
 
     async function fetchChildren(parentId: string, currentDepth: number): Promise<Array<{ id: number; confluenceId: string | null; title: string; spaceKey: string | null; children?: Array<unknown> }>> {
+      if (currentDepth > depth || totalFetched >= MAX_TOTAL_NODES) return [];
+
       const result = await query<ChildRow>(
         `SELECT id, confluence_id, title, space_key
          FROM pages
          WHERE parent_id = $1 AND deleted_at IS NULL
          ORDER BY ${sortColumn} ${sortOrder}
          LIMIT $2`,
-        [parentId, limit],
+        [parentId, Math.min(limit, MAX_TOTAL_NODES - totalFetched)],
       );
+
+      totalFetched += result.rows.length;
 
       const children = [];
       for (const row of result.rows) {
