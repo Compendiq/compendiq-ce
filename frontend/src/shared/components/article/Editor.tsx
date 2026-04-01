@@ -17,7 +17,7 @@ import {
   ArrowUpFromLine, ArrowDownFromLine, ArrowLeftFromLine, ArrowRightFromLine,
   Trash2, Columns3, Rows3, Merge, SplitSquareHorizontal, Square,
   ToggleLeft, PanelTop, Workflow, Underline, Highlighter, Palette,
-  Badge, ChevronsUpDown, Hash, Paperclip, ListTree,
+  Badge, ChevronsUpDown, Hash, Paperclip, ListTree, ImagePlus, TableProperties, Table2,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '../../lib/cn';
@@ -36,6 +36,11 @@ import {
   Details,
   DetailsSummary,
   DrawioDiagram,
+  Figure,
+  Figcaption,
+  TableCaption,
+  FigureIndex,
+  TableIndex,
   isInConfluenceSection,
   isInConfluenceLayout,
   LAYOUT_PRESETS,
@@ -448,6 +453,57 @@ export function EditorToolbar({ editor, headerNumbering, onToggleHeaderNumbering
 
       <LayoutPresetPicker editor={editor} />
 
+      <ToolbarSeparator />
+
+      {/* Caption & Index tools (#13) */}
+      <ToolbarButton
+        onClick={() => {
+          // Wrap selected image in a figure with caption
+          const { from } = editor.state.selection;
+          const node = editor.state.doc.nodeAt(from);
+          if (node?.type.name === 'image') {
+            editor.chain()
+              .deleteRange({ from, to: from + node.nodeSize })
+              .insertContentAt(from, {
+                type: 'figure',
+                content: [
+                  { type: 'image', attrs: node.attrs },
+                  { type: 'figcaption' },
+                ],
+              })
+              .run();
+          }
+        }}
+        title="Add Caption to Selected Image"
+      >
+        <ImagePlus size={16} />
+      </ToolbarButton>
+      <ToolbarButton
+        onClick={() => {
+          // Insert a table caption after the current position
+          editor.chain().focus().insertContent({ type: 'tableCaption' }).run();
+        }}
+        title="Insert Table Caption"
+      >
+        <TableProperties size={16} />
+      </ToolbarButton>
+      <ToolbarButton
+        onClick={() => {
+          editor.chain().focus().insertContent({ type: 'figureIndex' }).run();
+        }}
+        title="Insert List of Figures"
+      >
+        <ListTree size={16} />
+      </ToolbarButton>
+      <ToolbarButton
+        onClick={() => {
+          editor.chain().focus().insertContent({ type: 'tableIndex' }).run();
+        }}
+        title="Insert List of Tables"
+      >
+        <Table2 size={16} />
+      </ToolbarButton>
+
       <div className="flex-1" />
 
       <ToolbarButton onClick={() => editor.chain().focus().undo().run()} disabled={!editor.can().undo()} title="Undo">
@@ -559,6 +615,19 @@ export function TableContextToolbar({ editor }: { editor: EditorType }) {
         title="Toggle header column"
       >
         <ToggleLeft size={15} />
+      </ToolbarButton>
+
+      <ToolbarSeparator />
+
+      {/* Add table caption (#13) */}
+      <ToolbarButton
+        onClick={() => {
+          // Insert a table caption node after the current table
+          editor.chain().focus().insertContent({ type: 'tableCaption' }).run();
+        }}
+        title="Add Table Caption"
+      >
+        <TableProperties size={15} />
       </ToolbarButton>
 
       <div className="flex-1" />
@@ -886,6 +955,11 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       ConfluenceAttachments,
       ConfluenceChildren,
       DrawioDiagram,
+      Figure,
+      Figcaption,
+      TableCaption,
+      FigureIndex,
+      TableIndex,
       TitledCodeBlock.configure({ lowlight }),
       ConfluenceImage.configure({ inline: false }),
       Placeholder.configure({ placeholder: placeholder ?? 'Start writing...' }),

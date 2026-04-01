@@ -1960,3 +1960,37 @@ pre:hover .code-copy-btn {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--color-muted-foreground);
 }
+
+/* ============================================
+   Figure & Table Caption Auto-Numbering
+   ============================================ */
+
+/* Editor (ProseMirror) counters */
+.ProseMirror { counter-reset: figure-counter table-counter; }
+
+.ProseMirror figure { counter-increment: figure-counter; }
+.ProseMirror figure figcaption::before {
+  content: "Figure " counter(figure-counter) ": ";
+  font-weight: 600;
+}
+
+.ProseMirror .table-caption { counter-increment: table-counter; }
+.ProseMirror .table-caption::before {
+  content: "Table " counter(table-counter) ": ";
+  font-weight: 600;
+}
+
+/* ArticleViewer (read-only) counters */
+.article-viewer { counter-reset: figure-counter table-counter; }
+
+.article-viewer figure { counter-increment: figure-counter; }
+.article-viewer figure figcaption::before {
+  content: "Figure " counter(figure-counter) ": ";
+  font-weight: 600;
+}
+
+.article-viewer .table-caption { counter-increment: table-counter; }
+.article-viewer .table-caption::before {
+  content: "Table " counter(table-counter) ": ";
+  font-weight: 600;
+}

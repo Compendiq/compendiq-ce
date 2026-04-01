@@ -4,6 +4,8 @@ import { DrawioDiagramNodeView } from './DrawioDiagramNodeView';
 import { StatusBadgeView } from './StatusBadgeView';
 import { AttachmentsMacroView } from './AttachmentsMacroView';
 import { ChildrenMacroView } from './ChildrenMacroView';
+import { FigureIndexView } from './FigureIndexView';
+import { TableIndexView } from './TableIndexView';
 
 declare module '@tiptap/core' {
   interface Commands<ReturnType> {
@@ -817,5 +819,120 @@ export const UnknownMacro = Node.create({
 
   renderHTML({ HTMLAttributes }) {
     return ['div', mergeAttributes(HTMLAttributes, { class: 'confluence-macro-unknown' }), 0];
+  },
+});
+
+/**
+ * Figure node — wraps an image + editable caption.
+ * Renders as <figure class="figure-block">.
+ * The content schema uses `image` which matches the TipTap Image extension node name.
+ */
+export const Figure = Node.create({
+  name: 'figure',
+  group: 'block',
+  content: 'image figcaption',
+  draggable: true,
+
+  parseHTML() {
+    return [{ tag: 'figure' }];
+  },
+
+  renderHTML({ HTMLAttributes }) {
+    return ['figure', mergeAttributes(HTMLAttributes, { class: 'figure-block' }), 0];
+  },
+});
+
+/**
+ * Figcaption node — editable caption text inside a Figure.
+ * Renders as <figcaption> with styling classes.
+ */
+export const Figcaption = Node.create({
+  name: 'figcaption',
+  content: 'inline*',
+
+  parseHTML() {
+    return [{ tag: 'figcaption' }];
+  },
+
+  renderHTML({ HTMLAttributes }) {
+    return [
+      'figcaption',
+      mergeAttributes(HTMLAttributes, {
+        class: 'text-sm text-muted-foreground text-center mt-1 italic',
+      }),
+      0,
+    ];
+  },
+});
+
+/**
+ * TableCaption node — caption for tables.
+ * Renders as <div class="table-caption">.
+ * Parses from both <caption> (standard HTML) and <div class="table-caption">.
+ */
+export const TableCaption = Node.create({
+  name: 'tableCaption',
+  group: 'block',
+  content: 'inline*',
+
+  parseHTML() {
+    return [
+      { tag: 'caption' },
+      { tag: 'div.table-caption' },
+    ];
+  },
+
+  renderHTML({ HTMLAttributes }) {
+    return [
+      'div',
+      mergeAttributes(HTMLAttributes, {
+        class: 'table-caption text-sm text-muted-foreground text-center mt-1 italic',
+      }),
+      0,
+    ];
+  },
+});
+
+/**
+ * FigureIndex node — auto-generated list of figures in the document.
+ * Atom node rendered via React NodeView that scans for figure nodes.
+ */
+export const FigureIndex = Node.create({
+  name: 'figureIndex',
+  group: 'block',
+  atom: true,
+
+  parseHTML() {
+    return [{ tag: 'div.figure-index' }];
+  },
+
+  renderHTML({ HTMLAttributes }) {
+    return ['div', mergeAttributes(HTMLAttributes, { class: 'figure-index' })];
+  },
+
+  addNodeView() {
+    return ReactNodeViewRenderer(FigureIndexView);
+  },
+});
+
+/**
+ * TableIndex node — auto-generated list of tables in the document.
+ * Atom node rendered via React NodeView that scans for tableCaption nodes.
+ */
+export const TableIndex = Node.create({
+  name: 'tableIndex',
+  group: 'block',
+  atom: true,
+
+  parseHTML() {
+    return [{ tag: 'div.table-index' }];
+  },
+
+  renderHTML({ HTMLAttributes }) {
+    return ['div', mergeAttributes(HTMLAttributes, { class: 'table-index' })];
+  },
+
+  addNodeView() {
+    return ReactNodeViewRenderer(TableIndexView);
   },
 });

@@ -851,3 +851,71 @@ describe('content-converter', () => {
     });
   });
 });
+
+describe('content-converter: figure/caption round-trip (#13)', () => {
+  it('passes <figure> and <figcaption> through confluenceToHtml unchanged', () => {
+    const html = '<figure class="figure-block"><img src="test.png" alt="Test" /><figcaption>My caption</figcaption></figure>';
+    // confluenceToHtml processes Confluence XHTML; standard HTML elements should pass through
+    const result = confluenceToHtml(html);
+    expect(result).toContain('<figure');
+    expect(result).toContain('<figcaption>');
+    expect(result).toContain('My caption');
+  });
+
+  it('passes <div class="table-caption"> through confluenceToHtml unchanged', () => {
+    const html = '<div class="table-caption">Revenue by Quarter</div>';
+    const result = confluenceToHtml(html);
+    expect(result).toContain('table-caption');
+    expect(result).toContain('Revenue by Quarter');
+  });
+
+  it('preserves <figure> and <figcaption> in htmlToConfluence', () => {
+    const html = '<figure class="figure-block"><img src="test.png" alt="Test" /><figcaption>My caption</figcaption></figure>';
+    const result = htmlToConfluence(html);
+    expect(result).toContain('<figure');
+    expect(result).toContain('<figcaption>');
+    expect(result).toContain('My caption');
+  });
+
+  it('preserves <div class="table-caption"> in htmlToConfluence', () => {
+    const html = '<div class="table-caption">Revenue by Quarter</div>';
+    const result = htmlToConfluence(html);
+    expect(result).toContain('table-caption');
+    expect(result).toContain('Revenue by Quarter');
+  });
+});
+
+describe('content-converter: index block stripping (#13)', () => {
+  it('strips <div class="figure-index"> during htmlToConfluence', () => {
+    const html = '<p>Hello</p><div class="figure-index"><h3>List of Figures</h3><ol><li>Figure 1: Test</li></ol></div><p>World</p>';
+    const result = htmlToConfluence(html);
+    expect(result).not.toContain('figure-index');
+    expect(result).not.toContain('List of Figures');
+    expect(result).toContain('Hello');
+    expect(result).toContain('World');
+  });
+
+  it('strips <div class="table-index"> during htmlToConfluence', () => {
+    const html = '<p>Hello</p><div class="table-index"><h3>List of Tables</h3><ol><li>Table 1: Test</li></ol></div><p>World</p>';
+    const result = htmlToConfluence(html);
+    expect(result).not.toContain('table-index');
+    expect(result).not.toContain('List of Tables');
+    expect(result).toContain('Hello');
+    expect(result).toContain('World');
+  });
+
+  it('strips multiple index blocks at once', () => {
+    const html = '<div class="figure-index">figures</div><div class="table-index">tables</div><p>Content</p>';
+    const result = htmlToConfluence(html);
+    expect(result).not.toContain('figure-index');
+    expect(result).not.toContain('table-index');
+    expect(result).toContain('Content');
+  });
+
+  it('does not strip index blocks during confluenceToHtml (inbound pass-through)', () => {
+    // Index blocks in stored HTML should be preserved when loading into the editor
+    const html = '<div class="figure-index">figures</div><p>Content</p>';
+    const result = confluenceToHtml(html);
+    expect(result).toContain('figure-index');
+  });
+});
