@@ -1,6 +1,7 @@
 import { Node, mergeAttributes, type Editor } from '@tiptap/core';
 import { ReactNodeViewRenderer } from '@tiptap/react';
 import { DrawioDiagramNodeView } from './DrawioDiagramNodeView';
+import { StatusBadgeView } from './StatusBadgeView';
 
 declare module '@tiptap/core' {
   interface Commands<ReturnType> {
@@ -275,6 +276,10 @@ export const ConfluenceStatus = Node.create({
       },
       node.attrs.label,
     ];
+  },
+
+  addNodeView() {
+    return ReactNodeViewRenderer(StatusBadgeView);
   },
 });
 
