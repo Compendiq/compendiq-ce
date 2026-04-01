@@ -592,6 +592,102 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     return { hasChildren: parseInt(result.rows[0].count, 10) > 0 };
   });
 
+  // GET /api/pages/:id/children - list child pages for the Confluence Children macro
+  const ChildrenQuerySchema = z.object({
+    sort: z.enum(['title', 'created_at']).default('title'),
+    order: z.enum(['asc', 'desc']).default('asc'),
+    depth: z.coerce.number().int().min(1).max(3).default(1),
+    limit: z.coerce.number().int().min(1).max(100).default(50),
+  });
+
+  fastify.get('/pages/:id/children', async (request) => {
+    const { id } = IdParamSchema.parse(request.params);
+    const userId = request.userId;
+    const params = ChildrenQuerySchema.parse(request.query);
+    const { sort, order, depth, limit } = params;
+
+    // Resolve page: try confluence_id first, then integer id
+    const isNumericId = /^\d+$/.test(id);
+    const pageResult = await query<{ id: number; confluence_id: string | null; space_key: string | null; source: string; visibility: string; created_by_user_id: string | null }>(
+      `SELECT id, confluence_id, space_key, source, visibility, created_by_user_id FROM pages
+       WHERE ${isNumericId ? '(confluence_id = $1 OR id = $1::int)' : 'confluence_id = $1'}
+         AND deleted_at IS NULL
+       LIMIT 1`,
+      [isNumericId ? id : id],
+    );
+
+    if (pageResult.rows.length === 0) {
+      throw fastify.httpErrors.notFound('Page not found');
+    }
+
+    const page = pageResult.rows[0];
+
+    // Access control: same pattern as GET /pages/:id
+    if (page.source === 'confluence') {
+      const spaces = await getUserAccessibleSpaces(userId);
+      if (!page.space_key || !spaces.includes(page.space_key)) {
+        throw fastify.httpErrors.notFound('Page not found');
+      }
+    } else {
+      if (page.created_by_user_id !== userId && page.visibility !== 'shared') {
+        throw fastify.httpErrors.notFound('Page not found');
+      }
+    }
+
+    // Children are linked via parent_id which stores the confluence_id string
+    const parentLookupId = page.confluence_id ?? String(page.id);
+
+    // Validate sort column to prevent SQL injection (only allow whitelisted values)
+    const sortColumn = sort === 'created_at' ? 'created_at' : 'title';
+    const sortOrder = order === 'desc' ? 'DESC' : 'ASC';
+
+    // Cap total nodes to prevent unbounded recursive N+1 queries (DoS protection)
+    const MAX_TOTAL_NODES = 200;
+    let totalFetched = 0;
+
+    type ChildRow = { id: number; confluence_id: string | null; title: string; space_key: string | null };
+
+    async function fetchChildren(parentId: string, currentDepth: number): Promise<Array<{ id: number; confluenceId: string | null; title: string; spaceKey: string | null; children?: Array<unknown> }>> {
+      if (currentDepth > depth || totalFetched >= MAX_TOTAL_NODES) return [];
+
+      const result = await query<ChildRow>(
+        `SELECT id, confluence_id, title, space_key
+         FROM pages
+         WHERE parent_id = $1 AND deleted_at IS NULL
+         ORDER BY ${sortColumn} ${sortOrder}
+         LIMIT $2`,
+        [parentId, Math.min(limit, MAX_TOTAL_NODES - totalFetched)],
+      );
+
+      totalFetched += result.rows.length;
+
+      const children = [];
+      for (const row of result.rows) {
+        const child: { id: number; confluenceId: string | null; title: string; spaceKey: string | null; children?: Array<unknown> } = {
+          id: row.id,
+          confluenceId: row.confluence_id,
+          title: row.title,
+          spaceKey: row.space_key,
+        };
+
+        if (currentDepth < depth) {
+          const childLookupId = row.confluence_id ?? String(row.id);
+          const subChildren = await fetchChildren(childLookupId, currentDepth + 1);
+          if (subChildren.length > 0) {
+            child.children = subChildren;
+          }
+        }
+
+        children.push(child);
+      }
+
+      return children;
+    }
+
+    const children = await fetchChildren(parentLookupId, 1);
+    return { children };
+  });
+
   // POST /api/pages/:id/restore - restore a soft-deleted standalone article from trash
   fastify.post('/pages/:id/restore', async (request) => {
     const { id } = IdParamSchema.parse(request.params);

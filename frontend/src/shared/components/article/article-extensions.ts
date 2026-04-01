@@ -3,6 +3,7 @@ import { ReactNodeViewRenderer } from '@tiptap/react';
 import { DrawioDiagramNodeView } from './DrawioDiagramNodeView';
 import { StatusBadgeView } from './StatusBadgeView';
 import { AttachmentsMacroView } from './AttachmentsMacroView';
+import { ChildrenMacroView } from './ChildrenMacroView';
 
 declare module '@tiptap/core' {
   interface Commands<ReturnType> {
@@ -316,6 +317,10 @@ export const ConfluenceChildren = Node.create({
       if (node.attrs[name] != null) htmlAttrs[`data-${name}`] = node.attrs[name];
     }
     return ['div', htmlAttrs, '[Children pages listed here]'];
+  },
+
+  addNodeView() {
+    return ReactNodeViewRenderer(ChildrenMacroView);
   },
 });
 

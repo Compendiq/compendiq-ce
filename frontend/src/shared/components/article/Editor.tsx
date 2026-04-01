@@ -17,7 +17,7 @@ import {
   ArrowUpFromLine, ArrowDownFromLine, ArrowLeftFromLine, ArrowRightFromLine,
   Trash2, Columns3, Rows3, Merge, SplitSquareHorizontal, Square,
   ToggleLeft, PanelTop, Workflow, Underline, Highlighter, Palette,
-  Badge, ChevronsUpDown, Hash, Paperclip,
+  Badge, ChevronsUpDown, Hash, Paperclip, ListTree,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '../../lib/cn';
@@ -30,6 +30,7 @@ import {
   ConfluenceLayoutCell,
   ConfluenceSection,
   ConfluenceColumn,
+  ConfluenceChildren,
   ConfluenceStatus,
   ConfluenceAttachments,
   Details,
@@ -435,6 +436,14 @@ export function EditorToolbar({ editor, headerNumbering, onToggleHeaderNumbering
         title="Insert Attachments Block"
       >
         <Paperclip size={16} />
+      </ToolbarButton>
+      <ToolbarButton
+        onClick={() => {
+          editor.chain().focus().insertContent({ type: 'confluenceChildren' }).run();
+        }}
+        title="Insert Children Pages"
+      >
+        <ListTree size={16} />
       </ToolbarButton>
 
       <LayoutPresetPicker editor={editor} />
@@ -875,6 +884,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       ConfluenceSection,
       ConfluenceColumn,
       ConfluenceAttachments,
+      ConfluenceChildren,
       DrawioDiagram,
       TitledCodeBlock.configure({ lowlight }),
       ConfluenceImage.configure({ inline: false }),

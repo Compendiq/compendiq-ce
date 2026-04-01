@@ -20,6 +20,21 @@ vi.mock('../../hooks/use-authenticated-src', () => ({
   fetchAuthenticatedBlob: (...args: unknown[]) => mockFetchAuthenticatedBlob(...args),
 }));
 
+// Mock react-router-dom for ChildrenMacroView (uses useParams + Link)
+vi.mock('react-router-dom', async () => {
+  const React = await import('react');
+  return {
+    useParams: () => ({ id: 'test-page-id' }),
+    Link: ({ to, children, ...props }: { to: string; children: React.ReactNode; [key: string]: unknown }) =>
+      React.createElement('a', { href: to, ...props }, children),
+  };
+});
+
+// Mock apiFetch for ChildrenMacroView
+vi.mock('../../lib/api', () => ({
+  apiFetch: vi.fn().mockResolvedValue({ children: [] }),
+}));
+
 import { ArticleViewer } from './ArticleViewer';
 
 describe('ArticleViewer', () => {
@@ -384,12 +399,17 @@ describe('ArticleViewer', () => {
 
     const { container } = render(<ArticleViewer content={html} />);
 
+    // The ConfluenceChildren TipTap node now renders a React NodeView
+    // (ChildrenMacroView) instead of static placeholder text.
+    // Without a page context the component shows "Child Pages" header
+    // and "No child pages" empty state.
     await waitFor(() => {
-      expect(container.querySelector('.confluence-children-macro')).toBeTruthy();
+      expect(container.querySelector('[data-testid="children-macro-view"]')).toBeTruthy();
     });
 
-    const placeholder = container.querySelector('.confluence-children-macro')!;
-    expect(placeholder.textContent).toContain('Children pages listed here');
+    const view = container.querySelector('[data-testid="children-macro-view"]')!;
+    expect(view.textContent).toContain('Child Pages');
+    expect(view.textContent).toContain('No child pages');
   });
 
   it('renders collapsible details/summary sections', async () => {
