@@ -184,6 +184,34 @@ describe('Editor', () => {
     });
     expect(container.querySelector('.header-numbering')).toBeFalsy();
   });
+
+  describe('drag handle (#49)', () => {
+    it('renders drag handle in edit mode', async () => {
+      const { container } = render(
+        <Editor content="<p>Hello</p>" editable={true} />,
+      );
+
+      await waitFor(() => {
+        expect(container.querySelector('[class*="tiptap"]')).toBeTruthy();
+      });
+
+      const dragHandle = container.querySelector('.drag-handle');
+      expect(dragHandle).toBeTruthy();
+    });
+
+    it('does not render drag handle in read-only mode', async () => {
+      const { container } = render(
+        <Editor content="<p>Hello</p>" editable={false} />,
+      );
+
+      await waitFor(() => {
+        expect(container.querySelector('[class*="tiptap"]')).toBeTruthy();
+      });
+
+      const dragHandle = container.querySelector('.drag-handle');
+      expect(dragHandle).toBeFalsy();
+    });
+  });
 });
 
 describe('EditorToolbar — header numbering toggle', () => {
