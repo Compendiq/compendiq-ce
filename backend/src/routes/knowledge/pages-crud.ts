@@ -1449,7 +1449,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
   // POST /api/pages/:id/images - upload a pasted/dropped image for a page
   // Accepts JSON body: { dataUri: "data:image/png;base64,...", filename: "paste-123-abcd.png" }
   // Stores the image in the local attachment cache and returns the serving URL.
-  fastify.post('/pages/:id/images', { config: { bodyLimit: 15_000_000 } }, async (request, reply) => {
+  fastify.post('/pages/:id/images', { bodyLimit: 15_000_000 }, async (request, reply) => {
     const { id } = IdParamSchema.parse(request.params);
     const userId = request.userId;
 
