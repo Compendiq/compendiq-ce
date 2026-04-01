@@ -22,6 +22,7 @@ import {
   ToggleLeft, PanelTop, Workflow, Underline, Highlighter, Palette,
   Badge, ChevronsUpDown, Hash, Paperclip, ListTree, ImagePlus, TableProperties, Table2,
   GripVertical,
+  Terminal,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '../../lib/cn';
@@ -50,6 +51,8 @@ import {
   LAYOUT_PRESETS,
 } from './article-extensions';
 import type { Editor as EditorType } from '@tiptap/react';
+import { VimExtension, type VimState } from './vim-extension';
+import { VimModeIndicator } from './VimModeIndicator';
 
 const ConfluenceImage = Image.extend({
   addAttributes() {
@@ -295,7 +298,7 @@ function ColorPickerDropdown({
   );
 }
 
-export function EditorToolbar({ editor, headerNumbering, onToggleHeaderNumbering }: { editor: EditorType; headerNumbering?: boolean; onToggleHeaderNumbering?: () => void }) {
+export function EditorToolbar({ editor, headerNumbering, onToggleHeaderNumbering, vimEnabled, onToggleVim }: { editor: EditorType; headerNumbering?: boolean; onToggleHeaderNumbering?: () => void; vimEnabled?: boolean; onToggleVim?: () => void }) {
   // Subscribe to editor state changes so toolbar re-renders on selection/formatting changes (#16)
   const activeState = useEditorState({
     editor,
@@ -509,6 +512,14 @@ export function EditorToolbar({ editor, headerNumbering, onToggleHeaderNumbering
       </ToolbarButton>
 
       <div className="flex-1" />
+
+      {onToggleVim && (
+        <ToolbarButton onClick={onToggleVim} active={vimEnabled} title="Toggle Vim Mode">
+          <Terminal size={16} />
+        </ToolbarButton>
+      )}
+
+      <ToolbarSeparator />
 
       <ToolbarButton onClick={() => editor.chain().focus().undo().run()} disabled={!editor.can().undo()} title="Undo">
         <Undo2 size={16} />
@@ -875,6 +886,12 @@ export function clearDraft(key: string): void {
   } catch { /* ignore */ }
 }
 
+const VIM_STORAGE_KEY = 'compendiq-vim-mode';
+
+function defaultVimDisplayState(): VimState {
+  return { mode: 'normal', pendingKeys: '', countPrefix: '', register: '', commandBuffer: null };
+}
+
 export function Editor({ content, onChange, editable = true, placeholder, draftKey, naked = false, onEditorReady, hideToolbar = false, pageId }: EditorProps) {
   const isLight = useIsLightTheme();
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -892,6 +909,21 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
     setHeaderNumbering(prev => {
       localStorage.setItem('editor-header-numbering', String(!prev));
       return !prev;
+    });
+  };
+
+  // Vim mode state
+  const [vimEnabled, setVimEnabled] = useState(() =>
+    localStorage.getItem(VIM_STORAGE_KEY) === 'true'
+  );
+  const [vimDisplayState, setVimDisplayState] = useState<VimState>(defaultVimDisplayState);
+
+  const toggleVim = () => {
+    setVimEnabled(prev => {
+      const next = !prev;
+      localStorage.setItem(VIM_STORAGE_KEY, String(next));
+      if (!next) setVimDisplayState(defaultVimDisplayState());
+      return next;
     });
   };
 
@@ -968,6 +1000,15 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       ConfluenceImage.configure({ inline: false }),
       Placeholder.configure({ placeholder: placeholder ?? 'Start writing...' }),
       SearchAndReplaceExtension,
+      ...(vimEnabled ? [VimExtension.configure({
+        onStateChange: setVimDisplayState,
+        onSave: () => {
+          // Trigger save via onChange with current content
+          if (editorRef.current) {
+            onChange?.(editorRef.current.getHTML());
+          }
+        },
+      })] : []),
     ],
     editorProps: {
       handlePaste(_view, event) {
@@ -998,7 +1039,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       onChange?.(html);
       saveDraft(html);
     },
-  });
+  }, [vimEnabled]);
 
   // Keep the editor ref in sync
   editorRef.current = editor;
@@ -1013,7 +1054,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
     <div className={cn('relative', naked ? '' : 'glass-card', headerNumbering && 'header-numbering')}>
       {editable && editor && !hideToolbar && (
         <div className="sticky top-0 z-30 rounded-t-xl border-b border-border/50 bg-card before:absolute before:-z-10 before:-top-[100px] before:bottom-0 before:left-0 before:right-0 before:bg-background">
-          <EditorToolbar editor={editor} headerNumbering={headerNumbering} onToggleHeaderNumbering={toggleHeaderNumbering} />
+          <EditorToolbar editor={editor} headerNumbering={headerNumbering} onToggleHeaderNumbering={toggleHeaderNumbering} vimEnabled={vimEnabled} onToggleVim={toggleVim} />
           <TableContextToolbar editor={editor} />
           <LayoutContextToolbar editor={editor} />
           <ColumnContextToolbar editor={editor} />
@@ -1036,6 +1077,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
           '[&_ul[data-type=taskList]]:list-none [&_ul[data-type=taskList]]:pl-0',
         )}
       />
+      {vimEnabled && editable && <VimModeIndicator vimState={vimDisplayState} />}
     </div>
   );
 }
