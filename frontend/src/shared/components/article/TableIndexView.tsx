@@ -1,5 +1,5 @@
 import { NodeViewWrapper, type NodeViewProps } from '@tiptap/react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 interface TableEntry {
   number: number;
@@ -8,9 +8,10 @@ interface TableEntry {
 
 export function TableIndexView({ editor }: NodeViewProps) {
   const [entries, setEntries] = useState<TableEntry[]>([]);
+  const timerRef = useRef<ReturnType<typeof setTimeout>>();
 
   useEffect(() => {
-    const update = () => {
+    const scan = () => {
       const tables: TableEntry[] = [];
       let count = 0;
       editor.state.doc.descendants((node) => {
@@ -21,9 +22,14 @@ export function TableIndexView({ editor }: NodeViewProps) {
       });
       setEntries(tables);
     };
-    update();
+    const update = () => {
+      clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(scan, 250);
+    };
+    scan();
     editor.on('update', update);
     return () => {
+      clearTimeout(timerRef.current);
       editor.off('update', update);
     };
   }, [editor]);

@@ -1,5 +1,5 @@
 import { NodeViewWrapper, type NodeViewProps } from '@tiptap/react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 interface FigureEntry {
   number: number;
@@ -8,9 +8,10 @@ interface FigureEntry {
 
 export function FigureIndexView({ editor }: NodeViewProps) {
   const [entries, setEntries] = useState<FigureEntry[]>([]);
+  const timerRef = useRef<ReturnType<typeof setTimeout>>();
 
   useEffect(() => {
-    const update = () => {
+    const scan = () => {
       const figures: FigureEntry[] = [];
       let count = 0;
       editor.state.doc.descendants((node) => {
@@ -22,9 +23,14 @@ export function FigureIndexView({ editor }: NodeViewProps) {
       });
       setEntries(figures);
     };
-    update();
+    const update = () => {
+      clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(scan, 250);
+    };
+    scan();
     editor.on('update', update);
     return () => {
+      clearTimeout(timerRef.current);
       editor.off('update', update);
     };
   }, [editor]);
