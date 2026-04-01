@@ -272,13 +272,20 @@ describe('use-standalone hooks', () => {
   });
 
   describe('useExportPdf', () => {
-    it('sends export request', async () => {
-      const mock = mockFetch({ message: 'ok' });
+    it('sends export request and returns a blob', async () => {
+      const pdfBytes = new Uint8Array([0x25, 0x50, 0x44, 0x46]); // %PDF
+      const mock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(pdfBytes, {
+          status: 200,
+          headers: { 'Content-Type': 'application/pdf' },
+        }),
+      );
       const { result } = renderHook(() => useExportPdf(), { wrapper: createWrapper() });
-      await result.current.mutateAsync(42);
+      const blob = await result.current.mutateAsync(42);
       const [url, opts] = mock.mock.calls[0] as [string, RequestInit];
       expect(url).toContain('/pages/42/export/pdf');
       expect(opts.method).toBe('POST');
+      expect(blob.size).toBeGreaterThan(0);
     });
   });
 });

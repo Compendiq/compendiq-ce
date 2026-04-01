@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { apiFetch } from '../lib/api';
+import { apiFetch, ApiError, refreshAccessTokenOnce } from '../lib/api';
+import { useAuthStore } from '../../stores/auth-store';
 
 // ======== Templates ========
 
@@ -387,20 +388,50 @@ export function useContentGaps() {
 
 // ======== PDF Export ========
 
+/**
+ * Fetch a PDF blob from the backend. Uses `fetch` directly instead of
+ * `apiFetch` because `apiFetch` only handles JSON responses — binary
+ * content types like `application/pdf` would return `undefined`.
+ */
+async function fetchPdfBlob(url: string, init?: RequestInit): Promise<Blob> {
+  const { accessToken } = useAuthStore.getState();
+  const headers = new Headers(init?.headers);
+  if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
+
+  let res = await fetch(url, { ...init, headers, credentials: 'include' });
+
+  if (res.status === 401) {
+    const newToken = await refreshAccessTokenOnce();
+    if (newToken) {
+      headers.set('Authorization', `Bearer ${newToken}`);
+      res = await fetch(url, { ...init, headers, credentials: 'include' });
+    } else {
+      useAuthStore.getState().clearAuth();
+      throw new ApiError(401, 'Session expired');
+    }
+  }
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ message: res.statusText }));
+    throw new ApiError(res.status, body.message ?? 'PDF export failed');
+  }
+
+  return res.blob();
+}
+
 export function useExportPdf() {
   return useMutation({
     mutationFn: (pageId: number) =>
-      apiFetch<Blob>(`/pages/${pageId}/export/pdf`, {
-        method: 'POST',
-      }),
+      fetchPdfBlob(`/api/pages/${pageId}/export/pdf`, { method: 'POST' }),
   });
 }
 
 export function useBatchExportPdf() {
   return useMutation({
     mutationFn: (pageIds: number[]) =>
-      apiFetch<Blob>('/pages/export/pdf', {
+      fetchPdfBlob('/api/pages/export/pdf', {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pageIds }),
       }),
   });
