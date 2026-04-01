@@ -384,12 +384,17 @@ describe('ArticleViewer', () => {
 
     const { container } = render(<ArticleViewer content={html} />);
 
+    // The ConfluenceChildren TipTap node now renders a React NodeView
+    // (ChildrenMacroView) instead of static placeholder text.
+    // Without a page context the component shows "Child Pages" header
+    // and "No child pages" empty state.
     await waitFor(() => {
-      expect(container.querySelector('.confluence-children-macro')).toBeTruthy();
+      expect(container.querySelector('[data-testid="children-macro-view"]')).toBeTruthy();
     });
 
-    const placeholder = container.querySelector('.confluence-children-macro')!;
-    expect(placeholder.textContent).toContain('Children pages listed here');
+    const view = container.querySelector('[data-testid="children-macro-view"]')!;
+    expect(view.textContent).toContain('Child Pages');
+    expect(view.textContent).toContain('No child pages');
   });
 
   it('renders collapsible details/summary sections', async () => {
