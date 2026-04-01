@@ -8,7 +8,7 @@ interface TableEntry {
 
 export function TableIndexView({ editor }: NodeViewProps) {
   const [entries, setEntries] = useState<TableEntry[]>([]);
-  const timerRef = useRef<ReturnType<typeof setTimeout>>();
+  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => {
     const scan = () => {

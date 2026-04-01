@@ -8,7 +8,7 @@ interface FigureEntry {
 
 export function FigureIndexView({ editor }: NodeViewProps) {
   const [entries, setEntries] = useState<FigureEntry[]>([]);
-  const timerRef = useRef<ReturnType<typeof setTimeout>>();
+  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => {
     const scan = () => {
