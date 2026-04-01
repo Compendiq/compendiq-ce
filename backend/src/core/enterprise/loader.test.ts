@@ -12,7 +12,7 @@ describe('Enterprise loader', () => {
   });
 
   describe('loadEnterprisePlugin', () => {
-    it('should return noop plugin when @atlasmind/enterprise is not installed', async () => {
+    it('should return noop plugin when @compendiq/enterprise is not installed', async () => {
       const plugin = await loadEnterprisePlugin();
 
       expect(plugin).toBe(noopPlugin);

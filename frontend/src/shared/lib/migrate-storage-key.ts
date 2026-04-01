@@ -1,5 +1,5 @@
 /**
- * One-time localStorage key migration for the ai-kb-creator → AtlasMind rebrand.
+ * One-time localStorage key migration for rebrands (ai-kb-creator → AtlasMind → Compendiq).
  *
  * If the old key exists and the new key does not, copies the value over and
  * removes the old key. This preserves user theme/auth/UI state across the rename.

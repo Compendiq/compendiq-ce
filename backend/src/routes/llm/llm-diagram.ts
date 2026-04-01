@@ -3,7 +3,7 @@ import { getSystemPrompt, SystemPromptKey } from '../../domains/llm/services/oll
 import { providerStreamChat } from '../../domains/llm/services/llm-provider.js';
 import { htmlToMarkdown } from '../../core/services/content-converter.js';
 import { LlmCache, buildLlmCacheKey } from '../../domains/llm/services/llm-cache.js';
-import { GenerateDiagramRequestSchema } from '@atlasmind/contracts';
+import { GenerateDiagramRequestSchema } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import {
   checkCacheWithLock,

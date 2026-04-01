@@ -4,15 +4,15 @@ let cached: EnterpriseUI | null = null;
 let loaded = false;
 
 // Module specifier stored in a variable so Vite's static import analysis
-// does not attempt to resolve it at build time. When @atlasmind/enterprise
+// does not attempt to resolve it at build time. When @compendiq/enterprise
 // is not installed (community edition), the dynamic import simply throws
 // and we return null.
-const ENTERPRISE_FRONTEND_MODULE = '@atlasmind/enterprise/frontend';
+const ENTERPRISE_FRONTEND_MODULE = '@compendiq/enterprise/frontend';
 
 /**
  * Attempts to load the enterprise frontend module via dynamic import.
  *
- * - If @atlasmind/enterprise/frontend is installed and exports valid
+ * - If @compendiq/enterprise/frontend is installed and exports valid
  *   components, they are returned and cached.
  * - If the package is not installed (normal for community edition),
  *   null is returned silently. No console errors, no warnings.

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working with this repository. AG
 
 ## Project Overview
 
-**AtlasMind** — AI-powered knowledge base management web app that integrates with Confluence Data Center (on-premises) and supports multiple LLM providers (Ollama, OpenAI-compatible APIs) for article improvement, generation, summarization, and RAG-powered Q&A. Multi-user: each user configures their own Confluence PAT and space selections. Monorepo: `backend/` (Fastify 5 + PostgreSQL + Redis) and `frontend/` (React 19 + Vite).
+**Compendiq** — AI-powered knowledge base management web app that integrates with Confluence Data Center (on-premises) and supports multiple LLM providers (Ollama, OpenAI-compatible APIs) for article improvement, generation, summarization, and RAG-powered Q&A. Multi-user: each user configures their own Confluence PAT and space selections. Monorepo: `backend/` (Fastify 5 + PostgreSQL + Redis) and `frontend/` (React 19 + Vite).
 
 See `@docs/ARCHITECTURE-DECISIONS.md` for all ADRs. See `@docs/ACTION-PLAN.md` for the implementation plan.
 
@@ -38,7 +38,7 @@ npm run test -w frontend   # Frontend only
 Flat monorepo with domain-based backend structure and shared contracts (ADR-001, ADR-008):
 
 ```
-atlasmind/
+compendiq/
 ├── backend/src/
 │   ├── core/                        # Shared infrastructure (no domain imports)
 │   │   ├── enterprise/              # Enterprise plugin loader (types, noop, loader, features)
@@ -77,7 +77,7 @@ atlasmind/
 │   │   └── components/   # Categorized: layout/, article/, diagrams/, badges/, feedback/, effects/
 │   ├── stores/           # Zustand stores (auth, theme, ui, article-view, command-palette, keyboard-shortcuts)
 │   └── providers/        # Context providers (Query, Auth, Router)
-├── packages/contracts/   # Shared Zod schemas + TypeScript types (@atlasmind/contracts)
+├── packages/contracts/   # Shared Zod schemas + TypeScript types (@compendiq/contracts)
 └── docker/               # Docker Compose files
 ```
 
@@ -112,7 +112,7 @@ Import restrictions enforced by `eslint-plugin-boundaries`:
 
 ## Enterprise Plugin Architecture (Open-Core)
 
-AtlasMind uses an open-core model. The CE (Community Edition) is this repo. The EE (Enterprise Edition) is a separate private repo (`atlasmind-enterprise`) that publishes `@atlasmind/enterprise` via GitHub Packages. See `docs/ENTERPRISE-ARCHITECTURE.md` for the full design.
+Compendiq uses an open-core model. The CE (Community Edition) is this repo. The EE (Enterprise Edition) is a separate private repo (`compendiq-enterprise`) that publishes `@compendiq/enterprise` via GitHub Packages. See `docs/ENTERPRISE-ARCHITECTURE.md` for the full design.
 
 **Key files in the CE codebase:**
 
@@ -121,10 +121,10 @@ AtlasMind uses an open-core model. The CE (Community Edition) is this repo. The 
 | `backend/src/core/enterprise/types.ts` | `EnterprisePlugin` interface, `LicenseInfo`, `LicenseTier`, Fastify augmentation (`app.license`, `app.enterprise`) |
 | `backend/src/core/enterprise/features.ts` | `ENTERPRISE_FEATURES` constants (24+ feature flags) |
 | `backend/src/core/enterprise/noop.ts` | Community-mode stub (all features disabled, zero side effects) |
-| `backend/src/core/enterprise/loader.ts` | Dynamic `import('@atlasmind/enterprise')` with fallback to noop |
-| `backend/src/core/types/atlasmind-enterprise.d.ts` | TypeScript declaration for the optional EE package |
+| `backend/src/core/enterprise/loader.ts` | Dynamic `import('@compendiq/enterprise')` with fallback to noop |
+| `backend/src/core/types/compendiq-enterprise.d.ts` | TypeScript declaration for the optional EE package |
 | `frontend/src/shared/enterprise/types.ts` | `EnterpriseUI` interface, `LicenseInfo`, `EnterpriseContextValue` |
-| `frontend/src/shared/enterprise/loader.ts` | Dynamic `import('@atlasmind/enterprise/frontend')` with `@vite-ignore` |
+| `frontend/src/shared/enterprise/loader.ts` | Dynamic `import('@compendiq/enterprise/frontend')` with `@vite-ignore` |
 | `frontend/src/shared/enterprise/enterprise-context.ts` | React context object |
 | `frontend/src/shared/enterprise/context.tsx` | `EnterpriseProvider` component |
 | `frontend/src/shared/enterprise/use-enterprise.ts` | `useEnterprise()` hook |
@@ -138,14 +138,14 @@ AtlasMind uses an open-core model. The CE (Community Edition) is this repo. The 
 - `GET /api/admin/license` returns `{ edition: 'community', tier: 'community', features: [] }` in CE mode. The fallback route is only registered when `enterprise.version === 'community'` (noop plugin) to avoid duplicate-route errors when the EE plugin registers its own version via `registerRoutes()`.
 - OIDC routes are conditionally registered only when the enterprise plugin enables `ENTERPRISE_FEATURES.OIDC_SSO`.
 - Frontend `loadEnterpriseUI()` uses `@vite-ignore` to prevent Vite from resolving the missing package at build time.
-- License format: `ATM-{tier}-{seats}-{expiryYYYYMMDD}.{ed25519SignatureBase64url}` via `ATLASMIND_LICENSE_KEY` env var.
+- License format: `ATM-{tier}-{seats}-{expiryYYYYMMDD}.{ed25519SignatureBase64url}` via `COMPENDIQ_LICENSE_KEY` env var.
 
 ## Security (Mandatory)
 
 1. **PAT Encryption** — Confluence PATs are encrypted with AES-256-GCM using `PAT_ENCRYPTION_KEY` env var. Never store plaintext PATs. Never send PATs to the frontend.
 2. **Zero Default Secrets** — Production (`NODE_ENV=production`) MUST fail to start if `JWT_SECRET` or `PAT_ENCRYPTION_KEY` is default or < 32 characters.
 3. **LLM Safety** — All user content must be sanitized before sending to Ollama (prompt injection guard). Sanitize LLM output before displaying.
-4. **Input Validation** — Use Zod schemas from `@atlasmind/contracts` on all API boundaries. Parameterized SQL only (no string concatenation).
+4. **Input Validation** — Use Zod schemas from `@compendiq/contracts` on all API boundaries. Parameterized SQL only (no string concatenation).
 5. **Auth on all routes** — `fastify.authenticate` decorator on every protected endpoint. No anonymous access except `/api/health` and `/api/auth/*`.
 6. **Infrastructure Isolation** — Internal services (PostgreSQL, Redis, Ollama) must not be exposed on `0.0.0.0` in production. Use Docker internal networks.
 
@@ -252,9 +252,9 @@ Copy `.env.example` to `.env`. Key vars:
 - `ATTACHMENTS_DIR` (optional, attachment cache dir, default: `data/attachments`)
 - `NODE_EXTRA_CA_CERTS` (optional, PEM CA bundle path for self-signed certs)
 - `OTEL_ENABLED` (optional, set to `true` to enable OpenTelemetry tracing)
-- `OTEL_SERVICE_NAME` (optional, default: `atlasmind-backend`)
+- `OTEL_SERVICE_NAME` (optional, default: `compendiq-backend`)
 - `OTEL_EXPORTER_OTLP_ENDPOINT` (optional, OTLP collector endpoint)
 
-- `ATLASMIND_LICENSE_KEY` (optional, enterprise license key, format: `ATM-{tier}-{seats}-{expiryYYYYMMDD}.{signature}`)
+- `COMPENDIQ_LICENSE_KEY` (optional, enterprise license key, format: `ATM-{tier}-{seats}-{expiryYYYYMMDD}.{signature}`)
 
 OIDC/SSO is available in the Enterprise Edition only.

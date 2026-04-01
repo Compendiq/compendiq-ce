@@ -6,7 +6,7 @@ import { useCommandPaletteStore } from '../../../stores/command-palette-store';
 import { useKeyboardShortcutsStore } from '../../../stores/keyboard-shortcuts-store';
 import { useUiStore } from '../../../stores/ui-store';
 import { useKeyboardShortcuts, type ShortcutDefinition } from '../../hooks/use-keyboard-shortcuts';
-import { AtlasMindLogo } from '../AtlasMindLogo';
+import { CompendiqLogo } from '../CompendiqLogo';
 import { CommandPalette } from './CommandPalette';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 import { ServiceStatus } from '../badges/ServiceStatus';
@@ -197,7 +197,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
 
         {/* Logo - always visible in header */}
         <Link to="/" className="flex items-center gap-1.5 mr-3 group">
-          <AtlasMindLogo size={20} className="text-primary transition-transform duration-200 group-hover:scale-110" />
+          <CompendiqLogo size={20} className="text-primary transition-transform duration-200 group-hover:scale-110" />
           <span className="text-sm font-semibold text-foreground">
             Atlas<span className="font-bold">Mind</span>
           </span>

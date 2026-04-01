@@ -1,5 +1,5 @@
 /**
- * AtlasMind MCP Documentation Server
+ * Compendiq MCP Documentation Server
  *
  * Sidecar container that fetches online documentation for air-gapped LLM environments.
  * Exposes tools via MCP Streamable HTTP transport.
@@ -52,7 +52,7 @@ async function connectRedis(): Promise<void> {
 
 function createMcpServerInstance(): McpServer {
   const server = new McpServer(
-    { name: 'atlasmind-mcp-docs', version: APP_VERSION },
+    { name: 'compendiq-mcp-docs', version: APP_VERSION },
     { capabilities: { tools: { listChanged: true } } },
   );
 
@@ -286,7 +286,7 @@ async function start() {
   await connectRedis();
 
   app.listen(PORT, HOST, () => {
-    logger.info({ port: PORT, host: HOST }, 'AtlasMind MCP Docs server started');
+    logger.info({ port: PORT, host: HOST }, 'Compendiq MCP Docs server started');
   });
 }
 

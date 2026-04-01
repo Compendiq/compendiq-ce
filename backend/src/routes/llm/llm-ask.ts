@@ -7,7 +7,7 @@ import { LlmCache, buildRagCacheKey } from '../../domains/llm/services/llm-cache
 import { CircuitBreakerOpenError } from '../../core/services/circuit-breaker.js';
 import { isEnabled as isMcpDocsEnabled, fetchDocumentation } from '../../core/services/mcp-docs-client.js';
 import { fetchWebSources, formatWebContext, type WebSource } from './_web-search-helper.js';
-import { AskRequestSchema } from '@atlasmind/contracts';
+import { AskRequestSchema } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
 import { assembleSubPageContext, getMultiPagePromptSuffix } from '../../domains/confluence/services/subpage-context.js';

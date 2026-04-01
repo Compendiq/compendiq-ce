@@ -29,7 +29,7 @@ async function ensureConnected(): Promise<Client> {
 
   try {
     transport = new StreamableHTTPClientTransport(new URL(settings.url));
-    client = new Client({ name: 'atlasmind-backend', version: APP_VERSION });
+    client = new Client({ name: 'compendiq-backend', version: APP_VERSION });
     await client.connect(transport);
     connectedUrl = settings.url;
     logger.info({ url: settings.url }, 'MCP Docs client connected');

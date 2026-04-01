@@ -1,25 +1,25 @@
-# AtlasMind User Guide
+# Compendiq User Guide
 
-This guide covers day-to-day usage of AtlasMind for knowledge base management, AI features, and search.
+This guide covers day-to-day usage of Compendiq for knowledge base management, AI features, and search.
 
 ## Getting Started
 
 ### First-Run Setup
 
-1. **Open AtlasMind** in your browser (default: `http://localhost:5273` for development, or the URL provided by your administrator).
+1. **Open Compendiq** in your browser (default: `http://localhost:5273` for development, or the URL provided by your administrator).
 2. **Register an account.** The first user automatically receives the admin role.
 3. **Configure your Confluence connection** (optional): go to **Settings** and enter your Confluence Data Center URL and Personal Access Token (PAT).
 
 ### Creating a Confluence PAT
 
-To connect AtlasMind to your Confluence Data Center instance:
+To connect Compendiq to your Confluence Data Center instance:
 
 1. Log in to Confluence Data Center.
 2. Click your profile icon > **Settings** > **Personal Access Tokens**.
 3. Click **Create token**.
-4. Give it a name (e.g., "AtlasMind") and set an expiry.
+4. Give it a name (e.g., "Compendiq") and set an expiry.
 5. Copy the generated token.
-6. In AtlasMind, go to **Settings**, paste the token in the PAT field, and enter your Confluence base URL.
+6. In Compendiq, go to **Settings**, paste the token in the PAT field, and enter your Confluence base URL.
 
 Your PAT is encrypted at rest with AES-256-GCM and is never sent back to the browser after saving.
 
@@ -29,7 +29,7 @@ After configuring your Confluence connection:
 
 1. Go to **Spaces** in the sidebar.
 2. You will see all available Confluence spaces.
-3. Select the spaces you want to sync to AtlasMind.
+3. Select the spaces you want to sync to Compendiq.
 4. Click **Sync** to start the initial synchronization.
 
 Synced spaces are periodically updated in the background (default: every 15 minutes).
@@ -65,7 +65,7 @@ Changes to Confluence-synced pages can be pushed back to Confluence.
 
 ### Page Versions
 
-AtlasMind tracks version history for all pages:
+Compendiq tracks version history for all pages:
 
 1. Open a page.
 2. Click the **Versions** tab in the right panel.
@@ -80,7 +80,7 @@ Tags help organize and categorize your knowledge base:
 2. Click the **Tags** section.
 3. Add tags manually or accept AI-suggested tags.
 
-AtlasMind can automatically suggest tags based on page content using LLM classification.
+Compendiq can automatically suggest tags based on page content using LLM classification.
 
 ### Page Comments
 
@@ -148,12 +148,12 @@ Ask questions across your entire knowledge base:
 
 1. Open the AI chat.
 2. Type your question naturally (e.g., "How do I deploy the authentication service?").
-3. AtlasMind searches across all synced pages using hybrid search (vector similarity + keyword matching).
+3. Compendiq searches across all synced pages using hybrid search (vector similarity + keyword matching).
 4. The AI answers using the most relevant page content as context, with source citations.
 
 ### Quality Analysis
 
-AtlasMind automatically analyzes page quality in the background:
+Compendiq automatically analyzes page quality in the background:
 
 - Pages receive a quality score based on structure, completeness, and readability.
 - Low-quality pages are highlighted for improvement.
@@ -161,7 +161,7 @@ AtlasMind automatically analyzes page quality in the background:
 
 ## Search
 
-AtlasMind supports three search modes:
+Compendiq supports three search modes:
 
 ### Keyword Search
 
@@ -247,7 +247,7 @@ Request new documentation topics when you identify knowledge gaps:
 
 ## Notifications
 
-AtlasMind notifies you of relevant events:
+Compendiq notifies you of relevant events:
 
 - Page updates and comments on pages you follow
 - Verification requests assigned to you
@@ -257,7 +257,7 @@ Access notifications via the bell icon in the top navigation bar.
 
 ## Dark and Light Theme
 
-AtlasMind supports both dark and light themes:
+Compendiq supports both dark and light themes:
 
 - The theme follows your system preference by default.
 - Toggle manually via the theme switch in the user menu.

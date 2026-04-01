@@ -6,7 +6,7 @@
  *
  * Controlled by environment variables:
  *   OTEL_ENABLED=true          - Enable OpenTelemetry (default: false)
- *   OTEL_SERVICE_NAME          - Service name (default: 'atlasmind-backend')
+ *   OTEL_SERVICE_NAME          - Service name (default: 'compendiq-backend')
  *   OTEL_EXPORTER_OTLP_ENDPOINT - OTLP endpoint (if set, uses OTLP exporter; otherwise console)
  */
 
@@ -30,7 +30,7 @@ export async function initTelemetry(): Promise<void> {
     );
     const otelApi = await import('@opentelemetry/api');
 
-    const serviceName = process.env.OTEL_SERVICE_NAME ?? 'atlasmind-backend';
+    const serviceName = process.env.OTEL_SERVICE_NAME ?? 'compendiq-backend';
 
     // Build the SDK configuration
     const sdkConfig: ConstructorParameters<typeof NodeSDK>[0] = {

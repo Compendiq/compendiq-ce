@@ -1,6 +1,6 @@
 # Architectural Decisions Record (ADR)
 
-This document captures all key architectural decisions for the AtlasMind project.
+This document captures all key architectural decisions for the Compendiq project.
 Each decision includes context, options considered, and the chosen approach with rationale.
 
 ---
@@ -21,7 +21,7 @@ The reference project (ai-portainer-dashboard) evolved into a complex monorepo w
 ### Decision: **Option C - Flat monorepo with shared contracts package**
 
 ```
-atlasmind/
+compendiq/
 ├── backend/
 │   └── src/
 │       ├── plugins/          # Fastify plugins (auth, cors, etc.)
@@ -503,7 +503,7 @@ CREATE TABLE llm_improvements (
 - Rate limiting on LLM endpoints (prevent abuse of local Ollama resources)
 
 ### Input Validation
-- **Zod** schemas on all API boundaries (from `@atlasmind/contracts`)
+- **Zod** schemas on all API boundaries (from `@compendiq/contracts`)
 - Parameterized SQL only (no string concatenation)
 
 ---

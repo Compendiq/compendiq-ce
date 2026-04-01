@@ -192,8 +192,8 @@ test_compose_generation() {
   setup
   source_install
 
-  ATLASMIND_VERSION="1.2.3"
-  ATLASMIND_PORT="9090"
+  COMPENDIQ_VERSION="1.2.3"
+  COMPENDIQ_PORT="9090"
   write_compose "${TEST_DIR}/docker-compose.yml"
 
   assert_file_exists "docker-compose.yml is created" "${TEST_DIR}/docker-compose.yml"
@@ -201,8 +201,8 @@ test_compose_generation() {
   local compose_content
   compose_content="$(cat "${TEST_DIR}/docker-compose.yml")"
 
-  assert_contains "Uses specified image version" "$compose_content" "diinlu/atlasmind-backend:1.2.3"
-  assert_contains "Uses specified frontend version" "$compose_content" "diinlu/atlasmind-frontend:1.2.3"
+  assert_contains "Uses specified image version" "$compose_content" "diinlu/compendiq-backend:1.2.3"
+  assert_contains "Uses specified frontend version" "$compose_content" "diinlu/compendiq-frontend:1.2.3"
   assert_contains "Maps specified port" "$compose_content" "9090:8081"
   assert_contains "Sets FRONTEND_URL with port" "$compose_content" "http://localhost:9090"
   assert_contains "Has postgres service" "$compose_content" "pgvector/pgvector:pg17"
@@ -225,14 +225,14 @@ test_compose_defaults() {
   setup
   source_install
 
-  unset ATLASMIND_VERSION 2>/dev/null || true
-  unset ATLASMIND_PORT 2>/dev/null || true
+  unset COMPENDIQ_VERSION 2>/dev/null || true
+  unset COMPENDIQ_PORT 2>/dev/null || true
   write_compose "${TEST_DIR}/docker-compose.yml"
 
   local compose_content
   compose_content="$(cat "${TEST_DIR}/docker-compose.yml")"
 
-  assert_contains "Defaults to latest tag" "$compose_content" "diinlu/atlasmind-backend:latest"
+  assert_contains "Defaults to latest tag" "$compose_content" "diinlu/compendiq-backend:latest"
   assert_contains "Defaults to port 8080" "$compose_content" "8080:8081"
 
   teardown
@@ -288,22 +288,22 @@ test_cli_args() {
   parse_args --dir /tmp/custom-dir
   assert_eq "--dir sets INSTALL_DIR" "/tmp/custom-dir" "$INSTALL_DIR"
 
-  # --port sets ATLASMIND_PORT
-  unset ATLASMIND_PORT 2>/dev/null || true
+  # --port sets COMPENDIQ_PORT
+  unset COMPENDIQ_PORT 2>/dev/null || true
   parse_args --port 9999
-  assert_eq "--port sets ATLASMIND_PORT" "9999" "$ATLASMIND_PORT"
+  assert_eq "--port sets COMPENDIQ_PORT" "9999" "$COMPENDIQ_PORT"
 
-  # --version sets ATLASMIND_VERSION
-  unset ATLASMIND_VERSION 2>/dev/null || true
+  # --version sets COMPENDIQ_VERSION
+  unset COMPENDIQ_VERSION 2>/dev/null || true
   parse_args --version 2.0.0
-  assert_eq "--version sets ATLASMIND_VERSION" "2.0.0" "$ATLASMIND_VERSION"
+  assert_eq "--version sets COMPENDIQ_VERSION" "2.0.0" "$COMPENDIQ_VERSION"
 
   # Multiple flags combined
-  unset INSTALL_DIR ATLASMIND_PORT ATLASMIND_VERSION 2>/dev/null || true
-  parse_args --dir /opt/atlasmind --port 3000 --version 1.5.0
-  assert_eq "Combined: --dir" "/opt/atlasmind" "$INSTALL_DIR"
-  assert_eq "Combined: --port" "3000" "$ATLASMIND_PORT"
-  assert_eq "Combined: --version" "1.5.0" "$ATLASMIND_VERSION"
+  unset INSTALL_DIR COMPENDIQ_PORT COMPENDIQ_VERSION 2>/dev/null || true
+  parse_args --dir /opt/compendiq --port 3000 --version 1.5.0
+  assert_eq "Combined: --dir" "/opt/compendiq" "$INSTALL_DIR"
+  assert_eq "Combined: --port" "3000" "$COMPENDIQ_PORT"
+  assert_eq "Combined: --version" "1.5.0" "$COMPENDIQ_VERSION"
 
   # CLI flag overrides env var
   INSTALL_DIR="/from/env"
@@ -311,13 +311,13 @@ test_cli_args() {
   assert_eq "CLI flag overrides env var" "/from/flag" "$INSTALL_DIR"
 
   # Clean up
-  unset INSTALL_DIR ATLASMIND_PORT ATLASMIND_VERSION 2>/dev/null || true
+  unset INSTALL_DIR COMPENDIQ_PORT COMPENDIQ_VERSION 2>/dev/null || true
 }
 
 # =============================================================================
 # Run all tests
 # =============================================================================
-printf '=== AtlasMind Installer Tests ===\n\n'
+printf '=== Compendiq Installer Tests ===\n\n'
 
 test_secret_generation
 printf '\n'

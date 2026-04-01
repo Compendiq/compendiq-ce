@@ -1,6 +1,6 @@
-# AtlasMind API Reference
+# Compendiq API Reference
 
-AtlasMind provides a RESTful API built on Fastify 5 with auto-generated interactive documentation.
+Compendiq provides a RESTful API built on Fastify 5 with auto-generated interactive documentation.
 
 ## Interactive API Documentation
 

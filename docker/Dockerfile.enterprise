@@ -1,12 +1,12 @@
 # syntax=docker/dockerfile:1
 #
-# AtlasMind Enterprise Edition — Multi-stage Dockerfile
+# Compendiq Enterprise Edition — Multi-stage Dockerfile
 #
-# This Dockerfile is used by the private atlasmind-enterprise repo's CI/CD
+# This Dockerfile is used by the private compendiq-enterprise repo's CI/CD
 # pipeline. It is a TEMPLATE in the CE repo — the EE build process:
 #
 #   1. Merges CE source (git submodule) + EE overlay into a single tree
-#   2. Installs @atlasmind/enterprise from GitHub Packages
+#   2. Installs @compendiq/enterprise from GitHub Packages
 #   3. Builds TypeScript → JavaScript (both CE + EE code)
 #   4. Runs javascript-obfuscator on enterprise-specific JS files (Layer 2)
 #   5. Ships only compiled+obfuscated JS in the final image (Layer 3)
@@ -16,10 +16,10 @@
 #   Layer 2: javascript-obfuscator on enterprise JS after compilation
 #   Layer 3: Multi-stage Docker — no .ts, no .map, no tests in final image
 #
-# Usage (in atlasmind-enterprise CI):
+# Usage (in compendiq-enterprise CI):
 #   docker build -f docker/Dockerfile.enterprise \
 #     --build-arg GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }} \
-#     -t atlasmind-enterprise:latest .
+#     -t compendiq-enterprise:latest .
 #
 # ─────────────────────────────────────────────────────────────────────
 
@@ -30,19 +30,19 @@ RUN apk add --no-cache python3 make g++
 
 WORKDIR /app
 
-# Configure GitHub Packages registry for @atlasmind scope
+# Configure GitHub Packages registry for @compendiq scope
 ARG GITHUB_TOKEN
-RUN echo "@atlasmind:registry=https://npm.pkg.github.com" > .npmrc && \
+RUN echo "@compendiq:registry=https://npm.pkg.github.com" > .npmrc && \
     echo "//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}" >> .npmrc
 
 COPY package.json package-lock.json ./
 COPY backend/package.json ./backend/
 COPY packages/contracts/package.json ./packages/contracts/
-RUN --mount=type=cache,target=/root/.npm npm ci -w backend -w @atlasmind/contracts
+RUN --mount=type=cache,target=/root/.npm npm ci -w backend -w @compendiq/contracts
 
 # Build contracts
 COPY packages/contracts/ ./packages/contracts/
-RUN npm run build -w @atlasmind/contracts
+RUN npm run build -w @compendiq/contracts
 
 # Build backend
 COPY backend/tsconfig.json backend/tsconfig.build.json ./backend/
@@ -60,7 +60,7 @@ RUN npm install -g javascript-obfuscator
 WORKDIR /app
 COPY --from=builder /app/backend/dist/ ./dist/
 
-# Obfuscate only enterprise-specific files (the @atlasmind/enterprise package
+# Obfuscate only enterprise-specific files (the @compendiq/enterprise package
 # output within node_modules). CE code is open-source and not obfuscated.
 #
 # NOTE: The actual paths depend on how the EE overlay merges. The EE repo's
@@ -84,13 +84,13 @@ RUN apk add --no-cache python3 make g++
 WORKDIR /app
 
 ARG GITHUB_TOKEN
-RUN echo "@atlasmind:registry=https://npm.pkg.github.com" > .npmrc && \
+RUN echo "@compendiq:registry=https://npm.pkg.github.com" > .npmrc && \
     echo "//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}" >> .npmrc
 
 COPY package.json package-lock.json ./
 COPY backend/package.json ./backend/
 COPY packages/contracts/package.json ./packages/contracts/
-RUN --mount=type=cache,target=/root/.npm npm ci -w backend -w @atlasmind/contracts --omit=dev
+RUN --mount=type=cache,target=/root/.npm npm ci -w backend -w @compendiq/contracts --omit=dev
 
 # Clean up .npmrc
 RUN rm -f .npmrc
@@ -125,8 +125,8 @@ COPY --chown=node:node --from=builder /app/backend/package.json ./
 COPY --chown=node:node --from=prod-deps /app/node_modules ./node_modules
 
 # Copy contracts
-COPY --chown=node:node --from=builder /app/packages/contracts/dist/ ./node_modules/@atlasmind/contracts/dist/
-COPY --chown=node:node --from=builder /app/packages/contracts/package.json ./node_modules/@atlasmind/contracts/package.json
+COPY --chown=node:node --from=builder /app/packages/contracts/dist/ ./node_modules/@compendiq/contracts/dist/
+COPY --chown=node:node --from=builder /app/packages/contracts/package.json ./node_modules/@compendiq/contracts/package.json
 
 # Copy compiled (and optionally obfuscated) backend — NO .ts, NO .map, NO tests
 COPY --chown=node:node --from=obfuscator /app/dist/ dist/

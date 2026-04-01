@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 # =============================================================================
-# AtlasMind — Uninstaller
+# Compendiq — Uninstaller
 #
 # Usage:
 #   bash scripts/uninstall.sh
-#   bash scripts/uninstall.sh --dir /opt/atlasmind
+#   bash scripts/uninstall.sh --dir /opt/compendiq
 #
 # Options:
-#   --dir DIR            Installation directory (default: $HOME/atlasmind)
-#   --yes                Skip interactive prompts (same as ATLASMIND_CONFIRM=yes)
+#   --dir DIR            Installation directory (default: $HOME/compendiq)
+#   --yes                Skip interactive prompts (same as COMPENDIQ_CONFIRM=yes)
 #   --help               Show this help message
 #
 # Environment variables (all optional, overridden by CLI flags):
-#   INSTALL_DIR          Installation directory (default: $HOME/atlasmind)
-#   ATLASMIND_CONFIRM    Set to "yes" to skip interactive prompts
+#   INSTALL_DIR          Installation directory (default: $HOME/compendiq)
+#   COMPENDIQ_CONFIRM    Set to "yes" to skip interactive prompts
 # =============================================================================
 set -euo pipefail
 
@@ -52,13 +52,13 @@ confirm() {
   local reply
 
   # Auto-confirm if env var is set
-  if [ "${ATLASMIND_CONFIRM:-}" = "yes" ]; then
+  if [ "${COMPENDIQ_CONFIRM:-}" = "yes" ]; then
     return 0
   fi
 
   # Non-interactive — default to abort
   if [ ! -t 0 ]; then
-    err "Non-interactive shell detected. Run this script directly (not piped) or set ATLASMIND_CONFIRM=yes."
+    err "Non-interactive shell detected. Run this script directly (not piped) or set COMPENDIQ_CONFIRM=yes."
     exit 1
   fi
 
@@ -80,10 +80,10 @@ parse_args() {
         [ -n "${2:-}" ] || die "--dir requires a value"
         INSTALL_DIR="$2"; shift 2 ;;
       --yes|-y)
-        ATLASMIND_CONFIRM="yes"; shift ;;
+        COMPENDIQ_CONFIRM="yes"; shift ;;
       --help|-h)
         printf 'Usage: bash uninstall.sh [--dir DIR] [--yes] [--help]\n'
-        printf '  --dir DIR   Installation directory (default: $HOME/atlasmind)\n'
+        printf '  --dir DIR   Installation directory (default: $HOME/compendiq)\n'
         printf '  --yes       Skip interactive prompts\n'
         printf '  --help      Show this help message\n'
         exit 0 ;;
@@ -100,9 +100,9 @@ main() {
   setup_colors
   parse_args "$@"
 
-  INSTALL_DIR="${INSTALL_DIR:-${HOME}/atlasmind}"
+  INSTALL_DIR="${INSTALL_DIR:-${HOME}/compendiq}"
 
-  printf '\n%b%bAtlasMind Uninstaller%b\n\n' "$CYAN" "$BOLD" "$RESET"
+  printf '\n%b%bCompendiq Uninstaller%b\n\n' "$CYAN" "$BOLD" "$RESET"
 
   # ---- Validate ----
   if [ ! -d "$INSTALL_DIR" ]; then
@@ -110,13 +110,13 @@ main() {
   fi
 
   if [ ! -f "${INSTALL_DIR}/docker-compose.yml" ]; then
-    die "No docker-compose.yml found in ${INSTALL_DIR} — is this an AtlasMind installation?"
+    die "No docker-compose.yml found in ${INSTALL_DIR} — is this an Compendiq installation?"
   fi
 
   info "Installation directory: ${INSTALL_DIR}"
 
   # ---- Confirm ----
-  if ! confirm "This will stop and remove all AtlasMind containers. Continue?"; then
+  if ! confirm "This will stop and remove all Compendiq containers. Continue?"; then
     info "Aborted."
     exit 0
   fi
@@ -152,7 +152,7 @@ main() {
     info "Keeping installation directory"
   fi
 
-  printf '\n%b%bAtlasMind has been uninstalled.%b\n\n' "$GREEN" "$BOLD" "$RESET"
+  printf '\n%b%bCompendiq has been uninstalled.%b\n\n' "$GREEN" "$BOLD" "$RESET"
 }
 
 main "$@"

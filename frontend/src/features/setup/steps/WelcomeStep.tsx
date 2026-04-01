@@ -1,5 +1,5 @@
 import { m } from 'framer-motion';
-import { AtlasMindLogo } from '../../../shared/components/AtlasMindLogo';
+import { CompendiqLogo } from '../../../shared/components/CompendiqLogo';
 
 interface WelcomeStepProps {
   onNext: () => void;
@@ -19,7 +19,7 @@ export function WelcomeStep({ onNext }: WelcomeStepProps) {
         animate={{ scale: 1, opacity: 1 }}
         transition={{ delay: 0.1, duration: 0.3 }}
       >
-        <AtlasMindLogo size={80} className="text-primary" animated />
+        <CompendiqLogo size={80} className="text-primary" animated />
       </m.div>
 
       <m.h1
@@ -28,7 +28,7 @@ export function WelcomeStep({ onNext }: WelcomeStepProps) {
         transition={{ delay: 0.2, duration: 0.25 }}
         className="mt-6 text-3xl font-bold tracking-tight"
       >
-        Welcome to Atlas<span className="font-extrabold">Mind</span>
+        Welcome to Compendiq
       </m.h1>
 
       <m.p

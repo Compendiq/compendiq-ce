@@ -1,4 +1,4 @@
-name: atlasmind-confluence
+name: compendiq-confluence
 
 services:
   confluence-postgres:

@@ -111,7 +111,7 @@ export async function buildApp() {
     await app.register(swagger, {
       openapi: {
         info: {
-          title: 'AtlasMind API',
+          title: 'Compendiq API',
           version: APP_VERSION,
         },
       },
@@ -129,7 +129,7 @@ export async function buildApp() {
 
   // ── Enterprise Plugin Bootstrap ──────────────────────────────────
   const enterprise = await loadEnterprisePlugin();
-  const licenseKey = process.env.ATLASMIND_LICENSE_KEY;
+  const licenseKey = process.env.COMPENDIQ_LICENSE_KEY ?? process.env.ATLASMIND_LICENSE_KEY;
   const license = enterprise.validateLicense(licenseKey);
 
   app.decorate('license', license);

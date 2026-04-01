@@ -81,7 +81,7 @@ describe('AppLayout', () => {
       { wrapper: createWrapper('/') },
     );
     // Logo SVG (role="img" with aria-label) is always in the top header bar
-    expect(screen.getByRole('img', { name: 'AtlasMind' })).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'Compendiq' })).toBeInTheDocument();
     unmount();
 
     render(
@@ -90,7 +90,7 @@ describe('AppLayout', () => {
       </AppLayout>,
       { wrapper: createWrapper('/ai') },
     );
-    expect(screen.getByRole('img', { name: 'AtlasMind' })).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'Compendiq' })).toBeInTheDocument();
   });
 
   it('header spans full width above sidebar and content', () => {
