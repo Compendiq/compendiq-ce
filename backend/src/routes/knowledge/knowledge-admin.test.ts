@@ -259,7 +259,7 @@ describe('knowledge-admin routes - happy path', () => {
   });
 
   it('should regenerate summary for a specific page', async () => {
-    mockQueryFn.mockResolvedValue({ rows: [{ confluence_id: 'page-42' }] });
+    mockQueryFn.mockResolvedValue({ rows: [{ id: 42 }] });
     mockRegenerateSummary.mockResolvedValue(undefined);
 
     const response = await app.inject({
@@ -271,7 +271,7 @@ describe('knowledge-admin routes - happy path', () => {
     const body = response.json();
     expect(body.pageId).toBe('page-42');
     expect(body.message).toContain('queued');
-    expect(mockRegenerateSummary).toHaveBeenCalledWith('page-42');
+    expect(mockRegenerateSummary).toHaveBeenCalledWith(42);
   });
 
   it('should return 404 when regenerating summary for non-existent page', async () => {

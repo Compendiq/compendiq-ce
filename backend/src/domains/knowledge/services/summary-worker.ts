@@ -402,14 +402,14 @@ export async function rescanAllSummaries(): Promise<number> {
 /**
  * Trigger re-summarization for a single page.
  */
-export async function regenerateSummary(pageId: string): Promise<void> {
+export async function regenerateSummary(pageId: number): Promise<void> {
   await query(
     `UPDATE pages
      SET summary_status = 'pending',
          summary_content_hash = NULL,
          summary_retry_count = 0,
          summary_error = NULL
-     WHERE confluence_id = $1`,
+     WHERE id = $1`,
     [pageId],
   );
 }
