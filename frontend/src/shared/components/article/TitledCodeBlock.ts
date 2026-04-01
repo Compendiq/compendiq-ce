@@ -1,5 +1,7 @@
 import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight';
 import { mergeAttributes } from '@tiptap/core';
+import { ReactNodeViewRenderer } from '@tiptap/react';
+import { CodeBlockNodeView } from './CodeBlockNodeView';
 
 /**
  * Extended CodeBlockLowlight that preserves the `data-title` attribute
@@ -55,5 +57,9 @@ export const TitledCodeBlock = CodeBlockLowlight.extend({
         0,
       ],
     ];
+  },
+
+  addNodeView() {
+    return ReactNodeViewRenderer(CodeBlockNodeView);
   },
 });
