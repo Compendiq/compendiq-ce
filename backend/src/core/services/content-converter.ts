@@ -356,6 +356,11 @@ export function htmlToConfluence(html: string): string {
   const dom = new JSDOM(`<body>${html}</body>`, { contentType: 'text/html' });
   const doc = dom.window.document;
 
+  // Strip auto-generated index blocks before export to Confluence (#13)
+  for (const div of doc.querySelectorAll('div.figure-index, div.table-index')) {
+    div.remove();
+  }
+
   // Convert code blocks back
   for (const pre of doc.querySelectorAll('pre')) {
     const codeEl = pre.querySelector('code');

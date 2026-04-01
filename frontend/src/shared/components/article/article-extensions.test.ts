@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { Details, DetailsSummary, Panel, DrawioDiagram, ConfluenceToc, ConfluenceStatus, ConfluenceChildren, ConfluenceAttachments, ConfluenceLayout, ConfluenceLayoutSection, ConfluenceLayoutCell, ConfluenceSection, ConfluenceColumn, UnknownMacro, LAYOUT_PRESETS } from './article-extensions';
+import { Editor } from '@tiptap/core';
+import StarterKit from '@tiptap/starter-kit';
+import { Image } from '@tiptap/extension-image';
+import { Details, DetailsSummary, Panel, DrawioDiagram, ConfluenceToc, ConfluenceStatus, ConfluenceChildren, ConfluenceAttachments, ConfluenceLayout, ConfluenceLayoutSection, ConfluenceLayoutCell, ConfluenceSection, ConfluenceColumn, UnknownMacro, LAYOUT_PRESETS, Figure, Figcaption, TableCaption, FigureIndex, TableIndex } from './article-extensions';
 
 // Helper to extract parseHTML rules from a TipTap extension config
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -537,5 +540,139 @@ describe('article-extensions', () => {
       expect(parseRules).toBeDefined();
       expect(parseRules).toContainEqual(expect.objectContaining({ tag: 'div.confluence-macro-unknown' }));
     });
+  });
+});
+
+// ========== Caption & Index extension tests (#13) ==========
+
+/** Create a minimal TipTap editor with the caption/index extensions. */
+function createCaptionEditor(content: string) {
+  return new Editor({
+    extensions: [
+      StarterKit,
+      Image,
+      Figure,
+      Figcaption,
+      TableCaption,
+      // FigureIndex and TableIndex use ReactNodeViewRenderer which requires a DOM
+      // environment with React — register them without NodeView for parse tests.
+      FigureIndex.extend({ addNodeView: undefined }),
+      TableIndex.extend({ addNodeView: undefined }),
+    ],
+    content,
+  });
+}
+
+describe('Figure node', () => {
+  it('parses a <figure> containing an image and figcaption', () => {
+    const html = '<figure><img src="test.png" alt="Test" /><figcaption>My caption</figcaption></figure>';
+    const editor = createCaptionEditor(html);
+    const doc = editor.getJSON();
+
+    const figure = doc.content?.find((n) => n.type === 'figure');
+    expect(figure).toBeDefined();
+    expect(figure?.content).toHaveLength(2);
+    expect(figure?.content?.[0].type).toBe('image');
+    expect(figure?.content?.[0].attrs?.src).toBe('test.png');
+    expect(figure?.content?.[1].type).toBe('figcaption');
+    expect(figure?.content?.[1].content?.[0].text).toBe('My caption');
+    editor.destroy();
+  });
+
+  it('renders to HTML with figure-block class', () => {
+    const html = '<figure><img src="test.png" alt="Test" /><figcaption>Caption</figcaption></figure>';
+    const editor = createCaptionEditor(html);
+    const output = editor.getHTML();
+
+    expect(output).toContain('<figure class="figure-block">');
+    expect(output).toContain('<figcaption');
+    expect(output).toContain('Caption');
+    editor.destroy();
+  });
+});
+
+describe('Figcaption node', () => {
+  it('parses <figcaption> with inline content including bold marks', () => {
+    const html = '<figure><img src="x.png" /><figcaption>Test <strong>bold</strong> caption</figcaption></figure>';
+    const editor = createCaptionEditor(html);
+    const doc = editor.getJSON();
+
+    const figure = doc.content?.find((n) => n.type === 'figure');
+    const figcaption = figure?.content?.find((n) => n.type === 'figcaption');
+    expect(figcaption).toBeDefined();
+    // TipTap splits text around marks: "Test ", "bold" (with bold mark), " caption"
+    expect(figcaption?.content?.length).toBeGreaterThanOrEqual(2);
+    // Verify there is at least one node with a bold mark
+    const boldNode = figcaption?.content?.find((n) =>
+      n.marks?.some((m) => m.type === 'bold'),
+    );
+    expect(boldNode).toBeDefined();
+    expect(boldNode?.text).toBe('bold');
+    editor.destroy();
+  });
+});
+
+describe('TableCaption node', () => {
+  it('parses <div class="table-caption">', () => {
+    const html = '<div class="table-caption">Revenue by Quarter</div>';
+    const editor = createCaptionEditor(html);
+    const doc = editor.getJSON();
+
+    const caption = doc.content?.find((n) => n.type === 'tableCaption');
+    expect(caption).toBeDefined();
+    expect(caption?.content?.[0].text).toBe('Revenue by Quarter');
+    editor.destroy();
+  });
+
+  it('renders with table-caption class', () => {
+    const html = '<div class="table-caption">Test</div>';
+    const editor = createCaptionEditor(html);
+    const output = editor.getHTML();
+
+    expect(output).toContain('class="table-caption');
+    expect(output).toContain('Test');
+    editor.destroy();
+  });
+});
+
+describe('FigureIndex node', () => {
+  it('parses <div class="figure-index">', () => {
+    const html = '<div class="figure-index"></div>';
+    const editor = createCaptionEditor(html);
+    const doc = editor.getJSON();
+
+    const index = doc.content?.find((n) => n.type === 'figureIndex');
+    expect(index).toBeDefined();
+    editor.destroy();
+  });
+
+  it('renders with figure-index class', () => {
+    const html = '<div class="figure-index"></div>';
+    const editor = createCaptionEditor(html);
+    const output = editor.getHTML();
+
+    expect(output).toContain('figure-index');
+    editor.destroy();
+  });
+});
+
+describe('TableIndex node', () => {
+  it('parses <div class="table-index">', () => {
+    const html = '<div class="table-index"></div>';
+    const editor = createCaptionEditor(html);
+    const doc = editor.getJSON();
+
+    const index = doc.content?.find((n) => n.type === 'tableIndex');
+    expect(index).toBeDefined();
+    editor.destroy();
+  });
+
+  it('renders with table-index class', () => {
+    const html = '<div class="table-index"></div>';
+    const editor = createCaptionEditor(html);
+    const output = editor.getHTML();
+
+    expect(output).toContain('table-index');
+    editor.destroy();
   });
 });
