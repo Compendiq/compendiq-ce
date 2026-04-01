@@ -21,13 +21,14 @@ vi.mock('../../hooks/use-authenticated-src', () => ({
 }));
 
 // Mock react-router-dom for ChildrenMacroView (uses useParams + Link)
-vi.mock('react-router-dom', () => ({
-  useParams: () => ({ id: 'test-page-id' }),
-  Link: ({ to, children, ...props }: { to: string; children: React.ReactNode; [key: string]: unknown }) => {
-    const React = require('react');
-    return React.createElement('a', { href: to, ...props }, children);
-  },
-}));
+vi.mock('react-router-dom', async () => {
+  const React = await import('react');
+  return {
+    useParams: () => ({ id: 'test-page-id' }),
+    Link: ({ to, children, ...props }: { to: string; children: React.ReactNode; [key: string]: unknown }) =>
+      React.createElement('a', { href: to, ...props }, children),
+  };
+});
 
 // Mock apiFetch for ChildrenMacroView
 vi.mock('../../lib/api', () => ({
