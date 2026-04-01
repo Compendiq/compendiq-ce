@@ -20,6 +20,20 @@ vi.mock('../../hooks/use-authenticated-src', () => ({
   fetchAuthenticatedBlob: (...args: unknown[]) => mockFetchAuthenticatedBlob(...args),
 }));
 
+// Mock react-router-dom for ChildrenMacroView (uses useParams + Link)
+vi.mock('react-router-dom', () => ({
+  useParams: () => ({ id: 'test-page-id' }),
+  Link: ({ to, children, ...props }: { to: string; children: React.ReactNode; [key: string]: unknown }) => {
+    const React = require('react');
+    return React.createElement('a', { href: to, ...props }, children);
+  },
+}));
+
+// Mock apiFetch for ChildrenMacroView
+vi.mock('../../lib/api', () => ({
+  apiFetch: vi.fn().mockResolvedValue({ children: [] }),
+}));
+
 import { ArticleViewer } from './ArticleViewer';
 
 describe('ArticleViewer', () => {
