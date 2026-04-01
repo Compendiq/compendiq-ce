@@ -35,7 +35,15 @@ services:
       CONFLUENCE_LOG_STDOUT: "true"
     volumes:
       - confluence-home:/var/atlassian/application-data/confluence
+    networks:
+      - default
+      - compendiq-backend
 
 volumes:
   confluence-postgres-data:
   confluence-home:
+
+networks:
+  compendiq-backend:
+    name: compendiq_backend-net
+    external: true
