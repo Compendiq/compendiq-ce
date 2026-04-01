@@ -506,11 +506,15 @@ async function detectDeletedPages(
  * page_embeddings are removed by CASCADE on the pages table FK.
  */
 async function purgeDeletedPages(spaceKey: string): Promise<void> {
-  const result = await query(
-    `DELETE FROM pages WHERE space_key = $1 AND deleted_at < NOW() - INTERVAL '30 days'`,
+  const result = await query<{ confluence_id: string }>(
+    `DELETE FROM pages WHERE space_key = $1 AND deleted_at < NOW() - INTERVAL '30 days' RETURNING confluence_id`,
     [spaceKey],
   );
   if (result.rowCount && result.rowCount > 0) {
+    for (const { confluence_id } of result.rows) {
+      await cleanPageAttachments('', confluence_id);
+      await clearPageFailures(confluence_id);
+    }
     logger.info({ spaceKey, purged: result.rowCount }, 'Purged expired soft-deleted pages');
   }
 }

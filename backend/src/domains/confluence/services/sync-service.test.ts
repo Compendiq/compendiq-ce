@@ -102,6 +102,7 @@ import { getSyncStatus, setSyncStatus, startSyncWorker, stopSyncWorker, syncUser
 import { query } from '../../../core/db/postgres.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { cleanPageAttachments } from './attachment-handler.js';
+import { clearAttachmentFailures } from '../../../core/services/redis-cache.js';
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
@@ -521,7 +522,7 @@ describe('sync-service', () => {
           return emptyResult as any;
         }
         if (sqlStr.includes('DELETE FROM pages') && sqlStr.includes('deleted_at <')) {
-          return { rows: [], rowCount: 2, command: 'DELETE', oid: 0, fields: [] } as any;
+          return { rows: [], rowCount: 0, command: 'DELETE', oid: 0, fields: [] } as any;
         }
         if (sqlStr.includes('UPDATE spaces SET last_synced')) return emptyResult as any;
         return emptyResult as any;
@@ -537,6 +538,53 @@ describe('sync-service', () => {
       );
       expect(purgeCall).toBeDefined();
       expect(purgeCall![1]).toEqual(['TEST']);
+    });
+
+    it('calls cleanPageAttachments and clearPageFailures for each purged page', async () => {
+      mockConfluenceClientInstance.getAllSpaces.mockResolvedValue([{ key: 'TEST', name: 'Test Space', homepage: null }]);
+      mockConfluenceClientInstance.getAllPagesInSpace.mockResolvedValue([]);
+      mockConfluenceClientInstance.getModifiedPages.mockResolvedValue([]);
+
+      vi.mocked(getUserAccessibleSpaces).mockResolvedValue(['TEST']);
+      mockRedisSet.mockResolvedValue('OK');
+      mockRedisGet.mockResolvedValue(null);
+
+      vi.mocked(query).mockImplementation(async (sql: string) => {
+        const sqlStr = typeof sql === 'string' ? sql : '';
+        const emptyResult = { rows: [], rowCount: 0, command: '', oid: 0, fields: [] };
+
+        if (sqlStr.includes('confluence_url') && sqlStr.includes('user_settings')) {
+          return {
+            rows: [{ confluence_url: 'https://confluence.test', confluence_pat: 'encrypted-pat' }],
+            rowCount: 1, command: '', oid: 0, fields: [],
+          } as any;
+        }
+        if (sqlStr.includes('INSERT INTO spaces')) return emptyResult as any;
+        if (sqlStr.includes('last_synced') && sqlStr.includes('FROM spaces')) {
+          return { rows: [{ last_synced: null }], rowCount: 1, command: '', oid: 0, fields: [] } as any;
+        }
+        if (sqlStr.includes('COUNT(DISTINCT principal_id)')) {
+          return { rows: [{ count: '1' }], rowCount: 1, command: '', oid: 0, fields: [] } as any;
+        }
+        if (sqlStr.includes('SELECT confluence_id FROM pages')) {
+          return emptyResult as any;
+        }
+        if (sqlStr.includes('DELETE FROM pages') && sqlStr.includes('deleted_at <')) {
+          return {
+            rows: [{ confluence_id: 'purged-1' }, { confluence_id: 'purged-2' }],
+            rowCount: 2, command: 'DELETE', oid: 0, fields: [],
+          } as any;
+        }
+        if (sqlStr.includes('UPDATE spaces SET last_synced')) return emptyResult as any;
+        return emptyResult as any;
+      });
+
+      await syncUser('user-1');
+
+      expect(vi.mocked(cleanPageAttachments)).toHaveBeenCalledWith('', 'purged-1');
+      expect(vi.mocked(cleanPageAttachments)).toHaveBeenCalledWith('', 'purged-2');
+      expect(vi.mocked(clearAttachmentFailures)).toHaveBeenCalledWith(mockRedisClient, 'purged-1');
+      expect(vi.mocked(clearAttachmentFailures)).toHaveBeenCalledWith(mockRedisClient, 'purged-2');
     });
   });
 
