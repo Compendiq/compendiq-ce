@@ -742,6 +742,26 @@ body {
   margin-top: 0;
 }
 
+/* Header numbering — activated by .header-numbering class on editor/viewer container */
+.header-numbering {
+  counter-reset: h1-counter;
+}
+.header-numbering h1 { counter-reset: h2-counter; counter-increment: h1-counter; }
+.header-numbering h2 { counter-reset: h3-counter; counter-increment: h2-counter; }
+.header-numbering h3 { counter-increment: h3-counter; }
+
+.header-numbering h1::before { content: counter(h1-counter) ". "; }
+.header-numbering h2::before { content: counter(h1-counter) "." counter(h2-counter) " "; }
+.header-numbering h3::before { content: counter(h1-counter) "." counter(h2-counter) "." counter(h3-counter) " "; }
+
+/* Style the counters */
+.header-numbering h1::before,
+.header-numbering h2::before,
+.header-numbering h3::before {
+  color: var(--color-muted-foreground);
+  font-weight: normal;
+}
+
 /* Paragraphs — compact spacing */
 .prose :where(p) {
   margin-top: 0.5rem;

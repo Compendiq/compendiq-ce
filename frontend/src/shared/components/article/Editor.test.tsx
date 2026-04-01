@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
-import { render, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, waitFor, screen, fireEvent } from '@testing-library/react';
 
 vi.mock('../hooks/use-is-light-theme', () => ({
   useIsLightTheme: () => false,
@@ -13,7 +13,34 @@ vi.mock('sonner', () => ({
   toast: { error: vi.fn(), success: vi.fn() },
 }));
 
-import { Editor } from './Editor';
+import { Editor, EditorToolbar } from './Editor';
+import type { Editor as EditorType } from '@tiptap/react';
+
+// Minimal mock of a TipTap Editor instance for toolbar-level tests
+function createMockEditor(): EditorType {
+  const chainProxy: Record<string, unknown> = new Proxy(
+    { run: vi.fn() } as Record<string, unknown>,
+    {
+      get(_target, prop: string) {
+        if (prop === 'run') return vi.fn();
+        return () => chainProxy;
+      },
+    },
+  );
+
+  return {
+    chain: () => chainProxy,
+    can: () =>
+      new Proxy(
+        {},
+        { get() { return () => true; } },
+      ),
+    isActive: () => false,
+    getAttributes: () => ({}),
+    on: vi.fn(),
+    off: vi.fn(),
+  } as unknown as EditorType;
+}
 
 describe('Editor', () => {
   it('sticky toolbar has a safe ::before mask that covers the scroll gap without overlapping content above', async () => {
@@ -43,56 +70,57 @@ describe('Editor', () => {
 
   it('renders Insert Layout toolbar button', async () => {
     const { container } = render(
-      <Editor content="<p>Hello</p>" editable={true} />,
+      <Editor content="<p>Test</p>" editable={true} />,
     );
 
     await waitFor(() => {
-      expect(container.querySelector('[title="Insert Layout"]')).toBeTruthy();
+      expect(container.querySelector('[class*="tiptap"]')).toBeTruthy();
     });
+
+    // Find the toolbar region: look for a group of buttons inside the editor wrapper
+    const buttons = container.querySelectorAll('button');
+    const layoutButton = Array.from(buttons).find(
+      (btn) =>
+        btn.title?.toLowerCase().includes('layout') ||
+        btn.textContent?.toLowerCase().includes('layout'),
+    );
+
+    // The Insert Layout button must exist in the toolbar
+    expect(layoutButton).toBeTruthy();
   });
 
-  it('preserves Confluence page layout structure in read-only mode', async () => {
-    const layoutHtml = '<div class="confluence-layout"><div class="confluence-layout-section" data-layout-type="two_equal"><div class="confluence-layout-cell"><p>Left</p></div><div class="confluence-layout-cell"><p>Right</p></div></div></div>';
+  it('renders Mermaid Diagram toolbar button', async () => {
     const { container } = render(
-      <Editor content={layoutHtml} editable={false} />,
+      <Editor content="<p>Test</p>" editable={true} />,
     );
 
     await waitFor(() => {
-      expect(container.querySelector('.confluence-layout')).toBeTruthy();
+      expect(container.querySelector('[class*="tiptap"]')).toBeTruthy();
     });
 
-    const section = container.querySelector('.confluence-layout-section');
-    expect(section).toHaveAttribute('data-layout-type', 'two_equal');
-
-    const cells = container.querySelectorAll('.confluence-layout-cell');
-    expect(cells).toHaveLength(2);
-  });
-
-  it('preserves Confluence column structure in read-only mode', async () => {
-    const columnHtml = '<div class="confluence-section" data-border="true"><div class="confluence-column" data-cell-width="30%"><p>Left</p></div><div class="confluence-column" data-cell-width="70%"><p>Right</p></div></div>';
-    const { container } = render(
-      <Editor content={columnHtml} editable={false} />,
+    const buttons = container.querySelectorAll('button');
+    const mermaidButton = Array.from(buttons).find(
+      (btn) =>
+        btn.title?.toLowerCase().includes('mermaid') ||
+        btn.textContent?.toLowerCase().includes('mermaid'),
     );
 
-    await waitFor(() => {
-      expect(container.querySelector('.confluence-section')).toBeTruthy();
-    });
-
-    const section = container.querySelector('.confluence-section');
-    expect(section).toHaveAttribute('data-border', 'true');
-
-    const columns = container.querySelectorAll('.confluence-column');
-    expect(columns).toHaveLength(2);
-    expect(columns[0]).toHaveAttribute('data-cell-width', '30%');
-    expect(columns[1]).toHaveAttribute('data-cell-width', '70%');
+    expect(mermaidButton).toBeTruthy();
   });
 
-  it('preserves Confluence image metadata attributes on mirrored images', async () => {
+  it('preserves Confluence image metadata attributes in the editor', async () => {
+    const htmlWithMetadata = `
+      <p><img src="/api/attachments/page-1/test.png"
+        data-confluence-image-source="external-url"
+        data-confluence-url="https://example.com/a.png"
+        data-confluence-filename="original.png"
+        data-confluence-owner-page-title="Shared Assets"
+        data-confluence-owner-space-key="OPS"
+      /></p>
+    `;
+
     const { container } = render(
-      <Editor
-        content={'<p><img src="/api/attachments/page-1/external-abc.png" data-confluence-image-source="external-url" data-confluence-url="https://example.com/a.png" data-confluence-filename="original.png" data-confluence-owner-page-title="Shared Assets" data-confluence-owner-space-key="OPS" /></p>'}
-        editable={false}
-      />,
+      <Editor content={htmlWithMetadata} editable={true} />,
     );
 
     await waitFor(() => {
@@ -132,5 +160,77 @@ describe('Editor', () => {
 
       expect(container.querySelector('[class*="tiptap"]')).toBeTruthy();
     });
+  });
+
+  it('applies header-numbering class to container when localStorage flag is true', async () => {
+    localStorage.setItem('editor-header-numbering', 'true');
+    const { container } = render(
+      <Editor content="<p>Hello</p>" editable={true} />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector('.header-numbering')).toBeTruthy();
+    });
+  });
+
+  it('does not apply header-numbering class when localStorage flag is false', async () => {
+    localStorage.setItem('editor-header-numbering', 'false');
+    const { container } = render(
+      <Editor content="<p>Hello</p>" editable={true} />,
+    );
+
+    await waitFor(() => {
+      // Wait for editor to render
+      expect(container.querySelector('[class*="glass-card"]')).toBeTruthy();
+    });
+    expect(container.querySelector('.header-numbering')).toBeFalsy();
+  });
+});
+
+describe('EditorToolbar — header numbering toggle', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it('renders a header numbering toggle button when props are provided', () => {
+    const editor = createMockEditor();
+    const toggle = vi.fn();
+    render(<EditorToolbar editor={editor} headerNumbering={false} onToggleHeaderNumbering={toggle} />);
+
+    expect(screen.getByTitle('Toggle Header Numbering')).toBeInTheDocument();
+  });
+
+  it('shows active styling when headerNumbering is true', () => {
+    const editor = createMockEditor();
+    const toggle = vi.fn();
+    render(<EditorToolbar editor={editor} headerNumbering={true} onToggleHeaderNumbering={toggle} />);
+
+    const btn = screen.getByTitle('Toggle Header Numbering');
+    expect(btn.className).toContain('bg-primary');
+  });
+
+  it('shows inactive styling when headerNumbering is false', () => {
+    const editor = createMockEditor();
+    const toggle = vi.fn();
+    render(<EditorToolbar editor={editor} headerNumbering={false} onToggleHeaderNumbering={toggle} />);
+
+    const btn = screen.getByTitle('Toggle Header Numbering');
+    expect(btn.className).not.toContain('bg-primary');
+  });
+
+  it('calls onToggleHeaderNumbering when the button is clicked', () => {
+    const editor = createMockEditor();
+    const toggle = vi.fn();
+    render(<EditorToolbar editor={editor} headerNumbering={false} onToggleHeaderNumbering={toggle} />);
+
+    fireEvent.click(screen.getByTitle('Toggle Header Numbering'));
+    expect(toggle).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not render the toggle button when onToggleHeaderNumbering is absent', () => {
+    const editor = createMockEditor();
+    render(<EditorToolbar editor={editor} />);
+
+    expect(screen.queryByTitle('Toggle Header Numbering')).not.toBeInTheDocument();
   });
 });

@@ -82,6 +82,7 @@ export function ArticleViewer({
   const containerRef = useRef<HTMLDivElement>(null);
   const [isReady, setIsReady] = useState(false);
   const isLight = useIsLightTheme();
+  const headerNumbering = localStorage.getItem('editor-header-numbering') === 'true';
 
   const sanitizedContent = useMemo(
     () =>
@@ -423,7 +424,7 @@ export function ArticleViewer({
   }, [isReady, sanitizedContent, onEditDiagram]);
 
   return (
-    <div ref={containerRef} className="article-viewer-container">
+    <div ref={containerRef} className={cn('article-viewer-container', headerNumbering && 'header-numbering')}>
       <EditorContent
         editor={editor}
         className={cn(
