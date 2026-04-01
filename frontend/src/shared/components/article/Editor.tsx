@@ -17,7 +17,7 @@ import {
   ArrowUpFromLine, ArrowDownFromLine, ArrowLeftFromLine, ArrowRightFromLine,
   Trash2, Columns3, Rows3, Merge, SplitSquareHorizontal, Square,
   ToggleLeft, PanelTop, Workflow, Underline, Highlighter, Palette,
-  Badge, ChevronsUpDown,
+  Badge, ChevronsUpDown, Hash,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '../../lib/cn';
@@ -284,7 +284,7 @@ function ColorPickerDropdown({
   );
 }
 
-export function EditorToolbar({ editor }: { editor: EditorType }) {
+export function EditorToolbar({ editor, headerNumbering, onToggleHeaderNumbering }: { editor: EditorType; headerNumbering?: boolean; onToggleHeaderNumbering?: () => void }) {
   // Subscribe to editor state changes so toolbar re-renders on selection/formatting changes (#16)
   const activeState = useEditorState({
     editor,
@@ -354,6 +354,11 @@ export function EditorToolbar({ editor }: { editor: EditorType }) {
       <ToolbarButton onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()} active={activeState.h3} title="Heading 3 (Ctrl+Alt+3)">
         <Heading3 size={16} />
       </ToolbarButton>
+      {onToggleHeaderNumbering && (
+        <ToolbarButton onClick={onToggleHeaderNumbering} active={headerNumbering} title="Toggle Header Numbering">
+          <Hash size={16} />
+        </ToolbarButton>
+      )}
 
       <ToolbarSeparator />
 
@@ -785,6 +790,17 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
   const pageIdRef = useRef(pageId);
   pageIdRef.current = pageId;
 
+  const [headerNumbering, setHeaderNumbering] = useState(() =>
+    localStorage.getItem('editor-header-numbering') === 'true'
+  );
+
+  const toggleHeaderNumbering = () => {
+    setHeaderNumbering(prev => {
+      localStorage.setItem('editor-header-numbering', String(!prev));
+      return !prev;
+    });
+  };
+
   const saveDraft = useCallback((html: string) => {
     if (!draftKey) return;
     if (timerRef.current) clearTimeout(timerRef.current);
@@ -892,10 +908,10 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
   }, [editor, onEditorReady]);
 
   return (
-    <div className={naked ? '' : 'glass-card'}>
+    <div className={cn(naked ? '' : 'glass-card', headerNumbering && 'header-numbering')}>
       {editable && editor && !hideToolbar && (
         <div className="sticky top-0 z-30 rounded-t-xl border-b border-border/50 bg-card before:absolute before:-z-10 before:-top-[100px] before:bottom-0 before:left-0 before:right-0 before:bg-background">
-          <EditorToolbar editor={editor} />
+          <EditorToolbar editor={editor} headerNumbering={headerNumbering} onToggleHeaderNumbering={toggleHeaderNumbering} />
           <TableContextToolbar editor={editor} />
           <LayoutContextToolbar editor={editor} />
           <ColumnContextToolbar editor={editor} />
