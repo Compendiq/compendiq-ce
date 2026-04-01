@@ -543,8 +543,10 @@ describe('article-extensions', () => {
   });
 });
 
+// ========== Caption & Index extension tests (#13) ==========
+
 /** Create a minimal TipTap editor with the caption/index extensions. */
-function createEditor(content: string) {
+function createCaptionEditor(content: string) {
   return new Editor({
     extensions: [
       StarterKit,
@@ -564,7 +566,7 @@ function createEditor(content: string) {
 describe('Figure node', () => {
   it('parses a <figure> containing an image and figcaption', () => {
     const html = '<figure><img src="test.png" alt="Test" /><figcaption>My caption</figcaption></figure>';
-    const editor = createEditor(html);
+    const editor = createCaptionEditor(html);
     const doc = editor.getJSON();
 
     const figure = doc.content?.find((n) => n.type === 'figure');
@@ -579,7 +581,7 @@ describe('Figure node', () => {
 
   it('renders to HTML with figure-block class', () => {
     const html = '<figure><img src="test.png" alt="Test" /><figcaption>Caption</figcaption></figure>';
-    const editor = createEditor(html);
+    const editor = createCaptionEditor(html);
     const output = editor.getHTML();
 
     expect(output).toContain('<figure class="figure-block">');
@@ -592,7 +594,7 @@ describe('Figure node', () => {
 describe('Figcaption node', () => {
   it('parses <figcaption> with inline content including bold marks', () => {
     const html = '<figure><img src="x.png" /><figcaption>Test <strong>bold</strong> caption</figcaption></figure>';
-    const editor = createEditor(html);
+    const editor = createCaptionEditor(html);
     const doc = editor.getJSON();
 
     const figure = doc.content?.find((n) => n.type === 'figure');
@@ -613,7 +615,7 @@ describe('Figcaption node', () => {
 describe('TableCaption node', () => {
   it('parses <div class="table-caption">', () => {
     const html = '<div class="table-caption">Revenue by Quarter</div>';
-    const editor = createEditor(html);
+    const editor = createCaptionEditor(html);
     const doc = editor.getJSON();
 
     const caption = doc.content?.find((n) => n.type === 'tableCaption');
@@ -624,7 +626,7 @@ describe('TableCaption node', () => {
 
   it('renders with table-caption class', () => {
     const html = '<div class="table-caption">Test</div>';
-    const editor = createEditor(html);
+    const editor = createCaptionEditor(html);
     const output = editor.getHTML();
 
     expect(output).toContain('class="table-caption');
@@ -636,7 +638,7 @@ describe('TableCaption node', () => {
 describe('FigureIndex node', () => {
   it('parses <div class="figure-index">', () => {
     const html = '<div class="figure-index"></div>';
-    const editor = createEditor(html);
+    const editor = createCaptionEditor(html);
     const doc = editor.getJSON();
 
     const index = doc.content?.find((n) => n.type === 'figureIndex');
@@ -646,7 +648,7 @@ describe('FigureIndex node', () => {
 
   it('renders with figure-index class', () => {
     const html = '<div class="figure-index"></div>';
-    const editor = createEditor(html);
+    const editor = createCaptionEditor(html);
     const output = editor.getHTML();
 
     expect(output).toContain('figure-index');
@@ -657,7 +659,7 @@ describe('FigureIndex node', () => {
 describe('TableIndex node', () => {
   it('parses <div class="table-index">', () => {
     const html = '<div class="table-index"></div>';
-    const editor = createEditor(html);
+    const editor = createCaptionEditor(html);
     const doc = editor.getJSON();
 
     const index = doc.content?.find((n) => n.type === 'tableIndex');
@@ -667,7 +669,7 @@ describe('TableIndex node', () => {
 
   it('renders with table-index class', () => {
     const html = '<div class="table-index"></div>';
-    const editor = createEditor(html);
+    const editor = createCaptionEditor(html);
     const output = editor.getHTML();
 
     expect(output).toContain('table-index');

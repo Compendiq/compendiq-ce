@@ -852,6 +852,8 @@ describe('content-converter', () => {
   });
 });
 
+// ========== Figure/Caption pass-through tests (#13) ==========
+
 describe('content-converter: figure/caption round-trip (#13)', () => {
   it('passes <figure> and <figcaption> through confluenceToHtml unchanged', () => {
     const html = '<figure class="figure-block"><img src="test.png" alt="Test" /><figcaption>My caption</figcaption></figure>';
@@ -884,6 +886,8 @@ describe('content-converter: figure/caption round-trip (#13)', () => {
     expect(result).toContain('Revenue by Quarter');
   });
 });
+
+// ========== Index block stripping tests (#13) ==========
 
 describe('content-converter: index block stripping (#13)', () => {
   it('strips <div class="figure-index"> during htmlToConfluence', () => {
