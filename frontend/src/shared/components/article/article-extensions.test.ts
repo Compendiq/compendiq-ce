@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { Details, DetailsSummary, Panel, DrawioDiagram, ConfluenceToc, ConfluenceStatus, ConfluenceChildren, ConfluenceLayout, ConfluenceLayoutSection, ConfluenceLayoutCell, ConfluenceSection, ConfluenceColumn, UnknownMacro, LAYOUT_PRESETS } from './article-extensions';
+import { Details, DetailsSummary, Panel, DrawioDiagram, ConfluenceToc, ConfluenceStatus, ConfluenceChildren, ConfluenceAttachments, ConfluenceLayout, ConfluenceLayoutSection, ConfluenceLayoutCell, ConfluenceSection, ConfluenceColumn, UnknownMacro, LAYOUT_PRESETS } from './article-extensions';
 
 // Helper to extract parseHTML rules from a TipTap extension config
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -225,6 +225,56 @@ describe('article-extensions', () => {
       expect(attrs).not.toHaveProperty('data-reverse');
       expect(attrs).not.toHaveProperty('data-first');
     });
+
+  describe('ConfluenceAttachments', () => {
+    it('has correct name and is block atom', () => {
+      expect(ConfluenceAttachments.name).toBe('confluenceAttachments');
+      expect(ConfluenceAttachments.config.group).toBe('block');
+      expect(ConfluenceAttachments.config.atom).toBe(true);
+    });
+
+    it('parses div.confluence-attachments-macro', () => {
+      const parseRules = getParseRules(ConfluenceAttachments);
+      expect(parseRules).toBeDefined();
+      expect(parseRules).toContainEqual(expect.objectContaining({ tag: 'div.confluence-attachments-macro' }));
+    });
+
+    it('defines upload and old attributes with defaults', () => {
+      const addAttributes = ConfluenceAttachments.config.addAttributes;
+      const attrs = addAttributes?.call({ name: 'confluenceAttachments', options: {}, storage: {}, parent: undefined });
+      expect(attrs).toHaveProperty('upload');
+      expect(attrs).toHaveProperty('old');
+      expect(attrs.upload.default).toBe('false');
+      expect(attrs.old.default).toBe('false');
+    });
+
+    it('parseHTML reads data-upload and data-old attributes', () => {
+      const addAttributes = ConfluenceAttachments.config.addAttributes;
+      const attrs = addAttributes?.call({ name: 'confluenceAttachments', options: {}, storage: {}, parent: undefined });
+      const mockEl = {
+        getAttribute: (name: string) => {
+          const map: Record<string, string> = { 'data-upload': 'true', 'data-old': 'false' };
+          return map[name] ?? null;
+        },
+      } as unknown as HTMLElement;
+      expect(attrs.upload.parseHTML(mockEl)).toBe('true');
+      expect(attrs.old.parseHTML(mockEl)).toBe('false');
+    });
+
+    it('parseHTML defaults to false when attributes are missing', () => {
+      const addAttributes = ConfluenceAttachments.config.addAttributes;
+      const attrs = addAttributes?.call({ name: 'confluenceAttachments', options: {}, storage: {}, parent: undefined });
+      const mockEl = {
+        getAttribute: () => null,
+      } as unknown as HTMLElement;
+      expect(attrs.upload.parseHTML(mockEl)).toBe('false');
+      expect(attrs.old.parseHTML(mockEl)).toBe('false');
+    });
+
+    it('defines addNodeView for ReactNodeViewRenderer', () => {
+      expect(ConfluenceAttachments.config.addNodeView).toBeDefined();
+    });
+  });
 
   describe('ConfluenceLayout', () => {
     it('has correct name and group', () => {

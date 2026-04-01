@@ -272,3 +272,12 @@ export const DATA_MACRO_VARIANT_PAGE = `<h2>Code Example</h2>
 <ac:structured-macro data-macro-name="code"><ac:parameter ac:name="language">python</ac:parameter><ac:plain-text-body><![CDATA[print("hello world")]]></ac:plain-text-body></ac:structured-macro>
 <ac:structured-macro data-macro-name="info"><ac:rich-text-body><p>Python 3.12+ required.</p></ac:rich-text-body></ac:structured-macro>
 <ac:structured-macro data-macro-name="expand"><ac:parameter ac:name="title">Details</ac:parameter><ac:rich-text-body><p>More info here.</p></ac:rich-text-body></ac:structured-macro>`;
+
+/** Page with attachments macro (with parameters) */
+export const ATTACHMENTS_MACRO_PAGE = `<h2>Page Attachments</h2>
+<p>Files attached to this page:</p>
+<ac:structured-macro ac:name="attachments"><ac:parameter ac:name="upload">true</ac:parameter><ac:parameter ac:name="old">false</ac:parameter></ac:structured-macro>`;
+
+/** Page with attachments macro (no parameters) */
+export const ATTACHMENTS_MACRO_NO_PARAMS_PAGE = `<h2>Attachments</h2>
+<ac:structured-macro ac:name="attachments"></ac:structured-macro>`;

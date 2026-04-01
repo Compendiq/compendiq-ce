@@ -1,5 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import path from 'node:path';
+import { readdir, stat } from 'node:fs/promises';
 import { query } from '../../core/db/postgres.js';
 import { readAttachment, fetchAndCachePageImage, getMimeType, writeAttachmentCache } from '../../domains/confluence/services/attachment-handler.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
@@ -15,8 +17,62 @@ const UpdateAttachmentBodySchema = z.object({
 /** Maximum allowed attachment upload size: 10 MB */
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 
+const ATTACHMENTS_BASE = process.env.ATTACHMENTS_DIR ?? 'data/attachments';
+
 export async function attachmentRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
+
+  // GET /api/attachments/:pageId/list - list all cached attachments for a page
+  fastify.get('/attachments/:pageId/list', async (request, reply) => {
+    const { pageId } = request.params as { pageId: string };
+    const userId = request.userId;
+
+    // Verify the page belongs to the user's accessible spaces (RBAC)
+    const listSpaces = await getUserAccessibleSpaces(userId);
+    const pageResult = await query<{ confluence_id: string }>(
+      `SELECT cp.confluence_id
+       FROM pages cp
+       WHERE cp.space_key = ANY($1::text[])
+         AND cp.confluence_id = $2`,
+      [listSpaces, pageId],
+    );
+    if (pageResult.rows.length === 0) {
+      return reply.status(404).send({
+        statusCode: 404,
+        error: 'Not Found',
+        message: 'Page not found in accessible spaces',
+      });
+    }
+
+    const resolvedId = pageResult.rows[0].confluence_id;
+    const dirPath = path.join(ATTACHMENTS_BASE, path.basename(resolvedId));
+
+    try {
+      const entries = await readdir(dirPath);
+      const results = await Promise.allSettled(
+        entries.map(async (filename) => {
+          const filePath = path.join(dirPath, filename);
+          const fileStat = await stat(filePath);
+          return {
+            filename,
+            size: fileStat.size,
+            url: `/api/attachments/${pageId}/${encodeURIComponent(filename)}`,
+          };
+        }),
+      );
+      const attachments = results
+        .filter((r): r is PromiseFulfilledResult<{ filename: string; size: number; url: string }> => r.status === 'fulfilled')
+        .map(r => r.value);
+      return reply.send({ attachments });
+    } catch (err) {
+      // Directory doesn't exist — no attachments cached yet, not an error
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return reply.send({ attachments: [] });
+      }
+      logger.error({ err, userId, pageId, dirPath }, 'Failed to list attachments');
+      throw fastify.httpErrors.internalServerError('Failed to list attachments');
+    }
+  });
 
   // GET /api/attachments/:pageId/:filename - serve cached or on-demand fetched attachment
   fastify.get('/attachments/:pageId/:filename', async (request, reply) => {

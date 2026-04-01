@@ -292,6 +292,19 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
     macro.replaceWith(div);
   }
 
+  // Process attachments macro -> placeholder div, preserving upload/old params
+  for (const macro of byTag(doc, 'ac:structured-macro')) {
+    if (getMacroName(macro) !== 'attachments') continue;
+    const upload = getParamValue(macro, 'upload') ?? 'false';
+    const old = getParamValue(macro, 'old') ?? 'false';
+    const div = doc.createElement('div');
+    div.className = 'confluence-attachments-macro';
+    div.setAttribute('data-upload', upload);
+    div.setAttribute('data-old', old);
+    div.textContent = '[Attachments]';
+    macro.replaceWith(div);
+  }
+
   // Process layout macros: ac:layout / ac:layout-section / ac:layout-cell -> grid divs
   // Process inside-out: cells first, then sections, then layout wrapper.
   for (const cell of byTag(doc, 'ac:layout-cell')) {
@@ -480,6 +493,27 @@ export function htmlToConfluence(html: string): string {
     div.replaceWith(macro);
   }
 
+  // Convert attachments macro placeholder back to ac:structured-macro[name=attachments]
+  for (const div of doc.querySelectorAll('div.confluence-attachments-macro')) {
+    const macro = doc.createElement('ac:structured-macro');
+    macro.setAttribute('ac:name', 'attachments');
+    const upload = div.getAttribute('data-upload');
+    const old = div.getAttribute('data-old');
+    if (upload && upload !== 'false') {
+      const param = doc.createElement('ac:parameter');
+      param.setAttribute('ac:name', 'upload');
+      param.textContent = upload;
+      macro.appendChild(param);
+    }
+    if (old && old !== 'false') {
+      const param = doc.createElement('ac:parameter');
+      param.setAttribute('ac:name', 'old');
+      param.textContent = old;
+      macro.appendChild(param);
+    }
+    div.replaceWith(macro);
+  }
+
   // Convert status badges back to ac:structured-macro[name=status]
   for (const span of doc.querySelectorAll('span.confluence-status')) {
     const colour = span.getAttribute('data-color') ?? 'grey';
@@ -650,6 +684,13 @@ export function htmlToMarkdown(html: string): string {
     filter: (node) =>
       node.nodeName === 'DIV' && node.classList.contains('confluence-children-macro'),
     replacement: () => '\n[Children pages]\n\n',
+  });
+
+  // Custom rule for attachments macro placeholder
+  turndownService.addRule('confluenceAttachments', {
+    filter: (node) =>
+      node.nodeName === 'DIV' && node.classList.contains('confluence-attachments-macro'),
+    replacement: () => '\n[Attachments]\n\n',
   });
 
   // Custom rule for panels
