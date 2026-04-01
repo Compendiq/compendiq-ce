@@ -290,6 +290,24 @@ describe('POST /api/pages/:id/images', () => {
     );
   });
 
+  it('should return 403 when page is not standalone and has no space_key', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ id: 42, source: 'confluence', confluence_id: 'conf-999', created_by_user_id: null, space_key: null }],
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/42/images',
+      payload: {
+        dataUri: VALID_PNG_DATA_URI,
+        filename: 'paste-123-abcd.png',
+      },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(JSON.parse(response.payload).message).toBe('Access denied');
+  });
+
   it('should require auth (route has onRequest authenticate hook)', async () => {
     // The authenticate hook is always called for all routes in this plugin.
     // We verify the hook is set up by checking the app is working normally
