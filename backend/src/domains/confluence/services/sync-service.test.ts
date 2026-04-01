@@ -4,6 +4,7 @@
  * Mocks Redis, database, and external services to isolate the lock/status logic.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type { QueryResult } from 'pg';
 import type { RedisClientType } from 'redis';
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
@@ -37,7 +38,7 @@ const mockConfluenceClientInstance: Record<string, ReturnType<typeof vi.fn>> = {
 };
 
 vi.mock('./confluence-client.js', () => ({
-  ConfluenceClient: vi.fn(function (this: any) {
+  ConfluenceClient: vi.fn(function (this: Record<string, ReturnType<typeof vi.fn>>) {
     Object.assign(this, mockConfluenceClientInstance);
   }),
 }));
@@ -362,7 +363,7 @@ describe('sync-service', () => {
       vi.mocked(getUserAccessibleSpaces).mockResolvedValue(['TEST']);
 
       // Track query calls and provide responses
-      vi.mocked(query).mockImplementation(async (sql: string, params?: unknown[]) => {
+      vi.mocked(query).mockImplementation(async (sql: string, _params?: unknown[]) => {
         const sqlStr = typeof sql === 'string' ? sql : '';
         const emptyResult = { rows: [], rowCount: 0, command: '', oid: 0, fields: [] };
 
@@ -371,27 +372,27 @@ describe('sync-service', () => {
           return {
             rows: [{ confluence_url: 'https://confluence.test', confluence_pat: 'encrypted-pat' }],
             rowCount: 1, command: '', oid: 0, fields: [],
-          } as any;
+          } as QueryResult;
         }
 
         // syncSpace: upsert space metadata
         if (sqlStr.includes('INSERT INTO spaces')) {
-          return emptyResult as any;
+          return emptyResult as QueryResult;
         }
 
         // syncSpace: check last sync time (return null to force full sync)
         if (sqlStr.includes('last_synced') && sqlStr.includes('FROM spaces')) {
-          return { rows: [{ last_synced: null }], rowCount: 1, command: '', oid: 0, fields: [] } as any;
+          return { rows: [{ last_synced: null }], rowCount: 1, command: '', oid: 0, fields: [] } as QueryResult;
         }
 
         // syncPage: check existing page
         if (sqlStr.includes('SELECT version') && sqlStr.includes('FROM pages')) {
-          return emptyResult as any;
+          return emptyResult as QueryResult;
         }
 
         // syncPage: upsert page
         if (sqlStr.includes('INSERT INTO pages')) {
-          return emptyResult as any;
+          return emptyResult as QueryResult;
         }
 
         // detectDeletedPages: RBAC user count
@@ -399,7 +400,7 @@ describe('sync-service', () => {
           return {
             rows: [{ count: String(rbacUserCount) }],
             rowCount: 1, command: '', oid: 0, fields: [],
-          } as any;
+          } as QueryResult;
         }
 
         // detectDeletedPages: existing pages in DB
@@ -407,26 +408,26 @@ describe('sync-service', () => {
           return {
             rows: dbPageIds.map((id) => ({ confluence_id: id })),
             rowCount: dbPageIds.length, command: '', oid: 0, fields: [],
-          } as any;
+          } as QueryResult;
         }
 
         // detectDeletedPages: soft-delete UPDATE
         if (sqlStr.includes('UPDATE pages SET deleted_at = NOW()')) {
-          return { rows: [], rowCount: 1, command: 'UPDATE', oid: 0, fields: [] } as any;
+          return { rows: [], rowCount: 1, command: 'UPDATE', oid: 0, fields: [] } as QueryResult;
         }
 
         // purgeDeletedPages: DELETE old soft-deleted
         if (sqlStr.includes('DELETE FROM pages') && sqlStr.includes('deleted_at <')) {
-          return { rows: [], rowCount: 0, command: 'DELETE', oid: 0, fields: [] } as any;
+          return { rows: [], rowCount: 0, command: 'DELETE', oid: 0, fields: [] } as QueryResult;
         }
 
         // syncSpace: update space timestamp
         if (sqlStr.includes('UPDATE spaces SET last_synced')) {
-          return emptyResult as any;
+          return emptyResult as QueryResult;
         }
 
         // processDirtyPages status updates (setSyncStatus via Redis, not query)
-        return emptyResult as any;
+        return emptyResult as QueryResult;
       });
     }
 
@@ -509,23 +510,23 @@ describe('sync-service', () => {
           return {
             rows: [{ confluence_url: 'https://confluence.test', confluence_pat: 'encrypted-pat' }],
             rowCount: 1, command: '', oid: 0, fields: [],
-          } as any;
+          } as QueryResult;
         }
-        if (sqlStr.includes('INSERT INTO spaces')) return emptyResult as any;
+        if (sqlStr.includes('INSERT INTO spaces')) return emptyResult as QueryResult;
         if (sqlStr.includes('last_synced') && sqlStr.includes('FROM spaces')) {
-          return { rows: [{ last_synced: null }], rowCount: 1, command: '', oid: 0, fields: [] } as any;
+          return { rows: [{ last_synced: null }], rowCount: 1, command: '', oid: 0, fields: [] } as QueryResult;
         }
         if (sqlStr.includes('COUNT(DISTINCT principal_id)')) {
-          return { rows: [{ count: '1' }], rowCount: 1, command: '', oid: 0, fields: [] } as any;
+          return { rows: [{ count: '1' }], rowCount: 1, command: '', oid: 0, fields: [] } as QueryResult;
         }
         if (sqlStr.includes('SELECT confluence_id FROM pages')) {
-          return emptyResult as any;
+          return emptyResult as QueryResult;
         }
         if (sqlStr.includes('DELETE FROM pages') && sqlStr.includes('deleted_at <')) {
-          return { rows: [], rowCount: 0, command: 'DELETE', oid: 0, fields: [] } as any;
+          return { rows: [], rowCount: 0, command: 'DELETE', oid: 0, fields: [] } as QueryResult;
         }
-        if (sqlStr.includes('UPDATE spaces SET last_synced')) return emptyResult as any;
-        return emptyResult as any;
+        if (sqlStr.includes('UPDATE spaces SET last_synced')) return emptyResult as QueryResult;
+        return emptyResult as QueryResult;
       });
 
       await syncUser('user-1');
@@ -557,26 +558,26 @@ describe('sync-service', () => {
           return {
             rows: [{ confluence_url: 'https://confluence.test', confluence_pat: 'encrypted-pat' }],
             rowCount: 1, command: '', oid: 0, fields: [],
-          } as any;
+          } as QueryResult;
         }
-        if (sqlStr.includes('INSERT INTO spaces')) return emptyResult as any;
+        if (sqlStr.includes('INSERT INTO spaces')) return emptyResult as QueryResult;
         if (sqlStr.includes('last_synced') && sqlStr.includes('FROM spaces')) {
-          return { rows: [{ last_synced: null }], rowCount: 1, command: '', oid: 0, fields: [] } as any;
+          return { rows: [{ last_synced: null }], rowCount: 1, command: '', oid: 0, fields: [] } as QueryResult;
         }
         if (sqlStr.includes('COUNT(DISTINCT principal_id)')) {
-          return { rows: [{ count: '1' }], rowCount: 1, command: '', oid: 0, fields: [] } as any;
+          return { rows: [{ count: '1' }], rowCount: 1, command: '', oid: 0, fields: [] } as QueryResult;
         }
         if (sqlStr.includes('SELECT confluence_id FROM pages')) {
-          return emptyResult as any;
+          return emptyResult as QueryResult;
         }
         if (sqlStr.includes('DELETE FROM pages') && sqlStr.includes('deleted_at <')) {
           return {
             rows: [{ confluence_id: 'purged-1' }, { confluence_id: 'purged-2' }],
             rowCount: 2, command: 'DELETE', oid: 0, fields: [],
-          } as any;
+          } as QueryResult;
         }
-        if (sqlStr.includes('UPDATE spaces SET last_synced')) return emptyResult as any;
-        return emptyResult as any;
+        if (sqlStr.includes('UPDATE spaces SET last_synced')) return emptyResult as QueryResult;
+        return emptyResult as QueryResult;
       });
 
       await syncUser('user-1');
@@ -618,31 +619,31 @@ describe('sync-service', () => {
           return {
             rows: [{ confluence_url: 'https://confluence.test', confluence_pat: 'encrypted-pat' }],
             rowCount: 1, command: '', oid: 0, fields: [],
-          } as any;
+          } as QueryResult;
         }
-        if (sqlStr.includes('INSERT INTO spaces')) return emptyResult as any;
+        if (sqlStr.includes('INSERT INTO spaces')) return emptyResult as QueryResult;
         if (sqlStr.includes('last_synced') && sqlStr.includes('FROM spaces')) {
-          return { rows: [{ last_synced: null }], rowCount: 1, command: '', oid: 0, fields: [] } as any;
+          return { rows: [{ last_synced: null }], rowCount: 1, command: '', oid: 0, fields: [] } as QueryResult;
         }
         // syncPage: existing page check — return no existing page so upsert is used
         if (sqlStr.includes('SELECT version') && sqlStr.includes('FROM pages')) {
-          return emptyResult as any;
+          return emptyResult as QueryResult;
         }
         // syncPage: upsert with deleted_at = NULL
         if (sqlStr.includes('INSERT INTO pages')) {
-          return emptyResult as any;
+          return emptyResult as QueryResult;
         }
         if (sqlStr.includes('COUNT(DISTINCT principal_id)')) {
-          return { rows: [{ count: '1' }], rowCount: 1, command: '', oid: 0, fields: [] } as any;
+          return { rows: [{ count: '1' }], rowCount: 1, command: '', oid: 0, fields: [] } as QueryResult;
         }
         if (sqlStr.includes('SELECT confluence_id FROM pages') && sqlStr.includes('deleted_at IS NULL')) {
-          return emptyResult as any;
+          return emptyResult as QueryResult;
         }
         if (sqlStr.includes('DELETE FROM pages') && sqlStr.includes('deleted_at <')) {
-          return { rows: [], rowCount: 0, command: 'DELETE', oid: 0, fields: [] } as any;
+          return { rows: [], rowCount: 0, command: 'DELETE', oid: 0, fields: [] } as QueryResult;
         }
-        if (sqlStr.includes('UPDATE spaces SET last_synced')) return emptyResult as any;
-        return emptyResult as any;
+        if (sqlStr.includes('UPDATE spaces SET last_synced')) return emptyResult as QueryResult;
+        return emptyResult as QueryResult;
       });
 
       await syncUser('user-1');
