@@ -215,6 +215,9 @@ async function syncSpace(client: ConfluenceClient, userId: string, spaceKey: str
     await detectDeletedPages(client, spaceKey, pages);
   }
 
+  // Purge pages that have been soft-deleted for more than 30 days
+  await purgeDeletedPages(spaceKey);
+
   // Update space sync timestamp (shared table)
   await query(
     'UPDATE spaces SET last_synced = NOW() WHERE space_key = $1',
@@ -317,7 +320,8 @@ async function syncPage(
              summary_status = CASE
                WHEN body_text IS DISTINCT FROM $5 THEN 'pending'
                ELSE summary_status
-             END
+             END,
+             deleted_at = NULL
          WHERE confluence_id = $1`,
         [page.id, page.title, bodyStorage, bodyHtml, bodyText, parentId, labels, author, lastModified],
       );
@@ -351,6 +355,8 @@ async function syncPage(
   }
 
   // Upsert page (shared table, no user_id)
+  // deleted_at = NULL restores pages that were previously soft-deleted
+  // (e.g. page was restored from Confluence trash)
   await query(
     `INSERT INTO pages
        (confluence_id, space_key, title, body_storage, body_html, body_text,
@@ -369,7 +375,8 @@ async function syncPage(
        last_modified_at = EXCLUDED.last_modified_at,
        last_synced = NOW(),
        embedding_dirty = TRUE,
-       summary_status = 'pending'`,
+       summary_status = 'pending',
+       deleted_at = NULL`,
     [page.id, spaceKey, page.title, bodyStorage, bodyHtml, bodyText,
      page.version.number, parentId, labels, author, lastModified],
   );
@@ -475,20 +482,40 @@ async function detectDeletedPages(
 
   const currentIds = new Set(currentPages.map((p) => p.id));
 
-  // Query shared table by space_key only
+  // Query shared table by space_key only (exclude already soft-deleted pages)
   const existingResult = await query<{ confluence_id: string }>(
-    'SELECT confluence_id FROM pages WHERE space_key = $1',
+    'SELECT confluence_id FROM pages WHERE space_key = $1 AND deleted_at IS NULL',
     [spaceKey],
   );
 
   for (const { confluence_id } of existingResult.rows) {
     if (!currentIds.has(confluence_id)) {
-      logger.info({ spaceKey, confluenceId: confluence_id }, 'Deleting stale page');
-      // page_embeddings are deleted by CASCADE on pages
-      await query('DELETE FROM pages WHERE confluence_id = $1', [confluence_id]);
+      logger.info({ spaceKey, confluenceId: confluence_id }, 'Soft-deleting stale page');
+      await query(
+        'UPDATE pages SET deleted_at = NOW() WHERE confluence_id = $1 AND deleted_at IS NULL',
+        [confluence_id],
+      );
       await cleanPageAttachments('', confluence_id);
       await clearPageFailures(confluence_id);
     }
+  }
+}
+
+/**
+ * Permanently remove pages that were soft-deleted more than 30 days ago.
+ * page_embeddings are removed by CASCADE on the pages table FK.
+ */
+async function purgeDeletedPages(spaceKey: string): Promise<void> {
+  const result = await query<{ confluence_id: string }>(
+    `DELETE FROM pages WHERE space_key = $1 AND deleted_at < NOW() - INTERVAL '30 days' RETURNING confluence_id`,
+    [spaceKey],
+  );
+  if (result.rowCount && result.rowCount > 0) {
+    for (const { confluence_id } of result.rows) {
+      await cleanPageAttachments('', confluence_id);
+      await clearPageFailures(confluence_id);
+    }
+    logger.info({ spaceKey, purged: result.rowCount }, 'Purged expired soft-deleted pages');
   }
 }
 
