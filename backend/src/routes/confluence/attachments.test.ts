@@ -32,6 +32,14 @@ vi.mock('../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
+// Mock node:fs/promises for the list endpoint
+const mockReaddir = vi.fn();
+const mockStat = vi.fn();
+vi.mock('node:fs/promises', () => ({
+  readdir: (...args: unknown[]) => mockReaddir(...args),
+  stat: (...args: unknown[]) => mockStat(...args),
+}));
+
 // Mock Redis client
 const mockRedisGet = vi.fn();
 const mockRedisSetEx = vi.fn();
@@ -316,7 +324,6 @@ describe('Attachment routes', () => {
 
   describe('GET /api/attachments/:pageId/:filename (standalone pages)', () => {
     it('should serve attachment from local cache for standalone page looked up by integer ID', async () => {
-      // First query (by confluence_id) returns nothing; second query (by integer ID) finds the standalone page
       mockQuery
         .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [{ body_storage: null, space_key: null, source: 'standalone' }] });
@@ -334,7 +341,6 @@ describe('Attachment routes', () => {
     });
 
     it('should return 404 for standalone page attachment not in local cache (no Confluence fallback)', async () => {
-      // First query (by confluence_id) returns nothing; second query (by integer ID) finds the standalone page
       mockQuery
         .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [{ body_storage: null, space_key: null, source: 'standalone' }] });
@@ -346,9 +352,119 @@ describe('Attachment routes', () => {
         url: '/api/attachments/42/missing.png',
       });
 
-      // Standalone pages skip Confluence on-demand fetch; missing file should 404
       expect(response.statusCode).toBe(404);
       expect(mockGetClientForUser).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('GET /api/attachments/:pageId/list', () => {
+    beforeEach(() => {
+      mockQuery.mockResolvedValue({
+        rows: [{ confluence_id: '12345' }],
+      });
+    });
+
+    it('should return 404 when page is not in accessible spaces', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/attachments/page-123/list',
+      });
+
+      expect(response.statusCode).toBe(404);
+    });
+
+    it('should return empty array when directory does not exist', async () => {
+      mockReaddir.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/attachments/page-123/list',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ attachments: [] });
+    });
+
+    it('should list attachments with file sizes', async () => {
+      mockReaddir.mockResolvedValue(['image.png', 'doc.pdf']);
+      mockStat.mockImplementation((filePath: string) => {
+        if (filePath.includes('image.png')) return Promise.resolve({ size: 1024 });
+        if (filePath.includes('doc.pdf')) return Promise.resolve({ size: 2048 });
+        return Promise.reject(new Error('unexpected file'));
+      });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/attachments/page-123/list',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.attachments).toHaveLength(2);
+      expect(body.attachments[0]).toEqual({
+        filename: 'image.png',
+        size: 1024,
+        url: '/api/attachments/page-123/image.png',
+      });
+      expect(body.attachments[1]).toEqual({
+        filename: 'doc.pdf',
+        size: 2048,
+        url: '/api/attachments/page-123/doc.pdf',
+      });
+    });
+
+    it('should use path.basename on resolvedId for defense-in-depth against path traversal', async () => {
+      mockQuery.mockResolvedValueOnce({
+        rows: [{ confluence_id: '../../../etc/passwd' }],
+      });
+      mockReaddir.mockResolvedValue(['file.txt']);
+      mockStat.mockResolvedValue({ size: 100 });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/attachments/page-123/list',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockReaddir).toHaveBeenCalledWith(
+        expect.stringContaining('passwd'),
+      );
+      expect(mockReaddir).toHaveBeenCalledWith(
+        expect.not.stringContaining('..'),
+      );
+    });
+
+    it('should gracefully handle individual stat failures using Promise.allSettled', async () => {
+      mockReaddir.mockResolvedValue(['good.png', 'broken-symlink.png', 'also-good.jpg']);
+      mockStat.mockImplementation((filePath: string) => {
+        if (filePath.includes('broken-symlink.png')) return Promise.reject(new Error('ENOENT'));
+        if (filePath.includes('good.png')) return Promise.resolve({ size: 512 });
+        if (filePath.includes('also-good.jpg')) return Promise.resolve({ size: 768 });
+        return Promise.reject(new Error('unexpected file'));
+      });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/attachments/page-123/list',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.attachments).toHaveLength(2);
+      expect(body.attachments.map((a: { filename: string }) => a.filename)).toEqual(['good.png', 'also-good.jpg']);
+    });
+
+    it('should return 500 when readdir fails with non-ENOENT error', async () => {
+      mockReaddir.mockRejectedValue(Object.assign(new Error('EACCES'), { code: 'EACCES' }));
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/attachments/page-123/list',
+      });
+
+      expect(response.statusCode).toBe(500);
     });
   });
 

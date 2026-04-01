@@ -45,11 +45,11 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
     }
 
     const resolvedId = pageResult.rows[0].confluence_id;
-    const dirPath = path.join(ATTACHMENTS_BASE, resolvedId);
+    const dirPath = path.join(ATTACHMENTS_BASE, path.basename(resolvedId));
 
     try {
       const entries = await readdir(dirPath);
-      const attachments = await Promise.all(
+      const results = await Promise.allSettled(
         entries.map(async (filename) => {
           const filePath = path.join(dirPath, filename);
           const fileStat = await stat(filePath);
@@ -60,6 +60,9 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
           };
         }),
       );
+      const attachments = results
+        .filter((r): r is PromiseFulfilledResult<{ filename: string; size: number; url: string }> => r.status === 'fulfilled')
+        .map(r => r.value);
       return reply.send({ attachments });
     } catch (err) {
       // Directory doesn't exist — no attachments cached yet, not an error
