@@ -112,6 +112,8 @@ interface EditorProps {
   hideToolbar?: boolean;
   /** Page ID for image paste/drop uploads. When set, clipboard images are uploaded to this page. */
   pageId?: string;
+  /** Callback to trigger a server-side save (used by vim :w command). */
+  onSave?: () => void;
 }
 
 function ToolbarButton({
@@ -892,7 +894,7 @@ function defaultVimDisplayState(): VimState {
   return { mode: 'normal', pendingKeys: '', countPrefix: '', register: '', commandBuffer: null };
 }
 
-export function Editor({ content, onChange, editable = true, placeholder, draftKey, naked = false, onEditorReady, hideToolbar = false, pageId }: EditorProps) {
+export function Editor({ content, onChange, editable = true, placeholder, draftKey, naked = false, onEditorReady, hideToolbar = false, pageId, onSave }: EditorProps) {
   const isLight = useIsLightTheme();
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   // Ref for the editor instance so async paste/drop handlers can insert images
@@ -900,6 +902,9 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
   // Keep pageId in a ref so editorProps closures see the latest value
   const pageIdRef = useRef(pageId);
   pageIdRef.current = pageId;
+  // Keep onSave in a ref so the VimExtension closure always sees the latest callback
+  const onSaveRef = useRef(onSave);
+  onSaveRef.current = onSave;
 
   const [headerNumbering, setHeaderNumbering] = useState(() =>
     localStorage.getItem('editor-header-numbering') === 'true'
@@ -1003,10 +1008,11 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       ...(vimEnabled ? [VimExtension.configure({
         onStateChange: setVimDisplayState,
         onSave: () => {
-          // Trigger save via onChange with current content
+          // Flush current editor content to React state, then trigger server-side save
           if (editorRef.current) {
             onChange?.(editorRef.current.getHTML());
           }
+          onSaveRef.current?.();
         },
       })] : []),
     ],
