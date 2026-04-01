@@ -103,6 +103,12 @@ vi.mock('../../shared/components/TagEditor', () => ({
   TagEditor: () => <div data-testid="tag-editor" />,
 }));
 
+vi.mock('./AutoTagger', () => ({
+  AutoTagger: ({ pageId, currentLabels, model }: { pageId: string; currentLabels: string[]; model: string }) => (
+    <div data-testid="auto-tagger" data-page-id={pageId} data-labels={currentLabels.join(',')} data-model={model} />
+  ),
+}));
+
 vi.mock('../../shared/components/diagrams/DrawioEditor', () => ({
   DrawioEditor: () => <div data-testid="drawio-editor" />,
 }));
@@ -129,7 +135,12 @@ vi.mock('../../shared/hooks/use-authenticated-src', () => ({
 
 vi.mock('../../shared/hooks/use-settings', () => ({
   useSettings: () => ({
-    data: { confluenceUrl: 'https://confluence.example.com' },
+    data: {
+      confluenceUrl: 'https://confluence.example.com',
+      ollamaModel: 'qwen3.5',
+      llmProvider: 'ollama',
+      openaiModel: null,
+    },
     isLoading: false,
   }),
 }));
@@ -459,5 +470,30 @@ describe('PageViewPage', () => {
     expect(aiShortcut).toBeDefined();
     aiShortcut!.action();
     expect(mockNavigate).toHaveBeenCalledWith('/ai?mode=improve&pageId=page-1');
+  });
+
+  // --- AutoTagger integration ---
+  it('renders AutoTagger in reading view with correct props', () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    const autoTagger = screen.getByTestId('auto-tagger');
+    expect(autoTagger).toBeInTheDocument();
+    expect(autoTagger).toHaveAttribute('data-page-id', 'page-1');
+    expect(autoTagger).toHaveAttribute('data-labels', 'docs,platform');
+    expect(autoTagger).toHaveAttribute('data-model', 'qwen3.5');
+  });
+
+  it('renders AutoTagger in edit mode near TagEditor', () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText('Edit'));
+    const autoTaggers = screen.getAllByTestId('auto-tagger');
+    expect(autoTaggers.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('renders AutoTagger when page has no labels', () => {
+    currentMockPage = { ...mockPage, labels: [] };
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    const autoTagger = screen.getByTestId('auto-tagger');
+    expect(autoTagger).toBeInTheDocument();
+    expect(autoTagger).toHaveAttribute('data-labels', '');
   });
 });

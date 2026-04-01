@@ -31,6 +31,7 @@ import type { TocHeading } from '../../shared/components/article/TableOfContents
 import { PageViewSkeleton } from '../../shared/components/feedback/Skeleton';
 import { TagEditor } from '../../shared/components/TagEditor';
 import { ShortcutHint } from '../../shared/components/ShortcutHint';
+import { AutoTagger } from './AutoTagger';
 
 function ImageLightbox({
   alt,
@@ -116,6 +117,11 @@ export function PageViewPage() {
   const deleteMutation_page = useDeletePage();
 
   const isPinned = pinnedData?.items.some((item) => item.id === id) ?? false;
+
+  // Derive the active LLM model from settings for AI features (auto-tagging)
+  const activeModel = settings?.llmProvider === 'openai'
+    ? (settings.openaiModel ?? '')
+    : (settings?.ollamaModel ?? '');
 
   // Fetch the configured draw.io embed URL (falls back to default inside DrawioEditor if undefined)
   const { data: drawioSettings } = useQuery({
@@ -537,14 +543,18 @@ export function PageViewPage() {
                   placeholder="Article title…"
                 />
               </div>
-              <TagEditor
-                tags={page.labels}
-                onAddTag={handleAddTag}
-                onRemoveTag={handleRemoveTag}
-                suggestions={filterOptions?.labels}
-                isLoading={labelsMutation.isPending}
-                className="mt-4"
-              />
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                <TagEditor
+                  tags={page.labels}
+                  onAddTag={handleAddTag}
+                  onRemoveTag={handleRemoveTag}
+                  suggestions={filterOptions?.labels}
+                  isLoading={labelsMutation.isPending}
+                />
+                {id && activeModel && (
+                  <AutoTagger pageId={id} currentLabels={page.labels} model={activeModel} />
+                )}
+              </div>
             </div>
 
             {/* Editor — naked (no inner glass-card, we are already inside glass-card-xl) */}
@@ -586,7 +596,7 @@ export function PageViewPage() {
             </h1>
 
             {page.labels.length > 0 && (
-              <div className="mb-10 flex flex-wrap gap-2" data-testid="article-tags-readonly">
+              <div className="mb-10 flex flex-wrap items-center gap-2" data-testid="article-tags-readonly">
                 {page.labels.map((label) => (
                   <span
                     key={label}
@@ -595,10 +605,19 @@ export function PageViewPage() {
                     {label}
                   </span>
                 ))}
+                {id && activeModel && (
+                  <AutoTagger pageId={id} currentLabels={page.labels} model={activeModel} />
+                )}
               </div>
             )}
 
-            {!page.labels.length && <div className="mb-6" />}
+            {!page.labels.length && (
+              <div className="mb-6 flex items-center gap-2">
+                {id && activeModel && (
+                  <AutoTagger pageId={id} currentLabels={page.labels} model={activeModel} />
+                )}
+              </div>
+            )}
 
             {page.summaryStatus && (
               <ArticleSummary
