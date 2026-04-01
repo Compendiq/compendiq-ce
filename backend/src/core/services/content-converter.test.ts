@@ -35,6 +35,8 @@ import {
   SECTION_COLUMN_PAGE,
   SECTION_BORDER_PAGE,
   SECTION_PIXEL_WIDTH_PAGE,
+  ATTACHMENTS_MACRO_PAGE,
+  ATTACHMENTS_MACRO_NO_PARAMS_PAGE,
 } from './__fixtures__/confluence-xhtml.js';
 
 describe('content-converter', () => {
@@ -275,6 +277,25 @@ describe('content-converter', () => {
       expect(html).not.toContain('ac:task-list');
     });
 
+    // --- Attachments macro tests ---
+
+    it('converts attachments macro with parameters', () => {
+      const html = confluenceToHtml(ATTACHMENTS_MACRO_PAGE);
+      expect(html).toContain('class="confluence-attachments-macro"');
+      expect(html).toContain('data-upload="true"');
+      expect(html).toContain('data-old="false"');
+      expect(html).toContain('[Attachments]');
+      expect(html).not.toContain('ac:structured-macro');
+    });
+
+    it('converts attachments macro without parameters (defaults to false)', () => {
+      const html = confluenceToHtml(ATTACHMENTS_MACRO_NO_PARAMS_PAGE);
+      expect(html).toContain('class="confluence-attachments-macro"');
+      expect(html).toContain('data-upload="false"');
+      expect(html).toContain('data-old="false"');
+      expect(html).not.toContain('confluence-macro-unknown');
+    });
+
     // --- Layout macro tests ---
 
     it('converts two_equal layout to grid divs', () => {
@@ -494,6 +515,24 @@ describe('content-converter', () => {
       expect(xhtml).toContain('>3<');
     });
 
+    it('round-trips attachments macro with parameters', () => {
+      const html = confluenceToHtml(ATTACHMENTS_MACRO_PAGE);
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toContain('ac:name="attachments"');
+      expect(xhtml).toContain('ac:name="upload"');
+      expect(xhtml).toContain('>true<');
+      expect(xhtml).not.toContain('confluence-attachments-macro');
+    });
+
+    it('round-trips attachments macro without parameters (no false params emitted)', () => {
+      const html = confluenceToHtml(ATTACHMENTS_MACRO_NO_PARAMS_PAGE);
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toContain('ac:name="attachments"');
+      // Default "false" params should not be emitted as Confluence parameters
+      expect(xhtml).not.toContain('ac:name="upload"');
+      expect(xhtml).not.toContain('ac:name="old"');
+    });
+
     it('round-trips two_equal layout macros', () => {
       const html = confluenceToHtml(LAYOUT_TWO_EQUAL_PAGE);
       const xhtml = htmlToConfluence(html);
@@ -608,6 +647,8 @@ describe('content-converter', () => {
       { name: 'section/column', xhtml: SECTION_COLUMN_PAGE },
       { name: 'section/column with border', xhtml: SECTION_BORDER_PAGE },
       { name: 'section/column with pixel width', xhtml: SECTION_PIXEL_WIDTH_PAGE },
+      { name: 'attachments macro', xhtml: ATTACHMENTS_MACRO_NO_PARAMS_PAGE },
+      { name: 'attachments macro with params', xhtml: ATTACHMENTS_MACRO_PAGE },
     ];
 
     for (const { name, xhtml } of stableFixtures) {
@@ -701,6 +742,13 @@ describe('content-converter', () => {
       const md = htmlToMarkdown(html);
       expect(md).toContain('[Children pages]');
       expect(md).not.toContain('confluence-children-macro');
+    });
+
+    it('converts attachments macro to markdown placeholder', () => {
+      const html = confluenceToHtml(ATTACHMENTS_MACRO_PAGE);
+      const md = htmlToMarkdown(html);
+      expect(md).toContain('[Attachments]');
+      expect(md).not.toContain('confluence-attachments-macro');
     });
 
     it('converts section/column to markdown preserving column content', () => {

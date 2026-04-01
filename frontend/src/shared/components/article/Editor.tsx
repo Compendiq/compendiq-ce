@@ -17,7 +17,7 @@ import {
   ArrowUpFromLine, ArrowDownFromLine, ArrowLeftFromLine, ArrowRightFromLine,
   Trash2, Columns3, Rows3, Merge, SplitSquareHorizontal, Square,
   ToggleLeft, PanelTop, Workflow, Underline, Highlighter, Palette,
-  Badge, ChevronsUpDown, Hash,
+  Badge, ChevronsUpDown, Hash, Paperclip,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '../../lib/cn';
@@ -31,6 +31,7 @@ import {
   ConfluenceSection,
   ConfluenceColumn,
   ConfluenceStatus,
+  ConfluenceAttachments,
   Details,
   DetailsSummary,
   DrawioDiagram,
@@ -423,6 +424,17 @@ export function EditorToolbar({ editor, headerNumbering, onToggleHeaderNumbering
         title="Insert Expand/Collapse Section"
       >
         <ChevronsUpDown size={16} />
+      </ToolbarButton>
+      <ToolbarButton
+        onClick={() => {
+          editor.chain().focus().insertContent({
+            type: 'confluenceAttachments',
+            attrs: { upload: 'false', old: 'false' },
+          }).run();
+        }}
+        title="Insert Attachments Block"
+      >
+        <Paperclip size={16} />
       </ToolbarButton>
 
       <LayoutPresetPicker editor={editor} />
@@ -862,6 +874,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       ConfluenceLayoutCell,
       ConfluenceSection,
       ConfluenceColumn,
+      ConfluenceAttachments,
       DrawioDiagram,
       TitledCodeBlock.configure({ lowlight }),
       ConfluenceImage.configure({ inline: false }),

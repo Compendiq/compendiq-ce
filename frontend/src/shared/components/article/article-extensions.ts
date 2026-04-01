@@ -2,6 +2,7 @@ import { Node, mergeAttributes, type Editor } from '@tiptap/core';
 import { ReactNodeViewRenderer } from '@tiptap/react';
 import { DrawioDiagramNodeView } from './DrawioDiagramNodeView';
 import { StatusBadgeView } from './StatusBadgeView';
+import { AttachmentsMacroView } from './AttachmentsMacroView';
 
 declare module '@tiptap/core' {
   interface Commands<ReturnType> {
@@ -315,6 +316,50 @@ export const ConfluenceChildren = Node.create({
       if (node.attrs[name] != null) htmlAttrs[`data-${name}`] = node.attrs[name];
     }
     return ['div', htmlAttrs, '[Children pages listed here]'];
+  },
+});
+
+/**
+ * ConfluenceAttachments node — placeholder for Confluence attachments macro.
+ * Block-level atom node (non-editable). Renders as a placeholder that the
+ * AttachmentsMacroView NodeView component can hydrate with real attachment data.
+ */
+export const ConfluenceAttachments = Node.create({
+  name: 'confluenceAttachments',
+  group: 'block',
+  atom: true,
+
+  addAttributes() {
+    return {
+      upload: {
+        default: 'false',
+        parseHTML: (element: HTMLElement) => element.getAttribute('data-upload') ?? 'false',
+      },
+      old: {
+        default: 'false',
+        parseHTML: (element: HTMLElement) => element.getAttribute('data-old') ?? 'false',
+      },
+    };
+  },
+
+  parseHTML() {
+    return [{ tag: 'div.confluence-attachments-macro' }];
+  },
+
+  renderHTML({ node }) {
+    return [
+      'div',
+      {
+        class: 'confluence-attachments-macro',
+        'data-upload': node.attrs.upload,
+        'data-old': node.attrs.old,
+      },
+      '[Attachments]',
+    ];
+  },
+
+  addNodeView() {
+    return ReactNodeViewRenderer(AttachmentsMacroView);
   },
 });
 
