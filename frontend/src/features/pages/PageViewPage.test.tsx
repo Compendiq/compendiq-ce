@@ -224,7 +224,6 @@ describe('PageViewPage', () => {
     mockPinMutate.mockReset();
     mockUnpinMutate.mockReset();
     mockDeleteMutateAsync.mockReset().mockResolvedValue(undefined);
-    mockExportPdfAsync.mockReset();
     localStorage.clear();
     Element.prototype.scrollTo = vi.fn();
 
