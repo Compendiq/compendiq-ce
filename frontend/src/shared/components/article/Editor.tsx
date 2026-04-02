@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { useEditor, useEditorState, EditorContent } from '@tiptap/react';
+import DragHandle from '@tiptap/extension-drag-handle-react';
 import StarterKit from '@tiptap/starter-kit';
 import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
 import { TaskList, TaskItem } from '@tiptap/extension-list';
@@ -20,6 +21,7 @@ import {
   Trash2, Columns3, Rows3, Merge, SplitSquareHorizontal, Square,
   ToggleLeft, PanelTop, Workflow, Underline, Highlighter, Palette,
   Badge, ChevronsUpDown, Hash, Paperclip, ListTree, ImagePlus, TableProperties, Table2,
+  GripVertical,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '../../lib/cn';
@@ -1018,6 +1020,11 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
         </div>
       )}
       {editable && editor && <SearchAndReplace editor={editor} />}
+      {editable && editor && (
+        <DragHandle editor={editor} className="drag-handle">
+          <GripVertical size={16} />
+        </DragHandle>
+      )}
       <EditorContent
         editor={editor}
         className={cn(
