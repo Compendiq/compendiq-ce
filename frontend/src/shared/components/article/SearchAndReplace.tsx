@@ -81,7 +81,7 @@ export function SearchAndReplace({ editor }: SearchAndReplaceProps) {
       while (result) {
         count++;
         if (result.to >= editor.state.doc.content.size) break;
-        result = query.findNext(editor.state, result.to);
+        result = query.findNext(editor.state, Math.max(result.to, result.from + 1));
       }
 
       // Find which match the selection is at
@@ -98,7 +98,7 @@ export function SearchAndReplace({ editor }: SearchAndReplaceProps) {
             break;
           }
           if (r.to >= editor.state.doc.content.size) break;
-          r = query.findNext(editor.state, r.to);
+          r = query.findNext(editor.state, Math.max(r.to, r.from + 1));
         }
       }
 
