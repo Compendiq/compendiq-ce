@@ -1,157 +1,111 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-
-// We mock playwright-core so tests don't need a real browser.
-// vi.mock is hoisted so the factory must not reference top-level variables.
-// Instead we use vi.hoisted() to define mocks that are available at hoist time.
-const { mockPage, mockBrowser } = vi.hoisted(() => {
-  const mockPdfBuffer = Buffer.from('%PDF-1.4 mock');
-
-  const mockPage = {
-    setContent: vi.fn().mockResolvedValue(undefined),
-    pdf: vi.fn().mockResolvedValue(mockPdfBuffer),
-    close: vi.fn().mockResolvedValue(undefined),
-  };
-
-  const mockBrowser = {
-    isConnected: vi.fn().mockReturnValue(true),
-    newPage: vi.fn().mockResolvedValue(mockPage),
-    close: vi.fn().mockResolvedValue(undefined),
-  };
-
-  return { mockPage, mockBrowser };
-});
-
-vi.mock('playwright-core', () => ({
-  chromium: {
-    launch: vi.fn().mockResolvedValue(mockBrowser),
-  },
-}));
-
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { generatePdf, closeBrowser } from './pdf-service.js';
 
-describe('pdf-service', () => {
+describe('pdf-service (pdf-lib)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // Reset connected state
-    mockBrowser.isConnected.mockReturnValue(true);
-  });
-
-  afterEach(async () => {
-    await closeBrowser();
   });
 
   describe('generatePdf', () => {
-    it('should generate a PDF buffer from HTML content', async () => {
+    it('should generate a valid PDF buffer from HTML content', async () => {
       const html = '<p>Hello, World!</p>';
       const result = await generatePdf(html, { title: 'Test Article' });
 
       expect(result).toBeInstanceOf(Buffer);
-      expect(mockPage.setContent).toHaveBeenCalledOnce();
-      expect(mockPage.pdf).toHaveBeenCalledOnce();
-      expect(mockPage.close).toHaveBeenCalledOnce();
+      expect(result.length).toBeGreaterThan(100);
+      // PDF magic bytes
+      expect(result.subarray(0, 5).toString()).toBe('%PDF-');
     });
 
-    it('should include title in the rendered HTML', async () => {
-      await generatePdf('<p>Content</p>', { title: 'My Title' });
+    it('should include a cover page when title is provided', async () => {
+      const result = await generatePdf('<p>Content</p>', { title: 'My Title' });
 
-      const calledHtml = mockPage.setContent.mock.calls[0][0] as string;
-      expect(calledHtml).toContain('My Title');
-      // Title should be HTML-escaped in the cover page
-      expect(calledHtml).toContain('<!DOCTYPE html>');
+      expect(result).toBeInstanceOf(Buffer);
+      // With title: cover page + content page = at least 2 pages
+      expect(result.length).toBeGreaterThan(200);
     });
 
-    it('should escape HTML characters in title', async () => {
-      await generatePdf('<p>Content</p>', { title: '<script>alert("xss")</script>' });
+    it('should render without cover page when no title is provided', async () => {
+      const result = await generatePdf('<p>Content only</p>', {});
 
-      const calledHtml = mockPage.setContent.mock.calls[0][0] as string;
-      expect(calledHtml).toContain('&lt;script&gt;');
-      expect(calledHtml).not.toContain('<script>alert');
+      expect(result).toBeInstanceOf(Buffer);
+      expect(result.subarray(0, 5).toString()).toBe('%PDF-');
     });
 
-    it('should render without cover page div when no title is provided', async () => {
-      await generatePdf('<p>Content</p>', {});
+    it('should handle headings', async () => {
+      const html = '<h1>Title</h1><h2>Subtitle</h2><h3>Section</h3>';
+      const result = await generatePdf(html, {});
 
-      const calledHtml = mockPage.setContent.mock.calls[0][0] as string;
-      // The CSS class is always in the stylesheet, but no cover-page div should be rendered
-      expect(calledHtml).not.toContain('<div class="cover-page">');
+      expect(result).toBeInstanceOf(Buffer);
+      expect(result.length).toBeGreaterThan(100);
     });
 
-    it('should set A4 format with margins', async () => {
-      await generatePdf('<p>Content</p>', {});
+    it('should handle code blocks', async () => {
+      const html = '<pre><code>const x = 1;\nconsole.log(x);</code></pre>';
+      const result = await generatePdf(html, {});
 
-      const pdfOptions = mockPage.pdf.mock.calls[0][0];
-      expect(pdfOptions.format).toBe('A4');
-      expect(pdfOptions.margin).toEqual({
-        top: '60px',
-        bottom: '60px',
-        left: '40px',
-        right: '40px',
-      });
+      expect(result).toBeInstanceOf(Buffer);
     });
 
-    it('should use waitUntil networkidle for images', async () => {
-      await generatePdf('<img src="data:image/png;base64,abc"/>', {});
+    it('should handle tables', async () => {
+      const html = '<table><tr><th>Name</th><th>Value</th></tr><tr><td>A</td><td>1</td></tr></table>';
+      const result = await generatePdf(html, {});
 
-      const setContentOptions = mockPage.setContent.mock.calls[0][1];
-      expect(setContentOptions.waitUntil).toBe('networkidle');
+      expect(result).toBeInstanceOf(Buffer);
     });
 
-    it('should always close the page even on error', async () => {
-      mockPage.pdf.mockRejectedValueOnce(new Error('PDF generation failed'));
+    it('should handle lists', async () => {
+      const html = '<ul><li>Item 1</li><li>Item 2</li></ul><ol><li>First</li><li>Second</li></ol>';
+      const result = await generatePdf(html, {});
 
-      await expect(generatePdf('<p>Broken</p>', {})).rejects.toThrow('PDF generation failed');
-      expect(mockPage.close).toHaveBeenCalledOnce();
+      expect(result).toBeInstanceOf(Buffer);
     });
 
-    it('should relaunch browser if disconnected', async () => {
-      const { chromium } = await import('playwright-core');
+    it('should handle blockquotes', async () => {
+      const html = '<blockquote>This is a quote</blockquote>';
+      const result = await generatePdf(html, {});
 
-      // First call establishes connection
-      await generatePdf('<p>First</p>', {});
-      expect(chromium.launch).toHaveBeenCalledTimes(1);
-
-      // Simulate disconnect
-      mockBrowser.isConnected.mockReturnValue(false);
-
-      await generatePdf('<p>Second</p>', {});
-      expect(chromium.launch).toHaveBeenCalledTimes(2);
+      expect(result).toBeInstanceOf(Buffer);
     });
 
-    it('should pass executablePath from PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH env var', async () => {
-      const { chromium } = await import('playwright-core');
+    it('should handle empty HTML', async () => {
+      const result = await generatePdf('', {});
 
-      process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH = '/usr/lib/chromium/chromium';
-      try {
-        await generatePdf('<p>Content</p>', {});
-
-        expect(chromium.launch).toHaveBeenCalledWith(
-          expect.objectContaining({
-            executablePath: '/usr/lib/chromium/chromium',
-          }),
-        );
-      } finally {
-        delete process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
-      }
+      expect(result).toBeInstanceOf(Buffer);
+      expect(result.subarray(0, 5).toString()).toBe('%PDF-');
     });
 
-    it('should not set executablePath when env var is not set', async () => {
-      const { chromium } = await import('playwright-core');
-      delete process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
+    it('should handle complex mixed content', async () => {
+      const html = `
+        <h1>Report</h1>
+        <p>This is an introduction paragraph.</p>
+        <h2>Data</h2>
+        <table>
+          <tr><th>Metric</th><th>Value</th></tr>
+          <tr><td>Users</td><td>1000</td></tr>
+        </table>
+        <h2>Code Example</h2>
+        <pre>function hello() { return "world"; }</pre>
+        <blockquote>Important note here</blockquote>
+        <ul><li>Point one</li><li>Point two</li></ul>
+      `;
+      const result = await generatePdf(html, { title: 'Full Report' });
 
-      await generatePdf('<p>Content</p>', {});
+      expect(result).toBeInstanceOf(Buffer);
+      expect(result.length).toBeGreaterThan(500);
+    });
 
-      const launchCall = (chromium.launch as ReturnType<typeof vi.fn>).mock.calls[0][0];
-      expect(launchCall.executablePath).toBeUndefined();
+    it('should handle XSS-like content safely', async () => {
+      const html = '<p><script>alert("xss")</script>Safe text</p>';
+      const result = await generatePdf(html, { title: '<script>alert("xss")</script>' });
+
+      expect(result).toBeInstanceOf(Buffer);
     });
   });
 
   describe('closeBrowser', () => {
-    it('should close the browser when called', async () => {
-      // Launch by generating a PDF first
-      await generatePdf('<p>Content</p>', {});
-
-      await closeBrowser();
-      expect(mockBrowser.close).toHaveBeenCalledOnce();
+    it('should be a no-op (pdf-lib has no browser)', async () => {
+      await expect(closeBrowser()).resolves.toBeUndefined();
     });
   });
 });
