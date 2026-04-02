@@ -73,7 +73,6 @@ export const Details = Node.create({
   },
 
   addProseMirrorPlugins() {
-    const editor = this.editor;
     return [
       new Plugin({
         key: new PluginKey('detailsToggle'),
