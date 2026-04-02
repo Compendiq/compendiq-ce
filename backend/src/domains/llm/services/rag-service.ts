@@ -138,11 +138,15 @@ function reciprocalRankFusion(
 
   // Score from vector search
   vectorResults.forEach((result, rank) => {
-    const key = `${result.pageId}:${result.chunkText.slice(0, 50)}`;
+    const key = String(result.pageId);
     const existing = scoreMap.get(key);
     const rrf = 1 / (k + rank + 1);
     if (existing) {
       existing.score += rrf;
+      // Keep the result with the higher individual score (best chunk for context)
+      if (result.score > existing.result.score) {
+        existing.result = result;
+      }
     } else {
       scoreMap.set(key, { result, score: rrf });
     }
@@ -150,11 +154,15 @@ function reciprocalRankFusion(
 
   // Score from keyword search
   keywordResults.forEach((result, rank) => {
-    const key = `${result.pageId}:${result.chunkText.slice(0, 50)}`;
+    const key = String(result.pageId);
     const existing = scoreMap.get(key);
     const rrf = 1 / (k + rank + 1);
     if (existing) {
       existing.score += rrf;
+      // Keep the result with the higher individual score (best chunk for context)
+      if (result.score > existing.result.score) {
+        existing.result = result;
+      }
     } else {
       scoreMap.set(key, { result, score: rrf });
     }
