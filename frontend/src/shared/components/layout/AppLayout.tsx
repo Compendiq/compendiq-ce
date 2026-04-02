@@ -199,7 +199,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
         <Link to="/" className="flex items-center gap-1.5 mr-3 group">
           <CompendiqLogo size={20} className="text-primary transition-transform duration-200 group-hover:scale-110" />
           <span className="text-sm font-semibold text-foreground">
-            Atlas<span className="font-bold">Mind</span>
+            Compen<span className="font-bold">diq</span>
           </span>
         </Link>
 
