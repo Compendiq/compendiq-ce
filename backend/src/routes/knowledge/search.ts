@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { SearchHybridQuerySchema } from '@compendiq/contracts';
 import { query } from '../../core/db/postgres.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
+import { getFtsLanguage } from '../../core/services/fts-language.js';
 import {
   vectorSearch,
   hybridSearch,
@@ -76,6 +77,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
     const userId = request.userId;
 
     const searchSpaces = await getUserAccessibleSpaces(userId);
+    const ftsLang = await getFtsLanguage();
 
     // ── Embeddings availability check (only needed for semantic/hybrid) ──────
     let hasEmbeddings = true;
@@ -199,7 +201,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
 
     // Base full-text search condition
     conditions.push(
-      `cp.tsv @@ plainto_tsquery('english', $1)`,
+      `cp.tsv @@ plainto_tsquery('${ftsLang}', $1)`,
     );
 
     // Access control: RBAC-based space access for confluence pages; standalone pages
@@ -292,8 +294,8 @@ export async function searchRoutes(fastify: FastifyInstance) {
     }>(
       `SELECT cp.id, cp.confluence_id, cp.title, cp.space_key, cp.author,
               cp.last_modified_at, cp.labels,
-              ts_rank(cp.tsv, plainto_tsquery('english', $1)) AS rank,
-              ts_headline('english', COALESCE(cp.body_text, ''), plainto_tsquery('english', $1),
+              ts_rank(cp.tsv, plainto_tsquery('${ftsLang}', $1)) AS rank,
+              ts_headline('${ftsLang}', COALESCE(cp.body_text, ''), plainto_tsquery('${ftsLang}', $1),
                           'MaxWords=30, MinWords=15, StartSel=<mark>, StopSel=</mark>') AS snippet
        FROM pages cp
        WHERE ${whereClause}
@@ -383,7 +385,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
       }>(
         `SELECT 'space' AS facet, cp.space_key AS value, COUNT(*)::TEXT AS count
          FROM pages cp
-         WHERE cp.tsv @@ plainto_tsquery('english', $1)
+         WHERE cp.tsv @@ plainto_tsquery('${ftsLang}', $1)
            AND (
              (cp.source = 'confluence' AND cp.space_key = ANY($2::text[]))
              OR (cp.source = 'standalone' AND cp.visibility = 'shared')
@@ -395,7 +397,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
          UNION ALL
          SELECT 'author' AS facet, cp.author AS value, COUNT(*)::TEXT AS count
          FROM pages cp
-         WHERE cp.tsv @@ plainto_tsquery('english', $1)
+         WHERE cp.tsv @@ plainto_tsquery('${ftsLang}', $1)
            AND (
              (cp.source = 'confluence' AND cp.space_key = ANY($2::text[]))
              OR (cp.source = 'standalone' AND cp.visibility = 'shared')
@@ -408,7 +410,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
          SELECT 'tag' AS facet, tag AS value, COUNT(*)::TEXT AS count
          FROM pages cp
          CROSS JOIN unnest(cp.labels) AS tag
-         WHERE cp.tsv @@ plainto_tsquery('english', $1)
+         WHERE cp.tsv @@ plainto_tsquery('${ftsLang}', $1)
            AND (
              (cp.source = 'confluence' AND cp.space_key = ANY($2::text[]))
              OR (cp.source = 'standalone' AND cp.visibility = 'shared')

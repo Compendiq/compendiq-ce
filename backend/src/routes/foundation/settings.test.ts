@@ -55,7 +55,9 @@ const mockGetSharedLlmSettings = vi.fn().mockResolvedValue({
   openaiBaseUrl: null,
   hasOpenaiApiKey: false,
   openaiModel: null,
-  embeddingModel: 'nomic-embed-text',
+  embeddingModel: 'bge-m3',
+    embeddingDimensions: 1024,
+    ftsLanguage: 'simple',
 });
 vi.mock('../../core/services/admin-settings-service.js', () => ({
   getSharedLlmSettings: (...args: unknown[]) => mockGetSharedLlmSettings(...args),
@@ -122,7 +124,9 @@ describe('Settings routes – test-confluence', () => {
       openaiBaseUrl: null,
       hasOpenaiApiKey: false,
       openaiModel: null,
-      embeddingModel: 'nomic-embed-text',
+      embeddingModel: 'bge-m3',
+    embeddingDimensions: 1024,
+    ftsLanguage: 'simple',
     });
   });
 

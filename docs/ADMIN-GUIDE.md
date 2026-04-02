@@ -64,7 +64,7 @@ Additionally, you need an **Ollama** server (or OpenAI-compatible API) accessibl
 5. **Pull Ollama models** on your host machine:
 
    ```bash
-   ollama pull nomic-embed-text   # Required for embeddings
+   ollama pull bge-m3              # Required for embeddings
    ollama pull qwen3.5            # Or any chat model
    ```
 
@@ -150,7 +150,7 @@ curl http://localhost:3051/api/health
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `EMBEDDING_MODEL` | `nomic-embed-text` | Server-wide embedding model (locked to 768 dimensions) |
+| `EMBEDDING_MODEL` | `bge-m3` | Server-wide embedding model (1024 dimensions by default) |
 | `RAG_EF_SEARCH` | `100` | HNSW ef_search parameter for pgvector similarity queries |
 
 ### Background Workers
@@ -419,9 +419,9 @@ For self-signed certificates on Confluence or LLM servers:
 
 ### Embeddings are not being generated
 
-1. Ensure the embedding model is pulled: `ollama pull nomic-embed-text`
+1. Ensure the embedding model is pulled: `ollama pull bge-m3`
 2. Check that `EMBEDDING_MODEL` is set correctly in `.env`.
-3. The embedding model is locked to 768 dimensions -- do not change it after initial setup without re-embedding all content.
+3. The embedding model can be changed via admin settings, which triggers automatic re-embedding of all content.
 
 ### Database migrations fail
 

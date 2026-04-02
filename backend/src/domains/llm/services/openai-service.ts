@@ -273,13 +273,13 @@ export class OpenAIProvider implements LlmProvider {
       return llmLimit(async () => {
         const input = Array.isArray(text) ? text : [text];
 
-        const REQUIRED_DIMS = 768;
         const sharedSettings = await getSharedLlmSettings();
+        const requiredDims = sharedSettings.embeddingDimensions;
         const embeddingModel = sharedSettings.embeddingModel;
         const response = await openaiRequest('/embeddings', {
           model: embeddingModel,
           input,
-          dimensions: REQUIRED_DIMS,
+          dimensions: requiredDims,
         });
 
         if (!response.ok) {
@@ -297,9 +297,9 @@ export class OpenAIProvider implements LlmProvider {
           .map((d) => d.embedding);
 
         // Validate dimensions match pgvector column
-        if (embeddings.length > 0 && embeddings[0].length !== REQUIRED_DIMS) {
+        if (embeddings.length > 0 && embeddings[0].length !== requiredDims) {
           throw new Error(
-            `Embedding dimension mismatch: got ${embeddings[0].length}, expected ${REQUIRED_DIMS} (pgvector column is vector(${REQUIRED_DIMS}))`,
+            `Embedding dimension mismatch: got ${embeddings[0].length}, expected ${requiredDims} (pgvector column is vector(${requiredDims}))`,
           );
         }
 

@@ -426,7 +426,7 @@ CREATE TABLE page_embeddings (
   confluence_id   TEXT NOT NULL,        -- FK to cached_pages.confluence_id
   chunk_index     INT NOT NULL,         -- Order within the page
   chunk_text      TEXT NOT NULL,         -- The text chunk
-  embedding       vector(768) NOT NULL,  -- nomic-embed-text: 768 dimensions
+  embedding       vector(1024) NOT NULL,  -- bge-m3: 1024 dimensions
   metadata        JSONB DEFAULT '{}',    -- {section_title, page_title, space_key}
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE(user_id, confluence_id, chunk_index)
@@ -650,7 +650,7 @@ Page synced/updated from Confluence
     │
     ▼
 3. Generate embeddings via Ollama
-   Model: nomic-embed-text (768 dimensions, fast, high quality)
+   Model: bge-m3 (1024 dimensions, multilingual, MIT license)
    Endpoint: ollama.embed({ model, input })
     │
     ▼
@@ -687,7 +687,7 @@ Each chunk stored with metadata:
 User Question: "How do I deploy to staging?"
     │
     ▼
-1. Generate question embedding via Ollama (nomic-embed-text)
+1. Generate question embedding via Ollama (bge-m3)
     │
     ▼
 2. Hybrid search (vector + keyword):
@@ -726,15 +726,16 @@ User Question: "How do I deploy to staging?"
 #### Embedding Model Selection
 | Model | Dimensions | Speed | Quality | Notes |
 |-------|-----------|-------|---------|-------|
-| **nomic-embed-text** (default) | 768 | Fast | High | Best balance, outperforms OpenAI ada-002 |
+| **bge-m3** (default) | 1024 | Fast | Very High | Multilingual, MIT license, best balance |
+| nomic-embed-text | 768 | Fast | High | Previous default, still usable |
 | snowflake-arctic-embed | 1024 | Fast | High | Alternative option |
 | qwen3-embedding | 1024 | Medium | Very High | If user runs Qwen family |
 
-The embedding column is **locked to `vector(768)`** using `nomic-embed-text`. Users can select
+The embedding dimension is configurable via admin settings (`EMBEDDING_DIMENSIONS` env var, default 1024). Users can select
 their chat model freely, but the embedding model is a server-wide setting (`EMBEDDING_MODEL` env var).
-Changing the embedding model requires a manual admin action: run `POST /api/admin/re-embed` which
-truncates the `page_embeddings` table and re-generates all embeddings with the new model. This is
-a deliberate trade-off: dimension changes require HNSW index rebuilds that cannot happen transparently.
+Changing the embedding model via admin settings triggers automatic re-embedding of all content. This
+rebuilds the HNSW index with the new dimensions. This is
+a deliberate trade-off: dimension changes require HNSW index rebuilds.
 
 #### Background Embedding Worker
 - Runs as a background task after sync
@@ -743,7 +744,7 @@ a deliberate trade-off: dimension changes require HNSW index rebuilds that canno
 - Progress indicator in UI ("Embedding 42/150 pages...")
 - Can be paused/resumed
 
-**Rationale**: Full vector search gives the LLM the best possible context for Q&A. pgvector keeps it in PostgreSQL (no new service). Hybrid search (vector + keyword) handles both semantic similarity and exact term matching. nomic-embed-text is fast enough for incremental re-embedding on sync.
+**Rationale**: Full vector search gives the LLM the best possible context for Q&A. pgvector keeps it in PostgreSQL (no new service). Hybrid search (vector + keyword) handles both semantic similarity and exact term matching. bge-m3 provides multilingual support and is fast enough for incremental re-embedding on sync.
 
 ---
 
@@ -907,7 +908,7 @@ The critic flagged ambiguity about whether Ollama is per-user or shared.
 
 - **Single `OLLAMA_BASE_URL` env var** — not per-user. All users share the same Ollama instance.
 - **Chat model**: per-user preference (stored in `user_settings.ollama_model`). Users can pick different models.
-- **Embedding model**: server-wide (`EMBEDDING_MODEL` env var, default `nomic-embed-text`). Locked to `vector(768)`.
+- **Embedding model**: server-wide (`EMBEDDING_MODEL` env var, default `bge-m3`). Configurable dimensions via `EMBEDDING_DIMENSIONS` (default 1024).
 - **Global concurrency limiter**: `p-limit(2)` — max 2 concurrent Ollama calls across all users. At 4-15 users this is fine; most requests are short (summarize, improve) and naturally serialize.
 - **Singleton service**: One `OllamaService` instance, created at server start. Chat calls pass the user's preferred model as a parameter.
 
@@ -1060,7 +1061,7 @@ The app was originally a Confluence-only cache — every article required a `con
 | 009 | State Management | TanStack Query + Zustand | Server data vs client state separation |
 | 010 | UI Components | Radix UI + TailwindCSS + Framer Motion | Glassmorphic, accessible, same as reference |
 | 011 | Docker Stack | 4 services (frontend, backend, postgres+pgvector, redis) | Proper caching + vector search, manageable ops |
-| 012 | RAG Pipeline | pgvector + hybrid search (vector + keyword) + nomic-embed-text | Best LLM context quality for Q&A |
+| 012 | RAG Pipeline | pgvector + hybrid search (vector + keyword) + bge-m3 | Best LLM context quality for Q&A, multilingual |
 | 013 | Draw.io Support | Read-only rendering + "Edit in Confluence" link | Display diagrams, edit in Confluence |
 | 014 | Background Workers | `setInterval` + lock flag + retry limits | Simple, 4 workers (sync, embedding, quality, summary), crash-safe, admin controls |
 | 015 | Ollama Architecture | Shared server, global concurrency limit, per-user chat model | Single instance, no per-user URL complexity |

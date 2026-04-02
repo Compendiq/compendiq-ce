@@ -11,7 +11,7 @@ interface ConfidenceBadgeProps {
 /**
  * Derives a confidence level from a RAG similarity score.
  *
- * Thresholds based on cosine similarity from nomic-embed-text:
+ * Thresholds based on cosine similarity (calibrated for bge-m3; may need adjustment for other models):
  *   >= 0.7  -> High   (strong semantic match)
  *   >= 0.4  -> Medium (partial match)
  *   <  0.4  -> Low    (weak match)

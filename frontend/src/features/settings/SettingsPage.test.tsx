@@ -37,7 +37,7 @@ const mockSettings = {
   openaiBaseUrl: null,
   hasOpenaiApiKey: false,
   openaiModel: null,
-  embeddingModel: 'nomic-embed-text',
+  embeddingModel: 'bge-m3',
   theme: 'glass-dark',
   syncIntervalMin: 15,
   confluenceConnected: true,

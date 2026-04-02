@@ -127,7 +127,7 @@ export async function providerChat(
 
 /**
  * Generate embeddings using the user's configured provider.
- * For OpenAI, requests exactly 768 dimensions to match pgvector column.
+ * For OpenAI, requests the configured embedding dimensions to match the pgvector column.
  */
 export async function providerGenerateEmbedding(
   userId: string,

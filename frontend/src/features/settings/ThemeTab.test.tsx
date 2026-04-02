@@ -19,7 +19,7 @@ const mockSettings = {
   hasConfluencePat: true,
   selectedSpaces: [],
   ollamaModel: 'qwen3.5',
-  embeddingModel: 'nomic-embed-text',
+  embeddingModel: 'bge-m3',
   theme: 'void-indigo',
   syncIntervalMin: 15,
   confluenceConnected: true,

@@ -74,7 +74,9 @@ const mockGetSharedLlmSettings = vi.fn().mockResolvedValue({
   openaiBaseUrl: null,
   hasOpenaiApiKey: false,
   openaiModel: null,
-  embeddingModel: 'nomic-embed-text',
+  embeddingModel: 'bge-m3',
+    embeddingDimensions: 1024,
+    ftsLanguage: 'simple',
 });
 
 vi.mock('../../core/services/admin-settings-service.js', () => ({
@@ -171,7 +173,9 @@ describe('llm-models routes - models and status', () => {
       openaiBaseUrl: null,
       hasOpenaiApiKey: false,
       openaiModel: null,
-      embeddingModel: 'nomic-embed-text',
+      embeddingModel: 'bge-m3',
+    embeddingDimensions: 1024,
+    ftsLanguage: 'simple',
     });
   });
 
@@ -264,7 +268,7 @@ describe('llm-models routes - models and status', () => {
     expect(body.connected).toBe(true);
     expect(body.provider).toBe('ollama');
     expect(body.ollamaBaseUrl).toBeDefined();
-    expect(body.embeddingModel).toBe('nomic-embed-text');
+    expect(body.embeddingModel).toBe('bge-m3');
     expect(typeof body.authConfigured).toBe('boolean');
     expect(typeof body.verifySsl).toBe('boolean');
     expect(body.authType).toBeDefined();

@@ -47,6 +47,10 @@ vi.mock('../../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
+vi.mock('../../../core/services/fts-language.js', () => ({
+  getFtsLanguage: vi.fn().mockResolvedValue('simple'),
+}));
+
 import { buildRagContext, hybridSearch, RAG_EF_SEARCH, reciprocalRankFusion, vectorSearch, keywordSearch, recordSearchAnalytics } from './rag-service.js';
 import type { SearchResult } from './rag-service.js';
 import { CircuitBreakerOpenError } from '../../../core/services/circuit-breaker.js';
@@ -248,8 +252,8 @@ describe('RAG Service', () => {
     });
 
     it('should use pe.page_id = cp.id JOIN (not pe.confluence_id = cp.confluence_id)', async () => {
-      // providerGenerateEmbedding returns one 768-dim vector
-      const fakeEmbedding = new Array(768).fill(0.1);
+      // providerGenerateEmbedding returns one 1024-dim vector
+      const fakeEmbedding = new Array(1024).fill(0.1);
       mocks.mockProviderGenerateEmbedding.mockResolvedValue([[...fakeEmbedding]]);
 
       // getUserAccessibleSpaces
@@ -279,7 +283,7 @@ describe('RAG Service', () => {
     });
 
     it('should return empty results when no embeddings exist', async () => {
-      const fakeEmbedding = new Array(768).fill(0.1);
+      const fakeEmbedding = new Array(1024).fill(0.1);
       mocks.mockProviderGenerateEmbedding.mockResolvedValue([[...fakeEmbedding]]);
       mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
 
@@ -364,7 +368,7 @@ describe('RAG Service', () => {
     });
 
     it('should record hybrid search type when both vector and keyword succeed', async () => {
-      const fakeEmbedding = new Array(768).fill(0.1);
+      const fakeEmbedding = new Array(1024).fill(0.1);
       mocks.mockProviderGenerateEmbedding.mockResolvedValue([[...fakeEmbedding]]);
       mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
 
@@ -562,7 +566,7 @@ describe('RAG Service', () => {
       mocks.mockClientQuery.mockResolvedValueOnce({ rows: [] }); // SELECT
       mocks.mockClientQuery.mockResolvedValueOnce(undefined); // COMMIT
 
-      await vectorSearch('user-1', new Array(768).fill(0.1), 5);
+      await vectorSearch('user-1', new Array(1024).fill(0.1), 5);
 
       const queries = mocks.mockClientQuery.mock.calls.map((c: unknown[]) => c[0]);
       expect(queries[0]).toBe('BEGIN');
@@ -587,7 +591,7 @@ describe('RAG Service', () => {
       }); // SELECT
       mocks.mockClientQuery.mockResolvedValueOnce(undefined); // COMMIT
 
-      const results = await vectorSearch('user-1', new Array(768).fill(0.1), 5);
+      const results = await vectorSearch('user-1', new Array(1024).fill(0.1), 5);
       expect(results).toHaveLength(1);
       expect(results[0].pageId).toBe(7);
       expect(results[0].score).toBeCloseTo(0.7); // 1 - 0.3
@@ -602,7 +606,7 @@ describe('RAG Service', () => {
       // ROLLBACK
       mocks.mockClientQuery.mockResolvedValueOnce(undefined);
 
-      await expect(vectorSearch('user-1', new Array(768).fill(0.1))).rejects.toThrow('DB exploded');
+      await expect(vectorSearch('user-1', new Array(1024).fill(0.1))).rejects.toThrow('DB exploded');
       expect(mocks.mockClient.release).toHaveBeenCalledTimes(1);
     });
   });

@@ -248,7 +248,7 @@ describe('Embedding Status in API responses', () => {
         embedding_dirty: true,
         embedding_status: 'failed',
         embedded_at: null,
-        embedding_error: 'Model nomic-embed-text not found',
+        embedding_error: 'Model bge-m3 not found',
         has_children: false,
       });
 
@@ -260,7 +260,7 @@ describe('Embedding Status in API responses', () => {
       expect(response.statusCode).toBe(200);
       const body = response.json();
       expect(body.embeddingStatus).toBe('failed');
-      expect(body.embeddingError).toBe('Model nomic-embed-text not found');
+      expect(body.embeddingError).toBe('Model bge-m3 not found');
     });
 
     it('should return embeddingStatus "embedding" for a page being processed', async () => {

@@ -16,7 +16,7 @@ Web interface for managing Confluence knowledge base articles, enhanced with a l
 - **Frontend**: React 19 + Vite + TailwindCSS 4 + Radix UI + Zustand + TanStack Query
 - **Editor**: TipTap v3 (ADR-002)
 - **Auth**: JWT (jose) + bcrypt, per-user encrypted PAT storage (ADR-007)
-- **RAG**: pgvector + nomic-embed-text (768 dims, server-wide) + hybrid search (ADR-012)
+- **RAG**: pgvector + bge-m3 (1024 dims, server-wide) + hybrid search (ADR-012)
 - **LLM Streaming**: SSE via fetch (ADR-005)
 - **Deployment**: Docker Compose - 4 services (ADR-011)
 - **Testing**: Vitest + Playwright
@@ -82,7 +82,7 @@ backend/src/
 - **003_user_settings**: confluence_url, confluence_pat (encrypted), selected_spaces[], ollama_model
 - **004_cached_spaces**: space_key, space_name, user_id, last_synced
 - **005_cached_pages**: confluence_id, space_key, title, body_storage (XHTML), body_html (clean), body_text (plain), embedding_dirty flag
-- **006_page_embeddings**: chunk_text, embedding vector(768), metadata JSONB, HNSW index
+- **006_page_embeddings**: chunk_text, embedding vector(1024), metadata JSONB, HNSW index
 - **007_llm_conversations**: user_id, page_id, model, messages JSONB
 - **008_llm_improvements**: confluence_id, improvement_type, original/improved content, status
 - **009_refresh_tokens**: refresh token rotation (ADR-007)
@@ -324,8 +324,8 @@ Full schema in ADR-006.
 - [ ] `domains/llm/services/embedding-service.ts`
 - [ ] Text chunking: split on headings first, then paragraphs, ~500 tokens with 50 token overlap
 - [ ] Preserve chunk metadata: `{page_title, section_title, space_key}`
-- [ ] Generate embeddings via `ollama.embed({ model: 'nomic-embed-text', input: chunk })`
-- [ ] Store in `page_embeddings` table (vector(768))
+- [ ] Generate embeddings via `ollama.embed({ model: 'bge-m3', input: chunk })`
+- [ ] Store in `page_embeddings` table (vector(1024))
 - [ ] Background embedding worker: process pages where `embedding_dirty = TRUE`
 - [ ] Concurrency limited (max 2 parallel embedding calls)
 - [ ] Progress tracking (`GET /api/embeddings/status` — "Embedding 42/150 pages...")

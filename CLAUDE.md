@@ -97,7 +97,7 @@ Import restrictions enforced by `eslint-plugin-boundaries`:
 - **Frontend**: React 19, Vite, TailwindCSS 4, Radix UI, Zustand, TanStack Query, Framer Motion, TipTap v3, Sonner
 - **Content conversion**: `turndown` + `jsdom` + `turndown-plugin-gfm` (Confluence XHTML → Markdown), `marked` (Markdown → HTML)
 - **PDF**: `pdf-lib` for PDF export/import processing
-- **RAG**: pgvector (HNSW index), `nomic-embed-text` embeddings via Ollama, hybrid search (vector + keyword)
+- **RAG**: pgvector (HNSW index), `bge-m3` embeddings (1024 dimensions) via Ollama, hybrid search (vector + keyword)
 - **Docker**: `pgvector/pgvector:pg17`, `redis:8-alpine`, multi-stage Dockerfiles
 
 ## External Services
@@ -239,7 +239,9 @@ Copy `.env.example` to `.env`. Key vars:
 - `LLM_CACHE_TTL` (optional, Redis TTL in seconds for LLM cache, default: `3600`)
 - `OPENAI_BASE_URL` (optional, OpenAI-compatible API base URL)
 - `OPENAI_API_KEY` (optional, required when using openai provider)
-- `EMBEDDING_MODEL` (default: `nomic-embed-text`, server-wide, locked to 768 dims)
+- `EMBEDDING_MODEL` (default: `bge-m3`, server-wide, 1024 dims)
+- `EMBEDDING_DIMENSIONS` (default: `1024`, server-wide embedding vector dimensions)
+- `FTS_LANGUAGE` (default: `simple`, PostgreSQL text search configuration -- e.g. `german`, `english`)
 - `DEFAULT_LLM_MODEL` (optional, fallback model for background workers)
 - `QUALITY_CHECK_INTERVAL_MINUTES` (default: `60`)
 - `QUALITY_BATCH_SIZE` (default: `5`, pages per batch)

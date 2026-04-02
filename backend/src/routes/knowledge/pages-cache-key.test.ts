@@ -93,6 +93,10 @@ describe('Pages cache key format', () => {
           message: error.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; '),
           statusCode: 400,
         });
+
+vi.mock('../../core/services/fts-language.js', () => ({
+  getFtsLanguage: vi.fn().mockResolvedValue('simple'),
+}));
         return;
       }
       reply.status(error.statusCode ?? 500).send({ error: error.message, statusCode: error.statusCode ?? 500 });

@@ -19,7 +19,7 @@ const defaultSettings = {
   openaiBaseUrl: null,
   hasOpenaiApiKey: false,
   openaiModel: null,
-  embeddingModel: 'nomic-embed-text',
+  embeddingModel: 'bge-m3',
   embeddingChunkSize: 500,
   embeddingChunkOverlap: 50,
   drawioEmbedUrl: null,

@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { query, getPool } from '../../core/db/postgres.js';
+import { getFtsLanguage } from '../../core/services/fts-language.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { htmlToConfluence, confluenceToHtml } from '../../core/services/content-converter.js';
@@ -133,6 +134,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const cached = await cache.get(userId, 'pages', cacheKey);
     if (cached) return cached;
 
+    const ftsLang = await getFtsLanguage();
+
     // Build WHERE clause from parts array for reuse in count query.
     // Using an array lets us swap the FTS condition for ILIKE on fallback
     // without fragile string replacement.
@@ -168,7 +171,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       // Full-text search using plainto_tsquery for safe handling of arbitrary user input
       searchClauseParamIdx = paramIdx;
       ftsWhereIndex = whereParts.length;
-      whereParts.push(`cp.tsv @@ plainto_tsquery('english', $${paramIdx++})`);
+      whereParts.push(`cp.tsv @@ plainto_tsquery('${ftsLang}', $${paramIdx++})`);
       values.push(search.trim());
     }
 
@@ -257,7 +260,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // doesn't receive extra parameters that cause a bind mismatch.
     const orderByValues: unknown[] = [];
     if (sort === 'relevance' && search && search.trim()) {
-      orderBy = `ts_rank(cp.tsv, plainto_tsquery('english', $${paramIdx++})) DESC`;
+      orderBy = `ts_rank(cp.tsv, plainto_tsquery('${ftsLang}', $${paramIdx++})) DESC`;
       orderByValues.push(search.trim());
     } else {
       orderBy = sortMap[sort] ?? sortMap.title;
