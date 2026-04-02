@@ -148,13 +148,14 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
 
   describe('regenerateSummary', () => {
     it('should reset a single page to pending', async () => {
-      await query(
+      const insertResult = await query<{ id: number }>(
         `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status, summary_retry_count, summary_error)
-         VALUES ('p1', $1, 'Page 1', 'content one', 'failed', 3, 'some error')`,
+         VALUES ('p1', $1, 'Page 1', 'content one', 'failed', 3, 'some error')
+         RETURNING id`,
         [testSpaceKey],
       );
 
-      await regenerateSummary('p1');
+      await regenerateSummary(insertResult.rows[0].id);
 
       const result = await query<{ summary_status: string; summary_retry_count: number; summary_error: string | null }>(
         'SELECT summary_status, summary_retry_count, summary_error FROM pages WHERE confluence_id = $1',
