@@ -11,6 +11,7 @@ import { getAiGuardrails, getAiOutputRules, upsertAiGuardrails, upsertAiOutputRu
 import { getRateLimits, upsertRateLimits } from '../../core/services/rate-limit-service.js';
 import { sanitizeLlmInput } from '../../core/utils/sanitize-llm-input.js';
 import { setActiveProvider } from '../../domains/llm/services/ollama-service.js';
+import { ALLOWED_FTS_LANGUAGES } from '../../core/services/fts-language.js';
 
 const AuditLogQuerySchema = z.object({
   userId: z.string().optional(),
@@ -324,6 +325,11 @@ export async function adminRoutes(fastify: FastifyInstance) {
     }
 
     if (body.ftsLanguage !== undefined) {
+      if (!ALLOWED_FTS_LANGUAGES.has(body.ftsLanguage)) {
+        throw fastify.httpErrors.badRequest(
+          `Invalid FTS language: "${body.ftsLanguage}". Allowed: ${[...ALLOWED_FTS_LANGUAGES].join(', ')}`,
+        );
+      }
       // Rebuild all tsvectors with the new language
       await query(
         `UPDATE pages SET tsv = to_tsvector(

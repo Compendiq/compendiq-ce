@@ -19,6 +19,10 @@ vi.mock('../../core/services/redis-cache.js', () => {
   };
 });
 
+vi.mock('../../core/services/fts-language.js', () => ({
+  getFtsLanguage: vi.fn().mockResolvedValue('simple'),
+}));
+
 vi.mock('../../domains/confluence/services/sync-service.js', () => ({
   getClientForUser: vi.fn().mockResolvedValue(null),
 }));
@@ -94,9 +98,6 @@ describe('Pages cache key format', () => {
           statusCode: 400,
         });
 
-vi.mock('../../core/services/fts-language.js', () => ({
-  getFtsLanguage: vi.fn().mockResolvedValue('simple'),
-}));
         return;
       }
       reply.status(error.statusCode ?? 500).send({ error: error.message, statusCode: error.statusCode ?? 500 });

@@ -22,9 +22,7 @@ vi.mock('../../../core/services/rbac-service.js', () => ({
 }));
 
 vi.mock('../../../core/services/admin-settings-service.js', () => ({
-  getSharedLlmSettings: vi.fn().mockResolvedValue({ embeddingModel: 'bge-m3', llmProvider: 'ollama' }),
-    embeddingDimensions: 1024,
-    ftsLanguage: 'simple',
+  getSharedLlmSettings: vi.fn().mockResolvedValue({ embeddingModel: 'bge-m3', llmProvider: 'ollama', embeddingDimensions: 1024, ftsLanguage: 'simple' }),
 }));
 
 vi.mock('../../../core/services/circuit-breaker.js', () => ({
