@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Warm Theme Variations</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; padding: 24px; min-height: 100vh; }
+  h1 { text-align: center; font-size: 1.5rem; font-weight: 600; margin-bottom: 6px; color: #fff; }
+  .subtitle { text-align: center; font-size: 0.85rem; color: #888; margin-bottom: 32px; }
+
+  .section-label { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #f0a060; margin-bottom: 16px; padding-left: 4px; }
+
+  .variations-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 40px; }
+  @media (max-width: 1000px) { .variations-grid { grid-template-columns: 1fr; } }
+
+  .variation { border-radius: 16px; overflow: hidden; border: 2px solid transparent; cursor: pointer; transition: border-color 0.2s, transform 0.15s; }
+  .variation:hover { border-color: rgba(255,255,255,0.1); transform: translateY(-2px); }
+  .variation.selected { border-color: #f0a060; }
+
+  .var-header { padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+  .var-letter { width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0.85rem; background: rgba(240,160,80,0.2); color: #f0a060; flex-shrink: 0; }
+  .var-name { font-size: 0.95rem; font-weight: 600; color: #fff; }
+  .var-desc { font-size: 0.75rem; color: #999; margin-top: 2px; }
+
+  .preview { padding: 20px; min-height: 320px; }
+
+  .swatches { display: flex; gap: 8px; margin-bottom: 14px; }
+  .swatch { width: 36px; height: 36px; border-radius: 10px; }
+  .swatch-label { font-size: 0.55rem; text-align: center; margin-top: 3px; }
+
+  .neu-card { border-radius: 12px; padding: 16px; margin-bottom: 12px; }
+  .neu-card h3 { font-size: 0.9rem; font-weight: 600; margin-bottom: 6px; }
+  .neu-card p { font-size: 0.78rem; line-height: 1.55; opacity: 0.75; }
+
+  .neu-btn { display: inline-block; padding: 7px 16px; border-radius: 8px; font-size: 0.78rem; font-weight: 600; border: none; margin-right: 8px; }
+  .neu-btn-ghost { display: inline-block; padding: 7px 16px; border-radius: 8px; font-size: 0.78rem; font-weight: 500; border: 1px solid; background: transparent; }
+
+  .code-mock { border-radius: 8px; padding: 10px 12px; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.68rem; line-height: 1.7; margin-top: 10px; }
+
+  .status-row { display: flex; gap: 12px; align-items: center; margin-top: 10px; }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .status-item { display: flex; align-items: center; gap: 4px; font-size: 0.65rem; }
+
+  /* ====== VARIATION 1: Current (Sunrise/Ember - baseline) ====== */
+  .v1-light .preview { background: #FFF5EE; }
+  .v1-light .neu-card { background: #FFFBF7; box-shadow: 3px 3px 8px rgba(180,150,120,0.15), -2px -2px 6px rgba(255,255,255,0.7); color: #3D2A1A; }
+  .v1-light .neu-btn { background: #F0A050; color: #3D2A1A; box-shadow: 2px 2px 6px rgba(180,130,80,0.25), -1px -1px 4px rgba(255,255,255,0.6); }
+  .v1-light .neu-btn-ghost { color: #F0A050; border-color: #F0A050; }
+  .v1-light .code-mock { background: #F5E8DA; color: #5A3E28; }
+  .v1-light .swatch-label { color: #3D2A1A; }
+
+  .v1-dark .preview { background: #1E1410; }
+  .v1-dark .neu-card { background: #2A1E16; box-shadow: 3px 3px 8px rgba(0,0,0,0.4), -2px -2px 6px rgba(60,45,30,0.3); color: #E8D5C4; }
+  .v1-dark .neu-btn { background: #C07030; color: #FFF5EE; box-shadow: 2px 2px 6px rgba(0,0,0,0.3), -1px -1px 4px rgba(80,55,35,0.3); }
+  .v1-dark .neu-btn-ghost { color: #C07030; border-color: #C07030; }
+  .v1-dark .code-mock { background: #241A12; color: #D4B896; }
+  .v1-dark .swatch-label { color: #E8D5C4; }
+
+  /* ====== VARIATION 2: Softer & Rosier — less orange, more blush/rose ====== */
+  .v2-light .preview { background: #FDF5F2; }
+  .v2-light .neu-card { background: #FFFAF8; box-shadow: 3px 3px 8px rgba(180,140,140,0.14), -2px -2px 6px rgba(255,255,255,0.75); color: #3A2828; }
+  .v2-light .neu-btn { background: #D08070; color: #fff; box-shadow: 2px 2px 6px rgba(170,100,90,0.22), -1px -1px 4px rgba(255,255,255,0.6); }
+  .v2-light .neu-btn-ghost { color: #D08070; border-color: #D08070; }
+  .v2-light .code-mock { background: #F2E6E2; color: #5A3838; }
+  .v2-light .swatch-label { color: #3A2828; }
+
+  .v2-dark .preview { background: #1A1214; }
+  .v2-dark .neu-card { background: #261C1E; box-shadow: 3px 3px 8px rgba(0,0,0,0.4), -2px -2px 6px rgba(55,35,40,0.3); color: #E4CCC8; }
+  .v2-dark .neu-btn { background: #B06868; color: #FFF5F2; box-shadow: 2px 2px 6px rgba(0,0,0,0.3), -1px -1px 4px rgba(70,40,45,0.3); }
+  .v2-dark .neu-btn-ghost { color: #C88080; border-color: #C88080; }
+  .v2-dark .code-mock { background: #201618; color: #D0A8A0; }
+  .v2-dark .swatch-label { color: #E4CCC8; }
+
+  /* ====== VARIATION 3: Richer & Deeper — more saturated amber/copper ====== */
+  .v3-light .preview { background: #FAF0E4; }
+  .v3-light .neu-card { background: #FFF8EE; box-shadow: 3px 3px 8px rgba(170,140,90,0.18), -2px -2px 6px rgba(255,255,255,0.7); color: #2E2010; }
+  .v3-light .neu-btn { background: #C88030; color: #fff; box-shadow: 2px 2px 6px rgba(160,110,40,0.28), -1px -1px 4px rgba(255,255,255,0.55); }
+  .v3-light .neu-btn-ghost { color: #B07020; border-color: #B07020; }
+  .v3-light .code-mock { background: #EEE0C8; color: #4A3418; }
+  .v3-light .swatch-label { color: #2E2010; }
+
+  .v3-dark .preview { background: #161008; }
+  .v3-dark .neu-card { background: #221A0E; box-shadow: 3px 3px 8px rgba(0,0,0,0.45), -2px -2px 6px rgba(50,40,20,0.3); color: #E0D0B0; }
+  .v3-dark .neu-btn { background: #A86820; color: #FFF0D8; box-shadow: 2px 2px 6px rgba(0,0,0,0.35), -1px -1px 4px rgba(60,45,20,0.3); }
+  .v3-dark .neu-btn-ghost { color: #C89040; border-color: #C89040; }
+  .v3-dark .code-mock { background: #1C1408; color: #C8B080; }
+  .v3-dark .swatch-label { color: #E0D0B0; }
+
+  .hint { text-align: center; font-size: 0.8rem; color: #666; margin-top: 8px; }
+</style>
+</head>
+<body>
+
+<h1>Warm Theme Variations</h1>
+<p class="subtitle">What feels off about the current warm pair? Here are 3 directions. Click to select, or describe what you'd change.</p>
+
+<!-- LIGHT THEMES -->
+<div class="section-label">Light Themes</div>
+<div class="variations-grid">
+
+  <!-- V1 Light -->
+  <div class="variation v1-light" data-choice="1-light" onclick="document.querySelectorAll('.variations-grid:first-of-type .variation').forEach(v=>v.classList.remove('selected'));this.classList.add('selected');">
+    <div class="var-header">
+      <div class="var-letter">1</div>
+      <div>
+        <div class="var-name">Sunrise Cream (Current)</div>
+        <div class="var-desc">Peach-cream bg, orange primary — the original proposal</div>
+      </div>
+    </div>
+    <div class="preview">
+      <div class="swatches">
+        <div><div class="swatch" style="background:#FFF5EE;border:1px solid #e0d0c0;"></div><div class="swatch-label">bg</div></div>
+        <div><div class="swatch" style="background:#FFFBF7;border:1px solid #e8ddd0;"></div><div class="swatch-label">card</div></div>
+        <div><div class="swatch" style="background:#F0A050;"></div><div class="swatch-label">primary</div></div>
+        <div><div class="swatch" style="background:#3D2A1A;"></div><div class="swatch-label">text</div></div>
+      </div>
+      <div class="neu-card">
+        <h3>Getting Started with Confluence Sync</h3>
+        <p>Connect your Confluence Data Center instance to automatically sync spaces and pages. Articles are converted to Markdown for AI processing.</p>
+      </div>
+      <div class="neu-btn">Sync Now</div>
+      <div class="neu-btn-ghost">View Spaces</div>
+      <div class="code-mock">
+<span style="color:#9B7050">const</span> <span style="color:#4A7050">spaces</span> = <span style="color:#9B7050">await</span> confluence.<span style="color:#4A7050">getSpaces</span>();
+<span style="color:#9B7050">const</span> <span style="color:#4A7050">articles</span> = spaces.<span style="color:#4A7050">flatMap</span>(s => s.pages);
+      </div>
+      <div class="status-row">
+        <div class="status-item"><span class="status-dot" style="background:#2E8B40;"></span> Connected</div>
+        <div class="status-item"><span class="status-dot" style="background:#D06040;"></span> Error</div>
+        <div class="status-item"><span class="status-dot" style="background:#C09030;"></span> Syncing</div>
+        <div class="status-item"><span class="status-dot" style="background:#5080B0;"></span> AI</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- V2 Light -->
+  <div class="variation v2-light" data-choice="2-light" onclick="document.querySelectorAll('.variations-grid:first-of-type .variation').forEach(v=>v.classList.remove('selected'));this.classList.add('selected');">
+    <div class="var-header">
+      <div class="var-letter">2</div>
+      <div>
+        <div class="var-name">Blush Petal</div>
+        <div class="var-desc">Softer, rosier tones — less orange, more dusty rose/blush</div>
+      </div>
+    </div>
+    <div class="preview">
+      <div class="swatches">
+        <div><div class="swatch" style="background:#FDF5F2;border:1px solid #e0d0cc;"></div><div class="swatch-label">bg</div></div>
+        <div><div class="swatch" style="background:#FFFAF8;border:1px solid #e8dcd8;"></div><div class="swatch-label">card</div></div>
+        <div><div class="swatch" style="background:#D08070;"></div><div class="swatch-label">primary</div></div>
+        <div><div class="swatch" style="background:#3A2828;"></div><div class="swatch-label">text</div></div>
+      </div>
+      <div class="neu-card">
+        <h3>Getting Started with Confluence Sync</h3>
+        <p>Connect your Confluence Data Center instance to automatically sync spaces and pages. Articles are converted to Markdown for AI processing.</p>
+      </div>
+      <div class="neu-btn">Sync Now</div>
+      <div class="neu-btn-ghost">View Spaces</div>
+      <div class="code-mock">
+<span style="color:#906058">const</span> <span style="color:#507058">spaces</span> = <span style="color:#906058">await</span> confluence.<span style="color:#507058">getSpaces</span>();
+<span style="color:#906058">const</span> <span style="color:#507058">articles</span> = spaces.<span style="color:#507058">flatMap</span>(s => s.pages);
+      </div>
+      <div class="status-row">
+        <div class="status-item"><span class="status-dot" style="background:#2E8B40;"></span> Connected</div>
+        <div class="status-item"><span class="status-dot" style="background:#C05050;"></span> Error</div>
+        <div class="status-item"><span class="status-dot" style="background:#C09030;"></span> Syncing</div>
+        <div class="status-item"><span class="status-dot" style="background:#5080B0;"></span> AI</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- V3 Light -->
+  <div class="variation v3-light" data-choice="3-light" onclick="document.querySelectorAll('.variations-grid:first-of-type .variation').forEach(v=>v.classList.remove('selected'));this.classList.add('selected');">
+    <div class="var-header">
+      <div class="var-letter">3</div>
+      <div>
+        <div class="var-name">Amber Parchment</div>
+        <div class="var-desc">Richer, deeper — more saturated amber/copper, old-library warmth</div>
+      </div>
+    </div>
+    <div class="preview">
+      <div class="swatches">
+        <div><div class="swatch" style="background:#FAF0E4;border:1px solid #d8c8a8;"></div><div class="swatch-label">bg</div></div>
+        <div><div class="swatch" style="background:#FFF8EE;border:1px solid #e0d4b8;"></div><div class="swatch-label">card</div></div>
+        <div><div class="swatch" style="background:#C88030;"></div><div class="swatch-label">primary</div></div>
+        <div><div class="swatch" style="background:#2E2010;"></div><div class="swatch-label">text</div></div>
+      </div>
+      <div class="neu-card">
+        <h3>Getting Started with Confluence Sync</h3>
+        <p>Connect your Confluence Data Center instance to automatically sync spaces and pages. Articles are converted to Markdown for AI processing.</p>
+      </div>
+      <div class="neu-btn">Sync Now</div>
+      <div class="neu-btn-ghost">View Spaces</div>
+      <div class="code-mock">
+<span style="color:#8A6020">const</span> <span style="color:#4A6830">spaces</span> = <span style="color:#8A6020">await</span> confluence.<span style="color:#4A6830">getSpaces</span>();
+<span style="color:#8A6020">const</span> <span style="color:#4A6830">articles</span> = spaces.<span style="color:#4A6830">flatMap</span>(s => s.pages);
+      </div>
+      <div class="status-row">
+        <div class="status-item"><span class="status-dot" style="background:#2E8B40;"></span> Connected</div>
+        <div class="status-item"><span class="status-dot" style="background:#C04030;"></span> Error</div>
+        <div class="status-item"><span class="status-dot" style="background:#B88020;"></span> Syncing</div>
+        <div class="status-item"><span class="status-dot" style="background:#5080B0;"></span> AI</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- DARK THEMES -->
+<div class="section-label">Dark Themes</div>
+<div class="variations-grid">
+
+  <!-- V1 Dark -->
+  <div class="variation v1-dark" data-choice="1-dark" onclick="document.querySelectorAll('.variations-grid:nth-of-type(2) .variation').forEach(v=>v.classList.remove('selected'));this.classList.add('selected');">
+    <div class="var-header">
+      <div class="var-letter">1</div>
+      <div>
+        <div class="var-name">Ember Dusk (Current)</div>
+        <div class="var-desc">Deep cocoa with warm copper accents</div>
+      </div>
+    </div>
+    <div class="preview">
+      <div class="swatches">
+        <div><div class="swatch" style="background:#1E1410;border:1px solid #3a2a1a;"></div><div class="swatch-label">bg</div></div>
+        <div><div class="swatch" style="background:#2A1E16;border:1px solid #4a3828;"></div><div class="swatch-label">card</div></div>
+        <div><div class="swatch" style="background:#C07030;"></div><div class="swatch-label">primary</div></div>
+        <div><div class="swatch" style="background:#E8D5C4;"></div><div class="swatch-label">text</div></div>
+      </div>
+      <div class="neu-card">
+        <h3>Getting Started with Confluence Sync</h3>
+        <p>Connect your Confluence Data Center instance to automatically sync spaces and pages. Articles are converted to Markdown for AI processing.</p>
+      </div>
+      <div class="neu-btn">Sync Now</div>
+      <div class="neu-btn-ghost">View Spaces</div>
+      <div class="code-mock">
+<span style="color:#D4A070">const</span> <span style="color:#80B878">spaces</span> = <span style="color:#D4A070">await</span> confluence.<span style="color:#80B878">getSpaces</span>();
+<span style="color:#D4A070">const</span> <span style="color:#80B878">articles</span> = spaces.<span style="color:#80B878">flatMap</span>(s => s.pages);
+      </div>
+      <div class="status-row">
+        <div class="status-item"><span class="status-dot" style="background:#50B060;"></span> Connected</div>
+        <div class="status-item"><span class="status-dot" style="background:#E06050;"></span> Error</div>
+        <div class="status-item"><span class="status-dot" style="background:#D0A040;"></span> Syncing</div>
+        <div class="status-item"><span class="status-dot" style="background:#60A0E0;"></span> AI</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- V2 Dark -->
+  <div class="variation v2-dark" data-choice="2-dark" onclick="document.querySelectorAll('.variations-grid:nth-of-type(2) .variation').forEach(v=>v.classList.remove('selected'));this.classList.add('selected');">
+    <div class="var-header">
+      <div class="var-letter">2</div>
+      <div>
+        <div class="var-name">Rosewood Night</div>
+        <div class="var-desc">Muted plum-brown with dusty rose accents</div>
+      </div>
+    </div>
+    <div class="preview">
+      <div class="swatches">
+        <div><div class="swatch" style="background:#1A1214;border:1px solid #352428;"></div><div class="swatch-label">bg</div></div>
+        <div><div class="swatch" style="background:#261C1E;border:1px solid #402e32;"></div><div class="swatch-label">card</div></div>
+        <div><div class="swatch" style="background:#B06868;"></div><div class="swatch-label">primary</div></div>
+        <div><div class="swatch" style="background:#E4CCC8;"></div><div class="swatch-label">text</div></div>
+      </div>
+      <div class="neu-card">
+        <h3>Getting Started with Confluence Sync</h3>
+        <p>Connect your Confluence Data Center instance to automatically sync spaces and pages. Articles are converted to Markdown for AI processing.</p>
+      </div>
+      <div class="neu-btn">Sync Now</div>
+      <div class="neu-btn-ghost">View Spaces</div>
+      <div class="code-mock">
+<span style="color:#C89090">const</span> <span style="color:#80B898">spaces</span> = <span style="color:#C89090">await</span> confluence.<span style="color:#80B898">getSpaces</span>();
+<span style="color:#C89090">const</span> <span style="color:#80B898">articles</span> = spaces.<span style="color:#80B898">flatMap</span>(s => s.pages);
+      </div>
+      <div class="status-row">
+        <div class="status-item"><span class="status-dot" style="background:#50B060;"></span> Connected</div>
+        <div class="status-item"><span class="status-dot" style="background:#E06060;"></span> Error</div>
+        <div class="status-item"><span class="status-dot" style="background:#D0A040;"></span> Syncing</div>
+        <div class="status-item"><span class="status-dot" style="background:#60A0E0;"></span> AI</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- V3 Dark -->
+  <div class="variation v3-dark" data-choice="3-dark" onclick="document.querySelectorAll('.variations-grid:nth-of-type(2) .variation').forEach(v=>v.classList.remove('selected'));this.classList.add('selected');">
+    <div class="var-header">
+      <div class="var-letter">3</div>
+      <div>
+        <div class="var-name">Bourbon Shadow</div>
+        <div class="var-desc">Deep espresso with rich amber/gold accents</div>
+      </div>
+    </div>
+    <div class="preview">
+      <div class="swatches">
+        <div><div class="swatch" style="background:#161008;border:1px solid #302410;"></div><div class="swatch-label">bg</div></div>
+        <div><div class="swatch" style="background:#221A0E;border:1px solid #3e3018;"></div><div class="swatch-label">card</div></div>
+        <div><div class="swatch" style="background:#A86820;"></div><div class="swatch-label">primary</div></div>
+        <div><div class="swatch" style="background:#E0D0B0;"></div><div class="swatch-label">text</div></div>
+      </div>
+      <div class="neu-card">
+        <h3>Getting Started with Confluence Sync</h3>
+        <p>Connect your Confluence Data Center instance to automatically sync spaces and pages. Articles are converted to Markdown for AI processing.</p>
+      </div>
+      <div class="neu-btn">Sync Now</div>
+      <div class="neu-btn-ghost">View Spaces</div>
+      <div class="code-mock">
+<span style="color:#C8A060">const</span> <span style="color:#88B870">spaces</span> = <span style="color:#C8A060">await</span> confluence.<span style="color:#88B870">getSpaces</span>();
+<span style="color:#C8A060">const</span> <span style="color:#88B870">articles</span> = spaces.<span style="color:#88B870">flatMap</span>(s => s.pages);
+      </div>
+      <div class="status-row">
+        <div class="status-item"><span class="status-dot" style="background:#50B060;"></span> Connected</div>
+        <div class="status-item"><span class="status-dot" style="background:#E06040;"></span> Error</div>
+        <div class="status-item"><span class="status-dot" style="background:#C89030;"></span> Syncing</div>
+        <div class="status-item"><span class="status-dot" style="background:#60A0E0;"></span> AI</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<p class="hint" style="text-align:center;font-size:0.8rem;color:#666;">You can pick different light + dark variants (e.g. light 2 + dark 3). Or describe what you'd change — I can create more variations.</p>
+
+</body>
+</html>

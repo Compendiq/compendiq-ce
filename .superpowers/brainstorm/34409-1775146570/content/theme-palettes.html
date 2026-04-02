@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Theme Palette Comparison</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; padding: 24px; min-height: 100vh; }
+
+  h1 { text-align: center; font-size: 1.5rem; font-weight: 600; margin-bottom: 8px; color: #fff; }
+  .subtitle { text-align: center; font-size: 0.9rem; color: #888; margin-bottom: 32px; }
+
+  .approach { margin-bottom: 48px; }
+  .approach-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+  .approach-letter { width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 1.1rem; flex-shrink: 0; }
+  .approach-letter.a { background: #f0a060; color: #2a1a0a; }
+  .approach-letter.b { background: #7090c0; color: #fff; }
+  .approach-letter.c { background: #70a070; color: #fff; }
+  .approach-title { font-size: 1.15rem; font-weight: 600; color: #fff; }
+  .approach-desc { font-size: 0.85rem; color: #999; margin-top: 2px; }
+
+  .themes-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+  @media (max-width: 900px) { .themes-row { grid-template-columns: repeat(2, 1fr); } }
+
+  .theme-card { border-radius: 16px; overflow: hidden; border: 1px solid rgba(255,255,255,0.08); }
+  .theme-label { padding: 10px 14px; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; display: flex; align-items: center; gap: 6px; }
+  .theme-label .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .warm .theme-label { background: rgba(240,160,80,0.15); color: #f0a060; }
+  .warm .theme-label .dot { background: #f0a060; }
+  .cool .theme-label { background: rgba(100,140,200,0.15); color: #90b8e8; }
+  .cool .theme-label .dot { background: #90b8e8; }
+
+  /* Mockup area */
+  .theme-preview { padding: 16px; min-height: 280px; position: relative; }
+
+  /* Neumorphic card inside preview */
+  .neu-card {
+    border-radius: 12px;
+    padding: 14px;
+    margin-bottom: 12px;
+  }
+  .neu-card h3 { font-size: 0.85rem; font-weight: 600; margin-bottom: 6px; }
+  .neu-card p { font-size: 0.75rem; line-height: 1.5; opacity: 0.7; }
+
+  /* Swatches */
+  .swatches { display: flex; gap: 6px; margin-bottom: 12px; }
+  .swatch { width: 32px; height: 32px; border-radius: 8px; position: relative; }
+  .swatch-label { font-size: 0.55rem; text-align: center; margin-top: 2px; opacity: 0.6; }
+
+  /* Status dots */
+  .status-row { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+  .status-dot { width: 10px; height: 10px; border-radius: 50%; }
+  .status-label { font-size: 0.65rem; opacity: 0.5; }
+
+  /* Button mock */
+  .neu-btn { display: inline-block; padding: 6px 14px; border-radius: 8px; font-size: 0.75rem; font-weight: 600; border: none; cursor: pointer; }
+
+  /* Code block mock */
+  .code-mock { border-radius: 8px; padding: 8px 10px; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.65rem; line-height: 1.6; margin-top: 8px; }
+
+  /* ===== THEME-SPECIFIC STYLES ===== */
+
+  /* --- WARM LIGHT: Sunrise Cream (shared across all approaches) --- */
+  .sunrise .theme-preview { background: #FFF5EE; }
+  .sunrise .neu-card {
+    background: #FFFBF7;
+    box-shadow: 3px 3px 8px rgba(180,150,120,0.15), -2px -2px 6px rgba(255,255,255,0.7);
+    color: #3D2A1A;
+  }
+  .sunrise .neu-btn {
+    background: #F0A050;
+    color: #3D2A1A;
+    box-shadow: 2px 2px 6px rgba(180,130,80,0.25), -1px -1px 4px rgba(255,255,255,0.6);
+  }
+  .sunrise .code-mock { background: #F5E8DA; color: #5A3E28; }
+
+  /* --- WARM DARK: Ember Dusk (shared) --- */
+  .ember .theme-preview { background: #1E1410; }
+  .ember .neu-card {
+    background: #2A1E16;
+    box-shadow: 3px 3px 8px rgba(0,0,0,0.4), -2px -2px 6px rgba(60,45,30,0.3);
+    color: #E8D5C4;
+  }
+  .ember .neu-btn {
+    background: #C07030;
+    color: #FFF5EE;
+    box-shadow: 2px 2px 6px rgba(0,0,0,0.3), -1px -1px 4px rgba(80,55,35,0.3);
+  }
+  .ember .code-mock { background: #241A12; color: #D4B896; }
+
+  /* --- APPROACH A COOL: Frost Slate --- */
+  .frost .theme-preview { background: #EEF2F8; }
+  .frost .neu-card {
+    background: #F6F8FC;
+    box-shadow: 3px 3px 8px rgba(140,160,190,0.2), -2px -2px 6px rgba(255,255,255,0.8);
+    color: #2A3548;
+  }
+  .frost .neu-btn {
+    background: #5080C0;
+    color: #fff;
+    box-shadow: 2px 2px 6px rgba(60,100,160,0.25), -1px -1px 4px rgba(255,255,255,0.6);
+  }
+  .frost .code-mock { background: #E0E8F2; color: #3A5070; }
+
+  /* --- APPROACH A COOL: Abyss Indigo --- */
+  .abyss .theme-preview { background: #0E1420; }
+  .abyss .neu-card {
+    background: #161E2E;
+    box-shadow: 3px 3px 8px rgba(0,0,0,0.5), -2px -2px 6px rgba(30,45,70,0.3);
+    color: #C0D0E8;
+  }
+  .abyss .neu-btn {
+    background: #4070B0;
+    color: #E8F0FF;
+    box-shadow: 2px 2px 6px rgba(0,0,0,0.4), -1px -1px 4px rgba(30,50,80,0.3);
+  }
+  .abyss .code-mock { background: #121A28; color: #90B0D8; }
+
+  /* --- APPROACH B COOL: Arctic Mist --- */
+  .arctic .theme-preview { background: #F2F4F6; }
+  .arctic .neu-card {
+    background: #FAFBFC;
+    box-shadow: 3px 3px 8px rgba(150,160,170,0.18), -2px -2px 6px rgba(255,255,255,0.8);
+    color: #2C3240;
+  }
+  .arctic .neu-btn {
+    background: #6070A0;
+    color: #fff;
+    box-shadow: 2px 2px 6px rgba(80,90,130,0.2), -1px -1px 4px rgba(255,255,255,0.6);
+  }
+  .arctic .code-mock { background: #E8EAEE; color: #4A5068; }
+
+  /* --- APPROACH B COOL: Obsidian Night --- */
+  .obsidian .theme-preview { background: #151518; }
+  .obsidian .neu-card {
+    background: #1E1E24;
+    box-shadow: 3px 3px 8px rgba(0,0,0,0.5), -2px -2px 6px rgba(40,40,50,0.3);
+    color: #C8C8D8;
+  }
+  .obsidian .neu-btn {
+    background: #7060B0;
+    color: #F0EEFF;
+    box-shadow: 2px 2px 6px rgba(0,0,0,0.4), -1px -1px 4px rgba(45,40,60,0.3);
+  }
+  .obsidian .code-mock { background: #18181E; color: #A8A0C8; }
+
+  /* --- APPROACH C COOL: Sage Meadow --- */
+  .sage .theme-preview { background: #EFF4F0; }
+  .sage .neu-card {
+    background: #F6FAF6;
+    box-shadow: 3px 3px 8px rgba(130,160,130,0.18), -2px -2px 6px rgba(255,255,255,0.8);
+    color: #2A3830;
+  }
+  .sage .neu-btn {
+    background: #508060;
+    color: #fff;
+    box-shadow: 2px 2px 6px rgba(60,100,70,0.2), -1px -1px 4px rgba(255,255,255,0.6);
+  }
+  .sage .code-mock { background: #E0EAE0; color: #3A5840; }
+
+  /* --- APPROACH C COOL: Onyx Emerald --- */
+  .onyx .theme-preview { background: #101814; }
+  .onyx .neu-card {
+    background: #182018;
+    box-shadow: 3px 3px 8px rgba(0,0,0,0.5), -2px -2px 6px rgba(30,50,35,0.3);
+    color: #B8D0B8;
+  }
+  .onyx .neu-btn {
+    background: #408050;
+    color: #E8FFF0;
+    box-shadow: 2px 2px 6px rgba(0,0,0,0.4), -1px -1px 4px rgba(30,55,35,0.3);
+  }
+  .onyx .code-mock { background: #141C14; color: #88B090; }
+
+  /* Selection */
+  .approach { cursor: pointer; border: 2px solid transparent; border-radius: 20px; padding: 20px; transition: border-color 0.2s, background 0.2s; }
+  .approach:hover { border-color: rgba(255,255,255,0.08); background: rgba(255,255,255,0.02); }
+  .approach.selected { border-color: #f0a060; background: rgba(240,160,80,0.05); }
+
+  .vote-hint { text-align: center; font-size: 0.8rem; color: #666; margin-top: 16px; }
+</style>
+</head>
+<body>
+
+<h1>Theme Palette Comparison</h1>
+<p class="subtitle">Each approach shares the same warm pair — the cool pair differs. Click to select.</p>
+
+<!-- APPROACH A -->
+<div class="approach" data-choice="a" onclick="document.querySelectorAll('.approach').forEach(a=>a.classList.remove('selected'));this.classList.add('selected');">
+  <div class="approach-header">
+    <div class="approach-letter a">A</div>
+    <div>
+      <div class="approach-title">Sunrise &amp; Ember + Frost &amp; Abyss</div>
+      <div class="approach-desc">Warm cream/cocoa paired with icy blue/navy — maximum contrast between warm and cool</div>
+    </div>
+  </div>
+  <div class="themes-row">
+    <!-- Sunrise -->
+    <div class="theme-card warm sunrise">
+      <div class="theme-label"><span class="dot"></span> Sunrise Cream (Light)</div>
+      <div class="theme-preview">
+        <div class="swatches">
+          <div><div class="swatch" style="background:#FFF5EE;border:1px solid #e0d0c0;"></div><div class="swatch-label">bg</div></div>
+          <div><div class="swatch" style="background:#FFFBF7;border:1px solid #e8ddd0;"></div><div class="swatch-label">card</div></div>
+          <div><div class="swatch" style="background:#F0A050;"></div><div class="swatch-label">primary</div></div>
+          <div><div class="swatch" style="background:#3D2A1A;"></div><div class="swatch-label">text</div></div>
+        </div>
+        <div class="neu-card">
+          <h3>Knowledge Article</h3>
+          <p>Warm, readable surfaces with soft neumorphic depth. Cream backgrounds reduce eye strain.</p>
+        </div>
+        <div class="neu-btn">Sync to Confluence</div>
+        <div class="code-mock">
+          <span style="color:#8B6040">const</span> <span style="color:#3D6040">sync</span> = <span style="color:#8B6040">await</span> <span style="color:#3D6040">fetchPages</span>();
+        </div>
+      </div>
+    </div>
+    <!-- Ember -->
+    <div class="theme-card warm ember">
+      <div class="theme-label"><span class="dot"></span> Ember Dusk (Dark)</div>
+      <div class="theme-preview">
+        <div class="swatches">
+          <div><div class="swatch" style="background:#1E1410;border:1px solid #3a2a1a;"></div><div class="swatch-label">bg</div></div>
+          <div><div class="swatch" style="background:#2A1E16;border:1px solid #4a3828;"></div><div class="swatch-label">card</div></div>
+          <div><div class="swatch" style="background:#C07030;"></div><div class="swatch-label">primary</div></div>
+          <div><div class="swatch" style="background:#E8D5C4;"></div><div class="swatch-label">text</div></div>
+        </div>
+        <div class="neu-card">
+          <h3>Knowledge Article</h3>
+          <p>Deep cocoa tones with warm gold accents. Comfortable for late-night reading sessions.</p>
+        </div>
+        <div class="neu-btn">Sync to Confluence</div>
+        <div class="code-mock">
+          <span style="color:#D4A070">const</span> <span style="color:#80B878">sync</span> = <span style="color:#D4A070">await</span> <span style="color:#80B878">fetchPages</span>();
+        </div>
+      </div>
+    </div>
+    <!-- Frost -->
+    <div class="theme-card cool frost">
+      <div class="theme-label"><span class="dot"></span> Frost Slate (Light)</div>
+      <div class="theme-preview">
+        <div class="swatches">
+          <div><div class="swatch" style="background:#EEF2F8;border:1px solid #c8d0e0;"></div><div class="swatch-label">bg</div></div>
+          <div><div class="swatch" style="background:#F6F8FC;border:1px solid #d8e0f0;"></div><div class="swatch-label">card</div></div>
+          <div><div class="swatch" style="background:#5080C0;"></div><div class="swatch-label">primary</div></div>
+          <div><div class="swatch" style="background:#2A3548;"></div><div class="swatch-label">text</div></div>
+        </div>
+        <div class="neu-card">
+          <h3>Knowledge Article</h3>
+          <p>Cool blue-white with icy accents. Clean, professional feel like a winter morning.</p>
+        </div>
+        <div class="neu-btn">Sync to Confluence</div>
+        <div class="code-mock">
+          <span style="color:#4060A0">const</span> <span style="color:#307050">sync</span> = <span style="color:#4060A0">await</span> <span style="color:#307050">fetchPages</span>();
+        </div>
+      </div>
+    </div>
+    <!-- Abyss -->
+    <div class="theme-card cool abyss">
+      <div class="theme-label"><span class="dot"></span> Abyss Indigo (Dark)</div>
+      <div class="theme-preview">
+        <div class="swatches">
+          <div><div class="swatch" style="background:#0E1420;border:1px solid #1e2e40;"></div><div class="swatch-label">bg</div></div>
+          <div><div class="swatch" style="background:#161E2E;border:1px solid #283850;"></div><div class="swatch-label">card</div></div>
+          <div><div class="swatch" style="background:#4070B0;"></div><div class="swatch-label">primary</div></div>
+          <div><div class="swatch" style="background:#C0D0E8;"></div><div class="swatch-label">text</div></div>
+        </div>
+        <div class="neu-card">
+          <h3>Knowledge Article</h3>
+          <p>Deep navy graphite with ice-blue accents. Immersive, like coding at midnight.</p>
+        </div>
+        <div class="neu-btn">Sync to Confluence</div>
+        <div class="code-mock">
+          <span style="color:#6090D0">const</span> <span style="color:#60B888">sync</span> = <span style="color:#6090D0">await</span> <span style="color:#60B888">fetchPages</span>();
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- APPROACH B -->
+<div class="approach" data-choice="b" onclick="document.querySelectorAll('.approach').forEach(a=>a.classList.remove('selected'));this.classList.add('selected');">
+  <div class="approach-header">
+    <div class="approach-letter b">B</div>
+    <div>
+      <div class="approach-title">Sunrise &amp; Ember + Arctic &amp; Obsidian</div>
+      <div class="approach-desc">Warm cream/cocoa paired with neutral gray/violet — modern, conventional dev aesthetic</div>
+    </div>
+  </div>
+  <div class="themes-row">
+    <!-- Sunrise (same) -->
+    <div class="theme-card warm sunrise">
+      <div class="theme-label"><span class="dot"></span> Sunrise Cream (Light)</div>
+      <div class="theme-preview">
+        <div class="swatches">
+          <div><div class="swatch" style="background:#FFF5EE;border:1px solid #e0d0c0;"></div><div class="swatch-label">bg</div></div>
+          <div><div class="swatch" style="background:#FFFBF7;border:1px solid #e8ddd0;"></div><div class="swatch-label">card</div></div>
+          <div><div class="swatch" style="background:#F0A050;"></div><div class="swatch-label">primary</div></div>
+          <div><div class="swatch" style="background:#3D2A1A;"></div><div class="swatch-label">text</div></div>
+        </div>
+        <div class="neu-card">
+          <h3>Knowledge Article</h3>
+          <p>Warm, readable surfaces with soft neumorphic depth. Cream backgrounds reduce eye strain.</p>
+        </div>
+        <div class="neu-btn">Sync to Confluence</div>
+        <div class="code-mock">
+          <span style="color:#8B6040">const</span> <span style="color:#3D6040">sync</span> = <span style="color:#8B6040">await</span> <span style="color:#3D6040">fetchPages</span>();
+        </div>
+      </div>
+    </div>
+    <!-- Ember (same) -->
+    <div class="theme-card warm ember">
+      <div class="theme-label"><span class="dot"></span> Ember Dusk (Dark)</div>
+      <div class="theme-preview">
+        <div class="swatches">
+          <div><div class="swatch" style="background:#1E1410;border:1px solid #3a2a1a;"></div><div class="swatch-label">bg</div></div>
+          <div><div class="swatch" style="background:#2A1E16;border:1px solid #4a3828;"></div><div class="swatch-label">card</div></div>
+          <div><div class="swatch" style="background:#C07030;"></div><div class="swatch-label">primary</div></div>
+          <div><div class="swatch" style="background:#E8D5C4;"></div><div class="swatch-label">text</div></div>
+        </div>
+        <div class="neu-card">
+          <h3>Knowledge Article</h3>
+          <p>Deep cocoa tones with warm gold accents. Comfortable for late-night reading sessions.</p>
+        </div>
+        <div class="neu-btn">Sync to Confluence</div>
+        <div class="code-mock">
+          <span style="color:#D4A070">const</span> <span style="color:#80B878">sync</span> = <span style="color:#D4A070">await</span> <span style="color:#80B878">fetchPages</span>();
+        </div>
+      </div>
+    </div>
+    <!-- Arctic -->
+    <div class="theme-card cool arctic">
+      <div class="theme-label"><span class="dot"></span> Arctic Mist (Light)</div>
+      <div class="theme-preview">
+        <div class="swatches">
+          <div><div class="swatch" style="background:#F2F4F6;border:1px solid #d0d4d8;"></div><div class="swatch-label">bg</div></div>
+          <div><div class="swatch" style="background:#FAFBFC;border:1px solid #dde0e4;"></div><div class="swatch-label">card</div></div>
+          <div><div class="swatch" style="background:#6070A0;"></div><div class="swatch-label">primary</div></div>
+          <div><div class="swatch" style="background:#2C3240;"></div><div class="swatch-label">text</div></div>
+        </div>
+        <div class="neu-card">
+          <h3>Knowledge Article</h3>
+          <p>Neutral white with subtle blue undertones. Clean, no-nonsense — like Vercel or Linear.</p>
+        </div>
+        <div class="neu-btn">Sync to Confluence</div>
+        <div class="code-mock">
+          <span style="color:#5060A0">const</span> <span style="color:#406850">sync</span> = <span style="color:#5060A0">await</span> <span style="color:#406850">fetchPages</span>();
+        </div>
+      </div>
+    </div>
+    <!-- Obsidian -->
+    <div class="theme-card cool obsidian">
+      <div class="theme-label"><span class="dot"></span> Obsidian Night (Dark)</div>
+      <div class="theme-preview">
+        <div class="swatches">
+          <div><div class="swatch" style="background:#151518;border:1px solid #2a2a30;"></div><div class="swatch-label">bg</div></div>
+          <div><div class="swatch" style="background:#1E1E24;border:1px solid #34343e;"></div><div class="swatch-label">card</div></div>
+          <div><div class="swatch" style="background:#7060B0;"></div><div class="swatch-label">primary</div></div>
+          <div><div class="swatch" style="background:#C8C8D8;"></div><div class="swatch-label">text</div></div>
+        </div>
+        <div class="neu-card">
+          <h3>Knowledge Article</h3>
+          <p>Pure dark graphite with violet-indigo accents. Refined, like Obsidian or Raycast.</p>
+        </div>
+        <div class="neu-btn">Sync to Confluence</div>
+        <div class="code-mock">
+          <span style="color:#9080C0">const</span> <span style="color:#70B880">sync</span> = <span style="color:#9080C0">await</span> <span style="color:#70B880">fetchPages</span>();
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- APPROACH C -->
+<div class="approach" data-choice="c" onclick="document.querySelectorAll('.approach').forEach(a=>a.classList.remove('selected'));this.classList.add('selected');">
+  <div class="approach-header">
+    <div class="approach-letter c">C</div>
+    <div>
+      <div class="approach-title">Sunrise &amp; Ember + Sage &amp; Onyx</div>
+      <div class="approach-desc">Warm cream/cocoa paired with nature-inspired greens — distinctive and unconventional</div>
+    </div>
+  </div>
+  <div class="themes-row">
+    <!-- Sunrise (same) -->
+    <div class="theme-card warm sunrise">
+      <div class="theme-label"><span class="dot"></span> Sunrise Cream (Light)</div>
+      <div class="theme-preview">
+        <div class="swatches">
+          <div><div class="swatch" style="background:#FFF5EE;border:1px solid #e0d0c0;"></div><div class="swatch-label">bg</div></div>
+          <div><div class="swatch" style="background:#FFFBF7;border:1px solid #e8ddd0;"></div><div class="swatch-label">card</div></div>
+          <div><div class="swatch" style="background:#F0A050;"></div><div class="swatch-label">primary</div></div>
+          <div><div class="swatch" style="background:#3D2A1A;"></div><div class="swatch-label">text</div></div>
+        </div>
+        <div class="neu-card">
+          <h3>Knowledge Article</h3>
+          <p>Warm, readable surfaces with soft neumorphic depth. Cream backgrounds reduce eye strain.</p>
+        </div>
+        <div class="neu-btn">Sync to Confluence</div>
+        <div class="code-mock">
+          <span style="color:#8B6040">const</span> <span style="color:#3D6040">sync</span> = <span style="color:#8B6040">await</span> <span style="color:#3D6040">fetchPages</span>();
+        </div>
+      </div>
+    </div>
+    <!-- Ember (same) -->
+    <div class="theme-card warm ember">
+      <div class="theme-label"><span class="dot"></span> Ember Dusk (Dark)</div>
+      <div class="theme-preview">
+        <div class="swatches">
+          <div><div class="swatch" style="background:#1E1410;border:1px solid #3a2a1a;"></div><div class="swatch-label">bg</div></div>
+          <div><div class="swatch" style="background:#2A1E16;border:1px solid #4a3828;"></div><div class="swatch-label">card</div></div>
+          <div><div class="swatch" style="background:#C07030;"></div><div class="swatch-label">primary</div></div>
+          <div><div class="swatch" style="background:#E8D5C4;"></div><div class="swatch-label">text</div></div>
+        </div>
+        <div class="neu-card">
+          <h3>Knowledge Article</h3>
+          <p>Deep cocoa tones with warm gold accents. Comfortable for late-night reading sessions.</p>
+        </div>
+        <div class="neu-btn">Sync to Confluence</div>
+        <div class="code-mock">
+          <span style="color:#D4A070">const</span> <span style="color:#80B878">sync</span> = <span style="color:#D4A070">await</span> <span style="color:#80B878">fetchPages</span>();
+        </div>
+      </div>
+    </div>
+    <!-- Sage -->
+    <div class="theme-card cool sage">
+      <div class="theme-label"><span class="dot"></span> Sage Meadow (Light)</div>
+      <div class="theme-preview">
+        <div class="swatches">
+          <div><div class="swatch" style="background:#EFF4F0;border:1px solid #c0d0c0;"></div><div class="swatch-label">bg</div></div>
+          <div><div class="swatch" style="background:#F6FAF6;border:1px solid #d0e0d0;"></div><div class="swatch-label">card</div></div>
+          <div><div class="swatch" style="background:#508060;"></div><div class="swatch-label">primary</div></div>
+          <div><div class="swatch" style="background:#2A3830;"></div><div class="swatch-label">text</div></div>
+        </div>
+        <div class="neu-card">
+          <h3>Knowledge Article</h3>
+          <p>Soft sage green with forest accents. Organic, calming — like a library in nature.</p>
+        </div>
+        <div class="neu-btn">Sync to Confluence</div>
+        <div class="code-mock">
+          <span style="color:#406848">const</span> <span style="color:#705830">sync</span> = <span style="color:#406848">await</span> <span style="color:#705830">fetchPages</span>();
+        </div>
+      </div>
+    </div>
+    <!-- Onyx -->
+    <div class="theme-card cool onyx">
+      <div class="theme-label"><span class="dot"></span> Onyx Emerald (Dark)</div>
+      <div class="theme-preview">
+        <div class="swatches">
+          <div><div class="swatch" style="background:#101814;border:1px solid #203020;"></div><div class="swatch-label">bg</div></div>
+          <div><div class="swatch" style="background:#182018;border:1px solid #2a3a2a;"></div><div class="swatch-label">card</div></div>
+          <div><div class="swatch" style="background:#408050;"></div><div class="swatch-label">primary</div></div>
+          <div><div class="swatch" style="background:#B8D0B8;"></div><div class="swatch-label">text</div></div>
+        </div>
+        <div class="neu-card">
+          <h3>Knowledge Article</h3>
+          <p>Deep charcoal with emerald accents. Like a terminal in a forest — unique and serene.</p>
+        </div>
+        <div class="neu-btn">Sync to Confluence</div>
+        <div class="code-mock">
+          <span style="color:#60A068">const</span> <span style="color:#B0A070">sync</span> = <span style="color:#60A068">await</span> <span style="color:#B0A070">fetchPages</span>();
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<p class="vote-hint">Click an approach to select it, then tell me in the terminal</p>
+
+</body>
+</html>
