@@ -159,10 +159,8 @@ function reciprocalRankFusion(
     const rrf = 1 / (k + rank + 1);
     if (existing) {
       existing.score += rrf;
-      // Keep the result with the higher individual score (best chunk for context)
-      if (result.score > existing.result.score) {
-        existing.result = result;
-      }
+      // Do NOT replace a vector chunk with a keyword body excerpt:
+      // vector chunks are purpose-built for LLM context, body text is not.
     } else {
       scoreMap.set(key, { result, score: rrf });
     }
@@ -233,29 +231,17 @@ export async function hybridSearch(
     keywordHits: keywordResults.length,
   }, 'Search results');
 
-  // Combine with RRF
+  // Combine with RRF — output is already one entry per pageId, so slice to topK
   const combined = reciprocalRankFusion(vectorResults, keywordResults);
-
-  // Deduplicate by page PK (take best chunk per page).
-  // Using pageId instead of confluenceId avoids collapsing standalone
-  // pages that share a NULL confluence_id.
-  const seen = new Set<number>();
-  const deduped: SearchResult[] = [];
-  for (const result of combined) {
-    if (!seen.has(result.pageId)) {
-      seen.add(result.pageId);
-      deduped.push(result);
-    }
-    if (deduped.length >= topK) break;
-  }
+  const topResults = combined.slice(0, topK);
 
   // Record search analytics (non-blocking)
   // Distinguish keyword-fallback (embedding failed) from true hybrid
   const searchType = vectorResults.length === 0 && keywordResults.length > 0 ? 'keyword_fallback' : 'hybrid';
-  const maxScore = deduped.length > 0 ? Math.max(...deduped.map((r) => r.score)) : null;
-  recordSearchAnalytics(userId, question, deduped.length, maxScore, searchType).catch(() => {});
+  const maxScore = topResults.length > 0 ? Math.max(...topResults.map((r) => r.score)) : null;
+  recordSearchAnalytics(userId, question, topResults.length, maxScore, searchType).catch(() => {});
 
-  return deduped;
+  return topResults;
 }
 
 /**

@@ -452,21 +452,24 @@ describe('RAG Service', () => {
       expect(combined[0].score).toBeGreaterThan(singleSource[0].score);
     });
 
-    it('should keep the representative result with the higher individual score', () => {
+    it('should always prefer vector chunk over keyword body text as representative', () => {
+      // Vector chunks are purpose-built for LLM context; keyword results return raw body text.
+      // Even if keyword ts_rank were numerically larger (different scale), vector chunk wins.
       const vectorResult = makeResult('page-1', 'High quality embedding chunk', { score: 0.9 });
       const keywordResult = makeResult('page-1', 'First 500 chars of body text', { score: 0.3 });
       const combined = reciprocalRankFusion([vectorResult], [keywordResult]);
       expect(combined).toHaveLength(1);
-      // The kept chunkText should be from the vector result (score 0.9 > 0.3)
       expect(combined[0].chunkText).toBe('High quality embedding chunk');
     });
 
-    it('should keep keyword result when it has higher individual score', () => {
+    it('should prefer vector chunk even when keyword score is numerically higher', () => {
+      // ts_rank and cosine similarity are on different scales — never compare across methods.
+      // Vector chunk always wins as the representative for LLM context.
       const vectorResult = makeResult('page-1', 'Low similarity chunk', { score: 0.2 });
       const keywordResult = makeResult('page-1', 'Highly relevant body text', { score: 0.8 });
       const combined = reciprocalRankFusion([vectorResult], [keywordResult]);
       expect(combined).toHaveLength(1);
-      expect(combined[0].chunkText).toBe('Highly relevant body text');
+      expect(combined[0].chunkText).toBe('Low similarity chunk');
     });
 
     it('should merge multiple vector chunks for the same page', () => {
