@@ -332,9 +332,6 @@ function renderCodeBlock(ctx: RenderContext, code: string): void {
   interface CodeLine { page: PDFPage; y: number; text: string }
   const rendered: CodeLine[] = [];
 
-  const savedY = ctx.y;
-  const savedPage = ctx.page;
-
   // Pass 1: calculate positions (may trigger page breaks)
   for (let i = 0; i < lines.length; i++) {
     ensureSpace(ctx, lineHeight + CODE_PADDING);
