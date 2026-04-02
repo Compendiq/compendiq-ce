@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, m } from 'framer-motion';
-import { FileText, X, Upload, ShieldCheck, Globe, Lock, ThumbsUp, ThumbsDown, AlertCircle, GitGraph } from 'lucide-react';
+import { FileText, X, Upload, ShieldCheck, Globe, Lock, ThumbsUp, ThumbsDown, AlertCircle, GitGraph, FileDown, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   usePage,
@@ -14,7 +14,7 @@ import {
   useUnpinPage,
   useDeletePage,
 } from '../../shared/hooks/use-pages';
-import { useSubmitFeedback, useVerifyPage } from '../../shared/hooks/use-standalone';
+import { useSubmitFeedback, useVerifyPage, useExportPdf } from '../../shared/hooks/use-standalone';
 import { useAuthenticatedSrc } from '../../shared/hooks/use-authenticated-src';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { useKeyboardShortcuts, type ShortcutDefinition } from '../../shared/hooks/use-keyboard-shortcuts';
@@ -316,6 +316,35 @@ export function PageViewPage() {
     }
   }, [deleteMutation_page, id, navigate]);
 
+  const exportPdf = useExportPdf();
+
+  const handleExportPdf = useCallback(async () => {
+    if (!id || !page) return;
+    try {
+      const blob = await exportPdf.mutateAsync(Number(id));
+      const filename = page.title
+        .replace(/[^a-zA-Z0-9-_ ]/g, '')
+        .replace(/\s+/g, '-')
+        .toLowerCase();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${filename}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toast.success('PDF exported successfully.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to export PDF.';
+      if (message.toLowerCase().includes('chromium')) {
+        toast.error('PDF export requires Chromium. Please install it on the server: npx playwright install chromium', { duration: 10_000 });
+      } else {
+        toast.error(message);
+      }
+    }
+  }, [exportPdf, id, page]);
+
   // Page-specific keyboard shortcuts (Ctrl+S, Ctrl+E, Escape, Alt+P, Alt+Shift+D, Alt+I)
   const pageShortcuts = useMemo<ShortcutDefinition[]>(() => [
     {
@@ -518,6 +547,20 @@ export function PageViewPage() {
                 >
                   <GitGraph size={12} className="mr-1 inline" />
                   Graph
+                </button>
+                <button
+                  onClick={handleExportPdf}
+                  disabled={exportPdf.isPending}
+                  className="rounded-md px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground disabled:opacity-50"
+                  data-testid="export-pdf-btn"
+                  title="Export as PDF"
+                >
+                  {exportPdf.isPending ? (
+                    <Loader2 size={12} className="mr-1 inline animate-spin" />
+                  ) : (
+                    <FileDown size={12} className="mr-1 inline" />
+                  )}
+                  PDF
                 </button>
                 <button
                   onClick={handleStartEditing}
