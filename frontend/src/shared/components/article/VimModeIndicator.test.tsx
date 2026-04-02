@@ -56,7 +56,7 @@ describe('VimModeIndicator', () => {
   });
 
   it('does not show pending keys when empty', () => {
-    const { container } = render(<VimModeIndicator vimState={makeState()} />);
+    render(<VimModeIndicator vimState={makeState()} />);
     // Only the mode label should be present, no extra text nodes
     const indicator = screen.getByTestId('vim-mode-indicator');
     expect(indicator.children.length).toBe(1); // only the mode label span
