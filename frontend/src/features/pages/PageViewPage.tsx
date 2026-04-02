@@ -145,6 +145,18 @@ export function PageViewPage() {
   const [drawioEditingDiagram, setDrawioEditingDiagram] = useState<string | null>(null);
   const [drawioXml, setDrawioXml] = useState<string>('');
 
+  // Vim mode state — lifted here so we can pass it to the external toolbar
+  const [vimEnabled, setVimEnabled] = useState(() =>
+    localStorage.getItem('compendiq-vim-mode') === 'true'
+  );
+  const toggleVim = useCallback(() => {
+    setVimEnabled(prev => {
+      const next = !prev;
+      localStorage.setItem('compendiq-vim-mode', String(next));
+      return next;
+    });
+  }, []);
+
   // Sync editing state to the shared store (consumed by ArticleRightPane)
   useEffect(() => {
     setStoreEditing(editing);
@@ -448,7 +460,7 @@ export function PageViewPage() {
       {/* Sticky toolbar — ABOVE the card, sticks at top-0 with no movement */}
       {editing && editorInstance && (
         <div className="sticky top-0 z-30 border border-border/25 bg-card rounded-xl shadow-[0_8px_32px_var(--glass-shadow)] before:absolute before:-z-10 before:-top-[100px] before:bottom-0 before:-left-[14px] before:-right-[14px] sm:before:-left-[22px] sm:before:-right-[22px] before:bg-background">
-          <EditorToolbar editor={editorInstance} />
+          <EditorToolbar editor={editorInstance} vimEnabled={vimEnabled} onToggleVim={toggleVim} />
           <TableContextToolbar editor={editorInstance} />
           <LayoutContextToolbar editor={editorInstance} />
           <ColumnContextToolbar editor={editorInstance} />
@@ -602,7 +614,7 @@ export function PageViewPage() {
 
             {/* Editor — naked (no inner glass-card, we are already inside glass-card-xl) */}
             <FeatureErrorBoundary featureName="Editor">
-              <Editor content={editHtml} onChange={setEditHtml} draftKey={draftKey} naked onEditorReady={setEditorInstance} hideToolbar pageId={id} onSave={handleSave} />
+              <Editor content={editHtml} onChange={setEditHtml} draftKey={draftKey} naked onEditorReady={setEditorInstance} hideToolbar pageId={id} onSave={handleSave} vimEnabled={vimEnabled} />
             </FeatureErrorBoundary>
           </>
         ) : !page.bodyHtml?.trim() || page.bodyHtml.trim() === '<p></p>' ? (

@@ -114,6 +114,8 @@ interface EditorProps {
   pageId?: string;
   /** Callback to trigger a server-side save (used by vim :w command). */
   onSave?: () => void;
+  /** Controlled vim mode — when provided, overrides internal vim state. */
+  vimEnabled?: boolean;
 }
 
 function ToolbarButton({
@@ -894,7 +896,7 @@ function defaultVimDisplayState(): VimState {
   return { mode: 'normal', pendingKeys: '', countPrefix: '', register: '', commandBuffer: null };
 }
 
-export function Editor({ content, onChange, editable = true, placeholder, draftKey, naked = false, onEditorReady, hideToolbar = false, pageId, onSave }: EditorProps) {
+export function Editor({ content, onChange, editable = true, placeholder, draftKey, naked = false, onEditorReady, hideToolbar = false, pageId, onSave, vimEnabled: vimEnabledProp }: EditorProps) {
   const isLight = useIsLightTheme();
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   // Ref for the editor instance so async paste/drop handlers can insert images
@@ -917,14 +919,15 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
     });
   };
 
-  // Vim mode state
-  const [vimEnabled, setVimEnabled] = useState(() =>
+  // Vim mode state — use controlled prop when provided, otherwise internal state
+  const [vimEnabledInternal, setVimEnabledInternal] = useState(() =>
     localStorage.getItem(VIM_STORAGE_KEY) === 'true'
   );
+  const vimEnabled = vimEnabledProp ?? vimEnabledInternal;
   const [vimDisplayState, setVimDisplayState] = useState<VimState>(defaultVimDisplayState);
 
   const toggleVim = () => {
-    setVimEnabled(prev => {
+    setVimEnabledInternal(prev => {
       const next = !prev;
       localStorage.setItem(VIM_STORAGE_KEY, String(next));
       if (!next) setVimDisplayState(defaultVimDisplayState());

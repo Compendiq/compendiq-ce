@@ -419,17 +419,20 @@ function handleNormalKey(
   const count = parseInt(vim.countPrefix || '1', 10);
   const pending = vim.pendingKeys;
 
-  // Pending operator (d, y, g)
+  // Pending operator (d, y, g) — count was preserved when operator key was pressed
   if (pending === 'd') {
     updateVimState(view, { pendingKeys: '', countPrefix: '' });
     if (key === 'd') {
-      // dd — delete line
-      const text = deleteLine(view);
-      updateVimState(view, { register: text });
+      // dd — delete line(s)
+      const lines: string[] = [];
+      for (let i = 0; i < count; i++) {
+        lines.push(deleteLine(view));
+      }
+      updateVimState(view, { register: lines.join('\n') });
       return true;
     }
     if (key === 'w') {
-      // dw — delete word
+      // dw — delete word(s)
       for (let i = 0; i < count; i++) deleteWord(view);
       return true;
     }
@@ -458,48 +461,54 @@ function handleNormalKey(
     return true;
   }
 
-  // Clear count prefix after processing
-  if (vim.countPrefix) {
-    updateVimState(view, { countPrefix: '' });
-  }
-
-  // Movement keys
+  // Movement keys — clear count prefix after use (but NOT before operators that need it)
   switch (key) {
     case 'h':
       moveLeft(view, count);
+      if (vim.countPrefix) updateVimState(view, { countPrefix: '' });
       return true;
     case 'j':
       moveDown(view, count);
+      if (vim.countPrefix) updateVimState(view, { countPrefix: '' });
       return true;
     case 'k':
       moveUp(view, count);
+      if (vim.countPrefix) updateVimState(view, { countPrefix: '' });
       return true;
     case 'l':
       moveRight(view, count);
+      if (vim.countPrefix) updateVimState(view, { countPrefix: '' });
       return true;
     case 'w':
       moveWordForward(view, count);
+      if (vim.countPrefix) updateVimState(view, { countPrefix: '' });
       return true;
     case 'b':
       moveWordBackward(view, count);
+      if (vim.countPrefix) updateVimState(view, { countPrefix: '' });
       return true;
     case '0':
       moveLineStart(view);
+      if (vim.countPrefix) updateVimState(view, { countPrefix: '' });
       return true;
     case '$':
       moveLineEnd(view);
+      if (vim.countPrefix) updateVimState(view, { countPrefix: '' });
       return true;
     case 'G':
       moveDocEnd(view);
+      if (vim.countPrefix) updateVimState(view, { countPrefix: '' });
       return true;
     case 'x':
       for (let i = 0; i < count; i++) deleteChar(view);
+      if (vim.countPrefix) updateVimState(view, { countPrefix: '' });
       return true;
     case 'u':
       // Undo
       for (let i = 0; i < count; i++) {
         undo(view.state, view.dispatch);
       }
+      if (vim.countPrefix) updateVimState(view, { countPrefix: '' });
       return true;
     case 'p': {
       // Paste from register
@@ -517,6 +526,7 @@ function handleNormalKey(
         );
         view.dispatch(tr);
       }
+      if (vim.countPrefix) updateVimState(view, { countPrefix: '' });
       return true;
     }
 
@@ -552,7 +562,7 @@ function handleNormalKey(
       updateVimState(view, { mode: 'visual', pendingKeys: '', countPrefix: '' });
       return true;
 
-    // Operators (wait for second key)
+    // Operators (wait for second key — preserve countPrefix so it propagates)
     case 'd':
       updateVimState(view, { pendingKeys: 'd' });
       return true;
