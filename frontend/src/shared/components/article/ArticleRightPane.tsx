@@ -9,9 +9,12 @@ import {
   PanelRight,
   PanelRightClose,
   Pin,
+  FileDown,
+  Loader2,
   Trash2,
   Wand2,
 } from 'lucide-react';
+import { AutoTagger } from '../../../features/pages/AutoTagger';
 import { FreshnessBadge } from '../badges/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../badges/EmbeddingStatusBadge';
 import { QualityScoreBadge } from '../badges/QualityScoreBadge';
@@ -29,6 +32,7 @@ import {
   usePinPage,
   useUnpinPage,
 } from '../../hooks/use-pages';
+import { useExportPdf } from '../../hooks/use-standalone';
 import { useSettings } from '../../hooks/use-settings';
 import { cn } from '../../lib/cn';
 import type { TocHeading } from './TableOfContents';
@@ -188,6 +192,30 @@ export function ArticleRightPane() {
   const unpinMutation = useUnpinPage();
 
   const isPinned = pinnedData?.items.some((item) => item.id === id) ?? false;
+
+  // Derive the active LLM model from settings for auto-tagging
+  const activeModel = settings?.llmProvider === 'openai'
+    ? (settings.openaiModel ?? '')
+    : (settings?.ollamaModel ?? '');
+
+  // PDF export
+  const exportPdf = useExportPdf();
+  const handleExportPdf = useCallback(async () => {
+    if (!id) return;
+    try {
+      const blob = await exportPdf.mutateAsync(parseInt(id, 10));
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${page?.title?.replace(/[^a-zA-Z0-9-_ ]/g, '').replace(/\s+/g, '-').toLowerCase() ?? 'article'}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'PDF export failed';
+      toast.error(msg.includes('Chromium') ? 'PDF generation unavailable — Chromium not installed on the server' : msg);
+    }
+  }, [id, page?.title, exportPdf]);
 
   const storageKey = `article-outline-collapsed-${id ?? 'default'}`;
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -420,6 +448,29 @@ export function ArticleRightPane() {
           >
             <Wand2 size={15} className="shrink-0 opacity-70" />
             <span className="truncate">AI Improve</span>
+          </button>
+
+          {id && activeModel && (
+            <AutoTagger
+              pageId={id}
+              currentLabels={page?.labels ?? []}
+              model={activeModel}
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+            />
+          )}
+
+          <button
+            onClick={handleExportPdf}
+            disabled={exportPdf.isPending}
+            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground disabled:opacity-50"
+            title="Export as PDF"
+          >
+            {exportPdf.isPending ? (
+              <Loader2 size={15} className="shrink-0 animate-spin opacity-70" />
+            ) : (
+              <FileDown size={15} className="shrink-0 opacity-70" />
+            )}
+            <span className="truncate">Export PDF</span>
           </button>
 
           <button

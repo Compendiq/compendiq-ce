@@ -1,4 +1,5 @@
 import { Node, mergeAttributes, type Editor } from '@tiptap/core';
+import { Plugin, PluginKey } from '@tiptap/pm/state';
 import { ReactNodeViewRenderer } from '@tiptap/react';
 import { DrawioDiagramNodeView } from './DrawioDiagramNodeView';
 import { StatusBadgeView } from './StatusBadgeView';
@@ -40,6 +41,12 @@ export const LAYOUT_PRESETS = [
 /**
  * Details node — renders <details> for collapsible sections.
  * Handles Confluence expand macros converted to <details>/<summary>.
+ *
+ * Two fixes for TipTap editor:
+ * 1. In edit mode, force `open` attribute so the content area is always
+ *    visible and the cursor can be placed inside.
+ * 2. Add a click handler on <summary> to toggle the `open` node attribute
+ *    via ProseMirror transaction (native toggle is swallowed by PM).
  */
 export const Details = Node.create({
   name: 'details',
@@ -63,6 +70,64 @@ export const Details = Node.create({
 
   renderHTML({ HTMLAttributes }) {
     return ['details', mergeAttributes(HTMLAttributes), 0];
+  },
+
+  addProseMirrorPlugins() {
+    const editor = this.editor;
+    return [
+      new Plugin({
+        key: new PluginKey('detailsToggle'),
+        props: {
+          handleClickOn(view, pos, node, nodePos, event) {
+            // Check if the click target is a <summary> element
+            const target = event.target as HTMLElement;
+            if (target.tagName !== 'SUMMARY' && !target.closest('summary')) {
+              return false;
+            }
+            // Find the parent details node in the document
+            const resolved = view.state.doc.resolve(pos);
+            for (let d = resolved.depth; d >= 0; d--) {
+              const ancestor = resolved.node(d);
+              if (ancestor.type.name === 'details') {
+                const ancestorPos = resolved.before(d);
+                // Toggle the open attribute
+                const tr = view.state.tr.setNodeAttribute(ancestorPos, 'open', !ancestor.attrs.open);
+                view.dispatch(tr);
+                // Prevent the native toggle
+                event.preventDefault();
+                return true;
+              }
+            }
+            return false;
+          },
+          // In edit mode, force all <details> elements to be open in the DOM
+          // so users can always access the content area
+          handleDOMEvents: {
+            focus(view) {
+              if (!view.editable) return false;
+              const detailsEls = view.dom.querySelectorAll('details');
+              detailsEls.forEach((el) => el.setAttribute('open', ''));
+              return false;
+            },
+          },
+        },
+        view(editorView) {
+          // On init: force open in edit mode
+          function forceOpen() {
+            if (!editorView.editable) return;
+            const detailsEls = editorView.dom.querySelectorAll('details');
+            detailsEls.forEach((el) => el.setAttribute('open', ''));
+          }
+          // Run after initial render
+          requestAnimationFrame(forceOpen);
+          return {
+            update() {
+              requestAnimationFrame(forceOpen);
+            },
+          };
+        },
+      }),
+    ];
   },
 });
 
