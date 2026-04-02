@@ -35,7 +35,6 @@ const COLOR_CODE_TEXT = rgb(0.15, 0.15, 0.15);
 const COLOR_BLOCKQUOTE_BORDER = rgb(0.39, 0.4, 0.95);
 const COLOR_TABLE_BORDER = rgb(0.75, 0.78, 0.82);
 const COLOR_TABLE_HEADER_BG = rgb(0.96, 0.97, 0.98);
-const COLOR_LINK = rgb(0.2, 0.3, 0.7);
 const COLOR_LIST_BULLET = rgb(0.35, 0.35, 0.4);
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -324,31 +323,53 @@ function renderCodeBlock(ctx: RenderContext, code: string): void {
   if (!code) return;
   const lines = code.split('\n');
   const lineHeight = FONT_SIZE_CODE + 4;
-  const blockHeight = lines.length * lineHeight + CODE_PADDING * 2;
 
-  ensureSpace(ctx, Math.min(blockHeight, 200));
+  ensureSpace(ctx, Math.min(lines.length * lineHeight + CODE_PADDING * 2, 200));
   ctx.y -= 4;
 
-  // Calculate background bounds, then draw background FIRST (so text renders on top)
-  const bgTop = ctx.y + FONT_SIZE_CODE + CODE_PADDING;
-  const bgBottom = ctx.y - lines.length * lineHeight - CODE_PADDING + FONT_SIZE_CODE;
-  drawCodeBg(ctx.page, bgTop, Math.max(bgBottom, MARGIN_BOTTOM));
+  // Collect line positions first, then draw backgrounds, then text.
+  // This handles page breaks correctly: background per page segment, text on top.
+  interface CodeLine { page: PDFPage; y: number; text: string }
+  const rendered: CodeLine[] = [];
 
-  // Now draw text on top of the background
+  const savedY = ctx.y;
+  const savedPage = ctx.page;
+
+  // Pass 1: calculate positions (may trigger page breaks)
   for (let i = 0; i < lines.length; i++) {
     ensureSpace(ctx, lineHeight + CODE_PADDING);
+    rendered.push({
+      page: ctx.page,
+      y: ctx.y,
+      text: sanitizeForStandardFont(lines[i].substring(0, 120)),
+    });
+    ctx.y -= lineHeight;
+  }
 
-    const sanitized = sanitizeForStandardFont(lines[i].substring(0, 120));
-    if (sanitized) {
-      ctx.page.drawText(sanitized, {
+  // Pass 2: draw backgrounds per page segment
+  let segStart = 0;
+  for (let i = 0; i <= rendered.length; i++) {
+    if (i === rendered.length || (i > 0 && rendered[i].page !== rendered[i - 1].page)) {
+      // Draw background for segment [segStart, i-1]
+      const segPage = rendered[segStart].page;
+      const top = rendered[segStart].y + FONT_SIZE_CODE + CODE_PADDING;
+      const bottom = rendered[i - 1].y - CODE_PADDING;
+      drawCodeBg(segPage, top, bottom);
+      segStart = i;
+    }
+  }
+
+  // Pass 3: draw text on top of backgrounds
+  for (const line of rendered) {
+    if (line.text) {
+      line.page.drawText(line.text, {
         x: MARGIN_LEFT + CODE_PADDING,
-        y: ctx.y,
+        y: line.y,
         size: FONT_SIZE_CODE,
         font: ctx.fontMono,
         color: COLOR_CODE_TEXT,
       });
     }
-    ctx.y -= lineHeight;
   }
 
   ctx.y -= CODE_PADDING + PARAGRAPH_SPACING;
@@ -373,28 +394,45 @@ function renderBlockquote(ctx: RenderContext, text: string): void {
 
   const indent = 16;
   const lines = wrapText(text, ctx.fontItalic, FONT_SIZE_BODY, CONTENT_WIDTH - indent);
-  const startY = ctx.y;
+
+  // Collect positions first, then draw borders per page, then text on top
+  interface QLine { page: PDFPage; y: number; text: string }
+  const rendered: QLine[] = [];
 
   for (const line of lines) {
     ensureSpace(ctx, LINE_HEIGHT);
-    ctx.page.drawText(line, {
+    rendered.push({ page: ctx.page, y: ctx.y, text: line });
+    ctx.y -= LINE_HEIGHT;
+  }
+
+  // Draw left border per page segment
+  let segStart = 0;
+  for (let i = 0; i <= rendered.length; i++) {
+    if (i === rendered.length || (i > 0 && rendered[i].page !== rendered[i - 1].page)) {
+      const segPage = rendered[segStart].page;
+      const top = rendered[segStart].y + LINE_HEIGHT;
+      const bottom = rendered[i - 1].y;
+      segPage.drawRectangle({
+        x: MARGIN_LEFT,
+        y: bottom,
+        width: 3,
+        height: top - bottom,
+        color: COLOR_BLOCKQUOTE_BORDER,
+      });
+      segStart = i;
+    }
+  }
+
+  // Draw text
+  for (const line of rendered) {
+    line.page.drawText(line.text, {
       x: MARGIN_LEFT + indent,
-      y: ctx.y,
+      y: line.y,
       size: FONT_SIZE_BODY,
       font: ctx.fontItalic,
       color: COLOR_MUTED,
     });
-    ctx.y -= LINE_HEIGHT;
   }
-
-  // Draw left border
-  ctx.page.drawRectangle({
-    x: MARGIN_LEFT,
-    y: ctx.y,
-    width: 3,
-    height: startY - ctx.y + LINE_HEIGHT,
-    color: COLOR_BLOCKQUOTE_BORDER,
-  });
 
   ctx.y -= PARAGRAPH_SPACING;
 }
@@ -436,7 +474,7 @@ function renderList(ctx: RenderContext, el: Element, ordered: boolean): void {
 }
 
 function renderTable(ctx: RenderContext, el: Element): void {
-  const rows = Array.from(el.querySelectorAll('tr'));
+  const rows = Array.from(el.querySelectorAll(':scope > thead > tr, :scope > tbody > tr, :scope > tr'));
   if (rows.length === 0) return;
 
   // Determine column count from first row
@@ -452,7 +490,7 @@ function renderTable(ctx: RenderContext, el: Element): void {
     const cells = Array.from(rows[r].querySelectorAll('th, td'));
     const isHeader = cells[0]?.tagName.toLowerCase() === 'th';
     const cellFont = isHeader ? ctx.fontBold : ctx.font;
-    const fontSize = isHeader ? FONT_SIZE_BODY : FONT_SIZE_BODY;
+    const fontSize = FONT_SIZE_BODY;
 
     // Calculate row height (based on tallest cell)
     let maxLines = 1;
@@ -593,7 +631,6 @@ function sanitizeForStandardFont(text: string): string {
     .replace(/\u2190/g, '<-')        // left arrow
     .replace(/\u2022/g, '*')         // bullet
     .replace(/\u00A0/g, ' ')         // non-breaking space
-    // eslint-disable-next-line no-control-regex
     .replace(/[^\x20-\x7E\xA0-\xFF]/g, ''); // strip remaining non-Latin-1
 }
 
