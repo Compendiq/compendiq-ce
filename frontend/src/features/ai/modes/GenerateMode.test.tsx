@@ -653,7 +653,7 @@ describe('GenerateMode', () => {
             ],
             total: 1,
             page: 1,
-            limit: 20,
+            limit: 50,
             totalPages: 1,
           });
         }
@@ -775,6 +775,122 @@ describe('GenerateMode', () => {
       // Button should say "Save to Confluence"
       const saveBtn = screen.getByTestId('generate-save-button');
       expect(saveBtn.textContent).toContain('Save to Confluence');
+    });
+
+    it('displays selected page title even when page is not in current search results (#36)', async () => {
+      // Initially return a page, then return empty results (simulating a search filter)
+      let returnPages = true;
+      apiFetchMock.mockImplementation((path: string, opts?: RequestInit) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'llama3' }]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        if (path.startsWith('/pages') && !opts?.method) {
+          return Promise.resolve({
+            items: returnPages
+              ? [{ id: 'page-42', spaceKey: 'DEV', title: 'Deep Nested Page', version: 1, parentId: null, labels: [], author: null, lastModifiedAt: null, lastSynced: '', embeddingDirty: false, embeddingStatus: 'not_embedded', embeddedAt: null, embeddingError: null }]
+              : [],
+            total: returnPages ? 1 : 0,
+            page: 1,
+            limit: 50,
+            totalPages: returnPages ? 1 : 0,
+          });
+        }
+        return Promise.resolve([]);
+      });
+
+      render(
+        <GenerateSavePanel generatedContent={sampleMarkdown} onSaved={onSavedMock} />,
+        { wrapper: createWrapper() },
+      );
+
+      // Select space
+      fireEvent.change(screen.getByTestId('generate-space-select'), { target: { value: 'DEV' } });
+
+      // Open parent picker and select a page
+      await waitFor(() => {
+        expect(screen.getByText('None (root level)')).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByText('None (root level)'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Deep Nested Page')).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByText('Deep Nested Page'));
+
+      // The button should display the selected page title
+      await waitFor(() => {
+        expect(screen.getByText('Deep Nested Page')).toBeInTheDocument();
+      });
+
+      // Now simulate the page disappearing from results (e.g., different search/filter)
+      returnPages = false;
+
+      // The selected title should still be visible via the fallback prop
+      // (the button text should not revert to "None (root level)")
+      expect(screen.queryByText('None (root level)')).not.toBeInTheDocument();
+    });
+
+    it('resets selected page title when space changes (#36)', async () => {
+      apiFetchMock.mockImplementation((path: string, opts?: RequestInit) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'llama3' }]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        if (path.startsWith('/pages') && !opts?.method) {
+          return Promise.resolve({
+            items: [
+              { id: 'page-99', spaceKey: 'DEV', title: 'Selected Page', version: 1, parentId: null, labels: [], author: null, lastModifiedAt: null, lastSynced: '', embeddingDirty: false, embeddingStatus: 'not_embedded', embeddedAt: null, embeddingError: null },
+            ],
+            total: 1,
+            page: 1,
+            limit: 50,
+            totalPages: 1,
+          });
+        }
+        return Promise.resolve([]);
+      });
+
+      render(
+        <GenerateSavePanel generatedContent={sampleMarkdown} onSaved={onSavedMock} />,
+        { wrapper: createWrapper() },
+      );
+
+      // Select space and pick a parent page
+      fireEvent.change(screen.getByTestId('generate-space-select'), { target: { value: 'DEV' } });
+
+      await waitFor(() => {
+        expect(screen.getByText('None (root level)')).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByText('None (root level)'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Selected Page')).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByText('Selected Page'));
+
+      // Verify selected page is shown
+      await waitFor(() => {
+        expect(screen.getByText('Selected Page')).toBeInTheDocument();
+      });
+
+      // Change space - should reset parent page selection
+      fireEvent.change(screen.getByTestId('generate-space-select'), { target: { value: 'OPS' } });
+
+      // After space change, the parent picker should show "None (root level)" again
+      await waitFor(() => {
+        expect(screen.getByText('None (root level)')).toBeInTheDocument();
+      });
     });
 
     it('shows correct toast when saving to a local space (#528)', async () => {

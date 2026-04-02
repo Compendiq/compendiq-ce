@@ -45,10 +45,12 @@ function formatFileSize(bytes: number): string {
 function ParentPagePicker({
   spaceKey,
   parentId,
+  selectedPageTitle,
   onSelect,
 }: {
   spaceKey: string;
   parentId: string | null;
+  selectedPageTitle: string | null;
   onSelect: (id: string | null, title: string | null) => void;
 }) {
   const [search, setSearch] = useState('');
@@ -57,7 +59,7 @@ function ParentPagePicker({
   const filters: PageFilters = useMemo(() => ({
     spaceKey,
     search: search || undefined,
-    limit: 20,
+    limit: 50,
     sort: 'title',
   }), [spaceKey, search]);
 
@@ -82,7 +84,7 @@ function ParentPagePicker({
         )}
       >
         <span className={parentId ? 'text-foreground' : 'text-muted-foreground'}>
-          {parentId && selectedPage ? selectedPage.title : 'None (root level)'}
+          {parentId ? (selectedPage?.title ?? selectedPageTitle ?? 'Unknown page') : 'None (root level)'}
         </span>
         <div className="flex items-center gap-1">
           {parentId && (
@@ -329,6 +331,7 @@ export function GenerateSavePanel({
 
   const [spaceKey, setSpaceKey] = useState('');
   const [parentId, setParentId] = useState<string | null>(null);
+  const [selectedPageTitle, setSelectedPageTitle] = useState<string | null>(null);
   const [title, setTitle] = useState(() => extractTitleFromMarkdown(generatedContent));
   const [isSaving, setIsSaving] = useState(false);
 
@@ -417,6 +420,7 @@ export function GenerateSavePanel({
               onChange={(e) => {
                 setSpaceKey(e.target.value);
                 setParentId(null);
+                setSelectedPageTitle(null);
               }}
               className="w-full rounded-lg border border-border/40 bg-background/50 px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-primary/30"
               data-testid="generate-space-select"
@@ -442,7 +446,11 @@ export function GenerateSavePanel({
           <ParentPagePicker
             spaceKey={spaceKey}
             parentId={parentId}
-            onSelect={(id) => setParentId(id)}
+            selectedPageTitle={selectedPageTitle}
+            onSelect={(id, pageTitle) => {
+              setParentId(id);
+              setSelectedPageTitle(pageTitle);
+            }}
           />
         </div>
       </div>
