@@ -1,5 +1,5 @@
 name: Feature Request
-description: Suggest a new feature or enhancement for AtlasMind
+description: Suggest a new feature or enhancement for Compendiq
 title: "[Feature]: "
 labels: ["enhancement"]
 body:
@@ -51,7 +51,7 @@ body:
     id: area
     attributes:
       label: Area
-      description: Which part of AtlasMind does this feature relate to?
+      description: Which part of Compendiq does this feature relate to?
       options:
         - Frontend / UI
         - Backend / API

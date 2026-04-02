@@ -9,11 +9,11 @@
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in AtlasMind, please report it responsibly.
+If you discover a security vulnerability in Compendiq, please report it responsibly.
 
 ### How to Report
 
-**Email:** [security@atlasmind.app](mailto:security@atlasmind.app)
+**Email:** [security@compendiq.app](mailto:security@compendiq.app)
 
 Include the following in your report:
 
@@ -50,7 +50,7 @@ We will acknowledge receipt of your report and keep you informed of progress tow
 
 ## Security Measures
 
-AtlasMind implements multiple layers of security:
+Compendiq implements multiple layers of security:
 
 ### Authentication and Authorization
 
@@ -68,7 +68,7 @@ AtlasMind implements multiple layers of security:
 
 ### Input Validation and Injection Prevention
 
-- **Zod schema validation** on all API boundaries (shared via `@atlasmind/contracts`)
+- **Zod schema validation** on all API boundaries (shared via `@compendiq/contracts`)
 - **Parameterized SQL only** -- no string concatenation in queries
 - **SSRF guard** -- Confluence URLs are validated and restricted to user-configured endpoints
 - **Prompt injection guard** -- user content is sanitized before sending to LLM providers

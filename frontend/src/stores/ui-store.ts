@@ -2,8 +2,9 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { migrateStorageKey } from '../shared/lib/migrate-storage-key';
 
-// One-time migration from legacy kb-ui → atlasmind-ui localStorage key
-migrateStorageKey('kb-ui', 'atlasmind-ui');
+// One-time migrations for localStorage key renames
+migrateStorageKey('kb-ui', 'compendiq-ui');
+migrateStorageKey('atlasmind-ui', 'compendiq-ui');
 
 interface UiState {
   sidebarCollapsed: boolean;
@@ -47,6 +48,6 @@ export const useUiStore = create<UiState>()(
       setArticleSidebarWidth: (width) => set({ articleSidebarWidth: Math.max(200, Math.min(500, width)) }),
       setSingleKeyShortcutsEnabled: (enabled) => set({ singleKeyShortcutsEnabled: enabled }),
     }),
-    { name: 'atlasmind-ui' },
+    { name: 'compendiq-ui' },
   ),
 );

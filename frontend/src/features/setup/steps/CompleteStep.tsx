@@ -1,6 +1,6 @@
 import { m } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
-import { AtlasMindLogo } from '../../../shared/components/AtlasMindLogo';
+import { CompendiqLogo } from '../../../shared/components/CompendiqLogo';
 
 export function CompleteStep() {
   const navigate = useNavigate();
@@ -45,7 +45,7 @@ export function CompleteStep() {
         transition={{ delay: 0.3, duration: 0.25 }}
         className="mt-2 max-w-md text-muted-foreground"
       >
-        AtlasMind is ready to use. Start building your knowledge base with AI-powered tools.
+        Compendiq is ready to use. Start building your knowledge base with AI-powered tools.
       </m.p>
 
       <m.div
@@ -54,8 +54,8 @@ export function CompleteStep() {
         transition={{ delay: 0.35, duration: 0.25 }}
         className="mt-4 flex items-center gap-2 text-xs text-muted-foreground/60"
       >
-        <AtlasMindLogo size={14} className="text-primary" />
-        <span>Powered by AtlasMind v{__APP_VERSION__}</span>
+        <CompendiqLogo size={14} className="text-primary" />
+        <span>Powered by Compendiq v{__APP_VERSION__}</span>
       </m.div>
 
       <m.div

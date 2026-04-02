@@ -1,6 +1,6 @@
-# AtlasMind Admin Guide
+# Compendiq Admin Guide
 
-This guide covers installation, configuration, maintenance, and troubleshooting for AtlasMind administrators.
+This guide covers installation, configuration, maintenance, and troubleshooting for Compendiq administrators.
 
 ## System Requirements
 
@@ -68,7 +68,7 @@ Additionally, you need an **Ollama** server (or OpenAI-compatible API) accessibl
    ollama pull qwen3.5            # Or any chat model
    ```
 
-6. **Access AtlasMind** at `http://localhost:8081`. Register the first user -- they automatically receive the admin role.
+6. **Access Compendiq** at `http://localhost:8081`. Register the first user -- they automatically receive the admin role.
 
 ### Verifying the Installation
 
@@ -184,7 +184,7 @@ curl http://localhost:3051/api/health
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ATLASMIND_LICENSE_KEY` | *(none)* | License key for enterprise features (OIDC/SSO, advanced RBAC) |
+| `COMPENDIQ_LICENSE_KEY` | *(none)* | License key for enterprise features (OIDC/SSO, advanced RBAC) |
 
 ### OIDC / SSO
 
@@ -195,7 +195,7 @@ OIDC is configured entirely via the Admin UI (Settings > OIDC/SSO). No environme
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OTEL_ENABLED` | `false` | Set to `true` to enable OpenTelemetry tracing |
-| `OTEL_SERVICE_NAME` | `atlasmind-backend` | Service name reported to the OTLP collector |
+| `OTEL_SERVICE_NAME` | `compendiq-backend` | Service name reported to the OTLP collector |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | *(none)* | OTLP collector endpoint (e.g., `http://localhost:4318`) |
 
 ### Docker Compose Only
@@ -280,7 +280,7 @@ docker compose -f docker/docker-compose.yml exec redis redis-cli -a <redis-passw
 If you have synced Confluence attachments, back up the attachments volume:
 
 ```bash
-docker run --rm -v atlasmind_attachments:/data -v $(pwd):/backup alpine tar czf /backup/attachments_backup.tar.gz -C /data .
+docker run --rm -v compendiq_attachments:/data -v $(pwd):/backup alpine tar czf /backup/attachments_backup.tar.gz -C /data .
 ```
 
 ### Backup Schedule Recommendation
@@ -295,7 +295,7 @@ docker run --rm -v atlasmind_attachments:/data -v $(pwd):/backup alpine tar czf 
 
 ### Health Endpoints
 
-AtlasMind provides Kubernetes-compatible health probes:
+Compendiq provides Kubernetes-compatible health probes:
 
 | Endpoint | Purpose | Checks |
 |----------|---------|--------|
@@ -348,7 +348,7 @@ This exports traces to any OTLP-compatible collector (Jaeger, Grafana Tempo, Dat
 
 ### Audit Logging
 
-AtlasMind logs user actions and system events. View audit logs in the Admin panel under **Admin > Audit Log**. Logs are stored in PostgreSQL and include:
+Compendiq logs user actions and system events. View audit logs in the Admin panel under **Admin > Audit Log**. Logs are stored in PostgreSQL and include:
 
 - User authentication events (login, logout, failed attempts)
 - Page operations (create, update, delete)
@@ -357,7 +357,7 @@ AtlasMind logs user actions and system events. View audit logs in the Admin pane
 
 ## Encryption Key Rotation
 
-AtlasMind supports zero-downtime rotation of the PAT encryption key:
+Compendiq supports zero-downtime rotation of the PAT encryption key:
 
 1. **Generate a new key:**
 

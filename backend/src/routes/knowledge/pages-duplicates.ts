@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { findDuplicates, scanAllDuplicates } from '../../domains/knowledge/services/duplicate-detector.js';
-import { DuplicatesQuerySchema, AdminDuplicatesQuerySchema } from '@atlasmind/contracts';
+import { DuplicatesQuerySchema, AdminDuplicatesQuerySchema } from '@compendiq/contracts';
 import { z } from 'zod';
 
 const IdParamSchema = z.object({ id: z.string().min(1) });

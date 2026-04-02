@@ -1,5 +1,5 @@
 /**
- * AtlasMind logo mark — inline SVG React component.
+ * Compendiq logo mark — inline SVG React component.
  *
  * Design: "The Neural Atlas" — seven nodes arranged in a hexagonal
  * constellation that simultaneously reads as a brain (bilateral symmetry)
@@ -11,7 +11,7 @@
  * `text-primary`). Every theme gets a matched logo for free.
  */
 
-interface AtlasMindLogoProps {
+interface CompendiqLogoProps {
   /** Display size in px (width = height). */
   size?: number;
   className?: string;
@@ -56,11 +56,11 @@ const HEX_PATH = 'M32,8 L51,20 L51,44 L32,56 L13,44 L13,20 Z';
 const ARC_TR = 'M46,2 Q60,16 56,32';
 const ARC_BL = 'M18,62 Q4,48 8,32';
 
-export function AtlasMindLogo({
+export function CompendiqLogo({
   size = 24,
   className,
   animated = false,
-}: AtlasMindLogoProps) {
+}: CompendiqLogoProps) {
   return (
     <svg
       viewBox="0 0 64 64"
@@ -69,7 +69,7 @@ export function AtlasMindLogo({
       className={className}
       fill="none"
       role="img"
-      aria-label="AtlasMind"
+      aria-label="Compendiq"
     >
       {/* CSS animation for the hub glow (respects prefers-reduced-motion) */}
       {animated && (

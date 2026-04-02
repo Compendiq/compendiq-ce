@@ -1,4 +1,4 @@
-name: atlasmind-test
+name: compendiq-test
 
 services:
   postgres-test:

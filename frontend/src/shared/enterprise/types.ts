@@ -17,7 +17,7 @@ export interface LicenseInfo {
 // ─── Enterprise UI Component Contract ──────────────────────────────
 
 /**
- * Contract for the enterprise frontend package (@atlasmind/enterprise/frontend).
+ * Contract for the enterprise frontend package (@compendiq/enterprise/frontend).
  * These components are loaded dynamically. If the package is not installed,
  * the community edition renders without them.
  */

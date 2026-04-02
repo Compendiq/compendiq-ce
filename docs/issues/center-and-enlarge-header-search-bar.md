@@ -8,7 +8,7 @@ The search bar (CommandPalette trigger button) is currently a small, auto-sized 
 
 ```
 ┌─ HEADER (h-11, glass-header) ─────────────────────────────────────────────────┐
-│ [☰] [Logo AtlasMind]  [Breadcrumb ... flex-1 ...]   [🔍Search ⌘K] [🌙] [👤] │
+│ [☰] [Logo Compendiq]  [Breadcrumb ... flex-1 ...]   [🔍Search ⌘K] [🌙] [👤] │
 │      ← fixed →        ← stretches to fill →         ← right, auto-width →    │
 └───────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -24,7 +24,7 @@ The search bar (CommandPalette trigger button) is currently a small, auto-sized 
 
 ```
 ┌─ HEADER (h-11, glass-header) ─────────────────────────────────────────────────┐
-│ [☰] [Logo AtlasMind]  [    🔍 Search pages...  ⌘K    ]          [🌙] [👤]   │
+│ [☰] [Logo Compendiq]  [    🔍 Search pages...  ⌘K    ]          [🌙] [👤]   │
 │      ← fixed →        ← centered, larger, flex-1 →              ← right →    │
 └───────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -44,7 +44,7 @@ The search bar should:
   <button className="... md:hidden"> ... </button>
 
   {/* Logo */}
-  <Link to="/" className="... mr-3"> AtlasMind </Link>
+  <Link to="/" className="... mr-3"> Compendiq </Link>
 
   {/* Breadcrumb — takes all remaining space */}
   <div className="flex min-w-0 flex-1 items-center">
@@ -82,7 +82,7 @@ Restructure the header into three clear sections: left (logo), center (search), 
     <button className="... md:hidden"> ... </button>
 
     {/* Logo */}
-    <Link to="/" className="... mr-3"> AtlasMind </Link>
+    <Link to="/" className="... mr-3"> Compendiq </Link>
 
 -   {/* Breadcrumb — takes all remaining space */}
 -   <div className="flex min-w-0 flex-1 items-center">

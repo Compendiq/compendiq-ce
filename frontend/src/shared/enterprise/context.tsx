@@ -7,7 +7,7 @@ import { apiFetch } from '../lib/api';
 /**
  * Provider that loads the enterprise UI module and fetches license info.
  *
- * In community mode (no @atlasmind/enterprise installed), this resolves
+ * In community mode (no @compendiq/enterprise installed), this resolves
  * almost instantly with ui=null, license=null, isEnterprise=false.
  * The rest of the app renders normally with no awareness of enterprise.
  */

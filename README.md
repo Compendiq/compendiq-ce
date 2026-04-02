@@ -1,13 +1,13 @@
-# AtlasMind
+# Compendiq
 
 <p align="center">
-  <img src="frontend/public/logo.svg" alt="AtlasMind" width="128" height="128" />
+  <img src="frontend/public/logo.svg" alt="Compendiq" width="128" height="128" />
 </p>
 
 [![CI](https://github.com/laboef1900/ai-kb-creator/actions/workflows/pr-check.yml/badge.svg)](https://github.com/laboef1900/ai-kb-creator/actions/workflows/pr-check.yml)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-[![Docker Backend](https://img.shields.io/docker/pulls/diinlu/atlasmind-backend?label=Docker%20pulls%20%28backend%29)](https://hub.docker.com/r/diinlu/atlasmind-backend)
-[![Docker Frontend](https://img.shields.io/docker/pulls/diinlu/atlasmind-frontend?label=Docker%20pulls%20%28frontend%29)](https://hub.docker.com/r/diinlu/atlasmind-frontend)
+[![Docker Backend](https://img.shields.io/docker/pulls/diinlu/compendiq-backend?label=Docker%20pulls%20%28backend%29)](https://hub.docker.com/r/diinlu/compendiq-backend)
+[![Docker Frontend](https://img.shields.io/docker/pulls/diinlu/compendiq-frontend?label=Docker%20pulls%20%28frontend%29)](https://hub.docker.com/r/diinlu/compendiq-frontend)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D22.0.0-brightgreen)]()
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue)]()
 
@@ -50,7 +50,7 @@ AI-powered knowledge base management for **Confluence Data Center** with multi-p
 ## Architecture
 
 ```
-atlasmind/
+compendiq/
 +-- backend/src/
 |   +-- core/                  # Shared infrastructure (no domain imports)
 |   |   +-- db/                # PostgreSQL connection pool + SQL migrations (001-045)
@@ -76,7 +76,7 @@ atlasmind/
 |   +-- shared/                # Reusable components, hooks, lib
 |   +-- stores/                # Zustand stores (auth, theme, ui, article-view, command-palette, keyboard-shortcuts)
 |   +-- providers/             # Context providers (Query, Auth, Router)
-+-- packages/contracts/        # Shared Zod schemas + TypeScript types (@atlasmind/contracts)
++-- packages/contracts/        # Shared Zod schemas + TypeScript types (@compendiq/contracts)
 +-- docker/                    # Docker Compose files (dev + production)
 +-- e2e/                       # Playwright E2E tests
 +-- docs/                      # Architecture decisions, action plan
@@ -114,7 +114,7 @@ Frontend (React 19 + Vite)
 | **PDF** | pdf-lib (export/import processing) |
 | **Auth** | JWT (jose) + bcrypt, refresh token rotation |
 | **Content** | turndown + jsdom (XHTML->Markdown), marked (Markdown->HTML) |
-| **Validation** | Zod schemas shared via @atlasmind/contracts |
+| **Validation** | Zod schemas shared via @compendiq/contracts |
 | **Infrastructure** | Docker Compose (4 services), multi-stage Dockerfiles |
 | **Testing** | Vitest, Playwright, @testing-library/react |
 
@@ -135,7 +135,7 @@ ollama pull qwen3.5            # Or any chat model of your choice
 
 ## One-Command Installation (Docker)
 
-Get from zero to the AtlasMind setup wizard in under 3 minutes — no cloning, no manual config:
+Get from zero to the Compendiq setup wizard in under 3 minutes — no cloning, no manual config:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/laboef1900/ai-kb-creator/main/scripts/install.sh | bash
@@ -150,8 +150,8 @@ curl -fsSL https://raw.githubusercontent.com/laboef1900/ai-kb-creator/main/scrip
 ### What the installer does
 
 1. Generates cryptographically secure secrets (AES-256 keys, passwords)
-2. Writes a self-contained `~/atlasmind/docker-compose.yml` with all secrets embedded as literal values
-3. Pulls images from Docker Hub (`diinlu/atlasmind-backend`, `diinlu/atlasmind-frontend`)
+2. Writes a self-contained `~/compendiq/docker-compose.yml` with all secrets embedded as literal values
+3. Pulls images from Docker Hub (`diinlu/compendiq-backend`, `diinlu/compendiq-frontend`)
 4. Starts all four containers (frontend, backend, postgres, redis)
 5. Polls the backend health endpoint until ready (up to 3 minutes)
 6. Removes the temporary backend port binding (port 3051 is never permanently exposed to the host)
@@ -166,7 +166,7 @@ INSTALL_DIR=~/mydir curl -fsSL https://raw.githubusercontent.com/laboef1900/ai-k
 ### Uninstall
 
 ```bash
-bash ~/atlasmind/uninstall.sh
+bash ~/compendiq/uninstall.sh
 ```
 
 This stops all containers, removes all data volumes, and deletes the install directory.
@@ -177,13 +177,13 @@ Images are published to two registries on every release:
 
 | Registry | Images |
 |----------|--------|
-| Docker Hub | `diinlu/atlasmind-backend` · `diinlu/atlasmind-frontend` · `diinlu/atlasmind-mcp-docs` · `diinlu/atlasmind-searxng` |
+| Docker Hub | `diinlu/compendiq-backend` · `diinlu/compendiq-frontend` · `diinlu/compendiq-mcp-docs` · `diinlu/compendiq-searxng` |
 
 Both registries publish `linux/amd64` and `linux/arm64` variants.
 
 ### Ollama requirement
 
-AtlasMind uses Ollama for local LLM inference. Ollama must be running on your host machine **before** you start the containers. The installer defaults to `http://host.docker.internal:11434`; override with:
+Compendiq uses Ollama for local LLM inference. Ollama must be running on your host machine **before** you start the containers. The installer defaults to `http://host.docker.internal:11434`; override with:
 
 ```bash
 OLLAMA_BASE_URL=http://my-ollama-host:11434 curl -fsSL ... | bash
@@ -203,8 +203,8 @@ ollama pull qwen3:4b           # Or any chat model of your choice
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/your-org/atlasmind.git
-cd atlasmind
+git clone https://github.com/your-org/compendiq.git
+cd compendiq
 npm install
 ```
 
@@ -307,7 +307,7 @@ Ollama is expected to run on the host machine. The backend connects via `OLLAMA_
 | `ATTACHMENTS_DIR` | `data/attachments` | No | Attachment cache directory |
 | `NODE_EXTRA_CA_CERTS` | -- | No | PEM CA bundle path for self-signed certificates |
 | `OTEL_ENABLED` | `false` | No | Set to `true` for OpenTelemetry tracing |
-| `OTEL_SERVICE_NAME` | `atlasmind-backend` | No | Service name for OTLP collector |
+| `OTEL_SERVICE_NAME` | `compendiq-backend` | No | Service name for OTLP collector |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | -- | No | OTLP collector endpoint |
 
 ## API Documentation

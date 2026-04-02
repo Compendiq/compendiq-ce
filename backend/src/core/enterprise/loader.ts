@@ -8,7 +8,7 @@ let loaded = false;
 /**
  * Attempts to load the enterprise plugin via dynamic import.
  *
- * - If @atlasmind/enterprise is installed and exports a valid plugin,
+ * - If @compendiq/enterprise is installed and exports a valid plugin,
  *   it is returned and cached.
  * - If the package is not installed (normal for community edition),
  *   the noop plugin is returned silently. No error, no warning.
@@ -20,7 +20,7 @@ export async function loadEnterprisePlugin(): Promise<EnterprisePlugin> {
   try {
     // Dynamic import — the package is never in package.json dependencies.
     // It is installed separately via .npmrc + GitHub Packages registry.
-    const mod = await import('@atlasmind/enterprise');
+    const mod = await import('@compendiq/enterprise');
 
     // Validate the module exports the expected interface
     if (mod && typeof mod.validateLicense === 'function') {

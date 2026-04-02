@@ -27,14 +27,14 @@
 
 ## 1. Executive Summary
 
-AtlasMind adopts an **open-core** model with two repositories:
+Compendiq adopts an **open-core** model with two repositories:
 
 | Repository | Visibility | Purpose |
 |-----------|-----------|---------|
-| `atlasmind` (existing) | **Public** | Open-source core product. All features except enterprise-gated ones. |
-| `atlasmind-enterprise` (new) | **Private** | Enterprise features, license verification, enterprise UI components. Published as `@atlasmind/enterprise` via GitHub Packages. |
+| `compendiq` (existing) | **Public** | Open-source core product. All features except enterprise-gated ones. |
+| `compendiq-enterprise` (new) | **Private** | Enterprise features, license verification, enterprise UI components. Published as `@compendiq/enterprise` via GitHub Packages. |
 
-**Principle**: The open repository must contain zero enterprise logic. It defines extension points (hooks, slots, plugin contracts) that the enterprise package fills. If `@atlasmind/enterprise` is not installed, the app runs in community mode with no degradation, no error messages, and no awareness that enterprise features even exist.
+**Principle**: The open repository must contain zero enterprise logic. It defines extension points (hooks, slots, plugin contracts) that the enterprise package fills. If `@compendiq/enterprise` is not installed, the app runs in community mode with no degradation, no error messages, and no awareness that enterprise features even exist.
 
 **Integration mechanism**: Optional dynamic `import()` with a thin loader abstraction in the open repo. The enterprise package is never listed in `package.json` dependencies. It is installed separately (via `.npmrc` with GitHub Packages registry) and discovered at runtime.
 
@@ -42,12 +42,12 @@ AtlasMind adopts an **open-core** model with two repositories:
 
 ## 2. Repository Structure
 
-### 2.1 Open Repository (`atlasmind`)
+### 2.1 Open Repository (`compendiq`)
 
 Changes to the existing structure are minimal. We add a thin plugin loader layer:
 
 ```
-atlasmind/                           # PUBLIC REPO (existing)
+compendiq/                           # PUBLIC REPO (existing)
 ├── backend/src/
 │   ├── core/
 │   │   ├── enterprise/              # NEW: Plugin loader + type contracts
@@ -77,10 +77,10 @@ atlasmind/                           # PUBLIC REPO (existing)
 └── ...
 ```
 
-### 2.2 Private Repository (`atlasmind-enterprise`)
+### 2.2 Private Repository (`compendiq-enterprise`)
 
 ```
-atlasmind-enterprise/                # PRIVATE REPO (new)
+compendiq-enterprise/                # PRIVATE REPO (new)
 ├── src/
 │   ├── index.ts                     # Main entry: exports EnterprisePlugin impl
 │   ├── license/
@@ -99,7 +99,7 @@ atlasmind-enterprise/                # PRIVATE REPO (new)
 │   │   ├── LicenseStatusCard.tsx    # Admin UI: license info display
 │   │   ├── EnterpriseBanner.tsx     # "Enterprise required" banner component
 │   │   └── EnterpriseGate.tsx       # Wrapper: renders children only if licensed
-│   └── peer-types.d.ts             # Type-only imports from @atlasmind/contracts
+│   └── peer-types.d.ts             # Type-only imports from @compendiq/contracts
 ├── scripts/
 │   ├── generate-keypair.ts          # One-time: generates Ed25519 key pair
 │   ├── create-license.ts            # CLI: signs a license key
@@ -135,7 +135,7 @@ This is the same pattern used by GitLab (OIDC code is open-source, but EE licens
 
 ```json
 {
-  "name": "@atlasmind/enterprise",
+  "name": "@compendiq/enterprise",
   "version": "1.0.0",
   "license": "BUSL-1.1",
   "type": "module",
@@ -165,7 +165,7 @@ This is the same pattern used by GitLab (OIDC code is open-source, but EE licens
 The package exports exactly two things:
 
 ```typescript
-// @atlasmind/enterprise (backend)
+// @compendiq/enterprise (backend)
 export interface EnterprisePlugin {
   /** Validate the license key and return parsed info, or null if invalid/missing. */
   validateLicense(key: string | undefined): LicenseInfo | null;
@@ -183,7 +183,7 @@ export interface EnterprisePlugin {
   version: string;
 }
 
-// @atlasmind/enterprise/frontend
+// @compendiq/enterprise/frontend
 export interface EnterpriseUI {
   /** License status card for the admin panel. */
   LicenseStatusCard: React.ComponentType<{ license: LicenseInfo | null }>;
@@ -205,13 +205,13 @@ export interface EnterpriseUI {
 
 ### 3.3 Versioning Strategy
 
-- Enterprise package version tracks the open repo version: `1.x.y` where `x.y` matches the AtlasMind release it targets.
+- Enterprise package version tracks the open repo version: `1.x.y` where `x.y` matches the Compendiq release it targets.
 - The enterprise package declares the open repo's contracts package as a peer dependency for type compatibility.
 - Breaking changes to the plugin interface require a major version bump in both repos.
 
 **Version compatibility matrix** (maintained in the enterprise repo's README):
 
-| @atlasmind/enterprise | AtlasMind | Notes |
+| @compendiq/enterprise | Compendiq | Notes |
 |-----------------------|-----------|-------|
 | 1.0.x | 1.0.x | Initial release |
 | 1.1.x | 1.1.x | Added seat enforcement |
@@ -239,7 +239,7 @@ export async function loadEnterprisePlugin(): Promise<EnterprisePlugin> {
   if (loaded) return cached ?? noopPlugin;
 
   try {
-    const mod = await import('@atlasmind/enterprise');
+    const mod = await import('@compendiq/enterprise');
     // Validate the module exports the expected interface
     if (mod && typeof mod.validateLicense === 'function') {
       cached = mod as EnterprisePlugin;
@@ -388,7 +388,7 @@ export async function buildApp() {
 
   // ── Enterprise Plugin Bootstrap ──────────────────────────────
   const enterprise = await loadEnterprisePlugin();
-  const licenseKey = process.env.ATLASMIND_LICENSE_KEY;
+  const licenseKey = process.env.COMPENDIQ_LICENSE_KEY;
   const license = enterprise.validateLicense(licenseKey);
 
   // Store license info for route handlers to access
@@ -429,11 +429,11 @@ declare module 'fastify' {
 
 ```
                     PRIVATE REPO                              OPEN REPO / DEPLOYED
-                    (atlasmind-enterprise)                    (atlasmind + @atlasmind/enterprise)
+                    (compendiq-enterprise)                    (compendiq + @compendiq/enterprise)
 
    ┌─────────────────────────┐              ┌──────────────────────────────────────┐
    │ scripts/generate-keypair│              │                                      │
-   │  - Ed25519 key pair     │              │  @atlasmind/enterprise package       │
+   │  - Ed25519 key pair     │              │  @compendiq/enterprise package       │
    │  - private.pem (SECRET) │              │  ┌──────────────────────────┐        │
    │  - public.pem           │──embeds──▶   │  │ license/keys/public.ts  │        │
    │                         │              │  │ (public key as base64)  │        │
@@ -449,7 +449,7 @@ declare module 'fastify' {
    │                         │              └──────────────────────────────────────┘
    │ Output:                 │
    │   ATM-enterprise-50-    │              Environment variable:
-   │   20271231.{signature}  │──────────▶   ATLASMIND_LICENSE_KEY=ATM-enterprise-50-20271231.{sig}
+   │   20271231.{signature}  │──────────▶   COMPENDIQ_LICENSE_KEY=ATM-enterprise-50-20271231.{sig}
    └─────────────────────────┘
 ```
 
@@ -608,10 +608,10 @@ export function verifyLicenseKey(key: string | undefined): LicenseInfo | null {
 
 ```bash
 # .env (never committed)
-ATLASMIND_LICENSE_KEY=ATM-enterprise-50-20271231.MEUCIQDp7a...
+COMPENDIQ_LICENSE_KEY=ATM-enterprise-50-20271231.MEUCIQDp7a...
 ```
 
-The license key is passed as a single environment variable. The open repo's loader reads `process.env.ATLASMIND_LICENSE_KEY` and passes it to the enterprise plugin's `validateLicense()`.
+The license key is passed as a single environment variable. The open repo's loader reads `process.env.COMPENDIQ_LICENSE_KEY` and passes it to the enterprise plugin's `validateLicense()`.
 
 ---
 
@@ -631,7 +631,7 @@ This is cleaner than per-route middleware because:
 // In app.ts - buildApp()
 
 const enterprise = await loadEnterprisePlugin();
-const license = enterprise.validateLicense(process.env.ATLASMIND_LICENSE_KEY);
+const license = enterprise.validateLicense(process.env.COMPENDIQ_LICENSE_KEY);
 
 // OIDC routes: only registered if enterprise license includes OIDC feature
 if (enterprise.isFeatureEnabled(ENTERPRISE_FEATURES.OIDC_SSO, license)) {
@@ -765,7 +765,7 @@ export async function loadEnterpriseUI(): Promise<EnterpriseUI | null> {
   if (loaded) return cached;
 
   try {
-    const mod = await import('@atlasmind/enterprise/frontend');
+    const mod = await import('@compendiq/enterprise/frontend');
     if (mod && typeof mod.LicenseStatusCard === 'function') {
       cached = mod as EnterpriseUI;
     }
@@ -932,7 +932,7 @@ function SomeAdminPage() {
 
 ### 8.1 Community Build (no enterprise package)
 
-Nothing changes. `npm install` from the repo root installs only the declared dependencies. The dynamic `import('@atlasmind/enterprise')` fails silently, and the noop plugin takes over.
+Nothing changes. `npm install` from the repo root installs only the declared dependencies. The dynamic `import('@compendiq/enterprise')` fails silently, and the noop plugin takes over.
 
 ```bash
 # Standard community build
@@ -949,17 +949,17 @@ Add to the project-level `.npmrc` (or instruct enterprise customers to):
 
 ```ini
 # .npmrc (not committed to the open repo)
-@atlasmind:registry=https://npm.pkg.github.com
+@compendiq:registry=https://npm.pkg.github.com
 //npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
 ```
 
 #### Step 2: Install Enterprise Package
 
 ```bash
-npm install @atlasmind/enterprise@^1.0.0
+npm install @compendiq/enterprise@^1.0.0
 ```
 
-This installs the package into `node_modules/@atlasmind/enterprise`. Because it is NOT in `package.json`, `npm ci` on the open repo alone will not install it. Enterprise customers either:
+This installs the package into `node_modules/@compendiq/enterprise`. Because it is NOT in `package.json`, `npm ci` on the open repo alone will not install it. Enterprise customers either:
 
 1. Add it to their own fork's `package.json`, OR
 2. Use a post-install script or Docker build step that installs it separately.
@@ -968,7 +968,7 @@ This installs the package into `node_modules/@atlasmind/enterprise`. Because it 
 
 ```bash
 # In .env or Docker environment
-ATLASMIND_LICENSE_KEY=ATM-enterprise-50-20271231.MEUCIQDp7a...
+COMPENDIQ_LICENSE_KEY=ATM-enterprise-50-20271231.MEUCIQDp7a...
 ```
 
 ### 8.3 Docker Build Variants
@@ -996,8 +996,8 @@ COPY .npmrc.enterprise ./.npmrc
 # Install all deps including enterprise
 ARG GITHUB_TOKEN
 RUN --mount=type=cache,target=/root/.npm \
-    GITHUB_TOKEN=${GITHUB_TOKEN} npm ci -w backend -w @atlasmind/contracts && \
-    npm install @atlasmind/enterprise@^1.0.0
+    GITHUB_TOKEN=${GITHUB_TOKEN} npm ci -w backend -w @compendiq/contracts && \
+    npm install @compendiq/enterprise@^1.0.0
 
 # Continue with standard build...
 ```
@@ -1015,13 +1015,13 @@ services:
       args:
         GITHUB_TOKEN: ${GITHUB_TOKEN}
     environment:
-      ATLASMIND_LICENSE_KEY: ${ATLASMIND_LICENSE_KEY}
+      COMPENDIQ_LICENSE_KEY: ${COMPENDIQ_LICENSE_KEY}
 ```
 
 ### 8.4 GitHub Packages Publishing (CI in private repo)
 
 ```yaml
-# .github/workflows/publish.yml (in atlasmind-enterprise repo)
+# .github/workflows/publish.yml (in compendiq-enterprise repo)
 name: Publish to GitHub Packages
 on:
   push:
@@ -1104,10 +1104,10 @@ This is a 6-phase migration executed over approximately 1-2 sprints.
 
 ### Phase 3: Create Private Repository (Day 2-3)
 
-**Goal**: `atlasmind-enterprise` repo exists with license system and enterprise plugin.
+**Goal**: `compendiq-enterprise` repo exists with license system and enterprise plugin.
 
-1. Create `atlasmind-enterprise` GitHub repository (private).
-2. Initialize npm package with `@atlasmind/enterprise` name.
+1. Create `compendiq-enterprise` GitHub repository (private).
+2. Initialize npm package with `@compendiq/enterprise` name.
 3. Implement:
    - `scripts/generate-keypair.ts` -- Ed25519 key generation
    - `scripts/create-license.ts` -- License creation CLI
@@ -1123,25 +1123,25 @@ This is a 6-phase migration executed over approximately 1-2 sprints.
    - Invalid signature rejection
    - Tampered payload rejection
    - Feature-to-tier mapping
-6. Publish `@atlasmind/enterprise@1.0.0-alpha.1` to GitHub Packages.
+6. Publish `@compendiq/enterprise@1.0.0-alpha.1` to GitHub Packages.
 
 ### Phase 4: Enterprise Frontend Components (Day 3-4)
 
 **Goal**: Enterprise UI components in the private repo.
 
-1. Add frontend components to `atlasmind-enterprise`:
+1. Add frontend components to `compendiq-enterprise`:
    - `src/frontend/LicenseStatusCard.tsx`
    - `src/frontend/EnterpriseBanner.tsx`
    - `src/frontend/EnterpriseGate.tsx`
    - `src/frontend/index.ts` (exports EnterpriseUI implementation)
 2. Configure the build to produce both backend and frontend bundles.
-3. Publish `@atlasmind/enterprise@1.0.0-alpha.2`.
+3. Publish `@compendiq/enterprise@1.0.0-alpha.2`.
 
 ### Phase 5: Integration Testing (Day 4-5)
 
 **Goal**: Both repos work together correctly.
 
-1. In a test environment, install `@atlasmind/enterprise` alongside the open repo.
+1. In a test environment, install `@compendiq/enterprise` alongside the open repo.
 2. Verify:
    - Community mode: OIDC routes absent, license endpoint returns community
    - Enterprise mode (valid key): OIDC routes present, license endpoint returns enterprise info
@@ -1154,11 +1154,11 @@ This is a 6-phase migration executed over approximately 1-2 sprints.
 
 ### Phase 6: Cleanup and Release (Day 5-6)
 
-1. Publish `@atlasmind/enterprise@1.0.0` (stable).
+1. Publish `@compendiq/enterprise@1.0.0` (stable).
 2. Update open repo documentation:
    - Add ADR-012 (or next number) documenting the enterprise separation decision
    - Update CLAUDE.md with enterprise-related env vars
-   - Update `.env.example` with `ATLASMIND_LICENSE_KEY`
+   - Update `.env.example` with `COMPENDIQ_LICENSE_KEY`
    - Update `docker-compose.yml` with enterprise env var passthrough
 3. Close PR #549 with reference to the new architecture.
 4. Update PR #553 if it has any enterprise dependencies.
@@ -1180,8 +1180,8 @@ This is a 6-phase migration executed over approximately 1-2 sprints.
 | Key | Location | Protection |
 |-----|----------|-----------|
 | Ed25519 **private key** | Developer machine only. NEVER in git, Docker images, npm packages, or CI artifacts. | File permissions (600). Consider hardware security module (HSM) for production key signing. |
-| Ed25519 **public key** | Embedded in `@atlasmind/enterprise` npm package as base64 constant. | Not secret. Changing it requires a new package version. |
-| License key (signed string) | `ATLASMIND_LICENSE_KEY` env var in the deployed environment. | Same protection as other secrets (JWT_SECRET, etc.). Not in source control. |
+| Ed25519 **public key** | Embedded in `@compendiq/enterprise` npm package as base64 constant. | Not secret. Changing it requires a new package version. |
+| License key (signed string) | `COMPENDIQ_LICENSE_KEY` env var in the deployed environment. | Same protection as other secrets (JWT_SECRET, etc.). Not in source control. |
 
 ### 10.2 Preventing Bypass
 
@@ -1311,18 +1311,18 @@ The enterprise repo's CI installs both the open repo and the enterprise package,
 # In enterprise repo CI
 - name: Integration test
   run: |
-    git clone https://github.com/yourorg/atlasmind.git /tmp/atlasmind
-    cd /tmp/atlasmind
+    git clone https://github.com/yourorg/compendiq.git /tmp/compendiq
+    cd /tmp/compendiq
     npm install
     npm install /path/to/enterprise/dist  # Install local build
-    ATLASMIND_LICENSE_KEY=${{ secrets.TEST_LICENSE_KEY }} npm test
+    COMPENDIQ_LICENSE_KEY=${{ secrets.TEST_LICENSE_KEY }} npm test
 ```
 
 ---
 
 ## 12. Enterprise Feature Roadmap
 
-Implementation roadmap for enterprise features. Derived from the [Open-Core Business Model](../../Documentation-Research/AtlasMind/Open-Core%20Business%20Model.md) research document (2026-03-21).
+Implementation roadmap for enterprise features. Derived from the [Open-Core Business Model](../../Documentation-Research/Compendiq/Open-Core%20Business%20Model.md) research document (2026-03-21).
 
 ### Phase 0: Infrastructure (Pre-launch)
 
@@ -1365,10 +1365,10 @@ Implementation roadmap for enterprise features. Derived from the [Open-Core Busi
 | Version snapshot archival | `version_snapshot_archival` | Compliance | Tamper-evident storage |
 | ABAC permissions | `abac_permissions` | Identity | Fine-grained attribute-based space permissions |
 | IP allowlisting | `ip_allowlisting` | Identity | Restrict instance access by IP range |
-| AD/LDAP group sync | `ldap_group_sync` | Identity | Map AD/LDAP groups to AtlasMind roles |
+| AD/LDAP group sync | `ldap_group_sync` | Identity | Map AD/LDAP groups to Compendiq roles |
 | Slack/Teams deep integration | `slack_teams_deep` | Integrations | Deep links, content previews, interactive notifications |
 | Webhook push | `webhook_push` | Integrations | Push events to external systems |
-| Multi-instance management | `multi_instance` | Scale | Single pane of glass for multiple AtlasMind instances |
+| Multi-instance management | `multi_instance` | Scale | Single pane of glass for multiple Compendiq instances |
 | Bulk user operations | `bulk_user_operations` | Scale | CSV import/export, batch role changes |
 | Batch page operations | `batch_page_operations` | Scale | Bulk tag, archive, permission changes |
 
@@ -1397,7 +1397,7 @@ Implementation roadmap for enterprise features. Derived from the [Open-Core Busi
 
 #### Context
 
-AtlasMind needs to offer enterprise features (OIDC/SSO, advanced RBAC, audit log export) under a paid license while keeping the core product open-source. PR #549 implemented enterprise gating as in-repo code with HMAC license validation. This has several issues:
+Compendiq needs to offer enterprise features (OIDC/SSO, advanced RBAC, audit log export) under a paid license while keeping the core product open-source. PR #549 implemented enterprise gating as in-repo code with HMAC license validation. This has several issues:
 
 1. Enterprise logic pollutes the open-source codebase.
 2. HMAC requires a shared secret, which means the signing key must be kept secret but also present in the deployed application.
@@ -1414,13 +1414,13 @@ AtlasMind needs to offer enterprise features (OIDC/SSO, advanced RBAC, audit log
 
 #### Decision: Option C - Separate npm package
 
-Use a private GitHub repository that publishes `@atlasmind/enterprise` to GitHub Packages. The open repo uses optional dynamic `import()` with a plugin loader pattern.
+Use a private GitHub repository that publishes `@compendiq/enterprise` to GitHub Packages. The open repo uses optional dynamic `import()` with a plugin loader pattern.
 
 #### Rationale
 
 - **True isolation**: Enterprise code is never in the open-source repository.
 - **Ed25519 asymmetric signing**: Private key stays with the issuer, public key ships in the package. No shared secrets.
-- **Standard npm workflow**: `npm install @atlasmind/enterprise` -- familiar to developers.
+- **Standard npm workflow**: `npm install @compendiq/enterprise` -- familiar to developers.
 - **Clean legal boundary**: Open repo under one license, enterprise package under BUSL-1.1.
 - **Zero degradation**: Community edition has no awareness of enterprise features. No 403s, no "upgrade" nags, no dead code.
 
@@ -1455,8 +1455,8 @@ Use a private GitHub repository that publishes `@atlasmind/enterprise` to GitHub
 | `backend/src/app.ts` | Add enterprise loader bootstrap, conditional OIDC registration |
 | `backend/src/routes/foundation/admin.ts` | Add fallback `GET /api/admin/license` endpoint |
 | `frontend/src/App.tsx` | Wrap in EnterpriseProvider, conditional OIDC route |
-| `docker/docker-compose.yml` | Add `ATLASMIND_LICENSE_KEY` env var passthrough |
-| `.env.example` | Add `ATLASMIND_LICENSE_KEY` documentation |
+| `docker/docker-compose.yml` | Add `COMPENDIQ_LICENSE_KEY` env var passthrough |
+| `.env.example` | Add `COMPENDIQ_LICENSE_KEY` documentation |
 | `CLAUDE.md` | Document enterprise env var |
 | `docs/ARCHITECTURE-DECISIONS.md` | Add ADR-012 |
 
@@ -1469,7 +1469,7 @@ Use a private GitHub repository that publishes `@atlasmind/enterprise` to GitHub
 | `frontend/src/features/admin/OidcSettingsPage.tsx` | No changes needed. Page is simply not routed to in community mode. |
 | `backend/package.json` | Enterprise package is NOT a dependency. |
 
-### New Repository Files (atlasmind-enterprise)
+### New Repository Files (compendiq-enterprise)
 
 | File | Purpose |
 |------|---------|
@@ -1495,8 +1495,8 @@ Use a private GitHub repository that publishes `@atlasmind/enterprise` to GitHub
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `ATLASMIND_LICENSE_KEY` | No | (none) | Enterprise license key. Format: `ATM-{tier}-{seats}-{expiry}.{signature}`. Omit for community edition. |
-| `GITHUB_TOKEN` | For enterprise Docker build | (none) | GitHub PAT with `read:packages` scope for installing `@atlasmind/enterprise`. |
+| `COMPENDIQ_LICENSE_KEY` | No | (none) | Enterprise license key. Format: `ATM-{tier}-{seats}-{expiry}.{signature}`. Omit for community edition. |
+| `GITHUB_TOKEN` | For enterprise Docker build | (none) | GitHub PAT with `read:packages` scope for installing `@compendiq/enterprise`. |
 
 ---
 

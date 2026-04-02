@@ -1,6 +1,6 @@
 {
-  "name": "AtlasMind",
-  "short_name": "AtlasMind",
+  "name": "Compendiq",
+  "short_name": "Compendiq",
   "description": "AI-powered knowledge base management with Confluence integration and Ollama LLM backend",
   "id": "/",
   "start_url": "/",

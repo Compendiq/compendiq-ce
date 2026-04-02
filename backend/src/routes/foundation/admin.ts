@@ -5,7 +5,7 @@ import { reEncryptPat } from '../../core/utils/crypto.js';
 import { getAuditLog, logAuditEvent } from '../../core/services/audit-service.js';
 import { listErrors, resolveError, getErrorSummary } from '../../core/services/error-tracker.js';
 import { logger } from '../../core/utils/logger.js';
-import { UpdateAdminSettingsSchema } from '@atlasmind/contracts';
+import { UpdateAdminSettingsSchema } from '@compendiq/contracts';
 import { getSharedLlmSettings, upsertSharedLlmSettings } from '../../core/services/admin-settings-service.js';
 import { getAiGuardrails, getAiOutputRules, upsertAiGuardrails, upsertAiOutputRules } from '../../core/services/ai-safety-service.js';
 import { getRateLimits, upsertRateLimits } from '../../core/services/rate-limit-service.js';

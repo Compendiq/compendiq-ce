@@ -35,7 +35,7 @@ test.describe('Keyboard shortcuts', () => {
           state: { accessToken, user, isAuthenticated: true },
           version: 0,
         };
-        localStorage.setItem('atlasmind-auth', JSON.stringify(authState));
+        localStorage.setItem('compendiq-auth', JSON.stringify(authState));
       },
       { accessToken: data.accessToken, user: data.user },
     );

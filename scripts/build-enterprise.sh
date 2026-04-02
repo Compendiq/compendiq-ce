@@ -2,10 +2,10 @@
 set -euo pipefail
 
 # ═══════════════════════════════════════════════════════════════════════
-# AtlasMind Enterprise Build Script (Template)
+# Compendiq Enterprise Build Script (Template)
 #
 # This script is a TEMPLATE that lives in the public CE repository.
-# The private atlasmind-enterprise repo uses this as a reference for
+# The private compendiq-enterprise repo uses this as a reference for
 # its CI/CD pipeline.
 #
 # The enterprise build process:
@@ -24,7 +24,7 @@ set -euo pipefail
 #
 # Prerequisites:
 #   - Node.js 24+
-#   - npm with access to @atlasmind scope on GitHub Packages
+#   - npm with access to @compendiq scope on GitHub Packages
 #   - javascript-obfuscator (npm install -g javascript-obfuscator)
 #   - Docker (for the final image build)
 #
@@ -38,7 +38,7 @@ set -euo pipefail
 #
 # ═══════════════════════════════════════════════════════════════════════
 
-echo "=== AtlasMind Enterprise Build ==="
+echo "=== Compendiq Enterprise Build ==="
 echo ""
 echo "This is a template script in the CE repository."
 echo "The actual build is performed by the EE repo's CI pipeline."
@@ -50,14 +50,14 @@ echo "To build the enterprise Docker image manually:"
 echo ""
 echo "  docker build -f docker/Dockerfile.enterprise \\"
 echo "    --build-arg GITHUB_TOKEN=\$GITHUB_TOKEN \\"
-echo "    -t atlasmind-enterprise:\${IMAGE_TAG:-latest} ."
+echo "    -t compendiq-enterprise:\${IMAGE_TAG:-latest} ."
 echo ""
 
 # ─── Overlay Merge Process (reference implementation) ───────────────
 #
 # The EE repo structure:
 #
-#   atlasmind-enterprise/
+#   compendiq-enterprise/
 #   ├── ce/                     ← git submodule (this repo)
 #   ├── overlay/
 #   │   ├── backend/src/
@@ -71,7 +71,7 @@ echo ""
 # Merge steps:
 #   1. Copy ce/ to build/
 #   2. Copy overlay/ on top (overlay files take precedence)
-#   3. Install @atlasmind/enterprise from GitHub Packages
+#   3. Install @compendiq/enterprise from GitHub Packages
 #   4. Run tsc
 #   5. Obfuscate enterprise dirs
 #   6. Build Docker image

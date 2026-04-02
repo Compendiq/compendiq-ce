@@ -32,7 +32,7 @@ describe('generateAccessToken expiry', () => {
     const now = Math.floor(Date.now() / 1000);
     const token = await generateAccessToken(payload);
     const secret = new TextEncoder().encode(JWT_SECRET);
-    const { payload: decoded } = await jose.jwtVerify(token, secret, { issuer: 'atlasmind' });
+    const { payload: decoded } = await jose.jwtVerify(token, secret, { issuer: 'compendiq' });
 
     // exp should be approximately 1 hour (3600s) from now
     const expiry = decoded.exp as number;
@@ -49,7 +49,7 @@ describe('generateAccessToken expiry', () => {
     const now = Math.floor(Date.now() / 1000);
     const token = await generateAccessToken(payload);
     const secret = new TextEncoder().encode(JWT_SECRET);
-    const { payload: decoded } = await jose.jwtVerify(token, secret, { issuer: 'atlasmind' });
+    const { payload: decoded } = await jose.jwtVerify(token, secret, { issuer: 'compendiq' });
 
     // exp should be approximately 30 minutes (1800s) from now
     const expiry = decoded.exp as number;
@@ -65,7 +65,7 @@ describe('generateAccessToken expiry', () => {
     const now = Math.floor(Date.now() / 1000);
     const token = await generateAccessToken(payload);
     const secret = new TextEncoder().encode(JWT_SECRET);
-    const { payload: decoded } = await jose.jwtVerify(token, secret, { issuer: 'atlasmind' });
+    const { payload: decoded } = await jose.jwtVerify(token, secret, { issuer: 'compendiq' });
 
     const expiry = decoded.exp as number;
     const diff = expiry - now;

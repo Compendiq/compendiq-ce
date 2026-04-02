@@ -293,7 +293,7 @@ function getJwtSecret(): Uint8Array {
 
 ### Input validation
 
-- **PASS:** Zod schemas from `@atlasmind/contracts` on all API boundaries
+- **PASS:** Zod schemas from `@compendiq/contracts` on all API boundaries
 - **PASS:** File upload validation (magic bytes, MIME type, size limits) for PDF and image uploads
 - **PASS:** DOMPurify sanitization on imported Markdown HTML output
 - **PASS:** SVG attachments served with `Content-Security-Policy: sandbox` and `Content-Disposition: attachment`

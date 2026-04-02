@@ -1,6 +1,6 @@
-# Contributing to AtlasMind
+# Contributing to Compendiq
 
-Thank you for your interest in contributing to AtlasMind! This guide will help you get started.
+Thank you for your interest in contributing to Compendiq! This guide will help you get started.
 
 ## Prerequisites
 
@@ -51,11 +51,11 @@ npm run dev
 
 This starts both the backend (port 3051) and frontend (port 5273) with hot reload.
 
-Open http://localhost:5273 to access AtlasMind. The first registered user automatically gets the admin role.
+Open http://localhost:5273 to access Compendiq. The first registered user automatically gets the admin role.
 
 ## Branch Workflow
 
-AtlasMind follows a strict branching model:
+Compendiq follows a strict branching model:
 
 ```
 feature/* --> dev --> main
@@ -73,7 +73,7 @@ feature/* --> dev --> main
 - **TypeScript strict mode** -- no `any` types unless absolutely necessary
 - **ESLint** -- flat config in each workspace, run `npm run lint` before committing
 - **Readability first** -- explicit over clever, descriptive variable names
-- **Zod validation** -- use schemas from `@atlasmind/contracts` on all API boundaries
+- **Zod validation** -- use schemas from `@compendiq/contracts` on all API boundaries
 - **Parameterized SQL only** -- never use string concatenation for queries
 
 ### Testing
@@ -158,4 +158,4 @@ All architectural decisions are documented in `docs/ARCHITECTURE-DECISIONS.md`. 
 
 ## License
 
-By contributing to AtlasMind, you agree that your contributions will be licensed under the [GNU Affero General Public License v3.0](LICENSE).
+By contributing to Compendiq, you agree that your contributions will be licensed under the [GNU Affero General Public License v3.0](LICENSE).

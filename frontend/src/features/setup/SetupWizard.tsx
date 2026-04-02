@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { m, AnimatePresence } from 'framer-motion';
-import { AtlasMindLogo } from '../../shared/components/AtlasMindLogo';
+import { CompendiqLogo } from '../../shared/components/CompendiqLogo';
 import { useSetupStatus } from '../../shared/hooks/useSetupStatus';
 import { WelcomeStep } from './steps/WelcomeStep';
 import { AdminStep } from './steps/AdminStep';
@@ -78,9 +78,9 @@ export function SetupWizard() {
             animate={{ opacity: 1 }}
             className="mb-4 flex items-center justify-center gap-2"
           >
-            <AtlasMindLogo size={20} className="text-primary" />
+            <CompendiqLogo size={20} className="text-primary" />
             <span className="text-sm font-semibold text-muted-foreground">
-              Atlas<span className="font-extrabold">Mind</span> Setup
+              Compendiq Setup
             </span>
           </m.div>
         )}

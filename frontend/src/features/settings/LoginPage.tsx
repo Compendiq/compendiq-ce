@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useAuthStore } from '../../stores/auth-store';
 import { apiFetch } from '../../shared/lib/api';
-import { AtlasMindLogo } from '../../shared/components/AtlasMindLogo';
+import { CompendiqLogo } from '../../shared/components/CompendiqLogo';
 
 export function LoginPage() {
   const navigate = useNavigate();
@@ -37,9 +37,9 @@ export function LoginPage() {
     <div className="bg-background flex min-h-screen items-center justify-center p-4">
       <div className="glass-card w-full max-w-md p-8">
         <div className="mb-2 flex flex-col items-center gap-3">
-          <AtlasMindLogo size={56} className="text-primary" animated />
+          <CompendiqLogo size={56} className="text-primary" animated />
           <h1 className="text-center text-2xl font-bold">
-            Atlas<span className="font-extrabold">Mind</span>
+            Compendiq
           </h1>
         </div>
         <p className="mb-8 text-center text-sm text-muted-foreground">

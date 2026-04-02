@@ -20,10 +20,10 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY frontend/package.json ./frontend/
 COPY packages/contracts/package.json ./packages/contracts/
-RUN --mount=type=cache,target=/root/.npm npm ci -w frontend -w @atlasmind/contracts
-# Build @atlasmind/contracts so frontend can resolve its type declarations
+RUN --mount=type=cache,target=/root/.npm npm ci -w frontend -w @compendiq/contracts
+# Build @compendiq/contracts so frontend can resolve its type declarations
 COPY packages/contracts/ ./packages/contracts/
-RUN npm run build -w @atlasmind/contracts
+RUN npm run build -w @compendiq/contracts
 COPY frontend/index.html frontend/vite.config.ts frontend/tsconfig.json frontend/tsconfig.node.json ./frontend/
 COPY frontend/public/ frontend/public/
 COPY frontend/src/ frontend/src/

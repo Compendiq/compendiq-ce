@@ -2,7 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { providerStreamChat } from '../../domains/llm/services/llm-provider.js';
 import { LlmCache, buildLlmCacheKey } from '../../domains/llm/services/llm-cache.js';
 import { fetchWebSources, formatWebContext, type WebSource } from './_web-search-helper.js';
-import { SummarizeRequestSchema } from '@atlasmind/contracts';
+import { SummarizeRequestSchema } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import {
   assembleContextIfNeeded,

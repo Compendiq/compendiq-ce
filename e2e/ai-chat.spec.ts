@@ -33,7 +33,7 @@ test.describe('AI Chat', () => {
           state: { accessToken, user, isAuthenticated: true },
           version: 0,
         };
-        localStorage.setItem('atlasmind-auth', JSON.stringify(authState));
+        localStorage.setItem('compendiq-auth', JSON.stringify(authState));
       },
       { accessToken: data.accessToken, user: data.user },
     );
@@ -138,7 +138,7 @@ test.describe('AI Chat', () => {
 
     if (await chatInput.first().isVisible({ timeout: 5_000 }).catch(() => false)) {
       // Type a question
-      await chatInput.first().fill('What is AtlasMind?');
+      await chatInput.first().fill('What is Compendiq?');
 
       // Try to submit (Enter or submit button)
       const submitBtn = page

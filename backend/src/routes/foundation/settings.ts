@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { request as undiciRequest } from 'undici';
-import { UpdateSettingsSchema, TestConfluenceSchema } from '@atlasmind/contracts';
+import { UpdateSettingsSchema, TestConfluenceSchema } from '@compendiq/contracts';
 import { query } from '../../core/db/postgres.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { encryptPat, decryptPat } from '../../core/utils/crypto.js';

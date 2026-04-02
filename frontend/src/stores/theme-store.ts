@@ -2,8 +2,9 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { migrateStorageKey } from '../shared/lib/migrate-storage-key';
 
-// One-time migration from legacy kb-theme → atlasmind-theme localStorage key
-migrateStorageKey('kb-theme', 'atlasmind-theme');
+// One-time migrations for localStorage key renames
+migrateStorageKey('kb-theme', 'compendiq-theme');
+migrateStorageKey('atlasmind-theme', 'compendiq-theme');
 
 export const THEME_IDS = [
   // Dark themes
@@ -116,7 +117,7 @@ export const useThemeStore = create<ThemeState>()(
       },
     }),
     {
-      name: 'atlasmind-theme',
+      name: 'compendiq-theme',
       onRehydrateStorage: () => {
         return (state?: ThemeState) => {
           if (state?.theme) {

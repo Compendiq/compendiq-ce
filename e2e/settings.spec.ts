@@ -39,7 +39,7 @@ test.describe('Settings page', () => {
           state: { accessToken, user, isAuthenticated: true },
           version: 0,
         };
-        localStorage.setItem('atlasmind-auth', JSON.stringify(authState));
+        localStorage.setItem('compendiq-auth', JSON.stringify(authState));
       },
       { accessToken: authToken, user: authUser },
     );

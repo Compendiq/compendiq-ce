@@ -14,7 +14,7 @@
     "noEmit": true,
     "paths": {
       "@/*": ["./src/*"],
-      "@atlasmind/contracts": ["../packages/contracts/src"]
+      "@compendiq/contracts": ["../packages/contracts/src"]
     }
   },
   "include": ["src/**/*"],

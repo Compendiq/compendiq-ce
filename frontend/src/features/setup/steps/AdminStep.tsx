@@ -57,7 +57,7 @@ export function AdminStep({ onNext, onBack }: AdminStepProps) {
     >
       <h2 className="text-xl font-semibold">Create Admin Account</h2>
       <p className="mt-1 text-sm text-muted-foreground">
-        This will be the first administrator account for your AtlasMind instance.
+        This will be the first administrator account for your Compendiq instance.
       </p>
 
       <form onSubmit={handleSubmit} className="mt-6 space-y-4">

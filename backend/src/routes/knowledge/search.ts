@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { SearchHybridQuerySchema } from '@atlasmind/contracts';
+import { SearchHybridQuerySchema } from '@compendiq/contracts';
 import { query } from '../../core/db/postgres.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 import {

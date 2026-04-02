@@ -1,6 +1,6 @@
 # Performance Baseline & Testing
 
-This document defines the performance testing methodology, key metrics, baseline targets, and how to run performance tests for AtlasMind.
+This document defines the performance testing methodology, key metrics, baseline targets, and how to run performance tests for Compendiq.
 
 ## Test Methodology
 

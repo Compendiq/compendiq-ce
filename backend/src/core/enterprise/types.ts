@@ -37,7 +37,7 @@ export type FastifyPreHandler = (
 ) => Promise<void>;
 
 /**
- * Contract that the @atlasmind/enterprise package must implement.
+ * Contract that the @compendiq/enterprise package must implement.
  * The open-source repo defines this interface; the enterprise package
  * provides the real implementation. Community mode uses the noop stub.
  */

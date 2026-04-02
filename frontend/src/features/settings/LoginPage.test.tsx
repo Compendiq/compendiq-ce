@@ -27,7 +27,7 @@ describe('LoginPage', () => {
 
   it('renders the login form', () => {
     renderLoginPage();
-    expect(screen.getByRole('img', { name: 'AtlasMind' })).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'Compendiq' })).toBeInTheDocument();
     expect(screen.getByPlaceholderText('Enter username')).toBeInTheDocument();
     expect(screen.getByPlaceholderText('Enter password')).toBeInTheDocument();
   });

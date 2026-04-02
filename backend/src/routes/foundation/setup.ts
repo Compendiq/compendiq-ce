@@ -1,7 +1,7 @@
 /**
  * First-run setup wizard endpoints.
  *
- * These endpoints power the initial setup flow when AtlasMind is deployed for
+ * These endpoints power the initial setup flow when Compendiq is deployed for
  * the first time. They allow detecting whether setup is complete, creating the
  * initial admin account, and testing LLM connectivity before persisting config.
  */

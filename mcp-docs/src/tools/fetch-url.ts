@@ -76,7 +76,7 @@ export async function fetchUrl(
     method: 'GET',
     redirect: 'manual',
     headers: {
-      'User-Agent': 'AtlasMind-MCP-Docs/1.0',
+      'User-Agent': 'Compendiq-MCP-Docs/1.0',
       'Accept': 'text/html,application/xhtml+xml,text/plain,application/json',
     },
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),

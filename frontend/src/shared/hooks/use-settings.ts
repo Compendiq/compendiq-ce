@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import type { SettingsResponse } from '@atlasmind/contracts';
+import type { SettingsResponse } from '@compendiq/contracts';
 import { apiFetch } from '../lib/api';
 
 export function useSettings() {

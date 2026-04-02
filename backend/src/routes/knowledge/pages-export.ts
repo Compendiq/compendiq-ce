@@ -3,7 +3,7 @@ import { query } from '../../core/db/postgres.js';
 import { generatePdf } from '../../core/services/pdf-service.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 import { PDFDocument } from 'pdf-lib';
-import { BatchExportBodySchema } from '@atlasmind/contracts';
+import { BatchExportBodySchema } from '@compendiq/contracts';
 import { z } from 'zod';
 
 const IdParamSchema = z.object({ id: z.string().min(1) });

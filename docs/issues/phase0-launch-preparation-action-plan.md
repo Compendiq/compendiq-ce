@@ -2,7 +2,7 @@
 
 **Target:** 2026-04-26 (5 weeks from today)
 **Goal:** Everything needed before flipping the repo to public
-**Source:** AtlasMind-Release-Roadmap.md (Phase 0, sections 3.1–3.7)
+**Source:** Compendiq-Release-Roadmap.md (Phase 0, sections 3.1–3.7)
 
 ---
 
@@ -42,7 +42,7 @@ backend/src/enterprise/
 
 #### 1.2 Implement license-service.ts
 
-- Parse `ATLASMIND_LICENSE_KEY` env var (or absent = Community)
+- Parse `COMPENDIQ_LICENSE_KEY` env var (or absent = Community)
 - License key format: `ATM-{tier}-{seatCount}-{expiryYYYYMMDD}-{signature}`
   - Example: `ATM-ENT-50-20270101-a1b2c3d4e5f6`
   - Tier: `ENT` (enterprise), `PRO` (future)
@@ -91,7 +91,7 @@ Most security infrastructure is already solid. This stream is a verification pas
 #### 2.1 Dependency audit
 
 ```bash
-npm audit --workspace=backend --workspace=frontend --workspace=@atlasmind/contracts
+npm audit --workspace=backend --workspace=frontend --workspace=@compendiq/contracts
 ```
 
 - Patch all critical and high CVEs
@@ -190,7 +190,7 @@ Start with v1.0.0-rc.1 entry. Format: [Keep a Changelog](https://keepachangelog.
 - Verify all env vars from CLAUDE.md are present
 - Add inline comments explaining each var
 - Group by category (Required, Database, LLM, Auth, Optional)
-- Add `ATLASMIND_LICENSE_KEY` (after Stream 1)
+- Add `COMPENDIQ_LICENSE_KEY` (after Stream 1)
 
 ---
 
@@ -230,7 +230,7 @@ Create `frontend/src/features/setup/`:
 frontend/src/features/setup/
 ├── SetupWizard.tsx           # Main wizard container with stepper
 ├── steps/
-│   ├── WelcomeStep.tsx       # AtlasMind logo, "Let's get started"
+│   ├── WelcomeStep.tsx       # Compendiq logo, "Let's get started"
 │   ├── AdminStep.tsx         # Create admin account form
 │   ├── LlmStep.tsx           # Configure LLM (detect Ollama, or API key)
 │   ├── ConfluenceStep.tsx    # Connect Confluence (optional, "Skip for now")
@@ -275,19 +275,19 @@ Location: `scripts/install.sh`
 
 ```bash
 #!/usr/bin/env bash
-# AtlasMind One-Command Installer
-# Usage: curl -fsSL https://get.atlasmind.app/install.sh | bash
+# Compendiq One-Command Installer
+# Usage: curl -fsSL https://get.compendiq.app/install.sh | bash
 
 set -euo pipefail
 
-INSTALL_DIR="${ATLASMIND_DIR:-$HOME/atlasmind}"
+INSTALL_DIR="${COMPENDIQ_DIR:-$HOME/compendiq}"
 COMPOSE_VERSION="latest"
 ```
 
 Steps:
 1. Check Docker is installed and running (exit with helpful message if not)
 2. Check Docker Compose v2 (`docker compose version`)
-3. Create `$INSTALL_DIR` (default: `~/atlasmind/`)
+3. Create `$INSTALL_DIR` (default: `~/compendiq/`)
 4. Generate cryptographically secure random secrets:
    - `JWT_SECRET` (64 chars, `openssl rand -base64 48`)
    - `PAT_ENCRYPTION_KEY` (64 chars)
@@ -306,8 +306,8 @@ Steps:
 Update `.github/workflows/docker-build.yml`:
 - Trigger on git tags (`v*`)
 - Build multi-arch images (amd64 + arm64) using `docker buildx`
-- Push to Docker Hub (`diinlu/atlasmind-backend`, `diinlu/atlasmind-frontend`)
-- Push to GHCR as mirror (`ghcr.io/laboef1900/atlasmind-backend`, etc.)
+- Push to Docker Hub (`diinlu/compendiq-backend`, `diinlu/compendiq-frontend`)
+- Push to GHCR as mirror (`ghcr.io/laboef1900/compendiq-backend`, etc.)
 - Tag with: `latest`, semver (`1.0.0`), major (`1`)
 
 #### 5.3 Test the installer

@@ -87,11 +87,11 @@ describe('SetupWizard', () => {
     expect(screen.getByTestId('start-setup-btn')).toBeInTheDocument();
   });
 
-  it('displays the AtlasMind logo on welcome step', () => {
+  it('displays the Compendiq logo on welcome step', () => {
     renderWizard();
 
-    // The logo is rendered as an SVG with aria-label "AtlasMind"
-    expect(screen.getByLabelText('AtlasMind')).toBeInTheDocument();
+    // The logo is rendered as an SVG with aria-label "Compendiq"
+    expect(screen.getByLabelText('Compendiq')).toBeInTheDocument();
   });
 
   it('displays version on welcome step', () => {

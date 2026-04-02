@@ -7,7 +7,7 @@ import { FeatureErrorBoundary } from '../../shared/components/feedback/FeatureEr
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
 import { toast } from 'sonner';
-import type { DiagramType } from '@atlasmind/contracts';
+import type { DiagramType } from '@compendiq/contracts';
 
 /** HTML-encode a string so it is safe to interpolate inside HTML elements. */
 function escapeHtml(str: string): string {

@@ -95,7 +95,7 @@ export function LlmStep({ onNext, onBack }: LlmStepProps) {
     >
       <h2 className="text-xl font-semibold">Configure LLM Provider</h2>
       <p className="mt-1 text-sm text-muted-foreground">
-        AtlasMind uses a large language model for AI features. Configure your preferred provider below.
+        Compendiq uses a large language model for AI features. Configure your preferred provider below.
       </p>
 
       {autoDetecting && (
