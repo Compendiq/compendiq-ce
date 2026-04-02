@@ -10,7 +10,7 @@ import {
   Regex,
 } from 'lucide-react';
 import { cn } from '../../lib/cn';
-import { SearchQuery, getSearchState } from './search-extension';
+import { SearchQuery } from './search-extension';
 import type { Editor as EditorType } from '@tiptap/react';
 
 interface SearchAndReplaceProps {
@@ -61,7 +61,9 @@ export function SearchAndReplace({ editor }: SearchAndReplaceProps) {
     editor.commands.focus();
   }, [editor]);
 
-  // Count matches whenever the search query or document changes
+  // Count matches whenever the search query or document changes.
+  // Capped at 10 000 to avoid UI jank on high-frequency patterns (e.g. \b).
+  const MAX_MATCHES = 10_000;
   const countMatches = useCallback(
     (term: string, cs: boolean, ww: boolean, re: boolean) => {
       if (!term) {
@@ -75,31 +77,18 @@ export function SearchAndReplace({ editor }: SearchAndReplaceProps) {
         regexp: re,
       });
 
-      // Count all matches by iterating
+      // Single pass: count all matches and find which one the cursor is at
+      const { from } = editor.state.selection;
       let count = 0;
+      let currentIndex = 0;
       let result = query.findNext(editor.state, 0);
-      while (result) {
+      while (result && count < MAX_MATCHES) {
         count++;
+        if (result.from <= from && result.to >= from) {
+          currentIndex = count;
+        }
         if (result.to >= editor.state.doc.content.size) break;
         result = query.findNext(editor.state, Math.max(result.to, result.from + 1));
-      }
-
-      // Find which match the selection is at
-      const searchState = getSearchState(editor.state);
-      let currentIndex = 0;
-      if (searchState && count > 0) {
-        const { from } = editor.state.selection;
-        let idx = 0;
-        let r = query.findNext(editor.state, 0);
-        while (r) {
-          idx++;
-          if (r.from <= from && r.to >= from) {
-            currentIndex = idx;
-            break;
-          }
-          if (r.to >= editor.state.doc.content.size) break;
-          r = query.findNext(editor.state, Math.max(r.to, r.from + 1));
-        }
       }
 
       setMatchInfo({ current: currentIndex, total: count });
