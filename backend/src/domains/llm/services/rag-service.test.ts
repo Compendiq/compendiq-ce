@@ -433,14 +433,55 @@ describe('RAG Service', () => {
       const vectorResults = [makeResult('page-1', 'Vector chunk 1'), makeResult('page-2', 'Vector chunk 2')];
       const keywordResults = [makeResult('page-3', 'Keyword chunk 3'), makeResult('page-1', 'Keyword chunk 1')];
       const combined = reciprocalRankFusion(vectorResults, keywordResults);
-      expect(combined.length).toBeGreaterThanOrEqual(3);
+      expect(combined).toHaveLength(3);
     });
 
-    it('should boost results that appear in both searches', () => {
-      const sharedChunk = 'This is shared content that appears in both search results';
-      const combined = reciprocalRankFusion([makeResult('page-1', sharedChunk)], [makeResult('page-1', sharedChunk)]);
-      const singleSource = reciprocalRankFusion([makeResult('page-1', sharedChunk)], []);
+    it('should boost results that appear in both searches (even with different chunkText)', () => {
+      const vectorChunk = 'Specific embedding chunk about Redis configuration options';
+      const keywordChunk = 'First 500 chars of the full page body text about Redis...';
+      const combined = reciprocalRankFusion(
+        [makeResult('page-1', vectorChunk)],
+        [makeResult('page-1', keywordChunk)],
+      );
+      const singleSource = reciprocalRankFusion(
+        [makeResult('page-1', vectorChunk)],
+        [],
+      );
+      // Same page from both methods must produce a higher combined RRF score
+      expect(combined).toHaveLength(1);
       expect(combined[0].score).toBeGreaterThan(singleSource[0].score);
+    });
+
+    it('should always prefer vector chunk over keyword body text as representative', () => {
+      // Vector chunks are purpose-built for LLM context; keyword results return raw body text.
+      // Even if keyword ts_rank were numerically larger (different scale), vector chunk wins.
+      const vectorResult = makeResult('page-1', 'High quality embedding chunk', { score: 0.9 });
+      const keywordResult = makeResult('page-1', 'First 500 chars of body text', { score: 0.3 });
+      const combined = reciprocalRankFusion([vectorResult], [keywordResult]);
+      expect(combined).toHaveLength(1);
+      expect(combined[0].chunkText).toBe('High quality embedding chunk');
+    });
+
+    it('should prefer vector chunk even when keyword score is numerically higher', () => {
+      // ts_rank and cosine similarity are on different scales — never compare across methods.
+      // Vector chunk always wins as the representative for LLM context.
+      const vectorResult = makeResult('page-1', 'Low similarity chunk', { score: 0.2 });
+      const keywordResult = makeResult('page-1', 'Highly relevant body text', { score: 0.8 });
+      const combined = reciprocalRankFusion([vectorResult], [keywordResult]);
+      expect(combined).toHaveLength(1);
+      expect(combined[0].chunkText).toBe('Low similarity chunk');
+    });
+
+    it('should merge multiple vector chunks for the same page', () => {
+      // Vector search can return multiple chunks from the same page
+      const chunk1 = makeResult('page-1', 'First chunk from page', { score: 0.7 });
+      const chunk2 = makeResult('page-1', 'Second chunk from page', { score: 0.9 });
+      const keywordResult = makeResult('page-1', 'Body text of page', { score: 0.3 });
+      const combined = reciprocalRankFusion([chunk1, chunk2], [keywordResult]);
+      // All three entries for page-1 should merge into a single entry
+      expect(combined).toHaveLength(1);
+      // Representative should be the chunk with highest individual score (0.9)
+      expect(combined[0].chunkText).toBe('Second chunk from page');
     });
 
     it('should handle empty vector results (keyword-only fallback)', () => {
