@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { LazyMotion, domMax } from 'framer-motion';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -11,6 +11,7 @@ const mockNavigate = vi.fn();
 const mockDeletePage = vi.fn();
 const mockPinPage = vi.fn();
 const mockUnpinPage = vi.fn();
+const mockExportPdfAsync = vi.fn();
 
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
@@ -62,8 +63,18 @@ vi.mock('../../hooks/use-pages', () => ({
 
 vi.mock('../../hooks/use-settings', () => ({
   useSettings: () => ({
-    data: { confluenceUrl: 'https://confluence.example.com' },
+    data: { confluenceUrl: 'https://confluence.example.com', ollamaModel: 'qwen3.5', llmProvider: 'ollama', openaiModel: null },
   }),
+}));
+
+vi.mock('../../hooks/use-standalone', () => ({
+  useExportPdf: () => ({ mutateAsync: mockExportPdfAsync, isPending: false }),
+}));
+
+vi.mock('../../../features/pages/AutoTagger', () => ({
+  AutoTagger: ({ pageId, currentLabels, model }: { pageId: string; currentLabels: string[]; model: string }) => (
+    <div data-testid="auto-tagger" data-page-id={pageId} data-labels={currentLabels.join(',')} data-model={model} />
+  ),
 }));
 
 vi.mock('../badges/FreshnessBadge', () => ({
@@ -109,6 +120,7 @@ describe('ArticleRightPane', () => {
     mockDeletePage.mockReset().mockResolvedValue(undefined);
     mockPinPage.mockReset();
     mockUnpinPage.mockReset();
+    mockExportPdfAsync.mockReset();
     localStorage.clear();
     useUiStore.setState({ articleSidebarCollapsed: false, articleSidebarWidth: 280 });
     useArticleViewStore.setState({ headings: [], editing: false });
@@ -226,5 +238,54 @@ describe('ArticleRightPane', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     expect(screen.queryByText('Open in Confluence')).not.toBeInTheDocument();
+  });
+
+  // --- AutoTagger ---
+  it('renders AutoTagger with correct props', () => {
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    const autoTagger = screen.getByTestId('auto-tagger');
+    expect(autoTagger).toBeInTheDocument();
+    expect(autoTagger).toHaveAttribute('data-page-id', 'page-1');
+    expect(autoTagger).toHaveAttribute('data-labels', 'docs');
+    expect(autoTagger).toHaveAttribute('data-model', 'qwen3.5');
+  });
+
+  // --- PDF Export ---
+  it('renders the Export PDF button', () => {
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    expect(screen.getByText('Export PDF')).toBeInTheDocument();
+  });
+
+  it('calls export mutation and triggers download on success', async () => {
+    const fakeBlob = new Blob(['%PDF'], { type: 'application/pdf' });
+    mockExportPdfAsync.mockResolvedValueOnce(fakeBlob);
+    const createObjectURLSpy = vi.fn(() => 'blob:http://localhost/fake-url');
+    const revokeObjectURLSpy = vi.fn();
+    globalThis.URL.createObjectURL = createObjectURLSpy;
+    globalThis.URL.revokeObjectURL = revokeObjectURLSpy;
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText('Export PDF'));
+
+    await waitFor(() => {
+      expect(mockExportPdfAsync).toHaveBeenCalledWith(NaN);
+    });
+    await waitFor(() => {
+      expect(createObjectURLSpy).toHaveBeenCalledWith(fakeBlob);
+      expect(revokeObjectURLSpy).toHaveBeenCalledWith('blob:http://localhost/fake-url');
+    });
+  });
+
+  it('shows error toast on export failure', async () => {
+    mockExportPdfAsync.mockRejectedValueOnce(new Error('Server error'));
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText('Export PDF'));
+
+    await waitFor(() => {
+      expect(mockExportPdfAsync).toHaveBeenCalled();
+    });
   });
 });

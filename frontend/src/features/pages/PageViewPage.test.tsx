@@ -103,11 +103,6 @@ vi.mock('../../shared/components/TagEditor', () => ({
   TagEditor: () => <div data-testid="tag-editor" />,
 }));
 
-vi.mock('./AutoTagger', () => ({
-  AutoTagger: ({ pageId, currentLabels, model }: { pageId: string; currentLabels: string[]; model: string }) => (
-    <div data-testid="auto-tagger" data-page-id={pageId} data-labels={currentLabels.join(',')} data-model={model} />
-  ),
-}));
 
 vi.mock('../../shared/components/diagrams/DrawioEditor', () => ({
   DrawioEditor: () => <div data-testid="drawio-editor" />,
@@ -120,7 +115,6 @@ vi.mock('../../shared/lib/api', () => ({
 vi.mock('../../shared/hooks/use-standalone', () => ({
   useSubmitFeedback: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useVerifyPage: () => ({ mutateAsync: vi.fn(), isPending: false }),
-  useExportPdf: () => ({ mutateAsync: mockExportPdfAsync, isPending: false }),
 }));
 
 let capturedShortcuts: Array<{ key: string; keys: string[]; mod?: boolean; alt?: boolean; shift?: boolean; description: string; category: string; action: () => void }> = [];
@@ -188,7 +182,6 @@ let mockIsLoading = false;
 const mockPinMutate = vi.fn();
 const mockUnpinMutate = vi.fn();
 const mockDeleteMutateAsync = vi.fn().mockResolvedValue(undefined);
-const mockExportPdfAsync = vi.fn();
 
 vi.mock('../../shared/hooks/use-pages', () => ({
   usePage: () => ({ data: mockIsLoading ? undefined : currentMockPage, isLoading: mockIsLoading }),
@@ -231,7 +224,6 @@ describe('PageViewPage', () => {
     mockPinMutate.mockReset();
     mockUnpinMutate.mockReset();
     mockDeleteMutateAsync.mockReset().mockResolvedValue(undefined);
-    mockExportPdfAsync.mockReset();
     localStorage.clear();
     Element.prototype.scrollTo = vi.fn();
 
@@ -475,79 +467,5 @@ describe('PageViewPage', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/ai?mode=improve&pageId=page-1');
   });
 
-  // --- AutoTagger integration ---
-  it('renders AutoTagger in reading view with correct props', () => {
-    render(<PageViewPage />, { wrapper: createWrapper() });
-    const autoTagger = screen.getByTestId('auto-tagger');
-    expect(autoTagger).toBeInTheDocument();
-    expect(autoTagger).toHaveAttribute('data-page-id', 'page-1');
-    expect(autoTagger).toHaveAttribute('data-labels', 'docs,platform');
-    expect(autoTagger).toHaveAttribute('data-model', 'qwen3.5');
-  });
-
-  it('renders AutoTagger in edit mode near TagEditor', () => {
-    render(<PageViewPage />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByText('Edit'));
-    const autoTaggers = screen.getAllByTestId('auto-tagger');
-    expect(autoTaggers.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it('renders AutoTagger when page has no labels', () => {
-    currentMockPage = { ...mockPage, labels: [] };
-    render(<PageViewPage />, { wrapper: createWrapper() });
-    const autoTagger = screen.getByTestId('auto-tagger');
-    expect(autoTagger).toBeInTheDocument();
-    expect(autoTagger).toHaveAttribute('data-labels', '');
-  });
-
-  // --- PDF Export ---
-  it('renders the Export PDF button in the action bar', () => {
-    render(<PageViewPage />, { wrapper: createWrapper() });
-    expect(screen.getByTestId('export-pdf-btn')).toBeInTheDocument();
-    expect(screen.getByText('PDF')).toBeInTheDocument();
-  });
-
-  it('calls export mutation and triggers download on success', async () => {
-    const fakeBlob = new Blob(['%PDF'], { type: 'application/pdf' });
-    mockExportPdfAsync.mockResolvedValueOnce(fakeBlob);
-
-    const createObjectURLSpy = vi.fn(() => 'blob:http://localhost/fake-url');
-    const revokeObjectURLSpy = vi.fn();
-    globalThis.URL.createObjectURL = createObjectURLSpy;
-    globalThis.URL.revokeObjectURL = revokeObjectURLSpy;
-
-    render(<PageViewPage />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByTestId('export-pdf-btn'));
-
-    await waitFor(() => {
-      expect(mockExportPdfAsync).toHaveBeenCalledWith(Number('page-1'));
-    });
-
-    await waitFor(() => {
-      expect(createObjectURLSpy).toHaveBeenCalledWith(fakeBlob);
-      expect(revokeObjectURLSpy).toHaveBeenCalledWith('blob:http://localhost/fake-url');
-    });
-  });
-
-  it('shows error toast on export failure', async () => {
-    mockExportPdfAsync.mockRejectedValueOnce(new Error('Server error'));
-
-    render(<PageViewPage />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByTestId('export-pdf-btn'));
-
-    await waitFor(() => {
-      expect(mockExportPdfAsync).toHaveBeenCalled();
-    });
-  });
-
-  it('shows helpful message for Chromium not installed error', async () => {
-    mockExportPdfAsync.mockRejectedValueOnce(new Error('Chromium browser not found'));
-
-    render(<PageViewPage />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByTestId('export-pdf-btn'));
-
-    await waitFor(() => {
-      expect(mockExportPdfAsync).toHaveBeenCalled();
-    });
-  });
 });
+
