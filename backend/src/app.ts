@@ -138,6 +138,34 @@ export async function buildApp() {
   // Let the enterprise plugin register its own routes (e.g., full license endpoint)
   await enterprise.registerRoutes(app, license);
 
+  // Known Fastify HTTP error names that are safe to expose to clients.
+  // Anything not in this set could leak internal details (e.g. TypeError, RangeError).
+  const KNOWN_HTTP_ERROR_NAMES = new Set([
+    'BadRequestError',
+    'UnauthorizedError',
+    'ForbiddenError',
+    'NotFoundError',
+    'MethodNotAllowedError',
+    'NotAcceptableError',
+    'ConflictError',
+    'GoneError',
+    'PayloadTooLargeError',
+    'UnsupportedMediaTypeError',
+    'UnprocessableEntityError',
+    'TooManyRequestsError',
+    'ServiceUnavailableError',
+    'GatewayTimeoutError',
+  ]);
+
+  /** Map status code range to a generic error name when the real name is not safe to expose. */
+  function safeErrorName(statusCode: number, errorName?: string): string {
+    if (statusCode === 500) return 'InternalServerError';
+    if (errorName && KNOWN_HTTP_ERROR_NAMES.has(errorName)) return errorName;
+    // Generic fallback based on status code range
+    if (statusCode >= 400 && statusCode < 500) return 'ClientError';
+    return 'InternalServerError';
+  }
+
   // Error handler
   app.setErrorHandler((error: Error & { statusCode?: number }, request, reply) => {
     // Zod validation errors → 400
@@ -169,7 +197,7 @@ export async function buildApp() {
     }
 
     reply.status(statusCode).send({
-      error: error.name ?? 'InternalServerError',
+      error: safeErrorName(statusCode, error.name),
       message: statusCode === 500 ? 'Internal Server Error' : error.message,
       statusCode,
     });

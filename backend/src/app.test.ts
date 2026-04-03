@@ -88,6 +88,76 @@ vi.mock('./routes/knowledge/knowledge-requests.js', () => ({ knowledgeRequestRou
 vi.mock('./routes/knowledge/search.js', () => ({ searchRoutes: noopRoute }));
 vi.mock('./routes/knowledge/local-spaces.js', () => ({ localSpacesRoutes: noopRoute }));
 
+describe('buildApp — error handler information leakage', () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+
+  afterEach(() => {
+    process.env.NODE_ENV = originalNodeEnv;
+  });
+
+  it('should not leak internal error names like TypeError for non-500 errors', async () => {
+    process.env.NODE_ENV = 'development';
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+
+    // Register a test route that throws a TypeError with a non-500 status code
+    app.get('/test/type-error', async () => {
+      const err = new TypeError('Cannot read properties of undefined') as TypeError & {
+        statusCode: number;
+      };
+      err.statusCode = 400;
+      throw err;
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/test/type-error' });
+    expect(response.statusCode).toBe(400);
+    const body = JSON.parse(response.body);
+    // Should NOT expose "TypeError" — should use generic name
+    expect(body.error).not.toBe('TypeError');
+    expect(body.error).toBe('ClientError');
+
+    await app.close();
+  });
+
+  it('should expose known Fastify HTTP error names', async () => {
+    process.env.NODE_ENV = 'development';
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+
+    // Register a test route that throws a known Fastify error
+    app.get('/test/not-found', async (_request, reply) => {
+      return reply.notFound('Resource not found');
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/test/not-found' });
+    expect(response.statusCode).toBe(404);
+    const body = JSON.parse(response.body);
+    expect(body.error).toBe('NotFoundError');
+
+    await app.close();
+  });
+
+  it('should always use InternalServerError for 500 errors regardless of error name', async () => {
+    process.env.NODE_ENV = 'development';
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+
+    // Register a test route that throws a RangeError with 500 status
+    app.get('/test/range-error', async () => {
+      throw new RangeError('Value out of range');
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/test/range-error' });
+    expect(response.statusCode).toBe(500);
+    const body = JSON.parse(response.body);
+    expect(body.error).toBe('InternalServerError');
+    // Should NOT expose the actual error message for 500 errors
+    expect(body.message).toBe('Internal Server Error');
+
+    await app.close();
+  });
+});
+
 describe('buildApp — Swagger UI gating', () => {
   const originalNodeEnv = process.env.NODE_ENV;
 
