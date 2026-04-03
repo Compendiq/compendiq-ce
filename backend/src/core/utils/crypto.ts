@@ -2,6 +2,7 @@ import { randomBytes, createCipheriv, createDecipheriv } from 'crypto';
 
 const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH = 16;
+const AUTH_TAG_LENGTH = 16;
 
 /**
  * Versioned encryption key support for zero-downtime key rotation.
@@ -93,7 +94,7 @@ export function getEncryptionKeyByVersion(version: number): VersionedKey {
 export function encryptPat(plaintext: string): string {
   const { version, key } = getLatestEncryptionKey();
   const iv = randomBytes(IV_LENGTH);
-  const cipher = createCipheriv(ALGORITHM, key, iv);
+  const cipher = createCipheriv(ALGORITHM, key, iv, { authTagLength: AUTH_TAG_LENGTH });
 
   let encrypted = cipher.update(plaintext, 'utf-8', 'hex');
   encrypted += cipher.final('hex');
@@ -139,7 +140,7 @@ export function decryptPat(encrypted: string): string {
   const { key } = getEncryptionKeyByVersion(version);
   const iv = Buffer.from(ivHex, 'hex');
   const authTag = Buffer.from(authTagHex, 'hex');
-  const decipher = createDecipheriv(ALGORITHM, key, iv);
+  const decipher = createDecipheriv(ALGORITHM, key, iv, { authTagLength: AUTH_TAG_LENGTH });
   decipher.setAuthTag(authTag);
 
   let decrypted = decipher.update(ciphertext, 'hex', 'utf-8');
