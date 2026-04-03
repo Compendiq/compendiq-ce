@@ -88,6 +88,85 @@ vi.mock('./routes/knowledge/knowledge-requests.js', () => ({ knowledgeRequestRou
 vi.mock('./routes/knowledge/search.js', () => ({ searchRoutes: noopRoute }));
 vi.mock('./routes/knowledge/local-spaces.js', () => ({ localSpacesRoutes: noopRoute }));
 
+describe('buildApp — CORS multi-origin support', () => {
+  const originalFrontendUrl = process.env.FRONTEND_URL;
+  const originalNodeEnv = process.env.NODE_ENV;
+
+  afterEach(() => {
+    process.env.NODE_ENV = originalNodeEnv;
+    if (originalFrontendUrl === undefined) {
+      delete process.env.FRONTEND_URL;
+    } else {
+      process.env.FRONTEND_URL = originalFrontendUrl;
+    }
+  });
+
+  it('should default to http://localhost:5273 when FRONTEND_URL is unset', async () => {
+    delete process.env.FRONTEND_URL;
+    process.env.NODE_ENV = 'development';
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+
+    const res = await app.inject({
+      method: 'OPTIONS',
+      url: '/api/health',
+      headers: { origin: 'http://localhost:5273' },
+    });
+    expect(res.headers['access-control-allow-origin']).toBe('http://localhost:5273');
+
+    await app.close();
+  });
+
+  it('should accept a single custom origin', async () => {
+    process.env.FRONTEND_URL = 'https://app.example.com';
+    process.env.NODE_ENV = 'development';
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+
+    const res = await app.inject({
+      method: 'OPTIONS',
+      url: '/api/health',
+      headers: { origin: 'https://app.example.com' },
+    });
+    expect(res.headers['access-control-allow-origin']).toBe('https://app.example.com');
+
+    await app.close();
+  });
+
+  it('should accept comma-separated origins', async () => {
+    process.env.FRONTEND_URL = 'http://localhost:5273, https://app.example.com';
+    process.env.NODE_ENV = 'development';
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+
+    // First origin
+    const res1 = await app.inject({
+      method: 'OPTIONS',
+      url: '/api/health',
+      headers: { origin: 'http://localhost:5273' },
+    });
+    expect(res1.headers['access-control-allow-origin']).toBe('http://localhost:5273');
+
+    // Second origin
+    const res2 = await app.inject({
+      method: 'OPTIONS',
+      url: '/api/health',
+      headers: { origin: 'https://app.example.com' },
+    });
+    expect(res2.headers['access-control-allow-origin']).toBe('https://app.example.com');
+
+    // Unknown origin should not be reflected
+    const res3 = await app.inject({
+      method: 'OPTIONS',
+      url: '/api/health',
+      headers: { origin: 'https://evil.example.com' },
+    });
+    expect(res3.headers['access-control-allow-origin']).not.toBe('https://evil.example.com');
+
+    await app.close();
+  });
+});
+
 describe('buildApp — Swagger UI gating', () => {
   const originalNodeEnv = process.env.NODE_ENV;
 

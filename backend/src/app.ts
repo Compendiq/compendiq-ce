@@ -72,9 +72,15 @@ export async function buildApp() {
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
 
-  // Core plugins
+  // Core plugins — CORS with multi-origin support (comma-separated FRONTEND_URL)
+  const frontendUrls = (process.env.FRONTEND_URL ?? 'http://localhost:5273')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const corsOrigin = frontendUrls.length === 1 ? frontendUrls[0] : frontendUrls;
+
   await app.register(cors, {
-    origin: process.env.FRONTEND_URL ?? 'http://localhost:5273',
+    origin: corsOrigin,
     credentials: true,
   });
 
