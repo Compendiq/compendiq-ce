@@ -1,10 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { ENTERPRISE_FEATURES } from './features.js';
+import {
+  ENTERPRISE_FEATURES,
+  FEATURE_ID_PATTERN,
+  validateFeatureIdentifier,
+} from './features.js';
 import type { EnterpriseFeature } from './features.js';
 
 describe('ENTERPRISE_FEATURES', () => {
   it('should export a frozen object of feature flag constants', () => {
-    // TypeScript const assertion makes it readonly, but we can verify values are strings
     expect(typeof ENTERPRISE_FEATURES).toBe('object');
     expect(Object.keys(ENTERPRISE_FEATURES).length).toBeGreaterThanOrEqual(24);
   });
@@ -54,9 +57,49 @@ describe('ENTERPRISE_FEATURES', () => {
   });
 
   it('should export the EnterpriseFeature type (compile-time check)', () => {
-    // This is a compile-time type check. If EnterpriseFeature is not exported
-    // or the values don't match, TypeScript will fail to compile.
     const feature: EnterpriseFeature = ENTERPRISE_FEATURES.OIDC_SSO;
     expect(feature).toBe('oidc_sso');
+  });
+
+  it('should have ALL values matching snake_case pattern (FEATURE_ID_PATTERN)', () => {
+    const values = Object.values(ENTERPRISE_FEATURES);
+    for (const value of values) {
+      expect(
+        FEATURE_ID_PATTERN.test(value),
+        `Feature flag "${value}" does not match snake_case pattern ${FEATURE_ID_PATTERN}`,
+      ).toBe(true);
+    }
+  });
+});
+
+describe('validateFeatureIdentifier', () => {
+  it('should accept valid snake_case identifiers', () => {
+    expect(validateFeatureIdentifier('oidc_sso')).toBe(true);
+    expect(validateFeatureIdentifier('pii_detection')).toBe(true);
+    expect(validateFeatureIdentifier('a')).toBe(true);
+    expect(validateFeatureIdentifier('feature123')).toBe(true);
+    expect(validateFeatureIdentifier('advanced_rbac')).toBe(true);
+  });
+
+  it('should reject identifiers starting with a number', () => {
+    expect(validateFeatureIdentifier('1_feature')).toBe(false);
+    expect(validateFeatureIdentifier('123')).toBe(false);
+  });
+
+  it('should reject identifiers with uppercase letters', () => {
+    expect(validateFeatureIdentifier('OIDC_SSO')).toBe(false);
+    expect(validateFeatureIdentifier('OidcSso')).toBe(false);
+    expect(validateFeatureIdentifier('oidc_SSO')).toBe(false);
+  });
+
+  it('should reject identifiers with hyphens or special characters', () => {
+    expect(validateFeatureIdentifier('oidc-sso')).toBe(false);
+    expect(validateFeatureIdentifier('feature.name')).toBe(false);
+    expect(validateFeatureIdentifier('feature name')).toBe(false);
+    expect(validateFeatureIdentifier('')).toBe(false);
+  });
+
+  it('should reject identifiers starting with underscore', () => {
+    expect(validateFeatureIdentifier('_private')).toBe(false);
   });
 });

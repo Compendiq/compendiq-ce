@@ -1,17 +1,17 @@
 import type { ReactNode, ComponentType } from 'react';
+import type { LicenseInfoResponse } from '@compendiq/contracts';
 
-// ─── License Types (mirrors backend types.ts) ─────────────────────
+// ─── License Types ────────────────────────────────────────────────
+// The canonical API response shape is defined in @compendiq/contracts
+// (LicenseInfoResponseSchema). This interface extends it with UI-only
+// fields that the backend may also include.
 
 export type LicenseTier = 'community' | 'team' | 'business' | 'enterprise';
 
-export interface LicenseInfo {
-  edition: string;
+export interface LicenseInfo extends LicenseInfoResponse {
   tier: LicenseTier;
-  seats?: number;
-  expiresAt?: string;
   isValid?: boolean;
   displayKey?: string;
-  features: string[];
 }
 
 // ─── Enterprise UI Component Contract ──────────────────────────────
