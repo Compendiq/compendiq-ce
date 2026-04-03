@@ -87,56 +87,70 @@ export async function upsertSharedLlmSettings(
   try {
     await client.query('BEGIN');
 
-    const rows: Array<{ key: string; value: string }> = [];
+    const upsertRows: Array<{ key: string; value: string }> = [];
+    const deleteKeys: string[] = [];
 
     if (updates.llmProvider !== undefined) {
-      rows.push({ key: 'llm_provider', value: updates.llmProvider });
+      upsertRows.push({ key: 'llm_provider', value: updates.llmProvider });
     }
     if (updates.ollamaModel !== undefined) {
-      rows.push({ key: 'ollama_model', value: updates.ollamaModel });
+      upsertRows.push({ key: 'ollama_model', value: updates.ollamaModel });
     }
     if (updates.openaiBaseUrl !== undefined) {
       if (updates.openaiBaseUrl) {
-        rows.push({ key: 'openai_base_url', value: updates.openaiBaseUrl });
+        upsertRows.push({ key: 'openai_base_url', value: updates.openaiBaseUrl });
       } else {
-        await client.query(`DELETE FROM admin_settings WHERE setting_key = 'openai_base_url'`);
+        deleteKeys.push('openai_base_url');
       }
     }
     if (updates.openaiApiKey !== undefined) {
       if (updates.openaiApiKey) {
-        rows.push({ key: 'openai_api_key', value: encryptPat(updates.openaiApiKey) });
+        upsertRows.push({ key: 'openai_api_key', value: encryptPat(updates.openaiApiKey) });
       } else {
-        await client.query(`DELETE FROM admin_settings WHERE setting_key = 'openai_api_key'`);
+        deleteKeys.push('openai_api_key');
       }
     }
     if (updates.openaiModel !== undefined) {
       if (updates.openaiModel) {
-        rows.push({ key: 'openai_model', value: updates.openaiModel });
+        upsertRows.push({ key: 'openai_model', value: updates.openaiModel });
       } else {
-        await client.query(`DELETE FROM admin_settings WHERE setting_key = 'openai_model'`);
+        deleteKeys.push('openai_model');
       }
     }
     if (updates.embeddingModel !== undefined) {
       if (updates.embeddingModel) {
-        rows.push({ key: 'embedding_model', value: updates.embeddingModel });
+        upsertRows.push({ key: 'embedding_model', value: updates.embeddingModel });
       } else {
-        await client.query(`DELETE FROM admin_settings WHERE setting_key = 'embedding_model'`);
+        deleteKeys.push('embedding_model');
       }
     }
     if (updates.ftsLanguage !== undefined) {
       if (updates.ftsLanguage) {
-        rows.push({ key: 'fts_language', value: updates.ftsLanguage });
+        upsertRows.push({ key: 'fts_language', value: updates.ftsLanguage });
       } else {
-        await client.query(`DELETE FROM admin_settings WHERE setting_key = 'fts_language'`);
+        deleteKeys.push('fts_language');
       }
     }
 
-    for (const row of rows) {
+    // Batch upsert: single INSERT...ON CONFLICT using unnest() (#73)
+    if (upsertRows.length > 0) {
+      const keys = upsertRows.map((r) => r.key);
+      const values = upsertRows.map((r) => r.value);
       await client.query(
         `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
-         VALUES ($1, $2, NOW())
-         ON CONFLICT (setting_key) DO UPDATE SET setting_value = $2, updated_at = NOW()`,
-        [row.key, row.value],
+         SELECT key, value, NOW()
+         FROM unnest($1::text[], $2::text[]) AS t(key, value)
+         ON CONFLICT (setting_key) DO UPDATE
+         SET setting_value = EXCLUDED.setting_value, updated_at = NOW()`,
+        [keys, values],
+      );
+    }
+
+    // Batch delete: single DELETE with ANY() (#80)
+    if (deleteKeys.length > 0) {
+      await client.query(
+        `DELETE FROM admin_settings WHERE setting_key = ANY($1::text[])`,
+        [deleteKeys],
       );
     }
 
