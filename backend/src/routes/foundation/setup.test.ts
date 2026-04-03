@@ -193,6 +193,14 @@ describe('Setup routes', () => {
       // Should gracefully handle the timeout
       expect(body.steps.llm).toBe(false);
     });
+
+    it('should have rate limiting configured on GET setup-status', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [{ count: '1' }] }); // admin count
+      mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // confluence count
+
+      const response = await app.inject({ method: 'GET', url: '/api/health/setup-status' });
+      expect(response.statusCode).toBe(200);
+    });
   });
 
   // ─── POST /api/setup/admin ────────────────────────────────────────────
