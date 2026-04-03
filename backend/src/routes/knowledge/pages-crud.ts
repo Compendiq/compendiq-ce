@@ -717,51 +717,64 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const sortColumn = sort === 'created_at' ? 'created_at' : 'title';
     const sortOrder = order === 'desc' ? 'DESC' : 'ASC';
 
-    // Cap total nodes to prevent unbounded recursive N+1 queries (DoS protection)
+    // Cap total nodes to prevent unbounded recursive queries (DoS protection)
     const MAX_TOTAL_NODES = 200;
-    let totalFetched = 0;
 
-    type ChildRow = { id: number; confluence_id: string | null; title: string; space_key: string | null };
+    // Single recursive CTE replaces the N+1 fetchChildren() function.
+    // Fetches the entire subtree in one round-trip, then assembles the
+    // tree structure in application code.
+    type FlatChildRow = {
+      id: number;
+      confluence_id: string | null;
+      title: string;
+      space_key: string | null;
+      parent_id: string | null;
+      depth: number;
+    };
 
-    async function fetchChildren(parentId: string, currentDepth: number): Promise<Array<{ id: number; confluenceId: string | null; title: string; spaceKey: string | null; children?: Array<unknown> }>> {
-      if (currentDepth > depth || totalFetched >= MAX_TOTAL_NODES) return [];
+    const treeResult = await query<FlatChildRow>(
+      `WITH RECURSIVE tree AS (
+         SELECT p.id, p.confluence_id, p.title, p.space_key, p.parent_id, 1 AS depth
+         FROM pages p
+         WHERE p.parent_id = $1 AND p.deleted_at IS NULL
+         UNION ALL
+         SELECT p.id, p.confluence_id, p.title, p.space_key, p.parent_id, t.depth + 1
+         FROM pages p
+         JOIN tree t ON p.parent_id = COALESCE(t.confluence_id, t.id::text)
+         WHERE p.deleted_at IS NULL AND t.depth < $2
+       )
+       SELECT * FROM tree ORDER BY depth, ${sortColumn} ${sortOrder}
+       LIMIT $3`,
+      [parentLookupId, depth, MAX_TOTAL_NODES],
+    );
 
-      const result = await query<ChildRow>(
-        `SELECT id, confluence_id, title, space_key
-         FROM pages
-         WHERE parent_id = $1 AND deleted_at IS NULL
-         ORDER BY ${sortColumn} ${sortOrder}
-         LIMIT $2`,
-        [parentId, Math.min(limit, MAX_TOTAL_NODES - totalFetched)],
-      );
+    // Assemble flat rows into nested tree structure
+    type ChildNode = { id: number; confluenceId: string | null; title: string; spaceKey: string | null; children?: ChildNode[] };
+    const nodeMap = new Map<string, ChildNode>();
+    const roots: ChildNode[] = [];
 
-      totalFetched += result.rows.length;
+    for (const row of treeResult.rows) {
+      const node: ChildNode = {
+        id: row.id,
+        confluenceId: row.confluence_id,
+        title: row.title,
+        spaceKey: row.space_key,
+      };
+      const nodeKey = row.confluence_id ?? String(row.id);
+      nodeMap.set(nodeKey, node);
 
-      const children = [];
-      for (const row of result.rows) {
-        const child: { id: number; confluenceId: string | null; title: string; spaceKey: string | null; children?: Array<unknown> } = {
-          id: row.id,
-          confluenceId: row.confluence_id,
-          title: row.title,
-          spaceKey: row.space_key,
-        };
-
-        if (currentDepth < depth) {
-          const childLookupId = row.confluence_id ?? String(row.id);
-          const subChildren = await fetchChildren(childLookupId, currentDepth + 1);
-          if (subChildren.length > 0) {
-            child.children = subChildren;
-          }
+      if (row.parent_id === parentLookupId) {
+        roots.push(node);
+      } else if (row.parent_id) {
+        const parent = nodeMap.get(row.parent_id);
+        if (parent) {
+          if (!parent.children) parent.children = [];
+          parent.children.push(node);
         }
-
-        children.push(child);
       }
-
-      return children;
     }
 
-    const children = await fetchChildren(parentLookupId, 1);
-    return { children };
+    return { children: roots };
   });
 
   // POST /api/pages/:id/restore - restore a soft-deleted standalone article from trash
