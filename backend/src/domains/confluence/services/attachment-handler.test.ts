@@ -1177,4 +1177,74 @@ describe('attachment-handler', () => {
       expect(client.downloadAttachment).toHaveBeenCalledWith('/download/shared.png');
     });
   });
+
+  describe('path traversal prevention', () => {
+    it('allows normal pageId values', async () => {
+      const client = createMockClient();
+      // A normal pageId should work without errors
+      await expect(
+        cacheAttachment(client, 'user-1', '12345', '/download/img.png', 'img.png'),
+      ).resolves.toBeDefined();
+      expect(fs.mkdir).toHaveBeenCalled();
+    });
+
+    it('blocks pageId with path traversal sequences (../)', async () => {
+      const client = createMockClient();
+      // After sanitization, "../../../etc" becomes "_.._.._.._etc" which is safe,
+      // but the key protection is the resolved path check
+      await expect(
+        cacheAttachment(client, 'user-1', '../../../etc/passwd', '/download/x.png', 'x.png'),
+      ).resolves.toBeDefined();
+      // Verify the directory created does NOT contain literal ".."
+      const mkdirCall = vi.mocked(fs.mkdir).mock.calls[0][0] as string;
+      expect(mkdirCall).not.toContain('..');
+    });
+
+    it('sanitizes URL-encoded traversal (..%2F)', async () => {
+      const client = createMockClient();
+      // "..%2F..%2Fetc" — dots and slashes are stripped; the %2F literal chars
+      // are harmless at the filesystem level but dots are still removed.
+      await expect(
+        cacheAttachment(client, 'user-1', '..%2F..%2Fetc', '/download/x.png', 'x.png'),
+      ).resolves.toBeDefined();
+      const mkdirCall = vi.mocked(fs.mkdir).mock.calls[0][0] as string;
+      // Dots and slashes stripped — no traversal sequences remain
+      expect(mkdirCall).not.toContain('..');
+      expect(mkdirCall).not.toContain('/.');
+    });
+
+    it('rejects empty pageId', async () => {
+      const client = createMockClient();
+      await expect(
+        cacheAttachment(client, 'user-1', '', '/download/x.png', 'x.png'),
+      ).rejects.toThrow('Invalid page ID');
+    });
+
+    it('sanitizes backslashes and dots in pageId', async () => {
+      const client = createMockClient();
+      await expect(
+        cacheAttachment(client, 'user-1', '..\\..\\etc', '/download/x.png', 'x.png'),
+      ).resolves.toBeDefined();
+      const mkdirCall = vi.mocked(fs.mkdir).mock.calls[0][0] as string;
+      // Both dots and backslashes are replaced, no traversal possible
+      expect(mkdirCall).not.toContain('..');
+      expect(mkdirCall).not.toContain('\\');
+    });
+
+    it('rejects pageId that is only dots and slashes', async () => {
+      const client = createMockClient();
+      // "../../.." becomes all underscores then trimmed — empty after trim
+      await expect(
+        cacheAttachment(client, 'user-1', '../../..', '/download/x.png', 'x.png'),
+      ).rejects.toThrow('Invalid page ID');
+    });
+
+    it('rejects pageId that is only slashes', async () => {
+      const client = createMockClient();
+      // "///" becomes "___" then trimmed to empty
+      await expect(
+        cacheAttachment(client, 'user-1', '///', '/download/x.png', 'x.png'),
+      ).rejects.toThrow('Invalid page ID');
+    });
+  });
 });
