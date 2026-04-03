@@ -9,6 +9,7 @@ import { addAllowedBaseUrl } from './core/utils/ssrf-guard.js';
 import { startQualityWorker, stopQualityWorker, triggerQualityBatch } from './domains/knowledge/services/quality-worker.js';
 import { startSummaryWorker, stopSummaryWorker, triggerSummaryBatch } from './domains/knowledge/services/summary-worker.js';
 import { startTokenCleanupWorker, stopTokenCleanupWorker } from './core/services/token-cleanup-service.js';
+import { startRetentionWorker, stopRetentionWorker } from './core/services/data-retention-service.js';
 import { markStartupComplete } from './routes/foundation/health.js';
 import { logger } from './core/utils/logger.js';
 import { getSharedLlmSettings } from './core/services/admin-settings-service.js';
@@ -81,6 +82,9 @@ async function start() {
   // Start background token cleanup worker
   startTokenCleanupWorker();
 
+  // Start daily data retention cleanup worker
+  startRetentionWorker();
+
   // Run initial worker batches after 30s delay to let server stabilize.
   // Uses lock-guarded trigger functions to prevent concurrent execution
   // if a worker interval fires at the same time.
@@ -96,6 +100,7 @@ async function start() {
     stopSyncWorker();
     stopSummaryWorker();
     stopTokenCleanupWorker();
+    stopRetentionWorker();
     try { const { closeBrowser } = await import('./core/services/pdf-service.js'); await closeBrowser(); } catch { /* shutdown cleanup is best-effort */ }
     await app.close();
     await closeVectorPool();
