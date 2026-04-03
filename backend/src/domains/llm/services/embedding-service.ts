@@ -16,6 +16,16 @@ export const CHUNK_HARD_LIMIT = 6_000;  // absolute character ceiling (~1,500–
 /** Delay between embedding pages to reduce LLM server pressure (ms). */
 export const INTER_PAGE_DELAY_MS = 200;
 
+/**
+ * Number of pages to embed concurrently within a batch.
+ * Default 1 (sequential) to respect LLM rate limits.
+ * Increase only if the embedding server supports parallel requests.
+ */
+export const EMBEDDING_CONCURRENCY = Math.max(
+  1,
+  parseInt(process.env.EMBEDDING_CONCURRENCY ?? '1', 10) || 1,
+);
+
 /** Max retries when circuit breaker is open before stopping the batch. */
 export const MAX_CIRCUIT_BREAKER_RETRIES = 3;
 
@@ -474,13 +484,15 @@ export async function processDirtyPages(
       let batchErrors = 0;
       const batchTotal = totalDirty; // Use totalDirty for progress percentage
 
+      // Batch-mark all pages in this DB batch as 'embedding' in a single UPDATE
+      const batchPageIds = batch.rows.map((p) => p.id);
+      await query(
+        `UPDATE pages SET embedding_status = 'embedding', embedding_error = NULL WHERE id = ANY($1::int[])`,
+        [batchPageIds],
+      );
+
       for (const page of batch.rows) {
         try {
-          // Mark page as currently embedding and clear any previous error
-          await query(
-            `UPDATE pages SET embedding_status = 'embedding', embedding_error = NULL WHERE id = $1`,
-            [page.id],
-          );
 
           await embedPage(userId, page.id, page.title, page.space_key, page.body_html, chunkOpts);
           totalProcessed++;

@@ -451,11 +451,9 @@ describe('embedding-service', () => {
       // Batch SELECT returns 3 pages
       const pages = [makePage('p1'), makePage('p2'), makePage('p3')];
       mocks.query.mockResolvedValueOnce({ rows: pages });
-      // For each page: only mark embedding goes through pool query()
+      // Batch UPDATE: mark all pages as 'embedding' in one query (via ANY($1::int[]))
       // Phase 2 (BEGIN/DELETE/INSERT×N/UPDATE/COMMIT) handled by mockClient.query default
-      for (let i = 0; i < 3; i++) {
-        mocks.query.mockResolvedValueOnce({ rows: [] }); // UPDATE embedding_status='embedding'
-      }
+      mocks.query.mockResolvedValueOnce({ rows: [] }); // batch UPDATE embedding_status='embedding'
       // computePageRelationships (post-embed hook) handled by mockClient.query default
       // Batch was < DIRTY_PAGE_BATCH_SIZE so loop breaks after first batch
 
