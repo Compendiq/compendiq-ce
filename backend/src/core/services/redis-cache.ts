@@ -109,6 +109,44 @@ export async function isEmbeddingLocked(userId: string): Promise<boolean> {
   }
 }
 
+// ── Generic worker lock (distributed via Redis) ──────────────────────────
+// Provides a simple distributed lock for background workers (quality, summary,
+// token-cleanup) so that only one process runs a given worker at a time.
+// Falls back to returning true (lock acquired) when Redis is unavailable,
+// preserving single-node behaviour.
+
+/**
+ * Attempt to acquire a named worker lock via Redis SET NX EX.
+ * Returns true if the lock was acquired, false if another holder has it.
+ * Falls back to true when Redis is not available (single-node fallback).
+ */
+export async function acquireWorkerLock(name: string, ttlSeconds = 300): Promise<boolean> {
+  if (!_redisClient) return true; // single-node fallback
+  try {
+    const result = await _redisClient.set(`worker:lock:${name}`, '1', {
+      NX: true,
+      EX: ttlSeconds,
+    });
+    return result !== null;
+  } catch (err) {
+    logger.error({ err, name }, 'Failed to acquire worker lock');
+    return true; // degrade to local execution
+  }
+}
+
+/**
+ * Release a named worker lock.
+ * Safe to call when Redis is unavailable (no-op).
+ */
+export async function releaseWorkerLock(name: string): Promise<void> {
+  if (!_redisClient) return;
+  try {
+    await _redisClient.del(`worker:lock:${name}`);
+  } catch (err) {
+    logger.error({ err, name }, 'Failed to release worker lock');
+  }
+}
+
 // ── Attachment download-failure tracking (persisted in Redis) ──────────────
 // Tracks per-attachment download failures so we can skip Confluence calls
 // for attachments that have persistently failed, even across container restarts.

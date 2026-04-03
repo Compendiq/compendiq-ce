@@ -12,6 +12,7 @@ import { sanitizeLlmInput } from '../../../core/utils/sanitize-llm-input.js';
 import { htmlToMarkdown } from '../../../core/services/content-converter.js';
 import { logger } from '../../../core/utils/logger.js';
 import { getSharedLlmSettings } from '../../../core/services/admin-settings-service.js';
+import { acquireWorkerLock, releaseWorkerLock } from '../../../core/services/redis-cache.js';
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 
@@ -321,6 +322,8 @@ export function startQualityWorker(intervalMinutes?: number): void {
 
   qualityIntervalHandle = setInterval(async () => {
     if (qualityLock) return;
+    const acquired = await acquireWorkerLock('quality-worker', 600);
+    if (!acquired) return;
     qualityLock = true;
     isProcessing = true;
 
@@ -334,6 +337,7 @@ export function startQualityWorker(intervalMinutes?: number): void {
     } finally {
       qualityLock = false;
       isProcessing = false;
+      await releaseWorkerLock('quality-worker');
     }
   }, intervalMs);
 
@@ -346,6 +350,8 @@ export function startQualityWorker(intervalMinutes?: number): void {
  */
 export async function triggerQualityBatch(): Promise<void> {
   if (qualityLock) return;
+  const acquired = await acquireWorkerLock('quality-worker', 600);
+  if (!acquired) return;
   qualityLock = true;
   isProcessing = true;
 
@@ -359,6 +365,7 @@ export async function triggerQualityBatch(): Promise<void> {
   } finally {
     qualityLock = false;
     isProcessing = false;
+    await releaseWorkerLock('quality-worker');
   }
 }
 

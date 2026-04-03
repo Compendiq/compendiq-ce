@@ -16,6 +16,7 @@ import { query } from '../../../core/db/postgres.js';
 import { summarizeContent } from '../../llm/services/ollama-service.js';
 import { logger } from '../../../core/utils/logger.js';
 import { getSharedLlmSettings } from '../../../core/services/admin-settings-service.js';
+import { acquireWorkerLock, releaseWorkerLock } from '../../../core/services/redis-cache.js';
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -333,6 +334,8 @@ export function startSummaryWorker(intervalMinutes?: number): void {
 
   workerIntervalHandle = setInterval(async () => {
     if (workerLock) return;
+    const acquired = await acquireWorkerLock('summary-worker', 600);
+    if (!acquired) return;
     workerLock = true;
     isProcessing = true;
 
@@ -346,6 +349,7 @@ export function startSummaryWorker(intervalMinutes?: number): void {
     } finally {
       workerLock = false;
       isProcessing = false;
+      await releaseWorkerLock('summary-worker');
     }
   }, interval);
 
@@ -361,6 +365,8 @@ export function startSummaryWorker(intervalMinutes?: number): void {
  */
 export async function triggerSummaryBatch(): Promise<void> {
   if (workerLock) return;
+  const acquired = await acquireWorkerLock('summary-worker', 600);
+  if (!acquired) return;
   workerLock = true;
   isProcessing = true;
 
@@ -374,6 +380,7 @@ export async function triggerSummaryBatch(): Promise<void> {
   } finally {
     workerLock = false;
     isProcessing = false;
+    await releaseWorkerLock('summary-worker');
   }
 }
 

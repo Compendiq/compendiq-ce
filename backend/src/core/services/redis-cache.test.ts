@@ -16,6 +16,8 @@ import {
   clearAttachmentFailures,
   MAX_ATTACHMENT_FAILURES,
   RedisCache,
+  acquireWorkerLock,
+  releaseWorkerLock,
 } from './redis-cache.js';
 
 /**
@@ -331,6 +333,78 @@ describe('redis-cache embedding lock', () => {
       expect(mockRedis.eval.mock.calls[0][1]).toEqual(
         expect.objectContaining({ keys: ['embedding:lock:test-user'] }),
       );
+    });
+  });
+
+  describe('acquireWorkerLock', () => {
+    it('returns true when lock is acquired (SET NX returns OK)', async () => {
+      mockRedis.set.mockResolvedValue('OK');
+
+      const acquired = await acquireWorkerLock('quality-worker');
+
+      expect(acquired).toBe(true);
+      expect(mockRedis.set).toHaveBeenCalledWith(
+        'worker:lock:quality-worker',
+        '1',
+        { NX: true, EX: 300 },
+      );
+    });
+
+    it('returns false when lock is already held', async () => {
+      mockRedis.set.mockResolvedValue(null);
+
+      const acquired = await acquireWorkerLock('quality-worker');
+
+      expect(acquired).toBe(false);
+    });
+
+    it('uses custom TTL when provided', async () => {
+      mockRedis.set.mockResolvedValue('OK');
+
+      await acquireWorkerLock('summary-worker', 600);
+
+      const call = mockRedis.set.mock.calls[0];
+      expect(call[2]).toEqual({ NX: true, EX: 600 });
+    });
+
+    it('falls back to true when Redis is not available', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      setRedisClient(null as any);
+
+      const acquired = await acquireWorkerLock('test-worker');
+
+      expect(acquired).toBe(true);
+    });
+
+    it('falls back to true when Redis throws', async () => {
+      mockRedis.set.mockRejectedValue(new Error('Redis down'));
+
+      const acquired = await acquireWorkerLock('test-worker');
+
+      expect(acquired).toBe(true);
+    });
+  });
+
+  describe('releaseWorkerLock', () => {
+    it('deletes the lock key', async () => {
+      mockRedis.del.mockResolvedValue(1);
+
+      await releaseWorkerLock('quality-worker');
+
+      expect(mockRedis.del).toHaveBeenCalledWith('worker:lock:quality-worker');
+    });
+
+    it('is a no-op when Redis is not available', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      setRedisClient(null as any);
+
+      await expect(releaseWorkerLock('test-worker')).resolves.toBeUndefined();
+    });
+
+    it('does not throw when Redis throws', async () => {
+      mockRedis.del.mockRejectedValue(new Error('Redis timeout'));
+
+      await expect(releaseWorkerLock('test-worker')).resolves.toBeUndefined();
     });
   });
 });
