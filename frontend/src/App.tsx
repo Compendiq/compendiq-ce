@@ -14,7 +14,6 @@ import { SetupWizard } from './features/setup/SetupWizard';
 // Route-based code splitting: lazy-load all page components (#186)
 // LoginPage is statically imported — it's the first screen for
 // unauthenticated users and lazy-loading it causes a "Loading..." flash.
-// DashboardPage removed — merged into PagesPage (issue #109)
 const SettingsPage = lazy(() =>
   import('./features/settings/SettingsPage').then((m) => ({
     default: m.SettingsPage,
