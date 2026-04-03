@@ -43,7 +43,7 @@ compendiq/
 │   ├── core/                        # Shared infrastructure (no domain imports)
 │   │   ├── enterprise/              # Enterprise plugin loader (types, noop, loader, features)
 │   │   ├── db/postgres.ts           # Connection pool + migration runner
-│   │   ├── db/migrations/           # Sequential SQL files (001-045)
+│   │   ├── db/migrations/           # Sequential SQL files (001-049, 51 files)
 │   │   ├── plugins/                 # Fastify plugins (auth, correlation-id, redis)
 │   │   ├── services/                # Cross-cutting: redis-cache, audit-service, error-tracker,
 │   │   │                            #   content-converter, circuit-breaker, image-references,
@@ -93,7 +93,7 @@ Import restrictions enforced by `eslint-plugin-boundaries`:
 ## Tech Stack
 
 - **Backend**: Fastify 5, TypeScript, PostgreSQL 17 (pgvector), Redis 8, `ollama` npm package, `jose` (JWT), `bcrypt`, `pg`, `undici`, `zod`, `pino`
-- **LLM providers**: Ollama (default) + OpenAI-compatible APIs (`openai` npm package) — configurable per-user or server-wide via `LLM_PROVIDER`
+- **LLM providers**: Ollama (default) + OpenAI-compatible APIs (raw HTTP via `undici`) — configurable per-user or server-wide via `LLM_PROVIDER`
 - **Frontend**: React 19, Vite, TailwindCSS 4, Radix UI, Zustand, TanStack Query, Framer Motion, TipTap v3, Sonner
 - **Content conversion**: `turndown` + `jsdom` + `turndown-plugin-gfm` (Confluence XHTML → Markdown), `marked` (Markdown → HTML)
 - **PDF**: `pdf-lib` for PDF export/import processing

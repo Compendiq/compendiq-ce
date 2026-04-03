@@ -81,13 +81,12 @@ async function start() {
   // Start background token cleanup worker
   startTokenCleanupWorker();
 
-  // Run initial worker batches after 30s delay to let server stabilize.
+  // Run initial worker batches with staggered delays to let server stabilize
+  // and avoid overloading the LLM server with concurrent requests.
   // Uses lock-guarded trigger functions to prevent concurrent execution
   // if a worker interval fires at the same time.
-  setTimeout(async () => {
-    await triggerQualityBatch();
-    await triggerSummaryBatch();
-  }, 30_000);
+  setTimeout(() => { triggerQualityBatch().catch((err) => logger.error({ err }, 'Initial quality batch failed')); }, 30_000);
+  setTimeout(() => { triggerSummaryBatch().catch((err) => logger.error({ err }, 'Initial summary batch failed')); }, 60_000);
 
   // Graceful shutdown
   const shutdown = async (signal: string) => {

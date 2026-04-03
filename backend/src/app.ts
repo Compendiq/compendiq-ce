@@ -60,7 +60,8 @@ import { trackError } from './core/services/error-tracker.js';
 import { logger } from './core/utils/logger.js';
 import { APP_VERSION } from './core/utils/version.js';
 import { loadEnterprisePlugin } from './core/enterprise/loader.js';
-import { ENTERPRISE_FEATURES } from './core/enterprise/features.js';
+// ENTERPRISE_FEATURES is imported when EE routes are activated (see conditional OIDC block below)
+// import { ENTERPRISE_FEATURES } from './core/enterprise/features.js';
 
 export async function buildApp() {
   const app = Fastify({
@@ -202,7 +203,6 @@ export async function buildApp() {
   //   await app.register(oidcRoutes, { prefix: '/api' });
   //   logger.info('OIDC routes registered (enterprise license active)');
   // }
-  void ENTERPRISE_FEATURES; // referenced to prevent unused-import lint error
 
   // Confluence routes
   await app.register(spacesRoutes, { prefix: '/api' });
