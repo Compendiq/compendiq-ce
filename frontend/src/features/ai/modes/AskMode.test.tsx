@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { LazyMotion, domMax } from 'framer-motion';
+import { LazyMotion, domAnimation } from 'framer-motion';
 import { AskModeInput, ASK_EMPTY_TITLE, ASK_EMPTY_SUBTITLE } from './AskMode';
 import { AiProvider } from '../AiContext';
 import { useAuthStore } from '../../../stores/auth-store';
@@ -40,7 +40,7 @@ function createWrapper(initialEntries = ['/ai']) {
     return (
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={initialEntries}>
-          <LazyMotion features={domMax}>
+          <LazyMotion features={domAnimation}>
             <AiProvider>
               {children}
             </AiProvider>

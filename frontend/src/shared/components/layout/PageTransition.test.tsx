@@ -1,13 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { LazyMotion, domMax } from 'framer-motion';
+import { LazyMotion, domAnimation } from 'framer-motion';
 import { PageTransition, routeDepth } from './PageTransition';
 
 function Wrapper({ children, initialPath = '/' }: { children: React.ReactNode; initialPath?: string }) {
   return (
     <MemoryRouter initialEntries={[initialPath]}>
-      <LazyMotion features={domMax}>
+      <LazyMotion features={domAnimation}>
         {children}
       </LazyMotion>
     </MemoryRouter>

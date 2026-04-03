@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { LazyMotion, domMax } from 'framer-motion';
+import { LazyMotion, domAnimation } from 'framer-motion';
 import { SourceCitations, type Source } from './SourceCitations';
 
 const mockNavigate = vi.fn();
@@ -16,7 +16,7 @@ vi.mock('react-router-dom', async () => {
 function Wrapper({ children }: { children: React.ReactNode }) {
   return (
     <MemoryRouter>
-      <LazyMotion features={domMax}>
+      <LazyMotion features={domAnimation}>
         {children}
       </LazyMotion>
     </MemoryRouter>

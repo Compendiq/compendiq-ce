@@ -1,6 +1,6 @@
 import { lazy, Suspense } from 'react';
 import { Routes, Route, Navigate, useSearchParams } from 'react-router-dom';
-import { LazyMotion, domMax } from 'framer-motion';
+import { LazyMotion, domAnimation } from 'framer-motion';
 import { useAuthStore } from './stores/auth-store';
 import { useSessionInit } from './shared/hooks/useSessionInit';
 import { useThemeEffect } from './shared/hooks/useThemeEffect';
@@ -106,7 +106,7 @@ export function App() {
   useThemeEffect();
 
   return (
-    <LazyMotion features={domMax}>
+    <LazyMotion features={domAnimation}>
       <ErrorBoundary>
         <Suspense fallback={<PageLoadingFallback />}>
           <Routes>

@@ -1,13 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { LazyMotion, domMax } from 'framer-motion';
+import { LazyMotion, domAnimation } from 'framer-motion';
 import { LoginPage } from './LoginPage';
 import { useAuthStore } from '../../stores/auth-store';
 
 function renderLoginPage(initialEntry = '/login') {
   return render(
-    <LazyMotion features={domMax}>
+    <LazyMotion features={domAnimation}>
       <MemoryRouter initialEntries={[initialEntry]}>
         <LoginPage />
       </MemoryRouter>
