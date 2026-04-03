@@ -137,7 +137,7 @@ This is the same pattern used by GitLab (OIDC code is open-source, but EE licens
 {
   "name": "@compendiq/enterprise",
   "version": "1.0.0",
-  "license": "BUSL-1.1",
+  "license": "SEE LICENSE IN LICENSE",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -1205,7 +1205,7 @@ This is a 6-phase migration executed over approximately 1-2 sprints.
 - GitHub Packages access requires authentication.
 - The package is scoped to the organization.
 - License key still required even if the package is obtained.
-- BUSL-1.1 license provides legal protection.
+- Proprietary (All Rights Reserved) license provides legal protection.
 
 ### 10.3 Package Integrity
 
@@ -1421,7 +1421,7 @@ Use a private GitHub repository that publishes `@compendiq/enterprise` to GitHub
 - **True isolation**: Enterprise code is never in the open-source repository.
 - **Ed25519 asymmetric signing**: Private key stays with the issuer, public key ships in the package. No shared secrets.
 - **Standard npm workflow**: `npm install @compendiq/enterprise` -- familiar to developers.
-- **Clean legal boundary**: Open repo under one license, enterprise package under BUSL-1.1.
+- **Clean legal boundary**: Open repo under AGPL-3.0, enterprise package under Proprietary (All Rights Reserved).
 - **Zero degradation**: Community edition has no awareness of enterprise features. No 403s, no "upgrade" nags, no dead code.
 
 #### Consequences

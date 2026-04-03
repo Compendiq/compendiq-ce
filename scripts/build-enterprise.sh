@@ -18,7 +18,7 @@ set -euo pipefail
 #   6. Docker multi-stage build ships only compiled+obfuscated JS (Layer 3)
 #
 # Protection layers:
-#   Layer 1: BUSL-1.1 license on EE source (legal)
+#   Layer 1: Proprietary (All Rights Reserved) license on EE source (legal)
 #   Layer 2: javascript-obfuscator on enterprise JS after tsc
 #   Layer 3: Multi-stage Dockerfile — no .ts, .map, or test files
 #

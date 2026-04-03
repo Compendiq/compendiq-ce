@@ -359,17 +359,20 @@ Based on the Research/AtlasMind documents (Open-Core Business Model, Gap Analysi
 | Draw.io diagram display (read-only) | Content compatibility |
 
 ### Features Correctly in EE (gated by enterprise license)
+
+Two EE tiers: **Business** (Team + Business merged) and **Enterprise**.
+
 | Feature | Tier | Why EE | Status |
 |---------|------|--------|--------|
-| **OIDC/SSO** | Team | #1 enterprise gate — IT blocks tools without SSO | **Implemented** |
-| **Seat enforcement** | Team | License compliance | **Implemented** |
+| **OIDC/SSO** | Business | #1 enterprise gate — IT blocks tools without SSO | **Implemented** |
+| **Seat enforcement** | Business | License compliance | **Implemented** |
 | OIDC group mappings | Business | Enterprise identity management | Planned (v1.1) |
-| Advanced RBAC (custom roles) | Business | Governance gate | CE has custom role CRUD — **review if this should be EE-only** |
+| Advanced RBAC (custom roles) | Business | Governance gate | **Decided: EE-only.** CE keeps Admin/Editor/Viewer; custom roles gated. |
 | Audit log export | Business | Compliance gate (SOC2, ISO 27001) | Planned (v1.1) |
 | LLM audit trail | Business | AI governance — who queried what | Planned (v1.1) |
 | Advanced analytics dashboards | Business | Manager/dept head reporting | Planned (v1.1) |
 | AI usage analytics | Business | AI governance visibility | Planned (v1.1) |
-| Unlimited spaces | Business | Scale gate (CE: up to 5 per research) | **Not enforced yet** |
+| ~~Unlimited spaces~~ | ~~Business~~ | ~~Scale gate~~ | **Decided: No limit in CE.** Unlimited spaces permanently in CE — removed from EE. |
 | Batch page operations | Business | Organizational scale | Planned (v1.2) |
 | Webhook push | Business | Enterprise integration | Planned (v1.2) |
 | SCIM provisioning | Enterprise | Automated offboarding | Planned (v1.1) |
@@ -389,8 +392,8 @@ Based on the Research/AtlasMind documents (Open-Core Business Model, Gap Analysi
 ### Items Requiring Decision
 | Feature | Current State | Research Says | Recommendation |
 |---------|--------------|---------------|----------------|
-| **Custom RBAC roles** | Implemented in CE (`routes/foundation/rbac.ts`) | EE (Advanced RBAC) | **Keep basic roles in CE, gate custom role creation as EE.** CE provides Admin/Editor/Viewer. EE unlocks custom roles beyond those three. |
-| **Confluence space limit** | No limit enforced | CE: up to 5 spaces; EE: unlimited | **Enforce in v0.1.0 or defer?** Recommendation: defer enforcement to v0.2.0. Launching with an artificial limit on a feature that currently works unlimitedly feels like a downgrade. Add it when there's a clear business signal. |
+| **Custom RBAC roles** | Implemented in CE (`routes/foundation/rbac.ts`) | EE (Advanced RBAC) | **Decided: Gate as EE Business tier.** CE provides Admin/Editor/Viewer only. Custom role creation requires enterprise license. |
+| **Confluence space limit** | No limit enforced | CE: up to 5 spaces; EE: unlimited | **Decided: No limit ever in CE.** Unlimited spaces permanently in CE. |
 | **Draw.io inline editing** | Read-only in CE | CE (full functionality per research) | **Keep read-only for now.** Inline editing is not built. When built, keep in CE per research recommendation. |
 | **Email notifications (SMTP)** | Not implemented | CE (basic email) | **When implemented, keep in CE.** Basic email notifications are an individual-contributor feature. |
 
