@@ -33,6 +33,34 @@ export async function closePool(): Promise<void> {
   }
 }
 
+// ── Dedicated vector search pool ─────────────────────────────────────────
+// Keeps long-running pgvector similarity queries from consuming the
+// main pool's connections and starving CRUD routes.
+
+let vectorPool: pg.Pool | null = null;
+
+export function getVectorPool(): pg.Pool {
+  if (!vectorPool) {
+    vectorPool = new pg.Pool({
+      connectionString: process.env.POSTGRES_URL,
+      max: parseInt(process.env.PG_VECTOR_POOL_MAX ?? '5', 10),
+      connectionTimeoutMillis: 10_000,
+      idleTimeoutMillis: 30_000,
+    });
+    vectorPool.on('error', (err) => {
+      logger.error({ err }, 'Unexpected PostgreSQL vector pool error');
+    });
+  }
+  return vectorPool;
+}
+
+export async function closeVectorPool(): Promise<void> {
+  if (vectorPool) {
+    await vectorPool.end();
+    vectorPool = null;
+  }
+}
+
 export async function query<T extends pg.QueryResultRow = pg.QueryResultRow>(
   text: string,
   params?: unknown[],

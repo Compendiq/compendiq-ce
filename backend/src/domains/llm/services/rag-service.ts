@@ -1,4 +1,4 @@
-import { query, getPool } from '../../../core/db/postgres.js';
+import { query, getVectorPool } from '../../../core/db/postgres.js';
 import { providerGenerateEmbedding } from './llm-provider.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { CircuitBreakerOpenError } from '../../../core/services/circuit-breaker.js';
@@ -32,8 +32,9 @@ interface SearchResult {
  */
 export async function vectorSearch(userId: string, questionEmbedding: number[], limit = 10): Promise<SearchResult[]> {
   const vecSpaces = await getUserAccessibleSpaces(userId);
-  // Use a dedicated client so SET LOCAL applies to our query
-  const client = await getPool().connect();
+  // Use the dedicated vector pool so long-running similarity queries
+  // do not starve the main pool used by CRUD routes.
+  const client = await getVectorPool().connect();
   try {
     await client.query('BEGIN');
     await client.query(`SET LOCAL hnsw.ef_search = ${Number(RAG_EF_SEARCH)}`);

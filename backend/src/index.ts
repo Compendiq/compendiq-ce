@@ -3,7 +3,7 @@
 import { initTelemetry, shutdownTelemetry } from './telemetry.js';
 
 import { buildApp } from './app.js';
-import { runMigrations, closePool, query } from './core/db/postgres.js';
+import { runMigrations, closePool, closeVectorPool, query } from './core/db/postgres.js';
 import { startSyncWorker, stopSyncWorker } from './domains/confluence/services/sync-service.js';
 import { addAllowedBaseUrl } from './core/utils/ssrf-guard.js';
 import { startQualityWorker, stopQualityWorker, triggerQualityBatch } from './domains/knowledge/services/quality-worker.js';
@@ -98,6 +98,7 @@ async function start() {
     stopTokenCleanupWorker();
     try { const { closeBrowser } = await import('./core/services/pdf-service.js'); await closeBrowser(); } catch { /* shutdown cleanup is best-effort */ }
     await app.close();
+    await closeVectorPool();
     await closePool();
     await shutdownTelemetry();
     process.exit(0);
