@@ -196,3 +196,120 @@ describe('tls-config', () => {
     expect(lastCall.length === 0 || lastCall[0] === undefined).toBe(true);
   });
 });
+
+describe('TLS bypass periodic warnings', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.unstubAllEnvs();
+  });
+
+  it('checkConfluenceTlsBypassWarning should log when CONFLUENCE_VERIFY_SSL=false', async () => {
+    vi.stubEnv('CONFLUENCE_VERIFY_SSL', 'false');
+    vi.stubEnv('NODE_EXTRA_CA_CERTS', '');
+
+    vi.doMock('fs', () => ({
+      readFileSync: vi.fn().mockImplementation(() => { throw new Error('ENOENT'); }),
+      existsSync: vi.fn().mockReturnValue(false),
+    }));
+
+    const { MockAgent } = createMockAgent();
+    vi.doMock('undici', () => ({
+      Agent: MockAgent,
+      Dispatcher: class {},
+      interceptors: { redirect: mockRedirectInterceptor },
+    }));
+
+    const { logger } = await import('./logger.js');
+    const { checkConfluenceTlsBypassWarning, _resetTlsWarningTimestamps } = await import('./tls-config.js');
+
+    _resetTlsWarningTimestamps();
+    checkConfluenceTlsBypassWarning();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('CONFLUENCE_VERIFY_SSL=false is still active'),
+    );
+  });
+
+  it('checkConfluenceTlsBypassWarning should not log when CONFLUENCE_VERIFY_SSL=true', async () => {
+    vi.stubEnv('CONFLUENCE_VERIFY_SSL', 'true');
+    vi.stubEnv('NODE_EXTRA_CA_CERTS', '');
+
+    vi.doMock('fs', () => ({
+      readFileSync: vi.fn().mockImplementation(() => { throw new Error('ENOENT'); }),
+      existsSync: vi.fn().mockReturnValue(false),
+    }));
+
+    const { MockAgent } = createMockAgent();
+    vi.doMock('undici', () => ({
+      Agent: MockAgent,
+      Dispatcher: class {},
+      interceptors: { redirect: mockRedirectInterceptor },
+    }));
+
+    const { logger } = await import('./logger.js');
+    const warnCallsBefore = (logger.warn as ReturnType<typeof vi.fn>).mock.calls.length;
+    const { checkConfluenceTlsBypassWarning } = await import('./tls-config.js');
+
+    checkConfluenceTlsBypassWarning();
+    // No new warn calls about TLS bypass
+    const warnCallsAfter = (logger.warn as ReturnType<typeof vi.fn>).mock.calls.length;
+    expect(warnCallsAfter).toBe(warnCallsBefore);
+  });
+
+  it('checkConfluenceTlsBypassWarning should not log twice within 24h', async () => {
+    vi.stubEnv('CONFLUENCE_VERIFY_SSL', 'false');
+    vi.stubEnv('NODE_EXTRA_CA_CERTS', '');
+
+    vi.doMock('fs', () => ({
+      readFileSync: vi.fn().mockImplementation(() => { throw new Error('ENOENT'); }),
+      existsSync: vi.fn().mockReturnValue(false),
+    }));
+
+    const { MockAgent } = createMockAgent();
+    vi.doMock('undici', () => ({
+      Agent: MockAgent,
+      Dispatcher: class {},
+      interceptors: { redirect: mockRedirectInterceptor },
+    }));
+
+    const { logger } = await import('./logger.js');
+    const { checkConfluenceTlsBypassWarning, _resetTlsWarningTimestamps } = await import('./tls-config.js');
+
+    _resetTlsWarningTimestamps();
+    (logger.warn as ReturnType<typeof vi.fn>).mockClear();
+
+    checkConfluenceTlsBypassWarning();
+    checkConfluenceTlsBypassWarning(); // Second call within interval
+    // Should only have been called once for the periodic warning
+    const tlsWarnings = (logger.warn as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('CONFLUENCE_VERIFY_SSL=false is still active'),
+    );
+    expect(tlsWarnings.length).toBe(1);
+  });
+
+  it('checkLlmTlsBypassWarning should log when LLM_VERIFY_SSL=false', async () => {
+    vi.stubEnv('CONFLUENCE_VERIFY_SSL', 'true');
+    vi.stubEnv('LLM_VERIFY_SSL', 'false');
+    vi.stubEnv('NODE_EXTRA_CA_CERTS', '');
+
+    vi.doMock('fs', () => ({
+      readFileSync: vi.fn().mockImplementation(() => { throw new Error('ENOENT'); }),
+      existsSync: vi.fn().mockReturnValue(false),
+    }));
+
+    const { MockAgent } = createMockAgent();
+    vi.doMock('undici', () => ({
+      Agent: MockAgent,
+      Dispatcher: class {},
+      interceptors: { redirect: mockRedirectInterceptor },
+    }));
+
+    const { logger } = await import('./logger.js');
+    const { checkLlmTlsBypassWarning, _resetTlsWarningTimestamps } = await import('./tls-config.js');
+
+    _resetTlsWarningTimestamps();
+    checkLlmTlsBypassWarning();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('LLM_VERIFY_SSL=false is still active'),
+    );
+  });
+});
