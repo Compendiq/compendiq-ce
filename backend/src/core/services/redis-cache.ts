@@ -253,6 +253,77 @@ export class RedisCache {
     }
   }
 
+  /**
+   * Cache-aside with stampede protection.
+   *
+   * On cache miss, acquires a short-lived NX lock so only one caller computes
+   * the value. Other concurrent callers poll the cache for up to 5 seconds;
+   * if the value still does not appear they fall through and compute it
+   * themselves (safe fallback — better than hanging forever).
+   */
+  async getOrCompute<T>(
+    cacheKey: string,
+    computeFn: () => Promise<T>,
+    ttl: number,
+  ): Promise<T> {
+    // 1. Fast path: cache hit
+    try {
+      const cached = await this.redis.get(cacheKey);
+      if (cached !== null) return JSON.parse(cached) as T;
+    } catch {
+      // Redis read failure — fall through to compute
+    }
+
+    // 2. Try to acquire a stampede lock
+    const lockKey = `${cacheKey}:lock`;
+    let lockAcquired = false;
+    try {
+      const result = await this.redis.set(lockKey, '1', { NX: true, EX: 30 });
+      lockAcquired = result !== null;
+    } catch {
+      // Redis failure — proceed without lock
+    }
+
+    if (lockAcquired) {
+      try {
+        const value = await computeFn();
+        try {
+          await this.redis.setEx(cacheKey, ttl, JSON.stringify(value));
+        } catch {
+          // Cache store failed — not critical, value is still returned
+        }
+        return value;
+      } finally {
+        try {
+          await this.redis.del(lockKey);
+        } catch {
+          // Lock cleanup failed — TTL will expire it
+        }
+      }
+    }
+
+    // 3. Another caller holds the lock — poll for the result
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 100));
+      try {
+        const cached = await this.redis.get(cacheKey);
+        if (cached !== null) return JSON.parse(cached) as T;
+      } catch {
+        // Redis read failure during poll — keep trying until deadline
+      }
+    }
+
+    // 4. Timeout waiting — compute it ourselves (safe fallback)
+    const value = await computeFn();
+    try {
+      await this.redis.setEx(cacheKey, ttl, JSON.stringify(value));
+    } catch {
+      // Best-effort cache store
+    }
+    return value;
+  }
+
   private async scanAndDelete(pattern: string): Promise<void> {
     let cursor = '0';
     do {
