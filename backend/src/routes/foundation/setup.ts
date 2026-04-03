@@ -28,6 +28,7 @@ const REFRESH_MAX_AGE = 7 * 24 * 60 * 60; // 7 days in seconds
 import { getRateLimits } from '../../core/services/rate-limit-service.js';
 // Rate limit config for setup endpoints (uses auth category — both are security-sensitive)
 const SETUP_RATE_LIMIT = { config: { rateLimit: { max: async () => (await getRateLimits()).auth.max, timeWindow: '1 minute' } } };
+const SETUP_STATUS_RATE_LIMIT = { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } };
 
 // ─── Validation schemas ───────────────────────────────────────────────────
 
@@ -53,7 +54,7 @@ export async function setupRoutes(fastify: FastifyInstance) {
    * setup has been completed. The frontend uses this on every app mount to
    * decide whether to show the setup wizard or the normal UI.
    */
-  fastify.get('/health/setup-status', async () => {
+  fastify.get('/health/setup-status', SETUP_STATUS_RATE_LIMIT, async () => {
     const [adminResult, confluenceResult] = await Promise.all([
       query<{ count: string }>(
         `SELECT COUNT(*) AS count FROM users WHERE role = $1 AND id != '00000000-0000-0000-0000-000000000000'`,
