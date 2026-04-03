@@ -85,20 +85,22 @@ export async function searchRoutes(fastify: FastifyInstance) {
     let warning: string | undefined;
 
     if (mode !== 'keyword') {
-      const embResult = await query<{ count: string }>(
-        `SELECT COUNT(*) AS count
-         FROM page_embeddings pe
-         JOIN pages cp ON pe.page_id = cp.id
-         WHERE (
-           (cp.source = 'confluence' AND cp.space_key = ANY($1::text[]))
-           OR (cp.source = 'standalone' AND cp.visibility = 'shared')
-           OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $2)
-         )
-         AND cp.deleted_at IS NULL`,
+      const embResult = await query<{ exists: boolean }>(
+        `SELECT EXISTS(
+           SELECT 1
+           FROM page_embeddings pe
+           JOIN pages cp ON pe.page_id = cp.id
+           WHERE (
+             (cp.source = 'confluence' AND cp.space_key = ANY($1::text[]))
+             OR (cp.source = 'standalone' AND cp.visibility = 'shared')
+             OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $2)
+           )
+           AND cp.deleted_at IS NULL
+           LIMIT 1
+         ) AS exists`,
         [searchSpaces, userId],
       );
-      const embCount = parseInt(embResult.rows[0].count, 10);
-      if (embCount === 0) {
+      if (!embResult.rows[0].exists) {
         hasEmbeddings = false;
         effectiveMode = 'keyword';
         warning = 'No embeddings found — falling back to keyword search. Embed your pages to enable semantic search.';
