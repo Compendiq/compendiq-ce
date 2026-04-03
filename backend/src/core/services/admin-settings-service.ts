@@ -10,6 +10,8 @@ export interface SharedLlmSettings {
   hasOpenaiApiKey: boolean;
   openaiModel: string | null;
   embeddingModel: string;
+  embeddingDimensions: number;
+  ftsLanguage: string;
 }
 
 const DEFAULTS: SharedLlmSettings = {
@@ -18,7 +20,9 @@ const DEFAULTS: SharedLlmSettings = {
   openaiBaseUrl: null,
   hasOpenaiApiKey: false,
   openaiModel: null,
-  embeddingModel: process.env.EMBEDDING_MODEL ?? 'nomic-embed-text',
+  embeddingModel: process.env.EMBEDDING_MODEL ?? 'bge-m3',
+  embeddingDimensions: parseInt(process.env.EMBEDDING_DIMENSIONS ?? '1024', 10),
+  ftsLanguage: process.env.FTS_LANGUAGE ?? 'simple',
 };
 
 const LLM_SETTING_KEYS = [
@@ -28,6 +32,8 @@ const LLM_SETTING_KEYS = [
   'openai_api_key',
   'openai_model',
   'embedding_model',
+  'embedding_dimensions',
+  'fts_language',
 ] as const;
 
 type AdminSettingKey = (typeof LLM_SETTING_KEYS)[number];
@@ -58,13 +64,11 @@ export async function getSharedLlmSettings(): Promise<SharedLlmSettings> {
     hasOpenaiApiKey: !!encryptedOpenaiApiKey,
     openaiModel: settings['openai_model'] ?? DEFAULTS.openaiModel,
     embeddingModel: settings['embedding_model'] ?? DEFAULTS.embeddingModel,
+    embeddingDimensions: settings['embedding_dimensions'] ? parseInt(settings['embedding_dimensions'], 10) : DEFAULTS.embeddingDimensions,
+    ftsLanguage: settings['fts_language'] ?? DEFAULTS.ftsLanguage,
   };
 }
 
-/**
- * Returns the decrypted OpenAI API key, or null if not set / decryption fails.
- * Only call this where the actual key is needed (e.g. LLM provider HTTP calls).
- */
 export async function getSharedOpenaiApiKey(): Promise<string | null> {
   const settings = await getAdminSettingsMap(['openai_api_key'] as const satisfies readonly AdminSettingKey[]);
   const encrypted = settings['openai_api_key'] ?? null;
@@ -77,7 +81,7 @@ export async function getSharedOpenaiApiKey(): Promise<string | null> {
 }
 
 export async function upsertSharedLlmSettings(
-  updates: Partial<Pick<SharedLlmSettings & { openaiApiKey: string | null }, 'llmProvider' | 'ollamaModel' | 'openaiBaseUrl' | 'openaiApiKey' | 'openaiModel' | 'embeddingModel'>>,
+  updates: Partial<Pick<SharedLlmSettings & { openaiApiKey: string | null }, 'llmProvider' | 'ollamaModel' | 'openaiBaseUrl' | 'openaiApiKey' | 'openaiModel' | 'embeddingModel' | 'ftsLanguage'>>,
 ): Promise<void> {
   const client = await getPool().connect();
   try {
@@ -112,12 +116,18 @@ export async function upsertSharedLlmSettings(
         await client.query(`DELETE FROM admin_settings WHERE setting_key = 'openai_model'`);
       }
     }
-
     if (updates.embeddingModel !== undefined) {
       if (updates.embeddingModel) {
         rows.push({ key: 'embedding_model', value: updates.embeddingModel });
       } else {
         await client.query(`DELETE FROM admin_settings WHERE setting_key = 'embedding_model'`);
+      }
+    }
+    if (updates.ftsLanguage !== undefined) {
+      if (updates.ftsLanguage) {
+        rows.push({ key: 'fts_language', value: updates.ftsLanguage });
+      } else {
+        await client.query(`DELETE FROM admin_settings WHERE setting_key = 'fts_language'`);
       }
     }
 

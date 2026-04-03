@@ -2,6 +2,7 @@ import { query, getPool } from '../../../core/db/postgres.js';
 import { providerGenerateEmbedding } from './llm-provider.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { CircuitBreakerOpenError } from '../../../core/services/circuit-breaker.js';
+import { getFtsLanguage } from '../../../core/services/fts-language.js';
 import pgvector from 'pgvector';
 import { logger } from '../../../core/utils/logger.js';
 
@@ -89,6 +90,8 @@ export async function keywordSearch(userId: string, questionText: string, limit 
   const trimmed = questionText.trim();
   if (!trimmed) return [];
 
+  const ftsLang = await getFtsLanguage();
+
   const kwSpaces = await getUserAccessibleSpaces(userId);
   const result = await query<{
     page_id: number;
@@ -100,9 +103,9 @@ export async function keywordSearch(userId: string, questionText: string, limit 
   }>(
     `SELECT cp.id AS page_id, cp.confluence_id, cp.title, cp.space_key,
             substring(cp.body_text, 1, 500) as body_text,
-            ts_rank(cp.tsv, plainto_tsquery('english', $2)) AS rank
+            ts_rank(cp.tsv, plainto_tsquery('${ftsLang}', $2)) AS rank
      FROM pages cp
-     WHERE cp.tsv @@ plainto_tsquery('english', $2)
+     WHERE cp.tsv @@ plainto_tsquery('${ftsLang}', $2)
        AND (
          (cp.source = 'confluence' AND cp.space_key = ANY($1::text[]))
          OR (cp.source = 'standalone' AND cp.visibility = 'shared')

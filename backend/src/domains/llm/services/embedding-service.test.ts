@@ -62,7 +62,9 @@ vi.mock('../../../core/services/admin-settings-service.js', () => ({
     openaiBaseUrl: null,
     hasOpenaiApiKey: false,
     openaiModel: null,
-    embeddingModel: 'nomic-embed-text',
+    embeddingModel: 'bge-m3',
+    embeddingDimensions: 1024,
+    ftsLanguage: 'simple',
   }),
 }));
 
@@ -115,11 +117,13 @@ describe('embedding-service', () => {
       openaiBaseUrl: null,
       hasOpenaiApiKey: false,
       openaiModel: null,
-      embeddingModel: 'nomic-embed-text',
+      embeddingModel: 'bge-m3',
+    embeddingDimensions: 1024,
+    ftsLanguage: 'simple',
     });
     // Default: providerGenerateEmbedding returns one embedding vector per text
     mocks.providerGenerateEmbedding.mockImplementation((_userId: string, texts: string[]) =>
-      Promise.resolve(texts.map(() => new Array(768).fill(0.1))),
+      Promise.resolve(texts.map(() => new Array(1024).fill(0.1))),
     );
     // Default: mockClient handles all transaction queries (BEGIN/DELETE/INSERT/UPDATE/COMMIT)
     // for embedPage (Phase 2) and computePageRelationships.
@@ -145,7 +149,7 @@ describe('embedding-service', () => {
         totalEmbeddings: 200,
         isProcessing: false,
         lastRunAt: null,
-        model: 'nomic-embed-text',
+        model: 'bge-m3',
       });
     });
 
@@ -505,7 +509,7 @@ describe('embedding-service', () => {
     });
 
     it('should store error message when embedding fails', async () => {
-      const embeddingError = new Error('Model nomic-embed-text not found');
+      const embeddingError = new Error('Model bge-m3 not found');
 
       mockChunkSettings();
       // COUNT query
@@ -539,7 +543,7 @@ describe('embedding-service', () => {
       );
       expect(failedUpdateCall).toBeDefined();
       expect(failedUpdateCall![0]).toContain('embedding_error');
-      expect(failedUpdateCall![1]).toContain('Model nomic-embed-text not found');
+      expect(failedUpdateCall![1]).toContain('Model bge-m3 not found');
     });
 
     it('should truncate long error messages to 1000 characters', async () => {
@@ -634,7 +638,7 @@ describe('embedding-service', () => {
         if (embedCallCount === 2) {
           return Promise.reject(new Error('Ollama timeout'));
         }
-        return Promise.resolve([new Array(768).fill(0.1)]);
+        return Promise.resolve([new Array(1024).fill(0.1)]);
       });
 
       const result = await processDirtyPages('user-1');
@@ -685,11 +689,11 @@ describe('embedding-service', () => {
 
       // Page 1: mark embedding (pool); Phase 1 generate; Phase 2 + computePageRelationships via mockClient
       mocks.query.mockResolvedValueOnce({ rows: [] }); // mark embedding
-      mocks.providerGenerateEmbedding.mockResolvedValueOnce([new Array(768).fill(0)]);
+      mocks.providerGenerateEmbedding.mockResolvedValueOnce([new Array(1024).fill(0)]);
 
       // Page 2: mark embedding (pool); Phase 1 generate; Phase 2 via mockClient
       mocks.query.mockResolvedValueOnce({ rows: [] }); // mark embedding
-      mocks.providerGenerateEmbedding.mockResolvedValueOnce([new Array(768).fill(0)]);
+      mocks.providerGenerateEmbedding.mockResolvedValueOnce([new Array(1024).fill(0)]);
       // computePageRelationships handled by mockClient.query default
 
       const result = await processDirtyPages('progress-user', (event) => {
@@ -768,7 +772,7 @@ describe('embedding-service', () => {
       mocks.providerGenerateEmbedding.mockRejectedValueOnce(cbError);
 
       // Second attempt after wait: Phase 1 succeeds, Phase 2 handled by mockClient default
-      mocks.providerGenerateEmbedding.mockResolvedValueOnce([new Array(768).fill(0)]);
+      mocks.providerGenerateEmbedding.mockResolvedValueOnce([new Array(1024).fill(0)]);
       // computePageRelationships handled by mockClient.query default
 
       const promise = processDirtyPages('cb-user');
@@ -855,7 +859,7 @@ describe('embedding-service', () => {
       mocks.providerGenerateEmbedding.mockRejectedValueOnce(cbError);
 
       // Retry: Phase 1 succeeds, Phase 2 handled by mockClient default
-      mocks.providerGenerateEmbedding.mockResolvedValueOnce([new Array(768).fill(0)]);
+      mocks.providerGenerateEmbedding.mockResolvedValueOnce([new Array(1024).fill(0)]);
       // computePageRelationships handled by mockClient.query default
 
       const promise = processDirtyPages('cb-wait-user', (event) => {
@@ -1026,7 +1030,7 @@ describe('embedPage', () => {
     mocks.toSql.mockReturnValue('[0.1,0.2]');
     mocks.htmlToText.mockReturnValue('Some substantial page content for embedding that is long enough');
     mocks.providerGenerateEmbedding.mockImplementation((_userId: string, texts: string[]) =>
-      Promise.resolve(texts.map(() => new Array(768).fill(0.1))),
+      Promise.resolve(texts.map(() => new Array(1024).fill(0.1))),
     );
   });
 
@@ -1304,7 +1308,7 @@ describe('chunkText', () => {
       mocks.getPool.mockReturnValue({ connect: vi.fn().mockResolvedValue(mockClient) });
       mocks.toSql.mockReturnValue('[0.1,0.2]');
       mocks.providerGenerateEmbedding.mockImplementation((_userId: string, texts: string[]) =>
-        Promise.resolve(texts.map(() => new Array(768).fill(0.1))),
+        Promise.resolve(texts.map(() => new Array(1024).fill(0.1))),
       );
     });
 
@@ -1326,7 +1330,7 @@ describe('chunkText', () => {
       mocks.providerGenerateEmbedding
         .mockRejectedValueOnce(contextErr)
         .mockImplementation((_userId: string, texts: string[]) =>
-          Promise.resolve(texts.map(() => new Array(768).fill(0.1))),
+          Promise.resolve(texts.map(() => new Array(1024).fill(0.1))),
         );
 
       // Should not throw even though first batch failed

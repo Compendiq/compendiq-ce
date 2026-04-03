@@ -30,6 +30,9 @@ const mockGetSharedLlmSettings = vi.fn().mockResolvedValue({
   openaiBaseUrl: 'https://api.test.com/v1',
   hasOpenaiApiKey: true,
   openaiModel: 'gpt-4o',
+  embeddingModel: 'bge-m3',
+  embeddingDimensions: 1024,
+  ftsLanguage: 'simple',
 });
 const mockGetSharedOpenaiApiKey = vi.fn().mockResolvedValue('test-key-123');
 vi.mock('../../../core/services/admin-settings-service.js', () => ({
@@ -39,9 +42,9 @@ vi.mock('../../../core/services/admin-settings-service.js', () => ({
 
 import { OpenAIProvider } from './openai-service.js';
 
-/** Create a mock embedding array of exactly 768 dimensions. */
+/** Create a mock embedding array of exactly 1024 dimensions. */
 function mockEmbedding(seed: number): number[] {
-  return Array.from({ length: 768 }, (_, i) => seed + i * 0.001);
+  return Array.from({ length: 1024 }, (_, i) => seed + i * 0.001);
 }
 
 describe('OpenAIProvider', () => {
@@ -57,6 +60,9 @@ describe('OpenAIProvider', () => {
       openaiBaseUrl: 'https://api.test.com/v1',
       hasOpenaiApiKey: true,
       openaiModel: 'gpt-4o',
+      embeddingModel: 'bge-m3',
+      embeddingDimensions: 1024,
+      ftsLanguage: 'simple',
     });
     mockGetSharedOpenaiApiKey.mockResolvedValue('test-key-123');
   });

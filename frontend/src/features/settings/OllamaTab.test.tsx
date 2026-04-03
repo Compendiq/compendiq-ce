@@ -56,7 +56,7 @@ const mockSettings: {
   openaiBaseUrl: null,
   hasOpenaiApiKey: false,
   openaiModel: null,
-  embeddingModel: 'nomic-embed-text',
+  embeddingModel: 'bge-m3',
   theme: 'glass-dark',
   syncIntervalMin: 15,
   confluenceConnected: true,
@@ -91,7 +91,7 @@ const mockStatus: {
   provider: 'ollama',
   ollamaBaseUrl: 'http://localhost:11434',
   openaiBaseUrl: 'https://api.openai.com/v1',
-  embeddingModel: 'nomic-embed-text',
+  embeddingModel: 'bge-m3',
 };
 
 describe('LlmTab (OllamaTab)', () => {
@@ -203,7 +203,7 @@ describe('LlmTab (OllamaTab)', () => {
         provider: 'ollama',
         ollamaBaseUrl: 'http://ollama:11434',
         openaiBaseUrl: 'https://api.openai.com/v1',
-        embeddingModel: 'nomic-embed-text',
+        embeddingModel: 'bge-m3',
       },
     });
     render(<SettingsPage />, { wrapper: createWrapper() });
@@ -329,7 +329,7 @@ describe('LlmTab (OllamaTab)', () => {
         provider: 'ollama',
         ollamaBaseUrl: 'http://localhost:11434',
         openaiBaseUrl: 'https://api.openai.com/v1',
-        embeddingModel: 'nomic-embed-text',
+        embeddingModel: 'bge-m3',
       },
     });
     render(<SettingsPage />, { wrapper: createWrapper() });

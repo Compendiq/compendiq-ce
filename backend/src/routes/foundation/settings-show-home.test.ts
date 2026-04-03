@@ -31,7 +31,9 @@ vi.mock('../../core/services/admin-settings-service.js', () => ({
     openaiBaseUrl: null,
     hasOpenaiApiKey: false,
     openaiModel: null,
-    embeddingModel: 'nomic-embed-text',
+    embeddingModel: 'bge-m3',
+    embeddingDimensions: 1024,
+    ftsLanguage: 'simple',
   }),
 }));
 

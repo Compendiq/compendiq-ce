@@ -51,7 +51,7 @@ const embeddingStatus = {
   totalEmbeddings: 3500,
   isProcessing: false,
   lastRunAt: null,
-  model: 'nomic-embed-text',
+  model: 'bge-m3',
 };
 
 function createWrapper() {
@@ -294,7 +294,7 @@ describe('WorkersTab', () => {
     await waitFor(() => {
       const embeddingCard = screen.getByTestId('worker-card-embedding');
       const timingRow = within(embeddingCard).getByTestId('timing-row');
-      expect(timingRow.textContent).toContain('nomic-embed-text');
+      expect(timingRow.textContent).toContain('bge-m3');
     });
   });
 

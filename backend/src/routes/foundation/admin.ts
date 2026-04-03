@@ -11,6 +11,7 @@ import { getAiGuardrails, getAiOutputRules, upsertAiGuardrails, upsertAiOutputRu
 import { getRateLimits, upsertRateLimits } from '../../core/services/rate-limit-service.js';
 import { sanitizeLlmInput } from '../../core/utils/sanitize-llm-input.js';
 import { setActiveProvider } from '../../domains/llm/services/ollama-service.js';
+import { ALLOWED_FTS_LANGUAGES } from '../../core/services/fts-language.js';
 
 const AuditLogQuerySchema = z.object({
   userId: z.string().optional(),
@@ -248,6 +249,8 @@ export async function adminRoutes(fastify: FastifyInstance) {
       hasOpenaiApiKey: sharedLlmSettings.hasOpenaiApiKey,
       openaiModel: sharedLlmSettings.openaiModel,
       embeddingModel: sharedLlmSettings.embeddingModel,
+      embeddingDimensions: sharedLlmSettings.embeddingDimensions,
+      ftsLanguage: sharedLlmSettings.ftsLanguage,
       embeddingChunkSize: parseInt(map['embedding_chunk_size'] ?? '500', 10),
       embeddingChunkOverlap: parseInt(map['embedding_chunk_overlap'] ?? '50', 10),
       drawioEmbedUrl: map['drawio_embed_url'] ?? null,
@@ -281,7 +284,8 @@ export async function adminRoutes(fastify: FastifyInstance) {
       || body.openaiBaseUrl !== undefined
       || body.openaiApiKey !== undefined
       || body.openaiModel !== undefined
-      || body.embeddingModel !== undefined;
+      || body.embeddingModel !== undefined
+      || body.ftsLanguage !== undefined;
 
     // Validate chunk overlap does not exceed 25% of chunk size (only when chunk settings change)
     if (hasChunkChanges) {
@@ -308,6 +312,13 @@ export async function adminRoutes(fastify: FastifyInstance) {
       }
     }
 
+    // Validate FTS language before persisting (invalid values would break the tsvector trigger)
+    if (body.ftsLanguage !== undefined && !ALLOWED_FTS_LANGUAGES.has(body.ftsLanguage)) {
+      throw fastify.httpErrors.badRequest(
+        `Invalid FTS language: "${body.ftsLanguage}". Allowed: ${[...ALLOWED_FTS_LANGUAGES].join(', ')}`,
+      );
+    }
+
     if (hasLlmChanges) {
       await upsertSharedLlmSettings({
         llmProvider: body.llmProvider,
@@ -316,7 +327,19 @@ export async function adminRoutes(fastify: FastifyInstance) {
         openaiApiKey: body.openaiApiKey,
         openaiModel: body.openaiModel,
         embeddingModel: body.embeddingModel,
+        ftsLanguage: body.ftsLanguage,
       });
+    }
+
+    if (body.ftsLanguage !== undefined) {
+      // Rebuild all tsvectors with the new language
+      await query(
+        `UPDATE pages SET tsv = to_tsvector(
+          $1::regconfig,
+          coalesce(title, '') || ' ' || coalesce(body_text, '')
+        ) WHERE deleted_at IS NULL`,
+        [body.ftsLanguage],
+      );
     }
 
     // Upsert changed settings

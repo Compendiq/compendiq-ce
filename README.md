@@ -110,7 +110,7 @@ Frontend (React 19 + Vite)
 | **Editor** | TipTap v3 (ProseMirror-based) |
 | **Database** | PostgreSQL 17 with pgvector extension |
 | **Cache** | Redis 8 |
-| **AI/ML** | Ollama (local LLM server) + OpenAI-compatible APIs, nomic-embed-text embeddings (768 dims) |
+| **AI/ML** | Ollama (local LLM server) + OpenAI-compatible APIs, bge-m3 embeddings (1024 dims) |
 | **PDF** | pdf-lib (export/import processing) |
 | **Auth** | JWT (jose) + bcrypt, refresh token rotation |
 | **Content** | turndown + jsdom (XHTML->Markdown), marked (Markdown->HTML) |
@@ -129,7 +129,7 @@ Frontend (React 19 + Vite)
 Pull the required Ollama models before starting:
 
 ```bash
-ollama pull nomic-embed-text   # Required for embeddings (768 dimensions)
+ollama pull bge-m3              # Required for embeddings (1024 dimensions)
 ollama pull qwen3.5            # Or any chat model of your choice
 ```
 
@@ -192,7 +192,7 @@ OLLAMA_BASE_URL=http://my-ollama-host:11434 curl -fsSL ... | bash
 Pull the required models before or after installation:
 
 ```bash
-ollama pull nomic-embed-text   # Required for RAG embeddings (768 dimensions)
+ollama pull bge-m3              # Required for RAG embeddings (1024 dimensions)
 ollama pull qwen3:4b           # Or any chat model of your choice
 ```
 
@@ -233,7 +233,7 @@ REDIS_URL=redis://:your-redis-password@localhost:6379
 
 # Ollama (default: local server)
 OLLAMA_BASE_URL=http://localhost:11434
-EMBEDDING_MODEL=nomic-embed-text
+EMBEDDING_MODEL=bge-m3
 ```
 
 ### 3. Start infrastructure services
@@ -289,7 +289,7 @@ Ollama is expected to run on the host machine. The backend connects via `OLLAMA_
 | `REDIS_PASSWORD` | `changeme-redis` | Yes | Redis password |
 | `REDIS_URL` | `redis://:changeme-redis@localhost:6379` | No | Full Redis connection string |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | No | Ollama server URL |
-| `EMBEDDING_MODEL` | `nomic-embed-text` | No | Server-wide embedding model (locked to 768 dimensions) |
+| `EMBEDDING_MODEL` | `bge-m3` | No | Server-wide embedding model (1024 dimensions by default) |
 | `NODE_ENV` | `development` | No | Environment (`development` or `production`) |
 | `BACKEND_PORT` | `3051` | No | Backend server port |
 | `FRONTEND_PORT` | `5273` | No | Frontend dev server port |
