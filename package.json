@@ -16,13 +16,15 @@
     "test": "npm run build -w @compendiq/contracts && npm run test -w @compendiq/contracts && npm run test -w backend && npm run test -w frontend",
     "test:e2e": "npx playwright test",
     "lighthouse": "lhci autorun",
+    "knip": "knip",
     "prepare": "husky || true"
   },
   "devDependencies": {
     "@lhci/cli": "^0.15.1",
     "@playwright/test": "^1.58.2",
     "concurrently": "^9.1.0",
-    "husky": "^9.1.7"
+    "husky": "^9.1.7",
+    "knip": "^6.3.0"
   },
   "dependencies": {
     "zod": "^4.3.6"
