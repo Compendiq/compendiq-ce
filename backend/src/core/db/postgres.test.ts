@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../test-db-helper.js';
-import { query } from './postgres.js';
+import { query, getVectorPool, closeVectorPool } from './postgres.js';
 
 const dbAvailable = await isDbAvailable();
 
@@ -48,5 +48,43 @@ describe.skipIf(!dbAvailable)('Database', () => {
       "SELECT '[1,2,3]'::vector(3) <=> '[4,5,6]'::vector(3) AS distance",
     );
     expect(result.rows[0].distance).toBeGreaterThan(0);
+  });
+
+  describe('vector pool', () => {
+    afterAll(async () => {
+      await closeVectorPool();
+    });
+
+    it('getVectorPool returns a working pool that can query', async () => {
+      const vPool = getVectorPool();
+      const result = await vPool.query<{ one: number }>('SELECT 1 AS one');
+      expect(result.rows[0].one).toBe(1);
+    });
+
+    it('getVectorPool returns the same instance on repeated calls', () => {
+      const pool1 = getVectorPool();
+      const pool2 = getVectorPool();
+      expect(pool1).toBe(pool2);
+    });
+
+    it('vector pool supports pgvector operations', async () => {
+      const vPool = getVectorPool();
+      const result = await vPool.query<{ distance: number }>(
+        "SELECT '[1,2,3]'::vector(3) <=> '[4,5,6]'::vector(3) AS distance",
+      );
+      expect(result.rows[0].distance).toBeGreaterThan(0);
+    });
+
+    it('closeVectorPool closes the pool and allows re-creation', async () => {
+      const poolBefore = getVectorPool();
+      await closeVectorPool();
+      const poolAfter = getVectorPool();
+      // After closing and re-getting, it should be a new instance
+      expect(poolAfter).not.toBe(poolBefore);
+      // And it should still work
+      const result = await poolAfter.query('SELECT 1');
+      expect(result.rows).toHaveLength(1);
+      await closeVectorPool();
+    });
   });
 });
