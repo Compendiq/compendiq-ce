@@ -49,3 +49,16 @@ export const ENTERPRISE_FEATURES = {
 
 export type EnterpriseFeature =
   (typeof ENTERPRISE_FEATURES)[keyof typeof ENTERPRISE_FEATURES];
+
+/**
+ * Pattern that all feature flag identifiers must match: lowercase snake_case
+ * starting with a letter, e.g. `oidc_sso`, `pii_detection`.
+ */
+export const FEATURE_ID_PATTERN = /^[a-z][a-z0-9_]*$/;
+
+/**
+ * Validate that a feature identifier follows the required snake_case format.
+ */
+export function validateFeatureIdentifier(id: string): boolean {
+  return FEATURE_ID_PATTERN.test(id);
+}
