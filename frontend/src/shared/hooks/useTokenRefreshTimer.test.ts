@@ -9,10 +9,6 @@ vi.mock('../lib/api', () => ({
   refreshAccessTokenOnce: mockRefreshAccessTokenOnce,
 }));
 
-vi.mock('jose', () => ({
-  decodeJwt: vi.fn(),
-}));
-
 let accessTokenState: string | null = null;
 
 vi.mock('../../stores/auth-store', () => ({
@@ -22,8 +18,16 @@ vi.mock('../../stores/auth-store', () => ({
 
 // Dynamic import after mocks are wired up
 const { useTokenRefreshTimer } = await import('./useTokenRefreshTimer');
-const { decodeJwt } = await import('jose');
-const mockedDecodeJwt = vi.mocked(decodeJwt);
+
+/** Build a fake JWT with the given payload (header and signature are ignored). */
+function fakeJwt(payload: Record<string, unknown>): string {
+  const header = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+  const body = btoa(JSON.stringify(payload))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+  return `${header}.${body}.fake-signature`;
+}
 
 describe('useTokenRefreshTimer', () => {
   beforeEach(() => {
@@ -43,8 +47,7 @@ describe('useTokenRefreshTimer', () => {
     const exp = now + 900; // 900 seconds remaining
     // 75% of 900 = 675 seconds = 675_000 ms
 
-    accessTokenState = 'valid.token.here';
-    mockedDecodeJwt.mockReturnValue({ exp } as ReturnType<typeof decodeJwt>);
+    accessTokenState = fakeJwt({ exp });
 
     renderHook(() => useTokenRefreshTimer());
 
@@ -64,8 +67,7 @@ describe('useTokenRefreshTimer', () => {
     const now = Math.floor(Date.now() / 1000);
     const exp = now + 5; // only 5 seconds remaining — 75% = 3.75s, floored to 10s minimum
 
-    accessTokenState = 'nearly.expired.token';
-    mockedDecodeJwt.mockReturnValue({ exp } as ReturnType<typeof decodeJwt>);
+    accessTokenState = fakeJwt({ exp });
 
     renderHook(() => useTokenRefreshTimer());
 
@@ -91,8 +93,7 @@ describe('useTokenRefreshTimer', () => {
     const now = Math.floor(Date.now() / 1000);
     const exp = now + 900;
 
-    accessTokenState = 'valid.token.here';
-    mockedDecodeJwt.mockReturnValue({ exp } as ReturnType<typeof decodeJwt>);
+    accessTokenState = fakeJwt({ exp });
 
     const { unmount } = renderHook(() => useTokenRefreshTimer());
 
@@ -107,8 +108,7 @@ describe('useTokenRefreshTimer', () => {
     const now = Math.floor(Date.now() / 1000);
     const exp = now - 60; // expired 60 seconds ago
 
-    accessTokenState = 'expired.token.here';
-    mockedDecodeJwt.mockReturnValue({ exp } as ReturnType<typeof decodeJwt>);
+    accessTokenState = fakeJwt({ exp });
 
     renderHook(() => useTokenRefreshTimer());
 
@@ -117,8 +117,7 @@ describe('useTokenRefreshTimer', () => {
   });
 
   it('does not schedule a timer when token has no exp claim', () => {
-    accessTokenState = 'no.exp.token';
-    mockedDecodeJwt.mockReturnValue({} as ReturnType<typeof decodeJwt>);
+    accessTokenState = fakeJwt({});
 
     renderHook(() => useTokenRefreshTimer());
 
@@ -126,11 +125,17 @@ describe('useTokenRefreshTimer', () => {
     expect(mockRefreshAccessTokenOnce).not.toHaveBeenCalled();
   });
 
-  it('does not schedule a timer when decodeJwt throws (malformed token)', () => {
-    accessTokenState = 'malformed-token';
-    mockedDecodeJwt.mockImplementation(() => {
-      throw new Error('Invalid JWT');
-    });
+  it('does not schedule a timer for a malformed token (no payload segment)', () => {
+    accessTokenState = 'malformed-token-no-dots';
+
+    renderHook(() => useTokenRefreshTimer());
+
+    vi.advanceTimersByTime(60_000);
+    expect(mockRefreshAccessTokenOnce).not.toHaveBeenCalled();
+  });
+
+  it('does not schedule a timer when payload is not valid base64/JSON', () => {
+    accessTokenState = 'header.!!!invalid-base64!!!.signature';
 
     renderHook(() => useTokenRefreshTimer());
 
@@ -141,10 +146,9 @@ describe('useTokenRefreshTimer', () => {
   it('clears the old timer and schedules a new one when accessToken changes', () => {
     const now = Math.floor(Date.now() / 1000);
 
-    // Initial token: exp = now + 100s → timer fires at 75s (75_000 ms)
+    // Initial token: exp = now + 100s -> timer fires at 75s (75_000 ms)
     const firstExp = now + 100;
-    accessTokenState = 'first.token.here';
-    mockedDecodeJwt.mockReturnValue({ exp: firstExp } as ReturnType<typeof decodeJwt>);
+    accessTokenState = fakeJwt({ exp: firstExp });
 
     const { rerender } = renderHook(() => useTokenRefreshTimer());
 
@@ -153,12 +157,9 @@ describe('useTokenRefreshTimer', () => {
     expect(mockRefreshAccessTokenOnce).not.toHaveBeenCalled();
 
     // Simulate a successful token refresh: the store emits a new accessToken
-    // with exp = now + 200s → new timer should fire at 150s (150_000 ms from now,
-    // but relative to the re-render we only need to advance by ~150_000 ms total
-    // since fake timers track elapsed time across the whole test).
+    // with exp = now + 200s
     const secondExp = now + 200;
-    accessTokenState = 'second.token.after.refresh';
-    mockedDecodeJwt.mockReturnValue({ exp: secondExp } as ReturnType<typeof decodeJwt>);
+    accessTokenState = fakeJwt({ exp: secondExp });
 
     // Re-render so the hook sees the new accessToken value from the store
     rerender();
@@ -169,8 +170,8 @@ describe('useTokenRefreshTimer', () => {
     expect(mockRefreshAccessTokenOnce).not.toHaveBeenCalled();
 
     // New timer fires at 75% of the new token's remaining lifetime.
-    // At re-render time ~75_000 ms have elapsed; secondExp remaining ≈ 200 - 75 = 125s.
-    // 75% of 125s = 93.75s → 93_750 ms after re-render.
+    // At re-render time ~75_000 ms have elapsed; secondExp remaining ~ 200 - 75 = 125s.
+    // 75% of 125s = 93.75s -> 93_750 ms after re-render.
     // Advance to just before the new timer fires.
     vi.advanceTimersByTime(93_748);
     expect(mockRefreshAccessTokenOnce).not.toHaveBeenCalled();
@@ -184,8 +185,7 @@ describe('useTokenRefreshTimer', () => {
     const now = Math.floor(Date.now() / 1000);
     const exp = now + 100;
 
-    accessTokenState = 'valid.token.here';
-    mockedDecodeJwt.mockReturnValue({ exp } as ReturnType<typeof decodeJwt>);
+    accessTokenState = fakeJwt({ exp });
     mockRefreshAccessTokenOnce.mockRejectedValue(new Error('Network error'));
 
     renderHook(() => useTokenRefreshTimer());

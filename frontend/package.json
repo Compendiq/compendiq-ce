@@ -39,7 +39,6 @@
     "diff": "^8.0.3",
     "dompurify": "^3.3.2",
     "framer-motion": "^12.34.3",
-    "jose": "^6.2.1",
     "lowlight": "^3.0.0",
     "lucide-react": "^0.575.0",
     "marked": "^17.0.4",
