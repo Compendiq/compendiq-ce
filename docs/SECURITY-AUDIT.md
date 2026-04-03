@@ -1,6 +1,6 @@
 # Security Hardening Audit
 
-**Date:** 2026-03-22
+**Date:** 2026-04-03
 **Auditor:** Claude Opus 4.6 (automated) + human review
 **Scope:** Full backend route audit, dependency audit, CORS, auth coverage, startup validation, debug route review
 **Issue:** #539
@@ -49,12 +49,19 @@ Audited all `query()` calls across every route file in `backend/src/routes/`. Ch
 | `routes/confluence/spaces.ts` | 2 | PASS -- uses `ANY($1::text[])` |
 | `routes/confluence/sync.ts` | 0 (delegates to service) | PASS |
 | `routes/confluence/attachments.ts` | 2 | PASS -- parameterized |
-| `routes/llm/llm-chat.ts` | 6 | PASS -- all parameterized |
+| `routes/llm/llm-ask.ts` | 6 | PASS -- all parameterized |
+| `routes/llm/llm-improve.ts` | 2 | PASS -- all parameterized |
+| `routes/llm/llm-generate.ts` | 2 | PASS -- all parameterized |
+| `routes/llm/llm-diagram.ts` | 2 | PASS -- all parameterized |
+| `routes/llm/llm-summarize.ts` | 2 | PASS -- all parameterized |
+| `routes/llm/llm-quality.ts` | 2 | PASS -- all parameterized |
 | `routes/llm/llm-conversations.ts` | 8 | PASS -- all parameterized |
 | `routes/llm/llm-embeddings.ts` | 4 | PASS -- all parameterized |
 | `routes/llm/llm-models.ts` | 0 | PASS |
 | `routes/llm/llm-admin.ts` | 0 | PASS |
 | `routes/llm/llm-pdf.ts` | 0 | PASS |
+| `routes/foundation/setup.ts` | 4 | PASS -- all parameterized |
+| `routes/foundation/rbac.ts` | 20+ | PASS -- all parameterized |
 | `routes/knowledge/pages-crud.ts` | 15+ | PASS -- all parameterized; ILIKE uses `escapeIlikeTerm()` |
 | `routes/knowledge/search.ts` | 8 | PASS -- parameterized; LIKE metacharacters escaped |
 | `routes/knowledge/pages-versions.ts` | 6 | PASS -- all parameterized |
@@ -113,10 +120,18 @@ Verified every route file for authentication hooks (`onRequest`, `preHandler`) o
 | `oidc.ts` /auth/oidc/logout | `onRequest: [fastify.authenticate]` | PASS |
 | `oidcAdminRoutes` | `fastify.addHook('onRequest', fastify.requireAdmin)` | PASS |
 | `notifications.ts` | `fastify.addHook('onRequest', fastify.authenticate)` | PASS |
+| `setup.ts` /health/setup-status | None (exempt) | PASS -- public setup status check, rate-limited (#82) |
+| `setup.ts` /setup/admin | Rate-limited (auth category) | PASS -- creates initial admin only |
+| `setup.ts` /setup/llm-test | `preHandler: fastify.authenticate` | PASS |
 | `spaces.ts` | `fastify.addHook('onRequest', fastify.authenticate)` | PASS |
 | `sync.ts` | `fastify.addHook('onRequest', fastify.authenticate)` | PASS |
 | `attachments.ts` | `fastify.addHook('onRequest', fastify.authenticate)` | PASS |
-| `llm-chat.ts` | `fastify.addHook('onRequest', fastify.authenticate)` | PASS |
+| `llm-ask.ts` | `fastify.addHook('onRequest', fastify.authenticate)` | PASS |
+| `llm-improve.ts` | `fastify.addHook('onRequest', fastify.authenticate)` | PASS |
+| `llm-generate.ts` | `fastify.addHook('onRequest', fastify.authenticate)` | PASS |
+| `llm-summarize.ts` | `fastify.addHook('onRequest', fastify.authenticate)` | PASS |
+| `llm-diagram.ts` | `fastify.addHook('onRequest', fastify.authenticate)` | PASS |
+| `llm-quality.ts` | `fastify.addHook('onRequest', fastify.authenticate)` | PASS |
 | `llm-conversations.ts` | `fastify.addHook('onRequest', fastify.authenticate)` | PASS |
 | `llm-embeddings.ts` | `fastify.addHook('onRequest', fastify.authenticate)` | PASS |
 | `llm-models.ts` | `fastify.addHook('onRequest', fastify.authenticate)` | PASS |
@@ -151,6 +166,7 @@ Verified every route file for authentication hooks (`onRequest`, `preHandler`) o
 - `/api/auth/oidc/authorize` -- IdP redirect initiation
 - `/api/auth/oidc/callback` -- IdP callback handler
 - `/api/auth/oidc/exchange` -- One-time login code exchange
+- `/api/health/setup-status` -- Setup wizard status check (rate-limited)
 
 **Result: PASS -- All routes have appropriate authentication.**
 
@@ -251,6 +267,8 @@ function getJwtSecret(): Uint8Array {
 | LLM streaming routes | 10 req/min | PASS |
 | Embedding routes | 5 req/min | PASS |
 | PDF extraction | 5 req/min | PASS |
+| Setup status (GET) | 20 req/min | PASS (#82) |
+| Setup admin (POST) | 5 req/min (auth category) | PASS |
 | Global default | 100 req/min | PASS |
 
 ### SSRF guard (ssrf-guard.ts)
@@ -313,6 +331,10 @@ function getJwtSecret(): Uint8Array {
 |---|----------|-------|--------|
 | 1 | Medium | Swagger UI (`/api/docs`) exposed in production without authentication | **FIXED** -- gated behind `NODE_ENV !== 'production'` |
 | 2 | High | `flatted` package vulnerable to DoS + prototype pollution | **FIXED** -- updated via `npm audit fix` |
+| 3 | Medium | Path traversal in attachment download route | **FIXED** -- #71 path sanitization added |
+| 4 | High | GCM auth tag not verified on PAT decryption | **FIXED** -- #70 auth tag length validation added |
+| 5 | Medium | Error handler leaks internal error names (TypeError, etc.) | **FIXED** -- #87 allowlist of safe Fastify HTTP error names |
+| 6 | Low | Setup status endpoint missing rate limiting | **FIXED** -- #82 added 20 req/min limit |
 
 ---
 
@@ -334,4 +356,4 @@ function getJwtSecret(): Uint8Array {
 | Input validation | PASS (Zod schemas, file validation, DOMPurify) |
 | Open redirect | PASS (hardcoded paths, no user-controlled redirects) |
 
-**Overall assessment: The codebase demonstrates strong security practices. Two issues were found and fixed during this audit.**
+**Overall assessment: The codebase demonstrates strong security practices. Six issues were found and fixed across two audit passes (2026-03-22 and 2026-04-03).**
