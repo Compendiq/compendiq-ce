@@ -288,16 +288,19 @@ export async function runSummaryBatch(model?: string): Promise<{ processed: numb
     return { processed: 0, errors: 0 };
   }
 
-  // Phase 1: Detect content changes (hash mismatch) and mark as pending
+  // Phase 1: Detect content changes via timestamp and mark as pending.
+  // Uses last_modified_at > summary_generated_at instead of recomputing
+  // SHA-256 hashes for every summarized page on every batch cycle.
   await query(
     `UPDATE pages
      SET summary_status = 'pending'
      WHERE summary_status = 'summarized'
        AND deleted_at IS NULL
-       AND summary_content_hash IS NOT NULL
+       AND summary_generated_at IS NOT NULL
+       AND last_modified_at IS NOT NULL
+       AND last_modified_at > summary_generated_at
        AND body_text IS NOT NULL
-       AND length(body_text) >= $1
-       AND summary_content_hash != encode(sha256(convert_to(body_text, 'UTF-8')), 'hex')`,
+       AND length(body_text) >= $1`,
     [MIN_BODY_LENGTH],
   );
 
