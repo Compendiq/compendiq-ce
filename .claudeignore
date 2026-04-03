@@ -1,9 +1,15 @@
 .gitignore
 backend/node_modules/
+backend/node_modules.old/
 backend/dist/
 frontend/node_modules/
 frontend/dist/
 packages/*/node_modules/
 packages/*/dist/
+mcp-docs/node_modules/
+mcp-docs/dist/
 *.log
 .git/
+coverage/
+playwright-report/
+test-results/
