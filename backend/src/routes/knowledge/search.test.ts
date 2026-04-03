@@ -105,9 +105,6 @@ describe('Search Routes', () => {
             ],
           };
         }
-        if (typeof sql === 'string' && sql.includes('COUNT(*)')) {
-          return { rows: [{ count: '2' }] };
-        }
         if (typeof sql === 'string' && sql.includes('ts_rank')) {
           return {
             rows: [
@@ -121,6 +118,7 @@ describe('Search Routes', () => {
                 labels: ['howto'],
                 rank: 0.85,
                 snippet: 'How to use <mark>Redis</mark> caching',
+                total_count: '2',
               },
               {
                 id: 2,
@@ -132,6 +130,7 @@ describe('Search Routes', () => {
                 labels: ['architecture'],
                 rank: 0.72,
                 snippet: 'Configure <mark>Redis</mark> for production',
+                total_count: '2',
               },
             ],
           };
@@ -175,18 +174,19 @@ describe('Search Routes', () => {
     });
 
     it('should include access control JOIN and deleted_at filter', async () => {
-      mockQueryFn.mockResolvedValue({ rows: [{ count: '0' }] });
+      mockQueryFn.mockResolvedValue({ rows: [] });
 
       await app.inject({
         method: 'GET',
         url: '/api/search?q=test',
       });
 
-      const countCall = mockQueryFn.mock.calls.find(
-        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('COUNT(*)'),
+      // Access control is in the FTS data query (which now includes COUNT(*) OVER())
+      const dataCall = mockQueryFn.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('ts_rank'),
       );
-      expect(countCall).toBeDefined();
-      const sql = countCall![0] as string;
+      expect(dataCall).toBeDefined();
+      const sql = dataCall![0] as string;
       expect(sql).toContain('cp.space_key = ANY');
       expect(sql).toContain('cp.deleted_at IS NULL');
       expect(sql).toContain('cp.source');
@@ -194,75 +194,70 @@ describe('Search Routes', () => {
     });
 
     it('should filter by spaceKey', async () => {
-      mockQueryFn.mockResolvedValue({ rows: [{ count: '0' }] });
+      mockQueryFn.mockResolvedValue({ rows: [] });
 
       await app.inject({
         method: 'GET',
         url: '/api/search?q=test&spaceKey=DEV',
       });
 
-      const countCall = mockQueryFn.mock.calls.find(
-        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('COUNT(*)'),
+      const dataCall = mockQueryFn.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('ts_rank'),
       );
-      expect(countCall).toBeDefined();
-      expect(countCall![0] as string).toContain('cp.space_key = $');
-      expect(countCall![1] as unknown[]).toContain('DEV');
+      expect(dataCall).toBeDefined();
+      expect(dataCall![0] as string).toContain('cp.space_key = $');
+      expect(dataCall![1] as unknown[]).toContain('DEV');
     });
 
     it('should filter by author', async () => {
-      mockQueryFn.mockResolvedValue({ rows: [{ count: '0' }] });
+      mockQueryFn.mockResolvedValue({ rows: [] });
 
       await app.inject({
         method: 'GET',
         url: '/api/search?q=test&author=Alice',
       });
 
-      const countCall = mockQueryFn.mock.calls.find(
-        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('COUNT(*)'),
+      const dataCall = mockQueryFn.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('ts_rank'),
       );
-      expect(countCall![0] as string).toContain('cp.author = $');
-      expect(countCall![1] as unknown[]).toContain('Alice');
+      expect(dataCall![0] as string).toContain('cp.author = $');
+      expect(dataCall![1] as unknown[]).toContain('Alice');
     });
 
     it('should filter by date range', async () => {
-      mockQueryFn.mockResolvedValue({ rows: [{ count: '0' }] });
+      mockQueryFn.mockResolvedValue({ rows: [] });
 
       await app.inject({
         method: 'GET',
         url: '/api/search?q=test&dateFrom=2025-01-01&dateTo=2025-12-31',
       });
 
-      const countCall = mockQueryFn.mock.calls.find(
-        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('COUNT(*)'),
+      const dataCall = mockQueryFn.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('ts_rank'),
       );
-      expect(countCall![0] as string).toContain('cp.last_modified_at >=');
-      expect(countCall![0] as string).toContain('cp.last_modified_at <=');
-      expect(countCall![1] as unknown[]).toContain('2025-01-01');
-      expect(countCall![1] as unknown[]).toContain('2025-12-31');
+      expect(dataCall![0] as string).toContain('cp.last_modified_at >=');
+      expect(dataCall![0] as string).toContain('cp.last_modified_at <=');
+      expect(dataCall![1] as unknown[]).toContain('2025-01-01');
+      expect(dataCall![1] as unknown[]).toContain('2025-12-31');
     });
 
     it('should filter by tags', async () => {
-      mockQueryFn.mockResolvedValue({ rows: [{ count: '0' }] });
+      mockQueryFn.mockResolvedValue({ rows: [] });
 
       await app.inject({
         method: 'GET',
         url: '/api/search?q=test&tags=howto,architecture',
       });
 
-      const countCall = mockQueryFn.mock.calls.find(
-        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('COUNT(*)'),
+      const dataCall = mockQueryFn.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('ts_rank'),
       );
-      expect(countCall![0] as string).toContain('cp.labels @>');
-      expect(countCall![1] as unknown[]).toContainEqual(['howto', 'architecture']);
+      expect(dataCall![0] as string).toContain('cp.labels @>');
+      expect(dataCall![1] as unknown[]).toContainEqual(['howto', 'architecture']);
     });
 
     it('should support sort by modified date', async () => {
-      mockQueryFn.mockImplementation((sql: string) => {
-        if (typeof sql === 'string' && sql.includes('COUNT(*)')) {
-          return { rows: [{ count: '0' }] };
-        }
-        return { rows: [] };
-      });
+      mockQueryFn.mockResolvedValue({ rows: [] });
 
       await app.inject({
         method: 'GET',
@@ -278,11 +273,10 @@ describe('Search Routes', () => {
 
     it('should paginate results correctly', async () => {
       mockQueryFn.mockImplementation((sql: string) => {
-        if (typeof sql === 'string' && sql.includes('COUNT(*)')) {
-          return { rows: [{ count: '50' }] };
-        }
         if (typeof sql === 'string' && sql.includes('ts_rank')) {
-          return { rows: [] };
+          return {
+            rows: [{ id: 1, confluence_id: 'p-1', title: 'T', space_key: 'DEV', author: null, last_modified_at: null, labels: [], rank: 0.5, snippet: 's', total_count: '50' }],
+          };
         }
         return { rows: [] };
       });
@@ -328,9 +322,6 @@ describe('Search Routes', () => {
             ],
           };
         }
-        if (typeof sql === 'string' && sql.includes('COUNT(*)')) {
-          return { rows: [{ count: '1' }] };
-        }
         if (typeof sql === 'string' && sql.includes('ts_rank')) {
           return {
             rows: [{
@@ -343,6 +334,7 @@ describe('Search Routes', () => {
               labels: [],
               rank: 0.9,
               snippet: 'Redis intro',
+              total_count: '1',
             }],
           };
         }
@@ -523,9 +515,6 @@ describe('Search Routes', () => {
   describe('GET /api/search — includeFacets parameter', () => {
     it('should skip facet query when includeFacets=false', async () => {
       mockQueryFn.mockImplementation((sql: string) => {
-        if (typeof sql === 'string' && sql.includes('COUNT(*)')) {
-          return { rows: [{ count: '1' }] };
-        }
         if (typeof sql === 'string' && sql.includes('ts_rank')) {
           return {
             rows: [{
@@ -538,6 +527,7 @@ describe('Search Routes', () => {
               labels: [],
               rank: 0.8,
               snippet: 'Redis snippet',
+              total_count: '1',
             }],
           };
         }
@@ -575,9 +565,6 @@ describe('Search Routes', () => {
             ],
           };
         }
-        if (typeof sql === 'string' && sql.includes('COUNT(*)')) {
-          return { rows: [{ count: '1' }] };
-        }
         if (typeof sql === 'string' && sql.includes('ts_rank')) {
           return {
             rows: [{
@@ -590,6 +577,7 @@ describe('Search Routes', () => {
               labels: [],
               rank: 0.5,
               snippet: 'snippet',
+              total_count: '1',
             }],
           };
         }
@@ -626,9 +614,6 @@ describe('Search Routes', () => {
               { facet: 'tag', value: 'howto', count: '5' },
             ],
           };
-        }
-        if (typeof sql === 'string' && sql.includes('COUNT(*)')) {
-          return { rows: [{ count: '0' }] };
         }
         if (typeof sql === 'string' && sql.includes('ts_rank')) {
           return { rows: [] };

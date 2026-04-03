@@ -272,18 +272,12 @@ export async function searchRoutes(fastify: FastifyInstance) {
         break;
     }
 
-    // Count total matches
-    const countResult = await query<{ count: string }>(
-      `SELECT COUNT(*) AS count FROM pages cp WHERE ${whereClause}`,
-      values,
-    );
-    const total = parseInt(countResult.rows[0].count, 10);
-
-    // Fetch paginated FTS results with rank and snippet
+    // Run FTS data query (with COUNT(*) OVER() to eliminate separate count query),
+    // trigram query, and facet query in parallel since they are independent.
     const limitParamIndex = paramIndex;
     const offsetParamIndex = paramIndex + 1;
 
-    const dataResult = await query<{
+    const dataQueryPromise = query<{
       id: number;
       confluence_id: string;
       title: string;
@@ -293,12 +287,14 @@ export async function searchRoutes(fastify: FastifyInstance) {
       labels: string[];
       rank: number;
       snippet: string;
+      total_count: string;
     }>(
       `SELECT cp.id, cp.confluence_id, cp.title, cp.space_key, cp.author,
               cp.last_modified_at, cp.labels,
               ts_rank(cp.tsv, plainto_tsquery('${ftsLang}', $1)) AS rank,
               ts_headline('${ftsLang}', COALESCE(cp.body_text, ''), plainto_tsquery('${ftsLang}', $1),
-                          'MaxWords=30, MinWords=15, StartSel=<mark>, StopSel=</mark>') AS snippet
+                          'MaxWords=30, MinWords=15, StartSel=<mark>, StopSel=</mark>') AS snippet,
+              COUNT(*) OVER() AS total_count
        FROM pages cp
        WHERE ${whereClause}
        ORDER BY ${orderClause}
@@ -308,7 +304,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
 
     // Path B: Fuzzy title matching via pg_trgm (separate from FTS)
     // Merges additional title-match results that the FTS query may have missed.
-    const trgmResult = await query<{
+    const trgmQueryPromise = query<{
       id: number;
       confluence_id: string;
       title: string;
@@ -332,6 +328,59 @@ export async function searchRoutes(fastify: FastifyInstance) {
        LIMIT $5`,
       [q, searchSpaces, userId, TRGM_SIMILARITY_THRESHOLD, limit],
     );
+
+    // Facet aggregation — opt-in via includeFacets (default: true).
+    // Skipping facets avoids 3 UNION ALL subqueries when the caller doesn't need them.
+    const facetQueryPromise = includeFacets
+      ? query<{ facet: string; value: string; count: string }>(
+          `SELECT 'space' AS facet, cp.space_key AS value, COUNT(*)::TEXT AS count
+           FROM pages cp
+           WHERE cp.tsv @@ plainto_tsquery('${ftsLang}', $1)
+             AND (
+               (cp.source = 'confluence' AND cp.space_key = ANY($2::text[]))
+               OR (cp.source = 'standalone' AND cp.visibility = 'shared')
+               OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $3)
+             )
+             AND cp.deleted_at IS NULL
+             AND cp.space_key IS NOT NULL
+           GROUP BY cp.space_key
+           UNION ALL
+           SELECT 'author' AS facet, cp.author AS value, COUNT(*)::TEXT AS count
+           FROM pages cp
+           WHERE cp.tsv @@ plainto_tsquery('${ftsLang}', $1)
+             AND (
+               (cp.source = 'confluence' AND cp.space_key = ANY($2::text[]))
+               OR (cp.source = 'standalone' AND cp.visibility = 'shared')
+               OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $3)
+             )
+             AND cp.deleted_at IS NULL
+             AND cp.author IS NOT NULL
+           GROUP BY cp.author
+           UNION ALL
+           SELECT 'tag' AS facet, tag AS value, COUNT(*)::TEXT AS count
+           FROM pages cp
+           CROSS JOIN unnest(cp.labels) AS tag
+           WHERE cp.tsv @@ plainto_tsquery('${ftsLang}', $1)
+             AND (
+               (cp.source = 'confluence' AND cp.space_key = ANY($2::text[]))
+               OR (cp.source = 'standalone' AND cp.visibility = 'shared')
+               OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $3)
+             )
+             AND cp.deleted_at IS NULL
+           GROUP BY tag`,
+          [q, searchSpaces, userId],
+        )
+      : Promise.resolve({ rows: [] as Array<{ facet: string; value: string; count: string }> });
+
+    // Execute all three queries in parallel
+    const [dataResult, trgmResult, facetResult] = await Promise.all([
+      dataQueryPromise,
+      trgmQueryPromise,
+      facetQueryPromise,
+    ]);
+
+    // Extract total from window function (available on every row, take from first)
+    const total = dataResult.rows.length > 0 ? parseInt(dataResult.rows[0].total_count, 10) : 0;
 
     // Merge: start with FTS results (higher weight), add trgm-only hits
     const ftsItems = dataResult.rows.map((row) => ({
@@ -371,71 +420,25 @@ export async function searchRoutes(fastify: FastifyInstance) {
     const maxFtsScore = ftsItems.length > 0 ? Math.max(...ftsItems.map((r) => r.rank)) : null;
     recordSearchAnalytics(userId, q, ftsItems.length, maxFtsScore, 'keyword').catch(() => {});
 
-    // Facet aggregation — opt-in via includeFacets (default: true).
-    // Skipping facets avoids 3 UNION ALL subqueries when the caller doesn't need them.
+    // Parse facets from result
     const facets: Record<string, Array<{ value: string; count: number }>> = {
       spaces: [],
       authors: [],
       tags: [],
     };
 
-    if (includeFacets) {
-      const facetResult = await query<{
-        facet: string;
-        value: string;
-        count: string;
-      }>(
-        `SELECT 'space' AS facet, cp.space_key AS value, COUNT(*)::TEXT AS count
-         FROM pages cp
-         WHERE cp.tsv @@ plainto_tsquery('${ftsLang}', $1)
-           AND (
-             (cp.source = 'confluence' AND cp.space_key = ANY($2::text[]))
-             OR (cp.source = 'standalone' AND cp.visibility = 'shared')
-             OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $3)
-           )
-           AND cp.deleted_at IS NULL
-           AND cp.space_key IS NOT NULL
-         GROUP BY cp.space_key
-         UNION ALL
-         SELECT 'author' AS facet, cp.author AS value, COUNT(*)::TEXT AS count
-         FROM pages cp
-         WHERE cp.tsv @@ plainto_tsquery('${ftsLang}', $1)
-           AND (
-             (cp.source = 'confluence' AND cp.space_key = ANY($2::text[]))
-             OR (cp.source = 'standalone' AND cp.visibility = 'shared')
-             OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $3)
-           )
-           AND cp.deleted_at IS NULL
-           AND cp.author IS NOT NULL
-         GROUP BY cp.author
-         UNION ALL
-         SELECT 'tag' AS facet, tag AS value, COUNT(*)::TEXT AS count
-         FROM pages cp
-         CROSS JOIN unnest(cp.labels) AS tag
-         WHERE cp.tsv @@ plainto_tsquery('${ftsLang}', $1)
-           AND (
-             (cp.source = 'confluence' AND cp.space_key = ANY($2::text[]))
-             OR (cp.source = 'standalone' AND cp.visibility = 'shared')
-             OR (cp.source = 'standalone' AND cp.visibility = 'private' AND cp.created_by_user_id = $3)
-           )
-           AND cp.deleted_at IS NULL
-         GROUP BY tag`,
-        [q, searchSpaces, userId],
-      );
-
-      for (const row of facetResult.rows) {
-        const entry = { value: row.value, count: parseInt(row.count, 10) };
-        switch (row.facet) {
-          case 'space':
-            facets.spaces.push(entry);
-            break;
-          case 'author':
-            facets.authors.push(entry);
-            break;
-          case 'tag':
-            facets.tags.push(entry);
-            break;
-        }
+    for (const row of facetResult.rows) {
+      const entry = { value: row.value, count: parseInt(row.count, 10) };
+      switch (row.facet) {
+        case 'space':
+          facets.spaces.push(entry);
+          break;
+        case 'author':
+          facets.authors.push(entry);
+          break;
+        case 'tag':
+          facets.tags.push(entry);
+          break;
       }
     }
 
