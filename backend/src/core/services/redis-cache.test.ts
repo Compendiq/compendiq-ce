@@ -15,6 +15,7 @@ import {
   getAttachmentFailureCount,
   clearAttachmentFailures,
   MAX_ATTACHMENT_FAILURES,
+  RedisCache,
 } from './redis-cache.js';
 
 /**
@@ -331,5 +332,104 @@ describe('redis-cache embedding lock', () => {
         expect.objectContaining({ keys: ['embedding:lock:test-user'] }),
       );
     });
+  });
+});
+
+describe('RedisCache.getOrCompute', () => {
+  let mockRedis: ReturnType<typeof createMockRedisClient>;
+  let cache: RedisCache;
+
+  beforeEach(() => {
+    mockRedis = createMockRedisClient();
+    cache = new RedisCache(asRedis(mockRedis));
+  });
+
+  it('returns cached value on cache hit without calling computeFn', async () => {
+    mockRedis.get.mockResolvedValue(JSON.stringify({ data: 42 }));
+    const computeFn = vi.fn();
+
+    const result = await cache.getOrCompute('key1', computeFn, 300);
+
+    expect(result).toEqual({ data: 42 });
+    expect(computeFn).not.toHaveBeenCalled();
+  });
+
+  it('computes, stores, and returns value on cache miss when lock acquired', async () => {
+    // Cache miss
+    mockRedis.get.mockResolvedValueOnce(null);
+    // Lock acquired
+    mockRedis.set.mockResolvedValue('OK');
+    // setEx succeeds
+    mockRedis.setEx.mockResolvedValue('OK');
+    // del (lock release) succeeds
+    mockRedis.del.mockResolvedValue(1);
+
+    const computeFn = vi.fn().mockResolvedValue({ data: 99 });
+
+    const result = await cache.getOrCompute('key2', computeFn, 600);
+
+    expect(result).toEqual({ data: 99 });
+    expect(computeFn).toHaveBeenCalledOnce();
+    expect(mockRedis.setEx).toHaveBeenCalledWith('key2', 600, JSON.stringify({ data: 99 }));
+    expect(mockRedis.del).toHaveBeenCalledWith('key2:lock');
+  });
+
+  it('polls and returns value when another caller holds the lock', async () => {
+    // Cache miss on initial get
+    mockRedis.get.mockResolvedValueOnce(null);
+    // Lock NOT acquired (another caller has it)
+    mockRedis.set.mockResolvedValue(null);
+    // Polling: miss on first poll, hit on second poll
+    mockRedis.get
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(JSON.stringify({ data: 'from-other-caller' }));
+
+    const computeFn = vi.fn();
+
+    const result = await cache.getOrCompute('key3', computeFn, 300);
+
+    expect(result).toEqual({ data: 'from-other-caller' });
+    expect(computeFn).not.toHaveBeenCalled();
+  });
+
+  it('falls through to compute when poll times out', async () => {
+    // Cache miss
+    mockRedis.get.mockResolvedValue(null);
+    // Lock NOT acquired
+    mockRedis.set.mockResolvedValue(null);
+    // setEx for the fallback compute
+    mockRedis.setEx.mockResolvedValue('OK');
+
+    const computeFn = vi.fn().mockResolvedValue('fallback-value');
+
+    const result = await cache.getOrCompute('key4', computeFn, 300);
+
+    expect(result).toBe('fallback-value');
+    expect(computeFn).toHaveBeenCalledOnce();
+  }, 15_000);
+
+  it('releases lock even when computeFn throws', async () => {
+    mockRedis.get.mockResolvedValueOnce(null);
+    mockRedis.set.mockResolvedValue('OK');
+    mockRedis.del.mockResolvedValue(1);
+
+    const computeFn = vi.fn().mockRejectedValue(new Error('compute error'));
+
+    await expect(cache.getOrCompute('key5', computeFn, 300)).rejects.toThrow('compute error');
+    expect(mockRedis.del).toHaveBeenCalledWith('key5:lock');
+  });
+
+  it('falls through to compute when Redis read fails', async () => {
+    mockRedis.get.mockRejectedValue(new Error('Redis down'));
+    // Lock acquisition also fails
+    mockRedis.set.mockRejectedValue(new Error('Redis down'));
+    mockRedis.setEx.mockRejectedValue(new Error('Redis down'));
+
+    const computeFn = vi.fn().mockResolvedValue('computed');
+
+    const result = await cache.getOrCompute('key6', computeFn, 300);
+
+    expect(result).toBe('computed');
+    expect(computeFn).toHaveBeenCalledOnce();
   });
 });
