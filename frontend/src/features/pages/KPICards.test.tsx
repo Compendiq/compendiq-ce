@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
-import { LazyMotion, domMax } from 'framer-motion';
+import { LazyMotion, domAnimation } from 'framer-motion';
 import { KPICards } from './KPICards';
 import { formatRelativeTime } from '../../shared/lib/format-relative-time';
 
 function Wrapper({ children }: { children: React.ReactNode }) {
   return (
-    <LazyMotion features={domMax}>
+    <LazyMotion features={domAnimation}>
       {children}
     </LazyMotion>
   );

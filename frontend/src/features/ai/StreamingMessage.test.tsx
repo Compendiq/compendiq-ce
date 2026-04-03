@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { LazyMotion, domMax } from 'framer-motion';
+import { LazyMotion, domAnimation } from 'framer-motion';
 import { StreamingMessage } from './StreamingMessage';
 
 function Wrapper({ children }: { children: React.ReactNode }) {
-  return <LazyMotion features={domMax}>{children}</LazyMotion>;
+  return <LazyMotion features={domAnimation}>{children}</LazyMotion>;
 }
 
 describe('StreamingMessage', () => {

@@ -1,11 +1,11 @@
 import { createRef } from 'react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { LazyMotion, domMax } from 'framer-motion';
+import { LazyMotion, domAnimation } from 'framer-motion';
 import { ArticleOutline } from './ArticleOutline';
 
 function Wrapper({ children }: { children: React.ReactNode }) {
-  return <LazyMotion features={domMax}>{children}</LazyMotion>;
+  return <LazyMotion features={domAnimation}>{children}</LazyMotion>;
 }
 
 describe('ArticleOutline', () => {

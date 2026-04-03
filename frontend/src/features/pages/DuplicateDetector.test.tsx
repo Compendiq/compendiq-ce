@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { LazyMotion, domMax } from 'framer-motion';
+import { LazyMotion, domAnimation } from 'framer-motion';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { DuplicateDetector } from './DuplicateDetector';
 import { useAuthStore } from '../../stores/auth-store';
@@ -23,7 +23,7 @@ function createWrapper() {
     return (
       <QueryClientProvider client={queryClient}>
         <MemoryRouter>
-          <LazyMotion features={domMax}>
+          <LazyMotion features={domAnimation}>
             {children}
           </LazyMotion>
         </MemoryRouter>

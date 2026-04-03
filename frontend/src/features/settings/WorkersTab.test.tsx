@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { LazyMotion, domMax } from 'framer-motion';
+import { LazyMotion, domAnimation } from 'framer-motion';
 import { WorkersTab } from './WorkersTab';
 
 // Mock auth store - supports both hook-style (selector) and getState() calls
@@ -61,7 +61,7 @@ function createWrapper() {
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return (
       <QueryClientProvider client={queryClient}>
-        <LazyMotion features={domMax}>
+        <LazyMotion features={domAnimation}>
           {children}
         </LazyMotion>
       </QueryClientProvider>
