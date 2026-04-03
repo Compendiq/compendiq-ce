@@ -680,7 +680,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const { id } = IdParamSchema.parse(request.params);
     const userId = request.userId;
     const params = ChildrenQuerySchema.parse(request.query);
-    const { sort, order, depth, limit } = params;
+    const { sort, order, depth } = params;
 
     // Resolve page: try confluence_id first, then integer id
     const isNumericId = /^\d+$/.test(id);
