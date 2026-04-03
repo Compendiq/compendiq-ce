@@ -61,26 +61,27 @@ export async function contentAnalyticsRoutes(fastify: FastifyInstance) {
     const { id: pageId } = IdParamSchema.parse(request.params);
     const userId = request.userId;
 
-    const summary = await query<{
-      helpful_count: string;
-      not_helpful_count: string;
-      total_count: string;
-    }>(
-      `SELECT
-         COUNT(*) FILTER (WHERE is_helpful = TRUE)  AS helpful_count,
-         COUNT(*) FILTER (WHERE is_helpful = FALSE) AS not_helpful_count,
-         COUNT(*)                                    AS total_count
-       FROM article_feedback
-       WHERE page_id = $1`,
-      [pageId],
-    );
-
-    const userVote = await query<{ is_helpful: boolean; comment: string | null }>(
-      `SELECT is_helpful, comment
-       FROM article_feedback
-       WHERE page_id = $1 AND user_id = $2`,
-      [pageId, userId],
-    );
+    const [summary, userVote] = await Promise.all([
+      query<{
+        helpful_count: string;
+        not_helpful_count: string;
+        total_count: string;
+      }>(
+        `SELECT
+           COUNT(*) FILTER (WHERE is_helpful = TRUE)  AS helpful_count,
+           COUNT(*) FILTER (WHERE is_helpful = FALSE) AS not_helpful_count,
+           COUNT(*)                                    AS total_count
+         FROM article_feedback
+         WHERE page_id = $1`,
+        [pageId],
+      ),
+      query<{ is_helpful: boolean; comment: string | null }>(
+        `SELECT is_helpful, comment
+         FROM article_feedback
+         WHERE page_id = $1 AND user_id = $2`,
+        [pageId, userId],
+      ),
+    ]);
 
     const row = summary.rows[0];
     return {

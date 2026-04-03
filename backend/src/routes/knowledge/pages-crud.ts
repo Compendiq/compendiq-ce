@@ -469,10 +469,19 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
   });
 
   // GET /api/pages/filters - get available filter options (distinct authors, labels)
+  // Cached in Redis with 5-minute TTL keyed by user's accessible space list.
   fastify.get('/pages/filters', async (request) => {
     const userId = request.userId;
 
     const filterSpaces = await getUserAccessibleSpaces(userId);
+
+    // Cache key based on sorted space list to ensure consistency
+    const spacesKey = [...filterSpaces].sort().join(',');
+    const cacheKey = `filters:${spacesKey}`;
+
+    const cached = await cache.get<{ authors: string[]; labels: string[] }>(userId, 'pages', cacheKey);
+    if (cached) return cached;
+
     const [authorsResult, labelsResult] = await Promise.all([
       query<{ author: string }>(
         `SELECT DISTINCT cp.author FROM pages cp
@@ -488,10 +497,14 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       ),
     ]);
 
-    return {
+    const response = {
       authors: authorsResult.rows.map((r) => r.author),
       labels: labelsResult.rows.map((r) => r.label),
     };
+
+    await cache.set(userId, 'pages', cacheKey, response, 300); // 5-minute TTL
+
+    return response;
   });
 
   // GET /api/pages/trash - list soft-deleted standalone articles for the current user
