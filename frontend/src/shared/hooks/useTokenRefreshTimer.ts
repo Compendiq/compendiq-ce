@@ -1,7 +1,22 @@
 import { useEffect } from 'react';
-import { decodeJwt } from 'jose';
 import { useAuthStore } from '../../stores/auth-store';
 import { refreshAccessTokenOnce } from '../lib/api';
+
+/**
+ * Decode the payload of a JWT without verifying the signature.
+ * The frontend only needs the `exp` claim to schedule proactive refreshes —
+ * no cryptographic verification is required (the backend validates tokens).
+ */
+function decodeJwtPayload(token: string): { exp?: number; [key: string]: unknown } {
+  const parts = token.split('.');
+  const payload = parts[1];
+  if (!payload) return {};
+  try {
+    return JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/')));
+  } catch {
+    return {};
+  }
+}
 
 /**
  * Proactively refreshes the access token at 75% of its remaining lifetime,
@@ -21,7 +36,7 @@ export function useTokenRefreshTimer() {
 
     let exp: number | undefined;
     try {
-      const claims = decodeJwt(accessToken);
+      const claims = decodeJwtPayload(accessToken);
       exp = claims.exp;
     } catch {
       return; // malformed token — let reactive refresh handle it
