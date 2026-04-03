@@ -103,11 +103,11 @@ describe('GET /api/pages/:id/children', () => {
     mockQueryFn.mockResolvedValueOnce({
       rows: [{ id: 10, confluence_id: 'parent-conf-id', space_key: 'DEV', source: 'confluence', visibility: 'private', created_by_user_id: null }],
     });
-    // Second query: fetch children
+    // Single CTE query returns flat rows with parent_id and depth
     mockQueryFn.mockResolvedValueOnce({
       rows: [
-        { id: 20, confluence_id: 'child-1', title: 'Child One', space_key: 'DEV' },
-        { id: 30, confluence_id: 'child-2', title: 'Child Two', space_key: 'DEV' },
+        { id: 20, confluence_id: 'child-1', title: 'Child One', space_key: 'DEV', parent_id: 'parent-conf-id', depth: 1 },
+        { id: 30, confluence_id: 'child-2', title: 'Child Two', space_key: 'DEV', parent_id: 'parent-conf-id', depth: 1 },
       ],
     });
 
@@ -167,16 +167,11 @@ describe('GET /api/pages/:id/children', () => {
     mockQueryFn.mockResolvedValueOnce({
       rows: [{ id: 1, confluence_id: 'root', space_key: 'DEV', source: 'confluence', visibility: 'private', created_by_user_id: null }],
     });
-    // Level 1 children
+    // Single CTE query returns flat rows with depth and parent_id
     mockQueryFn.mockResolvedValueOnce({
       rows: [
-        { id: 2, confluence_id: 'child-1', title: 'Child 1', space_key: 'DEV' },
-      ],
-    });
-    // Level 2 children (of child-1)
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [
-        { id: 3, confluence_id: 'grandchild-1', title: 'Grandchild 1', space_key: 'DEV' },
+        { id: 2, confluence_id: 'child-1', title: 'Child 1', space_key: 'DEV', parent_id: 'root', depth: 1 },
+        { id: 3, confluence_id: 'grandchild-1', title: 'Grandchild 1', space_key: 'DEV', parent_id: 'child-1', depth: 2 },
       ],
     });
 
@@ -191,6 +186,8 @@ describe('GET /api/pages/:id/children', () => {
     expect(body.children[0].title).toBe('Child 1');
     expect(body.children[0].children).toHaveLength(1);
     expect(body.children[0].children[0].title).toBe('Grandchild 1');
+    // Verify only 2 queries: page resolve + single CTE
+    expect(mockQueryFn).toHaveBeenCalledTimes(2);
   });
 
   it('should resolve confluence_id string parameter', async () => {
@@ -198,10 +195,10 @@ describe('GET /api/pages/:id/children', () => {
     mockQueryFn.mockResolvedValueOnce({
       rows: [{ id: 10, confluence_id: 'my-conf-page', space_key: 'DEV', source: 'confluence', visibility: 'private', created_by_user_id: null }],
     });
-    // Children
+    // CTE children query with flat rows
     mockQueryFn.mockResolvedValueOnce({
       rows: [
-        { id: 20, confluence_id: 'child-1', title: 'Child One', space_key: 'DEV' },
+        { id: 20, confluence_id: 'child-1', title: 'Child One', space_key: 'DEV', parent_id: 'my-conf-page', depth: 1 },
       ],
     });
 
@@ -234,7 +231,7 @@ describe('GET /api/pages/:id/children', () => {
     mockQueryFn.mockResolvedValueOnce({
       rows: [{ id: 1, confluence_id: 'root', space_key: 'DEV', source: 'confluence', visibility: 'private', created_by_user_id: null }],
     });
-    // Children
+    // CTE children query
     mockQueryFn.mockResolvedValueOnce({ rows: [] });
 
     await app.inject({
@@ -242,9 +239,9 @@ describe('GET /api/pages/:id/children', () => {
       url: '/api/pages/1/children',
     });
 
-    // Verify children query uses default sort (title ASC)
+    // Verify CTE query uses default sort (depth, then title ASC)
     const childrenQuerySql = mockQueryFn.mock.calls[1][0] as string;
-    expect(childrenQuerySql).toContain('ORDER BY title ASC');
+    expect(childrenQuerySql).toContain('ORDER BY depth, title ASC');
   });
 
   it('should return 404 when user lacks space access for confluence page', async () => {
@@ -290,51 +287,37 @@ describe('GET /api/pages/:id/children', () => {
     expect(response.statusCode).toBe(200);
   });
 
-  it('should cap total fetched nodes at MAX_TOTAL_NODES', async () => {
+  it('should cap total fetched nodes at MAX_TOTAL_NODES via CTE LIMIT', async () => {
     // Resolve page
     mockQueryFn.mockResolvedValueOnce({
       rows: [{ id: 1, confluence_id: 'root', space_key: 'DEV', source: 'confluence', visibility: 'private', created_by_user_id: null }],
     });
 
-    // Generate 200 children at level 1 (the cap) — limit is 100 per request but cap is 200
-    // With limit=100, first fetch gets 100, second fetch (for depth=2 children of first child) would get capped
-    const level1Children = Array.from({ length: 100 }, (_, i) => ({
+    // CTE returns flat rows capped by LIMIT (MAX_TOTAL_NODES = 200)
+    const flatRows = Array.from({ length: 200 }, (_, i) => ({
       id: 100 + i,
       confluence_id: `child-${i}`,
       title: `Child ${i}`,
       space_key: 'DEV',
+      parent_id: 'root',
+      depth: 1,
     }));
-    mockQueryFn.mockResolvedValueOnce({ rows: level1Children });
-
-    // For depth=2, each child will try to fetch sub-children.
-    // After 100 level-1 nodes, only 100 more are allowed (200 - 100 = 100).
-    // First child's sub-children fetch: allow up to 100
-    const level2Children = Array.from({ length: 100 }, (_, i) => ({
-      id: 1000 + i,
-      confluence_id: `grandchild-${i}`,
-      title: `Grandchild ${i}`,
-      space_key: 'DEV',
-    }));
-    mockQueryFn.mockResolvedValueOnce({ rows: level2Children });
-
-    // Second child onwards: totalFetched = 200 >= MAX_TOTAL_NODES, so fetchChildren returns []
-    // No more queries should be made
+    mockQueryFn.mockResolvedValueOnce({ rows: flatRows });
 
     const response = await app.inject({
       method: 'GET',
-      url: '/api/pages/1/children?depth=2&limit=100',
+      url: '/api/pages/1/children?depth=2',
     });
 
     expect(response.statusCode).toBe(200);
     const body = JSON.parse(response.payload);
-    expect(body.children).toHaveLength(100);
-    // Only the first child should have sub-children (the rest are capped)
-    expect(body.children[0].children).toHaveLength(100);
-    // Second child should have no children (cap reached)
-    expect(body.children[1].children).toBeUndefined();
+    expect(body.children).toHaveLength(200);
 
-    // Verify: 1 page-resolve + 1 level-1 fetch + 1 level-2 fetch for first child = 3 queries total
-    // No further queries because totalFetched reached 200
-    expect(mockQueryFn).toHaveBeenCalledTimes(3);
+    // Verify only 2 queries: page resolve + single CTE (no N+1)
+    expect(mockQueryFn).toHaveBeenCalledTimes(2);
+
+    // Verify CTE query has LIMIT parameter
+    const cteSql = mockQueryFn.mock.calls[1][0] as string;
+    expect(cteSql).toContain('LIMIT');
   });
 });
