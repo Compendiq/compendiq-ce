@@ -216,15 +216,15 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
       expect(result.rows[0].summary_content_hash).toHaveLength(64);
     });
 
-    it('should detect content changes via hash mismatch and re-summarize', async () => {
+    it('should detect content changes via timestamp and re-summarize', async () => {
       const longContent = 'B'.repeat(200);
-      const staleHash = 'aaaa'.repeat(16); // 64-char fake hash that won't match
 
       // Insert a page that was previously summarized but whose content has since changed
+      // (last_modified_at is after summary_generated_at)
       await query(
-        `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status, summary_content_hash, summary_text)
-         VALUES ('changed1', $1, 'Changed Page', $2, 'summarized', $3, 'old summary')`,
-        [testSpaceKey, longContent, staleHash],
+        `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status, summary_content_hash, summary_text, summary_generated_at, last_modified_at)
+         VALUES ('changed1', $1, 'Changed Page', $2, 'summarized', $3, 'old summary', NOW() - INTERVAL '1 hour', NOW())`,
+        [testSpaceKey, longContent, computeContentHash('old content')],
       );
 
       const { processed, errors } = await runSummaryBatch('test-model');
@@ -244,14 +244,15 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
       expect(result.rows[0].summary_content_hash).toBe(computeContentHash(longContent));
     });
 
-    it('should not re-summarize when content hash matches', async () => {
+    it('should not re-summarize when content has not changed since last summary', async () => {
       const longContent = 'C'.repeat(200);
       const correctHash = computeContentHash(longContent);
 
-      // Insert a page that is already summarized with the correct hash
+      // Insert a page that is already summarized and has not been modified since
+      // (summary_generated_at is after last_modified_at)
       await query(
-        `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status, summary_content_hash, summary_text)
-         VALUES ('unchanged1', $1, 'Unchanged Page', $2, 'summarized', $3, 'existing summary')`,
+        `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status, summary_content_hash, summary_text, summary_generated_at, last_modified_at)
+         VALUES ('unchanged1', $1, 'Unchanged Page', $2, 'summarized', $3, 'existing summary', NOW(), NOW() - INTERVAL '1 hour')`,
         [testSpaceKey, longContent, correctHash],
       );
 
@@ -265,18 +266,18 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
       expect(result.rows[0].summary_text).toBe('existing summary');
     });
 
-    it('should handle body_text with special characters in hash comparison', async () => {
-      // Content with backslashes, unicode, and special chars that would break ::bytea cast
+    it('should handle body_text with special characters in timestamp comparison', async () => {
+      // Content with backslashes, unicode, and special chars
       const specialContent = 'A'.repeat(100) + ' backslash: \\ quote: " unicode: ü emoji: 🎉 tab:\t newline:\n end';
       const correctHash = computeContentHash(specialContent);
 
       await query(
-        `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status, summary_content_hash, summary_text)
-         VALUES ('special1', $1, 'Special Chars Page', $2, 'summarized', $3, 'existing summary')`,
+        `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status, summary_content_hash, summary_text, summary_generated_at, last_modified_at)
+         VALUES ('special1', $1, 'Special Chars Page', $2, 'summarized', $3, 'existing summary', NOW(), NOW() - INTERVAL '1 hour')`,
         [testSpaceKey, specialContent, correctHash],
       );
 
-      // Should NOT crash and should NOT re-summarize (hash matches)
+      // Should NOT crash and should NOT re-summarize (not modified since summary)
       const { processed, errors } = await runSummaryBatch('test-model');
       expect(errors).toBe(0);
       expect(processed).toBe(0);
