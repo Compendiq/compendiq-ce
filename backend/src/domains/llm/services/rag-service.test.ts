@@ -29,6 +29,7 @@ const mocks = vi.hoisted(() => {
 vi.mock('../../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mocks.mockQuery(...args),
   getPool: () => mocks.mockPool,
+  getVectorPool: () => mocks.mockPool,
 }));
 
 vi.mock('./llm-provider.js', () => ({
