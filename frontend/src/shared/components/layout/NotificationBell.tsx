@@ -11,7 +11,8 @@ function useNotifications() {
   return useQuery<Notification[]>({
     queryKey: ['notifications'],
     queryFn: () => apiFetch('/notifications'),
-    refetchInterval: 30_000, // poll every 30s
+    refetchInterval: 60_000, // poll every 60s
+    refetchOnWindowFocus: true,
   });
 }
 
