@@ -374,8 +374,8 @@ describe('Search Routes', () => {
     // ── semantic mode ────────────────────────────────────────────────────────
 
     it('semantic mode calls providerGenerateEmbedding + vectorSearch', async () => {
-      // Embeddings exist check → count > 0
-      mockQueryFn.mockResolvedValue({ rows: [{ count: '5' }] });
+      // Embeddings exist check → EXISTS = true
+      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] });
 
       const fakeEmbedding = new Array(768).fill(0.1);
       mockProviderGenerateEmbedding.mockResolvedValue([[...fakeEmbedding]]);
@@ -397,10 +397,10 @@ describe('Search Routes', () => {
     });
 
     it('semantic mode with no embeddings → falls back to keyword', async () => {
-      // Embeddings exist check → count = 0
+      // Embeddings exist check → EXISTS = false
       mockQueryFn.mockImplementation((sql: string) => {
         if (typeof sql === 'string' && sql.includes('page_embeddings')) {
-          return { rows: [{ count: '0' }] };
+          return { rows: [{ exists: false }] };
         }
         if (typeof sql === 'string' && sql.includes('COUNT(*)')) {
           return { rows: [{ count: '1' }] };
@@ -445,10 +445,31 @@ describe('Search Routes', () => {
       expect(mockProviderGenerateEmbedding).not.toHaveBeenCalled();
     });
 
+
+    it('semantic/hybrid mode uses EXISTS instead of COUNT(*) for embeddings check', async () => {
+      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] });
+      mockProviderGenerateEmbedding.mockResolvedValue([[new Array(768).fill(0.1)]]);
+      mockVectorSearch.mockResolvedValue([]);
+
+      await app.inject({
+        method: 'GET',
+        url: '/api/search?q=test&mode=semantic',
+      });
+
+      const embCall = mockQueryFn.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('page_embeddings'),
+      );
+      expect(embCall).toBeDefined();
+      const sql = embCall![0] as string;
+      // Should use EXISTS, not COUNT(*)
+      expect(sql).toContain('SELECT EXISTS');
+      expect(sql).not.toContain('COUNT(*)');
+    });
+
     // ── hybrid mode ──────────────────────────────────────────────────────────
 
     it('hybrid mode calls hybridSearch from rag-service', async () => {
-      mockQueryFn.mockResolvedValue({ rows: [{ count: '10' }] }); // embeddings exist
+      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] }); // embeddings exist
 
       mockHybridSearch.mockResolvedValue([
         makeSearchResult(1, 'Vector Result'),
@@ -469,7 +490,7 @@ describe('Search Routes', () => {
     });
 
     it('semantic mode: providerGenerateEmbedding failure → 502', async () => {
-      mockQueryFn.mockResolvedValue({ rows: [{ count: '5' }] }); // embeddings exist
+      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] }); // embeddings exist
       mockProviderGenerateEmbedding.mockRejectedValue(new Error('Ollama unreachable'));
 
       const response = await app.inject({
@@ -481,7 +502,7 @@ describe('Search Routes', () => {
     });
 
     it('recordSearchAnalytics is called once per request for semantic mode', async () => {
-      mockQueryFn.mockResolvedValue({ rows: [{ count: '5' }] }); // embeddings exist
+      mockQueryFn.mockResolvedValue({ rows: [{ exists: true }] }); // embeddings exist
       mockProviderGenerateEmbedding.mockResolvedValue([[new Array(768).fill(0.1)]]);
       mockVectorSearch.mockResolvedValue([]);
 
