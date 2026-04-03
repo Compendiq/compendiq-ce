@@ -8,6 +8,7 @@
 
 import { cleanupExpiredTokens } from '../plugins/auth.js';
 import { logger } from '../utils/logger.js';
+import { acquireWorkerLock, releaseWorkerLock } from './redis-cache.js';
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
@@ -39,6 +40,8 @@ export function startTokenCleanupWorker(): void {
 
   cleanupIntervalHandle = setInterval(async () => {
     if (cleanupLock) return;
+    const acquired = await acquireWorkerLock('token-cleanup', 300);
+    if (!acquired) return;
     cleanupLock = true;
 
     try {
@@ -48,6 +51,7 @@ export function startTokenCleanupWorker(): void {
       logger.error({ err }, 'Token cleanup worker error');
     } finally {
       cleanupLock = false;
+      await releaseWorkerLock('token-cleanup');
     }
   }, intervalHours * 60 * 60 * 1000);
 
