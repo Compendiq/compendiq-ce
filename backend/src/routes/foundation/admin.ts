@@ -312,6 +312,13 @@ export async function adminRoutes(fastify: FastifyInstance) {
       }
     }
 
+    // Validate FTS language before persisting (invalid values would break the tsvector trigger)
+    if (body.ftsLanguage !== undefined && !ALLOWED_FTS_LANGUAGES.has(body.ftsLanguage)) {
+      throw fastify.httpErrors.badRequest(
+        `Invalid FTS language: "${body.ftsLanguage}". Allowed: ${[...ALLOWED_FTS_LANGUAGES].join(', ')}`,
+      );
+    }
+
     if (hasLlmChanges) {
       await upsertSharedLlmSettings({
         llmProvider: body.llmProvider,
@@ -325,11 +332,6 @@ export async function adminRoutes(fastify: FastifyInstance) {
     }
 
     if (body.ftsLanguage !== undefined) {
-      if (!ALLOWED_FTS_LANGUAGES.has(body.ftsLanguage)) {
-        throw fastify.httpErrors.badRequest(
-          `Invalid FTS language: "${body.ftsLanguage}". Allowed: ${[...ALLOWED_FTS_LANGUAGES].join(', ')}`,
-        );
-      }
       // Rebuild all tsvectors with the new language
       await query(
         `UPDATE pages SET tsv = to_tsvector(
