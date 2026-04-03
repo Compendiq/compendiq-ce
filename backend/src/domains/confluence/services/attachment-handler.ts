@@ -39,7 +39,17 @@ export const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
  * compatibility with callers, but is no longer used in the path.
  */
 function attachmentDir(_userId: string, pageId: string): string {
-  return path.join(ATTACHMENTS_BASE, pageId);
+  // Sanitize pageId to prevent path traversal (e.g. "../../etc")
+  const safeId = pageId.replace(/[/\\..]+/g, '_').replace(/^_+|_+$/g, '');
+  if (!safeId) {
+    throw new Error('Invalid page ID');
+  }
+  const dir = path.join(ATTACHMENTS_BASE, safeId);
+  const resolved = path.resolve(dir);
+  if (!resolved.startsWith(path.resolve(ATTACHMENTS_BASE))) {
+    throw new Error('Path traversal detected');
+  }
+  return dir;
 }
 
 function attachmentPath(userId: string, pageId: string, filename: string): string {
