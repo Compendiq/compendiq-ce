@@ -103,6 +103,46 @@ export function createTlsDispatcher(): Dispatcher {
     : new Agent().compose(redirectInterceptor);
 }
 
+// ─── Periodic TLS bypass warning ───────────────────────────────────
+// Re-log a warning every 24 hours when TLS verification is disabled,
+// so operators don't forget the insecure configuration.
+const TLS_WARNING_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+let lastConfluenceTlsWarning = 0;
+let lastLlmTlsWarning = 0;
+
+/**
+ * Log a periodic warning if Confluence TLS bypass is active.
+ * Call this from health checks or on a timer.
+ */
+export function checkConfluenceTlsBypassWarning(): void {
+  if (verifySsl) return;
+  const now = Date.now();
+  if (now - lastConfluenceTlsWarning >= TLS_WARNING_INTERVAL_MS) {
+    lastConfluenceTlsWarning = now;
+    logger.warn('CONFLUENCE_VERIFY_SSL=false is still active — TLS certificate verification is disabled for Confluence connections');
+  }
+}
+
+/**
+ * Log a periodic warning if LLM TLS bypass is active.
+ * Call this from health checks or on a timer.
+ */
+export function checkLlmTlsBypassWarning(): void {
+  const llmVerify = process.env.LLM_VERIFY_SSL !== 'false';
+  if (llmVerify) return;
+  const now = Date.now();
+  if (now - lastLlmTlsWarning >= TLS_WARNING_INTERVAL_MS) {
+    lastLlmTlsWarning = now;
+    logger.warn('LLM_VERIFY_SSL=false is still active — TLS certificate verification is disabled for LLM connections');
+  }
+}
+
+/** Reset warning timestamps (for testing only). */
+export function _resetTlsWarningTimestamps(): void {
+  lastConfluenceTlsWarning = 0;
+  lastLlmTlsWarning = 0;
+}
+
 /**
  * Whether SSL verification is enabled for Confluence connections.
  */
