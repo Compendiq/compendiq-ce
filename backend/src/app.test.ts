@@ -87,6 +87,74 @@ vi.mock('./routes/knowledge/verification.js', () => ({ verificationRoutes: noopR
 vi.mock('./routes/knowledge/knowledge-requests.js', () => ({ knowledgeRequestRoutes: noopRoute }));
 vi.mock('./routes/knowledge/search.js', () => ({ searchRoutes: noopRoute }));
 vi.mock('./routes/knowledge/local-spaces.js', () => ({ localSpacesRoutes: noopRoute }));
+vi.mock('./routes/foundation/setup.js', () => ({ setupRoutes: noopRoute }));
+
+describe('buildApp — CORS multi-origin support', () => {
+  const originalFrontendUrl = process.env.FRONTEND_URL;
+
+  afterEach(() => {
+    if (originalFrontendUrl === undefined) {
+      delete process.env.FRONTEND_URL;
+    } else {
+      process.env.FRONTEND_URL = originalFrontendUrl;
+    }
+  });
+
+  it('should allow a single CORS origin', async () => {
+    process.env.FRONTEND_URL = 'https://app.example.com';
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+
+    const response = await app.inject({
+      method: 'OPTIONS',
+      url: '/api/health',
+      headers: { origin: 'https://app.example.com' },
+    });
+
+    expect(response.headers['access-control-allow-origin']).toBe('https://app.example.com');
+    await app.close();
+  });
+
+  it('should allow multiple CORS origins (comma-separated)', async () => {
+    process.env.FRONTEND_URL = 'https://app.example.com, https://staging.example.com';
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+
+    // First origin
+    const res1 = await app.inject({
+      method: 'OPTIONS',
+      url: '/api/health',
+      headers: { origin: 'https://app.example.com' },
+    });
+    expect(res1.headers['access-control-allow-origin']).toBe('https://app.example.com');
+
+    // Second origin
+    const res2 = await app.inject({
+      method: 'OPTIONS',
+      url: '/api/health',
+      headers: { origin: 'https://staging.example.com' },
+    });
+    expect(res2.headers['access-control-allow-origin']).toBe('https://staging.example.com');
+
+    await app.close();
+  });
+
+  it('should reject unknown origins when multiple are configured', async () => {
+    process.env.FRONTEND_URL = 'https://app.example.com, https://staging.example.com';
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+
+    const response = await app.inject({
+      method: 'OPTIONS',
+      url: '/api/health',
+      headers: { origin: 'https://evil.example.com' },
+    });
+
+    // @fastify/cors returns false/empty for disallowed origins
+    expect(response.headers['access-control-allow-origin']).not.toBe('https://evil.example.com');
+    await app.close();
+  });
+});
 
 describe('buildApp — error handler information leakage', () => {
   const originalNodeEnv = process.env.NODE_ENV;
