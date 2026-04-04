@@ -22,8 +22,8 @@ export interface LicenseInfo extends LicenseInfoResponse {
  * the community edition renders without them.
  */
 export interface EnterpriseUI {
-  /** License status card for the admin panel. */
-  LicenseStatusCard: ComponentType<{ license: LicenseInfo | null }>;
+  /** License status card for the admin panel (self-fetching, zero props). */
+  LicenseStatusCard: ComponentType;
 
   /** Banner shown when an enterprise feature is required. */
   EnterpriseBanner: ComponentType<{ feature: string }>;

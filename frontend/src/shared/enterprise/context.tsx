@@ -25,14 +25,12 @@ export function EnterpriseProvider({ children }: { children: ReactNode }) {
       if (cancelled) return;
       setUi(enterpriseUi);
 
-      // Only fetch license info if enterprise module is present
-      if (enterpriseUi) {
-        try {
-          const info = await apiFetch<LicenseInfo>('/admin/license');
-          if (!cancelled) setLicense(info);
-        } catch {
-          // Not admin, or endpoint unavailable — license stays null
-        }
+      // Always fetch license info — CE returns edition:'community', EE returns actual tier
+      try {
+        const info = await apiFetch<LicenseInfo>('/admin/license');
+        if (!cancelled) setLicense(info);
+      } catch {
+        // Not admin, or endpoint unavailable — license stays null
       }
 
       if (!cancelled) setIsLoading(false);
@@ -45,7 +43,7 @@ export function EnterpriseProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const hasFeature = (feature: string): boolean => {
-    if (!license || !license.isValid) return false;
+    if (!license || !license.valid) return false;
     return (license.features ?? []).includes(feature);
   };
 
@@ -54,7 +52,7 @@ export function EnterpriseProvider({ children }: { children: ReactNode }) {
       value={{
         ui,
         license,
-        isEnterprise: !!ui,
+        isEnterprise: license?.edition !== 'community' && license?.valid === true,
         hasFeature,
         isLoading,
       }}

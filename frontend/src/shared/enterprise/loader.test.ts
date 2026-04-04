@@ -6,7 +6,7 @@ describe('Enterprise frontend loader', () => {
     _resetForTesting();
   });
 
-  it('should return null when @compendiq/enterprise/frontend is not installed', async () => {
+  it('should return null when /enterprise/frontend.js is not available', async () => {
     const ui = await loadEnterpriseUI();
     expect(ui).toBeNull();
   });

@@ -80,8 +80,13 @@ describe('EnterpriseProvider (community mode)', () => {
     expect(screen.getByTestId('has-oidc').textContent).toBe('false');
   });
 
-  it('should not make API calls in community mode (no enterprise UI loaded)', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+  it('always fetches /admin/license to determine edition', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ edition: 'community', tier: 'community', features: [], valid: false }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
 
     render(
       <EnterpriseProvider>
@@ -93,8 +98,32 @@ describe('EnterpriseProvider (community mode)', () => {
       expect(screen.getByTestId('loading').textContent).toBe('false');
     });
 
-    // In community mode, loadEnterpriseUI returns null, so no API call to /admin/license
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(fetchSpy).toHaveBeenCalled();
+    expect(screen.getByTestId('enterprise').textContent).toBe('false');
+    expect(screen.getByTestId('license').textContent).toBe('community');
+  });
+
+  it('isEnterprise is true when backend returns valid non-community edition', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ edition: 'enterprise', tier: 'enterprise', features: ['oidc_sso'], valid: true }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    render(
+      <EnterpriseProvider>
+        <TestConsumer />
+      </EnterpriseProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('loading').textContent).toBe('false');
+    });
+
+    expect(screen.getByTestId('enterprise').textContent).toBe('true');
+    expect(screen.getByTestId('license').textContent).toBe('enterprise');
+    expect(screen.getByTestId('has-oidc').textContent).toBe('true');
   });
 });
 
