@@ -24,8 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **PDF export and import** -- export pages as PDF documents, import content from PDF files
 - **OIDC/SSO authentication** -- integrate with external identity providers, configured entirely via the Admin UI
 - **RBAC with custom roles** -- role-based access control with granular permissions (view, edit, delete, admin)
-- **Rich text editor** -- TipTap v3 editor with full Confluence macro round-trip support
+- **Rich text editor** -- TipTap v3 editor with full Confluence macro round-trip support, optional Vim modal editing, Notion-style block drag-and-drop, find-and-replace, image/table captions with auto-numbering and figure/table index, code block language selector with auto-detection, header numbering toggle, inline status label editing with styled badges, and clipboard image paste/drop upload
 - **Draw.io diagram display** -- read-only rendering of draw.io diagrams with "Edit in Confluence" links
+- **Confluence macro rendering** -- interactive Children Pages macro (expandable inline), Attachments macro with download links, in addition to existing code blocks, task lists, panels, user mentions, and page links
 - **Keyboard shortcuts** -- comprehensive shortcuts for navigation, actions, editor, and panel management
 - **Dark and light theme** -- system-aware with manual toggle, glassmorphic UI design
 - **Audit logging** -- track user actions and system events for compliance
@@ -45,3 +46,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **API documentation** -- auto-generated Swagger UI at `/api/docs`
 - **Rate limiting** -- global rate limiting with stricter limits on admin and LLM endpoints
 - **Multi-user support** -- per-user Confluence PAT storage with AES-256-GCM encryption
+
+### Changed
+
+- **PDF generation** -- replaced `playwright-core` with `pdf-lib` for a lighter, headless-browser-free implementation
+- **Article actions layout** -- AutoTagger and PDF export controls moved to the ArticleRightPane for a cleaner editing experience
+- **Confluence sync** -- page deletion now uses soft-delete detection, preserving local history on Confluence-side deletes
+- **RAG re-ranking** -- fixed RRF key assignment so cross-method score boosting between vector and full-text results works correctly

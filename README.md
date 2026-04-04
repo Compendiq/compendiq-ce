@@ -27,8 +27,9 @@ AI-powered knowledge base management for **Confluence Data Center** with multi-p
 - **Knowledge gap detection** -- identify missing documentation topics
 - **Premium glassmorphic UI** -- dark mode, backdrop blur cards, animated gradient backgrounds, Framer Motion transitions
 - **Multi-user with encrypted credentials** -- per-user Confluence PAT storage with AES-256-GCM encryption
-- **Rich text editing** -- TipTap v3 editor with full Confluence macro round-trip support
+- **Rich text editing** -- TipTap v3 editor with full Confluence macro round-trip support, optional Vim modal editing, Notion-style block drag-and-drop, find-and-replace, image/table captions with auto-numbering and figure/table index, code block language selector with auto-detection, header numbering toggle, inline status label editing, and clipboard image paste/drop upload
 - **Draw.io diagram display** -- read-only rendering of draw.io diagrams with "Edit in Confluence" links
+- **Confluence macro rendering** -- interactive Children Pages macro (expandable inline) and Attachments macro with download links, in addition to code blocks, task lists, panels, user mentions, and page links
 - **Multi-provider LLM** -- Ollama (default) or OpenAI-compatible APIs (OpenAI, Azure, LM Studio, vLLM)
 - **PDF import/export** -- extract content from PDFs, export pages as PDF
 - **RBAC** -- role-based access control with granular permissions
@@ -53,7 +54,7 @@ AI-powered knowledge base management for **Confluence Data Center** with multi-p
 compendiq/
 +-- backend/src/
 |   +-- core/                  # Shared infrastructure (no domain imports)
-|   |   +-- db/                # PostgreSQL connection pool + SQL migrations (001-045)
+|   |   +-- db/                # PostgreSQL connection pool + SQL migrations (001-049)
 |   |   +-- plugins/           # Fastify plugins (auth, correlation-id, redis)
 |   |   +-- services/          # Cross-cutting services (redis-cache, audit, error-tracker,
 |   |   |                      #   content-converter, circuit-breaker, pdf-service, oidc, rbac,
