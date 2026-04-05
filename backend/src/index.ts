@@ -101,7 +101,6 @@ async function start() {
     stopSummaryWorker();
     stopTokenCleanupWorker();
     stopRetentionWorker();
-    try { const { closeBrowser } = await import('./core/services/pdf-service.js'); await closeBrowser(); } catch { /* shutdown cleanup is best-effort */ }
     await app.close();
     await closeVectorPool();
     await closePool();
