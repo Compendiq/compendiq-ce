@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Blush Petal — Light Theme Prototype</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg: #FDF5F2;
+    --bg-subtle: #F8EDE8;
+    --card: #FFFAF8;
+    --card-alt: #FFF6F3;
+    --text: #3A2828;
+    --text-secondary: #6B5050;
+    --text-muted: #9A7878;
+    --primary: #D08070;
+    --primary-hover: #C07060;
+    --primary-text: #fff;
+    --border: #E8D0CC;
+
+    --shadow-dark: rgba(160, 120, 120, 0.15);
+    --shadow-light: rgba(255, 255, 255, 0.7);
+    --shadow-dark-strong: rgba(160, 120, 120, 0.22);
+    --shadow-light-strong: rgba(255, 255, 255, 0.85);
+
+    --success: #3A8A4A;
+    --warning: #B87830;
+    --destructive: #C05050;
+    --info: #5878B0;
+    --ai-purple: #8868A8;
+
+    --code-bg: #F2E6E2;
+    --code-keyword: #906058;
+    --code-string: #508050;
+    --code-function: #5878A0;
+    --code-comment: #A08888;
+    --code-number: #B07840;
+
+    --glow-1: rgba(208, 128, 112, 0.06);
+    --glow-2: rgba(180, 140, 160, 0.05);
+  }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ===== VAPOR BACKGROUND (subtle mode) ===== */
+  .vapor-bg {
+    position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    overflow: hidden;
+  }
+  .vapor-glow {
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(80px);
+  }
+  .vapor-glow-1 {
+    width: 60vw; height: 30vh;
+    background: radial-gradient(ellipse, var(--glow-1) 0%, transparent 70%);
+    top: -5%; left: -10%;
+    animation: drift-1 14s ease-in-out infinite alternate;
+  }
+  .vapor-glow-2 {
+    width: 50vw; height: 25vh;
+    background: radial-gradient(ellipse, var(--glow-2) 0%, transparent 70%);
+    bottom: 10%; right: -10%;
+    animation: drift-2 18s ease-in-out infinite alternate;
+  }
+  @keyframes drift-1 { 0% { transform: translateX(0); } 100% { transform: translateX(15vw); } }
+  @keyframes drift-2 { 0% { transform: translateX(0); } 100% { transform: translateX(-12vw); } }
+
+  /* ===== NEUMORPHIC UTILITIES ===== */
+  .neu-card {
+    background: var(--card);
+    border-radius: 12px;
+    box-shadow:
+      3px 3px 8px var(--shadow-dark),
+      -2px -2px 6px var(--shadow-light);
+    transition: box-shadow 0.15s ease, transform 0.15s ease;
+  }
+  .neu-card-hover:hover {
+    box-shadow:
+      4px 4px 12px var(--shadow-dark-strong),
+      -3px -3px 8px var(--shadow-light-strong);
+    transform: translateY(-1px);
+  }
+  .neu-card-hover:active {
+    box-shadow:
+      inset 2px 2px 5px var(--shadow-dark),
+      inset -1px -1px 3px var(--shadow-light);
+    transform: scale(0.98);
+  }
+  .neu-inset {
+    background: var(--bg-subtle);
+    border-radius: 10px;
+    box-shadow:
+      inset 2px 2px 5px var(--shadow-dark),
+      inset -1px -1px 3px var(--shadow-light);
+  }
+  .neu-sidebar {
+    background: var(--card-alt);
+    box-shadow:
+      3px 0 10px var(--shadow-dark),
+      -2px 0 6px var(--shadow-light);
+  }
+  .neu-btn-primary {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 8px 18px;
+    background: var(--primary);
+    color: var(--primary-text);
+    border: none; border-radius: 8px;
+    font-size: 0.85rem; font-weight: 600;
+    cursor: pointer;
+    box-shadow:
+      2px 2px 6px var(--shadow-dark-strong),
+      -1px -1px 4px var(--shadow-light);
+    transition: box-shadow 0.15s ease, transform 0.15s ease;
+  }
+  .neu-btn-primary:hover {
+    background: var(--primary-hover);
+    box-shadow:
+      3px 3px 8px var(--shadow-dark-strong),
+      -2px -2px 6px var(--shadow-light-strong);
+    transform: translateY(-1px);
+  }
+  .neu-btn-primary:active {
+    box-shadow: inset 2px 2px 4px rgba(0,0,0,0.15), inset -1px -1px 3px rgba(255,255,255,0.2);
+    transform: scale(0.98);
+  }
+  .neu-btn-ghost {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 8px 18px;
+    background: transparent;
+    color: var(--primary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 0.85rem; font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .neu-btn-ghost:hover {
+    background: rgba(208,128,112,0.08);
+    border-color: var(--primary);
+  }
+  .neu-pill {
+    padding: 6px 14px;
+    border-radius: 8px;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .neu-pill:hover { background: rgba(208,128,112,0.06); }
+  .neu-pill-active {
+    background: var(--bg-subtle);
+    color: var(--primary);
+    font-weight: 600;
+    box-shadow:
+      inset 2px 2px 4px var(--shadow-dark),
+      inset -1px -1px 3px var(--shadow-light);
+  }
+  .neu-input {
+    width: 100%;
+    padding: 10px 14px;
+    border: none;
+    border-radius: 8px;
+    font-size: 0.85rem;
+    color: var(--text);
+    background: var(--bg-subtle);
+    box-shadow:
+      inset 2px 2px 5px var(--shadow-dark),
+      inset -1px -1px 3px var(--shadow-light);
+    outline: none;
+    transition: box-shadow 0.15s ease;
+  }
+  .neu-input:focus {
+    box-shadow:
+      inset 2px 2px 5px var(--shadow-dark),
+      inset -1px -1px 3px var(--shadow-light),
+      0 0 0 2px var(--primary);
+  }
+  .neu-input::placeholder { color: var(--text-muted); }
+
+  /* ===== LAYOUT ===== */
+  .app { display: flex; min-height: 100vh; position: relative; z-index: 1; }
+
+  .sidebar {
+    width: 240px; padding: 20px 14px; display: flex; flex-direction: column; gap: 4px;
+  }
+  .sidebar-logo { font-size: 1.1rem; font-weight: 700; color: var(--text); padding: 8px 10px; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+  .sidebar-logo .logo-icon { width: 28px; height: 28px; border-radius: 8px; background: var(--primary); display: flex; align-items: center; justify-content: center; color: #fff; font-weight: 800; font-size: 0.85rem; }
+  .sidebar-section { font-size: 0.65rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); padding: 16px 10px 6px; }
+  .sidebar-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; font-size: 0.85rem; color: var(--text-secondary); cursor: pointer; transition: all 0.15s ease; }
+  .sidebar-item:hover { background: rgba(208,128,112,0.06); color: var(--text); }
+  .sidebar-item.active { background: var(--bg-subtle); color: var(--primary); font-weight: 600; box-shadow: inset 2px 2px 4px var(--shadow-dark), inset -1px -1px 3px var(--shadow-light); }
+  .sidebar-icon { width: 18px; height: 18px; opacity: 0.6; }
+  .sidebar-item.active .sidebar-icon { opacity: 1; }
+
+  .main { flex: 1; padding: 24px 32px; overflow-y: auto; }
+
+  .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; }
+  .header h1 { font-size: 1.4rem; font-weight: 700; }
+  .header-actions { display: flex; gap: 10px; align-items: center; }
+
+  /* ===== DASHBOARD KPI CARDS ===== */
+  .kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+  .kpi-card { padding: 18px; }
+  .kpi-label { font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 8px; }
+  .kpi-value { font-size: 1.6rem; font-weight: 700; color: var(--text); }
+  .kpi-sub { font-size: 0.75rem; color: var(--text-secondary); margin-top: 4px; }
+  .kpi-change { font-size: 0.75rem; font-weight: 600; }
+  .kpi-change.up { color: var(--success); }
+  .kpi-change.down { color: var(--destructive); }
+
+  /* ===== CONTENT CARDS ===== */
+  .content-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; }
+
+  .article-list { display: flex; flex-direction: column; gap: 2px; }
+  .article-item { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-radius: 10px; cursor: pointer; transition: all 0.15s ease; }
+  .article-item:hover { background: rgba(208,128,112,0.04); }
+  .article-title { font-size: 0.88rem; font-weight: 500; color: var(--text); }
+  .article-meta { font-size: 0.72rem; color: var(--text-muted); margin-top: 3px; }
+  .article-status { display: flex; align-items: center; gap: 6px; }
+
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; }
+  .status-dot.connected { background: var(--success); }
+  .status-dot.error { background: var(--destructive); }
+  .status-dot.syncing { background: var(--warning); }
+  .status-dot.embedding { background: var(--info); }
+  .status-dot.ai { background: var(--ai-purple); }
+
+  .badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 6px; font-size: 0.68rem; font-weight: 600; }
+  .badge-success { background: rgba(58,138,74,0.1); color: var(--success); }
+  .badge-warning { background: rgba(184,120,48,0.1); color: var(--warning); }
+  .badge-info { background: rgba(88,120,176,0.1); color: var(--info); }
+  .badge-ai { background: rgba(136,104,168,0.1); color: var(--ai-purple); }
+
+  /* ===== ACTIVITY FEED ===== */
+  .activity-feed { padding: 18px; }
+  .activity-feed h3 { font-size: 0.9rem; font-weight: 600; margin-bottom: 14px; }
+  .activity-item { display: flex; gap: 10px; padding: 8px 0; border-bottom: 1px solid rgba(160,120,120,0.08); }
+  .activity-item:last-child { border-bottom: none; }
+  .activity-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; }
+  .activity-text { font-size: 0.78rem; color: var(--text-secondary); line-height: 1.5; }
+  .activity-time { font-size: 0.68rem; color: var(--text-muted); margin-top: 2px; }
+
+  /* ===== EDITOR PREVIEW ===== */
+  .editor-section { margin-top: 24px; }
+  .editor-section h2 { font-size: 1.1rem; font-weight: 600; margin-bottom: 16px; }
+
+  .editor-card { padding: 24px; }
+  .editor-card h3 { font-size: 1.15rem; font-weight: 600; margin-bottom: 12px; color: var(--text); }
+  .editor-card > p { font-size: 0.88rem; line-height: 1.7; color: var(--text-secondary); margin-bottom: 16px; }
+
+  .editor-card blockquote {
+    border-left: 3px solid var(--primary);
+    margin: 16px 0;
+    padding: 12px 16px;
+    border-radius: 0 8px 8px 0;
+    background: var(--bg-subtle);
+    box-shadow: inset 2px 2px 4px var(--shadow-dark), inset -1px -1px 3px var(--shadow-light);
+  }
+  .editor-card blockquote p { font-size: 0.85rem; color: var(--text-secondary); line-height: 1.6; font-style: italic; }
+
+  .code-block {
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin: 16px 0;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.78rem;
+    line-height: 1.7;
+    background: var(--code-bg);
+    box-shadow: inset 2px 2px 5px var(--shadow-dark), inset -1px -1px 3px var(--shadow-light);
+    overflow-x: auto;
+  }
+  .kw { color: var(--code-keyword); }
+  .fn { color: var(--code-function); }
+  .str { color: var(--code-string); }
+  .cmt { color: var(--code-comment); }
+  .num { color: var(--code-number); }
+
+  .inline-code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.82em;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--code-bg);
+    box-shadow: inset 1px 1px 2px var(--shadow-dark), inset -0.5px -0.5px 1px var(--shadow-light);
+  }
+
+  .panel {
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin: 16px 0;
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    background: var(--bg-subtle);
+    box-shadow: inset 2px 2px 4px var(--shadow-dark), inset -1px -1px 3px var(--shadow-light);
+  }
+  .panel-icon { font-size: 1rem; flex-shrink: 0; margin-top: 1px; }
+  .panel-info { border-left: 3px solid var(--info); }
+  .panel-warning { border-left: 3px solid var(--warning); }
+  .panel-tip { border-left: 3px solid var(--success); }
+  .panel p { font-size: 0.82rem; line-height: 1.6; color: var(--text-secondary); }
+
+  .editor-table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    margin: 16px 0;
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 2px 2px 6px var(--shadow-dark), -1px -1px 4px var(--shadow-light);
+  }
+  .editor-table th {
+    background: var(--bg-subtle);
+    padding: 10px 14px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    text-align: left;
+    color: var(--text);
+    box-shadow: inset 0 -1px 0 var(--border);
+  }
+  .editor-table td {
+    padding: 10px 14px;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    background: var(--card);
+    box-shadow: inset 0 -1px 0 rgba(160,120,120,0.06);
+  }
+  .editor-table tr:last-child td { box-shadow: none; }
+  .editor-table tr:hover td { background: rgba(208,128,112,0.03); }
+
+  /* ===== SEARCH BAR ===== */
+  .search-wrapper { position: relative; width: 280px; }
+  .search-icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--text-muted); font-size: 0.85rem; }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+</style>
+</head>
+<body>
+
+<!-- Vapor Background (subtle mode) -->
+<div class="vapor-bg">
+  <div class="vapor-glow vapor-glow-1"></div>
+  <div class="vapor-glow vapor-glow-2"></div>
+</div>
+
+<div class="app">
+  <!-- Sidebar -->
+  <div class="sidebar neu-sidebar">
+    <div class="sidebar-logo">
+      <div class="logo-icon">C</div>
+      Compendiq
+    </div>
+
+    <div class="sidebar-section">Main</div>
+    <div class="sidebar-item active">
+      <svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+      Dashboard
+    </div>
+    <div class="sidebar-item">
+      <svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/></svg>
+      Articles
+    </div>
+    <div class="sidebar-item">
+      <svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+      Search
+    </div>
+    <div class="sidebar-item">
+      <svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+      AI Chat
+    </div>
+
+    <div class="sidebar-section">Confluence</div>
+    <div class="sidebar-item">
+      <svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+      Spaces
+    </div>
+    <div class="sidebar-item">
+      <svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="8.5" cy="7" r="4"/></svg>
+      Sync Status
+    </div>
+
+    <div class="sidebar-section">Settings</div>
+    <div class="sidebar-item">
+      <svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+      Settings
+    </div>
+  </div>
+
+  <!-- Main Content -->
+  <div class="main">
+    <div class="header">
+      <h1>Dashboard</h1>
+      <div class="header-actions">
+        <div class="search-wrapper">
+          <span class="search-icon">&#128269;</span>
+          <input class="neu-input" placeholder="Search articles..." style="padding-left: 36px;">
+        </div>
+        <button class="neu-btn-primary">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
+          New Article
+        </button>
+      </div>
+    </div>
+
+    <!-- KPI Cards -->
+    <div class="kpi-grid">
+      <div class="neu-card kpi-card">
+        <div class="kpi-label">Total Articles</div>
+        <div class="kpi-value">2,847</div>
+        <div class="kpi-change up">+12% this month</div>
+      </div>
+      <div class="neu-card kpi-card">
+        <div class="kpi-label">Synced Spaces</div>
+        <div class="kpi-value">14</div>
+        <div class="kpi-sub">3 syncing now</div>
+      </div>
+      <div class="neu-card kpi-card">
+        <div class="kpi-label">AI Embeddings</div>
+        <div class="kpi-value">89%</div>
+        <div class="kpi-change up">+5% this week</div>
+      </div>
+      <div class="neu-card kpi-card">
+        <div class="kpi-label">Quality Score</div>
+        <div class="kpi-value">8.4</div>
+        <div class="kpi-sub">Across all articles</div>
+      </div>
+    </div>
+
+    <!-- Content Grid -->
+    <div class="content-grid">
+      <!-- Recent Articles -->
+      <div class="neu-card" style="padding: 18px;">
+        <h3 style="font-size: 0.9rem; font-weight: 600; margin-bottom: 14px;">Recent Articles</h3>
+        <div class="article-list">
+          <div class="article-item">
+            <div>
+              <div class="article-title">Kubernetes Deployment Best Practices</div>
+              <div class="article-meta">Engineering &bull; Updated 2h ago</div>
+            </div>
+            <div class="article-status">
+              <span class="badge badge-success"><span class="status-dot connected" style="width:6px;height:6px;"></span> Synced</span>
+            </div>
+          </div>
+          <div class="article-item">
+            <div>
+              <div class="article-title">API Authentication Guide v3</div>
+              <div class="article-meta">Security &bull; Updated 5h ago</div>
+            </div>
+            <div class="article-status">
+              <span class="badge badge-ai"><span class="status-dot ai" style="width:6px;height:6px;"></span> Processing</span>
+            </div>
+          </div>
+          <div class="article-item">
+            <div>
+              <div class="article-title">Incident Response Playbook</div>
+              <div class="article-meta">DevOps &bull; Updated 1d ago</div>
+            </div>
+            <div class="article-status">
+              <span class="badge badge-warning"><span class="status-dot syncing" style="width:6px;height:6px;"></span> Syncing</span>
+            </div>
+          </div>
+          <div class="article-item">
+            <div>
+              <div class="article-title">Database Migration Procedures</div>
+              <div class="article-meta">Infrastructure &bull; Updated 2d ago</div>
+            </div>
+            <div class="article-status">
+              <span class="badge badge-info"><span class="status-dot embedding" style="width:6px;height:6px;"></span> Embedding</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Activity Feed -->
+      <div class="neu-card activity-feed">
+        <h3>Activity</h3>
+        <div class="activity-item">
+          <div class="activity-dot" style="background: var(--success);"></div>
+          <div>
+            <div class="activity-text">Confluence sync completed for <strong>Engineering</strong> space</div>
+            <div class="activity-time">12 minutes ago</div>
+          </div>
+        </div>
+        <div class="activity-item">
+          <div class="activity-dot" style="background: var(--ai-purple);"></div>
+          <div>
+            <div class="activity-text">AI generated summary for <strong>API Auth Guide</strong></div>
+            <div class="activity-time">34 minutes ago</div>
+          </div>
+        </div>
+        <div class="activity-item">
+          <div class="activity-dot" style="background: var(--info);"></div>
+          <div>
+            <div class="activity-text">Embeddings updated for <strong>42 articles</strong></div>
+            <div class="activity-time">1 hour ago</div>
+          </div>
+        </div>
+        <div class="activity-item">
+          <div class="activity-dot" style="background: var(--warning);"></div>
+          <div>
+            <div class="activity-text">Quality check flagged <strong>3 articles</strong> for review</div>
+            <div class="activity-time">2 hours ago</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Editor Preview -->
+    <div class="editor-section">
+      <h2>Editor Preview</h2>
+      <div class="neu-card editor-card">
+        <h3>Getting Started with Confluence Sync</h3>
+        <p>Compendiq connects to your Confluence Data Center instance and synchronizes spaces, pages, and attachments. Articles are converted from XHTML to Markdown for AI processing via the <span class="inline-code">confluenceToHtml()</span> pipeline.</p>
+
+        <blockquote>
+          <p>Pro tip: Start with a small space to verify your PAT configuration before enabling full sync across all spaces.</p>
+        </blockquote>
+
+        <div class="panel panel-info">
+          <span class="panel-icon">&#8505;&#65039;</span>
+          <p>Confluence PATs are encrypted with AES-256-GCM at rest. They are never sent to the frontend or exposed in API responses.</p>
+        </div>
+
+        <div class="panel panel-tip">
+          <span class="panel-icon">&#9989;</span>
+          <p>Use the <span class="inline-code">SYNC_INTERVAL_MIN</span> environment variable to control how often automatic sync runs.</p>
+        </div>
+
+        <div class="code-block"><span class="cmt">// Configure sync for a space</span>
+<span class="kw">const</span> <span class="fn">config</span> = {
+  spaceKey: <span class="str">'ENG'</span>,
+  syncInterval: <span class="num">15</span>, <span class="cmt">// minutes</span>
+  includeAttachments: <span class="kw">true</span>,
+  embeddingModel: <span class="str">'nomic-embed-text'</span>,
+};
+
+<span class="kw">const</span> <span class="fn">result</span> = <span class="kw">await</span> <span class="fn">syncService</span>.<span class="fn">startSync</span>(<span class="fn">config</span>);
+console.<span class="fn">log</span>(<span class="str">`Synced ${<span class="fn">result</span>.pageCount} pages`</span>);</div>
+
+        <table class="editor-table">
+          <thead>
+            <tr>
+              <th>Environment Variable</th>
+              <th>Default</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="inline-code">SYNC_INTERVAL_MIN</span></td>
+              <td>15</td>
+              <td>Polling interval in minutes</td>
+            </tr>
+            <tr>
+              <td><span class="inline-code">CONFLUENCE_VERIFY_SSL</span></td>
+              <td>true</td>
+              <td>TLS verification for Confluence API</td>
+            </tr>
+            <tr>
+              <td><span class="inline-code">ATTACHMENTS_DIR</span></td>
+              <td>data/attachments</td>
+              <td>Local cache directory for attachments</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="panel panel-warning">
+          <span class="panel-icon">&#9888;&#65039;</span>
+          <p>Never set <span class="inline-code">CONFLUENCE_VERIFY_SSL=false</span> in production. This disables TLS certificate verification and exposes your PAT to MITM attacks.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
