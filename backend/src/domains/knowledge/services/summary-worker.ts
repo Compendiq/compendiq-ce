@@ -96,6 +96,7 @@ export async function getSummaryStatus(): Promise<SummaryStatus> {
   ]);
 
   const row = result.rows[0];
+  if (!row) throw new Error('Expected a row from summary stats query');
   return {
     totalPages: parseInt(row.total, 10),
     summarizedPages: parseInt(row.summarized, 10),

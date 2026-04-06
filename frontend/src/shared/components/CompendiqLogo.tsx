@@ -97,10 +97,10 @@ export function CompendiqLogo({
       {RADIAL.map(([from, to]) => (
         <line
           key={`${from}-${to}`}
-          x1={NODES[from][0]}
-          y1={NODES[from][1]}
-          x2={NODES[to][0]}
-          y2={NODES[to][1]}
+          x1={NODES[from]![0]}
+          y1={NODES[from]![1]}
+          x2={NODES[to]![0]}
+          y2={NODES[to]![1]}
           stroke="currentColor"
           strokeWidth="1.2"
           strokeLinecap="round"

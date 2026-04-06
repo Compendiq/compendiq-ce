@@ -63,7 +63,7 @@ export async function knowledgeAdminRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.notFound('Page not found');
     }
 
-    const resolvedId = pageResult.rows[0].id;
+    const resolvedId = pageResult.rows[0]!.id;
     await regenerateSummary(resolvedId);
 
     // Fire off a batch immediately for this page

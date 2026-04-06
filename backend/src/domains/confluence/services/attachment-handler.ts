@@ -425,7 +425,7 @@ async function downloadExternalImage(url: string): Promise<ExternalImageDownload
 
   const contentTypeHeader = headers['content-type'];
   const contentType = typeof contentTypeHeader === 'string'
-    ? contentTypeHeader.split(';')[0].trim().toLowerCase()
+    ? contentTypeHeader.split(';')[0]?.trim().toLowerCase() ?? null
     : null;
   if (contentType && !contentType.startsWith('image/')) {
     throw new Error(`External URL did not return an image: ${contentType}`);

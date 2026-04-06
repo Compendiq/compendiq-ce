@@ -29,7 +29,7 @@ export async function pagesExportRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.notFound('Page not found');
     }
 
-    const row = result.rows[0];
+    const row = result.rows[0]!;
 
     // Access control: Confluence pages require RBAC space access; standalone pages
     // require ownership or shared visibility (matches pages-crud.ts pattern)

@@ -199,7 +199,7 @@ async function syncSpace(client: ConfluenceClient, userId: string, spaceKey: str
       progress: { current: i + 1, total, space: spaceKey },
     });
 
-    const page = pages[i];
+    const page = pages[i]!;
     await syncPage(client, userId, spaceKey, page);
   }
 
@@ -241,7 +241,7 @@ async function syncPage(
 
   // Extract metadata
   const labels = page.metadata?.labels?.results?.map((l) => l.name) ?? [];
-  const parentId = page.ancestors?.length ? page.ancestors[page.ancestors.length - 1].id : null;
+  const parentId = page.ancestors?.length ? page.ancestors[page.ancestors.length - 1]!.id : null;
   const author = page.version?.by?.displayName ?? null;
   const lastModified = page.version?.when ? new Date(page.version.when) : new Date();
 
@@ -251,8 +251,8 @@ async function syncPage(
     [page.id],
   );
 
-  if (existing.rows.length > 0 && existing.rows[0].version >= page.version.number) {
-    const htmlChanged = existing.rows[0].body_html !== bodyHtml || existing.rows[0].body_text !== bodyText;
+  if (existing.rows.length > 0 && existing.rows[0]!.version >= page.version.number) {
+    const htmlChanged = existing.rows[0]!.body_html !== bodyHtml || existing.rows[0]!.body_text !== bodyText;
 
     // Page content hasn't changed, but check if all expected attachments are cached.
     // Previous syncs may have failed to download some/all attachments (transient errors).
@@ -347,10 +347,10 @@ async function syncPage(
   if (existing.rows.length > 0) {
     await saveVersionSnapshot(
       page.id,
-      existing.rows[0].version,
-      existing.rows[0].title,
-      existing.rows[0].body_html,
-      existing.rows[0].body_text,
+      existing.rows[0]!.version,
+      existing.rows[0]!.title,
+      existing.rows[0]!.body_html,
+      existing.rows[0]!.body_text,
     );
   }
 

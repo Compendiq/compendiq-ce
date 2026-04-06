@@ -94,7 +94,7 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.notFound('Page not found');
     }
 
-    const page = existing.rows[0];
+    const page = existing.rows[0]!;
     let labels = page.labels || [];
 
     // Remove labels

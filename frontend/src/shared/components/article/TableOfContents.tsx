@@ -35,7 +35,7 @@ export function parseHeadings(html: string): TocHeading[] {
   const elements = doc.querySelectorAll('h1, h2, h3, h4');
 
   elements.forEach((el, i) => {
-    const level = parseInt(el.tagName[1], 10);
+    const level = parseInt(el.tagName[1] ?? '0', 10);
     const text = el.textContent?.trim() || '';
     const id = el.id || `heading-${i}`;
     if (text) {
@@ -52,13 +52,13 @@ export function buildTree(headings: TocHeading[]): TocNode[] {
 
   for (const heading of headings) {
     const node: TocNode = { heading, children: [] };
-    while (stack.length > 0 && stack[stack.length - 1].heading.level >= heading.level) {
+    while (stack.length > 0 && stack[stack.length - 1]!.heading.level >= heading.level) {
       stack.pop();
     }
     if (stack.length === 0) {
       root.push(node);
     } else {
-      stack[stack.length - 1].children.push(node);
+      stack[stack.length - 1]!.children.push(node);
     }
     stack.push(node);
   }

@@ -21,7 +21,7 @@ export const PDF_TEXT_TRUNCATION_THRESHOLD = 80_000;
 /** Extract a title suggestion from the first markdown heading in the content. */
 function extractTitleFromMarkdown(md: string): string {
   const match = md.match(/^#{1,3}\s+(.+)$/m);
-  return match ? match[1].trim() : '';
+  return match?.[1]?.trim() ?? '';
 }
 
 /** Convert markdown to HTML using marked (sync). */

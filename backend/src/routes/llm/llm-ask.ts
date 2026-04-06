@@ -58,7 +58,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         [convId, userId],
       );
       if (conv.rows.length > 0) {
-        conversationHistory = conv.rows[0].messages;
+        conversationHistory = conv.rows[0]!.messages;
       }
     }
 
@@ -84,7 +84,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         [body.pageId],
       );
       if (pageResult.rows.length > 0) {
-        const { title, body_html } = pageResult.rows[0];
+        const { title, body_html } = pageResult.rows[0]!;
         const assembled = await assembleSubPageContext(userId, body.pageId, body_html || '', title);
         // Prepend the page tree context before the RAG context
         ragContext = `Page tree context:\n\n${assembled.markdown}\n\n---\n\nAdditional knowledge base context:\n\n${ragContext}`;
@@ -183,7 +183,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
            VALUES ($1, $2, $3, $4) RETURNING id`,
           [userId, model, question.slice(0, 100), JSON.stringify(newMessages)],
         );
-        convId = insertResult.rows[0].id;
+        convId = insertResult.rows[0]!.id;
       }
     };
 

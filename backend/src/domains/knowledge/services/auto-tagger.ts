@@ -144,7 +144,7 @@ export async function autoTagPage(
     throw new Error(`Page not found: ${pageId}`);
   }
 
-  const { body_html, labels } = result.rows[0];
+  const { body_html, labels } = result.rows[0]!;
   if (!body_html) {
     return { suggestedTags: [], existingLabels: labels ?? [] };
   }
@@ -177,7 +177,7 @@ export async function applyTags(
     throw new Error(`Page not found: ${pageId}`);
   }
 
-  const page = existing.rows[0];
+  const page = existing.rows[0]!;
   const existingLabels = page.labels ?? [];
   const mergedLabels = Array.from(new Set([...existingLabels, ...tags]));
 

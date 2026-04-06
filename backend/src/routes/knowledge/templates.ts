@@ -129,7 +129,7 @@ export async function templateRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.notFound('Template not found');
     }
 
-    const r = result.rows[0];
+    const r = result.rows[0]!;
     return {
       id: r.id,
       title: r.title,
@@ -176,7 +176,7 @@ export async function templateRoutes(fastify: FastifyInstance) {
       ],
     );
 
-    const row = result.rows[0];
+    const row = result.rows[0]!;
     logger.info({ templateId: row.id, userId }, 'Template created');
 
     reply.status(201);
@@ -209,7 +209,7 @@ export async function templateRoutes(fastify: FastifyInstance) {
     // Increment use_count
     await query('UPDATE templates SET use_count = use_count + 1 WHERE id = $1', [id]);
 
-    const row = tpl.rows[0];
+    const row = tpl.rows[0]!;
     logger.info({ templateId: id, userId }, 'Template used');
 
     return {
@@ -235,7 +235,7 @@ export async function templateRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.notFound('Template not found');
     }
 
-    if (existing.rows[0].created_by !== userId && request.userRole !== 'admin') {
+    if (existing.rows[0]!.created_by !== userId && request.userRole !== 'admin') {
       throw fastify.httpErrors.forbidden('Only the template owner or an admin can update');
     }
 
@@ -273,7 +273,7 @@ export async function templateRoutes(fastify: FastifyInstance) {
 
     logger.info({ templateId: id, userId }, 'Template updated');
 
-    return { id: result.rows[0].id, updatedAt: result.rows[0].updated_at };
+    return { id: result.rows[0]!.id, updatedAt: result.rows[0]!.updated_at };
   });
 
   // DELETE /api/templates/:id - delete template (owner or admin only)
@@ -290,7 +290,7 @@ export async function templateRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.notFound('Template not found');
     }
 
-    if (existing.rows[0].created_by !== userId && request.userRole !== 'admin') {
+    if (existing.rows[0]!.created_by !== userId && request.userRole !== 'admin') {
       throw fastify.httpErrors.forbidden('Only the template owner or an admin can delete');
     }
 

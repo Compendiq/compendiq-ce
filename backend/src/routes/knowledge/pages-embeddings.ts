@@ -147,11 +147,11 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
       return { nodes: [], edges: [], centerId: id };
     }
 
-    const centerPageId = pageResult.rows[0].id;
+    const centerPageId = pageResult.rows[0]!.id;
 
     // RBAC check
     const graphSpaces = await getUserAccessibleSpaces(userId);
-    if (!graphSpaces.includes(pageResult.rows[0].space_key)) {
+    if (!graphSpaces.includes(pageResult.rows[0]!.space_key)) {
       return { nodes: [], edges: [], centerId: String(centerPageId) };
     }
 
@@ -401,7 +401,7 @@ async function buildClusteredGraph(
     }
 
     clusterEdges = Array.from(edgeMap.entries()).map(([key, val]) => {
-      const [source, target] = key.split('|');
+      const [source, target] = key.split('|') as [string, string];
       return {
         source,
         target,

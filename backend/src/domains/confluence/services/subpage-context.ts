@@ -95,7 +95,9 @@ export async function hasSubPages(
     `SELECT COUNT(*) as count FROM pages WHERE parent_id = $1`,
     [pageId],
   );
-  return parseInt(result.rows[0].count, 10) > 0;
+  const row = result.rows[0];
+  if (!row) throw new Error('Expected a row from COUNT query');
+  return parseInt(row.count, 10) > 0;
 }
 
 /**

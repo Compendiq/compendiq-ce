@@ -50,7 +50,7 @@ function findReferenceSectionStart(content: string): { index: number; headingNam
   for (const pattern of [ATX_PATTERN, SETEXT_PATTERN, BOLD_COLON_PATTERN]) {
     const match = pattern.exec(content);
     if (match) {
-      return { index: match.index, headingName: match[1] };
+      return { index: match.index, headingName: match[1] ?? '' };
     }
   }
   return { index: -1, headingName: '' };

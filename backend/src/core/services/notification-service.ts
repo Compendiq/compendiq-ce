@@ -43,7 +43,7 @@ export async function createNotification(params: CreateNotificationParams): Prom
     );
 
     // Default to enabled if no preference set
-    const inApp = prefs.rows.length === 0 || prefs.rows[0].in_app;
+    const inApp = prefs.rows.length === 0 || prefs.rows[0]?.in_app;
     if (!inApp) return;
 
     await query(
@@ -98,7 +98,9 @@ export async function listNotifications(
     `SELECT COUNT(*) as count FROM notifications ${whereClause}`,
     values,
   );
-  const total = parseInt(countResult.rows[0].count, 10);
+  const countRow = countResult.rows[0];
+  if (!countRow) throw new Error('Expected a row from COUNT query');
+  const total = parseInt(countRow.count, 10);
 
   const limit = filter.limit ?? 50;
   const offset = filter.offset ?? 0;
@@ -147,7 +149,9 @@ export async function getUnreadCount(userId: string): Promise<number> {
     'SELECT COUNT(*) as count FROM notifications WHERE user_id = $1 AND is_read = FALSE',
     [userId],
   );
-  return parseInt(result.rows[0].count, 10);
+  const row = result.rows[0];
+  if (!row) throw new Error('Expected a row from COUNT query');
+  return parseInt(row.count, 10);
 }
 
 /**
@@ -247,7 +251,9 @@ export async function isWatching(pageId: number, userId: string): Promise<boolea
     'SELECT EXISTS(SELECT 1 FROM article_watchers WHERE page_id = $1 AND user_id = $2) as exists',
     [pageId, userId],
   );
-  return result.rows[0].exists;
+  const row = result.rows[0];
+  if (!row) throw new Error('Expected a row from EXISTS query');
+  return row.exists;
 }
 
 /**

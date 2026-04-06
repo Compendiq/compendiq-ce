@@ -84,7 +84,7 @@ export async function getVersion(
 
   if (result.rows.length === 0) return null;
 
-  const row = result.rows[0];
+  const row = result.rows[0]!;
   return {
     id: row.id,
     pageId: row.page_id,

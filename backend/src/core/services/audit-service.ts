@@ -139,7 +139,9 @@ export async function getAuditLog(filter: AuditLogFilter): Promise<{
     `SELECT COUNT(*) as count FROM audit_log ${whereClause}`,
     values,
   );
-  const total = parseInt(countResult.rows[0].count, 10);
+  const row = countResult.rows[0];
+  if (!row) throw new Error('Expected a row from COUNT query');
+  const total = parseInt(row.count, 10);
 
   // Paginate
   const page = filter.page ?? 1;

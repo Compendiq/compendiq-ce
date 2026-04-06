@@ -171,15 +171,15 @@ function isBlockedIpv6(hostname: string): boolean {
   // Handle IPv4-mapped IPv6 addresses in dotted notation (::ffff:127.0.0.1)
   const ipv4MappedDotted = normalized.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
   if (ipv4MappedDotted) {
-    return isBlockedIpv4(ipv4MappedDotted[1]);
+    return isBlockedIpv4(ipv4MappedDotted[1]!);
   }
 
   // Handle IPv4-mapped IPv6 addresses in hex notation (::ffff:7f00:1)
   // URL parser normalizes ::ffff:127.0.0.1 to ::ffff:7f00:1
   const ipv4MappedHex = normalized.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
   if (ipv4MappedHex) {
-    const high = parseInt(ipv4MappedHex[1], 16);
-    const low = parseInt(ipv4MappedHex[2], 16);
+    const high = parseInt(ipv4MappedHex[1]!, 16);
+    const low = parseInt(ipv4MappedHex[2]!, 16);
     const ipv4 = `${(high >> 8) & 0xff}.${high & 0xff}.${(low >> 8) & 0xff}.${low & 0xff}`;
     return isBlockedIpv4(ipv4);
   }

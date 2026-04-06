@@ -176,9 +176,9 @@ export class OllamaProvider implements LlmProvider {
       );
 
       const expectedDims = sharedSettings.embeddingDimensions;
-      if (response.embeddings.length > 0 && response.embeddings[0].length !== expectedDims) {
+      if (response.embeddings.length > 0 && response.embeddings[0]!.length !== expectedDims) {
         throw new Error(
-          `Embedding dimension mismatch: model "${model}" produces ${response.embeddings[0].length} dimensions, ` +
+          `Embedding dimension mismatch: model "${model}" produces ${response.embeddings[0]!.length} dimensions, ` +
           `but the database expects ${expectedDims}. Please switch to a ${expectedDims}-dimensional model ` +
           `(e.g. bge-m3) in Admin Settings, or update EMBEDDING_DIMENSIONS if intentional.`,
         );

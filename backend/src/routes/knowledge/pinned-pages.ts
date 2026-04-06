@@ -75,7 +75,7 @@ export async function pinnedPagesRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.notFound('Page not found');
     }
 
-    const pageId = pageResult.rows[0].id;
+    const pageId = pageResult.rows[0]!.id;
 
     // If already pinned, return 200 immediately (idempotent)
     const alreadyPinned = await query<{ page_id: number }>(

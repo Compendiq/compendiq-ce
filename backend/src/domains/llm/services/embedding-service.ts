@@ -229,7 +229,7 @@ export function chunkText(
     // Extract section title
     const headingMatch = trimmed.match(/^#{1,6}\s+(.+?)$/m);
     if (headingMatch) {
-      currentSection = headingMatch[1];
+      currentSection = headingMatch[1]!;
     }
 
     const meta: ChunkMetadata = {
@@ -332,9 +332,9 @@ export async function embedPage(
       for (let j = 0; j < batch.length; j++) {
         allEmbeddings.push({
           chunkIndex: i + j,
-          text: batch[j].text,
-          embedding: embeddings[j],
-          metadata: batch[j].metadata,
+          text: batch[j]!.text,
+          embedding: embeddings[j]!,
+          metadata: batch[j]!.metadata,
         });
       }
     } catch (err) {
@@ -448,7 +448,9 @@ export async function processDirtyPages(
     const countResult = await query<{ count: string }>(
       "SELECT COUNT(*) as count FROM pages WHERE embedding_dirty = TRUE AND body_html IS NOT NULL AND deleted_at IS NULL AND COALESCE(page_type, 'page') != 'folder'",
     );
-    const totalDirty = parseInt(countResult.rows[0].count, 10);
+    const countRow = countResult.rows[0];
+    if (!countRow) throw new Error('Expected a row from COUNT query');
+    const totalDirty = parseInt(countRow.count, 10);
     logger.info({ userId, dirtyPages: totalDirty }, 'Processing dirty pages for embedding');
 
     if (totalDirty === 0) {
@@ -853,10 +855,10 @@ export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatu
   ]);
 
   return {
-    totalPages: parseInt(totalResult.rows[0].count, 10),
-    embeddedPages: parseInt(embeddedPagesResult.rows[0].count, 10),
-    dirtyPages: parseInt(dirtyResult.rows[0].count, 10),
-    totalEmbeddings: parseInt(embeddingResult.rows[0].count, 10),
+    totalPages: parseInt(totalResult.rows[0]?.count ?? '0', 10),
+    embeddedPages: parseInt(embeddedPagesResult.rows[0]?.count ?? '0', 10),
+    dirtyPages: parseInt(dirtyResult.rows[0]?.count ?? '0', 10),
+    totalEmbeddings: parseInt(embeddingResult.rows[0]?.count ?? '0', 10),
     isProcessing,
     lastRunAt: lastRunAt ? lastRunAt.toISOString() : null,
     model: sharedSettings.embeddingModel,

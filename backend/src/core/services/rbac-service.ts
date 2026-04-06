@@ -114,7 +114,7 @@ export async function userHasPermission(
       'SELECT inherit_perms FROM pages WHERE id = $1',
       [pageId],
     );
-    if (pageCheck.rows.length > 0 && !pageCheck.rows[0].inherit_perms) {
+    if (pageCheck.rows.length > 0 && !pageCheck.rows[0]!.inherit_perms) {
       // Page has custom ACEs -- check them
       const aceCheck = await query<{ permission: string }>(
         `SELECT ace.permission FROM access_control_entries ace
@@ -285,7 +285,7 @@ export async function userCanAccessPage(
   );
 
   if (pageResult.rows.length === 0) return false;
-  const page = pageResult.rows[0];
+  const page = pageResult.rows[0]!;
 
   // Standalone pages: check visibility rules
   if (page.source === 'standalone') {

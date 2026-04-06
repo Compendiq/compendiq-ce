@@ -57,7 +57,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       };
     }
 
-    const row = result.rows[0];
+    const row = result.rows[0]!;
     return {
       confluenceUrl: row.confluence_url,
       hasConfluencePat: !!row.confluence_pat,

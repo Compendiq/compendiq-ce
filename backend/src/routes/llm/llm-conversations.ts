@@ -50,7 +50,7 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.notFound('Conversation not found');
     }
 
-    const row = result.rows[0];
+    const row = result.rows[0]!;
     return {
       id: row.id,
       model: row.model,
@@ -121,7 +121,7 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.notFound('Page not found');
     }
 
-    const existingPage = existing.rows[0];
+    const existingPage = existing.rows[0]!;
     const currentVersion = existingPage.version;
     const pageTitle = title ?? existingPage.title;
 

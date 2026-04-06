@@ -71,7 +71,9 @@ export function getEncryptionKeys(): VersionedKey[] {
  * Returns the latest (highest version) encryption key for encrypting new data.
  */
 export function getLatestEncryptionKey(): VersionedKey {
-  return getEncryptionKeys()[0];
+  const key = getEncryptionKeys()[0];
+  if (!key) throw new Error('No encryption keys available');
+  return key;
 }
 
 /**
@@ -117,18 +119,18 @@ export function decryptPat(encrypted: string): string {
   let authTagHex: string;
   let ciphertext: string;
 
-  if (parts[0].startsWith('v') && parts.length === 4) {
+  if (parts[0]?.startsWith('v') && parts.length === 4) {
     // Versioned format: v{N}:iv:authTag:ciphertext
-    version = parseInt(parts[0].slice(1), 10);
-    ivHex = parts[1];
-    authTagHex = parts[2];
-    ciphertext = parts[3];
+    version = parseInt(parts[0]!.slice(1), 10);
+    ivHex = parts[1]!;
+    authTagHex = parts[2]!;
+    ciphertext = parts[3]!;
   } else if (parts.length === 3) {
     // Legacy format: iv:authTag:ciphertext (version 0)
     version = 0;
-    ivHex = parts[0];
-    authTagHex = parts[1];
-    ciphertext = parts[2];
+    ivHex = parts[0]!;
+    authTagHex = parts[1]!;
+    ciphertext = parts[2]!;
   } else {
     throw new Error('Invalid encrypted PAT format');
   }
@@ -157,8 +159,8 @@ export function reEncryptPat(encrypted: string): string | null {
   const parts = encrypted.split(':');
 
   // Check if already using latest version
-  if (parts[0].startsWith('v') && parts.length === 4) {
-    const currentVersion = parseInt(parts[0].slice(1), 10);
+  if (parts[0]?.startsWith('v') && parts.length === 4) {
+    const currentVersion = parseInt(parts[0]!.slice(1), 10);
     if (currentVersion === latest.version) {
       return null; // Already up to date
     }
