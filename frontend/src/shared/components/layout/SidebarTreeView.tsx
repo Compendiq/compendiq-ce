@@ -1,4 +1,4 @@
-import { memo, useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import { memo, useState, useMemo, useCallback, useEffect, useRef, lazy, Suspense } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import {
   BookOpen,
@@ -8,7 +8,6 @@ import {
   FileText,
   FolderPlus,
   ChevronsUpDown,
-  GripVertical,
   PanelLeft,
   PanelLeftClose,
   Plus,
@@ -18,8 +17,6 @@ import {
 } from 'lucide-react';
 import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { ShortcutHint } from '../ShortcutHint';
-import { DragDropProvider } from '@dnd-kit/react';
-import { useSortable, isSortable } from '@dnd-kit/react/sortable';
 import { usePageTree, useCreatePage } from '../../hooks/use-pages';
 import { useSpaces } from '../../hooks/use-spaces';
 import { useLocalSpaces, useReorderPage } from '../../hooks/use-standalone';
@@ -27,6 +24,8 @@ import { useClickOutside } from '../../hooks/use-click-outside';
 import { useUiStore } from '../../../stores/ui-store';
 import { cn } from '../../lib/cn';
 import type { PageTreeItem } from '../../hooks/use-pages';
+
+const DndLocalSpaceTree = lazy(() => import('./DndLocalSpaceTree'));
 
 const navItems = [
   { icon: BookOpen, label: 'Pages', path: '/', shortcut: 'G then P' },
@@ -99,8 +98,6 @@ export interface SidebarTreeNodeProps {
   expandedSet: Set<string>;
   toggleExpand: (id: string) => void;
   activePageId: string | undefined;
-  enableDrag?: boolean;
-  sortableIndex?: number;
 }
 
 export const SidebarTreeNode = memo(function SidebarTreeNode({
@@ -109,8 +106,6 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
   expandedSet,
   toggleExpand,
   activePageId,
-  enableDrag = false,
-  sortableIndex,
 }: SidebarTreeNodeProps) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -118,13 +113,6 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
   const hasChildren = node.children.length > 0;
   const isActive = node.page.id === activePageId;
   const isAiRoute = location.pathname === '/ai';
-
-  // Always call hook (React rules), but only use the ref when DnD is active
-  const sortable = useSortable({
-    id: node.page.id,
-    index: sortableIndex ?? 0,
-    disabled: !enableDrag,
-  });
 
   const handleNavigate = useCallback(() => {
     if (hasChildren) toggleExpand(node.page.id);
@@ -144,7 +132,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
   );
 
   return (
-    <div ref={enableDrag ? sortable.ref : undefined}>
+    <div>
       <div
         className={cn(
           'group flex items-center gap-1.5 rounded-[10px] h-9 pr-2 text-sm cursor-pointer transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
@@ -155,11 +143,6 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         style={{ paddingLeft: `${level * 16 + 10}px` }}
         onClick={handleNavigate}
       >
-        {enableDrag && (
-          <span className="shrink-0 opacity-0 group-hover:opacity-50 cursor-grab active:cursor-grabbing transition-opacity" aria-label="Drag to reorder">
-            <GripVertical size={12} />
-          </span>
-        )}
         {hasChildren ? (
           <button
             onClick={handleToggle}
@@ -177,7 +160,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
 
       {hasChildren && isExpanded && (
         <div className="relative">
-          {/* Indent guide line — click to collapse parent */}
+          {/* Indent guide line -- click to collapse parent */}
           <button
             type="button"
             onClick={handleToggle}
@@ -186,7 +169,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
             aria-label={`Collapse ${node.page.title}`}
             tabIndex={-1}
           />
-          {node.children.map((child, idx) => (
+          {node.children.map((child) => (
             <SidebarTreeNode
               key={child.page.id}
               node={child}
@@ -194,8 +177,6 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
               expandedSet={expandedSet}
               toggleExpand={toggleExpand}
               activePageId={activePageId}
-              enableDrag={enableDrag}
-              sortableIndex={enableDrag ? idx : undefined}
             />
           ))}
         </div>
@@ -207,9 +188,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
     prev.node === next.node &&
     prev.level === next.level &&
     prev.activePageId === next.activePageId &&
-    prev.expandedSet === next.expandedSet &&
-    prev.enableDrag === next.enableDrag &&
-    prev.sortableIndex === next.sortableIndex
+    prev.expandedSet === next.expandedSet
   );
 });
 
@@ -393,25 +372,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
     });
   }, []);
 
-  // Handle drag end for sortable reordering
-  const handleDragEnd = useCallback(
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (event: any) => {
-      if (event.canceled) return;
-      const source = event.operation?.source;
-      if (!source || !isSortable(source)) return;
-
-      const currentIndex = source.index;
-      const startIndex = 'initialIndex' in source ? (source as { initialIndex: number }).initialIndex : currentIndex;
-      if (startIndex === currentIndex) return;
-
-      const pageId = String(source.id);
-      reorderPage.mutate({ id: pageId, sortOrder: currentIndex });
-    },
-    [reorderPage],
-  );
-
-  // Collapsed rail — nav icons + expand toggle
+  // Collapsed rail -- nav icons + expand toggle
   if (treeSidebarCollapsed) {
     return (
       <AnimatePresence mode="wait">
@@ -720,21 +681,21 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
             )}
           </div>
         ) : isLocalSpace ? (
-          <DragDropProvider onDragEnd={handleDragEnd}>
-            <div className="space-y-0.5">
-              {tree.map((node, idx) => (
-                <SidebarTreeNode
-                  key={node.page.id}
-                  node={node}
-                  expandedSet={expandedIds}
-                  toggleExpand={toggleExpand}
-                  activePageId={activePageId}
-                  enableDrag
-                  sortableIndex={idx}
-                />
+          <Suspense fallback={
+            <div className="space-y-1 px-2">
+              {Array.from({ length: 6 }, (_, i) => (
+                <div key={i} className="h-9 animate-pulse rounded-[10px] bg-foreground/5" />
               ))}
             </div>
-          </DragDropProvider>
+          }>
+            <DndLocalSpaceTree
+              tree={tree}
+              expandedIds={expandedIds}
+              toggleExpand={toggleExpand}
+              activePageId={activePageId}
+              reorderPage={reorderPage}
+            />
+          </Suspense>
         ) : (
           <div className="space-y-0.5">
             {tree.map((node) => (

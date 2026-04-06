@@ -11,13 +11,10 @@ vi.mock('framer-motion', async () => {
   return { ...actual, useReducedMotion: () => true };
 });
 
-vi.mock('@dnd-kit/react', () => ({
-  DragDropProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}));
-
-vi.mock('@dnd-kit/react/sortable', () => ({
-  useSortable: () => ({ ref: { current: null }, isDragging: false }),
-  isSortable: () => false,
+// DndLocalSpaceTree is lazy-loaded; provide a lightweight stub so Suspense
+// resolves synchronously in tests without pulling in @dnd-kit.
+vi.mock('./DndLocalSpaceTree', () => ({
+  default: () => <div data-testid="dnd-local-space-tree" />,
 }));
 
 const mockNavigate = vi.fn();
