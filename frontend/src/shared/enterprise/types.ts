@@ -10,7 +10,6 @@ export type LicenseTier = 'community' | 'team' | 'business' | 'enterprise';
 
 export interface LicenseInfo extends LicenseInfoResponse {
   tier: LicenseTier;
-  isValid?: boolean;
   displayKey?: string;
 }
 
@@ -49,7 +48,7 @@ export interface EnterpriseContextValue {
   ui: EnterpriseUI | null;
   /** License info from the backend */
   license: LicenseInfo | null;
-  /** Whether the enterprise plugin is available (even if license is invalid) */
+  /** Whether the active license is a valid, non-community edition */
   isEnterprise: boolean;
   /** Whether a specific feature is enabled */
   hasFeature: (feature: string) => boolean;

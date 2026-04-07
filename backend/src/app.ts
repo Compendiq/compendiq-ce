@@ -221,6 +221,7 @@ export async function buildApp() {
     app.get('/api/admin/license', { onRequest: [app.requireAdmin] }, async () => ({
       edition: 'community',
       tier: 'community',
+      valid: true,
       features: [],
     }));
   }

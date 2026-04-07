@@ -7,9 +7,10 @@ import { apiFetch } from '../lib/api';
 /**
  * Provider that loads the enterprise UI module and fetches license info.
  *
- * In community mode (no @compendiq/enterprise installed), this resolves
- * almost instantly with ui=null, license=null, isEnterprise=false.
- * The rest of the app renders normally with no awareness of enterprise.
+ * Always fetches /admin/license so isEnterprise is derived from the backend
+ * response (edition + valid), not from whether the overlay bundle loaded.
+ * In CE deployments the endpoint returns edition:'community'; in EE it returns
+ * the actual tier. The fetch is silently swallowed for unauthenticated users.
  */
 export function EnterpriseProvider({ children }: { children: ReactNode }) {
   const [ui, setUi] = useState<EnterpriseUI | null>(null);
