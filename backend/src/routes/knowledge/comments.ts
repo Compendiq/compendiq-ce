@@ -156,7 +156,7 @@ export async function commentsRoutes(fastify: FastifyInstance) {
       if (!emojiMap[r.emoji]) {
         emojiMap[r.emoji] = [];
       }
-      emojiMap[r.emoji].push(r.username);
+      emojiMap[r.emoji]!.push(r.username);
     }
 
     // Assemble top-level comments with nested replies (1 level)
@@ -209,7 +209,7 @@ export async function commentsRoutes(fastify: FastifyInstance) {
       if (parentCheck.rows.length === 0) {
         return reply.notFound('Parent comment not found');
       }
-      if (parentCheck.rows[0].page_id !== pageId) {
+      if (parentCheck.rows[0]!.page_id !== pageId) {
         return reply.badRequest('Parent comment belongs to a different page');
       }
     }
@@ -221,7 +221,7 @@ export async function commentsRoutes(fastify: FastifyInstance) {
       [pageId, userId, parentId ?? null, body, bodyHtml, anchorType ?? null, anchorData ? JSON.stringify(anchorData) : null],
     );
 
-    const commentRow = result.rows[0];
+    const commentRow = result.rows[0]!;
 
     // Extract and store @mentions
     const mentionedUsernames = extractMentions(body);
@@ -272,7 +272,7 @@ export async function commentsRoutes(fastify: FastifyInstance) {
       return reply.notFound('Comment not found');
     }
 
-    if (existing.rows[0].user_id !== userId) {
+    if (existing.rows[0]!.user_id !== userId) {
       return reply.forbidden('You can only edit your own comments');
     }
 
@@ -307,7 +307,7 @@ export async function commentsRoutes(fastify: FastifyInstance) {
     logger.info({ commentId: id, userId }, 'Comment edited');
 
     return {
-      ...formatComment({ ...result.rows[0], username: userResult.rows[0]?.username ?? 'unknown' }),
+      ...formatComment({ ...result.rows[0]!, username: userResult.rows[0]?.username ?? 'unknown' }),
       reactions: {},
     };
   });
@@ -326,7 +326,7 @@ export async function commentsRoutes(fastify: FastifyInstance) {
       return reply.notFound('Comment not found');
     }
 
-    if (existing.rows[0].parent_id !== null) {
+    if (existing.rows[0]!.parent_id !== null) {
       return reply.badRequest('Only top-level comments can be resolved');
     }
 
@@ -353,7 +353,7 @@ export async function commentsRoutes(fastify: FastifyInstance) {
       return reply.notFound('Comment not found');
     }
 
-    if (existing.rows[0].parent_id !== null) {
+    if (existing.rows[0]!.parent_id !== null) {
       return reply.badRequest('Only top-level comments can be unresolved');
     }
 
@@ -419,7 +419,7 @@ export async function commentsRoutes(fastify: FastifyInstance) {
     }
 
     // Only the author or an admin can delete
-    if (existing.rows[0].user_id !== userId && request.userRole !== 'admin') {
+    if (existing.rows[0]!.user_id !== userId && request.userRole !== 'admin') {
       return reply.forbidden('You can only delete your own comments');
     }
 

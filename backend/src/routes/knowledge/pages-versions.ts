@@ -22,7 +22,7 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
       [confluenceId],
     );
     if (pageResult.rows.length === 0) return; // page not found — let downstream handle 404
-    const page = pageResult.rows[0];
+    const page = pageResult.rows[0]!;
     if (page.source === 'standalone') {
       if (page.visibility === 'private' && page.created_by_user_id !== userId) {
         throw fastify.httpErrors.forbidden('Access denied');
@@ -92,13 +92,13 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
       [id],
     );
 
-    if (currentResult.rows.length > 0 && currentResult.rows[0].version === versionNum) {
+    if (currentResult.rows.length > 0 && currentResult.rows[0]!.version === versionNum) {
       return {
         confluenceId: id,
         versionNumber: versionNum,
-        title: currentResult.rows[0].title,
-        bodyHtml: currentResult.rows[0].body_html,
-        bodyText: currentResult.rows[0].body_text,
+        title: currentResult.rows[0]!.title,
+        bodyHtml: currentResult.rows[0]!.body_html,
+        bodyText: currentResult.rows[0]!.body_text,
         isCurrent: true,
       };
     }
@@ -140,7 +140,7 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
     );
 
     if (current.rows.length > 0) {
-      const row = current.rows[0];
+      const row = current.rows[0]!;
       // Ensure current version exists in page_versions for comparison
       await saveVersionSnapshot(id, row.version, row.title, row.body_html, row.body_text);
     }

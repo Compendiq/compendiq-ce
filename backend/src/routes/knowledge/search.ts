@@ -55,7 +55,7 @@ async function generateSearchEmbedding(
 ): Promise<number[] | null> {
   try {
     const embeddings = await providerGenerateEmbedding(userId, q);
-    return embeddings[0];
+    return embeddings[0] ?? null;
   } catch (err) {
     logger.warn({ err }, `Embedding generation failed for ${modeName} search`);
     reply.status(502).send({
@@ -100,7 +100,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
          ) AS exists`,
         [searchSpaces, userId],
       );
-      if (!embResult.rows[0].exists) {
+      if (!embResult.rows[0]?.exists) {
         hasEmbeddings = false;
         effectiveMode = 'keyword';
         warning = 'No embeddings found — falling back to keyword search. Embed your pages to enable semantic search.';
@@ -380,7 +380,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
     ]);
 
     // Extract total from window function (available on every row, take from first)
-    const total = dataResult.rows.length > 0 ? parseInt(dataResult.rows[0].total_count, 10) : 0;
+    const total = dataResult.rows.length > 0 ? parseInt(dataResult.rows[0]!.total_count, 10) : 0;
 
     // Merge: start with FTS results (higher weight), add trgm-only hits
     const ftsItems = dataResult.rows.map((row) => ({
@@ -431,13 +431,13 @@ export async function searchRoutes(fastify: FastifyInstance) {
       const entry = { value: row.value, count: parseInt(row.count, 10) };
       switch (row.facet) {
         case 'space':
-          facets.spaces.push(entry);
+          facets.spaces!.push(entry);
           break;
         case 'author':
-          facets.authors.push(entry);
+          facets.authors!.push(entry);
           break;
         case 'tag':
-          facets.tags.push(entry);
+          facets.tags!.push(entry);
           break;
       }
     }

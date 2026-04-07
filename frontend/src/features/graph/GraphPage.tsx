@@ -55,7 +55,7 @@ const SPACE_COLORS = [
 
 function getSpaceColor(spaceKey: string, spaceKeys: string[]): string {
   const idx = spaceKeys.indexOf(spaceKey);
-  return SPACE_COLORS[idx % SPACE_COLORS.length];
+  return SPACE_COLORS[idx % SPACE_COLORS.length] ?? '#7c8cf5';
 }
 
 const EDGE_COLORS: Record<string, string> = {

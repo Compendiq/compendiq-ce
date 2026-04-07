@@ -205,7 +205,7 @@ export async function rbacRoutes(fastify: FastifyInstance) {
       );
 
       await invalidateRbacCache();
-      const row = result.rows[0];
+      const row = result.rows[0]!;
       reply.status(201);
       return {
         id: row.id,
@@ -247,7 +247,7 @@ export async function rbacRoutes(fastify: FastifyInstance) {
       }
 
       await invalidateRbacCache();
-      const row = result.rows[0];
+      const row = result.rows[0]!;
       return {
         id: row.id,
         name: row.name,
@@ -427,12 +427,12 @@ export async function rbacRoutes(fastify: FastifyInstance) {
         await invalidateRbacCache();
         reply.status(201);
         return {
-          id: result.rows[0].id,
+          id: result.rows[0]!.id,
           spaceKey: key,
           principalType,
           principalId,
           roleId,
-          createdAt: result.rows[0].created_at,
+          createdAt: result.rows[0]!.created_at,
         };
       } catch (err: unknown) {
         if ((err as { code?: string }).code === '23505') {
@@ -519,13 +519,13 @@ export async function rbacRoutes(fastify: FastifyInstance) {
         await invalidateRbacCache();
         reply.status(201);
         return {
-          id: result.rows[0].id,
+          id: result.rows[0]!.id,
           resourceType,
           resourceId,
           principalType,
           principalId,
           permission,
-          createdAt: result.rows[0].created_at,
+          createdAt: result.rows[0]!.created_at,
         };
       } catch (err: unknown) {
         if ((err as { code?: string }).code === '23505') {

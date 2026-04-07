@@ -44,7 +44,7 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
       });
     }
 
-    const resolvedId = pageResult.rows[0].confluence_id;
+    const resolvedId = pageResult.rows[0]!.confluence_id;
     const dirPath = path.join(ATTACHMENTS_BASE, path.basename(resolvedId));
 
     try {

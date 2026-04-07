@@ -65,7 +65,9 @@ export async function knowledgeRequestRoutes(fastify: FastifyInstance) {
       `SELECT COUNT(*) AS count FROM knowledge_requests kr ${whereClause}`,
       params,
     );
-    const total = parseInt(countResult.rows[0].count, 10);
+    const countRow = countResult.rows[0];
+    if (!countRow) throw new Error('Expected a row from COUNT query');
+    const total = parseInt(countRow.count, 10);
 
     const result = await query<{
       id: number;
@@ -133,12 +135,12 @@ export async function knowledgeRequestRoutes(fastify: FastifyInstance) {
 
     reply.status(201);
     return {
-      id: result.rows[0].id,
+      id: result.rows[0]!.id,
       title: body.title,
       description: body.description ?? null,
       priority: body.priority,
       status: 'open',
-      createdAt: result.rows[0].created_at,
+      createdAt: result.rows[0]!.created_at,
     };
   });
 
@@ -178,7 +180,7 @@ export async function knowledgeRequestRoutes(fastify: FastifyInstance) {
       return reply.notFound('Knowledge request not found');
     }
 
-    const r = result.rows[0];
+    const r = result.rows[0]!;
     return {
       id: r.id,
       title: r.title,
@@ -208,7 +210,7 @@ export async function knowledgeRequestRoutes(fastify: FastifyInstance) {
     if (existing.rows.length === 0) {
       return reply.notFound('Knowledge request not found');
     }
-    if (existing.rows[0].requested_by !== userId && existing.rows[0].assigned_to !== userId) {
+    if (existing.rows[0]!.requested_by !== userId && existing.rows[0]!.assigned_to !== userId) {
       throw fastify.httpErrors.forbidden('Not authorized');
     }
 
@@ -270,7 +272,7 @@ export async function knowledgeRequestRoutes(fastify: FastifyInstance) {
     if (existing.rows.length === 0) {
       return reply.notFound('Knowledge request not found');
     }
-    if (existing.rows[0].requested_by !== userId && existing.rows[0].assigned_to !== userId) {
+    if (existing.rows[0]!.requested_by !== userId && existing.rows[0]!.assigned_to !== userId) {
       throw fastify.httpErrors.forbidden('Not authorized');
     }
 

@@ -297,9 +297,9 @@ export class OpenAIProvider implements LlmProvider {
           .map((d) => d.embedding);
 
         // Validate dimensions match pgvector column
-        if (embeddings.length > 0 && embeddings[0].length !== requiredDims) {
+        if (embeddings.length > 0 && embeddings[0]!.length !== requiredDims) {
           throw new Error(
-            `Embedding dimension mismatch: got ${embeddings[0].length}, expected ${requiredDims} (pgvector column is vector(${requiredDims}))`,
+            `Embedding dimension mismatch: got ${embeddings[0]!.length}, expected ${requiredDims} (pgvector column is vector(${requiredDims}))`,
           );
         }
 

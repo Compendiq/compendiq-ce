@@ -128,7 +128,7 @@ export async function verifyRefreshToken(token: string): Promise<RefreshTokenPay
     throw new Error('Refresh token JTI not found');
   }
 
-  if (result.rows[0].revoked) {
+  if (result.rows[0]!.revoked) {
     // Reuse detection: revoked token used again = security breach
     // Revoke the entire token family
     logger.warn({ jti, family, userId: payload.sub }, 'Refresh token reuse detected - revoking entire family');

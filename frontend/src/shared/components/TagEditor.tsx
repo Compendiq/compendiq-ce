@@ -85,7 +85,7 @@ export function TagEditor({
       if (event.key === 'Enter') {
         event.preventDefault();
         if (highlightedIndex >= 0 && highlightedIndex < filteredSuggestions.length) {
-          handleAddTag(filteredSuggestions[highlightedIndex]);
+          handleAddTag(filteredSuggestions[highlightedIndex]!);
         } else {
           handleAddTag(input);
         }

@@ -196,7 +196,7 @@ export function ArticleViewer({
         usedIds.add(id);
         heading.id = id;
 
-        const level = parseInt(heading.tagName[1], 10);
+        const level = parseInt(heading.tagName[1] ?? '0', 10);
         headings.push({ id, text, level });
       });
 

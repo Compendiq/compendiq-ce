@@ -853,6 +853,7 @@ export function PagesPage() {
             >
               {virtualizer.getVirtualItems().map((virtualRow) => {
                 const pageItem = pageItems[virtualRow.index];
+                if (!pageItem) return null;
                 return (
                   <div
                     key={pageItem.id}

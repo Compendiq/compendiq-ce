@@ -218,7 +218,7 @@ export async function hybridSearch(
   try {
     // Generate question embedding using the user's configured provider
     const embeddings = await providerGenerateEmbedding(userId, question);
-    const questionEmbedding = embeddings[0];
+    const questionEmbedding = embeddings[0]!;
     vectorResults = await vectorSearch(userId, questionEmbedding);
   } catch (err) {
     // Let circuit breaker errors propagate for proper 503 handling

@@ -121,7 +121,7 @@ function addFooters(ctx: RenderContext): void {
   // Skip cover page if title is present
   const startIdx = ctx.title ? 1 : 0;
   for (let i = startIdx; i < total; i++) {
-    const page = pages[i];
+    const page = pages[i]!;
     const pageNumber = i - startIdx + 1;
     const text = `Page ${pageNumber} of ${total - startIdx}`;
     const w = ctx.font.widthOfTextAtSize(text, FONT_SIZE_FOOTER);
@@ -143,8 +143,8 @@ function renderCoverPage(ctx: RenderContext, title: string): void {
   const startY = PAGE_HEIGHT / 2 + titleHeight / 2;
 
   for (let i = 0; i < titleLines.length; i++) {
-    const lineW = ctx.fontBold.widthOfTextAtSize(titleLines[i], FONT_SIZE_H1);
-    ctx.page.drawText(titleLines[i], {
+    const lineW = ctx.fontBold.widthOfTextAtSize(titleLines[i]!, FONT_SIZE_H1);
+    ctx.page.drawText(titleLines[i]!, {
       x: (PAGE_WIDTH - lineW) / 2,
       y: startY - i * (FONT_SIZE_H1 + 6),
       size: FONT_SIZE_H1,
@@ -338,7 +338,7 @@ function renderCodeBlock(ctx: RenderContext, code: string): void {
     rendered.push({
       page: ctx.page,
       y: ctx.y,
-      text: sanitizeForStandardFont(lines[i].substring(0, 120)),
+      text: sanitizeForStandardFont(lines[i]!.substring(0, 120)),
     });
     ctx.y -= lineHeight;
   }
@@ -346,11 +346,11 @@ function renderCodeBlock(ctx: RenderContext, code: string): void {
   // Pass 2: draw backgrounds per page segment
   let segStart = 0;
   for (let i = 0; i <= rendered.length; i++) {
-    if (i === rendered.length || (i > 0 && rendered[i].page !== rendered[i - 1].page)) {
+    if (i === rendered.length || (i > 0 && rendered[i]!.page !== rendered[i - 1]!.page)) {
       // Draw background for segment [segStart, i-1]
-      const segPage = rendered[segStart].page;
-      const top = rendered[segStart].y + FONT_SIZE_CODE + CODE_PADDING;
-      const bottom = rendered[i - 1].y - CODE_PADDING;
+      const segPage = rendered[segStart]!.page;
+      const top = rendered[segStart]!.y + FONT_SIZE_CODE + CODE_PADDING;
+      const bottom = rendered[i - 1]!.y - CODE_PADDING;
       drawCodeBg(segPage, top, bottom);
       segStart = i;
     }
@@ -405,10 +405,10 @@ function renderBlockquote(ctx: RenderContext, text: string): void {
   // Draw left border per page segment
   let segStart = 0;
   for (let i = 0; i <= rendered.length; i++) {
-    if (i === rendered.length || (i > 0 && rendered[i].page !== rendered[i - 1].page)) {
-      const segPage = rendered[segStart].page;
-      const top = rendered[segStart].y + LINE_HEIGHT;
-      const bottom = rendered[i - 1].y;
+    if (i === rendered.length || (i > 0 && rendered[i]!.page !== rendered[i - 1]!.page)) {
+      const segPage = rendered[segStart]!.page;
+      const top = rendered[segStart]!.y + LINE_HEIGHT;
+      const bottom = rendered[i - 1]!.y;
       segPage.drawRectangle({
         x: MARGIN_LEFT,
         y: bottom,
@@ -439,7 +439,7 @@ function renderList(ctx: RenderContext, el: Element, ordered: boolean): void {
   const indent = 20;
 
   for (let i = 0; i < items.length; i++) {
-    const text = extractTextContent(items[i]);
+    const text = extractTextContent(items[i]!);
     if (!text) continue;
 
     ensureSpace(ctx, LINE_HEIGHT);
@@ -475,7 +475,7 @@ function renderTable(ctx: RenderContext, el: Element): void {
   if (rows.length === 0) return;
 
   // Determine column count from first row
-  const firstRow = rows[0];
+  const firstRow = rows[0]!;
   const firstCells = Array.from(firstRow.querySelectorAll('th, td'));
   const colCount = firstCells.length || 1;
   const colWidth = CONTENT_WIDTH / colCount;
@@ -484,7 +484,7 @@ function renderTable(ctx: RenderContext, el: Element): void {
   ctx.y -= 4;
 
   for (let r = 0; r < rows.length; r++) {
-    const cells = Array.from(rows[r].querySelectorAll('th, td'));
+    const cells = Array.from(rows[r]!.querySelectorAll('th, td'));
     const isHeader = cells[0]?.tagName.toLowerCase() === 'th';
     const cellFont = isHeader ? ctx.fontBold : ctx.font;
     const fontSize = FONT_SIZE_BODY;
@@ -518,7 +518,7 @@ function renderTable(ctx: RenderContext, el: Element): void {
       const lines = cellTexts[c] ?? [''];
       for (let l = 0; l < lines.length; l++) {
         try {
-          ctx.page.drawText(lines[l], {
+          ctx.page.drawText(lines[l]!, {
             x: MARGIN_LEFT + c * colWidth + TABLE_CELL_PADDING,
             y: ctx.y - TABLE_CELL_PADDING - l * (fontSize + 3),
             size: fontSize,

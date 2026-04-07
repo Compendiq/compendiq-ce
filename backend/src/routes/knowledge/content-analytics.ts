@@ -52,7 +52,7 @@ export async function contentAnalyticsRoutes(fastify: FastifyInstance) {
       [pageId, userId, isHelpful, comment ?? null],
     );
 
-    reply.status(201).send({ id: result.rows[0].id });
+    reply.status(201).send({ id: result.rows[0]!.id });
   });
 
   // ── GET /api/pages/:id/feedback ──────────────────────────────────────────
@@ -84,12 +84,13 @@ export async function contentAnalyticsRoutes(fastify: FastifyInstance) {
     ]);
 
     const row = summary.rows[0];
+    if (!row) throw new Error('Expected a row from feedback summary query');
     return {
       helpful: parseInt(row.helpful_count, 10),
       notHelpful: parseInt(row.not_helpful_count, 10),
       total: parseInt(row.total_count, 10),
       userVote: userVote.rows.length > 0
-        ? { isHelpful: userVote.rows[0].is_helpful, comment: userVote.rows[0].comment }
+        ? { isHelpful: userVote.rows[0]!.is_helpful, comment: userVote.rows[0]!.comment }
         : null,
     };
   });

@@ -24,14 +24,14 @@ function buildTree(headings: TocHeading[]): OutlineNode[] {
 
   for (const heading of headings) {
     const node: OutlineNode = { heading, children: [] };
-    while (stack.length > 0 && stack[stack.length - 1].heading.level >= heading.level) {
+    while (stack.length > 0 && stack[stack.length - 1]!.heading.level >= heading.level) {
       stack.pop();
     }
 
     if (stack.length === 0) {
       root.push(node);
     } else {
-      stack[stack.length - 1].children.push(node);
+      stack[stack.length - 1]!.children.push(node);
     }
 
     stack.push(node);

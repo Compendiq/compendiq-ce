@@ -79,17 +79,17 @@ export function parseQualityScores(text: string): QualityScores | null {
 
   // Extract summary section
   const summaryMatch = cleaned.match(/##?\s*Summary\s*\n([\s\S]*?)(?:\n##|$)/i);
-  const summary = summaryMatch ? summaryMatch[1].trim() : '';
+  const summary = summaryMatch?.[1]?.trim() ?? '';
 
   const clamp = (n: number) => Math.max(0, Math.min(100, n));
 
   return {
-    overall: clamp(parseInt(overallMatch[1], 10)),
-    completeness: clamp(parseInt(completenessMatch[1], 10)),
-    clarity: clamp(parseInt(clarityMatch[1], 10)),
-    structure: clamp(parseInt(structureMatch[1], 10)),
-    accuracy: clamp(parseInt(accuracyMatch[1], 10)),
-    readability: clamp(parseInt(readabilityMatch[1], 10)),
+    overall: clamp(parseInt(overallMatch[1]!, 10)),
+    completeness: clamp(parseInt(completenessMatch[1]!, 10)),
+    clarity: clamp(parseInt(clarityMatch[1]!, 10)),
+    structure: clamp(parseInt(structureMatch[1]!, 10)),
+    accuracy: clamp(parseInt(accuracyMatch[1]!, 10)),
+    readability: clamp(parseInt(readabilityMatch[1]!, 10)),
     summary,
   };
 }
@@ -434,6 +434,7 @@ export async function getQualityStatus(): Promise<{
   ]);
 
   const row = result.rows[0];
+  if (!row) throw new Error('Expected a row from quality stats query');
   const intervalMinutes = parseInt(process.env.QUALITY_CHECK_INTERVAL_MINUTES ?? '60', 10);
 
   return {

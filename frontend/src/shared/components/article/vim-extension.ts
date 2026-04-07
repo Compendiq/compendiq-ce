@@ -326,7 +326,7 @@ function openLineBelow(view: EditorView): boolean {
   const blockEnd = $pos.after($pos.depth);
 
   // Insert a new paragraph after the current block
-  const tr = state.tr.insert(blockEnd, state.schema.nodes.paragraph.create());
+  const tr = state.tr.insert(blockEnd, state.schema.nodes.paragraph!.create());
   // Position cursor inside the new paragraph
   const newPos = blockEnd + 1;
   tr.setSelection(TextSelection.create(tr.doc, newPos));
@@ -341,7 +341,7 @@ function openLineAbove(view: EditorView): boolean {
   const $pos = state.doc.resolve(from);
   const blockStart = $pos.before($pos.depth);
 
-  const tr = state.tr.insert(blockStart, state.schema.nodes.paragraph.create());
+  const tr = state.tr.insert(blockStart, state.schema.nodes.paragraph!.create());
   const newPos = blockStart + 1;
   tr.setSelection(TextSelection.create(tr.doc, newPos));
   view.dispatch(tr);
@@ -519,7 +519,7 @@ function handleNormalKey(
         const blockEnd = $pos.after($pos.depth);
         const tr = state.tr.insert(
           blockEnd,
-          state.schema.nodes.paragraph.create(
+          state.schema.nodes.paragraph!.create(
             null,
             state.schema.text(vim.register),
           ),

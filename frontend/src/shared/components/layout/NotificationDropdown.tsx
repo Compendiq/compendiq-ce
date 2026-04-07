@@ -51,11 +51,11 @@ function groupByDate(notifications: Notification[]) {
     const date = new Date(n.createdAt);
     date.setHours(0, 0, 0, 0);
     if (date.getTime() >= today.getTime()) {
-      groups[0].items.push(n);
+      groups[0]!.items.push(n);
     } else if (date.getTime() >= yesterday.getTime()) {
-      groups[1].items.push(n);
+      groups[1]!.items.push(n);
     } else {
-      groups[2].items.push(n);
+      groups[2]!.items.push(n);
     }
   }
 

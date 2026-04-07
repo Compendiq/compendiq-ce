@@ -63,8 +63,10 @@ export async function setupRoutes(fastify: FastifyInstance) {
       query<{ count: string }>('SELECT COUNT(*) AS count FROM pages WHERE source = $1 LIMIT 1', ['confluence']),
     ]);
 
-    const adminExists = parseInt(adminResult.rows[0].count, 10) > 0;
-    const confluenceConnected = parseInt(confluenceResult.rows[0].count, 10) > 0;
+    // Fail-open for unauthenticated setup status endpoint: if the DB query
+    // somehow returns no rows, treat as "not configured" rather than crashing.
+    const adminExists = parseInt(adminResult.rows[0]?.count ?? '0', 10) > 0;
+    const confluenceConnected = parseInt(confluenceResult.rows[0]?.count ?? '0', 10) > 0;
 
     // Check LLM health — best-effort, don't let it fail the whole response
     let llmConnected = false;
@@ -115,7 +117,7 @@ export async function setupRoutes(fastify: FastifyInstance) {
       if (result.rows.length === 0) {
         throw fastify.httpErrors.conflict('Admin account already exists');
       }
-      const user = result.rows[0];
+      const user = result.rows[0]!;
 
       // Create default user_settings row
       await query('INSERT INTO user_settings (user_id) VALUES ($1)', [user.id]);

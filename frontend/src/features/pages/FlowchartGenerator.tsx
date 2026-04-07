@@ -67,7 +67,7 @@ export function FlowchartGenerator({
     apiFetch<Array<{ name: string }>>('/ollama/models')
       .then((m) => {
         setModels(m);
-        if (m.length > 0 && !model) setModel(m[0].name);
+        if (m.length > 0 && !model) setModel(m[0]?.name ?? '');
       })
       .catch(() => {
         toast.error('Failed to load models');

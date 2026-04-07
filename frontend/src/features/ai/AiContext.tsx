@@ -243,7 +243,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
             if (preferredModel) {
               setModel(preferredModel);
             } else if (m.length > 0) {
-              setModel((prev) => prev || m[0].name);
+              setModel((prev) => prev || (m[0]?.name ?? ''));
             }
           })
           .catch(() => {
@@ -254,7 +254,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
         apiFetch<Array<{ name: string }>>('/ollama/models')
           .then((m) => {
             setModels(m);
-            if (m.length > 0) setModel((prev) => prev || m[0].name);
+            if (m.length > 0) setModel((prev) => prev || (m[0]?.name ?? ''));
           })
           .catch(() => {});
       });
@@ -358,7 +358,8 @@ export function AiProvider({ children }: { children: ReactNode }) {
           accumulated = (chunk as Record<string, unknown>).finalContent as string;
           setMessages((prev) => {
             const updated = [...prev];
-            updated[updated.length - 1] = { ...updated[updated.length - 1], content: accumulated };
+            const lastMsg = updated[updated.length - 1];
+            if (lastMsg) updated[updated.length - 1] = { ...lastMsg, content: accumulated };
             return updated;
           });
           opts?.onContent?.(accumulated);
@@ -368,7 +369,8 @@ export function AiProvider({ children }: { children: ReactNode }) {
           accumulated += chunk.content;
           setMessages((prev) => {
             const updated = [...prev];
-            updated[updated.length - 1] = { ...updated[updated.length - 1], content: accumulated };
+            const lastMsg = updated[updated.length - 1];
+            if (lastMsg) updated[updated.length - 1] = { ...lastMsg, content: accumulated };
             return updated;
           });
           opts?.onContent?.(accumulated);
@@ -384,7 +386,8 @@ export function AiProvider({ children }: { children: ReactNode }) {
       if (finalSources.length > 0) {
         setMessages((prev) => {
           const updated = [...prev];
-          updated[updated.length - 1] = { ...updated[updated.length - 1], sources: finalSources };
+          const lastMsg = updated[updated.length - 1];
+          if (lastMsg) updated[updated.length - 1] = { ...lastMsg, sources: finalSources };
           return updated;
         });
       }

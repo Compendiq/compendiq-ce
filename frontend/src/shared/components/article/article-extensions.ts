@@ -520,16 +520,18 @@ export const ConfluenceLayout = Node.create({
           // Build target cells — last cell absorbs excess cells' content
           const newCells = [];
           for (let i = 0; i < targetCells; i++) {
-            const blocks = existingContent[i] ? [...existingContent[i]] : [schema.nodes.paragraph.create()];
+            const existing = existingContent[i];
+            const blocks = existing ? [...existing] : [schema.nodes.paragraph!.create()];
             if (i === targetCells - 1 && currentCells > targetCells) {
               for (let j = i + 1; j < currentCells; j++) {
-                if (existingContent[j]) blocks.push(...existingContent[j]);
+                const extra = existingContent[j];
+                if (extra) blocks.push(...extra);
               }
             }
-            newCells.push(schema.nodes.confluenceLayoutCell.create(null, blocks));
+            newCells.push(schema.nodes.confluenceLayoutCell!.create(null, blocks));
           }
 
-          const newSection = schema.nodes.confluenceLayoutSection.create(
+          const newSection = schema.nodes.confluenceLayoutSection!.create(
             { 'data-layout-type': layoutType },
             newCells,
           );
@@ -686,8 +688,8 @@ export const ConfluenceSection = Node.create({
           if (columnDepth === -1) return false;
 
           const insertPos = $from.before(columnDepth);
-          const newColumn = state.schema.nodes.confluenceColumn.create(null, [
-            state.schema.nodes.paragraph.create(),
+          const newColumn = state.schema.nodes.confluenceColumn!.create(null, [
+            state.schema.nodes.paragraph!.create(),
           ]);
           if (dispatch) dispatch(state.tr.insert(insertPos, newColumn));
           return true;
@@ -707,8 +709,8 @@ export const ConfluenceSection = Node.create({
           if (columnDepth === -1) return false;
 
           const insertPos = $from.after(columnDepth);
-          const newColumn = state.schema.nodes.confluenceColumn.create(null, [
-            state.schema.nodes.paragraph.create(),
+          const newColumn = state.schema.nodes.confluenceColumn!.create(null, [
+            state.schema.nodes.paragraph!.create(),
           ]);
           if (dispatch) dispatch(state.tr.insert(insertPos, newColumn));
           return true;

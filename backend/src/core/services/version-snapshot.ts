@@ -28,7 +28,7 @@ export async function saveVersionSnapshot(
       logger.warn({ confluenceId, versionNumber }, 'Cannot save version snapshot: page not found');
       return;
     }
-    const pageId = pageResult.rows[0].id;
+    const pageId = pageResult.rows[0]!.id;
 
     await query(
       `INSERT INTO page_versions (page_id, version_number, title, body_html, body_text)

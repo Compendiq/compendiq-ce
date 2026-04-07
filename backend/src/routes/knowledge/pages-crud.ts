@@ -197,7 +197,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         aging:  [`NOW() - INTERVAL '90 days'`, `NOW() - INTERVAL '30 days'`],
         stale:  [null as unknown as string, `NOW() - INTERVAL '90 days'`],
       };
-      const [after, before] = freshnessMap[freshness];
+      const entry = freshnessMap[freshness];
+      if (!entry) throw fastify.httpErrors.badRequest(`Unknown freshness level: ${freshness}`);
+      const [after, before] = entry;
       if (after) {
         whereParts.push(`cp.last_modified_at >= ${after}`);
       }
@@ -263,7 +265,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       orderBy = `ts_rank(cp.tsv, plainto_tsquery('${ftsLang}', $${paramIdx++})) DESC`;
       orderByValues.push(search.trim());
     } else {
-      orderBy = sortMap[sort] ?? sortMap.title;
+      orderBy = sortMap[sort] ?? sortMap.title!;
     }
 
     // --- Execute count + data query (with ILIKE fallback) ---
@@ -302,7 +304,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       // Count query uses only WHERE params (no ORDER BY params)
       const countSql = `SELECT COUNT(*) as count FROM pages cp ${wc}`;
       const countResult = await query<{ count: string }>(countSql, [...vals]);
-      const total = parseInt(countResult.rows[0].count, 10);
+      const countRow = countResult.rows[0];
+      if (!countRow) throw new Error('Expected a row from COUNT query');
+      const total = parseInt(countRow.count, 10);
 
       if (total === 0) {
         return { total: 0, rows: [] as PageRow[] };
@@ -607,7 +611,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.notFound('Page not found');
     }
 
-    const row = result.rows[0];
+    const row = result.rows[0]!;
 
     // Access control: Confluence pages require RBAC space access; standalone pages
     // require ownership or shared visibility
@@ -678,7 +682,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       [id],
     );
 
-    return { hasChildren: parseInt(result.rows[0].count, 10) > 0 };
+    const row = result.rows[0];
+    if (!row) throw new Error('Expected a row from COUNT query');
+    return { hasChildren: parseInt(row.count, 10) > 0 };
   });
 
   // GET /api/pages/:id/children - list child pages for the Confluence Children macro
@@ -709,7 +715,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.notFound('Page not found');
     }
 
-    const page = pageResult.rows[0];
+    const page = pageResult.rows[0]!;
 
     // Access control: same pattern as GET /pages/:id
     if (page.source === 'confluence') {
@@ -806,7 +812,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.notFound('Page not found');
     }
 
-    const page = existing.rows[0];
+    const page = existing.rows[0]!;
     if (page.source !== 'standalone') {
       throw fastify.httpErrors.badRequest('Only standalone articles can be restored');
     }
@@ -844,7 +850,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         [body.spaceKey],
       );
       if (spaceRow.rows.length > 0) {
-        spaceSource = spaceRow.rows[0].source;
+        spaceSource = spaceRow.rows[0]!.source;
       }
     }
 
@@ -880,10 +886,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           throw fastify.httpErrors.badRequest('Parent page not found');
         }
         // Verify parent belongs to the same space (when a space is specified)
-        if (spaceKey && parentResult.rows[0].space_key !== spaceKey) {
+        if (spaceKey && parentResult.rows[0]!.space_key !== spaceKey) {
           throw fastify.httpErrors.badRequest('Parent page must belong to the same space');
         }
-        parentPath = parentResult.rows[0].path;
+        parentPath = parentResult.rows[0]!.path;
       }
 
       const result = await query<{ id: number; title: string; version: number }>(
@@ -899,7 +905,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
          pageType, !isFolder],
       );
 
-      const newPage = result.rows[0];
+      const newPage = result.rows[0]!;
 
       // Compute and set materialized path now that we have the page id
       const newPath = parentPath ? `${parentPath}/${newPage.id}` : `/${newPage.id}`;
@@ -986,7 +992,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     if (existing.rows.length === 0) {
       throw fastify.httpErrors.notFound('Page not found');
     }
-    const existingPage = existing.rows[0];
+    const existingPage = existing.rows[0]!;
 
     if (existingPage.deleted_at) {
       throw fastify.httpErrors.badRequest('Cannot edit a page that is in the trash');
@@ -1105,7 +1111,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     if (existing.rows.length === 0) {
       throw fastify.httpErrors.notFound('Page not found');
     }
-    const existingPage = existing.rows[0];
+    const existingPage = existing.rows[0]!;
 
     if (existingPage.source === 'standalone') {
       // --- Standalone article ---
@@ -1180,7 +1186,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     );
     if (!existing.rows.length) throw fastify.httpErrors.notFound('Page not found');
 
-    const page = existing.rows[0];
+    const page = existing.rows[0]!;
 
     // Access control: standalone pages require ownership or shared visibility
     if (page.source === 'standalone' && page.created_by_user_id !== userId && page.visibility !== 'shared') {
@@ -1215,7 +1221,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     );
     if (!result.rows.length) throw fastify.httpErrors.notFound('Page not found');
 
-    const row = result.rows[0];
+    const row = result.rows[0]!;
 
     // Access control
     if (row.source === 'standalone' && row.created_by_user_id !== userId && row.visibility !== 'shared') {
@@ -1251,7 +1257,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     );
     if (!existing.rows.length) throw fastify.httpErrors.notFound('Page not found');
 
-    const page = existing.rows[0];
+    const page = existing.rows[0]!;
 
     // Access control
     if (page.source === 'standalone' && page.created_by_user_id !== userId && page.visibility !== 'shared') {
@@ -1333,7 +1339,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     );
     if (!existing.rows.length) throw fastify.httpErrors.notFound('Page not found');
 
-    const page = existing.rows[0];
+    const page = existing.rows[0]!;
 
     // Access control
     if (page.source === 'standalone' && page.created_by_user_id !== userId && page.visibility !== 'shared') {
@@ -1414,15 +1420,15 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         const deletedConfluenceIds: string[] = [];
         const deletedConfluenceNumericIds: number[] = [];
         for (let i = 0; i < deleteResults.length; i++) {
-          const result = deleteResults[i];
+          const result = deleteResults[i]!;
           if (result.status === 'fulfilled') {
-            deletedConfluenceIds.push(confluencePages[i].confluence_id!);
-            deletedConfluenceNumericIds.push(confluencePages[i].id);
+            deletedConfluenceIds.push(confluencePages[i]!.confluence_id!);
+            deletedConfluenceNumericIds.push(confluencePages[i]!.id);
             confluenceSucceeded++;
           } else {
             failed++;
             errors.push(
-              `Page ${confluencePages[i].confluence_id}: ${result.reason instanceof Error ? result.reason.message : 'Unknown error'}`,
+              `Page ${confluencePages[i]!.confluence_id}: ${result.reason instanceof Error ? result.reason.message : 'Unknown error'}`,
             );
           }
         }
@@ -1502,13 +1508,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     let succeeded = 0;
     const ownedIdArray = [...ownedIds];
     for (let i = 0; i < syncResults.length; i++) {
-      const result = syncResults[i];
+      const result = syncResults[i]!;
       if (result.status === 'fulfilled') {
         succeeded++;
       } else {
         failed++;
         errors.push(
-          `Page ${ownedIdArray[i]}: ${result.reason instanceof Error ? result.reason.message : 'Unknown error'}`,
+          `Page ${ownedIdArray[i]!}: ${result.reason instanceof Error ? result.reason.message : 'Unknown error'}`,
         );
       }
     }
@@ -1637,13 +1643,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     let succeeded = 0;
     const ownedIdArray = [...pageMap.keys()];
     for (let i = 0; i < tagResults.length; i++) {
-      const result = tagResults[i];
+      const result = tagResults[i]!;
       if (result.status === 'fulfilled') {
         succeeded++;
       } else {
         failed++;
         errors.push(
-          `Page ${ownedIdArray[i]}: ${result.reason instanceof Error ? result.reason.message : 'Unknown error'}`,
+          `Page ${ownedIdArray[i]!}: ${result.reason instanceof Error ? result.reason.message : 'Unknown error'}`,
         );
       }
     }
@@ -1681,8 +1687,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       });
     }
 
-    const mimeType = dataUriMatch[1];
-    const base64Data = dataUriMatch[2];
+    const mimeType = dataUriMatch[1]!;
+    const base64Data = dataUriMatch[2]!;
 
     // Validate MIME type
     if (!ALLOWED_IMAGE_MIMES.has(mimeType)) {
@@ -1736,7 +1742,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       });
     }
 
-    const page = pageResult.rows[0];
+    const page = pageResult.rows[0]!;
 
     // Access control: standalone pages require ownership; Confluence pages require space access
     if (page.source === 'standalone') {

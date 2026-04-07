@@ -138,7 +138,7 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
     if (existing.rows.length === 0) {
       throw fastify.httpErrors.notFound('Space not found');
     }
-    if (existing.rows[0].source !== 'local') {
+    if (existing.rows[0]!.source !== 'local') {
       throw fastify.httpErrors.badRequest('Cannot modify a Confluence-synced space');
     }
 
@@ -187,7 +187,7 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
     if (existing.rows.length === 0) {
       throw fastify.httpErrors.notFound('Space not found');
     }
-    if (existing.rows[0].source !== 'local') {
+    if (existing.rows[0]!.source !== 'local') {
       throw fastify.httpErrors.badRequest('Cannot delete a Confluence-synced space');
     }
 
@@ -196,7 +196,9 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
       'SELECT COUNT(*) as count FROM pages WHERE space_key = $1 AND deleted_at IS NULL',
       [key],
     );
-    if (parseInt(pageCount.rows[0].count, 10) > 0) {
+    const pageCountRow = pageCount.rows[0];
+    if (!pageCountRow) throw new Error('Expected a row from COUNT query');
+    if (parseInt(pageCountRow.count, 10) > 0) {
       throw fastify.httpErrors.conflict(
         'Space still has pages. Delete or move all pages first.',
       );
@@ -287,7 +289,7 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.notFound('Page not found');
     }
 
-    const page = existing.rows[0];
+    const page = existing.rows[0]!;
     const newParentId = body.parentId !== undefined ? body.parentId : page.parent_id;
     const newSpaceKey = body.spaceKey ?? page.space_key;
 
@@ -302,7 +304,7 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
       }
 
       // Prevent circular reference: cannot move a page under its own descendant
-      const parentPath = parentCheck.rows[0].path as string | null;
+      const parentPath = parentCheck.rows[0]!.path as string | null;
       if (parentPath && parentPath.includes(`/${page.id}/`)) {
         throw fastify.httpErrors.badRequest('Cannot move a page under its own descendant');
       }
@@ -404,7 +406,7 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
     // Fetch all ancestors in a single query using the materialized path column.
     // The path format is /id1/id2/id3 -- we extract the ancestor IDs, exclude
     // the current page, and fetch them all at once (eliminates N+1 queries).
-    const currentPage = page.rows[0];
+    const currentPage = page.rows[0]!;
     const crumbs: { id: number; title: string }[] = [];
 
     if (currentPage.path) {
@@ -442,8 +444,8 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
           );
 
         if (parentResult.rows.length === 0) break;
-        crumbs.unshift({ id: parentResult.rows[0].id, title: parentResult.rows[0].title });
-        currentParentId = parentResult.rows[0].parent_id;
+        crumbs.unshift({ id: parentResult.rows[0]!.id, title: parentResult.rows[0]!.title });
+        currentParentId = parentResult.rows[0]!.parent_id;
         depth++;
       }
     }
@@ -458,8 +460,8 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
         [spaceKey],
       );
       if (spaceResult.rows.length > 0) {
-        spaceName = spaceResult.rows[0].space_name;
-        spaceSource = spaceResult.rows[0].source as 'confluence' | 'local';
+        spaceName = spaceResult.rows[0]!.space_name;
+        spaceSource = spaceResult.rows[0]!.source as 'confluence' | 'local';
       }
     }
 

@@ -217,7 +217,8 @@ function AiAssistantInner() {
               const next = e.key === 'ArrowRight'
                 ? (idx + 1) % keys.length
                 : (idx - 1 + keys.length) % keys.length;
-              setMode(keys[next]);
+              const nextKey = keys[next];
+              if (nextKey) setMode(nextKey);
             }
           }}
         >

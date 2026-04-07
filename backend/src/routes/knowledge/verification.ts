@@ -36,7 +36,7 @@ export async function verificationRoutes(fastify: FastifyInstance) {
     if (check.rows.length === 0) {
       throw fastify.httpErrors.notFound('Page not found');
     }
-    return check.rows[0].id;
+    return check.rows[0]!.id;
   }
 
   // POST /api/pages/:id/verify — One-click re-verify
@@ -145,6 +145,7 @@ export async function verificationRoutes(fastify: FastifyInstance) {
     );
 
     const row = result.rows[0];
+    if (!row) throw new Error('Expected a row from verification stats query');
     return {
       fresh: parseInt(row.fresh, 10),
       aging: parseInt(row.aging, 10),

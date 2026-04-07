@@ -37,7 +37,7 @@ export async function authRoutes(fastify: FastifyInstance) {
          RETURNING id, username, role`,
         [body.username, passwordHash],
       );
-      const user = result.rows[0];
+      const user = result.rows[0]!;
 
       // Create default user_settings row
       await query('INSERT INTO user_settings (user_id) VALUES ($1)', [user.id]);
@@ -89,7 +89,7 @@ export async function authRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.unauthorized('Invalid username or password');
     }
 
-    const user = result.rows[0];
+    const user = result.rows[0]!;
     const valid = await bcrypt.compare(body.password, user.password_hash);
     if (!valid) {
       await logAuditEvent(user.id, 'LOGIN_FAILED', 'user', user.id, { reason: 'invalid_password' }, request);
@@ -142,7 +142,7 @@ export async function authRoutes(fastify: FastifyInstance) {
         throw fastify.httpErrors.unauthorized('User not found');
       }
 
-      const user = result.rows[0];
+      const user = result.rows[0]!;
 
       // Token rotation: revoke old JTI
       await revokeToken(payload.jti);

@@ -120,7 +120,7 @@ export function usePageLinksWithPreview(contentRef: React.RefObject<HTMLElement 
     links.forEach((link) => {
       const href = link.getAttribute('href') || '';
       const match = href.match(/^\/pages\/(.+)$/);
-      if (match) {
+      if (match?.[1]) {
         link.setAttribute('data-page-id', match[1]);
       }
     });

@@ -50,8 +50,8 @@ export function parseFrontMatter(markdown: string): { metadata: Record<string, s
   const match = markdown.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
   if (!match) return { metadata: {}, content: markdown };
 
-  const yaml = match[1];
-  const content = match[2];
+  const yaml = match[1]!;
+  const content = match[2] ?? '';
   const metadata: Record<string, string | string[]> = {};
 
   for (const line of yaml.split('\n')) {

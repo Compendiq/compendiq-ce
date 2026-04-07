@@ -100,7 +100,9 @@ export async function listErrors(options: {
     `SELECT COUNT(*) as count FROM error_log${whereClauses}`,
     values,
   );
-  const total = parseInt(countResult.rows[0].count, 10);
+  const countRow = countResult.rows[0];
+  if (!countRow) throw new Error('Expected a row from COUNT query');
+  const total = parseInt(countRow.count, 10);
 
   const dataValues = [...values, limit, offset];
   const result = await query<{
@@ -183,10 +185,13 @@ export async function getErrorSummary(): Promise<ErrorSummaryResponse> {
       lastOccurrence: r.last_occurrence.toISOString(),
     }));
 
+  const unresolvedRow = unresolvedResult.rows[0];
+  if (!unresolvedRow) throw new Error('Expected a row from COUNT query');
+
   return {
     last24h: mapSummary(last24h.rows),
     last7d: mapSummary(last7d.rows),
     last30d: mapSummary(last30d.rows),
-    unresolvedCount: parseInt(unresolvedResult.rows[0].count, 10),
+    unresolvedCount: parseInt(unresolvedRow.count, 10),
   };
 }

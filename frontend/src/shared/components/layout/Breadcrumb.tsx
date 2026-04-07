@@ -84,12 +84,13 @@ export function Breadcrumb() {
 
   let accumulated = '';
   for (let i = 0; i < segments.length; i++) {
-    accumulated += '/' + segments[i];
+    const segment = segments[i]!;
+    accumulated += '/' + segment;
     const isLast = i === segments.length - 1;
 
     let label = routeLabels[accumulated];
     if (!label) {
-      label = segments[i].split('-').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+      label = segment.split('-').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
     }
 
     // Skip "Pages" crumb — already shown as the home link prefix

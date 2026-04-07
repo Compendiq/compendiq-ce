@@ -58,8 +58,8 @@ export async function findDuplicates(
   if (sourcePageResult.rows.length === 0) {
     return [];
   }
-  const sourceTitle = sourcePageResult.rows[0].title;
-  const sourcePageId = sourcePageResult.rows[0].id;
+  const sourceTitle = sourcePageResult.rows[0]!.title;
+  const sourcePageId = sourcePageResult.rows[0]!.id;
 
   // Use a dedicated client for SET LOCAL
   const client = await getPool().connect();
