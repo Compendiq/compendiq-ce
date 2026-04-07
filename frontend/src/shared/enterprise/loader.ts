@@ -19,6 +19,7 @@ type ScriptLoader = (url: string) => Promise<void>;
 
 const defaultScriptLoader: ScriptLoader = (url) =>
   new Promise<void>((resolve, reject) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     if ((window as any)[EE_UI_GLOBAL]) {
       resolve(); // Already loaded (e.g. hot-reload)
       return;
@@ -59,7 +60,7 @@ export async function loadEnterpriseUI(): Promise<EnterpriseUI | null> {
       import('framer-motion'),
     ]);
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    /* eslint-disable @typescript-eslint/no-explicit-any */
     (window as any)[DEPS_GLOBAL] = {
       ...(React as any),
       default: (React as any).default ?? React,
@@ -67,6 +68,7 @@ export async function loadEnterpriseUI(): Promise<EnterpriseUI | null> {
       ...(ReactQuery as any),
       ...(FramerMotion as any),
     };
+    /* eslint-enable @typescript-eslint/no-explicit-any */
 
     await _scriptLoader(ENTERPRISE_BUNDLE_URL);
 

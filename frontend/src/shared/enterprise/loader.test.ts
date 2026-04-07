@@ -35,6 +35,7 @@ describe('Enterprise frontend loader', () => {
     const mockCard = () => null;
     _setScriptLoaderForTesting(async () => {
       // Simulate IIFE bundle: registers itself on window global
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (window as any).__COMPENDIQ_UI__ = {
         LicenseStatusCard: mockCard,
         version: '1.0.0',
