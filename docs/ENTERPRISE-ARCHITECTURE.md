@@ -754,37 +754,49 @@ export function isFeatureAvailable(
 
 ### 7.1 Frontend Plugin Loader
 
-The EE overlay bundle is served at `/enterprise/frontend.js` by the nginx frontend container.
-CE deployments simply do not have this file — the dynamic import fails silently and `ui` stays null.
+The EE overlay bundle is served at `/api/enterprise/frontend.js` by the EE backend.
+CE deployments return 404 — the script tag errors silently and `ui` stays null.
+Both CE and EE deployments use the same CE frontend image; no separate EE frontend image is needed.
 
-**Why a URL variable, not a bare specifier**: Vite's `import-analysis` plugin resolves bare specifiers
-(e.g. `@compendiq/enterprise/frontend`) at build time and throws if the package is missing. An
-absolute path like `/enterprise/frontend.js` is also resolved statically in Vite 7+ even with
-`@vite-ignore`. Storing the URL in a variable prevents static analysis entirely.
+**Why IIFE, not an ES module**: ES modules with bare-specifier externals (e.g. `import React from 'react'`)
+require an import map declared before any `<script type="module">` in `index.html`. Since the CE frontend
+image is not modified for EE, we can't patch `index.html`. IIFE format reads externals from `window` globals
+instead — no import map, no patched HTML.
+
+**Shared module instances**: React, react-query, and framer-motion contexts must be the same objects in both
+the CE SPA and the EE overlay. Before loading the script, the loader populates `window.__COMPENDIQ_DEPS__`
+by merging the CE SPA's already-imported module namespaces. The IIFE's Rollup globals map all external IDs
+to this single object.
 
 ```typescript
-// frontend/src/shared/enterprise/loader.ts
-import type { EnterpriseUI } from './types';
-
-let cached: EnterpriseUI | null = null;
-let loaded = false;
-
-// URL stored in variable so Vite's import-analysis skips static resolution.
-// Browsers resolve this at runtime; in CE mode the file is absent and the
-// import fails gracefully.
-const ENTERPRISE_BUNDLE_URL = '/enterprise/frontend.js';
+// frontend/src/shared/enterprise/loader.ts (simplified)
+const ENTERPRISE_BUNDLE_URL = '/api/enterprise/frontend.js';
+const EE_UI_GLOBAL = '__COMPENDIQ_UI__';
+const DEPS_GLOBAL = '__COMPENDIQ_DEPS__';
 
 export async function loadEnterpriseUI(): Promise<EnterpriseUI | null> {
   if (loaded) return cached;
 
   try {
-    const mod = await (import(/* @vite-ignore */ ENTERPRISE_BUNDLE_URL) as Promise<any>);
-    if (mod && typeof mod.LicenseStatusCard === 'function') {
-      cached = mod as EnterpriseUI;
+    // Expose CE SPA's live module instances so the IIFE's externals resolve correctly
+    const [React, jsxRuntime, ReactQuery, FramerMotion] = await Promise.all([
+      import('react'), import('react/jsx-runtime'),
+      import('@tanstack/react-query'), import('framer-motion'),
+    ]);
+    (window as any)[DEPS_GLOBAL] = {
+      ...(React as any), default: (React as any).default ?? React,
+      ...(jsxRuntime as any), ...(ReactQuery as any), ...(FramerMotion as any),
+    };
+
+    // Inject <script> tag; IIFE runs and registers window.__COMPENDIQ_UI__
+    await injectScript(ENTERPRISE_BUNDLE_URL);
+
+    const ui = (window as any)[EE_UI_GLOBAL];
+    if (ui && typeof ui.LicenseStatusCard === 'function') {
+      cached = ui as EnterpriseUI;
     }
   } catch {
-    // File absent (CE) or failed to load — community mode, ui stays null
-    cached = null;
+    cached = null; // CE mode or script unavailable
   }
 
   loaded = true;
