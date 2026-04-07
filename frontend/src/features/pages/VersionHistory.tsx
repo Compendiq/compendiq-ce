@@ -204,14 +204,14 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                       {i < versions.length - 1 && (
                         <>
                           <button
-                            onClick={() => handleCompare(version.versionNumber, versions[i + 1]?.versionNumber ?? version.versionNumber)}
+                            onClick={() => handleCompare(version.versionNumber, versions[i + 1]!.versionNumber)}
                             className="rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
                             title="Compare with previous version"
                           >
                             <GitCompare size={12} />
                           </button>
                           <button
-                            onClick={() => handleSemanticDiff(versions[i + 1]?.versionNumber ?? version.versionNumber, version.versionNumber)}
+                            onClick={() => handleSemanticDiff(versions[i + 1]!.versionNumber, version.versionNumber)}
                             className="rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-primary"
                             title="AI semantic diff with previous version"
                           >

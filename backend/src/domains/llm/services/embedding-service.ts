@@ -854,11 +854,19 @@ export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatu
     getLastEmbeddingRunAt(),
   ]);
 
+  const totalRow = totalResult.rows[0];
+  const embeddedPagesRow = embeddedPagesResult.rows[0];
+  const dirtyRow = dirtyResult.rows[0];
+  const embeddingRow = embeddingResult.rows[0];
+  if (!totalRow || !embeddedPagesRow || !dirtyRow || !embeddingRow) {
+    throw new Error('Expected a row from COUNT query');
+  }
+
   return {
-    totalPages: parseInt(totalResult.rows[0]?.count ?? '0', 10),
-    embeddedPages: parseInt(embeddedPagesResult.rows[0]?.count ?? '0', 10),
-    dirtyPages: parseInt(dirtyResult.rows[0]?.count ?? '0', 10),
-    totalEmbeddings: parseInt(embeddingResult.rows[0]?.count ?? '0', 10),
+    totalPages: parseInt(totalRow.count, 10),
+    embeddedPages: parseInt(embeddedPagesRow.count, 10),
+    dirtyPages: parseInt(dirtyRow.count, 10),
+    totalEmbeddings: parseInt(embeddingRow.count, 10),
     isProcessing,
     lastRunAt: lastRunAt ? lastRunAt.toISOString() : null,
     model: sharedSettings.embeddingModel,

@@ -185,10 +185,13 @@ export async function getErrorSummary(): Promise<ErrorSummaryResponse> {
       lastOccurrence: r.last_occurrence.toISOString(),
     }));
 
+  const unresolvedRow = unresolvedResult.rows[0];
+  if (!unresolvedRow) throw new Error('Expected a row from COUNT query');
+
   return {
     last24h: mapSummary(last24h.rows),
     last7d: mapSummary(last7d.rows),
     last30d: mapSummary(last30d.rows),
-    unresolvedCount: parseInt(unresolvedResult.rows[0]?.count ?? '0', 10),
+    unresolvedCount: parseInt(unresolvedRow.count, 10),
   };
 }

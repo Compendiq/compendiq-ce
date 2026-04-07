@@ -196,7 +196,9 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
       'SELECT COUNT(*) as count FROM pages WHERE space_key = $1 AND deleted_at IS NULL',
       [key],
     );
-    if (parseInt(pageCount.rows[0]?.count ?? '0', 10) > 0) {
+    const pageCountRow = pageCount.rows[0];
+    if (!pageCountRow) throw new Error('Expected a row from COUNT query');
+    if (parseInt(pageCountRow.count, 10) > 0) {
       throw fastify.httpErrors.conflict(
         'Space still has pages. Delete or move all pages first.',
       );

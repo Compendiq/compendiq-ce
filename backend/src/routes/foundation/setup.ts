@@ -63,6 +63,8 @@ export async function setupRoutes(fastify: FastifyInstance) {
       query<{ count: string }>('SELECT COUNT(*) AS count FROM pages WHERE source = $1 LIMIT 1', ['confluence']),
     ]);
 
+    // Fail-open for unauthenticated setup status endpoint: if the DB query
+    // somehow returns no rows, treat as "not configured" rather than crashing.
     const adminExists = parseInt(adminResult.rows[0]?.count ?? '0', 10) > 0;
     const confluenceConnected = parseInt(confluenceResult.rows[0]?.count ?? '0', 10) > 0;
 

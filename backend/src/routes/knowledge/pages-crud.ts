@@ -682,7 +682,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       [id],
     );
 
-    return { hasChildren: parseInt(result.rows[0]?.count ?? '0', 10) > 0 };
+    const row = result.rows[0];
+    if (!row) throw new Error('Expected a row from COUNT query');
+    return { hasChildren: parseInt(row.count, 10) > 0 };
   });
 
   // GET /api/pages/:id/children - list child pages for the Confluence Children macro

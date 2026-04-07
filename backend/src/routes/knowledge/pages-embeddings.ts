@@ -401,6 +401,7 @@ async function buildClusteredGraph(
     }
 
     clusterEdges = Array.from(edgeMap.entries()).map(([key, val]) => {
+      // Safe assertion: key is constructed as [c1, c2].sort().join('|') on line above
       const [source, target] = key.split('|') as [string, string];
       return {
         source,
