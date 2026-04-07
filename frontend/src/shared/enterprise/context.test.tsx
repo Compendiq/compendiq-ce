@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import { EnterpriseProvider } from './context';
 import { useEnterprise } from './use-enterprise';
-import { _resetForTesting } from './loader';
+import { _resetForTesting, _setScriptLoaderForTesting } from './loader';
 
 // Mock the auth store (required by apiFetch)
 vi.mock('../../stores/auth-store', () => ({
@@ -39,6 +39,9 @@ function TestConsumer() {
 describe('EnterpriseProvider (community mode)', () => {
   beforeEach(() => {
     _resetForTesting();
+    // In jsdom, script tags never fire onload/onerror — use a mock loader
+    // that rejects immediately (simulates CE mode: /api/enterprise/frontend.js returns 404)
+    _setScriptLoaderForTesting(() => Promise.reject(new Error('not available')));
   });
 
   afterEach(() => {
