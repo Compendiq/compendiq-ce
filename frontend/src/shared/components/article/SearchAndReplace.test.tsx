@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 
 vi.mock('../../hooks/use-is-light-theme', () => ({
   useIsLightTheme: () => false,
@@ -91,6 +91,9 @@ describe('SearchAndReplace', () => {
     await waitFor(() => {
       expect(screen.getByTestId('search-and-replace')).toBeInTheDocument();
     });
+
+    // Flush pending effects (registers the Escape keydown listener)
+    await act(async () => {});
 
     // Press Escape
     fireEvent.keyDown(document, { key: 'Escape' });
