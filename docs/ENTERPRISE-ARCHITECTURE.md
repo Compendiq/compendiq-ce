@@ -185,8 +185,8 @@ export interface EnterprisePlugin {
 
 // @compendiq/enterprise/frontend
 export interface EnterpriseUI {
-  /** License status card for the admin panel. */
-  LicenseStatusCard: React.ComponentType<{ license: LicenseInfo | null }>;
+  /** License status card for the admin panel (self-fetching, zero props). */
+  LicenseStatusCard: React.ComponentType;
 
   /** Banner shown when an enterprise feature is required. */
   EnterpriseBanner: React.ComponentType<{ feature: string }>;
@@ -754,6 +754,14 @@ export function isFeatureAvailable(
 
 ### 7.1 Frontend Plugin Loader
 
+The EE overlay bundle is served at `/enterprise/frontend.js` by the nginx frontend container.
+CE deployments simply do not have this file — the dynamic import fails silently and `ui` stays null.
+
+**Why a URL variable, not a bare specifier**: Vite's `import-analysis` plugin resolves bare specifiers
+(e.g. `@compendiq/enterprise/frontend`) at build time and throws if the package is missing. An
+absolute path like `/enterprise/frontend.js` is also resolved statically in Vite 7+ even with
+`@vite-ignore`. Storing the URL in a variable prevents static analysis entirely.
+
 ```typescript
 // frontend/src/shared/enterprise/loader.ts
 import type { EnterpriseUI } from './types';
@@ -761,16 +769,21 @@ import type { EnterpriseUI } from './types';
 let cached: EnterpriseUI | null = null;
 let loaded = false;
 
+// URL stored in variable so Vite's import-analysis skips static resolution.
+// Browsers resolve this at runtime; in CE mode the file is absent and the
+// import fails gracefully.
+const ENTERPRISE_BUNDLE_URL = '/enterprise/frontend.js';
+
 export async function loadEnterpriseUI(): Promise<EnterpriseUI | null> {
   if (loaded) return cached;
 
   try {
-    const mod = await import('@compendiq/enterprise/frontend');
+    const mod = await (import(/* @vite-ignore */ ENTERPRISE_BUNDLE_URL) as Promise<any>);
     if (mod && typeof mod.LicenseStatusCard === 'function') {
       cached = mod as EnterpriseUI;
     }
   } catch {
-    // Not installed - community mode
+    // File absent (CE) or failed to load — community mode, ui stays null
     cached = null;
   }
 
@@ -781,33 +794,18 @@ export async function loadEnterpriseUI(): Promise<EnterpriseUI | null> {
 
 ### 7.2 Enterprise Context
 
+Key design decisions:
+- **`isEnterprise` from backend, not from whether the overlay loaded**: `license.edition !== 'community' && license.valid === true`. This means even without the overlay bundle, the CE can correctly report its tier.
+- **Always fetch `/admin/license`**: CE returns `{ edition:'community', valid:true, features:[] }`. The fetch is silently swallowed for unauthenticated users.
+- **`LicenseStatusCard` is self-fetching** (zero props): it calls the license API internally. The `license` state in context is for routing/gating decisions only.
+
 ```typescript
 // frontend/src/shared/enterprise/context.tsx
-import { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
+import { useState, useEffect, type ReactNode } from 'react';
 import type { EnterpriseUI, LicenseInfo } from './types';
+import { EnterpriseContext } from './enterprise-context';
 import { loadEnterpriseUI } from './loader';
 import { apiFetch } from '../lib/api';
-
-interface EnterpriseContextValue {
-  /** null = community mode, object = enterprise loaded */
-  ui: EnterpriseUI | null;
-  /** License info from the backend */
-  license: LicenseInfo | null;
-  /** Whether the enterprise plugin is available (even if license is invalid) */
-  isEnterprise: boolean;
-  /** Whether a specific feature is enabled */
-  hasFeature: (feature: string) => boolean;
-  /** Loading state */
-  isLoading: boolean;
-}
-
-const EnterpriseContext = createContext<EnterpriseContextValue>({
-  ui: null,
-  license: null,
-  isEnterprise: false,
-  hasFeature: () => false,
-  isLoading: true,
-});
 
 export function EnterpriseProvider({ children }: { children: ReactNode }) {
   const [ui, setUi] = useState<EnterpriseUI | null>(null);
@@ -818,19 +816,18 @@ export function EnterpriseProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
 
     async function init() {
-      // Load enterprise UI module (fast, just a dynamic import)
+      // Load enterprise UI module (fast, just a dynamic import attempt)
       const enterpriseUi = await loadEnterpriseUI();
       if (cancelled) return;
       setUi(enterpriseUi);
 
-      // Fetch license info from backend
-      if (enterpriseUi) {
-        try {
-          const info = await apiFetch<LicenseInfo>('/admin/license');
-          if (!cancelled) setLicense(info);
-        } catch {
-          // Not admin or endpoint not available
-        }
+      // Always fetch license info — CE returns edition:'community', EE returns actual tier.
+      // Silently swallowed for unauthenticated/non-admin users.
+      try {
+        const info = await apiFetch<LicenseInfo>('/admin/license');
+        if (!cancelled) setLicense(info);
+      } catch {
+        // Not admin or endpoint not available — license stays null
       }
 
       if (!cancelled) setIsLoading(false);
@@ -841,7 +838,7 @@ export function EnterpriseProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const hasFeature = (feature: string): boolean => {
-    if (!license || !license.isValid) return false;
+    if (!license || !license.valid) return false;
     return (license.features ?? []).includes(feature);
   };
 
@@ -849,17 +846,15 @@ export function EnterpriseProvider({ children }: { children: ReactNode }) {
     <EnterpriseContext.Provider value={{
       ui,
       license,
-      isEnterprise: !!ui,
+      // isEnterprise is derived from the license API response, not from whether
+      // the overlay bundle loaded successfully.
+      isEnterprise: license?.edition !== 'community' && license?.valid === true,
       hasFeature,
       isLoading,
     }}>
       {children}
     </EnterpriseContext.Provider>
   );
-}
-
-export function useEnterprise() {
-  return useContext(EnterpriseContext);
 }
 ```
 
@@ -894,9 +889,9 @@ function AdminNav() {
       {hasFeature('oidc_sso') && (
         <NavLink to="/settings/oidc">SSO / OIDC</NavLink>
       )}
-      {/* License status card in admin panel */}
+      {/* License status card in admin panel (self-fetching, zero props) */}
       {ui?.LicenseStatusCard && (
-        <ui.LicenseStatusCard license={license} />
+        <ui.LicenseStatusCard />
       )}
     </nav>
   );
