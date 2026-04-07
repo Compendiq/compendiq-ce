@@ -124,7 +124,7 @@ Compendiq uses an open-core model. The CE (Community Edition) is this repo. The 
 | `backend/src/core/enterprise/loader.ts` | Dynamic `import('@compendiq/enterprise')` with fallback to noop |
 | `backend/src/core/types/compendiq-enterprise.d.ts` | TypeScript declaration for the optional EE package |
 | `frontend/src/shared/enterprise/types.ts` | `EnterpriseUI` interface, `LicenseInfo`, `EnterpriseContextValue` |
-| `frontend/src/shared/enterprise/loader.ts` | Dynamic import of `/enterprise/frontend.js` via URL variable (prevents Vite static analysis) |
+| `frontend/src/shared/enterprise/loader.ts` | Loads IIFE bundle via `<script>` tag injection; populates `window.__COMPENDIQ_DEPS__` with shared React instances |
 | `frontend/src/shared/enterprise/enterprise-context.ts` | React context object |
 | `frontend/src/shared/enterprise/context.tsx` | `EnterpriseProvider` component |
 | `frontend/src/shared/enterprise/use-enterprise.ts` | `useEnterprise()` hook |
@@ -137,7 +137,7 @@ Compendiq uses an open-core model. The CE (Community Edition) is this repo. The 
 - `app.ts` calls `loadEnterprisePlugin()` during bootstrap and decorates Fastify with `license` and `enterprise`.
 - `GET /api/admin/license` returns `{ edition: 'community', tier: 'community', valid: true, features: [] }` in CE mode. The fallback route is only registered when `enterprise.version === 'community'` (noop plugin) to avoid duplicate-route errors when the EE plugin registers its own version via `registerRoutes()`.
 - OIDC routes are conditionally registered only when the enterprise plugin enables `ENTERPRISE_FEATURES.OIDC_SSO`.
-- Frontend `loadEnterpriseUI()` imports `/enterprise/frontend.js` via a URL variable so Vite's `import-analysis` skips static resolution. In CE deployments the file is absent — the import is silently caught and `ui` stays null. `isEnterprise` is derived from the `/admin/license` API response (`edition !== 'community' && valid === true`), not from whether the overlay bundle loaded.
+- Frontend `loadEnterpriseUI()` populates `window.__COMPENDIQ_DEPS__` with the CE SPA's live React/ReactQuery/FramerMotion instances, then injects a `<script src="/api/enterprise/frontend.js">` tag. The EE IIFE bundle registers `window.__COMPENDIQ_UI__` on load; the loader reads it back. In CE deployments the script returns 404 — the error is silently caught and `ui` stays null. `isEnterprise` is derived from the `/admin/license` API response (`edition !== 'community' && valid === true`), not from whether the overlay bundle loaded. Both CE and EE deployments use the same CE frontend image — no separate EE frontend image is needed.
 - License format: `ATM-{tier}-{seats}-{expiryYYYYMMDD}.{ed25519SignatureBase64url}` via `COMPENDIQ_LICENSE_KEY` env var.
 
 ## Security (Mandatory)
