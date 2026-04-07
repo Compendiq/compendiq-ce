@@ -6,10 +6,10 @@ import {
   FileText,
   GripVertical,
 } from 'lucide-react';
-import { DragDropProvider } from '@dnd-kit/react';
+import { DragDropProvider, type DragEndEvent } from '@dnd-kit/react';
 import { useSortable, isSortable } from '@dnd-kit/react/sortable';
 import { cn } from '../../lib/cn';
-import type { TreeNode } from './SidebarTreeView';
+import type { TreeNode } from './sidebar-types';
 
 export interface DndLocalSpaceTreeProps {
   tree: TreeNode[];
@@ -140,8 +140,7 @@ export default function DndLocalSpaceTree({
   reorderPage,
 }: DndLocalSpaceTreeProps) {
   const handleDragEnd = useCallback(
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (event: any) => {
+    (event: Parameters<DragEndEvent>[0]) => {
       if (event.canceled) return;
       const source = event.operation?.source;
       if (!source || !isSortable(source)) return;

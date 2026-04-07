@@ -3,7 +3,7 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import DndLocalSpaceTree from './DndLocalSpaceTree';
 import type { DndLocalSpaceTreeProps } from './DndLocalSpaceTree';
-import type { TreeNode } from './SidebarTreeView';
+import type { TreeNode } from './sidebar-types';
 
 // Mock @dnd-kit so we can test component logic without the full DnD runtime
 vi.mock('@dnd-kit/react', () => ({

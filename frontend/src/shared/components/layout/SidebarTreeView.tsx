@@ -24,6 +24,9 @@ import { useClickOutside } from '../../hooks/use-click-outside';
 import { useUiStore } from '../../../stores/ui-store';
 import { cn } from '../../lib/cn';
 import type { PageTreeItem } from '../../hooks/use-pages';
+import type { TreeNode } from './sidebar-types';
+
+export type { TreeNode };
 
 const DndLocalSpaceTree = lazy(() => import('./DndLocalSpaceTree'));
 
@@ -32,11 +35,6 @@ const navItems = [
   { icon: Share2, label: 'Graph', path: '/graph', shortcut: 'G then G' },
   { icon: Bot, label: 'AI', path: '/ai', shortcut: 'G then A' },
 ] as const;
-
-export interface TreeNode {
-  page: PageTreeItem;
-  children: TreeNode[];
-}
 
 function buildTree(pages: PageTreeItem[], homepageId?: string | null): TreeNode[] {
   const nodeMap = new Map<string, TreeNode>();
