@@ -7,9 +7,10 @@ import { apiFetch } from '../lib/api';
 /**
  * Provider that loads the enterprise UI module and fetches license info.
  *
- * In community mode (no @compendiq/enterprise installed), this resolves
- * almost instantly with ui=null, license=null, isEnterprise=false.
- * The rest of the app renders normally with no awareness of enterprise.
+ * Always fetches /admin/license so isEnterprise is derived from the backend
+ * response (edition + valid), not from whether the overlay bundle loaded.
+ * In CE deployments the endpoint returns edition:'community'; in EE it returns
+ * the actual tier. The fetch is silently swallowed for unauthenticated users.
  */
 export function EnterpriseProvider({ children }: { children: ReactNode }) {
   const [ui, setUi] = useState<EnterpriseUI | null>(null);
@@ -25,14 +26,12 @@ export function EnterpriseProvider({ children }: { children: ReactNode }) {
       if (cancelled) return;
       setUi(enterpriseUi);
 
-      // Only fetch license info if enterprise module is present
-      if (enterpriseUi) {
-        try {
-          const info = await apiFetch<LicenseInfo>('/admin/license');
-          if (!cancelled) setLicense(info);
-        } catch {
-          // Not admin, or endpoint unavailable — license stays null
-        }
+      // Always fetch license info — CE returns edition:'community', EE returns actual tier
+      try {
+        const info = await apiFetch<LicenseInfo>('/admin/license');
+        if (!cancelled) setLicense(info);
+      } catch {
+        // Not admin, or endpoint unavailable — license stays null
       }
 
       if (!cancelled) setIsLoading(false);
@@ -45,7 +44,7 @@ export function EnterpriseProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const hasFeature = (feature: string): boolean => {
-    if (!license || !license.isValid) return false;
+    if (!license || !license.valid) return false;
     return (license.features ?? []).includes(feature);
   };
 
@@ -54,7 +53,7 @@ export function EnterpriseProvider({ children }: { children: ReactNode }) {
       value={{
         ui,
         license,
-        isEnterprise: !!ui,
+        isEnterprise: license?.edition !== 'community' && license?.valid === true,
         hasFeature,
         isLoading,
       }}
