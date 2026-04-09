@@ -508,6 +508,7 @@ main() {
   local preflight_ok=true
   check_docker  || preflight_ok=false
   check_docker_compose || preflight_ok=false
+  check_openssl || preflight_ok=false
 
   # ---- Dry-run mode ----
   if [ "$DRY_RUN" = true ]; then
@@ -541,7 +542,7 @@ main() {
       exit 0
     else
       warn "Dry-run completed with warnings — some pre-flight checks failed (see above)"
-      exit 0
+      exit 1
     fi
   fi
 

@@ -49,7 +49,7 @@ jobs:
         run: bash scripts/install.sh --dry-run
 
       - name: Run install.sh --dry-run with custom flags
-        run: bash scripts/install.sh --dry-run --port 9090 --version 0.3.0
+        run: bash scripts/install.sh --dry-run --port 9090 --version 0.3.0 --dir /tmp/test-compendiq
 
       - name: Verify --help flag
         run: bash scripts/install.sh --help
