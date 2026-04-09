@@ -19,6 +19,7 @@ export default defineConfig({
       exclude: [
         'src/**/*.test.ts',
         'src/test-setup.ts',
+        'src/test-db-helper.ts',
         'src/core/db/migrations/**',
       ],
       // Thresholds — enable after coverage gaps are filled
