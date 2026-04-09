@@ -131,7 +131,7 @@ test.describe('Confluence sync flow', () => {
       .getByRole('button', { name: /sync now|start sync|trigger sync/i })
       .or(page.getByTestId('sync-trigger-btn'));
 
-    if (await syncBtn.first().isVisible({ timeout: 5_000 }).catch(() => false)) {
+    if (await syncBtn.first().waitFor({ state: 'visible', timeout: 5_000 }).then(() => true).catch(() => false)) {
       await syncBtn.first().click();
 
       // Verify that sync started (status changes or progress indicator appears)
@@ -155,7 +155,8 @@ test.describe('Confluence sync flow', () => {
 
     const hasSpaces = await spaceItem
       .first()
-      .isVisible({ timeout: 10_000 })
+      .waitFor({ state: 'visible', timeout: 10_000 })
+      .then(() => true)
       .catch(() => false);
 
     // Spaces appearing confirms the connection is working end-to-end.

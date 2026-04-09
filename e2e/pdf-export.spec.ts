@@ -55,7 +55,7 @@ test.describe('PDF export', () => {
       data: {
         title: `PDF Export Test ${Date.now()}`,
         bodyHtml: '<h1>Test Article</h1><p>This is a test article for PDF export verification.</p><h2>Section One</h2><p>Some content in section one.</p>',
-        spaceKey: null,
+        spaceKey: undefined,
       },
     });
 
@@ -84,7 +84,7 @@ test.describe('PDF export', () => {
       .getByLabel('Expand article sidebar')
       .or(page.getByTestId('article-right-pane-rail'));
 
-    if (await expandBtn.isVisible({ timeout: 3_000 }).catch(() => false)) {
+    if (await expandBtn.waitFor({ state: 'visible', timeout: 3_000 }).then(() => true).catch(() => false)) {
       await expandBtn.click();
       await page.waitForLoadState('domcontentloaded');
     }
@@ -183,7 +183,7 @@ test.describe('PDF export', () => {
       .getByLabel('Expand article sidebar')
       .or(page.getByTestId('article-right-pane-rail'));
 
-    if (await expandBtn.isVisible({ timeout: 3_000 }).catch(() => false)) {
+    if (await expandBtn.waitFor({ state: 'visible', timeout: 3_000 }).then(() => true).catch(() => false)) {
       await expandBtn.click();
       await page.waitForLoadState('domcontentloaded');
     }
@@ -201,15 +201,16 @@ test.describe('PDF export', () => {
 
     // The button should show a loading/disabled state while generating
     // Either the button becomes disabled or a spinner appears
-    const isDisabledOrLoading = await exportBtn
-      .first()
-      .isDisabled({ timeout: 3_000 })
+    const isDisabledOrLoading = await expect(exportBtn.first())
+      .toBeDisabled({ timeout: 3_000 })
+      .then(() => true)
       .catch(() => false);
 
     const hasSpinner = await page
       .locator('[data-testid="article-actions"] .animate-spin')
       .or(page.locator('button:has(.animate-spin)').filter({ hasText: /export|pdf/i }))
-      .isVisible({ timeout: 3_000 })
+      .waitFor({ state: 'visible', timeout: 3_000 })
+      .then(() => true)
       .catch(() => false);
 
     // At least one loading indicator should have appeared, or the export
