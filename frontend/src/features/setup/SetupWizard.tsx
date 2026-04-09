@@ -43,9 +43,14 @@ export function SetupWizard() {
 
   // Skip admin step when admin already exists; on rerun always start at LLM
   const initialStep = isRerun ? 2 : 0;
-  const [currentStep, setCurrentStep] = useState(() =>
-    getPersistedStep(initialStep),
-  );
+  const [currentStep, setCurrentStep] = useState(() => {
+    // On rerun, ignore any stale persisted step and start fresh
+    if (isRerun) {
+      try { sessionStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
+      return initialStep;
+    }
+    return getPersistedStep(initialStep);
+  });
 
   // Persist step changes to sessionStorage; clear on the final (complete) step
   useEffect(() => {
