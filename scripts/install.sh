@@ -518,21 +518,27 @@ main() {
     INSTALL_DIR="${INSTALL_DIR:-${HOME}/compendiq}"
     info "Dry-run mode — generating config to ${dry_run_dir}"
 
-    # Generate config to temp directory
-    write_env "${dry_run_dir}/.env"
-    write_compose "${dry_run_dir}/docker-compose.yml"
-
     # Print what would happen
     dry_run_summary "$INSTALL_DIR"
 
-    # Show generated files for inspection
-    info "Generated .env preview (secrets redacted):"
-    sed '/^[A-Z_]*=.\{12,\}/s/=.*/=<REDACTED>/' "${dry_run_dir}/.env"
-    printf '\n'
+    # Only generate config if all pre-flight checks passed (openssl is needed
+    # for secret generation inside write_env — without it, set -e aborts)
+    if [ "$preflight_ok" = true ]; then
+      write_env "${dry_run_dir}/.env"
+      write_compose "${dry_run_dir}/docker-compose.yml"
 
-    info "Generated docker-compose.yml preview (first 30 lines):"
-    head -30 "${dry_run_dir}/docker-compose.yml"
-    printf '  ...\n\n'
+      # Show generated files for inspection
+      info "Generated .env preview (secrets redacted):"
+      sed '/^[A-Z_]*=.\{12,\}/s/=.*/=<REDACTED>/' "${dry_run_dir}/.env"
+      printf '\n'
+
+      info "Generated docker-compose.yml preview (first 30 lines):"
+      head -30 "${dry_run_dir}/docker-compose.yml"
+      printf '  ...\n\n'
+    else
+      warn "Skipping config generation — pre-flight checks failed (see above)"
+      printf '\n'
+    fi
 
     # Clean up temp files
     rm -rf "$dry_run_dir"
