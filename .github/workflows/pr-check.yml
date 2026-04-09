@@ -80,3 +80,6 @@ jobs:
 
       - name: Run tests
         run: npm test
+
+      - name: Generate backend coverage report
+        run: npm run test:coverage -w backend
