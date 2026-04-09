@@ -1,0 +1,63 @@
+name: Test Installer
+
+on:
+  pull_request:
+    branches: [dev, main]
+    paths:
+      - 'scripts/install.sh'
+      - '.github/workflows/test-installer.yml'
+  push:
+    branches: [dev]
+    paths:
+      - 'scripts/install.sh'
+      - '.github/workflows/test-installer.yml'
+  workflow_dispatch:
+
+# Cancel in-progress runs for the same PR — saves CI minutes on rapid pushes
+concurrency:
+  group: test-installer-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-dry-run:
+    name: Dry-run (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Ubuntu latest
+            runner: ubuntu-latest
+          - name: macOS 14
+            runner: macos-14
+          - name: Debian 12
+            runner: ubuntu-latest
+            container: debian:12
+
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container || '' }}
+
+    steps:
+      - name: Install prerequisites (Debian container)
+        if: matrix.container
+        run: |
+          apt-get update
+          apt-get install -y git openssl ca-certificates
+
+      - uses: actions/checkout@v4
+
+      - name: Run install.sh --dry-run
+        run: bash scripts/install.sh --dry-run
+
+      - name: Run install.sh --dry-run with custom flags
+        run: bash scripts/install.sh --dry-run --port 9090 --version 0.3.0
+
+      - name: Verify --help flag
+        run: bash scripts/install.sh --help
+
+      - name: Verify unknown flag is rejected
+        run: |
+          if bash scripts/install.sh --unknown-flag 2>/dev/null; then
+            echo "ERROR: Unknown flag should have caused a non-zero exit"
+            exit 1
+          fi
+          echo "OK: Unknown flag correctly rejected"

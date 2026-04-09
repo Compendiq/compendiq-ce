@@ -7,11 +7,13 @@
 #   curl -fsSL https://raw.githubusercontent.com/diinlu/compendiq/main/scripts/install.sh | bash
 #   curl ... | bash -s -- --dir /opt/compendiq --port 9090
 #   bash install.sh --dir /opt/compendiq --port 9090 --version 1.2.0
+#   bash install.sh --dry-run
 #
 # Options:
 #   --dir DIR          Installation directory  (default: $HOME/compendiq)
 #   --port PORT        Frontend port           (default: 8080)
 #   --version TAG      Image tag               (default: latest)
+#   --dry-run          Validate prerequisites, generate config to a temp dir, then exit
 #   --help             Show this help message
 #
 # Environment variables (all optional, overridden by CLI flags):
@@ -20,6 +22,11 @@
 #   COMPENDIQ_VERSION  Image tag               (default: latest)
 # =============================================================================
 set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Dry-run mode — set via --dry-run flag
+# ---------------------------------------------------------------------------
+DRY_RUN=false
 
 # ---------------------------------------------------------------------------
 # Color helpers — disabled when stdout is not a terminal or NO_COLOR is set
@@ -69,10 +76,18 @@ banner() {
 # ---------------------------------------------------------------------------
 check_docker() {
   if ! command -v docker >/dev/null 2>&1; then
+    if [ "$DRY_RUN" = true ]; then
+      warn "Docker is not installed (dry-run: would fail here in real install)"
+      return 1
+    fi
     die "Docker is not installed. Install it from https://docs.docker.com/get-docker/"
   fi
 
   if ! docker info >/dev/null 2>&1; then
+    if [ "$DRY_RUN" = true ]; then
+      warn "Docker daemon is not running (dry-run: would fail here in real install)"
+      return 1
+    fi
     die "Docker daemon is not running. Please start Docker and try again."
   fi
 
@@ -81,6 +96,10 @@ check_docker() {
 
 check_docker_compose() {
   if ! docker compose version >/dev/null 2>&1; then
+    if [ "$DRY_RUN" = true ]; then
+      warn "Docker Compose v2 is not available (dry-run: would fail here in real install)"
+      return 1
+    fi
     die "Docker Compose v2 is required (docker compose, not docker-compose). Update Docker or install the compose plugin."
   fi
 
@@ -89,6 +108,10 @@ check_docker_compose() {
 
 check_openssl() {
   if ! command -v openssl >/dev/null 2>&1; then
+    if [ "$DRY_RUN" = true ]; then
+      warn "openssl is not installed (dry-run: would fail here in real install)"
+      return 1
+    fi
     die "openssl is required to generate secrets. Install it and try again."
   fi
 }
@@ -403,6 +426,7 @@ usage() {
   printf '  --dir DIR          Installation directory  (default: $HOME/compendiq)\n'
   printf '  --port PORT        Frontend port           (default: 8080)\n'
   printf '  --version TAG      Docker image tag        (default: latest)\n'
+  printf '  --dry-run          Validate prerequisites, generate config to temp dir, exit\n'
   printf '  --help             Show this help message\n\n'
   printf '%bEnvironment variables (overridden by CLI flags):%b\n' "$BOLD" "$RESET"
   printf '  INSTALL_DIR        Installation directory\n'
@@ -426,12 +450,50 @@ parse_args() {
       --version)
         [ -n "${2:-}" ] || die "--version requires a value"
         COMPENDIQ_VERSION="$2"; shift 2 ;;
+      --dry-run)
+        DRY_RUN=true; shift ;;
       --help|-h)
         usage ;;
       *)
         die "Unknown option: $1 (use --help for usage)" ;;
     esac
   done
+}
+
+# ---------------------------------------------------------------------------
+# Dry-run summary — print what would happen without executing
+# ---------------------------------------------------------------------------
+dry_run_summary() {
+  local dir="$1"
+  local version="${COMPENDIQ_VERSION:-latest}"
+  local port="${COMPENDIQ_PORT:-8080}"
+
+  printf '\n'
+  printf '%b%b--- Dry-run summary ---%b\n\n' "$CYAN" "$BOLD" "$RESET"
+  printf '  %bInstall directory:%b  %s\n' "$DIM" "$RESET" "$dir"
+  printf '  %bFrontend port:%b     %s\n' "$DIM" "$RESET" "$port"
+  printf '  %bImage tag:%b         %s\n' "$DIM" "$RESET" "$version"
+  printf '\n'
+  printf '  The following actions WOULD be performed:\n'
+  printf '    1. Create directory %s\n' "$dir"
+  printf '    2. Generate .env with cryptographic secrets\n'
+  printf '    3. Write docker-compose.yml\n'
+  printf '    4. docker compose pull (images: compendiq-frontend:%s, compendiq-backend:%s, pgvector:pg17, redis:8-alpine)\n' "$version" "$version"
+  printf '    5. docker compose up -d\n'
+  printf '    6. Wait for backend health check (max 60s)\n'
+  printf '    7. Open http://localhost:%s in browser\n' "$port"
+  printf '\n'
+
+  if [ -d "$dir" ]; then
+    printf '  %bGenerated config files:%b\n' "$DIM" "$RESET"
+    if [ -f "${dir}/.env" ]; then
+      printf '    - %s/.env (exists, would be preserved)\n' "$dir"
+    else
+      printf '    - %s/.env (generated)\n' "$dir"
+    fi
+    printf '    - %s/docker-compose.yml (generated)\n' "$dir"
+  fi
+  printf '\n'
 }
 
 # =============================================================================
@@ -443,8 +505,50 @@ main() {
   banner
 
   # ---- Pre-flight ----
-  check_docker
-  check_docker_compose
+  local preflight_ok=true
+  check_docker  || preflight_ok=false
+  check_docker_compose || preflight_ok=false
+
+  # ---- Dry-run mode ----
+  if [ "$DRY_RUN" = true ]; then
+    local dry_run_dir
+    dry_run_dir="$(mktemp -d)"
+
+    INSTALL_DIR="${INSTALL_DIR:-${HOME}/compendiq}"
+    info "Dry-run mode — generating config to ${dry_run_dir}"
+
+    # Generate config to temp directory
+    write_env "${dry_run_dir}/.env"
+    write_compose "${dry_run_dir}/docker-compose.yml"
+
+    # Print what would happen
+    dry_run_summary "$INSTALL_DIR"
+
+    # Show generated files for inspection
+    info "Generated .env preview (secrets redacted):"
+    sed '/^[A-Z_]*=.\{12,\}/s/=.*/=<REDACTED>/' "${dry_run_dir}/.env"
+    printf '\n'
+
+    info "Generated docker-compose.yml preview (first 30 lines):"
+    head -30 "${dry_run_dir}/docker-compose.yml"
+    printf '  ...\n\n'
+
+    # Clean up temp files
+    rm -rf "$dry_run_dir"
+
+    if [ "$preflight_ok" = true ]; then
+      ok "Dry-run completed successfully — all pre-flight checks passed"
+      exit 0
+    else
+      warn "Dry-run completed with warnings — some pre-flight checks failed (see above)"
+      exit 0
+    fi
+  fi
+
+  # ---- Normal install (pre-flight must have passed) ----
+  if [ "$preflight_ok" = false ]; then
+    die "Pre-flight checks failed (see warnings above)"
+  fi
 
   # ---- Install directory (CLI flag > env var > default) ----
   INSTALL_DIR="${INSTALL_DIR:-${HOME}/compendiq}"
