@@ -114,7 +114,12 @@ function randomItem<T>(arr: T[]): T {
 
 function randomSubset<T>(arr: T[], min: number, max: number): T[] {
   const count = Math.floor(Math.random() * (max - min + 1)) + min;
-  const shuffled = [...arr].sort(() => Math.random() - 0.5);
+  // Fisher-Yates shuffle (unbiased)
+  const shuffled = [...arr];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j]!, shuffled[i]!];
+  }
   return shuffled.slice(0, count);
 }
 
@@ -134,7 +139,7 @@ function generateRandomEmbedding(): number[] {
   let norm = 0;
   for (let i = 0; i < EMBEDDING_DIMS; i++) {
     // Box-Muller transform for normally distributed values
-    const u1 = Math.random();
+    const u1 = Math.random() || Number.EPSILON;  // guard against log(0) → NaN
     const u2 = Math.random();
     vec[i] = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
     norm += vec[i] * vec[i];

@@ -50,7 +50,7 @@ Test pages are identified by their `confluence_id` prefix (`perf-test-*`) so cle
 ## 2. Run the Load Test
 
 ```bash
-# Obtain a JWT token (replace credentials as needed)
+# Obtain a JWT token (example credentials — replace with your actual admin account)
 TOKEN=$(curl -s -X POST http://localhost:3051/api/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"username":"admin","password":"admin"}' | jq -r '.token')
