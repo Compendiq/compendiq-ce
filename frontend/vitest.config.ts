@@ -21,5 +21,25 @@ export default defineConfig({
     include: ['src/**/*.test.{ts,tsx}'],
     setupFiles: ['src/test-setup.ts'],
     css: false,
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'text-summary', 'lcov', 'json-summary'],
+      reportsDirectory: './coverage',
+      reportOnFailure: true,
+      include: ['src/**/*.{ts,tsx}'],
+      exclude: [
+        'src/**/*.test.{ts,tsx}',
+        'src/test-setup.ts',
+        'src/vite-env.d.ts',
+        'src/main.tsx',
+      ],
+      // Thresholds commented out — enable after coverage gaps are filled
+      // thresholds: {
+      //   lines: 60,
+      //   functions: 60,
+      //   branches: 50,
+      //   statements: 60,
+      // },
+    },
   },
 });

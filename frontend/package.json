@@ -10,7 +10,8 @@
     "lint": "eslint --max-warnings=0 src/",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "@compendiq/contracts": "*",
@@ -66,6 +67,7 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.0.3",
     "@vitejs/plugin-react": "^5.1.4",
+    "@vitest/coverage-v8": "^4.1.4",
     "autoprefixer": "^10.4.27",
     "eslint": "^9.27.0",
     "eslint-plugin-react-hooks": "^5.2.0",
