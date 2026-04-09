@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { m, AnimatePresence } from 'framer-motion';
 import { CompendiqLogo } from '../../shared/components/CompendiqLogo';
@@ -17,6 +17,24 @@ const STEPS = [
   { id: 'complete', label: 'Complete' },
 ] as const;
 
+const STORAGE_KEY = 'compendiq-setup-step';
+
+/** Read persisted step from sessionStorage, falling back to the given default. */
+function getPersistedStep(fallback: number): number {
+  try {
+    const raw = sessionStorage.getItem(STORAGE_KEY);
+    if (raw !== null) {
+      const parsed = Number(raw);
+      if (Number.isInteger(parsed) && parsed >= 0 && parsed < STEPS.length) {
+        return parsed;
+      }
+    }
+  } catch {
+    // sessionStorage may be unavailable (e.g. security policy)
+  }
+  return fallback;
+}
+
 export function SetupWizard() {
   const [searchParams] = useSearchParams();
   const isRerun = searchParams.get('rerun') === 'true';
@@ -25,25 +43,40 @@ export function SetupWizard() {
 
   // Skip admin step when admin already exists; on rerun always start at LLM
   const initialStep = isRerun ? 2 : 0;
-  const [currentStep, setCurrentStep] = useState(initialStep);
+  const [currentStep, setCurrentStep] = useState(() =>
+    getPersistedStep(initialStep),
+  );
 
-  function goNext() {
+  // Persist step changes to sessionStorage; clear on the final (complete) step
+  useEffect(() => {
+    try {
+      if (currentStep === STEPS.length - 1) {
+        sessionStorage.removeItem(STORAGE_KEY);
+      } else {
+        sessionStorage.setItem(STORAGE_KEY, String(currentStep));
+      }
+    } catch {
+      // sessionStorage may be unavailable
+    }
+  }, [currentStep]);
+
+  const goNext = useCallback(() => {
     setCurrentStep((prev) => {
       let next = prev + 1;
       // Skip admin step if admin already exists
       if (next === 1 && adminExists) next = 2;
       return Math.min(next, STEPS.length - 1);
     });
-  }
+  }, [adminExists]);
 
-  function goBack() {
+  const goBack = useCallback(() => {
     setCurrentStep((prev) => {
       let back = prev - 1;
       // Skip admin step going back if admin already exists
       if (back === 1 && adminExists) back = 0;
       return Math.max(back, 0);
     });
-  }
+  }, [adminExists]);
 
   // Auto-advance past admin step if setup-status query resolves while on it
   useEffect(() => {
