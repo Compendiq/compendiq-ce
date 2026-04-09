@@ -158,10 +158,9 @@ test.describe('Confluence sync flow', () => {
       .isVisible({ timeout: 10_000 })
       .catch(() => false);
 
-    // Spaces appearing confirms the connection is working end-to-end
-    if (hasSpaces) {
-      expect(hasSpaces).toBe(true);
-    }
+    // Spaces appearing confirms the connection is working end-to-end.
+    // If the Confluence instance has spaces, at least one must be visible.
+    expect(hasSpaces).toBe(true);
   });
 
   test('saves Confluence URL and displays it after page reload', async ({ page }) => {
