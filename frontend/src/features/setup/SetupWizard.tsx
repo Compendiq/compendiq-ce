@@ -42,9 +42,11 @@ function getPersistedStep(fallback: number): number {
  * sessionStorage was wiped (incognito tab, different browser, etc).
  *
  * Returns the step index matching the first incomplete step. Falls back to
- * welcome (0) when nothing is configured yet.
+ * welcome (0) when nothing is configured yet. Kept module-private so this
+ * file only exports the SetupWizard component (keeps the
+ * `react-refresh/only-export-components` lint rule happy).
  */
-export function deriveMinStepFromBackend(steps: {
+function deriveMinStepFromBackend(steps: {
   admin: boolean;
   llm: boolean;
   confluence: boolean;
