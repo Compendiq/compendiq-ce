@@ -124,21 +124,23 @@ Compendiq uses an open-core model. The CE (Community Edition) is this repo. The 
 | `backend/src/core/enterprise/loader.ts` | Dynamic `import('@compendiq/enterprise')` with fallback to noop |
 | `backend/src/core/types/compendiq-enterprise.d.ts` | TypeScript declaration for the optional EE package |
 | `frontend/src/shared/enterprise/types.ts` | `EnterpriseUI` interface, `LicenseInfo`, `EnterpriseContextValue` |
-| `frontend/src/shared/enterprise/loader.ts` | Loads IIFE bundle via `<script>` tag injection; populates `window.__COMPENDIQ_DEPS__` with shared React instances |
-| `frontend/src/shared/enterprise/enterprise-context.ts` | React context object |
-| `frontend/src/shared/enterprise/context.tsx` | `EnterpriseProvider` component |
+| `frontend/src/shared/enterprise/context.tsx` | `EnterpriseProvider` — fetches `/api/admin/license` once per load; derives `isEnterprise` |
 | `frontend/src/shared/enterprise/use-enterprise.ts` | `useEnterprise()` hook |
+| `frontend/src/features/admin/LicenseStatusCard.tsx` | License status + key-entry form (admin Settings → License tab) |
+| `frontend/src/features/admin/OidcSettingsPage.tsx` | OIDC/SSO admin UI (admin Settings → SSO tab, gated by `isEnterprise`) |
+| `frontend/src/features/auth/OidcCallbackPage.tsx` | Route `/auth/oidc/callback` — exchanges login_code for JWT |
 | `docker/Dockerfile.enterprise` | Multi-stage Dockerfile template for EE builds (Layer 2+3 protection) |
 | `scripts/build-enterprise.sh` | Template script documenting the EE overlay merge process |
 
 **Rules for the enterprise extension points:**
-- CE defines types, loader, noop stub, and feature constants only. No enterprise logic.
+- CE defines types, loader, noop stub, and feature constants — plus the enterprise UI surfaces (`LicenseStatusCard`, `OidcSettingsPage`, `OidcCallbackPage`), which render their own state based on the live license API response.
 - The noop plugin must be completely inert (zero dependencies, zero side effects).
-- `app.ts` calls `loadEnterprisePlugin()` during bootstrap and decorates Fastify with `license` and `enterprise`.
+- `app.ts` calls `loadEnterprisePlugin()` during bootstrap and decorates Fastify with `license` and `enterprise`. The EE plugin's `registerRoutes()` additionally loads the persisted license key from the `admin_settings` table and refreshes the in-memory cache, so runtime `PUT /api/admin/license` updates take effect without a restart.
 - `GET /api/admin/license` returns `{ edition: 'community', tier: 'community', valid: true, features: [] }` in CE mode. The fallback route is only registered when `enterprise.version === 'community'` (noop plugin) to avoid duplicate-route errors when the EE plugin registers its own version via `registerRoutes()`.
+- The EE plugin's response additionally includes `displayKey`, `licenseId`, and `canUpdate: true` — the frontend reads `canUpdate` to decide whether to render the key-entry form in `LicenseStatusCard`. The CE noop fallback omits this flag.
 - OIDC routes are conditionally registered only when the enterprise plugin enables `ENTERPRISE_FEATURES.OIDC_SSO`.
-- Frontend `loadEnterpriseUI()` populates `window.__COMPENDIQ_DEPS__` with the CE SPA's live React/ReactQuery/FramerMotion instances, then injects a `<script src="/api/enterprise/frontend.js">` tag. The EE IIFE bundle registers `window.__COMPENDIQ_UI__` on load; the loader reads it back. In CE deployments the script returns 404 — the error is silently caught and `ui` stays null. `isEnterprise` is derived from the `/admin/license` API response (`edition !== 'community' && valid === true`), not from whether the overlay bundle loaded. Both CE and EE deployments use the same CE frontend image — no separate EE frontend image is needed.
-- License format: `ATM-{tier}-{seats}-{expiryYYYYMMDD}.{ed25519SignatureBase64url}` via `COMPENDIQ_LICENSE_KEY` env var.
+- Both CE and EE deployments ship the **same** unmodified CE frontend image. There is no EE-specific frontend image, no IIFE bundle, and no build-time patching of the CE SPA source. Enterprise UI is gated at runtime by `useEnterprise().isEnterprise`, derived from the `/admin/license` API response (`edition !== 'community' && valid === true`).
+- License format: `ATM-{tier}-{seats}-{expiryYYYYMMDD}-{licenseId}.{ed25519SignatureBase64url}` (v2) or legacy v1 without `licenseId`. Persisted in the `admin_settings` table under key `license_key` by the EE plugin. The `COMPENDIQ_LICENSE_KEY` env var is a **deprecated bootstrap fallback** — consulted only when the DB row is absent.
 
 ## Security (Mandatory)
 
@@ -257,6 +259,6 @@ Copy `.env.example` to `.env`. Key vars:
 - `OTEL_SERVICE_NAME` (optional, default: `compendiq-backend`)
 - `OTEL_EXPORTER_OTLP_ENDPOINT` (optional, OTLP collector endpoint)
 
-- `COMPENDIQ_LICENSE_KEY` (optional, enterprise license key, format: `ATM-{tier}-{seats}-{expiryYYYYMMDD}.{signature}`)
+- `COMPENDIQ_LICENSE_KEY` (deprecated bootstrap fallback — new installs should leave this unset and paste the key into Settings → License after first login; the EE plugin persists it in the `admin_settings` table and the env var is only consulted when the DB row is absent)
 
 OIDC/SSO is available in the Enterprise Edition only.

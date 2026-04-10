@@ -5,7 +5,7 @@ import { getOllamaCircuitBreakerStatus, getOpenaiCircuitBreakerStatus } from '..
 import { getProvider } from '../../domains/llm/services/ollama-service.js';
 import { logger } from '../../core/utils/logger.js';
 import { getSharedLlmSettings } from '../../core/services/admin-settings-service.js';
-import { APP_VERSION } from '../../core/utils/version.js';
+import { APP_VERSION, APP_BUILD_INFO } from '../../core/utils/version.js';
 
 // Track whether startup checks have passed
 let startupComplete = false;
@@ -58,6 +58,9 @@ export async function healthRoutes(fastify: FastifyInstance) {
         redis,
       },
       version: APP_VERSION,
+      edition: APP_BUILD_INFO.edition,
+      commit: APP_BUILD_INFO.commit,
+      builtAt: APP_BUILD_INFO.builtAt,
       uptime: process.uptime(),
     });
   });
@@ -84,6 +87,9 @@ export async function healthRoutes(fastify: FastifyInstance) {
         llmProvider: sharedLlmSettings.llmProvider,
       },
       version: APP_VERSION,
+      edition: APP_BUILD_INFO.edition,
+      commit: APP_BUILD_INFO.commit,
+      builtAt: APP_BUILD_INFO.builtAt,
     });
   });
 
@@ -110,6 +116,9 @@ export async function healthRoutes(fastify: FastifyInstance) {
           openai: getOpenaiCircuitBreakerStatus(),
         },
         version: APP_VERSION,
+        edition: APP_BUILD_INFO.edition,
+        commit: APP_BUILD_INFO.commit,
+        builtAt: APP_BUILD_INFO.builtAt,
         uptime: process.uptime(),
       });
     } catch {
@@ -120,6 +129,9 @@ export async function healthRoutes(fastify: FastifyInstance) {
         status: allHealthy ? 'ok' : 'degraded',
         services: { postgres, redis, llm: false },
         version: APP_VERSION,
+        edition: APP_BUILD_INFO.edition,
+        commit: APP_BUILD_INFO.commit,
+        builtAt: APP_BUILD_INFO.builtAt,
         uptime: process.uptime(),
       });
     }

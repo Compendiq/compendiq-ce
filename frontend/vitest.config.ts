@@ -9,6 +9,9 @@ export default defineConfig({
   plugins: [react()],
   define: {
     __APP_VERSION__: JSON.stringify(rootPkg.version),
+    __APP_COMMIT__: JSON.stringify('test'),
+    __APP_EDITION__: JSON.stringify('community'),
+    __APP_BUILT_AT__: JSON.stringify(''),
   },
   resolve: {
     alias: {

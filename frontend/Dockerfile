@@ -27,6 +27,10 @@ RUN npm run build -w @compendiq/contracts
 COPY frontend/index.html frontend/vite.config.ts frontend/tsconfig.json frontend/tsconfig.node.json ./frontend/
 COPY frontend/public/ frontend/public/
 COPY frontend/src/ frontend/src/
+# Build-time metadata (edition + commit hash). Ships as a committed
+# placeholder in the CE repo; overwritten by scripts/build-enterprise.sh
+# in the EE flow. Read by vite.config.ts and injected as __BUILD_INFO__.
+COPY build-info.json ./build-info.json
 ENV VITE_API_URL=$VITE_API_URL
 RUN npm run build -w frontend
 
