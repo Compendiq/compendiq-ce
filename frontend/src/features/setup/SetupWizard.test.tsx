@@ -1,9 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useAuthStore } from '../../stores/auth-store';
 import { SetupWizard } from './SetupWizard';
+
+const STORAGE_KEY = 'compendiq-setup-step';
 
 function renderWizard(initialEntries = ['/setup']) {
   const queryClient = new QueryClient({
@@ -71,6 +73,7 @@ describe('SetupWizard', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     useAuthStore.getState().clearAuth();
+    sessionStorage.clear();
 
     // Default: mock all API calls to return success (no admin exists)
     mockFetchForSetup({ adminExists: false });
@@ -328,5 +331,104 @@ describe('SetupWizard', () => {
     // Check navigation links
     expect(screen.getByText('Go to Pages')).toBeInTheDocument();
     expect(screen.getByText('Admin Settings')).toBeInTheDocument();
+  });
+
+  describe('sessionStorage persistence', () => {
+    it('persists current step to sessionStorage on step change', async () => {
+      renderWizard();
+
+      // After mount the initial step (0) is persisted
+      await waitFor(() => {
+        expect(sessionStorage.getItem(STORAGE_KEY)).toBe('0');
+      });
+
+      // Advance to admin step (step 1)
+      fireEvent.click(screen.getByTestId('start-setup-btn'));
+      await waitFor(() => {
+        expect(screen.getByText('Create Admin Account')).toBeInTheDocument();
+      });
+
+      expect(sessionStorage.getItem(STORAGE_KEY)).toBe('1');
+    });
+
+    it('restores step from sessionStorage on remount', async () => {
+      // Simulate a previous session that reached the LLM step (step 2)
+      sessionStorage.setItem(STORAGE_KEY, '2');
+
+      renderWizard();
+
+      // Should restore to LLM step, not welcome
+      await waitFor(() => {
+        expect(screen.getByText('Configure LLM Provider')).toBeInTheDocument();
+      });
+    });
+
+    it('clears sessionStorage when wizard reaches complete step', async () => {
+      renderWizard();
+
+      // Navigate through all steps
+      fireEvent.click(screen.getByTestId('start-setup-btn'));
+
+      await waitFor(() => {
+        expect(screen.getByTestId('setup-username')).toBeInTheDocument();
+      });
+      typeInto(screen.getByTestId('setup-username'), 'admin');
+      typeInto(screen.getByTestId('setup-password'), 'securepass123');
+      typeInto(screen.getByTestId('setup-confirm-password'), 'securepass123');
+      fireEvent.click(screen.getByTestId('create-admin-btn'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Configure LLM Provider')).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByTestId('llm-next-btn'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Connect Confluence')).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByTestId('skip-confluence-btn'));
+
+      // Reach the complete step
+      await waitFor(() => {
+        expect(screen.getByText(/You're All Set/i)).toBeInTheDocument();
+      });
+
+      // sessionStorage should be cleared on completion
+      expect(sessionStorage.getItem(STORAGE_KEY)).toBeNull();
+    });
+
+    it('starts at step 0 after completion even if remounted', async () => {
+      // First, complete the wizard
+      renderWizard();
+
+      fireEvent.click(screen.getByTestId('start-setup-btn'));
+      await waitFor(() => {
+        expect(screen.getByTestId('setup-username')).toBeInTheDocument();
+      });
+      typeInto(screen.getByTestId('setup-username'), 'admin');
+      typeInto(screen.getByTestId('setup-password'), 'securepass123');
+      typeInto(screen.getByTestId('setup-confirm-password'), 'securepass123');
+      fireEvent.click(screen.getByTestId('create-admin-btn'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Configure LLM Provider')).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByTestId('llm-next-btn'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Connect Confluence')).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByTestId('skip-confluence-btn'));
+
+      await waitFor(() => {
+        expect(screen.getByText(/You're All Set/i)).toBeInTheDocument();
+      });
+
+      // Unmount and remount
+      cleanup();
+      renderWizard();
+
+      // Should start at welcome (step 0) since storage was cleared
+      expect(screen.getByText(/Welcome to/i)).toBeInTheDocument();
+    });
   });
 });
