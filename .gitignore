@@ -58,3 +58,7 @@ research/
 .claude/
 frontend/vendor/
 firebase-debug.log
+
+# k6 output files
+perf/*.json
+perf/*.html
