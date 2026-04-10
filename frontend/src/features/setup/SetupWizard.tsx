@@ -35,10 +35,30 @@ function getPersistedStep(fallback: number): number {
   return fallback;
 }
 
+/**
+ * Derive the earliest wizard step the user can meaningfully land on, given
+ * the completion flags reported by `/api/health/setup-status`. Used at mount
+ * time to resume a partially-completed wizard even if the user's
+ * sessionStorage was wiped (incognito tab, different browser, etc).
+ *
+ * Returns the step index matching the first incomplete step. Falls back to
+ * welcome (0) when nothing is configured yet.
+ */
+export function deriveMinStepFromBackend(steps: {
+  admin: boolean;
+  llm: boolean;
+  confluence: boolean;
+}): number {
+  if (!steps.admin) return 0;      // welcome or admin (wizard walks welcome → admin)
+  if (!steps.llm) return 2;         // LLM
+  if (!steps.confluence) return 3;  // Confluence
+  return STEPS.length - 1;          // all done → complete
+}
+
 export function SetupWizard() {
   const [searchParams] = useSearchParams();
   const isRerun = searchParams.get('rerun') === 'true';
-  const { steps } = useSetupStatus();
+  const { steps, isLoading: isSetupStatusLoading } = useSetupStatus();
   const adminExists = steps.admin;
 
   // Skip admin step when admin already exists; on rerun always start at LLM
@@ -51,6 +71,11 @@ export function SetupWizard() {
     }
     return getPersistedStep(initialStep);
   });
+
+  // One-shot gate: once the backend-derived min step has been applied, never
+  // clobber the user's position again — they may have manually navigated
+  // forward past what the backend yet knows about.
+  const [hasAppliedBackendMin, setHasAppliedBackendMin] = useState(false);
 
   // Persist step changes to sessionStorage; clear on the final (complete) step
   useEffect(() => {
@@ -83,12 +108,20 @@ export function SetupWizard() {
     });
   }, [adminExists]);
 
-  // Auto-advance past admin step if setup-status query resolves while on it
+  // Resume support: once the setup-status query resolves, jump forward to the
+  // earliest incomplete step so the user isn't forced back through Welcome +
+  // sign-in after closing the tab mid-flow. `isRerun` short-circuits this —
+  // admins explicitly re-opening the wizard want to start fresh at LLM.
+  //
+  // We use Math.max so a user whose sessionStorage puts them ahead of the
+  // backend-known minimum keeps their position (e.g. they're mid-Confluence
+  // but the backend doesn't yet know because they haven't clicked Save).
   useEffect(() => {
-    if (currentStep === 1 && adminExists) {
-      setCurrentStep(2);
-    }
-  }, [currentStep, adminExists]);
+    if (hasAppliedBackendMin || isRerun || isSetupStatusLoading) return;
+    const min = deriveMinStepFromBackend(steps);
+    setCurrentStep((prev) => Math.max(prev, min));
+    setHasAppliedBackendMin(true);
+  }, [hasAppliedBackendMin, isRerun, isSetupStatusLoading, steps]);
 
   return (
     <div className="bg-background flex min-h-screen items-center justify-center p-4">

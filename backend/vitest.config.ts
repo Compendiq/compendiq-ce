@@ -22,13 +22,18 @@ export default defineConfig({
         'src/test-db-helper.ts',
         'src/core/db/migrations/**',
       ],
-      // Thresholds — enable after coverage gaps are filled
-      // thresholds: {
-      //   lines: 70,
-      //   functions: 70,
-      //   branches: 60,
-      //   statements: 70,
-      // },
+      // Phase 0 coverage gates. Aggregate-wide floors, not per-file. The
+      // roadmap specifies "≥ 70% on routes" — baseline measured 2026-04-10
+      // shows routes at 84.11% and overall at 79.05% lines, so the floor
+      // holds comfortably. Tighten to per-file thresholds or lift to 75%+
+      // in a follow-up once outlier routes (llm-admin, llm-embeddings,
+      // knowledge-admin, llm-ask) get backfilled.
+      thresholds: {
+        lines: 70,
+        functions: 70,
+        branches: 60,
+        statements: 70,
+      },
     },
   },
 });

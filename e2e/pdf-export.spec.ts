@@ -135,27 +135,14 @@ test.describe('PDF export', () => {
       return;
     }
 
-    // Call the PDF export API directly to verify the backend endpoint works
+    // Call the PDF export API directly to verify the backend endpoint works.
+    // The backend uses pdf-lib (pure JS, no browser engine), so there is no
+    // puppeteer / Chromium dependency — any non-2xx response is a real bug.
     const pdfRes = await page.request.post(`/api/pages/${createdPageId}/export/pdf`, {
       headers: { Authorization: `Bearer ${authToken}` },
     });
 
-    // The PDF export may fail if Chromium/puppeteer is not installed on the
-    // backend server — that is expected in many CI environments.
-    if (pdfRes.status() === 500) {
-      const body = await pdfRes.json().catch(() => null);
-      const msg = body?.message ?? '';
-      if (/chromium|puppeteer|browser/i.test(msg)) {
-        test.skip();
-        return;
-      }
-    }
-
-    if (!pdfRes.ok()) {
-      // Non-Chromium failures should still be reported
-      test.skip();
-      return;
-    }
+    expect(pdfRes.ok()).toBeTruthy();
 
     // Verify the response content type is PDF
     const contentType = pdfRes.headers()['content-type'] ?? '';

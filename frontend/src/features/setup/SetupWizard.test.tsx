@@ -27,14 +27,21 @@ function typeInto(element: HTMLElement, value: string) {
 
 const fetchSpy = vi.spyOn(globalThis, 'fetch');
 
-function mockFetchForSetup({ adminExists }: { adminExists: boolean }) {
+function mockFetchForSetup(
+  opts: { adminExists: boolean } | { steps: { admin: boolean; llm: boolean; confluence: boolean } },
+) {
+  const steps = 'steps' in opts
+    ? opts.steps
+    : { admin: opts.adminExists, llm: false, confluence: false };
+  const setupComplete = steps.admin && steps.llm && steps.confluence;
+
   fetchSpy.mockImplementation(async (input) => {
     const url = typeof input === 'string' ? input : (input as Request).url;
 
     if (url.includes('/health/setup-status')) {
       return new Response(JSON.stringify({
-        setupComplete: false,
-        steps: { admin: adminExists, llm: false, confluence: false },
+        setupComplete,
+        steps,
       }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -394,6 +401,63 @@ describe('SetupWizard', () => {
 
       // sessionStorage should be cleared on completion
       expect(sessionStorage.getItem(STORAGE_KEY)).toBeNull();
+    });
+
+    it('resumes to LLM step when admin exists but llm is not configured', async () => {
+      // Fresh browser, no sessionStorage. Backend reports admin done but llm pending.
+      sessionStorage.clear();
+      mockFetchForSetup({ steps: { admin: true, llm: false, confluence: false } });
+
+      renderWizard();
+
+      // Should skip welcome + admin and land directly on LLM
+      await waitFor(() => {
+        expect(screen.getByText('Configure LLM Provider')).toBeInTheDocument();
+      });
+      expect(screen.queryByText(/Welcome to/i)).not.toBeInTheDocument();
+      expect(screen.queryByText('Create Admin Account')).not.toBeInTheDocument();
+    });
+
+    it('resumes to Confluence step when admin and llm are both done', async () => {
+      sessionStorage.clear();
+      mockFetchForSetup({ steps: { admin: true, llm: true, confluence: false } });
+
+      renderWizard();
+
+      await waitFor(() => {
+        expect(screen.getByText('Connect Confluence')).toBeInTheDocument();
+      });
+      expect(screen.queryByText(/Welcome to/i)).not.toBeInTheDocument();
+      expect(screen.queryByText('Configure LLM Provider')).not.toBeInTheDocument();
+    });
+
+    it('jumps to the Complete step when every setup flag is already true', async () => {
+      sessionStorage.clear();
+      mockFetchForSetup({ steps: { admin: true, llm: true, confluence: true } });
+
+      renderWizard();
+
+      // Backend reports everything done → wizard lands on the terminal step.
+      await waitFor(() => {
+        expect(screen.getByText(/You're All Set/i)).toBeInTheDocument();
+      });
+      expect(screen.queryByText(/Welcome to/i)).not.toBeInTheDocument();
+      expect(screen.queryByText('Configure LLM Provider')).not.toBeInTheDocument();
+      expect(screen.queryByText('Connect Confluence')).not.toBeInTheDocument();
+    });
+
+    it('keeps the user on a later step if sessionStorage is ahead of the backend-known min', async () => {
+      // User was mid-Confluence (step 3) when they refreshed. Backend only
+      // knows admin + llm are done (step 3 is their target too). Confirm
+      // sessionStorage is honoured even though the backend min would also be 3.
+      sessionStorage.setItem(STORAGE_KEY, '3');
+      mockFetchForSetup({ steps: { admin: true, llm: true, confluence: false } });
+
+      renderWizard();
+
+      await waitFor(() => {
+        expect(screen.getByText('Connect Confluence')).toBeInTheDocument();
+      });
     });
 
     it('starts at step 0 after completion even if remounted', async () => {
