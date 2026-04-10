@@ -10,6 +10,7 @@ import { AppLayout } from './shared/components/layout/AppLayout';
 import { ErrorBoundary } from './shared/components/feedback/ErrorBoundary';
 
 import { LoginPage } from './features/settings/LoginPage';
+import { OidcCallbackPage } from './features/auth/OidcCallbackPage';
 import { SetupWizard } from './features/setup/SetupWizard';
 // Route-based code splitting: lazy-load all page components (#186)
 // LoginPage is statically imported — it's the first screen for
@@ -111,6 +112,7 @@ export function App() {
           <Routes>
             <Route path="/setup" element={<SetupRoute><SetupWizard /></SetupRoute>} />
             <Route path="/login" element={<LoginPage />} />
+            <Route path="/auth/oidc/callback" element={<OidcCallbackPage />} />
             <Route
               path="/*"
               element={
