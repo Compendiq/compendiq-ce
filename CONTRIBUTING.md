@@ -15,8 +15,8 @@ PostgreSQL 17 (with pgvector) and Redis 8 run via Docker Compose -- no manual in
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/laboef1900/ai-kb-creator.git
-cd ai-kb-creator
+git clone https://github.com/Compendiq/compendiq-ce.git
+cd compendiq-ce
 ```
 
 ### 2. Install dependencies

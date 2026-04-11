@@ -1318,7 +1318,7 @@ The enterprise repo's CI installs both the open repo and the enterprise package,
 # In enterprise repo CI
 - name: Integration test
   run: |
-    git clone https://github.com/yourorg/compendiq.git /tmp/compendiq
+    git clone https://github.com/Compendiq/compendiq-ce.git /tmp/compendiq-ce
     cd /tmp/compendiq
     npm install
     npm install /path/to/enterprise/dist  # Install local build

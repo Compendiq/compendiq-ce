@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # =============================================================================
 # Compendiq — One-Command Docker Installer
-# https://github.com/diinlu/compendiq
+# https://github.com/Compendiq/compendiq-ce
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/diinlu/compendiq/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/Compendiq/compendiq-ce/main/scripts/install.sh | bash
 #   curl ... | bash -s -- --dir /opt/compendiq --port 9090
 #   bash install.sh --dir /opt/compendiq --port 9090 --version 1.2.0
 #   bash install.sh --dry-run
@@ -234,7 +234,7 @@ write_compose() {
 
 services:
   frontend:
-    image: diinlu/compendiq-frontend:__VERSION__
+    image: diinlu/compendiq-ce-frontend:__VERSION__
     ports:
       - "__PORT__:8081"
     depends_on:
@@ -250,7 +250,7 @@ services:
       - frontend
 
   backend:
-    image: diinlu/compendiq-backend:__VERSION__
+    image: diinlu/compendiq-ce-backend:__VERSION__
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
@@ -410,7 +410,7 @@ success_banner() {
   printf '  %bStop:%b    cd %s && docker compose down\n' "$DIM" "$RESET" "$dir"
   printf '  %bUpdate:%b  cd %s && docker compose pull && docker compose up -d\n' "$DIM" "$RESET" "$dir"
   printf '  %bLogs:%b    cd %s && docker compose logs -f\n' "$DIM" "$RESET" "$dir"
-  printf '  %bRemove:%b  curl -fsSL https://raw.githubusercontent.com/diinlu/compendiq/main/scripts/uninstall.sh | bash\n' "$DIM" "$RESET"
+  printf '  %bRemove:%b  curl -fsSL https://raw.githubusercontent.com/Compendiq/compendiq-ce/main/scripts/uninstall.sh | bash\n' "$DIM" "$RESET"
   printf '\n'
 }
 
@@ -478,7 +478,7 @@ dry_run_summary() {
   printf '    1. Create directory %s\n' "$dir"
   printf '    2. Generate .env with cryptographic secrets\n'
   printf '    3. Write docker-compose.yml\n'
-  printf '    4. docker compose pull (images: compendiq-frontend:%s, compendiq-backend:%s, pgvector:pg17, redis:8-alpine)\n' "$version" "$version"
+  printf '    4. docker compose pull (images: diinlu/compendiq-ce-frontend:%s, diinlu/compendiq-ce-backend:%s, pgvector/pgvector:pg17, redis:8-alpine)\n' "$version" "$version"
   printf '    5. docker compose up -d\n'
   printf '    6. Wait for backend health check (max 60s)\n'
   printf '    7. Open http://localhost:%s in browser\n' "$port"
