@@ -7,8 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+<!--
+  Claude draft 2026-04-11 (Phase 1 Session 1):
+  At launch time (2026-05-05), rename this `[Unreleased]` header to
+  `[1.0.0] - 2026-05-05` and insert a new empty `[Unreleased]` section above it.
+  The entries below now cover everything the v1.0 on-premise CE launch ships.
+  Sections added today for Phase 0 closeout:
+    - First-run setup wizard with backend-derived resume
+    - One-command installer
+    - Enterprise plugin architecture (open-core extension points)
+    - Settings → License + System tabs (DB-backed license management)
+    - Build info surfaced via /api/health + SystemTab
+    - Test coverage gates (backend ≥70%, frontend ≥60%)
+    - E2E test suite (Playwright) for critical user flows
+    - Performance harness (k6) with 1000-page baseline
+-->
+
 ### Added
 
+- **First-run setup wizard** -- 5-step onboarding (admin account → LLM provider → Confluence connection → space selection → sync trigger), resumable from backend state if interrupted, re-runnable from `/admin/setup`
+- **One-command installer** -- `install.sh` script auto-generates secrets (`JWT_SECRET`, `PAT_ENCRYPTION_KEY`), pulls published Docker images, creates `docker-compose.yml` + `.env`, and opens the first-run wizard in the browser. Tested on macOS 14 and Rocky Linux 10.
+- **Enterprise plugin architecture (open-core)** -- `backend/src/core/enterprise/` provides the plugin loader, type contracts, and noop fallback for the optional `@compendiq/enterprise` package. When the enterprise package is absent, CE runs unchanged with all enterprise features disabled.
+- **License management via UI** -- `Settings → License` shows the current edition, seats, expiry, and feature availability. When an EE backend is detected, admins can paste a signed license key directly into the UI (persisted in the `admin_settings` database table).
+- **Build info display** -- `Settings → System` now shows the running edition (CE/EE), backend commit hash, frontend commit hash, and build timestamp, sourced from `build-info.json` and `/api/health`.
+- **E2E test suite (Playwright)** -- covers user registration/login, article create/edit/delete, RAG Q&A with SSE streaming, settings flows, keyboard shortcuts, PDF export, and a mocked Confluence sync flow (the real-DC variant remains available via environment variables).
+- **Performance harness (k6)** -- `perf/seed-test-data.ts` seeds 1000 pages + 3000 embedding chunks; `perf/search-load-test.js` runs a ramping load scenario against `/api/search` with a `p(99)<500ms` threshold. Baseline on MacBook / Docker Desktop: p99 = 9.28 ms against 500 ms target (54× headroom).
+- **Test coverage gates** -- backend ≥70% on routes (baseline: 79.05% lines, routes aggregate 84.11%); frontend ≥60% (baseline: 67.03% lines). Enforced in `vitest.config.ts` thresholds.
 - **Confluence Data Center integration** -- bidirectional sync with XHTML storage format conversion, support for Confluence macros (code blocks, task lists, panels, user mentions, page links, draw.io diagrams)
 - **Multi-LLM provider support** -- Ollama (default) and OpenAI-compatible APIs (OpenAI, Azure OpenAI, LM Studio, vLLM, llama.cpp, LocalAI), configurable per-user or server-wide
 - **RAG-powered Q&A** -- ask questions across the entire knowledge base using pgvector hybrid search (vector cosine similarity + full-text keyword search + RRF re-ranking)

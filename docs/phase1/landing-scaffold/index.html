@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Compendiq — AI knowledge base for Confluence Data Center</title>
+    <meta name="description" content="Open-source, self-hosted AI layer for Confluence Data Center. RAG-powered Q&A, article improvement, and generation over your existing knowledge base." />
+    <meta property="og:title" content="Compendiq — AI knowledge base for Confluence DC" />
+    <meta property="og:description" content="Open-source, self-hosted AI layer for Confluence Data Center." />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://compendiq.com/" />
+    <meta name="twitter:card" content="summary" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="nav">
+      <a class="logo" href="/">Compendiq</a>
+      <nav>
+        <a href="https://github.com/Compendiq/compendiq-ce" rel="noopener">GitHub</a>
+        <a href="https://github.com/Compendiq/compendiq-ce/discussions" rel="noopener">Community</a>
+        <a href="#install">Install</a>
+        <a href="#enterprise">Enterprise</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero">
+        <h1>{{HERO_TAGLINE}}</h1>
+        <p class="subtitle">
+          Open source. Self-hosted. Connects to your Confluence Data Center, syncs your knowledge base, and lets you ask questions, improve articles, and generate new ones using the LLM of your choice.
+        </p>
+        <div class="cta">
+          <a class="btn btn-primary" href="#install">Self-host for free</a>
+          <a class="btn btn-secondary" href="https://github.com/Compendiq/compendiq-ce" rel="noopener">GitHub ★ <span id="stars">—</span></a>
+        </div>
+        <!-- {{FOUNDER_TODO: replace with actual GitHub stars badge via Shields.io}} -->
+      </section>
+
+      <section class="features">
+        <div class="feature">
+          <h3>RAG-powered Q&amp;A</h3>
+          <p>Hybrid search across every synced page — pgvector cosine + full-text + RRF re-ranking. Ask a question, get an answer grounded in your real Confluence content, with citations.</p>
+        </div>
+        <div class="feature">
+          <h3>Your LLM, your rules</h3>
+          <p>Ollama by default (fully local, zero API cost). Or bring your own OpenAI-compatible API — OpenAI, Azure OpenAI, LM Studio, vLLM, llama.cpp, LocalAI. Per-user or server-wide.</p>
+        </div>
+        <div class="feature">
+          <h3>Confluence DC-native</h3>
+          <p>XHTML storage format bidirectional sync. Draw.io diagrams render. Macros round-trip. Written for Confluence DC 8.x and 9.x on-premise — not a Cloud-only rewrite.</p>
+        </div>
+      </section>
+
+      <section id="install" class="install">
+        <h2>Install on your own machine</h2>
+        <p>One command. Generates secrets, pulls images, opens the first-run wizard.</p>
+        <pre><code>curl -fsSL https://raw.githubusercontent.com/Compendiq/compendiq-ce/main/scripts/install.sh | bash</code></pre>
+        <p class="small">Tested on macOS 14 (Sonoma) and Rocky Linux 10. Ubuntu, Debian, and Windows + WSL2 coverage lands in Phase 2. Requires Docker Desktop on macOS or Docker Engine on Linux.</p>
+      </section>
+
+      <section class="demo">
+        <h2>90 seconds of Compendiq doing its thing</h2>
+        <div class="video">
+          <a href="{{DEMO_VIDEO_URL}}" rel="noopener">
+            Watch the demo →
+          </a>
+        </div>
+        <p class="small">{{FOUNDER_TODO: embed YouTube video once A9 is live}}</p>
+      </section>
+
+      <section id="enterprise" class="enterprise">
+        <h2>For teams that need more</h2>
+        <p>
+          Compendiq Community Edition is AGPL-3.0 and has no functional limits.
+          Compendiq Enterprise adds SSO/OIDC, per-space RAG permissions, audit log export, seat enforcement, and priority support.
+        </p>
+        <p>Still self-hosted, still behind your firewall. Paid via email — no self-service signup yet.</p>
+        <form class="enterprise-form" action="{{ENTERPRISE_FORM_ENDPOINT}}" method="POST">
+          <label>
+            Work email
+            <input type="email" name="email" required placeholder="you@company.com" />
+          </label>
+          <label>
+            Company
+            <input type="text" name="company" placeholder="Acme Inc." />
+          </label>
+          <label class="consent">
+            <input type="checkbox" name="gdpr_consent" required />
+            I consent to Compendiq storing this email to follow up about Enterprise access. We will not share it.
+          </label>
+          <button type="submit" class="btn btn-primary">Request Enterprise access</button>
+        </form>
+      </section>
+
+      <section class="stewardship">
+        <h3>A note on stewardship</h3>
+        <p>{{STEWARDSHIP_HEDGE}}</p>
+        <!--
+          {{FOUNDER_TODO}}: Phase 1 plan §2.4 proposes three options.
+          Default (soft hedge):
+            "We're open-source and self-hostable. A formal stewardship commitment
+             ships with v1.1 in August 2026 — the short version: Community features
+             will never be downgraded to Enterprise."
+        -->
+      </section>
+
+      <section class="saas">
+        <h3>Cloud-hosted SaaS — coming 2027</h3>
+        <p>Right now Compendiq is on-premise only. A cloud-hosted SaaS is planned for early 2027 as an invitation-only showcase. Drop your email if you want to be on the invite list.</p>
+        <form class="saas-form" action="{{ENTERPRISE_FORM_ENDPOINT}}" method="POST">
+          <input type="hidden" name="list" value="saas-waitlist" />
+          <label>
+            <input type="email" name="email" required placeholder="you@company.com" />
+          </label>
+          <button type="submit" class="btn btn-secondary">Join SaaS waitlist</button>
+        </form>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div>
+        <p>Built by {{FOUNDER_NAME}} — one human, one project.</p>
+        <p><a href="https://github.com/Compendiq/compendiq-ce" rel="noopener">GitHub</a> · <a href="https://github.com/Compendiq/compendiq-ce/discussions" rel="noopener">Discussions</a> · <a href="/SECURITY.md">Security</a> · <a href="/LICENSE">AGPL-3.0</a></p>
+      </div>
+      <p class="copy">© 2026 Compendiq</p>
+    </footer>
+  </body>
+</html>
