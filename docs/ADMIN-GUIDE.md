@@ -21,8 +21,8 @@ Additionally, you need an **Ollama** server (or OpenAI-compatible API) accessibl
 1. **Clone the repository:**
 
    ```bash
-   git clone https://github.com/laboef1900/ai-kb-creator.git
-   cd ai-kb-creator
+   git clone https://github.com/Compendiq/compendiq-ce.git
+   cd compendiq-ce
    ```
 
 2. **Create your environment file:**

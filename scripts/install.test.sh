@@ -232,7 +232,8 @@ test_compose_defaults() {
   local compose_content
   compose_content="$(cat "${TEST_DIR}/docker-compose.yml")"
 
-  assert_contains "Defaults to latest tag" "$compose_content" "diinlu/compendiq-ce-backend:latest"
+  assert_contains "Defaults to latest tag (backend)" "$compose_content" "diinlu/compendiq-ce-backend:latest"
+  assert_contains "Defaults to latest tag (frontend)" "$compose_content" "diinlu/compendiq-ce-frontend:latest"
   assert_contains "Defaults to port 8080" "$compose_content" "8080:8081"
 
   teardown
