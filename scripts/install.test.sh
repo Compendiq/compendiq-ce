@@ -201,8 +201,8 @@ test_compose_generation() {
   local compose_content
   compose_content="$(cat "${TEST_DIR}/docker-compose.yml")"
 
-  assert_contains "Uses specified image version" "$compose_content" "diinlu/compendiq-backend:1.2.3"
-  assert_contains "Uses specified frontend version" "$compose_content" "diinlu/compendiq-frontend:1.2.3"
+  assert_contains "Uses specified image version" "$compose_content" "diinlu/compendiq-ce-backend:1.2.3"
+  assert_contains "Uses specified frontend version" "$compose_content" "diinlu/compendiq-ce-frontend:1.2.3"
   assert_contains "Maps specified port" "$compose_content" "9090:8081"
   assert_contains "Sets FRONTEND_URL with port" "$compose_content" "http://localhost:9090"
   assert_contains "Has postgres service" "$compose_content" "pgvector/pgvector:pg17"
@@ -232,7 +232,7 @@ test_compose_defaults() {
   local compose_content
   compose_content="$(cat "${TEST_DIR}/docker-compose.yml")"
 
-  assert_contains "Defaults to latest tag" "$compose_content" "diinlu/compendiq-backend:latest"
+  assert_contains "Defaults to latest tag" "$compose_content" "diinlu/compendiq-ce-backend:latest"
   assert_contains "Defaults to port 8080" "$compose_content" "8080:8081"
 
   teardown
