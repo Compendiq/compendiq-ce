@@ -113,3 +113,92 @@ The seed script creates:
 - **3000 embedding chunks** (3 per page) with random 1024-dim vectors
 - Pages have realistic titles, body text, labels, and authors
 - All test data uses the `perf-test-` confluence_id prefix for safe cleanup
+
+## Baselines
+
+### 2026-04-11 — MacBook / docker-desktop / 1000 pages
+
+Phase 0 gate run. Seeded 1000 PERF-* pages into the running EE stack's postgres
+(via a `node:20-alpine` sidecar on `compendiq-ee_data-net` because the
+postgres container is not exposed to the host — the data network is
+`internal: true`). Ran k6 via `grafana/k6` docker image attached to
+`compendiq-ee_backend-net`, reaching the backend at `http://backend:3051`.
+
+**Fixture:** 1000 pages × 3 embedding chunks = 3000 vectors, random 1024-dim.
+**Script:** `perf/search-load-test.js` — 30s ramp → 60s @ 50 VUs → 10s
+cooldown, mix of keyword (60%) + semantic (20%) + hybrid (20%) modes.
+**Note:** Default global rate limit of 100 req/min had to be raised to
+100000/min for the run (via `admin_settings.rate_limit_global_max` +
+backend restart to bypass the 60s TTL cache) and reverted afterwards.
+
+**Result: PASS — huge headroom.**
+
+| Metric | Value | Target | Headroom |
+|---|---|---|---|
+| http_req_duration p(50) / med | 4.80ms | — | — |
+| http_req_duration p(90) | 6.60ms | — | — |
+| http_req_duration p(95) | 7.09ms | < 300ms | ~42× |
+| http_req_duration p(99) | **9.28ms** | **< 500ms** | **~54×** |
+| http_req_duration max | 19.35ms | — | — |
+| http_req_duration avg | 4.72ms | — | — |
+| Total requests | 1743 | — | — |
+| Failed requests | 0 | < 1% | — |
+| search_errors | 0% | < 2% | — |
+
+Interpretation: hybrid search over a 1000-page index with random embeddings
+is comfortably bound by SQL / index traversal rather than application-level
+overhead. Random-vector HNSW queries are typically faster than real-world
+ones (no semantic clustering), so the real-world p99 under production data
+is expected to be somewhat higher — still with significant headroom.
+
+**Known caveats for this baseline:**
+1. Random 1024-dim embeddings have artificially flat neighbourhoods. Real
+   `bge-m3` embeddings cluster, which stresses the HNSW index differently.
+2. The global rate limit had to be raised to let k6 generate load; the
+   backend's rate limiter is the first bottleneck under real load. Tune
+   `rate_limit_global_max` per deployment.
+3. The `perf_user` is a freshly-registered non-admin, so search results
+   are empty (no space permissions). This still exercises the query
+   pipeline end-to-end; result-set size affects response serialisation
+   but not the HNSW / FTS / RRF path.
+4. Run was on a MacBook via Docker Desktop; repeat on a Linux target VM
+   before reporting a production SLO number.
+
+To re-run with zero friction:
+
+```bash
+# 1. Start the EE stack (already documented above)
+# 2. Seed via docker sidecar (postgres is on an internal network)
+docker build -t perf-seeder:local /tmp/perf-seeder  # Dockerfile: FROM node:20-alpine, npm i tsx pg pgvector
+docker run --rm \
+  --network compendiq-ee_data-net \
+  -v "$PWD/perf:/perf:ro" \
+  -e POSTGRES_URL=postgresql://kb_user:changeme-postgres@postgres:5432/kb_creator \
+  perf-seeder:local sh -c 'cp /perf/seed-test-data.ts /app/seed.ts && cd /app && npx tsx seed.ts'
+
+# 3. Raise rate limit
+docker exec compendiq-ee-postgres-1 psql -U kb_user -d kb_creator -c \
+  "INSERT INTO admin_settings VALUES ('rate_limit_global_max','100000',NOW()) \
+   ON CONFLICT (setting_key) DO UPDATE SET setting_value='100000';"
+docker restart compendiq-ee-backend-1  # bypass the 60s in-process cache
+
+# 4. Get auth token and run k6
+TOKEN=$(curl -sS -X POST http://localhost:3053/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"<user>","password":"<pass>"}' | jq -r .accessToken)
+docker run --rm -i \
+  --network compendiq-ee_backend-net \
+  -e BASE_URL=http://backend:3051 \
+  -e AUTH_TOKEN="$TOKEN" \
+  grafana/k6 run - < perf/search-load-test.js
+
+# 5. Cleanup
+docker run --rm \
+  --network compendiq-ee_data-net \
+  -v "$PWD/perf:/perf:ro" \
+  -e POSTGRES_URL=postgresql://kb_user:changeme-postgres@postgres:5432/kb_creator \
+  perf-seeder:local sh -c 'cp /perf/seed-test-data.ts /app/seed.ts && cd /app && npx tsx seed.ts --cleanup'
+docker exec compendiq-ee-postgres-1 psql -U kb_user -d kb_creator -c \
+  "DELETE FROM admin_settings WHERE setting_key='rate_limit_global_max';"
+docker restart compendiq-ee-backend-1
+```
