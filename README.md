@@ -6,8 +6,8 @@
 
 [![CI](https://github.com/Compendiq/compendiq-ce/actions/workflows/pr-check.yml/badge.svg)](https://github.com/Compendiq/compendiq-ce/actions/workflows/pr-check.yml)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-[![Docker Backend](https://img.shields.io/docker/pulls/diinlu/compendiq-ce-backend?label=Docker%20pulls%20%28backend%29)](https://hub.docker.com/r/diinlu/compendiq-ce-backend)
-[![Docker Frontend](https://img.shields.io/docker/pulls/diinlu/compendiq-ce-frontend?label=Docker%20pulls%20%28frontend%29)](https://hub.docker.com/r/diinlu/compendiq-ce-frontend)
+[![GHCR Backend](https://img.shields.io/badge/ghcr.io-compendiq--ce--backend-blue)](https://github.com/Compendiq/compendiq-ce/pkgs/container/compendiq-ce-backend)
+[![GHCR Frontend](https://img.shields.io/badge/ghcr.io-compendiq--ce--frontend-blue)](https://github.com/Compendiq/compendiq-ce/pkgs/container/compendiq-ce-frontend)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D22.0.0-brightgreen)]()
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue)]()
 
@@ -152,7 +152,7 @@ curl -fsSL https://raw.githubusercontent.com/Compendiq/compendiq-ce/main/scripts
 
 1. Generates cryptographically secure secrets (AES-256 keys, passwords)
 2. Writes a self-contained `~/compendiq/docker-compose.yml` with all secrets embedded as literal values
-3. Pulls images from Docker Hub (`diinlu/compendiq-ce-backend`, `diinlu/compendiq-ce-frontend`)
+3. Pulls images from GHCR (`ghcr.io/compendiq/compendiq-ce-backend`, `ghcr.io/compendiq/compendiq-ce-frontend`)
 4. Starts all four containers (frontend, backend, postgres, redis)
 5. Polls the backend health endpoint until ready (up to 3 minutes)
 6. Removes the temporary backend port binding (port 3051 is never permanently exposed to the host)
@@ -178,7 +178,7 @@ Images are published to two registries on every release:
 
 | Registry | Images |
 |----------|--------|
-| Docker Hub | `diinlu/compendiq-ce-backend` · `diinlu/compendiq-ce-frontend` · `diinlu/compendiq-ce-mcp-docs` · `diinlu/compendiq-ce-searxng` |
+| GHCR | `ghcr.io/compendiq/compendiq-ce-backend` · `ghcr.io/compendiq/compendiq-ce-frontend` · `ghcr.io/compendiq/compendiq-ce-mcp-docs` · `ghcr.io/compendiq/compendiq-ce-searxng` |
 
 Both registries publish `linux/amd64` and `linux/arm64` variants.
 

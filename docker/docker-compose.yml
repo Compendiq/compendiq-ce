@@ -2,7 +2,7 @@ name: compendiq
 
 services:
   frontend:
-    image: diinlu/compendiq-ce-frontend:dev
+    image: ghcr.io/compendiq/compendiq-ce-frontend:dev
     build:
       context: ..
       dockerfile: frontend/Dockerfile
@@ -15,7 +15,7 @@ services:
     networks: [frontend-net, backend-net]
 
   backend:
-    image: diinlu/compendiq-ce-backend:dev
+    image: ghcr.io/compendiq/compendiq-ce-backend:dev
     build:
       context: ..
       dockerfile: backend/Dockerfile
@@ -93,7 +93,7 @@ services:
     networks: [data-net]
 
   mcp-docs:
-    image: diinlu/compendiq-ce-mcp-docs:dev
+    image: ghcr.io/compendiq/compendiq-ce-mcp-docs:dev
     build:
       context: ..
       dockerfile: mcp-docs/Dockerfile
@@ -119,7 +119,7 @@ services:
     networks: [backend-net]
 
   searxng:
-    image: diinlu/compendiq-ce-searxng:dev
+    image: ghcr.io/compendiq/compendiq-ce-searxng:dev
     build:
       context: ./searxng
       dockerfile: Dockerfile

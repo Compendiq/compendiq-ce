@@ -40,7 +40,7 @@ At v0.1.0, only OIDC/SSO and seat enforcement are implemented in the EE overlay.
 **This must happen before Gaps 3, 5, and 6 can proceed.**
 
 Currently three different namespaces are in use:
-- Docker Hub: `diinlu/compendiq-ce-*`
+- GHCR: `ghcr.io/compendiq/compendiq-ce-*`
 - README badge: `laboef1900/ai-kb-creator`
 - EE README: `github.com/Compendiq/compendiq-ee`
 
@@ -107,15 +107,13 @@ However, the EE build script (`build-enterprise.sh`) patches `app.ts` during the
    b. Add GHCR login step.
    c. Use dual `images` list in metadata-action:
       ```yaml
-      images: |
-        diinlu/compendiq-ce-backend
-        ghcr.io/<org>/compendiq-ce-backend
+      images: ghcr.io/compendiq/compendiq-ce-backend
       ```
 2. Test with a workflow dispatch dry run before merging.
 
 **Files:** `/compendiq-ce/.github/workflows/docker-build.yml`
 **Effort:** 3h
-**Acceptance:** Tag push publishes to both Docker Hub and GHCR.
+**Acceptance:** Tag push publishes to GHCR (`ghcr.io/compendiq/*`).
 
 ---
 
@@ -511,6 +509,6 @@ All five on-premise gates pass:
 2. **Security** — Audit pass ✅, no critical/high prod CVEs ✅, auth hardened ✅
 3. **Operational (on-prem)** — New user: zero to running in < 15 min via installer; wizard completes without support
 4. **Documentation** — Admin guide ✅, user guide ✅, API reference ✅, .env.example ✅, stewardship ✅
-5. **Distribution** — Docker Hub images ✅, GHCR mirror, GitHub releases tagged, installer tested cross-platform, repo public
+5. **Distribution** — GHCR images ✅, GitHub releases tagged, installer tested cross-platform, repo public
 
 Gate 6 (SaaS operational) → deferred to post-launch phase.

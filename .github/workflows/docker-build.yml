@@ -18,21 +18,23 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Log in to Docker Hub
+      - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
-          username: ${{ vars.DHI_USER }}
-          password: ${{ secrets.DHI_PAT }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: diinlu/compendiq-ce-backend
+          images: ghcr.io/compendiq/compendiq-ce-backend
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -55,8 +57,8 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           push: true
-          cache-from: type=registry,ref=diinlu/compendiq-ce-backend:buildcache
-          cache-to: type=registry,ref=diinlu/compendiq-ce-backend:buildcache,mode=max
+          cache-from: type=registry,ref=ghcr.io/compendiq/compendiq-ce-backend:buildcache
+          cache-to: type=registry,ref=ghcr.io/compendiq/compendiq-ce-backend:buildcache,mode=max
           sbom: true
           provenance: mode=max
 
@@ -66,21 +68,23 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Log in to Docker Hub
+      - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
-          username: ${{ vars.DHI_USER }}
-          password: ${{ secrets.DHI_PAT }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: diinlu/compendiq-ce-frontend
+          images: ghcr.io/compendiq/compendiq-ce-frontend
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -103,8 +107,8 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           push: true
-          cache-from: type=registry,ref=diinlu/compendiq-ce-frontend:buildcache
-          cache-to: type=registry,ref=diinlu/compendiq-ce-frontend:buildcache,mode=max
+          cache-from: type=registry,ref=ghcr.io/compendiq/compendiq-ce-frontend:buildcache
+          cache-to: type=registry,ref=ghcr.io/compendiq/compendiq-ce-frontend:buildcache,mode=max
           sbom: true
           provenance: mode=max
 
@@ -114,21 +118,23 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Log in to Docker Hub
+      - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
-          username: ${{ vars.DHI_USER }}
-          password: ${{ secrets.DHI_PAT }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: diinlu/compendiq-ce-searxng
+          images: ghcr.io/compendiq/compendiq-ce-searxng
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -151,8 +157,8 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           push: true
-          cache-from: type=registry,ref=diinlu/compendiq-ce-searxng:buildcache
-          cache-to: type=registry,ref=diinlu/compendiq-ce-searxng:buildcache,mode=max
+          cache-from: type=registry,ref=ghcr.io/compendiq/compendiq-ce-searxng:buildcache
+          cache-to: type=registry,ref=ghcr.io/compendiq/compendiq-ce-searxng:buildcache,mode=max
 
   docker-mcp-docs:
     name: MCP Docs Image
@@ -160,21 +166,23 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Log in to Docker Hub
+      - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
-          username: ${{ vars.DHI_USER }}
-          password: ${{ secrets.DHI_PAT }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: diinlu/compendiq-ce-mcp-docs
+          images: ghcr.io/compendiq/compendiq-ce-mcp-docs
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -197,7 +205,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           push: true
-          cache-from: type=registry,ref=diinlu/compendiq-ce-mcp-docs:buildcache
-          cache-to: type=registry,ref=diinlu/compendiq-ce-mcp-docs:buildcache,mode=max
+          cache-from: type=registry,ref=ghcr.io/compendiq/compendiq-ce-mcp-docs:buildcache
+          cache-to: type=registry,ref=ghcr.io/compendiq/compendiq-ce-mcp-docs:buildcache,mode=max
           sbom: true
           provenance: mode=max
