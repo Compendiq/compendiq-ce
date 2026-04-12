@@ -81,7 +81,7 @@ However, the EE build script (`build-enterprise.sh`) patches `app.ts` during the
    ```yaml
    services:
      backend:
-       image: dhi.io/compendiq-backend:ee
+       image: ghcr.io/compendiq/compendiq-ee-backend:latest
        build: !reset null
        environment:
          COMPENDIQ_LICENSE_KEY: ${COMPENDIQ_LICENSE_KEY}
