@@ -26,7 +26,7 @@ Tone notes:
 >
 > **What's free and what's not:** the Community Edition you see on the repo is AGPL-3.0 and has no functional limits — full RAG Q&A, full article generation, full sync. The Enterprise Edition adds SSO/OIDC, per-space RAG permissions, audit log export, and seat enforcement, and requires a separate proprietary license key.
 >
-> **Install:** `curl -fsSL https://raw.githubusercontent.com/Compendiq/compendiq-ce/main/scripts/install.sh | bash` — this auto-generates secrets, pulls the images from Docker Hub, and opens the first-run wizard in your browser. Tested on macOS 14 and Rocky Linux 10 so far; Ubuntu / Debian / WSL2 is in Phase 2.
+> **Install:** `curl -fsSL https://raw.githubusercontent.com/Compendiq/compendiq-ce/main/scripts/install.sh | bash` — this auto-generates secrets, pulls the images from GHCR, and opens the first-run wizard in your browser. Tested on macOS 14 and Rocky Linux 10 so far; Ubuntu / Debian / WSL2 is in Phase 2.
 >
 > **What to do from here:**
 > - File bugs you hit in the Q&A category below (please include install platform + Confluence DC version + a copy of the error)

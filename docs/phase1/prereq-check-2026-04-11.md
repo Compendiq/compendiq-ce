@@ -22,7 +22,7 @@
 | P1 | `compendiq.com` DNS controllable | ✅ | Nameservers: `ns69.domaincontrol.com`, `ns70.domaincontrol.com` (GoDaddy). DNS is controllable. Not urgent — with A8 moved to Phase 3, the domain is unused at launch (or optionally set up a simple redirect to the GitHub repo). |
 | P2 | ~~Cloudflare Pages account linked to `compendiq.com`~~ | n/a | **Not needed per 2026-04-11 founder decision.** A8 landing page moved to Phase 3 alongside the SaaS showcase. Phase 1 launch routes all traffic directly to `github.com/Compendiq/compendiq-ce`. |
 | P3 | `gh` CLI scopes | ⚠ | Logged in as `laboef1900`. Token scopes: `gist`, `read:org`, `repo`. **Missing:** `admin:org`, `workflow`. **Action:** `gh auth refresh -s admin:org,workflow` before A4/A5 execution. **Correction:** an earlier draft listed `discussions:write` which is not a valid GitHub OAuth scope — it produced `invalid_scope` errors. The correct singular name is `write:discussion` but even that is unnecessary because the `repo` scope already covers GitHub Discussions operations on `compendiq-ce`. |
-| P4 | Docker Hub admin access | ✅ | Founder confirmed access 2026-04-11. When ready to flip images public at A6, log into Docker Hub, navigate to `diinlu/compendiq-ce-*` (backend, frontend, mcp-docs, searxng), set visibility to public. Claude verifies afterward with `docker pull`. |
+| P4 | GHCR packages on `Compendiq` org | ⚠ | **Revised 2026-04-12: switched from Docker Hub to GHCR.** Needs `write:packages` scope on `gh` CLI and GitHub Packages enabled on the `Compendiq` org. CI workflow (`docker-build.yml`) must be updated to push to `ghcr.io/compendiq/*` instead of Docker Hub. Once the repo is public (A4), packages inherit public visibility. Claude verifies with `docker pull ghcr.io/compendiq/compendiq-ce-backend:latest`. |
 | P5 | GitHub admin on `Compendiq` org | ⚠ | Cannot verify fully from the `laboef1900` session. **Founder confirms** that the same or a parallel session has `admin:org` on `Compendiq`. The P3 scope refresh also satisfies this. |
 | P6 | Hacker News account with karma > 100 | ❓ | **Founder only** — Claude cannot introspect HN accounts. |
 | P7 | Product Hunt account ≥60 days old | ❓ | **Founder only**. Confirm the launch account was created before ~2026-03-06. |
@@ -44,7 +44,7 @@
 
    A15 (GitHub Discussions setup) uses the `repo` scope that's already in place — no additional scope needed.
 
-2. **P4 — Docker Hub UI action.** Founder has access confirmed. When ready: Docker Hub web UI → `diinlu/compendiq-ce-*` images → flip to public. Claude verifies.
+2. **P4 — GHCR setup.** Run `gh auth refresh -s write:packages` to add the packages scope. Ensure GitHub Packages is enabled on the `Compendiq` org (Settings → Packages). The CI workflow needs updating to push to `ghcr.io/compendiq/*` instead of Docker Hub — this is part of A6. Once the repo is public, GHCR packages are publicly pullable by default.
 
 ## What Session 1 delivered
 
