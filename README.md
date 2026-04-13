@@ -174,13 +174,13 @@ This stops all containers, removes all data volumes, and deletes the install dir
 
 ### Image registries
 
-Images are published to two registries on every release:
+Images are published to GHCR on every release:
 
 | Registry | Images |
 |----------|--------|
 | GHCR | `ghcr.io/compendiq/compendiq-ce-backend` · `ghcr.io/compendiq/compendiq-ce-frontend` · `ghcr.io/compendiq/compendiq-ce-mcp-docs` · `ghcr.io/compendiq/compendiq-ce-searxng` |
 
-Both registries publish `linux/amd64` and `linux/arm64` variants.
+All images publish `linux/amd64` and `linux/arm64` variants.
 
 ### Ollama requirement
 
