@@ -1,0 +1,92 @@
+name: Test Installer
+
+on:
+  pull_request:
+    branches: [dev, main]
+    paths:
+      - 'scripts/install.sh'
+      - '.github/workflows/test-installer.yml'
+  push:
+    branches: [dev]
+    paths:
+      - 'scripts/install.sh'
+      - '.github/workflows/test-installer.yml'
+  workflow_dispatch:
+
+# Cancel in-progress runs for the same PR — saves CI minutes on rapid pushes
+concurrency:
+  group: test-installer-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-dry-run:
+    name: Dry-run (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Ubuntu latest has Docker pre-installed — expect a clean dry-run (exit 0)
+          - name: Ubuntu latest
+            runner: ubuntu-latest
+            docker_present: true
+          # macOS and Debian container do NOT have Docker — expect graceful
+          # degradation (exit 1 with warnings, no crash)
+          - name: macOS 14
+            runner: macos-14
+            docker_present: false
+          - name: Debian 12
+            runner: ubuntu-latest
+            container: debian:12
+            docker_present: false
+
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container || '' }}
+
+    steps:
+      - name: Install prerequisites (Debian container)
+        if: matrix.container
+        run: |
+          apt-get update
+          apt-get install -y git openssl ca-certificates
+
+      - uses: actions/checkout@v4
+
+      - name: Run install.sh --dry-run (Docker present)
+        if: matrix.docker_present
+        run: bash scripts/install.sh --dry-run
+
+      - name: Run install.sh --dry-run with custom flags (Docker present)
+        if: matrix.docker_present
+        run: bash scripts/install.sh --dry-run --port 9090 --version 0.3.0 --dir /tmp/test-compendiq
+
+      - name: Run install.sh --dry-run (Docker absent, expect graceful failure)
+        if: ${{ !matrix.docker_present }}
+        run: |
+          set +e
+          output="$(bash scripts/install.sh --dry-run 2>&1)"
+          exit_code=$?
+          printf '%s\n' "$output"
+          if [ "$exit_code" -ne 1 ]; then
+            echo "ERROR: expected exit code 1 when Docker is absent, got $exit_code"
+            exit 1
+          fi
+          if ! echo "$output" | grep -q "Docker is not installed"; then
+            echo "ERROR: expected 'Docker is not installed' warning in output"
+            exit 1
+          fi
+          if ! echo "$output" | grep -q "Dry-run completed with warnings"; then
+            echo "ERROR: expected 'Dry-run completed with warnings' in output"
+            exit 1
+          fi
+          echo "OK: dry-run gracefully degraded when Docker is absent"
+
+      - name: Verify --help flag
+        run: bash scripts/install.sh --help
+
+      - name: Verify unknown flag is rejected
+        run: |
+          if bash scripts/install.sh --unknown-flag 2>/dev/null; then
+            echo "ERROR: Unknown flag should have caused a non-zero exit"
+            exit 1
+          fi
+          echo "OK: Unknown flag correctly rejected"

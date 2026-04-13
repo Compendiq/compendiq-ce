@@ -2,11 +2,12 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { GitBranch, Loader2, X, FileInput } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { streamSSE } from '../../shared/lib/sse';
-import { MermaidDiagram } from '../../shared/components/MermaidDiagram';
+import { MermaidDiagram } from '../../shared/components/diagrams/MermaidDiagram';
+import { FeatureErrorBoundary } from '../../shared/components/feedback/FeatureErrorBoundary';
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
 import { toast } from 'sonner';
-import type { DiagramType } from '@kb-creator/contracts';
+import type { DiagramType } from '@compendiq/contracts';
 
 /** HTML-encode a string so it is safe to interpolate inside HTML elements. */
 function escapeHtml(str: string): string {
@@ -23,13 +24,28 @@ interface FlowchartGeneratorProps {
   bodyHtml: string;
   pageTitle: string;
   pageVersion: number;
+  /** When provided, the component is "controlled" — the parent owns the open state. */
+  open?: boolean;
+  /** Called when the user wants to toggle the panel open/closed. */
+  onToggle?: () => void;
+  /** When true, render only the trigger button (used for header placement). */
+  renderTriggerOnly?: boolean;
+  /** When true, render only the expanded panel (used for content-area placement). */
+  renderPanelOnly?: boolean;
 }
 
 const DIAGRAM_TYPES: DiagramType[] = ['flowchart', 'sequence', 'state', 'mindmap'];
 
-export function FlowchartGenerator({ pageId, bodyHtml, pageTitle, pageVersion }: FlowchartGeneratorProps) {
+export function FlowchartGenerator({
+  pageId, bodyHtml, pageTitle, pageVersion,
+  open: controlledOpen, onToggle, renderTriggerOnly, renderPanelOnly,
+}: FlowchartGeneratorProps) {
   const queryClient = useQueryClient();
-  const [open, setOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
+
+  // Support both controlled and uncontrolled modes
+  const open = controlledOpen !== undefined ? controlledOpen : internalOpen;
+  const toggleOpen = onToggle ?? (() => setInternalOpen((prev) => !prev));
   const [diagramType, setDiagramType] = useState<DiagramType>('flowchart');
   const [diagramCode, setDiagramCode] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
@@ -51,7 +67,7 @@ export function FlowchartGenerator({ pageId, bodyHtml, pageTitle, pageVersion }:
     apiFetch<Array<{ name: string }>>('/ollama/models')
       .then((m) => {
         setModels(m);
-        if (m.length > 0 && !model) setModel(m[0].name);
+        if (m.length > 0 && !model) setModel(m[0]?.name ?? '');
       })
       .catch(() => {
         toast.error('Failed to load models');
@@ -115,26 +131,24 @@ export function FlowchartGenerator({ pageId, bodyHtml, pageTitle, pageVersion }:
     }
   }, [diagramCode, isInserting, bodyHtml, pageId, pageTitle, pageVersion, queryClient]);
 
-  if (!open) {
-    return (
-      <button
-        onClick={() => setOpen(true)}
-        className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
-        title="Generate diagram from article"
-      >
-        <GitBranch size={14} /> Diagram
-      </button>
-    );
-  }
+  const triggerButton = (
+    <button
+      onClick={toggleOpen}
+      className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
+      title="Generate diagram from article"
+    >
+      <GitBranch size={14} /> <span className="hidden sm:inline">Diagram</span>
+    </button>
+  );
 
-  return (
+  const panel = (
     <div className="glass-card space-y-3 p-4">
       <div className="flex items-center justify-between">
         <h3 className="flex items-center gap-2 text-sm font-medium">
           <GitBranch size={16} className="text-primary" /> Generate Diagram
         </h3>
         <button
-          onClick={() => setOpen(false)}
+          onClick={toggleOpen}
           className="rounded p-1 text-muted-foreground hover:bg-foreground/5"
         >
           <X size={14} />
@@ -187,7 +201,9 @@ export function FlowchartGenerator({ pageId, bodyHtml, pageTitle, pageVersion }:
       {/* Rendered diagram */}
       {diagramCode && !isStreaming && (
         <>
-          <MermaidDiagram code={diagramCode} />
+          <FeatureErrorBoundary featureName="Mermaid Diagram">
+            <MermaidDiagram code={diagramCode} />
+          </FeatureErrorBoundary>
           <button
             onClick={handleInsertInArticle}
             disabled={isInserting}
@@ -213,4 +229,17 @@ export function FlowchartGenerator({ pageId, bodyHtml, pageTitle, pageVersion }:
       )}
     </div>
   );
+
+  // Render trigger button only (for header placement)
+  if (renderTriggerOnly) {
+    return triggerButton;
+  }
+
+  // Render panel only (for content-area placement)
+  if (renderPanelOnly) {
+    return open ? panel : null;
+  }
+
+  // Default: self-contained toggle (backward compatible)
+  return open ? panel : triggerButton;
 }

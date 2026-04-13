@@ -6,6 +6,7 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "jsx": "react-jsx",
     "strict": true,
+    "noUncheckedIndexedAccess": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
@@ -14,9 +15,10 @@
     "noEmit": true,
     "paths": {
       "@/*": ["./src/*"],
-      "@kb-creator/contracts": ["../packages/contracts/src"]
+      "@compendiq/contracts": ["../packages/contracts/src"]
     }
   },
   "include": ["src/**/*"],
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

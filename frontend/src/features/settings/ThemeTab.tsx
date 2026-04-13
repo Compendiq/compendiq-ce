@@ -5,7 +5,8 @@ interface ThemeTabProps {
 }
 
 export function ThemeTab({ onSave }: ThemeTabProps) {
-  const { theme: currentTheme, setTheme } = useThemeStore();
+  const currentTheme = useThemeStore((s) => s.theme);
+  const setTheme = useThemeStore((s) => s.setTheme);
 
   function handleSelect(id: ThemeId) {
     setTheme(id);
@@ -17,6 +18,7 @@ export function ThemeTab({ onSave }: ThemeTabProps) {
       <p className="text-sm text-muted-foreground">
         Choose a color theme for the interface. Changes apply immediately.
       </p>
+
       {THEME_CATEGORIES.map((cat) => {
         const categoryThemes = THEMES.filter((t) => t.category === cat.key);
         return (
@@ -24,7 +26,7 @@ export function ThemeTab({ onSave }: ThemeTabProps) {
             <h3 className="mb-3 text-sm font-semibold text-foreground/70 uppercase tracking-wider">
               {cat.label}
             </h3>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5" data-testid="theme-grid">
+            <div className="grid grid-cols-2 gap-4" data-testid="theme-grid">
               {categoryThemes.map((t) => {
                 const isActive = currentTheme === t.id;
                 return (
@@ -32,31 +34,31 @@ export function ThemeTab({ onSave }: ThemeTabProps) {
                     key={t.id}
                     onClick={() => handleSelect(t.id)}
                     data-testid={`theme-${t.id}`}
-                    className={`group relative flex flex-col rounded-lg border p-3 text-left transition-all ${
+                    className={`group relative flex flex-col rounded-lg border p-4 text-left transition-all ${
                       isActive
                         ? 'border-primary bg-primary/10 ring-1 ring-primary'
                         : 'border-border/50 hover:border-border hover:bg-muted/50'
                     }`}
                   >
                     {/* Color preview swatches */}
-                    <div className="mb-2.5 flex gap-1.5">
+                    <div className="mb-3 flex gap-2">
                       <div
-                        className="h-6 w-6 rounded-full border border-border/50"
+                        className="h-8 w-8 rounded-full border border-border/50"
                         style={{ background: t.preview.bg }}
                         title="Background"
                       />
                       <div
-                        className="h-6 w-6 rounded-full border border-border/50"
+                        className="h-8 w-8 rounded-full border border-border/50"
                         style={{ background: t.preview.card }}
                         title="Card"
                       />
                       <div
-                        className="h-6 w-6 rounded-full border border-border/50"
+                        className="h-8 w-8 rounded-full border border-border/50"
                         style={{ background: t.preview.primary }}
                         title="Primary"
                       />
                       <div
-                        className="h-6 w-6 rounded-full border border-border/50"
+                        className="h-8 w-8 rounded-full border border-border/50"
                         style={{ background: t.preview.accent }}
                         title="Accent"
                       />

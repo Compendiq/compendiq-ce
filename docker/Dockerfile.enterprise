@@ -1,0 +1,152 @@
+# syntax=docker/dockerfile:1
+#
+# Compendiq Enterprise Edition — Multi-stage Dockerfile
+#
+# This Dockerfile is used by the private compendiq-enterprise repo's CI/CD
+# pipeline. It is a TEMPLATE in the CE repo — the EE build process:
+#
+#   1. Merges CE source (git submodule) + EE overlay into a single tree
+#   2. Installs @compendiq/enterprise from GitHub Packages
+#   3. Builds TypeScript → JavaScript (both CE + EE code)
+#   4. Runs javascript-obfuscator on enterprise-specific JS files (Layer 2)
+#   5. Ships only compiled+obfuscated JS in the final image (Layer 3)
+#
+# Protection Layers:
+#   Layer 1: Proprietary (All Rights Reserved) license on EE source code (legal protection)
+#   Layer 2: javascript-obfuscator on enterprise JS after compilation
+#   Layer 3: Multi-stage Docker — no .ts, no .map, no tests in final image
+#
+# Usage (in compendiq-enterprise CI):
+#   docker build -f docker/Dockerfile.enterprise \
+#     --build-arg GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }} \
+#     -t compendiq-enterprise:latest .
+#
+# ─────────────────────────────────────────────────────────────────────
+
+# ── Stage 1: Build ──────────────────────────────────────────────────
+FROM node:24-alpine AS builder
+
+RUN apk add --no-cache python3 make g++
+
+WORKDIR /app
+
+# Configure GitHub Packages registry for @compendiq scope
+ARG GITHUB_TOKEN
+RUN echo "@compendiq:registry=https://npm.pkg.github.com" > .npmrc && \
+    echo "//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}" >> .npmrc
+
+COPY package.json package-lock.json ./
+COPY backend/package.json ./backend/
+COPY packages/contracts/package.json ./packages/contracts/
+RUN --mount=type=cache,target=/root/.npm npm ci -w backend -w @compendiq/contracts
+
+# Build contracts
+COPY packages/contracts/ ./packages/contracts/
+RUN npm run build -w @compendiq/contracts
+
+# Build backend
+COPY backend/tsconfig.json backend/tsconfig.build.json ./backend/
+COPY backend/src/ backend/src/
+RUN npm run build -w backend
+
+# Clean up .npmrc (contains token)
+RUN rm -f .npmrc
+
+# ── Stage 2: Obfuscate enterprise code (Layer 2) ───────────────────
+FROM node:24-alpine AS obfuscator
+
+RUN npm install -g javascript-obfuscator
+
+WORKDIR /app
+COPY --from=builder /app/backend/dist/ ./dist/
+
+# Obfuscate only enterprise-specific files (the @compendiq/enterprise package
+# output within node_modules). CE code is open-source and not obfuscated.
+#
+# NOTE: The actual paths depend on how the EE overlay merges. The EE repo's
+# build script should adjust these globs to match the final file layout.
+#
+# Example (uncomment and adjust in EE repo):
+# RUN javascript-obfuscator dist/enterprise/ \
+#     --output dist/enterprise/ \
+#     --compact true \
+#     --control-flow-flattening true \
+#     --dead-code-injection true \
+#     --string-array true \
+#     --string-array-encoding rc4 \
+#     --self-defending true
+
+# ── Stage 3: Production dependencies ───────────────────────────────
+FROM node:24-alpine AS prod-deps
+
+RUN apk add --no-cache python3 make g++
+
+WORKDIR /app
+
+ARG GITHUB_TOKEN
+RUN echo "@compendiq:registry=https://npm.pkg.github.com" > .npmrc && \
+    echo "//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}" >> .npmrc
+
+COPY package.json package-lock.json ./
+COPY backend/package.json ./backend/
+COPY packages/contracts/package.json ./packages/contracts/
+RUN --mount=type=cache,target=/root/.npm npm ci -w backend -w @compendiq/contracts --omit=dev
+
+# Clean up .npmrc
+RUN rm -f .npmrc
+
+# ── Stage 4: Chromium (for PDF export) ─────────────────────────────
+FROM alpine:3.23 AS chromium
+
+RUN apk add --no-cache \
+    chromium \
+    nss \
+    freetype \
+    harfbuzz \
+    ca-certificates \
+    ttf-freefont
+
+# ── Stage 5: Runtime (Layer 3 — only compiled JS) ──────────────────
+FROM node:24-alpine AS runtime
+
+RUN apk add --no-cache dumb-init wget
+
+# Chromium dependencies
+COPY --from=chromium /usr/lib/ /usr/lib/
+COPY --from=chromium /usr/share/fonts/ /usr/share/fonts/
+COPY --from=chromium /etc/fonts/ /etc/fonts/
+ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/lib/chromium/chromium
+
+RUN mkdir -p /app/data && chown -R 1000:1000 /app
+
+WORKDIR /app
+
+COPY --chown=node:node --from=builder /app/backend/package.json ./
+COPY --chown=node:node --from=prod-deps /app/node_modules ./node_modules
+
+# Copy contracts
+COPY --chown=node:node --from=builder /app/packages/contracts/dist/ ./node_modules/@compendiq/contracts/dist/
+COPY --chown=node:node --from=builder /app/packages/contracts/package.json ./node_modules/@compendiq/contracts/package.json
+
+# Copy compiled (and optionally obfuscated) backend — NO .ts, NO .map, NO tests
+COPY --chown=node:node --from=obfuscator /app/dist/ dist/
+
+# Copy SQL migrations (not emitted by tsc)
+COPY --chown=node:node --from=builder /app/backend/src/core/db/migrations/ dist/core/db/migrations/
+
+# Explicitly verify no source files leaked into the final image
+RUN test -z "$(find dist/ -name '*.ts' -o -name '*.map' -o -name '*.test.*' 2>/dev/null)" \
+    || (echo "ERROR: Source/test files found in dist/" && exit 1)
+
+USER node
+
+ENV NODE_ENV=production
+ENV BACKEND_PORT=3051
+
+EXPOSE 3051
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD ["node", "-e", "fetch('http://127.0.0.1:3051/api/health/ready').then(r=>{if(!r.ok)throw r.status;process.exit(0)}).catch(()=>process.exit(1))"]
+
+ENTRYPOINT ["dumb-init", "--"]
+CMD ["node", "dist/index.js"]

@@ -1,10 +1,19 @@
+import { useMemo, useState, useCallback, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '../lib/api';
+import { streamSSE } from '../lib/sse';
+
+export type EmbeddingStatus = 'not_embedded' | 'embedding' | 'embedded' | 'failed';
+export type QualityStatus = 'pending' | 'analyzing' | 'analyzed' | 'failed' | 'skipped';
+export type SummaryStatus = 'pending' | 'summarizing' | 'summarized' | 'failed' | 'skipped';
+export type PageType = 'page' | 'folder';
 
 interface PageSummary {
   id: string;
+  confluenceId: string | null;
   spaceKey: string;
   title: string;
+  pageType: PageType;
   version: number;
   parentId: string | null;
   labels: string[];
@@ -12,11 +21,32 @@ interface PageSummary {
   lastModifiedAt: string | null;
   lastSynced: string;
   embeddingDirty: boolean;
+  embeddingStatus: EmbeddingStatus;
+  embeddedAt: string | null;
+  embeddingError: string | null;
+  qualityScore: number | null;
+  qualityStatus: QualityStatus | null;
+  qualityCompleteness: number | null;
+  qualityClarity: number | null;
+  qualityStructure: number | null;
+  qualityAccuracy: number | null;
+  qualityReadability: number | null;
+  qualitySummary: string | null;
+  qualityAnalyzedAt: string | null;
+  qualityError: string | null;
+  summaryStatus?: SummaryStatus;
+  source: 'confluence' | 'standalone';
+  visibility: 'private' | 'shared';
 }
 
 interface PageDetail extends PageSummary {
   bodyHtml: string;
   bodyText: string;
+  hasChildren: boolean;
+  summaryHtml: string | null;
+  summaryGeneratedAt: string | null;
+  summaryModel: string | null;
+  summaryError: string | null;
 }
 
 interface PaginatedPages {
@@ -34,38 +64,60 @@ export interface PageFilters {
   labels?: string;
   freshness?: 'fresh' | 'recent' | 'aging' | 'stale';
   embeddingStatus?: 'pending' | 'done';
+  qualityMin?: number;
+  qualityMax?: number;
+  qualityStatus?: QualityStatus;
+  source?: 'confluence' | 'standalone';
   dateFrom?: string;
   dateTo?: string;
   page?: number;
   limit?: number;
-  sort?: 'title' | 'modified' | 'author';
+  sort?: 'title' | 'modified' | 'author' | 'quality' | 'relevance';
 }
 
 export function usePages(params: PageFilters = {}) {
-  const searchParams = new URLSearchParams();
-  if (params.spaceKey) searchParams.set('spaceKey', params.spaceKey);
-  if (params.search) searchParams.set('search', params.search);
-  if (params.author) searchParams.set('author', params.author);
-  if (params.labels) searchParams.set('labels', params.labels);
-  if (params.freshness) searchParams.set('freshness', params.freshness);
-  if (params.embeddingStatus) searchParams.set('embeddingStatus', params.embeddingStatus);
-  if (params.dateFrom) searchParams.set('dateFrom', params.dateFrom);
-  if (params.dateTo) searchParams.set('dateTo', params.dateTo);
-  if (params.page) searchParams.set('page', String(params.page));
-  if (params.limit) searchParams.set('limit', String(params.limit));
-  if (params.sort) searchParams.set('sort', params.sort);
+  const {
+    spaceKey, search, author, labels, freshness,
+    embeddingStatus, qualityMin, qualityMax, qualityStatus,
+    source, dateFrom, dateTo, page, limit, sort,
+  } = params;
 
-  const qs = searchParams.toString();
+  const queryKey = useMemo(
+    () => ['pages', { spaceKey, search, author, labels, freshness, embeddingStatus, qualityMin, qualityMax, qualityStatus, source, dateFrom, dateTo, page, limit, sort }] as const,
+    [spaceKey, search, author, labels, freshness, embeddingStatus, qualityMin, qualityMax, qualityStatus, source, dateFrom, dateTo, page, limit, sort],
+  );
+
+  const qs = useMemo(() => {
+    const sp = new URLSearchParams();
+    if (spaceKey) sp.set('spaceKey', spaceKey);
+    if (search) sp.set('search', search);
+    if (author) sp.set('author', author);
+    if (labels) sp.set('labels', labels);
+    if (freshness) sp.set('freshness', freshness);
+    if (embeddingStatus) sp.set('embeddingStatus', embeddingStatus);
+    if (qualityMin !== undefined) sp.set('qualityMin', String(qualityMin));
+    if (qualityMax !== undefined) sp.set('qualityMax', String(qualityMax));
+    if (qualityStatus) sp.set('qualityStatus', qualityStatus);
+    if (source) sp.set('source', source);
+    if (dateFrom) sp.set('dateFrom', dateFrom);
+    if (dateTo) sp.set('dateTo', dateTo);
+    if (page) sp.set('page', String(page));
+    if (limit) sp.set('limit', String(limit));
+    if (sort) sp.set('sort', sort);
+    return sp.toString();
+  }, [spaceKey, search, author, labels, freshness, embeddingStatus, qualityMin, qualityMax, qualityStatus, source, dateFrom, dateTo, page, limit, sort]);
+
   return useQuery<PaginatedPages>({
-    queryKey: ['pages', params],
+    queryKey,
     queryFn: () => apiFetch(`/pages${qs ? `?${qs}` : ''}`),
   });
 }
 
-interface PageTreeItem {
+export interface PageTreeItem {
   id: string;
   spaceKey: string;
   title: string;
+  pageType: PageType;
   parentId: string | null;
   labels: string[];
   lastModifiedAt: string | null;
@@ -77,14 +129,24 @@ interface PageTreeResponse {
   total: number;
 }
 
-export function usePageTree(params: { spaceKey?: string } = {}) {
-  const searchParams = new URLSearchParams();
-  if (params.spaceKey) searchParams.set('spaceKey', params.spaceKey);
-  const qs = searchParams.toString();
+export function usePageTree(params: { spaceKey?: string; enabled?: boolean } = {}) {
+  const { spaceKey, enabled = true } = params;
+
+  const queryKey = useMemo(
+    () => ['pages', 'tree', { spaceKey }] as const,
+    [spaceKey],
+  );
+
+  const qs = useMemo(() => {
+    const sp = new URLSearchParams();
+    if (spaceKey) sp.set('spaceKey', spaceKey);
+    return sp.toString();
+  }, [spaceKey]);
 
   return useQuery<PageTreeResponse>({
-    queryKey: ['pages', 'tree', params],
+    queryKey,
     queryFn: () => apiFetch(`/pages/tree${qs ? `?${qs}` : ''}`),
+    enabled,
   });
 }
 
@@ -112,7 +174,7 @@ export function usePage(id: string | undefined) {
 export function useCreatePage() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (data: { spaceKey: string; title: string; bodyHtml: string; parentId?: string }) =>
+    mutationFn: (data: { spaceKey: string; title: string; bodyHtml: string; parentId?: string; pageType?: PageType; source?: string }) =>
       apiFetch<{ id: string; title: string; version: number }>('/pages', {
         method: 'POST',
         body: JSON.stringify(data),
@@ -132,9 +194,22 @@ export function useUpdatePage() {
         method: 'PUT',
         body: JSON.stringify(data),
       }),
-    onSuccess: (_data, variables) => {
+    onMutate: async ({ id, title, bodyHtml }) => {
+      await queryClient.cancelQueries({ queryKey: ['pages', id] });
+      const previous = queryClient.getQueryData<PageDetail>(['pages', id]);
+      queryClient.setQueryData<PageDetail>(['pages', id], (old) =>
+        old ? { ...old, title, bodyHtml } : old,
+      );
+      return { previous };
+    },
+    onError: (_err, variables, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(['pages', variables.id], context.previous);
+      }
+    },
+    onSettled: (_data, _err, variables) => {
       queryClient.invalidateQueries({ queryKey: ['pages', variables.id] });
-      queryClient.invalidateQueries({ queryKey: ['pages'] });
+      queryClient.invalidateQueries({ queryKey: ['pages'], refetchType: 'none' });
     },
   });
 }
@@ -147,10 +222,27 @@ export function useUpdatePageLabels() {
         method: 'PUT',
         body: JSON.stringify({ addLabels, removeLabels }),
       }),
-    onSuccess: (_data, variables) => {
+    onMutate: async ({ id, addLabels = [], removeLabels = [] }) => {
+      await queryClient.cancelQueries({ queryKey: ['pages', id] });
+      const previous = queryClient.getQueryData<PageDetail>(['pages', id]);
+      queryClient.setQueryData<PageDetail>(['pages', id], (old) => {
+        if (!old) return old;
+        const next = old.labels
+          .filter((l) => !removeLabels.includes(l))
+          .concat(addLabels.filter((l) => !old.labels.includes(l)));
+        return { ...old, labels: next };
+      });
+      return { previous };
+    },
+    onError: (_err, variables, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(['pages', variables.id], context.previous);
+      }
+    },
+    onSettled: (_data, _err, variables) => {
       queryClient.invalidateQueries({ queryKey: ['pages', variables.id] });
-      queryClient.invalidateQueries({ queryKey: ['pages'] });
-      queryClient.invalidateQueries({ queryKey: ['pages', 'filters'] });
+      queryClient.invalidateQueries({ queryKey: ['pages'], refetchType: 'none' });
+      queryClient.invalidateQueries({ queryKey: ['pages', 'filters'], refetchType: 'none' });
     },
   });
 }
@@ -160,20 +252,31 @@ export function useDeletePage() {
   return useMutation({
     mutationFn: (id: string) =>
       apiFetch(`/pages/${id}`, { method: 'DELETE' }),
-    onSuccess: () => {
+    onMutate: async (id) => {
+      await queryClient.cancelQueries({ queryKey: ['pages'] });
+      // Remove from all paginated list caches optimistically
+      queryClient.setQueriesData<PaginatedPages>({ queryKey: ['pages'] }, (old) => {
+        if (!old?.items) return old;
+        return { ...old, items: old.items.filter((p) => p.id !== id), total: Math.max(0, old.total - 1) };
+      });
+    },
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['pages'] });
-      queryClient.invalidateQueries({ queryKey: ['spaces'] });
+      queryClient.invalidateQueries({ queryKey: ['spaces'], refetchType: 'none' });
     },
   });
 }
 
+export interface EmbeddingStatusData {
+  totalPages: number;
+  embeddedPages: number;
+  dirtyPages: number;
+  totalEmbeddings: number;
+  isProcessing: boolean;
+}
+
 export function useEmbeddingStatus() {
-  return useQuery<{
-    totalPages: number;
-    dirtyPages: number;
-    totalEmbeddings: number;
-    isProcessing: boolean;
-  }>({
+  return useQuery<EmbeddingStatusData>({
     queryKey: ['embeddings', 'status'],
     queryFn: () => apiFetch('/embeddings/status'),
     refetchInterval: (query) => {
@@ -182,4 +285,211 @@ export function useEmbeddingStatus() {
   });
 }
 
-export type { PageSummary, PageDetail, PaginatedPages, PageTreeItem, PageTreeResponse, FilterOptions };
+export interface EmbeddingProgress {
+  total: number;
+  completed: number;
+  failed: number;
+  percentage: number;
+  currentPage?: string;
+  errors: string[];
+  isWaiting: boolean;
+  waitReason?: string;
+}
+
+const INITIAL_PROGRESS: EmbeddingProgress = {
+  total: 0, completed: 0, failed: 0, percentage: 0,
+  errors: [], isWaiting: false,
+};
+
+/**
+ * Hook to trigger embedding processing with real-time SSE progress.
+ * Replaces the old JSON-based useTriggerEmbedding. The backend streams
+ * progress events (type: 'progress' | 'complete' | 'waiting' | 'paused')
+ * over SSE for the duration of the job.
+ */
+export function useEmbeddingProcess() {
+  const queryClient = useQueryClient();
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [progress, setProgress] = useState<EmbeddingProgress>(INITIAL_PROGRESS);
+  const abortRef = useRef<AbortController | null>(null);
+
+  const start = useCallback(async (endpoint: '/embeddings/process' | '/embeddings/retry-failed' = '/embeddings/process') => {
+    if (isProcessing) return;
+    abortRef.current = new AbortController();
+    setIsProcessing(true);
+    setProgress(INITIAL_PROGRESS);
+
+    try {
+      for await (const event of streamSSE<{ type: string; total?: number; completed?: number; failed?: number; percentage?: number; currentPage?: string; reason?: string; errors?: string[] }>(
+        endpoint, {}, abortRef.current.signal,
+      )) {
+        if (event.type === 'progress' || event.type === 'paused') {
+          setProgress({
+            total: event.total ?? 0,
+            completed: event.completed ?? 0,
+            failed: event.failed ?? 0,
+            percentage: event.percentage ?? 0,
+            currentPage: event.currentPage,
+            errors: [],
+            isWaiting: false,
+          });
+        } else if (event.type === 'waiting') {
+          setProgress((prev) => ({ ...prev, isWaiting: true, waitReason: event.reason }));
+        } else if (event.type === 'complete') {
+          setProgress({
+            total: event.total ?? 0,
+            completed: event.completed ?? 0,
+            failed: event.failed ?? 0,
+            percentage: 100,
+            errors: event.errors ?? [],
+            isWaiting: false,
+          });
+        }
+      }
+    } catch (err) {
+      if (err instanceof Error && err.name !== 'AbortError') {
+        throw err;
+      }
+    } finally {
+      setIsProcessing(false);
+      abortRef.current = null;
+      queryClient.invalidateQueries({ queryKey: ['embeddings', 'status'] });
+      queryClient.invalidateQueries({ queryKey: ['pages'], refetchType: 'none' });
+    }
+  }, [isProcessing, queryClient]);
+
+  const cancel = useCallback(() => {
+    abortRef.current?.abort();
+  }, []);
+
+  return { start, cancel, isProcessing, progress };
+}
+
+// ======== Quality Analysis Status ========
+
+export interface QualityStatusData {
+  totalPages: number;
+  analyzedPages: number;
+  pendingPages: number;
+  failedPages: number;
+  skippedPages: number;
+  averageScore: number | null;
+  isProcessing: boolean;
+}
+
+export function useQualityStatus() {
+  return useQuery<QualityStatusData>({
+    queryKey: ['quality', 'status'],
+    queryFn: () => apiFetch('/llm/quality-status'),
+    refetchInterval: (query) => {
+      return query.state.data?.isProcessing ? 5000 : 30_000;
+    },
+  });
+}
+
+// ======== Pinned Pages (Issue #144) ========
+
+export interface PinnedPage {
+  id: string;
+  spaceKey: string;
+  title: string;
+  author: string | null;
+  lastModifiedAt: string | null;
+  excerpt: string;
+  pinnedAt: string;
+  pinOrder: number;
+}
+
+interface PinnedPagesResponse {
+  items: PinnedPage[];
+  total: number;
+}
+
+export function usePinnedPages() {
+  return useQuery<PinnedPagesResponse>({
+    queryKey: ['pages', 'pinned'],
+    queryFn: () => apiFetch('/pages/pinned'),
+    staleTime: 60_000, // lightweight query (max 8 items) — avoid refetching on every mount
+  });
+}
+
+export function usePinPage() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (pageId: string) =>
+      apiFetch<{ message: string; pageId: string }>(`/pages/${pageId}/pin`, {
+        method: 'POST',
+      }),
+    onMutate: async (pageId) => {
+      await queryClient.cancelQueries({ queryKey: ['pages', 'pinned'] });
+      const previous = queryClient.getQueryData<PinnedPagesResponse>(['pages', 'pinned']);
+      queryClient.setQueryData<PinnedPagesResponse>(['pages', 'pinned'], (old) =>
+        old
+          ? {
+              ...old,
+              items: [...old.items, { id: pageId, spaceKey: '', title: '', author: null, lastModifiedAt: null, excerpt: '', pinnedAt: new Date().toISOString(), pinOrder: old.items.length + 1 }],
+              total: old.total + 1,
+            }
+          : { items: [{ id: pageId, spaceKey: '', title: '', author: null, lastModifiedAt: null, excerpt: '', pinnedAt: new Date().toISOString(), pinOrder: 1 }], total: 1 },
+      );
+      return { previous };
+    },
+    onError: (_err, _pageId, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(['pages', 'pinned'], context.previous);
+      }
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['pages', 'pinned'] });
+    },
+  });
+}
+
+export function useUnpinPage() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (pageId: string) =>
+      apiFetch<{ message: string; pageId: string }>(`/pages/${pageId}/pin`, {
+        method: 'DELETE',
+      }),
+    onMutate: async (pageId) => {
+      await queryClient.cancelQueries({ queryKey: ['pages', 'pinned'] });
+      const previous = queryClient.getQueryData<PinnedPagesResponse>(['pages', 'pinned']);
+      queryClient.setQueryData<PinnedPagesResponse>(['pages', 'pinned'], (old) =>
+        old
+          ? {
+              ...old,
+              items: old.items.filter((item) => item.id !== pageId),
+              total: Math.max(0, old.total - 1),
+            }
+          : { items: [], total: 0 },
+      );
+      return { previous };
+    },
+    onError: (_err, _pageId, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(['pages', 'pinned'], context.previous);
+      }
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['pages', 'pinned'] });
+    },
+  });
+}
+
+// ======== Summary Regeneration (Issue #323) ========
+
+export function useSummaryRegenerate() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (pageId: string) =>
+      apiFetch<{ message: string; pageId: string }>(`/llm/summary-regenerate/${pageId}`, {
+        method: 'POST',
+      }),
+    onSuccess: (_data, pageId) => {
+      queryClient.invalidateQueries({ queryKey: ['pages', pageId] });
+    },
+  });
+}
+
+export type { PageSummary, PageDetail, PaginatedPages, PageTreeResponse, FilterOptions };

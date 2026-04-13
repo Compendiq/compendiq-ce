@@ -7,6 +7,7 @@
     "outDir": "dist",
     "rootDir": "src",
     "strict": true,
+    "noUncheckedIndexedAccess": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
@@ -15,7 +16,7 @@
     "declarationMap": true,
     "sourceMap": true,
     "paths": {
-      "@kb-creator/contracts": ["../packages/contracts/src"]
+      "@compendiq/contracts": ["../packages/contracts/src"]
     }
   },
   "include": ["src/**/*"],

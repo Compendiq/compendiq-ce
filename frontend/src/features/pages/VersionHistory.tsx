@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
-import { m, AnimatePresence } from 'framer-motion';
-import { History, ChevronRight, Eye, GitCompare, Sparkles, Loader2, X } from 'lucide-react';
+import { AnimatePresence, m } from 'framer-motion';
+import { History, Eye, GitCompare, Sparkles, Loader2, X } from 'lucide-react';
+import * as Dialog from '@radix-ui/react-dialog';
 import { apiFetch } from '../../shared/lib/api';
-import { DiffView } from '../../shared/components/DiffView';
+import { DiffView } from '../../shared/components/article/DiffView';
 import { cn } from '../../shared/lib/cn';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 
@@ -35,11 +36,11 @@ interface SemanticDiffResponse {
   pageId: string;
 }
 
-function useVersionHistory(pageId: string | undefined) {
+function useVersionHistory(pageId: string | undefined, enabled: boolean) {
   return useQuery<VersionsResponse>({
     queryKey: ['pages', pageId, 'versions'],
     queryFn: () => apiFetch(`/pages/${pageId}/versions`),
-    enabled: !!pageId,
+    enabled: !!pageId && enabled,
     staleTime: 5 * 60 * 1000,
   });
 }
@@ -60,12 +61,12 @@ interface VersionHistoryProps {
 
 export function VersionHistory({ pageId, currentBodyText: _currentBodyText, model }: VersionHistoryProps) {
   const isLight = useIsLightTheme();
-  const [expanded, setExpanded] = useState(false);
+  const [open, setOpen] = useState(false);
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
   const [compareVersions, setCompareVersions] = useState<[number, number] | null>(null);
   const [showSemanticDiff, setShowSemanticDiff] = useState(false);
 
-  const { data: versionsData, isLoading } = useVersionHistory(expanded ? pageId : undefined);
+  const { data: versionsData, isLoading } = useVersionHistory(pageId, open);
   const { data: selectedVersionData } = useVersionDetail(
     pageId,
     selectedVersion,
@@ -81,6 +82,15 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
 
   const versions = versionsData?.versions ?? [];
 
+  // Reset state when dialog closes
+  useEffect(() => {
+    if (!open) {
+      setSelectedVersion(null);
+      setCompareVersions(null);
+      setShowSemanticDiff(false);
+    }
+  }, [open]);
+
   const handleCompare = (v1: number, v2: number) => {
     setCompareVersions([v1, v2]);
     setShowSemanticDiff(false);
@@ -92,43 +102,46 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
   };
 
   return (
-    <m.div
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      className="glass-card overflow-hidden"
-    >
-      {/* Header */}
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-foreground/5 transition-colors"
-      >
-        <div className="flex items-center gap-2">
-          <History size={16} className="text-primary" />
-          <h3 className="text-sm font-semibold">Version History</h3>
-          {versions.length > 0 && (
-            <span className="rounded bg-foreground/5 px-1.5 py-0.5 text-xs text-muted-foreground">
-              {versions.length}
-            </span>
-          )}
-        </div>
-        <ChevronRight
-          size={14}
-          className={cn(
-            'text-muted-foreground transition-transform',
-            expanded && 'rotate-90',
-          )}
-        />
-      </button>
+    <Dialog.Root open={open} onOpenChange={setOpen}>
+      <Dialog.Trigger asChild>
+        <button
+          className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
+          title="Version history"
+        >
+          <History size={14} />
+          History
+        </button>
+      </Dialog.Trigger>
 
-      {/* Version timeline */}
-      <AnimatePresence>
-        {expanded && (
-          <m.div
-            initial={{ height: 0 }}
-            animate={{ height: 'auto' }}
-            exit={{ height: 0 }}
-            className="overflow-hidden border-t border-border/50"
-          >
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
+        <Dialog.Content
+          className="fixed left-1/2 top-1/2 z-50 w-full max-w-2xl -translate-x-1/2 -translate-y-1/2 glass-card overflow-hidden shadow-xl max-h-[85vh] flex flex-col"
+          aria-describedby={undefined}
+        >
+          {/* Header */}
+          <div className="flex items-center justify-between border-b border-border/50 px-5 py-4">
+            <div className="flex items-center gap-2">
+              <History size={16} className="text-primary" />
+              <Dialog.Title className="font-semibold">Version History</Dialog.Title>
+              {versions.length > 0 && (
+                <span className="rounded bg-foreground/5 px-1.5 py-0.5 text-xs text-muted-foreground">
+                  {versions.length}
+                </span>
+              )}
+            </div>
+            <Dialog.Close asChild>
+              <button
+                className="rounded p-1 text-muted-foreground hover:bg-foreground/5"
+                aria-label="Close"
+              >
+                <X size={16} />
+              </button>
+            </Dialog.Close>
+          </div>
+
+          {/* Body (scrollable) */}
+          <div className="flex-1 overflow-y-auto">
             {isLoading ? (
               <div className="flex items-center justify-center gap-2 py-6 text-muted-foreground">
                 <Loader2 size={14} className="animate-spin" />
@@ -144,7 +157,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                   <div
                     key={`${version.versionNumber}-${version.isCurrent}`}
                     className={cn(
-                      'flex items-center gap-3 px-4 py-2.5',
+                      'flex items-center gap-3 px-5 py-2.5',
                       i !== versions.length - 1 && 'border-b border-border/30',
                       selectedVersion === version.versionNumber && 'bg-primary/5',
                     )}
@@ -191,14 +204,14 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                       {i < versions.length - 1 && (
                         <>
                           <button
-                            onClick={() => handleCompare(version.versionNumber, versions[i + 1].versionNumber)}
+                            onClick={() => handleCompare(version.versionNumber, versions[i + 1]!.versionNumber)}
                             className="rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
                             title="Compare with previous version"
                           >
                             <GitCompare size={12} />
                           </button>
                           <button
-                            onClick={() => handleSemanticDiff(versions[i + 1].versionNumber, version.versionNumber)}
+                            onClick={() => handleSemanticDiff(versions[i + 1]!.versionNumber, version.versionNumber)}
                             className="rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-primary"
                             title="AI semantic diff with previous version"
                           >
@@ -213,26 +226,35 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
             )}
 
             {/* Version preview */}
-            {selectedVersionData && (
-              <div className="border-t border-border/50 p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <h4 className="text-xs font-medium text-muted-foreground">
-                    Version {selectedVersionData.versionNumber} Preview
-                  </h4>
-                  <button
-                    onClick={() => setSelectedVersion(null)}
-                    className="rounded p-1 text-muted-foreground hover:bg-foreground/5"
-                  >
-                    <X size={12} />
-                  </button>
-                </div>
-                <div className={cn('prose max-h-48 overflow-y-auto text-xs', !isLight && 'prose-invert')}>
-                  <pre className="whitespace-pre-wrap text-xs text-muted-foreground">
-                    {selectedVersionData.bodyText ?? 'No content available'}
-                  </pre>
-                </div>
-              </div>
-            )}
+            <AnimatePresence>
+              {selectedVersionData && (
+                <m.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className="overflow-hidden border-t border-border/50"
+                >
+                  <div className="p-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="text-xs font-medium text-muted-foreground">
+                        Version {selectedVersionData.versionNumber} Preview
+                      </h4>
+                      <button
+                        onClick={() => setSelectedVersion(null)}
+                        className="rounded p-1 text-muted-foreground hover:bg-foreground/5"
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                    <div className={cn('prose max-h-48 overflow-y-auto text-xs', !isLight && 'prose-invert')}>
+                      <pre className="whitespace-pre-wrap text-xs text-muted-foreground">
+                        {selectedVersionData.bodyText ?? 'No content available'}
+                      </pre>
+                    </div>
+                  </div>
+                </m.div>
+              )}
+            </AnimatePresence>
 
             {/* Text diff comparison */}
             {compareVersions && !showSemanticDiff && (
@@ -275,10 +297,10 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                 ) : null}
               </div>
             )}
-          </m.div>
-        )}
-      </AnimatePresence>
-    </m.div>
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }
 

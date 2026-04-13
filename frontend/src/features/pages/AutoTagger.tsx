@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { m, AnimatePresence } from 'framer-motion';
-import { Wand2, Check, X, Loader2, Tag } from 'lucide-react';
+import { Check, X, Loader2, Tag } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
@@ -15,9 +15,10 @@ interface AutoTaggerProps {
   pageId: string;
   currentLabels: string[];
   model: string;
+  className?: string;
 }
 
-export function AutoTagger({ pageId, currentLabels, model }: AutoTaggerProps) {
+export function AutoTagger({ pageId, currentLabels, model, className }: AutoTaggerProps) {
   const queryClient = useQueryClient();
   const [showDialog, setShowDialog] = useState(false);
   const [suggestedTags, setSuggestedTags] = useState<string[]>([]);
@@ -88,15 +89,15 @@ export function AutoTagger({ pageId, currentLabels, model }: AutoTaggerProps) {
       <button
         onClick={() => autoTagMutation.mutate()}
         disabled={autoTagMutation.isPending}
-        className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5 disabled:opacity-50"
+        className={className ?? "glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5 disabled:opacity-50"}
         title="Suggest tags using AI"
       >
         {autoTagMutation.isPending ? (
           <Loader2 size={14} className="animate-spin" />
         ) : (
-          <Wand2 size={14} />
+          <Tag size={15} className="shrink-0 opacity-70" />
         )}
-        Auto-tag
+        <span className="truncate">Auto-tag</span>
       </button>
 
       {/* Tag suggestion dialog */}

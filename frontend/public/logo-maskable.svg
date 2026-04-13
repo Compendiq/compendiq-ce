@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <!--
+    AtlasMind maskable icon — padded for PWA safe zone (inner 80%).
+    Background: dark indigo. Mark: white.
+  -->
+  <rect width="512" height="512" rx="0" fill="#1e1b4b"/>
+
+  <!-- Mark scaled to fit inner 80% (safe zone: 51.2–460.8) -->
+  <g transform="translate(256, 256) scale(0.55) translate(-256, -256)">
+    <!-- Hexagonal outline -->
+    <path d="M256 64 L408 160 L408 352 L256 448 L104 352 L104 160 Z"
+          stroke="white" stroke-width="6" stroke-linejoin="round" opacity="0.2" />
+
+    <!-- Radial connections -->
+    <line x1="256" y1="256" x2="256" y2="64"  stroke="white" stroke-width="8" stroke-linecap="round" opacity="0.3"/>
+    <line x1="256" y1="256" x2="104" y2="160" stroke="white" stroke-width="8" stroke-linecap="round" opacity="0.3"/>
+    <line x1="256" y1="256" x2="408" y2="160" stroke="white" stroke-width="8" stroke-linecap="round" opacity="0.3"/>
+    <line x1="256" y1="256" x2="104" y2="352" stroke="white" stroke-width="8" stroke-linecap="round" opacity="0.3"/>
+    <line x1="256" y1="256" x2="408" y2="352" stroke="white" stroke-width="8" stroke-linecap="round" opacity="0.3"/>
+    <line x1="256" y1="256" x2="256" y2="448" stroke="white" stroke-width="8" stroke-linecap="round" opacity="0.3"/>
+
+    <!-- Hub glow -->
+    <circle cx="256" cy="256" r="96" fill="white" opacity="0.08"/>
+
+    <!-- Outer nodes -->
+    <circle cx="256" cy="64"  r="36" fill="white"/>
+    <circle cx="104" cy="160" r="28" fill="white" opacity="0.85"/>
+    <circle cx="408" cy="160" r="28" fill="white" opacity="0.85"/>
+    <circle cx="104" cy="352" r="28" fill="white" opacity="0.85"/>
+    <circle cx="408" cy="352" r="28" fill="white" opacity="0.85"/>
+    <circle cx="256" cy="448" r="36" fill="white"/>
+
+    <!-- Core hub -->
+    <circle cx="256" cy="256" r="48" fill="white"/>
+  </g>
+</svg>

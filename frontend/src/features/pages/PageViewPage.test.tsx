@@ -1,75 +1,204 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { PageViewPage } from './PageViewPage';
 import { useAuthStore } from '../../stores/auth-store';
+import { useArticleViewStore } from '../../stores/article-view-store';
+
+const mockNavigate = vi.fn();
+const mockUpdatePage = vi.fn();
 
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
   return {
     ...actual,
-    useNavigate: () => vi.fn(),
+    useNavigate: () => mockNavigate,
   };
 });
 
+vi.mock('../../shared/components/article/ArticleViewer', async () => {
+  const React = await vi.importActual<typeof import('react')>('react');
+
+  return {
+    ArticleViewer: ({
+      className,
+      confluenceUrl,
+      content,
+      onHeadingsReady,
+      onImageClick,
+      onEditDiagram,
+      pageId,
+      confluencePageId,
+    }: {
+      className?: string;
+      confluenceUrl?: string | null;
+      content: string;
+      onHeadingsReady?: (headings: Array<{ id: string; text: string; level: number }>) => void;
+      onImageClick?: (src: string, alt: string) => void;
+      onEditDiagram?: (diagramName: string) => void;
+      pageId?: string | null;
+      confluencePageId?: string | null;
+    }) => {
+      React.useEffect(() => {
+        onHeadingsReady?.([
+          { id: 'intro', text: 'Introduction', level: 1 },
+          { id: 'usage', text: 'Usage', level: 2 },
+        ]);
+      }, [onHeadingsReady]);
+
+      return (
+        <div className={className} data-testid="article-viewer" data-confluence-url={confluenceUrl ?? ''} data-page-id={pageId ?? ''} data-confluence-page-id={confluencePageId ?? ''}>
+          <button onClick={() => onImageClick?.('/api/attachments/page-1/diagram.png', 'Diagram')}>
+            Preview image
+          </button>
+          <button onClick={() => onEditDiagram?.('my-diagram')} data-testid="edit-diagram-trigger">
+            Edit diagram
+          </button>
+          <div dangerouslySetInnerHTML={{ __html: content }} />
+        </div>
+      );
+    },
+  };
+});
+
+vi.mock('../../shared/components/article/Editor', () => ({
+  Editor: ({
+    content,
+    onChange,
+  }: {
+    content: string;
+    onChange: (value: string) => void;
+  }) => (
+    <textarea
+      aria-label="Article editor"
+      value={content}
+      onChange={(event) => onChange(event.target.value)}
+    />
+  ),
+  EditorToolbar: () => null,
+  TableContextToolbar: () => null,
+  getDraft: () => null,
+  clearDraft: vi.fn(),
+}));
+
+vi.mock('../../shared/components/feedback/FeatureErrorBoundary', () => ({
+  FeatureErrorBoundary: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+
+vi.mock('../../shared/components/badges/QualityScoreBadge', () => ({
+  QualityScoreBadge: () => <span data-testid="quality-score-badge" />,
+}));
+
+vi.mock('../../shared/components/article/ArticleSummary', () => ({
+  ArticleSummary: () => <div data-testid="article-summary" />,
+}));
+
+vi.mock('../../shared/components/feedback/Skeleton', () => ({
+  PageViewSkeleton: () => <div data-testid="page-view-skeleton" />,
+}));
+
+vi.mock('../../shared/components/TagEditor', () => ({
+  TagEditor: () => <div data-testid="tag-editor" />,
+}));
+
+
+vi.mock('../../shared/components/diagrams/DrawioEditor', () => ({
+  DrawioEditor: () => <div data-testid="drawio-editor" />,
+}));
+
+vi.mock('../../shared/lib/api', () => ({
+  apiFetch: vi.fn().mockResolvedValue({}),
+}));
+
+vi.mock('../../shared/hooks/use-standalone', () => ({
+  useSubmitFeedback: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useVerifyPage: () => ({ mutateAsync: vi.fn(), isPending: false }),
+}));
+
+let capturedShortcuts: Array<{ key: string; keys: string[]; mod?: boolean; alt?: boolean; shift?: boolean; description: string; category: string; action: () => void }> = [];
+vi.mock('../../shared/hooks/use-keyboard-shortcuts', () => ({
+  useKeyboardShortcuts: (shortcuts: typeof capturedShortcuts) => {
+    capturedShortcuts = shortcuts;
+  },
+}));
+
+vi.mock('../../shared/hooks/use-authenticated-src', () => ({
+  useAuthenticatedSrc: (src: string) => ({ blobSrc: src, loading: false }),
+}));
+
+vi.mock('../../shared/hooks/use-settings', () => ({
+  useSettings: () => ({
+    data: {
+      confluenceUrl: 'https://confluence.example.com',
+      ollamaModel: 'qwen3.5',
+      llmProvider: 'ollama',
+      openaiModel: null,
+    },
+    isLoading: false,
+  }),
+}));
+
 const mockPage = {
-  confluenceId: 'page-1',
-  title: 'Test Page',
-  spaceKey: 'DEV',
-  bodyHtml: '<h2>Hello</h2><p>World</p>',
-  bodyText: 'Hello World',
-  version: 3,
-  author: 'testuser',
-  labels: ['docs'],
-  lastModifiedAt: '2025-01-01T00:00:00Z',
-  status: 'current',
+  id: 'page-1',
+  confluenceId: '98765432',
+  title: 'Engineering Handbook',
+  spaceKey: 'ENG',
+  pageType: 'page' as const,
+  bodyHtml: '<h1 id="intro">Introduction</h1><p>Body</p>',
+  bodyText: 'Body',
+  version: 7,
+  parentId: null,
+  labels: ['docs', 'platform'],
+  author: 'simon',
+  lastModifiedAt: '2026-03-01T12:00:00Z',
+  lastSynced: '2026-03-01T12:00:00Z',
+  hasChildren: true,
+  embeddingDirty: false,
+  embeddingStatus: 'embedded',
+  embeddedAt: '2026-03-01T12:00:00Z',
+  embeddingError: null,
+  qualityScore: 85,
+  qualityStatus: 'analyzed' as const,
+  qualityCompleteness: 80,
+  qualityClarity: 90,
+  qualityStructure: 85,
+  qualityAccuracy: 82,
+  qualityReadability: 88,
+  qualitySummary: 'Well-written article',
+  qualityAnalyzedAt: '2026-03-01T12:00:00Z',
+  qualityError: null,
+  summaryHtml: null,
+  summaryStatus: 'pending' as const,
+  summaryGeneratedAt: null,
+  summaryModel: null,
+  summaryError: null,
 };
 
-const mockPageWithCode = {
-  ...mockPage,
-  bodyHtml: '<p>Use <code>console.log()</code> for debugging.</p><pre><code class="language-javascript">const x = 42;\nconsole.log(x);</code></pre>',
-  bodyText: 'Use console.log() for debugging. const x = 42; console.log(x);',
-};
+let currentMockPage: typeof mockPage | undefined = mockPage;
+let mockIsLoading = false;
 
-const mockPageWithImages = {
-  ...mockPage,
-  bodyHtml: '<h2>Screenshots</h2><img src="/api/attachments/page-1/dashboard.png" alt="dashboard.png" width="600"><p>External:</p><img src="https://example.com/diagram.svg" alt="external">',
-  bodyText: 'Screenshots External:',
-};
-
-const mockPageWithDrawio = {
-  ...mockPage,
-  bodyHtml: '<h2>Architecture</h2><div class="confluence-drawio" data-diagram-name="system-topology"><img src="/api/attachments/page-1/system-topology.png" alt="Draw.io diagram: system-topology"><a class="drawio-edit-link" href="#" data-drawio="true">Edit in Confluence</a></div>',
-  bodyText: 'Architecture',
-};
-
-const mockPageWithHeadings = {
-  ...mockPage,
-  bodyHtml: '<h1>Main Title</h1><p>Intro paragraph.</p><h2>Section One</h2><p>Content for section one.</p><h3>Subsection</h3><p>Deeper content.</p><h2>Section Two</h2><ul><li>Item A</li><li>Item B</li></ul>',
-  bodyText: 'Main Title Intro paragraph. Section One Content for section one. Subsection Deeper content. Section Two Item A Item B',
-};
-
-const mockPageWithPanelsAndTasks = {
-  ...mockPage,
-  bodyHtml: '<div class="panel-info"><p>This is an info panel.</p></div><div class="panel-warning"><p>Watch out!</p></div><ul data-type="taskList"><li data-type="taskItem" data-checked="true">Done task</li><li data-type="taskItem" data-checked="false">Open task</li></ul><blockquote><p>A wise quote.</p></blockquote><hr><details><summary>Expand me</summary><p>Hidden content.</p></details>',
-  bodyText: 'This is an info panel. Watch out! Done task Open task A wise quote. Hidden content.',
-};
-
-let currentMockPage = mockPage;
+const mockPinMutate = vi.fn();
+const mockUnpinMutate = vi.fn();
+const mockDeleteMutateAsync = vi.fn().mockResolvedValue(undefined);
 
 vi.mock('../../shared/hooks/use-pages', () => ({
-  usePage: () => ({ data: currentMockPage, isLoading: false }),
-  useUpdatePage: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  usePage: () => ({ data: mockIsLoading ? undefined : currentMockPage, isLoading: mockIsLoading }),
+  useUpdatePage: () => ({ mutateAsync: mockUpdatePage, isPending: false }),
   useUpdatePageLabels: () => ({ mutate: vi.fn(), isPending: false }),
-  useDeletePage: () => ({ mutateAsync: vi.fn() }),
+  usePageFilterOptions: () => ({ data: { authors: [], labels: [] } }),
+  usePinnedPages: () => ({ data: { items: [] } }),
+  usePinPage: () => ({ mutate: mockPinMutate, isPending: false }),
+  useUnpinPage: () => ({ mutate: mockUnpinMutate, isPending: false }),
+  useDeletePage: () => ({ mutateAsync: mockDeleteMutateAsync, isPending: false }),
 }));
 
 function createWrapper() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
+
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return (
       <QueryClientProvider client={queryClient}>
@@ -88,240 +217,255 @@ function createWrapper() {
 describe('PageViewPage', () => {
   beforeEach(() => {
     currentMockPage = mockPage;
-    useAuthStore.getState().setAuth('test-token', {
+    mockIsLoading = false;
+    capturedShortcuts = [];
+    mockNavigate.mockReset();
+    mockUpdatePage.mockReset().mockResolvedValue(undefined);
+    mockPinMutate.mockReset();
+    mockUnpinMutate.mockReset();
+    mockDeleteMutateAsync.mockReset().mockResolvedValue(undefined);
+    localStorage.clear();
+    Element.prototype.scrollTo = vi.fn();
+
+    useAuthStore.getState().setAuth('token', {
       id: '1',
-      username: 'testuser',
+      username: 'simon',
       role: 'user',
     });
-    // Mock fetch for sub-components that may call APIs
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({}), {
-        headers: { 'Content-Type': 'application/json' },
-      }),
-    );
   });
 
   afterEach(() => {
-    vi.restoreAllMocks();
     useAuthStore.getState().clearAuth();
+    useArticleViewStore.getState().setHeadings([]);
+    useArticleViewStore.getState().setEditing(false);
+    document.body.innerHTML = '';
   });
 
-  it('renders page title and metadata', () => {
+  it('renders the article title and space key in the breadcrumb', () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
 
-    expect(screen.getByText('Test Page')).toBeInTheDocument();
-    expect(screen.getByText('DEV')).toBeInTheDocument();
-    expect(screen.getByText('v3')).toBeInTheDocument();
-    expect(screen.getByText('docs')).toBeInTheDocument();
+    expect(screen.getByText('Engineering Handbook')).toBeInTheDocument();
+    expect(screen.getByText('ENG')).toBeInTheDocument();
   });
 
-  it('renders sidebar with sticky positioning', () => {
-    const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
-
-    // The sidebar div should have sticky positioning classes
-    const sidebar = container.querySelector('.sticky.top-4.self-start');
-    expect(sidebar).toBeInTheDocument();
-    expect(sidebar).toHaveClass('sticky', 'top-4', 'self-start');
-  });
-
-  it('sidebar contains version history and duplicate detector sections', () => {
+  it('renders the Edit button in the header (action buttons moved to right pane)', () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
 
-    expect(screen.getByText('Duplicate Detection')).toBeInTheDocument();
+    expect(screen.getByText('Edit')).toBeInTheDocument();
+    // AI Improve, Pin, Confluence, Delete are now in ArticleRightPane
+    expect(screen.queryByText('AI Improve')).not.toBeInTheDocument();
+    expect(screen.queryByText('Delete')).not.toBeInTheDocument();
   });
 
-  it('renders inline code and code blocks visually', () => {
-    currentMockPage = mockPageWithCode;
-    const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
+  it('resets the app scroll container when the article route renders', async () => {
+    const scrollContainer = document.createElement('div');
+    scrollContainer.setAttribute('data-scroll-container', '');
+    document.body.appendChild(scrollContainer);
 
-    // Content area should have prose classes for code styling
-    const contentArea = container.querySelector('.prose');
-    expect(contentArea).toBeInTheDocument();
+    const scrollSpy = vi.spyOn(scrollContainer, 'scrollTo');
 
-    // Inline code should be rendered
-    const inlineCode = container.querySelector('code');
-    expect(inlineCode).toBeInTheDocument();
-    expect(inlineCode!.textContent).toBe('console.log()');
+    render(<PageViewPage />, { wrapper: createWrapper() });
 
-    // Code block should be rendered with language class
-    const codeBlock = container.querySelector('pre code.language-javascript');
-    expect(codeBlock).toBeInTheDocument();
-    expect(codeBlock!.textContent).toContain('const x = 42');
-  });
-
-  it('renders images with correct src attributes', () => {
-    currentMockPage = mockPageWithImages;
-    const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
-
-    const images = container.querySelectorAll('img');
-    expect(images).toHaveLength(2);
-
-    // Local attachment image
-    expect(images[0]).toHaveAttribute('src', '/api/attachments/page-1/dashboard.png');
-    expect(images[0]).toHaveAttribute('alt', 'dashboard.png');
-
-    // External image
-    expect(images[1]).toHaveAttribute('src', 'https://example.com/diagram.svg');
-  });
-
-  it('renders draw.io diagrams with data attributes preserved', () => {
-    currentMockPage = mockPageWithDrawio;
-    const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
-
-    const drawioDiv = container.querySelector('.confluence-drawio');
-    expect(drawioDiv).toBeInTheDocument();
-    expect(drawioDiv).toHaveAttribute('data-diagram-name', 'system-topology');
-
-    const drawioImg = drawioDiv!.querySelector('img');
-    expect(drawioImg).toHaveAttribute('src', '/api/attachments/page-1/system-topology.png');
-
-    const editLink = drawioDiv!.querySelector('a.drawio-edit-link');
-    expect(editLink).toBeInTheDocument();
-    expect(editLink!.textContent).toBe('Edit in Confluence');
-  });
-
-  it('opens lightbox when clicking an image', async () => {
-    currentMockPage = mockPageWithImages;
-    const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
-
-    // Wait for TipTap to render and the rAF-based image click handler to attach
-    let image: HTMLImageElement | null = null;
     await waitFor(() => {
-      image = container.querySelector('img');
-      expect(image).toBeTruthy();
-      expect(image!.style.cursor).toBe('zoom-in');
+      expect(scrollSpy).toHaveBeenCalledWith({ top: 0, left: 0, behavior: 'auto' });
     });
-
-    // Click the image
-    fireEvent.click(image!);
-
-    // Lightbox should appear with a dialog role
-    const lightbox = screen.getByRole('dialog');
-    expect(lightbox).toBeInTheDocument();
-
-    // Close button should be present
-    const closeBtn = screen.getByLabelText('Close preview');
-    expect(closeBtn).toBeInTheDocument();
   });
 
-  it('closes lightbox when clicking close button', async () => {
-    currentMockPage = mockPageWithImages;
-    const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
+  it('opens the lightbox from article media', async () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
 
-    // Wait for image click handler
-    let image: HTMLImageElement | null = null;
-    await waitFor(() => {
-      image = container.querySelector('img');
-      expect(image).toBeTruthy();
-      expect(image!.style.cursor).toBe('zoom-in');
-    });
+    fireEvent.click(screen.getByText('Preview image'));
 
-    fireEvent.click(image!);
-
-    // Lightbox is open
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
-
-    // Click close
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
     fireEvent.click(screen.getByLabelText('Close preview'));
 
-    // Wait for AnimatePresence exit animation
     await waitFor(() => {
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     });
   });
 
-  it('closes lightbox on Escape key', async () => {
-    currentMockPage = mockPageWithImages;
-    const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
+  it('shows save and cancel buttons in edit mode', () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
 
-    // Wait for image click handler
-    let image: HTMLImageElement | null = null;
+    fireEvent.click(screen.getByText('Edit'));
+
+    expect(screen.getByText('Save')).toBeInTheDocument();
+    expect(screen.getByText('Cancel')).toBeInTheDocument();
+    expect(screen.queryByText('Edit')).not.toBeInTheDocument();
+  });
+
+  it('saves edited article content', async () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByText('Edit'));
+    fireEvent.change(screen.getByDisplayValue('Engineering Handbook'), {
+      target: { value: 'Updated Engineering Handbook' },
+    });
+    fireEvent.change(screen.getByLabelText('Article editor'), {
+      target: { value: '<p>Updated content</p>' },
+    });
+    fireEvent.click(screen.getByText('Save'));
+
     await waitFor(() => {
-      image = container.querySelector('img');
-      expect(image).toBeTruthy();
-      expect(image!.style.cursor).toBe('zoom-in');
+      expect(mockUpdatePage).toHaveBeenCalledWith({
+        id: 'page-1',
+        title: 'Updated Engineering Handbook',
+        bodyHtml: '<p>Updated content</p>',
+        version: 7,
+      });
+    });
+  });
+
+  it('passes confluenceUrl and confluencePageId to ArticleViewer for draw.io edit links', () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+
+    const viewer = screen.getByTestId('article-viewer');
+    expect(viewer).toHaveAttribute('data-confluence-url', 'https://confluence.example.com');
+    expect(viewer).toHaveAttribute('data-page-id', 'page-1');
+    // confluencePageId should be the Confluence ID, not the internal page ID
+    expect(viewer).toHaveAttribute('data-confluence-page-id', '98765432');
+  });
+
+  it('syncs headings to article-view-store for the right pane', async () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      const storeHeadings = useArticleViewStore.getState().headings;
+      expect(storeHeadings).toHaveLength(2);
+      expect(storeHeadings[0].text).toBe('Introduction');
+    });
+  });
+
+  it('syncs editing state to article-view-store', async () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+
+    expect(useArticleViewStore.getState().editing).toBe(false);
+
+    fireEvent.click(screen.getByText('Edit'));
+
+    await waitFor(() => {
+      expect(useArticleViewStore.getState().editing).toBe(true);
+    });
+  });
+
+  it('shows error toast when draw.io attachment fetch returns non-OK status', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(null, { status: 404, statusText: 'Not Found' }),
+    );
+
+    render(<PageViewPage />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByTestId('edit-diagram-trigger'));
+
+    await waitFor(() => {
+      // The draw.io editor should NOT be opened on fetch failure
+      expect(screen.queryByTestId('drawio-editor')).not.toBeInTheDocument();
     });
 
-    fireEvent.click(image!);
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    fetchSpy.mockRestore();
+  });
 
-    // Press Escape
-    fireEvent.keyDown(document, { key: 'Escape' });
+  it('shows Edit button for pages with pageType "folder" (folder concept removed)', () => {
+    currentMockPage = { ...mockPage, pageType: 'folder' as const };
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    expect(screen.getByText('Edit')).toBeInTheDocument();
+  });
 
-    // Wait for AnimatePresence exit animation
+  it('shows empty page placeholder when bodyHtml is empty', () => {
+    currentMockPage = { ...mockPage, bodyHtml: '' };
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    expect(screen.getByText('This page has no content yet.')).toBeInTheDocument();
+    expect(screen.getByTestId('add-content-btn')).toBeInTheDocument();
+  });
+
+  it('shows empty page placeholder when bodyHtml is whitespace-only', () => {
+    currentMockPage = { ...mockPage, bodyHtml: '   \n  ' };
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    expect(screen.getByText('This page has no content yet.')).toBeInTheDocument();
+    expect(screen.getByTestId('add-content-btn')).toBeInTheDocument();
+  });
+
+  it('shows empty page placeholder when bodyHtml is just <p></p>', () => {
+    currentMockPage = { ...mockPage, bodyHtml: '<p></p>' };
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    expect(screen.getByText('This page has no content yet.')).toBeInTheDocument();
+    expect(screen.getByTestId('add-content-btn')).toBeInTheDocument();
+  });
+
+  it('Add content button enters inline edit mode instead of navigating', async () => {
+    currentMockPage = { ...mockPage, bodyHtml: '' };
+    render(<PageViewPage />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByTestId('add-content-btn'));
+
+    // Should enter edit mode (shows Save/Cancel), not navigate to a non-existent route
     await waitFor(() => {
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(screen.getByText('Save')).toBeInTheDocument();
+      expect(screen.getByText('Cancel')).toBeInTheDocument();
     });
+    expect(mockNavigate).not.toHaveBeenCalled();
   });
 
-  it('renders headings with proper hierarchy in the content area', () => {
-    currentMockPage = mockPageWithHeadings;
-    const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
-
-    const contentArea = container.querySelector('.prose');
-    expect(contentArea).toBeInTheDocument();
-
-    // All heading levels should render
-    const h1 = contentArea!.querySelector('h1');
-    expect(h1).toBeInTheDocument();
-    expect(h1!.textContent).toBe('Main Title');
-
-    const h2s = contentArea!.querySelectorAll('h2');
-    expect(h2s).toHaveLength(2);
-    expect(h2s[0].textContent).toBe('Section One');
-    expect(h2s[1].textContent).toBe('Section Two');
-
-    const h3 = contentArea!.querySelector('h3');
-    expect(h3).toBeInTheDocument();
-    expect(h3!.textContent).toBe('Subsection');
-
-    // Lists should render
-    const listItems = contentArea!.querySelectorAll('li');
-    expect(listItems.length).toBeGreaterThanOrEqual(2);
+  it('shows article content when bodyHtml has content', () => {
+    currentMockPage = { ...mockPage, bodyHtml: '<p>Some content</p>' };
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    expect(screen.queryByText('This page has no content yet.')).not.toBeInTheDocument();
+    expect(screen.getByTestId('article-viewer')).toBeInTheDocument();
   });
 
-  it('renders panels, task lists, blockquotes, and expand sections', () => {
-    currentMockPage = mockPageWithPanelsAndTasks;
-    const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
-
-    const contentArea = container.querySelector('.prose');
-    expect(contentArea).toBeInTheDocument();
-
-    // Info and warning panels
-    const infoPanel = contentArea!.querySelector('.panel-info');
-    expect(infoPanel).toBeInTheDocument();
-    expect(infoPanel!.textContent).toContain('info panel');
-
-    const warningPanel = contentArea!.querySelector('.panel-warning');
-    expect(warningPanel).toBeInTheDocument();
-    expect(warningPanel!.textContent).toContain('Watch out');
-
-    // Task list with checked/unchecked items
-    const taskList = contentArea!.querySelector('ul[data-type="taskList"]');
-    expect(taskList).toBeInTheDocument();
-
-    const checkedTask = contentArea!.querySelector('li[data-checked="true"]');
-    expect(checkedTask).toBeInTheDocument();
-    expect(checkedTask!.textContent).toContain('Done task');
-
-    const uncheckedTask = contentArea!.querySelector('li[data-checked="false"]');
-    expect(uncheckedTask).toBeInTheDocument();
-    expect(uncheckedTask!.textContent).toContain('Open task');
-
-    // Blockquote
-    const blockquote = contentArea!.querySelector('blockquote');
-    expect(blockquote).toBeInTheDocument();
-    expect(blockquote!.textContent).toContain('wise quote');
-
-    // Horizontal rule
-    const hr = contentArea!.querySelector('hr');
-    expect(hr).toBeInTheDocument();
-
-    // Expand section (details/summary)
-    const details = contentArea!.querySelector('details');
-    expect(details).toBeInTheDocument();
-    const summary = details!.querySelector('summary');
-    expect(summary).toBeInTheDocument();
-    expect(summary!.textContent).toBe('Expand me');
+  // --- Phase 5: Action shortcuts ---
+  it('registers an Alt+P shortcut for pin/unpin', () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    const pinShortcut = capturedShortcuts.find((s) => s.key === 'Alt+P');
+    expect(pinShortcut).toBeDefined();
+    expect(pinShortcut!.alt).toBe(true);
+    expect(pinShortcut!.keys).toContain('p');
+    expect(pinShortcut!.category).toBe('actions');
   });
+
+  it('Alt+P action calls pin mutation', () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    const pinShortcut = capturedShortcuts.find((s) => s.key === 'Alt+P');
+    expect(pinShortcut).toBeDefined();
+    pinShortcut!.action();
+    expect(mockPinMutate).toHaveBeenCalledWith('page-1', expect.any(Object));
+  });
+
+  it('registers an Alt+Shift+D shortcut for delete', () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    const deleteShortcut = capturedShortcuts.find((s) => s.key === 'Alt+Shift+D');
+    expect(deleteShortcut).toBeDefined();
+    expect(deleteShortcut!.alt).toBe(true);
+    expect(deleteShortcut!.shift).toBe(true);
+    expect(deleteShortcut!.category).toBe('actions');
+  });
+
+  it('Alt+Shift+D action triggers delete confirmation', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValueOnce(true);
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    const deleteShortcut = capturedShortcuts.find((s) => s.key === 'Alt+Shift+D');
+    expect(deleteShortcut).toBeDefined();
+    await deleteShortcut!.action();
+    expect(window.confirm).toHaveBeenCalledWith('Delete this article? This cannot be undone.');
+    expect(mockDeleteMutateAsync).toHaveBeenCalledWith('page-1');
+  });
+
+  it('registers an Alt+I shortcut for AI Improve', () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    const aiShortcut = capturedShortcuts.find((s) => s.key === 'Alt+I');
+    expect(aiShortcut).toBeDefined();
+    expect(aiShortcut!.alt).toBe(true);
+    expect(aiShortcut!.keys).toContain('i');
+    expect(aiShortcut!.category).toBe('actions');
+  });
+
+  it('Alt+I action navigates to AI improve page', () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    const aiShortcut = capturedShortcuts.find((s) => s.key === 'Alt+I');
+    expect(aiShortcut).toBeDefined();
+    aiShortcut!.action();
+    expect(mockNavigate).toHaveBeenCalledWith('/ai?mode=improve&pageId=page-1');
+  });
+
 });
+

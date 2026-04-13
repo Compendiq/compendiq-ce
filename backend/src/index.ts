@@ -3,10 +3,17 @@
 import { initTelemetry, shutdownTelemetry } from './telemetry.js';
 
 import { buildApp } from './app.js';
-import { runMigrations, closePool } from './db/postgres.js';
-import { startSyncWorker, stopSyncWorker } from './services/sync-service.js';
-import { markStartupComplete } from './routes/health.js';
-import { logger } from './utils/logger.js';
+import { runMigrations, closePool, closeVectorPool, query } from './core/db/postgres.js';
+import { startSyncWorker, stopSyncWorker } from './domains/confluence/services/sync-service.js';
+import { addAllowedBaseUrl } from './core/utils/ssrf-guard.js';
+import { startQualityWorker, stopQualityWorker, triggerQualityBatch } from './domains/knowledge/services/quality-worker.js';
+import { startSummaryWorker, stopSummaryWorker, triggerSummaryBatch } from './domains/knowledge/services/summary-worker.js';
+import { startTokenCleanupWorker, stopTokenCleanupWorker } from './core/services/token-cleanup-service.js';
+import { startRetentionWorker, stopRetentionWorker } from './core/services/data-retention-service.js';
+import { markStartupComplete } from './routes/foundation/health.js';
+import { logger } from './core/utils/logger.js';
+import { getSharedLlmSettings } from './core/services/admin-settings-service.js';
+import { setActiveProvider } from './domains/llm/services/ollama-service.js';
 
 const PORT = parseInt(process.env.BACKEND_PORT ?? '3051', 10);
 const HOST = process.env.NODE_ENV === 'production' ? '0.0.0.0' : '127.0.0.1';
@@ -32,6 +39,26 @@ async function start() {
   await runMigrations();
   logger.info('Migrations complete');
 
+  // Pre-register all user-configured Confluence URLs so the SSRF guard
+  // allows requests to on-premises instances on private networks (#480).
+  try {
+    const urlRows = await query<{ confluence_url: string }>(
+      'SELECT DISTINCT confluence_url FROM user_settings WHERE confluence_url IS NOT NULL',
+      [],
+    );
+    for (const row of urlRows.rows) {
+      addAllowedBaseUrl(row.confluence_url);
+    }
+    if (urlRows.rows.length > 0) {
+      logger.info({ count: urlRows.rows.length }, 'Registered Confluence URLs in SSRF allowlist');
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Failed to pre-register Confluence URLs in SSRF allowlist');
+  }
+
+  const sharedLlmSettings = await getSharedLlmSettings();
+  setActiveProvider(sharedLlmSettings.llmProvider);
+
   // Build and start the app
   const app = await buildApp();
 
@@ -45,11 +72,37 @@ async function start() {
   const syncInterval = parseInt(process.env.SYNC_INTERVAL_MIN ?? '15', 10);
   startSyncWorker(syncInterval);
 
+  // Start background quality analysis worker
+  startQualityWorker();
+
+  // Start background summary worker
+  const summaryInterval = parseInt(process.env.SUMMARY_CHECK_INTERVAL_MINUTES ?? '60', 10);
+  startSummaryWorker(summaryInterval);
+
+  // Start background token cleanup worker
+  startTokenCleanupWorker();
+
+  // Start daily data retention cleanup worker
+  startRetentionWorker();
+
+  // Run initial worker batches after 30s delay to let server stabilize.
+  // Uses lock-guarded trigger functions to prevent concurrent execution
+  // if a worker interval fires at the same time.
+  setTimeout(async () => {
+    await triggerQualityBatch();
+    await triggerSummaryBatch();
+  }, 30_000);
+
   // Graceful shutdown
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutting down...');
+    stopQualityWorker();
     stopSyncWorker();
+    stopSummaryWorker();
+    stopTokenCleanupWorker();
+    stopRetentionWorker();
     await app.close();
+    await closeVectorPool();
     await closePool();
     await shutdownTelemetry();
     process.exit(0);

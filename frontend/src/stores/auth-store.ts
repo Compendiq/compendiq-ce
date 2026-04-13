@@ -1,5 +1,10 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { migrateStorageKey } from '../shared/lib/migrate-storage-key';
+
+// One-time migrations for localStorage key renames
+migrateStorageKey('kb-auth', 'compendiq-auth');
+migrateStorageKey('atlasmind-auth', 'compendiq-auth');
 
 interface User {
   id: string;
@@ -27,7 +32,7 @@ export const useAuthStore = create<AuthState>()(
         set({ accessToken: null, user: null, isAuthenticated: false }),
     }),
     {
-      name: 'kb-auth',
+      name: 'compendiq-auth',
       partialize: (state) => ({
         // Persist token so new tabs have it immediately without refresh races
         accessToken: state.accessToken,
@@ -46,7 +51,7 @@ export const useAuthStore = create<AuthState>()(
  */
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', (event) => {
-    if (event.key !== 'kb-auth') return;
+    if (event.key !== 'compendiq-auth') return;
 
     if (event.newValue === null) {
       // localStorage was cleared (logout in another tab)

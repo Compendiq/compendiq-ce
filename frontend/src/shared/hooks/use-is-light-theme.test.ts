@@ -5,7 +5,7 @@ import { useThemeStore } from '../../stores/theme-store';
 
 describe('useIsLightTheme', () => {
   beforeEach(() => {
-    useThemeStore.setState({ theme: 'midnight-blue' });
+    useThemeStore.setState({ theme: 'void-indigo' });
   });
 
   it('returns false for dark themes', () => {
@@ -16,25 +16,25 @@ describe('useIsLightTheme', () => {
   it('returns true when switched to a light theme', () => {
     const { result } = renderHook(() => useIsLightTheme());
     act(() => {
-      useThemeStore.getState().setTheme('cloud-white');
+      useThemeStore.getState().setTheme('polar-slate');
     });
     expect(result.current).toBe(true);
   });
 
   it('returns false when switched back to dark theme', () => {
-    useThemeStore.setState({ theme: 'cloud-white' });
+    useThemeStore.setState({ theme: 'polar-slate' });
     const { result } = renderHook(() => useIsLightTheme());
     expect(result.current).toBe(true);
 
     act(() => {
-      useThemeStore.getState().setTheme('catppuccin-mocha');
+      useThemeStore.getState().setTheme('obsidian-violet');
     });
     expect(result.current).toBe(false);
   });
 
-  it('returns true for catppuccin-latte', () => {
+  it('returns true for parchment-glow', () => {
     act(() => {
-      useThemeStore.getState().setTheme('catppuccin-latte');
+      useThemeStore.getState().setTheme('parchment-glow');
     });
     const { result } = renderHook(() => useIsLightTheme());
     expect(result.current).toBe(true);

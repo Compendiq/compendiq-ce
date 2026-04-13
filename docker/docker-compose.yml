@@ -1,6 +1,8 @@
+name: compendiq
+
 services:
   frontend:
-    image: diinlu/ai-kb-creator-frontend:dev
+    image: ghcr.io/compendiq/compendiq-ce-frontend:dev
     build:
       context: ..
       dockerfile: frontend/Dockerfile
@@ -10,17 +12,20 @@ services:
       backend:
         condition: service_healthy
     restart: unless-stopped
+    networks: [frontend-net, backend-net]
 
   backend:
-    image: diinlu/ai-kb-creator-backend:dev
+    image: ghcr.io/compendiq/compendiq-ce-backend:dev
     build:
       context: ..
       dockerfile: backend/Dockerfile
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    ports:
+      - "${BACKEND_HOST_PORT:-3052}:3051"
     environment:
       NODE_ENV: production
-      PORT: "3051"
+      BACKEND_PORT: "3051"
       POSTGRES_URL: postgresql://${POSTGRES_USER:-kb_user}:${POSTGRES_PASSWORD:-changeme-postgres}@postgres:5432/${POSTGRES_DB:-kb_creator}
       REDIS_URL: redis://:${REDIS_PASSWORD:-changeme-redis}@redis:6379
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
@@ -28,12 +33,32 @@ services:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
-      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-nomic-embed-text}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-bge-m3}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1024}
+      FTS_LANGUAGE: ${FTS_LANGUAGE:-simple}
       LLM_BEARER_TOKEN: ${LLM_BEARER_TOKEN:-}
       LLM_AUTH_TYPE: ${LLM_AUTH_TYPE:-bearer}
       LLM_VERIFY_SSL: ${LLM_VERIFY_SSL:-true}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:8081}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      DEFAULT_LLM_MODEL: ${DEFAULT_LLM_MODEL:-}
+      QUALITY_MODEL: ${QUALITY_MODEL:-}
+      QUALITY_CHECK_INTERVAL_MINUTES: ${QUALITY_CHECK_INTERVAL_MINUTES:-60}
+      QUALITY_BATCH_SIZE: ${QUALITY_BATCH_SIZE:-5}
+      SUMMARY_MODEL: ${SUMMARY_MODEL:-}
+      SUMMARY_CHECK_INTERVAL_MINUTES: ${SUMMARY_CHECK_INTERVAL_MINUTES:-60}
+      SUMMARY_BATCH_SIZE: ${SUMMARY_BATCH_SIZE:-5}
+      SYNC_INTERVAL_MIN: ${SYNC_INTERVAL_MIN:-15}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LLM_CACHE_TTL: ${LLM_CACHE_TTL:-3600}
+      OTEL_ENABLED: ${OTEL_ENABLED:-false}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-compendiq-backend}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       CONFLUENCE_VERIFY_SSL: ${CONFLUENCE_VERIFY_SSL:-true}
+      CONFLUENCE_DOCKER_HOST: ${CONFLUENCE_DOCKER_HOST:-confluence}
+      ATTACHMENTS_DIR: /app/data/attachments
       NODE_EXTRA_CA_CERTS: ${CONTAINER_CA_BUNDLE_PATH:-/etc/ssl/certs/ca-certificates.crt}
+      MCP_DOCS_URL: ${MCP_DOCS_URL:-http://mcp-docs:3100/mcp}
     depends_on:
       postgres:
         condition: service_healthy
@@ -44,11 +69,12 @@ services:
       - attachments:/app/data
       - "${HOST_CA_BUNDLE_PATH:-/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem}:${CONTAINER_CA_BUNDLE_PATH:-/etc/ssl/certs/ca-certificates.crt}:ro"
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3051/api/health || exit 1"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3051/api/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 15s
+    networks: [backend-net, data-net]
 
   postgres:
     image: pgvector/pgvector:pg17
@@ -64,6 +90,52 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    networks: [data-net]
+
+  mcp-docs:
+    image: ghcr.io/compendiq/compendiq-ce-mcp-docs:dev
+    build:
+      context: ..
+      dockerfile: mcp-docs/Dockerfile
+    environment:
+      PORT: "3100"
+      MCP_DOCS_HOST: "0.0.0.0"
+      REDIS_URL: redis://:${REDIS_PASSWORD:-changeme-redis}@redis:6379
+      LOG_LEVEL: ${MCP_LOG_LEVEL:-info}
+      CACHE_TTL_SECONDS: ${MCP_CACHE_TTL:-3600}
+      SEARXNG_URL: ${SEARXNG_URL:-http://searxng:8080}
+    depends_on:
+      redis:
+        condition: service_healthy
+      searxng:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3100/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks: [backend-net]
+
+  searxng:
+    image: ghcr.io/compendiq/compendiq-ce-searxng:dev
+    build:
+      context: ./searxng
+      dockerfile: Dockerfile
+    environment:
+      SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://localhost:8080}
+      SEARXNG_LIMITER: ${SEARXNG_LIMITER:-false}
+      SEARXNG_IMAGE_PROXY: ${SEARXNG_IMAGE_PROXY:-false}
+      SEARXNG_SECRET_KEY: ${SEARXNG_SECRET_KEY:-}
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks: [backend-net]
 
   redis:
     image: redis:8-alpine
@@ -73,12 +145,22 @@ services:
       --maxmemory-policy allkeys-lru
       --requirepass ${REDIS_PASSWORD:-changeme-redis}
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-changeme-redis}", "ping"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=${REDIS_PASSWORD:-changeme-redis} redis-cli ping"]
       interval: 5s
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    networks: [data-net, backend-net]
 
 volumes:
   postgres-data:
   attachments:
+
+networks:
+  frontend-net:
+    driver: bridge
+  backend-net:
+    driver: bridge
+  data-net:
+    driver: bridge
+    internal: true

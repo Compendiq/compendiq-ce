@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <!--
+    AtlasMind favicon — simplified Neural Atlas mark.
+    Designed for clarity at 16–32 px.
+  -->
+  <style>
+    :root { --c: #6366f1; --c2: #8b5cf6; }
+    @media (prefers-color-scheme: light) {
+      :root { --c: #4f46e5; --c2: #7c3aed; }
+    }
+  </style>
+  <defs>
+    <linearGradient id="f" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="var(--c)"/>
+      <stop offset="100%" stop-color="var(--c2)"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Hexagonal outline -->
+  <path d="M16 4 L25.5 10 L25.5 22 L16 28 L6.5 22 L6.5 10 Z"
+        stroke="url(#f)" stroke-width="0.8" stroke-linejoin="round" opacity="0.18"/>
+
+  <!-- Radial connections -->
+  <line x1="16" y1="16" x2="16"   y2="4"  stroke="url(#f)" stroke-width="1" stroke-linecap="round" opacity="0.3"/>
+  <line x1="16" y1="16" x2="6.5"  y2="10" stroke="url(#f)" stroke-width="1" stroke-linecap="round" opacity="0.3"/>
+  <line x1="16" y1="16" x2="25.5" y2="10" stroke="url(#f)" stroke-width="1" stroke-linecap="round" opacity="0.3"/>
+  <line x1="16" y1="16" x2="6.5"  y2="22" stroke="url(#f)" stroke-width="1" stroke-linecap="round" opacity="0.3"/>
+  <line x1="16" y1="16" x2="25.5" y2="22" stroke="url(#f)" stroke-width="1" stroke-linecap="round" opacity="0.3"/>
+  <line x1="16" y1="16" x2="16"   y2="28" stroke="url(#f)" stroke-width="1" stroke-linecap="round" opacity="0.3"/>
+
+  <!-- Outer nodes -->
+  <circle cx="16"   cy="4"  r="2.2" fill="url(#f)"/>
+  <circle cx="6.5"  cy="10" r="1.8" fill="url(#f)" opacity="0.85"/>
+  <circle cx="25.5" cy="10" r="1.8" fill="url(#f)" opacity="0.85"/>
+  <circle cx="6.5"  cy="22" r="1.8" fill="url(#f)" opacity="0.85"/>
+  <circle cx="25.5" cy="22" r="1.8" fill="url(#f)" opacity="0.85"/>
+  <circle cx="16"   cy="28" r="2.2" fill="url(#f)"/>
+
+  <!-- Core hub -->
+  <circle cx="16" cy="16" r="3" fill="url(#f)"/>
+
+  <!-- Specular -->
+  <circle cx="16" cy="16" r="1.1" fill="white" opacity="0.65"/>
+</svg>

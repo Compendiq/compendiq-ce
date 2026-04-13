@@ -95,6 +95,57 @@ describe('apiFetch', () => {
     expect(mockClearAuth).toHaveBeenCalled();
   });
 
+  it('deduplicates concurrent refresh calls on multiple 401s', async () => {
+    storeState.accessToken = 'expired-token';
+
+    let refreshCallCount = 0;
+    // Track per-path call counts to distinguish initial vs retry calls
+    const callCounts = new Map<string, number>();
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: string | URL | Request) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+      if (url === '/api/auth/refresh') {
+        refreshCallCount++;
+        await new Promise((r) => setTimeout(r, 10));
+        // Update store so retry calls pick up the new token
+        storeState.accessToken = 'refreshed-token';
+        return new Response(
+          JSON.stringify({ accessToken: 'refreshed-token', user: { id: '1', username: 'test', role: 'user' } }),
+          { headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+
+      // Track call count per path
+      const count = (callCounts.get(url) ?? 0) + 1;
+      callCounts.set(url, count);
+
+      // First call to each path returns 401; retry (count 2) succeeds
+      if (count === 1) {
+        return new Response('Unauthorized', { status: 401 });
+      }
+
+      return new Response(JSON.stringify({ ok: true }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    // Fire 5 concurrent requests — all will get 401 and try to refresh
+    const results = await Promise.all([
+      apiFetch('/a'),
+      apiFetch('/b'),
+      apiFetch('/c'),
+      apiFetch('/d'),
+      apiFetch('/e'),
+    ]);
+
+    // All should succeed
+    results.forEach((r) => expect(r).toEqual({ ok: true }));
+
+    // Only ONE refresh call should have been made (deduplication)
+    expect(refreshCallCount).toBe(1);
+  });
+
   it('attempts refresh on 401 when accessToken exists but expired', async () => {
     storeState.accessToken = 'expired-token';
 

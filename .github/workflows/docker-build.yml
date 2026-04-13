@@ -4,57 +4,61 @@ on:
   push:
     branches: [main, dev]
     tags: ['v*']
-  pull_request:
   workflow_dispatch:
+
+# Cancel in-progress runs for the same branch — saves CI minutes on rapid pushes
+concurrency:
+  group: docker-build-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   docker-backend:
     name: Backend Image
     if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
-      - name: Log in to DHI registry (base images)
+      - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
-          registry: dhi.io
-          username: ${{ vars.DHI_USER }}
-          password: ${{ secrets.DHI_PAT }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ vars.DHI_USER }}
-          password: ${{ secrets.DHI_PAT }}
-
-      - name: Extract metadata for backend
+      - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: diinlu/ai-kb-creator-backend
+          images: ghcr.io/compendiq/compendiq-ce-backend
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=branch,enable=${{ github.ref != 'refs/heads/main' }}
-            type=ref,event=pr
-            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' && !startsWith(github.ref, 'refs/tags/') }}
+            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
+
+      - name: Set up QEMU
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push backend
+      - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./backend/Dockerfile
+          platforms: ${{ startsWith(github.ref, 'refs/tags/') && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          outputs: ${{ github.event_name == 'pull_request' && 'type=cacheonly' || 'type=registry' }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          push: true
+          cache-from: type=registry,ref=ghcr.io/compendiq/compendiq-ce-backend:buildcache
+          cache-to: type=registry,ref=ghcr.io/compendiq/compendiq-ce-backend:buildcache,mode=max
           sbom: true
           provenance: mode=max
 
@@ -62,48 +66,146 @@ jobs:
     name: Frontend Image
     if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
-      - name: Log in to DHI registry (base images)
+      - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
-          registry: dhi.io
-          username: ${{ vars.DHI_USER }}
-          password: ${{ secrets.DHI_PAT }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ vars.DHI_USER }}
-          password: ${{ secrets.DHI_PAT }}
-
-      - name: Extract metadata for frontend
+      - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: diinlu/ai-kb-creator-frontend
+          images: ghcr.io/compendiq/compendiq-ce-frontend
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=branch,enable=${{ github.ref != 'refs/heads/main' }}
-            type=ref,event=pr
-            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' && !startsWith(github.ref, 'refs/tags/') }}
+            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
+
+      - name: Set up QEMU
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push frontend
+      - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./frontend/Dockerfile
+          platforms: ${{ startsWith(github.ref, 'refs/tags/') && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          outputs: ${{ github.event_name == 'pull_request' && 'type=cacheonly' || 'type=registry' }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          push: true
+          cache-from: type=registry,ref=ghcr.io/compendiq/compendiq-ce-frontend:buildcache
+          cache-to: type=registry,ref=ghcr.io/compendiq/compendiq-ce-frontend:buildcache,mode=max
+          sbom: true
+          provenance: mode=max
+
+  docker-searxng:
+    name: SearXNG Image
+    if: github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/compendiq/compendiq-ce-searxng
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
+
+      - name: Set up QEMU
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./docker/searxng
+          file: ./docker/searxng/Dockerfile
+          platforms: ${{ startsWith(github.ref, 'refs/tags/') && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          push: true
+          cache-from: type=registry,ref=ghcr.io/compendiq/compendiq-ce-searxng:buildcache
+          cache-to: type=registry,ref=ghcr.io/compendiq/compendiq-ce-searxng:buildcache,mode=max
+
+  docker-mcp-docs:
+    name: MCP Docs Image
+    if: github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/compendiq/compendiq-ce-mcp-docs
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
+
+      - name: Set up QEMU
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./mcp-docs/Dockerfile
+          platforms: ${{ startsWith(github.ref, 'refs/tags/') && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          push: true
+          cache-from: type=registry,ref=ghcr.io/compendiq/compendiq-ce-mcp-docs:buildcache
+          cache-to: type=registry,ref=ghcr.io/compendiq/compendiq-ce-mcp-docs:buildcache,mode=max
           sbom: true
           provenance: mode=max

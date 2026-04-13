@@ -1,6 +1,6 @@
 # Architectural Decisions Record (ADR)
 
-This document captures all key architectural decisions for the AI KB Creator project.
+This document captures all key architectural decisions for the Compendiq project.
 Each decision includes context, options considered, and the chosen approach with rationale.
 
 ---
@@ -21,7 +21,7 @@ The reference project (ai-portainer-dashboard) evolved into a complex monorepo w
 ### Decision: **Option C - Flat monorepo with shared contracts package**
 
 ```
-ai-kb-creator/
+compendiq/
 ├── backend/
 │   └── src/
 │       ├── plugins/          # Fastify plugins (auth, cors, etc.)
@@ -67,7 +67,7 @@ ai-kb-creator/
 │           └── types/        # Shared TypeScript interfaces
 ├── docker/
 │   ├── docker-compose.yml
-│   └── docker-compose.dev.yml
+│   └── docker-compose.test.yml
 └── docs/
 ```
 
@@ -426,7 +426,7 @@ CREATE TABLE page_embeddings (
   confluence_id   TEXT NOT NULL,        -- FK to cached_pages.confluence_id
   chunk_index     INT NOT NULL,         -- Order within the page
   chunk_text      TEXT NOT NULL,         -- The text chunk
-  embedding       vector(768) NOT NULL,  -- nomic-embed-text: 768 dimensions
+  embedding       vector(1024) NOT NULL,  -- bge-m3: 1024 dimensions
   metadata        JSONB DEFAULT '{}',    -- {section_title, page_title, space_key}
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE(user_id, confluence_id, chunk_index)
@@ -503,7 +503,7 @@ CREATE TABLE llm_improvements (
 - Rate limiting on LLM endpoints (prevent abuse of local Ollama resources)
 
 ### Input Validation
-- **Zod** schemas on all API boundaries (from `@kb-creator/contracts`)
+- **Zod** schemas on all API boundaries (from `@compendiq/contracts`)
 - Parameterized SQL only (no string concatenation)
 
 ---
@@ -650,7 +650,7 @@ Page synced/updated from Confluence
     │
     ▼
 3. Generate embeddings via Ollama
-   Model: nomic-embed-text (768 dimensions, fast, high quality)
+   Model: bge-m3 (1024 dimensions, multilingual, MIT license)
    Endpoint: ollama.embed({ model, input })
     │
     ▼
@@ -687,7 +687,7 @@ Each chunk stored with metadata:
 User Question: "How do I deploy to staging?"
     │
     ▼
-1. Generate question embedding via Ollama (nomic-embed-text)
+1. Generate question embedding via Ollama (bge-m3)
     │
     ▼
 2. Hybrid search (vector + keyword):
@@ -726,15 +726,16 @@ User Question: "How do I deploy to staging?"
 #### Embedding Model Selection
 | Model | Dimensions | Speed | Quality | Notes |
 |-------|-----------|-------|---------|-------|
-| **nomic-embed-text** (default) | 768 | Fast | High | Best balance, outperforms OpenAI ada-002 |
+| **bge-m3** (default) | 1024 | Fast | Very High | Multilingual, MIT license, best balance |
+| nomic-embed-text | 768 | Fast | High | Previous default, still usable |
 | snowflake-arctic-embed | 1024 | Fast | High | Alternative option |
 | qwen3-embedding | 1024 | Medium | Very High | If user runs Qwen family |
 
-The embedding column is **locked to `vector(768)`** using `nomic-embed-text`. Users can select
+The embedding dimension is configurable via admin settings (`EMBEDDING_DIMENSIONS` env var, default 1024). Users can select
 their chat model freely, but the embedding model is a server-wide setting (`EMBEDDING_MODEL` env var).
-Changing the embedding model requires a manual admin action: run `POST /api/admin/re-embed` which
-truncates the `page_embeddings` table and re-generates all embeddings with the new model. This is
-a deliberate trade-off: dimension changes require HNSW index rebuilds that cannot happen transparently.
+Changing the embedding model via admin settings triggers automatic re-embedding of all content. This
+rebuilds the HNSW index with the new dimensions. This is
+a deliberate trade-off: dimension changes require HNSW index rebuilds.
 
 #### Background Embedding Worker
 - Runs as a background task after sync
@@ -743,7 +744,7 @@ a deliberate trade-off: dimension changes require HNSW index rebuilds that canno
 - Progress indicator in UI ("Embedding 42/150 pages...")
 - Can be paused/resumed
 
-**Rationale**: Full vector search gives the LLM the best possible context for Q&A. pgvector keeps it in PostgreSQL (no new service). Hybrid search (vector + keyword) handles both semantic similarity and exact term matching. nomic-embed-text is fast enough for incremental re-embedding on sync.
+**Rationale**: Full vector search gives the LLM the best possible context for Q&A. pgvector keeps it in PostgreSQL (no new service). Hybrid search (vector + keyword) handles both semantic similarity and exact term matching. bge-m3 provides multilingual support and is fast enough for incremental re-embedding on sync.
 
 ---
 
@@ -839,9 +840,11 @@ const DrawioDiagram = Node.create({
 ## ADR-014: Background Workers
 
 ### Context
-The app needs two background tasks: Confluence sync (every 15min) and embedding generation (after sync or on dirty pages). Fastify has no built-in job scheduler.
+The app needs several background tasks: Confluence sync, embedding generation, article quality analysis, and auto-summarization. Fastify has no built-in job scheduler.
 
 ### Decision: **Simple `setInterval` with lock flags**
+
+All four workers follow the same pattern: `setInterval` with an in-memory lock flag to prevent concurrent execution, configurable interval and batch size via env vars, and a 30-second delayed initial batch on startup.
 
 ```typescript
 // In index.ts after server start
@@ -858,14 +861,41 @@ setInterval(async () => {
 }, SYNC_INTERVAL_MS);
 ```
 
+#### Workers
+
+| Worker | Interval | Batch Size | Model Env Var | Retry Limit |
+|--------|----------|------------|---------------|-------------|
+| Sync | `SYNC_INTERVAL_MINUTES` (15) | All changed pages | N/A | N/A |
+| Embedding | After sync | All dirty pages | `EMBEDDING_MODEL` | N/A |
+| Quality Analysis | `QUALITY_CHECK_INTERVAL_MINUTES` (60) | `QUALITY_BATCH_SIZE` (5) | `QUALITY_MODEL` → `DEFAULT_LLM_MODEL` → `qwen3:4b` | 3 (`quality_retry_count`) |
+| Summary | `SUMMARY_CHECK_INTERVAL_MINUTES` (60) | `SUMMARY_BATCH_SIZE` (5) | `SUMMARY_MODEL` → `DEFAULT_LLM_MODEL` | 3 (`summary_retry_count`) |
+
+#### Worker Lifecycle
+
+1. **Startup**: `startXxxWorker()` called from `index.ts`, registers `setInterval`
+2. **Initial batch**: Runs 30 seconds after startup via `triggerXxxBatch()` (lock-guarded)
+3. **Interval batches**: Every N minutes, processes up to BATCH_SIZE pages
+4. **Priority**: Pending pages first, then stale/changed content, then failed (with retries remaining)
+5. **Shutdown**: `stopXxxWorker()` called on SIGTERM/SIGINT, clears interval
+
+#### Quality Analysis Worker
+
+Scores articles across 6 dimensions (overall, completeness, clarity, structure, accuracy, readability) by sending content to the LLM with a structured prompt. Results stored in `cached_pages` columns. Pages with changed content (`last_modified_at > quality_analyzed_at`) are automatically re-analyzed. Status: `pending → analyzing → analyzed | failed | skipped`.
+
+#### Summary Worker
+
+Generates plain-text and HTML summaries by sending article content to the LLM. Detects content changes via SHA-256 hash comparison (using PostgreSQL built-in `sha256()`, no pgcrypto extension needed). Status: `pending → summarizing → summarized | failed | skipped`.
+
 **Why not bullmq/pg-boss?**
 - 4-15 users, ~1000 pages total. A simple interval is sufficient.
 - No distributed workers needed (single backend instance).
 - Redis-based job queues add complexity for zero benefit at this scale.
 
-**Crash recovery**: On restart, all `embedding_dirty` flags are still set in PostgreSQL. The next interval picks them up automatically. No work is lost.
+**Crash recovery**: On restart, all status flags and `embedding_dirty` markers are still set in PostgreSQL. The next interval picks them up automatically. No work is lost. Failed pages retry up to 3 times before being left in `failed` state.
 
 **Per-user sync**: The worker iterates all users with configured Confluence connections and syncs each user's spaces sequentially. At 15 users × 1000 pages, a full delta sync takes seconds (CQL returns only changed pages).
+
+**Admin controls**: Force rescan endpoints (`POST /api/llm/quality-rescan`, `POST /api/llm/summary-rescan`) reset all pages to pending. Status endpoints (`GET /api/llm/quality-status`, `GET /api/llm/summary-status`) expose aggregate stats. All visible in Settings > Sync tab.
 
 ---
 
@@ -878,7 +908,7 @@ The critic flagged ambiguity about whether Ollama is per-user or shared.
 
 - **Single `OLLAMA_BASE_URL` env var** — not per-user. All users share the same Ollama instance.
 - **Chat model**: per-user preference (stored in `user_settings.ollama_model`). Users can pick different models.
-- **Embedding model**: server-wide (`EMBEDDING_MODEL` env var, default `nomic-embed-text`). Locked to `vector(768)`.
+- **Embedding model**: server-wide (`EMBEDDING_MODEL` env var, default `bge-m3`). Configurable dimensions via `EMBEDDING_DIMENSIONS` (default 1024).
 - **Global concurrency limiter**: `p-limit(2)` — max 2 concurrent Ollama calls across all users. At 4-15 users this is fine; most requests are short (summarize, improve) and naturally serialize.
 - **Singleton service**: One `OllamaService` instance, created at server start. Chat calls pass the user's preferred model as a parameter.
 
@@ -975,6 +1005,47 @@ The embedding model is server-wide. Changing it requires re-generating all embed
 
 ---
 
+## ADR-020: Standalone KB Articles & Confluence-Free Mode
+
+### Context
+The app was originally a Confluence-only cache — every article required a `confluence_id` and `space_key`. Users without Confluence couldn't use the app at all. Issue #353 proposed making the app work standalone and as a hybrid Confluence + local KB.
+
+### Decision: **Shared `pages` table with `source` discriminator + universal SERIAL FK**
+
+**Table rename**: `cached_pages` → `pages` — the table is no longer just a cache; standalone articles are the source of truth.
+
+**New columns on `pages`**:
+- `source` (`'confluence'` | `'standalone'`) — discriminates article origin
+- `created_by_user_id` (UUID FK) — owner for standalone articles
+- `visibility` (`'private'` | `'shared'`) — access control for standalone articles
+- `deleted_at` (TIMESTAMPTZ) — soft delete for standalone articles (trash/restore)
+
+**Universal FK migration**: All 5 dependent tables (`page_embeddings`, `page_versions`, `llm_improvements`, `pinned_pages`, `page_relationships`) migrated from `confluence_id TEXT` to `page_id INT REFERENCES pages(id)`. The SERIAL `id` is now the canonical identifier everywhere. This eliminates orphaning when standalone articles are published to Confluence.
+
+**RAG dual-path access control**: Every query that previously used `INNER JOIN user_space_selections` now uses `LEFT JOIN` with a triple-OR WHERE clause:
+1. Confluence pages where user has selected the space
+2. Standalone shared pages (visible to all)
+3. Standalone private pages (visible to owner only)
+
+**Soft delete**: Standalone articles use `deleted_at` instead of hard delete. Workers skip `deleted_at IS NOT NULL`. Trash endpoint lists deleted articles with restore/permanent-delete.
+
+**Content verification**: Per-article `review_interval_days`, `next_review_at`, `verified_by`, `verified_at` — Guru-style staleness system.
+
+**Draft-while-published**: Separate `draft_body_html` columns allow editing without affecting the live article. Atomic publish swaps draft → live.
+
+### Alternatives Considered
+1. **Separate table for standalone articles** — rejected because all existing features (RAG, embeddings, quality scoring, summaries) would need duplication
+2. **Keep `cached_pages` name** — rejected because standalone articles are the source of truth, not a cache
+3. **Keep `confluence_id` as FK target** — rejected because standalone articles have no `confluence_id`, creating a dual-identifier problem
+
+### Consequences
+- All existing features work on standalone articles with zero extra code (embeddings, RAG, quality, summaries, tagging, duplicate detection)
+- Every SELECT query on `pages` must include `AND deleted_at IS NULL`
+- `confluence_id` remains on the table as metadata (nullable, partial unique index) but is no longer a join key
+- Migrations 028-037 must apply in order; historical migrations (001-027) are never modified
+
+---
+
 ## Summary of All Decisions
 
 | # | Decision | Choice | Key Rationale |
@@ -990,11 +1061,12 @@ The embedding model is server-wide. Changing it requires re-generating all embed
 | 009 | State Management | TanStack Query + Zustand | Server data vs client state separation |
 | 010 | UI Components | Radix UI + TailwindCSS + Framer Motion | Glassmorphic, accessible, same as reference |
 | 011 | Docker Stack | 4 services (frontend, backend, postgres+pgvector, redis) | Proper caching + vector search, manageable ops |
-| 012 | RAG Pipeline | pgvector + hybrid search (vector + keyword) + nomic-embed-text | Best LLM context quality for Q&A |
+| 012 | RAG Pipeline | pgvector + hybrid search (vector + keyword) + bge-m3 | Best LLM context quality for Q&A, multilingual |
 | 013 | Draw.io Support | Read-only rendering + "Edit in Confluence" link | Display diagrams, edit in Confluence |
-| 014 | Background Workers | `setInterval` + lock flag | Simple, sufficient for 4-15 users, crash-safe |
+| 014 | Background Workers | `setInterval` + lock flag + retry limits | Simple, 4 workers (sync, embedding, quality, summary), crash-safe, admin controls |
 | 015 | Ollama Architecture | Shared server, global concurrency limit, per-user chat model | Single instance, no per-user URL complexity |
 | 016 | Diff View | v1: Accept All/Reject All, v2: individual changes | Ship simple first, iterate |
 | 017 | PAT Change Behavior | Invalidate all user data + full re-sync | Safest approach for URL/PAT changes |
 | 018 | Draw.io Image Storage | Local filesystem cache + Docker volume | Fast, no Confluence dependency for viewing |
 | 019 | Admin Role & Re-embed | Simple role column, first user is admin | Protects destructive re-embed operation |
+| 020 | Standalone KB Articles | Shared `pages` table + `source` discriminator + universal SERIAL FK | All features work on standalone articles; no dual-identifier problem |

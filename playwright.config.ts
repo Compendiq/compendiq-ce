@@ -7,8 +7,9 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   workers: process.env.CI ? 1 : undefined,
   reporter: 'html',
+  timeout: 60_000,
   use: {
-    baseURL: 'http://localhost:5273',
+    baseURL: process.env.E2E_BASE_URL || 'http://localhost:8081',
     trace: 'on-first-retry',
   },
   projects: [

@@ -1,0 +1,122 @@
+import { FastifyInstance } from 'fastify';
+import { query } from '../../core/db/postgres.js';
+import { SystemPromptKey } from '../../domains/llm/services/ollama-service.js';
+import { providerStreamChat } from '../../domains/llm/services/llm-provider.js';
+import { LlmCache, buildLlmCacheKey } from '../../domains/llm/services/llm-cache.js';
+import { fetchWebSources, formatWebContext, type WebSource } from './_web-search-helper.js';
+import { ImproveRequestSchema } from '@compendiq/contracts';
+import { logAuditEvent } from '../../core/services/audit-service.js';
+import {
+  assembleContextIfNeeded,
+  resolveSystemPrompt,
+  checkCacheWithLock,
+  sendCachedSSE,
+  streamSSE,
+  sanitizeLlmInput,
+  buildOutputPostProcessor,
+  LLM_STREAM_RATE_LIMIT,
+  MAX_INPUT_LENGTH,
+} from './_helpers.js';
+
+export async function llmImproveRoutes(fastify: FastifyInstance) {
+  fastify.addHook('onRequest', fastify.authenticate);
+
+  const llmCache = new LlmCache(fastify.redis);
+
+  // POST /api/llm/improve - stream improved content
+  fastify.post('/llm/improve', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
+    const body = ImproveRequestSchema.parse(request.body);
+    const { content, type, model, includeSubPages, instruction } = body;
+    const userId = request.userId;
+
+    if (content.length > MAX_INPUT_LENGTH) {
+      throw fastify.httpErrors.badRequest(`Content too large (max ${MAX_INPUT_LENGTH} characters)`);
+    }
+
+    const { markdown, multiPageSuffix } = await assembleContextIfNeeded(userId, body.pageId, content, includeSubPages);
+
+    // Sanitize before sending to LLM
+    const { sanitized, warnings } = sanitizeLlmInput(markdown);
+    if (warnings.length > 0) {
+      await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/improve' }, request);
+    }
+
+    // Sanitize optional user instruction (strip HTML tags, limit length)
+    let sanitizedInstruction: string | undefined;
+    if (instruction) {
+      const stripped = instruction.replace(/<[^>]*>/g, '').slice(0, 10000);
+      const { sanitized: instrSanitized, warnings: instrWarnings } = sanitizeLlmInput(stripped);
+      sanitizedInstruction = instrSanitized;
+      if (instrWarnings.length > 0) {
+        await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings: instrWarnings, route: '/llm/improve', field: 'instruction' }, request);
+      }
+    }
+
+    // Web search for reference material (Phase 3 — #564)
+    const webSources: WebSource[] = [];
+    if (body.searchWeb) {
+      const sq = body.searchQuery || sanitizedInstruction?.slice(0, 200) || `improve ${type} technical documentation`;
+      webSources.push(...await fetchWebSources(sq, userId));
+    }
+
+    let improveContent = sanitized;
+    if (webSources.length > 0) {
+      improveContent += formatWebContext(webSources, {
+        sourceLabel: 'Reference',
+        sectionHeader: 'Verified reference material from web search',
+      });
+    }
+
+    let systemPrompt = await resolveSystemPrompt(userId, `improve_${type}` as SystemPromptKey) + multiPageSuffix;
+    if (sanitizedInstruction) {
+      systemPrompt += `\n\nADDITIONAL USER INSTRUCTIONS:\n${sanitizedInstruction}`;
+    }
+
+    // Check LLM cache with stampede protection
+    const cacheKey = buildLlmCacheKey(model, systemPrompt, improveContent);
+    const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
+    if (cached) {
+      sendCachedSSE(reply, cached.content);
+      return;
+    }
+
+    // Pre-insert improvement record so we have the row to update after streaming
+    let improvementId: string | undefined;
+    if (body.pageId) {
+      const insertResult = await query<{ id: string }>(
+        `INSERT INTO llm_improvements (user_id, page_id, improvement_type, model, original_content, improved_content, status)
+         SELECT $1, p.id, $3, $4, $5, '', 'streaming' FROM pages p WHERE p.confluence_id = $2 RETURNING id`,
+        [userId, body.pageId, type, model, content.slice(0, 10000)],
+      );
+      improvementId = insertResult.rows[0]?.id;
+    }
+
+    const improveExtras = webSources.length > 0 ? {
+      sources: webSources.map((s) => ({
+        pageTitle: s.title, spaceKey: 'Web', confluenceId: s.url, score: 1,
+      })),
+    } : undefined;
+
+    try {
+      const postProcess = await buildOutputPostProcessor(webSources.map((s) => s.url));
+
+      // Resolve per-user LLM provider and stream
+      const generator = providerStreamChat(userId, model, [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: improveContent },
+      ]);
+
+      const accumulated = await streamSSE(request, reply, generator, improveExtras, { llmCache, cacheKey, postProcess });
+
+      // Persist the full improved content now that streaming is done
+      if (improvementId && accumulated) {
+        await query(
+          `UPDATE llm_improvements SET improved_content = $1, status = 'completed' WHERE id = $2`,
+          [accumulated.slice(0, 50000), improvementId],
+        );
+      }
+    } finally {
+      if (lockAcquired) await llmCache.releaseLock(cacheKey);
+    }
+  });
+}

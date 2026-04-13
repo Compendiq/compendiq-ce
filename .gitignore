@@ -1,5 +1,6 @@
 # Dependencies
 node_modules/
+node_modules.old/
 .pnp
 .pnp.js
 
@@ -19,6 +20,7 @@ build/
 .idea/
 *.swp
 *.swo
+.nvimlog
 
 # OS
 .DS_Store
@@ -30,6 +32,7 @@ logs/
 
 # Data (draw.io attachment cache)
 backend/data/
+data/
 
 # Coverage
 coverage/
@@ -43,5 +46,19 @@ e2e/.auth/
 tmp/
 temp/
 
+# Research
+research/
+
+# Java/binary artifacts
+*.war
+*.jar
+*.ear
+
 # Claude Code
 .claude/
+frontend/vendor/
+firebase-debug.log
+
+# k6 output files
+perf/*.json
+perf/*.html

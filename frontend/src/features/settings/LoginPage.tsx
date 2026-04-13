@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useAuthStore } from '../../stores/auth-store';
 import { apiFetch } from '../../shared/lib/api';
+import { CompendiqLogo } from '../../shared/components/CompendiqLogo';
 
 export function LoginPage() {
   const navigate = useNavigate();
@@ -33,36 +34,43 @@ export function LoginPage() {
   }
 
   return (
-    <div className="mesh-gradient flex min-h-screen items-center justify-center p-4">
+    <div className="bg-background flex min-h-screen items-center justify-center p-4">
       <div className="glass-card w-full max-w-md p-8">
-        <h1 className="mb-2 text-center text-2xl font-bold">AI KB Creator</h1>
+        <div className="mb-2 flex flex-col items-center gap-3">
+          <CompendiqLogo size={56} className="text-primary" animated />
+          <h1 className="text-center text-2xl font-bold">
+            Compendiq
+          </h1>
+        </div>
         <p className="mb-8 text-center text-sm text-muted-foreground">
           {isRegister ? 'Create your account' : 'Sign in to your account'}
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="mb-1.5 block text-sm font-medium">Username</label>
+            <label htmlFor="login-username" className="mb-1.5 block text-sm font-medium">Username</label>
             <input
+              id="login-username"
               type="text"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               required
               minLength={3}
-              className="w-full rounded-md border border-border/50 bg-foreground/5 px-3 py-2 text-sm outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+              className="glass-input"
               placeholder="Enter username"
             />
           </div>
 
           <div>
-            <label className="mb-1.5 block text-sm font-medium">Password</label>
+            <label htmlFor="login-password" className="mb-1.5 block text-sm font-medium">Password</label>
             <input
+              id="login-password"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
               minLength={8}
-              className="w-full rounded-md border border-border/50 bg-foreground/5 px-3 py-2 text-sm outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+              className="glass-input"
               placeholder="Enter password"
             />
           </div>
@@ -70,7 +78,7 @@ export function LoginPage() {
           <button
             type="submit"
             disabled={loading}
-            className="w-full rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+            className="glass-button-primary w-full py-2.5"
           >
             {loading ? 'Loading...' : isRegister ? 'Create Account' : 'Sign In'}
           </button>
