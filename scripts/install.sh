@@ -234,7 +234,7 @@ write_compose() {
 
 services:
   frontend:
-    image: diinlu/compendiq-ce-frontend:__VERSION__
+    image: ghcr.io/compendiq/compendiq-ce-frontend:__VERSION__
     ports:
       - "__PORT__:8081"
     depends_on:
@@ -250,7 +250,7 @@ services:
       - frontend
 
   backend:
-    image: diinlu/compendiq-ce-backend:__VERSION__
+    image: ghcr.io/compendiq/compendiq-ce-backend:__VERSION__
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
@@ -478,7 +478,7 @@ dry_run_summary() {
   printf '    1. Create directory %s\n' "$dir"
   printf '    2. Generate .env with cryptographic secrets\n'
   printf '    3. Write docker-compose.yml\n'
-  printf '    4. docker compose pull (images: diinlu/compendiq-ce-frontend:%s, diinlu/compendiq-ce-backend:%s, pgvector/pgvector:pg17, redis:8-alpine)\n' "$version" "$version"
+  printf '    4. docker compose pull (images: ghcr.io/compendiq/compendiq-ce-frontend:%s, ghcr.io/compendiq/compendiq-ce-backend:%s, pgvector/pgvector:pg17, redis:8-alpine)\n' "$version" "$version"
   printf '    5. docker compose up -d\n'
   printf '    6. Wait for backend health check (max 60s)\n'
   printf '    7. Open http://localhost:%s in browser\n' "$port"
