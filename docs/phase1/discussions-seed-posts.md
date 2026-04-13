@@ -62,7 +62,7 @@ Tone notes:
 > - **High** (install fails, sync breaks): within 72h
 > - **Medium / low:** next minor release
 >
-> For **security issues, don't post here** — follow `SECURITY.md` and email the disclosure address.
+> For **security issues, don't post here** — report them via [GitHub Security Advisories](https://github.com/Compendiq/compendiq-ce/security/advisories/new) (private channel). See `SECURITY.md` for details.
 
 ---
 
