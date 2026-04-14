@@ -43,7 +43,7 @@
     "lowlight": "^3.0.0",
     "lucide-react": "^0.575.0",
     "marked": "^17.0.4",
-    "mermaid": "^11.12.3",
+    "mermaid": "^11.14.0",
     "prosemirror-search": "^1.1.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
