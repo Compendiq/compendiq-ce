@@ -7,12 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-14
+
 <!--
-  Claude draft 2026-04-11 (Phase 1 Session 1):
-  At launch time (2026-05-05), rename this `[Unreleased]` header to
-  `[1.0.0] - 2026-05-05` and insert a new empty `[Unreleased]` section above it.
-  The entries below now cover everything the v1.0 on-premise CE launch ships.
-  Sections added today for Phase 0 closeout:
+  Phase 1 public launch release. Covers everything from Phase 0 closeout
+  through the public repo launch.
+  Sections added during Phase 0 + Phase 1:
     - First-run setup wizard with backend-derived resume
     - One-command installer
     - Enterprise plugin architecture (open-core extension points)
