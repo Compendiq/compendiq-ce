@@ -17,12 +17,13 @@ import { McpDocsTab } from './McpDocsTab';
 import { AiSafetyTab } from './AiSafetyTab';
 import { RateLimitsTab } from './RateLimitsTab';
 import { SearxngTab } from './SearxngTab';
+import { SmtpSettingsTab } from './SmtpSettingsTab';
 import { SkeletonFormFields } from '../../shared/components/feedback/Skeleton';
 import { LicenseStatusCard } from '../admin/LicenseStatusCard';
 import { OidcSettingsPage } from '../admin/OidcSettingsPage';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 
-type TabId = 'confluence' | 'sync' | 'ollama' | 'ai-prompts' | 'ai-safety' | 'rate-limits' | 'spaces' | 'theme' | 'labels' | 'errors' | 'embedding' | 'workers' | 'mcp-docs' | 'searxng' | 'license' | 'sso' | 'system';
+type TabId = 'confluence' | 'sync' | 'ollama' | 'ai-prompts' | 'ai-safety' | 'rate-limits' | 'spaces' | 'theme' | 'labels' | 'errors' | 'embedding' | 'workers' | 'mcp-docs' | 'searxng' | 'email' | 'license' | 'sso' | 'system';
 
 export function SettingsPage() {
   const queryClient = useQueryClient();
@@ -58,6 +59,7 @@ export function SettingsPage() {
     { id: 'workers', label: 'Workers', adminOnly: true },
     { id: 'mcp-docs', label: 'MCP Docs', adminOnly: true },
     { id: 'searxng', label: 'SearXNG', adminOnly: true },
+    { id: 'email', label: 'Email / SMTP', adminOnly: true },
     // License tab is always visible to admins so community users can see their
     // edition status and learn how to upgrade. The SSO tab is gated on a valid
     // enterprise license AND the EE backend (which returns features:['oidc']).
@@ -100,7 +102,7 @@ export function SettingsPage() {
         </div>
 
         <div className="p-6">
-          {(isLoading || !settings) && activeTab !== 'labels' && activeTab !== 'errors' && activeTab !== 'theme' && activeTab !== 'embedding' && activeTab !== 'sync' && activeTab !== 'workers' && activeTab !== 'mcp-docs' && activeTab !== 'ai-safety' && activeTab !== 'rate-limits' && activeTab !== 'searxng' && activeTab !== 'license' && activeTab !== 'sso' ? (
+          {(isLoading || !settings) && activeTab !== 'labels' && activeTab !== 'errors' && activeTab !== 'theme' && activeTab !== 'embedding' && activeTab !== 'sync' && activeTab !== 'workers' && activeTab !== 'mcp-docs' && activeTab !== 'ai-safety' && activeTab !== 'rate-limits' && activeTab !== 'searxng' && activeTab !== 'email' && activeTab !== 'license' && activeTab !== 'sso' ? (
             <SkeletonFormFields />
           ) : activeTab === 'confluence' ? (
             <ConfluenceTab settings={settings!} onSave={(v) => updateSettings.mutate(v)} />
@@ -134,6 +136,8 @@ export function SettingsPage() {
             <McpDocsTab />
           ) : activeTab === 'searxng' && isAdmin ? (
             <SearxngTab />
+          ) : activeTab === 'email' && isAdmin ? (
+            <SmtpSettingsTab />
           ) : activeTab === 'license' && isAdmin ? (
             <LicenseStatusCard />
           ) : activeTab === 'sso' && isAdmin && isEnterprise ? (

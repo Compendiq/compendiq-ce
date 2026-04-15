@@ -12,6 +12,7 @@ import { getRateLimits, upsertRateLimits } from '../../core/services/rate-limit-
 import { sanitizeLlmInput } from '../../core/utils/sanitize-llm-input.js';
 import { setActiveProvider } from '../../domains/llm/services/ollama-service.js';
 import { ALLOWED_FTS_LANGUAGES } from '../../core/services/fts-language.js';
+import { getSmtpConfig, updateSmtpConfig, sendTestEmail } from '../../core/services/email-service.js';
 
 const AuditLogQuerySchema = z.object({
   userId: z.string().optional(),
@@ -441,5 +442,62 @@ export async function adminRoutes(fastify: FastifyInstance) {
       return { message: 'Admin settings updated, all pages queued for re-embedding' };
     }
     return { message: 'Admin settings updated' };
+  });
+
+  // ── SMTP / Email settings ───────────────────────────────────────────────
+
+  // GET /api/admin/smtp - Get current SMTP configuration
+  fastify.get('/admin/smtp', async () => {
+    return getSmtpConfig();
+  });
+
+  // PUT /api/admin/smtp - Update SMTP configuration
+  const SmtpUpdateSchema = z.object({
+    host: z.string().optional(),
+    port: z.number().int().min(1).max(65535).optional(),
+    secure: z.boolean().optional(),
+    user: z.string().optional(),
+    pass: z.string().optional(),
+    from: z.string().optional(),
+    enabled: z.boolean().optional(),
+  });
+
+  fastify.put('/admin/smtp', async (request) => {
+    const body = SmtpUpdateSchema.parse(request.body);
+    updateSmtpConfig(body);
+
+    // Persist to admin_settings table
+    const entries: Array<{ key: string; value: string }> = [];
+    if (body.host !== undefined) entries.push({ key: 'smtp_host', value: body.host });
+    if (body.port !== undefined) entries.push({ key: 'smtp_port', value: String(body.port) });
+    if (body.secure !== undefined) entries.push({ key: 'smtp_secure', value: String(body.secure) });
+    if (body.user !== undefined) entries.push({ key: 'smtp_user', value: body.user });
+    if (body.pass !== undefined && body.pass !== '••••••••') entries.push({ key: 'smtp_pass', value: body.pass });
+    if (body.from !== undefined) entries.push({ key: 'smtp_from', value: body.from });
+    if (body.enabled !== undefined) entries.push({ key: 'smtp_enabled', value: String(body.enabled) });
+
+    if (entries.length > 0) {
+      const keys = entries.map((e) => e.key);
+      const values = entries.map((e) => e.value);
+      await query(
+        `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
+         SELECT key, value, NOW()
+         FROM unnest($1::text[], $2::text[]) AS t(key, value)
+         ON CONFLICT (setting_key) DO UPDATE
+         SET setting_value = EXCLUDED.setting_value, updated_at = NOW()`,
+        [keys, values],
+      );
+    }
+
+    await logAuditEvent(request.userId, 'ADMIN_ACTION', 'admin_settings', undefined, { action: 'update_smtp_settings' }, request);
+    return { message: 'SMTP settings updated' };
+  });
+
+  // POST /api/admin/smtp/test - Send test email
+  const SmtpTestSchema = z.object({ to: z.string().email() });
+
+  fastify.post('/admin/smtp/test', async (request) => {
+    const { to } = SmtpTestSchema.parse(request.body);
+    return sendTestEmail(to);
   });
 }
