@@ -25,9 +25,8 @@ const AUTH_RATE_LIMIT = { config: { rateLimit: { max: async () => (await getRate
 export async function authRoutes(fastify: FastifyInstance) {
   fastify.post('/register', AUTH_RATE_LIMIT, async (request, reply) => {
     const body = RegisterSchema.parse(request.body);
-    const rawBody = request.body as Record<string, unknown>;
-    const email = typeof rawBody.email === 'string' && rawBody.email.trim() ? rawBody.email.trim().toLowerCase() : null;
-    const displayName = typeof rawBody.displayName === 'string' && rawBody.displayName.trim() ? rawBody.displayName.trim() : null;
+    const email = body.email?.trim().toLowerCase() ?? null;
+    const displayName = body.displayName?.trim() ?? null;
 
     const passwordHash = await bcrypt.hash(body.password, SALT_ROUNDS);
 

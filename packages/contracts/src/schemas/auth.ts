@@ -3,6 +3,8 @@ import { z } from 'zod';
 export const RegisterSchema = z.object({
   username: z.string().min(3).max(50),
   password: z.string().min(8).max(128),
+  email: z.string().email().optional(),
+  displayName: z.string().min(1).max(200).optional(),
 });
 
 export const LoginSchema = z.object({
@@ -16,6 +18,8 @@ export const AuthResponseSchema = z.object({
     id: z.string().uuid(),
     username: z.string(),
     role: z.enum(['user', 'admin']),
+    email: z.string().email().nullable().optional(),
+    displayName: z.string().nullable().optional(),
   }),
 });
 

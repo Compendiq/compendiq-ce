@@ -131,9 +131,9 @@ describe('Auth routes', () => {
   describe('POST /api/auth/register', () => {
     it('should create a user and return 201 with accessToken and user', async () => {
       mockBcryptHash.mockResolvedValue('hashed-password');
-      // First query: INSERT user RETURNING id, username, role
+      // First query: INSERT user RETURNING id, username, role, email, display_name
       mockQuery.mockResolvedValueOnce({
-        rows: [{ id: TEST_USER.id, username: TEST_USER.username, role: TEST_USER.role }],
+        rows: [{ id: TEST_USER.id, username: TEST_USER.username, role: TEST_USER.role, email: null, display_name: null }],
       });
       // Second query: INSERT user_settings
       mockQuery.mockResolvedValueOnce({ rows: [] });
@@ -151,6 +151,8 @@ describe('Auth routes', () => {
         id: TEST_USER.id,
         username: TEST_USER.username,
         role: TEST_USER.role,
+        email: null,
+        displayName: null,
       });
 
       // Verify bcrypt was called with password and salt rounds
@@ -202,6 +204,53 @@ describe('Auth routes', () => {
       expect(response.statusCode).toBe(400);
     });
 
+    it('should create a user with email and displayName when provided', async () => {
+      mockBcryptHash.mockResolvedValue('hashed-password');
+      mockQuery.mockResolvedValueOnce({
+        rows: [{ id: TEST_USER.id, username: TEST_USER.username, role: TEST_USER.role, email: 'user@example.com', display_name: 'Test User' }],
+      });
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/auth/register',
+        payload: { username: 'testuser', password: 'securepassword', email: 'user@example.com', displayName: 'Test User' },
+      });
+
+      expect(response.statusCode).toBe(201);
+      const body = JSON.parse(response.body);
+      expect(body.user.email).toBe('user@example.com');
+      expect(body.user.displayName).toBe('Test User');
+    });
+
+    it('should return 400 when email format is invalid', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/auth/register',
+        payload: { username: 'testuser', password: 'securepassword', email: 'not-an-email' },
+      });
+
+      expect(response.statusCode).toBe(400);
+    });
+
+    it('should return 409 when email is already in use', async () => {
+      mockBcryptHash.mockResolvedValue('hashed-password');
+      const duplicateError = new Error('duplicate key value violates unique constraint') as Error & { code: string; detail: string };
+      duplicateError.code = '23505';
+      duplicateError.detail = 'Key (email)=(user@example.com) already exists.';
+      mockQuery.mockRejectedValueOnce(duplicateError);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/auth/register',
+        payload: { username: 'newuser', password: 'securepassword', email: 'user@example.com' },
+      });
+
+      expect(response.statusCode).toBe(409);
+      const body = JSON.parse(response.body);
+      expect(body.error).toContain('Email already in use');
+    });
+
     it('should return 400 when username or password is missing', async () => {
       const response = await app.inject({
         method: 'POST',
@@ -226,6 +275,8 @@ describe('Auth routes', () => {
           username: TEST_USER.username,
           password_hash: TEST_USER.password_hash,
           role: TEST_USER.role,
+          email: 'test@example.com',
+          display_name: 'Test User',
         }],
       });
       mockBcryptCompare.mockResolvedValue(true);
@@ -243,6 +294,8 @@ describe('Auth routes', () => {
         id: TEST_USER.id,
         username: TEST_USER.username,
         role: TEST_USER.role,
+        email: 'test@example.com',
+        displayName: 'Test User',
       });
 
       // Verify refresh cookie was set
@@ -308,7 +361,7 @@ describe('Auth routes', () => {
       });
       // SELECT user by id
       mockQuery.mockResolvedValueOnce({
-        rows: [{ id: TEST_USER.id, username: TEST_USER.username, role: TEST_USER.role }],
+        rows: [{ id: TEST_USER.id, username: TEST_USER.username, role: TEST_USER.role, email: null, display_name: null }],
       });
       mockRevokeToken.mockResolvedValue(undefined);
       mockGenerateAccessToken.mockResolvedValue('new-access-token');
@@ -327,6 +380,8 @@ describe('Auth routes', () => {
         id: TEST_USER.id,
         username: TEST_USER.username,
         role: TEST_USER.role,
+        email: null,
+        displayName: null,
       });
 
       // Verify old token was revoked
