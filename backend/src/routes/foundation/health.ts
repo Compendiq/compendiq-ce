@@ -4,6 +4,7 @@ import { checkRedisConnection } from '../../core/plugins/redis.js';
 import { getOllamaCircuitBreakerStatus, getOpenaiCircuitBreakerStatus } from '../../core/services/circuit-breaker.js';
 import { getProvider } from '../../domains/llm/services/ollama-service.js';
 import { logger } from '../../core/utils/logger.js';
+import { getMetrics as getLlmQueueMetrics } from '../../domains/llm/services/llm-queue.js';
 import { getSharedLlmSettings } from '../../core/services/admin-settings-service.js';
 import { APP_VERSION, APP_BUILD_INFO } from '../../core/utils/version.js';
 
@@ -115,6 +116,7 @@ export async function healthRoutes(fastify: FastifyInstance) {
           ollama: getOllamaCircuitBreakerStatus(),
           openai: getOpenaiCircuitBreakerStatus(),
         },
+        llmQueue: getLlmQueueMetrics(),
         version: APP_VERSION,
         edition: APP_BUILD_INFO.edition,
         commit: APP_BUILD_INFO.commit,

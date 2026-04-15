@@ -13,6 +13,7 @@ import {
   generateEmbedding as ollamaGenerateEmbedding,
 } from './ollama-service.js';
 import { OpenAIProvider } from './openai-service.js';
+import { enqueue } from './llm-queue.js';
 
 // ─── Shared interfaces ──────────────────────────────────────────────────────
 
@@ -116,13 +117,15 @@ export async function providerChat(
   model: string,
   messages: ChatMessage[],
 ): Promise<string> {
-  const provider = await resolveUserProvider(userId);
+  return enqueue(async () => {
+    const provider = await resolveUserProvider(userId);
 
-  if (provider.type === 'openai') {
-    return getOpenAIProvider().chat(model, messages);
-  } else {
-    return ollamaChat(model, messages);
-  }
+    if (provider.type === 'openai') {
+      return getOpenAIProvider().chat(model, messages);
+    } else {
+      return ollamaChat(model, messages);
+    }
+  });
 }
 
 /**

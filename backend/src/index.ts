@@ -14,6 +14,7 @@ import { markStartupComplete } from './routes/foundation/health.js';
 import { logger } from './core/utils/logger.js';
 import { getSharedLlmSettings } from './core/services/admin-settings-service.js';
 import { setActiveProvider } from './domains/llm/services/ollama-service.js';
+import { initLlmQueue } from './domains/llm/services/llm-queue.js';
 
 const PORT = parseInt(process.env.BACKEND_PORT ?? '3051', 10);
 const HOST = process.env.NODE_ENV === 'production' ? '0.0.0.0' : '127.0.0.1';
@@ -58,6 +59,7 @@ async function start() {
 
   const sharedLlmSettings = await getSharedLlmSettings();
   setActiveProvider(sharedLlmSettings.llmProvider);
+  await initLlmQueue();
 
   // Build and start the app
   const app = await buildApp();
