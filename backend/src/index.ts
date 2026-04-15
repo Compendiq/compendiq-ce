@@ -4,12 +4,8 @@ import { initTelemetry, shutdownTelemetry } from './telemetry.js';
 
 import { buildApp } from './app.js';
 import { runMigrations, closePool, closeVectorPool, query } from './core/db/postgres.js';
-import { startSyncWorker, stopSyncWorker } from './domains/confluence/services/sync-service.js';
 import { addAllowedBaseUrl } from './core/utils/ssrf-guard.js';
-import { startQualityWorker, stopQualityWorker, triggerQualityBatch } from './domains/knowledge/services/quality-worker.js';
-import { startSummaryWorker, stopSummaryWorker, triggerSummaryBatch } from './domains/knowledge/services/summary-worker.js';
-import { startTokenCleanupWorker, stopTokenCleanupWorker } from './core/services/token-cleanup-service.js';
-import { startRetentionWorker, stopRetentionWorker } from './core/services/data-retention-service.js';
+import { startQueueWorkers, stopQueueWorkers } from './core/services/queue-service.js';
 import { markStartupComplete } from './routes/foundation/health.js';
 import { logger } from './core/utils/logger.js';
 import { getSharedLlmSettings } from './core/services/admin-settings-service.js';
@@ -70,39 +66,13 @@ async function start() {
   // Mark startup as complete for health checks
   markStartupComplete();
 
-  // Start background sync worker
-  const syncInterval = parseInt(process.env.SYNC_INTERVAL_MIN ?? '15', 10);
-  startSyncWorker(syncInterval);
-
-  // Start background quality analysis worker
-  startQualityWorker();
-
-  // Start background summary worker
-  const summaryInterval = parseInt(process.env.SUMMARY_CHECK_INTERVAL_MINUTES ?? '60', 10);
-  startSummaryWorker(summaryInterval);
-
-  // Start background token cleanup worker
-  startTokenCleanupWorker();
-
-  // Start daily data retention cleanup worker
-  startRetentionWorker();
-
-  // Run initial worker batches after 30s delay to let server stabilize.
-  // Uses lock-guarded trigger functions to prevent concurrent execution
-  // if a worker interval fires at the same time.
-  setTimeout(async () => {
-    await triggerQualityBatch();
-    await triggerSummaryBatch();
-  }, 30_000);
+  // Start background workers (BullMQ or legacy setInterval, controlled by USE_BULLMQ)
+  await startQueueWorkers();
 
   // Graceful shutdown
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutting down...');
-    stopQualityWorker();
-    stopSyncWorker();
-    stopSummaryWorker();
-    stopTokenCleanupWorker();
-    stopRetentionWorker();
+    await stopQueueWorkers();
     await app.close();
     await closeVectorPool();
     await closePool();
