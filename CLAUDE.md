@@ -6,7 +6,7 @@ This file provides guidance to Claude Code when working with this repository. AG
 
 **Compendiq** — AI-powered knowledge base management web app that integrates with Confluence Data Center (on-premises) and supports multiple LLM providers (Ollama, OpenAI-compatible APIs) for article improvement, generation, summarization, and RAG-powered Q&A. Multi-user: each user configures their own Confluence PAT and space selections. Monorepo: `backend/` (Fastify 5 + PostgreSQL + Redis) and `frontend/` (React 19 + Vite).
 
-See `@docs/ARCHITECTURE-DECISIONS.md` for all ADRs. See `@docs/ACTION-PLAN.md` for the implementation plan.
+See `@docs/ARCHITECTURE-DECISIONS.md` for all ADRs. See `@docs/ACTION-PLAN.md` for the implementation plan. See `@docs/architecture/` for the Mermaid architecture diagrams (system context, containers, domain boundaries, deployment, ERD, auth/sync/RAG/license flows, content pipeline).
 
 ## Mandatory Rules
 
@@ -15,6 +15,7 @@ See `@docs/ARCHITECTURE-DECISIONS.md` for all ADRs. See `@docs/ACTION-PLAN.md` f
 3. **Never commit secrets** — No `.env`, API keys, PATs, passwords, or credentials.
 4. **Ask before assuming** — If ambiguous, ask for clarification before proceeding.
 5. **Follow the ADRs** — All architectural decisions are in `docs/ARCHITECTURE-DECISIONS.md`. Do not deviate without discussion.
+6. **Keep architecture diagrams in sync** — `docs/architecture/*.md` are part of the source of truth. In the same PR as any code change that affects the system structure, update the affected diagram(s). See `docs/architecture/README.md` for the mapping of code areas → diagrams (e.g. Docker compose → `02-container.md` + `05-deployment.md`; new domain/service or ESLint boundary change → `03-backend-domains.md`; new migration that adds/renames/drops a table or FK → `06-data-model.md`; auth/sync/RAG/license flow changes → the matching `07-`/`08-`/`09-`/`10-*.md`; content-converter changes → `11-content-pipeline.md`). If unsure how to update a diagram, flag it in the PR description rather than leaving it stale.
 
 ## Build Commands
 
