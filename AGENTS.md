@@ -4,6 +4,8 @@ This file provides guidance to AI coding assistants (GitHub Copilot, Cursor, Win
 
 **All project rules, architecture, and conventions are defined in `CLAUDE.md`.** This file exists as a pointer — the rules are identical across all AI tools. Read and follow `CLAUDE.md` completely.
 
+**Architecture diagrams live in `docs/architecture/` (Mermaid).** When you change code that affects system structure — Docker compose, backend domains, ESLint boundaries, migrations that add/rename/drop tables or FKs, auth/sync/RAG/license flows, content conversion — update the affected diagram(s) in the same PR. See `docs/architecture/README.md` for the code-area → diagram mapping.
+
 ## Security (Mandatory)
 
 1. **PAT Encryption** — Confluence PATs are encrypted with AES-256-GCM. Never store plaintext PATs. Never send PATs to the frontend.

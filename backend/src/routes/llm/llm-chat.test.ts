@@ -28,6 +28,7 @@ const mockProviderStreamChat = vi.fn();
 vi.mock('../../domains/llm/services/llm-provider.js', () => ({
   providerStreamChat: (...args: unknown[]) => mockProviderStreamChat(...args),
   providerGenerateEmbedding: vi.fn(),
+  resolveUserProvider: vi.fn().mockResolvedValue({ type: 'ollama' }),
 }));
 
 // --- Mock: circuit-breaker ---
