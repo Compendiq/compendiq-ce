@@ -25,17 +25,20 @@ const AUTH_RATE_LIMIT = { config: { rateLimit: { max: async () => (await getRate
 export async function authRoutes(fastify: FastifyInstance) {
   fastify.post('/register', AUTH_RATE_LIMIT, async (request, reply) => {
     const body = RegisterSchema.parse(request.body);
+    const rawBody = request.body as Record<string, unknown>;
+    const email = typeof rawBody.email === 'string' && rawBody.email.trim() ? rawBody.email.trim().toLowerCase() : null;
+    const displayName = typeof rawBody.displayName === 'string' && rawBody.displayName.trim() ? rawBody.displayName.trim() : null;
 
     const passwordHash = await bcrypt.hash(body.password, SALT_ROUNDS);
 
     try {
       // Atomic first-user-is-admin: the role is determined in the same INSERT
       // to avoid a TOCTOU race between SELECT COUNT and INSERT
-      const result = await query<{ id: string; username: string; role: string }>(
-        `INSERT INTO users (username, password_hash, role)
-         VALUES ($1, $2, CASE WHEN (SELECT COUNT(*) FROM users) = 0 THEN 'admin' ELSE 'user' END)
-         RETURNING id, username, role`,
-        [body.username, passwordHash],
+      const result = await query<{ id: string; username: string; role: string; email: string | null; display_name: string | null }>(
+        `INSERT INTO users (username, password_hash, role, email, display_name)
+         VALUES ($1, $2, CASE WHEN (SELECT COUNT(*) FROM users) = 0 THEN 'admin' ELSE 'user' END, $3, $4)
+         RETURNING id, username, role, email, display_name`,
+        [body.username, passwordHash, email, displayName],
       );
       const user = result.rows[0]!;
 
@@ -66,10 +69,20 @@ export async function authRoutes(fastify: FastifyInstance) {
         .status(201)
         .send({
           accessToken,
-          user: { id: user.id, username: user.username, role: user.role },
+          user: {
+            id: user.id,
+            username: user.username,
+            role: user.role,
+            email: user.email,
+            displayName: user.display_name,
+          },
         });
     } catch (err: unknown) {
       if (err instanceof Error && 'code' in err && (err as { code: string }).code === '23505') {
+        const detail = (err as { detail?: string }).detail ?? '';
+        if (detail.includes('email')) {
+          throw fastify.httpErrors.conflict('Email already in use');
+        }
         throw fastify.httpErrors.conflict('Username already taken');
       }
       throw err;
@@ -79,8 +92,8 @@ export async function authRoutes(fastify: FastifyInstance) {
   fastify.post('/login', AUTH_RATE_LIMIT, async (request, reply) => {
     const body = LoginSchema.parse(request.body);
 
-    const result = await query<{ id: string; username: string; password_hash: string; role: string }>(
-      'SELECT id, username, password_hash, role FROM users WHERE username = $1',
+    const result = await query<{ id: string; username: string; password_hash: string; role: string; email: string | null; display_name: string | null }>(
+      'SELECT id, username, password_hash, role, email, display_name FROM users WHERE username = $1',
       [body.username],
     );
 
@@ -119,7 +132,13 @@ export async function authRoutes(fastify: FastifyInstance) {
       })
       .send({
         accessToken,
-        user: { id: user.id, username: user.username, role: user.role },
+        user: {
+          id: user.id,
+          username: user.username,
+          role: user.role,
+          email: user.email,
+          displayName: user.display_name,
+        },
       });
   });
 
@@ -134,8 +153,8 @@ export async function authRoutes(fastify: FastifyInstance) {
       const payload = await verifyRefreshToken(refreshTokenCookie);
 
       // Verify user still exists
-      const result = await query<{ id: string; username: string; role: string }>(
-        'SELECT id, username, role FROM users WHERE id = $1',
+      const result = await query<{ id: string; username: string; role: string; email: string | null; display_name: string | null }>(
+        'SELECT id, username, role, email, display_name FROM users WHERE id = $1',
         [payload.sub],
       );
       if (result.rows.length === 0) {
@@ -172,7 +191,16 @@ export async function authRoutes(fastify: FastifyInstance) {
           path: '/api/auth',
           maxAge: REFRESH_MAX_AGE,
         })
-        .send({ accessToken, user: { id: user.id, username: user.username, role: user.role } });
+        .send({
+          accessToken,
+          user: {
+            id: user.id,
+            username: user.username,
+            role: user.role,
+            email: user.email,
+            displayName: user.display_name,
+          },
+        });
     } catch (err) {
       logger.debug({ err }, 'Refresh token verification failed');
       throw fastify.httpErrors.unauthorized('Invalid refresh token');
