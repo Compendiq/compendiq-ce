@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
 import { ChatMessage } from '../../domains/llm/services/ollama-service.js';
-import { providerStreamChat } from '../../domains/llm/services/llm-provider.js';
+import { providerStreamChat, resolveUserProvider } from '../../domains/llm/services/llm-provider.js';
 import { hybridSearch, buildRagContext } from '../../domains/llm/services/rag-service.js';
 import { LlmCache, buildRagCacheKey } from '../../domains/llm/services/llm-cache.js';
 import { CircuitBreakerOpenError } from '../../core/services/circuit-breaker.js';
@@ -10,6 +10,7 @@ import { fetchWebSources, formatWebContext, type WebSource } from './_web-search
 import { AskRequestSchema } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
+import { emitLlmAudit, estimateTokens } from '../../domains/llm/services/llm-audit-hook.js';
 import { assembleSubPageContext, getMultiPagePromptSuffix } from '../../domains/confluence/services/subpage-context.js';
 import {
   resolveSystemPrompt,
@@ -34,6 +35,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
 
   // POST /api/llm/ask - RAG-powered Q&A with streaming
   fastify.post('/llm/ask', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
+    const auditStart = Date.now();
     const body = AskRequestSchema.parse(request.body);
     const { question, model, conversationId, includeSubPages, externalUrls } = body;
     const userId = request.userId;
@@ -250,6 +252,19 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
 
           await saveConversation(fullAnswer);
 
+          emitLlmAudit({
+            userId,
+            action: 'ask',
+            model,
+            provider: (await resolveUserProvider(userId)).type,
+            inputTokens: estimateTokens(messages.map(m => m.content).join('')),
+            outputTokens: estimateTokens(fullAnswer),
+            inputMessages: messages.map(m => ({ role: m.role, contentLength: m.content.length })),
+            retrievedChunkIds: searchResults.map(r => String(r.pageId)),
+            durationMs: Date.now() - auditStart,
+            status: 'success',
+          });
+
           reply.raw.write(`data: ${JSON.stringify({
             done: true,
             final: true,
@@ -262,6 +277,19 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
           logger.debug('RAG stream aborted by client disconnect');
         } else {
           logger.error({ err }, 'RAG stream error');
+          emitLlmAudit({
+            userId,
+            action: 'ask',
+            model,
+            provider: (await resolveUserProvider(userId)).type,
+            inputTokens: estimateTokens(messages.map(m => m.content).join('')),
+            outputTokens: 0,
+            inputMessages: messages.map(m => ({ role: m.role, contentLength: m.content.length })),
+            retrievedChunkIds: searchResults.map(r => String(r.pageId)),
+            durationMs: Date.now() - auditStart,
+            status: 'error',
+            errorMessage: err instanceof Error ? err.message : String(err),
+          });
           reply.raw.write(`data: ${JSON.stringify({ error: 'Stream error', done: true })}\n\n`);
         }
       } finally {

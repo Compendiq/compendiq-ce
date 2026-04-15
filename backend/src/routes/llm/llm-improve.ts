@@ -1,11 +1,12 @@
 import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
 import { SystemPromptKey } from '../../domains/llm/services/ollama-service.js';
-import { providerStreamChat } from '../../domains/llm/services/llm-provider.js';
+import { providerStreamChat, resolveUserProvider } from '../../domains/llm/services/llm-provider.js';
 import { LlmCache, buildLlmCacheKey } from '../../domains/llm/services/llm-cache.js';
 import { fetchWebSources, formatWebContext, type WebSource } from './_web-search-helper.js';
 import { ImproveRequestSchema } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
+import { emitLlmAudit, estimateTokens } from '../../domains/llm/services/llm-audit-hook.js';
 import {
   assembleContextIfNeeded,
   resolveSystemPrompt,
@@ -25,6 +26,7 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
 
   // POST /api/llm/improve - stream improved content
   fastify.post('/llm/improve', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
+    const auditStart = Date.now();
     const body = ImproveRequestSchema.parse(request.body);
     const { content, type, model, includeSubPages, instruction } = body;
     const userId = request.userId;
@@ -97,14 +99,16 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
       })),
     } : undefined;
 
+    const improveMessages = [
+      { role: 'system' as const, content: systemPrompt },
+      { role: 'user' as const, content: improveContent },
+    ];
+
     try {
       const postProcess = await buildOutputPostProcessor(webSources.map((s) => s.url));
 
       // Resolve per-user LLM provider and stream
-      const generator = providerStreamChat(userId, model, [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: improveContent },
-      ]);
+      const generator = providerStreamChat(userId, model, improveMessages);
 
       const accumulated = await streamSSE(request, reply, generator, improveExtras, { llmCache, cacheKey, postProcess });
 
@@ -115,6 +119,34 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
           [accumulated.slice(0, 50000), improvementId],
         );
       }
+
+      emitLlmAudit({
+        userId,
+        action: 'improve',
+        model,
+        provider: (await resolveUserProvider(userId)).type,
+        inputTokens: estimateTokens(improveMessages.map(m => m.content).join('')),
+        outputTokens: estimateTokens(accumulated),
+        inputMessages: improveMessages.map(m => ({ role: m.role, contentLength: m.content.length })),
+        retrievedChunkIds: [],
+        durationMs: Date.now() - auditStart,
+        status: 'success',
+      });
+    } catch (err) {
+      emitLlmAudit({
+        userId,
+        action: 'improve',
+        model,
+        provider: (await resolveUserProvider(userId)).type,
+        inputTokens: estimateTokens(improveMessages.map(m => m.content).join('')),
+        outputTokens: 0,
+        inputMessages: improveMessages.map(m => ({ role: m.role, contentLength: m.content.length })),
+        retrievedChunkIds: [],
+        durationMs: Date.now() - auditStart,
+        status: 'error',
+        errorMessage: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
     } finally {
       if (lockAcquired) await llmCache.releaseLock(cacheKey);
     }
