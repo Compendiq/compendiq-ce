@@ -12,6 +12,7 @@ import { getSharedLlmSettings } from './core/services/admin-settings-service.js'
 import { setActiveProvider } from './domains/llm/services/ollama-service.js';
 import { initLlmQueue } from './domains/llm/services/llm-queue.js';
 import { initRateLimiter } from './domains/confluence/services/confluence-rate-limiter.js';
+import { initEmailService, closeEmailService } from './core/services/email-service.js';
 
 const PORT = parseInt(process.env.BACKEND_PORT ?? '3051', 10);
 const HOST = process.env.NODE_ENV === 'production' ? '0.0.0.0' : '127.0.0.1';
@@ -58,6 +59,7 @@ async function start() {
   setActiveProvider(sharedLlmSettings.llmProvider);
   await initLlmQueue();
   await initRateLimiter();
+  await initEmailService();
 
   // Build and start the app
   const app = await buildApp();
@@ -75,6 +77,7 @@ async function start() {
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutting down...');
     await stopQueueWorkers();
+    closeEmailService();
     await app.close();
     await closeVectorPool();
     await closePool();
