@@ -7,6 +7,7 @@ import { logger } from '../../core/utils/logger.js';
 import { getMetrics as getLlmQueueMetrics } from '../../domains/llm/services/llm-queue.js';
 import { getSharedLlmSettings } from '../../core/services/admin-settings-service.js';
 import { APP_VERSION, APP_BUILD_INFO } from '../../core/utils/version.js';
+import { getQueueMetrics, isBullMQEnabled } from '../../core/services/queue-service.js';
 
 // Track whether startup checks have passed
 let startupComplete = false;
@@ -108,6 +109,8 @@ export async function healthRoutes(fastify: FastifyInstance) {
       const allHealthy = postgres && redis;
       const status = allHealthy ? 'ok' : (postgres || redis) ? 'degraded' : 'error';
 
+      const queueMetrics = isBullMQEnabled() ? await getQueueMetrics() : undefined;
+
       reply.status(allHealthy ? 200 : 503).send({
         status,
         services: { postgres, redis, llm },
@@ -117,6 +120,7 @@ export async function healthRoutes(fastify: FastifyInstance) {
           openai: getOpenaiCircuitBreakerStatus(),
         },
         llmQueue: getLlmQueueMetrics(),
+        ...(queueMetrics && { queues: queueMetrics }),
         version: APP_VERSION,
         edition: APP_BUILD_INFO.edition,
         commit: APP_BUILD_INFO.commit,

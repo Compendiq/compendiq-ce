@@ -586,6 +586,41 @@ export async function setSyncStatus(userId: string, status: SyncStatus): Promise
 }
 
 /**
+ * Run a single scheduled sync cycle across all users.
+ * Extracted from the setInterval callback for use by BullMQ workers.
+ * Returns the number of users synced.
+ */
+export async function runScheduledSync(): Promise<number> {
+  const lockId = await acquireSyncLock();
+  if (!lockId) return 0;
+
+  try {
+    const users = await query<{ user_id: string }>(
+      `SELECT DISTINCT us.user_id FROM user_settings us
+       WHERE us.confluence_url IS NOT NULL AND us.confluence_pat IS NOT NULL
+         AND EXISTS (
+           SELECT 1 FROM space_role_assignments sra
+           WHERE sra.principal_type = 'user' AND sra.principal_id = us.user_id::TEXT
+         )`,
+    );
+
+    for (const { user_id } of users.rows) {
+      try {
+        await syncUser(user_id);
+      } catch (err) {
+        logger.error({ err, userId: user_id }, 'Background sync failed for user');
+      }
+    }
+    return users.rows.length;
+  } catch (err) {
+    logger.error({ err }, 'Background sync worker error');
+    return 0;
+  } finally {
+    await releaseSyncLock(lockId);
+  }
+}
+
+/**
  * Start the background sync worker.
  */
 export function startSyncWorker(intervalMinutes = 15): void {
