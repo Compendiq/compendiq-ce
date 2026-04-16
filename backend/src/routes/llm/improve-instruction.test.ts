@@ -114,6 +114,7 @@ describe('POST /api/llm/improve - instruction field', () => {
     app.decorateRequest('userId', '');
     app.addHook('onRequest', async (request) => {
       request.userId = 'test-user-123';
+      request.userCan = async () => true;
     });
 
     await app.register(llmImproveRoutes, { prefix: '/api' });

@@ -105,6 +105,7 @@ describe('POST /api/llm/generate with pdfText', () => {
     app.decorateRequest('userId', '');
     app.addHook('onRequest', async (request) => {
       request.userId = 'test-user-123';
+      request.userCan = async () => true;
     });
 
     await app.register(llmGenerateRoutes, { prefix: '/api' });

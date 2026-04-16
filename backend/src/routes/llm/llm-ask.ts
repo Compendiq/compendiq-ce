@@ -20,6 +20,7 @@ import {
   LLM_STREAM_RATE_LIMIT,
   MAX_INPUT_LENGTH,
 } from './_helpers.js';
+import { requireGlobalPermission } from '../../core/utils/rbac-guards.js';
 
 export async function llmAskRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -34,7 +35,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
   });
 
   // POST /api/llm/ask - RAG-powered Q&A with streaming
-  fastify.post('/llm/ask', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
+  fastify.post('/llm/ask', { ...LLM_STREAM_RATE_LIMIT, preHandler: requireGlobalPermission('llm:query') }, async (request, reply) => {
     const auditStart = Date.now();
     const body = AskRequestSchema.parse(request.body);
     const { question, model, conversationId, includeSubPages, externalUrls } = body;

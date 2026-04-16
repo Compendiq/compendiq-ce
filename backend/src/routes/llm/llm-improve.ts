@@ -18,6 +18,7 @@ import {
   LLM_STREAM_RATE_LIMIT,
   MAX_INPUT_LENGTH,
 } from './_helpers.js';
+import { requireGlobalPermission } from '../../core/utils/rbac-guards.js';
 
 export async function llmImproveRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -25,7 +26,7 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
   const llmCache = new LlmCache(fastify.redis);
 
   // POST /api/llm/improve - stream improved content
-  fastify.post('/llm/improve', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
+  fastify.post('/llm/improve', { ...LLM_STREAM_RATE_LIMIT, preHandler: requireGlobalPermission('llm:improve') }, async (request, reply) => {
     const auditStart = Date.now();
     const body = ImproveRequestSchema.parse(request.body);
     const { content, type, model, includeSubPages, instruction } = body;

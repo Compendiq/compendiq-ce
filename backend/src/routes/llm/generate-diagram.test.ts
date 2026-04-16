@@ -95,6 +95,7 @@ describe('POST /api/llm/generate-diagram', () => {
     app.decorateRequest('userId', '');
     app.addHook('onRequest', async (request) => {
       request.userId = 'test-user-123';
+      request.userCan = async () => true;
     });
 
     await app.register(llmDiagramRoutes, { prefix: '/api' });

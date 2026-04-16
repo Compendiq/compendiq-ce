@@ -121,6 +121,8 @@ describe('POST /api/llm/summarize - functionality', () => {
     app.decorateRequest('userId', '');
     app.addHook('onRequest', async (request) => {
       request.userId = 'test-user-123';
+      // Mock userCan: grant all permissions (individual tests don't exercise RBAC)
+      request.userCan = async () => true;
     });
 
     await app.register(llmSummarizeRoutes, { prefix: '/api' });
