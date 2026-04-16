@@ -51,12 +51,10 @@ describe('auth-store', () => {
     expect(useAuthStore.getState().isAuthenticated).toBe(true);
 
     // Simulate another tab clearing localStorage (logout)
-    window.dispatchEvent(
-      new StorageEvent('storage', {
-        key: 'compendiq-auth',
-        newValue: null,
-      }),
-    );
+    const logoutStorageEvent = new Event('storage');
+    Object.defineProperty(logoutStorageEvent, 'key', { value: 'compendiq-auth' });
+    Object.defineProperty(logoutStorageEvent, 'newValue', { value: null });
+    window.dispatchEvent(logoutStorageEvent);
 
     expect(useAuthStore.getState().isAuthenticated).toBe(false);
     expect(useAuthStore.getState().accessToken).toBeNull();
@@ -79,12 +77,12 @@ describe('auth-store', () => {
       },
       version: 0,
     };
-    window.dispatchEvent(
-      new StorageEvent('storage', {
-        key: 'compendiq-auth',
-        newValue: JSON.stringify(newState),
-      }),
-    );
+    const refreshStorageEvent = new Event('storage');
+    Object.defineProperty(refreshStorageEvent, 'key', { value: 'compendiq-auth' });
+    Object.defineProperty(refreshStorageEvent, 'newValue', {
+      value: JSON.stringify(newState),
+    });
+    window.dispatchEvent(refreshStorageEvent);
 
     expect(useAuthStore.getState().accessToken).toBe('new-refreshed-token');
     expect(useAuthStore.getState().isAuthenticated).toBe(true);
