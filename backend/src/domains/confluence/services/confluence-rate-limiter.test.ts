@@ -69,11 +69,11 @@ describe('confluence-rate-limiter', () => {
     // All resolved without error
   });
 
-  it('resetRateLimiter restores tokens', () => {
+  it('resetRateLimiter restores tokens', async () => {
     // Drain some tokens
-    acquireToken();
-    acquireToken();
-    acquireToken();
+    await acquireToken();
+    await acquireToken();
+    await acquireToken();
 
     resetRateLimiter();
     const info = getRateLimit();
