@@ -123,7 +123,7 @@ export function SmtpSettingsTab() {
               type="password"
               value={form.pass ?? ''}
               onChange={(e) => setForm({ ...form, pass: e.target.value })}
-              placeholder={config?.pass || 'Enter password'}
+              placeholder="Enter password if changing"
               className="input-field w-full"
             />
           </div>
