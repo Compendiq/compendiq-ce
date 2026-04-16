@@ -22,7 +22,7 @@ async function checkLlm(): Promise<boolean> {
     const sharedLlmSettings = await getSharedLlmSettings();
     const result = await Promise.race([
       getProvider(sharedLlmSettings.llmProvider).checkHealth(),
-      new Promise<{ connected: false }>((_resolve, reject) =>
+      new Promise<never>((_resolve, reject) =>
         setTimeout(() => reject(new Error('LLM health check timed out')), 5000),
       ),
     ]);
