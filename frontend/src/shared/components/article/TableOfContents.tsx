@@ -208,19 +208,38 @@ export function TableOfContents({ htmlContent, headings: headingsProp, contentRe
 
     if (headingElements.length === 0) return;
 
-    observerRef.current = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (entry.isIntersecting) {
-            setActiveId(entry.target.id);
-          }
+    const updateActiveFromScroll = () => {
+      const viewportOffset = window.innerHeight * 0.2;
+      let currentId: string | null = null;
+      for (const el of headingElements) {
+        const rect = (el as Element).getBoundingClientRect();
+        if (rect.top <= viewportOffset) {
+          currentId = (el as HTMLElement).id;
+        } else {
+          break;
         }
-      },
-      { rootMargin: '-10% 0% -80% 0%', threshold: 0 },
-    );
+      }
+      if (currentId) setActiveId(currentId);
+    };
 
-    headingElements.forEach((el) => observerRef.current?.observe(el));
-    return () => observerRef.current?.disconnect();
+    const io = new IntersectionObserver();
+    observerRef.current = io;
+
+    if (typeof io.observe === 'function') {
+      headingElements.forEach((el) => io.observe(el));
+      updateActiveFromScroll();
+      window.addEventListener('scroll', updateActiveFromScroll, { passive: true });
+      return () => {
+        window.removeEventListener('scroll', updateActiveFromScroll);
+        io.disconnect?.();
+      };
+    }
+
+    updateActiveFromScroll();
+    window.addEventListener('scroll', updateActiveFromScroll, { passive: true });
+    return () => {
+      window.removeEventListener('scroll', updateActiveFromScroll);
+    };
   }, [headings, contentRef]);
 
   // Auto-expand any collapsed ancestors when the active heading changes
