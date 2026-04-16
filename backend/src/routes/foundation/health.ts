@@ -22,7 +22,7 @@ async function checkLlm(): Promise<boolean> {
     const sharedLlmSettings = await getSharedLlmSettings();
     const result = await Promise.race([
       getProvider(sharedLlmSettings.llmProvider).checkHealth(),
-      new Promise<{ connected: false }>((_resolve, reject) =>
+      new Promise<never>((_resolve, reject) =>
         setTimeout(() => reject(new Error('LLM health check timed out')), 5000),
       ),
     ]);
@@ -51,7 +51,14 @@ export async function healthRoutes(fastify: FastifyInstance) {
     ]);
 
     const allHealthy = postgres && redis;
-    const status = allHealthy ? 'ok' : (postgres || redis) ? 'degraded' : 'error';
+    let status: 'ok' | 'degraded' | 'error';
+    if (allHealthy) {
+      status = 'ok';
+    } else if (postgres || redis) {
+      status = 'degraded';
+    } else {
+      status = 'error';
+    }
 
     reply.status(allHealthy ? 200 : 503).send({
       status,
@@ -129,7 +136,10 @@ export async function healthRoutes(fastify: FastifyInstance) {
       });
     } catch {
       // Fallback: if any check throws unexpectedly, report partial status
-      const [postgres, redis] = await Promise.all([checkPg(), checkRedisConnection(fastify.redis)]).catch(() => [false, false]);
+      const [postgres, redis] = await Promise.all([checkPg(), checkRedisConnection(fastify.redis)]).catch((error) => {
+        logger.warn({ error }, 'Fallback health dependency checks failed');
+        return [false, false] as const;
+      });
       const allHealthy = postgres && redis;
       reply.status(allHealthy ? 200 : 503).send({
         status: allHealthy ? 'ok' : 'degraded',
