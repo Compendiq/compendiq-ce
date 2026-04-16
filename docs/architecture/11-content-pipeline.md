@@ -57,7 +57,7 @@ Custom turndown rules handle Confluence-specific macros:
 ## Why store three forms?
 
 - **`body_storage` (XHTML)** — lossless round-trip with Confluence; any
-  future write-back needs the exact original serialisation.
+  future write-back needs the exact original serialization.
 - **`body_html`** — what the viewer and TipTap editor consume; already
   sanitized so we don't run the converter on every render.
 - **`body_text`** — stripped of all tags; the input both to the embedding
