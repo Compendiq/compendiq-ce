@@ -141,7 +141,7 @@ export function SmtpSettingsTab() {
         </div>
 
         <button
-          onClick={() => saveMutation.mutate({ ...current, ...form })}
+          onClick={() => saveMutation.mutate(current)}
           disabled={saveMutation.isPending}
           className="btn-primary"
         >
