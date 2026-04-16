@@ -2,6 +2,13 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { useAuthStore } from './auth-store';
 
 describe('auth-store', () => {
+  const dispatchStorageEvent = (key: string, newValue: string | null) => {
+    const event = new Event('storage');
+    Object.defineProperty(event, 'key', { value: key });
+    Object.defineProperty(event, 'newValue', { value: newValue });
+    window.dispatchEvent(event);
+  };
+
   beforeEach(() => {
     localStorage.clear();
     useAuthStore.getState().clearAuth();
@@ -79,12 +86,7 @@ describe('auth-store', () => {
       },
       version: 0,
     };
-    window.dispatchEvent(
-      new StorageEvent('storage', {
-        key: 'compendiq-auth',
-        newValue: JSON.stringify(newState),
-      }),
-    );
+    dispatchStorageEvent('compendiq-auth', JSON.stringify(newState));
 
     expect(useAuthStore.getState().accessToken).toBe('new-refreshed-token');
     expect(useAuthStore.getState().isAuthenticated).toBe(true);
@@ -106,12 +108,7 @@ describe('auth-store', () => {
       },
       version: 0,
     };
-    window.dispatchEvent(
-      new StorageEvent('storage', {
-        key: 'compendiq-auth',
-        newValue: JSON.stringify(loggedOutState),
-      }),
-    );
+    dispatchStorageEvent('compendiq-auth', JSON.stringify(loggedOutState));
 
     expect(useAuthStore.getState().isAuthenticated).toBe(false);
     expect(useAuthStore.getState().accessToken).toBeNull();
@@ -125,12 +122,7 @@ describe('auth-store', () => {
     });
 
     // Simulate storage event for a different key
-    window.dispatchEvent(
-      new StorageEvent('storage', {
-        key: 'some-other-key',
-        newValue: null,
-      }),
-    );
+    dispatchStorageEvent('some-other-key', null);
 
     // Should not affect auth state
     expect(useAuthStore.getState().isAuthenticated).toBe(true);
@@ -145,12 +137,7 @@ describe('auth-store', () => {
     });
 
     // Simulate malformed JSON in storage event
-    window.dispatchEvent(
-      new StorageEvent('storage', {
-        key: 'compendiq-auth',
-        newValue: 'not-valid-json{{{',
-      }),
-    );
+    dispatchStorageEvent('compendiq-auth', 'not-valid-json{{{');
 
     // Should not crash or change state
     expect(useAuthStore.getState().isAuthenticated).toBe(true);
