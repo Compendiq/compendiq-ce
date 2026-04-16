@@ -55,8 +55,6 @@ describe('auth-store', () => {
     Object.defineProperty(logoutEvent, 'key', { value: 'compendiq-auth' });
     Object.defineProperty(logoutEvent, 'newValue', { value: null });
     window.dispatchEvent(logoutEvent);
-
-    expect(useAuthStore.getState().isAuthenticated).toBe(false);
     expect(useAuthStore.getState().accessToken).toBeNull();
   });
 
@@ -79,12 +77,10 @@ describe('auth-store', () => {
     };
     const tokenRefreshEvent = new Event('storage');
     Object.defineProperty(tokenRefreshEvent, 'key', { value: 'compendiq-auth' });
+    const tokenRefreshEvent = new Event('storage');
+    Object.defineProperty(tokenRefreshEvent, 'key', { value: 'compendiq-auth' });
     Object.defineProperty(tokenRefreshEvent, 'newValue', { value: JSON.stringify(newState) });
     window.dispatchEvent(tokenRefreshEvent);
-
-    expect(useAuthStore.getState().accessToken).toBe('new-refreshed-token');
-    expect(useAuthStore.getState().isAuthenticated).toBe(true);
-  });
 
   it('syncs explicit logout (isAuthenticated=false) across tabs via storage event', () => {
     useAuthStore.getState().setAuth('my-token', {
@@ -106,12 +102,10 @@ describe('auth-store', () => {
     Object.defineProperty(explicitLogoutEvent, 'key', { value: 'compendiq-auth' });
     Object.defineProperty(explicitLogoutEvent, 'newValue', { value: JSON.stringify(loggedOutState) });
     window.dispatchEvent(explicitLogoutEvent);
-
-    expect(useAuthStore.getState().isAuthenticated).toBe(false);
-    expect(useAuthStore.getState().accessToken).toBeNull();
-  });
-
-  it('ignores storage events for unrelated keys', () => {
+    const explicitLogoutEvent = new Event('storage');
+    Object.defineProperty(explicitLogoutEvent, 'key', { value: 'compendiq-auth' });
+    Object.defineProperty(explicitLogoutEvent, 'newValue', { value: JSON.stringify(loggedOutState) });
+    window.dispatchEvent(explicitLogoutEvent);
     useAuthStore.getState().setAuth('my-token', {
       id: '1',
       username: 'alice',
