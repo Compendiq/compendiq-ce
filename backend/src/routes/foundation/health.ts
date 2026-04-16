@@ -51,7 +51,14 @@ export async function healthRoutes(fastify: FastifyInstance) {
     ]);
 
     const allHealthy = postgres && redis;
-    const status = allHealthy ? 'ok' : (postgres || redis) ? 'degraded' : 'error';
+    let status: 'ok' | 'degraded' | 'error';
+    if (allHealthy) {
+      status = 'ok';
+    } else if (postgres || redis) {
+      status = 'degraded';
+    } else {
+      status = 'error';
+    }
 
     reply.status(allHealthy ? 200 : 503).send({
       status,
