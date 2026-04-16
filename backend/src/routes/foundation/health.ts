@@ -129,7 +129,10 @@ export async function healthRoutes(fastify: FastifyInstance) {
       });
     } catch {
       // Fallback: if any check throws unexpectedly, report partial status
-      const [postgres, redis] = await Promise.all([checkPg(), checkRedisConnection(fastify.redis)]).catch(() => [false, false]);
+      const [postgres, redis] = await Promise.all([checkPg(), checkRedisConnection(fastify.redis)]).catch((error) => {
+        logger.warn({ error }, 'Fallback health dependency checks failed');
+        return [false, false] as const;
+      });
       const allHealthy = postgres && redis;
       reply.status(allHealthy ? 200 : 503).send({
         status: allHealthy ? 'ok' : 'degraded',
