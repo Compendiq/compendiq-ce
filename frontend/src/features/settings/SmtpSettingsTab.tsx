@@ -13,6 +13,8 @@ interface SmtpConfig {
   enabled: boolean;
 }
 
+const DEFAULT_SMTP_PORT = 587;
+
 export function SmtpSettingsTab() {
   const queryClient = useQueryClient();
   const [testEmail, setTestEmail] = useState('');
@@ -89,7 +91,7 @@ export function SmtpSettingsTab() {
             <label className="mb-1 block text-sm font-medium">Port</label>
             <input
               type="number"
-              value={current.port ?? 587}
+              value={current.port ?? DEFAULT_SMTP_PORT}
               onChange={(e) => setForm({ ...form, port: parseInt(e.target.value, 10) })}
               className="input-field w-full"
             />
@@ -123,7 +125,7 @@ export function SmtpSettingsTab() {
               type="password"
               value={form.pass ?? ''}
               onChange={(e) => setForm({ ...form, pass: e.target.value })}
-              placeholder={config?.pass || 'Enter password'}
+              placeholder="Enter password if changing"
               className="input-field w-full"
             />
           </div>
@@ -141,7 +143,7 @@ export function SmtpSettingsTab() {
         </div>
 
         <button
-          onClick={() => saveMutation.mutate({ ...current, ...form })}
+          onClick={() => saveMutation.mutate(current)}
           disabled={saveMutation.isPending}
           className="btn-primary"
         >
