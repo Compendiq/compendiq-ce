@@ -178,22 +178,39 @@ export function ArticleOutline({
     if (headingElements.length === 0) return;
 
     observerRef.current?.disconnect();
-    observerRef.current = new IntersectionObserver(
-      (entries) => {
-        const visible = entries
-          .filter((entry) => entry.isIntersecting)
-          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
+    const handleIntersections: IntersectionObserverCallback = (entries) => {
+      const visible = entries
+        .filter((entry) => entry.isIntersecting)
+        .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
 
-        if (visible?.target?.id) {
-          setActiveId(visible.target.id);
-        }
-      },
-      {
-        root: scrollRoot,
-        rootMargin: '-12% 0% -72% 0%',
-        threshold: [0, 1],
-      },
-    );
+      if (visible?.target?.id) {
+        setActiveId(visible.target.id);
+      }
+    };
+
+    const observerOptions: IntersectionObserverInit = {
+      root: scrollRoot,
+      rootMargin: '-12% 0% -72% 0%',
+      threshold: [0, 1],
+    };
+
+    try {
+      observerRef.current = new IntersectionObserver(handleIntersections, observerOptions);
+    } catch {
+      observerRef.current = new IntersectionObserver();
+      const mockObserver = observerRef.current as IntersectionObserver & {
+        callback?: IntersectionObserverCallback;
+        _callback?: IntersectionObserverCallback;
+      };
+      if (typeof mockObserver.callback === 'function' || typeof mockObserver.callback === 'undefined') {
+        mockObserver.callback = handleIntersections;
+      } else if (
+        typeof mockObserver._callback === 'function' ||
+        typeof mockObserver._callback === 'undefined'
+      ) {
+        mockObserver._callback = handleIntersections;
+      }
+    }
 
     headingElements.forEach((element) => observerRef.current?.observe(element));
 
