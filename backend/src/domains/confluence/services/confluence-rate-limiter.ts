@@ -106,9 +106,12 @@ export async function initRateLimiter(): Promise<void> {
       [SETTING_KEY],
     );
     if (result.rows.length > 0) {
-      const rpm = parseInt(result.rows[0]!.setting_value, 10);
-      if (!isNaN(rpm) && rpm > 0) {
-        setRateLimit(rpm);
+      const settingValue = result.rows[0]?.setting_value;
+      if (settingValue !== undefined) {
+        const rpm = parseInt(settingValue, 10);
+        if (!isNaN(rpm) && rpm > 0) {
+          setRateLimit(rpm);
+        }
       }
     }
   } catch (err) {
