@@ -4,7 +4,7 @@ import * as jose from 'jose';
 import { randomUUID } from 'crypto';
 import { query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
-import { userHasPermission } from '../services/rbac-service.js';
+import { userHasPermission, userHasGlobalPermission } from '../services/rbac-service.js';
 
 const JWT_ISSUER = 'compendiq';
 const ACCESS_TOKEN_EXPIRY = process.env.ACCESS_TOKEN_EXPIRY ?? '1h';
@@ -32,7 +32,7 @@ declare module 'fastify' {
     userId: string;
     username: string;
     userRole: 'user' | 'admin';
-    userCan: (permission: string, resourceType?: 'space' | 'page', resourceId?: string | number) => Promise<boolean>;
+    userCan: (permission: string, resourceType?: 'space' | 'page' | 'global', resourceId?: string | number) => Promise<boolean>;
   }
   interface FastifyInstance {
     authenticate: (request: FastifyRequest) => Promise<void>;
@@ -191,7 +191,7 @@ export default fp(async (fastify: FastifyInstance) => {
       // Attach RBAC permission checker to request
       request.userCan = async (
         permission: string,
-        resourceType?: 'space' | 'page',
+        resourceType?: 'space' | 'page' | 'global',
         resourceId?: string | number,
       ): Promise<boolean> => {
         // System admin bypasses all checks
@@ -212,7 +212,14 @@ export default fp(async (fastify: FastifyInstance) => {
           return userHasPermission(request.userId, permission, String(resourceId));
         }
 
-        // Global permission check (no resource scope)
+        if (resourceType === 'global') {
+          // Action-level permission (llm:query, sync:trigger, etc.) — resolves
+          // true if the user holds the permission in ANY space assignment.
+          return userHasGlobalPermission(request.userId, permission);
+        }
+
+        // Legacy default: space-scoped check without a space_key returns false
+        // for non-admins (preserves behaviour of callers that predate granular).
         return userHasPermission(request.userId, permission);
       };
     } catch (err) {

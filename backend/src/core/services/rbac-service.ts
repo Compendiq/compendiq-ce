@@ -18,6 +18,10 @@ function adminCacheKey(userId: string): string {
   return `rbac:admin:${userId}`;
 }
 
+function globalPermsCacheKey(userId: string): string {
+  return `rbac:global:${userId}`;
+}
+
 async function getCached<T>(key: string): Promise<T | null> {
   const redis = getRedisClient();
   if (!redis) return null;
@@ -172,6 +176,69 @@ export async function userHasPermission(
   }
 
   // Cache the full permission set
+  const permsArray = Array.from(permissions);
+  await setCache(cacheKey, permsArray);
+
+  return permissions.has(permission);
+}
+
+/**
+ * Check whether a user has a specific permission in ANY space (global check).
+ *
+ * Used for action-level permissions that aren't tied to a specific resource,
+ * e.g. `llm:query`, `llm:generate`, `sync:trigger`. If the user holds the
+ * permission via any role assignment (direct or group-based) in any space,
+ * this returns true.
+ *
+ * System admins always pass. Results are cached in Redis for 60s under
+ * `rbac:global:<userId>`. Cache is flushed by `invalidateRbacCache(userId)`.
+ *
+ * NOTE: Granular permission IDs are plain strings stored in `roles.permissions
+ * TEXT[]`. No whitelist — the caller picks the ID. Validity against
+ * `permission_definitions` is enforced only when roles are created/updated
+ * (see `overlay/.../rbac-extensions-service.validatePermissions`).
+ */
+export async function userHasGlobalPermission(
+  userId: string,
+  permission: string,
+): Promise<boolean> {
+  // System admin bypass
+  if (await isSystemAdmin(userId)) return true;
+
+  // Check cache — single flattened permission set across all spaces for this user
+  const cacheKey = globalPermsCacheKey(userId);
+  const cached = await getCached<string[]>(cacheKey);
+  if (cached !== null) {
+    return cached.includes(permission);
+  }
+
+  const permissions = new Set<string>();
+
+  // Direct user assignments across all spaces
+  const directCheck = await query<{ permissions: string[] }>(
+    `SELECT r.permissions
+     FROM space_role_assignments sra
+     JOIN roles r ON r.id = sra.role_id
+     WHERE sra.principal_type = 'user' AND sra.principal_id = $1`,
+    [userId],
+  );
+  for (const row of directCheck.rows) {
+    for (const p of row.permissions) permissions.add(p);
+  }
+
+  // Group-based assignments across all spaces
+  const groupCheck = await query<{ permissions: string[] }>(
+    `SELECT r.permissions
+     FROM space_role_assignments sra
+     JOIN roles r ON r.id = sra.role_id
+     JOIN group_memberships gm ON (sra.principal_id ~ '^\\d+$' AND gm.group_id = sra.principal_id::INTEGER)
+     WHERE sra.principal_type = 'group' AND gm.user_id = $1`,
+    [userId],
+  );
+  for (const row of groupCheck.rows) {
+    for (const p of row.permissions) permissions.add(p);
+  }
+
   const permsArray = Array.from(permissions);
   await setCache(cacheKey, permsArray);
 

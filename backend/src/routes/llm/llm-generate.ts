@@ -18,6 +18,7 @@ import {
   MAX_INPUT_LENGTH,
   MAX_PDF_TEXT_FOR_LLM,
 } from './_helpers.js';
+import { requireGlobalPermission } from '../../core/utils/rbac-guards.js';
 
 export async function llmGenerateRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -25,7 +26,7 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
   const llmCache = new LlmCache(fastify.redis);
 
   // POST /api/llm/generate - stream generated article
-  fastify.post('/llm/generate', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
+  fastify.post('/llm/generate', { ...LLM_STREAM_RATE_LIMIT, preHandler: requireGlobalPermission('llm:generate') }, async (request, reply) => {
     const auditStart = Date.now();
     const body = GenerateRequestSchema.parse(request.body);
     const { prompt, model, template, pdfText } = body;

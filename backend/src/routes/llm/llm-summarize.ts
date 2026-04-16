@@ -15,6 +15,7 @@ import {
   LLM_STREAM_RATE_LIMIT,
   MAX_INPUT_LENGTH,
 } from './_helpers.js';
+import { requireGlobalPermission } from '../../core/utils/rbac-guards.js';
 
 export async function llmSummarizeRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -22,7 +23,7 @@ export async function llmSummarizeRoutes(fastify: FastifyInstance) {
   const llmCache = new LlmCache(fastify.redis);
 
   // POST /api/llm/summarize - stream summary
-  fastify.post('/llm/summarize', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
+  fastify.post('/llm/summarize', { ...LLM_STREAM_RATE_LIMIT, preHandler: requireGlobalPermission('llm:summarize') }, async (request, reply) => {
     const body = SummarizeRequestSchema.parse(request.body);
     const { content, model, length = 'medium', includeSubPages } = body;
     const userId = request.userId;

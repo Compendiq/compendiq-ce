@@ -124,6 +124,7 @@ describe('POST /api/llm/improve — page_id resolution (regression: issue #418)'
     app.decorateRequest('userId', '');
     app.addHook('onRequest', async (request) => {
       request.userId = 'user-123';
+      request.userCan = async () => true;
     });
 
     await app.register(llmImproveRoutes, { prefix: '/api' });

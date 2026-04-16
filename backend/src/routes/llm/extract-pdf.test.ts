@@ -68,6 +68,7 @@ describe('POST /api/llm/extract-pdf', () => {
     app.decorateRequest('userId', '');
     app.addHook('onRequest', async (request) => {
       request.userId = 'test-user-123';
+      request.userCan = async () => true;
     });
 
     await app.register(llmPdfRoutes, { prefix: '/api' });

@@ -2,12 +2,13 @@ import { FastifyInstance } from 'fastify';
 import { syncUser, getSyncStatus, setSyncStatus } from '../../domains/confluence/services/sync-service.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
+import { requireGlobalPermission } from '../../core/utils/rbac-guards.js';
 
 export async function syncRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
 
-  // POST /api/sync - trigger manual sync
-  fastify.post('/sync', async (request, reply) => {
+  // POST /api/sync - trigger manual sync (gated by sync:trigger)
+  fastify.post('/sync', { preHandler: requireGlobalPermission('sync:trigger') }, async (request, reply) => {
     const userId = request.userId;
 
     const status = await getSyncStatus(userId);

@@ -131,6 +131,7 @@ describe('POST /api/llm/improvements/apply', () => {
     app.decorateRequest('userId', '');
     app.addHook('onRequest', async (request) => {
       request.userId = 'user-123';
+      request.userCan = async () => true;
     });
 
     await app.register(llmConversationRoutes, { prefix: '/api' });
