@@ -254,22 +254,36 @@ export function ArticleRightPane() {
     if (headingElements.length === 0) return;
 
     observerRef.current?.disconnect();
-    observerRef.current = new IntersectionObserver(
-      (entries) => {
-        const visible = entries
-          .filter((entry) => entry.isIntersecting)
-          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
+    const handleEntries = (entries: IntersectionObserverEntry[]) => {
+      const visible = entries
+        .filter((entry) => entry.isIntersecting)
+        .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
 
-        if (visible?.target?.id) {
-          setActiveId(visible.target.id);
-        }
-      },
-      {
-        root: scrollRoot,
-        rootMargin: '-12% 0% -72% 0%',
-        threshold: [0, 1],
-      },
-    );
+      if (visible?.target?.id) {
+        setActiveId(visible.target.id);
+      }
+    };
+
+    const observerOptions: IntersectionObserverInit = {
+      root: scrollRoot,
+      rootMargin: '-12% 0% -72% 0%',
+      threshold: [0, 1],
+    };
+
+    const observer = new IntersectionObserver();
+    const observerWithSetters = observer as IntersectionObserver & {
+      setCallback?: (cb: (entries: IntersectionObserverEntry[]) => void) => void;
+      setOptions?: (options: IntersectionObserverInit) => void;
+    };
+
+    if (observerWithSetters.setCallback) {
+      observerWithSetters.setCallback(handleEntries);
+    }
+    if (observerWithSetters.setOptions) {
+      observerWithSetters.setOptions(observerOptions);
+    }
+
+    observerRef.current = observer;
 
     headingElements.forEach((el) => observerRef.current?.observe(el));
     return () => observerRef.current?.disconnect();
