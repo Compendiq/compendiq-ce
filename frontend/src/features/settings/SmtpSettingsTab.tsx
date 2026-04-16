@@ -13,6 +13,8 @@ interface SmtpConfig {
   enabled: boolean;
 }
 
+const DEFAULT_SMTP_PORT = 587;
+
 export function SmtpSettingsTab() {
   const queryClient = useQueryClient();
   const [testEmail, setTestEmail] = useState('');
@@ -89,7 +91,7 @@ export function SmtpSettingsTab() {
             <label className="mb-1 block text-sm font-medium">Port</label>
             <input
               type="number"
-              value={current.port ?? 587}
+              value={current.port ?? DEFAULT_SMTP_PORT}
               onChange={(e) => setForm({ ...form, port: parseInt(e.target.value, 10) })}
               className="input-field w-full"
             />
