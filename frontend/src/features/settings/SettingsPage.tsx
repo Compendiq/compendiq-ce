@@ -24,9 +24,10 @@ import { OidcSettingsPage } from '../admin/OidcSettingsPage';
 import { LlmPolicyTab } from '../admin/LlmPolicyTab';
 import { DataRetentionTab } from '../admin/DataRetentionTab';
 import { LlmAuditPage } from '../admin/LlmAuditPage';
+import { ScimSettingsPage } from '../admin/ScimSettingsPage';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 
-type TabId = 'confluence' | 'sync' | 'ollama' | 'ai-prompts' | 'ai-safety' | 'rate-limits' | 'spaces' | 'theme' | 'labels' | 'errors' | 'embedding' | 'workers' | 'mcp-docs' | 'searxng' | 'email' | 'license' | 'sso' | 'llm-policy' | 'retention' | 'llm-audit' | 'system';
+type TabId = 'confluence' | 'sync' | 'ollama' | 'ai-prompts' | 'ai-safety' | 'rate-limits' | 'spaces' | 'theme' | 'labels' | 'errors' | 'embedding' | 'workers' | 'mcp-docs' | 'searxng' | 'email' | 'license' | 'sso' | 'llm-policy' | 'retention' | 'llm-audit' | 'scim' | 'system';
 
 export function SettingsPage() {
   const queryClient = useQueryClient();
@@ -71,6 +72,7 @@ export function SettingsPage() {
     { id: 'llm-policy', label: 'LLM Policy', adminOnly: true, enterpriseOnly: true, requiresFeature: 'org_llm_policy' },
     { id: 'retention', label: 'Data Retention', adminOnly: true, enterpriseOnly: true, requiresFeature: 'data_retention_policies' },
     { id: 'llm-audit', label: 'LLM Audit', adminOnly: true, enterpriseOnly: true, requiresFeature: 'llm_audit_trail' },
+    { id: 'scim', label: 'SCIM', adminOnly: true, enterpriseOnly: true, requiresFeature: 'scim_provisioning' },
     { id: 'system', label: 'System', adminOnly: true },
   ];
 
@@ -109,7 +111,7 @@ export function SettingsPage() {
         </div>
 
         <div className="p-6">
-          {(isLoading || !settings) && activeTab !== 'labels' && activeTab !== 'errors' && activeTab !== 'theme' && activeTab !== 'embedding' && activeTab !== 'sync' && activeTab !== 'workers' && activeTab !== 'mcp-docs' && activeTab !== 'ai-safety' && activeTab !== 'rate-limits' && activeTab !== 'searxng' && activeTab !== 'email' && activeTab !== 'license' && activeTab !== 'sso' && activeTab !== 'llm-policy' && activeTab !== 'retention' && activeTab !== 'llm-audit' ? (
+          {(isLoading || !settings) && activeTab !== 'labels' && activeTab !== 'errors' && activeTab !== 'theme' && activeTab !== 'embedding' && activeTab !== 'sync' && activeTab !== 'workers' && activeTab !== 'mcp-docs' && activeTab !== 'ai-safety' && activeTab !== 'rate-limits' && activeTab !== 'searxng' && activeTab !== 'email' && activeTab !== 'license' && activeTab !== 'sso' && activeTab !== 'llm-policy' && activeTab !== 'retention' && activeTab !== 'llm-audit' && activeTab !== 'scim' ? (
             <SkeletonFormFields />
           ) : activeTab === 'confluence' ? (
             <ConfluenceTab settings={settings!} onSave={(v) => updateSettings.mutate(v)} />
@@ -155,6 +157,8 @@ export function SettingsPage() {
             <DataRetentionTab />
           ) : activeTab === 'llm-audit' && isAdmin ? (
             <LlmAuditPage />
+          ) : activeTab === 'scim' && isAdmin ? (
+            <ScimSettingsPage />
           ) : activeTab === 'system' && isAdmin ? (
             <SystemTab />
           ) : (
