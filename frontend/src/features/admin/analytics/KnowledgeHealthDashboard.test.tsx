@@ -6,20 +6,15 @@ import type { DashboardProps } from './AnalyticsPage';
 
 // ── Mock ChartsBundle ──────────────────────────────────────────────────────────
 
-vi.mock('../../../shared/components/charts/ChartsBundle', () => ({
-  BarChart: ({ children, ...props }: any) => <div data-testid="bar-chart" {...props}>{children}</div>,
-  Bar: (props: any) => <div data-testid="bar" {...props} />,
-  PieChart: ({ children, ...props }: any) => <div data-testid="pie-chart" {...props}>{children}</div>,
-  Pie: ({ children, ...props }: any) => <div data-testid="pie" {...props}>{children}</div>,
-  Cell: (props: any) => <div data-testid="cell" {...props} />,
-  Treemap: (props: any) => <div data-testid="treemap" {...props} />,
-  XAxis: (props: any) => <div {...props} />,
-  YAxis: (props: any) => <div {...props} />,
-  Tooltip: () => <div />,
-  ResponsiveContainer: ({ children }: any) => <div>{children}</div>,
-  CartesianGrid: () => <div />,
-  Legend: () => <div />,
-}));
+vi.mock('../../../shared/components/charts/ChartsBundle', () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- chart mocks only need to render containers
+  const P = (_: any) => _.children ?? null;
+  return {
+    BarChart: P, Bar: P, PieChart: P, Pie: P, Cell: P, Treemap: P,
+    XAxis: P, YAxis: P, Tooltip: P, ResponsiveContainer: P,
+    CartesianGrid: P, Legend: P,
+  };
+});
 
 // ── Mock apiFetch ──────────────────────────────────────────────────────────────
 

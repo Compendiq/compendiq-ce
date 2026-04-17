@@ -8,18 +8,15 @@ import type { DashboardProps } from './AnalyticsPage';
 
 // ── Mock ChartsBundle ──────────────────────────────────────────────────────────
 
-vi.mock('../../../shared/components/charts/ChartsBundle', () => ({
-  LineChart: ({ children, ...props }: any) => <div data-testid="line-chart" {...props}>{children}</div>,
-  Line: (props: any) => <div {...props} />,
-  BarChart: ({ children, ...props }: any) => <div data-testid="bar-chart" {...props}>{children}</div>,
-  Bar: (props: any) => <div {...props} />,
-  XAxis: (props: any) => <div {...props} />,
-  YAxis: (props: any) => <div {...props} />,
-  Tooltip: () => <div />,
-  ResponsiveContainer: ({ children }: any) => <div>{children}</div>,
-  CartesianGrid: () => <div />,
-  Legend: () => <div />,
-}));
+vi.mock('../../../shared/components/charts/ChartsBundle', () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- chart mocks only need to render containers
+  const P = (_: any) => _.children ?? null;
+  return {
+    LineChart: P, Line: P, BarChart: P, Bar: P,
+    XAxis: P, YAxis: P, Tooltip: P, ResponsiveContainer: P,
+    CartesianGrid: P, Legend: P,
+  };
+});
 
 // ── Mock apiFetch ──────────────────────────────────────────────────────────────
 
