@@ -44,18 +44,20 @@ compendiq/
 │   ├── core/                        # Shared infrastructure (no domain imports)
 │   │   ├── enterprise/              # Enterprise plugin loader (types, noop, loader, features)
 │   │   ├── db/postgres.ts           # Connection pool + migration runner
-│   │   ├── db/migrations/           # Sequential SQL files (001-049)
+│   │   ├── db/migrations/           # Sequential SQL files (001-051)
 │   │   ├── plugins/                 # Fastify plugins (auth, correlation-id, redis)
 │   │   ├── services/                # Cross-cutting: redis-cache, audit-service, error-tracker,
 │   │   │                            #   content-converter, circuit-breaker, image-references,
-│   │   │                            #   rbac-service, notification-service,
+│   │   │                            #   rbac-service, notification-service, queue-service,
+│   │   │                            #   email-service, email-templates,
 │   │   │                            #   pdf-service, admin-settings-service, version-snapshot
 │   │   └── utils/                   # crypto, logger, sanitize-llm-input, ssrf-guard, tls-config, llm-config
 │   ├── domains/
 │   │   ├── confluence/services/     # confluence-client, sync-service, attachment-handler,
-│   │   │                            #   subpage-context, sync-overview-service
+│   │   │                            #   subpage-context, sync-overview-service, confluence-rate-limiter
 │   │   ├── llm/services/            # ollama-service, ollama-provider, openai-service,
-│   │   │                            #   llm-provider, embedding-service, rag-service, llm-cache
+│   │   │                            #   llm-provider, embedding-service, rag-service, llm-cache,
+│   │   │                            #   llm-audit-hook, llm-queue
 │   │   └── knowledge/services/      # auto-tagger, quality-worker, summary-worker,
 │   │                                #   version-tracker, duplicate-detector
 │   ├── routes/
@@ -93,12 +95,14 @@ Import restrictions enforced by `eslint-plugin-boundaries`:
 
 ## Tech Stack
 
-- **Backend**: Fastify 5, TypeScript, PostgreSQL 17 (pgvector), Redis 8, `ollama` npm package, `jose` (JWT), `bcrypt`, `pg`, `undici`, `zod`, `pino`
+- **Backend**: Fastify 5, TypeScript, PostgreSQL 17 (pgvector), Redis 8, `ollama` npm package, `jose` (JWT), `bcrypt`, `pg`, `undici`, `zod`, `pino`, `bullmq`, `nodemailer`
 - **LLM providers**: Ollama (default) + OpenAI-compatible APIs (via `undici`) — configurable per-user or server-wide via `LLM_PROVIDER`
 - **Frontend**: React 19, Vite, TailwindCSS 4, Radix UI, Zustand, TanStack Query, Framer Motion, TipTap v3, Sonner
 - **Content conversion**: `turndown` + `jsdom` + `turndown-plugin-gfm` (Confluence XHTML → Markdown), `marked` (Markdown → HTML)
 - **PDF**: `pdf-lib` for PDF export/import processing
 - **RAG**: pgvector (HNSW index), `bge-m3` embeddings (1024 dimensions) via Ollama, hybrid search (vector + keyword)
+- **Job Queue**: BullMQ (Redis-backed) with setInterval fallback, configurable via `USE_BULLMQ` env var
+- **Email**: `nodemailer` for SMTP-based notifications, configurable via admin UI or env vars
 - **Docker**: `pgvector/pgvector:pg17`, `redis:8-alpine`, multi-stage Dockerfiles
 
 ## External Services
@@ -131,6 +135,7 @@ Compendiq uses an open-core model. The CE (Community Edition) is this repo. The 
 | `frontend/src/features/admin/OidcSettingsPage.tsx` | OIDC/SSO admin UI (admin Settings → SSO tab, gated by `isEnterprise`) |
 | `frontend/src/features/auth/OidcCallbackPage.tsx` | Route `/auth/oidc/callback` — exchanges login_code for JWT |
 | `docker/Dockerfile.enterprise` | Multi-stage Dockerfile template for EE builds (Layer 2+3 protection) |
+| `backend/src/domains/llm/services/llm-audit-hook.ts` | `LlmAuditEntry` interface, `emitLlmAudit()` fire-and-forget, `setLlmAuditHook()` for EE registration |
 | `scripts/build-enterprise.sh` | Template script documenting the EE overlay merge process |
 
 **Rules for the enterprise extension points:**
@@ -240,6 +245,8 @@ Copy `.env.example` to `.env`. Key vars:
 - `LLM_VERIFY_SSL` (optional, set to `false` to disable TLS verification for LLM connections)
 - `LLM_STREAM_TIMEOUT_MS` (optional, streaming timeout in ms, default: `300000`)
 - `LLM_CACHE_TTL` (optional, Redis TTL in seconds for LLM cache, default: `3600`)
+- `LLM_CONCURRENCY` (optional, default: `4`, max concurrent LLM requests)
+- `LLM_MAX_QUEUE_DEPTH` (optional, default: `50`, reject when exceeded)
 - `OPENAI_BASE_URL` (optional, OpenAI-compatible API base URL)
 - `OPENAI_API_KEY` (optional, required when using openai provider)
 - `EMBEDDING_MODEL` (default: `bge-m3`, server-wide, 1024 dims)
@@ -252,13 +259,22 @@ Copy `.env.example` to `.env`. Key vars:
 - `SUMMARY_CHECK_INTERVAL_MINUTES` (default: `60`)
 - `SUMMARY_BATCH_SIZE` (default: `5`, pages per batch)
 - `SUMMARY_MODEL` (default: `DEFAULT_LLM_MODEL`, then empty = disabled)
+- `USE_BULLMQ` (optional, default `true`, set `false` to fall back to legacy setInterval workers)
 - `SYNC_INTERVAL_MIN` (optional, sync scheduler polling interval in minutes, default: `15`)
 - `CONFLUENCE_VERIFY_SSL` (optional, set to `false` to disable TLS for Confluence)
+- `CONFLUENCE_RATE_LIMIT_RPM` (optional, default: `60`, admin-configurable)
 - `ATTACHMENTS_DIR` (optional, attachment cache dir, default: `data/attachments`)
 - `NODE_EXTRA_CA_CERTS` (optional, PEM CA bundle path for self-signed certs)
 - `OTEL_ENABLED` (optional, set to `true` to enable OpenTelemetry tracing)
 - `OTEL_SERVICE_NAME` (optional, default: `compendiq-backend`)
 - `OTEL_EXPORTER_OTLP_ENDPOINT` (optional, OTLP collector endpoint)
+- `SMTP_HOST` (optional, SMTP server hostname)
+- `SMTP_PORT` (optional, default: `587`)
+- `SMTP_SECURE` (optional, set to `true` for TLS)
+- `SMTP_USER` (optional, SMTP username)
+- `SMTP_PASS` (optional, SMTP password)
+- `SMTP_FROM` (optional, sender email address)
+- `SMTP_ENABLED` (optional, set to `true` to enable email notifications; all SMTP vars also configurable via admin UI)
 
 - `COMPENDIQ_LICENSE_KEY` (deprecated bootstrap fallback — new installs should leave this unset and paste the key into Settings → License after first login; the EE plugin persists it in the `admin_settings` table and the env var is only consulted when the DB row is absent)
 

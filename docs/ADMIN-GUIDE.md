@@ -165,12 +165,56 @@ curl http://localhost:3051/api/health
 | `SUMMARY_MODEL` | `DEFAULT_LLM_MODEL` then *(disabled)* | LLM model for summaries. Empty = disabled. |
 | `SYNC_INTERVAL_MIN` | `15` | Background sync scheduler polling interval (minutes) |
 
+### Background Job Queue (BullMQ)
+
+Compendiq uses BullMQ (Redis-backed) for reliable background job processing. Five worker types run as BullMQ queues:
+
+| Queue | Purpose | Default Interval |
+|-------|---------|-----------------|
+| `sync` | Confluence space synchronization | 15 min |
+| `quality` | Page quality analysis (LLM) | 60 min |
+| `summary` | Auto-summary generation (LLM) | 60 min |
+| `maintenance` | Expired token cleanup | 24 hours |
+| `maintenance` | Data retention cleanup | 24 hours |
+
+**Configuration:**
+- `USE_BULLMQ=true` (default) -- set to `false` to fall back to legacy `setInterval` workers
+- Redis `maxmemory-policy` must be `noeviction` (default in the provided Docker config)
+- Job history is stored in the `job_history` PostgreSQL table for observability
+- Queue metrics are exposed via `GET /api/health` under the `queues` key
+
+**Monitoring:** The health endpoint returns per-queue counts (waiting, active, completed, failed):
+```bash
+curl http://localhost:3051/api/health | jq '.queues'
+```
+
+### LLM Request Queue
+
+LLM requests are managed through a concurrency-controlled queue with backpressure:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `LLM_CONCURRENCY` | `4` | Max concurrent LLM requests |
+| `LLM_MAX_QUEUE_DEPTH` | `50` | Max queued requests before rejecting |
+| `LLM_STREAM_TIMEOUT_MS` | `300000` | Per-request timeout (5 min) |
+
+Queue metrics are exposed via `GET /api/health` under the `llmQueue` key. When the queue is full, new requests receive a `503` error with a message to retry later.
+
 ### Confluence
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CONFLUENCE_VERIFY_SSL` | `true` | Set to `false` to disable TLS verification for Confluence connections |
 | `ATTACHMENTS_DIR` | `data/attachments` | Attachment cache directory. Set to an absolute path in production. |
+
+### Confluence API Rate Limiting
+
+A token bucket rate limiter protects your Confluence Data Center instance from being overwhelmed during sync.
+
+- **Default:** 60 requests/minute
+- **Configurable:** via `admin_settings` table (key: `confluence_rate_limit_rpm`)
+- **Behavior:** When the rate limit is hit, requests are queued (not dropped). They resume automatically as tokens refill.
+- **Applied to:** All Confluence API calls including page fetches and attachment downloads
 
 ### Security and Encryption
 
@@ -179,6 +223,30 @@ curl http://localhost:3051/api/health
 | `PAT_ENCRYPTION_KEYS` | *(none)* | JSON array of versioned keys for rotation (see Encryption Key Rotation below) |
 | `PAT_ENCRYPTION_KEY_V1`...`V10` | *(none)* | Numbered env vars for key rotation (alternative to JSON format) |
 | `NODE_EXTRA_CA_CERTS` | *(none)* | PEM CA bundle file path for self-signed certificates |
+
+### Email Notifications (SMTP)
+
+Compendiq can send email notifications for key events. Configure SMTP in **Settings > Email / SMTP**.
+
+**Configuration (env vars or admin UI):**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SMTP_HOST` | _(empty)_ | SMTP server hostname |
+| `SMTP_PORT` | `587` | SMTP port (587 for STARTTLS, 465 for TLS) |
+| `SMTP_SECURE` | `false` | Use TLS/SSL |
+| `SMTP_USER` | _(empty)_ | SMTP username |
+| `SMTP_PASS` | _(empty)_ | SMTP password |
+| `SMTP_FROM` | `noreply@compendiq.local` | Sender address |
+| `SMTP_ENABLED` | `false` | Enable email notifications |
+
+**Email types:**
+- Sync completed / failed
+- Knowledge request assigned
+- Article comment notification
+- License expiry warning (Enterprise)
+
+Settings configured via the admin UI are persisted in the `admin_settings` database table and take precedence over environment variables. Use the **Send Test** button to verify SMTP connectivity.
 
 ### Enterprise
 

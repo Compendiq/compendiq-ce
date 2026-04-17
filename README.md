@@ -121,10 +121,10 @@ Bidirectional sync with XHTML storage format conversion. Round-trip support for 
 | Category | What you get |
 |----------|-------------|
 | **Editor** | TipTap v3 with Vim mode, drag-and-drop blocks, find-and-replace, image/table captions, header numbering, code block language detection, clipboard image paste |
-| **AI** | Multi-provider LLM (Ollama default, or any OpenAI-compatible API), real-time SSE streaming, conversation history, content summarization, knowledge gap detection, duplicate page detection |
+| **AI** | Multi-provider LLM (Ollama default, or any OpenAI-compatible API), real-time SSE streaming, conversation history, content summarization, knowledge gap detection, duplicate page detection, LLM request backpressure, audit hook extension point |
 | **Security** | AES-256-GCM PAT encryption, JWT with refresh token rotation, RBAC with custom roles, OIDC/SSO (Enterprise), rate limiting, SSRF protection, prompt injection guard |
 | **Analytics** | Page views, engagement metrics, search pattern tracking, knowledge graph visualization |
-| **Operations** | PDF import/export, page verification workflow, knowledge requests, audit logging, OpenTelemetry tracing |
+| **Operations** | PDF import/export, page verification workflow, knowledge requests, audit logging, OpenTelemetry tracing, background job queue (BullMQ), email notifications (SMTP), Confluence API rate limiting |
 
 ---
 
@@ -135,10 +135,13 @@ Confluence Data Center (XHTML Storage Format)
     |  REST API v1 (Bearer PAT)
     v
 Backend (Fastify 5 + TypeScript + Node.js 22)
+    |-- Queue Service ........... BullMQ job queues (sync, quality, summary, maintenance)
     |-- Sync Service ............ polls Confluence, stores in PostgreSQL
     |-- Content Converter ....... XHTML <-> HTML <-> Markdown
     |-- Embedding Service ....... chunks text, generates vectors via Ollama
     |-- RAG Service ............. hybrid search (pgvector + FTS + RRF)
+    |-- LLM Queue ............... backpressure + concurrency control for LLM calls
+    |-- Email Service ........... SMTP notifications via Nodemailer
     |-- Redis Cache ............. hot cache with TTL eviction
     v
 Frontend (React 19 + Vite + TailwindCSS 4)
@@ -151,7 +154,7 @@ Frontend (React 19 + Vite + TailwindCSS 4)
 
 | Layer | Technology |
 |-------|-----------|
-| **Backend** | Fastify 5, TypeScript, Node.js 22+ |
+| **Backend** | Fastify 5, TypeScript, Node.js 22+, BullMQ |
 | **Frontend** | React 19, Vite 7, TailwindCSS 4, Radix UI, Zustand, TanStack Query, Framer Motion |
 | **Editor** | TipTap v3 (ProseMirror) |
 | **Database** | PostgreSQL 17 + pgvector |
@@ -159,8 +162,9 @@ Frontend (React 19 + Vite + TailwindCSS 4)
 | **AI/ML** | Ollama (local) or OpenAI-compatible APIs, bge-m3 embeddings (1024 dims) |
 | **Auth** | JWT (jose) + bcrypt + optional OIDC/SSO |
 | **Validation** | Zod schemas shared via @compendiq/contracts |
+| **Job Queue** | BullMQ (Redis-backed), with setInterval fallback |
 | **Testing** | Vitest, Playwright, @testing-library/react |
-| **Infra** | Docker Compose (4 services), multi-stage Dockerfiles, GHCR |
+| **Infra** | Docker Compose (4+ services), multi-stage Dockerfiles, GHCR |
 
 ### Data Flow
 

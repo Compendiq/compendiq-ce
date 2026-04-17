@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **BullMQ worker queues** -- replace `setInterval` background workers with Redis-backed BullMQ job queues for sync, quality analysis, summary generation, token cleanup, and data retention. Dual-mode: `USE_BULLMQ=false` falls back to legacy workers. Job history table for observability. (#179)
+- **Users email + display name** -- migration 051 adds `email` (nullable, partial unique index), `email_verified`, and `display_name` columns to the users table. Auth endpoints return these fields. (#178)
+- **LLM request queue with backpressure** -- configurable concurrency (default: 4), queue depth limit (default: 50), per-request timeout. Health endpoint exposes queue metrics. (#181)
+- **LLM audit hook extension point** -- fire-and-forget `emitLlmAudit()` for CE/EE audit logging. Zero overhead when no hook registered. Wired into ask, improve, and generate routes. (#183)
+- **Confluence API rate limiting** -- token bucket rate limiter (default: 60 req/min, admin-configurable). Applied before every Confluence API call including attachment downloads. (#180)
+- **Email notification service** -- Nodemailer SMTP transport with 5 inline-CSS email templates (sync completed/failed, knowledge request, article comment, license expiry). Admin SMTP settings UI with test email button. (#182)
+
 ## [0.2.0] - 2026-04-14
 
 <!--
