@@ -1,0 +1,231 @@
+import { lazy, Suspense, useState, useCallback } from 'react';
+import {
+  BarChart3, Brain, Search, AlertTriangle,
+  Download, FileText, FileSpreadsheet,
+} from 'lucide-react';
+import { useEnterprise } from '../../../shared/enterprise/use-enterprise';
+import { cn } from '../../../shared/lib/cn';
+
+// ── Types ──────────────────────────────────────────────────────────────────────
+
+export type AnalyticsTab = 'knowledge' | 'ai-usage' | 'search' | 'content-gaps';
+
+export interface DateRange {
+  startDate: string; // YYYY-MM-DD
+  endDate: string;   // YYYY-MM-DD
+}
+
+export interface DashboardProps {
+  dateRange: DateRange;
+  onExportPdf: (rows: Record<string, unknown>[], title: string) => Promise<void>;
+  onExportExcel: (rows: Record<string, unknown>[], title: string) => Promise<void>;
+}
+
+// ── Lazy-loaded dashboards ─────────────────────────────────────────────────────
+
+const KnowledgeHealthDashboard = lazy(() =>
+  import('./KnowledgeHealthDashboard').then((m) => ({ default: m.KnowledgeHealthDashboard })),
+);
+const AiUsageDashboard = lazy(() =>
+  import('./AiUsageDashboard').then((m) => ({ default: m.AiUsageDashboard })),
+);
+const SearchEffectivenessDashboard = lazy(() =>
+  import('./SearchEffectivenessDashboard').then((m) => ({ default: m.SearchEffectivenessDashboard })),
+);
+const ContentGapsDashboard = lazy(() =>
+  import('./ContentGapsDashboard').then((m) => ({ default: m.ContentGapsDashboard })),
+);
+
+// ── Tab config ─────────────────────────────────────────────────────────────────
+
+interface TabDef {
+  id: AnalyticsTab;
+  label: string;
+  icon: typeof BarChart3;
+  requiresFeature?: string;
+}
+
+const TABS: TabDef[] = [
+  { id: 'knowledge', label: 'Knowledge Health', icon: BarChart3 },
+  { id: 'ai-usage', label: 'AI Usage', icon: Brain, requiresFeature: 'ai_usage_analytics' },
+  { id: 'search', label: 'Search', icon: Search },
+  { id: 'content-gaps', label: 'Content Gaps', icon: AlertTriangle },
+];
+
+// ── Loading fallback ───────────────────────────────────────────────────────────
+
+function DashboardSkeleton() {
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      {Array.from({ length: 4 }).map((_, i) => (
+        <div key={i} className="glass-card h-64 animate-pulse" />
+      ))}
+    </div>
+  );
+}
+
+// ── Main component ─────────────────────────────────────────────────────────────
+
+export function AnalyticsPage() {
+  const { hasFeature } = useEnterprise();
+  const analyticsEnabled = hasFeature('advanced_analytics');
+
+  const [activeTab, setActiveTab] = useState<AnalyticsTab>('knowledge');
+  const [dateRange, setDateRange] = useState<DateRange>(() => ({
+    startDate: new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10),
+    endDate: new Date().toISOString().slice(0, 10),
+  }));
+  const [exportOpen, setExportOpen] = useState(false);
+
+  const handleExportPdf = useCallback(
+    async (rows: Record<string, unknown>[], title: string) => {
+      const { exportToPdf } = await import('../../../shared/lib/export-helpers');
+      await exportToPdf(
+        `${title.toLowerCase().replace(/\s+/g, '-')}-${dateRange.startDate}.pdf`,
+        rows,
+        title,
+      );
+    },
+    [dateRange.startDate],
+  );
+
+  const handleExportExcel = useCallback(
+    async (rows: Record<string, unknown>[], title: string) => {
+      const { exportToExcel } = await import('../../../shared/lib/export-helpers');
+      await exportToExcel(
+        `${title.toLowerCase().replace(/\s+/g, '-')}-${dateRange.startDate}.xlsx`,
+        rows,
+        title,
+      );
+    },
+    [dateRange.startDate],
+  );
+
+  // Feature gate: require advanced_analytics
+  if (!analyticsEnabled) {
+    return (
+      <div className="space-y-6" data-testid="analytics-gate">
+        <h1 className="text-2xl font-semibold">Enterprise Analytics</h1>
+        <div className="glass-card p-8 text-center">
+          <BarChart3 className="mx-auto mb-3 h-12 w-12 text-muted-foreground/50" />
+          <h2 className="text-lg font-medium mb-2">Advanced Analytics</h2>
+          <p className="text-sm text-muted-foreground">
+            Analytics dashboards require an Enterprise license with the Advanced Analytics feature.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+
+  const dashboardProps: DashboardProps = {
+    dateRange,
+    onExportPdf: handleExportPdf,
+    onExportExcel: handleExportExcel,
+  };
+
+  return (
+    <div className="space-y-6" data-testid="analytics-page">
+      {/* Header */}
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold">Enterprise Analytics</h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Knowledge base health, AI usage, search effectiveness, and content gaps.
+          </p>
+        </div>
+
+        {/* Controls */}
+        <div className="flex items-center gap-3">
+          {/* Date range */}
+          <div className="flex items-center gap-2">
+            <input
+              type="date"
+              value={dateRange.startDate}
+              max={dateRange.endDate}
+              onChange={(e) => setDateRange((prev) => ({ ...prev, startDate: e.target.value }))}
+              className="glass-card px-2 py-1.5 text-xs"
+              data-testid="date-start"
+            />
+            <span className="text-xs text-muted-foreground">to</span>
+            <input
+              type="date"
+              value={dateRange.endDate}
+              min={dateRange.startDate}
+              max={today}
+              onChange={(e) => setDateRange((prev) => ({ ...prev, endDate: e.target.value }))}
+              className="glass-card px-2 py-1.5 text-xs"
+              data-testid="date-end"
+            />
+          </div>
+
+          {/* Export dropdown */}
+          <div className="relative">
+            <button
+              onClick={() => setExportOpen(!exportOpen)}
+              className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-xs hover:bg-foreground/5 transition-colors"
+              data-testid="export-btn"
+            >
+              <Download className="h-3.5 w-3.5" />
+              Export
+            </button>
+            {exportOpen && (
+              <div className="absolute right-0 top-full mt-1 z-10 glass-card p-1 min-w-[140px]">
+                <button
+                  onClick={() => { setExportOpen(false); }}
+                  className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-xs hover:bg-foreground/5 transition-colors"
+                  data-testid="export-pdf"
+                >
+                  <FileText className="h-3.5 w-3.5" />
+                  Export as PDF
+                </button>
+                <button
+                  onClick={() => { setExportOpen(false); }}
+                  className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-xs hover:bg-foreground/5 transition-colors"
+                  data-testid="export-excel"
+                >
+                  <FileSpreadsheet className="h-3.5 w-3.5" />
+                  Export as Excel
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Tab bar */}
+      <div className="glass-card p-1.5 flex gap-1" data-testid="analytics-tabs">
+        {TABS.map((tab) => {
+          const Icon = tab.icon;
+          const isDisabled = tab.requiresFeature ? !hasFeature(tab.requiresFeature) : false;
+          return (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={cn(
+                'flex items-center gap-2 rounded px-3 py-2 text-sm transition-colors',
+                activeTab === tab.id
+                  ? 'bg-foreground/10 font-medium'
+                  : 'hover:bg-foreground/5',
+                isDisabled && activeTab !== tab.id && 'opacity-50',
+              )}
+              data-testid={`tab-${tab.id}`}
+            >
+              <Icon className="h-4 w-4" />
+              <span className="hidden sm:inline">{tab.label}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Tab content */}
+      <Suspense fallback={<DashboardSkeleton />}>
+        {activeTab === 'knowledge' && <KnowledgeHealthDashboard {...dashboardProps} />}
+        {activeTab === 'ai-usage' && <AiUsageDashboard {...dashboardProps} />}
+        {activeTab === 'search' && <SearchEffectivenessDashboard {...dashboardProps} />}
+        {activeTab === 'content-gaps' && <ContentGapsDashboard {...dashboardProps} />}
+      </Suspense>
+    </div>
+  );
+}

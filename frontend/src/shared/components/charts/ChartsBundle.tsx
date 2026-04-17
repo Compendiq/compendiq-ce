@@ -12,6 +12,7 @@ export {
   BarChart,
   PieChart,
   AreaChart,
+  Treemap,
   ResponsiveContainer,
   Line,
   Bar,
