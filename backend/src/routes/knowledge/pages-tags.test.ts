@@ -374,9 +374,9 @@ describe('POST /api/pages/:id/auto-tag — resolver fallback (#214)', () => {
     vi.clearAllMocks();
   });
 
-  it('consults the resolver when the client omits `model`', async () => {
+  it('consults the resolver when the client omits `model` and routes with the resolved provider', async () => {
     mockGetUsecaseLlmAssignment.mockResolvedValueOnce({
-      provider: 'ollama',
+      provider: 'openai',
       model: 'resolved-auto-tag-model',
       source: { provider: 'usecase', model: 'usecase' },
     });
@@ -390,15 +390,24 @@ describe('POST /api/pages/:id/auto-tag — resolver fallback (#214)', () => {
 
     expect(response.statusCode).toBe(200);
     expect(mockGetUsecaseLlmAssignment).toHaveBeenCalledWith('auto_tag');
-    // The resolved model must have been passed through to autoTagPage.
+    // The resolved provider + model must have been passed through to autoTagPage
+    // so the per-use-case provider override is honored (#214 review finding).
     expect(mockAutoTagPage).toHaveBeenCalledWith(
       'test-user-id',
       'page-1',
+      'openai',
       'resolved-auto-tag-model',
     );
   });
 
-  it('uses the explicit `model` from the body and does not call the resolver', async () => {
+  it('uses the explicit `model` from the body but still resolves the provider from the use-case assignment', async () => {
+    // Body model overrides the resolved model — but we still consult the
+    // resolver to learn which provider to route through.
+    mockGetUsecaseLlmAssignment.mockResolvedValueOnce({
+      provider: 'openai',
+      model: 'inherited-model',
+      source: { provider: 'usecase', model: 'shared' },
+    });
     mockAutoTagPage.mockResolvedValueOnce({ suggestedTags: [], existingLabels: [] });
 
     const response = await app.inject({
@@ -408,8 +417,14 @@ describe('POST /api/pages/:id/auto-tag — resolver fallback (#214)', () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(mockGetUsecaseLlmAssignment).not.toHaveBeenCalled();
-    expect(mockAutoTagPage).toHaveBeenCalledWith('test-user-id', 'page-1', 'explicit-model');
+    expect(mockGetUsecaseLlmAssignment).toHaveBeenCalledWith('auto_tag');
+    // Body model wins, but resolved provider is used.
+    expect(mockAutoTagPage).toHaveBeenCalledWith(
+      'test-user-id',
+      'page-1',
+      'openai',
+      'explicit-model',
+    );
   });
 
   it('returns 400 when `model` is omitted and the resolver returns empty', async () => {

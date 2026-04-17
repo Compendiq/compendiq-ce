@@ -22,12 +22,25 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
   const cache = new RedisCache(fastify.redis);
 
-  // POST /api/pages/:id/auto-tag - auto-tag a single page
+  // POST /api/pages/:id/auto-tag - auto-tag a single page.
+  //
+  // Not admin-gated: this is an interactive per-user feature (invoked from the
+  // page view) and is analogous to `POST /api/llm/ask`, which is also
+  // authenticated-only, not admin-only. Bulk auto-tag across all pages lives
+  // at `POST /api/admin/auto-tag-all` below and IS admin-gated. If the cost
+  // of admin-configured (potentially paid) LLM calls becomes a concern, the
+  // correct fix is rate-limiting or per-user quotas — not admin-gating one
+  // endpoint while leaving chat/RAG unchanged.
   fastify.post('/pages/:id/auto-tag', async (request) => {
     const { id } = IdParamSchema.parse(request.params);
     const userId = request.userId;
     const { model: bodyModel } = AutoTagBodySchema.parse(request.body);
-    const model = bodyModel ?? (await getUsecaseLlmAssignment('auto_tag')).model;
+    // Always resolve the full assignment — we need the provider even when the
+    // client supplies an explicit model. Body model (if any) overrides the
+    // resolved model; provider always comes from the resolver so the per-
+    // use-case provider override is honored (issue #214).
+    const assignment = await getUsecaseLlmAssignment('auto_tag');
+    const model = bodyModel ?? assignment.model;
 
     if (!model) {
       throw fastify.httpErrors.badRequest(
@@ -36,7 +49,7 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      const result = await autoTagPage(userId, id, model);
+      const result = await autoTagPage(userId, id, assignment.provider, model);
       return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -157,7 +170,9 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
   }, async (request) => {
     const userId = request.userId;
     const { model: bodyModel } = AutoTagBodySchema.parse(request.body);
-    const model = bodyModel ?? (await getUsecaseLlmAssignment('auto_tag')).model;
+    // Same resolver-for-provider pattern as /pages/:id/auto-tag above.
+    const assignment = await getUsecaseLlmAssignment('auto_tag');
+    const model = bodyModel ?? assignment.model;
 
     if (!model) {
       throw fastify.httpErrors.badRequest(
@@ -166,7 +181,7 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
     }
 
     // Run in background
-    autoTagAllPages(userId, model).catch((err) => {
+    autoTagAllPages(userId, assignment.provider, model).catch((err) => {
       logger.error({ err, userId }, 'Auto-tag all pages failed');
     });
 

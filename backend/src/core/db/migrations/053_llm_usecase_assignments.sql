@@ -14,5 +14,15 @@
 
 -- No-op migration: documents the four new use-case key pairs but creates no rows.
 -- The resolver (§2) treats missing rows as "inherit shared default".
+--
+-- Reserved keys in `admin_settings` (string-valued):
+--   llm_usecase_chat_provider      | 'ollama' | 'openai'
+--   llm_usecase_chat_model         | string
+--   llm_usecase_summary_provider   | 'ollama' | 'openai'
+--   llm_usecase_summary_model      | string
+--   llm_usecase_quality_provider   | 'ollama' | 'openai'
+--   llm_usecase_quality_model      | string
+--   llm_usecase_auto_tag_provider  | 'ollama' | 'openai'
+--   llm_usecase_auto_tag_model     | string
 SELECT 1; -- placeholder; the migration file exists to reserve slot 053 and
           -- document the new key namespace for schema reviewers.

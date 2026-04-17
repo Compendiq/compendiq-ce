@@ -436,6 +436,22 @@ describe('LlmTab (OllamaTab)', () => {
       expect(screen.getByTestId('usecase-summary-model-inherited')).toBeInTheDocument();
     });
 
+    it('disables the chat row — chat routing through per-use-case is not yet wired (follow-up to #214)', async () => {
+      mockFetchResponses({ adminSettings: mockAdminSettingsWithUsecases });
+      render(<SettingsPage />, { wrapper: createWrapper() });
+      await navigateToLlmTab();
+
+      await waitFor(() => {
+        expect(screen.getByTestId('usecase-chat-provider')).toBeInTheDocument();
+      });
+
+      // chat is rendered but disabled; the wired rows stay enabled.
+      expect(screen.getByTestId('usecase-chat-provider')).toBeDisabled();
+      expect(screen.getByTestId('usecase-summary-provider')).not.toBeDisabled();
+      expect(screen.getByTestId('usecase-quality-provider')).not.toBeDisabled();
+      expect(screen.getByTestId('usecase-auto_tag-provider')).not.toBeDisabled();
+    });
+
     it('sends only the changed use case in the PUT body (diff-only)', async () => {
       const putCalls: Array<{ url: string; body: string }> = [];
 

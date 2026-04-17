@@ -56,8 +56,9 @@ vi.mock('../../domains/knowledge/services/auto-tagger.js', () => ({
   ALLOWED_TAGS: ['architecture', 'deployment', 'troubleshooting', 'how-to', 'api', 'security', 'database', 'monitoring', 'configuration', 'onboarding', 'policy', 'runbook'],
 }));
 
-// Issue #214: route consults the auto_tag use-case resolver when body.model is
-// absent. Default mock returns an empty model so the pre-existing
+// Issue #214: route consults the auto_tag use-case resolver on every call so
+// the per-use-case provider override is honored even when body supplies a
+// model. Default mock returns an empty model so the pre-existing
 // "should return 400 when model is missing from body" assertion still holds
 // (route throws 400 when neither body nor resolver supplies a model).
 const mockGetUsecaseLlmAssignment = vi.fn().mockResolvedValue({

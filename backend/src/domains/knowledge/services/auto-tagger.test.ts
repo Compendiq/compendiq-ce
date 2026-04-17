@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { parseTagResponse, ALLOWED_TAGS, autoTagContent, autoTagPage, applyTags, autoTagAllPages } from './auto-tagger.js';
 
-// Mock llm-provider to avoid real API calls (provider-aware resolution)
-const mockProviderChat = vi.fn();
+// Mock llm-provider to avoid real API calls. The auto-tag path uses
+// `providerChatForUsecase(provider, model, messages)` so the per-use-case
+// provider override is honored (issue #214).
+const mockProviderChatForUsecase = vi.fn();
 vi.mock('../../llm/services/llm-provider.js', () => ({
-  providerChat: (...args: unknown[]) => mockProviderChat(...args),
+  providerChatForUsecase: (...args: unknown[]) => mockProviderChatForUsecase(...args),
 }));
 
 vi.mock('../../../core/services/content-converter.js', () => ({
@@ -123,46 +125,59 @@ describe('AutoTagger', () => {
 
   describe('autoTagContent', () => {
     it('should return parsed tags on successful LLM response', async () => {
-      mockProviderChat.mockResolvedValueOnce('["architecture", "deployment"]');
+      mockProviderChatForUsecase.mockResolvedValueOnce('["architecture", "deployment"]');
 
-      const result = await autoTagContent('test-user-id', 'qwen3:32b', 'some content');
+      const result = await autoTagContent('test-user-id', 'ollama', 'qwen3:32b', 'some content');
       expect(result).toEqual(['architecture', 'deployment']);
-      expect(mockProviderChat).toHaveBeenCalledOnce();
-      // Verify userId is passed as the first argument
-      expect(mockProviderChat).toHaveBeenCalledWith(
-        'test-user-id',
+      expect(mockProviderChatForUsecase).toHaveBeenCalledOnce();
+      // Verify provider + model are passed through (not userId — use-case path
+      // does not resolve provider per-user).
+      expect(mockProviderChatForUsecase).toHaveBeenCalledWith(
+        'ollama',
         'qwen3:32b',
         expect.any(Array),
       );
     });
 
-    it('should wrap LLM errors with descriptive message', async () => {
-      mockProviderChat.mockRejectedValueOnce(new Error('connect ECONNREFUSED 127.0.0.1:11434'));
+    it('should route to the openai provider when the use case is assigned to openai', async () => {
+      mockProviderChatForUsecase.mockResolvedValueOnce('["api"]');
 
-      await expect(autoTagContent('test-user-id', 'qwen3:32b', 'some content'))
+      await autoTagContent('test-user-id', 'openai', 'gpt-4o-mini', 'some content');
+
+      expect(mockProviderChatForUsecase).toHaveBeenCalledWith(
+        'openai',
+        'gpt-4o-mini',
+        expect.any(Array),
+      );
+    });
+
+    it('should wrap LLM errors with descriptive message', async () => {
+      mockProviderChatForUsecase.mockRejectedValueOnce(new Error('connect ECONNREFUSED 127.0.0.1:11434'));
+
+      await expect(autoTagContent('test-user-id', 'ollama', 'qwen3:32b', 'some content'))
         .rejects.toThrow('Auto-tag failed: connect ECONNREFUSED 127.0.0.1:11434');
     });
 
     it('should wrap non-Error LLM failures with descriptive message', async () => {
-      mockProviderChat.mockRejectedValueOnce('string error');
+      mockProviderChatForUsecase.mockRejectedValueOnce('string error');
 
-      await expect(autoTagContent('test-user-id', 'qwen3:32b', 'some content'))
+      await expect(autoTagContent('test-user-id', 'ollama', 'qwen3:32b', 'some content'))
         .rejects.toThrow('Auto-tag failed: string error');
     });
 
     it('should wrap fetch failed errors', async () => {
-      mockProviderChat.mockRejectedValueOnce(new TypeError('fetch failed'));
+      mockProviderChatForUsecase.mockRejectedValueOnce(new TypeError('fetch failed'));
 
-      await expect(autoTagContent('test-user-id', 'qwen3:32b', 'some content'))
+      await expect(autoTagContent('test-user-id', 'ollama', 'qwen3:32b', 'some content'))
         .rejects.toThrow('Auto-tag failed: fetch failed');
     });
 
     it('should preserve original error as cause', async () => {
       const original = new Error('connect ECONNREFUSED 127.0.0.1:11434');
-      mockProviderChat.mockRejectedValueOnce(original);
+      mockProviderChatForUsecase.mockRejectedValueOnce(original);
 
       try {
-        await autoTagContent('test-user-id', 'qwen3:32b', 'some content');
+        await autoTagContent('test-user-id', 'ollama', 'qwen3:32b', 'some content');
         expect.fail('should have thrown');
       } catch (err) {
         expect(err).toBeInstanceOf(Error);
@@ -173,10 +188,10 @@ describe('AutoTagger', () => {
     it('should preserve CircuitBreakerOpenError as cause', async () => {
       const cbError = new Error('ollama-chat: LLM server temporarily unavailable');
       cbError.name = 'CircuitBreakerOpenError';
-      mockProviderChat.mockRejectedValueOnce(cbError);
+      mockProviderChatForUsecase.mockRejectedValueOnce(cbError);
 
       try {
-        await autoTagContent('test-user-id', 'qwen3:32b', 'some content');
+        await autoTagContent('test-user-id', 'ollama', 'qwen3:32b', 'some content');
         expect.fail('should have thrown');
       } catch (err) {
         expect(err).toBeInstanceOf(Error);
@@ -197,9 +212,9 @@ describe('AutoTagger', () => {
         rows: [{ body_html: '<p>test content</p>', labels: [] }],
         rowCount: 1,
       });
-      mockProviderChat.mockResolvedValueOnce('["architecture"]');
+      mockProviderChatForUsecase.mockResolvedValueOnce('["architecture"]');
 
-      const result = await autoTagPage('test-user-id', '42', 'qwen3:32b');
+      const result = await autoTagPage('test-user-id', '42', 'ollama', 'qwen3:32b');
       expect(result.suggestedTags).toEqual(['architecture']);
 
       // Verify query used id = $1 with integer value
@@ -213,9 +228,9 @@ describe('AutoTagger', () => {
         rows: [{ body_html: '<p>test content</p>', labels: [] }],
         rowCount: 1,
       });
-      mockProviderChat.mockResolvedValueOnce('["api"]');
+      mockProviderChatForUsecase.mockResolvedValueOnce('["api"]');
 
-      const result = await autoTagPage('test-user-id', 'conf-abc', 'qwen3:32b');
+      const result = await autoTagPage('test-user-id', 'conf-abc', 'ollama', 'qwen3:32b');
       expect(result.suggestedTags).toEqual(['api']);
 
       // Verify query used confluence_id = $1 with string value
@@ -227,7 +242,7 @@ describe('AutoTagger', () => {
     it('should throw when page not found', async () => {
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
 
-      await expect(autoTagPage('test-user-id', '999', 'qwen3:32b'))
+      await expect(autoTagPage('test-user-id', '999', 'ollama', 'qwen3:32b'))
         .rejects.toThrow('Page not found: 999');
     });
   });
@@ -327,11 +342,11 @@ describe('AutoTagger', () => {
         })
         .mockResolvedValueOnce({ rows: [], rowCount: 1 }); // UPDATE for page 2
 
-      mockProviderChat
+      mockProviderChatForUsecase
         .mockResolvedValueOnce('["architecture"]')
         .mockResolvedValueOnce('["deployment"]');
 
-      const result = await autoTagAllPages('test-user-id', 'qwen3:32b');
+      const result = await autoTagAllPages('test-user-id', 'ollama', 'qwen3:32b');
       expect(result.tagged).toBe(2);
       expect(result.errors).toBe(0);
 

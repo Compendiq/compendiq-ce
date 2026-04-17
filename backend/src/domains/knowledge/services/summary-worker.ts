@@ -9,6 +9,22 @@
  * configurable batch size and interval.
  *
  * NEVER writes summaries back to Confluence — local DB only.
+ *
+ * `summary_status = 'skipped'` recovery:
+ *   When no summary model can be resolved for the configured provider
+ *   (e.g. admin set provider=openai but no openai_model / usecase model),
+ *   pending pages are transitioned to `'skipped'` rather than sitting
+ *   stuck in `'pending'`. Admin recovery paths, in order of preference:
+ *     1. Set a model: Settings → LLM → Use case assignments → Summary,
+ *        or set the shared `openai_model` / `ollama_model` field.
+ *     2. Hit `POST /api/llm/summary-rescan` (admin-only) — calls
+ *        `rescanAllSummaries()` which resets pages for re-summarization
+ *        and fires an immediate batch.
+ *     3. (Surgical alternative) Re-queue only the skipped pages by SQL:
+ *        `UPDATE pages SET summary_status = 'pending'
+ *           WHERE summary_status = 'skipped' AND deleted_at IS NULL;`
+ *     4. The next batch (runs every SUMMARY_CHECK_INTERVAL_MINUTES, default
+ *        60) will pick them up automatically.
  */
 
 import crypto from 'node:crypto';
@@ -300,12 +316,13 @@ export async function runSummaryBatch(
   const effectiveModel = model || assignment.model;
 
   if (!effectiveModel) {
-    logger.warn(
-      'No summary model configured in admin settings (Settings → LLM → Use case assignments, or SUMMARY_MODEL / DEFAULT_LLM_MODEL as deprecated bootstrap env vars). Marking pending pages as skipped.',
-    );
-    await query(
+    const flipped = await query(
       `UPDATE pages SET summary_status = 'skipped'
        WHERE summary_status = 'pending' AND deleted_at IS NULL`,
+    );
+    logger.warn(
+      { provider: assignment.provider, flippedToSkipped: flipped.rowCount ?? 0 },
+      'No summary model configured in admin settings (Settings → LLM → Use case assignments, or SUMMARY_MODEL / DEFAULT_LLM_MODEL as deprecated bootstrap env vars). Marked pending pages as skipped — admin must POST /api/llm/summary-rescan to reprocess after fixing the config.',
     );
     return { processed: 0, errors: 0 };
   }

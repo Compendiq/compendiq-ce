@@ -148,10 +148,11 @@ describe.skipIf(!dbAvailable)('quality-worker — per-use-case assignment (issue
     expect(status.model).toBe('configured-model');
   });
 
-  it('falls back to hardcoded qwen3:4b when nothing is configured', async () => {
+  it('falls back to hardcoded qwen3:4b when nothing is configured (ollama provider)', async () => {
     // Fresh DB, no env, no admin_settings — the resolver returns '' and the
     // worker's resolveQualityAssignment wrapper substitutes the hardcoded
-    // default to preserve the prior behavior.
+    // default to preserve the prior behavior. Only applies when the resolved
+    // provider is ollama — `qwen3:4b` is an Ollama-shaped model name.
     const content =
       'This is a sufficiently long article body that exceeds the fifty character minimum threshold for quality analysis processing.';
     await query(
@@ -165,5 +166,35 @@ describe.skipIf(!dbAvailable)('quality-worker — per-use-case assignment (issue
 
     expect(providerSpy).toHaveBeenCalledTimes(1);
     expect(providerSpy.mock.calls[0]?.[1]).toBe('qwen3:4b');
+  });
+
+  it('skips the batch (does NOT apply qwen3:4b default) when provider is openai with no model configured', async () => {
+    // Admin set provider=openai at the shared level but never configured an
+    // openai_model. Before the fix this would send 'qwen3:4b' (an Ollama
+    // model name) to the OpenAI endpoint → 404. After the fix the batch
+    // skips and pending pages get marked 'skipped' instead.
+    await query(
+      `INSERT INTO admin_settings (setting_key, setting_value)
+       VALUES ('llm_provider', 'openai')
+       ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value`,
+    );
+
+    const content =
+      'This is a sufficiently long article body that exceeds the fifty character minimum threshold for quality analysis processing.';
+    await query(
+      `INSERT INTO pages (confluence_id, space_key, title, body_text, body_html, quality_status)
+       VALUES ('q4', $1, 'Page Four', $2, $3, 'pending')`,
+      [testSpaceKey, content, `<p>${content}</p>`],
+    );
+
+    const processed = await processBatch();
+    expect(processed).toBe(0);
+    expect(providerSpy).not.toHaveBeenCalled();
+
+    // Pending page was marked as skipped rather than left stuck in 'pending'.
+    const skipped = await query<{ quality_status: string }>(
+      `SELECT quality_status FROM pages WHERE confluence_id = 'q4'`,
+    );
+    expect(skipped.rows[0]?.quality_status).toBe('skipped');
   });
 });

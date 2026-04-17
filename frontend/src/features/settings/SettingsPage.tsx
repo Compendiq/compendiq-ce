@@ -762,11 +762,18 @@ function LlmTab({ settings }: { settings: SettingsResponse }) {
     retry: 1,
   });
 
+  // Enable the openai model list whenever the shared provider is openai OR
+  // any per-use-case assignment row is set to openai — otherwise the per-row
+  // model dropdown in UsecaseAssignmentsSection would be empty in a mixed
+  // config (shared=ollama, one row=openai). Issue #214 review finding #3.
+  const anyUsecaseUsesOpenai =
+    !!usecaseAssignments &&
+    Object.values(usecaseAssignments).some((row) => row?.provider === 'openai');
   const { data: openaiModels, isFetching: loadingOpenaiModels, error: openaiModelsError, refetch: refetchOpenaiModels } = useQuery({
     queryKey: ['ollama-models', 'openai'],
     queryFn: () => apiFetch<{ name: string }[]>('/ollama/models?provider=openai'),
     retry: 1,
-    enabled: provider === 'openai',
+    enabled: provider === 'openai' || anyUsecaseUsesOpenai,
   });
 
   const status = provider === 'ollama' ? ollamaStatus : openaiStatus;
@@ -1039,6 +1046,15 @@ const USECASE_LABELS: Record<LlmUsecase, string> = {
 
 const USECASES_ORDERED: LlmUsecase[] = ['chat', 'summary', 'quality', 'auto_tag'];
 
+/**
+ * Use cases whose resolver is wired into a production code path today. Rows
+ * for use cases not in this set are rendered read-only with a "not yet wired"
+ * note — the resolver is ready but the chat routes still read the shared
+ * provider (tracked as a follow-up to issue #214). This prevents the UI from
+ * implying an admin control that has no runtime effect.
+ */
+const WIRED_USECASES: ReadonlySet<LlmUsecase> = new Set(['summary', 'quality', 'auto_tag']);
+
 function UsecaseAssignmentsSection({
   assignments,
   onChange,
@@ -1067,6 +1083,7 @@ function UsecaseAssignmentsSection({
       <div className="space-y-2">
         {USECASES_ORDERED.map((usecase) => {
           const row = assignments[usecase];
+          const wired = WIRED_USECASES.has(usecase);
           const models = row.provider === 'openai' ? openaiModels : ollamaModels;
           return (
             <div key={usecase} className="grid grid-cols-1 gap-2 sm:grid-cols-[140px_180px_1fr_auto] sm:items-center">
@@ -1081,6 +1098,8 @@ function UsecaseAssignmentsSection({
                   });
                 }}
                 data-testid={`usecase-${usecase}-provider`}
+                disabled={!wired}
+                title={wired ? undefined : 'Chat routing through per-use-case assignments is not yet wired — tracked as a follow-up to #214.'}
               >
                 <option value="">Inherit shared default</option>
                 <option value="ollama">Ollama</option>
@@ -1102,6 +1121,8 @@ function UsecaseAssignmentsSection({
                     update(usecase, { model: e.target.value === '' ? null : e.target.value })
                   }
                   data-testid={`usecase-${usecase}-model`}
+                  disabled={!wired}
+                  title={wired ? undefined : 'Chat routing through per-use-case assignments is not yet wired — tracked as a follow-up to #214.'}
                 >
                   <option value="">Inherit shared model</option>
                   {models.map((m) => (
@@ -1112,9 +1133,11 @@ function UsecaseAssignmentsSection({
                 </select>
               )}
               <span className="text-xs text-muted-foreground">
-                {row.resolved
-                  ? `→ ${row.resolved.provider} / ${row.resolved.model || '(none)'}`
-                  : ''}
+                {wired
+                  ? row.resolved
+                    ? `→ ${row.resolved.provider} / ${row.resolved.model || '(none)'}`
+                    : ''
+                  : 'Not yet wired — chat still uses the shared provider above.'}
               </span>
             </div>
           );

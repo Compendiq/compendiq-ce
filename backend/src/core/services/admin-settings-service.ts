@@ -218,6 +218,11 @@ function envBootstrapModelFor(usecase: LlmUsecase): string {
  * Set of use-case keys that have already been seeded from env during this
  * process lifetime. Prevents redundant writes on every resolver call.
  * Module-scoped — survives for the life of the Node process, resets on restart.
+ *
+ * Safe under concurrent resolver calls: the DB write in `seedUsecaseModelFromEnv`
+ * is idempotent (`INSERT ... ON CONFLICT DO NOTHING`), so this Set is a
+ * write-dedup optimization only, not a correctness gate — two racing calls
+ * for the same key at most double-write harmlessly.
  */
 const seededFromEnv = new Set<string>();
 
@@ -259,32 +264,16 @@ async function seedUsecaseModelFromEnv(key: string, value: string): Promise<void
 }
 
 /**
- * Resolve the `{provider, model}` pair for a given LLM use case.
- *
- * Fallback order (per field, independent):
- *   Provider: usecase row → shared `llm_provider` → 'ollama'
- *   Model:    usecase row → shared model matching the resolved provider
- *             (`ollama_model` or `openai_model`) → env bootstrap
- *             (SUMMARY_MODEL / QUALITY_MODEL / DEFAULT_LLM_MODEL) → ''
- *
- * **No in-process cache** — each call hits `admin_settings`. This is a hard
- * requirement for the "changes take effect without restart" acceptance
- * criterion (see plan §2, "Caching strategy").
+ * Pure resolver — applies the fallback ladder against a pre-fetched settings
+ * map. Extracted so the batch path `getAllUsecaseAssignments` can reuse the
+ * same logic without re-querying per use case.
  */
-export async function getUsecaseLlmAssignment(
+async function resolveFromSettings(
   usecase: LlmUsecase,
+  settings: Record<string, string>,
 ): Promise<UsecaseLlmAssignment> {
   const pKey = usecaseProviderKey(usecase);
   const mKey = usecaseModelKey(usecase);
-
-  // One round-trip: fetch shared defaults + this use case's overrides.
-  const settings = await getAdminSettingsMap([
-    pKey,
-    mKey,
-    'llm_provider',
-    'ollama_model',
-    'openai_model',
-  ]);
 
   // --- Provider ---
   let provider: SharedLlmProvider;
@@ -339,6 +328,33 @@ export async function getUsecaseLlmAssignment(
     model,
     source: { provider: providerSource, model: modelSource },
   };
+}
+
+/**
+ * Resolve the `{provider, model}` pair for a given LLM use case.
+ *
+ * Fallback order (per field, independent):
+ *   Provider: usecase row → shared `llm_provider` → 'ollama'
+ *   Model:    usecase row → shared model matching the resolved provider
+ *             (`ollama_model` or `openai_model`) → env bootstrap
+ *             (SUMMARY_MODEL / QUALITY_MODEL / DEFAULT_LLM_MODEL) → ''
+ *
+ * **No in-process cache** — each call hits `admin_settings`. This is a hard
+ * requirement for the "changes take effect without restart" acceptance
+ * criterion (see plan §2, "Caching strategy").
+ */
+export async function getUsecaseLlmAssignment(
+  usecase: LlmUsecase,
+): Promise<UsecaseLlmAssignment> {
+  // One round-trip: fetch shared defaults + this use case's overrides.
+  const settings = await getAdminSettingsMap([
+    usecaseProviderKey(usecase),
+    usecaseModelKey(usecase),
+    'llm_provider',
+    'ollama_model',
+    'openai_model',
+  ]);
+  return resolveFromSettings(usecase, settings);
 }
 
 /**
@@ -430,29 +446,42 @@ export interface UsecaseAssignmentRow {
 }
 
 /**
- * Fetch raw-DB and resolved values for all four use cases. One combined query
- * for all 8 keys (plus shared defaults) — used by `GET /admin/settings`.
+ * Fetch raw-DB and resolved values for all four use cases in a single SELECT.
+ *
+ * Before: 4 resolver calls (each doing its own 5-key SELECT) + 1 extra SELECT
+ * for raw values = 5 queries per admin GET. Now: one SELECT pulling all 8
+ * `llm_usecase_*` keys + 3 shared keys, then the pure resolver is applied in
+ * memory per use case. Used by `GET /admin/settings`.
+ *
+ * Cold-start cost: on the very first admin GET of a fresh process, if any of
+ * `SUMMARY_MODEL` / `QUALITY_MODEL` / `DEFAULT_LLM_MODEL` env vars are set AND
+ * no matching DB row exists yet, `resolveFromSettings` will await
+ * `seedUsecaseModelFromEnv` for those use cases. These seeds run concurrently
+ * via `Promise.all`, so the worst case is a single round-trip wall-time of ~4
+ * parallel `INSERT ... ON CONFLICT DO NOTHING` writes. Every subsequent call
+ * hits the `seededFromEnv` in-memory Set and skips the writes entirely.
  */
 export async function getAllUsecaseAssignments(): Promise<
   Record<LlmUsecase, UsecaseAssignmentRow>
 > {
-  // Collect resolved values first (each call is its own query but resolver is
-  // small and the admin settings page is not hot-path).
-  const resolved = await Promise.all(
-    USECASES.map((u) => getUsecaseLlmAssignment(u)),
-  );
+  const allKeys = [
+    'llm_provider',
+    'ollama_model',
+    'openai_model',
+    ...USECASES.flatMap((u) => [usecaseProviderKey(u), usecaseModelKey(u)]),
+  ];
+  const settings = await getAdminSettingsMap(allKeys);
 
-  // Then read raw DB values in a single query.
-  const rawKeys = USECASES.flatMap((u) => [usecaseProviderKey(u), usecaseModelKey(u)]);
-  const raw = await getAdminSettingsMap(rawKeys);
+  // Resolve in memory — `resolveFromSettings` may trigger a one-shot env-seed
+  // write per use case on first call (same behavior as `getUsecaseLlmAssignment`).
+  const resolved = await Promise.all(
+    USECASES.map((u) => resolveFromSettings(u, settings)),
+  );
 
   const out = {} as Record<LlmUsecase, UsecaseAssignmentRow>;
   USECASES.forEach((usecase, idx) => {
-    const rawProvider = raw[usecaseProviderKey(usecase)];
-    const rawModel = raw[usecaseModelKey(usecase)];
-    // `resolved[idx]` always exists because USECASES and `resolved` are
-    // built together from the same array. Assert to appease the
-    // noUncheckedIndexedAccess lint.
+    const rawProvider = settings[usecaseProviderKey(usecase)];
+    const rawModel = settings[usecaseModelKey(usecase)];
     const r = resolved[idx] as UsecaseLlmAssignment;
     out[usecase] = {
       provider:
