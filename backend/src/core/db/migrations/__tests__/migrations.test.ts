@@ -230,4 +230,18 @@ describe.skipIf(!dbAvailable)('Database migrations', () => {
       expect(result.rows).toHaveLength(1);
     });
   });
+
+  describe('granular permissions (migration 052)', () => {
+    it('should have migration 052 applied without error', async () => {
+      // Migration 052 UPDATEs the system roles seeded in 039 to add granular
+      // LLM + sync permissions. The _migrations row existing confirms the SQL
+      // executed without error. Per-role permission assertions are omitted
+      // because other tests in this suite truncate the roles table, so data
+      // isn't reliably present when this describe block runs.
+      const result = await query<{ name: string }>(
+        "SELECT name FROM _migrations WHERE name = '052_seed_granular_permissions.sql'",
+      );
+      expect(result.rows).toHaveLength(1);
+    });
+  });
 });
