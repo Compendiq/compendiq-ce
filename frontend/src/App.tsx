@@ -60,6 +60,11 @@ const SpaceSettingsPage = lazy(() =>
     default: m.SpaceSettingsPage,
   })),
 );
+const AnalyticsPage = lazy(() =>
+  import('./features/admin/analytics/AnalyticsPage').then((m) => ({
+    default: m.AnalyticsPage,
+  })),
+);
 export function PageLoadingFallback() {
   return (
     <div className="flex items-center justify-center h-64">
@@ -139,6 +144,7 @@ export function App() {
                           <Route path="/graph" element={<GraphPage />} />
                           <Route path="/spaces/new" element={<NewSpacePage />} />
                           <Route path="/spaces/:key/settings" element={<SpaceSettingsPage />} />
+                          <Route path="/admin/analytics" element={<AnalyticsPage />} />
                           <Route
                             path="/settings"
                             element={<SettingsPage />}
