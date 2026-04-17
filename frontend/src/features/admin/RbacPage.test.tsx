@@ -7,7 +7,6 @@ import { RbacPage } from './RbacPage';
 import { useAuthStore } from '../../stores/auth-store';
 
 // ── Mock useEnterprise ─────────────────────────────────────────────────────────
-// eslint-disable-next-line prefer-const
 let mockHasFeature = (_f: string) => false;
 
 vi.mock('../../shared/enterprise/use-enterprise', () => ({
