@@ -110,6 +110,25 @@ export async function* providerStreamChat(
 }
 
 /**
+ * Stream a chat completion using an *explicit* provider/model — no per-user
+ * resolution. Used by background workers (summary, quality) which have no
+ * userId context but need to honor per-use-case provider overrides resolved
+ * via `getUsecaseLlmAssignment` (issue #214).
+ */
+export async function* providerStreamChatForUsecase(
+  provider: LlmProviderType,
+  model: string,
+  messages: ChatMessage[],
+  signal?: AbortSignal,
+): AsyncGenerator<StreamChunk> {
+  if (provider === 'openai') {
+    yield* getOpenAIProvider().streamChat(model, messages, signal);
+  } else {
+    yield* ollamaStreamChat(model, messages, signal);
+  }
+}
+
+/**
  * Non-streaming chat completion using the user's configured provider.
  */
 export async function providerChat(

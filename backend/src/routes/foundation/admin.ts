@@ -6,7 +6,12 @@ import { getAuditLog, logAuditEvent } from '../../core/services/audit-service.js
 import { listErrors, resolveError, getErrorSummary } from '../../core/services/error-tracker.js';
 import { logger } from '../../core/utils/logger.js';
 import { UpdateAdminSettingsSchema } from '@compendiq/contracts';
-import { getSharedLlmSettings, upsertSharedLlmSettings } from '../../core/services/admin-settings-service.js';
+import {
+  getSharedLlmSettings,
+  upsertSharedLlmSettings,
+  getAllUsecaseAssignments,
+  upsertUsecaseLlmAssignments,
+} from '../../core/services/admin-settings-service.js';
 import { getAiGuardrails, getAiOutputRules, upsertAiGuardrails, upsertAiOutputRules } from '../../core/services/ai-safety-service.js';
 import { getRateLimits, upsertRateLimits } from '../../core/services/rate-limit-service.js';
 import { sanitizeLlmInput } from '../../core/utils/sanitize-llm-input.js';
@@ -227,12 +232,14 @@ export async function adminRoutes(fastify: FastifyInstance) {
 
   // GET /api/admin/settings - retrieve shared admin settings
   fastify.get('/admin/settings', ADMIN_RATE_LIMIT, async () => {
-    const [sharedLlmSettings, guardrails, outputRules, rateLimits] = await Promise.all([
-      getSharedLlmSettings(),
-      getAiGuardrails(),
-      getAiOutputRules(),
-      getRateLimits(),
-    ]);
+    const [sharedLlmSettings, guardrails, outputRules, rateLimits, usecaseAssignments] =
+      await Promise.all([
+        getSharedLlmSettings(),
+        getAiGuardrails(),
+        getAiOutputRules(),
+        getRateLimits(),
+        getAllUsecaseAssignments(),
+      ]);
     const result = await query<{ setting_key: string; setting_value: string }>(
       `SELECT setting_key, setting_value FROM admin_settings
        WHERE setting_key IN ('embedding_chunk_size', 'embedding_chunk_overlap', 'drawio_embed_url')`,
@@ -266,6 +273,8 @@ export async function adminRoutes(fastify: FastifyInstance) {
       rateLimitAdmin: rateLimits.admin.max,
       rateLimitLlmStream: rateLimits.llmStream.max,
       rateLimitLlmEmbedding: rateLimits.llmEmbedding.max,
+      // Per-use-case LLM assignments (issue #214)
+      usecaseAssignments,
     };
   });
 
@@ -330,6 +339,12 @@ export async function adminRoutes(fastify: FastifyInstance) {
         embeddingModel: body.embeddingModel,
         ftsLanguage: body.ftsLanguage,
       });
+    }
+
+    // Per-use-case LLM overrides (issue #214). The contract allows nullable
+    // fields so admins can clear an override (revert to inherited default).
+    if (body.usecaseAssignments && Object.keys(body.usecaseAssignments).length > 0) {
+      await upsertUsecaseLlmAssignments(body.usecaseAssignments);
     }
 
     if (body.ftsLanguage !== undefined) {

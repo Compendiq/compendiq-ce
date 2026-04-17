@@ -3,11 +3,15 @@ import { query } from '../../core/db/postgres.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { autoTagPage, applyTags, autoTagAllPages, ALLOWED_TAGS, AllowedTag } from '../../domains/knowledge/services/auto-tagger.js';
+import { getUsecaseLlmAssignment } from '../../core/services/admin-settings-service.js';
 import { z } from 'zod';
 import { logger } from '../../core/utils/logger.js';
 
 const IdParamSchema = z.object({ id: z.string().min(1) });
-const AutoTagBodySchema = z.object({ model: z.string().min(1) });
+// `model` is optional: when omitted, the route resolves the auto_tag use-case
+// assignment from admin settings (issue #214). Frontend can stop asking the
+// user to pick a model for auto-tag once the admin has configured one.
+const AutoTagBodySchema = z.object({ model: z.string().min(1).optional() });
 const ApplyTagsBodySchema = z.object({ tags: z.array(z.string().min(1)).min(1) });
 const UpdateLabelsBodySchema = z.object({
   addLabels: z.array(z.string().min(1).max(100)).default([]),
@@ -22,7 +26,14 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
   fastify.post('/pages/:id/auto-tag', async (request) => {
     const { id } = IdParamSchema.parse(request.params);
     const userId = request.userId;
-    const { model } = AutoTagBodySchema.parse(request.body);
+    const { model: bodyModel } = AutoTagBodySchema.parse(request.body);
+    const model = bodyModel ?? (await getUsecaseLlmAssignment('auto_tag')).model;
+
+    if (!model) {
+      throw fastify.httpErrors.badRequest(
+        'No model provided and no auto_tag model configured in admin settings',
+      );
+    }
 
     try {
       const result = await autoTagPage(userId, id, model);
@@ -145,7 +156,14 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
     preHandler: fastify.requireAdmin,
   }, async (request) => {
     const userId = request.userId;
-    const { model } = AutoTagBodySchema.parse(request.body);
+    const { model: bodyModel } = AutoTagBodySchema.parse(request.body);
+    const model = bodyModel ?? (await getUsecaseLlmAssignment('auto_tag')).model;
+
+    if (!model) {
+      throw fastify.httpErrors.badRequest(
+        'No model provided and no auto_tag model configured in admin settings',
+      );
+    }
 
     // Run in background
     autoTagAllPages(userId, model).catch((err) => {

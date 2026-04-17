@@ -389,6 +389,124 @@ describe('LlmTab (OllamaTab)', () => {
     expect(screen.getByText('Configured')).toBeInTheDocument();
   });
 
+  // -------------------------------------------------------------------------
+  // Per-use-case LLM assignments (issue #214)
+  // -------------------------------------------------------------------------
+
+  describe('Use case assignments section', () => {
+    const mockAdminSettingsWithUsecases = {
+      ...mockAdminSettings,
+      usecaseAssignments: {
+        chat: {
+          provider: null,
+          model: null,
+          resolved: { provider: 'ollama', model: 'qwen3.5' },
+        },
+        summary: {
+          provider: null,
+          model: null,
+          resolved: { provider: 'ollama', model: 'qwen3.5' },
+        },
+        quality: {
+          provider: null,
+          model: null,
+          resolved: { provider: 'ollama', model: 'qwen3.5' },
+        },
+        auto_tag: {
+          provider: null,
+          model: null,
+          resolved: { provider: 'ollama', model: 'qwen3.5' },
+        },
+      },
+    };
+
+    it('renders four rows (chat, summary, quality, auto_tag) with inherited defaults', async () => {
+      mockFetchResponses({ adminSettings: mockAdminSettingsWithUsecases });
+      render(<SettingsPage />, { wrapper: createWrapper() });
+      await navigateToLlmTab();
+
+      await waitFor(() => {
+        expect(screen.getByTestId('usecase-chat-provider')).toBeInTheDocument();
+      });
+      expect(screen.getByTestId('usecase-summary-provider')).toBeInTheDocument();
+      expect(screen.getByTestId('usecase-quality-provider')).toBeInTheDocument();
+      expect(screen.getByTestId('usecase-auto_tag-provider')).toBeInTheDocument();
+
+      // With no overrides, the model field shows the "Inherited: ..." placeholder
+      expect(screen.getByTestId('usecase-summary-model-inherited')).toBeInTheDocument();
+    });
+
+    it('sends only the changed use case in the PUT body (diff-only)', async () => {
+      const putCalls: Array<{ url: string; body: string }> = [];
+
+      fetchSpy.mockImplementation(async (url: string | URL | Request, init?: RequestInit) => {
+        const path = typeof url === 'string' ? url : url instanceof URL ? url.toString() : (url as Request).url;
+
+        if (path.includes('/api/admin/settings')) {
+          if (init?.method === 'PUT') {
+            putCalls.push({ url: path, body: init.body as string });
+            return new Response(JSON.stringify({ message: 'Admin settings updated' }), {
+              headers: { 'Content-Type': 'application/json' },
+            });
+          }
+          return new Response(JSON.stringify(mockAdminSettingsWithUsecases), {
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
+        if (path.includes('/api/settings')) {
+          return new Response(JSON.stringify(mockSettings), {
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
+        if (path.includes('/api/ollama/status')) {
+          return new Response(JSON.stringify(mockStatus), {
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
+        if (path.includes('/api/ollama/models')) {
+          return new Response(JSON.stringify(mockModels), {
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
+        return new Response('{}', { headers: { 'Content-Type': 'application/json' } });
+      });
+
+      render(<SettingsPage />, { wrapper: createWrapper() });
+      await navigateToLlmTab();
+
+      await waitFor(() => {
+        expect(screen.getByTestId('usecase-summary-provider')).toBeInTheDocument();
+      });
+
+      // Pick a provider override for `summary` — that unlocks the model picker.
+      fireEvent.change(screen.getByTestId('usecase-summary-provider'), {
+        target: { value: 'ollama' },
+      });
+      fireEvent.change(screen.getByTestId('usecase-summary-model'), {
+        target: { value: 'llama3' },
+      });
+
+      // Click Save in the LLM tab (matches the original markup — the Save button has no testid).
+      fireEvent.click(screen.getByText(/^Save$/));
+
+      await waitFor(() => {
+        expect(putCalls).toHaveLength(1);
+      });
+
+      const payload = JSON.parse(putCalls[0]!.body);
+      expect(payload.usecaseAssignments).toEqual({
+        summary: { provider: 'ollama', model: 'llama3' },
+      });
+      // chat/quality/auto_tag unchanged — NOT in the payload.
+      expect(payload.usecaseAssignments.chat).toBeUndefined();
+      expect(payload.usecaseAssignments.quality).toBeUndefined();
+      expect(payload.usecaseAssignments.auto_tag).toBeUndefined();
+    });
+  });
 });
 
 describe('EmbeddingTab (admin-only chunk settings)', () => {

@@ -11,10 +11,14 @@ import {
 
 const dbAvailable = await isDbAvailable();
 
-// Mock the LLM and content converter to avoid real calls in tests
+// Mock the LLM, provider helper, and content converter to avoid real calls in tests.
+// After issue #214, the worker streams via `providerStreamChatForUsecase`.
 vi.mock('../../llm/services/ollama-service.js', () => ({
   getSystemPrompt: vi.fn().mockReturnValue('You are a quality analyzer.'),
-  streamChat: vi.fn().mockImplementation(() => {
+}));
+
+vi.mock('../../llm/services/llm-provider.js', () => ({
+  providerStreamChatForUsecase: vi.fn().mockImplementation(() => {
     async function* generator() {
       yield {
         content: `## Overall Quality Score: 75/100\n## Completeness: 80/100\n## Clarity: 70/100\n## Structure: 78/100\n## Accuracy: 72/100\n## Readability: 68/100\n## Summary\nDecent article.`,
@@ -35,15 +39,10 @@ vi.mock('../../../core/services/content-converter.js', () => ({
 }));
 
 vi.mock('../../../core/services/admin-settings-service.js', () => ({
-  getSharedLlmSettings: vi.fn().mockResolvedValue({
-    llmProvider: 'ollama',
-    ollamaModel: 'qwen3.5',
-    openaiBaseUrl: null,
-    hasOpenaiApiKey: false,
-    openaiModel: null,
-    embeddingModel: 'bge-m3',
-    embeddingDimensions: 1024,
-    ftsLanguage: 'simple',
+  getUsecaseLlmAssignment: vi.fn().mockResolvedValue({
+    provider: 'ollama',
+    model: 'qwen3.5',
+    source: { provider: 'shared', model: 'shared' },
   }),
 }));
 

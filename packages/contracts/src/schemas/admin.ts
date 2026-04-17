@@ -10,6 +10,55 @@ export type ReEmbedRequest = z.infer<typeof ReEmbedRequestSchema>;
 export const ReferenceActionSchema = z.enum(['flag', 'strip', 'off']);
 export type ReferenceAction = z.infer<typeof ReferenceActionSchema>;
 
+/**
+ * LLM use cases that can be individually assigned a provider/model override.
+ * When no override is set, the use case falls back to the shared LLM default.
+ * See issue #214.
+ */
+export const LlmUsecaseSchema = z.enum(['chat', 'summary', 'quality', 'auto_tag']);
+export type LlmUsecase = z.infer<typeof LlmUsecaseSchema>;
+
+/**
+ * Single use-case assignment row as returned by GET /admin/settings.
+ * - `provider` / `model` = the raw DB override (or `null` when inheriting).
+ * - `resolved` = what the resolver actually returns right now, for UI display.
+ */
+export const UsecaseAssignmentSchema = z.object({
+  provider: LlmProviderSchema.nullable(),
+  model: z.string().max(200).nullable(),
+  resolved: z
+    .object({
+      provider: LlmProviderSchema,
+      model: z.string(),
+    })
+    .optional(),
+});
+
+export const UsecaseAssignmentsSchema = z.object({
+  chat: UsecaseAssignmentSchema,
+  summary: UsecaseAssignmentSchema,
+  quality: UsecaseAssignmentSchema,
+  auto_tag: UsecaseAssignmentSchema,
+});
+
+/**
+ * PUT-shape: partial record where each field is nullable+optional so that:
+ *   - absent field   → untouched
+ *   - explicit null  → clear override (revert to inherited default)
+ *   - string / enum  → set override
+ */
+export const UpdateUsecaseAssignmentsSchema = z.partialRecord(
+  LlmUsecaseSchema,
+  z.object({
+    provider: LlmProviderSchema.nullable().optional(),
+    model: z.string().max(200).nullable().optional(),
+  }),
+);
+
+export type UsecaseAssignment = z.infer<typeof UsecaseAssignmentSchema>;
+export type UsecaseAssignments = z.infer<typeof UsecaseAssignmentsSchema>;
+export type UpdateUsecaseAssignmentsInput = z.infer<typeof UpdateUsecaseAssignmentsSchema>;
+
 export const AdminSettingsSchema = z.object({
   llmProvider: LlmProviderSchema,
   ollamaModel: z.string(),
@@ -38,6 +87,8 @@ export const AdminSettingsSchema = z.object({
   rateLimitAdmin: z.number().int().min(5).max(1000).optional(),
   rateLimitLlmStream: z.number().int().min(1).max(1000).optional(),
   rateLimitLlmEmbedding: z.number().int().min(1).max(1000).optional(),
+  // Per-use-case LLM provider/model overrides (issue #214)
+  usecaseAssignments: UsecaseAssignmentsSchema,
 });
 
 export const UpdateAdminSettingsSchema = z.object({
@@ -62,6 +113,8 @@ export const UpdateAdminSettingsSchema = z.object({
   rateLimitAdmin: z.number().int().min(5).max(1000).optional(),
   rateLimitLlmStream: z.number().int().min(1).max(1000).optional(),
   rateLimitLlmEmbedding: z.number().int().min(1).max(1000).optional(),
+  // Per-use-case LLM provider/model overrides (issue #214)
+  usecaseAssignments: UpdateUsecaseAssignmentsSchema.optional(),
 });
 
 export type AdminSettings = z.infer<typeof AdminSettingsSchema>;
