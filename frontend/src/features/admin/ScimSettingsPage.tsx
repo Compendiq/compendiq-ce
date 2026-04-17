@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { m } from 'framer-motion';
 import { toast } from 'sonner';
 import {
-  Key, Plus, Trash2, Copy, CheckCircle2, AlertTriangle, Loader2, Shield,
+  Plus, Trash2, Copy, CheckCircle2, AlertTriangle, Loader2, Shield,
 } from 'lucide-react';
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
