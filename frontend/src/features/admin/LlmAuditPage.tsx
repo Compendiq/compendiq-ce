@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { m } from 'framer-motion';
 import { toast } from 'sonner';
 import {
-  FileText, Loader2, AlertTriangle, Download, ChevronLeft, ChevronRight,
+  FileText, AlertTriangle, Download, ChevronLeft, ChevronRight,
   Filter,
 } from 'lucide-react';
 import { apiFetch } from '../../shared/lib/api';
