@@ -15,9 +15,19 @@ import { SetupWizard } from './features/setup/SetupWizard';
 // Route-based code splitting: lazy-load all page components (#186)
 // LoginPage is statically imported — it's the first screen for
 // unauthenticated users and lazy-loading it causes a "Loading..." flash.
-const SettingsPage = lazy(() =>
-  import('./features/settings/SettingsPage').then((m) => ({
-    default: m.SettingsPage,
+const SettingsLayout = lazy(() =>
+  import('./features/settings/SettingsLayout').then((m) => ({
+    default: m.SettingsLayout,
+  })),
+);
+const SettingsIndexRedirect = lazy(() =>
+  import('./features/settings/SettingsLayout').then((m) => ({
+    default: m.SettingsIndexRedirect,
+  })),
+);
+const SettingsPanelRoute = lazy(() =>
+  import('./features/settings/SettingsPanelRoute').then((m) => ({
+    default: m.SettingsPanelRoute,
   })),
 );
 const PagesPage = lazy(() =>
@@ -145,10 +155,13 @@ export function App() {
                           <Route path="/spaces/new" element={<NewSpacePage />} />
                           <Route path="/spaces/:key/settings" element={<SpaceSettingsPage />} />
                           <Route path="/admin/analytics" element={<AnalyticsPage />} />
-                          <Route
-                            path="/settings"
-                            element={<SettingsPage />}
-                          />
+                          <Route path="/settings" element={<SettingsLayout />}>
+                            <Route index element={<SettingsIndexRedirect />} />
+                            <Route
+                              path=":category/:item"
+                              element={<SettingsPanelRoute />}
+                            />
+                          </Route>
                           <Route
                             path="*"
                             element={<Navigate to="/" replace />}
