@@ -3,11 +3,14 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { m } from 'framer-motion';
 import {
   Shield, Users, FolderOpen, Plus, Trash2,
-  UserPlus, Loader2, Lock, ShieldCheck,
+  UserPlus, Loader2, Lock, ShieldCheck, Pencil,
 } from 'lucide-react';
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
 import { useAuthStore } from '../../stores/auth-store';
+import { useEnterprise } from '../../shared/enterprise/use-enterprise';
+import { CustomRoleEditor } from './CustomRoleEditor';
+import type { CustomRole } from './CustomRoleEditor';
 
 type RbacTab = 'roles' | 'groups' | 'permissions';
 
@@ -191,6 +194,20 @@ function useUsers() {
 
 function RolesTab() {
   const { data: roles, isLoading } = useRoles();
+  const { hasFeature } = useEnterprise();
+  const advancedRbac = hasFeature('advanced_rbac');
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editRole, setEditRole] = useState<CustomRole | null>(null);
+
+  const handleCreate = () => { setEditRole(null); setEditorOpen(true); };
+  const handleEdit = (role: Role) => {
+    setEditRole({
+      ...role,
+      description: (role as Role & { description?: string }).description ?? '',
+      updatedAt: (role as Role & { updatedAt?: string }).updatedAt ?? role.createdAt,
+    });
+    setEditorOpen(true);
+  };
 
   if (isLoading) {
     return (
@@ -204,14 +221,43 @@ function RolesTab() {
 
   if (!roles?.length) {
     return (
-      <div className="glass-card py-12 text-center text-sm text-muted-foreground">
-        No roles configured
+      <div className="space-y-3">
+        {advancedRbac && (
+          <button
+            onClick={handleCreate}
+            className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            data-testid="create-custom-role-btn"
+          >
+            <Plus size={16} />
+            Create Custom Role
+          </button>
+        )}
+        <div className="glass-card py-12 text-center text-sm text-muted-foreground">
+          No roles configured
+        </div>
+        {advancedRbac && (
+          <CustomRoleEditor
+            open={editorOpen}
+            onOpenChange={setEditorOpen}
+            editRole={editRole}
+          />
+        )}
       </div>
     );
   }
 
   return (
     <div className="space-y-3" data-testid="roles-list">
+      {advancedRbac && (
+        <button
+          onClick={handleCreate}
+          className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          data-testid="create-custom-role-btn"
+        >
+          <Plus size={16} />
+          Create Custom Role
+        </button>
+      )}
       {roles.map((role, i) => (
         <m.div
           key={role.id}
@@ -229,6 +275,16 @@ function RolesTab() {
                 System
               </span>
             )}
+            {!role.isSystem && advancedRbac && (
+              <button
+                onClick={() => handleEdit(role)}
+                className="rounded p-1 text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+                aria-label={`Edit ${role.displayName}`}
+                data-testid={`edit-role-${role.id}`}
+              >
+                <Pencil size={14} />
+              </button>
+            )}
           </div>
           <div className="mt-2 flex flex-wrap gap-1">
             {role.permissions.map((perm) => (
@@ -242,6 +298,13 @@ function RolesTab() {
           </div>
         </m.div>
       ))}
+      {advancedRbac && (
+        <CustomRoleEditor
+          open={editorOpen}
+          onOpenChange={setEditorOpen}
+          editRole={editRole}
+        />
+      )}
     </div>
   );
 }
