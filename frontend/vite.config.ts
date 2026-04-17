@@ -69,8 +69,12 @@ export default defineConfig({
             'sonner',
           ],
           'zustand': ['zustand'],
+          'recharts': ['recharts'],
+          'pdf': ['pdf-lib'],
+          'excel': ['exceljs'],
         },
       },
     },
+    chunkSizeWarningLimit: 600,
   },
 });

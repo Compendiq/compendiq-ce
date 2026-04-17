@@ -21,15 +21,18 @@ import { SmtpSettingsTab } from './SmtpSettingsTab';
 import { SkeletonFormFields } from '../../shared/components/feedback/Skeleton';
 import { LicenseStatusCard } from '../admin/LicenseStatusCard';
 import { OidcSettingsPage } from '../admin/OidcSettingsPage';
+import { LlmPolicyTab } from '../admin/LlmPolicyTab';
+import { DataRetentionTab } from '../admin/DataRetentionTab';
+import { LlmAuditPage } from '../admin/LlmAuditPage';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 
-type TabId = 'confluence' | 'sync' | 'ollama' | 'ai-prompts' | 'ai-safety' | 'rate-limits' | 'spaces' | 'theme' | 'labels' | 'errors' | 'embedding' | 'workers' | 'mcp-docs' | 'searxng' | 'email' | 'license' | 'sso' | 'system';
+type TabId = 'confluence' | 'sync' | 'ollama' | 'ai-prompts' | 'ai-safety' | 'rate-limits' | 'spaces' | 'theme' | 'labels' | 'errors' | 'embedding' | 'workers' | 'mcp-docs' | 'searxng' | 'email' | 'license' | 'sso' | 'llm-policy' | 'retention' | 'llm-audit' | 'system';
 
 export function SettingsPage() {
   const queryClient = useQueryClient();
   const user = useAuthStore((s) => s.user);
   const isAdmin = user?.role === 'admin';
-  const { isEnterprise } = useEnterprise();
+  const { isEnterprise, hasFeature } = useEnterprise();
   const [activeTab, setActiveTab] = useState<TabId>('confluence');
 
   const { data: settings, isLoading } = useSettings();
@@ -44,7 +47,7 @@ export function SettingsPage() {
     onError: (err) => toast.error(err.message),
   });
 
-  const tabs: { id: TabId; label: string; adminOnly?: boolean; enterpriseOnly?: boolean }[] = [
+  const tabs: { id: TabId; label: string; adminOnly?: boolean; enterpriseOnly?: boolean; requiresFeature?: string }[] = [
     { id: 'confluence', label: 'Confluence' },
     { id: 'sync', label: 'Sync' },
     { id: 'spaces', label: 'Spaces' },
@@ -65,12 +68,16 @@ export function SettingsPage() {
     // enterprise license AND the EE backend (which returns features:['oidc']).
     { id: 'license', label: 'License', adminOnly: true },
     { id: 'sso', label: 'SSO / OIDC', adminOnly: true, enterpriseOnly: true },
+    { id: 'llm-policy', label: 'LLM Policy', adminOnly: true, enterpriseOnly: true, requiresFeature: 'org_llm_policy' },
+    { id: 'retention', label: 'Data Retention', adminOnly: true, enterpriseOnly: true, requiresFeature: 'data_retention_policies' },
+    { id: 'llm-audit', label: 'LLM Audit', adminOnly: true, enterpriseOnly: true, requiresFeature: 'llm_audit_trail' },
     { id: 'system', label: 'System', adminOnly: true },
   ];
 
   const visibleTabs = tabs.filter((t) => {
     if (t.adminOnly && !isAdmin) return false;
     if (t.enterpriseOnly && !isEnterprise) return false;
+    if (t.requiresFeature && !hasFeature(t.requiresFeature)) return false;
     return true;
   });
 
@@ -102,7 +109,7 @@ export function SettingsPage() {
         </div>
 
         <div className="p-6">
-          {(isLoading || !settings) && activeTab !== 'labels' && activeTab !== 'errors' && activeTab !== 'theme' && activeTab !== 'embedding' && activeTab !== 'sync' && activeTab !== 'workers' && activeTab !== 'mcp-docs' && activeTab !== 'ai-safety' && activeTab !== 'rate-limits' && activeTab !== 'searxng' && activeTab !== 'email' && activeTab !== 'license' && activeTab !== 'sso' ? (
+          {(isLoading || !settings) && activeTab !== 'labels' && activeTab !== 'errors' && activeTab !== 'theme' && activeTab !== 'embedding' && activeTab !== 'sync' && activeTab !== 'workers' && activeTab !== 'mcp-docs' && activeTab !== 'ai-safety' && activeTab !== 'rate-limits' && activeTab !== 'searxng' && activeTab !== 'email' && activeTab !== 'license' && activeTab !== 'sso' && activeTab !== 'llm-policy' && activeTab !== 'retention' && activeTab !== 'llm-audit' ? (
             <SkeletonFormFields />
           ) : activeTab === 'confluence' ? (
             <ConfluenceTab settings={settings!} onSave={(v) => updateSettings.mutate(v)} />
@@ -142,6 +149,12 @@ export function SettingsPage() {
             <LicenseStatusCard />
           ) : activeTab === 'sso' && isAdmin && isEnterprise ? (
             <OidcSettingsPage />
+          ) : activeTab === 'llm-policy' && isAdmin ? (
+            <LlmPolicyTab />
+          ) : activeTab === 'retention' && isAdmin ? (
+            <DataRetentionTab />
+          ) : activeTab === 'llm-audit' && isAdmin ? (
+            <LlmAuditPage />
           ) : activeTab === 'system' && isAdmin ? (
             <SystemTab />
           ) : (
