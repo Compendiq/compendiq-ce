@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { m } from 'framer-motion';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import type { SettingsResponse, LlmProviderType, AdminSettings, SyncOverviewResponse, SyncOverviewSpace, CustomPrompts } from '@compendiq/contracts';
+import type { SettingsResponse, LlmProviderType, AdminSettings, SyncOverviewResponse, SyncOverviewSpace, CustomPrompts, LlmUsecase, UsecaseAssignments, UpdateUsecaseAssignmentsInput } from '@compendiq/contracts';
 import { apiFetch } from '../../shared/lib/api';
 import { useAuthStore } from '../../stores/auth-store';
 import { useSettings } from '../../shared/hooks/use-settings';
@@ -718,6 +718,8 @@ function LlmTab({ settings }: { settings: SettingsResponse }) {
   const [embeddingModel, setEmbeddingModel] = useState('');
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  // Per-use-case LLM overrides (issue #214). `null` means "inherit shared default".
+  const [usecaseAssignments, setUsecaseAssignments] = useState<UsecaseAssignments | null>(null);
 
   useEffect(() => {
     if (!adminSettings) return;
@@ -727,6 +729,7 @@ function LlmTab({ settings }: { settings: SettingsResponse }) {
     setOpenaiModel(adminSettings.openaiModel ?? '');
     setEmbeddingModel(adminSettings.embeddingModel ?? settings.embeddingModel);
     setOpenaiApiKey('');
+    setUsecaseAssignments(adminSettings.usecaseAssignments ?? null);
   }, [adminSettings, settings.ollamaModel, settings.embeddingModel]);
 
   const updateAdminSettings = useMutation({
@@ -759,11 +762,18 @@ function LlmTab({ settings }: { settings: SettingsResponse }) {
     retry: 1,
   });
 
+  // Enable the openai model list whenever the shared provider is openai OR
+  // any per-use-case assignment row is set to openai — otherwise the per-row
+  // model dropdown in UsecaseAssignmentsSection would be empty in a mixed
+  // config (shared=ollama, one row=openai). Issue #214 review finding #3.
+  const anyUsecaseUsesOpenai =
+    !!usecaseAssignments &&
+    Object.values(usecaseAssignments).some((row) => row?.provider === 'openai');
   const { data: openaiModels, isFetching: loadingOpenaiModels, error: openaiModelsError, refetch: refetchOpenaiModels } = useQuery({
     queryKey: ['ollama-models', 'openai'],
     queryFn: () => apiFetch<{ name: string }[]>('/ollama/models?provider=openai'),
     retry: 1,
-    enabled: provider === 'openai',
+    enabled: provider === 'openai' || anyUsecaseUsesOpenai,
   });
 
   const status = provider === 'ollama' ? ollamaStatus : openaiStatus;
@@ -777,6 +787,7 @@ function LlmTab({ settings }: { settings: SettingsResponse }) {
   if (adminSettingsLoading || !adminSettings) {
     return <SkeletonFormFields />;
   }
+  const loadedAdminSettings: AdminSettings = adminSettings;
 
   async function testConnection() {
     setTesting(true);
@@ -805,6 +816,19 @@ function LlmTab({ settings }: { settings: SettingsResponse }) {
       if (openaiApiKey) updates.openaiApiKey = openaiApiKey;
     }
     if (embeddingModel) updates.embeddingModel = embeddingModel;
+
+    // Diff use-case assignments vs. loaded admin settings so we only send
+    // rows that actually changed. `null` means "clear override / inherit".
+    if (usecaseAssignments) {
+      const diff = diffUsecaseAssignments(
+        loadedAdminSettings.usecaseAssignments ?? null,
+        usecaseAssignments,
+      );
+      if (Object.keys(diff).length > 0) {
+        updates.usecaseAssignments = diff;
+      }
+    }
+
     updateAdminSettings.mutate(updates);
   }
 
@@ -972,6 +996,16 @@ function LlmTab({ settings }: { settings: SettingsResponse }) {
         </p>
       </div>
 
+      {/* Per-use-case LLM assignments (issue #214) */}
+      {usecaseAssignments && (
+        <UsecaseAssignmentsSection
+          assignments={usecaseAssignments}
+          onChange={setUsecaseAssignments}
+          ollamaModels={ollamaModels ?? []}
+          openaiModels={openaiModels ?? []}
+        />
+      )}
+
       {testResult && (
         <div className={`rounded-md p-3 text-sm ${testResult.success ? 'bg-success/10 text-success' : 'bg-destructive/10 text-destructive'}`} data-testid="llm-test-result">
           {testResult.message}
@@ -997,6 +1031,146 @@ function LlmTab({ settings }: { settings: SettingsResponse }) {
       </div>
     </div>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Per-use-case LLM assignments (issue #214)
+// ---------------------------------------------------------------------------
+
+const USECASE_LABELS: Record<LlmUsecase, string> = {
+  chat: 'Chat',
+  summary: 'Summary worker',
+  quality: 'Quality worker',
+  auto_tag: 'Auto-tag',
+};
+
+const USECASES_ORDERED: LlmUsecase[] = ['chat', 'summary', 'quality', 'auto_tag'];
+
+/**
+ * Use cases whose resolver is wired into a production code path today. Rows
+ * for use cases not in this set are rendered read-only with a "not yet wired"
+ * note — the resolver is ready but the chat routes still read the shared
+ * provider (tracked as a follow-up to issue #214). This prevents the UI from
+ * implying an admin control that has no runtime effect.
+ */
+const WIRED_USECASES: ReadonlySet<LlmUsecase> = new Set(['summary', 'quality', 'auto_tag']);
+
+function UsecaseAssignmentsSection({
+  assignments,
+  onChange,
+  ollamaModels,
+  openaiModels,
+}: {
+  assignments: UsecaseAssignments;
+  onChange: (next: UsecaseAssignments) => void;
+  ollamaModels: Array<{ name: string }>;
+  openaiModels: Array<{ name: string }>;
+}) {
+  function update(usecase: LlmUsecase, patch: Partial<UsecaseAssignments[LlmUsecase]>) {
+    onChange({ ...assignments, [usecase]: { ...assignments[usecase], ...patch } });
+  }
+
+  return (
+    <div className="space-y-3 rounded-md border border-border/50 p-4">
+      <div>
+        <h3 className="text-sm font-semibold">Use case assignments</h3>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Assign a specific provider + model per background job. Leave a field as &quot;Inherit&quot;
+          to fall back to the shared default above. Changes take effect immediately — no restart required.
+        </p>
+      </div>
+
+      <div className="space-y-2">
+        {USECASES_ORDERED.map((usecase) => {
+          const row = assignments[usecase];
+          const wired = WIRED_USECASES.has(usecase);
+          const models = row.provider === 'openai' ? openaiModels : ollamaModels;
+          return (
+            <div key={usecase} className="grid grid-cols-1 gap-2 sm:grid-cols-[140px_180px_1fr_auto] sm:items-center">
+              <div className="text-sm font-medium">{USECASE_LABELS[usecase]}</div>
+              <select
+                className="glass-select"
+                value={row.provider ?? ''}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  update(usecase, {
+                    provider: value === '' ? null : (value as LlmProviderType),
+                  });
+                }}
+                data-testid={`usecase-${usecase}-provider`}
+                disabled={!wired}
+                title={wired ? undefined : 'Chat routing through per-use-case assignments is not yet wired — tracked as a follow-up to #214.'}
+              >
+                <option value="">Inherit shared default</option>
+                <option value="ollama">Ollama</option>
+                <option value="openai">OpenAI Compatible</option>
+              </select>
+              {row.provider === null ? (
+                <input
+                  className="glass-input"
+                  value=""
+                  readOnly
+                  placeholder={`Inherited: ${row.resolved?.provider ?? '—'} / ${row.resolved?.model ?? '—'}`}
+                  data-testid={`usecase-${usecase}-model-inherited`}
+                />
+              ) : (
+                <select
+                  className="glass-select"
+                  value={row.model ?? ''}
+                  onChange={(e) =>
+                    update(usecase, { model: e.target.value === '' ? null : e.target.value })
+                  }
+                  data-testid={`usecase-${usecase}-model`}
+                  disabled={!wired}
+                  title={wired ? undefined : 'Chat routing through per-use-case assignments is not yet wired — tracked as a follow-up to #214.'}
+                >
+                  <option value="">Inherit shared model</option>
+                  {models.map((m) => (
+                    <option key={m.name} value={m.name}>
+                      {m.name}
+                    </option>
+                  ))}
+                </select>
+              )}
+              <span className="text-xs text-muted-foreground">
+                {wired
+                  ? row.resolved
+                    ? `→ ${row.resolved.provider} / ${row.resolved.model || '(none)'}`
+                    : ''
+                  : 'Not yet wired — chat still uses the shared provider above.'}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Diff the user's edits against the loaded admin settings. Returns only the
+ * use cases whose provider or model differs, so the PUT body stays minimal
+ * and clearly distinguishes `null` (clear override) from `undefined`
+ * (untouched).
+ */
+function diffUsecaseAssignments(
+  original: UsecaseAssignments | null,
+  current: UsecaseAssignments,
+): UpdateUsecaseAssignmentsInput {
+  const diff: UpdateUsecaseAssignmentsInput = {};
+  for (const usecase of USECASES_ORDERED) {
+    const orig = original?.[usecase];
+    const curr = current[usecase];
+    const patch: { provider?: LlmProviderType | null; model?: string | null } = {};
+    const origProvider = orig?.provider ?? null;
+    const currProvider = curr.provider ?? null;
+    if (origProvider !== currProvider) patch.provider = currProvider;
+    const origModel = orig?.model ?? null;
+    const currModel = curr.model ?? null;
+    if (origModel !== currModel) patch.model = currModel;
+    if (Object.keys(patch).length > 0) diff[usecase] = patch;
+  }
+  return diff;
 }
 
 // Keep backward-compatible export name for tests

@@ -13,9 +13,15 @@ import {
 
 const dbAvailable = await isDbAvailable();
 
-// Mock the LLM summarization to avoid real LLM calls in tests
+// Mock the LLM streaming helpers to avoid real LLM calls in tests.
+// After issue #214, the worker streams via `providerStreamChatForUsecase`
+// using messages it builds itself from `getSystemPrompt('summarize')`.
 vi.mock('../../llm/services/ollama-service.js', () => ({
-  summarizeContent: vi.fn().mockImplementation(() => {
+  getSystemPrompt: vi.fn().mockReturnValue('You are a summarizer.'),
+}));
+
+vi.mock('../../llm/services/llm-provider.js', () => ({
+  providerStreamChatForUsecase: vi.fn().mockImplementation(() => {
     async function* generator() {
       yield { content: 'This is a **test** summary.', done: false };
       yield { content: '', done: true };
@@ -24,16 +30,19 @@ vi.mock('../../llm/services/ollama-service.js', () => ({
   }),
 }));
 
+vi.mock('../../../core/utils/sanitize-llm-input.js', () => ({
+  sanitizeLlmInput: vi
+    .fn()
+    .mockImplementation((input: string) => ({ sanitized: input, wasSanitized: false })),
+}));
+
+// Default mock: resolver returns ollama/qwen3.5 (the pre-#214 shared fallback).
+// Tests that need a different assignment override this per-test.
 vi.mock('../../../core/services/admin-settings-service.js', () => ({
-  getSharedLlmSettings: vi.fn().mockResolvedValue({
-    llmProvider: 'ollama',
-    ollamaModel: 'qwen3.5',
-    openaiBaseUrl: null,
-    hasOpenaiApiKey: false,
-    openaiModel: null,
-    embeddingModel: 'bge-m3',
-    embeddingDimensions: 1024,
-    ftsLanguage: 'simple',
+  getUsecaseLlmAssignment: vi.fn().mockResolvedValue({
+    provider: 'ollama',
+    model: 'qwen3.5',
+    source: { provider: 'shared', model: 'shared' },
   }),
 }));
 
@@ -300,17 +309,14 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
     });
 
     it('should mark pages as skipped (not disabled) when no model is available anywhere', async () => {
-      // Override the admin settings mock to return empty model
-      const { getSharedLlmSettings } = await import('../../../core/services/admin-settings-service.js');
-      vi.mocked(getSharedLlmSettings).mockResolvedValueOnce({
-        llmProvider: 'ollama',
-        ollamaModel: '',
-        openaiBaseUrl: null,
-        hasOpenaiApiKey: false,
-        openaiModel: null,
-        embeddingModel: 'bge-m3',
-    embeddingDimensions: 1024,
-    ftsLanguage: 'simple',
+      // Override the resolver mock to simulate "no model configured anywhere".
+      const { getUsecaseLlmAssignment } = await import(
+        '../../../core/services/admin-settings-service.js'
+      );
+      vi.mocked(getUsecaseLlmAssignment).mockResolvedValueOnce({
+        provider: 'ollama',
+        model: '',
+        source: { provider: 'default', model: 'default' },
       });
 
       await query(

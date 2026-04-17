@@ -1,4 +1,4 @@
-import { providerChat } from '../../llm/services/llm-provider.js';
+import { providerChatForUsecase, type LlmProviderType } from '../../llm/services/llm-provider.js';
 import { htmlToMarkdown } from '../../../core/services/content-converter.js';
 import { sanitizeLlmInput } from '../../../core/utils/sanitize-llm-input.js';
 import { query } from '../../../core/db/postgres.js';
@@ -28,10 +28,15 @@ const SYSTEM_PROMPT = `You are a document classifier. Given the following articl
 /**
  * Auto-tag a page's content using LLM zero-shot classification.
  * Returns an array of suggested tags from the allowed set.
- * Uses providerChat for provider-aware model resolution (Ollama or OpenAI).
+ *
+ * Routes via `providerChatForUsecase(provider, model, ...)` so the per-use-case
+ * provider override (from `getUsecaseLlmAssignment('auto_tag')`) is honored —
+ * not just the model (issue #214). `userId` is kept in the signature for
+ * future audit/logging hooks but is no longer used for provider resolution.
  */
 export async function autoTagContent(
-  userId: string,
+  _userId: string,
+  provider: LlmProviderType,
   model: string,
   content: string,
   options: { isHtml?: boolean } = {},
@@ -48,7 +53,7 @@ export async function autoTagContent(
 
   let response: string;
   try {
-    response = await providerChat(userId, model, [
+    response = await providerChatForUsecase(provider, model, [
       { role: 'system', content: SYSTEM_PROMPT },
       { role: 'user', content: sanitized },
     ]);
@@ -129,6 +134,7 @@ export function parseTagResponse(response: string): AllowedTag[] {
 export async function autoTagPage(
   userId: string,
   pageId: string,
+  provider: LlmProviderType,
   model: string,
 ): Promise<{ suggestedTags: AllowedTag[]; existingLabels: string[] }> {
   const isNumericId = /^\d+$/.test(pageId);
@@ -149,7 +155,7 @@ export async function autoTagPage(
     return { suggestedTags: [], existingLabels: labels ?? [] };
   }
 
-  const suggestedTags = await autoTagContent(userId, model, body_html, { isHtml: true });
+  const suggestedTags = await autoTagContent(userId, provider, model, body_html, { isHtml: true });
 
   return {
     suggestedTags,
@@ -209,6 +215,7 @@ export async function applyTags(
  */
 export async function autoTagAllPages(
   userId: string,
+  provider: LlmProviderType,
   model: string,
 ): Promise<{ tagged: number; errors: number }> {
   // Include both Confluence pages (filtered by RBAC space access) and
@@ -232,7 +239,7 @@ export async function autoTagAllPages(
 
   for (const page of pages.rows) {
     try {
-      const suggestedTags = await autoTagContent(userId, model, page.body_html, { isHtml: true });
+      const suggestedTags = await autoTagContent(userId, provider, model, page.body_html, { isHtml: true });
       if (suggestedTags.length > 0) {
         await applyTags(userId, String(page.id), suggestedTags);
         tagged++;

@@ -1,7 +1,27 @@
 import { query, getPool } from '../db/postgres.js';
 import { decryptPat, encryptPat } from '../utils/crypto.js';
+import { logger } from '../utils/logger.js';
 
 export type SharedLlmProvider = 'ollama' | 'openai';
+
+/**
+ * LLM use cases that can be individually assigned a provider/model override.
+ * Mirror of `LlmUsecaseSchema` in `@compendiq/contracts` (kept duplicated here
+ * to avoid adding a runtime dep on contracts in the core service layer).
+ * See issue #214.
+ */
+export type LlmUsecase = 'chat' | 'summary' | 'quality' | 'auto_tag';
+
+/** Result of the use-case resolver — always fully resolved, never undefined. */
+export interface UsecaseLlmAssignment {
+  provider: SharedLlmProvider;
+  /** May be '' when no model is configured anywhere (fresh install, no env var). */
+  model: string;
+  source: {
+    provider: 'usecase' | 'shared' | 'default';
+    model: 'usecase' | 'shared' | 'env' | 'default';
+  };
+}
 
 export interface SharedLlmSettings {
   llmProvider: SharedLlmProvider;
@@ -38,7 +58,7 @@ const LLM_SETTING_KEYS = [
 
 type AdminSettingKey = (typeof LLM_SETTING_KEYS)[number];
 
-async function getAdminSettingsMap(keys: readonly AdminSettingKey[]): Promise<Record<string, string>> {
+async function getAdminSettingsMap(keys: readonly string[]): Promise<Record<string, string>> {
   const result = await query<{ setting_key: string; setting_value: string }>(
     `SELECT setting_key, setting_value
      FROM admin_settings
@@ -161,4 +181,317 @@ export async function upsertSharedLlmSettings(
   } finally {
     client.release();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Per-use-case LLM provider/model resolver (issue #214)
+// ---------------------------------------------------------------------------
+
+const USECASES: readonly LlmUsecase[] = ['chat', 'summary', 'quality', 'auto_tag'];
+
+function usecaseProviderKey(usecase: LlmUsecase): string {
+  return `llm_usecase_${usecase}_provider`;
+}
+
+function usecaseModelKey(usecase: LlmUsecase): string {
+  return `llm_usecase_${usecase}_model`;
+}
+
+/**
+ * Env-var bootstrap precedence for the model field per use case.
+ * Each entry is consulted in order; the first truthy value wins.
+ *
+ * The comment in the plan calls this out explicitly: `SUMMARY_MODEL` for
+ * summary, `QUALITY_MODEL` for quality, `DEFAULT_LLM_MODEL` as catch-all.
+ */
+function envBootstrapModelFor(usecase: LlmUsecase): string {
+  const specific =
+    usecase === 'summary'
+      ? process.env.SUMMARY_MODEL
+      : usecase === 'quality'
+        ? process.env.QUALITY_MODEL
+        : undefined;
+  return specific || process.env.DEFAULT_LLM_MODEL || '';
+}
+
+/**
+ * Set of use-case keys that have already been seeded from env during this
+ * process lifetime. Prevents redundant writes on every resolver call.
+ * Module-scoped — survives for the life of the Node process, resets on restart.
+ *
+ * Safe under concurrent resolver calls: the DB write in `seedUsecaseModelFromEnv`
+ * is idempotent (`INSERT ... ON CONFLICT DO NOTHING`), so this Set is a
+ * write-dedup optimization only, not a correctness gate — two racing calls
+ * for the same key at most double-write harmlessly.
+ */
+const seededFromEnv = new Set<string>();
+
+/** Test-only hook — allows the unit tests to simulate a fresh process. */
+export function __resetUsecaseEnvSeedingForTests(): void {
+  seededFromEnv.clear();
+}
+
+/**
+ * One-shot write of an env bootstrap value into `admin_settings` using the
+ * same `unnest()` upsert pattern as `upsertSharedLlmSettings`. Written with
+ * `ON CONFLICT DO NOTHING` so a racing admin write never clobbers the
+ * DB-backed value. Failures are logged and swallowed so a seeding error
+ * cannot break the actual resolver call.
+ */
+async function seedUsecaseModelFromEnv(key: string, value: string): Promise<void> {
+  if (seededFromEnv.has(key)) return;
+  seededFromEnv.add(key);
+  try {
+    await query(
+      `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
+       SELECT k, v, NOW()
+       FROM unnest($1::text[], $2::text[]) AS t(k, v)
+       ON CONFLICT (setting_key) DO NOTHING`,
+      [[key], [value]],
+    );
+    logger.info(
+      { key, source: 'env' },
+      'Seeded use-case LLM model from env var into admin_settings',
+    );
+  } catch (err) {
+    // Unseed on failure so we can retry on the next call.
+    seededFromEnv.delete(key);
+    logger.warn(
+      { err, key },
+      'Failed to seed use-case LLM model from env var; resolver will fall back',
+    );
+  }
+}
+
+/**
+ * Pure resolver — applies the fallback ladder against a pre-fetched settings
+ * map. Extracted so the batch path `getAllUsecaseAssignments` can reuse the
+ * same logic without re-querying per use case.
+ */
+async function resolveFromSettings(
+  usecase: LlmUsecase,
+  settings: Record<string, string>,
+): Promise<UsecaseLlmAssignment> {
+  const pKey = usecaseProviderKey(usecase);
+  const mKey = usecaseModelKey(usecase);
+
+  // --- Provider ---
+  let provider: SharedLlmProvider;
+  let providerSource: UsecaseLlmAssignment['source']['provider'];
+  const rawUsecaseProvider = settings[pKey];
+  if (rawUsecaseProvider === 'ollama' || rawUsecaseProvider === 'openai') {
+    provider = rawUsecaseProvider;
+    providerSource = 'usecase';
+  } else if (settings['llm_provider'] === 'openai') {
+    provider = 'openai';
+    providerSource = 'shared';
+  } else if (settings['llm_provider'] === 'ollama') {
+    provider = 'ollama';
+    providerSource = 'shared';
+  } else {
+    provider = 'ollama';
+    providerSource = 'default';
+  }
+
+  // --- Model ---
+  let model = '';
+  let modelSource: UsecaseLlmAssignment['source']['model'] = 'default';
+
+  const rawUsecaseModel = settings[mKey];
+  if (rawUsecaseModel && rawUsecaseModel.length > 0) {
+    model = rawUsecaseModel;
+    modelSource = 'usecase';
+  } else {
+    // Shared default for the resolved provider.
+    const sharedModel =
+      provider === 'openai' ? settings['openai_model'] : settings['ollama_model'];
+    if (sharedModel && sharedModel.length > 0) {
+      model = sharedModel;
+      modelSource = 'shared';
+    } else {
+      // Env bootstrap — and seed it into the DB so next time the shared-fallback
+      // / usecase row wins and this branch stays cold.
+      const envValue = envBootstrapModelFor(usecase);
+      if (envValue) {
+        model = envValue;
+        modelSource = 'env';
+        // Fire-and-wait (awaited) but non-fatal — we only seed once per process
+        // per key so the cost is a single write on first access.
+        await seedUsecaseModelFromEnv(mKey, envValue);
+      }
+      // else: model stays '' with source 'default'.
+    }
+  }
+
+  return {
+    provider,
+    model,
+    source: { provider: providerSource, model: modelSource },
+  };
+}
+
+/**
+ * Resolve the `{provider, model}` pair for a given LLM use case.
+ *
+ * Fallback order (per field, independent):
+ *   Provider: usecase row → shared `llm_provider` → 'ollama'
+ *   Model:    usecase row → shared model matching the resolved provider
+ *             (`ollama_model` or `openai_model`) → env bootstrap
+ *             (SUMMARY_MODEL / QUALITY_MODEL / DEFAULT_LLM_MODEL) → ''
+ *
+ * **No in-process cache** — each call hits `admin_settings`. This is a hard
+ * requirement for the "changes take effect without restart" acceptance
+ * criterion (see plan §2, "Caching strategy").
+ */
+export async function getUsecaseLlmAssignment(
+  usecase: LlmUsecase,
+): Promise<UsecaseLlmAssignment> {
+  // One round-trip: fetch shared defaults + this use case's overrides.
+  const settings = await getAdminSettingsMap([
+    usecaseProviderKey(usecase),
+    usecaseModelKey(usecase),
+    'llm_provider',
+    'ollama_model',
+    'openai_model',
+  ]);
+  return resolveFromSettings(usecase, settings);
+}
+
+/**
+ * Batch upsert for use-case assignments.
+ *
+ * Semantics per field:
+ *   - `undefined` → leave the DB row untouched
+ *   - `null`      → delete the DB row (revert to inherited default)
+ *   - string/enum → upsert the DB row
+ *
+ * Reuses the same single-transaction `unnest()` upsert + `ANY()` delete pattern
+ * as `upsertSharedLlmSettings`.
+ */
+export async function upsertUsecaseLlmAssignments(
+  updates: Partial<
+    Record<LlmUsecase, { provider?: SharedLlmProvider | null; model?: string | null }>
+  >,
+): Promise<void> {
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+
+    const upsertRows: Array<{ key: string; value: string }> = [];
+    const deleteKeys: string[] = [];
+
+    for (const usecase of USECASES) {
+      const patch = updates[usecase];
+      if (!patch) continue;
+
+      if (patch.provider !== undefined) {
+        if (patch.provider === null) {
+          deleteKeys.push(usecaseProviderKey(usecase));
+        } else {
+          upsertRows.push({ key: usecaseProviderKey(usecase), value: patch.provider });
+        }
+      }
+      if (patch.model !== undefined) {
+        if (patch.model === null || patch.model === '') {
+          deleteKeys.push(usecaseModelKey(usecase));
+        } else {
+          upsertRows.push({ key: usecaseModelKey(usecase), value: patch.model });
+        }
+      }
+    }
+
+    if (upsertRows.length > 0) {
+      const keys = upsertRows.map((r) => r.key);
+      const values = upsertRows.map((r) => r.value);
+      await client.query(
+        `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
+         SELECT key, value, NOW()
+         FROM unnest($1::text[], $2::text[]) AS t(key, value)
+         ON CONFLICT (setting_key) DO UPDATE
+         SET setting_value = EXCLUDED.setting_value, updated_at = NOW()`,
+        [keys, values],
+      );
+    }
+
+    if (deleteKeys.length > 0) {
+      await client.query(
+        `DELETE FROM admin_settings WHERE setting_key = ANY($1::text[])`,
+        [deleteKeys],
+      );
+    }
+
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Shape returned by `getAllUsecaseAssignments` — matches the payload expected
+ * by the admin GET route (raw DB values + resolved values for each use case).
+ */
+export interface UsecaseAssignmentRow {
+  /** Raw DB override or `null` if inheriting. */
+  provider: SharedLlmProvider | null;
+  /** Raw DB override or `null` if inheriting. */
+  model: string | null;
+  /** Fully resolved values (what the resolver returns right now). */
+  resolved: {
+    provider: SharedLlmProvider;
+    model: string;
+  };
+}
+
+/**
+ * Fetch raw-DB and resolved values for all four use cases in a single SELECT.
+ *
+ * Before: 4 resolver calls (each doing its own 5-key SELECT) + 1 extra SELECT
+ * for raw values = 5 queries per admin GET. Now: one SELECT pulling all 8
+ * `llm_usecase_*` keys + 3 shared keys, then the pure resolver is applied in
+ * memory per use case. Used by `GET /admin/settings`.
+ *
+ * Cold-start cost: on the very first admin GET of a fresh process, if any of
+ * `SUMMARY_MODEL` / `QUALITY_MODEL` / `DEFAULT_LLM_MODEL` env vars are set AND
+ * no matching DB row exists yet, `resolveFromSettings` will await
+ * `seedUsecaseModelFromEnv` for those use cases. These seeds run concurrently
+ * via `Promise.all`, so the worst case is a single round-trip wall-time of ~4
+ * parallel `INSERT ... ON CONFLICT DO NOTHING` writes. Every subsequent call
+ * hits the `seededFromEnv` in-memory Set and skips the writes entirely.
+ */
+export async function getAllUsecaseAssignments(): Promise<
+  Record<LlmUsecase, UsecaseAssignmentRow>
+> {
+  const allKeys = [
+    'llm_provider',
+    'ollama_model',
+    'openai_model',
+    ...USECASES.flatMap((u) => [usecaseProviderKey(u), usecaseModelKey(u)]),
+  ];
+  const settings = await getAdminSettingsMap(allKeys);
+
+  // Resolve in memory — `resolveFromSettings` may trigger a one-shot env-seed
+  // write per use case on first call (same behavior as `getUsecaseLlmAssignment`).
+  const resolved = await Promise.all(
+    USECASES.map((u) => resolveFromSettings(u, settings)),
+  );
+
+  const out = {} as Record<LlmUsecase, UsecaseAssignmentRow>;
+  USECASES.forEach((usecase, idx) => {
+    const rawProvider = settings[usecaseProviderKey(usecase)];
+    const rawModel = settings[usecaseModelKey(usecase)];
+    const r = resolved[idx] as UsecaseLlmAssignment;
+    out[usecase] = {
+      provider:
+        rawProvider === 'ollama' || rawProvider === 'openai' ? rawProvider : null,
+      model: rawModel && rawModel.length > 0 ? rawModel : null,
+      resolved: {
+        provider: r.provider,
+        model: r.model,
+      },
+    };
+  });
+  return out;
 }

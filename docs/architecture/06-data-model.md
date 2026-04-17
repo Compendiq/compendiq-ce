@@ -211,6 +211,12 @@ erDiagram
 - **`admin_settings`** is a key-value bag used for server-wide config
   that must survive restarts and be editable at runtime — notably the
   `license_key` (populated by the EE plugin) and LLM admin overrides.
+  The `llm_usecase_*` key family (`llm_usecase_{chat,summary,quality,auto_tag}_{provider,model}`,
+  issue #214) stores optional per-use-case provider/model overrides; an
+  absent row means the use case inherits the shared `llm_provider` /
+  `ollama_model` / `openai_model` defaults. Workers resolve these at
+  batch time with no in-process cache so admin edits take effect
+  without a restart.
 - **`audit_log`** captures auth events, license changes, RBAC mutations,
   and high-value LLM calls (prompt-injection flags, failed sanitization).
 - **Soft delete** on `pages.deleted_at` — the Trash feature filters on this.

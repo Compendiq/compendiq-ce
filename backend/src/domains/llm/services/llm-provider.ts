@@ -93,6 +93,13 @@ export async function resolveUserProvider(_userId: string): Promise<ResolvedProv
 /**
  * Stream a chat completion using the user's configured provider.
  * Resolves provider per-request from the database -- no global singleton.
+ *
+ * NOTE: Streaming calls do NOT pass through `enqueue()` — the llm-queue
+ * concurrency limit (`LLM_CONCURRENCY`) and depth cap (`LLM_MAX_QUEUE_DEPTH`)
+ * apply to non-streaming calls only. Async iteration cannot be cleanly wrapped
+ * in the enqueue() pattern; enforcing backpressure on streams is tracked as a
+ * follow-up. For now, heavy concurrent streaming load (many chat/RAG requests
+ * or many worker batches) will bypass these guardrails.
  */
 export async function* providerStreamChat(
   userId: string,
@@ -110,17 +117,43 @@ export async function* providerStreamChat(
 }
 
 /**
- * Non-streaming chat completion using the user's configured provider.
+ * Stream a chat completion using an *explicit* provider/model — no per-user
+ * resolution. Used by background workers (summary, quality) which have no
+ * userId context but need to honor per-use-case provider overrides resolved
+ * via `getUsecaseLlmAssignment` (issue #214).
+ *
+ * Like `providerStreamChat`, this bypasses the `enqueue()` LLM queue. See the
+ * note on `providerStreamChat` above. Workers already serialize their LLM
+ * calls within a batch (`for ... await` loops), so per-worker the concurrency
+ * is 1 — the risk is multiple workers running simultaneously during overlap.
  */
-export async function providerChat(
-  userId: string,
+export async function* providerStreamChatForUsecase(
+  provider: LlmProviderType,
+  model: string,
+  messages: ChatMessage[],
+  signal?: AbortSignal,
+): AsyncGenerator<StreamChunk> {
+  if (provider === 'openai') {
+    yield* getOpenAIProvider().streamChat(model, messages, signal);
+  } else {
+    yield* ollamaStreamChat(model, messages, signal);
+  }
+}
+
+/**
+ * Non-streaming chat completion using an *explicit* provider/model — no
+ * per-user resolution. Non-streaming sibling of `providerStreamChatForUsecase`,
+ * used by the auto-tag path which needs a full response (not a stream) but
+ * must honor the per-use-case provider override resolved via
+ * `getUsecaseLlmAssignment` (issue #214).
+ */
+export async function providerChatForUsecase(
+  provider: LlmProviderType,
   model: string,
   messages: ChatMessage[],
 ): Promise<string> {
   return enqueue(async () => {
-    const provider = await resolveUserProvider(userId);
-
-    if (provider.type === 'openai') {
+    if (provider === 'openai') {
       return getOpenAIProvider().chat(model, messages);
     } else {
       return ollamaChat(model, messages);

@@ -3,11 +3,15 @@ import { query } from '../../core/db/postgres.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { autoTagPage, applyTags, autoTagAllPages, ALLOWED_TAGS, AllowedTag } from '../../domains/knowledge/services/auto-tagger.js';
+import { getUsecaseLlmAssignment } from '../../core/services/admin-settings-service.js';
 import { z } from 'zod';
 import { logger } from '../../core/utils/logger.js';
 
 const IdParamSchema = z.object({ id: z.string().min(1) });
-const AutoTagBodySchema = z.object({ model: z.string().min(1) });
+// `model` is optional: when omitted, the route resolves the auto_tag use-case
+// assignment from admin settings (issue #214). Frontend can stop asking the
+// user to pick a model for auto-tag once the admin has configured one.
+const AutoTagBodySchema = z.object({ model: z.string().min(1).optional() });
 const ApplyTagsBodySchema = z.object({ tags: z.array(z.string().min(1)).min(1) });
 const UpdateLabelsBodySchema = z.object({
   addLabels: z.array(z.string().min(1).max(100)).default([]),
@@ -18,14 +22,34 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
   const cache = new RedisCache(fastify.redis);
 
-  // POST /api/pages/:id/auto-tag - auto-tag a single page
+  // POST /api/pages/:id/auto-tag - auto-tag a single page.
+  //
+  // Not admin-gated: this is an interactive per-user feature (invoked from the
+  // page view) and is analogous to `POST /api/llm/ask`, which is also
+  // authenticated-only, not admin-only. Bulk auto-tag across all pages lives
+  // at `POST /api/admin/auto-tag-all` below and IS admin-gated. If the cost
+  // of admin-configured (potentially paid) LLM calls becomes a concern, the
+  // correct fix is rate-limiting or per-user quotas — not admin-gating one
+  // endpoint while leaving chat/RAG unchanged.
   fastify.post('/pages/:id/auto-tag', async (request) => {
     const { id } = IdParamSchema.parse(request.params);
     const userId = request.userId;
-    const { model } = AutoTagBodySchema.parse(request.body);
+    const { model: bodyModel } = AutoTagBodySchema.parse(request.body);
+    // Always resolve the full assignment — we need the provider even when the
+    // client supplies an explicit model. Body model (if any) overrides the
+    // resolved model; provider always comes from the resolver so the per-
+    // use-case provider override is honored (issue #214).
+    const assignment = await getUsecaseLlmAssignment('auto_tag');
+    const model = bodyModel ?? assignment.model;
+
+    if (!model) {
+      throw fastify.httpErrors.badRequest(
+        'No model provided and no auto_tag model configured in admin settings',
+      );
+    }
 
     try {
-      const result = await autoTagPage(userId, id, model);
+      const result = await autoTagPage(userId, id, assignment.provider, model);
       return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -145,10 +169,19 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
     preHandler: fastify.requireAdmin,
   }, async (request) => {
     const userId = request.userId;
-    const { model } = AutoTagBodySchema.parse(request.body);
+    const { model: bodyModel } = AutoTagBodySchema.parse(request.body);
+    // Same resolver-for-provider pattern as /pages/:id/auto-tag above.
+    const assignment = await getUsecaseLlmAssignment('auto_tag');
+    const model = bodyModel ?? assignment.model;
+
+    if (!model) {
+      throw fastify.httpErrors.badRequest(
+        'No model provided and no auto_tag model configured in admin settings',
+      );
+    }
 
     // Run in background
-    autoTagAllPages(userId, model).catch((err) => {
+    autoTagAllPages(userId, assignment.provider, model).catch((err) => {
       logger.error({ err, userId }, 'Auto-tag all pages failed');
     });
 
