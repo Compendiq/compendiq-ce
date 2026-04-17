@@ -19,6 +19,16 @@ import {
 } from './settings-nav';
 
 /**
+ * Extends AccessContext with the license-fetch loading flag so
+ * SettingsPanelRoute can defer EE-gated redirects until the license API
+ * resolves (avoids bouncing an EE admin's cold deep-link to an EE-only panel
+ * during the fetch window).
+ */
+export interface AccessContextWithLoading extends AccessContext {
+  isEnterpriseLoading: boolean;
+}
+
+/**
  * Shell for the Settings page: renders the left-rail nav landmark + <Outlet/>
  * for the active category/item panel. See docs/plans/215-settings-ia-reorg.md.
  *
@@ -33,7 +43,7 @@ import {
 export function SettingsLayout() {
   const user = useAuthStore((s) => s.user);
   const isAdmin = user?.role === 'admin';
-  const { isEnterprise, hasFeature } = useEnterprise();
+  const { isEnterprise, hasFeature, isLoading: isEnterpriseLoading } = useEnterprise();
 
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -119,7 +129,16 @@ export function SettingsLayout() {
 
         <div className="p-6">
           <Suspense fallback={<SkeletonFormFields />}>
-            <Outlet context={{ isAdmin, isEnterprise, hasFeature } satisfies AccessContext} />
+            <Outlet
+              context={
+                {
+                  isAdmin,
+                  isEnterprise,
+                  hasFeature,
+                  isEnterpriseLoading,
+                } satisfies AccessContextWithLoading
+              }
+            />
           </Suspense>
         </div>
       </div>

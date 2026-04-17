@@ -1,6 +1,7 @@
 import { lazy, type ComponentType, type ReactElement } from 'react';
 import { Navigate, useOutletContext, useParams } from 'react-router-dom';
-import { SETTINGS_NAV, canSeeItem, firstVisiblePath, type AccessContext } from './settings-nav';
+import { SETTINGS_NAV, canSeeItem, firstVisiblePath } from './settings-nav';
+import type { AccessContextWithLoading } from './SettingsLayout';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { useAuthStore } from '../../stores/auth-store';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -111,7 +112,7 @@ const PANELS: Readonly<Record<string, PanelRenderer>> = {
  */
 export function SettingsPanelRoute() {
   const { category, item } = useParams();
-  const ctx = useOutletContext<AccessContext>();
+  const ctx = useOutletContext<AccessContextWithLoading>();
   const key = `${category ?? ''}/${item ?? ''}`;
 
   const user = useAuthStore((s) => s.user);
@@ -140,7 +141,24 @@ export function SettingsPanelRoute() {
       ? SETTINGS_NAV.find((g) => g.id === groupId)?.items.find((i) => i.id === itemId)
       : undefined;
 
-  if (!navItem || !canSeeItem(navItem, ctx) || !PANELS[key]) {
+  // Unknown path — bounce immediately (nothing to load, nothing to wait for).
+  if (!navItem || !PANELS[key]) {
+    return <Navigate to={firstVisiblePath(ctx)} replace />;
+  }
+
+  // Defer the EE-gated redirect until the /admin/license fetch resolves.
+  // Without this, a cold deep-link like `/settings/ai/llm-policy` by an EE
+  // admin races the license fetch — `useEnterprise()` returns
+  // `{ isEnterprise: false, hasFeature: () => false }` for ~50–200ms, and the
+  // gate fires before the real license lands, redirecting the user away
+  // from their bookmarked URL. Admin-only (but not EE-only) items don't hit
+  // this path — `isAdmin` is synchronous from the auth store.
+  const needsEnterpriseResolution = !!(navItem.enterpriseOnly || navItem.requiresFeature);
+  if (needsEnterpriseResolution && ctx.isEnterpriseLoading) {
+    return <SkeletonFormFields />;
+  }
+
+  if (!canSeeItem(navItem, ctx)) {
     return <Navigate to={firstVisiblePath(ctx)} replace />;
   }
 

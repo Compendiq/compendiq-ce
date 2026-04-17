@@ -22,6 +22,9 @@ vi.mock('../../stores/auth-store', () => ({
 const enterpriseState = {
   isEnterprise: false,
   hasFeature: (_feature: string) => false,
+  isLoading: false,
+  ui: null,
+  license: null,
 };
 vi.mock('../../shared/enterprise/use-enterprise', () => ({
   useEnterprise: () => enterpriseState,
@@ -77,6 +80,7 @@ beforeEach(() => {
   authState.user = { role: 'user' };
   enterpriseState.isEnterprise = false;
   enterpriseState.hasFeature = () => false;
+  enterpriseState.isLoading = false;
 });
 
 describe('SettingsLayout — rail visibility', () => {
@@ -211,6 +215,63 @@ describe('SettingsPanelRoute — gating via direct URL', () => {
   });
 
   it('bounces unknown /settings/foo/bar URLs to the default panel', async () => {
+    renderLayoutAt('/settings/foo/bar');
+
+    await waitFor(() => {
+      expect(screen.getByTestId('nav-settings-confluence')).toHaveAttribute('aria-current', 'page');
+    });
+  });
+});
+
+describe('SettingsPanelRoute — EE deep-link loading race (PR #218 review finding)', () => {
+  it('does NOT redirect an EE-gated panel while the license fetch is still loading', async () => {
+    // Admin user, EE panel URL, but license fetch not yet resolved.
+    authState.user = { role: 'admin' };
+    enterpriseState.isLoading = true;
+    enterpriseState.isEnterprise = false; // not yet known
+    enterpriseState.hasFeature = () => false;
+
+    const { queryByTestId } = renderLayoutAt('/settings/ai/llm-policy');
+
+    // Must NOT bounce to the default panel during the fetch window.
+    // If the regression returns, this fails because the URL flips and
+    // `nav-settings-confluence` becomes the active link.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(queryByTestId('nav-settings-confluence')).not.toHaveAttribute('aria-current', 'page');
+  });
+
+  it('redirects a non-EE user when the license resolves as community', async () => {
+    // Admin user, EE panel URL, license has resolved as non-enterprise.
+    authState.user = { role: 'admin' };
+    enterpriseState.isLoading = false;
+    enterpriseState.isEnterprise = false;
+    enterpriseState.hasFeature = () => false;
+
+    renderLayoutAt('/settings/ai/llm-policy');
+
+    // After loading resolves as non-EE, the gate fires and bounces to default.
+    await waitFor(() => {
+      expect(screen.getByTestId('nav-settings-confluence')).toHaveAttribute('aria-current', 'page');
+    });
+  });
+
+  it('renders the panel once the license resolves as EE with the required feature', async () => {
+    authState.user = { role: 'admin' };
+    enterpriseState.isLoading = false;
+    enterpriseState.isEnterprise = true;
+    enterpriseState.hasFeature = (feature) => feature === 'org_llm_policy';
+
+    renderLayoutAt('/settings/ai/llm-policy');
+
+    await waitFor(() => {
+      expect(screen.getByTestId('nav-settings-llm-policy')).toHaveAttribute('aria-current', 'page');
+    });
+  });
+
+  it('still bounces unknown URLs immediately even while license is loading', async () => {
+    // Unknown path should not wait for EE resolution — there's nothing that
+    // could ever grant access. Fast-path fail.
+    enterpriseState.isLoading = true;
     renderLayoutAt('/settings/foo/bar');
 
     await waitFor(() => {
