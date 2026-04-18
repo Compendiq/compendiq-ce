@@ -184,16 +184,15 @@ describe('fetchUrl — streaming reader (chunked, no Content-Length)', () => {
     vi.restoreAllMocks();
   });
 
-  // Build a Response whose body is a ReadableStream that enqueues `chunkSize`-byte
-  // chunks until the consumer cancels (or `maxChunks` is hit as a safety net).
-  // Records how many chunks were actually enqueued so tests can prove that the
-  // streaming reader stopped pulling data once the cap was crossed.
-  function makeChunkedResponse(opts: {
+  // Build a Response whose body is a lazy (pull-based) ReadableStream of
+  // `chunkSize`-byte chunks, capped at `maxChunks`. Used for the happy-path
+  // chunked test where we want a finite, well-formed body.
+  function makeLazyChunkedResponse(opts: {
     chunkSize: number;
     maxChunks: number;
     contentType?: string;
     headers?: Record<string, string>;
-  }): { response: Response; getEnqueuedCount: () => number } {
+  }): Response {
     let enqueuedCount = 0;
     const stream = new ReadableStream<Uint8Array>({
       pull(controller) {
@@ -201,8 +200,7 @@ describe('fetchUrl — streaming reader (chunked, no Content-Length)', () => {
           controller.close();
           return;
         }
-        const chunk = new Uint8Array(opts.chunkSize).fill(0x61); // 'a'
-        controller.enqueue(chunk);
+        controller.enqueue(new Uint8Array(opts.chunkSize).fill(0x61));
         enqueuedCount += 1;
       },
     });
@@ -212,29 +210,43 @@ describe('fetchUrl — streaming reader (chunked, no Content-Length)', () => {
     };
     // node:stream/web ReadableStream is structurally compatible with the global
     // ReadableStream that Response expects, but TS sees them as distinct types.
-    const response = new Response(stream as unknown as BodyInit, {
-      status: 200,
-      headers,
-    });
-    return { response, getEnqueuedCount: () => enqueuedCount };
+    return new Response(stream as unknown as BodyInit, { status: 200, headers });
   }
 
-  it('aborts a chunked stream once running total exceeds the cap', async () => {
-    // 1 MB chunks, would total 10 MB if read fully. Cap is 5 MB → must reject after ~6 chunks.
-    const { response, getEnqueuedCount } = makeChunkedResponse({
-      chunkSize: 1024 * 1024,
-      maxChunks: 10,
+  it('aborts a chunked stream and propagates cancel(reason) to the producer', async () => {
+    // Eagerly enqueue the entire oversized payload up front (no `pull` callback)
+    // and wire `cancel(reason)` so we can prove that reader.cancel('Response too
+    // large') in the implementation actually reached the underlying source.
+    //
+    // A pull-based producer would let the test pass even if reader.cancel() were
+    // removed — the moment the consumer stops calling read(), pull() stops firing
+    // on its own. Eager enqueue removes that loophole: chunks are queued whether
+    // or not the consumer reads them, so only an explicit cancel() can fire the
+    // source-side cancel callback.
+    let cancelReason: string | null = null;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (let i = 0; i < 10; i += 1) {
+          controller.enqueue(new Uint8Array(1024 * 1024).fill(0x61));
+        }
+        // Intentionally do NOT close — leaves the queue full, simulating a
+        // server that has already shipped a large prefix.
+      },
+      cancel(reason) {
+        cancelReason = String(reason);
+      },
+    });
+    const response = new Response(stream as unknown as BodyInit, {
+      status: 200,
+      headers: { 'Content-Type': 'text/plain' },
     });
     fetchSpy.mockResolvedValue(response);
 
     await expect(fetchUrl(TEST_URL, null, {})).rejects.toThrow(/Response too large: streamed >5242880 bytes/);
 
-    // Reader.cancel() signals upstream — we should have stopped well before
-    // the producer enqueued all 10 MB. 6 chunks (1 MB each) is the first
-    // total that crosses the 5 MB cap.
-    const enqueued = getEnqueuedCount();
-    expect(enqueued).toBeGreaterThanOrEqual(6);
-    expect(enqueued).toBeLessThan(10);
+    // Direct proof that reader.cancel('Response too large') propagated. Would
+    // not fire if the implementation merely stopped reading without cancelling.
+    expect(cancelReason).toBe('Response too large');
 
     expect(auditSpy).toHaveBeenCalledTimes(1);
     expect(auditSpy.mock.calls[0]![0]).toMatchObject({
@@ -247,7 +259,7 @@ describe('fetchUrl — streaming reader (chunked, no Content-Length)', () => {
 
   it('successfully reads a chunked body that stays under the cap', async () => {
     // 4 chunks * 256 KB = 1 MB total, well under 5 MB cap.
-    const { response } = makeChunkedResponse({
+    const response = makeLazyChunkedResponse({
       chunkSize: 256 * 1024,
       maxChunks: 4,
       contentType: 'text/plain',
