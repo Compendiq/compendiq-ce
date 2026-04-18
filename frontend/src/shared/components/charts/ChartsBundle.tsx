@@ -1,13 +1,12 @@
 /**
- * ChartsBundle — re-exports recharts primitives as a single lazy-loadable module.
+ * ChartsBundle — centralized re-exports of the recharts primitives we use.
  *
- * Consumers lazy-load this entire module so recharts stays in its own chunk
- * and never bloats the main bundle:
+ * Consumers import named members directly; recharts stays out of the main
+ * bundle via Vite `manualChunks` (`frontend/vite.config.ts`, key `recharts`):
  *
- *   // In a consuming component (uses the `@/` Vite alias configured in
- *   // frontend/vite.config.ts and frontend/tsconfig.json):
- *   const ChartsBundle = lazy(() => import('@/shared/components/charts/ChartsBundle'));
- *   <Suspense fallback={<Spinner />}><ChartsBundle … /></Suspense>
+ *   // In a consuming component — relative path matches the convention used
+ *   // by existing consumers in frontend/src/features/admin/analytics/*.tsx:
+ *   import { LineChart, Line, XAxis, YAxis } from '../../../shared/components/charts/ChartsBundle';
  */
 export {
   LineChart,
