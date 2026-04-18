@@ -436,7 +436,7 @@ describe('LlmTab (OllamaTab)', () => {
       expect(screen.getByTestId('usecase-summary-model-inherited')).toBeInTheDocument();
     });
 
-    it('disables the chat row — chat routing through per-use-case is not yet wired (follow-up to #214)', async () => {
+    it('enables all four use-case rows — chat wired in #217', async () => {
       mockFetchResponses({ adminSettings: mockAdminSettingsWithUsecases });
       render(<SettingsPage />, { wrapper: createWrapper() });
       await navigateToLlmTab();
@@ -445,8 +445,8 @@ describe('LlmTab (OllamaTab)', () => {
         expect(screen.getByTestId('usecase-chat-provider')).toBeInTheDocument();
       });
 
-      // chat is rendered but disabled; the wired rows stay enabled.
-      expect(screen.getByTestId('usecase-chat-provider')).toBeDisabled();
+      // Issue #217 — all four rows are wired now; none should be disabled.
+      expect(screen.getByTestId('usecase-chat-provider')).not.toBeDisabled();
       expect(screen.getByTestId('usecase-summary-provider')).not.toBeDisabled();
       expect(screen.getByTestId('usecase-quality-provider')).not.toBeDisabled();
       expect(screen.getByTestId('usecase-auto_tag-provider')).not.toBeDisabled();

@@ -1,6 +1,10 @@
 import { FastifyInstance } from 'fastify';
 import { SystemPromptKey } from '../../domains/llm/services/ollama-service.js';
-import { providerStreamChat, resolveUserProvider } from '../../domains/llm/services/llm-provider.js';
+import {
+  providerStreamChat,
+  providerStreamChatForUsecase,
+  resolveUserProvider,
+} from '../../domains/llm/services/llm-provider.js';
 import { LlmCache, buildLlmCacheKey } from '../../domains/llm/services/llm-cache.js';
 import { fetchWebSources, formatWebContext, type WebSource } from './_web-search-helper.js';
 import { GenerateRequestSchema } from '@compendiq/contracts';
@@ -14,6 +18,7 @@ import {
   streamSSE,
   sanitizeLlmInput,
   buildOutputPostProcessor,
+  resolveChatAssignment,
   LLM_STREAM_RATE_LIMIT,
   MAX_INPUT_LENGTH,
   MAX_PDF_TEXT_FOR_LLM,
@@ -108,16 +113,24 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
     try {
       const postProcess = await buildOutputPostProcessor(genWebSources.map((s) => s.url));
 
-      // Resolve per-user LLM provider and stream
-      const generator = providerStreamChat(userId, model, generateMessages);
+      // Issue #217: honor the per-use-case `chat` provider/model override when
+      // the admin has set one. Fall back to per-user routing otherwise.
+      const chat = await resolveChatAssignment(model);
+      logger.debug(
+        { userId, bodyModel: model, resolved: chat.assignment, usedOverride: chat.hasUsecaseOverride },
+        'Resolved chat usecase assignment',
+      );
+      const generator = chat.hasUsecaseOverride
+        ? providerStreamChatForUsecase(chat.provider, chat.model, generateMessages)
+        : providerStreamChat(userId, model, generateMessages);
 
       const accumulated = await streamSSE(request, reply, generator, genExtras, { llmCache, cacheKey, postProcess });
 
       emitLlmAudit({
         userId,
         action: 'generate',
-        model,
-        provider: (await resolveUserProvider(userId)).type,
+        model: chat.hasUsecaseOverride ? chat.model : model,
+        provider: chat.hasUsecaseOverride ? chat.provider : (await resolveUserProvider(userId)).type,
         inputTokens: estimateTokens(generateMessages.map(m => m.content).join('')),
         outputTokens: estimateTokens(accumulated),
         inputMessages: generateMessages.map(m => ({ role: m.role, contentLength: m.content.length })),

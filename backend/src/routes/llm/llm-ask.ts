@@ -1,7 +1,11 @@
 import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
 import { ChatMessage } from '../../domains/llm/services/ollama-service.js';
-import { providerStreamChat, resolveUserProvider } from '../../domains/llm/services/llm-provider.js';
+import {
+  providerStreamChat,
+  providerStreamChatForUsecase,
+  resolveUserProvider,
+} from '../../domains/llm/services/llm-provider.js';
 import { hybridSearch, buildRagContext } from '../../domains/llm/services/rag-service.js';
 import { LlmCache, buildRagCacheKey } from '../../domains/llm/services/llm-cache.js';
 import { CircuitBreakerOpenError } from '../../core/services/circuit-breaker.js';
@@ -17,6 +21,7 @@ import {
   checkCacheWithLock,
   sendCachedSSE,
   sanitizeLlmInput,
+  resolveChatAssignment,
   LLM_STREAM_RATE_LIMIT,
   MAX_INPUT_LENGTH,
 } from './_helpers.js';
@@ -223,8 +228,17 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       const onClose = () => controller.abort();
       request.raw.on('close', onClose);
 
-      // Resolve per-user LLM provider and stream
-      const generator = providerStreamChat(userId, model, messages, controller.signal);
+      // Issue #217: honor the per-use-case `chat` provider/model override when
+      // the admin has set one in Settings → LLM → Use case assignments. When no
+      // override is set, preserve the existing per-user routing byte-for-byte.
+      const chat = await resolveChatAssignment(model);
+      logger.debug(
+        { userId, bodyModel: model, resolved: chat.assignment, usedOverride: chat.hasUsecaseOverride },
+        'Resolved chat usecase assignment',
+      );
+      const generator = chat.hasUsecaseOverride
+        ? providerStreamChatForUsecase(chat.provider, chat.model, messages, controller.signal)
+        : providerStreamChat(userId, model, messages, controller.signal);
       let fullAnswer = '';
 
       reply.hijack();
@@ -256,8 +270,8 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
           emitLlmAudit({
             userId,
             action: 'ask',
-            model,
-            provider: (await resolveUserProvider(userId)).type,
+            model: chat.hasUsecaseOverride ? chat.model : model,
+            provider: chat.hasUsecaseOverride ? chat.provider : (await resolveUserProvider(userId)).type,
             inputTokens: estimateTokens(messages.map(m => m.content).join('')),
             outputTokens: estimateTokens(fullAnswer),
             inputMessages: messages.map(m => ({ role: m.role, contentLength: m.content.length })),
@@ -281,8 +295,8 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
           emitLlmAudit({
             userId,
             action: 'ask',
-            model,
-            provider: (await resolveUserProvider(userId)).type,
+            model: chat.hasUsecaseOverride ? chat.model : model,
+            provider: chat.hasUsecaseOverride ? chat.provider : (await resolveUserProvider(userId)).type,
             inputTokens: estimateTokens(messages.map(m => m.content).join('')),
             outputTokens: 0,
             inputMessages: messages.map(m => ({ role: m.role, contentLength: m.content.length })),

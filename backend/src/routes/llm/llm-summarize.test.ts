@@ -2,11 +2,13 @@ import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vites
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 
-// --- Mock: llm-provider (providerStreamChat) ---
+// --- Mock: llm-provider (providerStreamChat + issue #217 providerStreamChatForUsecase) ---
 const mockProviderStreamChat = vi.fn();
+const mockProviderStreamChatForUsecase = vi.fn();
 
 vi.mock('../../domains/llm/services/llm-provider.js', () => ({
   providerStreamChat: (...args: unknown[]) => mockProviderStreamChat(...args),
+  providerStreamChatForUsecase: (...args: unknown[]) => mockProviderStreamChatForUsecase(...args),
 }));
 
 // --- Mock: llm-cache ---
@@ -52,6 +54,14 @@ const mockSendCachedSSE = vi.fn();
 const mockStreamSSE = vi.fn().mockResolvedValue(undefined);
 const mockSanitizeLlmInput = vi.fn((input: string) => ({ sanitized: input, warnings: [] }));
 const mockBuildOutputPostProcessor = vi.fn().mockResolvedValue((text: string) => text);
+// Issue #217: default to no chat-usecase override so the route takes the
+// per-user routing branch (providerStreamChat).
+const mockResolveChatAssignment = vi.fn().mockResolvedValue({
+  provider: 'ollama',
+  model: '',
+  hasUsecaseOverride: false,
+  assignment: { provider: 'ollama', model: '', source: { provider: 'shared', model: 'shared' } },
+});
 
 vi.mock('./_helpers.js', () => ({
   assembleContextIfNeeded: (...args: unknown[]) => mockAssembleContextIfNeeded(...args),
@@ -61,6 +71,7 @@ vi.mock('./_helpers.js', () => ({
   streamSSE: (...args: unknown[]) => mockStreamSSE(...args),
   sanitizeLlmInput: (...args: unknown[]) => mockSanitizeLlmInput(...args),
   buildOutputPostProcessor: (...args: unknown[]) => mockBuildOutputPostProcessor(...args),
+  resolveChatAssignment: (...args: unknown[]) => mockResolveChatAssignment(...args),
   LLM_STREAM_RATE_LIMIT: {},
   MAX_INPUT_LENGTH: 100_000,
 }));
@@ -146,6 +157,13 @@ describe('POST /api/llm/summarize - functionality', () => {
     mockProviderStreamChat.mockReturnValue((async function* () {
       yield { content: 'Summary text', done: true };
     })());
+    // Issue #217: reset chat usecase resolver to "no override" default.
+    mockResolveChatAssignment.mockResolvedValue({
+      provider: 'ollama',
+      model: '',
+      hasUsecaseOverride: false,
+      assignment: { provider: 'ollama', model: '', source: { provider: 'shared', model: 'shared' } },
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -421,5 +439,43 @@ describe('POST /api/llm/summarize - functionality', () => {
 
     const [, , messages] = mockProviderStreamChat.mock.calls[0] as [string, string, Array<{ role: string; content: string }>];
     expect(messages[0].content).toContain('(includes 3 sub-pages)');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Issue #217 — chat usecase routing
+  // ---------------------------------------------------------------------------
+
+  it('consults resolveChatAssignment on every request (issue #217)', async () => {
+    await app.inject({
+      method: 'POST',
+      url: '/api/llm/summarize',
+      payload: { content: 'Some text', model: 'llama3' },
+    });
+
+    expect(mockResolveChatAssignment).toHaveBeenCalledWith('llama3');
+  });
+
+  it('routes via providerStreamChatForUsecase when admin set a chat override (issue #217)', async () => {
+    mockResolveChatAssignment.mockResolvedValue({
+      provider: 'openai',
+      model: 'gpt-4o-mini',
+      hasUsecaseOverride: true,
+      assignment: { provider: 'openai', model: 'gpt-4o-mini', source: { provider: 'usecase', model: 'usecase' } },
+    });
+    mockProviderStreamChatForUsecase.mockReturnValue((async function* () {
+      yield { content: 'Summary', done: true };
+    })());
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/llm/summarize',
+      payload: { content: 'Some text', model: 'llama3' },
+    });
+
+    expect(mockProviderStreamChatForUsecase).toHaveBeenCalledOnce();
+    expect(mockProviderStreamChat).not.toHaveBeenCalled();
+    const [provider, usedModel] = mockProviderStreamChatForUsecase.mock.calls[0] as [string, string];
+    expect(provider).toBe('openai');
+    expect(usedModel).toBe('gpt-4o-mini');
   });
 });

@@ -360,11 +360,10 @@ const USECASES_ORDERED: LlmUsecase[] = ['chat', 'summary', 'quality', 'auto_tag'
 /**
  * Use cases whose resolver is wired into a production code path today. Rows
  * for use cases not in this set are rendered read-only with a "not yet wired"
- * note — the resolver is ready but the chat routes still read the shared
- * provider (tracked as a follow-up to issue #214). This prevents the UI from
- * implying an admin control that has no runtime effect.
+ * note. As of issue #217, all four use cases are wired — the set is kept as
+ * an extension point for future use cases added to `LlmUsecase`.
  */
-const WIRED_USECASES: ReadonlySet<LlmUsecase> = new Set(['summary', 'quality', 'auto_tag']);
+const WIRED_USECASES: ReadonlySet<LlmUsecase> = new Set(['chat', 'summary', 'quality', 'auto_tag']);
 
 function UsecaseAssignmentsSection({
   assignments,

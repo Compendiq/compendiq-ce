@@ -12,6 +12,10 @@ import { getAiGuardrails, getAiOutputRules } from '../../core/services/ai-safety
 import { sanitizeLlmOutput, type OutputSanitizeResult } from '../../core/utils/sanitize-llm-output.js';
 import { assembleSubPageContext, getMultiPagePromptSuffix } from '../../domains/confluence/services/subpage-context.js';
 import { htmlToMarkdown } from '../../core/services/content-converter.js';
+import {
+  getUsecaseLlmAssignment,
+  type UsecaseLlmAssignment,
+} from '../../core/services/admin-settings-service.js';
 
 export { sanitizeLlmInput };
 
@@ -29,6 +33,50 @@ export const MAX_INPUT_LENGTH = 100_000;
 
 // Maximum PDF text length sent to LLM (~20K tokens, safe for most model context windows)
 export const MAX_PDF_TEXT_FOR_LLM = 80_000;
+
+/**
+ * Resolve the `{provider, model}` pair for the `chat` use case, applying the
+ * issue #217 semantics:
+ *
+ *   - If the admin has set a model override (`source.model === 'usecase'`), both
+ *     the provider and the model come from the resolver — the caller's `bodyModel`
+ *     is ignored.
+ *   - Otherwise, the provider still comes from the resolver (which itself
+ *     inherits the shared default when no usecase override is set), and the
+ *     model is the caller's `bodyModel` — only falling back to the resolver's
+ *     model (shared/env/default) when the caller passed nothing.
+ *
+ * Semantics for the two product questions (see docs/plans/issue-217-…):
+ *   Q1 — override vs. default: override.
+ *   Q2 — body model + usecase provider: free (body wins), unless the admin also
+ *        pinned the model (then locked).
+ *
+ * The returned `assignment.source` is preserved as-is so callers can audit
+ * which tier produced the result (useful for the audit hook and debugging).
+ *
+ * Follow-up (out of scope for #217): when `source.provider === 'usecase'` and
+ * `source.model !== 'usecase'`, a caller-supplied Ollama-shaped model may be
+ * sent to OpenAI (or vice versa). Today this fails at the provider with a 4xx
+ * — same failure mode as a shared-provider flip. Tracked as a follow-up.
+ */
+export async function resolveChatAssignment(bodyModel: string): Promise<{
+  provider: UsecaseLlmAssignment['provider'];
+  model: string;
+  /** True when the resolver produced the provider (admin override exists). */
+  hasUsecaseOverride: boolean;
+  /** Full resolver result, for audit/logging. */
+  assignment: UsecaseLlmAssignment;
+}> {
+  const assignment = await getUsecaseLlmAssignment('chat');
+  const model =
+    assignment.source.model === 'usecase'
+      ? assignment.model
+      : (bodyModel || assignment.model);
+  const hasUsecaseOverride =
+    assignment.source.provider === 'usecase' ||
+    assignment.source.model === 'usecase';
+  return { provider: assignment.provider, model, hasUsecaseOverride, assignment };
+}
 
 /**
  * Assemble page context for LLM consumption, optionally including sub-pages.

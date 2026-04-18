@@ -63,7 +63,12 @@ sequenceDiagram
                 MCP-->>BE: top results
             end
             BE->>BE: build system prompt + context<br/>(resolveSystemPrompt, guardrails)
-            BE->>PROV: providerStreamChat(prompt, model)
+            BE->>BE: resolveChatAssignment(model)<br/>(getUsecaseLlmAssignment('chat') — #217)
+            alt admin set chat override (source.provider='usecase' or source.model='usecase')
+                BE->>PROV: providerStreamChatForUsecase(provider, model, prompt)
+            else no override
+                BE->>PROV: providerStreamChat(userId, model, prompt)
+            end
             loop chunks
                 PROV-->>BE: delta
                 BE-->>FE: SSE { content: delta }

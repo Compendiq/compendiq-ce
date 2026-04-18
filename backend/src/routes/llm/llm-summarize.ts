@@ -1,9 +1,13 @@
 import { FastifyInstance } from 'fastify';
-import { providerStreamChat } from '../../domains/llm/services/llm-provider.js';
+import {
+  providerStreamChat,
+  providerStreamChatForUsecase,
+} from '../../domains/llm/services/llm-provider.js';
 import { LlmCache, buildLlmCacheKey } from '../../domains/llm/services/llm-cache.js';
 import { fetchWebSources, formatWebContext, type WebSource } from './_web-search-helper.js';
 import { SummarizeRequestSchema } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
+import { logger } from '../../core/utils/logger.js';
 import {
   assembleContextIfNeeded,
   resolveSystemPrompt,
@@ -12,6 +16,7 @@ import {
   streamSSE,
   sanitizeLlmInput,
   buildOutputPostProcessor,
+  resolveChatAssignment,
   LLM_STREAM_RATE_LIMIT,
   MAX_INPUT_LENGTH,
 } from './_helpers.js';
@@ -79,10 +84,20 @@ export async function llmSummarizeRoutes(fastify: FastifyInstance) {
     try {
       const postProcess = await buildOutputPostProcessor(sumWebSources.map((s) => s.url));
 
-      const generator = providerStreamChat(userId, model, [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: summarizeContent },
-      ]);
+      // Issue #217: honor the per-use-case `chat` provider/model override when
+      // the admin has set one. Fall back to per-user routing otherwise.
+      const chat = await resolveChatAssignment(model);
+      logger.debug(
+        { userId, bodyModel: model, resolved: chat.assignment, usedOverride: chat.hasUsecaseOverride },
+        'Resolved chat usecase assignment',
+      );
+      const summarizeMessages = [
+        { role: 'system' as const, content: systemPrompt },
+        { role: 'user' as const, content: summarizeContent },
+      ];
+      const generator = chat.hasUsecaseOverride
+        ? providerStreamChatForUsecase(chat.provider, chat.model, summarizeMessages)
+        : providerStreamChat(userId, model, summarizeMessages);
 
       await streamSSE(request, reply, generator, sumExtras, { llmCache, cacheKey, postProcess });
     } finally {
