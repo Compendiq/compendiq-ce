@@ -10,7 +10,6 @@ import { validateUrl } from '../security/ssrf-guard.js';
 import { getDomainConfig, isDomainAllowed } from '../security/domain-filter.js';
 import { logOutboundRequest } from '../security/audit-logger.js';
 import { DocsCache, type CachedDoc } from '../cache/redis-cache.js';
-import { logger } from '../logger.js';
 
 const DEFAULT_MAX_LENGTH = 10_000;
 const ABSOLUTE_MAX_LENGTH = 100_000;
