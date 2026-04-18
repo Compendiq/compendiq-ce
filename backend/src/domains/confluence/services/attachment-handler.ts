@@ -40,7 +40,7 @@ export const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
  */
 function attachmentDir(_userId: string, pageId: string): string {
   // Sanitize pageId to prevent path traversal (e.g. "../../etc")
-  const safeId = pageId.replace(/[/\\..]+/g, '_').replace(/^_+|_+$/g, '');
+  const safeId = pageId.replace(/[/\\.]+/g, '_').replace(/^_+|_+$/g, '');
   if (!safeId) {
     throw new Error('Invalid page ID');
   }
