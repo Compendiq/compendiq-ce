@@ -34,7 +34,7 @@ function mockFetchWith(settings: Record<string, unknown>) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
     if (url.includes('/admin/settings')) {
-      if ((input as Request)?.method === 'PUT' || (typeof input === 'string' && false)) {
+      if ((input as Request)?.method === 'PUT') {
         return new Response(JSON.stringify({ message: 'Updated' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       return new Response(JSON.stringify(settings), { status: 200, headers: { 'Content-Type': 'application/json' } });
