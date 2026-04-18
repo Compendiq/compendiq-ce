@@ -497,6 +497,48 @@ describe('Admin routes', () => {
 
       expect(response.statusCode).toBe(400);
     });
+
+    it('rejects empty string for drawioEmbedUrl (use null to clear)', async () => {
+      // Prior contract silently accepted '' and treated it as clear; the new
+      // tri-state contract requires callers to send explicit null instead.
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: { drawioEmbedUrl: '' },
+      });
+
+      expect(response.statusCode).toBe(400);
+    });
+
+    it('clears drawioEmbedUrl when explicit null is sent', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [], rowCount: 0 });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: { drawioEmbedUrl: null },
+      });
+
+      expect(response.statusCode).toBe(200);
+
+      // The handler must issue a DELETE against admin_settings for drawio_embed_url.
+      const calls = (mockQuery as ReturnType<typeof vi.fn>).mock.calls as Array<[string, ...unknown[]]>;
+      const deleteCall = calls.find(([sql]) =>
+        typeof sql === 'string'
+        && sql.includes('DELETE FROM admin_settings')
+        && sql.includes('drawio_embed_url'),
+      );
+      expect(deleteCall).toBeDefined();
+
+      // And must NOT queue an upsert for the same key — the if/else branch is
+      // mutually exclusive, so both paths executing would indicate a regression.
+      const upsertCall = calls.find(([sql, ...params]) =>
+        typeof sql === 'string'
+        && sql.includes('INSERT INTO admin_settings')
+        && params.some((p) => p === 'drawio_embed_url'),
+      );
+      expect(upsertCall).toBeUndefined();
+    });
   });
 
   describe('PUT /api/admin/settings - embeddingChunkSize + drawioEmbedUrl (re-embedding triggered)', () => {

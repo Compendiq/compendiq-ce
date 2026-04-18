@@ -62,7 +62,7 @@ export type UpdateUsecaseAssignmentsInput = z.infer<typeof UpdateUsecaseAssignme
 export const AdminSettingsSchema = z.object({
   llmProvider: LlmProviderSchema,
   ollamaModel: z.string(),
-  openaiBaseUrl: z.string().nullable(),
+  openaiBaseUrl: z.string().url().nullable(),
   hasOpenaiApiKey: z.boolean(),
   openaiModel: z.string().nullable(),
   embeddingModel: z.string(),
@@ -72,10 +72,12 @@ export const AdminSettingsSchema = z.object({
   embeddingChunkOverlap: z.number().int().min(0).max(512),
   /**
    * URL of the draw.io embed server used in the diagram editor.
-   * Null/undefined means the default (https://embed.diagrams.net) is used.
+   * Null means the default (https://embed.diagrams.net) is used.
    * Useful for corporate/firewalled environments that need a self-hosted draw.io instance.
+   * The backend returns an explicit `null` when unset (see GET /api/admin/settings),
+   * so the read schema must accept `null` rather than `undefined`.
    */
-  drawioEmbedUrl: z.string().url().optional(),
+  drawioEmbedUrl: z.string().url().nullable(),
   // AI Safety settings
   aiGuardrailNoFabrication: z.string().optional(),
   aiGuardrailNoFabricationEnabled: z.boolean().optional(),
@@ -94,14 +96,29 @@ export const AdminSettingsSchema = z.object({
 export const UpdateAdminSettingsSchema = z.object({
   llmProvider: LlmProviderSchema.optional(),
   ollamaModel: z.string().optional(),
-  openaiBaseUrl: z.string().url().nullable().optional(),
+  /**
+   * Update semantics:
+   *  - field omitted → leave existing value unchanged
+   *  - null          → clear stored value (backend deletes the row, falls back to default)
+   *  - URL string    → set / replace value
+   */
+  openaiBaseUrl: z.string().url().nullish(),
   openaiApiKey: z.string().min(1).optional(),
-  openaiModel: z.string().nullable().optional(),
+  /**
+   * Update semantics: same omit/null/value tri-state as openaiBaseUrl above.
+   */
+  openaiModel: z.string().nullish(),
   embeddingModel: z.string().min(1).optional(),
   ftsLanguage: z.string().min(1).optional(),
   embeddingChunkSize: z.number().int().min(128).max(2048).optional(),
   embeddingChunkOverlap: z.number().int().min(0).max(512).optional(),
-  drawioEmbedUrl: z.string().url().optional(),
+  /**
+   * Update semantics:
+   *  - field omitted → leave existing value unchanged
+   *  - null          → clear stored value (backend deletes the row, falls back to default)
+   *  - URL string    → set / replace value
+   */
+  drawioEmbedUrl: z.string().url().nullish(),
   // AI Safety settings
   aiGuardrailNoFabrication: z.string().max(5000).optional(),
   aiGuardrailNoFabricationEnabled: z.boolean().optional(),

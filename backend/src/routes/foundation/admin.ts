@@ -367,11 +367,11 @@ export async function adminRoutes(fastify: FastifyInstance) {
       updates.push({ key: 'embedding_chunk_overlap', value: String(body.embeddingChunkOverlap) });
     }
     if (body.drawioEmbedUrl !== undefined) {
-      if (body.drawioEmbedUrl) {
-        updates.push({ key: 'drawio_embed_url', value: body.drawioEmbedUrl });
-      } else {
-        // Empty string clears the setting (falls back to default)
+      if (body.drawioEmbedUrl === null) {
+        // Explicit null clears the setting (falls back to default)
         await query(`DELETE FROM admin_settings WHERE setting_key = 'drawio_embed_url'`);
+      } else {
+        updates.push({ key: 'drawio_embed_url', value: body.drawioEmbedUrl });
       }
     }
 
