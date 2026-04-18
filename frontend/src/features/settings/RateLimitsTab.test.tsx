@@ -60,7 +60,7 @@ describe('RateLimitsTab', () => {
     vi.restoreAllMocks();
   });
 
-  it('renders all 6 rate limit categories', async () => {
+  it('renders all 5 rate limit categories', async () => {
     mockFetchWith(defaultSettings);
     render(<RateLimitsTab />, { wrapper: createWrapper() });
 
