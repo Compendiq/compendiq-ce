@@ -14,6 +14,10 @@ import { DocsCache, type CachedDoc } from '../cache/redis-cache.js';
 const DEFAULT_MAX_LENGTH = 10_000;
 const ABSOLUTE_MAX_LENGTH = 100_000;
 const FETCH_TIMEOUT_MS = 30_000;
+// Hard ceiling on bytes pulled into memory before HTML→Markdown conversion.
+// The MCP spec doesn't pin a number; 5 MB matches the request body limit used
+// by other Compendiq services and bounds heap usage by an obvious factor.
+const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 
 // Reusable turndown instance
 const turndown = new TurndownService({
@@ -59,14 +63,16 @@ export async function fetchUrl(
       contentLength: cached.contentLength, timestamp: new Date().toISOString(),
     });
 
-    const content = cached.markdown.slice(startIndex, startIndex + maxLength);
+    const safeStartIndex = Math.min(Math.max(startIndex, 0), cached.contentLength);
+    const endIndex = Math.min(safeStartIndex + maxLength, cached.contentLength);
+    const content = cached.markdown.slice(safeStartIndex, endIndex);
     return {
       markdown: content,
       title: cached.title,
       url: cached.url,
       cached: true,
       contentLength: cached.contentLength,
-      truncated: startIndex + maxLength < cached.contentLength,
+      truncated: endIndex < cached.contentLength,
     };
   }
 
@@ -100,7 +106,30 @@ export async function fetchUrl(
   }
 
   const contentType = response.headers.get('content-type') ?? '';
-  const body = await response.text();
+
+  // Bound in-memory body size: a hostile or misconfigured allowed-domain server
+  // could otherwise exhaust the heap. Check the declared Content-Length first,
+  // then verify the actual byte count once the body has been read.
+  const contentLengthHeader = response.headers.get('content-length');
+  if (contentLengthHeader) {
+    const declaredLength = Number(contentLengthHeader);
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_BYTES) {
+      logOutboundRequest({
+        tool: 'fetch_url', url, userId: options.userId, cached: false,
+        statusCode: response.status, timestamp: new Date().toISOString(),
+      });
+      throw new Error(`Response too large: ${declaredLength} bytes exceeds ${MAX_RESPONSE_BYTES}`);
+    }
+  }
+  const bodyBuffer = await response.arrayBuffer();
+  if (bodyBuffer.byteLength > MAX_RESPONSE_BYTES) {
+    logOutboundRequest({
+      tool: 'fetch_url', url, userId: options.userId, cached: false,
+      statusCode: response.status, timestamp: new Date().toISOString(),
+    });
+    throw new Error(`Response too large: ${bodyBuffer.byteLength} bytes exceeds ${MAX_RESPONSE_BYTES}`);
+  }
+  const body = new TextDecoder().decode(bodyBuffer);
 
   // 5. Convert to markdown
   let markdown: string;
@@ -144,13 +173,15 @@ export async function fetchUrl(
   });
 
   // 8. Return truncated content
-  const content = markdown.slice(startIndex, startIndex + maxLength);
+  const safeStartIndex = Math.min(Math.max(startIndex, 0), fullLength);
+  const endIndex = Math.min(safeStartIndex + maxLength, fullLength);
+  const content = markdown.slice(safeStartIndex, endIndex);
   return {
     markdown: content,
     title,
     url,
     cached: false,
     contentLength: fullLength,
-    truncated: startIndex + maxLength < fullLength,
+    truncated: endIndex < fullLength,
   };
 }
