@@ -61,13 +61,15 @@ export type UpdateUsecaseAssignmentsInput = z.infer<typeof UpdateUsecaseAssignme
 
 export const AdminSettingsSchema = z.object({
   llmProvider: LlmProviderSchema,
-  ollamaModel: z.string(),
+  ollamaModel: z.string().min(1),
   openaiBaseUrl: z.string().url().nullable(),
   hasOpenaiApiKey: z.boolean(),
-  openaiModel: z.string().nullable(),
-  embeddingModel: z.string(),
+  openaiModel: z.string().min(1).nullable(),
+  embeddingModel: z.string().min(1),
+  // Derived from the active embedding model; read-only in GET /admin/settings
+  // and intentionally not accepted by UpdateAdminSettingsSchema.
   embeddingDimensions: z.number().int().min(128).max(4096),
-  ftsLanguage: z.string(),
+  ftsLanguage: z.string().min(1),
   embeddingChunkSize: z.number().int().min(128).max(2048),
   embeddingChunkOverlap: z.number().int().min(0).max(512),
   /**

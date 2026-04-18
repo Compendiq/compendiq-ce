@@ -1,28 +1,48 @@
 import { describe, it, expect } from 'vitest';
 import { UpdateAdminSettingsSchema, AdminSettingsSchema } from './admin.js';
 
+const validReadPayload = {
+  llmProvider: 'ollama',
+  ollamaModel: 'qwen3.5',
+  openaiBaseUrl: null,
+  hasOpenaiApiKey: false,
+  openaiModel: null,
+  embeddingModel: 'bge-m3',
+  embeddingDimensions: 1024,
+  ftsLanguage: 'simple',
+  embeddingChunkSize: 500,
+  embeddingChunkOverlap: 50,
+  drawioEmbedUrl: null,
+  usecaseAssignments: {
+    chat: { provider: null, model: null },
+    summary: { provider: null, model: null },
+    quality: { provider: null, model: null },
+    auto_tag: { provider: null, model: null },
+  },
+} as const;
+
 describe('AdminSettingsSchema (read)', () => {
   it('accepts explicit null for drawioEmbedUrl (backend returns null when unset)', () => {
-    const parsed = AdminSettingsSchema.parse({
-      llmProvider: 'ollama',
-      ollamaModel: 'qwen3.5',
-      openaiBaseUrl: null,
-      hasOpenaiApiKey: false,
-      openaiModel: null,
-      embeddingModel: 'bge-m3',
-      embeddingDimensions: 1024,
-      ftsLanguage: 'simple',
-      embeddingChunkSize: 500,
-      embeddingChunkOverlap: 50,
-      drawioEmbedUrl: null,
-      usecaseAssignments: {
-        chat: { provider: null, model: null },
-        summary: { provider: null, model: null },
-        quality: { provider: null, model: null },
-        auto_tag: { provider: null, model: null },
-      },
-    });
+    const parsed = AdminSettingsSchema.parse(validReadPayload);
     expect(parsed.drawioEmbedUrl).toBeNull();
+  });
+
+  it('rejects empty ollamaModel — guards against a backend bug returning ""', () => {
+    expect(() =>
+      AdminSettingsSchema.parse({ ...validReadPayload, ollamaModel: '' }),
+    ).toThrow();
+  });
+
+  it('rejects empty embeddingModel', () => {
+    expect(() =>
+      AdminSettingsSchema.parse({ ...validReadPayload, embeddingModel: '' }),
+    ).toThrow();
+  });
+
+  it('rejects empty ftsLanguage', () => {
+    expect(() =>
+      AdminSettingsSchema.parse({ ...validReadPayload, ftsLanguage: '' }),
+    ).toThrow();
   });
 });
 
