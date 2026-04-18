@@ -1,15 +1,20 @@
 import { FastifyInstance } from 'fastify';
 import { getSystemPrompt, SystemPromptKey } from '../../domains/llm/services/ollama-service.js';
-import { providerStreamChat } from '../../domains/llm/services/llm-provider.js';
+import {
+  providerStreamChat,
+  providerStreamChatForUsecase,
+} from '../../domains/llm/services/llm-provider.js';
 import { htmlToMarkdown } from '../../core/services/content-converter.js';
 import { LlmCache, buildLlmCacheKey } from '../../domains/llm/services/llm-cache.js';
 import { GenerateDiagramRequestSchema } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
+import { logger } from '../../core/utils/logger.js';
 import {
   checkCacheWithLock,
   sendCachedSSE,
   streamSSE,
   sanitizeLlmInput,
+  resolveChatAssignment,
   LLM_STREAM_RATE_LIMIT,
   MAX_INPUT_LENGTH,
 } from './_helpers.js';
@@ -38,8 +43,16 @@ export async function llmDiagramRoutes(fastify: FastifyInstance) {
 
     const systemPrompt = getSystemPrompt(`generate_diagram_${diagramType}` as SystemPromptKey);
 
+    // Issue #217: resolve the `chat` usecase assignment up-front so the cache
+    // key can include the resolved provider+model.
+    const chat = await resolveChatAssignment(model);
+    logger.debug(
+      { userId: request.userId, bodyModel: model, resolved: chat.assignment, usedOverride: chat.hasUsecaseOverride },
+      'Resolved chat usecase assignment',
+    );
+
     // Check LLM cache with stampede protection
-    const cacheKey = buildLlmCacheKey(model, systemPrompt, sanitized);
+    const cacheKey = buildLlmCacheKey(chat.model, systemPrompt, sanitized, chat.provider);
     const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
       sendCachedSSE(reply, cached.content);
@@ -47,10 +60,15 @@ export async function llmDiagramRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      const generator = providerStreamChat(request.userId, model, [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: sanitized },
-      ]);
+      // Issue #217: honor the per-use-case `chat` provider/model override when
+      // the admin has set one. Fall back to per-user routing otherwise.
+      const diagramMessages = [
+        { role: 'system' as const, content: systemPrompt },
+        { role: 'user' as const, content: sanitized },
+      ];
+      const generator = chat.hasUsecaseOverride
+        ? providerStreamChatForUsecase(chat.provider, chat.model, diagramMessages)
+        : providerStreamChat(request.userId, model, diagramMessages);
 
       await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
     } finally {

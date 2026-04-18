@@ -1,11 +1,16 @@
 import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
 import { SystemPromptKey } from '../../domains/llm/services/ollama-service.js';
-import { providerStreamChat, resolveUserProvider } from '../../domains/llm/services/llm-provider.js';
+import {
+  providerStreamChat,
+  providerStreamChatForUsecase,
+  resolveUserProvider,
+} from '../../domains/llm/services/llm-provider.js';
 import { LlmCache, buildLlmCacheKey } from '../../domains/llm/services/llm-cache.js';
 import { fetchWebSources, formatWebContext, type WebSource } from './_web-search-helper.js';
 import { ImproveRequestSchema } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
+import { logger } from '../../core/utils/logger.js';
 import { emitLlmAudit, estimateTokens } from '../../domains/llm/services/llm-audit-hook.js';
 import {
   assembleContextIfNeeded,
@@ -15,6 +20,7 @@ import {
   streamSSE,
   sanitizeLlmInput,
   buildOutputPostProcessor,
+  resolveChatAssignment,
   LLM_STREAM_RATE_LIMIT,
   MAX_INPUT_LENGTH,
 } from './_helpers.js';
@@ -75,8 +81,18 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
       systemPrompt += `\n\nADDITIONAL USER INSTRUCTIONS:\n${sanitizedInstruction}`;
     }
 
+    // Issue #217: resolve the `chat` usecase assignment up-front so the cache
+    // key can include the resolved provider+model, and so the error-path audit
+    // can attribute failures to the resolved provider rather than the per-user
+    // default.
+    const chat = await resolveChatAssignment(model);
+    logger.debug(
+      { userId, bodyModel: model, resolved: chat.assignment, usedOverride: chat.hasUsecaseOverride },
+      'Resolved chat usecase assignment',
+    );
+
     // Check LLM cache with stampede protection
-    const cacheKey = buildLlmCacheKey(model, systemPrompt, improveContent);
+    const cacheKey = buildLlmCacheKey(chat.model, systemPrompt, improveContent, chat.provider);
     const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
       sendCachedSSE(reply, cached.content);
@@ -108,8 +124,11 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
     try {
       const postProcess = await buildOutputPostProcessor(webSources.map((s) => s.url));
 
-      // Resolve per-user LLM provider and stream
-      const generator = providerStreamChat(userId, model, improveMessages);
+      // Issue #217: honor the per-use-case `chat` provider/model override when
+      // the admin has set one. Fall back to per-user routing otherwise.
+      const generator = chat.hasUsecaseOverride
+        ? providerStreamChatForUsecase(chat.provider, chat.model, improveMessages)
+        : providerStreamChat(userId, model, improveMessages);
 
       const accumulated = await streamSSE(request, reply, generator, improveExtras, { llmCache, cacheKey, postProcess });
 
@@ -124,8 +143,8 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
       emitLlmAudit({
         userId,
         action: 'improve',
-        model,
-        provider: (await resolveUserProvider(userId)).type,
+        model: chat.hasUsecaseOverride ? chat.model : model,
+        provider: chat.hasUsecaseOverride ? chat.provider : (await resolveUserProvider(userId)).type,
         inputTokens: estimateTokens(improveMessages.map(m => m.content).join('')),
         outputTokens: estimateTokens(accumulated),
         inputMessages: improveMessages.map(m => ({ role: m.role, contentLength: m.content.length })),
@@ -137,8 +156,8 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
       emitLlmAudit({
         userId,
         action: 'improve',
-        model,
-        provider: (await resolveUserProvider(userId)).type,
+        model: chat.hasUsecaseOverride ? chat.model : model,
+        provider: chat.hasUsecaseOverride ? chat.provider : (await resolveUserProvider(userId)).type,
         inputTokens: estimateTokens(improveMessages.map(m => m.content).join('')),
         outputTokens: 0,
         inputMessages: improveMessages.map(m => ({ role: m.role, contentLength: m.content.length })),

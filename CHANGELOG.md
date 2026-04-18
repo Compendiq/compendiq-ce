@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Chat use-case assignment wired** -- admin-set `chat` provider/model overrides in Settings → LLM → Use case assignments now route `/api/llm/{ask,generate,improve,summarize,generate-diagram,analyze-quality}` through `providerStreamChatForUsecase`. Override semantics: if admin pinned the model too, body model is locked; if only the provider is pinned, the user-passed model is kept (matches `auto_tag` precedent). When no override is set, per-user routing is preserved byte-for-byte. The chat row in the UI is re-enabled. (#217)
 - **BullMQ worker queues** -- replace `setInterval` background workers with Redis-backed BullMQ job queues for sync, quality analysis, summary generation, token cleanup, and data retention. Dual-mode: `USE_BULLMQ=false` falls back to legacy workers. Job history table for observability. (#179)
 - **Users email + display name** -- migration 051 adds `email` (nullable, partial unique index), `email_verified`, and `display_name` columns to the users table. Auth endpoints return these fields. (#178)
 - **LLM request queue with backpressure** -- configurable concurrency (default: 4), queue depth limit (default: 50), per-request timeout. Health endpoint exposes queue metrics. (#181)
