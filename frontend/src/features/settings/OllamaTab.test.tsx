@@ -263,6 +263,25 @@ describe('LlmTab (OllamaTab)', () => {
     });
   });
 
+  it('embedding model select uses glass-select className (regression #245)', async () => {
+    mockFetchResponses();
+    render(<SettingsPage />, { wrapper: createWrapper() });
+    await navigateToLlmTab();
+
+    await waitFor(() => {
+      expect(screen.getByText(/Shared across all users/)).toBeInTheDocument();
+    });
+
+    // Embedding model renders as a <select> when models are available — find it
+    // by walking up from the helper-text paragraph to its parent container.
+    const helper = screen.getByText(/Shared across all users/);
+    const container = helper.parentElement!;
+    const embeddingSelect = container.querySelector('select');
+    expect(embeddingSelect).not.toBeNull();
+    expect(embeddingSelect!.className).toContain('glass-select');
+    expect(embeddingSelect!.className).not.toContain('glass-input');
+  });
+
   it('shows provider selector with Ollama and OpenAI buttons', async () => {
     mockFetchResponses();
     render(<SettingsPage />, { wrapper: createWrapper() });
@@ -450,6 +469,119 @@ describe('LlmTab (OllamaTab)', () => {
       expect(screen.getByTestId('usecase-summary-provider')).not.toBeDisabled();
       expect(screen.getByTestId('usecase-quality-provider')).not.toBeDisabled();
       expect(screen.getByTestId('usecase-auto_tag-provider')).not.toBeDisabled();
+    });
+
+    it('inherit row placeholder shows the resolved openai model when shared default is openai (regression #245)', async () => {
+      const adminSettings = {
+        ...mockAdminSettings,
+        llmProvider: 'openai' as const,
+        openaiBaseUrl: 'https://api.openai.com/v1',
+        hasOpenaiApiKey: true,
+        openaiModel: 'gpt-4o',
+        usecaseAssignments: {
+          chat: {
+            provider: null,
+            model: null,
+            resolved: { provider: 'openai', model: 'gpt-4o' },
+          },
+          summary: {
+            provider: null,
+            model: null,
+            resolved: { provider: 'openai', model: 'gpt-4o' },
+          },
+          quality: {
+            provider: null,
+            model: null,
+            resolved: { provider: 'openai', model: 'gpt-4o' },
+          },
+          auto_tag: {
+            provider: null,
+            model: null,
+            resolved: { provider: 'openai', model: 'gpt-4o' },
+          },
+        },
+      };
+      mockFetchResponses({ adminSettings });
+      render(<SettingsPage />, { wrapper: createWrapper() });
+      await navigateToLlmTab();
+
+      await waitFor(() => {
+        expect(screen.getByTestId('usecase-chat-model-inherited')).toBeInTheDocument();
+      });
+
+      const inherited = screen.getByTestId('usecase-chat-model-inherited') as HTMLInputElement;
+      expect(inherited.placeholder).toContain('openai');
+      expect(inherited.placeholder).toContain('gpt-4o');
+    });
+
+    it('explicit openai override populates the model select with openai models (regression #245)', async () => {
+      const openaiModels = [{ name: 'gpt-4o' }, { name: 'gpt-4o-mini' }];
+      const adminSettings = {
+        ...mockAdminSettings,
+        llmProvider: 'openai' as const,
+        openaiBaseUrl: 'https://api.openai.com/v1',
+        hasOpenaiApiKey: true,
+        openaiModel: 'gpt-4o',
+        usecaseAssignments: {
+          chat: {
+            provider: 'openai',
+            model: 'gpt-4o',
+            resolved: { provider: 'openai', model: 'gpt-4o' },
+          },
+          summary: {
+            provider: null,
+            model: null,
+            resolved: { provider: 'openai', model: 'gpt-4o' },
+          },
+          quality: {
+            provider: null,
+            model: null,
+            resolved: { provider: 'openai', model: 'gpt-4o' },
+          },
+          auto_tag: {
+            provider: null,
+            model: null,
+            resolved: { provider: 'openai', model: 'gpt-4o' },
+          },
+        },
+      };
+
+      fetchSpy.mockImplementation(async (url: string | URL | Request) => {
+        const path = typeof url === 'string' ? url : url instanceof URL ? url.toString() : (url as Request).url;
+        if (path.includes('/api/ollama/status')) {
+          return new Response(JSON.stringify(mockStatus), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (path.includes('/api/ollama/models')) {
+          if (path.includes('provider=openai')) {
+            return new Response(JSON.stringify(openaiModels), { headers: { 'Content-Type': 'application/json' } });
+          }
+          return new Response(JSON.stringify(mockModels), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (path.includes('/api/admin/settings')) {
+          return new Response(JSON.stringify(adminSettings), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (path.includes('/api/settings')) {
+          return new Response(JSON.stringify(mockSettings), { headers: { 'Content-Type': 'application/json' } });
+        }
+        return new Response('{}', { headers: { 'Content-Type': 'application/json' } });
+      });
+
+      render(<SettingsPage />, { wrapper: createWrapper() });
+      await navigateToLlmTab();
+
+      await waitFor(() => {
+        const select = screen.getByTestId('usecase-chat-model') as HTMLSelectElement;
+        const options = Array.from(select.querySelectorAll('option')).map((o) => o.textContent);
+        expect(options).toContain('gpt-4o');
+      });
+
+      const select = screen.getByTestId('usecase-chat-model') as HTMLSelectElement;
+      const options = Array.from(select.querySelectorAll('option')).map((o) => o.textContent);
+      expect(options).toContain('gpt-4o');
+      expect(options).toContain('gpt-4o-mini');
+      // Must NOT contain the ollama model names (mockModels = qwen3.5/llama3/mistral)
+      expect(options).not.toContain('qwen3.5');
+      expect(options).not.toContain('llama3');
     });
 
     it('sends only the changed use case in the PUT body (diff-only)', async () => {

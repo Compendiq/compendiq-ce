@@ -284,7 +284,7 @@ export function LlmTab({ settings }: { settings: SettingsResponse }) {
           <select
             value={embeddingModel}
             onChange={(e) => setEmbeddingModel(e.target.value)}
-            className="glass-input"
+            className="glass-select"
           >
             {!models.some((m: { name: string }) => m.name === embeddingModel) && embeddingModel && (
               <option value={embeddingModel}>{embeddingModel}</option>
@@ -385,7 +385,8 @@ function UsecaseAssignmentsSection({
       <div className="space-y-2">
         {USECASES_ORDERED.map((usecase) => {
           const row = assignments[usecase];
-          const models = row.provider === 'openai' ? openaiModels : ollamaModels;
+          const effectiveProvider = row.provider ?? row.resolved?.provider;
+          const models = effectiveProvider === 'openai' ? openaiModels : ollamaModels;
           return (
             <div key={usecase} className="grid grid-cols-1 gap-2 sm:grid-cols-[140px_180px_1fr_auto] sm:items-center">
               <div className="text-sm font-medium">{USECASE_LABELS[usecase]}</div>
