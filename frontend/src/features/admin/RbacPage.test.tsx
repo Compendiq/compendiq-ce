@@ -7,7 +7,7 @@ import { RbacPage } from './RbacPage';
 import { useAuthStore } from '../../stores/auth-store';
 
 // ── Mock useEnterprise ─────────────────────────────────────────────────────────
-let mockHasFeature = (_f: string) => false;
+let mockHasFeature: (feature: string) => boolean = (_feature) => false;
 
 vi.mock('../../shared/enterprise/use-enterprise', () => ({
   useEnterprise: () => ({
@@ -205,7 +205,7 @@ describe('RbacPage', () => {
       expect(screen.getByTestId('role-1')).toBeInTheDocument();
     });
     // "read" appears in both roles
-    expect(screen.getAllByText('read').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText('read')).toHaveLength(2);
     // "admin" only in system_admin role
     const roleR1 = screen.getByTestId('role-1');
     expect(roleR1).toHaveTextContent('admin');
@@ -218,7 +218,9 @@ describe('RbacPage', () => {
     await waitFor(() => {
       expect(screen.getByTestId('role-1')).toBeInTheDocument();
     });
-    expect(screen.getAllByText('System').length).toBeGreaterThanOrEqual(1);
+    // Both `system_admin` and `editor` carry isSystem: true (see mockRoles above),
+    // so exactly two "System" badges should render.
+    expect(screen.getAllByText('System')).toHaveLength(2);
   });
 
   it('switches to groups tab and shows group data', async () => {
