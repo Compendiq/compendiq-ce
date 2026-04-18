@@ -40,6 +40,20 @@ export interface SettingsNavGroup {
 }
 
 /**
+ * Builds a SettingsNavItem with the common case (`legacyTabId === id`) defaulted.
+ * Pass `legacyTabId` in options only when it diverges from the URL segment
+ * (e.g. the LLM panel whose legacy `?tab=ollama` predates the rename).
+ */
+function navItem(
+  id: string,
+  label: string,
+  options: Omit<SettingsNavItem, 'id' | 'label' | 'legacyTabId'> & { legacyTabId?: string | null } = {},
+): SettingsNavItem {
+  const { legacyTabId = id, ...rest } = options;
+  return { id, label, legacyTabId, ...rest };
+}
+
+/**
  * Grouped nav config. The order within each group controls rail rendering order;
  * the order of groups controls top-to-bottom rail order.
  */
@@ -48,18 +62,18 @@ export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
     id: 'personal',
     label: 'Personal',
     items: [
-      { id: 'confluence', label: 'Confluence', legacyTabId: 'confluence' },
-      { id: 'ai-prompts', label: 'AI Prompts', legacyTabId: 'ai-prompts' },
-      { id: 'theme', label: 'Theme', legacyTabId: 'theme' },
+      navItem('confluence', 'Confluence'),
+      navItem('ai-prompts', 'AI Prompts'),
+      navItem('theme', 'Theme'),
     ],
   },
   {
     id: 'content',
     label: 'Content',
     items: [
-      { id: 'spaces', label: 'Spaces', legacyTabId: 'spaces' },
-      { id: 'sync', label: 'Sync', legacyTabId: 'sync' },
-      { id: 'labels', label: 'Labels', legacyTabId: 'labels', adminOnly: true },
+      navItem('spaces', 'Spaces'),
+      navItem('sync', 'Sync'),
+      navItem('labels', 'Labels', { adminOnly: true }),
     ],
   },
   {
@@ -68,74 +82,59 @@ export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
     items: [
       // NOTE: the legacy `?tab=ollama` URL maps here. The URL segment is now
       // `llm` because the panel is provider-agnostic (Ollama + OpenAI).
-      { id: 'llm', label: 'LLM', legacyTabId: 'ollama', adminOnly: true },
-      { id: 'embedding', label: 'Embedding', legacyTabId: 'embedding', adminOnly: true },
-      { id: 'ai-safety', label: 'AI Safety', legacyTabId: 'ai-safety', adminOnly: true },
-      { id: 'workers', label: 'Workers', legacyTabId: 'workers', adminOnly: true },
-      {
-        id: 'llm-policy',
-        label: 'LLM Policy',
-        legacyTabId: 'llm-policy',
+      navItem('llm', 'LLM', { legacyTabId: 'ollama', adminOnly: true }),
+      navItem('embedding', 'Embedding', { adminOnly: true }),
+      navItem('ai-safety', 'AI Safety', { adminOnly: true }),
+      navItem('workers', 'Workers', { adminOnly: true }),
+      navItem('llm-policy', 'LLM Policy', {
         adminOnly: true,
         enterpriseOnly: true,
         requiresFeature: 'org_llm_policy',
-      },
-      {
-        id: 'llm-audit',
-        label: 'LLM Audit',
-        legacyTabId: 'llm-audit',
+      }),
+      navItem('llm-audit', 'LLM Audit', {
         adminOnly: true,
         enterpriseOnly: true,
         requiresFeature: 'llm_audit_trail',
-      },
+      }),
     ],
   },
   {
     id: 'integrations',
     label: 'Integrations',
     items: [
-      { id: 'email', label: 'Email / SMTP', legacyTabId: 'email', adminOnly: true },
-      { id: 'searxng', label: 'SearXNG', legacyTabId: 'searxng', adminOnly: true },
-      { id: 'mcp-docs', label: 'MCP Docs', legacyTabId: 'mcp-docs', adminOnly: true },
+      navItem('email', 'Email / SMTP', { adminOnly: true }),
+      navItem('searxng', 'SearXNG', { adminOnly: true }),
+      navItem('mcp-docs', 'MCP Docs', { adminOnly: true }),
     ],
   },
   {
     id: 'security',
     label: 'Security & Access',
     items: [
-      { id: 'rate-limits', label: 'Rate Limits', legacyTabId: 'rate-limits', adminOnly: true },
-      {
-        id: 'sso',
-        label: 'SSO / OIDC',
-        legacyTabId: 'sso',
+      navItem('rate-limits', 'Rate Limits', { adminOnly: true }),
+      navItem('sso', 'SSO / OIDC', {
         adminOnly: true,
         enterpriseOnly: true,
-      },
-      {
-        id: 'scim',
-        label: 'SCIM',
-        legacyTabId: 'scim',
+      }),
+      navItem('scim', 'SCIM', {
         adminOnly: true,
         enterpriseOnly: true,
         requiresFeature: 'scim_provisioning',
-      },
-      {
-        id: 'retention',
-        label: 'Data Retention',
-        legacyTabId: 'retention',
+      }),
+      navItem('retention', 'Data Retention', {
         adminOnly: true,
         enterpriseOnly: true,
         requiresFeature: 'data_retention_policies',
-      },
+      }),
     ],
   },
   {
     id: 'system',
     label: 'System',
     items: [
-      { id: 'license', label: 'License', legacyTabId: 'license', adminOnly: true },
-      { id: 'errors', label: 'Errors', legacyTabId: 'errors', adminOnly: true },
-      { id: 'system', label: 'System', legacyTabId: 'system', adminOnly: true },
+      navItem('license', 'License', { adminOnly: true }),
+      navItem('errors', 'Errors', { adminOnly: true }),
+      navItem('system', 'System', { adminOnly: true }),
     ],
   },
 ] as const;
@@ -145,14 +144,13 @@ export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
  * Generated from SETTINGS_NAV so there is no duplication.
  */
 export const legacyTabMap: Readonly<Record<string, string>> = Object.freeze(
-  SETTINGS_NAV.flatMap((group) =>
-    group.items
-      .filter((item) => item.legacyTabId !== null)
-      .map((item) => [item.legacyTabId!, `/settings/${group.id}/${item.id}`] as const),
-  ).reduce<Record<string, string>>((acc, [legacyId, path]) => {
-    acc[legacyId] = path;
-    return acc;
-  }, {}),
+  Object.fromEntries(
+    SETTINGS_NAV.flatMap((group) =>
+      group.items
+        .filter((item) => item.legacyTabId !== null)
+        .map((item) => [item.legacyTabId!, `/settings/${group.id}/${item.id}`] as const),
+    ),
+  ),
 );
 
 export interface AccessContext {
@@ -164,6 +162,11 @@ export interface AccessContext {
 /**
  * Shared visibility predicate — same rules used today in SettingsPage, centralised
  * so the layout and any future consumer (e.g. a search / command palette) agree.
+ *
+ * Checks are ordered for short-circuiting from cheapest/synchronous to potentially
+ * more expensive lookups: admin flag (sync auth-store read), enterprise flag
+ * (cached license context), then feature-flag resolution (may be a remote/cached
+ * lookup). Reorder only with measurement.
  */
 export function canSeeItem(item: SettingsNavItem, ctx: AccessContext): boolean {
   if (item.adminOnly && !ctx.isAdmin) return false;

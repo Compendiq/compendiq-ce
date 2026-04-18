@@ -4,7 +4,9 @@
  * Consumers lazy-load this entire module so recharts stays in its own chunk
  * and never bloats the main bundle:
  *
- *   const ChartsBundle = lazy(() => import('../../shared/components/charts/ChartsBundle'));
+ *   // In a consuming component (uses the `@/` Vite alias configured in
+ *   // frontend/vite.config.ts and frontend/tsconfig.json):
+ *   const ChartsBundle = lazy(() => import('@/shared/components/charts/ChartsBundle'));
  *   <Suspense fallback={<Spinner />}><ChartsBundle … /></Suspense>
  */
 export {

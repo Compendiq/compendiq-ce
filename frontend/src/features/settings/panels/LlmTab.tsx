@@ -357,14 +357,6 @@ const USECASE_LABELS: Record<LlmUsecase, string> = {
 
 const USECASES_ORDERED: LlmUsecase[] = ['chat', 'summary', 'quality', 'auto_tag'];
 
-/**
- * Use cases whose resolver is wired into a production code path today. Rows
- * for use cases not in this set are rendered read-only with a "not yet wired"
- * note. As of issue #217, all four use cases are wired — the set is kept as
- * an extension point for future use cases added to `LlmUsecase`.
- */
-const WIRED_USECASES: ReadonlySet<LlmUsecase> = new Set(['chat', 'summary', 'quality', 'auto_tag']);
-
 function UsecaseAssignmentsSection({
   assignments,
   onChange,
@@ -393,7 +385,6 @@ function UsecaseAssignmentsSection({
       <div className="space-y-2">
         {USECASES_ORDERED.map((usecase) => {
           const row = assignments[usecase];
-          const wired = WIRED_USECASES.has(usecase);
           const models = row.provider === 'openai' ? openaiModels : ollamaModels;
           return (
             <div key={usecase} className="grid grid-cols-1 gap-2 sm:grid-cols-[140px_180px_1fr_auto] sm:items-center">
@@ -408,8 +399,6 @@ function UsecaseAssignmentsSection({
                   });
                 }}
                 data-testid={`usecase-${usecase}-provider`}
-                disabled={!wired}
-                title={wired ? undefined : 'Chat routing through per-use-case assignments is not yet wired — tracked as a follow-up to #214.'}
               >
                 <option value="">Inherit shared default</option>
                 <option value="ollama">Ollama</option>
@@ -431,8 +420,6 @@ function UsecaseAssignmentsSection({
                     update(usecase, { model: e.target.value === '' ? null : e.target.value })
                   }
                   data-testid={`usecase-${usecase}-model`}
-                  disabled={!wired}
-                  title={wired ? undefined : 'Chat routing through per-use-case assignments is not yet wired — tracked as a follow-up to #214.'}
                 >
                   <option value="">Inherit shared model</option>
                   {models.map((m) => (
@@ -443,11 +430,9 @@ function UsecaseAssignmentsSection({
                 </select>
               )}
               <span className="text-xs text-muted-foreground">
-                {wired
-                  ? row.resolved
-                    ? `→ ${row.resolved.provider} / ${row.resolved.model || '(none)'}`
-                    : ''
-                  : 'Not yet wired — chat still uses the shared provider above.'}
+                {row.resolved
+                  ? `→ ${row.resolved.provider} / ${row.resolved.model || '(none)'}`
+                  : ''}
               </span>
             </div>
           );
