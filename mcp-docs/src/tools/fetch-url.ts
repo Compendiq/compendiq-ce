@@ -121,15 +121,37 @@ export async function fetchUrl(
       throw new Error(`Response too large: ${declaredLength} bytes exceeds ${MAX_RESPONSE_BYTES}`);
     }
   }
-  const bodyBuffer = await response.arrayBuffer();
-  if (bodyBuffer.byteLength > MAX_RESPONSE_BYTES) {
-    logOutboundRequest({
-      tool: 'fetch_url', url, userId: options.userId, cached: false,
-      statusCode: response.status, timestamp: new Date().toISOString(),
-    });
-    throw new Error(`Response too large: ${bodyBuffer.byteLength} bytes exceeds ${MAX_RESPONSE_BYTES}`);
+
+  // Stream the body and abort the moment we cross the cap. This bounds peak
+  // per-request memory to roughly MAX_RESPONSE_BYTES + one chunk, even when
+  // the server omits Content-Length or lies about it (Transfer-Encoding:
+  // chunked). reader.cancel() signals upstream to stop sending.
+  if (!response.body) {
+    throw new Error('Response body is not readable');
   }
-  const body = new TextDecoder().decode(bodyBuffer);
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > MAX_RESPONSE_BYTES) {
+        await reader.cancel('Response too large');
+        logOutboundRequest({
+          tool: 'fetch_url', url, userId: options.userId, cached: false,
+          statusCode: response.status, timestamp: new Date().toISOString(),
+        });
+        throw new Error(`Response too large: streamed >${MAX_RESPONSE_BYTES} bytes (cap exceeded)`);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const body = new TextDecoder().decode(Buffer.concat(chunks));
 
   // 5. Convert to markdown
   let markdown: string;
