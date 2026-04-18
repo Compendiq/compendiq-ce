@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { ReadableStream } from 'node:stream/web';
 import { fetchUrl } from './fetch-url.js';
 import { DocsCache, type CachedDoc } from '../cache/redis-cache.js';
 import * as auditLogger from '../security/audit-logger.js';
@@ -126,7 +127,7 @@ describe('fetchUrl — response body size cap (uncached path)', () => {
       }),
     );
 
-    await expect(fetchUrl(TEST_URL, null, {})).rejects.toThrow(/Response too large: 5242881 bytes exceeds/);
+    await expect(fetchUrl(TEST_URL, null, {})).rejects.toThrow(/Response too large: streamed >5242880 bytes/);
 
     expect(auditSpy).toHaveBeenCalledTimes(1);
     expect(auditSpy.mock.calls[0]![0]).toMatchObject({
@@ -165,5 +166,127 @@ describe('fetchUrl — response body size cap (uncached path)', () => {
 
     const result = await fetchUrl(TEST_URL, null, {});
     expect(result.markdown).toBe(body);
+  });
+});
+
+describe('fetchUrl — streaming reader (chunked, no Content-Length)', () => {
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  let auditSpy: ReturnType<typeof vi.spyOn>;
+  let getCachedDocSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    fetchSpy = vi.spyOn(globalThis, 'fetch');
+    auditSpy = vi.spyOn(auditLogger, 'logOutboundRequest').mockImplementation(() => {});
+    getCachedDocSpy = vi.spyOn(DocsCache.prototype, 'getCachedDoc').mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // Build a Response whose body is a lazy (pull-based) ReadableStream of
+  // `chunkSize`-byte chunks, capped at `maxChunks`. Used for the happy-path
+  // chunked test where we want a finite, well-formed body.
+  function makeLazyChunkedResponse(opts: {
+    chunkSize: number;
+    maxChunks: number;
+    contentType?: string;
+    headers?: Record<string, string>;
+  }): Response {
+    let enqueuedCount = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (enqueuedCount >= opts.maxChunks) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(new Uint8Array(opts.chunkSize).fill(0x61));
+        enqueuedCount += 1;
+      },
+    });
+    const headers: Record<string, string> = {
+      'Content-Type': opts.contentType ?? 'text/plain',
+      ...(opts.headers ?? {}),
+    };
+    // node:stream/web ReadableStream is structurally compatible with the global
+    // ReadableStream that Response expects, but TS sees them as distinct types.
+    return new Response(stream as unknown as BodyInit, { status: 200, headers });
+  }
+
+  it('aborts a chunked stream and propagates cancel(reason) to the producer', async () => {
+    // Eagerly enqueue the entire oversized payload up front (no `pull` callback)
+    // and wire `cancel(reason)` so we can prove that reader.cancel('Response too
+    // large') in the implementation actually reached the underlying source.
+    //
+    // A pull-based producer would let the test pass even if reader.cancel() were
+    // removed — the moment the consumer stops calling read(), pull() stops firing
+    // on its own. Eager enqueue removes that loophole: chunks are queued whether
+    // or not the consumer reads them, so only an explicit cancel() can fire the
+    // source-side cancel callback.
+    let cancelReason: string | null = null;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (let i = 0; i < 10; i += 1) {
+          controller.enqueue(new Uint8Array(1024 * 1024).fill(0x61));
+        }
+        // Intentionally do NOT close — leaves the queue full, simulating a
+        // server that has already shipped a large prefix.
+      },
+      cancel(reason) {
+        cancelReason = String(reason);
+      },
+    });
+    const response = new Response(stream as unknown as BodyInit, {
+      status: 200,
+      headers: { 'Content-Type': 'text/plain' },
+    });
+    fetchSpy.mockResolvedValue(response);
+
+    await expect(fetchUrl(TEST_URL, null, {})).rejects.toThrow(/Response too large: streamed >5242880 bytes/);
+
+    // Direct proof that reader.cancel('Response too large') propagated. Would
+    // not fire if the implementation merely stopped reading without cancelling.
+    expect(cancelReason).toBe('Response too large');
+
+    expect(auditSpy).toHaveBeenCalledTimes(1);
+    expect(auditSpy.mock.calls[0]![0]).toMatchObject({
+      tool: 'fetch_url',
+      url: TEST_URL,
+      cached: false,
+      statusCode: 200,
+    });
+  });
+
+  it('successfully reads a chunked body that stays under the cap', async () => {
+    // 4 chunks * 256 KB = 1 MB total, well under 5 MB cap.
+    const response = makeLazyChunkedResponse({
+      chunkSize: 256 * 1024,
+      maxChunks: 4,
+      contentType: 'text/plain',
+    });
+    fetchSpy.mockResolvedValue(response);
+
+    const result = await fetchUrl(TEST_URL, null, { maxLength: 100 });
+
+    // Body is all 'a' bytes; output is truncated to maxLength.
+    expect(result.markdown.length).toBe(100);
+    expect(result.markdown[0]).toBe('a');
+    expect(result.contentLength).toBe(4 * 256 * 1024);
+    expect(result.cached).toBe(false);
+  });
+
+  it('throws when response.body is null', async () => {
+    // Some response shapes (e.g. 204 No Content, or a mock without a body)
+    // have a null body. The streaming reader path must reject explicitly
+    // rather than NPE.
+    const response = new Response(null, {
+      status: 200,
+      headers: { 'Content-Type': 'text/plain' },
+    });
+    // Force body to null even though the constructor might create one.
+    Object.defineProperty(response, 'body', { value: null });
+    fetchSpy.mockResolvedValue(response);
+
+    await expect(fetchUrl(TEST_URL, null, {})).rejects.toThrow(/Response body is not readable/);
   });
 });
