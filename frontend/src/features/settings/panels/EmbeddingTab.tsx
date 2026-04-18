@@ -58,8 +58,8 @@ export function EmbeddingTab() {
     if (chunkSize !== undefined) updates.embeddingChunkSize = chunkSize;
     if (chunkOverlap !== undefined) updates.embeddingChunkOverlap = chunkOverlap;
     if (drawioEmbedUrl !== undefined) {
-      // Empty string clears the setting (backend will delete the row, falling back to default)
-      updates.drawioEmbedUrl = drawioEmbedUrl || undefined;
+      // Send null to clear the stored value (backend deletes the row, falling back to default).
+      updates.drawioEmbedUrl = drawioEmbedUrl === '' ? null : drawioEmbedUrl;
     }
     if (Object.keys(updates).length > 0) {
       updateAdminSettings.mutate(updates);
