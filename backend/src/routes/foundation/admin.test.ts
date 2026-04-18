@@ -529,6 +529,15 @@ describe('Admin routes', () => {
         && sql.includes('drawio_embed_url'),
       );
       expect(deleteCall).toBeDefined();
+
+      // And must NOT queue an upsert for the same key — the if/else branch is
+      // mutually exclusive, so both paths executing would indicate a regression.
+      const upsertCall = calls.find(([sql, ...params]) =>
+        typeof sql === 'string'
+        && sql.includes('INSERT INTO admin_settings')
+        && params.some((p) => p === 'drawio_embed_url'),
+      );
+      expect(upsertCall).toBeUndefined();
     });
   });
 

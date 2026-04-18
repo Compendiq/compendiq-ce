@@ -62,7 +62,7 @@ export type UpdateUsecaseAssignmentsInput = z.infer<typeof UpdateUsecaseAssignme
 export const AdminSettingsSchema = z.object({
   llmProvider: LlmProviderSchema,
   ollamaModel: z.string(),
-  openaiBaseUrl: z.string().nullable(),
+  openaiBaseUrl: z.string().url().nullable(),
   hasOpenaiApiKey: z.boolean(),
   openaiModel: z.string().nullable(),
   embeddingModel: z.string(),

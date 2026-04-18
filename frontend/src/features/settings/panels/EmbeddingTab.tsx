@@ -59,7 +59,9 @@ export function EmbeddingTab() {
     if (chunkOverlap !== undefined) updates.embeddingChunkOverlap = chunkOverlap;
     if (drawioEmbedUrl !== undefined) {
       // Send null to clear the stored value (backend deletes the row, falling back to default).
-      updates.drawioEmbedUrl = drawioEmbedUrl === '' ? null : drawioEmbedUrl;
+      // Trim first so a whitespace-only input ("   ") is treated as a clear, not a round-trip 400.
+      const trimmed = drawioEmbedUrl.trim();
+      updates.drawioEmbedUrl = trimmed === '' ? null : trimmed;
     }
     if (Object.keys(updates).length > 0) {
       updateAdminSettings.mutate(updates);
