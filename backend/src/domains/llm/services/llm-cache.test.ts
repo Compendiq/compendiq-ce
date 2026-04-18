@@ -45,6 +45,18 @@ describe('buildLlmCacheKey', () => {
     const key2 = buildLlmCacheKey('llama3', 'system', 'content');
     expect(key1).not.toBe(key2);
   });
+
+  it('should differ when provider changes (issue #217)', () => {
+    const keyOllama = buildLlmCacheKey('same-model', 'system', 'content', 'ollama');
+    const keyOpenai = buildLlmCacheKey('same-model', 'system', 'content', 'openai');
+    expect(keyOllama).not.toBe(keyOpenai);
+  });
+
+  it('should match key without provider when provider is omitted', () => {
+    const keyNoProvider = buildLlmCacheKey('model', 'system', 'content');
+    const keyUndefinedProvider = buildLlmCacheKey('model', 'system', 'content', undefined);
+    expect(keyNoProvider).toBe(keyUndefinedProvider);
+  });
 });
 
 describe('buildRagCacheKey', () => {
@@ -93,6 +105,22 @@ describe('buildRagCacheKey', () => {
       pageId: 'page-1',
     });
     expect(keyNoOpts).toBe(keyFalse);
+  });
+
+  it('should differ when provider changes (issue #217)', () => {
+    const keyOllama = buildRagCacheKey('same-model', 'question', ['doc1'], {
+      provider: 'ollama',
+    });
+    const keyOpenai = buildRagCacheKey('same-model', 'question', ['doc1'], {
+      provider: 'openai',
+    });
+    expect(keyOllama).not.toBe(keyOpenai);
+  });
+
+  it('should match key without provider when provider is omitted', () => {
+    const keyNoProvider = buildRagCacheKey('model', 'question', ['doc1']);
+    const keyEmptyOpts = buildRagCacheKey('model', 'question', ['doc1'], {});
+    expect(keyNoProvider).toBe(keyEmptyOpts);
   });
 });
 

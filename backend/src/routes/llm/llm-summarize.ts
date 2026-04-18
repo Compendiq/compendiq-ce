@@ -73,8 +73,16 @@ export async function llmSummarizeRoutes(fastify: FastifyInstance) {
     const basePrompt = await resolveSystemPrompt(userId, 'summarize');
     const systemPrompt = `${basePrompt} ${lengthInstructions[length]}${multiPageSuffix}`;
 
+    // Issue #217: resolve the `chat` usecase assignment up-front so the cache
+    // key can include the resolved provider+model.
+    const chat = await resolveChatAssignment(model);
+    logger.debug(
+      { userId, bodyModel: model, resolved: chat.assignment, usedOverride: chat.hasUsecaseOverride },
+      'Resolved chat usecase assignment',
+    );
+
     // Check LLM cache with stampede protection
-    const cacheKey = buildLlmCacheKey(model, systemPrompt, summarizeContent);
+    const cacheKey = buildLlmCacheKey(chat.model, systemPrompt, summarizeContent, chat.provider);
     const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
       sendCachedSSE(reply, cached.content);
@@ -86,11 +94,6 @@ export async function llmSummarizeRoutes(fastify: FastifyInstance) {
 
       // Issue #217: honor the per-use-case `chat` provider/model override when
       // the admin has set one. Fall back to per-user routing otherwise.
-      const chat = await resolveChatAssignment(model);
-      logger.debug(
-        { userId, bodyModel: model, resolved: chat.assignment, usedOverride: chat.hasUsecaseOverride },
-        'Resolved chat usecase assignment',
-      );
       const summarizeMessages = [
         { role: 'system' as const, content: systemPrompt },
         { role: 'user' as const, content: summarizeContent },

@@ -43,8 +43,16 @@ export async function llmDiagramRoutes(fastify: FastifyInstance) {
 
     const systemPrompt = getSystemPrompt(`generate_diagram_${diagramType}` as SystemPromptKey);
 
+    // Issue #217: resolve the `chat` usecase assignment up-front so the cache
+    // key can include the resolved provider+model.
+    const chat = await resolveChatAssignment(model);
+    logger.debug(
+      { userId: request.userId, bodyModel: model, resolved: chat.assignment, usedOverride: chat.hasUsecaseOverride },
+      'Resolved chat usecase assignment',
+    );
+
     // Check LLM cache with stampede protection
-    const cacheKey = buildLlmCacheKey(model, systemPrompt, sanitized);
+    const cacheKey = buildLlmCacheKey(chat.model, systemPrompt, sanitized, chat.provider);
     const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
       sendCachedSSE(reply, cached.content);
@@ -54,11 +62,6 @@ export async function llmDiagramRoutes(fastify: FastifyInstance) {
     try {
       // Issue #217: honor the per-use-case `chat` provider/model override when
       // the admin has set one. Fall back to per-user routing otherwise.
-      const chat = await resolveChatAssignment(model);
-      logger.debug(
-        { userId: request.userId, bodyModel: model, resolved: chat.assignment, usedOverride: chat.hasUsecaseOverride },
-        'Resolved chat usecase assignment',
-      );
       const diagramMessages = [
         { role: 'system' as const, content: systemPrompt },
         { role: 'user' as const, content: sanitized },

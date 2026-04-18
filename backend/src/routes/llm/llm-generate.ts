@@ -97,8 +97,18 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
       })),
     } : undefined;
 
+    // Issue #217: resolve the `chat` usecase assignment up-front so the cache
+    // key can include the resolved provider+model, and so the error-path audit
+    // can attribute failures to the resolved provider rather than the per-user
+    // default.
+    const chat = await resolveChatAssignment(model);
+    logger.debug(
+      { userId, bodyModel: model, resolved: chat.assignment, usedOverride: chat.hasUsecaseOverride },
+      'Resolved chat usecase assignment',
+    );
+
     // Check LLM cache with stampede protection
-    const cacheKey = buildLlmCacheKey(model, systemPrompt, userContent);
+    const cacheKey = buildLlmCacheKey(chat.model, systemPrompt, userContent, chat.provider);
     const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
       sendCachedSSE(reply, cached.content);
@@ -115,11 +125,6 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
 
       // Issue #217: honor the per-use-case `chat` provider/model override when
       // the admin has set one. Fall back to per-user routing otherwise.
-      const chat = await resolveChatAssignment(model);
-      logger.debug(
-        { userId, bodyModel: model, resolved: chat.assignment, usedOverride: chat.hasUsecaseOverride },
-        'Resolved chat usecase assignment',
-      );
       const generator = chat.hasUsecaseOverride
         ? providerStreamChatForUsecase(chat.provider, chat.model, generateMessages)
         : providerStreamChat(userId, model, generateMessages);
@@ -142,8 +147,8 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
       emitLlmAudit({
         userId,
         action: 'generate',
-        model,
-        provider: (await resolveUserProvider(userId)).type,
+        model: chat.hasUsecaseOverride ? chat.model : model,
+        provider: chat.hasUsecaseOverride ? chat.provider : (await resolveUserProvider(userId)).type,
         inputTokens: estimateTokens(generateMessages.map(m => m.content).join('')),
         outputTokens: 0,
         inputMessages: generateMessages.map(m => ({ role: m.role, contentLength: m.content.length })),

@@ -81,8 +81,18 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
       systemPrompt += `\n\nADDITIONAL USER INSTRUCTIONS:\n${sanitizedInstruction}`;
     }
 
+    // Issue #217: resolve the `chat` usecase assignment up-front so the cache
+    // key can include the resolved provider+model, and so the error-path audit
+    // can attribute failures to the resolved provider rather than the per-user
+    // default.
+    const chat = await resolveChatAssignment(model);
+    logger.debug(
+      { userId, bodyModel: model, resolved: chat.assignment, usedOverride: chat.hasUsecaseOverride },
+      'Resolved chat usecase assignment',
+    );
+
     // Check LLM cache with stampede protection
-    const cacheKey = buildLlmCacheKey(model, systemPrompt, improveContent);
+    const cacheKey = buildLlmCacheKey(chat.model, systemPrompt, improveContent, chat.provider);
     const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
       sendCachedSSE(reply, cached.content);
@@ -116,11 +126,6 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
 
       // Issue #217: honor the per-use-case `chat` provider/model override when
       // the admin has set one. Fall back to per-user routing otherwise.
-      const chat = await resolveChatAssignment(model);
-      logger.debug(
-        { userId, bodyModel: model, resolved: chat.assignment, usedOverride: chat.hasUsecaseOverride },
-        'Resolved chat usecase assignment',
-      );
       const generator = chat.hasUsecaseOverride
         ? providerStreamChatForUsecase(chat.provider, chat.model, improveMessages)
         : providerStreamChat(userId, model, improveMessages);
@@ -151,8 +156,8 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
       emitLlmAudit({
         userId,
         action: 'improve',
-        model,
-        provider: (await resolveUserProvider(userId)).type,
+        model: chat.hasUsecaseOverride ? chat.model : model,
+        provider: chat.hasUsecaseOverride ? chat.provider : (await resolveUserProvider(userId)).type,
         inputTokens: estimateTokens(improveMessages.map(m => m.content).join('')),
         outputTokens: 0,
         inputMessages: improveMessages.map(m => ({ role: m.role, contentLength: m.content.length })),
