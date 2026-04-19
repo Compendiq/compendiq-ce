@@ -367,8 +367,8 @@ function UsecaseAssignmentsSection({
 }: {
   assignments: UsecaseAssignments;
   onChange: (next: UsecaseAssignments) => void;
-  ollamaModels: Array<{ name: string }>;
-  openaiModels: Array<{ name: string }>;
+  ollamaModels: LlmModelOption[];
+  openaiModels: LlmModelOption[];
 }) {
   function update(usecase: LlmUsecase, patch: Partial<UsecaseAssignments[LlmUsecase]>) {
     onChange({ ...assignments, [usecase]: { ...assignments[usecase], ...patch } });
