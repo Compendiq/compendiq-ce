@@ -44,6 +44,23 @@ describe('AdminSettingsSchema (read)', () => {
       AdminSettingsSchema.parse({ ...validReadPayload, ftsLanguage: '' }),
     ).toThrow();
   });
+
+  it('rejects aiGuardrailNoFabrication > 5000 chars — symmetric with update schema', () => {
+    expect(() =>
+      AdminSettingsSchema.parse({
+        ...validReadPayload,
+        aiGuardrailNoFabrication: 'x'.repeat(5001),
+      }),
+    ).toThrow();
+  });
+
+  it('accepts aiGuardrailNoFabrication at 5000 chars', () => {
+    const parsed = AdminSettingsSchema.parse({
+      ...validReadPayload,
+      aiGuardrailNoFabrication: 'x'.repeat(5000),
+    });
+    expect(parsed.aiGuardrailNoFabrication).toHaveLength(5000);
+  });
 });
 
 describe('UpdateAdminSettingsSchema tri-state semantics', () => {
