@@ -14,6 +14,8 @@ interface LlmStatusResponse {
   embeddingModel: string;
 }
 
+type LlmModelOption = { name: string };
+
 export function LlmTab({ settings }: { settings: SettingsResponse }) {
   const queryClient = useQueryClient();
   const { data: adminSettings, isLoading: adminSettingsLoading } = useQuery<AdminSettings>({
@@ -286,10 +288,10 @@ export function LlmTab({ settings }: { settings: SettingsResponse }) {
             onChange={(e) => setEmbeddingModel(e.target.value)}
             className="glass-select"
           >
-            {!models.some((m: { name: string }) => m.name === embeddingModel) && embeddingModel && (
+            {!models.some((m: LlmModelOption) => m.name === embeddingModel) && embeddingModel && (
               <option value={embeddingModel}>{embeddingModel}</option>
             )}
-            {models.map((m: { name: string }) => (
+            {models.map((m: LlmModelOption) => (
               <option key={m.name} value={m.name}>{m.name}</option>
             ))}
           </select>
@@ -385,7 +387,7 @@ function UsecaseAssignmentsSection({
       <div className="space-y-2">
         {USECASES_ORDERED.map((usecase) => {
           const row = assignments[usecase];
-          const effectiveProvider = row.provider ?? row.resolved?.provider;
+          const effectiveProvider = row.provider ?? row.resolved?.provider ?? 'ollama';
           const models = effectiveProvider === 'openai' ? openaiModels : ollamaModels;
           return (
             <div key={usecase} className="grid grid-cols-1 gap-2 sm:grid-cols-[140px_180px_1fr_auto] sm:items-center">

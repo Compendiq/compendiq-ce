@@ -81,7 +81,7 @@ export const AdminSettingsSchema = z.object({
    */
   drawioEmbedUrl: z.string().url().nullable(),
   // AI Safety settings
-  aiGuardrailNoFabrication: z.string().optional(),
+  aiGuardrailNoFabrication: z.string().max(5000).optional(),
   aiGuardrailNoFabricationEnabled: z.boolean().optional(),
   aiOutputRuleStripReferences: z.boolean().optional(),
   aiOutputRuleReferenceAction: ReferenceActionSchema.optional(),
