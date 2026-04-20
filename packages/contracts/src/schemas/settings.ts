@@ -1,7 +1,5 @@
 import { z } from 'zod';
-
-export const LlmProviderSchema = z.enum(['ollama', 'openai']);
-export type LlmProviderType = z.infer<typeof LlmProviderSchema>;
+import { LlmProviderTypeSchema } from '../llm.js';
 
 /** Valid keys for custom system prompt overrides. */
 export const CUSTOM_PROMPT_KEYS = [
@@ -45,7 +43,7 @@ export const SettingsResponseSchema = z.object({
   hasConfluencePat: z.boolean(), // Never expose the actual PAT
   selectedSpaces: z.array(z.string()),
   ollamaModel: z.string(),
-  llmProvider: LlmProviderSchema,
+  llmProvider: LlmProviderTypeSchema,
   openaiBaseUrl: z.string().nullable(),
   hasOpenaiApiKey: z.boolean(), // Never expose the actual key
   openaiModel: z.string().nullable(),

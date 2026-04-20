@@ -1,6 +1,18 @@
 import { describe, it, expect } from 'vitest';
 import { UpdateAdminSettingsSchema, AdminSettingsSchema } from './admin.js';
 
+const PROVIDER_ID = '00000000-0000-4000-8000-000000000001';
+const resolvedAssignment = {
+  providerId: PROVIDER_ID,
+  providerName: 'Default',
+  model: 'qwen3.5',
+};
+const inheritAssignment = {
+  providerId: null,
+  model: null,
+  resolved: resolvedAssignment,
+};
+
 const validReadPayload = {
   llmProvider: 'ollama',
   ollamaModel: 'qwen3.5',
@@ -14,10 +26,11 @@ const validReadPayload = {
   embeddingChunkOverlap: 50,
   drawioEmbedUrl: null,
   usecaseAssignments: {
-    chat: { provider: null, model: null },
-    summary: { provider: null, model: null },
-    quality: { provider: null, model: null },
-    auto_tag: { provider: null, model: null },
+    chat: inheritAssignment,
+    summary: inheritAssignment,
+    quality: inheritAssignment,
+    auto_tag: inheritAssignment,
+    embedding: inheritAssignment,
   },
 } as const;
 
