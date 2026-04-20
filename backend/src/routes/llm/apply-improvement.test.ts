@@ -31,6 +31,20 @@ vi.mock('../../domains/llm/services/llm-provider.js', () => ({
   providerGenerateEmbedding: vi.fn(),
 }));
 
+// Defensive mock: llm-conversations.ts doesn't call the LLM directly, but
+// other route tests might be transitively imported. Safe no-op here.
+vi.mock('../../domains/llm/services/llm-provider-resolver.js', () => ({
+  resolveUsecase: vi.fn(),
+}));
+vi.mock('../../domains/llm/services/openai-compatible-client.js', () => ({
+  streamChat: vi.fn(),
+  chat: vi.fn(),
+  generateEmbedding: vi.fn(),
+  listModels: vi.fn(),
+  checkHealth: vi.fn(),
+  invalidateDispatcher: vi.fn(),
+}));
+
 vi.mock('../../core/services/circuit-breaker.js', () => ({
   getOllamaCircuitBreakerStatus: vi.fn().mockReturnValue({ chat: { state: 'CLOSED' }, embed: { state: 'CLOSED' }, list: { state: 'CLOSED' } }),
   getOpenaiCircuitBreakerStatus: vi.fn().mockReturnValue({ chat: { state: 'CLOSED' }, embed: { state: 'CLOSED' }, list: { state: 'CLOSED' } }),

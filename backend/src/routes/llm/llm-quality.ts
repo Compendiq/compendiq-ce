@@ -1,9 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { getSystemPrompt } from '../../domains/llm/services/ollama-service.js';
-import {
-  providerStreamChat,
-  providerStreamChatForUsecase,
-} from '../../domains/llm/services/llm-provider.js';
+import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
+import { streamChat } from '../../domains/llm/services/openai-compatible-client.js';
 import { LlmCache, buildLlmCacheKey } from '../../domains/llm/services/llm-cache.js';
 import { AnalyzeQualityRequestSchema } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
@@ -14,7 +12,6 @@ import {
   sendCachedSSE,
   streamSSE,
   sanitizeLlmInput,
-  resolveChatAssignment,
   LLM_STREAM_RATE_LIMIT,
   MAX_INPUT_LENGTH,
 } from './_helpers.js';
@@ -44,18 +41,16 @@ export async function llmQualityRoutes(fastify: FastifyInstance) {
 
     const systemPrompt = getSystemPrompt('analyze_quality') + multiPageSuffix;
 
-    // Issue #217: routes through the `chat` usecase, not `quality` — this is
-    // the interactive analyze-quality endpoint. The `quality` usecase governs
-    // the background quality worker (see domains/knowledge/services/quality-worker.ts).
-    // Resolved up-front so the cache key can include the resolved provider+model.
-    const chat = await resolveChatAssignment(model);
+    // Resolve the `quality` use-case up-front so the cache key can include the
+    // resolved provider+model. Queue + per-provider breakers wrap streamChat().
+    const { config: qualityConfig, model: resolvedModel } = await resolveUsecase('quality');
     logger.debug(
-      { userId, bodyModel: model, resolved: chat.assignment, usedOverride: chat.hasUsecaseOverride },
-      'Resolved chat usecase assignment',
+      { userId, bodyModel: model, providerId: qualityConfig.providerId, resolvedModel },
+      'Resolved quality usecase assignment',
     );
 
     // Check LLM cache with stampede protection
-    const cacheKey = buildLlmCacheKey(chat.model, systemPrompt, sanitized, chat.provider);
+    const cacheKey = buildLlmCacheKey(resolvedModel, systemPrompt, sanitized, qualityConfig.providerId);
     const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
       sendCachedSSE(reply, cached.content);
@@ -67,9 +62,7 @@ export async function llmQualityRoutes(fastify: FastifyInstance) {
         { role: 'system' as const, content: systemPrompt },
         { role: 'user' as const, content: sanitized },
       ];
-      const generator = chat.hasUsecaseOverride
-        ? providerStreamChatForUsecase(chat.provider, chat.model, qualityMessages)
-        : providerStreamChat(userId, model, qualityMessages);
+      const generator = streamChat(qualityConfig, resolvedModel, qualityMessages);
 
       await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
     } finally {

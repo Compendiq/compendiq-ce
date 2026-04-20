@@ -2,17 +2,46 @@ import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vites
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 
-// Mock ollama-service
-const mockStreamChat = vi.fn();
+// Mock ollama-service (getSystemPrompt is still used from here)
 const mockGetSystemPrompt = vi.fn().mockReturnValue('You are a quality analyst');
 
 vi.mock('../../domains/llm/services/ollama-service.js', () => ({
   listModels: vi.fn(),
   checkHealth: vi.fn(),
-  streamChat: (...args: unknown[]) => mockStreamChat(...args),
+  streamChat: vi.fn(),
   chat: vi.fn(),
   getSystemPrompt: (...args: unknown[]) => mockGetSystemPrompt(...args),
   generateEmbedding: vi.fn(),
+}));
+
+// Mock llm-provider-resolver
+const mockResolveUsecase = vi.fn().mockResolvedValue({
+  config: {
+    providerId: 'p1',
+    baseUrl: 'http://x/v1',
+    apiKey: null,
+    authType: 'none',
+    verifySsl: true,
+    name: 'X',
+    defaultModel: 'm',
+  },
+  model: 'm',
+});
+
+vi.mock('../../domains/llm/services/llm-provider-resolver.js', () => ({
+  resolveUsecase: (...args: unknown[]) => mockResolveUsecase(...args),
+}));
+
+// Mock openai-compatible-client (streamChat — queue + breakers wrapped inside)
+const mockStreamChatClient = vi.fn();
+
+vi.mock('../../domains/llm/services/openai-compatible-client.js', () => ({
+  streamChat: (...args: unknown[]) => mockStreamChatClient(...args),
+  chat: vi.fn(),
+  generateEmbedding: vi.fn(),
+  listModels: vi.fn(),
+  checkHealth: vi.fn(),
+  invalidateDispatcher: vi.fn(),
 }));
 
 vi.mock('../../core/services/circuit-breaker.js', () => ({
@@ -150,7 +179,7 @@ describe('POST /api/llm/analyze-quality', () => {
       yield { content: '## Overall Quality Score: 75/100\n', done: false };
       yield { content: '## Completeness: 80/100\n', done: true };
     }
-    mockStreamChat.mockReturnValue(mockGenerator());
+    mockStreamChatClient.mockReturnValue(mockGenerator());
 
     const response = await app.inject({
       method: 'POST',
@@ -176,7 +205,7 @@ describe('POST /api/llm/analyze-quality', () => {
     async function* mockGenerator() {
       yield { content: '## Overall Quality Score: 85/100', done: true };
     }
-    mockStreamChat.mockReturnValue(mockGenerator());
+    mockStreamChatClient.mockReturnValue(mockGenerator());
 
     await app.inject({
       method: 'POST',
@@ -207,14 +236,14 @@ describe('POST /api/llm/analyze-quality', () => {
     const data = JSON.parse(lines[0].replace('data: ', ''));
     expect(data.cached).toBe(true);
     expect(data.content).toContain('Overall Quality Score');
-    expect(mockStreamChat).not.toHaveBeenCalled();
+    expect(mockStreamChatClient).not.toHaveBeenCalled();
   });
 
   it('should accept optional pageId', async () => {
     async function* mockGenerator() {
       yield { content: 'Analysis complete', done: true };
     }
-    mockStreamChat.mockReturnValue(mockGenerator());
+    mockStreamChatClient.mockReturnValue(mockGenerator());
 
     const response = await app.inject({
       method: 'POST',
