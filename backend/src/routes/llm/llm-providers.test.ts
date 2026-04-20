@@ -1,5 +1,18 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
+
+// Short-circuit DNS lookups performed by the SSRF guard — the mutations tests
+// POST providers like `http://a` / `http://b` which would otherwise trigger
+// real DNS resolution that hangs for ~25s per call against public resolvers.
+// The guard swallows DNS errors silently, so a fake ENOTFOUND is safe here.
+vi.mock('node:dns/promises', () => ({
+  lookup: vi.fn(async () => {
+    const err = new Error('getaddrinfo ENOTFOUND (mocked)') as NodeJS.ErrnoException;
+    err.code = 'ENOTFOUND';
+    throw err;
+  }),
+}));
+
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../test-db-helper.js';
 import { query } from '../../core/db/postgres.js';
 import { buildApp } from '../../app.js';
@@ -25,26 +38,31 @@ async function createAdminAndLogin(): Promise<{ token: string; userId: string }>
 
 const dbAvailable = await isDbAvailable();
 
+// Shared app + DB lifecycle — one Fastify instance + one pool across describes
+// so the second block doesn't try to run against a closed pg pool.
+let app: FastifyInstance;
+let adminToken: string;
+
+beforeAll(async () => {
+  if (!dbAvailable) return;
+  await setupTestDb();
+  app = await buildApp();
+  await app.ready();
+}, 30_000);
+
+afterAll(async () => {
+  if (!dbAvailable) return;
+  await app?.close();
+  await teardownTestDb();
+});
+
+beforeEach(async () => {
+  if (!dbAvailable) return;
+  await truncateAllTables();
+  ({ token: adminToken } = await createAdminAndLogin());
+});
+
 describe.skipIf(!dbAvailable)('GET /api/admin/llm-providers', () => {
-  let app: FastifyInstance;
-  let adminToken: string;
-
-  beforeAll(async () => {
-    await setupTestDb();
-    app = await buildApp();
-    await app.ready();
-  }, 30_000);
-
-  afterAll(async () => {
-    await app?.close();
-    await teardownTestDb();
-  });
-
-  beforeEach(async () => {
-    await truncateAllTables();
-    ({ token: adminToken } = await createAdminAndLogin());
-  });
-
   it('returns [] when no providers', async () => {
     const r = await app.inject({
       method: 'GET',
@@ -69,5 +87,76 @@ describe.skipIf(!dbAvailable)('GET /api/admin/llm-providers', () => {
     const body = r.json();
     expect(body[0]).toMatchObject({ name: 'X', hasApiKey: true });
     expect(JSON.stringify(body)).not.toContain('encrypted-sekret');
+  });
+});
+
+describe.skipIf(!dbAvailable)('mutations', () => {
+  beforeEach(async () => {
+    await truncateAllTables();
+    ({ token: adminToken } = await createAdminAndLogin());
+  });
+
+  it('POST returns 201 and the created provider', async () => {
+    const r = await app.inject({
+      method: 'POST', url: '/api/admin/llm-providers',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({ name: 'A', baseUrl: 'http://a', authType: 'none', verifySsl: true }),
+    });
+    expect(r.statusCode).toBe(201);
+    expect(r.json()).toMatchObject({ name: 'A', baseUrl: 'http://a/v1', isDefault: false });
+  });
+
+  it('PATCH with omitted apiKey keeps the stored key', async () => {
+    const create = await app.inject({
+      method: 'POST', url: '/api/admin/llm-providers',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({ name: 'A', baseUrl: 'http://a/v1', apiKey: 'sekret', authType: 'bearer', verifySsl: true }),
+    });
+    const { id } = create.json();
+    const patch = await app.inject({
+      method: 'PATCH', url: `/api/admin/llm-providers/${id}`,
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({ defaultModel: 'm2' }),
+    });
+    expect(patch.statusCode).toBe(200);
+    expect(patch.json()).toMatchObject({ defaultModel: 'm2', hasApiKey: true });
+  });
+
+  it('DELETE returns 409 when provider is default', async () => {
+    const create = await app.inject({
+      method: 'POST', url: '/api/admin/llm-providers',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({ name: 'A', baseUrl: 'http://a/v1', authType: 'none', verifySsl: true }),
+    });
+    const { id } = create.json();
+    await app.inject({
+      method: 'POST', url: `/api/admin/llm-providers/${id}/set-default`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const del = await app.inject({
+      method: 'DELETE', url: `/api/admin/llm-providers/${id}`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(del.statusCode).toBe(409);
+    expect(del.json().error).toMatch(/default/i);
+  });
+
+  it('DELETE returns 409 when provider is referenced by a use case', async () => {
+    const create = await app.inject({
+      method: 'POST', url: '/api/admin/llm-providers',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({ name: 'B', baseUrl: 'http://b/v1', authType: 'none', verifySsl: true }),
+    });
+    const { id } = create.json();
+    await query(
+      `INSERT INTO llm_usecase_assignments (usecase, provider_id, model) VALUES ('summary', $1, 'm')`,
+      [id],
+    );
+    const del = await app.inject({
+      method: 'DELETE', url: `/api/admin/llm-providers/${id}`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(del.statusCode).toBe(409);
+    expect(del.json().error).toMatch(/referenced/i);
   });
 });
