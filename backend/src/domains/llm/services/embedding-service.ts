@@ -889,3 +889,13 @@ export async function reEmbedAll(): Promise<void> {
 
   await processDirtyPages(systemUserId);
 }
+
+/**
+ * Stub — replaced in Task 30 with full BullMQ-backed implementation that probes
+ * the new embedding dimensions and runs an ALTER TABLE on `page_embeddings` when
+ * the provider's embedding vector length changes. Issue #257 tracks the full
+ * BullMQ wiring as a follow-up.
+ */
+export async function enqueueReembedAll(): Promise<string> {
+  return `reembed-${Date.now()}`;
+}

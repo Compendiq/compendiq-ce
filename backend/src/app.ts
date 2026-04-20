@@ -35,6 +35,7 @@ import { llmModelRoutes } from './routes/llm/llm-models.js';
 import { llmAdminRoutes } from './routes/llm/llm-admin.js';
 import { llmProviderRoutes } from './routes/llm/llm-providers.js';
 import { llmUsecaseRoutes } from './routes/llm/llm-usecases.js';
+import { llmEmbeddingReembedRoutes } from './routes/llm/llm-embedding-reembed.js';
 import { llmPdfRoutes } from './routes/llm/llm-pdf.js';
 // Knowledge routes
 import { pagesCrudRoutes } from './routes/knowledge/pages-crud.js';
@@ -265,6 +266,7 @@ export async function buildApp() {
   await app.register(llmAdminRoutes, { prefix: '/api' });
   await app.register(llmProviderRoutes, { prefix: '/api' });
   await app.register(llmUsecaseRoutes, { prefix: '/api' });
+  await app.register(llmEmbeddingReembedRoutes, { prefix: '/api' });
   await app.register(llmPdfRoutes, { prefix: '/api' });
 
   // Knowledge routes
