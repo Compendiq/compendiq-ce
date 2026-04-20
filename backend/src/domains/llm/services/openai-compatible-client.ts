@@ -102,3 +102,18 @@ export async function* streamChat(
   }
   yield { content: '', done: true };
 }
+
+export async function generateEmbedding(
+  cfg: ProviderConfig, model: string, text: string | string[],
+): Promise<number[][]> {
+  const input = Array.isArray(text) ? text : [text];
+  const res = await undiciFetch(`${cfg.baseUrl}/embeddings`, {
+    method: 'POST',
+    headers: headers(cfg),
+    body: JSON.stringify({ model, input }),
+    dispatcher: dispatcherFor(cfg),
+  });
+  if (!res.ok) throw new Error(`generateEmbedding HTTP ${res.status}`);
+  const body = await res.json() as { data: Array<{ embedding: number[] }> };
+  return body.data.map((d) => d.embedding);
+}

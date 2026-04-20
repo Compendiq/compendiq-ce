@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { checkHealth, listModels, chat, streamChat, type ProviderConfig } from './openai-compatible-client.js';
+import { checkHealth, listModels, chat, streamChat, generateEmbedding, type ProviderConfig } from './openai-compatible-client.js';
 
 let srv: Server;
 let baseUrl: string;
@@ -86,5 +86,33 @@ describe('openai-compatible-client — chat', () => {
     }
     expect(out.filter(Boolean).join('')).toBe('hello');
     expect(done).toBe(true);
+  });
+});
+
+describe('openai-compatible-client — embeddings', () => {
+  let embSrv: Server;
+  let embBase: string;
+  beforeAll(async () => {
+    embSrv = createServer((req, res) => {
+      if (req.url === '/v1/embeddings') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ data: [{ embedding: [0.1, 0.2, 0.3] }, { embedding: [0.4, 0.5, 0.6] }] }));
+        return;
+      }
+      res.writeHead(404); res.end();
+    });
+    await new Promise<void>((r) => embSrv.listen(0, r));
+    const { port } = embSrv.address() as AddressInfo;
+    embBase = `http://127.0.0.1:${port}/v1`;
+  });
+  afterAll(() => new Promise<void>((r) => embSrv.close(() => r())));
+
+  it('returns embedding arrays for an array input', async () => {
+    const r = await generateEmbedding({ ...cfg, baseUrl: embBase }, 'bge-m3', ['a', 'b']);
+    expect(r).toEqual([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]);
+  });
+  it('wraps string input as single-element array', async () => {
+    const r = await generateEmbedding({ ...cfg, baseUrl: embBase }, 'bge-m3', 'a');
+    expect(r).toHaveLength(2);  // fake server returns both rows regardless
   });
 });
