@@ -28,14 +28,14 @@
 
 import { query } from '../../../core/db/postgres.js';
 import { getSystemPrompt } from '../../llm/services/ollama-service.js';
-import { providerStreamChatForUsecase } from '../../llm/services/llm-provider.js';
+import { resolveUsecase } from '../../llm/services/llm-provider-resolver.js';
+import {
+  streamChat,
+  type ProviderConfig,
+} from '../../llm/services/openai-compatible-client.js';
 import { sanitizeLlmInput } from '../../../core/utils/sanitize-llm-input.js';
 import { htmlToMarkdown } from '../../../core/services/content-converter.js';
 import { logger } from '../../../core/utils/logger.js';
-import {
-  getUsecaseLlmAssignment,
-  type UsecaseLlmAssignment,
-} from '../../../core/services/admin-settings-service.js';
 import { acquireWorkerLock, releaseWorkerLock } from '../../../core/services/redis-cache.js';
 
 // ─── Configuration ────────────────────────────────────────────────────────────
@@ -43,39 +43,22 @@ import { acquireWorkerLock, releaseWorkerLock } from '../../../core/services/red
 const QUALITY_BATCH_SIZE = parseInt(process.env.QUALITY_BATCH_SIZE ?? '5', 10);
 const MAX_RETRIES = 3;
 
-/** Hardcoded fallback used only when nothing is configured anywhere — keeps a
- *  fresh install working. See plan §3b. */
-const QUALITY_MODEL_HARDCODED_FALLBACK = 'qwen3:4b';
+interface QualityAssignment {
+  config: ProviderConfig & { id: string; name: string; defaultModel: string | null };
+  model: string;
+}
 
 /**
- * Resolve the `{provider, model}` pair for the quality use case.
- *
- * Fallback order (issue #214):
- *   1. Per-use-case override in `admin_settings`
- *   2. Shared LLM default in `admin_settings`
- *   3. `QUALITY_MODEL` / `DEFAULT_LLM_MODEL` env bootstrap (one-shot seeded into DB)
- *   4. Hardcoded `'qwen3:4b'` — **only applied when provider is `ollama`**.
- *      `qwen3:4b` is an Ollama-shaped model name; sending it to OpenAI would
- *      fail with a 404 the worker can't meaningfully recover from. When the
- *      resolved provider is anything else, model stays `''` and the batch
- *      skips with a log (mirrors summary-worker's no-model-configured path).
- *
- * Provider follows the resolver cascade ending in `'ollama'` as default.
- * No in-process cache — picks up DB changes without restart.
+ * Resolve the `{config, model}` pair for the quality use case via the
+ * use-case resolver. Pulls from `llm_usecase_assignments` + `llm_providers`
+ * tables; picks up runtime admin edits without restart.
  */
-async function resolveQualityAssignment(): Promise<UsecaseLlmAssignment> {
-  const assignment = await getUsecaseLlmAssignment('quality');
-  if (assignment.model && assignment.model.length > 0) return assignment;
-  if (assignment.provider === 'ollama') {
-    return {
-      provider: assignment.provider,
-      model: QUALITY_MODEL_HARDCODED_FALLBACK,
-      source: { ...assignment.source, model: 'default' },
-    };
+async function resolveQualityAssignment(): Promise<QualityAssignment | null> {
+  try {
+    return await resolveUsecase('quality');
+  } catch {
+    return null;
   }
-  // Non-ollama provider with no model configured: return empty model so the
-  // batch skips instead of sending an Ollama-shaped default to the OpenAI API.
-  return assignment;
 }
 
 // ─── State ────────────────────────────────────────────────────────────────────
@@ -146,16 +129,15 @@ export function parseQualityScores(text: string): QualityScores | null {
  * Collect the full streamed response from the quality analysis LLM call.
  * This is an internal batch job — no SSE, just accumulate chunks.
  *
- * Routes via `providerStreamChatForUsecase` so the per-use-case provider
- * override is honored (issue #214), not just the model.
+ * Routes via `streamChat` against the resolved use-case provider config.
  */
 async function collectStreamedResponse(
-  assignment: UsecaseLlmAssignment,
+  assignment: QualityAssignment,
   content: string,
 ): Promise<string> {
   const { sanitized } = sanitizeLlmInput(content);
   const systemPrompt = getSystemPrompt('analyze_quality');
-  const generator = providerStreamChatForUsecase(assignment.provider, assignment.model, [
+  const generator = streamChat(assignment.config, assignment.model, [
     { role: 'system', content: systemPrompt },
     { role: 'user', content: sanitized },
   ]);
@@ -172,7 +154,7 @@ async function collectStreamedResponse(
  */
 async function analyzePageQuality(
   pageId: number,
-  assignment: UsecaseLlmAssignment,
+  assignment: QualityAssignment,
   bodyHtml: string,
   bodyText: string,
   currentRetryCount: number = 0,
@@ -273,23 +255,22 @@ async function analyzePageQuality(
  */
 export async function processBatch(): Promise<number> {
   lastRunAt = new Date();
-  // Resolve `{provider, model}` at runtime — no cache, picks up admin edits
-  // immediately (issue #214).
+  // Resolve `{config, model}` at runtime — no cache, picks up admin edits
+  // immediately via the provider cache-bus.
   const assignment = await resolveQualityAssignment();
 
-  // Mirror summary-worker: when no model can be resolved for the configured
-  // provider, mark pending pages as skipped and return rather than making a
-  // call with an empty model name (which would fail downstream and leave
-  // pages stuck in 'pending'). Hit when provider is `openai` but neither a
-  // use-case model nor a shared `openai_model` is configured.
-  if (!assignment.model) {
+  // When no provider/model can be resolved, mark pending pages as skipped
+  // and return rather than making a call with an empty model name (which
+  // would fail downstream and leave pages stuck in 'pending'). Hit when no
+  // default provider is configured or the quality use case has no model set.
+  if (!assignment || !assignment.model) {
     const flipped = await query(
       `UPDATE pages SET quality_status = 'skipped'
        WHERE quality_status = 'pending' AND deleted_at IS NULL`,
     );
     logger.warn(
-      { provider: assignment.provider, flippedToSkipped: flipped.rowCount ?? 0 },
-      'No quality model configured for the resolved provider (Settings → LLM → Use case assignments, or QUALITY_MODEL / DEFAULT_LLM_MODEL as deprecated bootstrap env vars). Marked pending pages as skipped — admin must call forceQualityRescan() to reprocess after fixing the config.',
+      { providerId: assignment?.config.providerId, flippedToSkipped: flipped.rowCount ?? 0 },
+      'No quality provider/model configured (Settings → LLM → Use case assignments). Marked pending pages as skipped — admin must call forceQualityRescan() to reprocess after fixing the config.',
     );
     return 0;
   }
@@ -521,6 +502,6 @@ export async function getQualityStatus(): Promise<{
     isProcessing,
     lastRunAt: lastRunAt ? lastRunAt.toISOString() : null,
     intervalMinutes,
-    model: assignment.model,
+    model: assignment?.model ?? '',
   };
 }

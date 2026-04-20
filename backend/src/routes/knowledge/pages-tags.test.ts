@@ -32,10 +32,10 @@ vi.mock('../../domains/knowledge/services/auto-tagger.js', () => ({
   ALLOWED_TAGS: ['architecture', 'deployment', 'troubleshooting', 'how-to', 'api', 'security', 'database', 'monitoring', 'configuration', 'onboarding', 'policy', 'runbook'],
 }));
 
-// --- Mock: admin-settings-service (issue #214 auto_tag resolver) ---
-const mockGetUsecaseLlmAssignment = vi.fn();
-vi.mock('../../core/services/admin-settings-service.js', () => ({
-  getUsecaseLlmAssignment: (...args: unknown[]) => mockGetUsecaseLlmAssignment(...args),
+// --- Mock: llm-provider-resolver (auto_tag use-case resolver) ---
+const mockResolveUsecase = vi.fn();
+vi.mock('../../domains/llm/services/llm-provider-resolver.js', () => ({
+  resolveUsecase: (...args: unknown[]) => mockResolveUsecase(...args),
 }));
 
 // --- Mock: logger ---
@@ -374,11 +374,14 @@ describe('POST /api/pages/:id/auto-tag — resolver fallback (#214)', () => {
     vi.clearAllMocks();
   });
 
-  it('consults the resolver when the client omits `model` and routes with the resolved provider', async () => {
-    mockGetUsecaseLlmAssignment.mockResolvedValueOnce({
-      provider: 'openai',
+  it('consults the resolver when the client omits `model` and routes with the resolved model', async () => {
+    mockResolveUsecase.mockResolvedValueOnce({
+      config: {
+        providerId: 'p1', id: 'p1', name: 'OpenAI',
+        baseUrl: 'https://api.openai.com/v1', apiKey: 'sk',
+        authType: 'bearer', verifySsl: true, defaultModel: 'resolved-auto-tag-model',
+      },
       model: 'resolved-auto-tag-model',
-      source: { provider: 'usecase', model: 'usecase' },
     });
     mockAutoTagPage.mockResolvedValueOnce({ suggestedTags: [], existingLabels: [] });
 
@@ -389,24 +392,23 @@ describe('POST /api/pages/:id/auto-tag — resolver fallback (#214)', () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(mockGetUsecaseLlmAssignment).toHaveBeenCalledWith('auto_tag');
-    // The resolved provider + model must have been passed through to autoTagPage
-    // so the per-use-case provider override is honored (#214 review finding).
+    expect(mockResolveUsecase).toHaveBeenCalledWith('auto_tag');
+    // The resolved model is passed through to autoTagPage as the override.
     expect(mockAutoTagPage).toHaveBeenCalledWith(
       'test-user-id',
       'page-1',
-      'openai',
       'resolved-auto-tag-model',
     );
   });
 
-  it('uses the explicit `model` from the body but still resolves the provider from the use-case assignment', async () => {
-    // Body model overrides the resolved model — but we still consult the
-    // resolver to learn which provider to route through.
-    mockGetUsecaseLlmAssignment.mockResolvedValueOnce({
-      provider: 'openai',
+  it('uses the explicit `model` from the body when provided', async () => {
+    mockResolveUsecase.mockResolvedValueOnce({
+      config: {
+        providerId: 'p1', id: 'p1', name: 'OpenAI',
+        baseUrl: 'https://api.openai.com/v1', apiKey: 'sk',
+        authType: 'bearer', verifySsl: true, defaultModel: 'inherited-model',
+      },
       model: 'inherited-model',
-      source: { provider: 'usecase', model: 'shared' },
     });
     mockAutoTagPage.mockResolvedValueOnce({ suggestedTags: [], existingLabels: [] });
 
@@ -417,21 +419,21 @@ describe('POST /api/pages/:id/auto-tag — resolver fallback (#214)', () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(mockGetUsecaseLlmAssignment).toHaveBeenCalledWith('auto_tag');
-    // Body model wins, but resolved provider is used.
     expect(mockAutoTagPage).toHaveBeenCalledWith(
       'test-user-id',
       'page-1',
-      'openai',
       'explicit-model',
     );
   });
 
   it('returns 400 when `model` is omitted and the resolver returns empty', async () => {
-    mockGetUsecaseLlmAssignment.mockResolvedValueOnce({
-      provider: 'ollama',
+    mockResolveUsecase.mockResolvedValueOnce({
+      config: {
+        providerId: 'p1', id: 'p1', name: 'X',
+        baseUrl: 'http://x/v1', apiKey: null,
+        authType: 'none', verifySsl: true, defaultModel: null,
+      },
       model: '',
-      source: { provider: 'default', model: 'default' },
     });
 
     const response = await app.inject({

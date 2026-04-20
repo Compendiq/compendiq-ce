@@ -1,4 +1,5 @@
-import { providerChatForUsecase, type LlmProviderType } from '../../llm/services/llm-provider.js';
+import { resolveUsecase } from '../../llm/services/llm-provider-resolver.js';
+import { chat } from '../../llm/services/openai-compatible-client.js';
 import { htmlToMarkdown } from '../../../core/services/content-converter.js';
 import { sanitizeLlmInput } from '../../../core/utils/sanitize-llm-input.js';
 import { query } from '../../../core/db/postgres.js';
@@ -29,17 +30,16 @@ const SYSTEM_PROMPT = `You are a document classifier. Given the following articl
  * Auto-tag a page's content using LLM zero-shot classification.
  * Returns an array of suggested tags from the allowed set.
  *
- * Routes via `providerChatForUsecase(provider, model, ...)` so the per-use-case
- * provider override (from `getUsecaseLlmAssignment('auto_tag')`) is honored —
- * not just the model (issue #214). `userId` is kept in the signature for
- * future audit/logging hooks but is no longer used for provider resolution.
+ * Resolves the `auto_tag` use-case to a concrete provider+model via the
+ * use-case resolver. An optional `modelOverride` lets callers (e.g. routes)
+ * substitute the model while still honoring the resolved provider. `userId`
+ * is kept in the signature for future audit/logging hooks but is not used
+ * for provider resolution.
  */
 export async function autoTagContent(
   _userId: string,
-  provider: LlmProviderType,
-  model: string,
   content: string,
-  options: { isHtml?: boolean } = {},
+  options: { isHtml?: boolean; modelOverride?: string } = {},
 ): Promise<AllowedTag[]> {
   // Convert HTML to markdown if needed
   let text = options.isHtml ? htmlToMarkdown(content) : content;
@@ -51,9 +51,15 @@ export async function autoTagContent(
 
   const { sanitized } = sanitizeLlmInput(text);
 
+  const { config, model: resolvedModel } = await resolveUsecase('auto_tag');
+  const effectiveModel = options.modelOverride || resolvedModel;
+  if (!effectiveModel) {
+    throw new Error('Auto-tag failed: no model configured for auto_tag use case');
+  }
+
   let response: string;
   try {
-    response = await providerChatForUsecase(provider, model, [
+    response = await chat(config, effectiveModel, [
       { role: 'system', content: SYSTEM_PROMPT },
       { role: 'user', content: sanitized },
     ]);
@@ -134,8 +140,7 @@ export function parseTagResponse(response: string): AllowedTag[] {
 export async function autoTagPage(
   userId: string,
   pageId: string,
-  provider: LlmProviderType,
-  model: string,
+  modelOverride?: string,
 ): Promise<{ suggestedTags: AllowedTag[]; existingLabels: string[] }> {
   const isNumericId = /^\d+$/.test(pageId);
   const result = await query<{
@@ -155,7 +160,7 @@ export async function autoTagPage(
     return { suggestedTags: [], existingLabels: labels ?? [] };
   }
 
-  const suggestedTags = await autoTagContent(userId, provider, model, body_html, { isHtml: true });
+  const suggestedTags = await autoTagContent(userId, body_html, { isHtml: true, modelOverride });
 
   return {
     suggestedTags,
@@ -215,8 +220,7 @@ export async function applyTags(
  */
 export async function autoTagAllPages(
   userId: string,
-  provider: LlmProviderType,
-  model: string,
+  modelOverride?: string,
 ): Promise<{ tagged: number; errors: number }> {
   // Include both Confluence pages (filtered by RBAC space access) and
   // standalone/local pages (space_key IS NULL) so locally-created pages
@@ -239,7 +243,7 @@ export async function autoTagAllPages(
 
   for (const page of pages.rows) {
     try {
-      const suggestedTags = await autoTagContent(userId, provider, model, page.body_html, { isHtml: true });
+      const suggestedTags = await autoTagContent(userId, page.body_html, { isHtml: true, modelOverride });
       if (suggestedTags.length > 0) {
         await applyTags(userId, String(page.id), suggestedTags);
         tagged++;

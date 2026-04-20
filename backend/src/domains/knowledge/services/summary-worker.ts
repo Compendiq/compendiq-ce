@@ -30,13 +30,13 @@
 import crypto from 'node:crypto';
 import { query } from '../../../core/db/postgres.js';
 import { getSystemPrompt } from '../../llm/services/ollama-service.js';
-import { providerStreamChatForUsecase } from '../../llm/services/llm-provider.js';
+import { resolveUsecase } from '../../llm/services/llm-provider-resolver.js';
+import {
+  streamChat,
+  type ProviderConfig,
+} from '../../llm/services/openai-compatible-client.js';
 import { sanitizeLlmInput } from '../../../core/utils/sanitize-llm-input.js';
 import { logger } from '../../../core/utils/logger.js';
-import {
-  getUsecaseLlmAssignment,
-  type UsecaseLlmAssignment,
-} from '../../../core/services/admin-settings-service.js';
 import { acquireWorkerLock, releaseWorkerLock } from '../../../core/services/redis-cache.js';
 
 // ---------------------------------------------------------------------------
@@ -80,15 +80,22 @@ export interface SummaryStatus {
   model: string;
 }
 
+interface SummaryAssignment {
+  config: ProviderConfig & { id: string; name: string; defaultModel: string | null };
+  model: string;
+}
+
 /**
- * Resolve the `{provider, model}` pair for the summary use case via the
- * admin-settings resolver (issue #214). Env vars (`SUMMARY_MODEL`,
- * `DEFAULT_LLM_MODEL`) act as a one-shot bootstrap only — the resolver
- * seeds them into `admin_settings` on first read so subsequent runtime
- * admin edits take effect without a restart.
+ * Resolve the `{config, model}` pair for the summary use case via the
+ * use-case resolver (multi-provider). The resolver reads from
+ * `llm_usecase_assignments` + `llm_providers` tables.
  */
-async function resolveSummaryAssignment(): Promise<UsecaseLlmAssignment> {
-  return getUsecaseLlmAssignment('summary');
+async function resolveSummaryAssignment(): Promise<SummaryAssignment | null> {
+  try {
+    return await resolveUsecase('summary');
+  } catch {
+    return null;
+  }
 }
 
 export async function getSummaryStatus(): Promise<SummaryStatus> {
@@ -126,7 +133,7 @@ export async function getSummaryStatus(): Promise<SummaryStatus> {
     isProcessing,
     lastRunAt: lastRunAt ? lastRunAt.toISOString() : null,
     intervalMinutes: SUMMARY_CHECK_INTERVAL_MINUTES,
-    model: assignment.model,
+    model: assignment?.model ?? '',
   };
 }
 
@@ -212,10 +219,10 @@ const SUMMARIZE_LENGTH_INSTRUCTION_SHORT = 'Provide a brief 2-3 sentence summary
  */
 async function summarizePage(
   candidate: SummaryCandidate,
-  assignment: UsecaseLlmAssignment,
+  assignment: SummaryAssignment,
 ): Promise<void> {
   const { id, body_text, title } = candidate;
-  const { provider, model } = assignment;
+  const { config, model } = assignment;
 
   // Skip empty/short content
   if (!body_text || body_text.length < MIN_BODY_LENGTH) {
@@ -242,7 +249,7 @@ async function summarizePage(
     // Build summarize messages here (rather than via ollama-service.summarizeContent)
     // so we can route through the use-case provider override.
     const { sanitized } = sanitizeLlmInput(body_text);
-    const generator = providerStreamChatForUsecase(provider, model, [
+    const generator = streamChat(config, model, [
       {
         role: 'system',
         content: `${getSystemPrompt('summarize')} ${SUMMARIZE_LENGTH_INSTRUCTION_SHORT}`,
@@ -310,27 +317,25 @@ export async function runSummaryBatch(
 ): Promise<{ processed: number; errors: number }> {
   lastRunAt = new Date();
 
-  // Resolve the full assignment so the worker honors a use-case provider
-  // override (not just the model).
+  // Resolve the full assignment (config + model) via the use-case resolver.
   const assignment = await resolveSummaryAssignment();
-  const effectiveModel = model || assignment.model;
+  const effectiveModel = model || assignment?.model || '';
 
-  if (!effectiveModel) {
+  if (!assignment || !effectiveModel) {
     const flipped = await query(
       `UPDATE pages SET summary_status = 'skipped'
        WHERE summary_status = 'pending' AND deleted_at IS NULL`,
     );
     logger.warn(
-      { provider: assignment.provider, flippedToSkipped: flipped.rowCount ?? 0 },
-      'No summary model configured in admin settings (Settings → LLM → Use case assignments, or SUMMARY_MODEL / DEFAULT_LLM_MODEL as deprecated bootstrap env vars). Marked pending pages as skipped — admin must POST /api/llm/summary-rescan to reprocess after fixing the config.',
+      { providerId: assignment?.config.providerId, flippedToSkipped: flipped.rowCount ?? 0 },
+      'No summary provider/model configured (Settings → LLM → Use case assignments). Marked pending pages as skipped — admin must POST /api/llm/summary-rescan to reprocess after fixing the config.',
     );
     return { processed: 0, errors: 0 };
   }
 
-  const effectiveAssignment: UsecaseLlmAssignment = {
-    provider: assignment.provider,
+  const effectiveAssignment: SummaryAssignment = {
+    config: assignment.config,
     model: effectiveModel,
-    source: assignment.source,
   };
 
   // Phase 1: Detect content changes via timestamp and mark as pending.
