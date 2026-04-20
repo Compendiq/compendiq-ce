@@ -43,7 +43,7 @@ Two new tables replace the flat `admin_settings` keys for LLM configuration.
 CREATE TABLE llm_providers (
   id             UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
   name           TEXT         NOT NULL UNIQUE,
-  base_url       TEXT         NOT NULL,                    -- normalized to end with /v1
+  base_url       TEXT         NOT NULL,                    -- write-path normalizes to end with /v1
   api_key        TEXT         NULL,                        -- AES-256-GCM via encryptPat()
   auth_type      TEXT         NOT NULL DEFAULT 'bearer',   -- 'bearer' | 'none'
   verify_ssl     BOOLEAN      NOT NULL DEFAULT TRUE,
@@ -181,6 +181,9 @@ re-invoking while a job is pending returns the existing `jobId`.
   plugin (same bucket as other admin discovery endpoints).
 - `baseUrl` validated through `core/utils/ssrf-guard.ts`; rejects loopback +
   RFC1918 unless `LLM_ALLOW_PRIVATE_URLS=true` (already-in-use escape hatch).
+  Before persisting, `baseUrl` is trimmed, has trailing slashes stripped, and
+  `/v1` appended if missing — matching today's `getConfig` behavior in
+  `openai-service.ts`.
 
 ## 5. Service layer & resolver
 
@@ -345,17 +348,22 @@ Single file, idempotent, runs inside a transaction:
 1. `CREATE TABLE llm_providers (…)` and `llm_usecase_assignments (…)` as §3.
 2. `CREATE UNIQUE INDEX llm_providers_one_default …`.
 3. **Seed provider rows** from existing `admin_settings` via an anonymous
-   `DO $$ … $$` block:
-   - If `openai_base_url` OR `openai_api_key` is present → insert a row named
-     `"OpenAI"` with those values. `api_key` is copied as-is (already AES-encrypted).
-     `default_model` ← `openai_model`.
-   - Always insert a row named `"Ollama"` with `base_url =
-     'http://localhost:11434/v1'` (sentinel). The TS bootstrap in §7.2 replaces
-     the sentinel with `OLLAMA_BASE_URL` env if set, on first boot. `default_model`
-     ← `ollama_model`.
+   `DO $$ … $$` block. Migrations cannot read env vars — env-only installs
+   are handled by the TS bootstrap in §7.2.
+   - If `openai_base_url` OR `openai_api_key` OR `openai_model` is present →
+     insert a row named `"OpenAI"` with those values. `api_key` is copied
+     as-is (already AES-encrypted). `default_model` ← `openai_model`.
+     `base_url` normalized to end with `/v1`; if `openai_base_url` is absent
+     use `https://api.openai.com/v1`.
+   - If `ollama_model` is present OR `llm_provider = 'ollama'` →
+     insert a row named `"Ollama"` with a sentinel `base_url =
+     'http://localhost:11434/v1'` (the migration cannot read
+     `OLLAMA_BASE_URL`). The TS bootstrap rewrites the sentinel on first
+     boot. `default_model` ← `ollama_model`.
    - Set `is_default = true` on whichever row matches the old `llm_provider`
-     value (`'ollama'` → Ollama row, `'openai'` → OpenAI row). If neither exists
-     (totally fresh install), `is_default` is deferred to the TS bootstrap.
+     value (`'ollama'` → Ollama row, `'openai'` → OpenAI row). If neither
+     provider row was inserted above (totally fresh install with no LLM
+     admin_settings at all), `is_default` is deferred to the TS bootstrap.
 4. **Seed `llm_usecase_assignments`** from the eight old `llm_usecase_*_*`
    keys. Look up the new `provider_id` by name (`"Ollama"` / `"OpenAI"`).
    Missing keys → row omitted (inherits at runtime).
