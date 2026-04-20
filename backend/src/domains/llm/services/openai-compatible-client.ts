@@ -55,3 +55,50 @@ export async function checkHealth(cfg: ProviderConfig): Promise<HealthResult> {
     return { connected: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
+
+export async function chat(cfg: ProviderConfig, model: string, messages: ChatMessage[]): Promise<string> {
+  const res = await undiciFetch(`${cfg.baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: headers(cfg),
+    body: JSON.stringify({ model, messages, stream: false }),
+    dispatcher: dispatcherFor(cfg),
+  });
+  if (!res.ok) throw new Error(`chat HTTP ${res.status}`);
+  const body = await res.json() as { choices: Array<{ message: { content: string } }> };
+  return body.choices[0]?.message.content ?? '';
+}
+
+export async function* streamChat(
+  cfg: ProviderConfig, model: string, messages: ChatMessage[], signal?: AbortSignal,
+): AsyncGenerator<StreamChunk> {
+  const res = await undiciFetch(`${cfg.baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: headers(cfg),
+    body: JSON.stringify({ model, messages, stream: true }),
+    dispatcher: dispatcherFor(cfg),
+    signal,
+  });
+  if (!res.ok || !res.body) throw new Error(`streamChat HTTP ${res.status}`);
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf('\n\n')) !== -1) {
+      const frame = buf.slice(0, idx).trim();
+      buf = buf.slice(idx + 2);
+      if (!frame.startsWith('data:')) continue;
+      const data = frame.slice(5).trim();
+      if (data === '[DONE]') { yield { content: '', done: true }; return; }
+      try {
+        const parsed = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> };
+        const content = parsed.choices?.[0]?.delta?.content ?? '';
+        if (content) yield { content, done: false };
+      } catch { /* ignore parse errors on malformed frames */ }
+    }
+  }
+  yield { content: '', done: true };
+}
