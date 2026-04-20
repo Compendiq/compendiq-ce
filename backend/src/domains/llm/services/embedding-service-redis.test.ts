@@ -31,8 +31,24 @@ vi.mock('../../../core/services/circuit-breaker.js', () => ({
   openaiBreakers: { embed: { getStatus: () => ({ nextRetryTime: null }) } },
 }));
 
-vi.mock('./llm-provider.js', () => ({
-  providerGenerateEmbedding: vi.fn().mockResolvedValue([[0.1, 0.2]]),
+vi.mock('./llm-provider-resolver.js', () => ({
+  resolveUsecase: vi.fn().mockResolvedValue({
+    config: {
+      providerId: 'p1', id: 'p1', name: 'X',
+      baseUrl: 'http://x/v1', apiKey: null,
+      authType: 'none', verifySsl: true, defaultModel: 'bge-m3',
+    },
+    model: 'bge-m3',
+  }),
+}));
+
+vi.mock('./openai-compatible-client.js', () => ({
+  generateEmbedding: vi.fn().mockResolvedValue([[0.1, 0.2]]),
+  streamChat: vi.fn(),
+  chat: vi.fn(),
+  listModels: vi.fn(),
+  checkHealth: vi.fn(),
+  invalidateDispatcher: vi.fn(),
 }));
 
 vi.mock('../../../core/services/content-converter.js', () => ({

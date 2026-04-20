@@ -14,6 +14,14 @@ const mocks = vi.hoisted(() => ({
   query: vi.fn(),
   getPool: vi.fn(),
   providerGenerateEmbedding: vi.fn(),
+  resolveUsecase: vi.fn().mockResolvedValue({
+    config: {
+      providerId: 'p1', id: 'p1', name: 'X',
+      baseUrl: 'http://x/v1', apiKey: null,
+      authType: 'none', verifySsl: true, defaultModel: 'bge-m3',
+    },
+    model: 'bge-m3',
+  }),
   htmlToText: vi.fn(),
   toSql: vi.fn().mockReturnValue('[0.1,0.2]'),
   acquireEmbeddingLock: vi.fn().mockResolvedValue('fake-lock-id-for-tests'),
@@ -27,8 +35,22 @@ vi.mock('../../../core/db/postgres.js', () => ({
   getPool: () => mocks.getPool(),
 }));
 
-vi.mock('./llm-provider.js', () => ({
-  providerGenerateEmbedding: mocks.providerGenerateEmbedding,
+vi.mock('./llm-provider-resolver.js', () => ({
+  resolveUsecase: (...args: unknown[]) => mocks.resolveUsecase(...args),
+}));
+
+vi.mock('./openai-compatible-client.js', () => ({
+  // The embedding-service calls `generateEmbedding(config, model, texts)` but
+  // the test mock ignores the first two args and uses the same spy so existing
+  // assertions that call `providerGenerateEmbedding.mock.calls[…]` keep
+  // working against the third argument (texts).
+  generateEmbedding: (_cfg: unknown, _model: string, texts: string[] | string) =>
+    mocks.providerGenerateEmbedding('test-user', texts),
+  streamChat: vi.fn(),
+  chat: vi.fn(),
+  listModels: vi.fn(),
+  checkHealth: vi.fn(),
+  invalidateDispatcher: vi.fn(),
 }));
 
 vi.mock('../../../core/services/content-converter.js', () => ({
@@ -125,6 +147,15 @@ describe('embedding-service', () => {
     mocks.providerGenerateEmbedding.mockImplementation((_userId: string, texts: string[]) =>
       Promise.resolve(texts.map(() => new Array(1024).fill(0.1))),
     );
+    // Default: resolveUsecase returns a basic embedding provider config
+    mocks.resolveUsecase.mockResolvedValue({
+      config: {
+        providerId: 'p1', id: 'p1', name: 'X',
+        baseUrl: 'http://x/v1', apiKey: null,
+        authType: 'none', verifySsl: true, defaultModel: 'bge-m3',
+      },
+      model: 'bge-m3',
+    });
     // Default: mockClient handles all transaction queries (BEGIN/DELETE/INSERT/UPDATE/COMMIT)
     // for embedPage (Phase 2) and computePageRelationships.
     mockClient.query.mockResolvedValue({ rows: [], rowCount: 0 });

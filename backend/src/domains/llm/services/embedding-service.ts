@@ -1,5 +1,6 @@
 import { query, getPool } from '../../../core/db/postgres.js';
-import { providerGenerateEmbedding } from './llm-provider.js';
+import { resolveUsecase } from './llm-provider-resolver.js';
+import { generateEmbedding } from './openai-compatible-client.js';
 import { htmlToText } from '../../../core/services/content-converter.js';
 import { logger } from '../../../core/utils/logger.js';
 import { invalidateGraphCache, acquireEmbeddingLock, releaseEmbeddingLock, isEmbeddingLocked, getRedisClient } from '../../../core/services/redis-cache.js';
@@ -322,12 +323,18 @@ export async function embedPage(
   const batchSize = 10;
   const allEmbeddings: Array<{ chunkIndex: number; text: string; embedding: number[]; metadata: ChunkMetadata }> = [];
 
+  // Resolve the `embedding` use-case once per page so we don't hit the
+  // resolver cache on every batch. Rotating providers mid-page would mix
+  // incompatible vectors in the same page's embeddings; resolving once
+  // keeps all chunks of one page consistent.
+  const { config: embedConfig, model: embedModel } = await resolveUsecase('embedding');
+
   for (let i = 0; i < chunks.length; i += batchSize) {
     const batch = chunks.slice(i, i + batchSize);
     const texts = batch.map((c) => c.text);
 
     try {
-      const embeddings = await providerGenerateEmbedding(userId, texts);
+      const embeddings = await generateEmbedding(embedConfig, embedModel, texts);
 
       for (let j = 0; j < batch.length; j++) {
         allEmbeddings.push({
@@ -419,7 +426,7 @@ export async function isProcessingUser(userId: string): Promise<boolean> {
  *
  * An optional `onProgress` callback receives progress events for SSE streaming.
  *
- * userId is used only for the Redis lock and providerGenerateEmbedding (LLM provider selection).
+ * userId is used only for the Redis embedding-lock. The embedding provider is resolved via resolveUsecase('embedding').
  */
 export async function processDirtyPages(
   userId: string,
