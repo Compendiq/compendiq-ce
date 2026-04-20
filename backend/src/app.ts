@@ -60,6 +60,7 @@ import { trackError } from './core/services/error-tracker.js';
 import { logger } from './core/utils/logger.js';
 import { APP_VERSION } from './core/utils/version.js';
 import { loadEnterprisePlugin } from './core/enterprise/loader.js';
+import { bootstrapLlmProviders } from './domains/llm/services/llm-provider-bootstrap.js';
 
 export async function buildApp() {
   const app = Fastify({
@@ -142,6 +143,13 @@ export async function buildApp() {
 
   // Let the enterprise plugin register its own routes (e.g., full license endpoint)
   await enterprise.registerRoutes(app, license);
+
+  // ── LLM Provider Bootstrap ───────────────────────────────────────
+  // Seed llm_providers from env on fresh installs, rewrite the Ollama
+  // sentinel if OLLAMA_BASE_URL changed, and allowlist every provider
+  // URL with the SSRF guard. Runs after migrations (index.ts) so the
+  // llm_providers table exists.
+  await bootstrapLlmProviders();
 
   // Known Fastify HTTP error names that are safe to expose to clients.
   // Anything not in this set could leak internal details (e.g. TypeError, RangeError).
