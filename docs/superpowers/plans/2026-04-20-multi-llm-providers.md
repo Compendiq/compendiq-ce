@@ -23,7 +23,8 @@
 | `backend/src/core/db/migrations/__tests__/054_llm_providers.test.ts` | Seeds pre-054 state, runs the migration, asserts new rows + old-key deletion. |
 | `backend/src/domains/llm/services/openai-compatible-client.ts` | Pure functions `chat`, `streamChat`, `generateEmbedding`, `listModels`, `checkHealth`. |
 | `backend/src/domains/llm/services/openai-compatible-client.test.ts` | Unit tests against a fake `/v1` server. |
-| `backend/src/domains/llm/services/llm-provider-resolver.ts` | `getProvider`, `resolveUsecase`, `listProviders`, cache-invalidation. |
+| `backend/src/domains/llm/services/llm-provider-resolver.ts` | `getProvider`, `resolveUsecase`, `listProviders`. Does NOT own the cache-version counter (see `cache-bus.ts`). |
+| `backend/src/domains/llm/services/cache-bus.ts` | Standalone module owning `bumpProviderCacheVersion()` and `getProviderCacheVersion()`. Both `llm-provider-service.ts` (writes) and `llm-provider-resolver.ts` (reads) import from here — breaks the latent service↔resolver import cycle. |
 | `backend/src/domains/llm/services/llm-provider-resolver.test.ts` | Every branch of the §3.2 truth table. |
 | `backend/src/domains/llm/services/llm-provider-service.ts` | CRUD service for `llm_providers` (encrypt/decrypt, normalize baseUrl, set-default). |
 | `backend/src/domains/llm/services/llm-provider-service.test.ts` | CRUD + set-default + delete-guards. |
@@ -321,21 +322,20 @@ describe.skipIf(!dbAvailable)('Migration 054 — multi LLM providers', () => {
     ).rejects.toThrow(/violates foreign key constraint/i);
   });
 
-  it('seeds OpenAI provider from legacy admin_settings', async () => {
-    await truncateAllTables();
+  it('seeds OpenAI provider from legacy admin_settings (true pre-054 path)', async () => {
+    // Re-create a true pre-054 state: the CREATE TABLE statements in 054 are
+    // IF NOT EXISTS, so the tables still exist after truncate. Drop them so the
+    // migration re-runs its full body against the seeded legacy data.
     await seedLegacy({
       llm_provider: 'openai',
       openai_base_url: 'https://api.openai.com',
       openai_model: 'gpt-4o-mini',
     });
-    // Re-run just the idempotent seeding block by importing migration text.
-    // Simpler: setupTestDb already ran 054; we drive it by simulating:
-    // (the DO$$ block in 054 is idempotent — call it via ad-hoc SQL below).
-    // For this test we assume setupTestDb ran 054 already; verify seeding logic
-    // by re-running an equivalent SQL block after seeding legacy data:
     const sql = await (await import('node:fs')).promises.readFile(
       new URL('../054_llm_providers.sql', import.meta.url), 'utf8',
     );
+    await query(`DROP TABLE IF EXISTS llm_usecase_assignments CASCADE`);
+    await query(`DROP TABLE IF EXISTS llm_providers CASCADE`);
     await query(sql);
     const providers = await query<{ name: string; default_model: string | null; is_default: boolean }>(
       `SELECT name, default_model, is_default FROM llm_providers ORDER BY name`,
@@ -356,6 +356,9 @@ describe.skipIf(!dbAvailable)('Migration 054 — multi LLM providers', () => {
     const sql = await (await import('node:fs')).promises.readFile(
       new URL('../054_llm_providers.sql', import.meta.url), 'utf8',
     );
+    // Each pre-054 case must drop the tables first to simulate the real path.
+    await query(`DROP TABLE IF EXISTS llm_usecase_assignments CASCADE`);
+    await query(`DROP TABLE IF EXISTS llm_providers CASCADE`);
     await query(sql);
     const p = await query<{ name: string; base_url: string; default_model: string; is_default: boolean }>(
       `SELECT name, base_url, default_model, is_default FROM llm_providers`,
@@ -371,6 +374,9 @@ describe.skipIf(!dbAvailable)('Migration 054 — multi LLM providers', () => {
     const sql = await (await import('node:fs')).promises.readFile(
       new URL('../054_llm_providers.sql', import.meta.url), 'utf8',
     );
+    // Each pre-054 case must drop the tables first to simulate the real path.
+    await query(`DROP TABLE IF EXISTS llm_usecase_assignments CASCADE`);
+    await query(`DROP TABLE IF EXISTS llm_providers CASCADE`);
     await query(sql);
     const p = await query<{ name: string }>(`SELECT name FROM llm_providers`);
     expect(p.rows.map(r => r.name)).toEqual(['OpenAI']);
@@ -390,6 +396,9 @@ describe.skipIf(!dbAvailable)('Migration 054 — multi LLM providers', () => {
     const sql = await (await import('node:fs')).promises.readFile(
       new URL('../054_llm_providers.sql', import.meta.url), 'utf8',
     );
+    // Each pre-054 case must drop the tables first to simulate the real path.
+    await query(`DROP TABLE IF EXISTS llm_usecase_assignments CASCADE`);
+    await query(`DROP TABLE IF EXISTS llm_providers CASCADE`);
     await query(sql);
     const assigns = await query<{ usecase: string; provider_name: string | null; model: string | null }>(
       `SELECT a.usecase, p.name AS provider_name, a.model
@@ -1365,14 +1374,26 @@ git add backend/src/domains/llm/services/llm-provider-resolver.ts \
 git commit -m "llm: resolver with inherit/provider-only/override/model-only"
 ```
 
-### Task 9: Wire cache-invalidation into provider-service writes
+### Task 9: Extract `cache-bus.ts` + wire invalidation into provider-service writes
+
+**Why the cache-bus split:** the resolver writes no state other than its cache.
+The service writes rows but must trigger invalidation. A direct service → resolver
+import creates a latent cycle the moment the resolver ever needs to call back
+into the service (e.g. a helper that reads decrypted keys). Pulling the version
+counter into its own file breaks that cycle pre-emptively.
+
+**Files:**
+- Create: `backend/src/domains/llm/services/cache-bus.ts`
+- Modify: `backend/src/domains/llm/services/llm-provider-resolver.ts` (import from cache-bus instead of defining)
+- Modify: `backend/src/domains/llm/services/llm-provider-service.ts` (import from cache-bus, call on every write)
 
 - [ ] **Step 1: Add failing test**
 
 Append to `llm-provider-service.test.ts`:
 
 ```ts
-import { resolveUsecase, bumpProviderCacheVersion } from './llm-provider-resolver.js';
+import { resolveUsecase } from './llm-provider-resolver.js';
+import { bumpProviderCacheVersion } from './cache-bus.js';
 
 describe.skipIf(!dbAvailable)('cache invalidation on writes', () => {
   beforeEach(async () => { await truncateAllTables(); bumpProviderCacheVersion(); });
@@ -1386,24 +1407,61 @@ describe.skipIf(!dbAvailable)('cache invalidation on writes', () => {
 });
 ```
 
-- [ ] **Step 2: Run → fail (cache stale).**
+- [ ] **Step 2: Run → fail.**
 
-- [ ] **Step 3: Wire invalidation**
-
-At the top of `llm-provider-service.ts`, import:
+- [ ] **Step 3: Create `cache-bus.ts`**
 
 ```ts
-import { bumpProviderCacheVersion } from './llm-provider-resolver.js';
+// backend/src/domains/llm/services/cache-bus.ts
+let version = 0;
+type Listener = (v: number) => void;
+const listeners = new Set<Listener>();
+
+export function bumpProviderCacheVersion(): void {
+  version += 1;
+  for (const l of listeners) l(version);
+}
+export function getProviderCacheVersion(): number { return version; }
+export function onProviderCacheBump(l: Listener): () => void {
+  listeners.add(l);
+  return () => listeners.delete(l);
+}
 ```
 
-Add `bumpProviderCacheVersion();` at the bottom of each of `createProvider`, `updateProvider`, `deleteProvider`, `setDefaultProvider` (immediately before the `return` / function exit).
+- [ ] **Step 4: Update the resolver** (Task 8 code) to import from `cache-bus.ts`:
 
-- [ ] **Step 4: Run → pass.**
+Remove the `let cacheVersion = 0;` and `export function bumpProviderCacheVersion` from `llm-provider-resolver.ts`. Replace with:
 
-- [ ] **Step 5: Commit**
+```ts
+import { getProviderCacheVersion, onProviderCacheBump } from './cache-bus.js';
+import { invalidateDispatcher } from './openai-compatible-client.js';
+
+onProviderCacheBump(() => {
+  for (const entry of configCache.values()) invalidateDispatcher(entry.cfg.providerId);
+  configCache.clear();
+});
+```
+
+Change `cached.version !== cacheVersion` to `cached.version !== getProviderCacheVersion()`, and `version: cacheVersion` to `version: getProviderCacheVersion()`.
+
+- [ ] **Step 5: Wire invalidation in `llm-provider-service.ts`**
+
+At the top:
+
+```ts
+import { bumpProviderCacheVersion } from './cache-bus.js';
+```
+
+Call `bumpProviderCacheVersion();` at the end of each of `createProvider`, `updateProvider`, `deleteProvider`, `setDefaultProvider` (immediately before the `return` / function exit).
+
+- [ ] **Step 6: Update the `bootstrapLlmProviders` import** (Task 10 code) — change `from './llm-provider-resolver.js'` to `from './cache-bus.js'` for `bumpProviderCacheVersion`.
+
+- [ ] **Step 7: Run `npm test -w backend` → pass.**
+
+- [ ] **Step 8: Commit**
 
 ```bash
-git commit -am "llm: invalidate resolver cache on provider writes"
+git commit -am "llm: cache-bus module + invalidate on provider writes"
 ```
 
 ### Task 10: Bootstrap — seed providers from env on fresh install
@@ -1524,6 +1582,12 @@ export async function bootstrapLlmProviders(): Promise<void> {
   }
 
   bumpProviderCacheVersion();
+
+  // Allowlist every configured provider URL with the ssrf-guard so client calls
+  // from the resolver path aren't rejected.
+  const { addAllowedBaseUrl } = await import('../../../core/utils/ssrf-guard.js');
+  const rows = await query<{ base_url: string }>(`SELECT base_url FROM llm_providers`);
+  for (const r of rows.rows) addAllowedBaseUrl(r.base_url);
 }
 ```
 
@@ -1651,7 +1715,7 @@ import {
 } from '../../domains/llm/services/llm-provider-service.js';
 import { checkHealth, listModels as clientListModels } from '../../domains/llm/services/openai-compatible-client.js';
 import { emitLlmAudit } from '../../domains/llm/services/llm-audit-hook.js';
-import { assertNonSsrfUrl } from '../../core/utils/ssrf-guard.js';
+import { assertNonSsrfUrl, addAllowedBaseUrl, removeAllowedBaseUrl } from '../../core/utils/ssrf-guard.js';
 import { getRateLimits } from '../../core/services/rate-limit-service.js';
 
 const ADMIN_LIMIT = { config: { rateLimit: { max: async () => (await getRateLimits()).admin.max, timeWindow: '1 minute' } } };
@@ -1667,6 +1731,9 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
     const input = LlmProviderInputSchema.parse(req.body);
     await assertNonSsrfUrl(input.baseUrl);
     const provider = await createProvider(input);
+    // Every configured provider URL must be allowlisted for the existing ssrf-guard
+    // so that subsequent outbound calls from the service layer aren't rejected.
+    addAllowedBaseUrl(provider.baseUrl);
     emitLlmAudit({ event: 'llm_provider_created', userId: req.userId, metadata: { providerId: provider.id, name: provider.name } });
     reply.code(201);
     return provider;
@@ -1678,6 +1745,7 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
     if (patch.baseUrl) await assertNonSsrfUrl(patch.baseUrl);
     const updated = await updateProvider(id, patch);
     if (!updated) return reply.code(404).send({ error: 'Provider not found' });
+    if (patch.baseUrl) addAllowedBaseUrl(updated.baseUrl);
     emitLlmAudit({ event: 'llm_provider_updated', userId: req.userId, metadata: { providerId: id, fields: Object.keys(patch) } });
     return updated;
   });
@@ -2148,45 +2216,71 @@ git commit -am "embedding-service: resolve via use-case + add enqueueReembedAll"
 - Delete: `backend/src/domains/llm/services/openai-service.ts` (+ test)
 - Delete: `backend/src/domains/llm/services/llm-provider.ts` (+ test)
 
-- [ ] **Step 1: Run `npx tsc --noEmit`** to confirm no residual imports.
-- [ ] **Step 2: `git rm` the four files + their tests.**
-- [ ] **Step 3: Run full backend test suite `npm test -w backend` → pass.**
-- [ ] **Step 4: Commit**
+**Known importers to migrate BEFORE the `git rm` (inventory from `grep -rn` during review):**
+- `backend/src/domains/llm/index.ts` — re-exports from `llm-provider.ts` and `ollama-service.ts`. Update the re-exports to point at `openai-compatible-client.ts` and `llm-provider-resolver.ts`.
+- `backend/src/routes/foundation/setup.ts` — imports from `llm-provider.ts`. Replace with `resolveUsecase`/`listProviders`.
+- `backend/src/routes/knowledge/search.ts` — imports from `ollama-service`/`openai-service`. Replace with `resolveUsecase('embedding')` + `generateEmbedding`.
+- `backend/src/routes/llm/llm-models.ts` — imports from `ollama-service`/`openai-service`. Replace with a call to `listProviders()` + `/admin/llm-providers/:id/models` internally, or migrate the route to `resolveUsecase('chat').config` + `listModels`.
+
+- [ ] **Step 1: Inventory** — run `grep -rn "from.*ollama-service\|from.*openai-service\|from.*llm-provider\.js\|from.*ollama-provider" backend/src --include='*.ts'` and verify every hit is in the list above. If any new importer shows up, update it in-place in this task before continuing.
+- [ ] **Step 2: Update each importer** in the list above.
+- [ ] **Step 3: Run `npx tsc --noEmit`** — should be clean.
+- [ ] **Step 4: `git rm` the four files + their tests.**
+- [ ] **Step 5: Run full backend test suite `npm test -w backend` → pass.**
+- [ ] **Step 6: Commit**
 
 ```bash
 git commit -am "llm: delete old ollama/openai services, collapsed into openai-compatible-client"
 ```
 
-### Task 25: Prune `admin-settings-service.ts`
+### Task 25: Trim `AdminSettings` contract + add `getEmbeddingDimensions()` helper
 
-**Files:** Modify `backend/src/core/services/admin-settings-service.ts`
+**Why first:** Task 26 deletes `getSharedLlmSettings`, which today supplies
+`embeddingDimensions` to `backend/src/routes/foundation/admin.ts:260`. Adding a
+focused helper first keeps the legacy route alive.
 
-- [ ] **Step 1: Update neighbor tests** — anything that still asserted `getSharedLlmSettings().llmProvider` etc. needs to be rewritten to call `listProviders()`/`resolveUsecase()` instead.
+**Files:**
+- Modify: `packages/contracts/src/admin.ts` (grep for `AdminSettings` to confirm path)
+- Modify: `backend/src/core/services/admin-settings-service.ts` — add helper
+- Modify: `backend/src/routes/foundation/admin.ts` — switch the route to the new helper
+- Tests for all three.
 
-- [ ] **Step 2: Remove exports** `SharedLlmProvider`, `LlmUsecase` (now in contracts), `SharedLlmSettings`, `getSharedLlmSettings`, `getSharedOpenaiApiKey`, `upsertSharedLlmSettings`, `getUsecaseLlmAssignment`, `upsertUsecaseLlmAssignments`, `getAllUsecaseAssignments`, `__resetUsecaseEnvSeedingForTests`, `seedUsecaseModelFromEnv`.
+- [ ] **Step 1: Failing test** — a test that `getEmbeddingDimensions()` returns `1024` when `admin_settings['embedding_dimensions']` is unset, and the value when set.
+- [ ] **Step 2: Run → fail.**
+- [ ] **Step 3: Implement**
 
-- [ ] **Step 3: Keep** the non-LLM keys (`embedding_dimensions`, `fts_language`) if they're still read elsewhere. Search for each kept key usage first.
-
-- [ ] **Step 4: Run `npm test -w backend` → pass. `npm run typecheck -w backend` → pass.**
-
-- [ ] **Step 5: Commit**
-
-```bash
-git commit -am "admin-settings-service: remove LLM keys, replaced by llm_providers table"
+```ts
+// in admin-settings-service.ts
+export async function getEmbeddingDimensions(): Promise<number> {
+  const r = await query<{ setting_value: string }>(
+    `SELECT setting_value FROM admin_settings WHERE setting_key='embedding_dimensions'`,
+  );
+  const v = r.rows[0]?.setting_value;
+  return v ? parseInt(v, 10) : 1024;
+}
 ```
 
-### Task 26: Legacy `/api/admin/settings` payload
-
-The old `AdminSettings` response has `llmProvider`, `ollamaModel`, etc. Trim it to just the non-LLM keys. Any frontend reading LLM keys from it must be updated in Phase 7.
-
-- [ ] **Step 1: Update `AdminSettings` contract** in `packages/contracts/src/admin.ts` (or wherever it lives — grep for `AdminSettings`).
-- [ ] **Step 2: Update the route handler.**
-- [ ] **Step 3: Update its test.**
-- [ ] **Step 4: `npm run typecheck -w backend` → find frontend consumers.**
-- [ ] **Step 5: Commit.**
+- [ ] **Step 4: Trim `AdminSettingsSchema`** — remove `llmProvider`, `ollamaModel`, `openaiBaseUrl`, `hasOpenaiApiKey`, `openaiModel`, `embeddingModel`, `usecaseAssignments`. Keep `embeddingDimensions`, `ftsLanguage`, non-LLM.
+- [ ] **Step 5: Update the route handler** in `routes/foundation/admin.ts` to use the new helper + schema.
+- [ ] **Step 6: Run `npm run typecheck -w backend` → identify frontend consumers** (LlmTab etc. will be handled in Phase 7).
+- [ ] **Step 7: Commit**
 
 ```bash
-git commit -am "contracts: trim AdminSettings to non-LLM keys"
+git commit -am "contracts: trim AdminSettings to non-LLM; add getEmbeddingDimensions"
+```
+
+### Task 26: Delete LLM functions from `admin-settings-service.ts`
+
+- [ ] **Step 1: Remove exports** `SharedLlmProvider`, `LlmUsecase` (now in contracts), `SharedLlmSettings`, `getSharedLlmSettings`, `getSharedOpenaiApiKey`, `upsertSharedLlmSettings`, `getUsecaseLlmAssignment`, `upsertUsecaseLlmAssignments`, `getAllUsecaseAssignments`, `__resetUsecaseEnvSeedingForTests`, `seedUsecaseModelFromEnv`.
+
+Keep: the generic `getAdminSettingsMap` helper if any non-LLM caller still uses it, plus `getEmbeddingDimensions` (added in Task 25) and anything for `fts_language`.
+
+- [ ] **Step 2: Run `npx tsc --noEmit`** to surface stragglers. Update each one in-place.
+- [ ] **Step 3: Run `npm test -w backend` → pass.**
+- [ ] **Step 4: Commit**
+
+```bash
+git commit -am "admin-settings-service: remove LLM functions, superseded by llm_providers table"
 ```
 
 ---
@@ -2495,48 +2589,130 @@ function ModelPicker({ providerId, value, onChange, testId, inheritLabel }: { pr
 git commit -am "frontend: UsecaseAssignmentsSection supports 5 use cases via providerId"
 ```
 
-### Task 30: `EmbeddingReembedBanner` component
+### Task 30: Embedding dimension probe + reembed flow
 
-**Files:**
+pgvector's column type is `vector(1024)` (migration 048). Changing the embedding
+model to one that returns a different vector length requires an `ALTER TABLE`
+rewriting the column + rebuilding the HNSW index — not just a data re-embed.
+This task adds a probe endpoint, a dimension-aware reembed job, and the two-step
+confirmation banner.
+
+**New/modified backend files:**
+- Create: `backend/src/routes/llm/llm-embedding-probe.ts` — `POST /api/admin/embedding/probe` accepting `{providerId, model}`, returns `{dimensions: number, error?: string}`. Implementation: call `generateEmbedding(cfg, model, 'probe')` and return the length of the resulting vector.
+- Modify: `backend/src/routes/llm/llm-embedding-reembed.ts` — accept `{newDimensions?: number}`. If provided and it differs from the current `embedding_dimensions`, the enqueued job first runs `TRUNCATE page_embeddings`, then `ALTER TABLE page_embeddings ALTER COLUMN embedding TYPE vector($1)` using dynamic SQL (parameterless, literal-interpolated since pgvector type args cannot be parameterized), updates `admin_settings['embedding_dimensions']`, drops and recreates the HNSW index (`idx_page_embeddings_hnsw`), then re-embeds all pages.
+- Add backend unit test that covers the dimension-change branch with a mock PG transaction.
+
+**New/modified frontend files:**
 - Create: `frontend/src/features/settings/panels/EmbeddingReembedBanner.tsx`
 - Create: `frontend/src/features/settings/panels/EmbeddingReembedBanner.test.tsx`
 
-- [ ] **Step 1: Failing test** — renders only when `shouldPrompt=true`, clicking "Re-embed" POSTs and shows job progress.
+The banner consumes `{currentDimensions, pendingProviderId, pendingModel}` from `LlmTab.tsx` state. On click it:
+1. POSTs to `/admin/embedding/probe` with the pending pair → gets back `newDimensions`.
+2. If `newDimensions !== currentDimensions`, shows a second confirmation dialog with the heavier warning. On confirm, POSTs to `/admin/embedding/reembed` with `{newDimensions}`.
+3. If dimensions match, shows the lighter confirmation and POSTs without `newDimensions`.
 
-- [ ] **Step 2: Run → fail.**
+- [ ] **Step 1: Failing test** (backend probe route) — test that returns `dimensions: 3` when the fake provider returns 3-element vectors.
+- [ ] **Step 2: Implement probe route** using the pattern from Task 12 (admin guard, ssrf-guard, `getProviderById`, `generateEmbedding`).
+- [ ] **Step 3: Failing test** (reembed route, dimension-change branch) — assert the job calls `TRUNCATE page_embeddings` + `ALTER TABLE page_embeddings ALTER COLUMN embedding TYPE vector(768)` in order when `newDimensions=768`. Use a real PG transaction via `test-db-helper.ts`.
+- [ ] **Step 4: Implement reembed dimension-change path**
 
-- [ ] **Step 3: Implement**
+```ts
+// in embedding-service.ts (augmenting the Task 23 stub)
+export async function enqueueReembedAll(opts: { newDimensions?: number } = {}): Promise<string> {
+  const jobId = `reembed-${Date.now()}`;
+  if (opts.newDimensions) {
+    const client = await getPool().connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`TRUNCATE page_embeddings`);
+      // pgvector type args must be literal — validate strictly before interpolation.
+      const n = Math.floor(opts.newDimensions);
+      if (!Number.isFinite(n) || n < 1 || n > 8192) {
+        throw new Error(`refused dimension change to non-integer or out-of-range value: ${opts.newDimensions}`);
+      }
+      await client.query(`ALTER TABLE page_embeddings ALTER COLUMN embedding TYPE vector(${n})`);
+      await client.query(`UPDATE admin_settings SET setting_value=$1, updated_at=NOW() WHERE setting_key='embedding_dimensions'`, [String(n)]);
+      await client.query(`DROP INDEX IF EXISTS idx_page_embeddings_hnsw`);
+      await client.query(`CREATE INDEX idx_page_embeddings_hnsw ON page_embeddings USING hnsw (embedding vector_cosine_ops)`);
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { client.release(); }
+  }
+  // TODO(#257): enqueue BullMQ job that iterates pages and calls embedText() per page.
+  // For now, return the jobId — the worker run is tracked in a follow-up issue.
+  return jobId;
+}
+```
+
+- [ ] **Step 5: Failing test** (banner component) — renders, probe call fires, dimension-change path shows second confirmation.
+- [ ] **Step 6: Implement banner**
 
 ```tsx
 import { useState } from 'react';
 import { toast } from 'sonner';
 import { apiFetch } from '../../../shared/lib/api';
 
-export function EmbeddingReembedBanner({ shouldPrompt }: { shouldPrompt: boolean }) {
-  const [running, setRunning] = useState(false);
-  if (!shouldPrompt) return null;
-  async function run() {
-    setRunning(true);
+interface Pending { providerId: string; model: string; }
+export function EmbeddingReembedBanner({ currentDimensions, pending }: { currentDimensions: number; pending: Pending | null }) {
+  const [stage, setStage] = useState<'idle' | 'probing' | 'confirm' | 'running'>('idle');
+  const [newDims, setNewDims] = useState<number | null>(null);
+  if (!pending) return null;
+
+  async function start() {
+    setStage('probing');
     try {
-      const r = await apiFetch<{ jobId: string; pageCount: number }>('/admin/embedding/reembed', { method: 'POST' });
-      toast.success(`Re-embed queued for ${r.pageCount} pages (${r.jobId})`);
+      const probe = await apiFetch<{ dimensions: number }>('/admin/embedding/probe', {
+        method: 'POST', body: JSON.stringify(pending),
+      });
+      setNewDims(probe.dimensions);
+      setStage('confirm');
+    } catch (e) { toast.error(e instanceof Error ? e.message : 'probe failed'); setStage('idle'); }
+  }
+
+  async function confirm() {
+    setStage('running');
+    try {
+      const body = newDims !== null && newDims !== currentDimensions ? { newDimensions: newDims } : {};
+      const r = await apiFetch<{ jobId: string; pageCount: number }>('/admin/embedding/reembed', {
+        method: 'POST', body: JSON.stringify(body),
+      });
+      toast.success(`Re-embed queued (${r.pageCount} pages, ${r.jobId})`);
     } catch (e) { toast.error(e instanceof Error ? e.message : 'failed'); }
-    finally { setRunning(false); }
+    finally { setStage('idle'); }
+  }
+
+  if (stage === 'confirm') {
+    const heavy = newDims !== null && newDims !== currentDimensions;
+    return (
+      <div className="glass-card border-red-500/30 p-3 text-sm">
+        {heavy ? (
+          <p>⚠ Dimension change: <b>{currentDimensions} → {newDims}</b>. This will <b>delete all existing embeddings</b>, rewrite the column type, and rebuild the HNSW index. Continue?</p>
+        ) : (
+          <p>⚠ Embedding model changed (dimension stays at {currentDimensions}). Existing vectors will be inconsistent until re-embedded. Continue?</p>
+        )}
+        <div className="mt-2 flex gap-2">
+          <button className="glass-button-secondary" onClick={() => setStage('idle')}>Cancel</button>
+          <button className="glass-button-primary" onClick={confirm}>Confirm + re-embed</button>
+        </div>
+      </div>
+    );
   }
   return (
-    <div className="glass-card border-yellow-500/30 p-3 text-sm">
-      <div className="flex items-center justify-between">
-        <span>⚠ Embedding provider/model changed. Existing vectors are incompatible until you re-embed.</span>
-        <button className="glass-button-primary" disabled={running} onClick={run}>
-          {running ? 'Queuing…' : 'Re-embed all pages'}
-        </button>
-      </div>
+    <div className="glass-card border-yellow-500/30 p-3 text-sm flex items-center justify-between">
+      <span>⚠ Embedding provider/model changed. Probe and re-embed required.</span>
+      <button className="glass-button-primary" disabled={stage !== 'idle'} onClick={start}>
+        {stage === 'probing' ? 'Probing…' : stage === 'running' ? 'Queuing…' : 'Probe & re-embed'}
+      </button>
     </div>
   );
 }
 ```
 
-- [ ] **Step 4: Run → pass. Commit.**
+- [ ] **Step 7: Run → pass. Commit.**
+
+```bash
+git commit -am "llm: embedding dimension probe + schema-change reembed flow"
+```
 
 ### Task 31: Rewrite `LlmTab.tsx`
 
@@ -2676,10 +2852,12 @@ git commit -am "docs: ADR + architecture diagrams for multi-llm-provider"
 - Modify: `AGENTS.md`
 - Modify: `backend/.env.example`
 
-- [ ] **Step 1:** Delete these env var entries (they no longer have runtime effect):
-  `OLLAMA_BASE_URL`, `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `LLM_BEARER_TOKEN` (keep the name but mark deprecated in `.env.example`), `DEFAULT_LLM_MODEL`, `SUMMARY_MODEL`, `QUALITY_MODEL`, `EMBEDDING_MODEL`.
+- [ ] **Step 1:** **Keep** these env vars in `.env.example` with a `# DEPRECATED: seed-only; consulted on first boot when llm_providers is empty. Configure providers in Settings → LLM.` comment:
+  `OLLAMA_BASE_URL`, `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `LLM_BEARER_TOKEN`, `DEFAULT_LLM_MODEL`, `SUMMARY_MODEL`, `QUALITY_MODEL`, `EMBEDDING_MODEL`.
+  Docker-compose files in the wild pass these and deleting them causes silent drift. Leaving them documented + deprecated keeps operators informed.
+- [ ] **Step 2:** Change the bootstrap deprecation log in `llm-provider-bootstrap.ts` from `logger.warn` to `logger.info` so the deprecation notice appears in normal log streams without paging anyone.
 
-- [ ] **Step 2:** Update the "External Services" section in `CLAUDE.md` to say "LLM providers configured via admin UI (Settings → LLM)".
+- [ ] **Step 3:** Update the "External Services" section in `CLAUDE.md` to say "LLM providers configured via admin UI (Settings → LLM); legacy env vars remain as first-boot seed only."
 
 - [ ] **Step 3:** Commit
 

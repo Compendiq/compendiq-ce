@@ -53,10 +53,17 @@ CREATE TABLE llm_providers (
   updated_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
--- Exactly one default row, at most.
+-- At most one default row.
 CREATE UNIQUE INDEX llm_providers_one_default
   ON llm_providers (is_default) WHERE is_default;
 ```
+
+**Service-layer invariant:** the default flag is *swap-only* —
+`setDefaultProvider(id)` runs `UPDATE SET is_default=FALSE WHERE is_default=TRUE`
+and `UPDATE SET is_default=TRUE WHERE id=$1` in the same transaction. There is
+**no** code path that clears the default without promoting a replacement. Combined
+with `deleteProvider` blocking when `is_default=true`, this prevents a
+zero-default terminal state where every `resolveUsecase` throws.
 
 ### 3.2 `llm_usecase_assignments`
 
@@ -246,6 +253,20 @@ acceptance criterion that was explicit for issue #214 and carries forward.
 `DELETE`, or `set-default` write bumps a module-scoped `version` counter
 and invalidates the cache.
 
+**Cache scope:** the version counter is **process-local**. In a horizontally
+scaled deployment (multiple Node workers behind a load balancer), a write
+routed to worker A does not invalidate worker B's cache until worker B makes
+its next `PATCH` / `DELETE` / `set-default` call of its own, or restarts. CE
+currently runs single-process; this is acceptable for the target deployment
+scale. If we scale horizontally later, switch to a Postgres `LISTEN/NOTIFY`
+fan-out on an `llm_providers_changed` channel. Recorded as a known constraint
+rather than a bug.
+
+**In-flight reads:** a `PATCH` that arrives while `resolveUsecase('chat')` is
+already holding a `cfg` object leaves that in-flight call on the stale config.
+This is intended — an in-flight HTTP call cannot be retargeted mid-flight, and
+the next call after the write picks up the new config.
+
 ### 5.3 Call-site migration
 
 | Today | Replaced by |
@@ -315,14 +336,28 @@ Embedding  ⚠   │ [GPU Box (Ollama)      ▼]    │ [bge-m3             ▼]
 - Provider column lists all providers + "Inherit default".
 - Model column lazily fetches that provider's `/v1/models` via `useQuery`
   keyed by `providerId`; no fetch for "Inherit" rows.
-- The **Embedding row**:
-  - Warning icon with tooltip: "Changing embedding model requires re-embedding
-    all pages."
-  - Changing provider or model disables Save until a confirmation modal is
-    acknowledged: *"This will make all existing vectors (N pages) incompatible.
-    You will need to re-embed. Continue?"*
-  - After save, a banner at the section top offers "Re-embed all pages" and
-    shows job progress from the existing embedding job status endpoint.
+- The **Embedding row** is a three-step flow, not a one-click save:
+  1. **Probe.** On save, the backend calls `/v1/embeddings` on the chosen
+     provider with a one-token test input and reads back the vector length `N`.
+     Failure → the save is rejected with the upstream error; nothing persists.
+  2. **Dimension-change branch.** If `N !== current_embedding_dimensions`
+     (stored in `admin_settings['embedding_dimensions']`, today `1024`), the
+     UI shows a **second** confirmation with the new dimension and the heavier
+     warning *"This will delete all existing embeddings (N pages) and rewrite
+     the `page_embeddings.embedding` column type — the HNSW index will be
+     rebuilt. Continue?"* On confirm, the reembed job runs: `TRUNCATE
+     page_embeddings` → `ALTER TABLE page_embeddings ALTER COLUMN embedding
+     TYPE vector(N)` → update `admin_settings['embedding_dimensions']` → drop
+     and recreate the HNSW index → enqueue re-embed for every page. Dimension
+     mismatch is the headline risk pgvector imposes; the plan must treat it
+     as a schema change, not just a data rewrite.
+  3. **Same-dimension branch.** If `N === current`, we only enqueue re-embed
+     with a single-confirmation dialog: *"This will make all existing vectors
+     (N pages) inconsistent with the new model. You will need to re-embed.
+     Continue?"*
+
+  After either confirm path, a banner at the section top shows the re-embed
+  job progress via the existing embedding job status endpoint.
 
 ### 6.3 Files touched / added
 
