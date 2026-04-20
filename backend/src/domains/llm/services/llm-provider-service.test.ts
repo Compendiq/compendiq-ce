@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../../test-db-helper.js';
 import { query } from '../../../core/db/postgres.js';
-import { listProviders, getProviderById } from './llm-provider-service.js';
+import { listProviders, getProviderById, createProvider, updateProvider, deleteProvider, setDefaultProvider } from './llm-provider-service.js';
 
 const dbAvailable = await isDbAvailable();
 
@@ -34,5 +34,49 @@ describe.skipIf(!dbAvailable)('llm-provider-service — read', () => {
     );
     const cfg = await getProviderById(rows[0]!.id);
     expect(cfg).toMatchObject({ name: 'X', apiKey: 'secret-value' });
+  });
+});
+
+describe.skipIf(!dbAvailable)('llm-provider-service — write', () => {
+  beforeEach(async () => { await truncateAllTables(); });
+
+  it('create normalizes baseUrl and encrypts apiKey', async () => {
+    const p = await createProvider({
+      name: 'Box', baseUrl: 'http://gpu:11434', apiKey: 'topsecret',
+      authType: 'bearer', verifySsl: true, defaultModel: 'm1',
+    });
+    expect(p.baseUrl).toBe('http://gpu:11434/v1');
+    const raw = await query<{ api_key: string }>(`SELECT api_key FROM llm_providers WHERE id=$1`, [p.id]);
+    expect(raw.rows[0]!.api_key).not.toBe('topsecret');  // encrypted
+  });
+
+  it('update with omitted apiKey keeps the stored key', async () => {
+    const p = await createProvider({ name: 'A', baseUrl: 'http://a/v1', apiKey: 'orig', authType: 'bearer', verifySsl: true });
+    await updateProvider(p.id, { defaultModel: 'm2' });
+    const cfg = await getProviderById(p.id);
+    expect(cfg!.apiKey).toBe('orig');
+    expect(cfg!.defaultModel).toBe('m2');
+  });
+
+  it('setDefaultProvider flips is_default atomically', async () => {
+    const a = await createProvider({ name: 'A', baseUrl: 'http://a/v1', authType: 'none', verifySsl: true });
+    const b = await createProvider({ name: 'B', baseUrl: 'http://b/v1', authType: 'none', verifySsl: true });
+    await setDefaultProvider(a.id);
+    await setDefaultProvider(b.id);
+    const list = await listProviders();
+    expect(list.find(p => p.id === a.id)!.isDefault).toBe(false);
+    expect(list.find(p => p.id === b.id)!.isDefault).toBe(true);
+  });
+
+  it('deleteProvider throws when provider is default', async () => {
+    const a = await createProvider({ name: 'A', baseUrl: 'http://a/v1', authType: 'none', verifySsl: true });
+    await setDefaultProvider(a.id);
+    await expect(deleteProvider(a.id)).rejects.toThrow(/default/i);
+  });
+
+  it('deleteProvider throws with referenced-by info when in use', async () => {
+    const a = await createProvider({ name: 'A', baseUrl: 'http://a/v1', authType: 'none', verifySsl: true });
+    await query(`INSERT INTO llm_usecase_assignments (usecase, provider_id, model) VALUES ('chat',$1,'m')`, [a.id]);
+    await expect(deleteProvider(a.id)).rejects.toThrow(/referenced/i);
   });
 });

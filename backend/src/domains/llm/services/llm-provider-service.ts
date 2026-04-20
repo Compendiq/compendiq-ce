@@ -1,6 +1,6 @@
-import { query } from '../../../core/db/postgres.js';
-import { decryptPat } from '../../../core/utils/crypto.js';
-import type { LlmProvider } from '@compendiq/contracts';
+import { query, getPool } from '../../../core/db/postgres.js';
+import { decryptPat, encryptPat } from '../../../core/utils/crypto.js';
+import type { LlmProvider, LlmProviderInput, LlmProviderUpdate } from '@compendiq/contracts';
 
 /** Internal row shape returned from PG — includes the encrypted api_key. */
 interface ProviderRow {
@@ -81,4 +81,66 @@ export function normalizeBaseUrl(raw: string): string {
   let s = raw.trim().replace(/\/+$/, '');
   if (!/\/v1$/.test(s)) s += '/v1';
   return s;
+}
+
+export async function createProvider(input: LlmProviderInput): Promise<LlmProvider> {
+  const baseUrl = normalizeBaseUrl(input.baseUrl);
+  const apiKey = input.apiKey ? encryptPat(input.apiKey) : null;
+  const r = await query<ProviderRow>(
+    `INSERT INTO llm_providers (name, base_url, api_key, auth_type, verify_ssl, default_model)
+     VALUES ($1,$2,$3,$4,$5,$6)
+     RETURNING *`,
+    [input.name.trim(), baseUrl, apiKey, input.authType, input.verifySsl, input.defaultModel ?? null],
+  );
+  return rowToDto(r.rows[0]!);
+}
+
+export async function updateProvider(id: string, patch: LlmProviderUpdate): Promise<LlmProvider | null> {
+  const sets: string[] = [];
+  const vals: unknown[] = [];
+  let i = 1;
+  const push = (col: string, val: unknown) => { sets.push(`${col}=$${i++}`); vals.push(val); };
+  if (patch.name !== undefined)         push('name', patch.name.trim());
+  if (patch.baseUrl !== undefined)      push('base_url', normalizeBaseUrl(patch.baseUrl));
+  if (patch.apiKey !== undefined)       push('api_key', patch.apiKey ? encryptPat(patch.apiKey) : null);
+  if (patch.authType !== undefined)     push('auth_type', patch.authType);
+  if (patch.verifySsl !== undefined)    push('verify_ssl', patch.verifySsl);
+  if (patch.defaultModel !== undefined) push('default_model', patch.defaultModel);
+  if (sets.length === 0) {
+    const row = await query<ProviderRow>(`SELECT * FROM llm_providers WHERE id=$1`, [id]);
+    return row.rows[0] ? rowToDto(row.rows[0]) : null;
+  }
+  sets.push(`updated_at=NOW()`);
+  vals.push(id);
+  const r = await query<ProviderRow>(
+    `UPDATE llm_providers SET ${sets.join(', ')} WHERE id=$${i} RETURNING *`, vals,
+  );
+  return r.rows[0] ? rowToDto(r.rows[0]) : null;
+}
+
+export async function deleteProvider(id: string): Promise<void> {
+  const row = await query<{ is_default: boolean }>(`SELECT is_default FROM llm_providers WHERE id=$1`, [id]);
+  if (!row.rows[0]) return;
+  if (row.rows[0].is_default) {
+    throw new Error('Cannot delete the default provider — set another provider as default first.');
+  }
+  const refs = await query<{ usecase: string }>(
+    `SELECT usecase FROM llm_usecase_assignments WHERE provider_id=$1`, [id],
+  );
+  if (refs.rows.length > 0) {
+    throw new Error(`Provider is referenced by: ${refs.rows.map(r => r.usecase).join(', ')}`);
+  }
+  await query(`DELETE FROM llm_providers WHERE id=$1`, [id]);
+}
+
+export async function setDefaultProvider(id: string): Promise<void> {
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`UPDATE llm_providers SET is_default=FALSE WHERE is_default=TRUE`);
+    const r = await client.query(`UPDATE llm_providers SET is_default=TRUE, updated_at=NOW() WHERE id=$1`, [id]);
+    if (r.rowCount === 0) throw new Error('Provider not found');
+    await client.query('COMMIT');
+  } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+  finally { client.release(); }
 }
