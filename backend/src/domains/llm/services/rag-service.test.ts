@@ -11,7 +11,15 @@ const mocks = vi.hoisted(() => {
     connect: vi.fn().mockResolvedValue(mockClient),
   };
   const mockQuery = vi.fn();
-  const mockProviderGenerateEmbedding = vi.fn();
+  const mockGenerateEmbedding = vi.fn();
+  const mockResolveUsecase = vi.fn().mockResolvedValue({
+    config: {
+      providerId: 'p1', id: 'p1', name: 'X',
+      baseUrl: 'http://x/v1', apiKey: null,
+      authType: 'none', verifySsl: true, defaultModel: 'bge-m3',
+    },
+    model: 'bge-m3',
+  });
   const mockGetUserAccessibleSpaces = vi.fn();
   const mockToSql = vi.fn().mockReturnValue('[0.1,0.2]');
 
@@ -20,7 +28,8 @@ const mocks = vi.hoisted(() => {
     mockClient,
     mockPool,
     mockQuery,
-    mockProviderGenerateEmbedding,
+    mockGenerateEmbedding,
+    mockResolveUsecase,
     mockGetUserAccessibleSpaces,
     mockToSql,
   };
@@ -32,8 +41,17 @@ vi.mock('../../../core/db/postgres.js', () => ({
   getVectorPool: () => mocks.mockPool,
 }));
 
-vi.mock('./llm-provider.js', () => ({
-  providerGenerateEmbedding: (...args: unknown[]) => mocks.mockProviderGenerateEmbedding(...args),
+vi.mock('./llm-provider-resolver.js', () => ({
+  resolveUsecase: (...args: unknown[]) => mocks.mockResolveUsecase(...args),
+}));
+
+vi.mock('./openai-compatible-client.js', () => ({
+  generateEmbedding: (...args: unknown[]) => mocks.mockGenerateEmbedding(...args),
+  streamChat: vi.fn(),
+  chat: vi.fn(),
+  listModels: vi.fn(),
+  checkHealth: vi.fn(),
+  invalidateDispatcher: vi.fn(),
 }));
 
 vi.mock('../../../core/services/rbac-service.js', () => ({
@@ -250,12 +268,21 @@ describe('RAG Service', () => {
       mocks.mockPool.connect.mockResolvedValue(mocks.mockClient);
       mocks.mockClient.release.mockResolvedValue(undefined);
       mocks.mockToSql.mockReturnValue('[0.1,0.2]');
+      // Restore resolver mock default (resetAllMocks wipes it).
+      mocks.mockResolveUsecase.mockResolvedValue({
+        config: {
+          providerId: 'p1', id: 'p1', name: 'X',
+          baseUrl: 'http://x/v1', apiKey: null,
+          authType: 'none', verifySsl: true, defaultModel: 'bge-m3',
+        },
+        model: 'bge-m3',
+      });
     });
 
     it('should use pe.page_id = cp.id JOIN (not pe.confluence_id = cp.confluence_id)', async () => {
       // providerGenerateEmbedding returns one 1024-dim vector
       const fakeEmbedding = new Array(1024).fill(0.1);
-      mocks.mockProviderGenerateEmbedding.mockResolvedValue([[...fakeEmbedding]]);
+      mocks.mockGenerateEmbedding.mockResolvedValue([[...fakeEmbedding]]);
 
       // getUserAccessibleSpaces
       mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
@@ -285,7 +312,7 @@ describe('RAG Service', () => {
 
     it('should return empty results when no embeddings exist', async () => {
       const fakeEmbedding = new Array(1024).fill(0.1);
-      mocks.mockProviderGenerateEmbedding.mockResolvedValue([[...fakeEmbedding]]);
+      mocks.mockGenerateEmbedding.mockResolvedValue([[...fakeEmbedding]]);
       mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
 
       mocks.mockClientQuery.mockResolvedValueOnce(undefined); // BEGIN
@@ -301,7 +328,7 @@ describe('RAG Service', () => {
     });
 
     it('should fall back to keyword-only when embedding generation fails', async () => {
-      mocks.mockProviderGenerateEmbedding.mockRejectedValue(new Error('Ollama unreachable'));
+      mocks.mockGenerateEmbedding.mockRejectedValue(new Error('Ollama unreachable'));
       mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
 
       // keyword search returns results
@@ -325,7 +352,7 @@ describe('RAG Service', () => {
 
     it('should re-throw CircuitBreakerOpenError instead of falling back', async () => {
       const cbError = new CircuitBreakerOpenError('LLM server temporarily unavailable');
-      mocks.mockProviderGenerateEmbedding.mockRejectedValue(cbError);
+      mocks.mockGenerateEmbedding.mockRejectedValue(cbError);
       mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
 
       // keyword search is started concurrently but the CB error should still propagate
@@ -337,7 +364,7 @@ describe('RAG Service', () => {
     });
 
     it('should record keyword_fallback search type when embedding fails', async () => {
-      mocks.mockProviderGenerateEmbedding.mockRejectedValue(new Error('Ollama unreachable'));
+      mocks.mockGenerateEmbedding.mockRejectedValue(new Error('Ollama unreachable'));
       mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
 
       // keyword search returns results
@@ -370,7 +397,7 @@ describe('RAG Service', () => {
 
     it('should record hybrid search type when both vector and keyword succeed', async () => {
       const fakeEmbedding = new Array(1024).fill(0.1);
-      mocks.mockProviderGenerateEmbedding.mockResolvedValue([[...fakeEmbedding]]);
+      mocks.mockGenerateEmbedding.mockResolvedValue([[...fakeEmbedding]]);
       mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
 
       mocks.mockClientQuery.mockResolvedValueOnce(undefined); // BEGIN
