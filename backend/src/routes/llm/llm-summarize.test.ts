@@ -2,13 +2,34 @@ import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vites
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 
-// --- Mock: llm-provider (providerStreamChat + issue #217 providerStreamChatForUsecase) ---
-const mockProviderStreamChat = vi.fn();
-const mockProviderStreamChatForUsecase = vi.fn();
+// --- Mock: llm-provider-resolver (resolveUsecase) ---
+const mockResolveUsecase = vi.fn().mockResolvedValue({
+  config: {
+    providerId: 'p1',
+    baseUrl: 'http://x/v1',
+    apiKey: null,
+    authType: 'none',
+    verifySsl: true,
+    name: 'X',
+    defaultModel: 'm',
+  },
+  model: 'm',
+});
 
-vi.mock('../../domains/llm/services/llm-provider.js', () => ({
-  providerStreamChat: (...args: unknown[]) => mockProviderStreamChat(...args),
-  providerStreamChatForUsecase: (...args: unknown[]) => mockProviderStreamChatForUsecase(...args),
+vi.mock('../../domains/llm/services/llm-provider-resolver.js', () => ({
+  resolveUsecase: (...args: unknown[]) => mockResolveUsecase(...args),
+}));
+
+// --- Mock: openai-compatible-client (streamChat — queue + breakers wrapped inside) ---
+const mockStreamChatClient = vi.fn();
+
+vi.mock('../../domains/llm/services/openai-compatible-client.js', () => ({
+  streamChat: (...args: unknown[]) => mockStreamChatClient(...args),
+  chat: vi.fn(),
+  generateEmbedding: vi.fn(),
+  listModels: vi.fn(),
+  checkHealth: vi.fn(),
+  invalidateDispatcher: vi.fn(),
 }));
 
 // --- Mock: llm-cache ---
@@ -54,14 +75,6 @@ const mockSendCachedSSE = vi.fn();
 const mockStreamSSE = vi.fn().mockResolvedValue(undefined);
 const mockSanitizeLlmInput = vi.fn((input: string) => ({ sanitized: input, warnings: [] }));
 const mockBuildOutputPostProcessor = vi.fn().mockResolvedValue((text: string) => text);
-// Issue #217: default to no chat-usecase override so the route takes the
-// per-user routing branch (providerStreamChat).
-const mockResolveChatAssignment = vi.fn().mockResolvedValue({
-  provider: 'ollama',
-  model: '',
-  hasUsecaseOverride: false,
-  assignment: { provider: 'ollama', model: '', source: { provider: 'shared', model: 'shared' } },
-});
 
 vi.mock('./_helpers.js', () => ({
   assembleContextIfNeeded: (...args: unknown[]) => mockAssembleContextIfNeeded(...args),
@@ -71,7 +84,6 @@ vi.mock('./_helpers.js', () => ({
   streamSSE: (...args: unknown[]) => mockStreamSSE(...args),
   sanitizeLlmInput: (...args: unknown[]) => mockSanitizeLlmInput(...args),
   buildOutputPostProcessor: (...args: unknown[]) => mockBuildOutputPostProcessor(...args),
-  resolveChatAssignment: (...args: unknown[]) => mockResolveChatAssignment(...args),
   LLM_STREAM_RATE_LIMIT: {},
   MAX_INPUT_LENGTH: 100_000,
 }));
@@ -154,15 +166,20 @@ describe('POST /api/llm/summarize - functionality', () => {
     mockBuildOutputPostProcessor.mockResolvedValue((text: string) => text);
     mockStreamSSE.mockResolvedValue(undefined);
     mockFetchWebSources.mockResolvedValue([]);
-    mockProviderStreamChat.mockReturnValue((async function* () {
+    mockStreamChatClient.mockReturnValue((async function* () {
       yield { content: 'Summary text', done: true };
     })());
-    // Issue #217: reset chat usecase resolver to "no override" default.
-    mockResolveChatAssignment.mockResolvedValue({
-      provider: 'ollama',
-      model: '',
-      hasUsecaseOverride: false,
-      assignment: { provider: 'ollama', model: '', source: { provider: 'shared', model: 'shared' } },
+    mockResolveUsecase.mockResolvedValue({
+      config: {
+        providerId: 'p1',
+        baseUrl: 'http://x/v1',
+        apiKey: null,
+        authType: 'none',
+        verifySsl: true,
+        name: 'X',
+        defaultModel: 'm',
+      },
+      model: 'm',
     });
   });
 
@@ -243,12 +260,14 @@ describe('POST /api/llm/summarize - functionality', () => {
 
     // streamSSE was called (it handles writing the response)
     expect(mockStreamSSE).toHaveBeenCalledOnce();
-    expect(mockProviderStreamChat).toHaveBeenCalledOnce();
+    expect(mockStreamChatClient).toHaveBeenCalledOnce();
 
-    // Verify providerStreamChat was called with correct messages
-    const [userId, model, messages] = mockProviderStreamChat.mock.calls[0] as [string, string, Array<{ role: string; content: string }>];
-    expect(userId).toBe('test-user-123');
-    expect(model).toBe('llama3');
+    // Verify streamChat was called with the resolved provider config + model + messages
+    const [cfg, model, messages] = mockStreamChatClient.mock.calls[0] as [
+      { providerId: string }, string, Array<{ role: string; content: string }>,
+    ];
+    expect(cfg.providerId).toBe('p1');
+    expect(model).toBe('m');
     expect(messages).toHaveLength(2);
     expect(messages[0].role).toBe('system');
     expect(messages[1].role).toBe('user');
@@ -290,7 +309,7 @@ describe('POST /api/llm/summarize - functionality', () => {
       payload: { content: 'Some text', model: 'llama3', length: 'short' },
     });
 
-    const [, , messages] = mockProviderStreamChat.mock.calls[0] as [string, string, Array<{ role: string; content: string }>];
+    const [, , messages] = mockStreamChatClient.mock.calls[0] as [unknown, string, Array<{ role: string; content: string }>];
     expect(messages[0].content).toContain('brief 2-3 sentence');
   });
 
@@ -301,7 +320,7 @@ describe('POST /api/llm/summarize - functionality', () => {
       payload: { content: 'Some text', model: 'llama3' },
     });
 
-    const [, , messages] = mockProviderStreamChat.mock.calls[0] as [string, string, Array<{ role: string; content: string }>];
+    const [, , messages] = mockStreamChatClient.mock.calls[0] as [unknown, string, Array<{ role: string; content: string }>];
     expect(messages[0].content).toContain('1-2 paragraphs');
   });
 
@@ -312,7 +331,7 @@ describe('POST /api/llm/summarize - functionality', () => {
       payload: { content: 'Some text', model: 'llama3', length: 'detailed' },
     });
 
-    const [, , messages] = mockProviderStreamChat.mock.calls[0] as [string, string, Array<{ role: string; content: string }>];
+    const [, , messages] = mockStreamChatClient.mock.calls[0] as [unknown, string, Array<{ role: string; content: string }>];
     expect(messages[0].content).toContain('detailed summary covering all important points');
   });
 
@@ -437,45 +456,49 @@ describe('POST /api/llm/summarize - functionality', () => {
       },
     });
 
-    const [, , messages] = mockProviderStreamChat.mock.calls[0] as [string, string, Array<{ role: string; content: string }>];
+    const [, , messages] = mockStreamChatClient.mock.calls[0] as [unknown, string, Array<{ role: string; content: string }>];
     expect(messages[0].content).toContain('(includes 3 sub-pages)');
   });
 
   // ---------------------------------------------------------------------------
-  // Issue #217 — chat usecase routing
+  // summary use-case resolution
   // ---------------------------------------------------------------------------
 
-  it('consults resolveChatAssignment on every request (issue #217)', async () => {
+  it('consults resolveUsecase("summary") on every request', async () => {
     await app.inject({
       method: 'POST',
       url: '/api/llm/summarize',
       payload: { content: 'Some text', model: 'llama3' },
     });
 
-    expect(mockResolveChatAssignment).toHaveBeenCalledWith('llama3');
+    expect(mockResolveUsecase).toHaveBeenCalledWith('summary');
   });
 
-  it('routes via providerStreamChatForUsecase when admin set a chat override (issue #217)', async () => {
-    mockResolveChatAssignment.mockResolvedValue({
-      provider: 'openai',
+  it('streams via the resolved provider config + model', async () => {
+    mockResolveUsecase.mockResolvedValue({
+      config: {
+        providerId: 'provider-openai',
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: 'sk-test',
+        authType: 'bearer',
+        verifySsl: true,
+        name: 'OpenAI',
+        defaultModel: 'gpt-4o-mini',
+      },
       model: 'gpt-4o-mini',
-      hasUsecaseOverride: true,
-      assignment: { provider: 'openai', model: 'gpt-4o-mini', source: { provider: 'usecase', model: 'usecase' } },
     });
-    mockProviderStreamChatForUsecase.mockReturnValue((async function* () {
-      yield { content: 'Summary', done: true };
-    })());
 
     await app.inject({
       method: 'POST',
       url: '/api/llm/summarize',
-      payload: { content: 'Some text', model: 'llama3' },
+      payload: { content: 'Some text', model: 'ignored-body-model' },
     });
 
-    expect(mockProviderStreamChatForUsecase).toHaveBeenCalledOnce();
-    expect(mockProviderStreamChat).not.toHaveBeenCalled();
-    const [provider, usedModel] = mockProviderStreamChatForUsecase.mock.calls[0] as [string, string];
-    expect(provider).toBe('openai');
+    expect(mockStreamChatClient).toHaveBeenCalledOnce();
+    const [cfg, usedModel] = mockStreamChatClient.mock.calls[0] as [
+      { providerId: string }, string,
+    ];
+    expect(cfg.providerId).toBe('provider-openai');
     expect(usedModel).toBe('gpt-4o-mini');
   });
 });
