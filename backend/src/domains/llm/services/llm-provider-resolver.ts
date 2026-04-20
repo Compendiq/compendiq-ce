@@ -1,6 +1,6 @@
 import { query } from '../../../core/db/postgres.js';
 import { decryptPat } from '../../../core/utils/crypto.js';
-import { invalidateDispatcher, type ProviderConfig } from './openai-compatible-client.js';
+import { invalidateDispatcher, invalidateBreaker, type ProviderConfig } from './openai-compatible-client.js';
 import { getProviderCacheVersion, onProviderCacheBump } from './cache-bus.js';
 import type { LlmUsecase } from '@compendiq/contracts';
 
@@ -27,8 +27,13 @@ const configCache = new Map<string, { version: number; cfg: ProviderConfig & { i
 
 onProviderCacheBump(() => {
   // Also close any pooled undici dispatchers for those providers (they'll be
-  // re-created on the next resolveUsecase/listProviders call).
-  for (const entry of configCache.values()) invalidateDispatcher(entry.cfg.providerId);
+  // re-created on the next resolveUsecase/listProviders call) and drop their
+  // per-provider circuit breakers so stale failure state doesn't carry over
+  // against the new configuration.
+  for (const entry of configCache.values()) {
+    invalidateDispatcher(entry.cfg.providerId);
+    invalidateBreaker(entry.cfg.providerId);
+  }
   configCache.clear();
 });
 
