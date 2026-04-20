@@ -1,10 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { SystemPromptKey } from '../../domains/llm/services/ollama-service.js';
-import {
-  providerStreamChat,
-  providerStreamChatForUsecase,
-  resolveUserProvider,
-} from '../../domains/llm/services/llm-provider.js';
+import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
+import { streamChat } from '../../domains/llm/services/openai-compatible-client.js';
 import { LlmCache, buildLlmCacheKey } from '../../domains/llm/services/llm-cache.js';
 import { fetchWebSources, formatWebContext, type WebSource } from './_web-search-helper.js';
 import { GenerateRequestSchema } from '@compendiq/contracts';
@@ -18,7 +15,6 @@ import {
   streamSSE,
   sanitizeLlmInput,
   buildOutputPostProcessor,
-  resolveChatAssignment,
   LLM_STREAM_RATE_LIMIT,
   MAX_INPUT_LENGTH,
   MAX_PDF_TEXT_FOR_LLM,
@@ -97,18 +93,16 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
       })),
     } : undefined;
 
-    // Issue #217: resolve the `chat` usecase assignment up-front so the cache
-    // key can include the resolved provider+model, and so the error-path audit
-    // can attribute failures to the resolved provider rather than the per-user
-    // default.
-    const chat = await resolveChatAssignment(model);
+    // Resolve the `chat` use-case up-front so the cache key includes the
+    // resolved provider+model. Queue + per-provider breakers wrap streamChat().
+    const { config: chatConfig, model: resolvedModel } = await resolveUsecase('chat');
     logger.debug(
-      { userId, bodyModel: model, resolved: chat.assignment, usedOverride: chat.hasUsecaseOverride },
+      { userId, bodyModel: model, providerId: chatConfig.providerId, resolvedModel },
       'Resolved chat usecase assignment',
     );
 
     // Check LLM cache with stampede protection
-    const cacheKey = buildLlmCacheKey(chat.model, systemPrompt, userContent, chat.provider);
+    const cacheKey = buildLlmCacheKey(resolvedModel, systemPrompt, userContent, chatConfig.providerId);
     const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
       sendCachedSSE(reply, cached.content);
@@ -123,19 +117,15 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
     try {
       const postProcess = await buildOutputPostProcessor(genWebSources.map((s) => s.url));
 
-      // Issue #217: honor the per-use-case `chat` provider/model override when
-      // the admin has set one. Fall back to per-user routing otherwise.
-      const generator = chat.hasUsecaseOverride
-        ? providerStreamChatForUsecase(chat.provider, chat.model, generateMessages)
-        : providerStreamChat(userId, model, generateMessages);
+      const generator = streamChat(chatConfig, resolvedModel, generateMessages);
 
       const accumulated = await streamSSE(request, reply, generator, genExtras, { llmCache, cacheKey, postProcess });
 
       emitLlmAudit({
         userId,
         action: 'generate',
-        model: chat.hasUsecaseOverride ? chat.model : model,
-        provider: chat.hasUsecaseOverride ? chat.provider : (await resolveUserProvider(userId)).type,
+        model: resolvedModel,
+        provider: 'openai',
         inputTokens: estimateTokens(generateMessages.map(m => m.content).join('')),
         outputTokens: estimateTokens(accumulated),
         inputMessages: generateMessages.map(m => ({ role: m.role, contentLength: m.content.length })),
@@ -147,8 +137,8 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
       emitLlmAudit({
         userId,
         action: 'generate',
-        model: chat.hasUsecaseOverride ? chat.model : model,
-        provider: chat.hasUsecaseOverride ? chat.provider : (await resolveUserProvider(userId)).type,
+        model: resolvedModel,
+        provider: 'openai',
         inputTokens: estimateTokens(generateMessages.map(m => m.content).join('')),
         outputTokens: 0,
         inputMessages: generateMessages.map(m => ({ role: m.role, contentLength: m.content.length })),

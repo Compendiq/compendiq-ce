@@ -12,7 +12,6 @@ import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vites
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 
-const mockProviderStreamChat = vi.fn();
 const mockQuery = vi.fn();
 
 vi.mock('../../domains/llm/services/ollama-service.js', () => ({
@@ -32,9 +31,29 @@ vi.mock('../../domains/llm/services/ollama-service.js', () => ({
   LANGUAGE_PRESERVATION_INSTRUCTION: 'Keep the text in its ORIGINAL language.',
 }));
 
-vi.mock('../../domains/llm/services/llm-provider.js', () => ({
-  providerStreamChat: (...args: unknown[]) => mockProviderStreamChat(...args),
-  providerGenerateEmbedding: vi.fn(),
+// Mock llm-provider-resolver (resolveUsecase)
+const mockResolveUsecase = vi.fn().mockResolvedValue({
+  config: {
+    providerId: 'p1', baseUrl: 'http://x/v1', apiKey: null,
+    authType: 'none', verifySsl: true, name: 'X', defaultModel: 'm',
+  },
+  model: 'm',
+});
+
+vi.mock('../../domains/llm/services/llm-provider-resolver.js', () => ({
+  resolveUsecase: (...args: unknown[]) => mockResolveUsecase(...args),
+}));
+
+// Mock openai-compatible-client (streamChat — queue + breakers wrapped inside)
+const mockProviderStreamChat = vi.fn();
+
+vi.mock('../../domains/llm/services/openai-compatible-client.js', () => ({
+  streamChat: (...args: unknown[]) => mockProviderStreamChat(...args),
+  chat: vi.fn(),
+  generateEmbedding: vi.fn(),
+  listModels: vi.fn(),
+  checkHealth: vi.fn(),
+  invalidateDispatcher: vi.fn(),
 }));
 
 vi.mock('../../core/services/circuit-breaker.js', () => ({
