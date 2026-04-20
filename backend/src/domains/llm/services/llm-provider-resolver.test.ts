@@ -2,7 +2,8 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../../test-db-helper.js';
 import { query } from '../../../core/db/postgres.js';
 import { createProvider, setDefaultProvider } from './llm-provider-service.js';
-import { resolveUsecase, bumpProviderCacheVersion } from './llm-provider-resolver.js';
+import { resolveUsecase } from './llm-provider-resolver.js';
+import { bumpProviderCacheVersion } from './cache-bus.js';
 
 const dbAvailable = await isDbAvailable();
 

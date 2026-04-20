@@ -2,6 +2,8 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../../test-db-helper.js';
 import { query } from '../../../core/db/postgres.js';
 import { listProviders, getProviderById, createProvider, updateProvider, deleteProvider, setDefaultProvider } from './llm-provider-service.js';
+import { resolveUsecase } from './llm-provider-resolver.js';
+import { bumpProviderCacheVersion } from './cache-bus.js';
 
 const dbAvailable = await isDbAvailable();
 
@@ -78,5 +80,16 @@ describe.skipIf(!dbAvailable)('llm-provider-service — write', () => {
     const a = await createProvider({ name: 'A', baseUrl: 'http://a/v1', authType: 'none', verifySsl: true });
     await query(`INSERT INTO llm_usecase_assignments (usecase, provider_id, model) VALUES ('chat',$1,'m')`, [a.id]);
     await expect(deleteProvider(a.id)).rejects.toThrow(/referenced/i);
+  });
+});
+
+describe.skipIf(!dbAvailable)('cache invalidation on writes', () => {
+  beforeEach(async () => { await truncateAllTables(); bumpProviderCacheVersion(); });
+  it('updateProvider flips the cached baseUrl on the next resolve', async () => {
+    const p = await createProvider({ name: 'A', baseUrl: 'http://a/v1', authType: 'none', verifySsl: true, defaultModel: 'm' });
+    await setDefaultProvider(p.id);
+    expect((await resolveUsecase('chat')).config.baseUrl).toBe('http://a/v1');
+    await updateProvider(p.id, { baseUrl: 'http://aa/v1' });
+    expect((await resolveUsecase('chat')).config.baseUrl).toBe('http://aa/v1');
   });
 });

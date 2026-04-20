@@ -1,6 +1,7 @@
 import { query } from '../../../core/db/postgres.js';
 import { decryptPat } from '../../../core/utils/crypto.js';
 import { invalidateDispatcher, type ProviderConfig } from './openai-compatible-client.js';
+import { getProviderCacheVersion, onProviderCacheBump } from './cache-bus.js';
 import type { LlmUsecase } from '@compendiq/contracts';
 
 interface ResolveRow {
@@ -22,16 +23,14 @@ interface Resolved {
 }
 
 // In-memory cache of provider configs keyed by id, invalidated by version bump.
-let cacheVersion = 0;
 const configCache = new Map<string, { version: number; cfg: ProviderConfig & { id: string; name: string; defaultModel: string | null } }>();
 
-export function bumpProviderCacheVersion(): void {
-  cacheVersion += 1;
+onProviderCacheBump(() => {
   // Also close any pooled undici dispatchers for those providers (they'll be
   // re-created on the next resolveUsecase/listProviders call).
   for (const entry of configCache.values()) invalidateDispatcher(entry.cfg.providerId);
   configCache.clear();
-}
+});
 
 function decryptSafe(s: string | null): string | null {
   if (!s) return null;
@@ -76,9 +75,9 @@ export async function resolveUsecase(usecase: LlmUsecase): Promise<Resolved> {
 
   const cacheKey = row.provider_id;
   let cached = configCache.get(cacheKey);
-  if (!cached || cached.version !== cacheVersion) {
+  if (!cached || cached.version !== getProviderCacheVersion()) {
     cached = {
-      version: cacheVersion,
+      version: getProviderCacheVersion(),
       cfg: {
         providerId: row.provider_id,
         id: row.provider_id,
