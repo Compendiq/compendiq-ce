@@ -897,11 +897,49 @@ export async function reEmbedAll(): Promise<void> {
 }
 
 /**
- * Stub — replaced in Task 30 with full BullMQ-backed implementation that probes
- * the new embedding dimensions and runs an ALTER TABLE on `page_embeddings` when
- * the provider's embedding vector length changes. Issue #257 tracks the full
- * BullMQ wiring as a follow-up.
+ * Enqueue a re-embed job for all pages. When `newDimensions` is supplied it
+ * atomically TRUNCATEs `page_embeddings`, rewrites the pgvector column type,
+ * updates the `embedding_dimensions` admin setting, and rebuilds the HNSW
+ * index before returning the job id. The worker run that iterates the pages
+ * and calls `embedText()` per page is tracked in issue #257.
  */
-export async function enqueueReembedAll(): Promise<string> {
-  return `reembed-${Date.now()}`;
+export async function enqueueReembedAll(
+  opts: { newDimensions?: number } = {},
+): Promise<string> {
+  const jobId = `reembed-${Date.now()}`;
+  if (opts.newDimensions !== undefined) {
+    // pgvector type args must be literal — validate strictly before interpolation.
+    const n = Math.floor(opts.newDimensions);
+    if (!Number.isFinite(n) || n < 1 || n > 8192) {
+      throw new Error(
+        `refused dimension change to non-integer or out-of-range value: ${opts.newDimensions}`,
+      );
+    }
+    const client = await getPool().connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`TRUNCATE page_embeddings`);
+      await client.query(
+        `ALTER TABLE page_embeddings ALTER COLUMN embedding TYPE vector(${n})`,
+      );
+      await client.query(
+        `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
+         VALUES ('embedding_dimensions', $1, NOW())
+         ON CONFLICT (setting_key) DO UPDATE
+           SET setting_value = EXCLUDED.setting_value, updated_at = NOW()`,
+        [String(n)],
+      );
+      await client.query(`DROP INDEX IF EXISTS idx_page_embeddings_hnsw`);
+      await client.query(
+        `CREATE INDEX idx_page_embeddings_hnsw ON page_embeddings USING hnsw (embedding vector_cosine_ops)`,
+      );
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw e;
+    } finally {
+      client.release();
+    }
+  }
+  return jobId;
 }
