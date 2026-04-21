@@ -148,55 +148,13 @@ export class CircuitBreakerOpenError extends Error {
   }
 }
 
-// Embedding operations use a higher failure threshold (5 instead of 3)
-// because transient network issues during bulk embedding should not
-// trip the breaker as aggressively as interactive chat requests.
-const EMBED_BREAKER_CONFIG: Partial<CircuitBreakerConfig> = {
-  failureThreshold: 5,
-};
-
-// Per-method circuit breakers for Ollama
-export const ollamaBreakers = {
-  chat: new CircuitBreaker('ollama-chat'),
-  embed: new CircuitBreaker('ollama-embed', EMBED_BREAKER_CONFIG),
-  list: new CircuitBreaker('ollama-list'),
-} as const;
-
-// Separate per-method circuit breakers for OpenAI-compatible providers.
-// These are independent from Ollama breakers so that an OpenAI outage
-// does not block Ollama requests and vice versa.
-export const openaiBreakers = {
-  chat: new CircuitBreaker('openai-chat'),
-  embed: new CircuitBreaker('openai-embed', EMBED_BREAKER_CONFIG),
-  list: new CircuitBreaker('openai-list'),
-} as const;
-
-/**
- * Get aggregated status of all Ollama circuit breakers.
- */
-export function getOllamaCircuitBreakerStatus(): Record<string, CircuitBreakerStatus> {
-  return {
-    chat: ollamaBreakers.chat.getStatus(),
-    embed: ollamaBreakers.embed.getStatus(),
-    list: ollamaBreakers.list.getStatus(),
-  };
-}
-
-/**
- * Get aggregated status of all OpenAI circuit breakers.
- */
-export function getOpenaiCircuitBreakerStatus(): Record<string, CircuitBreakerStatus> {
-  return {
-    chat: openaiBreakers.chat.getStatus(),
-    embed: openaiBreakers.embed.getStatus(),
-    list: openaiBreakers.list.getStatus(),
-  };
-}
-
 // ─── Per-provider circuit breakers (multi-provider LLM support) ─────────────
 // Keyed by provider id (UUID). Each provider gets its own breaker so that an
-// outage on one provider does not affect others. Thresholds match the existing
-// `ollamaBreakers.chat` defaults (3 failures / 2 successes / 30s timeout).
+// outage on one provider does not affect others. Thresholds match the default
+// CircuitBreakerConfig (3 failures / 2 successes / 30s timeout). Replaces the
+// previous per-protocol {ollamaBreakers, openaiBreakers} globals which were
+// orphaned after #256 migrated all call sites to the multi-provider
+// openai-compatible-client.
 const providerBreakers = new Map<string, CircuitBreaker>();
 
 /**

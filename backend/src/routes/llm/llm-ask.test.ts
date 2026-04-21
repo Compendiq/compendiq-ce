@@ -46,20 +46,6 @@ vi.mock('../../domains/llm/services/openai-compatible-client.js', () => ({
   invalidateDispatcher: vi.fn(),
 }));
 
-// --- Mock: circuit-breaker (used internally by ollama-service/llm-provider) ---
-vi.mock('../../core/services/circuit-breaker.js', () => ({
-  getOllamaCircuitBreakerStatus: vi.fn().mockReturnValue({
-    chat: { state: 'CLOSED' },
-    embed: { state: 'CLOSED' },
-    list: { state: 'CLOSED' },
-  }),
-  ollamaBreakers: {
-    chat: { execute: vi.fn((fn: () => unknown) => fn()) },
-    embed: { execute: vi.fn((fn: () => unknown) => fn()) },
-    list: { execute: vi.fn((fn: () => unknown) => fn()) },
-  },
-}));
-
 // --- Mock: postgres query ---
 // Default returns a row with id so saveConversation INSERT can read rows[0].id.
 // Also returns non-openai llm_provider so resolveUserProvider falls back to Ollama.

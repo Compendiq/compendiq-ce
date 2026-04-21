@@ -12,10 +12,9 @@ export { trackError, listErrors, resolveError, getErrorSummary } from './service
 export {
   CircuitBreaker,
   CircuitBreakerOpenError,
-  ollamaBreakers,
-  openaiBreakers,
-  getOllamaCircuitBreakerStatus,
-  getOpenaiCircuitBreakerStatus,
+  getProviderBreaker,
+  invalidateProviderBreaker,
+  listProviderBreakers,
 } from './services/circuit-breaker.js';
 export {
   confluenceToHtml,

@@ -27,8 +27,9 @@ vi.mock('../../../core/services/admin-settings-service.js', () => ({
 
 vi.mock('../../../core/services/circuit-breaker.js', () => ({
   CircuitBreakerOpenError: class extends Error {},
-  ollamaBreakers: { embed: { getStatus: () => ({ nextRetryTime: null }) } },
-  openaiBreakers: { embed: { getStatus: () => ({ nextRetryTime: null }) } },
+  getProviderBreaker: vi.fn().mockReturnValue({
+    getStatus: () => ({ nextRetryTime: null }),
+  }),
 }));
 
 vi.mock('./llm-provider-resolver.js', () => ({
