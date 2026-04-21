@@ -3,7 +3,7 @@ import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '.
 import { query } from '../../../core/db/postgres.js';
 import { listProviders, getProviderById, createProvider, updateProvider, deleteProvider, setDefaultProvider } from './llm-provider-service.js';
 import { resolveUsecase } from './llm-provider-resolver.js';
-import { bumpProviderCacheVersion } from './cache-bus.js';
+import { bumpProviderCacheVersion, onProviderCacheBump, onProviderDeleted } from './cache-bus.js';
 
 const dbAvailable = await isDbAvailable();
 
@@ -91,5 +91,35 @@ describe.skipIf(!dbAvailable)('cache invalidation on writes', () => {
     expect((await resolveUsecase('chat')).config.baseUrl).toBe('http://a/v1');
     await updateProvider(p.id, { baseUrl: 'http://aa/v1' });
     expect((await resolveUsecase('chat')).config.baseUrl).toBe('http://aa/v1');
+  });
+});
+
+// Issue #267 — `deleteProvider` must emit a `providerDeleted(id)` signal on the
+// cache-bus so per-provider resources (circuit breakers, undici dispatchers)
+// can be dropped. Without this, `providerBreakers` leaks entries forever.
+// Ordering matters: the delete event must fire *before* the cache-version bump
+// so subscribers see the id before the generic invalidation sweep runs.
+describe.skipIf(!dbAvailable)('deleteProvider emits providerDeleted event', () => {
+  beforeEach(async () => { await truncateAllTables(); });
+
+  it('deleteProvider emits providerDeleted before bumping cache version', async () => {
+    const events: Array<{ kind: 'deleted'; id: string } | { kind: 'bump' }> = [];
+    const offDel = onProviderDeleted((id) => events.push({ kind: 'deleted', id }));
+    const offBump = onProviderCacheBump(() => events.push({ kind: 'bump' }));
+
+    try {
+      const p = await createProvider({
+        name: 'to-delete', baseUrl: 'http://x', apiKey: null,
+        authType: 'none', verifySsl: true, defaultModel: null,
+      });
+      // Creation itself bumps the cache version — clear the log before the act.
+      events.length = 0;
+      await deleteProvider(p.id);
+
+      expect(events).toEqual([{ kind: 'deleted', id: p.id }, { kind: 'bump' }]);
+    } finally {
+      offDel();
+      offBump();
+    }
   });
 });
