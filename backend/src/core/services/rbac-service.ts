@@ -1,6 +1,7 @@
 import { query } from '../db/postgres.js';
 import { getRedisClient } from './redis-cache.js';
 import { logger } from '../utils/logger.js';
+import { getScopedSpaces, setScopedSpaces } from './rbac-request-scope.js';
 
 const RBAC_CACHE_TTL = 60; // 60 seconds
 
@@ -326,6 +327,25 @@ export async function getUserAccessibleSpaces(userId: string): Promise<string[]>
 
   await setCache(cacheKey, spaceKeys);
   return spaceKeys;
+}
+
+/**
+ * Request-scoped wrapper around `getUserAccessibleSpaces`. Callers that run
+ * inside a Fastify request (entered via `enterRbacScope` from the auth plugin)
+ * pay at most one resolver hit per request, regardless of how many retrieval
+ * paths consult the readable-space set. Outside a scope (workers, tests that
+ * do not opt in) this falls through to the normal resolver with no change in
+ * behaviour.
+ *
+ * Signature matches `getUserAccessibleSpaces` exactly so call sites can swap
+ * the import without touching the call site.
+ */
+export async function getUserAccessibleSpacesMemoized(userId: string): Promise<string[]> {
+  const scoped = getScopedSpaces(userId);
+  if (scoped) return scoped;
+  const spaces = await getUserAccessibleSpaces(userId);
+  setScopedSpaces(spaces);
+  return spaces;
 }
 
 /**

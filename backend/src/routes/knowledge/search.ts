@@ -2,7 +2,10 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { SearchHybridQuerySchema } from '@compendiq/contracts';
 import { query } from '../../core/db/postgres.js';
-import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
+// Use the request-scoped memoised wrapper so the search route and downstream
+// rag-service calls resolve the readable-space set once per request. See
+// ADR-022.
+import { getUserAccessibleSpacesMemoized as getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 import { getFtsLanguage } from '../../core/services/fts-language.js';
 import {
   vectorSearch,

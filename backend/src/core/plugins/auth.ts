@@ -5,6 +5,7 @@ import { randomUUID } from 'crypto';
 import { query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
 import { userHasPermission, userHasGlobalPermission } from '../services/rbac-service.js';
+import { enterRbacScope } from '../services/rbac-request-scope.js';
 import { logAuditEvent } from '../services/audit-service.js';
 
 const JWT_ISSUER = 'compendiq';
@@ -188,6 +189,13 @@ export default fp(async (fastify: FastifyInstance) => {
       request.userId = payload.sub;
       request.username = payload.username;
       request.userRole = payload.role;
+
+      // Open a request-scoped AsyncLocalStorage frame so RBAC space-resolution
+      // is memoised for the rest of this request. `enterWith` binds the store
+      // to the current async chain without requiring a callback, so the route
+      // handler and every downstream hook inherit the scope automatically.
+      // See ADR-022.
+      enterRbacScope(request.userId);
 
       // Attach RBAC permission checker to request
       request.userCan = async (
