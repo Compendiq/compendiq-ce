@@ -201,7 +201,7 @@ Add `mockListProviderBreakers` following existing test mock shape at `llm-models
 
 ### Step 4 — docs
 
-- `docs/ADMIN-GUIDE.md`: replace old path with new + footnote: *"Older versions used `/api/ollama/…`; removed after 2026-07-20. See [issue #266]. The deprecated alias emits RFC 9745 `Deprecation` + RFC 8594 `Sunset` + `Link: …; rel="successor-version"` headers during the grace window."*
+- `docs/ADMIN-GUIDE.md`: replace old path with new + footnote: *"Older versions used `/api/ollama/…`; removed after 2026-10-21. See [issue #266]. The deprecated alias emits RFC 9745 `Deprecation` + RFC 8594 `Sunset` + `Link: …; rel="successor-version"` headers during the grace window."*
 - `docs/PERFORMANCE.md`: same replacement if path appears.
 - `docs/ARCHITECTURE-DECISIONS.md`: annotate if mentioned in an ADR; don't replace (preserve history).
 
@@ -211,9 +211,9 @@ None. No OpenAPI file in repo; `packages/contracts/` is Zod for request bodies (
 
 ---
 
-## 3. Follow-up (separate PR, after 2026-07-20)
+## 3. Follow-up (separate PR, after 2026-10-21)
 
-Remove the alias (~10 LoC). Track as a GH issue "Remove deprecated `/api/ollama/circuit-breaker-status` alias" with due date 2026-07-20.
+Remove the alias (~10 LoC). Track as a GH issue "Remove deprecated `/api/ollama/circuit-breaker-status` alias" with due date 2026-10-21.
 
 ---
 
