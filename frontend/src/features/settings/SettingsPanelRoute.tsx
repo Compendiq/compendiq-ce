@@ -81,10 +81,7 @@ const PANELS: Readonly<Record<string, PanelRenderer>> = {
   'content/sync': () => <SyncTab />,
   'content/labels': () => <LabelManager />,
 
-  'ai/llm': ({ settings, isLoading }) => {
-    if (isLoading || !settings) return <SkeletonFormFields />;
-    return <LlmTab settings={settings} />;
-  },
+  'ai/llm': () => <LlmTab />,
   'ai/embedding': () => <EmbeddingTab />,
   'ai/ai-safety': () => <AiSafetyTab />,
   'ai/workers': () => <WorkersTab />,
