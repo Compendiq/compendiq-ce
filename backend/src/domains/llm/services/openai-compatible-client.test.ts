@@ -299,9 +299,14 @@ describe('openai-compatible-client — queue-full vs breaker-open disambiguation
       // p3 should reject immediately with QueueFullError (breaker still CLOSED).
       await expect(chat(cfgOverflow, 'm', [{ role: 'user', content: '3' }]))
         .rejects.toBeInstanceOf(QueueFullError);
-      // Critical negative assertion: the overflow is NOT misreported as
-      // breaker-open. If these two error paths ever get conflated, this fails.
+      // Anchor the overflow identity with BOTH a positive and a negative
+      // assertion. The positive half pins the concrete error class so a
+      // silent rename of QueueFullError can't regress the overflow path; the
+      // negative half guarantees the two error paths don't get conflated
+      // (i.e. overflow is NOT misreported as breaker-open).
       await expect(chat(cfgOverflow, 'm', [{ role: 'user', content: '4' }]))
+        .rejects.toBeInstanceOf(QueueFullError);
+      await expect(chat(cfgOverflow, 'm', [{ role: 'user', content: '5' }]))
         .rejects.not.toBeInstanceOf(CircuitBreakerOpenError);
 
       // Drain the in-flight calls so afterAll can cleanly close the server.
