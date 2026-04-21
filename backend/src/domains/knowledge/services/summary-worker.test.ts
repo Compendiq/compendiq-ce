@@ -13,13 +13,10 @@ import {
 
 const dbAvailable = await isDbAvailable();
 
-// Mock the LLM streaming helpers to avoid real LLM calls in tests.
+// Mock the LLM streaming helper to avoid real LLM calls in tests.
 // The worker streams via `streamChat` from openai-compatible-client using
-// messages it builds itself from `getSystemPrompt('summarize')`.
-vi.mock('../../llm/services/ollama-service.js', () => ({
-  getSystemPrompt: vi.fn().mockReturnValue('You are a summarizer.'),
-}));
-
+// messages it builds itself; `getSystemPrompt` from prompts.ts is a pure
+// string helper and runs unmocked.
 vi.mock('../../llm/services/openai-compatible-client.js', () => ({
   streamChat: vi.fn().mockImplementation(() => {
     async function* generator() {

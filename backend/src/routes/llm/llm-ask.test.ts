@@ -2,20 +2,6 @@ import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vites
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 
-// --- Mock: ollama-service (streamChat, getSystemPrompt) ---
-const mockStreamChat = vi.fn();
-const mockGetSystemPrompt = vi.fn().mockReturnValue('You are a helpful knowledge base assistant');
-
-vi.mock('../../domains/llm/services/ollama-service.js', () => ({
-  listModels: vi.fn(),
-  checkHealth: vi.fn(),
-  streamChat: (...args: unknown[]) => mockStreamChat(...args),
-  chat: vi.fn(),
-  getSystemPrompt: (...args: unknown[]) => mockGetSystemPrompt(...args),
-  generateEmbedding: vi.fn(),
-  LANGUAGE_PRESERVATION_INSTRUCTION: '',
-}));
-
 // --- Mock: llm-provider-resolver (resolveUsecase) ---
 const mockResolveUsecase = vi.fn().mockResolvedValue({
   config: {
@@ -44,20 +30,6 @@ vi.mock('../../domains/llm/services/openai-compatible-client.js', () => ({
   listModels: vi.fn(),
   checkHealth: vi.fn(),
   invalidateDispatcher: vi.fn(),
-}));
-
-// --- Mock: circuit-breaker (used internally by ollama-service/llm-provider) ---
-vi.mock('../../core/services/circuit-breaker.js', () => ({
-  getOllamaCircuitBreakerStatus: vi.fn().mockReturnValue({
-    chat: { state: 'CLOSED' },
-    embed: { state: 'CLOSED' },
-    list: { state: 'CLOSED' },
-  }),
-  ollamaBreakers: {
-    chat: { execute: vi.fn((fn: () => unknown) => fn()) },
-    embed: { execute: vi.fn((fn: () => unknown) => fn()) },
-    list: { execute: vi.fn((fn: () => unknown) => fn()) },
-  },
 }));
 
 // --- Mock: postgres query ---
@@ -173,7 +145,6 @@ describe('POST /api/llm/ask', () => {
     // Reset to defaults after clearAllMocks
     mockGetCachedResponse.mockResolvedValue(null);
     mockSetCachedResponse.mockResolvedValue(undefined);
-    mockGetSystemPrompt.mockReturnValue('You are a helpful knowledge base assistant');
     // Default query mock: returns row with id for saveConversation INSERT
     mockQuery.mockResolvedValue({ rows: [{ id: 'test-conv-id' }] });
     mockBuildRagContext.mockReturnValue('Relevant context from the knowledge base.');

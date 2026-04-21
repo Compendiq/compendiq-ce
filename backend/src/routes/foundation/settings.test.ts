@@ -45,10 +45,6 @@ vi.mock('../../core/services/rbac-service.js', () => ({
   invalidateRbacCache: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../../domains/llm/services/ollama-service.js', () => ({
-  setActiveProvider: vi.fn(),
-}));
-
 const mockGetSharedLlmSettings = vi.fn().mockResolvedValue({
   llmProvider: 'ollama',
   ollamaModel: 'qwen3.5',

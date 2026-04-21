@@ -34,19 +34,6 @@ vi.mock('../../domains/llm/services/openai-compatible-client.js', () => ({
   invalidateDispatcher: vi.fn(),
 }));
 
-vi.mock('../../core/services/circuit-breaker.js', () => ({
-  getOllamaCircuitBreakerStatus: vi.fn().mockReturnValue({
-    chat: { state: 'CLOSED' },
-    embed: { state: 'CLOSED' },
-    list: { state: 'CLOSED' },
-  }),
-  ollamaBreakers: {
-    chat: { execute: vi.fn((fn: () => unknown) => fn()) },
-    embed: { execute: vi.fn((fn: () => unknown) => fn()) },
-    list: { execute: vi.fn((fn: () => unknown) => fn()) },
-  },
-}));
-
 vi.mock('../../core/db/postgres.js', () => ({
   query: vi.fn().mockResolvedValue({ rows: [] }),
   runMigrations: vi.fn(),

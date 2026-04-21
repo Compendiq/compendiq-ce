@@ -8,7 +8,7 @@ import {
   type ProviderConfig,
 } from '../../domains/llm/services/openai-compatible-client.js';
 import { decryptPat } from '../../core/utils/crypto.js';
-import { getOllamaCircuitBreakerStatus, getOpenaiCircuitBreakerStatus } from '../../core/services/circuit-breaker.js';
+import { listProviderBreakers } from '../../core/services/circuit-breaker.js';
 import { logger } from '../../core/utils/logger.js';
 
 async function getDefaultProviderConfig(): Promise<ProviderConfig | null> {
@@ -102,10 +102,26 @@ export async function llmModelRoutes(fastify: FastifyInstance) {
   });
 
   // GET /api/ollama/circuit-breaker-status
+  //
+  // Flat map: providerId → { state, failureCount, nextRetryTime }. The old
+  // `{ ollama, openai }` per-protocol shape was tied to the two-slot
+  // LLM_PROVIDER toggle (removed in #256); per-provider state is now the
+  // authoritative signal. No frontend consumer depends on the old shape
+  // (grep-verified on 2026-04-21). Route path is preserved for any external
+  // ops tooling; a rename to /api/llm/circuit-breaker-status is flagged as
+  // a separate follow-up (see docs/issues/258-implementation-plan.md §7).
   fastify.get('/ollama/circuit-breaker-status', async () => {
-    return {
-      ollama: getOllamaCircuitBreakerStatus(),
-      openai: getOpenaiCircuitBreakerStatus(),
-    };
+    const out: Record<
+      string,
+      { state: string; failureCount: number; nextRetryTime: number | null }
+    > = {};
+    for (const snap of listProviderBreakers()) {
+      out[snap.providerId] = {
+        state: snap.state,
+        failureCount: snap.failureCount,
+        nextRetryTime: snap.nextRetryTime,
+      };
+    }
+    return out;
   });
 }

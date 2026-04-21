@@ -224,3 +224,96 @@ describe('openai-compatible-client — per-provider circuit breaker', () => {
     expect(hits).toBeGreaterThan(hitsBefore);
   });
 });
+
+// ─── generateEmbedding passes through enqueue (parity with chat) ────────────
+describe('openai-compatible-client — generateEmbedding queue wrapping', () => {
+  let embQSrv: Server;
+  let embQBase: string;
+  beforeAll(async () => {
+    embQSrv = createServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ embedding: [0.1, 0.2] }] }));
+    });
+    await new Promise<void>((r) => embQSrv.listen(0, r));
+    const { port } = embQSrv.address() as AddressInfo;
+    embQBase = `http://127.0.0.1:${port}/v1`;
+  });
+  afterAll(() => new Promise<void>((r) => embQSrv.close(() => r())));
+
+  it('generateEmbedding passes through enqueue() (increments totalProcessed)', async () => {
+    const { getMetrics } = await import('./llm-queue.js');
+    const before = getMetrics().totalProcessed;
+    await generateEmbedding(
+      { ...cfg, baseUrl: embQBase, providerId: 'embed-queue-test' },
+      'bge-m3',
+      'hello',
+    );
+    expect(getMetrics().totalProcessed).toBe(before + 1);
+  });
+});
+
+// ─── Queue-full vs. breaker-open error-type disambiguation (RED #4) ─────────
+// With concurrency=1 + maxQueueDepth=1, 3 concurrent calls hit different
+// rejection paths:
+//   - slot 1: runs
+//   - slot 2: queued (pending === 1)
+//   - slot 3: pending >= maxQueueDepth → QueueFullError (NOT
+//     CircuitBreakerOpenError — the breaker is still CLOSED).
+// This proves the two error types do not get conflated at the client-layer.
+describe('openai-compatible-client — queue-full vs breaker-open disambiguation', () => {
+  let slowSrv: Server;
+  let slowBase: string;
+  beforeAll(async () => {
+    slowSrv = createServer((_req, res) => {
+      // 200ms delay so concurrent calls actually contend for the single slot.
+      setTimeout(() => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }));
+      }, 200);
+    });
+    await new Promise<void>((r) => slowSrv.listen(0, r));
+    const { port } = slowSrv.address() as AddressInfo;
+    slowBase = `http://127.0.0.1:${port}/v1`;
+  });
+  afterAll(() => new Promise<void>((r) => slowSrv.close(() => r())));
+
+  it('rejects the overflow call with QueueFullError (not CircuitBreakerOpenError)', async () => {
+    const { setConcurrency, setMaxQueueDepth, getMetrics, QueueFullError } = await import('./llm-queue.js');
+    const { CircuitBreakerOpenError } = await import('../../../core/services/circuit-breaker.js');
+
+    // Snapshot current queue config so we can restore it and avoid leaking
+    // tight limits onto subsequent tests in the same file.
+    const originalConcurrency = getMetrics().concurrency;
+    const originalMaxQueueDepth = getMetrics().maxQueueDepth;
+
+    setConcurrency(1);
+    setMaxQueueDepth(1);
+
+    const providerId = 'queue-full-' + Math.random().toString(36).slice(2);
+    invalidateBreaker(providerId); // ensure clean/closed breaker
+    const cfgOverflow: ProviderConfig = { ...cfg, baseUrl: slowBase, providerId };
+
+    try {
+      const p1 = chat(cfgOverflow, 'm', [{ role: 'user', content: '1' }]);
+      const p2 = chat(cfgOverflow, 'm', [{ role: 'user', content: '2' }]);
+      // p3 should reject immediately with QueueFullError (breaker still CLOSED).
+      await expect(chat(cfgOverflow, 'm', [{ role: 'user', content: '3' }]))
+        .rejects.toBeInstanceOf(QueueFullError);
+      // Anchor the overflow identity with BOTH a positive and a negative
+      // assertion. The positive half pins the concrete error class so a
+      // silent rename of QueueFullError can't regress the overflow path; the
+      // negative half guarantees the two error paths don't get conflated
+      // (i.e. overflow is NOT misreported as breaker-open).
+      await expect(chat(cfgOverflow, 'm', [{ role: 'user', content: '4' }]))
+        .rejects.toBeInstanceOf(QueueFullError);
+      await expect(chat(cfgOverflow, 'm', [{ role: 'user', content: '5' }]))
+        .rejects.not.toBeInstanceOf(CircuitBreakerOpenError);
+
+      // Drain the in-flight calls so afterAll can cleanly close the server.
+      await Promise.all([p1, p2]);
+    } finally {
+      setConcurrency(originalConcurrency);
+      setMaxQueueDepth(originalMaxQueueDepth);
+    }
+  });
+});

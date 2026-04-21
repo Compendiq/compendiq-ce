@@ -34,15 +34,9 @@ vi.mock('../../core/utils/crypto.js', () => ({
   encryptPat: (v: string) => v,
 }));
 
-const mockGetOllamaCBStatus = vi.fn().mockReturnValue({
-  chat: { state: 'CLOSED' }, embed: { state: 'CLOSED' }, list: { state: 'CLOSED' },
-});
-const mockGetOpenaiCBStatus = vi.fn().mockReturnValue({
-  chat: { state: 'CLOSED' }, embed: { state: 'CLOSED' }, list: { state: 'CLOSED' },
-});
+const mockListProviderBreakers = vi.fn().mockReturnValue([]);
 vi.mock('../../core/services/circuit-breaker.js', () => ({
-  getOllamaCircuitBreakerStatus: (...args: unknown[]) => mockGetOllamaCBStatus(...args),
-  getOpenaiCircuitBreakerStatus: (...args: unknown[]) => mockGetOpenaiCBStatus(...args),
+  listProviderBreakers: (...args: unknown[]) => mockListProviderBreakers(...args),
 }));
 
 vi.mock('../../core/utils/logger.js', () => ({
@@ -171,14 +165,29 @@ describe('llm-models routes — models + status', () => {
 
   // --- GET /api/ollama/circuit-breaker-status ---
 
-  it('returns circuit breaker status for both providers', async () => {
-    mockGetOpenaiCBStatus.mockReturnValue({
-      chat: { state: 'OPEN' }, embed: { state: 'CLOSED' }, list: { state: 'CLOSED' },
-    });
+  it('returns a flat map keyed by providerId', async () => {
+    mockListProviderBreakers.mockReturnValue([
+      { providerId: 'prov-1', state: 'closed', failureCount: 0, nextRetryTime: null },
+      { providerId: 'prov-2', state: 'open', failureCount: 3, nextRetryTime: 1_700_000_000_000 },
+    ]);
     const r = await app.inject({ method: 'GET', url: '/api/ollama/circuit-breaker-status' });
     expect(r.statusCode).toBe(200);
-    const body = r.json();
-    expect(body.ollama.chat.state).toBe('CLOSED');
-    expect(body.openai.chat.state).toBe('OPEN');
+    const body = r.json() as Record<string, { state: string; failureCount: number; nextRetryTime: number | null }>;
+    // Flat Record<providerId, {…}> — no more `{ ollama, openai }` wrapper.
+    expect(body).not.toHaveProperty('ollama');
+    expect(body).not.toHaveProperty('openai');
+    expect(body['prov-1']).toEqual({ state: 'closed', failureCount: 0, nextRetryTime: null });
+    expect(body['prov-2']).toEqual({
+      state: 'open',
+      failureCount: 3,
+      nextRetryTime: 1_700_000_000_000,
+    });
+  });
+
+  it('returns an empty object when no provider breakers have booted yet', async () => {
+    mockListProviderBreakers.mockReturnValue([]);
+    const r = await app.inject({ method: 'GET', url: '/api/ollama/circuit-breaker-status' });
+    expect(r.statusCode).toBe(200);
+    expect(r.json()).toEqual({});
   });
 });

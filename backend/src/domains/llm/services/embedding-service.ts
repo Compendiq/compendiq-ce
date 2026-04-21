@@ -122,11 +122,8 @@ export function isContextLengthError(err: unknown): boolean {
  * Get the next retry time for the currently-resolved embedding provider's
  * circuit breaker. Returns the timestamp at which the breaker will allow a
  * probe request, or `null` when the breaker is closed (immediate retry) or
- * when no embedding provider could be resolved.
- *
- * Previously this queried the legacy `ollamaBreakers` / `openaiBreakers`
- * globals which are no longer populated by the multi-provider OpenAI-compatible
- * client — the real state lives on per-provider breakers keyed by UUID.
+ * when no embedding provider could be resolved. Keyed by per-provider UUID
+ * via `getProviderBreaker`.
  */
 export async function getEmbedBreakerNextRetryTime(): Promise<number | null> {
   try {
