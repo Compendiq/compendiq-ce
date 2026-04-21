@@ -120,6 +120,46 @@ describe.skipIf(!dbAvailable)('rag-service integration — space permission enfo
     return pageId;
   }
 
+  it('enforces standalone article visibility (shared + own-private, not others-private)', async () => {
+    const userX = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+    const userY = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
+    // Insert both users so the FK on created_by_user_id is satisfied
+    await query(
+      `INSERT INTO users (id, username, email, role, password_hash)
+       VALUES ($1::uuid, $1::text, $1::text || '@t', 'user', 'x'),
+              ($2::uuid, $2::text, $2::text || '@t', 'user', 'x')
+       ON CONFLICT (id) DO NOTHING`,
+      [userX, userY],
+    );
+    // userX writes a private standalone article
+    const page = await query<{ id: number }>(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html,
+                          visibility, created_by_user_id)
+       VALUES (gen_random_uuid()::text, 'standalone', NULL, 'Private note', 'confidential draft', '', '',
+               'private', $1)
+       RETURNING id`,
+      [userX],
+    );
+    await query(
+      `INSERT INTO page_embeddings (page_id, chunk_index, chunk_text, embedding, metadata)
+       VALUES ($1, 0, $2, $3, $4::jsonb)`,
+      [
+        page.rows[0]!.id,
+        'confidential draft',
+        pgvector.toSql(fakeVec(13)),
+        JSON.stringify({ page_title: 'Private note', section_title: 'Private note', space_key: null }),
+      ],
+    );
+
+    // userX can see their own private article
+    const ownerHits = await hybridSearch(userX, 'confidential draft');
+    expect(ownerHits.length).toBeGreaterThan(0);
+
+    // userY cannot
+    const intruderHits = await hybridSearch(userY, 'confidential draft');
+    expect(intruderHits).toHaveLength(0);
+  });
+
   it('reflects mid-conversation ACL revocation on the next retrieval', async () => {
     const user = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
     await seedSpaceWithPage({
