@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
@@ -66,5 +66,67 @@ describe('llm-queue', () => {
 
     setConcurrency(200);
     expect(getMetrics().concurrency).toBe(100);
+  });
+
+  describe('env-var fallback defaults', () => {
+    const originalEnv = { ...process.env };
+
+    afterEach(() => {
+      // Restore env to original snapshot so env var leakage doesn't break
+      // other tests in this suite.
+      process.env = { ...originalEnv };
+      vi.resetModules();
+    });
+
+    it('honors LLM_CONCURRENCY when admin_settings row is absent', async () => {
+      process.env.LLM_CONCURRENCY = '1';
+      delete process.env.LLM_MAX_QUEUE_DEPTH;
+      vi.resetModules();
+      const { getMetrics } = await import('./llm-queue.js');
+      expect(getMetrics().concurrency).toBe(1);
+    });
+
+    it('honors LLM_MAX_QUEUE_DEPTH when admin_settings row is absent', async () => {
+      process.env.LLM_MAX_QUEUE_DEPTH = '7';
+      delete process.env.LLM_CONCURRENCY;
+      vi.resetModules();
+      const { getMetrics } = await import('./llm-queue.js');
+      expect(getMetrics().maxQueueDepth).toBe(7);
+    });
+
+    it('falls back to hardcoded defaults when env vars are unset', async () => {
+      delete process.env.LLM_CONCURRENCY;
+      delete process.env.LLM_MAX_QUEUE_DEPTH;
+      vi.resetModules();
+      const { getMetrics } = await import('./llm-queue.js');
+      expect(getMetrics().concurrency).toBe(4);
+      expect(getMetrics().maxQueueDepth).toBe(50);
+    });
+
+    it('ignores invalid env-var values and falls back to hardcoded defaults', async () => {
+      process.env.LLM_CONCURRENCY = 'not-a-number';
+      process.env.LLM_MAX_QUEUE_DEPTH = '0';
+      vi.resetModules();
+      const { getMetrics } = await import('./llm-queue.js');
+      expect(getMetrics().concurrency).toBe(4);
+      expect(getMetrics().maxQueueDepth).toBe(50);
+    });
+
+    it('LLM_CONCURRENCY=1 limits actual concurrent execution', async () => {
+      process.env.LLM_CONCURRENCY = '1';
+      vi.resetModules();
+      const { enqueue, getMetrics } = await import('./llm-queue.js');
+      expect(getMetrics().concurrency).toBe(1);
+
+      let running = 0;
+      let maxRunning = 0;
+      const task = () => new Promise<void>((resolve) => {
+        running++;
+        maxRunning = Math.max(maxRunning, running);
+        setTimeout(() => { running--; resolve(); }, 30);
+      });
+      await Promise.all([enqueue(task), enqueue(task), enqueue(task)]);
+      expect(maxRunning).toBe(1);
+    });
   });
 });

@@ -133,7 +133,7 @@ export function SettingsPage() {
               onSave={(v) => updateSettings.mutateAsync(v)}
             />
           ) : activeTab === 'ollama' ? (
-            <LlmTab settings={settings!} />
+            <LlmTab />
           ) : activeTab === 'ai-prompts' ? (
             <AiPromptsTab settings={settings!} onSave={(v) => updateSettings.mutate(v)} isAdmin={isAdmin} />
           ) : activeTab === 'ai-safety' && isAdmin ? (

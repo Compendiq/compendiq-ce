@@ -2,41 +2,17 @@ import { describe, it, expect } from 'vitest';
 import { UpdateAdminSettingsSchema, AdminSettingsSchema } from './admin.js';
 
 const validReadPayload = {
-  llmProvider: 'ollama',
-  ollamaModel: 'qwen3.5',
-  openaiBaseUrl: null,
-  hasOpenaiApiKey: false,
-  openaiModel: null,
-  embeddingModel: 'bge-m3',
   embeddingDimensions: 1024,
   ftsLanguage: 'simple',
   embeddingChunkSize: 500,
   embeddingChunkOverlap: 50,
   drawioEmbedUrl: null,
-  usecaseAssignments: {
-    chat: { provider: null, model: null },
-    summary: { provider: null, model: null },
-    quality: { provider: null, model: null },
-    auto_tag: { provider: null, model: null },
-  },
 } as const;
 
 describe('AdminSettingsSchema (read)', () => {
   it('accepts explicit null for drawioEmbedUrl (backend returns null when unset)', () => {
     const parsed = AdminSettingsSchema.parse(validReadPayload);
     expect(parsed.drawioEmbedUrl).toBeNull();
-  });
-
-  it('rejects empty ollamaModel — guards against a backend bug returning ""', () => {
-    expect(() =>
-      AdminSettingsSchema.parse({ ...validReadPayload, ollamaModel: '' }),
-    ).toThrow();
-  });
-
-  it('rejects empty embeddingModel', () => {
-    expect(() =>
-      AdminSettingsSchema.parse({ ...validReadPayload, embeddingModel: '' }),
-    ).toThrow();
   });
 
   it('rejects empty ftsLanguage', () => {
@@ -89,41 +65,7 @@ describe('UpdateAdminSettingsSchema tri-state semantics', () => {
     });
   });
 
-  describe('openaiBaseUrl', () => {
-    it('accepts a valid URL', () => {
-      const parsed = UpdateAdminSettingsSchema.parse({ openaiBaseUrl: 'https://api.example.com/v1' });
-      expect(parsed.openaiBaseUrl).toBe('https://api.example.com/v1');
-    });
-
-    it('accepts explicit null (clear signal)', () => {
-      const parsed = UpdateAdminSettingsSchema.parse({ openaiBaseUrl: null });
-      expect(parsed.openaiBaseUrl).toBeNull();
-    });
-
-    it('treats omitted field as undefined', () => {
-      const parsed = UpdateAdminSettingsSchema.parse({});
-      expect(parsed.openaiBaseUrl).toBeUndefined();
-    });
-
-    it('rejects empty string', () => {
-      expect(() => UpdateAdminSettingsSchema.parse({ openaiBaseUrl: '' })).toThrow();
-    });
-  });
-
-  describe('openaiModel', () => {
-    it('accepts a string value', () => {
-      const parsed = UpdateAdminSettingsSchema.parse({ openaiModel: 'gpt-4' });
-      expect(parsed.openaiModel).toBe('gpt-4');
-    });
-
-    it('accepts explicit null (clear signal)', () => {
-      const parsed = UpdateAdminSettingsSchema.parse({ openaiModel: null });
-      expect(parsed.openaiModel).toBeNull();
-    });
-
-    it('treats omitted field as undefined', () => {
-      const parsed = UpdateAdminSettingsSchema.parse({});
-      expect(parsed.openaiModel).toBeUndefined();
-    });
-  });
+  // LLM-specific settings (openaiBaseUrl, openaiModel, ollamaModel, etc.)
+  // moved to the `llm_providers` table + `/api/admin/llm-providers` route;
+  // they are no longer part of AdminSettings.
 });

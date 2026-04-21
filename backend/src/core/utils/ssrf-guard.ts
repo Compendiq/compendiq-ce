@@ -230,6 +230,18 @@ export async function validateUrlWithDns(urlString: string): Promise<void> {
   }
 }
 
+/**
+ * Convenience wrapper that gives route/service callers a single, clean API
+ * name for the "validate that this URL does not target a private/internal
+ * network" check. Delegates to `validateUrlWithDns` so we also get the
+ * DNS-rebinding mitigation.
+ *
+ * Throws `SsrfError` when the URL is not safe to connect to.
+ */
+export async function assertNonSsrfUrl(urlString: string): Promise<void> {
+  await validateUrlWithDns(urlString);
+}
+
 // ---------------------------------------------------------------------------
 // Docker-aware URL rewriting
 // ---------------------------------------------------------------------------

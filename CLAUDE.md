@@ -110,8 +110,7 @@ Import restrictions enforced by `eslint-plugin-boundaries`:
 | Service | Connection | Auth |
 |---------|-----------|------|
 | Confluence Data Center 9.2.15 | Per-user URL from `user_settings` | Bearer PAT (AES-256-GCM encrypted at rest) |
-| Ollama | Shared server, `OLLAMA_BASE_URL` env var (default `http://localhost:11434`), `LLM_VERIFY_SSL` (default `true`) | Optional Bearer token via `LLM_BEARER_TOKEN` env var, `LLM_AUTH_TYPE` (`bearer`\|`none`, default `bearer`) |
-| OpenAI-compatible | `OPENAI_BASE_URL` env var (works with OpenAI, Azure OpenAI, LM Studio, vLLM, etc.) | `OPENAI_API_KEY` env var |
+| LLM providers (Ollama, OpenAI, Azure OpenAI, LM Studio, vLLM, llama.cpp, LocalAI, …) | Configured via admin UI (Settings → LLM); rows in `llm_providers` table with per-use-case assignments (ADR-021). Legacy env vars (`OLLAMA_BASE_URL`, `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `LLM_BEARER_TOKEN`, `DEFAULT_LLM_MODEL`, `SUMMARY_MODEL`, `QUALITY_MODEL`, `EMBEDDING_MODEL`) remain as first-boot seed only. | Bearer token (AES-256-GCM encrypted at rest) + `LLM_AUTH_TYPE` (`bearer`\|`none`) + `LLM_VERIFY_SSL` per provider row |
 | PostgreSQL | `POSTGRES_URL` env var | Password via env |
 | Redis | `REDIS_URL` env var | Password via env |
 

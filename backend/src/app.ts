@@ -33,6 +33,10 @@ import { llmConversationRoutes } from './routes/llm/llm-conversations.js';
 import { llmEmbeddingRoutes } from './routes/llm/llm-embeddings.js';
 import { llmModelRoutes } from './routes/llm/llm-models.js';
 import { llmAdminRoutes } from './routes/llm/llm-admin.js';
+import { llmProviderRoutes } from './routes/llm/llm-providers.js';
+import { llmUsecaseRoutes } from './routes/llm/llm-usecases.js';
+import { llmEmbeddingReembedRoutes } from './routes/llm/llm-embedding-reembed.js';
+import { llmEmbeddingProbeRoutes } from './routes/llm/llm-embedding-probe.js';
 import { llmPdfRoutes } from './routes/llm/llm-pdf.js';
 // Knowledge routes
 import { pagesCrudRoutes } from './routes/knowledge/pages-crud.js';
@@ -60,6 +64,7 @@ import { trackError } from './core/services/error-tracker.js';
 import { logger } from './core/utils/logger.js';
 import { APP_VERSION } from './core/utils/version.js';
 import { loadEnterprisePlugin } from './core/enterprise/loader.js';
+import { bootstrapLlmProviders } from './domains/llm/services/llm-provider-bootstrap.js';
 
 export async function buildApp() {
   const app = Fastify({
@@ -142,6 +147,13 @@ export async function buildApp() {
 
   // Let the enterprise plugin register its own routes (e.g., full license endpoint)
   await enterprise.registerRoutes(app, license);
+
+  // ── LLM Provider Bootstrap ───────────────────────────────────────
+  // Seed llm_providers from env on fresh installs, rewrite the Ollama
+  // sentinel if OLLAMA_BASE_URL changed, and allowlist every provider
+  // URL with the SSRF guard. Runs after migrations (index.ts) so the
+  // llm_providers table exists.
+  await bootstrapLlmProviders();
 
   // Known Fastify HTTP error names that are safe to expose to clients.
   // Anything not in this set could leak internal details (e.g. TypeError, RangeError).
@@ -253,6 +265,10 @@ export async function buildApp() {
   await app.register(llmEmbeddingRoutes, { prefix: '/api' });
   await app.register(llmModelRoutes, { prefix: '/api' });
   await app.register(llmAdminRoutes, { prefix: '/api' });
+  await app.register(llmProviderRoutes, { prefix: '/api' });
+  await app.register(llmUsecaseRoutes, { prefix: '/api' });
+  await app.register(llmEmbeddingReembedRoutes, { prefix: '/api' });
+  await app.register(llmEmbeddingProbeRoutes, { prefix: '/api' });
   await app.register(llmPdfRoutes, { prefix: '/api' });
 
   // Knowledge routes

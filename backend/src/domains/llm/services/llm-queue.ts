@@ -1,5 +1,15 @@
 /**
  * LLM request queue with configurable concurrency and backpressure.
+ *
+ * Configuration precedence (first non-empty value wins):
+ *   1. `admin_settings` row (`llm_concurrency`, `llm_max_queue_depth`,
+ *      `llm_timeout_ms`) — loaded at boot by `initLlmQueue()` and by
+ *      the admin UI on save.
+ *   2. Environment variables:
+ *      - `LLM_CONCURRENCY`       (default: 4)       — max concurrent LLM requests
+ *      - `LLM_MAX_QUEUE_DEPTH`   (default: 50)      — reject when pending exceeds this
+ *      - `LLM_STREAM_TIMEOUT_MS` (default: 300000)  — per-request timeout in ms
+ *   3. Hardcoded defaults (listed above).
  */
 
 import pLimit, { type LimitFunction } from 'p-limit';
@@ -15,9 +25,24 @@ export interface LlmQueueMetrics {
   totalTimedOut: number;
 }
 
-const DEFAULT_CONCURRENCY = 4;
-const DEFAULT_MAX_QUEUE_DEPTH = 50;
-const DEFAULT_TIMEOUT_MS = parseInt(process.env.LLM_STREAM_TIMEOUT_MS ?? '300000', 10);
+const HARDCODED_CONCURRENCY = 4;
+const HARDCODED_MAX_QUEUE_DEPTH = 50;
+const HARDCODED_TIMEOUT_MS = 300_000;
+
+/**
+ * Parse a positive integer from an env var, returning `undefined` when the var
+ * is absent, empty, non-numeric, or ≤ 0.
+ */
+function envInt(name: string): number | undefined {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return undefined;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+const DEFAULT_CONCURRENCY = envInt('LLM_CONCURRENCY') ?? HARDCODED_CONCURRENCY;
+const DEFAULT_MAX_QUEUE_DEPTH = envInt('LLM_MAX_QUEUE_DEPTH') ?? HARDCODED_MAX_QUEUE_DEPTH;
+const DEFAULT_TIMEOUT_MS = envInt('LLM_STREAM_TIMEOUT_MS') ?? HARDCODED_TIMEOUT_MS;
 
 let _limiter: LimitFunction = pLimit(DEFAULT_CONCURRENCY);
 let _concurrency = DEFAULT_CONCURRENCY;

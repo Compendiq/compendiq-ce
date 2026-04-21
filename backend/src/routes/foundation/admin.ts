@@ -6,16 +6,10 @@ import { getAuditLog, logAuditEvent } from '../../core/services/audit-service.js
 import { listErrors, resolveError, getErrorSummary } from '../../core/services/error-tracker.js';
 import { logger } from '../../core/utils/logger.js';
 import { UpdateAdminSettingsSchema } from '@compendiq/contracts';
-import {
-  getSharedLlmSettings,
-  upsertSharedLlmSettings,
-  getAllUsecaseAssignments,
-  upsertUsecaseLlmAssignments,
-} from '../../core/services/admin-settings-service.js';
+import { getEmbeddingDimensions } from '../../core/services/admin-settings-service.js';
 import { getAiGuardrails, getAiOutputRules, upsertAiGuardrails, upsertAiOutputRules } from '../../core/services/ai-safety-service.js';
 import { getRateLimits, upsertRateLimits } from '../../core/services/rate-limit-service.js';
 import { sanitizeLlmInput } from '../../core/utils/sanitize-llm-input.js';
-import { setActiveProvider } from '../../domains/llm/services/ollama-service.js';
 import { ALLOWED_FTS_LANGUAGES } from '../../core/services/fts-language.js';
 import { getSmtpConfig, updateSmtpConfig, sendTestEmail } from '../../core/services/email-service.js';
 
@@ -232,17 +226,15 @@ export async function adminRoutes(fastify: FastifyInstance) {
 
   // GET /api/admin/settings - retrieve shared admin settings
   fastify.get('/admin/settings', ADMIN_RATE_LIMIT, async () => {
-    const [sharedLlmSettings, guardrails, outputRules, rateLimits, usecaseAssignments] =
-      await Promise.all([
-        getSharedLlmSettings(),
-        getAiGuardrails(),
-        getAiOutputRules(),
-        getRateLimits(),
-        getAllUsecaseAssignments(),
-      ]);
+    const [embeddingDimensions, guardrails, outputRules, rateLimits] = await Promise.all([
+      getEmbeddingDimensions(),
+      getAiGuardrails(),
+      getAiOutputRules(),
+      getRateLimits(),
+    ]);
     const result = await query<{ setting_key: string; setting_value: string }>(
       `SELECT setting_key, setting_value FROM admin_settings
-       WHERE setting_key IN ('embedding_chunk_size', 'embedding_chunk_overlap', 'drawio_embed_url')`,
+       WHERE setting_key IN ('embedding_chunk_size', 'embedding_chunk_overlap', 'drawio_embed_url', 'fts_language')`,
     );
 
     const map: Record<string, string> = {};
@@ -251,14 +243,8 @@ export async function adminRoutes(fastify: FastifyInstance) {
     }
 
     return {
-      llmProvider: sharedLlmSettings.llmProvider,
-      ollamaModel: sharedLlmSettings.ollamaModel,
-      openaiBaseUrl: sharedLlmSettings.openaiBaseUrl,
-      hasOpenaiApiKey: sharedLlmSettings.hasOpenaiApiKey,
-      openaiModel: sharedLlmSettings.openaiModel,
-      embeddingModel: sharedLlmSettings.embeddingModel,
-      embeddingDimensions: sharedLlmSettings.embeddingDimensions,
-      ftsLanguage: sharedLlmSettings.ftsLanguage,
+      embeddingDimensions,
+      ftsLanguage: map['fts_language'] ?? process.env.FTS_LANGUAGE ?? 'simple',
       embeddingChunkSize: parseInt(map['embedding_chunk_size'] ?? '500', 10),
       embeddingChunkOverlap: parseInt(map['embedding_chunk_overlap'] ?? '50', 10),
       drawioEmbedUrl: map['drawio_embed_url'] ?? null,
@@ -273,8 +259,6 @@ export async function adminRoutes(fastify: FastifyInstance) {
       rateLimitAdmin: rateLimits.admin.max,
       rateLimitLlmStream: rateLimits.llmStream.max,
       rateLimitLlmEmbedding: rateLimits.llmEmbedding.max,
-      // Per-use-case LLM assignments (issue #214)
-      usecaseAssignments,
     };
   });
 
@@ -288,14 +272,6 @@ export async function adminRoutes(fastify: FastifyInstance) {
 
     const hasChunkChanges =
       body.embeddingChunkSize !== undefined || body.embeddingChunkOverlap !== undefined;
-    const hasLlmChanges =
-      body.llmProvider !== undefined
-      || body.ollamaModel !== undefined
-      || body.openaiBaseUrl !== undefined
-      || body.openaiApiKey !== undefined
-      || body.openaiModel !== undefined
-      || body.embeddingModel !== undefined
-      || body.ftsLanguage !== undefined;
 
     // Validate chunk overlap does not exceed 25% of chunk size (only when chunk settings change)
     if (hasChunkChanges) {
@@ -329,26 +305,14 @@ export async function adminRoutes(fastify: FastifyInstance) {
       );
     }
 
-    if (hasLlmChanges) {
-      await upsertSharedLlmSettings({
-        llmProvider: body.llmProvider,
-        ollamaModel: body.ollamaModel,
-        openaiBaseUrl: body.openaiBaseUrl,
-        openaiApiKey: body.openaiApiKey,
-        openaiModel: body.openaiModel,
-        embeddingModel: body.embeddingModel,
-        ftsLanguage: body.ftsLanguage,
-      });
-    }
-
-    // Per-use-case LLM overrides (issue #214). The contract allows nullable
-    // fields so admins can clear an override (revert to inherited default).
-    if (body.usecaseAssignments && Object.keys(body.usecaseAssignments).length > 0) {
-      await upsertUsecaseLlmAssignments(body.usecaseAssignments);
-    }
-
     if (body.ftsLanguage !== undefined) {
-      // Rebuild all tsvectors with the new language
+      // Persist the new fts_language and rebuild all tsvectors with it.
+      await query(
+        `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
+         VALUES ('fts_language', $1, NOW())
+         ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1, updated_at = NOW()`,
+        [body.ftsLanguage],
+      );
       await query(
         `UPDATE pages SET tsv = to_tsvector(
           $1::regconfig,
@@ -382,10 +346,6 @@ export async function adminRoutes(fastify: FastifyInstance) {
          ON CONFLICT (setting_key) DO UPDATE SET setting_value = $2, updated_at = NOW()`,
         [key, value],
       );
-    }
-
-    if (body.llmProvider !== undefined) {
-      setActiveProvider(body.llmProvider);
     }
 
     // AI Safety settings
@@ -439,10 +399,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
       logger.info({ userId: request.userId, updates }, 'Admin chunk settings changed, all pages marked dirty');
     }
 
-    const auditDetails = {
-      ...body,
-      ...(body.openaiApiKey !== undefined ? { openaiApiKey: '[REDACTED]' } : {}),
-    };
+    const auditDetails = { ...body };
 
     await logAuditEvent(
       request.userId,

@@ -3,7 +3,7 @@ import { query } from '../../core/db/postgres.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { autoTagPage, applyTags, autoTagAllPages, ALLOWED_TAGS, AllowedTag } from '../../domains/knowledge/services/auto-tagger.js';
-import { getUsecaseLlmAssignment } from '../../core/services/admin-settings-service.js';
+import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
 import { z } from 'zod';
 import { logger } from '../../core/utils/logger.js';
 
@@ -35,12 +35,12 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
     const { id } = IdParamSchema.parse(request.params);
     const userId = request.userId;
     const { model: bodyModel } = AutoTagBodySchema.parse(request.body);
-    // Always resolve the full assignment — we need the provider even when the
-    // client supplies an explicit model. Body model (if any) overrides the
-    // resolved model; provider always comes from the resolver so the per-
-    // use-case provider override is honored (issue #214).
-    const assignment = await getUsecaseLlmAssignment('auto_tag');
-    const model = bodyModel ?? assignment.model;
+    // Resolve the use-case to determine the concrete model when the caller
+    // omits one. The auto-tagger itself resolves the provider config
+    // internally, so we only need to surface the model name here for the
+    // not-configured error message and body-model override plumbing.
+    const resolved = await resolveUsecase('auto_tag').catch(() => null);
+    const model = bodyModel ?? resolved?.model ?? '';
 
     if (!model) {
       throw fastify.httpErrors.badRequest(
@@ -49,7 +49,7 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      const result = await autoTagPage(userId, id, assignment.provider, model);
+      const result = await autoTagPage(userId, id, model);
       return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -170,9 +170,9 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
   }, async (request) => {
     const userId = request.userId;
     const { model: bodyModel } = AutoTagBodySchema.parse(request.body);
-    // Same resolver-for-provider pattern as /pages/:id/auto-tag above.
-    const assignment = await getUsecaseLlmAssignment('auto_tag');
-    const model = bodyModel ?? assignment.model;
+    // Same resolver-for-model pattern as /pages/:id/auto-tag above.
+    const resolved = await resolveUsecase('auto_tag').catch(() => null);
+    const model = bodyModel ?? resolved?.model ?? '';
 
     if (!model) {
       throw fastify.httpErrors.badRequest(
@@ -181,7 +181,7 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
     }
 
     // Run in background
-    autoTagAllPages(userId, assignment.provider, model).catch((err) => {
+    autoTagAllPages(userId, model).catch((err) => {
       logger.error({ err, userId }, 'Auto-tag all pages failed');
     });
 

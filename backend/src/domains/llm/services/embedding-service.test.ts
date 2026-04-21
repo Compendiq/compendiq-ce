@@ -14,6 +14,14 @@ const mocks = vi.hoisted(() => ({
   query: vi.fn(),
   getPool: vi.fn(),
   providerGenerateEmbedding: vi.fn(),
+  resolveUsecase: vi.fn().mockResolvedValue({
+    config: {
+      providerId: 'p1', id: 'p1', name: 'X',
+      baseUrl: 'http://x/v1', apiKey: null,
+      authType: 'none', verifySsl: true, defaultModel: 'bge-m3',
+    },
+    model: 'bge-m3',
+  }),
   htmlToText: vi.fn(),
   toSql: vi.fn().mockReturnValue('[0.1,0.2]'),
   acquireEmbeddingLock: vi.fn().mockResolvedValue('fake-lock-id-for-tests'),
@@ -27,8 +35,22 @@ vi.mock('../../../core/db/postgres.js', () => ({
   getPool: () => mocks.getPool(),
 }));
 
-vi.mock('./llm-provider.js', () => ({
-  providerGenerateEmbedding: mocks.providerGenerateEmbedding,
+vi.mock('./llm-provider-resolver.js', () => ({
+  resolveUsecase: (...args: unknown[]) => mocks.resolveUsecase(...args),
+}));
+
+vi.mock('./openai-compatible-client.js', () => ({
+  // The embedding-service calls `generateEmbedding(config, model, texts)` but
+  // the test mock ignores the first two args and uses the same spy so existing
+  // assertions that call `providerGenerateEmbedding.mock.calls[…]` keep
+  // working against the third argument (texts).
+  generateEmbedding: (_cfg: unknown, _model: string, texts: string[] | string) =>
+    mocks.providerGenerateEmbedding('test-user', texts),
+  streamChat: vi.fn(),
+  chat: vi.fn(),
+  listModels: vi.fn(),
+  checkHealth: vi.fn(),
+  invalidateDispatcher: vi.fn(),
 }));
 
 vi.mock('../../../core/services/content-converter.js', () => ({
@@ -79,10 +101,15 @@ import {
   isCircuitBreakerError,
   isContextLengthError,
   splitByWords,
+  getEmbedBreakerNextRetryTime,
   CHUNK_HARD_LIMIT,
   DIRTY_PAGE_BATCH_SIZE,
   type EmbeddingProgressEvent,
 } from './embedding-service.js';
+import {
+  getProviderBreaker,
+  invalidateProviderBreaker,
+} from '../../../core/services/circuit-breaker.js';
 import { getSharedLlmSettings } from '../../../core/services/admin-settings-service.js';
 
 /** Helper to create a fake dirty page row */
@@ -125,6 +152,15 @@ describe('embedding-service', () => {
     mocks.providerGenerateEmbedding.mockImplementation((_userId: string, texts: string[]) =>
       Promise.resolve(texts.map(() => new Array(1024).fill(0.1))),
     );
+    // Default: resolveUsecase returns a basic embedding provider config
+    mocks.resolveUsecase.mockResolvedValue({
+      config: {
+        providerId: 'p1', id: 'p1', name: 'X',
+        baseUrl: 'http://x/v1', apiKey: null,
+        authType: 'none', verifySsl: true, defaultModel: 'bge-m3',
+      },
+      model: 'bge-m3',
+    });
     // Default: mockClient handles all transaction queries (BEGIN/DELETE/INSERT/UPDATE/COMMIT)
     // for embedPage (Phase 2) and computePageRelationships.
     mockClient.query.mockResolvedValue({ rows: [], rowCount: 0 });
@@ -1349,6 +1385,55 @@ describe('chunkText', () => {
 
       // No DB interaction at all since Phase 1 throws
       expect(mockClient.query).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getEmbedBreakerNextRetryTime', () => {
+    beforeEach(() => {
+      // Always start from a clean breaker state for the resolved embedding provider.
+      invalidateProviderBreaker('p1');
+      // Keep the mocked resolver pointing at provider `p1` (set by resetAllMocks → defaults above).
+      mocks.resolveUsecase.mockResolvedValue({
+        config: {
+          providerId: 'p1', id: 'p1', name: 'X',
+          baseUrl: 'http://x/v1', apiKey: null,
+          authType: 'none', verifySsl: true, defaultModel: 'bge-m3',
+        },
+        model: 'bge-m3',
+      });
+    });
+
+    it('returns null when the resolved provider breaker is closed', async () => {
+      expect(await getEmbedBreakerNextRetryTime()).toBeNull();
+    });
+
+    it('returns a future timestamp when the resolved provider breaker is tripped', async () => {
+      const breaker = getProviderBreaker('p1');
+      // Default threshold is 3 failures → trip the breaker.
+      breaker.recordFailure();
+      breaker.recordFailure();
+      breaker.recordFailure();
+
+      const t = await getEmbedBreakerNextRetryTime();
+      expect(t).not.toBeNull();
+      expect(typeof t).toBe('number');
+      expect(t!).toBeGreaterThan(Date.now());
+    });
+
+    it('returns null again after the breaker is reset', async () => {
+      const breaker = getProviderBreaker('p1');
+      breaker.recordFailure();
+      breaker.recordFailure();
+      breaker.recordFailure();
+      expect(await getEmbedBreakerNextRetryTime()).not.toBeNull();
+
+      breaker.reset();
+      expect(await getEmbedBreakerNextRetryTime()).toBeNull();
+    });
+
+    it('returns null when no embedding provider can be resolved', async () => {
+      mocks.resolveUsecase.mockRejectedValueOnce(new Error('No default provider configured'));
+      expect(await getEmbedBreakerNextRetryTime()).toBeNull();
     });
   });
 });

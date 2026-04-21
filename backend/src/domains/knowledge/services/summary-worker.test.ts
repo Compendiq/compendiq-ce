@@ -14,20 +14,25 @@ import {
 const dbAvailable = await isDbAvailable();
 
 // Mock the LLM streaming helpers to avoid real LLM calls in tests.
-// After issue #214, the worker streams via `providerStreamChatForUsecase`
-// using messages it builds itself from `getSystemPrompt('summarize')`.
+// The worker streams via `streamChat` from openai-compatible-client using
+// messages it builds itself from `getSystemPrompt('summarize')`.
 vi.mock('../../llm/services/ollama-service.js', () => ({
   getSystemPrompt: vi.fn().mockReturnValue('You are a summarizer.'),
 }));
 
-vi.mock('../../llm/services/llm-provider.js', () => ({
-  providerStreamChatForUsecase: vi.fn().mockImplementation(() => {
+vi.mock('../../llm/services/openai-compatible-client.js', () => ({
+  streamChat: vi.fn().mockImplementation(() => {
     async function* generator() {
       yield { content: 'This is a **test** summary.', done: false };
       yield { content: '', done: true };
     }
     return generator();
   }),
+  chat: vi.fn(),
+  generateEmbedding: vi.fn(),
+  listModels: vi.fn(),
+  checkHealth: vi.fn(),
+  invalidateDispatcher: vi.fn(),
 }));
 
 vi.mock('../../../core/utils/sanitize-llm-input.js', () => ({
@@ -36,13 +41,16 @@ vi.mock('../../../core/utils/sanitize-llm-input.js', () => ({
     .mockImplementation((input: string) => ({ sanitized: input, wasSanitized: false })),
 }));
 
-// Default mock: resolver returns ollama/qwen3.5 (the pre-#214 shared fallback).
+// Default mock: resolver returns provider p1 with model qwen3.5.
 // Tests that need a different assignment override this per-test.
-vi.mock('../../../core/services/admin-settings-service.js', () => ({
-  getUsecaseLlmAssignment: vi.fn().mockResolvedValue({
-    provider: 'ollama',
+vi.mock('../../llm/services/llm-provider-resolver.js', () => ({
+  resolveUsecase: vi.fn().mockResolvedValue({
+    config: {
+      providerId: 'p1', id: 'p1', name: 'X',
+      baseUrl: 'http://x/v1', apiKey: null,
+      authType: 'none', verifySsl: true, defaultModel: 'qwen3.5',
+    },
     model: 'qwen3.5',
-    source: { provider: 'shared', model: 'shared' },
   }),
 }));
 
@@ -310,13 +318,16 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
 
     it('should mark pages as skipped (not disabled) when no model is available anywhere', async () => {
       // Override the resolver mock to simulate "no model configured anywhere".
-      const { getUsecaseLlmAssignment } = await import(
-        '../../../core/services/admin-settings-service.js'
+      const { resolveUsecase } = await import(
+        '../../llm/services/llm-provider-resolver.js'
       );
-      vi.mocked(getUsecaseLlmAssignment).mockResolvedValueOnce({
-        provider: 'ollama',
+      vi.mocked(resolveUsecase).mockResolvedValueOnce({
+        config: {
+          providerId: 'p1', id: 'p1', name: 'X',
+          baseUrl: 'http://x/v1', apiKey: null,
+          authType: 'none', verifySsl: true, defaultModel: null,
+        },
         model: '',
-        source: { provider: 'default', model: 'default' },
       });
 
       await query(

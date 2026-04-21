@@ -1,23 +1,19 @@
 // LLM domain barrel export
 export {
   getSystemPrompt,
+  LANGUAGE_PRESERVATION_INSTRUCTION,
+} from './services/prompts.js';
+export type { ChatMessage, SystemPromptKey } from './services/prompts.js';
+export {
   listModels,
   checkHealth,
   streamChat,
   chat,
-  summarizeContent,
-  isLlmVerifySslEnabled,
-  getLlmAuthType,
-  getActiveProviderType,
-  setActiveProvider,
-  getProvider,
-} from './services/ollama-service.js';
-export type { ChatMessage, SystemPromptKey } from './services/ollama-service.js';
-export { LANGUAGE_PRESERVATION_INSTRUCTION } from './services/ollama-service.js';
-export { providerStreamChat, providerGenerateEmbedding } from './services/llm-provider.js';
-export type { LlmProviderType, LlmProvider } from './services/llm-provider.js';
-export { OpenAIProvider } from './services/openai-service.js';
-export { OllamaProvider } from './services/ollama-provider.js';
+  generateEmbedding,
+  invalidateDispatcher,
+} from './services/openai-compatible-client.js';
+export type { ProviderConfig } from './services/openai-compatible-client.js';
+export { resolveUsecase } from './services/llm-provider-resolver.js';
 export {
   getEmbeddingStatus,
   processDirtyPages,

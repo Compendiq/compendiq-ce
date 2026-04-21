@@ -16,28 +16,34 @@ vi.mock('../../domains/llm/services/ollama-service.js', () => ({
   LANGUAGE_PRESERVATION_INSTRUCTION: '',
 }));
 
-// --- Mock: llm-provider (issue #217 — spy the per-user and per-usecase stream
-// dispatchers so we can assert which branch the route took). ---
-const mockProviderStreamChat = vi.fn();
-const mockProviderStreamChatForUsecase = vi.fn();
-const mockResolveUserProvider = vi.fn().mockResolvedValue({ type: 'ollama' });
-vi.mock('../../domains/llm/services/llm-provider.js', () => ({
-  providerStreamChat: (...args: unknown[]) => mockProviderStreamChat(...args),
-  providerStreamChatForUsecase: (...args: unknown[]) => mockProviderStreamChatForUsecase(...args),
-  resolveUserProvider: (...args: unknown[]) => mockResolveUserProvider(...args),
-  providerChatForUsecase: vi.fn(),
-  providerGenerateEmbedding: vi.fn(),
+// --- Mock: llm-provider-resolver (resolveUsecase) ---
+const mockResolveUsecase = vi.fn().mockResolvedValue({
+  config: {
+    providerId: 'p1',
+    baseUrl: 'http://x/v1',
+    apiKey: null,
+    authType: 'none',
+    verifySsl: true,
+    name: 'X',
+    defaultModel: 'm',
+  },
+  model: 'm',
+});
+
+vi.mock('../../domains/llm/services/llm-provider-resolver.js', () => ({
+  resolveUsecase: (...args: unknown[]) => mockResolveUsecase(...args),
 }));
 
-// --- Mock: admin-settings-service (issue #217 — chat usecase resolver). ---
-// Default: no override — route should dispatch via providerStreamChat.
-const mockGetUsecaseLlmAssignment = vi.fn().mockResolvedValue({
-  provider: 'ollama',
-  model: '',
-  source: { provider: 'shared', model: 'shared' },
-});
-vi.mock('../../core/services/admin-settings-service.js', () => ({
-  getUsecaseLlmAssignment: (...args: unknown[]) => mockGetUsecaseLlmAssignment(...args),
+// --- Mock: openai-compatible-client (streamChat — queue + breakers wrapped inside) ---
+const mockStreamChatClient = vi.fn();
+
+vi.mock('../../domains/llm/services/openai-compatible-client.js', () => ({
+  streamChat: (...args: unknown[]) => mockStreamChatClient(...args),
+  chat: vi.fn(),
+  generateEmbedding: vi.fn(),
+  listModels: vi.fn(),
+  checkHealth: vi.fn(),
+  invalidateDispatcher: vi.fn(),
 }));
 
 // --- Mock: circuit-breaker (used internally by ollama-service/llm-provider) ---
@@ -168,18 +174,22 @@ describe('POST /api/llm/ask', () => {
     mockGetCachedResponse.mockResolvedValue(null);
     mockSetCachedResponse.mockResolvedValue(undefined);
     mockGetSystemPrompt.mockReturnValue('You are a helpful knowledge base assistant');
-    // Default query mock: returns row with id for saveConversation INSERT,
-    // and empty llm_provider so resolveUserProvider falls back to Ollama
+    // Default query mock: returns row with id for saveConversation INSERT
     mockQuery.mockResolvedValue({ rows: [{ id: 'test-conv-id' }] });
     mockBuildRagContext.mockReturnValue('Relevant context from the knowledge base.');
-    // Issue #217: default to no chat-usecase override so the route takes the
-    // per-user routing branch (providerStreamChat).
-    mockGetUsecaseLlmAssignment.mockResolvedValue({
-      provider: 'ollama',
-      model: '',
-      source: { provider: 'shared', model: 'shared' },
+    // Default resolveUsecase: provider 'p1' with model 'm'
+    mockResolveUsecase.mockResolvedValue({
+      config: {
+        providerId: 'p1',
+        baseUrl: 'http://x/v1',
+        apiKey: null,
+        authType: 'none',
+        verifySsl: true,
+        name: 'X',
+        defaultModel: 'm',
+      },
+      model: 'm',
     });
-    mockResolveUserProvider.mockResolvedValue({ type: 'ollama' });
   });
 
   // ─── Validation tests ────────────────────────────────────────────────────
@@ -235,7 +245,7 @@ describe('POST /api/llm/ask', () => {
       },
     ];
     mockHybridSearch.mockResolvedValue(fakeResults);
-    mockProviderStreamChat.mockReturnValue(singleChunkGenerator('The deployment process uses CI/CD.'));
+    mockStreamChatClient.mockReturnValue(singleChunkGenerator('The deployment process uses CI/CD.'));
 
     // Act
     const response = await app.inject({
@@ -275,7 +285,7 @@ describe('POST /api/llm/ask', () => {
   it('should call hybridSearch with the user question', async () => {
     mockHybridSearch.mockResolvedValue([]);
     mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
-    mockProviderStreamChat.mockReturnValue(singleChunkGenerator('I could not find relevant information.'));
+    mockStreamChatClient.mockReturnValue(singleChunkGenerator('I could not find relevant information.'));
 
     await app.inject({
       method: 'POST',
@@ -334,8 +344,7 @@ describe('POST /api/llm/ask', () => {
     expect(sources[0].confluenceId).toBe('page-xyz');
 
     // The LLM should NOT have been called
-    expect(mockProviderStreamChat).not.toHaveBeenCalled();
-    expect(mockProviderStreamChatForUsecase).not.toHaveBeenCalled();
+    expect(mockStreamChatClient).not.toHaveBeenCalled();
   });
 
   // ─── Empty results test ──────────────────────────────────────────────────
@@ -344,7 +353,7 @@ describe('POST /api/llm/ask', () => {
     // Arrange: no RAG results → buildRagContext returns "no context" message
     mockHybridSearch.mockResolvedValue([]);
     mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
-    mockProviderStreamChat.mockReturnValue(singleChunkGenerator('I do not have enough context to answer.'));
+    mockStreamChatClient.mockReturnValue(singleChunkGenerator('I do not have enough context to answer.'));
 
     // Act
     const response = await app.inject({
@@ -374,12 +383,12 @@ describe('POST /api/llm/ask', () => {
     expect(sources).toHaveLength(0);
   });
 
-  // ─── Issue #217 — chat usecase routing ──────────────────────────────────
+  // ─── Use-case resolution ─────────────────────────────────────────────────
 
-  describe('issue #217 — chat usecase routing', () => {
-    it('consults getUsecaseLlmAssignment("chat") on every request', async () => {
+  describe('chat use-case resolution', () => {
+    it('consults resolveUsecase("chat") on every request', async () => {
       mockHybridSearch.mockResolvedValue([]);
-      mockProviderStreamChat.mockReturnValue(singleChunkGenerator('answer'));
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
 
       await app.inject({
         method: 'POST',
@@ -387,81 +396,39 @@ describe('POST /api/llm/ask', () => {
         payload: { question: 'hi', model: 'llama3' },
       });
 
-      expect(mockGetUsecaseLlmAssignment).toHaveBeenCalledWith('chat');
+      expect(mockResolveUsecase).toHaveBeenCalledWith('chat');
     });
 
-    it('routes via providerStreamChatForUsecase when admin set a chat override (both provider and model)', async () => {
+    it('streams via the resolved provider config + model', async () => {
       mockHybridSearch.mockResolvedValue([]);
-      // Admin has set provider=openai AND model=gpt-4o-mini for chat.
-      mockGetUsecaseLlmAssignment.mockResolvedValue({
-        provider: 'openai',
+      mockResolveUsecase.mockResolvedValue({
+        config: {
+          providerId: 'provider-openai',
+          baseUrl: 'https://api.openai.com/v1',
+          apiKey: 'sk-test',
+          authType: 'bearer',
+          verifySsl: true,
+          name: 'OpenAI',
+          defaultModel: 'gpt-4o-mini',
+        },
         model: 'gpt-4o-mini',
-        source: { provider: 'usecase', model: 'usecase' },
       });
-      mockProviderStreamChatForUsecase.mockReturnValue(singleChunkGenerator('answer'));
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
 
       const response = await app.inject({
         method: 'POST',
         url: '/api/llm/ask',
-        payload: { question: 'hi', model: 'llama3' }, // body model ignored
+        payload: { question: 'hi', model: 'ignored-body-model' },
       });
 
       expect(response.statusCode).toBe(200);
-      expect(mockProviderStreamChatForUsecase).toHaveBeenCalledTimes(1);
-      expect(mockProviderStreamChat).not.toHaveBeenCalled();
-
-      const [provider, usedModel] = mockProviderStreamChatForUsecase.mock.calls[0] as [
-        string,
+      expect(mockStreamChatClient).toHaveBeenCalledTimes(1);
+      const [cfg, usedModel] = mockStreamChatClient.mock.calls[0] as [
+        { providerId: string },
         string,
       ];
-      expect(provider).toBe('openai');
+      expect(cfg.providerId).toBe('provider-openai');
       expect(usedModel).toBe('gpt-4o-mini');
-    });
-
-    it('preserves per-user routing when no chat override is set', async () => {
-      mockHybridSearch.mockResolvedValue([]);
-      mockProviderStreamChat.mockReturnValue(singleChunkGenerator('answer'));
-      // Default resolver result (shared source) left from beforeEach.
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/llm/ask',
-        payload: { question: 'hi', model: 'llama3' },
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(mockProviderStreamChat).toHaveBeenCalledTimes(1);
-      expect(mockProviderStreamChatForUsecase).not.toHaveBeenCalled();
-
-      const [userId, usedModel] = mockProviderStreamChat.mock.calls[0] as [string, string];
-      expect(userId).toBe('test-user-123');
-      expect(usedModel).toBe('llama3'); // body model preserved
-    });
-
-    it('honors body.model when admin pinned only the provider (source.model !== "usecase")', async () => {
-      mockHybridSearch.mockResolvedValue([]);
-      // Admin set provider=openai but left model inherited (shared/env).
-      mockGetUsecaseLlmAssignment.mockResolvedValue({
-        provider: 'openai',
-        model: 'qwen3.5', // shared fallback
-        source: { provider: 'usecase', model: 'shared' },
-      });
-      mockProviderStreamChatForUsecase.mockReturnValue(singleChunkGenerator('answer'));
-
-      await app.inject({
-        method: 'POST',
-        url: '/api/llm/ask',
-        payload: { question: 'hi', model: 'user-picked-model' },
-      });
-
-      expect(mockProviderStreamChatForUsecase).toHaveBeenCalledTimes(1);
-      const [provider, usedModel] = mockProviderStreamChatForUsecase.mock.calls[0] as [
-        string,
-        string,
-      ];
-      expect(provider).toBe('openai');
-      // Q2 decision: body model wins when source.model !== 'usecase'.
-      expect(usedModel).toBe('user-picked-model');
     });
   });
 });

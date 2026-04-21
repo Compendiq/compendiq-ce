@@ -1,4 +1,4 @@
-import { getSharedLlmSettings } from './admin-settings-service.js';
+import { query } from '../db/postgres.js';
 
 /**
  * Allowed PostgreSQL text search configurations.
@@ -16,8 +16,10 @@ const ALLOWED_FTS_LANGUAGES = new Set([
  * are interpolated into queries since PostgreSQL does not support parameterized regconfig).
  */
 export async function getFtsLanguage(): Promise<string> {
-  const settings = await getSharedLlmSettings();
-  const lang = settings.ftsLanguage ?? 'simple';
+  const r = await query<{ setting_value: string }>(
+    `SELECT setting_value FROM admin_settings WHERE setting_key='fts_language'`,
+  );
+  const lang = r.rows[0]?.setting_value ?? process.env.FTS_LANGUAGE ?? 'simple';
   if (!ALLOWED_FTS_LANGUAGES.has(lang)) {
     return 'simple';
   }

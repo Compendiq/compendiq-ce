@@ -22,11 +22,43 @@ vi.mock('../../domains/llm/services/ollama-service.js', () => ({
   LANGUAGE_PRESERVATION_INSTRUCTION: 'Keep the text in its ORIGINAL language.',
 }));
 
-// --- Mock: llm-provider (providerStreamChat) ---
+// --- Mock: llm-provider-resolver (resolveUsecase) ---
+const mockResolveUsecase = vi.fn().mockResolvedValue({
+  config: {
+    providerId: 'p1',
+    baseUrl: 'http://x/v1',
+    apiKey: null,
+    authType: 'none',
+    verifySsl: true,
+    name: 'X',
+    defaultModel: 'm',
+  },
+  model: 'm',
+});
+
+vi.mock('../../domains/llm/services/llm-provider-resolver.js', () => ({
+  resolveUsecase: (...args: unknown[]) => mockResolveUsecase(...args),
+}));
+
+// --- Mock: openai-compatible-client (streamChat) ---
+const mockStreamChatClient = vi.fn();
+
+vi.mock('../../domains/llm/services/openai-compatible-client.js', () => ({
+  streamChat: (...args: unknown[]) => mockStreamChatClient(...args),
+  chat: vi.fn(),
+  generateEmbedding: vi.fn(),
+  listModels: vi.fn(),
+  checkHealth: vi.fn(),
+  invalidateDispatcher: vi.fn(),
+}));
+
+// --- Mock: llm-provider (kept for any downstream route that still imports) ---
 const mockProviderStreamChat = vi.fn();
 
 vi.mock('../../domains/llm/services/llm-provider.js', () => ({
   providerStreamChat: (...args: unknown[]) => mockProviderStreamChat(...args),
+  providerStreamChatForUsecase: vi.fn(),
+  providerChatForUsecase: vi.fn(),
   providerGenerateEmbedding: vi.fn(),
   resolveUserProvider: vi.fn().mockResolvedValue({ type: 'ollama' }),
 }));
@@ -292,7 +324,7 @@ describe('POST /api/llm/ask - SSE streaming', () => {
       },
     ];
     mockHybridSearch.mockResolvedValue(fakeResults);
-    mockProviderStreamChat.mockReturnValue(singleChunkGenerator('Docker is a container platform.'));
+    mockStreamChatClient.mockReturnValue(singleChunkGenerator('Docker is a container platform.'));
 
     const response = await app.inject({
       method: 'POST',
@@ -336,7 +368,7 @@ describe('POST /api/llm/ask - SSE streaming', () => {
 
   it('should create a new conversation when conversationId is not provided', async () => {
     mockHybridSearch.mockResolvedValue([]);
-    mockProviderStreamChat.mockReturnValue(singleChunkGenerator('No relevant context found.'));
+    mockStreamChatClient.mockReturnValue(singleChunkGenerator('No relevant context found.'));
 
     const response = await app.inject({
       method: 'POST',

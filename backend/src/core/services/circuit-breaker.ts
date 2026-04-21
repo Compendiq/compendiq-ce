@@ -192,3 +192,62 @@ export function getOpenaiCircuitBreakerStatus(): Record<string, CircuitBreakerSt
     list: openaiBreakers.list.getStatus(),
   };
 }
+
+// ─── Per-provider circuit breakers (multi-provider LLM support) ─────────────
+// Keyed by provider id (UUID). Each provider gets its own breaker so that an
+// outage on one provider does not affect others. Thresholds match the existing
+// `ollamaBreakers.chat` defaults (3 failures / 2 successes / 30s timeout).
+const providerBreakers = new Map<string, CircuitBreaker>();
+
+/**
+ * Get or create a circuit breaker for the given provider id.
+ * Returns the same instance on subsequent calls (per-provider cache).
+ */
+export function getProviderBreaker(providerId: string): CircuitBreaker {
+  let b = providerBreakers.get(providerId);
+  if (!b) {
+    b = new CircuitBreaker(`llm-provider:${providerId}`);
+    providerBreakers.set(providerId, b);
+  }
+  return b;
+}
+
+/**
+ * Invalidate the circuit breaker for a provider. Called when a provider's
+ * configuration changes (cache-bus bump) so the next request starts with a
+ * fresh breaker instead of the old one (which may hold stale failure state
+ * against the old config).
+ */
+export function invalidateProviderBreaker(providerId: string): void {
+  providerBreakers.delete(providerId);
+}
+
+/**
+ * Snapshot of a single live per-provider breaker used for health reporting.
+ * `state` is lowercased to match the legacy health payload shape.
+ */
+export interface ProviderBreakerSnapshot {
+  providerId: string;
+  state: string;
+  failureCount: number;
+  nextRetryTime: number | null;
+}
+
+/**
+ * List all currently-live per-provider circuit breakers. Used by the health
+ * route to surface real breaker state instead of dead legacy globals.
+ * Providers that have never been contacted yet simply won't appear.
+ */
+export function listProviderBreakers(): ProviderBreakerSnapshot[] {
+  const out: ProviderBreakerSnapshot[] = [];
+  for (const [providerId, breaker] of providerBreakers.entries()) {
+    const status = breaker.getStatus();
+    out.push({
+      providerId,
+      state: status.state.toLowerCase(),
+      failureCount: status.failureCount,
+      nextRetryTime: status.nextRetryTime,
+    });
+  }
+  return out;
+}

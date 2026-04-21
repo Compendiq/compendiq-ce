@@ -1,11 +1,11 @@
 import { query, getPool } from '../../../core/db/postgres.js';
-import { providerGenerateEmbedding } from './llm-provider.js';
+import { resolveUsecase } from './llm-provider-resolver.js';
+import { generateEmbedding } from './openai-compatible-client.js';
 import { htmlToText } from '../../../core/services/content-converter.js';
 import { logger } from '../../../core/utils/logger.js';
 import { invalidateGraphCache, acquireEmbeddingLock, releaseEmbeddingLock, isEmbeddingLocked, getRedisClient } from '../../../core/services/redis-cache.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
-import { CircuitBreakerOpenError, ollamaBreakers, openaiBreakers } from '../../../core/services/circuit-breaker.js';
-import { getSharedLlmSettings } from '../../../core/services/admin-settings-service.js';
+import { CircuitBreakerOpenError, getProviderBreaker } from '../../../core/services/circuit-breaker.js';
 import pgvector from 'pgvector';
 
 const CHUNK_SIZE = 500;          // ~500 tokens target
@@ -119,19 +119,25 @@ export function isContextLengthError(err: unknown): boolean {
 }
 
 /**
- * Get the next retry time for the embedding circuit breaker.
- * Checks both ollama and openai breakers and returns the soonest retry time,
- * or null if neither is open.
+ * Get the next retry time for the currently-resolved embedding provider's
+ * circuit breaker. Returns the timestamp at which the breaker will allow a
+ * probe request, or `null` when the breaker is closed (immediate retry) or
+ * when no embedding provider could be resolved.
+ *
+ * Previously this queried the legacy `ollamaBreakers` / `openaiBreakers`
+ * globals which are no longer populated by the multi-provider OpenAI-compatible
+ * client — the real state lives on per-provider breakers keyed by UUID.
  */
-export function getEmbedBreakerNextRetryTime(): number | null {
-  const ollamaStatus = ollamaBreakers.embed.getStatus();
-  const openaiStatus = openaiBreakers.embed.getStatus();
-
-  const times: number[] = [];
-  if (ollamaStatus.nextRetryTime !== null) times.push(ollamaStatus.nextRetryTime);
-  if (openaiStatus.nextRetryTime !== null) times.push(openaiStatus.nextRetryTime);
-
-  return times.length > 0 ? Math.min(...times) : null;
+export async function getEmbedBreakerNextRetryTime(): Promise<number | null> {
+  try {
+    const { config } = await resolveUsecase('embedding');
+    const breaker = getProviderBreaker(config.providerId);
+    return breaker.getStatus().nextRetryTime;
+  } catch {
+    // No default embedding provider configured yet — caller should retry
+    // immediately; we can't locate a breaker to wait on.
+    return null;
+  }
 }
 
 /**
@@ -322,12 +328,18 @@ export async function embedPage(
   const batchSize = 10;
   const allEmbeddings: Array<{ chunkIndex: number; text: string; embedding: number[]; metadata: ChunkMetadata }> = [];
 
+  // Resolve the `embedding` use-case once per page so we don't hit the
+  // resolver cache on every batch. Rotating providers mid-page would mix
+  // incompatible vectors in the same page's embeddings; resolving once
+  // keeps all chunks of one page consistent.
+  const { config: embedConfig, model: embedModel } = await resolveUsecase('embedding');
+
   for (let i = 0; i < chunks.length; i += batchSize) {
     const batch = chunks.slice(i, i + batchSize);
     const texts = batch.map((c) => c.text);
 
     try {
-      const embeddings = await providerGenerateEmbedding(userId, texts);
+      const embeddings = await generateEmbedding(embedConfig, embedModel, texts);
 
       for (let j = 0; j < batch.length; j++) {
         allEmbeddings.push({
@@ -419,7 +431,7 @@ export async function isProcessingUser(userId: string): Promise<boolean> {
  *
  * An optional `onProgress` callback receives progress events for SSE streaming.
  *
- * userId is used only for the Redis lock and providerGenerateEmbedding (LLM provider selection).
+ * userId is used only for the Redis embedding-lock. The embedding provider is resolved via resolveUsecase('embedding').
  */
 export async function processDirtyPages(
   userId: string,
@@ -522,7 +534,7 @@ export async function processDirtyPages(
             let cbSuccess = false;
 
             while (cbRetries < MAX_CIRCUIT_BREAKER_RETRIES) {
-              const nextRetry = getEmbedBreakerNextRetryTime();
+              const nextRetry = await getEmbedBreakerNextRetryTime();
               const waitMs = nextRetry !== null
                 ? Math.max(nextRetry - Date.now() + CIRCUIT_BREAKER_WAIT_BUFFER_MS, CIRCUIT_BREAKER_WAIT_BUFFER_MS)
                 : CIRCUIT_BREAKER_WAIT_BUFFER_MS;
@@ -822,7 +834,7 @@ export async function computePageRelationships(changedPageIds?: number[]): Promi
  */
 export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatus> {
   const statusSpaces = await getUserAccessibleSpaces(userId);
-  const [totalResult, dirtyResult, embeddingResult, embeddedPagesResult, isProcessing, sharedSettings, lastRunAt] = await Promise.all([
+  const [totalResult, dirtyResult, embeddingResult, embeddedPagesResult, isProcessing, resolvedEmbedding, lastRunAt] = await Promise.all([
     query<{ count: string }>(
       `SELECT COUNT(*) as count FROM pages cp
        WHERE cp.space_key = ANY($1::text[])
@@ -850,7 +862,7 @@ export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatu
       [statusSpaces],
     ),
     isEmbeddingLocked(userId),
-    getSharedLlmSettings(),
+    resolveUsecase('embedding').catch(() => null),
     getLastEmbeddingRunAt(),
   ]);
 
@@ -869,7 +881,7 @@ export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatu
     totalEmbeddings: parseInt(embeddingRow.count, 10),
     isProcessing,
     lastRunAt: lastRunAt ? lastRunAt.toISOString() : null,
-    model: sharedSettings.embeddingModel,
+    model: resolvedEmbedding?.model ?? '',
   };
 }
 
@@ -888,4 +900,52 @@ export async function reEmbedAll(): Promise<void> {
   const systemUserId = usersResult.rows[0]?.user_id ?? 'system';
 
   await processDirtyPages(systemUserId);
+}
+
+/**
+ * Enqueue a re-embed job for all pages. When `newDimensions` is supplied it
+ * atomically TRUNCATEs `page_embeddings`, rewrites the pgvector column type,
+ * updates the `embedding_dimensions` admin setting, and rebuilds the HNSW
+ * index before returning the job id. The worker run that iterates the pages
+ * and calls `embedText()` per page is tracked in issue #257.
+ */
+export async function enqueueReembedAll(
+  opts: { newDimensions?: number } = {},
+): Promise<string> {
+  const jobId = `reembed-${Date.now()}`;
+  if (opts.newDimensions !== undefined) {
+    // pgvector type args must be literal — validate strictly before interpolation.
+    const n = Math.floor(opts.newDimensions);
+    if (!Number.isFinite(n) || n < 1 || n > 8192) {
+      throw new Error(
+        `refused dimension change to non-integer or out-of-range value: ${opts.newDimensions}`,
+      );
+    }
+    const client = await getPool().connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`TRUNCATE page_embeddings`);
+      await client.query(
+        `ALTER TABLE page_embeddings ALTER COLUMN embedding TYPE vector(${n})`,
+      );
+      await client.query(
+        `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
+         VALUES ('embedding_dimensions', $1, NOW())
+         ON CONFLICT (setting_key) DO UPDATE
+           SET setting_value = EXCLUDED.setting_value, updated_at = NOW()`,
+        [String(n)],
+      );
+      await client.query(`DROP INDEX IF EXISTS idx_page_embeddings_hnsw`);
+      await client.query(
+        `CREATE INDEX idx_page_embeddings_hnsw ON page_embeddings USING hnsw (embedding vector_cosine_ops)`,
+      );
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw e;
+    } finally {
+      client.release();
+    }
+  }
+  return jobId;
 }

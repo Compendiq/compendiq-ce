@@ -12,13 +12,13 @@ import {
 const dbAvailable = await isDbAvailable();
 
 // Mock the LLM, provider helper, and content converter to avoid real calls in tests.
-// After issue #214, the worker streams via `providerStreamChatForUsecase`.
+// The worker streams via `streamChat` from openai-compatible-client.
 vi.mock('../../llm/services/ollama-service.js', () => ({
   getSystemPrompt: vi.fn().mockReturnValue('You are a quality analyzer.'),
 }));
 
-vi.mock('../../llm/services/llm-provider.js', () => ({
-  providerStreamChatForUsecase: vi.fn().mockImplementation(() => {
+vi.mock('../../llm/services/openai-compatible-client.js', () => ({
+  streamChat: vi.fn().mockImplementation(() => {
     async function* generator() {
       yield {
         content: `## Overall Quality Score: 75/100\n## Completeness: 80/100\n## Clarity: 70/100\n## Structure: 78/100\n## Accuracy: 72/100\n## Readability: 68/100\n## Summary\nDecent article.`,
@@ -28,6 +28,11 @@ vi.mock('../../llm/services/llm-provider.js', () => ({
     }
     return generator();
   }),
+  chat: vi.fn(),
+  generateEmbedding: vi.fn(),
+  listModels: vi.fn(),
+  checkHealth: vi.fn(),
+  invalidateDispatcher: vi.fn(),
 }));
 
 vi.mock('../../../core/utils/sanitize-llm-input.js', () => ({
@@ -38,11 +43,14 @@ vi.mock('../../../core/services/content-converter.js', () => ({
   htmlToMarkdown: vi.fn().mockImplementation((html: string) => html),
 }));
 
-vi.mock('../../../core/services/admin-settings-service.js', () => ({
-  getUsecaseLlmAssignment: vi.fn().mockResolvedValue({
-    provider: 'ollama',
+vi.mock('../../llm/services/llm-provider-resolver.js', () => ({
+  resolveUsecase: vi.fn().mockResolvedValue({
+    config: {
+      providerId: 'p1', id: 'p1', name: 'X',
+      baseUrl: 'http://x/v1', apiKey: null,
+      authType: 'none', verifySsl: true, defaultModel: 'qwen3.5',
+    },
     model: 'qwen3.5',
-    source: { provider: 'shared', model: 'shared' },
   }),
 }));
 

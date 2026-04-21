@@ -89,6 +89,12 @@ vi.mock('./routes/knowledge/search.js', () => ({ searchRoutes: noopRoute }));
 vi.mock('./routes/knowledge/local-spaces.js', () => ({ localSpacesRoutes: noopRoute }));
 vi.mock('./routes/foundation/setup.js', () => ({ setupRoutes: noopRoute }));
 
+// Track bootstrap invocations without suppressing its side effects on other tests.
+const bootstrapLlmProvidersSpy = vi.fn().mockResolvedValue(undefined);
+vi.mock('./domains/llm/services/llm-provider-bootstrap.js', () => ({
+  bootstrapLlmProviders: bootstrapLlmProvidersSpy,
+}));
+
 describe('buildApp — CORS multi-origin support', () => {
   const originalFrontendUrl = process.env.FRONTEND_URL;
 
@@ -253,6 +259,16 @@ describe('buildApp — Swagger UI gating', () => {
     const response = await app.inject({ method: 'GET', url: '/api/docs/' });
     expect(response.statusCode).toBe(404);
 
+    await app.close();
+  });
+});
+
+describe('buildApp — LLM provider bootstrap', () => {
+  it('calls bootstrapLlmProviders during buildApp', async () => {
+    bootstrapLlmProvidersSpy.mockClear();
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+    expect(bootstrapLlmProvidersSpy).toHaveBeenCalled();
     await app.close();
   });
 });
