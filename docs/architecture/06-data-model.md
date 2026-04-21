@@ -196,6 +196,27 @@ erDiagram
         bigint role_id FK
         bigint group_id FK
     }
+
+    llm_providers ||--o{ llm_usecase_assignments : "referenced by"
+    llm_providers {
+        uuid id PK
+        text name
+        text base_url
+        bytea api_key "AES-256-GCM"
+        text auth_type "bearer | none"
+        bool verify_ssl
+        text default_model
+        bool is_default
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    llm_usecase_assignments {
+        text usecase PK "chat|summary|quality|auto_tag|embedding"
+        uuid provider_id FK
+        text model "nullable; null = inherit provider default"
+        timestamptz updated_at
+    }
 ```
 
 ## Notable conventions
@@ -210,13 +231,17 @@ erDiagram
   log or expose it to the frontend.
 - **`admin_settings`** is a key-value bag used for server-wide config
   that must survive restarts and be editable at runtime — notably the
-  `license_key` (populated by the EE plugin) and LLM admin overrides.
-  The `llm_usecase_*` key family (`llm_usecase_{chat,summary,quality,auto_tag}_{provider,model}`,
-  issue #214) stores optional per-use-case provider/model overrides; an
-  absent row means the use case inherits the shared `llm_provider` /
-  `ollama_model` / `openai_model` defaults. Workers resolve these at
-  batch time with no in-process cache so admin edits take effect
-  without a restart.
+  `license_key` (populated by the EE plugin) and the `embedding_dimensions`
+  row (read by the embedding service and rewritten when the admin probes +
+  re-embeds against a different-dimensioned model).
+- **LLM providers are rows, not env vars.** The `llm_providers` table
+  stores one row per configured upstream endpoint (ADR-021). Exactly one
+  row has `is_default = TRUE`. The `llm_usecase_assignments` table maps
+  each of `chat | summary | quality | auto_tag | embedding` to a
+  `(provider_id, model)` pair. `model` may be `NULL` to inherit the
+  provider's `default_model`; the whole row may be absent to inherit the
+  default provider + its default model. The resolver caches this lookup
+  and invalidates on provider writes via `llm-cache-bus.ts`.
 - **`audit_log`** captures auth events, license changes, RBAC mutations,
   and high-value LLM calls (prompt-injection flags, failed sanitization).
 - **Soft delete** on `pages.deleted_at` — the Trash feature filters on this.
