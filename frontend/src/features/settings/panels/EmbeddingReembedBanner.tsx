@@ -85,7 +85,14 @@ export function EmbeddingReembedBanner({ currentDimensions, pending }: Props) {
     }, 2_000);
   }
 
-  if (!pending) return null;
+  // Issue #257 / PR #261: after a successful re-embed POST, the parent
+  // (LlmTab) recomputes `embeddingPending` from refetched saved assignments
+  // and hands us `pending === null`. The banner must still render the
+  // running-state UI below so the admin keeps seeing phase / heldBy /
+  // progress while polling continues — only collapse to null when we're
+  // NOT actively tracking a job.
+  const hasRunningJob = stage === 'running' && jobStatus !== null;
+  if (!pending && !hasRunningJob) return null;
 
   async function start() {
     if (!pending) return;
