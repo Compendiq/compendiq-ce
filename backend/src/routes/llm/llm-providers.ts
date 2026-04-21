@@ -17,7 +17,7 @@ import {
   listModels as clientListModels,
 } from '../../domains/llm/services/openai-compatible-client.js';
 import { emitLlmAudit } from '../../domains/llm/services/llm-audit-hook.js';
-import { assertNonSsrfUrl, addAllowedBaseUrl } from '../../core/utils/ssrf-guard.js';
+import { assertNonSsrfUrl, addAllowedBaseUrl, SsrfError } from '../../core/utils/ssrf-guard.js';
 import { getRateLimits } from '../../core/services/rate-limit-service.js';
 
 const ADMIN_RATE_LIMIT = {
@@ -44,7 +44,14 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
     { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT },
     async (request, reply) => {
       const input = LlmProviderInputSchema.parse(request.body);
-      await assertNonSsrfUrl(input.baseUrl);
+      try {
+        await assertNonSsrfUrl(input.baseUrl);
+      } catch (err) {
+        if (err instanceof SsrfError) {
+          return reply.code(400).send({ error: err.message });
+        }
+        throw err;
+      }
       const provider = await createProvider(input);
       // Every configured provider URL must be allowlisted for the ssrf-guard
       // so that subsequent outbound calls from the service layer aren't rejected.
@@ -66,7 +73,16 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
     async (request, reply) => {
       const { id } = IdParamsSchema.parse(request.params);
       const patch = LlmProviderUpdateSchema.parse(request.body);
-      if (patch.baseUrl) await assertNonSsrfUrl(patch.baseUrl);
+      if (patch.baseUrl) {
+        try {
+          await assertNonSsrfUrl(patch.baseUrl);
+        } catch (err) {
+          if (err instanceof SsrfError) {
+            return reply.code(400).send({ error: err.message });
+          }
+          throw err;
+        }
+      }
       const updated = await updateProvider(id, patch);
       if (!updated) return reply.code(404).send({ error: 'Provider not found' });
       if (patch.baseUrl) addAllowedBaseUrl(updated.baseUrl);
@@ -89,7 +105,12 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
         await deleteProvider(id);
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'delete failed';
-        if (/default|referenced/i.test(msg)) {
+        // Map to 409 Conflict when:
+        //   - our service layer rejected (default provider or use-case reference)
+        //   - PostgreSQL raises a foreign-key violation (23503) from a race
+        //     between DELETE and a concurrent usecase-assignment INSERT.
+        const pgCode = (err as { code?: unknown })?.code;
+        if (pgCode === '23503' || /default|referenced/i.test(msg)) {
           return reply.code(409).send({ error: msg });
         }
         throw err;

@@ -91,6 +91,36 @@ describe('EmbeddingReembedBanner', () => {
     expect(screen.getByText(/1024 → 768/)).toBeTruthy();
   });
 
+  it('heavy-warning dialog explicitly warns that the re-embed worker is not implemented yet and links to #257', async () => {
+    const Wrapper = createWrapper();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : (input as URL).toString();
+      if (url.includes('/admin/embedding/probe')) {
+        return new Response(JSON.stringify({ dimensions: 768 }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response('{}', { headers: { 'Content-Type': 'application/json' } });
+    });
+    render(
+      <EmbeddingReembedBanner
+        currentDimensions={1024}
+        pending={{ providerId: 'p1', model: 'other-model' }}
+      />,
+      { wrapper: Wrapper },
+    );
+    fireEvent.click(screen.getByRole('button', { name: /probe/i }));
+
+    // ARIA-role alert banner must appear
+    const alert = await screen.findByRole('alert');
+    expect(alert).toBeTruthy();
+    expect(alert.textContent ?? '').toMatch(/re-embed worker not yet implemented/i);
+
+    // Link to issue #257 must be present
+    const link = screen.getByRole('link', { name: /issue #257/i });
+    expect(link.getAttribute('href')).toContain('257');
+  });
+
   it('on confirm with heavy change, POSTs reembed with newDimensions', async () => {
     const Wrapper = createWrapper();
     const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {

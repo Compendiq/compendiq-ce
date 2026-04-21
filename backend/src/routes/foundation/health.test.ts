@@ -31,6 +31,7 @@ vi.mock('../../core/plugins/redis.js', () => ({
   default: vi.fn(),
 }));
 
+const mockListProviderBreakers = vi.fn().mockReturnValue([]);
 vi.mock('../../core/services/circuit-breaker.js', () => {
   const closedBreaker = { state: 'CLOSED', failureCount: 0, successCount: 0, lastFailureTime: null, nextRetryTime: null };
   return {
@@ -40,8 +41,14 @@ vi.mock('../../core/services/circuit-breaker.js', () => {
     getOpenaiCircuitBreakerStatus: vi.fn().mockReturnValue({
       chat: closedBreaker, embed: closedBreaker, list: closedBreaker,
     }),
+    listProviderBreakers: (...args: unknown[]) => mockListProviderBreakers(...args),
   };
 });
+
+const mockListProviders = vi.fn().mockResolvedValue([]);
+vi.mock('../../domains/llm/services/llm-provider-service.js', () => ({
+  listProviders: (...args: unknown[]) => mockListProviders(...args),
+}));
 
 // Provider-aware health check now lives in `openai-compatible-client.ts`.
 const mockCheckHealth = vi.fn().mockResolvedValue({ connected: true });
@@ -96,6 +103,8 @@ describe('Health routes', () => {
     (mockCheckPg as ReturnType<typeof vi.fn>).mockResolvedValue(true);
     (mockCheckRedis as ReturnType<typeof vi.fn>).mockResolvedValue(true);
     mockCheckHealth.mockResolvedValue({ connected: true });
+    mockListProviderBreakers.mockReturnValue([]);
+    mockListProviders.mockResolvedValue([]);
     mockQuery.mockResolvedValue({
       rows: [
         {
@@ -205,7 +214,7 @@ describe('Health routes', () => {
   });
 
   describe('GET /api/health (backward compat)', () => {
-    it('should return full health status including LLM and circuit breakers', async () => {
+    it('should return full health status including LLM and live per-provider breakers', async () => {
       const response = await app.inject({ method: 'GET', url: '/api/health' });
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
@@ -214,9 +223,43 @@ describe('Health routes', () => {
       expect(body.services).toHaveProperty('redis');
       expect(body.services).toHaveProperty('llm');
       expect(body).toHaveProperty('circuitBreakers');
-      expect(body.circuitBreakers).toHaveProperty('ollama');
-      expect(body.circuitBreakers).toHaveProperty('openai');
+      // New shape: circuitBreakers.providers is an array of live per-provider snapshots.
+      expect(Array.isArray(body.circuitBreakers.providers)).toBe(true);
+      // Dead legacy globals must no longer be reported here.
+      expect(body.circuitBreakers).not.toHaveProperty('ollama');
+      expect(body.circuitBreakers).not.toHaveProperty('openai');
       expect(body).toHaveProperty('llmProvider');
+    });
+
+    it('surfaces live per-provider breaker state enriched with provider names', async () => {
+      mockListProviderBreakers.mockReturnValue([
+        { providerId: 'uuid-a', state: 'closed', failureCount: 0, nextRetryTime: null },
+        { providerId: 'uuid-b', state: 'open', failureCount: 3, nextRetryTime: 99 },
+      ]);
+      mockListProviders.mockResolvedValue([
+        { id: 'uuid-a', name: 'Ollama Local' },
+        { id: 'uuid-b', name: 'OpenAI' },
+      ]);
+
+      const response = await app.inject({ method: 'GET', url: '/api/health' });
+      const body = JSON.parse(response.body);
+      expect(body.circuitBreakers.providers).toEqual([
+        { providerId: 'uuid-a', name: 'Ollama Local', state: 'closed', failures: 0 },
+        { providerId: 'uuid-b', name: 'OpenAI', state: 'open', failures: 3 },
+      ]);
+    });
+
+    it('tolerates a provider with a live breaker but no row (race during delete)', async () => {
+      mockListProviderBreakers.mockReturnValue([
+        { providerId: 'uuid-orphan', state: 'closed', failureCount: 0, nextRetryTime: null },
+      ]);
+      mockListProviders.mockResolvedValue([]);
+
+      const response = await app.inject({ method: 'GET', url: '/api/health' });
+      const body = JSON.parse(response.body);
+      expect(body.circuitBreakers.providers).toEqual([
+        { providerId: 'uuid-orphan', name: null, state: 'closed', failures: 0 },
+      ]);
     });
 
     it('should report llm=false when LLM provider is unreachable', async () => {

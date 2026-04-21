@@ -221,3 +221,33 @@ export function getProviderBreaker(providerId: string): CircuitBreaker {
 export function invalidateProviderBreaker(providerId: string): void {
   providerBreakers.delete(providerId);
 }
+
+/**
+ * Snapshot of a single live per-provider breaker used for health reporting.
+ * `state` is lowercased to match the legacy health payload shape.
+ */
+export interface ProviderBreakerSnapshot {
+  providerId: string;
+  state: string;
+  failureCount: number;
+  nextRetryTime: number | null;
+}
+
+/**
+ * List all currently-live per-provider circuit breakers. Used by the health
+ * route to surface real breaker state instead of dead legacy globals.
+ * Providers that have never been contacted yet simply won't appear.
+ */
+export function listProviderBreakers(): ProviderBreakerSnapshot[] {
+  const out: ProviderBreakerSnapshot[] = [];
+  for (const [providerId, breaker] of providerBreakers.entries()) {
+    const status = breaker.getStatus();
+    out.push({
+      providerId,
+      state: status.state.toLowerCase(),
+      failureCount: status.failureCount,
+      nextRetryTime: status.nextRetryTime,
+    });
+  }
+  return out;
+}

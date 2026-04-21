@@ -63,11 +63,37 @@ export function EmbeddingReembedBanner({ currentDimensions, pending }: Props) {
     return (
       <div className="glass-card border-red-500/30 p-3 text-sm">
         {heavy ? (
-          <p>
-            ⚠ Dimension change: <b>{currentDimensions} → {newDims}</b>. This will{' '}
-            <b>delete all existing embeddings</b>, rewrite the column type, and rebuild the
-            HNSW index. Continue?
-          </p>
+          <>
+            <p>
+              ⚠ Dimension change: <b>{currentDimensions} → {newDims}</b>. This will{' '}
+              <b>delete all existing embeddings</b>, rewrite the column type, and rebuild the
+              HNSW index. Continue?
+            </p>
+            <div
+              role="alert"
+              className="mt-2 rounded border border-red-500/40 bg-red-500/10 p-2 text-red-200"
+            >
+              <p className="font-semibold">⚠ Warning: re-embed worker not yet implemented.</p>
+              <p className="mt-1">
+                Confirming will <b>truncate every existing embedding row</b>, but the worker
+                loop that re-embeds all pages against the new model/dimension is tracked as a
+                follow-up and has not shipped yet. Until it does, RAG / semantic search will
+                return <b>no results</b> for any page.
+              </p>
+              <p className="mt-1">
+                See{' '}
+                <a
+                  href="https://github.com/VAMFI/compendiq-ce/issues/257"
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="underline"
+                >
+                  issue #257
+                </a>{' '}
+                for progress.
+              </p>
+            </div>
+          </>
         ) : (
           <p>
             ⚠ Embedding model changed (dimension stays at {currentDimensions}). Existing

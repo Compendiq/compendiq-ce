@@ -5,7 +5,7 @@ import { htmlToText } from '../../../core/services/content-converter.js';
 import { logger } from '../../../core/utils/logger.js';
 import { invalidateGraphCache, acquireEmbeddingLock, releaseEmbeddingLock, isEmbeddingLocked, getRedisClient } from '../../../core/services/redis-cache.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
-import { CircuitBreakerOpenError, ollamaBreakers, openaiBreakers } from '../../../core/services/circuit-breaker.js';
+import { CircuitBreakerOpenError, getProviderBreaker } from '../../../core/services/circuit-breaker.js';
 import pgvector from 'pgvector';
 
 const CHUNK_SIZE = 500;          // ~500 tokens target
@@ -119,19 +119,25 @@ export function isContextLengthError(err: unknown): boolean {
 }
 
 /**
- * Get the next retry time for the embedding circuit breaker.
- * Checks both ollama and openai breakers and returns the soonest retry time,
- * or null if neither is open.
+ * Get the next retry time for the currently-resolved embedding provider's
+ * circuit breaker. Returns the timestamp at which the breaker will allow a
+ * probe request, or `null` when the breaker is closed (immediate retry) or
+ * when no embedding provider could be resolved.
+ *
+ * Previously this queried the legacy `ollamaBreakers` / `openaiBreakers`
+ * globals which are no longer populated by the multi-provider OpenAI-compatible
+ * client — the real state lives on per-provider breakers keyed by UUID.
  */
-export function getEmbedBreakerNextRetryTime(): number | null {
-  const ollamaStatus = ollamaBreakers.embed.getStatus();
-  const openaiStatus = openaiBreakers.embed.getStatus();
-
-  const times: number[] = [];
-  if (ollamaStatus.nextRetryTime !== null) times.push(ollamaStatus.nextRetryTime);
-  if (openaiStatus.nextRetryTime !== null) times.push(openaiStatus.nextRetryTime);
-
-  return times.length > 0 ? Math.min(...times) : null;
+export async function getEmbedBreakerNextRetryTime(): Promise<number | null> {
+  try {
+    const { config } = await resolveUsecase('embedding');
+    const breaker = getProviderBreaker(config.providerId);
+    return breaker.getStatus().nextRetryTime;
+  } catch {
+    // No default embedding provider configured yet — caller should retry
+    // immediately; we can't locate a breaker to wait on.
+    return null;
+  }
 }
 
 /**
@@ -528,7 +534,7 @@ export async function processDirtyPages(
             let cbSuccess = false;
 
             while (cbRetries < MAX_CIRCUIT_BREAKER_RETRIES) {
-              const nextRetry = getEmbedBreakerNextRetryTime();
+              const nextRetry = await getEmbedBreakerNextRetryTime();
               const waitMs = nextRetry !== null
                 ? Math.max(nextRetry - Date.now() + CIRCUIT_BREAKER_WAIT_BUFFER_MS, CIRCUIT_BREAKER_WAIT_BUFFER_MS)
                 : CIRCUIT_BREAKER_WAIT_BUFFER_MS;
