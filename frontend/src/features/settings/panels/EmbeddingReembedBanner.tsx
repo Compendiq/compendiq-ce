@@ -83,7 +83,7 @@ export function EmbeddingReembedBanner({ currentDimensions, pending }: Props) {
               <p className="mt-1">
                 See{' '}
                 <a
-                  href="https://github.com/VAMFI/compendiq-ce/issues/257"
+                  href="https://github.com/Compendiq/compendiq-ce/issues/257"
                   target="_blank"
                   rel="noreferrer noopener"
                   className="underline"

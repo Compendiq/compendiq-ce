@@ -118,7 +118,7 @@ describe('EmbeddingReembedBanner', () => {
 
     // Link to issue #257 must be present
     const link = screen.getByRole('link', { name: /issue #257/i });
-    expect(link.getAttribute('href')).toContain('257');
+    expect(link.getAttribute('href')).toBe('https://github.com/Compendiq/compendiq-ce/issues/257');
   });
 
   it('on confirm with heavy change, POSTs reembed with newDimensions', async () => {
