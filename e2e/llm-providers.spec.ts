@@ -82,4 +82,48 @@ test.describe('Multi-LLM-provider flow', () => {
     await page.getByRole('button', { name: /send/i }).click();
     await expect(page.locator('.message-assistant')).toBeVisible({ timeout: 30_000 });
   });
+
+  // Issue #257 §4.9 RED #20 — end-to-end completion of reembed-all.
+  // Triggers the admin endpoint and polls the GET until `state === 'completed'`
+  // within 60 s. The BullMQ worker acquires the `__reembed_all__` lock, marks
+  // every non-folder page dirty, runs processDirtyPages, and reports progress.
+  // Empty-DB deployments complete near-instantly (processDirtyPages skips the
+  // batch loop when nothing is dirty); populated DBs need the upstream
+  // embedding endpoint to be reachable.
+  test('admin can trigger reembed-all and the worker completes within 60s', async ({
+    page,
+  }) => {
+    const headers = await page.evaluate(() => {
+      const raw = localStorage.getItem('compendiq-auth');
+      if (!raw) return {};
+      const token = (JSON.parse(raw) as { state: { accessToken: string } }).state.accessToken;
+      return { authorization: `Bearer ${token}` };
+    });
+
+    const enqueue = await page.request.post('/api/admin/embedding/reembed', {
+      headers: { ...headers, 'content-type': 'application/json' },
+      data: {},
+    });
+    expect(enqueue.ok()).toBe(true);
+    const body = await enqueue.json();
+    expect(body.jobId).toBe('reembed-all');
+
+    // Poll GET until state transitions to completed (or fail hard after 60s).
+    const deadline = Date.now() + 60_000;
+    let lastState = 'unknown';
+    while (Date.now() < deadline) {
+      const poll = await page.request.get(`/api/admin/embedding/reembed/${body.jobId}`, {
+        headers,
+      });
+      expect(poll.ok()).toBe(true);
+      const status = await poll.json();
+      lastState = status.state ?? 'unknown';
+      if (lastState === 'completed') return;
+      if (lastState === 'failed') {
+        throw new Error(`reembed-all failed: ${status.failedReason ?? 'unknown'}`);
+      }
+      await new Promise((r) => setTimeout(r, 1_000));
+    }
+    throw new Error(`reembed-all did not complete within 60s (last state: ${lastState})`);
+  });
 });
