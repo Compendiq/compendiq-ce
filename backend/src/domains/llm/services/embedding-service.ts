@@ -6,7 +6,6 @@ import { logger } from '../../../core/utils/logger.js';
 import { invalidateGraphCache, acquireEmbeddingLock, releaseEmbeddingLock, isEmbeddingLocked, getRedisClient } from '../../../core/services/redis-cache.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { CircuitBreakerOpenError, ollamaBreakers, openaiBreakers } from '../../../core/services/circuit-breaker.js';
-import { getSharedLlmSettings } from '../../../core/services/admin-settings-service.js';
 import pgvector from 'pgvector';
 
 const CHUNK_SIZE = 500;          // ~500 tokens target
@@ -829,7 +828,7 @@ export async function computePageRelationships(changedPageIds?: number[]): Promi
  */
 export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatus> {
   const statusSpaces = await getUserAccessibleSpaces(userId);
-  const [totalResult, dirtyResult, embeddingResult, embeddedPagesResult, isProcessing, sharedSettings, lastRunAt] = await Promise.all([
+  const [totalResult, dirtyResult, embeddingResult, embeddedPagesResult, isProcessing, resolvedEmbedding, lastRunAt] = await Promise.all([
     query<{ count: string }>(
       `SELECT COUNT(*) as count FROM pages cp
        WHERE cp.space_key = ANY($1::text[])
@@ -857,7 +856,7 @@ export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatu
       [statusSpaces],
     ),
     isEmbeddingLocked(userId),
-    getSharedLlmSettings(),
+    resolveUsecase('embedding').catch(() => null),
     getLastEmbeddingRunAt(),
   ]);
 
@@ -876,7 +875,7 @@ export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatu
     totalEmbeddings: parseInt(embeddingRow.count, 10),
     isProcessing,
     lastRunAt: lastRunAt ? lastRunAt.toISOString() : null,
-    model: sharedSettings.embeddingModel,
+    model: resolvedEmbedding?.model ?? '',
   };
 }
 

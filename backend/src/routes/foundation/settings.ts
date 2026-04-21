@@ -10,7 +10,6 @@ import { getUserAccessibleSpaces, invalidateRbacCache } from '../../core/service
 import { getSyncOverview } from '../../domains/confluence/services/sync-overview-service.js';
 import { logger } from '../../core/utils/logger.js';
 import { confluenceDispatcher } from '../../core/utils/tls-config.js';
-import { getSharedLlmSettings } from '../../core/services/admin-settings-service.js';
 import { getAiGuardrails, getAiOutputRules } from '../../core/services/ai-safety-service.js';
 
 export async function settingsRoutes(fastify: FastifyInstance) {
@@ -30,8 +29,6 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       'SELECT confluence_url, confluence_pat, theme, sync_interval_min, show_space_home_content, custom_prompts FROM user_settings WHERE user_id = $1',
       [request.userId],
     );
-    const sharedLlmSettings = await getSharedLlmSettings();
-
     // Fetch accessible spaces from RBAC
     const selectedSpaces = await getUserAccessibleSpaces(request.userId);
     selectedSpaces.sort();
@@ -43,12 +40,6 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         confluenceUrl: null,
         hasConfluencePat: false,
         selectedSpaces,
-        ollamaModel: sharedLlmSettings.ollamaModel,
-        llmProvider: sharedLlmSettings.llmProvider,
-        openaiBaseUrl: sharedLlmSettings.openaiBaseUrl,
-        hasOpenaiApiKey: sharedLlmSettings.hasOpenaiApiKey,
-        openaiModel: sharedLlmSettings.openaiModel,
-        embeddingModel: sharedLlmSettings.embeddingModel,
         theme: 'glass-dark',
         syncIntervalMin: 15,
         confluenceConnected: false,
@@ -62,12 +53,6 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       confluenceUrl: row.confluence_url,
       hasConfluencePat: !!row.confluence_pat,
       selectedSpaces,
-      ollamaModel: sharedLlmSettings.ollamaModel,
-      llmProvider: sharedLlmSettings.llmProvider,
-      openaiBaseUrl: sharedLlmSettings.openaiBaseUrl,
-      hasOpenaiApiKey: sharedLlmSettings.hasOpenaiApiKey,
-      openaiModel: sharedLlmSettings.openaiModel,
-      embeddingModel: sharedLlmSettings.embeddingModel,
       theme: row.theme,
       syncIntervalMin: row.sync_interval_min,
       confluenceConnected: !!(row.confluence_url && row.confluence_pat),
