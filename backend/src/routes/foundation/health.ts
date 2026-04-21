@@ -1,11 +1,14 @@
 import { FastifyInstance } from 'fastify';
-import { checkConnection as checkPg } from '../../core/db/postgres.js';
+import { checkConnection as checkPg, query } from '../../core/db/postgres.js';
 import { checkRedisConnection } from '../../core/plugins/redis.js';
 import { getOllamaCircuitBreakerStatus, getOpenaiCircuitBreakerStatus } from '../../core/services/circuit-breaker.js';
-import { getProvider } from '../../domains/llm/services/ollama-service.js';
+import {
+  checkHealth as providerCheckHealth,
+  type ProviderConfig,
+} from '../../domains/llm/services/openai-compatible-client.js';
+import { decryptPat } from '../../core/utils/crypto.js';
 import { logger } from '../../core/utils/logger.js';
 import { getMetrics as getLlmQueueMetrics } from '../../domains/llm/services/llm-queue.js';
-import { getSharedLlmSettings } from '../../core/services/admin-settings-service.js';
 import { APP_VERSION, APP_BUILD_INFO } from '../../core/utils/version.js';
 import { getQueueMetrics, isBullMQEnabled } from '../../core/services/queue-service.js';
 
@@ -16,20 +19,42 @@ export function markStartupComplete(): void {
   startupComplete = true;
 }
 
-/** Check LLM connectivity using the active provider's health check. */
-async function checkLlm(): Promise<boolean> {
+/**
+ * Check LLM connectivity against the default provider configured in
+ * `llm_providers` (if any). Returns false if no default provider is set.
+ */
+async function checkLlm(): Promise<{ connected: boolean; providerName: string | null }> {
   try {
-    const sharedLlmSettings = await getSharedLlmSettings();
+    const row = await query<{
+      name: string; base_url: string; api_key: string | null;
+      auth_type: 'bearer' | 'none'; verify_ssl: boolean;
+    }>(
+      `SELECT id, name, base_url, api_key, auth_type, verify_ssl
+       FROM llm_providers WHERE is_default = TRUE LIMIT 1`,
+    );
+    const p = row.rows[0];
+    if (!p) return { connected: false, providerName: null };
+
+    let apiKey: string | null = null;
+    try { apiKey = p.api_key ? decryptPat(p.api_key) : null; } catch { /* treat as no key */ }
+    const cfg: ProviderConfig = {
+      providerId: 'health-probe',
+      baseUrl: p.base_url,
+      apiKey,
+      authType: p.auth_type,
+      verifySsl: p.verify_ssl,
+    };
+
     const result = await Promise.race([
-      getProvider(sharedLlmSettings.llmProvider).checkHealth(),
+      providerCheckHealth(cfg),
       new Promise<never>((_resolve, reject) =>
         setTimeout(() => reject(new Error('LLM health check timed out')), 5000),
       ),
     ]);
-    return result.connected;
+    return { connected: result.connected, providerName: p.name };
   } catch {
     logger.debug('LLM health check failed');
-    return false;
+    return { connected: false, providerName: null };
   }
 }
 
@@ -79,8 +104,7 @@ export async function healthRoutes(fastify: FastifyInstance) {
   // Checks migrations ran + LLM provider reachable.
   // Used by k8s startup probe.
   fastify.get('/health/start', async (_request, reply) => {
-    const sharedLlmSettings = await getSharedLlmSettings();
-    const [postgres, llmReady] = await Promise.all([
+    const [postgres, llmStatus] = await Promise.all([
       checkPg(),
       checkLlm(),
     ]);
@@ -92,8 +116,8 @@ export async function healthRoutes(fastify: FastifyInstance) {
       checks: {
         startupComplete,
         postgres,
-        llmAvailable: llmReady,
-        llmProvider: sharedLlmSettings.llmProvider,
+        llmAvailable: llmStatus.connected,
+        llmProvider: llmStatus.providerName,
       },
       version: APP_VERSION,
       edition: APP_BUILD_INFO.edition,
@@ -106,8 +130,7 @@ export async function healthRoutes(fastify: FastifyInstance) {
   // Also includes LLM status for full picture.
   fastify.get('/health', async (_request, reply) => {
     try {
-      const [sharedLlmSettings, postgres, redis, llm] = await Promise.all([
-        getSharedLlmSettings(),
+      const [postgres, redis, llmStatus] = await Promise.all([
         checkPg(),
         checkRedisConnection(fastify.redis),
         checkLlm(),
@@ -120,8 +143,8 @@ export async function healthRoutes(fastify: FastifyInstance) {
 
       reply.status(allHealthy ? 200 : 503).send({
         status,
-        services: { postgres, redis, llm },
-        llmProvider: sharedLlmSettings.llmProvider,
+        services: { postgres, redis, llm: llmStatus.connected },
+        llmProvider: llmStatus.providerName,
         circuitBreakers: {
           ollama: getOllamaCircuitBreakerStatus(),
           openai: getOpenaiCircuitBreakerStatus(),

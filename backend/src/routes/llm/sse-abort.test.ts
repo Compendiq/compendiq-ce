@@ -1,12 +1,32 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
 
-// Mock ollama-service before any imports
-vi.mock('../../domains/llm/services/ollama-service.js', () => ({
+// Mock the openai-compatible client's streamChat — that's what the routes call.
+vi.mock('../../domains/llm/services/openai-compatible-client.js', () => ({
   streamChat: vi.fn(),
-  getSystemPrompt: vi.fn().mockReturnValue('System prompt'),
+  chat: vi.fn(),
+  generateEmbedding: vi.fn(),
   listModels: vi.fn().mockResolvedValue([]),
   checkHealth: vi.fn().mockResolvedValue({ connected: true }),
+  invalidateDispatcher: vi.fn(),
+}));
+
+// Mock prompts module (was part of ollama-service) so routes compile.
+vi.mock('../../domains/llm/services/prompts.js', () => ({
+  getSystemPrompt: vi.fn().mockReturnValue('System prompt'),
+  LANGUAGE_PRESERVATION_INSTRUCTION: '',
+}));
+
+// Mock the use-case resolver.
+vi.mock('../../domains/llm/services/llm-provider-resolver.js', () => ({
+  resolveUsecase: vi.fn().mockResolvedValue({
+    config: {
+      providerId: 'p1', id: 'p1', name: 'X',
+      baseUrl: 'http://x/v1', apiKey: null,
+      authType: 'none', verifySsl: true, defaultModel: 'm',
+    },
+    model: 'm',
+  }),
 }));
 
 vi.mock('../../domains/llm/services/rag-service.js', () => ({
@@ -28,7 +48,7 @@ vi.mock('../../core/services/content-converter.js', () => ({
   markdownToHtml: vi.fn().mockImplementation((s: string) => s),
 }));
 
-import { streamChat } from '../../domains/llm/services/ollama-service.js';
+import { streamChat } from '../../domains/llm/services/openai-compatible-client.js';
 
 describe('SSE abort on client disconnect', () => {
   beforeEach(() => {
@@ -51,7 +71,11 @@ describe('SSE abort on client disconnect', () => {
     }
 
     mockStreamChat.mockReturnValue(mockGenerator());
-    const result = streamChat('model', [{ role: 'user', content: 'test' }], signal);
+    const cfg = {
+      providerId: 'p1', baseUrl: 'http://x/v1', apiKey: null,
+      authType: 'none' as const, verifySsl: true,
+    };
+    const result = streamChat(cfg, 'model', [{ role: 'user', content: 'test' }], signal);
     expect(result).toBeDefined();
   });
 

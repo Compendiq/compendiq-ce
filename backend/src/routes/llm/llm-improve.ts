@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
-import { SystemPromptKey } from '../../domains/llm/services/ollama-service.js';
+import { SystemPromptKey } from '../../domains/llm/services/prompts.js';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
 import { streamChat } from '../../domains/llm/services/openai-compatible-client.js';
 import { LlmCache, buildLlmCacheKey } from '../../domains/llm/services/llm-cache.js';

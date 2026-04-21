@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
-import { ChatMessage } from '../../domains/llm/services/ollama-service.js';
+import { ChatMessage } from '../../domains/llm/services/prompts.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { ApplyImprovementRequestSchema } from '@compendiq/contracts';
 import { confluenceToHtml, htmlToConfluence, htmlToText, markdownToHtml } from '../../core/services/content-converter.js';

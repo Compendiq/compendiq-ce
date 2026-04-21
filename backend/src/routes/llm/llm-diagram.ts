@@ -1,5 +1,5 @@
 import { FastifyInstance } from 'fastify';
-import { getSystemPrompt, SystemPromptKey } from '../../domains/llm/services/ollama-service.js';
+import { getSystemPrompt, SystemPromptKey } from '../../domains/llm/services/prompts.js';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
 import { streamChat } from '../../domains/llm/services/openai-compatible-client.js';
 import { htmlToMarkdown } from '../../core/services/content-converter.js';

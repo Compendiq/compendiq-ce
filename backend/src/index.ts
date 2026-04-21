@@ -8,8 +8,6 @@ import { addAllowedBaseUrl } from './core/utils/ssrf-guard.js';
 import { startQueueWorkers, stopQueueWorkers } from './core/services/queue-service.js';
 import { markStartupComplete } from './routes/foundation/health.js';
 import { logger } from './core/utils/logger.js';
-import { getSharedLlmSettings } from './core/services/admin-settings-service.js';
-import { setActiveProvider } from './domains/llm/services/ollama-service.js';
 import { initLlmQueue } from './domains/llm/services/llm-queue.js';
 import { initRateLimiter } from './domains/confluence/services/confluence-rate-limiter.js';
 import { initEmailService, closeEmailService } from './core/services/email-service.js';
@@ -55,8 +53,8 @@ async function start() {
     logger.warn({ err }, 'Failed to pre-register Confluence URLs in SSRF allowlist');
   }
 
-  const sharedLlmSettings = await getSharedLlmSettings();
-  setActiveProvider(sharedLlmSettings.llmProvider);
+  // Legacy single-provider setup (`LLM_PROVIDER`) removed — providers are
+  // now registered in `llm_providers` and selected per use-case.
   await initLlmQueue();
   await initRateLimiter();
   await initEmailService();

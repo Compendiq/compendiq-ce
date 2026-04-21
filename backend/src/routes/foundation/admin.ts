@@ -15,7 +15,6 @@ import {
 import { getAiGuardrails, getAiOutputRules, upsertAiGuardrails, upsertAiOutputRules } from '../../core/services/ai-safety-service.js';
 import { getRateLimits, upsertRateLimits } from '../../core/services/rate-limit-service.js';
 import { sanitizeLlmInput } from '../../core/utils/sanitize-llm-input.js';
-import { setActiveProvider } from '../../domains/llm/services/ollama-service.js';
 import { ALLOWED_FTS_LANGUAGES } from '../../core/services/fts-language.js';
 import { getSmtpConfig, updateSmtpConfig, sendTestEmail } from '../../core/services/email-service.js';
 
@@ -384,9 +383,9 @@ export async function adminRoutes(fastify: FastifyInstance) {
       );
     }
 
-    if (body.llmProvider !== undefined) {
-      setActiveProvider(body.llmProvider);
-    }
+    // (Legacy `llmProvider` setting no longer drives runtime provider selection.
+    // Providers are now chosen per use-case via llm_usecase_assignments; see
+    // Settings → LLM → Use case assignments.)
 
     // AI Safety settings
     const hasAiGuardrailChanges =

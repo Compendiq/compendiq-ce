@@ -9,7 +9,8 @@ import {
   hybridSearch,
   recordSearchAnalytics,
 } from '../../domains/llm/services/rag-service.js';
-import { providerGenerateEmbedding } from '../../domains/llm/services/llm-provider.js';
+import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
+import { generateEmbedding } from '../../domains/llm/services/openai-compatible-client.js';
 import { logger } from '../../core/utils/logger.js';
 
 /**
@@ -54,7 +55,8 @@ async function generateSearchEmbedding(
   reply: import('fastify').FastifyReply,
 ): Promise<number[] | null> {
   try {
-    const embeddings = await providerGenerateEmbedding(userId, q);
+    const { config, model } = await resolveUsecase('embedding');
+    const embeddings = await generateEmbedding(config, model, q);
     return embeddings[0] ?? null;
   } catch (err) {
     logger.warn({ err }, `Embedding generation failed for ${modeName} search`);

@@ -6,7 +6,7 @@ import { sanitizeLlmInput } from '../../core/utils/sanitize-llm-input.js';
 import {
   getSystemPrompt, SystemPromptKey,
   LANGUAGE_PRESERVATION_INSTRUCTION,
-} from '../../domains/llm/services/ollama-service.js';
+} from '../../domains/llm/services/prompts.js';
 import { LlmCache, type CachedLlmResponse } from '../../domains/llm/services/llm-cache.js';
 import { getAiGuardrails, getAiOutputRules } from '../../core/services/ai-safety-service.js';
 import { sanitizeLlmOutput, type OutputSanitizeResult } from '../../core/utils/sanitize-llm-output.js';

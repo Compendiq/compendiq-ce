@@ -2,16 +2,12 @@ import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vites
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 
-// Mock ollama-service (getSystemPrompt still comes from here)
+// Mock prompts module (getSystemPrompt extracted from the legacy ollama-service)
 const mockGetSystemPrompt = vi.fn().mockReturnValue('You are a diagram assistant');
 
-vi.mock('../../domains/llm/services/ollama-service.js', () => ({
-  listModels: vi.fn(),
-  checkHealth: vi.fn(),
-  streamChat: vi.fn(),
-  chat: vi.fn(),
+vi.mock('../../domains/llm/services/prompts.js', () => ({
   getSystemPrompt: (...args: unknown[]) => mockGetSystemPrompt(...args),
-  generateEmbedding: vi.fn(),
+  LANGUAGE_PRESERVATION_INSTRUCTION: '',
 }));
 
 // Mock llm-provider-resolver (resolveUsecase)

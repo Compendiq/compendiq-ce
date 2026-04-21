@@ -324,7 +324,7 @@ describe('POST /api/llm/ask - SSE streaming', () => {
       },
     ];
     mockHybridSearch.mockResolvedValue(fakeResults);
-    mockProviderStreamChat.mockReturnValue(singleChunkGenerator('Docker is a container platform.'));
+    mockStreamChatClient.mockReturnValue(singleChunkGenerator('Docker is a container platform.'));
 
     const response = await app.inject({
       method: 'POST',
@@ -368,7 +368,7 @@ describe('POST /api/llm/ask - SSE streaming', () => {
 
   it('should create a new conversation when conversationId is not provided', async () => {
     mockHybridSearch.mockResolvedValue([]);
-    mockProviderStreamChat.mockReturnValue(singleChunkGenerator('No relevant context found.'));
+    mockStreamChatClient.mockReturnValue(singleChunkGenerator('No relevant context found.'));
 
     const response = await app.inject({
       method: 'POST',

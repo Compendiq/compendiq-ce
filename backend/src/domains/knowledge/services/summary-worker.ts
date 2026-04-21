@@ -29,7 +29,7 @@
 
 import crypto from 'node:crypto';
 import { query } from '../../../core/db/postgres.js';
-import { getSystemPrompt } from '../../llm/services/ollama-service.js';
+import { getSystemPrompt } from '../../llm/services/prompts.js';
 import { resolveUsecase } from '../../llm/services/llm-provider-resolver.js';
 import {
   streamChat,
