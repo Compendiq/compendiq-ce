@@ -443,6 +443,23 @@ export async function isProcessingUser(userId: string): Promise<boolean> {
 }
 
 /**
+ * Options for {@link processDirtyPages}.
+ */
+export interface ProcessDirtyPagesOpts {
+  /**
+   * When set, the caller has already acquired `embedding:lock:${userId}` and
+   * owns its lifecycle. In that case this function must NOT attempt a second
+   * `acquireEmbeddingLock(userId)` (Redis SET NX EX would fail because the
+   * key is held — see issue #257 / #261: `runReembedAllJob` acquires the
+   * `__reembed_all__` lock before calling this function; without this flag,
+   * the inner acquire short-circuits and every eligible page stays dirty),
+   * and must NOT release the lock in the `finally` — the outer caller keeps
+   * ownership and releases after post-embed hooks complete.
+   */
+  lockAlreadyHeld?: boolean;
+}
+
+/**
  * Process all dirty pages in batches with circuit breaker resilience.
  *
  * Pages are fetched in batches of DIRTY_PAGE_BATCH_SIZE using LIMIT/OFFSET.
@@ -456,11 +473,25 @@ export async function isProcessingUser(userId: string): Promise<boolean> {
 export async function processDirtyPages(
   userId: string,
   onProgress?: (event: EmbeddingProgressEvent) => void,
+  opts: ProcessDirtyPagesOpts = {},
 ): Promise<{ processed: number; errors: number; alreadyProcessing?: boolean }> {
-  const lockId = await acquireEmbeddingLock(userId);
-  if (!lockId) {
-    logger.warn({ userId }, 'Embedding processing already in progress for user');
-    return { processed: 0, errors: 0, alreadyProcessing: true };
+  // When the caller already holds the lock (e.g. runReembedAllJob for the
+  // `__reembed_all__` system lock), skip re-acquire / release. The inner
+  // SET NX EX would fail and we'd short-circuit without doing any work.
+  // In that case, snapshot the already-stored lockId from Redis so the
+  // holder-epoch guard (plan §2.10) can still detect a force-release or
+  // re-acquire, and skip `releaseEmbeddingLock` in the `finally` block so
+  // the outer caller keeps ownership.
+  let lockId: string | null;
+  if (opts.lockAlreadyHeld) {
+    const redis = getRedisClient();
+    lockId = redis ? await redis.get(`embedding:lock:${userId}`) : null;
+  } else {
+    lockId = await acquireEmbeddingLock(userId);
+    if (!lockId) {
+      logger.warn({ userId }, 'Embedding processing already in progress for user');
+      return { processed: 0, errors: 0, alreadyProcessing: true };
+    }
   }
 
   await setLastEmbeddingRunAt(new Date());
@@ -762,7 +793,13 @@ export async function processDirtyPages(
       });
     }
   } finally {
-    await releaseEmbeddingLock(userId, lockId);
+    // Only release when we acquired the lock ourselves. When
+    // `opts.lockAlreadyHeld` is set, the outer caller (e.g.
+    // `runReembedAllJob`) owns the lock's lifecycle and will release after
+    // post-embed hooks complete.
+    if (!opts.lockAlreadyHeld && lockId) {
+      await releaseEmbeddingLock(userId, lockId);
+    }
   }
 
   // Post-embed hook: recompute nearest-neighbor relationships (incremental)
@@ -1138,16 +1175,24 @@ export async function runReembedAllJob(job: Job): Promise<string> {
 
     let processed = 0;
     let failed = 0;
-    await processDirtyPages(REEMBED_ALL_LOCK_USER, (evt) => {
-      if (evt.type === 'progress') {
-        processed = evt.completed;
-        failed = evt.failed;
-        // Throttle: every 100 (processed + failed) pages, or on 100%.
-        if ((processed + failed) % 100 === 0 || evt.percentage === 100) {
-          void job.updateProgress({ total, processed, failed, phase: 'embedding' });
+    // `lockAlreadyHeld: true` — we already own the `__reembed_all__` lock
+    // above. Without this, `processDirtyPages`'s inner `acquireEmbeddingLock`
+    // would SET NX against the held key, fail, and short-circuit with
+    // `alreadyProcessing: true`, marking every page dirty but embedding none.
+    await processDirtyPages(
+      REEMBED_ALL_LOCK_USER,
+      (evt) => {
+        if (evt.type === 'progress') {
+          processed = evt.completed;
+          failed = evt.failed;
+          // Throttle: every 100 (processed + failed) pages, or on 100%.
+          if ((processed + failed) % 100 === 0 || evt.percentage === 100) {
+            void job.updateProgress({ total, processed, failed, phase: 'embedding' });
+          }
         }
-      }
-    });
+      },
+      { lockAlreadyHeld: true },
+    );
 
     await job.updateProgress({ total, processed, failed, phase: 'complete' });
     return `processed=${processed} failed=${failed} total=${total}`;
