@@ -14,6 +14,7 @@ const validReadPayload = {
   embeddingChunkOverlap: 50,
   drawioEmbedUrl: null,
   reembedHistoryRetention: 150,
+  adminAccessDeniedRetentionDays: 90,
 } as const;
 
 describe('AdminSettingsSchema (read)', () => {
@@ -132,6 +133,83 @@ describe('reembedHistoryRetention (issue #257)', () => {
     it('rejects values above 10000', () => {
       expect(() =>
         UpdateAdminSettingsSchema.parse({ reembedHistoryRetention: 20_000 }),
+      ).toThrow();
+    });
+  });
+});
+
+// ─── #264 — adminAccessDeniedRetentionDays validation ────────────────────
+describe('adminAccessDeniedRetentionDays (issue #264)', () => {
+  describe('read schema', () => {
+    it('accepts a valid integer within [7, 3650]', () => {
+      const parsed = AdminSettingsSchema.parse({
+        ...validReadPayload,
+        adminAccessDeniedRetentionDays: 30,
+      });
+      expect(parsed.adminAccessDeniedRetentionDays).toBe(30);
+    });
+
+    it('accepts boundary values — 7 and 3650', () => {
+      expect(
+        AdminSettingsSchema.parse({ ...validReadPayload, adminAccessDeniedRetentionDays: 7 })
+          .adminAccessDeniedRetentionDays,
+      ).toBe(7);
+      expect(
+        AdminSettingsSchema.parse({ ...validReadPayload, adminAccessDeniedRetentionDays: 3650 })
+          .adminAccessDeniedRetentionDays,
+      ).toBe(3650);
+    });
+
+    it('rejects values below 7', () => {
+      expect(() =>
+        AdminSettingsSchema.parse({ ...validReadPayload, adminAccessDeniedRetentionDays: 6 }),
+      ).toThrow();
+    });
+
+    it('rejects values above 3650', () => {
+      expect(() =>
+        AdminSettingsSchema.parse({ ...validReadPayload, adminAccessDeniedRetentionDays: 3651 }),
+      ).toThrow();
+    });
+
+    it('rejects non-integer values', () => {
+      expect(() =>
+        AdminSettingsSchema.parse({ ...validReadPayload, adminAccessDeniedRetentionDays: 30.5 }),
+      ).toThrow();
+    });
+
+    it('requires the field to be present (not optional on read)', () => {
+      const { adminAccessDeniedRetentionDays: _d, ...withoutField } = validReadPayload;
+      expect(() => AdminSettingsSchema.parse(withoutField)).toThrow();
+    });
+  });
+
+  describe('update schema', () => {
+    it('accepts a valid integer within [7, 3650]', () => {
+      const parsed = UpdateAdminSettingsSchema.parse({ adminAccessDeniedRetentionDays: 45 });
+      expect(parsed.adminAccessDeniedRetentionDays).toBe(45);
+    });
+
+    it('treats omitted field as undefined (leave unchanged)', () => {
+      const parsed = UpdateAdminSettingsSchema.parse({});
+      expect(parsed.adminAccessDeniedRetentionDays).toBeUndefined();
+    });
+
+    it('rejects values below 7', () => {
+      expect(() =>
+        UpdateAdminSettingsSchema.parse({ adminAccessDeniedRetentionDays: 6 }),
+      ).toThrow();
+    });
+
+    it('rejects values above 3650', () => {
+      expect(() =>
+        UpdateAdminSettingsSchema.parse({ adminAccessDeniedRetentionDays: 3651 }),
+      ).toThrow();
+    });
+
+    it('rejects non-integer values', () => {
+      expect(() =>
+        UpdateAdminSettingsSchema.parse({ adminAccessDeniedRetentionDays: 30.5 }),
       ).toThrow();
     });
   });

@@ -39,3 +39,40 @@ export async function getReembedHistoryRetention(): Promise<number> {
   if (!Number.isFinite(n)) return 150;
   return Math.max(10, Math.min(10_000, n));
 }
+
+/**
+ * Issue #264 — returns the configured retention window (days) for
+ * `audit_log` rows with action='ADMIN_ACCESS_DENIED'. Consumed by the
+ * targeted purge in `data-retention-service.ts ::
+ * runAdminAccessDeniedRetention`. Also consumed by the admin GET/PUT
+ * `/api/admin/settings` surface.
+ *
+ * Read cascade:
+ *   admin_settings.admin_access_denied_retention_days  (authoritative)
+ *     -> env RETENTION_ADMIN_ACCESS_DENIED_DAYS        (optional fallback)
+ *     -> 90                                            (hard default)
+ *
+ * Clamped to [7, 3650]. No caching — the retention scheduler runs once
+ * per 24 h, so a per-tick DB read is negligible and keeps the code
+ * simple (no cache invalidation on PUT).
+ */
+export async function getAdminAccessDeniedRetentionDays(): Promise<number> {
+  try {
+    const r = await query<{ setting_value: string }>(
+      `SELECT setting_value FROM admin_settings WHERE setting_key='admin_access_denied_retention_days'`,
+    );
+    const raw = r.rows[0]?.setting_value;
+    if (raw) {
+      const n = parseInt(raw, 10);
+      if (Number.isFinite(n) && n >= 7 && n <= 3650) return n;
+    }
+  } catch {
+    // Fall through to env / default — this getter must never throw.
+  }
+  const env = process.env.RETENTION_ADMIN_ACCESS_DENIED_DAYS;
+  if (env) {
+    const n = parseInt(env, 10);
+    if (Number.isFinite(n) && n >= 7 && n <= 3650) return n;
+  }
+  return 90;
+}

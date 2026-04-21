@@ -6,7 +6,10 @@ import { getAuditLog, logAuditEvent } from '../../core/services/audit-service.js
 import { listErrors, resolveError, getErrorSummary } from '../../core/services/error-tracker.js';
 import { logger } from '../../core/utils/logger.js';
 import { UpdateAdminSettingsSchema } from '@compendiq/contracts';
-import { getEmbeddingDimensions } from '../../core/services/admin-settings-service.js';
+import {
+  getEmbeddingDimensions,
+  getAdminAccessDeniedRetentionDays,
+} from '../../core/services/admin-settings-service.js';
 import { getAiGuardrails, getAiOutputRules, upsertAiGuardrails, upsertAiOutputRules } from '../../core/services/ai-safety-service.js';
 import { getRateLimits, upsertRateLimits } from '../../core/services/rate-limit-service.js';
 import { getStreamCap, invalidateStreamCapCache } from '../../core/services/sse-stream-limiter.js';
@@ -227,12 +230,20 @@ export async function adminRoutes(fastify: FastifyInstance) {
 
   // GET /api/admin/settings - retrieve shared admin settings
   fastify.get('/admin/settings', ADMIN_RATE_LIMIT, async () => {
-    const [embeddingDimensions, guardrails, outputRules, rateLimits, llmMaxConcurrentStreamsPerUser] = await Promise.all([
+    const [
+      embeddingDimensions,
+      guardrails,
+      outputRules,
+      rateLimits,
+      llmMaxConcurrentStreamsPerUser,
+      adminAccessDeniedRetentionDays,
+    ] = await Promise.all([
       getEmbeddingDimensions(),
       getAiGuardrails(),
       getAiOutputRules(),
       getRateLimits(),
       getStreamCap(),
+      getAdminAccessDeniedRetentionDays(),
     ]);
     const result = await query<{ setting_key: string; setting_value: string }>(
       `SELECT setting_key, setting_value FROM admin_settings
@@ -252,6 +263,10 @@ export async function adminRoutes(fastify: FastifyInstance) {
       drawioEmbedUrl: map['drawio_embed_url'] ?? null,
       // Issue #257 — re-embed-all job history retention (default 150, [10, 10000]).
       reembedHistoryRetention: parseInt(map['reembed_history_retention'] ?? '150', 10),
+      // Issue #264 — retention for ADMIN_ACCESS_DENIED audit rows
+      // (default 90, [7, 3650]). Resolved via getter so the env fallback
+      // + hard default cascade stay in one place.
+      adminAccessDeniedRetentionDays,
       // AI Safety
       aiGuardrailNoFabrication: guardrails.noFabricationInstruction,
       aiGuardrailNoFabricationEnabled: guardrails.noFabricationEnabled,
@@ -359,6 +374,15 @@ export async function adminRoutes(fastify: FastifyInstance) {
       updates.push({
         key: 'reembed_history_retention',
         value: String(body.reembedHistoryRetention),
+      });
+    }
+
+    // Issue #264 — retention (days) for ADMIN_ACCESS_DENIED audit rows.
+    // Zod already enforced the [7, 3650] integer range at the boundary.
+    if (body.adminAccessDeniedRetentionDays !== undefined) {
+      updates.push({
+        key: 'admin_access_denied_retention_days',
+        value: String(body.adminAccessDeniedRetentionDays),
       });
     }
 

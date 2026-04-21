@@ -3,8 +3,9 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { m } from 'framer-motion';
 import { toast } from 'sonner';
 import {
-  Database, Loader2, Save, AlertTriangle, Trash2, Eye,
+  Database, Loader2, Save, AlertTriangle, Trash2, Eye, ShieldAlert,
 } from 'lucide-react';
+import type { AdminSettings } from '@compendiq/contracts';
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
@@ -36,6 +37,97 @@ function useRetentionPolicy() {
     queryFn: () => apiFetch('/admin/data-retention'),
     staleTime: 30_000,
   });
+}
+
+// ── CE-native: ADMIN_ACCESS_DENIED retention (#264) ────────────────────────
+//
+// This section is rendered in BOTH CE and EE — the Enterprise-gated
+// policy-matrix sits below the feature-gate, but the targeted retention
+// window for denial-audit rows is a CE-level safety control (a single admin
+// setting under `admin_settings.admin_access_denied_retention_days` +
+// `data-retention-service` sweep). Lives here because semantically it is a
+// data-retention knob; matches the plan's file pointer.
+
+function AdminAccessDeniedRetentionSection() {
+  const queryClient = useQueryClient();
+  const { data: settings, isLoading } = useQuery({
+    queryKey: ['admin-settings'],
+    queryFn: () => apiFetch<AdminSettings>('/admin/settings'),
+  });
+
+  const [draft, setDraft] = useState<number | undefined>(undefined);
+
+  const serverValue = settings?.adminAccessDeniedRetentionDays ?? 90;
+  const effective = draft ?? serverValue;
+  const hasChange = draft !== undefined && draft !== serverValue;
+
+  const save = useMutation({
+    mutationFn: (value: number) =>
+      apiFetch('/admin/settings', {
+        method: 'PUT',
+        body: JSON.stringify({ adminAccessDeniedRetentionDays: value }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
+      setDraft(undefined);
+      toast.success('Denied-admin retention updated');
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  if (isLoading) {
+    return (
+      <div className="glass-card p-4" data-testid="denied-admin-retention-loading">
+        <div className="h-10 animate-pulse rounded bg-foreground/5" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="glass-card p-4" data-testid="denied-admin-retention-section">
+      <div className="flex items-start gap-3">
+        <ShieldAlert size={18} className="mt-0.5 shrink-0 text-muted-foreground" />
+        <div className="flex-1">
+          <label
+            htmlFor="admin-denied-retention-input"
+            className="block text-sm font-medium"
+          >
+            Admin access-denied audit retention (days)
+          </label>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Automated purge of <code className="rounded bg-foreground/10 px-1">audit_log</code>{' '}
+            rows recorded when non-admins attempted admin endpoints
+            (action = <code className="rounded bg-foreground/10 px-1">ADMIN_ACCESS_DENIED</code>).
+            Default 90 days. Applies only to these rows; other audit events
+            retain their own retention.
+          </p>
+          <div className="mt-3 flex items-center gap-2">
+            <input
+              id="admin-denied-retention-input"
+              type="number"
+              min={7}
+              max={3650}
+              step={1}
+              value={effective}
+              onChange={(e) => setDraft(Number(e.target.value))}
+              className="w-28 rounded-md bg-foreground/5 px-2 py-1 text-sm outline-none focus:ring-1 focus:ring-primary"
+              data-testid="admin-denied-retention-input"
+            />
+            <button
+              type="button"
+              onClick={() => draft !== undefined && save.mutate(draft)}
+              disabled={!hasChange || save.isPending}
+              className="flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              data-testid="admin-denied-retention-save-btn"
+            >
+              {save.isPending ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+              Save
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ── Component ──────────────────────────────────────────────────────────────────
@@ -102,20 +194,26 @@ export function DataRetentionTab() {
 
   if (!featureEnabled) {
     return (
-      <div className="space-y-6" data-testid="data-retention-gated">
-        <m.div
-          initial={{ opacity: 0, y: -8 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="flex items-start gap-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-4"
-        >
-          <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-500" />
-          <div>
-            <div className="text-sm font-medium text-amber-200">Enterprise Feature</div>
-            <div className="mt-1 text-xs text-muted-foreground">
-              Data retention policies require an enterprise license with the Data Retention feature enabled.
+      <div className="space-y-6">
+        {/* #264 — denied-admin retention is a CE-level control and renders
+            irrespective of the Enterprise feature gate below. */}
+        <AdminAccessDeniedRetentionSection />
+        <div data-testid="data-retention-gated">
+          <m.div
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="flex items-start gap-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-4"
+          >
+            <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-500" />
+            <div>
+              <div className="text-sm font-medium text-amber-200">Enterprise Feature</div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                Extended multi-table retention policies, preview, and on-demand purge
+                require an enterprise license with the Data Retention feature enabled.
+              </div>
             </div>
-          </div>
-        </m.div>
+          </m.div>
+        </div>
       </div>
     );
   }
@@ -132,6 +230,11 @@ export function DataRetentionTab() {
 
   return (
     <div className="space-y-6" data-testid="data-retention-form">
+      {/* #264 — CE-native denied-admin retention control. Rendered first so
+          the setting is consistent across CE and EE — the EE matrix below
+          covers different tables + policy-matrix features. */}
+      <AdminAccessDeniedRetentionSection />
+
       {/* Header */}
       <div>
         <h2 className="flex items-center gap-2 text-lg font-semibold">
