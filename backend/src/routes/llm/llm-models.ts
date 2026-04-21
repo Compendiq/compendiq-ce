@@ -11,24 +11,6 @@ import { decryptPat } from '../../core/utils/crypto.js';
 import { listProviderBreakers } from '../../core/services/circuit-breaker.js';
 import { logger } from '../../core/utils/logger.js';
 
-// ─── Deprecation header constants — single source of truth (issue #266) ────
-//
-// The /api/ollama/circuit-breaker-status route is a deprecated alias for
-// /api/llm/circuit-breaker-status. These constants MUST stay consistent:
-//   - `DEPRECATION_EPOCH` is the moment this alias was marked deprecated. It is
-//     the `@`-prefixed Structured Date value per RFC 9745 §2 (Structured Item
-//     form) — NOT the non-spec "true" sentinel.
-//   - `SUNSET_HTTP_DATE` is the HTTP-date per RFC 8594, strictly later than
-//     `DEPRECATION_EPOCH`. After this moment the follow-up PR removes the
-//     alias entirely (see docs/issues/266-implementation-plan.md §3).
-//   - `SUCCESSOR_URL` is the canonical replacement route; surfaced via a
-//     `Link: <…>; rel="successor-version"` header per RFC 9745 §2.
-//
-// Grace window: 6 months (2026-04-21 → 2026-10-21) per implementer directive.
-const DEPRECATION_EPOCH = 1776729600; // 2026-04-21T00:00:00Z
-const SUNSET_HTTP_DATE = 'Wed, 21 Oct 2026 00:00:00 GMT';
-const SUCCESSOR_URL = '/api/llm/circuit-breaker-status';
-
 async function getDefaultProviderConfig(): Promise<ProviderConfig | null> {
   const row = await query<{
     id: string; base_url: string; api_key: string | null;
@@ -119,14 +101,10 @@ export async function llmModelRoutes(fastify: FastifyInstance) {
     };
   });
 
-  // Shared handler for both the canonical route and its deprecated alias.
-  // Returns a provider-keyed flat map of live circuit-breaker state — only
-  // providers that have actually been contacted show up (see
-  // core/services/circuit-breaker.ts → listProviderBreakers).
-  function buildBreakerStatus(): Record<
-    string,
-    { state: string; failureCount: number; nextRetryTime: number | null }
-  > {
+  // GET /api/llm/circuit-breaker-status — provider-keyed flat map of live
+  // circuit-breaker state. Only providers that have actually been contacted
+  // show up (see core/services/circuit-breaker.ts → listProviderBreakers).
+  fastify.get('/llm/circuit-breaker-status', async () => {
     const out: Record<
       string,
       { state: string; failureCount: number; nextRetryTime: number | null }
@@ -139,20 +117,5 @@ export async function llmModelRoutes(fastify: FastifyInstance) {
       };
     }
     return out;
-  }
-
-  // GET /api/llm/circuit-breaker-status — canonical (issue #266).
-  fastify.get('/llm/circuit-breaker-status', async () => buildBreakerStatus());
-
-  // GET /api/ollama/circuit-breaker-status — DEPRECATED alias. Removed after
-  // sunset (see docs/issues/266-implementation-plan.md §3, follow-up PR).
-  fastify.get('/ollama/circuit-breaker-status', async (_request, reply) => {
-    // RFC 9745 §2 Structured Item form — `@`-prefixed Unix epoch. NOT "true".
-    reply.header('Deprecation', `@${DEPRECATION_EPOCH}`);
-    // RFC 8594 — HTTP-date, strictly later than Deprecation (asserted in tests).
-    reply.header('Sunset', SUNSET_HTTP_DATE);
-    // RFC 9745 §2 — canonical field for tooling auto-migration to the successor.
-    reply.header('Link', `<${SUCCESSOR_URL}>; rel="successor-version"`);
-    return buildBreakerStatus();
   });
 }

@@ -403,8 +403,6 @@ Compendiq provides Kubernetes-compatible health probes:
 | `GET /api/health/start` | Startup probe | Startup complete + PostgreSQL + LLM availability |
 | `GET /api/llm/circuit-breaker-status` | Per-provider circuit-breaker state | Returns a provider-keyed flat map: `{ [providerId]: { state, failureCount, nextRetryTime } }`. Requires auth. |
 
-> The legacy path `GET /api/ollama/circuit-breaker-status` remains as a **deprecated alias** during a 6-month grace window (through **2026-10-21**, issue [#266](https://github.com/Compendiq/compendiq-ce/issues/266)). Responses from the alias include **RFC 9745** `Deprecation: @<epoch>` (Structured Item form — *not* `Deprecation: true`), **RFC 8594** `Sunset: Wed, 21 Oct 2026 00:00:00 GMT`, and `Link: </api/llm/circuit-breaker-status>; rel="successor-version"` so clients can auto-migrate. Update any operator tooling to the canonical path before the sunset date.
-
 Example response from `GET /api/health`:
 
 ```json
