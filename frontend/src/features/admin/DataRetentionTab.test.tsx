@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { DataRetentionTab } from './DataRetentionTab';
 import { useAuthStore } from '../../stores/auth-store';
 
-// ── Mock useEnterprise ────────────────────────────────────���────────────────────
+// ── Mock useEnterprise ─────────────────────────────────────────────────────────
 
 let mockHasFeature = (_f: string) => true;
 
@@ -39,19 +39,22 @@ function createWrapper() {
   };
 }
 
-const mockRetentionPolicy = {
-  rules: [
-    { table: 'llm_audit_log', retentionDays: 90, enabled: true },
-    { table: 'sync_history', retentionDays: 30, enabled: true },
-    { table: 'error_log', retentionDays: null, enabled: false },
+// Matches backend `RetentionConfig` returned by GET /admin/data-retention.
+const mockRetentionConfig = {
+  policies: [
+    { tableName: 'llm_audit_log', displayName: 'LLM Audit Log', retentionDays: 90, enabled: true },
+    { tableName: 'audit_log', displayName: 'Audit Log', retentionDays: 30, enabled: true },
+    { tableName: 'error_log', displayName: 'Error Log', retentionDays: 0, enabled: false },
   ],
-  extendedRetention: false,
+  extendedRetentionEnabled: false,
+  extendedRetentionDays: 365,
 };
 
+// Matches backend `RetentionPreview[]` from GET /admin/data-retention/preview.
 const mockPreview = [
-  { table: 'llm_audit_log', rowCount: 1250, oldestRecord: '2025-01-15T00:00:00Z' },
-  { table: 'sync_history', rowCount: 340, oldestRecord: '2025-03-01T00:00:00Z' },
-  { table: 'error_log', rowCount: 0, oldestRecord: null },
+  { tableName: 'llm_audit_log', displayName: 'LLM Audit Log', retentionDays: 90, estimatedRows: 1250 },
+  { tableName: 'audit_log', displayName: 'Audit Log', retentionDays: 30, estimatedRows: 340 },
+  { tableName: 'error_log', displayName: 'Error Log', retentionDays: 0, estimatedRows: 0 },
 ];
 
 // #264 — GET /admin/settings is consumed by AdminAccessDeniedRetentionSection.
@@ -71,12 +74,17 @@ function mockFetch() {
       });
     }
     if (url.includes('/admin/data-retention/purge') && method === 'POST') {
-      return new Response(JSON.stringify({ success: true }), {
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return new Response(
+        JSON.stringify({
+          results: [
+            { tableName: 'llm_audit_log', displayName: 'LLM Audit Log', deletedRows: 1250 },
+          ],
+        }),
+        { headers: { 'Content-Type': 'application/json' } },
+      );
     }
     if (url.includes('/admin/data-retention')) {
-      return new Response(JSON.stringify(mockRetentionPolicy), {
+      return new Response(JSON.stringify(mockRetentionConfig), {
         headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -91,7 +99,7 @@ function mockFetch() {
   });
 }
 
-// ── Tests ────────────���─────────────────────��───────────────────────────────��───
+// ── Tests ──────────────────────────────────────────────────────────────────────
 
 describe('DataRetentionTab', () => {
   beforeEach(() => {
@@ -126,25 +134,27 @@ describe('DataRetentionTab', () => {
     });
   });
 
-  it('displays retention rules table with data from API', async () => {
+  it('displays per-table policies with displayName + tableName from the API', async () => {
     mockFetch();
     render(<DataRetentionTab />, { wrapper: createWrapper() });
 
     await waitFor(() => {
       expect(screen.getByTestId('retention-rules-table')).toBeInTheDocument();
     });
+    expect(screen.getByText('LLM Audit Log')).toBeInTheDocument();
     expect(screen.getByText('llm_audit_log')).toBeInTheDocument();
-    expect(screen.getByText('sync_history')).toBeInTheDocument();
+    expect(screen.getByText('audit_log')).toBeInTheDocument();
     expect(screen.getByText('error_log')).toBeInTheDocument();
   });
 
-  it('has extended retention toggle', async () => {
+  it('has extended retention toggle and days input', async () => {
     mockFetch();
     render(<DataRetentionTab />, { wrapper: createWrapper() });
 
     await waitFor(() => {
       expect(screen.getByTestId('extended-retention-toggle')).toBeInTheDocument();
     });
+    expect(screen.getByTestId('extended-retention-days-input')).toBeInTheDocument();
   });
 
   it('shows preview results when preview button is clicked', async () => {
@@ -160,6 +170,9 @@ describe('DataRetentionTab', () => {
     await waitFor(() => {
       expect(screen.getByTestId('preview-results')).toBeInTheDocument();
     });
+    // estimatedRows from mock
+    expect(screen.getByText('1,250')).toBeInTheDocument();
+    expect(screen.getByText('340')).toBeInTheDocument();
   });
 
   it('shows purge confirmation dialog requiring type-to-confirm', async () => {
@@ -192,7 +205,7 @@ describe('DataRetentionTab', () => {
     });
   });
 
-  it('submits PUT when save is clicked', async () => {
+  it('submits PUT with policies/extendedRetentionEnabled/extendedRetentionDays matching the backend schema', async () => {
     const fetchSpy = mockFetch();
     render(<DataRetentionTab />, { wrapper: createWrapper() });
 
@@ -203,10 +216,22 @@ describe('DataRetentionTab', () => {
     fireEvent.click(screen.getByTestId('data-retention-save-btn'));
 
     await waitFor(() => {
-      const putCalls = fetchSpy.mock.calls.filter(
-        ([, opts]) => opts && typeof opts === 'object' && 'method' in opts && (opts as RequestInit).method === 'PUT',
+      const putCall = fetchSpy.mock.calls.find(
+        ([url, opts]) =>
+          typeof url === 'string' &&
+          url.includes('/admin/data-retention') &&
+          !url.includes('/preview') &&
+          !url.includes('/purge') &&
+          opts && typeof opts === 'object' && 'method' in opts && (opts as RequestInit).method === 'PUT',
       );
-      expect(putCalls.length).toBeGreaterThanOrEqual(1);
+      expect(putCall).toBeTruthy();
+      const body = JSON.parse((putCall![1] as RequestInit).body as string);
+      expect(Array.isArray(body.policies)).toBe(true);
+      expect(body.policies[0]).toHaveProperty('tableName');
+      expect(body.policies[0]).toHaveProperty('retentionDays');
+      expect(body.policies[0]).not.toHaveProperty('table');
+      expect(typeof body.extendedRetentionEnabled).toBe('boolean');
+      expect(typeof body.extendedRetentionDays).toBe('number');
     });
   });
 
