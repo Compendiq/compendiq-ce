@@ -1106,6 +1106,27 @@ Until this ADR the app supported exactly two LLM backends selected by the `LLM_P
 
 ---
 
+## ADR-022: RAG retrieval honours per-user space permissions
+
+**Date:** 2026-04-21
+**Status:** Accepted
+**Context:** Confluence instances can host spaces with restricted read access. When multiple users share a Compendiq instance, RAG must not surface a chunk from a space the querying user cannot read in Confluence, even if a different user on the same instance synced that space.
+
+**Decision:** Enforce per-user space permissions as a **post-filter** on both vector (pgvector HNSW) and keyword (PostgreSQL FTS) candidate sets, before reciprocal-rank fusion. The allowed space set is resolved from `space_role_assignments` + `group_memberships` via `rbac-service.getUserAccessibleSpaces(userId)` and memoised for the lifetime of the request via `AsyncLocalStorage` so downstream callers pay a single DB round-trip regardless of how many retrieval paths execute per request.
+
+Standalone (non-Confluence) articles are filtered by the same visibility rules already enforced in the knowledge-search route: `shared` articles are visible to all authenticated users; `private` articles are visible only to their creator.
+
+**Why post-filter, not query-time HNSW index filter:** pgvector HNSW has a selectivity penalty when the filter column is sparse; adding `space_key = ANY(...)` as an ORDER-BY-time predicate would force oversampled top-K per call. Post-filter with candidate overfetch is simpler, keeps the vector index unconditioned on per-user state, and is adequate while per-user readable sets stay small (typically < 50 spaces per user in observed deployments).
+
+**Scope boundary (CE-only):** This ADR covers space-level RBAC enforcement. Per-space **per-user ACL** (access-control-entries with custom permissions per page) is gated behind the Enterprise Edition `ENTERPRISE_FEATURES.ADVANCED_RBAC` flag and is not covered here; see the v0.4 roadmap.
+
+**Consequences:**
+- Any new retrieval path MUST use `getUserAccessibleSpacesMemoized` (not the raw resolver) to inherit the request-scoped cache.
+- RBAC mutation paths MUST invalidate the Redis RBAC cache (`invalidateRbacCache(userId)`) so the next request sees the new ACL within the 60-second global TTL window.
+- Integration test `backend/src/domains/llm/services/rag-service.integration.test.ts` is the regression guard.
+
+---
+
 ## Summary of All Decisions
 
 | # | Decision | Choice | Key Rationale |
@@ -1131,3 +1152,4 @@ Until this ADR the app supported exactly two LLM backends selected by the `LLM_P
 | 019 | Admin Role & Re-embed | Simple role column, first user is admin | Protects destructive re-embed operation |
 | 020 | Standalone KB Articles | Shared `pages` table + `source` discriminator + universal SERIAL FK | All features work on standalone articles; no dual-identifier problem |
 | 021 | Multi-LLM-Provider | `llm_providers` table + per-use-case assignments + one OpenAI-compatible client | Supports multi-endpoint deployments; no triplication of client code |
+| 022 | RAG Permission Enforcement | Post-filter retrieval by RBAC-readable spaces + request-scoped AsyncLocalStorage cache | Prevents cross-user leakage in shared deployments; single resolver hit per request |
