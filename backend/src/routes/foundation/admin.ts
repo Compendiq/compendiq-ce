@@ -234,7 +234,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
     ]);
     const result = await query<{ setting_key: string; setting_value: string }>(
       `SELECT setting_key, setting_value FROM admin_settings
-       WHERE setting_key IN ('embedding_chunk_size', 'embedding_chunk_overlap', 'drawio_embed_url', 'fts_language')`,
+       WHERE setting_key IN ('embedding_chunk_size', 'embedding_chunk_overlap', 'drawio_embed_url', 'fts_language', 'reembed_history_retention')`,
     );
 
     const map: Record<string, string> = {};
@@ -248,6 +248,8 @@ export async function adminRoutes(fastify: FastifyInstance) {
       embeddingChunkSize: parseInt(map['embedding_chunk_size'] ?? '500', 10),
       embeddingChunkOverlap: parseInt(map['embedding_chunk_overlap'] ?? '50', 10),
       drawioEmbedUrl: map['drawio_embed_url'] ?? null,
+      // Issue #257 — re-embed-all job history retention (default 150, [10, 10000]).
+      reembedHistoryRetention: parseInt(map['reembed_history_retention'] ?? '150', 10),
       // AI Safety
       aiGuardrailNoFabrication: guardrails.noFabricationInstruction,
       aiGuardrailNoFabricationEnabled: guardrails.noFabricationEnabled,
@@ -337,6 +339,15 @@ export async function adminRoutes(fastify: FastifyInstance) {
       } else {
         updates.push({ key: 'drawio_embed_url', value: body.drawioEmbedUrl });
       }
+    }
+
+    // Issue #257 — reembed-all job history retention. Zod already enforced
+    // the [10, 10000] integer range at the boundary.
+    if (body.reembedHistoryRetention !== undefined) {
+      updates.push({
+        key: 'reembed_history_retention',
+        value: String(body.reembedHistoryRetention),
+      });
     }
 
     for (const { key, value } of updates) {

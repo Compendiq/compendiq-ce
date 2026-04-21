@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import type { AdminSettings } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
 import { SkeletonFormFields } from '../../../shared/components/feedback/Skeleton';
+import { ActiveEmbeddingLocksBanner } from './ActiveEmbeddingLocksBanner';
 
 export function EmbeddingTab() {
   const queryClient = useQueryClient();
@@ -16,22 +17,29 @@ export function EmbeddingTab() {
   const [chunkSize, setChunkSize] = useState<number | undefined>(undefined);
   const [chunkOverlap, setChunkOverlap] = useState<number | undefined>(undefined);
   const [drawioEmbedUrl, setDrawioEmbedUrl] = useState<string | undefined>(undefined);
+  // Issue #257 — admin-configurable BullMQ job-history retention.
+  const [reembedHistoryRetention, setReembedHistoryRetention] = useState<number | undefined>(undefined);
 
   // Initialise local state once data loads
   const effectiveChunkSize = chunkSize ?? adminSettings?.embeddingChunkSize ?? 500;
   const effectiveChunkOverlap = chunkOverlap ?? adminSettings?.embeddingChunkOverlap ?? 50;
   const effectiveDrawioUrl = drawioEmbedUrl ?? adminSettings?.drawioEmbedUrl ?? '';
+  const effectiveRetention =
+    reembedHistoryRetention ?? adminSettings?.reembedHistoryRetention ?? 150;
 
   const savedChunkSize = adminSettings?.embeddingChunkSize ?? 500;
   const savedChunkOverlap = adminSettings?.embeddingChunkOverlap ?? 50;
   const savedDrawioUrl = adminSettings?.drawioEmbedUrl ?? '';
+  const savedRetention = adminSettings?.reembedHistoryRetention ?? 150;
 
   const hasChunkChanges =
     (chunkSize !== undefined && chunkSize !== savedChunkSize) ||
     (chunkOverlap !== undefined && chunkOverlap !== savedChunkOverlap);
   const hasDrawioChanges =
     drawioEmbedUrl !== undefined && drawioEmbedUrl !== savedDrawioUrl;
-  const hasChanges = hasChunkChanges || hasDrawioChanges;
+  const hasRetentionChanges =
+    reembedHistoryRetention !== undefined && reembedHistoryRetention !== savedRetention;
+  const hasChanges = hasChunkChanges || hasDrawioChanges || hasRetentionChanges;
 
   const updateAdminSettings = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
@@ -43,11 +51,12 @@ export function EmbeddingTab() {
       setChunkSize(undefined);
       setChunkOverlap(undefined);
       setDrawioEmbedUrl(undefined);
+      setReembedHistoryRetention(undefined);
       const hasChunk = variables.embeddingChunkSize !== undefined || variables.embeddingChunkOverlap !== undefined;
       if (hasChunk) {
         toast.success('Embedding settings saved. All pages queued for re-embedding.');
       } else {
-        toast.success('Draw.io settings saved.');
+        toast.success('Settings saved.');
       }
     },
     onError: (err) => toast.error(err.message),
@@ -63,6 +72,9 @@ export function EmbeddingTab() {
       const trimmed = drawioEmbedUrl.trim();
       updates.drawioEmbedUrl = trimmed === '' ? null : trimmed;
     }
+    if (reembedHistoryRetention !== undefined) {
+      updates.reembedHistoryRetention = reembedHistoryRetention;
+    }
     if (Object.keys(updates).length > 0) {
       updateAdminSettings.mutate(updates);
     }
@@ -74,6 +86,9 @@ export function EmbeddingTab() {
 
   return (
     <div className="space-y-6">
+      {/* Issue #257 — admin visibility for in-flight per-user embedding locks. */}
+      <ActiveEmbeddingLocksBanner />
+
       <div className="glass-card border-yellow-500/30 p-3 text-sm text-yellow-400">
         These settings are shared across all users. Changing chunk settings will trigger re-embedding of all pages, which may take several minutes.
       </div>
@@ -156,6 +171,30 @@ export function EmbeddingTab() {
           onChange={(e) => setDrawioEmbedUrl(e.target.value)}
           className="glass-input w-full max-w-md"
           data-testid="admin-drawio-url-input"
+        />
+      </div>
+
+      <hr className="border-border/40" />
+
+      <div>
+        <label className="mb-1.5 block text-sm font-medium" htmlFor="admin-reembed-retention-input">
+          Re-embed Job History Retention
+        </label>
+        <p className="mb-1.5 text-sm text-muted-foreground">
+          Maximum completed/failed re-embed-all job records retained in Redis
+          before the oldest get swept. Takes effect on the <b>next</b> re-embed
+          run (existing queued jobs carry the previous value). Default: 150.
+        </p>
+        <input
+          id="admin-reembed-retention-input"
+          type="number"
+          min={10}
+          max={10000}
+          step={10}
+          value={effectiveRetention}
+          onChange={(e) => setReembedHistoryRetention(Number(e.target.value))}
+          className="glass-input w-40"
+          data-testid="admin-reembed-retention-input"
         />
       </div>
 

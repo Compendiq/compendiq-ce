@@ -189,4 +189,81 @@ describe.skipIf(!dbAvailable)('POST /api/admin/embedding/reembed', () => {
     });
     expect(r.statusCode).toBe(403);
   });
+
+  // ─── Plan §2.5 / §4.4 RED #8 + #9 + #10 ─────────────────────────────────
+  it('returns the fixed jobId="reembed-all" (idempotent across repeated POSTs)', async () => {
+    const r1 = await app.inject({
+      method: 'POST',
+      url: '/api/admin/embedding/reembed',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(r1.statusCode).toBe(200);
+    const b1 = r1.json();
+    expect(b1.jobId).toBe('reembed-all');
+
+    // Second POST returns the same fixed jobId (collapse-concurrent).
+    const r2 = await app.inject({
+      method: 'POST',
+      url: '/api/admin/embedding/reembed',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(r2.statusCode).toBe(200);
+    expect(r2.json().jobId).toBe('reembed-all');
+  });
+
+  it('returns a heldBy string[] (empty when no per-user locks are held)', async () => {
+    const r = await app.inject({
+      method: 'POST',
+      url: '/api/admin/embedding/reembed',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(r.statusCode).toBe(200);
+    const body = r.json();
+    expect(Array.isArray(body.heldBy)).toBe(true);
+    expect(body.heldBy).toEqual([]);
+  });
+});
+
+describe.skipIf(!dbAvailable)('GET /api/admin/embedding/reembed/:jobId', () => {
+  it('returns 401 without auth', async () => {
+    const r = await app.inject({
+      method: 'GET',
+      url: '/api/admin/embedding/reembed/reembed-all',
+    });
+    expect(r.statusCode).toBe(401);
+  });
+
+  it('returns 403 for non-admin users', async () => {
+    const userResult = await query<{ id: string }>(
+      `INSERT INTO users (username, password_hash, role)
+       VALUES ('reembed_getter_member', 'fakehash', 'member') RETURNING id`,
+    );
+    const memberId = userResult.rows[0]!.id;
+    await query('INSERT INTO user_settings (user_id) VALUES ($1)', [memberId]);
+    const memberToken = await generateAccessToken({
+      sub: memberId,
+      username: 'reembed_getter_member',
+      role: 'member',
+    });
+    const r = await app.inject({
+      method: 'GET',
+      url: '/api/admin/embedding/reembed/reembed-all',
+      headers: { authorization: `Bearer ${memberToken}` },
+    });
+    expect(r.statusCode).toBe(403);
+  });
+
+  it('returns { jobId, state: "unknown", progress: null, heldBy: [] } for an unknown job id', async () => {
+    const r = await app.inject({
+      method: 'GET',
+      url: '/api/admin/embedding/reembed/does-not-exist',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(r.statusCode).toBe(200);
+    const body = r.json();
+    expect(body.jobId).toBe('does-not-exist');
+    expect(body.state).toBe('unknown');
+    expect(body.progress).toBeNull();
+    expect(Array.isArray(body.heldBy)).toBe(true);
+  });
 });

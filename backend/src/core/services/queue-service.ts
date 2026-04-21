@@ -211,6 +211,103 @@ export async function stopQueueWorkers(): Promise<void> {
 }
 
 /**
+ * Enqueue a one-off job onto a named queue. Returns the resolved job id.
+ *
+ * Idempotency model (issue #257):
+ *   - When `opts.jobId` is passed and a previous job with that id is in a
+ *     *terminal* state (`completed` / `failed`), we explicitly `.remove()` it
+ *     before calling `queue.add()`. BullMQ's auto-removal is lazy — it only
+ *     runs when the NEXT job finishes — so without this sweep the second
+ *     enqueue would silently dedupe against the stale record.
+ *   - When the previous job is still `waiting` / `active` / `delayed` we do
+ *     NOT remove it — the duplicate `add()` is ignored by BullMQ (emitting a
+ *     `duplicated` event) and the second caller observes the same jobId.
+ *     That's the "collapse concurrent POSTs" semantic.
+ *
+ * When BullMQ is disabled (`USE_BULLMQ=false`) this runs the queue's
+ * registered processor inline synchronously (legacy fallback behaviour).
+ */
+export async function enqueueJob(
+  queueName: string,
+  data: Record<string, unknown>,
+  opts?: { jobId?: string; removeOnComplete?: number; removeOnFail?: number },
+): Promise<string> {
+  if (!USE_BULLMQ) {
+    const fakeId = opts?.jobId ?? `${queueName}-${Date.now()}`;
+    const def = workerDefs.find((d) => d.queueName === queueName);
+    if (def) {
+      // Fire-and-forget inline execution. We don't await so the caller
+      // observes the same "enqueue returns before processing finishes"
+      // contract as the BullMQ path.
+      void def.processor({
+        id: fakeId,
+        name: queueName,
+        data,
+        updateProgress: async () => {},
+        remove: async () => {},
+      } as unknown as Job);
+    }
+    return fakeId;
+  }
+
+  const q = getOrCreateQueue(queueName);
+
+  // Explicitly sweep terminal stale jobs — see jsdoc above.
+  if (opts?.jobId) {
+    const existing = await q.getJob(opts.jobId);
+    if (existing) {
+      const state = await existing.getState();
+      if (state === 'completed' || state === 'failed') {
+        await existing.remove().catch(() => {
+          /* race-tolerant: another process may have removed it first */
+        });
+      }
+    }
+  }
+
+  const addOpts: Record<string, unknown> = {};
+  if (opts?.jobId) addOpts.jobId = opts.jobId;
+  if (opts?.removeOnComplete !== undefined) {
+    addOpts.removeOnComplete = { count: opts.removeOnComplete };
+  }
+  if (opts?.removeOnFail !== undefined) {
+    addOpts.removeOnFail = { count: opts.removeOnFail };
+  }
+
+  const job = await q.add(queueName, data, addOpts);
+  return job.id ?? opts?.jobId ?? `${queueName}-${Date.now()}`;
+}
+
+/**
+ * Fetch a job's current status + progress. Returns null when the job is not
+ * found (includes unknown queue / unknown id). Returns null when BullMQ is
+ * disabled (legacy fallback has no observable job state).
+ */
+export async function getJobStatus(
+  queueName: string,
+  jobId: string,
+): Promise<
+  | {
+      state: string;
+      progress: number | object;
+      returnvalue: unknown;
+      failedReason?: string;
+    }
+  | null
+> {
+  if (!USE_BULLMQ) return null;
+  const q = queues.get(queueName) ?? getOrCreateQueue(queueName);
+  const job = await q.getJob(jobId);
+  if (!job) return null;
+  return {
+    state: await job.getState(),
+    progress: (job.progress ?? 0) as number | object,
+    returnvalue: job.returnvalue,
+    failedReason: job.failedReason,
+  };
+}
+
+/**
  * Get metrics for all queues (for health endpoint).
  */
 export async function getQueueMetrics(): Promise<
@@ -316,6 +413,19 @@ async function registerAllWorkers(): Promise<void> {
     { every: retentionHours * 60 * 60 * 1000 },
     { name: 'data-retention' },
   );
+
+  // Re-embed-all worker (issue #257) — NO repeatPattern: triggered on-demand
+  // by `enqueueReembedAll` via `POST /api/admin/embedding/reembed`.
+  // Concurrency 1 so a global re-embed is a true exclusive operation.
+  registerWorkerDef({
+    queueName: 'reembed-all',
+    concurrency: 1,
+    processor: async (job: Job) => {
+      // eslint-disable-next-line boundaries/dependencies -- orchestrator needs cross-domain access
+      const { runReembedAllJob } = await import('../../domains/llm/services/embedding-service.js');
+      return runReembedAllJob(job);
+    },
+  });
 }
 
 // ─── Legacy setInterval fallback ─────────────────────────────────────────────

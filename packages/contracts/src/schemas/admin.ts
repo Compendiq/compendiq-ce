@@ -39,6 +39,13 @@ export const AdminSettingsSchema = z.object({
   rateLimitAdmin: z.number().int().min(5).max(1000).optional(),
   rateLimitLlmStream: z.number().int().min(1).max(1000).optional(),
   rateLimitLlmEmbedding: z.number().int().min(1).max(1000).optional(),
+  /**
+   * Issue #257 — how many completed/failed re-embed-all BullMQ jobs are
+   * retained in Redis before the oldest get swept. Takes effect on the
+   * next re-embed run (read per-enqueue inside `enqueueReembedAll`).
+   * Default 150, clamped to [10, 10000].
+   */
+  reembedHistoryRetention: z.number().int().min(10).max(10_000),
 });
 
 export const UpdateAdminSettingsSchema = z.object({
@@ -63,7 +70,50 @@ export const UpdateAdminSettingsSchema = z.object({
   rateLimitAdmin: z.number().int().min(5).max(1000).optional(),
   rateLimitLlmStream: z.number().int().min(1).max(1000).optional(),
   rateLimitLlmEmbedding: z.number().int().min(1).max(1000).optional(),
+  /** Issue #257 — optional on update; omitted → leave unchanged. */
+  reembedHistoryRetention: z.number().int().min(10).max(10_000).optional(),
 });
 
 export type AdminSettings = z.infer<typeof AdminSettingsSchema>;
 export type UpdateAdminSettingsInput = z.infer<typeof UpdateAdminSettingsSchema>;
+
+// ─── Issue #257 — admin embedding-lock visibility + force-release ────────
+// Shared contract between `GET /api/admin/embedding/locks` / the force-release
+// POST and the frontend `ActiveEmbeddingLocksBanner`. See plan §2.10 / §3.3.
+
+/**
+ * Safety TTL on every `embedding:lock:${userId}` key in Redis (milliseconds).
+ * Mirrors `EMBEDDING_LOCK_TTL` in `backend/src/core/services/redis-cache.ts`
+ * (1 hour, in seconds there — kept aligned across both sides). Exposed from
+ * the contracts package so the frontend can derive "held for" without
+ * hardcoding the value. When the backend constant moves, update this too.
+ */
+export const EMBEDDING_LOCK_TTL_MS = 3_600_000;
+
+export const EmbeddingLockSnapshotSchema = z.object({
+  /** Lock holder. Usually a user id, but can also be the synthetic
+   *  `__reembed_all__` system lock (which the admin endpoint filters out). */
+  userId: z.string().min(1),
+  /** Random UUID written by `acquireEmbeddingLock`. The worker's holder-epoch
+   *  guard compares this every 20 pages to detect a force-release. May be
+   *  the empty string when the SCAN caught the key but the subsequent GET
+   *  raced against a release. */
+  holderEpoch: z.string(),
+  /** `PTTL` return in milliseconds. `-1` = no TTL (shouldn't happen),
+   *  `-2` = key missing. */
+  ttlRemainingMs: z.number().int(),
+});
+export type EmbeddingLockSnapshot = z.infer<typeof EmbeddingLockSnapshotSchema>;
+
+export const AdminEmbeddingLocksResponseSchema = z.object({
+  locks: z.array(EmbeddingLockSnapshotSchema),
+});
+export type AdminEmbeddingLocksResponse = z.infer<typeof AdminEmbeddingLocksResponseSchema>;
+
+export const ForceReleaseLockResponseSchema = z.object({
+  /** `true` when the key existed and was deleted; `false` when the lock was
+   *  already gone (idempotent — no 404). */
+  released: z.boolean(),
+  userId: z.string().min(1),
+});
+export type ForceReleaseLockResponse = z.infer<typeof ForceReleaseLockResponseSchema>;

@@ -167,7 +167,7 @@ curl http://localhost:3051/api/health
 
 ### Background Job Queue (BullMQ)
 
-Compendiq uses BullMQ (Redis-backed) for reliable background job processing. Five worker types run as BullMQ queues:
+Compendiq uses BullMQ (Redis-backed) for reliable background job processing. Six worker types run as BullMQ queues:
 
 | Queue | Purpose | Default Interval |
 |-------|---------|-----------------|
@@ -176,12 +176,19 @@ Compendiq uses BullMQ (Redis-backed) for reliable background job processing. Fiv
 | `summary` | Auto-summary generation (LLM) | 60 min |
 | `maintenance` | Expired token cleanup | 24 hours |
 | `maintenance` | Data retention cleanup | 24 hours |
+| `reembed-all` | Global re-embed of every non-folder page (issue #257) | On-demand |
 
 **Configuration:**
 - `USE_BULLMQ=true` (default) -- set to `false` to fall back to legacy `setInterval` workers
 - Redis `maxmemory-policy` must be `noeviction` (default in the provided Docker config)
 - Job history is stored in the `job_history` PostgreSQL table for observability
 - Queue metrics are exposed via `GET /api/health` under the `queues` key
+- `REEMBED_WAIT_LOCKS_MS=600000` (default 10 min): how long the `reembed-all`
+  worker waits for in-flight per-user embedding runs to finish before
+  aborting the job. Visible in the admin UI via `GET /api/admin/embedding/locks`.
+- `reembed_history_retention` (admin setting, default 150): how many
+  completed/failed `reembed-all` job records BullMQ keeps in Redis before
+  sweeping the oldest. Range [10, 10000]. Takes effect on the next run.
 
 **Monitoring:** The health endpoint returns per-queue counts (waiting, active, completed, failed):
 ```bash

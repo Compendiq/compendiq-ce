@@ -1,5 +1,6 @@
 import type { RedisClientType } from 'redis';
 import { randomUUID } from 'node:crypto';
+import { EMBEDDING_LOCK_TTL_MS } from '@compendiq/contracts';
 import { logger } from '../utils/logger.js';
 
 // Module-level reference for services that need cache invalidation without Fastify context
@@ -39,7 +40,13 @@ export async function invalidateGraphCache(userId: string): Promise<void> {
 // Replaces in-memory Set<string> to work correctly in multi-process deployments.
 // Uses SET NX EX for atomic lock acquisition with a safety TTL.
 
-const EMBEDDING_LOCK_TTL = 3600; // 1 hour safety TTL prevents permanent lock on crash
+/**
+ * Safety TTL on embedding lock keys (seconds). Derived from the shared
+ * `EMBEDDING_LOCK_TTL_MS` contract constant so the frontend banner can
+ * compute "held for" without hardcoding the value. 1 hour default —
+ * prevents permanent locks on crash.
+ */
+export const EMBEDDING_LOCK_TTL = Math.floor(EMBEDDING_LOCK_TTL_MS / 1000);
 
 function embeddingLockKey(userId: string): string {
   return `embedding:lock:${userId}`;
@@ -106,6 +113,108 @@ export async function isEmbeddingLocked(userId: string): Promise<boolean> {
   } catch (err) {
     logger.error({ err, userId }, 'Failed to check embedding lock');
     return false;
+  }
+}
+
+// ── Embedding lock visibility + admin escape hatch (plan §2.1) ───────────
+
+/** Snapshot of a single active per-user embedding lock (issue #257). */
+export interface EmbeddingLockSnapshot {
+  userId: string;
+  /** Lock identity token (random UUID written by `acquireEmbeddingLock`).
+   *  Exposed so the worker can verify, before each write, that the lock it
+   *  originally acquired is still the one in Redis (holder-epoch guard). */
+  holderEpoch: string;
+  /** Remaining TTL in milliseconds. `-2` means key does not exist; `-1` means
+   *  the key has no TTL (should not happen — `acquireEmbeddingLock` always
+   *  sets one). */
+  ttlRemainingMs: number;
+}
+
+/**
+ * List all per-user embedding locks currently held.
+ *
+ * Uses Redis SCAN (NOT KEYS) to avoid blocking Redis on large keyspaces.
+ * Returns `[]` when Redis is unavailable or SCAN fails.
+ *
+ * Consumers:
+ *   1. Admin UI (`GET /api/admin/embedding/locks`) — renders "alice, bob".
+ *   2. `runReembedAllJob` wait-on-locks loop (worker back-pressure).
+ */
+export async function listActiveEmbeddingLocks(): Promise<EmbeddingLockSnapshot[]> {
+  if (!_redisClient) return [];
+  const out: EmbeddingLockSnapshot[] = [];
+  try {
+    // Existing modules (e.g. `clearAttachmentFailures`, `RedisCache.scanAndDelete`)
+    // use the string-cursor form. Stay consistent with that idiom.
+    let cursor = '0';
+    do {
+      const reply = await _redisClient.scan(cursor, {
+        MATCH: 'embedding:lock:*',
+        COUNT: 100,
+      });
+      cursor = String(reply.cursor);
+      for (const key of reply.keys) {
+        const userId = key.slice('embedding:lock:'.length);
+        if (!userId) continue; // defend against malformed trailing-colon keys
+        // Two round-trips per key is fine for the expected keyspace size
+        // (typically << 100 entries) and the 5-second admin poll cadence.
+        const [holderEpoch, pttl] = await Promise.all([
+          _redisClient.get(key),
+          _redisClient.pTTL(key),
+        ]);
+        out.push({
+          userId,
+          holderEpoch: holderEpoch ?? '',
+          ttlRemainingMs: typeof pttl === 'number' ? pttl : -2,
+        });
+      }
+    } while (cursor !== '0');
+    return out;
+  } catch (err) {
+    logger.error({ err }, 'Failed to list active embedding locks');
+    return [];
+  }
+}
+
+/**
+ * Admin escape hatch — force-delete a per-user embedding lock regardless of
+ * holder. Unlike `releaseEmbeddingLock(userId, lockId)` (which refuses to
+ * delete unless the caller's lockId matches the stored value via Lua), this
+ * one unconditionally DELs the key. Use ONLY from admin-authenticated routes;
+ * log to the audit trail on every call.
+ *
+ * Returns:
+ *   - `{ released: true,  previousHolderEpoch: '<uuid>' }` when the key existed.
+ *   - `{ released: false, previousHolderEpoch: null     }` when the key was
+ *     already gone (idempotent — no 404) or when Redis is unavailable.
+ *
+ * Safety contract (documented for operators):
+ *   If the user's embedding worker is still genuinely running when this is
+ *   called, the worker's next `embedPage` transaction will still commit (it
+ *   doesn't re-check the lock between every row). A racing second acquirer of
+ *   the same userId's lock would see a fresh `holderEpoch`; the original
+ *   worker's write-guard (§2.10 holder-epoch guard) detects this and aborts
+ *   the loop. Duplicate rows in `page_embeddings` are prevented by the
+ *   DELETE/INSERT transaction inside `embedPage`.
+ */
+export async function forceReleaseEmbeddingLock(
+  userId: string,
+): Promise<{ released: boolean; previousHolderEpoch: string | null }> {
+  if (!_redisClient) {
+    return { released: false, previousHolderEpoch: null };
+  }
+  try {
+    const key = embeddingLockKey(userId);
+    const previous = await _redisClient.get(key);
+    const deleted = await _redisClient.del(key);
+    return {
+      released: deleted === 1,
+      previousHolderEpoch: previous,
+    };
+  } catch (err) {
+    logger.error({ err, userId }, 'Failed to force-release embedding lock');
+    return { released: false, previousHolderEpoch: null };
   }
 }
 
