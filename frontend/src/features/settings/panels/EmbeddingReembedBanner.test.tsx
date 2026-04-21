@@ -91,7 +91,10 @@ describe('EmbeddingReembedBanner', () => {
     expect(screen.getByText(/1024 → 768/)).toBeTruthy();
   });
 
-  it('heavy-warning dialog explicitly warns that the re-embed worker is not implemented yet and links to #257', async () => {
+  // Plan §2.9 — the "worker not yet implemented" warning block was dropped
+  // by Phase 5 of #257 now that the BullMQ worker actually runs. The dialog
+  // should now contain neither the old warning text nor a link to #257.
+  it('heavy-warning dialog no longer carries the "worker not implemented" alert', async () => {
     const Wrapper = createWrapper();
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = typeof input === 'string' ? input : (input as URL).toString();
@@ -110,15 +113,10 @@ describe('EmbeddingReembedBanner', () => {
       { wrapper: Wrapper },
     );
     fireEvent.click(screen.getByRole('button', { name: /probe/i }));
+    await screen.findByText(/delete all existing embeddings/i);
 
-    // ARIA-role alert banner must appear
-    const alert = await screen.findByRole('alert');
-    expect(alert).toBeTruthy();
-    expect(alert.textContent ?? '').toMatch(/re-embed worker not yet implemented/i);
-
-    // Link to issue #257 must be present
-    const link = screen.getByRole('link', { name: /issue #257/i });
-    expect(link.getAttribute('href')).toBe('https://github.com/Compendiq/compendiq-ce/issues/257');
+    expect(screen.queryByText(/re-embed worker not yet implemented/i)).toBeNull();
+    expect(screen.queryByRole('link', { name: /issue #257/i })).toBeNull();
   });
 
   it('on confirm with heavy change, POSTs reembed with newDimensions', async () => {
@@ -193,5 +191,62 @@ describe('EmbeddingReembedBanner', () => {
       expect(reembedCall).toBeTruthy();
       expect(JSON.parse((reembedCall![1] as RequestInit).body as string)).toEqual({});
     });
+  });
+
+  // RED #14 (plan §4.10) — surfaces the waiting-on-user-locks phase.
+  it('surfaces the waiting-on-user-locks progress phase when the GET polls return it', async () => {
+    const Wrapper = createWrapper();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : (input as URL).toString();
+      if (url.includes('/admin/embedding/probe')) {
+        return new Response(JSON.stringify({ dimensions: 1024 }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/admin/embedding/reembed')) {
+        return new Response(
+          JSON.stringify({ jobId: 'reembed-all', pageCount: 5, heldBy: ['alice'] }),
+          { headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      if (url.includes('/admin/embedding/reembed/reembed-all')) {
+        return new Response(
+          JSON.stringify({
+            jobId: 'reembed-all',
+            state: 'active',
+            progress: {
+              phase: 'waiting-on-user-locks',
+              heldBy: ['alice'],
+              waitedMs: 4000,
+            },
+            heldBy: ['alice'],
+          }),
+          { headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      return new Response('{}', { headers: { 'Content-Type': 'application/json' } });
+    });
+
+    render(
+      <EmbeddingReembedBanner
+        currentDimensions={1024}
+        pending={{ providerId: 'p1', model: 'bge-m3-instruct' }}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /probe/i }));
+    await screen.findByText(/inconsistent until re-embedded/i);
+    fireEvent.click(screen.getByRole('button', { name: /confirm/i }));
+
+    // Wait for the 2-second poll interval to fire at least once and the
+    // progress phase to hit the DOM.
+    const banner = await waitFor(
+      () => screen.getByTestId('reembed-progress-banner'),
+      { timeout: 5000 },
+    );
+    await waitFor(() => {
+      expect(banner.textContent ?? '').toMatch(/waiting for alice/i);
+    }, { timeout: 5000 });
   });
 });
