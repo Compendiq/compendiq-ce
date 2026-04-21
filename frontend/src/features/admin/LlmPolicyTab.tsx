@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { m } from 'framer-motion';
 import { toast } from 'sonner';
 import {
-  Shield, Loader2, Save, AlertTriangle, X,
+  Shield, Loader2, Save, AlertTriangle,
 } from 'lucide-react';
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
@@ -11,13 +11,12 @@ import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
-type ProviderLock = 'none' | 'ollama' | 'openai';
+type OrgLlmProvider = 'ollama' | 'openai';
 
 interface LlmPolicy {
-  providerLock: ProviderLock;
-  modelAllowlist: string[];
-  maxTokensPerRequest: number | null;
-  userOverrideAllowed: boolean;
+  enabled: boolean;
+  provider: OrgLlmProvider | null;
+  model: string | null;
 }
 
 // ── Hooks ──────────────────────────────────────────────────────────────────────
@@ -37,21 +36,18 @@ export function LlmPolicyTab() {
   const { hasFeature } = useEnterprise();
   const { data: policy, isLoading } = useLlmPolicy();
 
-  const [providerLock, setProviderLock] = useState<ProviderLock>('none');
-  const [modelAllowlist, setModelAllowlist] = useState<string[]>([]);
-  const [modelInput, setModelInput] = useState('');
-  const [maxTokens, setMaxTokens] = useState<string>('');
-  const [userOverride, setUserOverride] = useState(false);
+  const [enabled, setEnabled] = useState(false);
+  const [provider, setProvider] = useState<OrgLlmProvider | null>(null);
+  const [model, setModel] = useState('');
   const [initialized, setInitialized] = useState(false);
 
   const featureEnabled = hasFeature('org_llm_policy');
 
   // Populate form when data loads
   if (policy && !initialized) {
-    setProviderLock(policy.providerLock);
-    setModelAllowlist(policy.modelAllowlist);
-    setMaxTokens(policy.maxTokensPerRequest?.toString() ?? '');
-    setUserOverride(policy.userOverrideAllowed);
+    setEnabled(Boolean(policy.enabled));
+    setProvider(policy.provider ?? null);
+    setModel(policy.model ?? '');
     setInitialized(true);
   }
 
@@ -65,26 +61,13 @@ export function LlmPolicyTab() {
     onError: (err) => toast.error(err.message),
   });
 
-  const handleAddModel = useCallback(() => {
-    const trimmed = modelInput.trim();
-    if (trimmed && !modelAllowlist.includes(trimmed)) {
-      setModelAllowlist((prev) => [...prev, trimmed]);
-      setModelInput('');
-    }
-  }, [modelInput, modelAllowlist]);
-
-  const handleRemoveModel = useCallback((model: string) => {
-    setModelAllowlist((prev) => prev.filter((m) => m !== model));
-  }, []);
-
   const handleSave = useCallback(() => {
     saveMutation.mutate({
-      providerLock,
-      modelAllowlist,
-      maxTokensPerRequest: maxTokens ? parseInt(maxTokens, 10) : null,
-      userOverrideAllowed: userOverride,
+      enabled,
+      provider: enabled ? provider : null,
+      model: enabled ? (model.trim() || null) : null,
     });
-  }, [providerLock, modelAllowlist, maxTokens, userOverride, saveMutation]);
+  }, [enabled, provider, model, saveMutation]);
 
   if (!featureEnabled) {
     return (
@@ -130,131 +113,76 @@ export function LlmPolicyTab() {
         </div>
       </m.div>
 
-      {/* Provider lock */}
+      {/* Enable toggle */}
       <div>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={(e) => setEnabled(e.target.checked)}
+            className="h-4 w-4 rounded border-border accent-primary"
+            data-testid="llm-policy-enabled-toggle"
+          />
+          <span className="font-medium">Enforce organization-wide LLM policy</span>
+        </label>
+        <p className="ml-6 text-xs text-muted-foreground">
+          When enabled, all users are locked to the provider and model selected below.
+        </p>
+      </div>
+
+      {/* Provider */}
+      <div className={cn(!enabled && 'opacity-50 pointer-events-none')}>
         <label className="mb-1.5 flex items-center gap-1.5 text-sm font-medium">
           <Shield size={14} className="text-muted-foreground" />
-          Provider Lock
+          Provider
         </label>
         <p className="mb-2 text-xs text-muted-foreground">
-          Restrict which LLM provider users can select.
+          Locked LLM provider for the organization.
         </p>
         <div className="flex gap-3">
-          {(['none', 'ollama', 'openai'] as const).map((option) => (
+          {(['ollama', 'openai'] as const).map((option) => (
             <label
               key={option}
               className={cn(
                 'flex items-center gap-2 rounded-md border px-4 py-2 text-sm cursor-pointer transition-colors',
-                providerLock === option
+                provider === option
                   ? 'border-primary/50 bg-primary/10 text-primary'
                   : 'border-border/50 bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
               )}
             >
               <input
                 type="radio"
-                name="providerLock"
+                name="provider"
                 value={option}
-                checked={providerLock === option}
-                onChange={() => setProviderLock(option)}
+                checked={provider === option}
+                onChange={() => setProvider(option)}
+                disabled={!enabled}
                 className="sr-only"
-                data-testid={`provider-lock-${option}`}
+                data-testid={`provider-${option}`}
               />
-              {option === 'none' ? 'No restriction' : option.charAt(0).toUpperCase() + option.slice(1)}
+              {option.charAt(0).toUpperCase() + option.slice(1)}
             </label>
           ))}
         </div>
       </div>
 
-      {/* Model allowlist */}
-      <div>
+      {/* Model */}
+      <div className={cn(!enabled && 'opacity-50 pointer-events-none')}>
         <label className="mb-1.5 flex items-center gap-1.5 text-sm font-medium">
-          Model Allowlist
+          Model
         </label>
         <p className="mb-2 text-xs text-muted-foreground">
-          If set, users can only select from these models. Leave empty to allow all models.
-        </p>
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={modelInput}
-            onChange={(e) => setModelInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                handleAddModel();
-              }
-            }}
-            placeholder="e.g. gpt-4o, qwen3:4b"
-            className="flex-1 rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
-            data-testid="model-allowlist-input"
-          />
-          <button
-            type="button"
-            onClick={handleAddModel}
-            disabled={!modelInput.trim()}
-            className="rounded-md bg-foreground/5 px-3 py-2 text-sm hover:bg-foreground/10 disabled:opacity-50"
-            data-testid="add-model-btn"
-          >
-            Add
-          </button>
-        </div>
-        {modelAllowlist.length > 0 && (
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {modelAllowlist.map((model) => (
-              <span
-                key={model}
-                className="flex items-center gap-1 rounded-full bg-primary/10 px-2.5 py-1 text-xs text-primary"
-                data-testid={`model-chip-${model}`}
-              >
-                {model}
-                <button
-                  type="button"
-                  onClick={() => handleRemoveModel(model)}
-                  className="rounded-full p-0.5 hover:bg-primary/20"
-                  aria-label={`Remove ${model}`}
-                >
-                  <X size={10} />
-                </button>
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Max tokens */}
-      <div>
-        <label className="mb-1.5 flex items-center gap-1.5 text-sm font-medium">
-          Max Tokens per Request
-        </label>
-        <p className="mb-2 text-xs text-muted-foreground">
-          Leave empty for no limit.
+          Exact model identifier to enforce. Leave blank to let users pick any model from the locked provider.
         </p>
         <input
-          type="number"
-          value={maxTokens}
-          onChange={(e) => setMaxTokens(e.target.value)}
-          placeholder="e.g. 4096"
-          min={1}
-          className="w-48 rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
-          data-testid="max-tokens-input"
+          type="text"
+          value={model}
+          onChange={(e) => setModel(e.target.value)}
+          placeholder="e.g. gpt-4o, qwen3:4b"
+          disabled={!enabled}
+          className="w-full max-w-md rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary disabled:cursor-not-allowed"
+          data-testid="model-input"
         />
-      </div>
-
-      {/* User override toggle */}
-      <div>
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={userOverride}
-            onChange={(e) => setUserOverride(e.target.checked)}
-            className="h-4 w-4 rounded border-border accent-primary"
-            data-testid="user-override-toggle"
-          />
-          Allow users to override policy settings
-        </label>
-        <p className="ml-6 text-xs text-muted-foreground">
-          When enabled, individual users can change their LLM provider and model even if a policy is set.
-        </p>
       </div>
 
       {/* Save button */}

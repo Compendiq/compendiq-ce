@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { m } from 'framer-motion';
 import { toast } from 'sonner';
@@ -12,51 +12,67 @@ import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
+// Matches the backend `llm_audit_log` row shape (snake_case columns).
 interface AuditEntry {
   id: number;
-  userId: string;
-  username: string;
+  user_id: string | null;
   action: string;
   model: string;
   provider: string;
-  tokensUsed: number;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  duration_ms: number | null;
   status: 'success' | 'error';
-  createdAt: string;
+  error_message: string | null;
+  created_at: string;
 }
 
 interface AuditResponse {
-  entries: AuditEntry[];
+  items: AuditEntry[];
   total: number;
   page: number;
-  pageSize: number;
+  limit: number;
 }
 
 interface AuditStats {
   totalRequests: number;
-  totalTokens: number;
-  uniqueUsers: number;
-  errorRate: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  byAction: Record<string, number>;
+  byModel: Record<string, number>;
+  byStatus: Record<string, number>;
 }
 
 // ── Hooks ──────────────────────────────────────────────────────────────────────
 
+// Convert a YYYY-MM-DD from the date input to an ISO-8601 string with offset,
+// which is what the backend Zod schema (`z.string().datetime({ offset: true })`)
+// accepts. Returns `undefined` when the input is empty.
+function dateInputToIso(value: string, endOfDay = false): string | undefined {
+  if (!value) return undefined;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return undefined;
+  if (endOfDay) d.setUTCHours(23, 59, 59, 999);
+  return d.toISOString();
+}
+
 function useAuditLog(params: {
   page: number;
-  pageSize: number;
+  limit: number;
   userId?: string;
   action?: string;
   status?: string;
-  from?: string;
-  to?: string;
+  startDate?: string;
+  endDate?: string;
 }) {
   const searchParams = new URLSearchParams();
   searchParams.set('page', String(params.page));
-  searchParams.set('pageSize', String(params.pageSize));
+  searchParams.set('limit', String(params.limit));
   if (params.userId) searchParams.set('userId', params.userId);
   if (params.action) searchParams.set('action', params.action);
   if (params.status) searchParams.set('status', params.status);
-  if (params.from) searchParams.set('from', params.from);
-  if (params.to) searchParams.set('to', params.to);
+  if (params.startDate) searchParams.set('startDate', params.startDate);
+  if (params.endDate) searchParams.set('endDate', params.endDate);
 
   return useQuery<AuditResponse>({
     queryKey: ['admin', 'llm-audit', params],
@@ -89,17 +105,33 @@ export function LlmAuditPage() {
 
   const featureEnabled = hasFeature('llm_audit_trail');
 
+  // Validate userId filter: the backend requires a UUID. Silently drop
+  // partial input so the list doesn't error out on every keystroke.
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
   const { data, isLoading } = useAuditLog({
     page,
-    pageSize,
-    userId: filterUser || undefined,
+    limit: pageSize,
+    userId: isUuid.test(filterUser.trim()) ? filterUser.trim() : undefined,
     action: filterAction || undefined,
     status: filterStatus || undefined,
-    from: filterFrom || undefined,
-    to: filterTo || undefined,
+    startDate: dateInputToIso(filterFrom),
+    endDate: dateInputToIso(filterTo, true),
   });
 
   const { data: stats } = useAuditStats();
+
+  const derivedStats = useMemo(() => {
+    if (!stats) return null;
+    const totalTokens = (stats.totalInputTokens ?? 0) + (stats.totalOutputTokens ?? 0);
+    const errorCount = stats.byStatus?.error ?? 0;
+    const errorRate = stats.totalRequests > 0 ? errorCount / stats.totalRequests : 0;
+    return {
+      totalRequests: stats.totalRequests ?? 0,
+      totalTokens,
+      errorRate,
+    };
+  }, [stats]);
 
   const handleExportCsv = useCallback(async () => {
     try {
@@ -144,6 +176,8 @@ export function LlmAuditPage() {
     );
   }
 
+  const items = data?.items ?? [];
+
   return (
     <div className="space-y-6" data-testid="llm-audit-page">
       {/* Header */}
@@ -183,15 +217,14 @@ export function LlmAuditPage() {
       </div>
 
       {/* Stats cards */}
-      {stats && (
-        <div className="grid gap-3 sm:grid-cols-4" data-testid="audit-stats">
-          <StatCard label="Total Requests" value={stats.totalRequests.toLocaleString()} />
-          <StatCard label="Total Tokens" value={stats.totalTokens.toLocaleString()} />
-          <StatCard label="Unique Users" value={stats.uniqueUsers.toLocaleString()} />
+      {derivedStats && (
+        <div className="grid gap-3 sm:grid-cols-3" data-testid="audit-stats">
+          <StatCard label="Total Requests" value={derivedStats.totalRequests.toLocaleString()} />
+          <StatCard label="Total Tokens" value={derivedStats.totalTokens.toLocaleString()} />
           <StatCard
             label="Error Rate"
-            value={`${(stats.errorRate * 100).toFixed(1)}%`}
-            variant={stats.errorRate > 0.1 ? 'warning' : 'default'}
+            value={`${(derivedStats.errorRate * 100).toFixed(1)}%`}
+            variant={derivedStats.errorRate > 0.1 ? 'warning' : 'default'}
           />
         </div>
       )}
@@ -206,12 +239,12 @@ export function LlmAuditPage() {
         >
           <div className="grid gap-3 sm:grid-cols-5">
             <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">User ID</label>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">User ID (UUID)</label>
               <input
                 type="text"
                 value={filterUser}
                 onChange={(e) => { setFilterUser(e.target.value); setPage(1); }}
-                placeholder="Filter by user"
+                placeholder="Filter by user UUID"
                 className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
                 data-testid="filter-user"
               />
@@ -271,7 +304,7 @@ export function LlmAuditPage() {
             <div key={i} className="h-12 animate-pulse rounded-lg bg-foreground/5" />
           ))}
         </div>
-      ) : !data?.entries.length ? (
+      ) : items.length === 0 ? (
         <div className="glass-card py-12 text-center text-sm text-muted-foreground" data-testid="audit-empty">
           No audit entries found
         </div>
@@ -281,7 +314,7 @@ export function LlmAuditPage() {
             <thead>
               <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">
                 <th className="px-4 py-3 font-medium">Time</th>
-                <th className="px-4 py-3 font-medium">User</th>
+                <th className="px-4 py-3 font-medium">User ID</th>
                 <th className="px-4 py-3 font-medium">Action</th>
                 <th className="px-4 py-3 font-medium">Model</th>
                 <th className="px-4 py-3 font-medium">Tokens</th>
@@ -289,31 +322,36 @@ export function LlmAuditPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-border/30">
-              {data.entries.map((entry) => (
-                <tr key={entry.id} className="hover:bg-foreground/5">
-                  <td className="px-4 py-2.5 text-xs text-muted-foreground">
-                    {new Date(entry.createdAt).toLocaleString()}
-                  </td>
-                  <td className="px-4 py-2.5 text-xs">{entry.username}</td>
-                  <td className="px-4 py-2.5">
-                    <span className="rounded bg-primary/10 px-2 py-0.5 text-xs text-primary">
-                      {entry.action}
-                    </span>
-                  </td>
-                  <td className="px-4 py-2.5 font-mono text-xs">{entry.model}</td>
-                  <td className="px-4 py-2.5 text-xs">{entry.tokensUsed.toLocaleString()}</td>
-                  <td className="px-4 py-2.5">
-                    <span className={cn(
-                      'rounded px-2 py-0.5 text-xs font-medium',
-                      entry.status === 'success'
-                        ? 'bg-emerald-500/10 text-emerald-400'
-                        : 'bg-destructive/10 text-destructive',
-                    )}>
-                      {entry.status}
-                    </span>
-                  </td>
-                </tr>
-              ))}
+              {items.map((entry) => {
+                const tokens = (entry.input_tokens ?? 0) + (entry.output_tokens ?? 0);
+                return (
+                  <tr key={entry.id} className="hover:bg-foreground/5">
+                    <td className="px-4 py-2.5 text-xs text-muted-foreground">
+                      {entry.created_at ? new Date(entry.created_at).toLocaleString() : '—'}
+                    </td>
+                    <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">
+                      {entry.user_id ? entry.user_id.slice(0, 8) : '—'}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      <span className="rounded bg-primary/10 px-2 py-0.5 text-xs text-primary">
+                        {entry.action}
+                      </span>
+                    </td>
+                    <td className="px-4 py-2.5 font-mono text-xs">{entry.model}</td>
+                    <td className="px-4 py-2.5 text-xs">{tokens.toLocaleString()}</td>
+                    <td className="px-4 py-2.5">
+                      <span className={cn(
+                        'rounded px-2 py-0.5 text-xs font-medium',
+                        entry.status === 'success'
+                          ? 'bg-emerald-500/10 text-emerald-400'
+                          : 'bg-destructive/10 text-destructive',
+                      )}>
+                        {entry.status}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

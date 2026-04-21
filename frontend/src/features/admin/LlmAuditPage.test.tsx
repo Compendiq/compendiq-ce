@@ -39,36 +39,44 @@ function createWrapper() {
   };
 }
 
-const mockAuditEntries = [
+// Matches the backend `llm_audit_log` row shape — see
+// `overlay/backend/src/routes/foundation/llm-audit.ts`.
+const mockAuditItems = [
   {
     id: 1,
-    userId: 'u1',
-    username: 'alice',
+    user_id: '11111111-1111-1111-1111-111111111111',
     action: 'chat',
     model: 'gpt-4o',
     provider: 'openai',
-    tokensUsed: 1500,
+    input_tokens: 500,
+    output_tokens: 1000,
+    duration_ms: 1200,
     status: 'success' as const,
-    createdAt: '2026-04-10T10:00:00Z',
+    error_message: null,
+    created_at: '2026-04-10T10:00:00Z',
   },
   {
     id: 2,
-    userId: 'u2',
-    username: 'bob',
+    user_id: '22222222-2222-2222-2222-222222222222',
     action: 'embed',
     model: 'bge-m3',
     provider: 'ollama',
-    tokensUsed: 256,
+    input_tokens: 256,
+    output_tokens: 0,
+    duration_ms: 80,
     status: 'error' as const,
-    createdAt: '2026-04-10T11:00:00Z',
+    error_message: 'timeout',
+    created_at: '2026-04-10T11:00:00Z',
   },
 ];
 
 const mockStats = {
   totalRequests: 5000,
-  totalTokens: 1250000,
-  uniqueUsers: 42,
-  errorRate: 0.03,
+  totalInputTokens: 250_000,
+  totalOutputTokens: 1_000_000,
+  byAction: { chat: 4000, embed: 1000 },
+  byModel: { 'gpt-4o': 4000, 'bge-m3': 1000 },
+  byStatus: { success: 4850, error: 150 },
 };
 
 function mockFetch() {
@@ -90,10 +98,10 @@ function mockFetch() {
     }
     if (url.includes('/admin/llm-audit')) {
       return new Response(JSON.stringify({
-        entries: mockAuditEntries,
+        items: mockAuditItems,
         total: 2,
         page: 1,
-        pageSize: 25,
+        limit: 25,
       }), {
         headers: { 'Content-Type': 'application/json' },
       });
@@ -109,16 +117,24 @@ function mockFetchEmpty() {
     const url = typeof input === 'string' ? input : (input as Request).url;
 
     if (url.includes('/admin/llm-audit/stats')) {
-      return new Response(JSON.stringify({ totalRequests: 0, totalTokens: 0, uniqueUsers: 0, errorRate: 0 }), {
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return new Response(
+        JSON.stringify({
+          totalRequests: 0,
+          totalInputTokens: 0,
+          totalOutputTokens: 0,
+          byAction: {},
+          byModel: {},
+          byStatus: {},
+        }),
+        { headers: { 'Content-Type': 'application/json' } },
+      );
     }
     if (url.includes('/admin/llm-audit')) {
       return new Response(JSON.stringify({
-        entries: [],
+        items: [],
         total: 0,
         page: 1,
-        pageSize: 25,
+        limit: 25,
       }), {
         headers: { 'Content-Type': 'application/json' },
       });
@@ -163,28 +179,33 @@ describe('LlmAuditPage', () => {
     });
   });
 
-  it('shows the audit table with entries', async () => {
+  it('shows the audit table with items and sums tokens per row', async () => {
     mockFetch();
     render(<LlmAuditPage />, { wrapper: createWrapper() });
 
     await waitFor(() => {
       expect(screen.getByTestId('audit-table')).toBeInTheDocument();
     });
-    expect(screen.getByText('alice')).toBeInTheDocument();
-    expect(screen.getByText('bob')).toBeInTheDocument();
+    // Tokens = input + output = 1500 & 256 respectively
+    expect(screen.getByText('1,500')).toBeInTheDocument();
+    expect(screen.getByText('256')).toBeInTheDocument();
     expect(screen.getByText('gpt-4o')).toBeInTheDocument();
+    expect(screen.getByText('bge-m3')).toBeInTheDocument();
   });
 
-  it('shows stats cards', async () => {
+  it('derives total tokens + error rate from stats', async () => {
     mockFetch();
     render(<LlmAuditPage />, { wrapper: createWrapper() });
 
     await waitFor(() => {
       expect(screen.getByTestId('audit-stats')).toBeInTheDocument();
     });
+    // totalRequests
     expect(screen.getByText('5,000')).toBeInTheDocument();
+    // totalTokens = 250_000 + 1_000_000 = 1_250_000
     expect(screen.getByText('1,250,000')).toBeInTheDocument();
-    expect(screen.getByText('42')).toBeInTheDocument();
+    // errorRate = 150 / 5000 = 3.0%
+    expect(screen.getByText('3.0%')).toBeInTheDocument();
   });
 
   it('shows empty state when no entries', async () => {
@@ -213,6 +234,24 @@ describe('LlmAuditPage', () => {
     expect(screen.getByTestId('filter-user')).toBeInTheDocument();
     expect(screen.getByTestId('filter-action')).toBeInTheDocument();
     expect(screen.getByTestId('filter-status')).toBeInTheDocument();
+  });
+
+  it('requests the page with page+limit query params that the backend accepts', async () => {
+    const fetchSpy = mockFetch();
+    render(<LlmAuditPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('audit-table')).toBeInTheDocument();
+    });
+
+    const listCall = fetchSpy.mock.calls.find(([url]) =>
+      typeof url === 'string' && url.includes('/admin/llm-audit?') && !url.includes('/stats') && !url.includes('/export'),
+    );
+    expect(listCall).toBeTruthy();
+    const url = listCall![0] as string;
+    expect(url).toContain('page=1');
+    expect(url).toContain('limit=25');
+    expect(url).not.toContain('pageSize=');
   });
 
   it('has an export CSV button', async () => {

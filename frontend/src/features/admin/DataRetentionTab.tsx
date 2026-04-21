@@ -10,29 +10,36 @@ import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 
-// ── Types ──────────────────────────────────────────────────────────────────────
+// ── Types (match backend data-retention-service.ts) ───────────────────────────
 
-interface RetentionRule {
-  table: string;
-  retentionDays: number | null;
+interface RetentionPolicy {
+  tableName: string;
+  displayName: string;
+  retentionDays: number; // 0 means "keep forever"
   enabled: boolean;
 }
 
-interface RetentionPolicy {
-  rules: RetentionRule[];
-  extendedRetention: boolean;
+interface RetentionConfig {
+  policies: RetentionPolicy[];
+  extendedRetentionEnabled: boolean;
+  extendedRetentionDays: number;
 }
 
-interface PreviewResult {
-  table: string;
-  rowCount: number;
-  oldestRecord: string | null;
+interface RetentionPreview {
+  tableName: string;
+  displayName: string;
+  retentionDays: number;
+  estimatedRows: number;
+}
+
+interface PurgeResponse {
+  results: Array<{ tableName: string; displayName: string; deletedRows: number }>;
 }
 
 // ── Hooks ──────────────────────────────────────────────────────────────────────
 
-function useRetentionPolicy() {
-  return useQuery<RetentionPolicy>({
+function useRetentionConfig() {
+  return useQuery<RetentionConfig>({
     queryKey: ['admin', 'data-retention'],
     queryFn: () => apiFetch('/admin/data-retention'),
     staleTime: 30_000,
@@ -135,27 +142,39 @@ function AdminAccessDeniedRetentionSection() {
 export function DataRetentionTab() {
   const queryClient = useQueryClient();
   const { hasFeature } = useEnterprise();
-  const { data: policy, isLoading } = useRetentionPolicy();
+  const { data: config, isLoading } = useRetentionConfig();
 
-  const [rules, setRules] = useState<RetentionRule[]>([]);
-  const [extendedRetention, setExtendedRetention] = useState(false);
+  const [policies, setPolicies] = useState<RetentionPolicy[]>([]);
+  const [extendedRetentionEnabled, setExtendedRetentionEnabled] = useState(false);
+  const [extendedRetentionDays, setExtendedRetentionDays] = useState(365);
   const [initialized, setInitialized] = useState(false);
-  const [preview, setPreview] = useState<PreviewResult[] | null>(null);
+  const [preview, setPreview] = useState<RetentionPreview[] | null>(null);
   const [purgeConfirm, setPurgeConfirm] = useState('');
   const [showPurgeDialog, setShowPurgeDialog] = useState(false);
 
   const featureEnabled = hasFeature('data_retention_policies');
 
   // Populate form when data loads
-  if (policy && !initialized) {
-    setRules(policy.rules);
-    setExtendedRetention(policy.extendedRetention);
+  if (config && !initialized) {
+    setPolicies(config.policies ?? []);
+    setExtendedRetentionEnabled(Boolean(config.extendedRetentionEnabled));
+    setExtendedRetentionDays(config.extendedRetentionDays ?? 365);
     setInitialized(true);
   }
 
   const saveMutation = useMutation({
-    mutationFn: (body: RetentionPolicy) =>
-      apiFetch('/admin/data-retention', { method: 'PUT', body: JSON.stringify(body) }),
+    mutationFn: () =>
+      apiFetch('/admin/data-retention', {
+        method: 'PUT',
+        body: JSON.stringify({
+          policies: policies.map((p) => ({
+            tableName: p.tableName,
+            retentionDays: p.retentionDays,
+          })),
+          extendedRetentionEnabled,
+          extendedRetentionDays,
+        }),
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['admin', 'data-retention'] });
       toast.success('Retention policy saved');
@@ -164,16 +183,17 @@ export function DataRetentionTab() {
   });
 
   const previewMutation = useMutation({
-    mutationFn: () => apiFetch<PreviewResult[]>('/admin/data-retention/preview'),
+    mutationFn: () => apiFetch<RetentionPreview[]>('/admin/data-retention/preview'),
     onSuccess: (data) => setPreview(data),
     onError: (err) => toast.error(err.message),
   });
 
   const purgeMutation = useMutation({
     mutationFn: () =>
-      apiFetch('/admin/data-retention/purge', { method: 'POST' }),
-    onSuccess: () => {
-      toast.success('Data purge completed');
+      apiFetch<PurgeResponse>('/admin/data-retention/purge', { method: 'POST' }),
+    onSuccess: (data) => {
+      const totalDeleted = data.results?.reduce((s, r) => s + Math.max(0, r.deletedRows), 0) ?? 0;
+      toast.success(`Data purge completed — ${totalDeleted.toLocaleString()} rows deleted`);
       setShowPurgeDialog(false);
       setPurgeConfirm('');
       setPreview(null);
@@ -182,15 +202,28 @@ export function DataRetentionTab() {
     onError: (err) => toast.error(err.message),
   });
 
-  const handleRuleChange = useCallback((index: number, field: keyof RetentionRule, value: unknown) => {
-    setRules((prev) => prev.map((r, i) =>
-      i === index ? { ...r, [field]: value } : r,
-    ));
-  }, []);
+  const handlePolicyChange = useCallback(
+    (index: number, field: 'retentionDays' | 'enabled', value: unknown) => {
+      setPolicies((prev) =>
+        prev.map((p, i) => {
+          if (i !== index) return p;
+          if (field === 'retentionDays') {
+            const days = typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
+            return { ...p, retentionDays: days, enabled: days > 0 };
+          }
+          if (field === 'enabled') {
+            return { ...p, enabled: Boolean(value) };
+          }
+          return p;
+        }),
+      );
+    },
+    [],
+  );
 
   const handleSave = useCallback(() => {
-    saveMutation.mutate({ rules, extendedRetention });
-  }, [rules, extendedRetention, saveMutation]);
+    saveMutation.mutate();
+  }, [saveMutation]);
 
   if (!featureEnabled) {
     return (
@@ -242,29 +275,45 @@ export function DataRetentionTab() {
           Data Retention Policies
         </h2>
         <p className="text-sm text-muted-foreground">
-          Configure how long data is kept in each table before automatic cleanup.
+          Configure how long data is kept in each table before automatic cleanup. Set retention to 0 to keep rows forever.
         </p>
       </div>
 
-      {/* Extended retention toggle */}
-      <div className="glass-card p-4">
+      {/* Extended retention */}
+      <div className="glass-card space-y-3 p-4">
         <label className="flex items-center gap-2 text-sm">
           <input
             type="checkbox"
-            checked={extendedRetention}
-            onChange={(e) => setExtendedRetention(e.target.checked)}
+            checked={extendedRetentionEnabled}
+            onChange={(e) => setExtendedRetentionEnabled(e.target.checked)}
             className="h-4 w-4 rounded border-border accent-primary"
             data-testid="extended-retention-toggle"
           />
           <span className="font-medium">Extended retention mode</span>
         </label>
         <p className="ml-6 text-xs text-muted-foreground">
-          When enabled, all retention periods are doubled for compliance-heavy environments.
+          When enabled, retention for the LLM audit log is extended (up to 7 years) for compliance-heavy environments.
         </p>
+        <div className={cn('ml-6 flex items-center gap-2', !extendedRetentionEnabled && 'opacity-50')}>
+          <label htmlFor="extended-retention-days" className="text-xs font-medium text-muted-foreground">
+            Extended retention (days)
+          </label>
+          <input
+            id="extended-retention-days"
+            type="number"
+            min={1}
+            max={2555}
+            value={extendedRetentionDays}
+            onChange={(e) => setExtendedRetentionDays(parseInt(e.target.value, 10) || 1)}
+            disabled={!extendedRetentionEnabled}
+            className="w-28 rounded-md bg-foreground/5 px-2 py-1 text-sm outline-none focus:ring-1 focus:ring-primary disabled:cursor-not-allowed"
+            data-testid="extended-retention-days-input"
+          />
+        </div>
       </div>
 
       {/* Per-table rules */}
-      {rules.length > 0 ? (
+      {policies.length > 0 ? (
         <div className="glass-card overflow-hidden">
           <table className="w-full text-sm">
             <thead>
@@ -275,28 +324,38 @@ export function DataRetentionTab() {
               </tr>
             </thead>
             <tbody className="divide-y divide-border/30" data-testid="retention-rules-table">
-              {rules.map((rule, i) => (
-                <tr key={rule.table} className="hover:bg-foreground/5">
-                  <td className="px-4 py-2.5 font-mono text-xs">{rule.table}</td>
+              {policies.map((policy, i) => (
+                <tr key={policy.tableName} className="hover:bg-foreground/5">
                   <td className="px-4 py-2.5">
-                    <input
-                      type="number"
-                      value={rule.retentionDays ?? ''}
-                      onChange={(e) => handleRuleChange(i, 'retentionDays', e.target.value ? parseInt(e.target.value, 10) : null)}
-                      placeholder="No limit"
-                      min={1}
-                      className="w-24 rounded-md bg-foreground/5 px-2 py-1 text-sm outline-none focus:ring-1 focus:ring-primary"
-                      data-testid={`retention-days-${rule.table}`}
-                    />
+                    <div className="text-sm">{policy.displayName}</div>
+                    <div className="font-mono text-xs text-muted-foreground">{policy.tableName}</div>
                   </td>
                   <td className="px-4 py-2.5">
                     <input
-                      type="checkbox"
-                      checked={rule.enabled}
-                      onChange={(e) => handleRuleChange(i, 'enabled', e.target.checked)}
-                      className="h-4 w-4 rounded border-border accent-primary"
-                      data-testid={`retention-enabled-${rule.table}`}
+                      type="number"
+                      value={policy.retentionDays}
+                      onChange={(e) =>
+                        handlePolicyChange(i, 'retentionDays', parseInt(e.target.value, 10) || 0)
+                      }
+                      placeholder="0 = keep forever"
+                      min={0}
+                      max={3650}
+                      className="w-28 rounded-md bg-foreground/5 px-2 py-1 text-sm outline-none focus:ring-1 focus:ring-primary"
+                      data-testid={`retention-days-${policy.tableName}`}
                     />
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <span
+                      className={cn(
+                        'rounded px-2 py-0.5 text-xs font-medium',
+                        policy.enabled
+                          ? 'bg-emerald-500/10 text-emerald-400'
+                          : 'bg-foreground/10 text-muted-foreground',
+                      )}
+                      data-testid={`retention-enabled-${policy.tableName}`}
+                    >
+                      {policy.enabled ? 'On' : 'Keep forever'}
+                    </span>
                   </td>
                 </tr>
               ))}
@@ -305,7 +364,7 @@ export function DataRetentionTab() {
         </div>
       ) : (
         <div className="glass-card py-12 text-center text-sm text-muted-foreground">
-          No retention rules configured. Save will create default rules.
+          No retention rules configured.
         </div>
       )}
 
@@ -347,24 +406,31 @@ export function DataRetentionTab() {
             <thead>
               <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">
                 <th className="px-4 py-2 font-medium">Table</th>
+                <th className="px-4 py-2 font-medium">Retention (days)</th>
                 <th className="px-4 py-2 font-medium">Rows</th>
-                <th className="px-4 py-2 font-medium">Oldest Record</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border/30">
               {preview.map((row) => (
-                <tr key={row.table}>
-                  <td className="px-4 py-2 font-mono text-xs">{row.table}</td>
+                <tr key={row.tableName}>
+                  <td className="px-4 py-2">
+                    <div className="text-sm">{row.displayName}</div>
+                    <div className="font-mono text-xs text-muted-foreground">{row.tableName}</div>
+                  </td>
+                  <td className="px-4 py-2 text-xs text-muted-foreground">
+                    {row.retentionDays === 0 ? 'forever' : row.retentionDays}
+                  </td>
                   <td className="px-4 py-2">
                     <span className={cn(
                       'rounded px-2 py-0.5 text-xs font-medium',
-                      row.rowCount > 0 ? 'bg-amber-500/10 text-amber-400' : 'bg-emerald-500/10 text-emerald-400',
+                      row.estimatedRows < 0
+                        ? 'bg-destructive/10 text-destructive'
+                        : row.estimatedRows > 0
+                          ? 'bg-amber-500/10 text-amber-400'
+                          : 'bg-emerald-500/10 text-emerald-400',
                     )}>
-                      {row.rowCount.toLocaleString()}
+                      {row.estimatedRows < 0 ? 'error' : row.estimatedRows.toLocaleString()}
                     </span>
-                  </td>
-                  <td className="px-4 py-2 text-xs text-muted-foreground">
-                    {row.oldestRecord ? new Date(row.oldestRecord).toLocaleDateString() : '—'}
                   </td>
                 </tr>
               ))}
