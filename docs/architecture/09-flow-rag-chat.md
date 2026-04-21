@@ -12,6 +12,7 @@ sequenceDiagram
     participant FE as Frontend (AiAssistantPage)
     participant BE as /api/llm/ask (SSE)
     participant SAN as sanitize-llm-input
+    participant RBAC as rbac-service (per-req scope)
     participant RAG as rag-service
     participant EMB as embedding provider<br/>(resolveUsecase('embedding'))
     participant PG as Postgres (pgvector + FTS)
@@ -38,13 +39,15 @@ sequenceDiagram
             CACHE-->>BE: lock acquired
             BE->>EMB: POST /v1/embeddings (question)
             EMB-->>BE: q_vector[N]
+            BE->>RBAC: getUserAccessibleSpacesMemoized(userId)
+            RBAC-->>BE: readableSpaceKeys[] (request-scoped)
             par vector + keyword
-                BE->>RAG: vectorSearch(q_vector, userId, topK)
-                RAG->>PG: SELECT ... ORDER BY embedding <=> $1<br/>WHERE user_id=$2 AND space in (...)
+                BE->>RAG: vectorSearch(userId, q_vector)
+                RAG->>PG: WHERE cp.space_key = ANY(readableSpaceKeys) ...
                 PG-->>RAG: top-K chunks
             and
-                BE->>RAG: hybridKeyword(question, userId)
-                RAG->>PG: tsvector / BM25 search
+                BE->>RAG: keywordSearch(userId, question)
+                RAG->>PG: tsvector search WHERE same space filter
                 PG-->>RAG: matches
             end
             RAG-->>BE: merged + deduped + ranked
@@ -81,6 +84,17 @@ sequenceDiagram
         end
     end
 ```
+
+### Permission-check checkpoint
+
+Per ADR-022, RAG retrieval post-filters vector and FTS candidate sets by the
+caller's readable space keys. The resolver
+(`rbac-service.getUserAccessibleSpaces`) is memoised per request via
+`AsyncLocalStorage`, so a single hybrid query touches the RBAC path once
+regardless of how many retrieval calls execute. The Fastify `authenticate`
+hook enters the scope on every authenticated request via `enterRbacScope`; the
+memoised wrapper falls back to the raw resolver outside a scope (background
+workers, tests that skip the opt-in).
 
 ## Retrieval details
 
