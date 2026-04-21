@@ -90,11 +90,6 @@ describe('llm-models routes — auth required', () => {
     expect(r.statusCode).toBe(401);
   });
 
-  it('returns 401 for GET /api/ollama/circuit-breaker-status without auth', async () => {
-    const r = await app.inject({ method: 'GET', url: '/api/ollama/circuit-breaker-status' });
-    expect(r.statusCode).toBe(401);
-  });
-
   it('returns 401 for GET /api/llm/circuit-breaker-status without auth', async () => {
     const r = await app.inject({ method: 'GET', url: '/api/llm/circuit-breaker-status' });
     expect(r.statusCode).toBe(401);
@@ -168,9 +163,9 @@ describe('llm-models routes — models + status', () => {
     expect(r.json()).toEqual([]);
   });
 
-  // --- GET /api/llm/circuit-breaker-status (canonical) + /api/ollama/circuit-breaker-status (deprecated alias, issue #266) ---
+  // --- GET /api/llm/circuit-breaker-status ---
 
-  it('GET /api/llm/circuit-breaker-status returns the provider-keyed flat map with no deprecation headers', async () => {
+  it('returns the provider-keyed flat map', async () => {
     mockListProviderBreakers.mockReturnValue([
       { providerId: 'p1', state: 'closed', failureCount: 0, nextRetryTime: null },
       { providerId: 'p2', state: 'open',   failureCount: 3, nextRetryTime: 123 },
@@ -181,39 +176,17 @@ describe('llm-models routes — models + status', () => {
       p1: { state: 'closed', failureCount: 0, nextRetryTime: null },
       p2: { state: 'open',   failureCount: 3, nextRetryTime: 123 },
     });
-    expect(r.headers['deprecation']).toBeUndefined();
-    expect(r.headers['sunset']).toBeUndefined();
-    expect(r.headers['link']).toBeUndefined();
   });
 
-  it('GET /api/ollama/circuit-breaker-status is a deprecated alias with RFC 9745 / 8594 headers and parity payload', async () => {
-    mockListProviderBreakers.mockReturnValue([
-      { providerId: 'p1', state: 'closed', failureCount: 0, nextRetryTime: null },
-    ]);
-    const r = await app.inject({ method: 'GET', url: '/api/ollama/circuit-breaker-status' });
-    expect(r.statusCode).toBe(200);
-    // Payload parity with the canonical route.
-    expect(r.json()).toEqual({
-      p1: { state: 'closed', failureCount: 0, nextRetryTime: null },
-    });
-    // RFC 9745 Structured Item — `@`-prefixed Unix epoch. NOT "true".
-    expect(r.headers['deprecation']).toMatch(/^@\d+$/);
-    expect(r.headers['deprecation']).not.toBe('true');
-    // RFC 8594 IMF-fixdate.
-    expect(r.headers['sunset']).toMatch(
-      /^[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$/,
-    );
-    // RFC 9745 §2 successor-version link pointing at the canonical path.
-    expect(r.headers['link']).toBe('</api/llm/circuit-breaker-status>; rel="successor-version"');
-  });
-
-  it('Sunset date is strictly after Deprecation date on the deprecated alias (RFC 9745 constraint)', async () => {
+  it('returns an empty object when no provider breakers have booted yet', async () => {
     mockListProviderBreakers.mockReturnValue([]);
-    const r = await app.inject({ method: 'GET', url: '/api/ollama/circuit-breaker-status' });
+    const r = await app.inject({ method: 'GET', url: '/api/llm/circuit-breaker-status' });
     expect(r.statusCode).toBe(200);
-    const depEpochMs = parseInt((r.headers['deprecation'] as string).slice(1), 10) * 1000;
-    const sunsetEpochMs = new Date(r.headers['sunset'] as string).getTime();
-    expect(Number.isFinite(sunsetEpochMs)).toBe(true);
-    expect(sunsetEpochMs).toBeGreaterThan(depEpochMs);
+    expect(r.json()).toEqual({});
+  });
+
+  it('no longer serves the retired /api/ollama/circuit-breaker-status alias (#277)', async () => {
+    const r = await app.inject({ method: 'GET', url: '/api/ollama/circuit-breaker-status' });
+    expect(r.statusCode).toBe(404);
   });
 });
