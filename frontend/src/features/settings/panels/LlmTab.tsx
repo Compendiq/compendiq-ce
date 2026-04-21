@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import type {
+  AdminSettings,
   LlmProvider,
   LlmUsecase,
   UsecaseAssignments,
@@ -14,6 +15,11 @@ import { EmbeddingReembedBanner } from './EmbeddingReembedBanner';
 import { SkeletonFormFields } from '../../../shared/components/feedback/Skeleton';
 
 const USECASES_ORDERED: LlmUsecase[] = ['chat', 'summary', 'quality', 'auto_tag', 'embedding'];
+
+/** Default when the server response omits `llmMaxConcurrentStreamsPerUser`. */
+const DEFAULT_CONCURRENT_STREAMS_CAP = 3;
+const MIN_CONCURRENT_STREAMS_CAP = 1;
+const MAX_CONCURRENT_STREAMS_CAP = 20;
 
 export function LlmTab() {
   const qc = useQueryClient();
@@ -32,14 +38,37 @@ export function LlmTab() {
     // the legacy 1024-dim default rather than blocking the tab.
     retry: false,
   });
+  // Runtime limits — only reads fields we own from the shared admin-settings
+  // document. Other fields (embedding, rate limits, AI safety) are managed
+  // elsewhere and are left untouched when we PUT.
+  const { data: adminSettings } = useQuery<AdminSettings>({
+    queryKey: ['admin-settings'],
+    queryFn: () => apiFetch('/admin/settings'),
+  });
 
   const [assignments, setAssignments] = useState<UsecaseAssignments | null>(null);
+  // Per-user concurrent SSE-stream cap (#268). Separate local state so edits
+  // to the number input don't round-trip through TanStack Query on every
+  // keystroke. Default to 3 when the server omits the field.
+  const [concurrentStreamsCap, setConcurrentStreamsCap] = useState<number>(
+    DEFAULT_CONCURRENT_STREAMS_CAP,
+  );
 
   // Mirror the server-provided assignments once per load. Using useEffect
   // keeps the setState out of render (avoids an infinite update loop).
   useEffect(() => {
     if (rawAssignments) setAssignments(rawAssignments);
   }, [rawAssignments]);
+
+  // Mirror the server-provided concurrent-streams cap. Falls back to 3 when
+  // the field is absent (legacy backend that has not yet been migrated).
+  useEffect(() => {
+    if (adminSettings) {
+      setConcurrentStreamsCap(
+        adminSettings.llmMaxConcurrentStreamsPerUser ?? DEFAULT_CONCURRENT_STREAMS_CAP,
+      );
+    }
+  }, [adminSettings]);
 
   const embeddingPending = useMemo(() => {
     if (!rawAssignments || !assignments) return null;
@@ -62,6 +91,23 @@ export function LlmTab() {
     onError: (e: Error) => toast.error(e.message),
   });
 
+  // Runtime-limits mutation is deliberately separate from the use-case save
+  // so admins can update concurrency without implicitly re-applying other
+  // in-flight edits.
+  const saveRuntimeLimits = useMutation({
+    mutationFn: (body: { llmMaxConcurrentStreamsPerUser: number }) =>
+      apiFetch('/admin/settings', { method: 'PUT', body: JSON.stringify(body) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin-settings'] });
+      toast.success('Runtime limits updated (takes effect within 60 seconds)');
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const currentCapOnServer =
+    adminSettings?.llmMaxConcurrentStreamsPerUser ?? DEFAULT_CONCURRENT_STREAMS_CAP;
+  const runtimeLimitsDirty = concurrentStreamsCap !== currentCapOnServer;
+
   if (assignmentsLoading || !assignments || !rawAssignments) {
     return <SkeletonFormFields />;
   }
@@ -74,6 +120,15 @@ export function LlmTab() {
       return;
     }
     save.mutate(diff);
+  }
+
+  function handleSaveRuntimeLimits() {
+    // Clamp before sending so browsers that ignore min/max don't trip Zod 400s.
+    const clamped = Math.max(
+      MIN_CONCURRENT_STREAMS_CAP,
+      Math.min(MAX_CONCURRENT_STREAMS_CAP, concurrentStreamsCap),
+    );
+    saveRuntimeLimits.mutate({ llmMaxConcurrentStreamsPerUser: clamped });
   }
 
   return (
@@ -99,6 +154,63 @@ export function LlmTab() {
         >
           {save.isPending ? 'Saving…' : 'Save use-case assignments'}
         </button>
+      </div>
+
+      {/* Runtime limits — per-user concurrent-SSE-stream cap (#268) */}
+      <div className="glass-card space-y-4 p-4">
+        <div>
+          <h3 className="text-base font-semibold">Runtime limits</h3>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Bounds on how AI streams are served. Changes take effect within 60 seconds.
+          </p>
+        </div>
+        <div className="rounded-lg border border-border/30 bg-background/50 p-4">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <label
+                htmlFor="llm-max-concurrent-streams-per-user"
+                className="text-sm font-medium"
+              >
+                Max concurrent AI streams per user
+              </label>
+              <p className="text-xs text-muted-foreground">
+                Rejects additional streams with HTTP 429 once a user has this many open. Lowering
+                the cap takes effect for newly opened streams; in-flight streams continue to
+                completion.
+              </p>
+            </div>
+            <input
+              id="llm-max-concurrent-streams-per-user"
+              data-testid="llm-max-concurrent-streams-per-user"
+              type="number"
+              min={MIN_CONCURRENT_STREAMS_CAP}
+              max={MAX_CONCURRENT_STREAMS_CAP}
+              value={concurrentStreamsCap}
+              onChange={(e) => {
+                const v = parseInt(e.target.value, 10);
+                if (Number.isFinite(v)) {
+                  setConcurrentStreamsCap(
+                    Math.max(
+                      MIN_CONCURRENT_STREAMS_CAP,
+                      Math.min(MAX_CONCURRENT_STREAMS_CAP, v),
+                    ),
+                  );
+                }
+              }}
+              className="w-24 rounded-lg border border-border/40 bg-background/50 px-3 py-1.5 text-right text-sm outline-none focus:ring-1 focus:ring-primary/30"
+            />
+          </div>
+        </div>
+        <div className="flex gap-3">
+          <button
+            data-testid="llm-runtime-limits-save"
+            className="glass-button-primary"
+            disabled={!runtimeLimitsDirty || saveRuntimeLimits.isPending}
+            onClick={handleSaveRuntimeLimits}
+          >
+            {saveRuntimeLimits.isPending ? 'Saving…' : 'Save runtime limits'}
+          </button>
+        </div>
       </div>
     </div>
   );

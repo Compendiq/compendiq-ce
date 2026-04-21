@@ -248,6 +248,7 @@ Copy `.env.example` to `.env`. Key vars:
 - `LLM_CACHE_TTL` (optional, Redis TTL in seconds for LLM cache, default: `3600`)
 - `LLM_CONCURRENCY` (optional, default: `4`, max concurrent LLM requests)
 - `LLM_MAX_QUEUE_DEPTH` (optional, default: `50`, reject when exceeded)
+- `LLM_MAX_CONCURRENT_STREAMS_PER_USER` (deprecated bootstrap fallback — configured in Settings → LLM → Runtime limits, issue #268; consulted only when the `admin_settings` row is absent; fallback-of-last-resort: `3`; range: `1`–`20`)
 - `OPENAI_BASE_URL` (optional, OpenAI-compatible API base URL)
 - `OPENAI_API_KEY` (optional, required when using openai provider)
 - `EMBEDDING_MODEL` (default: `bge-m3`, server-wide, 1024 dims)

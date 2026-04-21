@@ -207,6 +207,29 @@ LLM requests are managed through a concurrency-controlled queue with backpressur
 
 Queue metrics are exposed via `GET /api/health` under the `llmQueue` key. When the queue is full, new requests receive a `503` error with a message to retry later.
 
+### Per-User Concurrent SSE-Stream Cap (#268)
+
+Streaming LLM endpoints (`/api/llm/ask`, `generate`, `improve`, `summarize`, `analyze-quality`, `generate-diagram`) intentionally bypass the queue above because streams are long-lived. Without a per-user bound, one user opening many tabs can saturate the upstream LLM.
+
+A Redis counter (`llm:streams:<userId>`) tracks currently-open SSE streams per user. New opens beyond the cap are rejected with **HTTP 429** and body:
+
+```json
+{ "error": "too_many_concurrent_streams", "message": "…" }
+```
+
+| Setting | Default | Range | Description |
+|---------|---------|-------|-------------|
+| **Settings → LLM → Runtime limits** (primary) | `3` | `1`–`20` | Admin-configurable. Changes apply within 60 s in every worker; the local worker sees them immediately. |
+| `LLM_MAX_CONCURRENT_STREAMS_PER_USER` | `3` | `1`–`20` | **Deprecated bootstrap fallback** — consulted only when the `admin_settings` row is absent. |
+
+**Release semantics.** The counter decrements on all four exit paths: normal completion, error, upstream timeout, and client disconnect. A 1-hour TTL self-heals leaked counters from crashed processes.
+
+**Lowering is graceful.** Existing in-flight streams run to completion; only new opens see the lower cap.
+
+**No admin bypass.** Admins share the same cap as regular users. This is intentional to prevent accidental concurrent-usage incidents from power users.
+
+**Interaction with `LLM_STREAM_RATE_LIMIT`.** The rate limit caps requests per minute; this caps concurrently-open connections. Both can 429 — they are distinguished by the response body's `error` string.
+
 ### Confluence
 
 | Variable | Default | Description |
