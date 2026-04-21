@@ -55,9 +55,11 @@ compendiq/
 │   ├── domains/
 │   │   ├── confluence/services/     # confluence-client, sync-service, attachment-handler,
 │   │   │                            #   subpage-context, sync-overview-service, confluence-rate-limiter
-│   │   ├── llm/services/            # ollama-service, ollama-provider, openai-service,
-│   │   │                            #   llm-provider, embedding-service, rag-service, llm-cache,
-│   │   │                            #   llm-audit-hook, llm-queue
+│   │   ├── llm/services/            # openai-compatible-client (unified; queue + per-provider breakers),
+│   │   │                            #   llm-provider-service (CRUD), llm-provider-resolver (resolveUsecase),
+│   │   │                            #   llm-provider-bootstrap (env seed on fresh install), cache-bus,
+│   │   │                            #   embedding-service, rag-service, llm-cache, llm-audit-hook,
+│   │   │                            #   llm-queue, prompts
 │   │   └── knowledge/services/      # auto-tagger, quality-worker, summary-worker,
 │   │                                #   version-tracker, duplicate-detector
 │   ├── routes/
@@ -96,7 +98,7 @@ Import restrictions enforced by `eslint-plugin-boundaries`:
 ## Tech Stack
 
 - **Backend**: Fastify 5, TypeScript, PostgreSQL 17 (pgvector), Redis 8, `ollama` npm package, `jose` (JWT), `bcrypt`, `pg`, `undici`, `zod`, `pino`, `bullmq`, `nodemailer`
-- **LLM providers**: Ollama (default) + OpenAI-compatible APIs (via `undici`) — configurable per-user or server-wide via `LLM_PROVIDER`
+- **LLM providers**: N named `openai-compatible` endpoints configured in Settings → LLM. Ollama is reached via its `/v1` shim — no separate protocol. Each use case (chat/summary/quality/auto_tag/embedding) either inherits a default provider or picks an explicit provider+model. Queue + per-provider circuit breakers wrap every outbound call inside `openai-compatible-client.ts`
 - **Frontend**: React 19, Vite, TailwindCSS 4, Radix UI, Zustand, TanStack Query, Framer Motion, TipTap v3, Sonner
 - **Content conversion**: `turndown` + `jsdom` + `turndown-plugin-gfm` (Confluence XHTML → Markdown), `marked` (Markdown → HTML)
 - **PDF**: `pdf-lib` for PDF export/import processing
@@ -237,8 +239,8 @@ Copy `.env.example` to `.env`. Key vars:
 - `PAT_ENCRYPTION_KEY` (32+ chars, required)
 - `POSTGRES_URL` (default: `postgresql://kb_user:changeme-postgres@localhost:5432/kb_creator`)
 - `REDIS_URL` (default: `redis://:changeme-redis@localhost:6379`)
-- `OLLAMA_BASE_URL` (default: `http://localhost:11434`)
-- `LLM_PROVIDER` (optional, `ollama` or `openai`, default: `ollama`)
+- `OLLAMA_BASE_URL` (**deprecated — seed-only**; consulted once on fresh install to seed the first `llm_providers` row. After that, configure providers in Settings → LLM.)
+- `LLM_PROVIDER` (**removed** — was the two-slot toggle. Replaced by the `llm_providers` table + per-use-case assignments.)
 - `LLM_BEARER_TOKEN` (optional, Bearer token for authenticated Ollama/LLM proxies)
 - `LLM_AUTH_TYPE` (optional, `bearer` or `none`, default: `bearer`)
 - `LLM_VERIFY_SSL` (optional, set to `false` to disable TLS verification for LLM connections)
