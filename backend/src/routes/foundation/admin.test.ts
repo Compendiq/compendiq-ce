@@ -46,12 +46,14 @@ vi.mock('../../core/utils/logger.js', () => ({
 // `GET /admin/settings` for the `embeddingDimensions` response field.
 vi.mock('../../core/services/admin-settings-service.js', () => ({
   getEmbeddingDimensions: vi.fn().mockResolvedValue(1024),
+  getAdminAccessDeniedRetentionDays: vi.fn().mockResolvedValue(90),
 }));
 
 import { listErrors, resolveError, getErrorSummary } from '../../core/services/error-tracker.js';
 import { query as mockQuery } from '../../core/db/postgres.js';
 import { _resetStreamCapCache } from '../../core/services/sse-stream-limiter.js';
 import { _resetCache as _resetRateLimitsCache } from '../../core/services/rate-limit-service.js';
+import { getAdminAccessDeniedRetentionDays as mockGetAdminAccessDeniedRetentionDays } from '../../core/services/admin-settings-service.js';
 
 describe('Admin routes', () => {
   let app: ReturnType<typeof Fastify>;
@@ -586,6 +588,84 @@ describe('Admin routes', () => {
         method: 'PUT',
         url: '/api/admin/settings',
         payload: { reembedHistoryRetention: 10_001 },
+      });
+      expect(response.statusCode).toBe(400);
+    });
+  });
+
+  // ─── #264 — adminAccessDeniedRetentionDays wiring ───────────────────────
+  describe('adminAccessDeniedRetentionDays (issue #264)', () => {
+    it('GET /api/admin/settings returns the value produced by the getter (90 default)', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
+      (mockGetAdminAccessDeniedRetentionDays as ReturnType<typeof vi.fn>).mockResolvedValueOnce(90);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/admin/settings',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body).adminAccessDeniedRetentionDays).toBe(90);
+    });
+
+    it('GET /api/admin/settings reflects a custom getter value (e.g. 30 after admin-PUT)', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
+      (mockGetAdminAccessDeniedRetentionDays as ReturnType<typeof vi.fn>).mockResolvedValueOnce(30);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/admin/settings',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body).adminAccessDeniedRetentionDays).toBe(30);
+    });
+
+    it('PUT /api/admin/settings persists adminAccessDeniedRetentionDays via UPSERT', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [], rowCount: 0 });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: { adminAccessDeniedRetentionDays: 30 },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const calls = (mockQuery as ReturnType<typeof vi.fn>).mock.calls as Array<[string, ...unknown[]]>;
+      const upsert = calls.find(([sql, args]) =>
+        typeof sql === 'string' &&
+        sql.includes('INSERT INTO admin_settings') &&
+        Array.isArray(args) &&
+        args[0] === 'admin_access_denied_retention_days',
+      );
+      expect(upsert).toBeTruthy();
+      // Persisted as text — the value is stringified.
+      expect((upsert![1] as unknown[])[1]).toBe('30');
+    });
+
+    it('PUT rejects values below 7 with 400 (validated by Zod)', async () => {
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: { adminAccessDeniedRetentionDays: 6 },
+      });
+      expect(response.statusCode).toBe(400);
+    });
+
+    it('PUT rejects values above 3650 with 400', async () => {
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: { adminAccessDeniedRetentionDays: 3651 },
+      });
+      expect(response.statusCode).toBe(400);
+    });
+
+    it('PUT rejects non-integer values with 400', async () => {
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: { adminAccessDeniedRetentionDays: 30.5 },
       });
       expect(response.statusCode).toBe(400);
     });

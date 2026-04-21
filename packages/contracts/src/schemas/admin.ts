@@ -49,6 +49,14 @@ export const AdminSettingsSchema = z.object({
   // Per-user concurrent SSE-stream cap (#268). Separate from rateLimitLlmStream:
   // that caps requests/minute; this caps concurrently-open streams.
   llmMaxConcurrentStreamsPerUser: z.number().int().min(1).max(20).optional(),
+  /**
+   * Issue #264 — retention (days) for `audit_log` rows where
+   * action = 'ADMIN_ACCESS_DENIED'. Consumed by the targeted purge in
+   * `data-retention-service.ts :: runAdminAccessDeniedRetention`. Default
+   * 90, clamped to [7, 3650]. Does NOT affect other audit actions — they
+   * continue to follow the umbrella `audit_log: 365 days` sweep.
+   */
+  adminAccessDeniedRetentionDays: z.number().int().min(7).max(3650),
 });
 
 export const UpdateAdminSettingsSchema = z.object({
@@ -77,6 +85,8 @@ export const UpdateAdminSettingsSchema = z.object({
   reembedHistoryRetention: z.number().int().min(10).max(10_000).optional(),
   // Per-user concurrent SSE-stream cap (#268).
   llmMaxConcurrentStreamsPerUser: z.number().int().min(1).max(20).optional(),
+  /** Issue #264 — optional on update; omitted → leave unchanged. */
+  adminAccessDeniedRetentionDays: z.number().int().min(7).max(3650).optional(),
 });
 
 export type AdminSettings = z.infer<typeof AdminSettingsSchema>;
