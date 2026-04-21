@@ -120,6 +120,34 @@ describe.skipIf(!dbAvailable)('rag-service integration — space permission enfo
     return pageId;
   }
 
+  it('reflects mid-conversation ACL revocation on the next retrieval', async () => {
+    const user = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+    await seedSpaceWithPage({
+      userId: user,
+      spaceKey: 'OPS',
+      pageTitle: 'Runbook',
+      bodyText: 'restart the queue',
+      vec: fakeVec(11),
+    });
+
+    // First retrieval: user has access, should see the page
+    const first = await hybridSearch(user, 'restart queue');
+    expect(first.length).toBeGreaterThan(0);
+
+    // Revoke the role assignment and invalidate cache (this is what admin APIs do)
+    await query(
+      `DELETE FROM space_role_assignments
+       WHERE space_key = $1 AND principal_id = $2`,
+      ['OPS', user],
+    );
+    const { invalidateRbacCache } = await import('../../../core/services/rbac-service.js');
+    await invalidateRbacCache(user);
+
+    // Second retrieval: access should be gone
+    const second = await hybridSearch(user, 'restart queue');
+    expect(second).toHaveLength(0);
+  });
+
   it('does not leak chunks from a space the caller has no role in', async () => {
     const userA = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
     const userB = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
