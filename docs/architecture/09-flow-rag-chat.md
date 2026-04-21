@@ -13,13 +13,13 @@ sequenceDiagram
     participant BE as /api/llm/ask (SSE)
     participant SAN as sanitize-llm-input
     participant RAG as rag-service
-    participant OL as Ollama (embed)
+    participant EMB as embedding provider<br/>(resolveUsecase('embedding'))
     participant PG as Postgres (pgvector + FTS)
     participant SP as subpage-context
     participant CF as Confluence
     participant MCP as mcp-docs / searxng
     participant CACHE as llm-cache (Redis)
-    participant PROV as LLM provider<br/>(Ollama / OpenAI)
+    participant PROV as chat provider<br/>(resolveUsecase('chat'))
     participant CONV as llm_conversations
 
     FE->>BE: POST /api/llm/ask<br/>{ question, model, conversationId,<br/>  includeSubPages, externalUrls, searchWeb }
@@ -36,8 +36,8 @@ sequenceDiagram
             BE-->>FE: SSE { content, done:true, fromCache:true }
         else miss (stampede lock)
             CACHE-->>BE: lock acquired
-            BE->>OL: POST /api/embeddings (question)
-            OL-->>BE: q_vector[1024]
+            BE->>EMB: POST /v1/embeddings (question)
+            EMB-->>BE: q_vector[N]
             par vector + keyword
                 BE->>RAG: vectorSearch(q_vector, userId, topK)
                 RAG->>PG: SELECT ... ORDER BY embedding <=> $1<br/>WHERE user_id=$2 AND space in (...)
@@ -135,7 +135,8 @@ All of these go through the same provider resolver and sanitization layer:
 - `backend/src/routes/llm/llm-ask.ts`
 - `backend/src/domains/llm/services/rag-service.ts`
 - `backend/src/domains/llm/services/embedding-service.ts`
-- `backend/src/domains/llm/services/llm-provider.ts` (Ollama vs OpenAI resolver)
+- `backend/src/domains/llm/services/llm-provider-resolver.ts` (per-use-case provider + model resolver)
+- `backend/src/domains/llm/services/openai-compatible-client.ts` (unified client — `chat` / `streamChat` / `generateEmbedding` with queue + per-provider circuit breakers)
 - `backend/src/domains/llm/services/llm-cache.ts`
 - `backend/src/core/utils/sanitize-llm-input.ts`
 - `backend/src/domains/confluence/services/subpage-context.ts`

@@ -256,11 +256,9 @@ All configuration is via environment variables. Key settings:
 |----------|:---:|-------------|
 | `JWT_SECRET` | Yes | JWT signing secret (32+ characters) |
 | `PAT_ENCRYPTION_KEY` | Yes | AES-256-GCM key for Confluence PATs (32+ characters) |
-| `OLLAMA_BASE_URL` | -- | Ollama server URL (default: `http://localhost:11434`) |
-| `EMBEDDING_MODEL` | -- | Embedding model (default: `bge-m3`) |
-| `LLM_PROVIDER` | -- | `ollama` (default) or `openai` |
-| `OPENAI_BASE_URL` | -- | OpenAI-compatible API URL (for Azure, LM Studio, vLLM, etc.) |
-| `OPENAI_API_KEY` | -- | API key when using OpenAI provider |
+| `OLLAMA_BASE_URL` | -- | **Deprecated — seed-only.** Used on fresh install to create the first `llm_providers` row. Configure providers in Settings → LLM after first login. |
+| `OPENAI_BASE_URL` | -- | **Deprecated — seed-only.** Same as above for an OpenAI-compatible endpoint. |
+| `OPENAI_API_KEY` | -- | **Deprecated — seed-only.** API key for the seeded OpenAI row. |
 | `POSTGRES_URL` | -- | PostgreSQL connection string |
 | `REDIS_URL` | -- | Redis connection string |
 
@@ -277,10 +275,9 @@ All configuration is via environment variables. Key settings:
 | `POSTGRES_URL` | `postgresql://kb_user:changeme-postgres@localhost:5432/kb_creator` | Full connection string |
 | `REDIS_PASSWORD` | `changeme-redis` | Redis password |
 | `REDIS_URL` | `redis://:changeme-redis@localhost:6379` | Full Redis connection string |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL |
-| `EMBEDDING_MODEL` | `bge-m3` | Server-wide embedding model (1024 dimensions) |
-| `LLM_PROVIDER` | `ollama` | LLM provider: `ollama` or `openai` |
-| `LLM_BEARER_TOKEN` | -- | Bearer token for authenticated Ollama/LLM proxies |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | **Deprecated — seed-only.** Consulted once on fresh install to create the first `llm_providers` row; ignored afterwards. Configure providers via Settings → LLM. |
+| `LLM_PROVIDER` | — | **Removed.** The two-slot `{ollama, openai}` toggle was replaced by the `llm_providers` table + per-use-case assignments. |
+| `LLM_BEARER_TOKEN` | -- | **Deprecated — seed-only.** Bearer token on the seeded Ollama row. |
 | `LLM_VERIFY_SSL` | `true` | Set to `false` for self-signed LLM certs |
 | `LLM_STREAM_TIMEOUT_MS` | `300000` | Streaming request timeout (ms) |
 | `LLM_CACHE_TTL` | `3600` | Redis TTL for LLM cache (seconds) |
