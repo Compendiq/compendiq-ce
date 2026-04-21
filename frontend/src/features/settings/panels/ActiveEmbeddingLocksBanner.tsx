@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import type { AdminEmbeddingLocksResponse, EmbeddingLockSnapshot } from '@compendiq/contracts';
+import { EMBEDDING_LOCK_TTL_MS } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
 
 /**
@@ -66,11 +67,12 @@ export function ActiveEmbeddingLocksBanner() {
       </p>
       <ul className="space-y-1">
         {locks.map((lock: EmbeddingLockSnapshot) => {
-          // Approximate "held for" = TTL_cap - remaining. EMBEDDING_LOCK_TTL
-          // is 1 hour per redis-cache.ts, i.e. 3_600_000 ms.
+          // Approximate "held for" = TTL_cap - remaining. EMBEDDING_LOCK_TTL_MS
+          // is the shared contract constant (see packages/contracts), kept in
+          // sync with the backend's SET NX EX.
           const heldSecs = Math.max(
             0,
-            Math.round((3_600_000 - lock.ttlRemainingMs) / 1000),
+            Math.round((EMBEDDING_LOCK_TTL_MS - lock.ttlRemainingMs) / 1000),
           );
           const isConfirming = confirming === lock.userId;
           return (

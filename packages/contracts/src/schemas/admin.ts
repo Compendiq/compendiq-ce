@@ -81,6 +81,15 @@ export type UpdateAdminSettingsInput = z.infer<typeof UpdateAdminSettingsSchema>
 // Shared contract between `GET /api/admin/embedding/locks` / the force-release
 // POST and the frontend `ActiveEmbeddingLocksBanner`. See plan §2.10 / §3.3.
 
+/**
+ * Safety TTL on every `embedding:lock:${userId}` key in Redis (milliseconds).
+ * Mirrors `EMBEDDING_LOCK_TTL` in `backend/src/core/services/redis-cache.ts`
+ * (1 hour, in seconds there — kept aligned across both sides). Exposed from
+ * the contracts package so the frontend can derive "held for" without
+ * hardcoding the value. When the backend constant moves, update this too.
+ */
+export const EMBEDDING_LOCK_TTL_MS = 3_600_000;
+
 export const EmbeddingLockSnapshotSchema = z.object({
   /** Lock holder. Usually a user id, but can also be the synthetic
    *  `__reembed_all__` system lock (which the admin endpoint filters out). */

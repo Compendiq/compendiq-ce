@@ -1,5 +1,6 @@
 import type { RedisClientType } from 'redis';
 import { randomUUID } from 'node:crypto';
+import { EMBEDDING_LOCK_TTL_MS } from '@compendiq/contracts';
 import { logger } from '../utils/logger.js';
 
 // Module-level reference for services that need cache invalidation without Fastify context
@@ -39,7 +40,13 @@ export async function invalidateGraphCache(userId: string): Promise<void> {
 // Replaces in-memory Set<string> to work correctly in multi-process deployments.
 // Uses SET NX EX for atomic lock acquisition with a safety TTL.
 
-const EMBEDDING_LOCK_TTL = 3600; // 1 hour safety TTL prevents permanent lock on crash
+/**
+ * Safety TTL on embedding lock keys (seconds). Derived from the shared
+ * `EMBEDDING_LOCK_TTL_MS` contract constant so the frontend banner can
+ * compute "held for" without hardcoding the value. 1 hour default —
+ * prevents permanent locks on crash.
+ */
+export const EMBEDDING_LOCK_TTL = Math.floor(EMBEDDING_LOCK_TTL_MS / 1000);
 
 function embeddingLockKey(userId: string): string {
   return `embedding:lock:${userId}`;
