@@ -27,7 +27,14 @@ const mocks = vi.hoisted(() => ({
   acquireEmbeddingLock: vi.fn().mockResolvedValue('fake-lock-id-for-tests'),
   releaseEmbeddingLock: vi.fn().mockResolvedValue(undefined),
   isEmbeddingLocked: vi.fn().mockResolvedValue(false),
+  listActiveEmbeddingLocks: vi.fn().mockResolvedValue([]),
+  forceReleaseEmbeddingLock: vi.fn().mockResolvedValue({ released: true, previousHolderEpoch: null }),
   invalidateGraphCache: vi.fn().mockResolvedValue(undefined),
+  // Mock Redis client used by the holder-epoch guard (plan §2.10):
+  // `processDirtyPages` reads back the lock key every 20 pages via
+  // `getRedisClient().get(embeddingLockKey(userId))`.
+  redisGet: vi.fn().mockResolvedValue(null),
+  enqueueJob: vi.fn().mockResolvedValue('reembed-all'),
 }));
 
 vi.mock('../../../core/db/postgres.js', () => ({
@@ -69,8 +76,19 @@ vi.mock('../../../core/services/redis-cache.js', () => ({
   acquireEmbeddingLock: (...args: unknown[]) => mocks.acquireEmbeddingLock(...args),
   releaseEmbeddingLock: (...args: unknown[]) => mocks.releaseEmbeddingLock(...args),
   isEmbeddingLocked: (...args: unknown[]) => mocks.isEmbeddingLocked(...args),
+  listActiveEmbeddingLocks: (...args: unknown[]) => mocks.listActiveEmbeddingLocks(...args),
+  forceReleaseEmbeddingLock: (...args: unknown[]) => mocks.forceReleaseEmbeddingLock(...args),
   invalidateGraphCache: (...args: unknown[]) => mocks.invalidateGraphCache(...args),
-  getRedisClient: () => null,
+  // The holder-epoch guard in processDirtyPages calls getRedisClient().get(...)
+  // every 20 pages. Return a minimal stub that exposes `.get` wired to `redisGet`.
+  getRedisClient: () => ({ get: mocks.redisGet }),
+}));
+
+// Mock queue-service so tests can observe `enqueueJob` without BullMQ booting.
+vi.mock('../../../core/services/queue-service.js', () => ({
+  enqueueJob: (...args: unknown[]) => mocks.enqueueJob(...args),
+  getJobStatus: vi.fn().mockResolvedValue(null),
+  isBullMQEnabled: vi.fn().mockReturnValue(true),
 }));
 
 vi.mock('../../../core/services/rbac-service.js', () => ({
@@ -102,6 +120,8 @@ import {
   isContextLengthError,
   splitByWords,
   getEmbedBreakerNextRetryTime,
+  enqueueReembedAll,
+  runReembedAllJob,
   CHUNK_HARD_LIMIT,
   DIRTY_PAGE_BATCH_SIZE,
   type EmbeddingProgressEvent,
@@ -134,7 +154,18 @@ describe('embedding-service', () => {
     mocks.acquireEmbeddingLock.mockResolvedValue(FAKE_LOCK_ID);
     mocks.releaseEmbeddingLock.mockResolvedValue(undefined);
     mocks.isEmbeddingLocked.mockResolvedValue(false);
+    mocks.listActiveEmbeddingLocks.mockResolvedValue([]);
+    mocks.forceReleaseEmbeddingLock.mockResolvedValue({ released: true, previousHolderEpoch: null });
     mocks.invalidateGraphCache.mockResolvedValue(undefined);
+    // Holder-epoch guard: by default the Redis GET returns the lock we just
+    // acquired for `embedding:lock:*` keys so the guard does not fire (it
+    // only aborts on mismatch/null). Other keys (e.g. embedding:last_run_at)
+    // must return null to avoid polluting unrelated tests.
+    mocks.redisGet.mockImplementation(async (key: string) => {
+      if (typeof key === 'string' && key.startsWith('embedding:lock:')) return FAKE_LOCK_ID;
+      return null;
+    });
+    mocks.enqueueJob.mockResolvedValue('reembed-all');
     // Default: htmlToText returns non-trivial text so embedPage proceeds
     mocks.htmlToText.mockReturnValue('Some substantial page content for embedding that is long enough');
     // Default: getSharedLlmSettings returns standard Ollama settings
@@ -289,6 +320,19 @@ describe('embedding-service', () => {
       mocks.isEmbeddingLocked.mockResolvedValue(true);
       expect(await isProcessingUser('busy-user')).toBe(true);
       expect(mocks.isEmbeddingLocked).toHaveBeenCalledWith('busy-user');
+    });
+
+    // Plan §2.4 — bidirectional gating for reembed-all.
+    it('returns true when the reembed-all system lock is held, even if the user has no lock', async () => {
+      mocks.isEmbeddingLocked.mockImplementation(async (id: string) => id === '__reembed_all__');
+      expect(await isProcessingUser('some-user')).toBe(true);
+      expect(mocks.isEmbeddingLocked).toHaveBeenCalledWith('some-user');
+      expect(mocks.isEmbeddingLocked).toHaveBeenCalledWith('__reembed_all__');
+    });
+
+    it('returns false when neither the user nor reembed-all lock is held', async () => {
+      mocks.isEmbeddingLocked.mockResolvedValue(false);
+      expect(await isProcessingUser('some-user')).toBe(false);
     });
   });
 
@@ -1434,6 +1478,351 @@ describe('chunkText', () => {
     it('returns null when no embedding provider can be resolved', async () => {
       mocks.resolveUsecase.mockRejectedValueOnce(new Error('No default provider configured'));
       expect(await getEmbedBreakerNextRetryTime()).toBeNull();
+    });
+  });
+
+  // ─── Plan §2.3 / §4.1 — enqueueReembedAll returns fixed jobId + retention ──
+  describe('enqueueReembedAll', () => {
+    beforeEach(() => {
+      // The top-level describe('chunkText') has no beforeEach, so reset
+      // locally to prevent mockResolvedValueOnce queues from leaking.
+      vi.resetAllMocks();
+      mocks.listActiveEmbeddingLocks.mockResolvedValue([]);
+      mocks.enqueueJob.mockResolvedValue('reembed-all');
+    });
+
+    it('returns the fixed "reembed-all" jobId (collapse-concurrent semantic)', async () => {
+      // Retention query returns the default seed.
+      mocks.query.mockResolvedValueOnce({ rows: [{ setting_value: '150' }] });
+
+      const id = await enqueueReembedAll();
+
+      expect(id).toBe('reembed-all');
+      expect(mocks.enqueueJob).toHaveBeenCalledOnce();
+      const [queueName, data, opts] = mocks.enqueueJob.mock.calls[0];
+      expect(queueName).toBe('reembed-all');
+      expect(data).toMatchObject({ heldBy: [] });
+      expect(opts).toMatchObject({
+        jobId: 'reembed-all',
+        removeOnComplete: 150,
+        removeOnFail: 150,
+      });
+    });
+
+    // RED #4 (plan §4.1): retention read from admin_settings.
+    it('reads reembed_history_retention from admin_settings and passes it as removeOnComplete/removeOnFail', async () => {
+      mocks.query.mockResolvedValueOnce({ rows: [{ setting_value: '250' }] });
+
+      await enqueueReembedAll();
+
+      const opts = mocks.enqueueJob.mock.calls[0][2];
+      expect(opts).toMatchObject({ removeOnComplete: 250, removeOnFail: 250 });
+    });
+
+    it('falls back to 150 when the retention setting is missing', async () => {
+      mocks.query.mockResolvedValueOnce({ rows: [] });
+
+      await enqueueReembedAll();
+
+      const opts = mocks.enqueueJob.mock.calls[0][2];
+      expect(opts).toMatchObject({ removeOnComplete: 150, removeOnFail: 150 });
+    });
+
+    it('clamps retention below the minimum (10) up to 10', async () => {
+      mocks.query.mockResolvedValueOnce({ rows: [{ setting_value: '1' }] });
+      await enqueueReembedAll();
+      const opts = mocks.enqueueJob.mock.calls[0][2];
+      expect(opts).toMatchObject({ removeOnComplete: 10, removeOnFail: 10 });
+    });
+
+    it('clamps retention above the maximum (10000) down to 10000', async () => {
+      mocks.query.mockResolvedValueOnce({ rows: [{ setting_value: '999999' }] });
+      await enqueueReembedAll();
+      const opts = mocks.enqueueJob.mock.calls[0][2];
+      expect(opts).toMatchObject({ removeOnComplete: 10_000, removeOnFail: 10_000 });
+    });
+
+    it('includes the currently-held per-user lock userIds in the job data (heldBy)', async () => {
+      mocks.query.mockResolvedValueOnce({ rows: [{ setting_value: '150' }] });
+      mocks.listActiveEmbeddingLocks.mockResolvedValueOnce([
+        { userId: 'alice', holderEpoch: 'uuid-a', ttlRemainingMs: 1000 },
+        { userId: 'bob', holderEpoch: 'uuid-b', ttlRemainingMs: 2000 },
+      ]);
+
+      await enqueueReembedAll();
+
+      const data = mocks.enqueueJob.mock.calls[0][1];
+      expect(data).toMatchObject({ heldBy: ['alice', 'bob'] });
+    });
+  });
+
+  // ─── Plan §2.3 / §4.1 — runReembedAllJob ────────────────────────────────
+  describe('runReembedAllJob', () => {
+    beforeEach(() => {
+      vi.resetAllMocks();
+      mocks.toSql.mockReturnValue('[0.1,0.2]');
+      mocks.acquireEmbeddingLock.mockResolvedValue(FAKE_LOCK_ID);
+      mocks.releaseEmbeddingLock.mockResolvedValue(undefined);
+      mocks.isEmbeddingLocked.mockResolvedValue(false);
+      mocks.listActiveEmbeddingLocks.mockResolvedValue([]);
+      mocks.forceReleaseEmbeddingLock.mockResolvedValue({ released: true, previousHolderEpoch: null });
+      mocks.invalidateGraphCache.mockResolvedValue(undefined);
+      mocks.htmlToText.mockReturnValue('Some substantial page content for embedding that is long enough');
+      vi.mocked(getSharedLlmSettings).mockResolvedValue({
+        llmProvider: 'ollama',
+        ollamaModel: 'qwen3.5',
+        openaiBaseUrl: null,
+        hasOpenaiApiKey: false,
+        openaiModel: null,
+        embeddingModel: 'bge-m3',
+        embeddingDimensions: 1024,
+        ftsLanguage: 'simple',
+      });
+      mocks.providerGenerateEmbedding.mockImplementation((_u: string, t: string[]) =>
+        Promise.resolve(t.map(() => new Array(1024).fill(0.1))),
+      );
+      mocks.resolveUsecase.mockResolvedValue({
+        config: {
+          providerId: 'p1', id: 'p1', name: 'X',
+          baseUrl: 'http://x/v1', apiKey: null,
+          authType: 'none', verifySsl: true, defaultModel: 'bge-m3',
+        },
+        model: 'bge-m3',
+      });
+      mockClient.query.mockResolvedValue({ rows: [], rowCount: 0 });
+      mockClient.release.mockResolvedValue(undefined);
+      mocks.getPool.mockReturnValue({ connect: async () => mockClient });
+      mocks.redisGet.mockImplementation(async (key: string) => {
+        if (typeof key === 'string' && key.startsWith('embedding:lock:')) return FAKE_LOCK_ID;
+        return null;
+      });
+      mocks.enqueueJob.mockResolvedValue('reembed-all');
+    });
+
+    type FakeJob = {
+      id: string;
+      name: string;
+      data: unknown;
+      updateProgress: ReturnType<typeof vi.fn>;
+      remove: ReturnType<typeof vi.fn>;
+    };
+
+    function makeFakeJob(): FakeJob {
+      return {
+        id: 'reembed-all',
+        name: 'reembed-all',
+        data: {},
+        updateProgress: vi.fn().mockResolvedValue(undefined),
+        remove: vi.fn().mockResolvedValue(undefined),
+      };
+    }
+
+    // RED #1 (plan §4.1): happy path. Uses a query dispatcher keyed on SQL
+    // fragments so the response order doesn't matter — the order of the
+    // real code path (getAdminChunkSettings → outer COUNT → inner COUNT →
+    // batch SELECT → batch UPDATE → embedPage → recompute relationships) is
+    // easily bypassed by matching the first few words of each query.
+    it('marks all non-folder pages dirty, runs processDirtyPages, returns processed/failed summary', async () => {
+      const pages = [makePage('c1', 1), makePage('c2', 2)];
+      mocks.query.mockImplementation(async (sql: string, _args?: unknown[]) => {
+        if (sql.includes('UPDATE pages') && sql.includes('embedding_dirty = TRUE')) {
+          return { rowCount: 2, rows: [] };
+        }
+        if (sql.includes('admin_settings') && sql.includes('embedding_chunk_size')) {
+          return { rows: [] };
+        }
+        if (sql.includes('COUNT(*)') && sql.includes('embedding_dirty')) {
+          // Worker's outer COUNT returns `{ c: '…' }` while processDirtyPages'
+          // inner COUNT returns `{ count: '…' }`. Return both aliases.
+          return { rows: [{ c: '2', count: '2' }] };
+        }
+        if (sql.includes('SELECT id, confluence_id')) {
+          return { rows: pages };
+        }
+        if (sql.includes("embedding_status = 'embedding'")) {
+          return { rowCount: 2, rows: [] };
+        }
+        // Any computePageRelationships / UPDATE-dirty-false calls.
+        return { rows: [], rowCount: 0 };
+      });
+
+      const job = makeFakeJob();
+      const result = await runReembedAllJob(job as unknown as Parameters<typeof runReembedAllJob>[0]);
+
+      expect(result).toMatch(/^processed=\d+ failed=\d+ total=\d+$/);
+      const finalProgress = job.updateProgress.mock.calls
+        .map((c: unknown[]) => c[0])
+        .reverse()
+        .find((p: unknown) => typeof p === 'object' && p !== null && (p as { phase?: string }).phase === 'complete');
+      expect(finalProgress).toBeTruthy();
+      expect(mocks.acquireEmbeddingLock).toHaveBeenCalledWith('__reembed_all__');
+      expect(mocks.releaseEmbeddingLock).toHaveBeenCalledWith('__reembed_all__', FAKE_LOCK_ID);
+    });
+
+    // RED #2 (plan §4.1, Q2): wait-on-locks loop.
+    it('emits { phase: "waiting-on-user-locks", heldBy: [...] } progress and waits until locks clear', async () => {
+      // Collapse setTimeout inside the wait loop so 3s polls fire immediately.
+      vi.useFakeTimers();
+      try {
+        // First two poll cycles: alice still holds a lock. Third: clear.
+        mocks.listActiveEmbeddingLocks
+          .mockResolvedValueOnce([
+            { userId: 'alice', holderEpoch: 'u1', ttlRemainingMs: 5000 },
+          ])
+          .mockResolvedValueOnce([
+            { userId: 'alice', holderEpoch: 'u1', ttlRemainingMs: 4000 },
+          ])
+          .mockResolvedValue([]);
+
+        // Zero-dirty-pages dispatcher — just enough to let processDirtyPages
+        // return quickly once the wait loop clears.
+        mocks.query.mockImplementation(async (sql: string) => {
+          if (sql.includes('UPDATE pages') && sql.includes('embedding_dirty = TRUE')) {
+            return { rowCount: 0, rows: [] };
+          }
+          if (sql.includes('admin_settings')) return { rows: [] };
+          if (sql.includes('COUNT(*)')) return { rows: [{ c: '0', count: '0' }] };
+          return { rows: [], rowCount: 0 };
+        });
+
+        const job = makeFakeJob();
+        const pending = runReembedAllJob(job as unknown as Parameters<typeof runReembedAllJob>[0]);
+
+        // Advance timers until the wait loop resolves (3s poll interval).
+        await vi.advanceTimersByTimeAsync(10_000);
+        await pending;
+
+        const waitingProgressCalls = job.updateProgress.mock.calls
+          .map((c: unknown[]) => c[0])
+          .filter((p: unknown): p is { phase: string; heldBy?: string[] } =>
+            typeof p === 'object' && p !== null && (p as { phase?: string }).phase === 'waiting-on-user-locks',
+          );
+        expect(waitingProgressCalls.length).toBeGreaterThan(0);
+        expect(waitingProgressCalls[0].heldBy).toEqual(['alice']);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // RED #3 (plan §4.1, Q2 timeout).
+    it('aborts with a clear error when per-user locks remain beyond REEMBED_WAIT_LOCKS_MS', async () => {
+      const originalTimeout = process.env.REEMBED_WAIT_LOCKS_MS;
+      process.env.REEMBED_WAIT_LOCKS_MS = '10'; // immediate timeout
+
+      try {
+        mocks.listActiveEmbeddingLocks.mockResolvedValue([
+          { userId: 'alice', holderEpoch: 'u1', ttlRemainingMs: 5000 },
+          { userId: 'bob', holderEpoch: 'u2', ttlRemainingMs: 5000 },
+        ]);
+
+        const job = makeFakeJob();
+        await expect(
+          runReembedAllJob(job as unknown as Parameters<typeof runReembedAllJob>[0]),
+        ).rejects.toThrow(/reembed-all aborted.*alice.*bob/);
+
+        // Did NOT proceed to acquire the system lock.
+        expect(mocks.acquireEmbeddingLock).not.toHaveBeenCalledWith('__reembed_all__');
+      } finally {
+        if (originalTimeout === undefined) delete process.env.REEMBED_WAIT_LOCKS_MS;
+        else process.env.REEMBED_WAIT_LOCKS_MS = originalTimeout;
+      }
+    });
+
+    it('excludes the __reembed_all__ lock itself from the held-locks list', async () => {
+      mocks.listActiveEmbeddingLocks.mockResolvedValueOnce([
+        { userId: '__reembed_all__', holderEpoch: 'self', ttlRemainingMs: 3_600_000 },
+      ]);
+      mocks.query.mockImplementation(async (sql: string) => {
+        if (sql.includes('UPDATE pages') && sql.includes('embedding_dirty = TRUE')) {
+          return { rowCount: 0, rows: [] };
+        }
+        if (sql.includes('admin_settings')) return { rows: [] };
+        if (sql.includes('COUNT(*)')) return { rows: [{ c: '0', count: '0' }] };
+        return { rows: [], rowCount: 0 };
+      });
+
+      const job = makeFakeJob();
+      // Should NOT block / timeout — the system-lock entry is filtered out.
+      await expect(
+        runReembedAllJob(job as unknown as Parameters<typeof runReembedAllJob>[0]),
+      ).resolves.toMatch(/^processed=/);
+    });
+  });
+
+  // ─── Plan §2.10 / §4.7 — RED #11g: holder-epoch worker guard ────────────
+  describe('processDirtyPages holder-epoch guard', () => {
+    beforeEach(() => {
+      vi.resetAllMocks();
+      mocks.toSql.mockReturnValue('[0.1,0.2]');
+      mocks.acquireEmbeddingLock.mockResolvedValue(FAKE_LOCK_ID);
+      mocks.releaseEmbeddingLock.mockResolvedValue(undefined);
+      mocks.isEmbeddingLocked.mockResolvedValue(false);
+      mocks.invalidateGraphCache.mockResolvedValue(undefined);
+      mocks.htmlToText.mockReturnValue('Some substantial page content for embedding that is long enough');
+      vi.mocked(getSharedLlmSettings).mockResolvedValue({
+        llmProvider: 'ollama',
+        ollamaModel: 'qwen3.5',
+        openaiBaseUrl: null,
+        hasOpenaiApiKey: false,
+        openaiModel: null,
+        embeddingModel: 'bge-m3',
+        embeddingDimensions: 1024,
+        ftsLanguage: 'simple',
+      });
+      mocks.providerGenerateEmbedding.mockImplementation((_u: string, t: string[]) =>
+        Promise.resolve(t.map(() => new Array(1024).fill(0.1))),
+      );
+      mocks.resolveUsecase.mockResolvedValue({
+        config: {
+          providerId: 'p1', id: 'p1', name: 'X',
+          baseUrl: 'http://x/v1', apiKey: null,
+          authType: 'none', verifySsl: true, defaultModel: 'bge-m3',
+        },
+        model: 'bge-m3',
+      });
+      mockClient.query.mockResolvedValue({ rows: [], rowCount: 0 });
+      mockClient.release.mockResolvedValue(undefined);
+      mocks.getPool.mockReturnValue({ connect: async () => mockClient });
+    });
+
+    it('aborts the batch loop within its 20-page guard window when the lock is force-released', async () => {
+      mocks.acquireEmbeddingLock.mockResolvedValue(FAKE_LOCK_ID);
+      const pages = Array.from({ length: 25 }, (_, i) => makePage(`c${i}`, i + 1));
+
+      mocks.query.mockImplementation(async (sql: string) => {
+        if (sql.includes('admin_settings') && sql.includes('embedding_chunk_size')) {
+          return { rows: [] };
+        }
+        if (sql.includes('COUNT(*)') && sql.includes('embedding_dirty')) {
+          return { rows: [{ count: '25' }] };
+        }
+        if (sql.includes('SELECT id, confluence_id')) {
+          return { rows: pages };
+        }
+        if (sql.includes("embedding_status = 'embedding'")) {
+          return { rowCount: 25, rows: [] };
+        }
+        // Defaults (no rows returned) for any additional queries.
+        return { rows: [], rowCount: 0 };
+      });
+
+      mocks.getPool.mockReturnValue({ connect: async () => mockClient });
+      mockClient.query.mockResolvedValue({ rows: [], rowCount: 1 });
+
+      // Holder-epoch guard: every redisGet returns null → the VERY FIRST
+      // guard check (after page 20) detects the mismatch and aborts. We
+      // expect ≤ 20 processed because the inner loop breaks immediately on
+      // page 21 before any more embedPage calls.
+      mocks.redisGet.mockImplementation(async () => null);
+
+      const { processed, errors } = await processDirtyPages('alice');
+
+      // Guard fires on page 21; we processed exactly 20 pages.
+      expect(processed).toBeLessThanOrEqual(20);
+      expect(errors).toBe(0);
+      expect(mocks.releaseEmbeddingLock).toHaveBeenCalledWith('alice', FAKE_LOCK_ID);
+      // Guard check was actually invoked.
+      expect(mocks.redisGet).toHaveBeenCalledWith('embedding:lock:alice');
     });
   });
 });

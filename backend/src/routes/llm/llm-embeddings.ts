@@ -3,11 +3,25 @@ import { query } from '../../core/db/postgres.js';
 import { confluenceToHtml } from '../../core/services/content-converter.js';
 import { getEmbeddingStatus, processDirtyPages, reEmbedAll, isProcessingUser, embedPage, resetFailedEmbeddings } from '../../domains/llm/services/embedding-service.js';
 import type { EmbeddingProgressEvent } from '../../domains/llm/services/embedding-service.js';
+import { isEmbeddingLocked } from '../../core/services/redis-cache.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { ForceEmbedTreeRequestSchema } from '@compendiq/contracts';
 import { logger } from '../../core/utils/logger.js';
 import { EMBEDDING_RATE_LIMIT } from './_helpers.js';
 import { getRateLimits } from '../../core/services/rate-limit-service.js';
+
+/**
+ * Pick the right 409 body depending on which lock is responsible.
+ * Plan §2.4: differentiate "your own in-flight run" from "global re-embed".
+ * Caller already knows `isProcessingUser(userId)` is true; we only re-check
+ * the system lock here to pick the wording.
+ */
+async function conflictMessage(): Promise<string> {
+  if (await isEmbeddingLocked('__reembed_all__')) {
+    return 'A global re-embed is in progress — per-user triggers are temporarily disabled. Try again in a few minutes.';
+  }
+  return 'Embedding processing is already in progress for this user';
+}
 
 export async function llmEmbeddingRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -22,8 +36,9 @@ export async function llmEmbeddingRoutes(fastify: FastifyInstance) {
     const userId = request.userId;
 
     // Return 409 if embedding is already in progress for this user
+    // (either their own lock, or the global reembed-all system lock).
     if (await isProcessingUser(userId)) {
-      throw fastify.httpErrors.conflict('Embedding processing is already in progress for this user');
+      throw fastify.httpErrors.conflict(await conflictMessage());
     }
 
     // Set up SSE response
@@ -68,8 +83,9 @@ export async function llmEmbeddingRoutes(fastify: FastifyInstance) {
     const userId = request.userId;
 
     // Return 409 if embedding is already in progress for this user
+    // (either their own lock, or the global reembed-all system lock).
     if (await isProcessingUser(userId)) {
-      throw fastify.httpErrors.conflict('Embedding processing is already in progress for this user');
+      throw fastify.httpErrors.conflict(await conflictMessage());
     }
 
     // Reset all failed pages back to 'not_embedded'
