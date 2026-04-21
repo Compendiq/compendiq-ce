@@ -32,7 +32,7 @@ From `backend/src/core/services/queue-service.ts:240–319` + PR #261:
 
 ### 1.3 Don't touch
 
-- `CLAUDE.md:261` — `USE_BULLMQ` already documented.
+- `CLAUDE.md:263` — `USE_BULLMQ` already documented.
 - `.env.example` — already lists `USE_BULLMQ`.
 
 ### 1.4 External research

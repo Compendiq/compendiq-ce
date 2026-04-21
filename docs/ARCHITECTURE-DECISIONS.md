@@ -873,7 +873,7 @@ registerWorkerDef({
 | `reembed-all` | 1 | on-demand (#257) | One-shot reembed-all run, admin-triggered |
 | `analytics-aggregation` | — | registered-only | Reserved for EE analytics workers |
 
-Worker definitions live in `registerAllWorkers()` (`queue-service.ts:240–319`). Job history is persisted to the `job_history` table on every completion / failure (`queue-service.ts:63–81`).
+Worker definitions live in `registerAllWorkers()` (`queue-service.ts:337–429`). Job history is persisted to the `job_history` table on every completion / failure (`queue-service.ts:63–81`).
 
 #### Why BullMQ over the old `setInterval`
 
@@ -902,7 +902,9 @@ That argument no longer holds as of issue #256 (multi-LLM-provider) and #257 (ad
 | Quality Analysis | `QUALITY_CHECK_INTERVAL_MINUTES` (60) | `QUALITY_BATCH_SIZE` (5) | `QUALITY_MODEL` → `DEFAULT_LLM_MODEL` → `qwen3:4b` | 3 (`quality_retry_count`) |
 | Summary | `SUMMARY_CHECK_INTERVAL_MINUTES` (60) | `SUMMARY_BATCH_SIZE` (5) | `SUMMARY_MODEL` → `DEFAULT_LLM_MODEL` | 3 (`summary_retry_count`) |
 
-#### Worker Lifecycle
+#### Legacy worker lifecycle (USE_BULLMQ=false fallback)
+
+Describes the `setInterval` path only; the primary BullMQ path is driven by the repeatable-job scheduler and `Worker` events documented above.
 
 1. **Startup**: `startXxxWorker()` called from `index.ts`, registers `setInterval`
 2. **Initial batch**: Runs 30 seconds after startup via `triggerXxxBatch()` (lock-guarded)
