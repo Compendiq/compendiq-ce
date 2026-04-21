@@ -424,6 +424,84 @@ describe('Admin routes', () => {
       expect(embeddingDirtyCall).toBeDefined();
     });
   });
+
+  // ─── Plan §2.7 / §4.5 RED #11 — reembedHistoryRetention wiring ──────────
+  describe('reembedHistoryRetention (issue #257)', () => {
+    it('GET /api/admin/settings returns 150 when no row is stored (default)', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
+        rows: [
+          { setting_key: 'embedding_chunk_size', setting_value: '500' },
+          { setting_key: 'embedding_chunk_overlap', setting_value: '50' },
+        ],
+      });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/admin/settings',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.reembedHistoryRetention).toBe(150);
+    });
+
+    it('GET /api/admin/settings reflects the persisted admin_settings row', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
+        rows: [
+          { setting_key: 'embedding_chunk_size', setting_value: '500' },
+          { setting_key: 'embedding_chunk_overlap', setting_value: '50' },
+          { setting_key: 'reembed_history_retention', setting_value: '500' },
+        ],
+      });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/admin/settings',
+      });
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body).reembedHistoryRetention).toBe(500);
+    });
+
+    it('PUT /api/admin/settings persists reembedHistoryRetention via UPSERT', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [], rowCount: 0 });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: { reembedHistoryRetention: 500 },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const calls = (mockQuery as ReturnType<typeof vi.fn>).mock.calls as Array<[string, ...unknown[]]>;
+      const upsert = calls.find(([sql, args]) =>
+        typeof sql === 'string' &&
+        sql.includes('INSERT INTO admin_settings') &&
+        Array.isArray(args) &&
+        args[0] === 'reembed_history_retention',
+      );
+      expect(upsert).toBeTruthy();
+      // Persisted as text — the value is stringified.
+      expect((upsert![1] as unknown[])[1]).toBe('500');
+    });
+
+    it('PUT rejects values below 10 with 400 (validated by Zod)', async () => {
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: { reembedHistoryRetention: 5 },
+      });
+      expect(response.statusCode).toBe(400);
+    });
+
+    it('PUT rejects values above 10000 with 400', async () => {
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: { reembedHistoryRetention: 10_001 },
+      });
+      expect(response.statusCode).toBe(400);
+    });
+  });
 });
 
 describe('Admin routes - non-admin access guard', () => {

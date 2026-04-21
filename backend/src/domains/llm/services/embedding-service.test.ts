@@ -106,6 +106,18 @@ vi.mock('../../../core/services/admin-settings-service.js', () => ({
     embeddingDimensions: 1024,
     ftsLanguage: 'simple',
   }),
+  // Issue #257 — retention read during enqueueReembedAll. We delegate to
+  // mocks.query so existing `mockResolvedValueOnce({ rows: [...] })` seeding
+  // in enqueueReembedAll retention tests keeps working.
+  getReembedHistoryRetention: vi.fn(async () => {
+    const r = await mocks.query(
+      "SELECT setting_value FROM admin_settings WHERE setting_key='reembed_history_retention'",
+    );
+    const raw = r?.rows?.[0]?.setting_value;
+    const n = raw ? parseInt(raw, 10) : NaN;
+    if (!Number.isFinite(n)) return 150;
+    return Math.max(10, Math.min(10_000, n));
+  }),
 }));
 
 import {

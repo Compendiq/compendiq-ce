@@ -39,6 +39,13 @@ export const AdminSettingsSchema = z.object({
   rateLimitAdmin: z.number().int().min(5).max(1000).optional(),
   rateLimitLlmStream: z.number().int().min(1).max(1000).optional(),
   rateLimitLlmEmbedding: z.number().int().min(1).max(1000).optional(),
+  /**
+   * Issue #257 — how many completed/failed re-embed-all BullMQ jobs are
+   * retained in Redis before the oldest get swept. Takes effect on the
+   * next re-embed run (read per-enqueue inside `enqueueReembedAll`).
+   * Default 150, clamped to [10, 10000].
+   */
+  reembedHistoryRetention: z.number().int().min(10).max(10_000),
 });
 
 export const UpdateAdminSettingsSchema = z.object({
@@ -63,6 +70,8 @@ export const UpdateAdminSettingsSchema = z.object({
   rateLimitAdmin: z.number().int().min(5).max(1000).optional(),
   rateLimitLlmStream: z.number().int().min(1).max(1000).optional(),
   rateLimitLlmEmbedding: z.number().int().min(1).max(1000).optional(),
+  /** Issue #257 — optional on update; omitted → leave unchanged. */
+  reembedHistoryRetention: z.number().int().min(10).max(10_000).optional(),
 });
 
 export type AdminSettings = z.infer<typeof AdminSettingsSchema>;

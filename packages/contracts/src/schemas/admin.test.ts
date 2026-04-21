@@ -7,6 +7,7 @@ const validReadPayload = {
   embeddingChunkSize: 500,
   embeddingChunkOverlap: 50,
   drawioEmbedUrl: null,
+  reembedHistoryRetention: 150,
 } as const;
 
 describe('AdminSettingsSchema (read)', () => {
@@ -68,4 +69,64 @@ describe('UpdateAdminSettingsSchema tri-state semantics', () => {
   // LLM-specific settings (openaiBaseUrl, openaiModel, ollamaModel, etc.)
   // moved to the `llm_providers` table + `/api/admin/llm-providers` route;
   // they are no longer part of AdminSettings.
+});
+
+// ─── Plan §2.6 / §4.8 RED #12 — reembedHistoryRetention validation ─────────
+describe('reembedHistoryRetention (issue #257)', () => {
+  describe('read schema', () => {
+    it('accepts a valid integer within [10, 10000]', () => {
+      const parsed = AdminSettingsSchema.parse({
+        ...validReadPayload,
+        reembedHistoryRetention: 500,
+      });
+      expect(parsed.reembedHistoryRetention).toBe(500);
+    });
+
+    it('rejects values below 10', () => {
+      expect(() =>
+        AdminSettingsSchema.parse({ ...validReadPayload, reembedHistoryRetention: 9 }),
+      ).toThrow();
+    });
+
+    it('rejects values above 10000', () => {
+      expect(() =>
+        AdminSettingsSchema.parse({ ...validReadPayload, reembedHistoryRetention: 10_001 }),
+      ).toThrow();
+    });
+
+    it('rejects non-integer values', () => {
+      expect(() =>
+        AdminSettingsSchema.parse({ ...validReadPayload, reembedHistoryRetention: 100.5 }),
+      ).toThrow();
+    });
+
+    it('requires the field to be present (not optional on read)', () => {
+      const { reembedHistoryRetention: _r, ...withoutField } = validReadPayload;
+      expect(() => AdminSettingsSchema.parse(withoutField)).toThrow();
+    });
+  });
+
+  describe('update schema', () => {
+    it('accepts a valid integer within [10, 10000]', () => {
+      const parsed = UpdateAdminSettingsSchema.parse({ reembedHistoryRetention: 250 });
+      expect(parsed.reembedHistoryRetention).toBe(250);
+    });
+
+    it('treats omitted field as undefined (leave unchanged)', () => {
+      const parsed = UpdateAdminSettingsSchema.parse({});
+      expect(parsed.reembedHistoryRetention).toBeUndefined();
+    });
+
+    it('rejects values below 10', () => {
+      expect(() =>
+        UpdateAdminSettingsSchema.parse({ reembedHistoryRetention: 5 }),
+      ).toThrow();
+    });
+
+    it('rejects values above 10000', () => {
+      expect(() =>
+        UpdateAdminSettingsSchema.parse({ reembedHistoryRetention: 20_000 }),
+      ).toThrow();
+    });
+  });
 });

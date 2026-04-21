@@ -983,21 +983,6 @@ export async function reEmbedAll(): Promise<void> {
 }
 
 /**
- * Read the admin-configurable job-history retention setting.
- * Default 150, clamped to [10, 10000]. See plan §2.6/§2.8 for schema +
- * migration. Exported for unit-level clamping tests.
- */
-async function getReembedHistoryRetention(): Promise<number> {
-  const r = await query<{ setting_value: string }>(
-    `SELECT setting_value FROM admin_settings WHERE setting_key='reembed_history_retention'`,
-  );
-  const raw = r.rows[0]?.setting_value;
-  const n = raw ? parseInt(raw, 10) : NaN;
-  if (!Number.isFinite(n)) return 150;
-  return Math.max(10, Math.min(10_000, n));
-}
-
-/**
  * Enqueue a re-embed job for all pages. When `newDimensions` is supplied it
  * atomically TRUNCATEs `page_embeddings`, rewrites the pgvector column type,
  * updates the `embedding_dimensions` admin setting, and rebuilds the HNSW
@@ -1059,6 +1044,7 @@ export async function enqueueReembedAll(
 
   // Plan §2.3 Q4 — retention read per-enqueue so runtime admin changes take
   // effect on the next run (existing queued jobs carry the old retention).
+  const { getReembedHistoryRetention } = await import('../../../core/services/admin-settings-service.js');
   const retention = await getReembedHistoryRetention();
 
   const { enqueueJob } = await import('../../../core/services/queue-service.js');
