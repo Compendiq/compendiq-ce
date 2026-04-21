@@ -50,6 +50,8 @@ vi.mock('../../core/services/admin-settings-service.js', () => ({
 
 import { listErrors, resolveError, getErrorSummary } from '../../core/services/error-tracker.js';
 import { query as mockQuery } from '../../core/db/postgres.js';
+import { _resetStreamCapCache } from '../../core/services/sse-stream-limiter.js';
+import { _resetCache as _resetRateLimitsCache } from '../../core/services/rate-limit-service.js';
 
 describe('Admin routes', () => {
   let app: ReturnType<typeof Fastify>;
@@ -93,6 +95,10 @@ describe('Admin routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Reset in-module caches that read from admin_settings so each test sees
+    // a fresh mocked `query()` result.
+    _resetStreamCapCache();
+    _resetRateLimitsCache();
   });
 
   // ========================
@@ -321,6 +327,88 @@ describe('Admin routes', () => {
 
   // LLM provider + per-use-case-assignment routes moved to
   // /admin/llm-providers and /admin/llm-usecases — tested in dedicated files.
+
+  describe('GET /api/admin/settings - llmMaxConcurrentStreamsPerUser (#268)', () => {
+    it('returns the configured cap when the admin_settings row is present', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockImplementation(
+        async (sql: string, params?: unknown[]) => {
+          if (
+            typeof sql === 'string'
+            && sql.includes('SELECT setting_value FROM admin_settings')
+            && params?.[0] === 'llm_max_concurrent_streams_per_user'
+          ) {
+            return { rows: [{ setting_value: '7' }] };
+          }
+          // Default response for the multi-key admin-settings SELECT.
+          return { rows: [] };
+        },
+      );
+
+      const response = await app.inject({ method: 'GET', url: '/api/admin/settings' });
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.llmMaxConcurrentStreamsPerUser).toBe(7);
+    });
+
+    it('returns the hard default (3) when the admin_settings row is absent', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
+
+      const response = await app.inject({ method: 'GET', url: '/api/admin/settings' });
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.llmMaxConcurrentStreamsPerUser).toBe(3);
+    });
+  });
+
+  describe('PUT /api/admin/settings - llmMaxConcurrentStreamsPerUser (#268)', () => {
+    it('upserts the cap via admin_settings and invalidates the cache', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [], rowCount: 0 });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: { llmMaxConcurrentStreamsPerUser: 5 },
+      });
+
+      expect(response.statusCode).toBe(200);
+
+      // Verify the key+value were written as an INSERT … ON CONFLICT upsert.
+      const calls = (mockQuery as ReturnType<typeof vi.fn>).mock.calls as Array<[string, ...unknown[]]>;
+      const upsert = calls.find(([sql, params]) =>
+        typeof sql === 'string'
+        && sql.includes('INSERT INTO admin_settings')
+        && Array.isArray(params)
+        && (params as unknown[])[0] === 'llm_max_concurrent_streams_per_user'
+        && (params as unknown[])[1] === '5',
+      );
+      expect(upsert).toBeDefined();
+    });
+
+    it('rejects values outside [1, 20]', async () => {
+      const low = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: { llmMaxConcurrentStreamsPerUser: 0 },
+      });
+      expect(low.statusCode).toBe(400);
+
+      const high = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: { llmMaxConcurrentStreamsPerUser: 21 },
+      });
+      expect(high.statusCode).toBe(400);
+    });
+
+    it('rejects non-integer values', async () => {
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: { llmMaxConcurrentStreamsPerUser: 3.5 },
+      });
+      expect(response.statusCode).toBe(400);
+    });
+  });
 
   describe('PUT /api/admin/settings - drawioEmbedUrl only (no re-embedding)', () => {
     it('saves drawioEmbedUrl and does NOT trigger embedding_dirty update', async () => {

@@ -9,6 +9,7 @@ import { UpdateAdminSettingsSchema } from '@compendiq/contracts';
 import { getEmbeddingDimensions } from '../../core/services/admin-settings-service.js';
 import { getAiGuardrails, getAiOutputRules, upsertAiGuardrails, upsertAiOutputRules } from '../../core/services/ai-safety-service.js';
 import { getRateLimits, upsertRateLimits } from '../../core/services/rate-limit-service.js';
+import { getStreamCap, invalidateStreamCapCache } from '../../core/services/sse-stream-limiter.js';
 import { sanitizeLlmInput } from '../../core/utils/sanitize-llm-input.js';
 import { ALLOWED_FTS_LANGUAGES } from '../../core/services/fts-language.js';
 import { getSmtpConfig, updateSmtpConfig, sendTestEmail } from '../../core/services/email-service.js';
@@ -226,11 +227,12 @@ export async function adminRoutes(fastify: FastifyInstance) {
 
   // GET /api/admin/settings - retrieve shared admin settings
   fastify.get('/admin/settings', ADMIN_RATE_LIMIT, async () => {
-    const [embeddingDimensions, guardrails, outputRules, rateLimits] = await Promise.all([
+    const [embeddingDimensions, guardrails, outputRules, rateLimits, llmMaxConcurrentStreamsPerUser] = await Promise.all([
       getEmbeddingDimensions(),
       getAiGuardrails(),
       getAiOutputRules(),
       getRateLimits(),
+      getStreamCap(),
     ]);
     const result = await query<{ setting_key: string; setting_value: string }>(
       `SELECT setting_key, setting_value FROM admin_settings
@@ -261,6 +263,8 @@ export async function adminRoutes(fastify: FastifyInstance) {
       rateLimitAdmin: rateLimits.admin.max,
       rateLimitLlmStream: rateLimits.llmStream.max,
       rateLimitLlmEmbedding: rateLimits.llmEmbedding.max,
+      // Per-user concurrent SSE-stream cap (#268)
+      llmMaxConcurrentStreamsPerUser,
     };
   });
 
@@ -340,6 +344,14 @@ export async function adminRoutes(fastify: FastifyInstance) {
         updates.push({ key: 'drawio_embed_url', value: body.drawioEmbedUrl });
       }
     }
+    // Per-user concurrent SSE-stream cap (#268). Zod already validated the
+    // range [1, 20], so we trust the value here.
+    if (body.llmMaxConcurrentStreamsPerUser !== undefined) {
+      updates.push({
+        key: 'llm_max_concurrent_streams_per_user',
+        value: String(body.llmMaxConcurrentStreamsPerUser),
+      });
+    }
 
     // Issue #257 — reembed-all job history retention. Zod already enforced
     // the [10, 10000] integer range at the boundary.
@@ -357,6 +369,13 @@ export async function adminRoutes(fastify: FastifyInstance) {
          ON CONFLICT (setting_key) DO UPDATE SET setting_value = $2, updated_at = NOW()`,
         [key, value],
       );
+    }
+
+    // Invalidate the SSE-stream cap cache in-process so the new value takes
+    // effect immediately in this worker. Other workers pick it up within the
+    // 60-second TTL (same contract as `rate-limit-service`).
+    if (body.llmMaxConcurrentStreamsPerUser !== undefined) {
+      invalidateStreamCapCache();
     }
 
     // AI Safety settings
