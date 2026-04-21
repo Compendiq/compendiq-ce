@@ -17,6 +17,7 @@ import { healthRoutes } from './routes/foundation/health.js';
 import { authRoutes } from './routes/foundation/auth.js';
 import { settingsRoutes } from './routes/foundation/settings.js';
 import { adminRoutes } from './routes/foundation/admin.js';
+import { adminEmbeddingLocksRoutes } from './routes/foundation/admin-embedding-locks.js';
 import { rbacRoutes } from './routes/foundation/rbac.js';
 // Confluence routes
 import { spacesRoutes } from './routes/confluence/spaces.js';
@@ -225,6 +226,7 @@ export async function buildApp() {
   await app.register(authRoutes, { prefix: '/api/auth' });
   await app.register(settingsRoutes, { prefix: '/api' });
   await app.register(adminRoutes, { prefix: '/api' });
+  await app.register(adminEmbeddingLocksRoutes, { prefix: '/api' });
   await app.register(rbacRoutes, { prefix: '/api' });
 
   // Community-mode license endpoint fallback.

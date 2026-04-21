@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { UpdateAdminSettingsSchema, AdminSettingsSchema } from './admin.js';
+import {
+  UpdateAdminSettingsSchema,
+  AdminSettingsSchema,
+  EmbeddingLockSnapshotSchema,
+  AdminEmbeddingLocksResponseSchema,
+  ForceReleaseLockResponseSchema,
+} from './admin.js';
 
 const validReadPayload = {
   embeddingDimensions: 1024,
@@ -128,5 +134,85 @@ describe('reembedHistoryRetention (issue #257)', () => {
         UpdateAdminSettingsSchema.parse({ reembedHistoryRetention: 20_000 }),
       ).toThrow();
     });
+  });
+});
+
+// ─── Plan §3.3 / §4.8 RED #12a — Embedding lock admin schemas ────────────
+describe('EmbeddingLockSnapshotSchema (issue #257)', () => {
+  it('parses a valid snapshot round-trip', () => {
+    const parsed = EmbeddingLockSnapshotSchema.parse({
+      userId: 'alice',
+      holderEpoch: '11111111-2222-3333-4444-555555555555',
+      ttlRemainingMs: 3_400_000,
+    });
+    expect(parsed.userId).toBe('alice');
+    expect(parsed.ttlRemainingMs).toBe(3_400_000);
+  });
+
+  it('accepts -1 and -2 as special TTL values (never-expires / key-not-found)', () => {
+    expect(
+      EmbeddingLockSnapshotSchema.parse({ userId: 'a', holderEpoch: '', ttlRemainingMs: -1 }).ttlRemainingMs,
+    ).toBe(-1);
+    expect(
+      EmbeddingLockSnapshotSchema.parse({ userId: 'a', holderEpoch: '', ttlRemainingMs: -2 }).ttlRemainingMs,
+    ).toBe(-2);
+  });
+
+  it('accepts an empty holderEpoch (lock race: GET returned null but SCAN saw the key)', () => {
+    const parsed = EmbeddingLockSnapshotSchema.parse({ userId: 'alice', holderEpoch: '', ttlRemainingMs: 100 });
+    expect(parsed.holderEpoch).toBe('');
+  });
+
+  it('rejects missing userId', () => {
+    expect(() =>
+      EmbeddingLockSnapshotSchema.parse({ holderEpoch: 'x', ttlRemainingMs: 100 }),
+    ).toThrow();
+  });
+
+  it('rejects non-integer ttlRemainingMs', () => {
+    expect(() =>
+      EmbeddingLockSnapshotSchema.parse({ userId: 'a', holderEpoch: 'x', ttlRemainingMs: 100.5 }),
+    ).toThrow();
+  });
+});
+
+describe('AdminEmbeddingLocksResponseSchema (issue #257)', () => {
+  it('accepts empty array', () => {
+    const parsed = AdminEmbeddingLocksResponseSchema.parse({ locks: [] });
+    expect(parsed.locks).toEqual([]);
+  });
+
+  it('accepts multiple snapshots', () => {
+    const parsed = AdminEmbeddingLocksResponseSchema.parse({
+      locks: [
+        { userId: 'alice', holderEpoch: 'u1', ttlRemainingMs: 1000 },
+        { userId: 'bob', holderEpoch: 'u2', ttlRemainingMs: 2000 },
+      ],
+    });
+    expect(parsed.locks).toHaveLength(2);
+  });
+
+  it('rejects missing locks array', () => {
+    expect(() => AdminEmbeddingLocksResponseSchema.parse({})).toThrow();
+  });
+});
+
+describe('ForceReleaseLockResponseSchema (issue #257)', () => {
+  it('accepts { released: true, userId }', () => {
+    const parsed = ForceReleaseLockResponseSchema.parse({ released: true, userId: 'alice' });
+    expect(parsed).toEqual({ released: true, userId: 'alice' });
+  });
+
+  it('accepts { released: false, userId } (idempotent no-op)', () => {
+    const parsed = ForceReleaseLockResponseSchema.parse({ released: false, userId: 'alice' });
+    expect(parsed.released).toBe(false);
+  });
+
+  it('rejects missing userId', () => {
+    expect(() => ForceReleaseLockResponseSchema.parse({ released: true })).toThrow();
+  });
+
+  it('rejects non-boolean released', () => {
+    expect(() => ForceReleaseLockResponseSchema.parse({ released: 'yes', userId: 'alice' })).toThrow();
   });
 });

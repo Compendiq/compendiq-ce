@@ -76,3 +76,35 @@ export const UpdateAdminSettingsSchema = z.object({
 
 export type AdminSettings = z.infer<typeof AdminSettingsSchema>;
 export type UpdateAdminSettingsInput = z.infer<typeof UpdateAdminSettingsSchema>;
+
+// ─── Issue #257 — admin embedding-lock visibility + force-release ────────
+// Shared contract between `GET /api/admin/embedding/locks` / the force-release
+// POST and the frontend `ActiveEmbeddingLocksBanner`. See plan §2.10 / §3.3.
+
+export const EmbeddingLockSnapshotSchema = z.object({
+  /** Lock holder. Usually a user id, but can also be the synthetic
+   *  `__reembed_all__` system lock (which the admin endpoint filters out). */
+  userId: z.string().min(1),
+  /** Random UUID written by `acquireEmbeddingLock`. The worker's holder-epoch
+   *  guard compares this every 20 pages to detect a force-release. May be
+   *  the empty string when the SCAN caught the key but the subsequent GET
+   *  raced against a release. */
+  holderEpoch: z.string(),
+  /** `PTTL` return in milliseconds. `-1` = no TTL (shouldn't happen),
+   *  `-2` = key missing. */
+  ttlRemainingMs: z.number().int(),
+});
+export type EmbeddingLockSnapshot = z.infer<typeof EmbeddingLockSnapshotSchema>;
+
+export const AdminEmbeddingLocksResponseSchema = z.object({
+  locks: z.array(EmbeddingLockSnapshotSchema),
+});
+export type AdminEmbeddingLocksResponse = z.infer<typeof AdminEmbeddingLocksResponseSchema>;
+
+export const ForceReleaseLockResponseSchema = z.object({
+  /** `true` when the key existed and was deleted; `false` when the lock was
+   *  already gone (idempotent — no 404). */
+  released: z.boolean(),
+  userId: z.string().min(1),
+});
+export type ForceReleaseLockResponse = z.infer<typeof ForceReleaseLockResponseSchema>;
