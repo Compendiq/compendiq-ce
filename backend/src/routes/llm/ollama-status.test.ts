@@ -37,12 +37,7 @@ vi.mock('../../core/utils/crypto.js', () => ({
 }));
 
 vi.mock('../../core/services/circuit-breaker.js', () => ({
-  getOllamaCircuitBreakerStatus: vi.fn().mockReturnValue({
-    chat: { state: 'CLOSED' }, embed: { state: 'CLOSED' }, list: { state: 'CLOSED' },
-  }),
-  getOpenaiCircuitBreakerStatus: vi.fn().mockReturnValue({
-    chat: { state: 'CLOSED' }, embed: { state: 'CLOSED' }, list: { state: 'CLOSED' },
-  }),
+  listProviderBreakers: vi.fn().mockReturnValue([]),
 }));
 
 import { llmModelRoutes } from './llm-models.js';

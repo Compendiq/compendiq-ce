@@ -32,18 +32,9 @@ vi.mock('../../core/plugins/redis.js', () => ({
 }));
 
 const mockListProviderBreakers = vi.fn().mockReturnValue([]);
-vi.mock('../../core/services/circuit-breaker.js', () => {
-  const closedBreaker = { state: 'CLOSED', failureCount: 0, successCount: 0, lastFailureTime: null, nextRetryTime: null };
-  return {
-    getOllamaCircuitBreakerStatus: vi.fn().mockReturnValue({
-      chat: closedBreaker, embed: closedBreaker, list: closedBreaker,
-    }),
-    getOpenaiCircuitBreakerStatus: vi.fn().mockReturnValue({
-      chat: closedBreaker, embed: closedBreaker, list: closedBreaker,
-    }),
-    listProviderBreakers: (...args: unknown[]) => mockListProviderBreakers(...args),
-  };
-});
+vi.mock('../../core/services/circuit-breaker.js', () => ({
+  listProviderBreakers: (...args: unknown[]) => mockListProviderBreakers(...args),
+}));
 
 const mockListProviders = vi.fn().mockResolvedValue([]);
 vi.mock('../../domains/llm/services/llm-provider-service.js', () => ({
