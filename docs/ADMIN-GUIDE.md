@@ -378,6 +378,9 @@ Compendiq provides Kubernetes-compatible health probes:
 | `GET /api/health/ready` | Readiness probe | PostgreSQL + Redis |
 | `GET /api/health/live` | Liveness probe | Always returns 200 (process is alive) |
 | `GET /api/health/start` | Startup probe | Startup complete + PostgreSQL + LLM availability |
+| `GET /api/llm/circuit-breaker-status` | Per-provider circuit-breaker state | Returns a provider-keyed flat map: `{ [providerId]: { state, failureCount, nextRetryTime } }`. Requires auth. |
+
+> The legacy path `GET /api/ollama/circuit-breaker-status` remains as a **deprecated alias** during a 6-month grace window (through **2026-10-21**, issue [#266](https://github.com/VAMFI/compendiq-ce/issues/266)). Responses from the alias include **RFC 9745** `Deprecation: @<epoch>` (Structured Item form — *not* `Deprecation: true`), **RFC 8594** `Sunset: Wed, 21 Oct 2026 00:00:00 GMT`, and `Link: </api/llm/circuit-breaker-status>; rel="successor-version"` so clients can auto-migrate. Update any operator tooling to the canonical path before the sunset date.
 
 Example response from `GET /api/health`:
 
@@ -482,7 +485,7 @@ Check that the `POSTGRES_URL` and `REDIS_URL` in your `.env` match the container
 2. Check the `OLLAMA_BASE_URL` in `.env`. Inside Docker, use `http://host.docker.internal:11434`.
 3. If using a proxy, set `LLM_BEARER_TOKEN` and `LLM_AUTH_TYPE=bearer`.
 4. For timeout issues with large articles, increase `LLM_STREAM_TIMEOUT_MS`.
-5. Check circuit breaker status via `GET /api/health` -- if `ollama` shows `open`, the circuit breaker has tripped due to repeated failures. It will reset automatically.
+5. Check circuit breaker status via `GET /api/health` (aggregated) or `GET /api/llm/circuit-breaker-status` (per-provider detail) -- if a provider shows `open`, the circuit breaker has tripped due to repeated failures. It will reset automatically.
 
 ### TLS certificate errors
 
