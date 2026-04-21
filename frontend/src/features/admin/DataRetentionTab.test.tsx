@@ -54,6 +54,12 @@ const mockPreview = [
   { table: 'error_log', rowCount: 0, oldestRecord: null },
 ];
 
+// #264 — GET /admin/settings is consumed by AdminAccessDeniedRetentionSection.
+// Default to 90 (matches backend default) but overridable per test.
+let mockAdminSettings: { adminAccessDeniedRetentionDays: number } = {
+  adminAccessDeniedRetentionDays: 90,
+};
+
 function mockFetch() {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = typeof input === 'string' ? input : (input as Request).url;
@@ -74,6 +80,11 @@ function mockFetch() {
         headers: { 'Content-Type': 'application/json' },
       });
     }
+    if (url.includes('/admin/settings')) {
+      return new Response(JSON.stringify(mockAdminSettings), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
     return new Response(JSON.stringify({}), {
       headers: { 'Content-Type': 'application/json' },
     });
@@ -85,6 +96,7 @@ function mockFetch() {
 describe('DataRetentionTab', () => {
   beforeEach(() => {
     mockHasFeature = () => true;
+    mockAdminSettings = { adminAccessDeniedRetentionDays: 90 };
     useAuthStore.getState().setAuth('test-token', {
       id: '1',
       username: 'admin',
@@ -195,6 +207,92 @@ describe('DataRetentionTab', () => {
         ([, opts]) => opts && typeof opts === 'object' && 'method' in opts && (opts as RequestInit).method === 'PUT',
       );
       expect(putCalls.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  // ─── #264 — denied-admin retention (CE-native) ──────────────────────────
+  describe('AdminAccessDeniedRetentionSection (#264)', () => {
+    it('renders the server value from /admin/settings', async () => {
+      mockAdminSettings = { adminAccessDeniedRetentionDays: 45 };
+      mockFetch();
+      render(<DataRetentionTab />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('admin-denied-retention-input')).toBeInTheDocument();
+      });
+      const input = screen.getByTestId('admin-denied-retention-input') as HTMLInputElement;
+      expect(input.value).toBe('45');
+    });
+
+    it('falls back to 90 (default) when the server omits the field', async () => {
+      // Simulate an older backend that has not yet been upgraded.
+      mockAdminSettings = {} as { adminAccessDeniedRetentionDays: number };
+      mockFetch();
+      render(<DataRetentionTab />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('admin-denied-retention-input')).toBeInTheDocument();
+      });
+      const input = screen.getByTestId('admin-denied-retention-input') as HTMLInputElement;
+      expect(input.value).toBe('90');
+    });
+
+    it('PUT /admin/settings carries only adminAccessDeniedRetentionDays when the save button is used', async () => {
+      const fetchSpy = mockFetch();
+      render(<DataRetentionTab />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('admin-denied-retention-input')).toBeInTheDocument();
+      });
+
+      fireEvent.change(screen.getByTestId('admin-denied-retention-input'), { target: { value: '30' } });
+      fireEvent.click(screen.getByTestId('admin-denied-retention-save-btn'));
+
+      await waitFor(() => {
+        const putCall = fetchSpy.mock.calls.find(
+          ([url, opts]) =>
+            typeof url === 'string' &&
+            url.includes('/admin/settings') &&
+            opts &&
+            typeof opts === 'object' &&
+            'method' in opts &&
+            (opts as RequestInit).method === 'PUT',
+        );
+        expect(putCall).toBeTruthy();
+        const body = JSON.parse((putCall![1] as RequestInit).body as string) as {
+          adminAccessDeniedRetentionDays?: number;
+        };
+        expect(body.adminAccessDeniedRetentionDays).toBe(30);
+        // Nothing else in the payload — this save button is single-field.
+        expect(Object.keys(body)).toEqual(['adminAccessDeniedRetentionDays']);
+      });
+    });
+
+    it('save button is disabled until the value diverges from the server state', async () => {
+      mockAdminSettings = { adminAccessDeniedRetentionDays: 90 };
+      mockFetch();
+      render(<DataRetentionTab />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('admin-denied-retention-save-btn')).toBeInTheDocument();
+      });
+      expect(screen.getByTestId('admin-denied-retention-save-btn')).toBeDisabled();
+
+      fireEvent.change(screen.getByTestId('admin-denied-retention-input'), { target: { value: '120' } });
+      expect(screen.getByTestId('admin-denied-retention-save-btn')).not.toBeDisabled();
+    });
+
+    it('renders the CE-native section even when the Enterprise data_retention_policies feature is gated off', async () => {
+      mockHasFeature = () => false;
+      mockFetch();
+      render(<DataRetentionTab />, { wrapper: createWrapper() });
+
+      // CE-native control visible
+      await waitFor(() => {
+        expect(screen.getByTestId('admin-denied-retention-input')).toBeInTheDocument();
+      });
+      // Enterprise-feature gate still present below it
+      expect(screen.getByTestId('data-retention-gated')).toBeInTheDocument();
     });
   });
 });
