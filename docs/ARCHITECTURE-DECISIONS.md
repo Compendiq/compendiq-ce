@@ -842,26 +842,57 @@ const DrawioDiagram = Node.create({
 ### Context
 The app needs several background tasks: Confluence sync, embedding generation, article quality analysis, and auto-summarization. Fastify has no built-in job scheduler.
 
-### Decision: **Simple `setInterval` with lock flags**
+### Decision: **BullMQ (Redis-backed) primary; legacy `setInterval` behind `USE_BULLMQ=false`**
 
-All four workers follow the same pattern: `setInterval` with an in-memory lock flag to prevent concurrent execution, configurable interval and batch size via env vars, and a 30-second delayed initial batch on startup.
+All recurring background work runs on BullMQ queues, registered in `backend/src/core/services/queue-service.ts`. Each queue gets a dedicated `Worker` with its own concurrency, and a repeatable-job scheduler drives it at a configurable cadence. A feature flag (`USE_BULLMQ`, default `true`) gates the behaviour: setting `USE_BULLMQ=false` falls back to the legacy `setInterval` code path, which remains in tree as a single-process escape hatch for dev environments where Redis is unavailable.
 
 ```typescript
-// In index.ts after server start
-let syncRunning = false;
-setInterval(async () => {
-  if (syncRunning) return;
-  syncRunning = true;
-  try {
-    await syncService.runForAllUsers();
-    await embeddingService.processAllDirtyPages();
-  } finally {
-    syncRunning = false;
-  }
-}, SYNC_INTERVAL_MS);
+// queue-service.ts (excerpt)
+registerWorkerDef({
+  queueName: 'sync',
+  concurrency: 3,
+  repeatPattern: { every: syncInterval * 60 * 1000 },
+  processor: async () => {
+    const { runScheduledSync } = await import(
+      '../../domains/confluence/services/sync-service.js'
+    );
+    const result = await runScheduledSync();
+    return `Synced ${result} users`;
+  },
+});
 ```
 
-#### Workers
+#### Queue inventory
+
+| Queue | Concurrency | Schedule | Purpose |
+|-------|-------------|----------|---------|
+| `sync` | 3 | `SYNC_INTERVAL_MIN` (15 min) | Confluence delta sync |
+| `quality` | 2 | `QUALITY_CHECK_INTERVAL_MINUTES` (60 min) | Quality scoring batch |
+| `summary` | 2 | `SUMMARY_CHECK_INTERVAL_MINUTES` (60 min) | Summary generation batch |
+| `maintenance` | 1 | `TOKEN_CLEANUP_INTERVAL_HOURS` (24 h) + 24 h data-retention | Token cleanup + retention |
+| `reembed-all` | 1 | on-demand (#257) | One-shot reembed-all run, admin-triggered |
+| `analytics-aggregation` | — | registered-only | Reserved for EE analytics workers |
+
+Worker definitions live in `registerAllWorkers()` (`queue-service.ts:337–429`). Job history is persisted to the `job_history` table on every completion / failure (`queue-service.ts:63–81`).
+
+#### Why BullMQ over the old `setInterval`
+
+- **Multi-process safety.** The embedding path uses a Redis SET-NX lock (`redis-cache.ts:55–71`); PR #261 adds per-user lock visibility. In-memory `let running = false` flags don't generalise.
+- **Job history and observability.** BullMQ's `Worker` events + `recordJobHistory` sink give admins a real audit trail; dashboard consumes via `getQueueMetrics()`.
+- **On-demand jobs.** The `reembed-all` queue (#257) is a one-shot job admin UI triggers via `enqueueJob('reembed-all', …)` and polls via `getJobStatus(jobId)`. `setInterval` can't express "run once, now, track progress".
+- **Feature-flag escape hatch.** `USE_BULLMQ=false` keeps the legacy path alive for envs without Redis.
+
+#### Superseded rationale (preserved for audit trail)
+
+The original ADR argued for `setInterval`:
+
+> *4-15 users, ~1000 pages total. A simple interval is sufficient.*
+> *No distributed workers needed (single backend instance).*
+> *Redis-based job queues add complexity for zero benefit at this scale.*
+
+That argument no longer holds as of issue #256 (multi-LLM-provider) and #257 (admin-triggered reembed-all). On-demand jobs, multi-provider fan-out, and per-user lock visibility can't be absorbed without re-inventing a queue. Paragraphs retained so the decision trail stays auditable.
+
+#### Legacy worker inventory (USE_BULLMQ=false fallback)
 
 | Worker | Interval | Batch Size | Model Env Var | Retry Limit |
 |--------|----------|------------|---------------|-------------|
@@ -871,7 +902,9 @@ setInterval(async () => {
 | Quality Analysis | `QUALITY_CHECK_INTERVAL_MINUTES` (60) | `QUALITY_BATCH_SIZE` (5) | `QUALITY_MODEL` → `DEFAULT_LLM_MODEL` → `qwen3:4b` | 3 (`quality_retry_count`) |
 | Summary | `SUMMARY_CHECK_INTERVAL_MINUTES` (60) | `SUMMARY_BATCH_SIZE` (5) | `SUMMARY_MODEL` → `DEFAULT_LLM_MODEL` | 3 (`summary_retry_count`) |
 
-#### Worker Lifecycle
+#### Legacy worker lifecycle (USE_BULLMQ=false fallback)
+
+Describes the `setInterval` path only; the primary BullMQ path is driven by the repeatable-job scheduler and `Worker` events documented above.
 
 1. **Startup**: `startXxxWorker()` called from `index.ts`, registers `setInterval`
 2. **Initial batch**: Runs 30 seconds after startup via `triggerXxxBatch()` (lock-guarded)
@@ -886,11 +919,6 @@ Scores articles across 6 dimensions (overall, completeness, clarity, structure, 
 #### Summary Worker
 
 Generates plain-text and HTML summaries by sending article content to the LLM. Detects content changes via SHA-256 hash comparison (using PostgreSQL built-in `sha256()`, no pgcrypto extension needed). Status: `pending → summarizing → summarized | failed | skipped`.
-
-**Why not bullmq/pg-boss?**
-- 4-15 users, ~1000 pages total. A simple interval is sufficient.
-- No distributed workers needed (single backend instance).
-- Redis-based job queues add complexity for zero benefit at this scale.
 
 **Crash recovery**: On restart, all status flags and `embedding_dirty` markers are still set in PostgreSQL. The next interval picks them up automatically. No work is lost. Failed pages retry up to 3 times before being left in `failed` state.
 
