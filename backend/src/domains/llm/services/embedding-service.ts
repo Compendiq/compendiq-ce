@@ -1153,6 +1153,26 @@ export async function runReembedAllJob(job: Job): Promise<string> {
     return 'already-running';
   }
 
+  // Close the TOCTOU window between the wait-loop and the acquire above:
+  // a user could have called `processDirtyPages` (taking their own
+  // `embedding:lock:${userId}`) in the milliseconds between the loop's
+  // final `held.length === 0` check and our `acquireEmbeddingLock`. If so,
+  // two writers would now scan `pages WHERE embedding_dirty = TRUE` in
+  // parallel. Release our system lock and return a sentinel so BullMQ's
+  // retry policy (or a manual re-trigger) can re-enter the wait-loop
+  // cleanly rather than running concurrently.
+  const postAcquire = (await listActiveEmbeddingLocks()).filter(
+    (l) => l.userId !== REEMBED_ALL_LOCK_USER,
+  );
+  if (postAcquire.length > 0) {
+    await releaseEmbeddingLock(REEMBED_ALL_LOCK_USER, lockId);
+    logger.warn(
+      { heldBy: postAcquire.map((l) => l.userId) },
+      'reembed-all: per-user lock appeared between wait-loop and acquire — releasing system lock and backing off',
+    );
+    return 'already-running';
+  }
+
   try {
     // Mark every eligible page dirty (matches processDirtyPages' filter).
     await query(
