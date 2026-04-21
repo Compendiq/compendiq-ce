@@ -5,6 +5,7 @@ import { randomUUID } from 'crypto';
 import { query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
 import { userHasPermission, userHasGlobalPermission } from '../services/rbac-service.js';
+import { logAuditEvent } from '../services/audit-service.js';
 
 const JWT_ISSUER = 'compendiq';
 const ACCESS_TOKEN_EXPIRY = process.env.ACCESS_TOKEN_EXPIRY ?? '1h';
@@ -229,8 +230,42 @@ export default fp(async (fastify: FastifyInstance) => {
   });
 
   fastify.decorate('requireAdmin', async (request: FastifyRequest) => {
-    await fastify.authenticate(request);
+    // Audit every denied admin-access attempt, including unauthenticated ones
+    // (#264). The audit write is `await`ed intentionally so tests aren't racey,
+    // but `logAuditEvent` is try/catch-wrapped internally and "never blocks the
+    // main operation" — a DB failure during audit-logging does NOT suppress the
+    // 401/403 to the caller.
+    //
+    // Path A — authentication failure (missing/invalid Bearer). Only reached
+    // when `requireAdmin` is the onRequest hook itself (see admin.ts:48). Routes
+    // that register `addHook('onRequest', authenticate)` + `{ preHandler:
+    // requireAdmin }` short-circuit inside `authenticate` before this decorator
+    // runs — that case is covered by the onRequest chain's own 401 and is out
+    // of scope for this decorator.
+    try {
+      await fastify.authenticate(request);
+    } catch (err) {
+      await logAuditEvent(
+        null,
+        'ADMIN_ACCESS_DENIED',
+        'route',
+        `${request.method} ${request.routeOptions.url ?? request.url}`,
+        { decision: 'denied', reason: 'unauthenticated' },
+        request,
+      );
+      throw err;
+    }
+
+    // Path B — authenticated but lacks the admin role.
     if (request.userRole !== 'admin') {
+      await logAuditEvent(
+        request.userId,
+        'ADMIN_ACCESS_DENIED',
+        'route',
+        `${request.method} ${request.routeOptions.url ?? request.url}`,
+        { decision: 'denied', reason: 'not_admin' },
+        request,
+      );
       throw fastify.httpErrors.forbidden('Admin access required');
     }
   });

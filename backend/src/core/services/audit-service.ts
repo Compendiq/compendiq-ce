@@ -35,7 +35,8 @@ export type AuditAction =
   | 'SUMMARY_RUN_NOW'
   | 'EMBEDDING_RUN_NOW'
   | 'EMBEDDING_RESCAN'
-  | 'EMBEDDING_RESET_FAILED';
+  | 'EMBEDDING_RESET_FAILED'
+  | 'ADMIN_ACCESS_DENIED';
 
 export interface AuditLogEntry {
   id: string;
