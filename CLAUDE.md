@@ -241,7 +241,7 @@ Copy `.env.example` to `.env`. Key vars:
 - `REDIS_URL` (default: `redis://:changeme-redis@localhost:6379`)
 - `OLLAMA_BASE_URL` (**deprecated — seed-only**; consulted once on fresh install to seed the first `llm_providers` row. After that, configure providers in Settings → LLM.)
 - `LLM_PROVIDER` (**removed** — was the two-slot toggle. Replaced by the `llm_providers` table + per-use-case assignments.)
-- `LLM_BEARER_TOKEN` (optional, Bearer token for authenticated Ollama/LLM proxies)
+- `LLM_BEARER_TOKEN` (**deprecated — seed-only**; Bearer token on the seeded Ollama row, consulted once on fresh install. After that, configure per-provider API keys in Settings → LLM.)
 - `LLM_AUTH_TYPE` (optional, `bearer` or `none`, default: `bearer`)
 - `LLM_VERIFY_SSL` (optional, set to `false` to disable TLS verification for LLM connections)
 - `LLM_STREAM_TIMEOUT_MS` (optional, streaming timeout in ms, default: `300000`)
