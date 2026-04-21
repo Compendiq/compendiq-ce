@@ -21,6 +21,7 @@ import {
   MAX_INPUT_LENGTH,
 } from './_helpers.js';
 import { requireGlobalPermission } from '../../core/utils/rbac-guards.js';
+import { acquireStreamSlot } from '../../core/services/sse-stream-limiter.js';
 
 export async function llmAskRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -36,6 +37,17 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
 
   // POST /api/llm/ask - RAG-powered Q&A with streaming
   fastify.post('/llm/ask', { ...LLM_STREAM_RATE_LIMIT, preHandler: requireGlobalPermission('llm:query') }, async (request, reply) => {
+    // Per-user concurrent SSE-stream cap (#268). MUST run before reply.hijack()
+    // so rejections can be returned as a normal JSON 429.
+    const slot = await acquireStreamSlot(request.userId);
+    if (!slot.acquired) {
+      return reply.code(429).send({
+        error: 'too_many_concurrent_streams',
+        message: 'You have reached the per-user concurrent AI-stream limit. Close an existing stream and try again.',
+      });
+    }
+
+    try {
     const auditStart = Date.now();
     const body = AskRequestSchema.parse(request.body);
     const { question, model, conversationId, includeSubPages, externalUrls } = body;
@@ -310,6 +322,9 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       }
     } finally {
       if (ragLockAcquired) await llmCache.releaseLock(ragCacheKey);
+    }
+    } finally {
+      await slot.release();
     }
   });
 }

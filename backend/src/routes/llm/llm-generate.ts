@@ -20,6 +20,7 @@ import {
   MAX_PDF_TEXT_FOR_LLM,
 } from './_helpers.js';
 import { requireGlobalPermission } from '../../core/utils/rbac-guards.js';
+import { acquireStreamSlot } from '../../core/services/sse-stream-limiter.js';
 
 export async function llmGenerateRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -28,6 +29,16 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
 
   // POST /api/llm/generate - stream generated article
   fastify.post('/llm/generate', { ...LLM_STREAM_RATE_LIMIT, preHandler: requireGlobalPermission('llm:generate') }, async (request, reply) => {
+    // Per-user concurrent SSE-stream cap (#268).
+    const slot = await acquireStreamSlot(request.userId);
+    if (!slot.acquired) {
+      return reply.code(429).send({
+        error: 'too_many_concurrent_streams',
+        message: 'You have reached the per-user concurrent AI-stream limit. Close an existing stream and try again.',
+      });
+    }
+
+    try {
     const auditStart = Date.now();
     const body = GenerateRequestSchema.parse(request.body);
     const { prompt, model, template, pdfText } = body;
@@ -150,6 +161,9 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
       throw err;
     } finally {
       if (lockAcquired) await llmCache.releaseLock(cacheKey);
+    }
+    } finally {
+      await slot.release();
     }
   });
 }

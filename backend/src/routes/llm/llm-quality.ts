@@ -15,6 +15,7 @@ import {
   LLM_STREAM_RATE_LIMIT,
   MAX_INPUT_LENGTH,
 } from './_helpers.js';
+import { acquireStreamSlot } from '../../core/services/sse-stream-limiter.js';
 
 export async function llmQualityRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -23,6 +24,17 @@ export async function llmQualityRoutes(fastify: FastifyInstance) {
 
   // POST /api/llm/analyze-quality - stream article quality analysis
   fastify.post('/llm/analyze-quality', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
+    // Per-user concurrent SSE-stream cap (#268). Must fire BEFORE reply.hijack()
+    // so rejections can be returned as a normal JSON 429.
+    const slot = await acquireStreamSlot(request.userId);
+    if (!slot.acquired) {
+      return reply.code(429).send({
+        error: 'too_many_concurrent_streams',
+        message: 'You have reached the per-user concurrent AI-stream limit. Close an existing stream and try again.',
+      });
+    }
+
+    try {
     const body = AnalyzeQualityRequestSchema.parse(request.body);
     const { content, model, includeSubPages } = body;
     const userId = request.userId;
@@ -67,6 +79,9 @@ export async function llmQualityRoutes(fastify: FastifyInstance) {
       await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
     } finally {
       if (lockAcquired) await llmCache.releaseLock(cacheKey);
+    }
+    } finally {
+      await slot.release();
     }
   });
 }
