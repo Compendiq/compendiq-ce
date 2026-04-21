@@ -21,7 +21,7 @@ Issue body is explicit: rewriting would falsify the "as observed" state. The sym
 
 | Reference in doc | Current-day status |
 |---|---|
-| `ollamaBreakers.embed` (doc:42, 109) | Gone — removed by PR #262. Replaced by per-`providerId` breakers at `circuit-breaker.ts:158–211`. |
+| `ollamaBreakers.embed` (doc:42, 109) | Retained as a legacy map entry in `circuit-breaker.ts:161` (still surfaced via `getOllamaCircuitBreakerStatus` and covered by `circuit-breaker.test.ts`), but no longer wrapped around active embedding use-sites — per-`providerId` breakers at `circuit-breaker.ts:196–211` took over after the #262 refactor. |
 | `rag-service.ts:197` (doc:46) | File exists; line drifted. `providerGenerateEmbedding()` no longer at :197. |
 | `llm-chat.ts:340` / `:347-348` / `:361` (doc:13, 27, 87, 196, 269) | File gone. `/api/llm/ask` handler lives at `routes/llm/llm-ask.ts`. |
 | `llm-provider.ts :: providerGenerateEmbedding` (doc:106) | Replaced by `openai-compatible-client.ts :: generateEmbedding` (`:141–158`). |
