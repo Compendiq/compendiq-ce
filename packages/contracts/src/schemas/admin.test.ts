@@ -102,41 +102,7 @@ describe('UpdateAdminSettingsSchema tri-state semantics', () => {
     });
   });
 
-  describe('openaiBaseUrl', () => {
-    it('accepts a valid URL', () => {
-      const parsed = UpdateAdminSettingsSchema.parse({ openaiBaseUrl: 'https://api.example.com/v1' });
-      expect(parsed.openaiBaseUrl).toBe('https://api.example.com/v1');
-    });
-
-    it('accepts explicit null (clear signal)', () => {
-      const parsed = UpdateAdminSettingsSchema.parse({ openaiBaseUrl: null });
-      expect(parsed.openaiBaseUrl).toBeNull();
-    });
-
-    it('treats omitted field as undefined', () => {
-      const parsed = UpdateAdminSettingsSchema.parse({});
-      expect(parsed.openaiBaseUrl).toBeUndefined();
-    });
-
-    it('rejects empty string', () => {
-      expect(() => UpdateAdminSettingsSchema.parse({ openaiBaseUrl: '' })).toThrow();
-    });
-  });
-
-  describe('openaiModel', () => {
-    it('accepts a string value', () => {
-      const parsed = UpdateAdminSettingsSchema.parse({ openaiModel: 'gpt-4' });
-      expect(parsed.openaiModel).toBe('gpt-4');
-    });
-
-    it('accepts explicit null (clear signal)', () => {
-      const parsed = UpdateAdminSettingsSchema.parse({ openaiModel: null });
-      expect(parsed.openaiModel).toBeNull();
-    });
-
-    it('treats omitted field as undefined', () => {
-      const parsed = UpdateAdminSettingsSchema.parse({});
-      expect(parsed.openaiModel).toBeUndefined();
-    });
-  });
+  // LLM-specific settings (openaiBaseUrl, openaiModel, ollamaModel, etc.)
+  // moved to the `llm_providers` table + `/api/admin/llm-providers` route;
+  // they are no longer part of AdminSettings.
 });

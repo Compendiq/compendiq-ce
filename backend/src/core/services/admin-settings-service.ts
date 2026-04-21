@@ -495,3 +495,22 @@ export async function getAllUsecaseAssignments(): Promise<
   });
   return out;
 }
+
+/**
+ * Returns the embedding vector dimension used by the shared `page_embeddings`
+ * column. Falls back to `EMBEDDING_DIMENSIONS` env (1024 default) when the
+ * `embedding_dimensions` row is unset. A one-line helper extracted from
+ * `getSharedLlmSettings` so the legacy route can keep working while the rest
+ * of admin-settings-service is deleted in Task 26.
+ */
+export async function getEmbeddingDimensions(): Promise<number> {
+  const r = await query<{ setting_value: string }>(
+    `SELECT setting_value FROM admin_settings WHERE setting_key='embedding_dimensions'`,
+  );
+  const v = r.rows[0]?.setting_value;
+  if (v) {
+    const n = parseInt(v, 10);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return parseInt(process.env.EMBEDDING_DIMENSIONS ?? '1024', 10);
+}
