@@ -1,55 +1,18 @@
 import { describe, it, expect } from 'vitest';
 import { UpdateAdminSettingsSchema, AdminSettingsSchema } from './admin.js';
 
-const PROVIDER_ID = '00000000-0000-4000-8000-000000000001';
-const resolvedAssignment = {
-  providerId: PROVIDER_ID,
-  providerName: 'Default',
-  model: 'qwen3.5',
-};
-const inheritAssignment = {
-  providerId: null,
-  model: null,
-  resolved: resolvedAssignment,
-};
-
 const validReadPayload = {
-  llmProvider: 'ollama',
-  ollamaModel: 'qwen3.5',
-  openaiBaseUrl: null,
-  hasOpenaiApiKey: false,
-  openaiModel: null,
-  embeddingModel: 'bge-m3',
   embeddingDimensions: 1024,
   ftsLanguage: 'simple',
   embeddingChunkSize: 500,
   embeddingChunkOverlap: 50,
   drawioEmbedUrl: null,
-  usecaseAssignments: {
-    chat: inheritAssignment,
-    summary: inheritAssignment,
-    quality: inheritAssignment,
-    auto_tag: inheritAssignment,
-    embedding: inheritAssignment,
-  },
 } as const;
 
 describe('AdminSettingsSchema (read)', () => {
   it('accepts explicit null for drawioEmbedUrl (backend returns null when unset)', () => {
     const parsed = AdminSettingsSchema.parse(validReadPayload);
     expect(parsed.drawioEmbedUrl).toBeNull();
-  });
-
-  it('rejects empty ollamaModel — guards against a backend bug returning ""', () => {
-    expect(() =>
-      AdminSettingsSchema.parse({ ...validReadPayload, ollamaModel: '' }),
-    ).toThrow();
-  });
-
-  it('rejects empty embeddingModel', () => {
-    expect(() =>
-      AdminSettingsSchema.parse({ ...validReadPayload, embeddingModel: '' }),
-    ).toThrow();
   });
 
   it('rejects empty ftsLanguage', () => {
