@@ -10,27 +10,6 @@ const mockConfluenceToHtml = vi.fn();
 const mockHtmlToText = vi.fn();
 const mockLogAuditEvent = vi.fn();
 
-vi.mock('../../domains/llm/services/ollama-service.js', () => ({
-  listModels: vi.fn(),
-  checkHealth: vi.fn(),
-  streamChat: vi.fn(),
-  chat: vi.fn(),
-  getSystemPrompt: vi.fn().mockReturnValue('system prompt'),
-  generateEmbedding: vi.fn(),
-  isLlmVerifySslEnabled: vi.fn().mockReturnValue(true),
-  getLlmAuthType: vi.fn().mockReturnValue('bearer'),
-  getActiveProviderType: vi.fn().mockReturnValue('ollama'),
-  getProvider: vi.fn().mockReturnValue({
-    listModels: vi.fn().mockResolvedValue([]),
-    checkHealth: vi.fn().mockResolvedValue({ connected: true }),
-  }),
-}));
-
-vi.mock('../../domains/llm/services/llm-provider.js', () => ({
-  providerStreamChat: vi.fn(),
-  providerGenerateEmbedding: vi.fn(),
-}));
-
 // Defensive mock: llm-conversations.ts doesn't call the LLM directly, but
 // other route tests might be transitively imported. Safe no-op here.
 vi.mock('../../domains/llm/services/llm-provider-resolver.js', () => ({

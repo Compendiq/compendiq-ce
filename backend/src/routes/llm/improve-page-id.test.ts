@@ -14,23 +14,6 @@ import sensible from '@fastify/sensible';
 
 const mockQuery = vi.fn();
 
-vi.mock('../../domains/llm/services/ollama-service.js', () => ({
-  listModels: vi.fn(),
-  checkHealth: vi.fn(),
-  streamChat: vi.fn(),
-  chat: vi.fn(),
-  getSystemPrompt: vi.fn().mockReturnValue('You are a technical writing assistant.'),
-  generateEmbedding: vi.fn(),
-  isLlmVerifySslEnabled: vi.fn().mockReturnValue(true),
-  getLlmAuthType: vi.fn().mockReturnValue('bearer'),
-  getActiveProviderType: vi.fn().mockReturnValue('ollama'),
-  getProvider: vi.fn().mockReturnValue({
-    listModels: vi.fn().mockResolvedValue([]),
-    checkHealth: vi.fn().mockResolvedValue({ connected: true }),
-  }),
-  LANGUAGE_PRESERVATION_INSTRUCTION: 'Keep the text in its ORIGINAL language.',
-}));
-
 // Mock llm-provider-resolver (resolveUsecase)
 const mockResolveUsecase = vi.fn().mockResolvedValue({
   config: {

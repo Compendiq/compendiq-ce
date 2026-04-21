@@ -11,17 +11,6 @@ vi.mock('../../core/db/postgres.js', () => ({
   closePool: vi.fn(),
 }));
 
-// --- Mock: ollama-service ---
-vi.mock('../../domains/llm/services/ollama-service.js', () => ({
-  listModels: vi.fn(),
-  checkHealth: vi.fn(),
-  streamChat: vi.fn(),
-  chat: vi.fn(),
-  getSystemPrompt: vi.fn().mockReturnValue('system prompt'),
-  generateEmbedding: vi.fn(),
-  ChatMessage: {},
-}));
-
 // --- Mock: redis-cache ---
 vi.mock('../../core/services/redis-cache.js', () => ({
   RedisCache: class MockRedisCache {
