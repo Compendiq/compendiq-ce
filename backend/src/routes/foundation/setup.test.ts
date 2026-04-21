@@ -31,31 +31,20 @@ vi.mock('../../core/services/audit-service.js', () => ({
 }));
 
 const mockCheckHealth = vi.fn().mockResolvedValue({ connected: true });
-const mockListModels = vi.fn().mockResolvedValue([
-  { name: 'llama3.2:latest', size: 2000000000, modifiedAt: new Date(), digest: 'abc123' },
-]);
-const mockGetProvider = vi.fn().mockReturnValue({
+const mockListModels = vi.fn().mockResolvedValue([{ name: 'llama3.2:latest' }]);
+
+vi.mock('../../domains/llm/services/openai-compatible-client.js', () => ({
   checkHealth: (...args: unknown[]) => mockCheckHealth(...args),
   listModels: (...args: unknown[]) => mockListModels(...args),
-});
-
-vi.mock('../../domains/llm/services/ollama-service.js', () => ({
-  getProvider: (...args: unknown[]) => mockGetProvider(...args),
+  streamChat: vi.fn(),
+  chat: vi.fn(),
+  generateEmbedding: vi.fn(),
+  invalidateDispatcher: vi.fn(),
 }));
 
-vi.mock('../../domains/llm/services/ollama-provider.js', () => ({
-  OllamaProvider: class MockOllamaProvider {
-    checkHealth(...args: unknown[]) { return mockCheckHealth(...args); }
-    listModels(...args: unknown[]) { return mockListModels(...args); }
-  },
-}));
-
-vi.mock('../../core/services/admin-settings-service.js', () => ({
-  getSharedLlmSettings: vi.fn().mockResolvedValue({
-    llmProvider: 'ollama',
-    ollamaBaseUrl: 'http://localhost:11434',
-    openaiBaseUrl: null,
-  }),
+vi.mock('../../core/utils/crypto.js', () => ({
+  decryptPat: (v: string) => v,
+  encryptPat: (v: string) => v,
 }));
 
 vi.mock('../../core/utils/logger.js', () => ({
@@ -109,9 +98,7 @@ describe('Setup routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockCheckHealth.mockResolvedValue({ connected: true });
-    mockListModels.mockResolvedValue([
-      { name: 'llama3.2:latest', size: 2000000000, modifiedAt: new Date(), digest: 'abc123' },
-    ]);
+    mockListModels.mockResolvedValue([{ name: 'llama3.2:latest' }]);
   });
 
   // ─── GET /api/health/setup-status ─────────────────────────────────────
@@ -120,6 +107,7 @@ describe('Setup routes', () => {
     it('should return all steps as false when nothing is configured', async () => {
       mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // admin count
       mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // confluence count
+      mockQuery.mockResolvedValueOnce({ rows: [] }); // no default llm_providers row
       mockCheckHealth.mockResolvedValue({ connected: false });
 
       const response = await app.inject({ method: 'GET', url: '/api/health/setup-status' });
@@ -135,6 +123,7 @@ describe('Setup routes', () => {
     it('should return admin=true when admin user exists', async () => {
       mockQuery.mockResolvedValueOnce({ rows: [{ count: '1' }] }); // admin count
       mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // confluence count
+      mockQuery.mockResolvedValueOnce({ rows: [] });
 
       const response = await app.inject({ method: 'GET', url: '/api/health/setup-status' });
       const body = JSON.parse(response.body);
@@ -144,6 +133,17 @@ describe('Setup routes', () => {
     it('should return llm=true when LLM health check passes', async () => {
       mockQuery.mockResolvedValueOnce({ rows: [{ count: '1' }] }); // admin count
       mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // confluence count
+      mockQuery.mockResolvedValueOnce({
+        rows: [
+          {
+            id: 'p1',
+            base_url: 'http://localhost:11434',
+            api_key: null,
+            auth_type: 'none',
+            verify_ssl: true,
+          },
+        ],
+      });
       mockCheckHealth.mockResolvedValue({ connected: true });
 
       const response = await app.inject({ method: 'GET', url: '/api/health/setup-status' });
@@ -154,6 +154,7 @@ describe('Setup routes', () => {
     it('should return confluence=true when confluence pages exist', async () => {
       mockQuery.mockResolvedValueOnce({ rows: [{ count: '1' }] }); // admin count
       mockQuery.mockResolvedValueOnce({ rows: [{ count: '3' }] }); // confluence count
+      mockQuery.mockResolvedValueOnce({ rows: [] });
 
       const response = await app.inject({ method: 'GET', url: '/api/health/setup-status' });
       const body = JSON.parse(response.body);
@@ -163,6 +164,7 @@ describe('Setup routes', () => {
     it('should return setupComplete=true when admin exists (regardless of LLM status)', async () => {
       mockQuery.mockResolvedValueOnce({ rows: [{ count: '1' }] }); // admin count
       mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // confluence count
+      mockQuery.mockResolvedValueOnce({ rows: [] });
       mockCheckHealth.mockResolvedValue({ connected: false });
 
       const response = await app.inject({ method: 'GET', url: '/api/health/setup-status' });
@@ -173,6 +175,7 @@ describe('Setup routes', () => {
     it('should return setupComplete=false when no admin exists even if LLM is up', async () => {
       mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // admin count
       mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // confluence count
+      mockQuery.mockResolvedValueOnce({ rows: [] });
       mockCheckHealth.mockResolvedValue({ connected: true });
 
       const response = await app.inject({ method: 'GET', url: '/api/health/setup-status' });
@@ -183,20 +186,30 @@ describe('Setup routes', () => {
     it('should handle LLM health check timeout gracefully', async () => {
       mockQuery.mockResolvedValueOnce({ rows: [{ count: '1' }] }); // admin count
       mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // confluence count
+      mockQuery.mockResolvedValueOnce({
+        rows: [
+          {
+            id: 'p1',
+            base_url: 'http://localhost:11434',
+            api_key: null,
+            auth_type: 'none',
+            verify_ssl: true,
+          },
+        ],
+      });
       mockCheckHealth.mockImplementation(() => new Promise((_resolve) => {
-        // Never resolves — will be timed out
         setTimeout(() => _resolve({ connected: true }), 10000);
       }));
 
       const response = await app.inject({ method: 'GET', url: '/api/health/setup-status' });
       const body = JSON.parse(response.body);
-      // Should gracefully handle the timeout
       expect(body.steps.llm).toBe(false);
     });
 
     it('should have rate limiting configured on GET setup-status', async () => {
       mockQuery.mockResolvedValueOnce({ rows: [{ count: '1' }] }); // admin count
       mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // confluence count
+      mockQuery.mockResolvedValueOnce({ rows: [] });
 
       const response = await app.inject({ method: 'GET', url: '/api/health/setup-status' });
       expect(response.statusCode).toBe(200);
@@ -347,13 +360,15 @@ describe('Setup routes', () => {
       });
 
       expect(response.statusCode).toBe(200);
-      expect(mockGetProvider).toHaveBeenCalledWith('openai');
+      // No baseUrl supplied → setup.ts defaults to https://api.openai.com/v1
+      expect(mockCheckHealth).toHaveBeenCalledWith(
+        expect.objectContaining({ baseUrl: 'https://api.openai.com/v1' }),
+      );
     });
 
     it('should handle exceptions gracefully', async () => {
-      mockGetProvider.mockImplementationOnce(() => {
-        throw new Error('Provider initialization failed');
-      });
+      mockCheckHealth.mockRejectedValueOnce(new Error('Provider initialization failed'));
+      mockListModels.mockRejectedValueOnce(new Error('Provider initialization failed'));
 
       const response = await app.inject({
         method: 'POST',

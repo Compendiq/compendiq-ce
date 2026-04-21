@@ -3,22 +3,34 @@ import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 import { healthRoutes, markStartupComplete } from './health.js';
 
-// Mock the database check
+// `checkLlm` reads the default provider from `llm_providers`. We intercept
+// `query` at the module boundary and hand back a stub row.
+const mockQuery = vi.fn().mockResolvedValue({
+  rows: [
+    {
+      id: 'prov-1',
+      name: 'ollama',
+      base_url: 'http://localhost:11434',
+      api_key: null,
+      auth_type: 'none',
+      verify_ssl: true,
+    },
+  ],
+});
+
 vi.mock('../../core/db/postgres.js', () => ({
   checkConnection: vi.fn().mockResolvedValue(true),
   getPool: vi.fn().mockReturnValue({}),
-  query: vi.fn(),
+  query: (...args: unknown[]) => mockQuery(...args),
   runMigrations: vi.fn(),
   closePool: vi.fn(),
 }));
 
-// Mock Redis plugin check
 vi.mock('../../core/plugins/redis.js', () => ({
   checkRedisConnection: vi.fn().mockResolvedValue(true),
   default: vi.fn(),
 }));
 
-// Mock circuit breakers
 vi.mock('../../core/services/circuit-breaker.js', () => {
   const closedBreaker = { state: 'CLOSED', failureCount: 0, successCount: 0, lastFailureTime: null, nextRetryTime: null };
   return {
@@ -31,23 +43,34 @@ vi.mock('../../core/services/circuit-breaker.js', () => {
   };
 });
 
-// Mock the LLM service (provider-aware health check)
+// Provider-aware health check now lives in `openai-compatible-client.ts`.
 const mockCheckHealth = vi.fn().mockResolvedValue({ connected: true });
-const mockGetProvider = vi.fn().mockReturnValue({ checkHealth: (...args: unknown[]) => mockCheckHealth(...args) });
-
-vi.mock('../../domains/llm/services/ollama-service.js', () => ({
-  getProvider: (...args: unknown[]) => mockGetProvider(...args),
+vi.mock('../../domains/llm/services/openai-compatible-client.js', () => ({
+  checkHealth: (...args: unknown[]) => mockCheckHealth(...args),
+  streamChat: vi.fn(),
+  chat: vi.fn(),
+  generateEmbedding: vi.fn(),
+  listModels: vi.fn(),
+  invalidateDispatcher: vi.fn(),
 }));
 
-const mockGetSharedLlmSettings = vi.fn().mockResolvedValue({
-  llmProvider: 'ollama',
-});
-vi.mock('../../core/services/admin-settings-service.js', () => ({
-  getSharedLlmSettings: (...args: unknown[]) => mockGetSharedLlmSettings(...args),
+// decryptPat is called on any non-null api_key in the provider row.
+vi.mock('../../core/utils/crypto.js', () => ({
+  decryptPat: (v: string) => v,
+  encryptPat: (v: string) => v,
 }));
 
 vi.mock('../../core/utils/logger.js', () => ({
   logger: { debug: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn() },
+}));
+
+vi.mock('../../domains/llm/services/llm-queue.js', () => ({
+  getMetrics: () => ({ queueDepth: 0, active: 0, total: 0, errors: 0 }),
+}));
+
+vi.mock('../../core/services/queue-service.js', () => ({
+  getQueueMetrics: () => ({}),
+  isBullMQEnabled: () => false,
 }));
 
 import { checkConnection as mockCheckPg } from '../../core/db/postgres.js';
@@ -73,8 +96,18 @@ describe('Health routes', () => {
     (mockCheckPg as ReturnType<typeof vi.fn>).mockResolvedValue(true);
     (mockCheckRedis as ReturnType<typeof vi.fn>).mockResolvedValue(true);
     mockCheckHealth.mockResolvedValue({ connected: true });
-    mockGetSharedLlmSettings.mockResolvedValue({ llmProvider: 'ollama' });
-    mockGetProvider.mockReturnValue({ checkHealth: (...args: unknown[]) => mockCheckHealth(...args) });
+    mockQuery.mockResolvedValue({
+      rows: [
+        {
+          id: 'prov-1',
+          name: 'ollama',
+          base_url: 'http://localhost:11434',
+          api_key: null,
+          auth_type: 'none',
+          verify_ssl: true,
+        },
+      ],
+    });
   });
 
   describe('GET /api/health/live', () => {
@@ -153,7 +186,18 @@ describe('Health routes', () => {
     });
 
     it('should report correct llmProvider', async () => {
-      mockGetSharedLlmSettings.mockResolvedValueOnce({ llmProvider: 'openai' });
+      mockQuery.mockResolvedValueOnce({
+        rows: [
+          {
+            id: 'prov-openai',
+            name: 'openai',
+            base_url: 'https://api.openai.com/v1',
+            api_key: 'sk-xxxx',
+            auth_type: 'bearer',
+            verify_ssl: true,
+          },
+        ],
+      });
       const response = await app.inject({ method: 'GET', url: '/api/health/start' });
       const body = JSON.parse(response.body);
       expect(body.checks.llmProvider).toBe('openai');
@@ -184,14 +228,27 @@ describe('Health routes', () => {
     });
 
     it('should use active provider for health check', async () => {
-      mockGetSharedLlmSettings.mockResolvedValue({ llmProvider: 'openai' });
+      mockQuery.mockResolvedValue({
+        rows: [
+          {
+            id: 'prov-openai',
+            name: 'openai',
+            base_url: 'https://api.openai.com/v1',
+            api_key: 'sk-xxxx',
+            auth_type: 'bearer',
+            verify_ssl: true,
+          },
+        ],
+      });
       mockCheckHealth.mockResolvedValue({ connected: true });
 
       const response = await app.inject({ method: 'GET', url: '/api/health' });
       const body = JSON.parse(response.body);
       expect(body.services.llm).toBe(true);
       expect(body.llmProvider).toBe('openai');
-      expect(mockGetProvider).toHaveBeenCalledWith('openai');
+      expect(mockCheckHealth).toHaveBeenCalledWith(
+        expect.objectContaining({ baseUrl: 'https://api.openai.com/v1' }),
+      );
     });
   });
 });

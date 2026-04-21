@@ -39,32 +39,13 @@ vi.mock('../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
-const mockGetSharedLlmSettings = vi.fn().mockResolvedValue({
-  llmProvider: 'ollama',
-  ollamaModel: 'qwen3.5',
-  openaiBaseUrl: null,
-  hasOpenaiApiKey: false,
-  openaiModel: null,
-});
-const mockUpsertSharedLlmSettings = vi.fn().mockResolvedValue(undefined);
-const EMPTY_USECASE_ASSIGNMENTS = {
-  chat:     { provider: null, model: null, resolved: { provider: 'ollama', model: 'qwen3.5' } },
-  summary:  { provider: null, model: null, resolved: { provider: 'ollama', model: 'qwen3.5' } },
-  quality:  { provider: null, model: null, resolved: { provider: 'ollama', model: 'qwen3.5' } },
-  auto_tag: { provider: null, model: null, resolved: { provider: 'ollama', model: 'qwen3.5' } },
-};
-const mockGetAllUsecaseAssignments = vi.fn().mockResolvedValue(EMPTY_USECASE_ASSIGNMENTS);
-const mockUpsertUsecaseLlmAssignments = vi.fn().mockResolvedValue(undefined);
+// LLM provider + per-use-case assignment routes have moved to
+// `/admin/llm-providers` + `/admin/llm-usecases` — see the dedicated tests in
+// `backend/src/routes/llm/llm-providers.test.ts` and `.../llm-usecases.test.ts`.
+// Here we only need to stub `getEmbeddingDimensions` which is read by
+// `GET /admin/settings` for the `embeddingDimensions` response field.
 vi.mock('../../core/services/admin-settings-service.js', () => ({
-  getSharedLlmSettings: (...args: unknown[]) => mockGetSharedLlmSettings(...args),
-  upsertSharedLlmSettings: (...args: unknown[]) => mockUpsertSharedLlmSettings(...args),
-  getAllUsecaseAssignments: (...args: unknown[]) => mockGetAllUsecaseAssignments(...args),
-  upsertUsecaseLlmAssignments: (...args: unknown[]) => mockUpsertUsecaseLlmAssignments(...args),
-}));
-
-const mockSetActiveProvider = vi.fn();
-vi.mock('../../domains/llm/services/ollama-service.js', () => ({
-  setActiveProvider: (...args: unknown[]) => mockSetActiveProvider(...args),
+  getEmbeddingDimensions: vi.fn().mockResolvedValue(1024),
 }));
 
 import { listErrors, resolveError, getErrorSummary } from '../../core/services/error-tracker.js';
@@ -112,14 +93,6 @@ describe('Admin routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockGetSharedLlmSettings.mockResolvedValue({
-      llmProvider: 'ollama',
-      ollamaModel: 'qwen3.5',
-      openaiBaseUrl: null,
-      hasOpenaiApiKey: false,
-      openaiModel: null,
-    });
-    mockGetAllUsecaseAssignments.mockResolvedValue(EMPTY_USECASE_ASSIGNMENTS);
   });
 
   // ========================
@@ -324,8 +297,6 @@ describe('Admin routes', () => {
       expect(body.drawioEmbedUrl).toBeNull();
       expect(body.embeddingChunkSize).toBe(500);
       expect(body.embeddingChunkOverlap).toBe(50);
-      expect(body.llmProvider).toBe('ollama');
-      expect(body.ollamaModel).toBe('qwen3.5');
     });
 
     it('returns drawioEmbedUrl when configured', async () => {
@@ -348,123 +319,8 @@ describe('Admin routes', () => {
     });
   });
 
-  describe('PUT /api/admin/settings - shared LLM settings', () => {
-    it('saves shared LLM settings via admin-settings service', async () => {
-      const response = await app.inject({
-        method: 'PUT',
-        url: '/api/admin/settings',
-        payload: {
-          llmProvider: 'openai',
-          openaiBaseUrl: 'https://api.openai.com/v1',
-          openaiApiKey: 'secret-key',
-          openaiModel: 'gpt-4o-mini',
-        },
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(mockUpsertSharedLlmSettings).toHaveBeenCalledWith({
-        llmProvider: 'openai',
-        ollamaModel: undefined,
-        openaiBaseUrl: 'https://api.openai.com/v1',
-        openaiApiKey: 'secret-key',
-        openaiModel: 'gpt-4o-mini',
-        embeddingModel: undefined,
-      });
-      expect(mockSetActiveProvider).toHaveBeenCalledWith('openai');
-    });
-  });
-
-  // ========================
-  // Per-use-case LLM assignments (issue #214)
-  // ========================
-
-  describe('GET /api/admin/settings - usecaseAssignments', () => {
-    it('includes usecaseAssignments in the response body', async () => {
-      mockGetAllUsecaseAssignments.mockResolvedValue({
-        chat: {
-          provider: 'openai',
-          model: 'gpt-4o',
-          resolved: { provider: 'openai', model: 'gpt-4o' },
-        },
-        summary: {
-          provider: null,
-          model: 'qwen3:4b',
-          resolved: { provider: 'ollama', model: 'qwen3:4b' },
-        },
-        quality: {
-          provider: null,
-          model: null,
-          resolved: { provider: 'ollama', model: 'qwen3.5' },
-        },
-        auto_tag: {
-          provider: null,
-          model: null,
-          resolved: { provider: 'ollama', model: 'qwen3.5' },
-        },
-      });
-
-      const response = await app.inject({ method: 'GET', url: '/api/admin/settings' });
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.usecaseAssignments.chat.provider).toBe('openai');
-      expect(body.usecaseAssignments.chat.model).toBe('gpt-4o');
-      expect(body.usecaseAssignments.summary.provider).toBeNull();
-      expect(body.usecaseAssignments.summary.model).toBe('qwen3:4b');
-      expect(body.usecaseAssignments.quality.resolved).toEqual({
-        provider: 'ollama',
-        model: 'qwen3.5',
-      });
-    });
-  });
-
-  describe('PUT /api/admin/settings - usecaseAssignments', () => {
-    it('forwards usecaseAssignments to upsertUsecaseLlmAssignments', async () => {
-      const response = await app.inject({
-        method: 'PUT',
-        url: '/api/admin/settings',
-        payload: {
-          usecaseAssignments: {
-            chat: { provider: 'openai', model: 'gpt-4o' },
-            summary: { provider: 'ollama', model: 'qwen3:4b' },
-          },
-        },
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(mockUpsertUsecaseLlmAssignments).toHaveBeenCalledWith({
-        chat: { provider: 'openai', model: 'gpt-4o' },
-        summary: { provider: 'ollama', model: 'qwen3:4b' },
-      });
-    });
-
-    it('accepts null fields to clear an override (revert to inherited default)', async () => {
-      const response = await app.inject({
-        method: 'PUT',
-        url: '/api/admin/settings',
-        payload: {
-          usecaseAssignments: {
-            chat: { provider: null, model: null },
-          },
-        },
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(mockUpsertUsecaseLlmAssignments).toHaveBeenCalledWith({
-        chat: { provider: null, model: null },
-      });
-    });
-
-    it('does not call the upsert helper when usecaseAssignments is absent', async () => {
-      const response = await app.inject({
-        method: 'PUT',
-        url: '/api/admin/settings',
-        payload: { drawioEmbedUrl: 'https://my-drawio.internal' },
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(mockUpsertUsecaseLlmAssignments).not.toHaveBeenCalled();
-    });
-  });
+  // LLM provider + per-use-case-assignment routes moved to
+  // /admin/llm-providers and /admin/llm-usecases — tested in dedicated files.
 
   describe('PUT /api/admin/settings - drawioEmbedUrl only (no re-embedding)', () => {
     it('saves drawioEmbedUrl and does NOT trigger embedding_dirty update', async () => {
