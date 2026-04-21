@@ -11,6 +11,8 @@ import {
   acquireEmbeddingLock,
   releaseEmbeddingLock,
   isEmbeddingLocked,
+  listActiveEmbeddingLocks,
+  forceReleaseEmbeddingLock,
   recordAttachmentFailure,
   getAttachmentFailureCount,
   clearAttachmentFailures,
@@ -35,6 +37,7 @@ function createMockRedisClient() {
     ping: vi.fn(),
     incr: vi.fn(),
     expire: vi.fn(),
+    pTTL: vi.fn(),
   };
 }
 
@@ -201,6 +204,145 @@ describe('redis-cache embedding lock', () => {
       const locked = await isEmbeddingLocked('user-1');
 
       expect(locked).toBe(false);
+    });
+  });
+
+  // ─── RED #7 (plan §2.1, §4.3) ─────────────────────────────────────────────
+  describe('listActiveEmbeddingLocks', () => {
+    it('returns empty array when Redis client is not available', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      setRedisClient(null as any);
+      const locks = await listActiveEmbeddingLocks();
+      expect(locks).toEqual([]);
+    });
+
+    it('returns empty array when no locks are held (SCAN returns no keys)', async () => {
+      mockRedis.scan.mockResolvedValueOnce({ cursor: '0', keys: [] });
+      const locks = await listActiveEmbeddingLocks();
+      expect(locks).toEqual([]);
+      expect(mockRedis.scan).toHaveBeenCalledWith('0', {
+        MATCH: 'embedding:lock:*',
+        COUNT: 100,
+      });
+    });
+
+    it('returns EmbeddingLockSnapshot[] for each active lock (userId, holderEpoch, ttlRemainingMs)', async () => {
+      mockRedis.scan.mockResolvedValueOnce({
+        cursor: '0',
+        keys: ['embedding:lock:alice', 'embedding:lock:bob'],
+      });
+      mockRedis.get.mockImplementation(async (key: string) => {
+        if (key === 'embedding:lock:alice') return 'uuid-alice';
+        if (key === 'embedding:lock:bob') return 'uuid-bob';
+        return null;
+      });
+      mockRedis.pTTL.mockImplementation(async (key: string) => {
+        if (key === 'embedding:lock:alice') return 3_000_000;
+        if (key === 'embedding:lock:bob') return 2_500_000;
+        return -2;
+      });
+
+      const locks = await listActiveEmbeddingLocks();
+
+      expect(locks).toEqual(
+        expect.arrayContaining([
+          { userId: 'alice', holderEpoch: 'uuid-alice', ttlRemainingMs: 3_000_000 },
+          { userId: 'bob', holderEpoch: 'uuid-bob', ttlRemainingMs: 2_500_000 },
+        ]),
+      );
+      expect(locks).toHaveLength(2);
+    });
+
+    it('handles paginated SCAN results (multi-page cursor loop)', async () => {
+      mockRedis.scan
+        .mockResolvedValueOnce({ cursor: '5', keys: ['embedding:lock:alice'] })
+        .mockResolvedValueOnce({ cursor: '0', keys: ['embedding:lock:bob'] });
+      mockRedis.get.mockResolvedValue('uuid');
+      mockRedis.pTTL.mockResolvedValue(1000);
+
+      const locks = await listActiveEmbeddingLocks();
+
+      expect(mockRedis.scan).toHaveBeenCalledTimes(2);
+      expect(locks).toHaveLength(2);
+    });
+
+    it('skips malformed keys with empty userId suffix', async () => {
+      mockRedis.scan.mockResolvedValueOnce({
+        cursor: '0',
+        keys: ['embedding:lock:'], // malformed — trailing colon, no user id
+      });
+      mockRedis.get.mockResolvedValue('uuid');
+      mockRedis.pTTL.mockResolvedValue(1000);
+
+      const locks = await listActiveEmbeddingLocks();
+      expect(locks).toEqual([]);
+    });
+
+    it('coerces null holderEpoch to empty string', async () => {
+      mockRedis.scan.mockResolvedValueOnce({
+        cursor: '0',
+        keys: ['embedding:lock:alice'],
+      });
+      mockRedis.get.mockResolvedValue(null); // lock key raced-away between SCAN and GET
+      mockRedis.pTTL.mockResolvedValue(-2);
+
+      const locks = await listActiveEmbeddingLocks();
+      expect(locks).toEqual([
+        { userId: 'alice', holderEpoch: '', ttlRemainingMs: -2 },
+      ]);
+    });
+
+    it('returns empty array when SCAN throws', async () => {
+      mockRedis.scan.mockRejectedValue(new Error('Redis down'));
+      const locks = await listActiveEmbeddingLocks();
+      expect(locks).toEqual([]);
+    });
+  });
+
+  // ─── RED #7b (plan §2.1, §4.3) ────────────────────────────────────────────
+  describe('forceReleaseEmbeddingLock', () => {
+    it('returns { released: false, previousHolderEpoch: null } when Redis is unavailable', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      setRedisClient(null as any);
+      const result = await forceReleaseEmbeddingLock('alice');
+      expect(result).toEqual({ released: false, previousHolderEpoch: null });
+    });
+
+    it('returns { released: true, previousHolderEpoch: "<uuid>" } when the key existed', async () => {
+      mockRedis.get.mockResolvedValueOnce('uuid-alice');
+      mockRedis.del.mockResolvedValueOnce(1);
+
+      const result = await forceReleaseEmbeddingLock('alice');
+
+      expect(result).toEqual({ released: true, previousHolderEpoch: 'uuid-alice' });
+      expect(mockRedis.get).toHaveBeenCalledWith('embedding:lock:alice');
+      expect(mockRedis.del).toHaveBeenCalledWith('embedding:lock:alice');
+    });
+
+    it('returns { released: false, previousHolderEpoch: null } when the key was already gone (idempotent)', async () => {
+      mockRedis.get.mockResolvedValueOnce(null);
+      mockRedis.del.mockResolvedValueOnce(0);
+
+      const result = await forceReleaseEmbeddingLock('alice');
+
+      expect(result).toEqual({ released: false, previousHolderEpoch: null });
+    });
+
+    it('returns { released: false, previousHolderEpoch: null } when Redis throws', async () => {
+      mockRedis.get.mockRejectedValueOnce(new Error('Redis down'));
+
+      const result = await forceReleaseEmbeddingLock('alice');
+
+      expect(result).toEqual({ released: false, previousHolderEpoch: null });
+    });
+
+    it('uses the embedding:lock:<userId> key pattern', async () => {
+      mockRedis.get.mockResolvedValueOnce('uuid');
+      mockRedis.del.mockResolvedValueOnce(1);
+
+      await forceReleaseEmbeddingLock('user-with-hyphens');
+
+      expect(mockRedis.del).toHaveBeenCalledWith('embedding:lock:user-with-hyphens');
     });
   });
 

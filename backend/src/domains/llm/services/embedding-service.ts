@@ -1,3 +1,4 @@
+import type { Job } from 'bullmq';
 import { query, getPool } from '../../../core/db/postgres.js';
 import { resolveUsecase } from './llm-provider-resolver.js';
 import { generateEmbedding } from './openai-compatible-client.js';
@@ -948,4 +949,24 @@ export async function enqueueReembedAll(
     }
   }
   return jobId;
+}
+
+/**
+ * BullMQ worker entry point for the `reembed-all` queue (issue #257).
+ *
+ * Phase 1 placeholder — wired up so the queue can be registered against a
+ * real function (typecheck passes, worker boots cleanly). The lock-aware
+ * wait-on-locks loop, progress throttling, and
+ * `processDirtyPages('__reembed_all__', …)` delegation arrive in Phase 2
+ * (§2.3 of `docs/issues/257-implementation-plan.md`).
+ *
+ * The `_job` parameter is deliberately unused in this stub — Phase 2 will
+ * use `job.updateProgress` for real progress reporting.
+ */
+export async function runReembedAllJob(_job: Job): Promise<string> {
+  // Phase 2 replaces this body with the real worker per plan §2.3.
+  // For now the legacy in-process reEmbedAll is invoked so the queue
+  // registration has a real callable target.
+  await reEmbedAll();
+  return 'phase-1-stub';
 }
