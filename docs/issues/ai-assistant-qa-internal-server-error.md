@@ -1,5 +1,7 @@
 # Issue: AI Assistant Q&A mode returns "Internal Server Error"
 
+> **Note:** This report describes pre-#256 (pre-multi-LLM-provider) code paths. File and symbol references below (e.g. `ollamaBreakers.embed`, `llm-chat.ts:340`, `rag-service.ts:197`) reflect the codebase at the time of the incident and may be stale as of the current tree. For the current architecture, see `docs/ARCHITECTURE-DECISIONS.md` (ADR-021) and `docs/architecture/`.
+
 ## Bug Description
 
 When using the AI Assistant in **Ask (Q&A) mode**, asking any question results in a 500 "Internal Server Error". The request never reaches the LLM streaming phase — it fails during the RAG search or embedding generation step before the response stream starts.
