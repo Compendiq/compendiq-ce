@@ -4,6 +4,9 @@ import {
   CircuitBreakerOpenError,
   getOllamaCircuitBreakerStatus,
   getOpenaiCircuitBreakerStatus,
+  getProviderBreaker,
+  invalidateProviderBreaker,
+  listProviderBreakers,
   ollamaBreakers,
   openaiBreakers,
 } from './circuit-breaker.js';
@@ -284,5 +287,54 @@ describe('embed breakers have higher failure threshold', () => {
       ollamaBreakers.chat.recordFailure();
     }
     expect(ollamaBreakers.chat.getStatus().state).toBe('OPEN');
+  });
+});
+
+// ─── Per-provider breaker lifecycle (cache-bus invalidation) ────────────────
+// This covers the cache-bus contract: when provider config changes, the
+// resolver calls `invalidateProviderBreaker(id)` so the next request starts
+// with a fresh CLOSED breaker instead of inheriting stale failure state
+// against the old configuration.
+describe('provider breaker lifecycle', () => {
+  it('returns the same instance on subsequent calls for the same providerId', () => {
+    const id = 'lifecycle-same-' + Math.random().toString(36).slice(2);
+    invalidateProviderBreaker(id);
+    const a = getProviderBreaker(id);
+    const b = getProviderBreaker(id);
+    expect(a).toBe(b);
+  });
+
+  it('invalidateProviderBreaker drops OPEN state — next get() returns a fresh CLOSED breaker', () => {
+    const id = 'lifecycle-reset-' + Math.random().toString(36).slice(2);
+    invalidateProviderBreaker(id); // start clean
+
+    // Trip the breaker to OPEN
+    const first = getProviderBreaker(id);
+    for (let i = 0; i < 3; i++) first.recordFailure();
+    expect(first.getStatus().state).toBe('OPEN');
+
+    // Simulate cache-bus bump: invalidate, then retrieve again.
+    invalidateProviderBreaker(id);
+    const fresh = getProviderBreaker(id);
+
+    // Must be a different instance AND in the CLOSED initial state —
+    // no carry-over of failureCount or lastFailureTime.
+    expect(fresh).not.toBe(first);
+    const status = fresh.getStatus();
+    expect(status.state).toBe('CLOSED');
+    expect(status.failureCount).toBe(0);
+    expect(status.lastFailureTime).toBeNull();
+    expect(status.nextRetryTime).toBeNull();
+  });
+
+  it('listProviderBreakers omits a providerId after it is invalidated', () => {
+    const id = 'lifecycle-list-' + Math.random().toString(36).slice(2);
+    invalidateProviderBreaker(id);
+    // Touch once so it appears in the map.
+    getProviderBreaker(id);
+    expect(listProviderBreakers().some((b) => b.providerId === id)).toBe(true);
+
+    invalidateProviderBreaker(id);
+    expect(listProviderBreakers().some((b) => b.providerId === id)).toBe(false);
   });
 });
