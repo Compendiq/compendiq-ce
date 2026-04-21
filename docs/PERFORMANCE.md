@@ -54,6 +54,9 @@ Performance is measured at three layers:
 | Time to first SSE token (AI chat) | p99 < 2s |
 | Total streaming duration (short query) | p99 < 15s |
 | Time to first SSE token (improve/summarize) | p99 < 3s |
+| `acquire()` round-trip on per-user SSE stream cap (#268) | p99 < 5ms (Redis Lua EVAL) |
+
+**Concurrent-stream cap (#268):** Each streaming route (`llm-ask`, `llm-generate`, `llm-improve`, `llm-summarize`, `llm-quality`, `llm-diagram`) calls `ssStreamLimiter.acquire(userId)` before opening the SSE response. Over-cap requests return `429 Too Many Requests` without contacting the upstream LLM — so the 429 path should be *faster*, not slower, than a normal stream. The cap is admin-configurable (default 3, env `LLM_MAX_CONCURRENT_STREAMS_PER_USER` as fallback) and cache-TTL is 60s; a setting change takes effect on the next `acquire()`.
 
 ### Frontend Core Web Vitals
 
@@ -222,8 +225,10 @@ npm run dev
 1. **p99 API latency trending above targets** -- Investigate slow queries or missing indexes.
 2. **Embedding generation queue depth** -- If the queue grows faster than it drains, consider scaling workers or reducing batch size.
 3. **SSE streaming timeout rate** -- High timeout rates indicate LLM provider issues.
-4. **Database connection pool exhaustion** -- Monitor `pg_stat_activity` for idle connections.
-5. **Redis memory usage** -- LLM cache and session data can grow; monitor eviction rates.
+4. **Per-user SSE stream 429 rate (#268)** -- A single user repeatedly hitting the concurrent-stream cap is a signal to (a) investigate whether the user's client is leaking stream handles, or (b) raise `LLM_MAX_CONCURRENT_STREAMS_PER_USER` globally if the cap is too tight for legitimate workloads.
+5. **`listActiveEmbeddingLocks` P99 latency (#265)** -- now SMEMBERS + pipelined `PTTL`/`GET` over a dedicated Redis set. If P99 on `GET /api/admin/embedding/locks` ever exceeds ~50 ms, investigate Redis latency (shouldn't be keyspace-dependent anymore).
+6. **Database connection pool exhaustion** -- Monitor `pg_stat_activity` for idle connections.
+7. **Redis memory usage** -- LLM cache, session data, and stream counters can grow; monitor eviction rates. The per-user stream counter has a 1-hour `EXPIRE` self-heal, so leaked counters reset automatically.
 
 ### Regression Detection
 
