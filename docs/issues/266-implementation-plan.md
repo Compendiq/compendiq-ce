@@ -1,9 +1,15 @@
 # Implementation Plan — Issue #266: rename `/api/ollama/circuit-breaker-status` → `/api/llm/circuit-breaker-status`
 
-> Target branch: `feature/266-llm-breaker-route-rename` → PR to `dev`.
+> Target branch: `feature/266-route-rename-circuit-breaker-status` → PR to `dev`.
 > Scope: add canonical route; keep old as deprecated alias for one release cycle with **RFC 9745 / RFC 8594** headers; update docs. Remove in follow-up PR after sunset.
 >
 > **Decision locked (v2, 2026-04-21):** the deprecation header is the RFC 9745 Structured Item form `Deprecation: @<epoch-seconds>` — **no `Deprecation: true` emitted anywhere**, not even for back-compat. If the issue body text needs adjusting, update it to match the plan.
+>
+> **Implementation-time deviations (v3, 2026-04-21, implementer):**
+> 1. **Handler migration is done in this PR.** Plan §1 assumed PR #262 had already refactored the handler to use `listProviderBreakers()` and return the `Record<providerId, CircuitBreakerStatus>` shape. Verification on `4625bfc` showed the handler still uses `getOllamaCircuitBreakerStatus()` + `getOpenaiCircuitBreakerStatus()` and returns `{ ollama, openai }`. We therefore migrate the handler here, in the same PR that renames the route. No frontend consumer (verified by grep), only one backend test references the old shape.
+> 2. **Grace window is 6 months, not 90 days.** Per implementer directive. `DEPRECATION_EPOCH = 1776729600` (2026-04-21T00:00:00Z), `SUNSET_HTTP_DATE = 'Wed, 21 Oct 2026 00:00:00 GMT'`. The plan's `1745222400` was also arithmetically wrong (it resolves to 2025-04-21, not 2026-04-21).
+> 3. **No `Warning: 299` header.** Implementer directive lists exactly three response headers for the alias: `Deprecation`, `Sunset`, `Link`. The non-normative `Warning` header from plan §2 Step 2 is dropped.
+> 4. **Follow-up sunset date in §3 is updated to 2026-10-21** to match constant (2).
 
 ---
 
