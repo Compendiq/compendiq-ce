@@ -4,9 +4,11 @@ import { resolveUsecase } from './llm-provider-resolver.js';
 import { generateEmbedding } from './openai-compatible-client.js';
 import { htmlToText } from '../../../core/services/content-converter.js';
 import { logger } from '../../../core/utils/logger.js';
-import { invalidateGraphCache, acquireEmbeddingLock, releaseEmbeddingLock, isEmbeddingLocked, getRedisClient } from '../../../core/services/redis-cache.js';
+import { invalidateGraphCache, acquireEmbeddingLock, releaseEmbeddingLock, isEmbeddingLocked, getRedisClient, listActiveEmbeddingLocks } from '../../../core/services/redis-cache.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { CircuitBreakerOpenError, getProviderBreaker } from '../../../core/services/circuit-breaker.js';
+import { getReembedHistoryRetention } from '../../../core/services/admin-settings-service.js';
+import { enqueueJob } from '../../../core/services/queue-service.js';
 import pgvector from 'pgvector';
 
 const CHUNK_SIZE = 500;          // ~500 tokens target
@@ -1074,17 +1076,14 @@ export async function enqueueReembedAll(
   // Plan §2.3 Q2 — include currently-held per-user lock userIds as hints
   // in the job payload so the worker can surface them in its initial
   // "waiting-on-user-locks" progress event without a second Redis round-trip.
-  const { listActiveEmbeddingLocks } = await import('../../../core/services/redis-cache.js');
   const heldBy = (await listActiveEmbeddingLocks())
     .map((l) => l.userId)
     .filter((id) => id !== REEMBED_ALL_LOCK_USER);
 
   // Plan §2.3 Q4 — retention read per-enqueue so runtime admin changes take
   // effect on the next run (existing queued jobs carry the old retention).
-  const { getReembedHistoryRetention } = await import('../../../core/services/admin-settings-service.js');
   const retention = await getReembedHistoryRetention();
 
-  const { enqueueJob } = await import('../../../core/services/queue-service.js');
   await enqueueJob(
     'reembed-all',
     { triggeredAt: new Date().toISOString(), heldBy },
@@ -1116,8 +1115,6 @@ export async function enqueueReembedAll(
  *     every 100 pages (or on 100%).
  */
 export async function runReembedAllJob(job: Job): Promise<string> {
-  const { listActiveEmbeddingLocks } = await import('../../../core/services/redis-cache.js');
-
   const WAIT_LOCKS_TIMEOUT_MS = parseInt(
     process.env.REEMBED_WAIT_LOCKS_MS ?? '600000',
     10,
