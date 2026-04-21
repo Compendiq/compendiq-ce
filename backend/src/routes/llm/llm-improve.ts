@@ -21,6 +21,7 @@ import {
   MAX_INPUT_LENGTH,
 } from './_helpers.js';
 import { requireGlobalPermission } from '../../core/utils/rbac-guards.js';
+import { acquireStreamSlot } from '../../core/services/sse-stream-limiter.js';
 
 export async function llmImproveRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -29,6 +30,16 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
 
   // POST /api/llm/improve - stream improved content
   fastify.post('/llm/improve', { ...LLM_STREAM_RATE_LIMIT, preHandler: requireGlobalPermission('llm:improve') }, async (request, reply) => {
+    // Per-user concurrent SSE-stream cap (#268).
+    const slot = await acquireStreamSlot(request.userId);
+    if (!slot.acquired) {
+      return reply.code(429).send({
+        error: 'too_many_concurrent_streams',
+        message: 'You have reached the per-user concurrent AI-stream limit. Close an existing stream and try again.',
+      });
+    }
+
+    try {
     const auditStart = Date.now();
     const body = ImproveRequestSchema.parse(request.body);
     const { content, type, model, includeSubPages, instruction } = body;
@@ -159,6 +170,9 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
       throw err;
     } finally {
       if (lockAcquired) await llmCache.releaseLock(cacheKey);
+    }
+    } finally {
+      await slot.release();
     }
   });
 }

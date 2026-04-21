@@ -62,7 +62,8 @@ const assignments = {
   },
 };
 
-function mockRoutes() {
+function mockRoutes(options?: { concurrentStreamsCap?: number }) {
+  const cap = options?.concurrentStreamsCap ?? 3;
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init = {}) => {
     const url = typeof input === 'string' ? input : (input as URL).toString();
     if (url.endsWith('/admin/llm-providers') && (init as RequestInit).method !== 'POST') {
@@ -77,6 +78,24 @@ function mockRoutes() {
     }
     if (url.endsWith('/admin/llm-usecases') && (init as RequestInit).method === 'PUT') {
       return new Response(JSON.stringify(assignments), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.endsWith('/admin/settings') && (init as RequestInit).method !== 'PUT') {
+      return new Response(
+        JSON.stringify({
+          embeddingDimensions: 1024,
+          ftsLanguage: 'simple',
+          embeddingChunkSize: 500,
+          embeddingChunkOverlap: 50,
+          drawioEmbedUrl: null,
+          llmMaxConcurrentStreamsPerUser: cap,
+        }),
+        { headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+    if (url.endsWith('/admin/settings') && (init as RequestInit).method === 'PUT') {
+      return new Response(JSON.stringify({ message: 'Admin settings updated' }), {
         headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -154,6 +173,89 @@ describe('LlmTab', () => {
       expect(putCall).toBeTruthy();
       const body = JSON.parse((putCall![1] as RequestInit).body as string);
       expect(body.chat.providerId).toBe(providerB.id);
+    });
+  });
+
+  // ── Runtime limits card — per-user concurrent-SSE-stream cap (#268) ──
+
+  it('renders the per-user concurrent stream cap with the server value', async () => {
+    const Wrapper = createWrapper();
+    mockRoutes({ concurrentStreamsCap: 7 });
+    render(<LlmTab />, { wrapper: Wrapper });
+
+    const input = (await screen.findByTestId(
+      'llm-max-concurrent-streams-per-user',
+    )) as HTMLInputElement;
+    expect(input).toBeTruthy();
+    expect(input.type).toBe('number');
+    expect(input.value).toBe('7');
+    expect(input.min).toBe('1');
+    expect(input.max).toBe('20');
+  });
+
+  it('falls back to the default of 3 when the server omits the value', async () => {
+    const Wrapper = createWrapper();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : (input as URL).toString();
+      if (url.endsWith('/admin/llm-providers')) {
+        return new Response(JSON.stringify([providerA, providerB]), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/admin/llm-usecases')) {
+        return new Response(JSON.stringify(assignments), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/admin/settings')) {
+        // Server omits `llmMaxConcurrentStreamsPerUser` — UI must fall back to 3.
+        return new Response(
+          JSON.stringify({
+            embeddingDimensions: 1024,
+            ftsLanguage: 'simple',
+            embeddingChunkSize: 500,
+            embeddingChunkOverlap: 50,
+            drawioEmbedUrl: null,
+          }),
+          { headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      if (url.endsWith('/admin/embedding/dimensions')) {
+        return new Response(JSON.stringify({ dimensions: 1024 }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify([]), { headers: { 'Content-Type': 'application/json' } });
+    });
+
+    render(<LlmTab />, { wrapper: Wrapper });
+    const input = (await screen.findByTestId(
+      'llm-max-concurrent-streams-per-user',
+    )) as HTMLInputElement;
+    expect(input.value).toBe('3');
+  });
+
+  it('PUTs the new cap to /admin/settings when Save is clicked', async () => {
+    const Wrapper = createWrapper();
+    const spy = mockRoutes({ concurrentStreamsCap: 3 });
+    render(<LlmTab />, { wrapper: Wrapper });
+
+    const input = (await screen.findByTestId(
+      'llm-max-concurrent-streams-per-user',
+    )) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '8' } });
+    fireEvent.click(screen.getByTestId('llm-runtime-limits-save'));
+
+    await waitFor(() => {
+      const putCall = spy.mock.calls.find(
+        ([url, init]) =>
+          typeof url === 'string' &&
+          url.endsWith('/admin/settings') &&
+          (init as RequestInit | undefined)?.method === 'PUT',
+      );
+      expect(putCall).toBeTruthy();
+      const body = JSON.parse((putCall![1] as RequestInit).body as string);
+      expect(body.llmMaxConcurrentStreamsPerUser).toBe(8);
     });
   });
 });

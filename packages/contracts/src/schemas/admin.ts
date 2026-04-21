@@ -46,6 +46,9 @@ export const AdminSettingsSchema = z.object({
    * Default 150, clamped to [10, 10000].
    */
   reembedHistoryRetention: z.number().int().min(10).max(10_000),
+  // Per-user concurrent SSE-stream cap (#268). Separate from rateLimitLlmStream:
+  // that caps requests/minute; this caps concurrently-open streams.
+  llmMaxConcurrentStreamsPerUser: z.number().int().min(1).max(20).optional(),
 });
 
 export const UpdateAdminSettingsSchema = z.object({
@@ -72,6 +75,8 @@ export const UpdateAdminSettingsSchema = z.object({
   rateLimitLlmEmbedding: z.number().int().min(1).max(1000).optional(),
   /** Issue #257 — optional on update; omitted → leave unchanged. */
   reembedHistoryRetention: z.number().int().min(10).max(10_000).optional(),
+  // Per-user concurrent SSE-stream cap (#268).
+  llmMaxConcurrentStreamsPerUser: z.number().int().min(1).max(20).optional(),
 });
 
 export type AdminSettings = z.infer<typeof AdminSettingsSchema>;
