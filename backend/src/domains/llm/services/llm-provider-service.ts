@@ -1,6 +1,6 @@
 import { query, getPool } from '../../../core/db/postgres.js';
 import { decryptPat, encryptPat } from '../../../core/utils/crypto.js';
-import { bumpProviderCacheVersion } from './cache-bus.js';
+import { bumpProviderCacheVersion, emitProviderDeleted } from './cache-bus.js';
 import type { LlmProvider, LlmProviderInput, LlmProviderUpdate } from '@compendiq/contracts';
 
 /** Internal row shape returned from PG — includes the encrypted api_key. */
@@ -134,6 +134,12 @@ export async function deleteProvider(id: string): Promise<void> {
     throw new Error(`Provider is referenced by: ${refs.rows.map(r => r.usecase).join(', ')}`);
   }
   await query(`DELETE FROM llm_providers WHERE id=$1`, [id]);
+  // Emit the deletion event *before* the cache-version bump so subscribers
+  // see the id before the generic cache sweep runs (issue #267). The bump
+  // listener only iterates the resolver's configCache and would otherwise
+  // miss providers that were contacted (e.g. "Test connection") but never
+  // bound to a use-case.
+  emitProviderDeleted(id);
   bumpProviderCacheVersion();
 }
 

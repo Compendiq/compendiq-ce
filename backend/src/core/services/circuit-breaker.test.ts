@@ -217,3 +217,44 @@ describe('provider breaker lifecycle', () => {
     expect(listProviderBreakers().some((b) => b.providerId === id)).toBe(false);
   });
 });
+
+// ─── Issue #267: provider-deletion event drops breaker map entry ─────────────
+// Prior to the fix, `providerBreakers` kept entries for deleted providers
+// forever (O(n) memory leak over process lifetime). The fix emits a
+// `providerDeleted(id)` signal on the cache-bus that the resolver listens for
+// and routes to `invalidateBreaker`/`invalidateDispatcher`. The test pins the
+// whole wiring end-to-end, not just `invalidateProviderBreaker` in isolation.
+describe('provider deletion event drops breaker entry via cache-bus', () => {
+  it('emitProviderDeleted drops the breaker — listProviderBreakers no longer sees the id', async () => {
+    // Importing the resolver module registers its `onProviderDeleted` listener
+    // as a module-evaluation side effect. This mirrors how the listener is
+    // wired in production via `llm-provider-bootstrap.ts`.
+    await import('../../domains/llm/services/llm-provider-resolver.js');
+    const { emitProviderDeleted } = await import('../../domains/llm/services/cache-bus.js');
+
+    const id = 'provider-to-delete-267';
+    // Start from a clean slate in case another test created a breaker for this id.
+    invalidateProviderBreaker(id);
+
+    // Trip the breaker to OPEN so we can prove the freshly-created replacement
+    // is CLOSED (no state bleed from the old instance).
+    const breaker = getProviderBreaker(id);
+    for (let i = 0; i < 3; i++) {
+      await breaker.execute(() => Promise.reject(new Error('boom'))).catch(() => {});
+    }
+    expect(breaker.getStatus().state).toBe('OPEN');
+    expect(listProviderBreakers().find((b) => b.providerId === id)).toBeDefined();
+
+    // Act — emit the deletion event. Synchronous: must be gone on the next tick.
+    emitProviderDeleted(id);
+
+    expect(listProviderBreakers().find((b) => b.providerId === id)).toBeUndefined();
+
+    // Re-create with the same id → fresh CLOSED breaker, no state bleed.
+    // (Data model uses DB UUIDs so this is exotic in practice, but the issue
+    // body calls it out as an acceptance criterion.)
+    const reborn = getProviderBreaker(id);
+    expect(reborn.getStatus().state).toBe('CLOSED');
+    expect(reborn).not.toBe(breaker);
+  });
+});

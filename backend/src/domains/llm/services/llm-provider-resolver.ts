@@ -1,7 +1,7 @@
 import { query } from '../../../core/db/postgres.js';
 import { decryptPat } from '../../../core/utils/crypto.js';
 import { invalidateDispatcher, invalidateBreaker, type ProviderConfig } from './openai-compatible-client.js';
-import { getProviderCacheVersion, onProviderCacheBump } from './cache-bus.js';
+import { getProviderCacheVersion, onProviderCacheBump, onProviderDeleted } from './cache-bus.js';
 import type { LlmUsecase } from '@compendiq/contracts';
 
 interface ResolveRow {
@@ -35,6 +35,20 @@ onProviderCacheBump(() => {
     invalidateBreaker(entry.cfg.providerId);
   }
   configCache.clear();
+});
+
+// Issue #267 — Definitive per-id cleanup on provider deletion. Runs even if
+// the resolver's configCache doesn't have an entry for `id` (e.g. a provider
+// contacted via "Test connection" before it was ever assigned to a use-case,
+// whose breaker lives in `providerBreakers` but not in `configCache`). This
+// listener is belt-and-braces with the cache-bump listener above: when both
+// fire, this one's `configCache.delete(id)` is redundant with the bump
+// listener's `configCache.clear()`, but keeping it here makes the listener
+// self-sufficient and independent of event ordering.
+onProviderDeleted((id) => {
+  invalidateDispatcher(id);
+  invalidateBreaker(id);
+  configCache.delete(id);
 });
 
 function decryptSafe(s: string | null): string | null {
