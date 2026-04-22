@@ -56,6 +56,10 @@ vi.mock('./openai-compatible-client.js', () => ({
 
 vi.mock('../../../core/services/rbac-service.js', () => ({
   getUserAccessibleSpaces: (...args: unknown[]) => mocks.mockGetUserAccessibleSpaces(...args),
+  // The rag-service now imports the memoised wrapper (ADR-022). Tests here
+  // exercise resolver behaviour, not the scope cache, so the wrapper just
+  // delegates to the same mock.
+  getUserAccessibleSpacesMemoized: (...args: unknown[]) => mocks.mockGetUserAccessibleSpaces(...args),
 }));
 
 vi.mock('pgvector', () => ({

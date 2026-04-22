@@ -1,7 +1,9 @@
 import { query, getVectorPool } from '../../../core/db/postgres.js';
 import { resolveUsecase } from './llm-provider-resolver.js';
 import { generateEmbedding } from './openai-compatible-client.js';
-import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
+// Use the request-scoped memoised wrapper so a single hybrid request resolves
+// the readable-space set once across vectorSearch + keywordSearch. See ADR-022.
+import { getUserAccessibleSpacesMemoized as getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { CircuitBreakerOpenError } from '../../../core/services/circuit-breaker.js';
 import { getFtsLanguage } from '../../../core/services/fts-language.js';
 import pgvector from 'pgvector';

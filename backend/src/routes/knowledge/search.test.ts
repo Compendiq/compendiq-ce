@@ -10,6 +10,9 @@ vi.mock('../../core/utils/logger.js', () => ({
 
 vi.mock('../../core/services/rbac-service.js', () => ({
   getUserAccessibleSpaces: vi.fn().mockResolvedValue(['TEST']),
+  // The search route now imports the memoised wrapper (ADR-022). For these
+  // tests, the scope cache is irrelevant; both forms resolve the same set.
+  getUserAccessibleSpacesMemoized: vi.fn().mockResolvedValue(['TEST']),
 }));
 
 const mockQueryFn = vi.fn();
