@@ -111,6 +111,9 @@ export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
     id: 'security',
     label: 'Security & Access',
     items: [
+      // Per-user admin CRUD (#304). Lives under Security & Access because it
+      // governs who can authenticate, not what settings they see.
+      navItem('users', 'Users', { adminOnly: true, legacyTabId: null }),
       navItem('rate-limits', 'Rate Limits', { adminOnly: true }),
       navItem('sso', 'SSO / OIDC', {
         adminOnly: true,

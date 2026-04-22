@@ -91,8 +91,16 @@ export async function authRoutes(fastify: FastifyInstance) {
   fastify.post('/login', AUTH_RATE_LIMIT, async (request, reply) => {
     const body = LoginSchema.parse(request.body);
 
-    const result = await query<{ id: string; username: string; password_hash: string; role: string; email: string | null; display_name: string | null }>(
-      'SELECT id, username, password_hash, role, email, display_name FROM users WHERE username = $1',
+    const result = await query<{
+      id: string;
+      username: string;
+      password_hash: string;
+      role: string;
+      email: string | null;
+      display_name: string | null;
+      deactivated_at: Date | null;
+    }>(
+      'SELECT id, username, password_hash, role, email, display_name, deactivated_at FROM users WHERE username = $1',
       [body.username],
     );
 
@@ -106,6 +114,20 @@ export async function authRoutes(fastify: FastifyInstance) {
     if (!valid) {
       await logAuditEvent(user.id, 'LOGIN_FAILED', 'user', user.id, { reason: 'invalid_password' }, request);
       throw fastify.httpErrors.unauthorized('Invalid username or password');
+    }
+
+    // Deactivated users are rejected (#304). The response message stays
+    // generic to avoid account-enumeration via the error string.
+    if (user.deactivated_at) {
+      await logAuditEvent(
+        user.id,
+        'LOGIN_FAILED',
+        'user',
+        user.id,
+        { reason: 'deactivated' },
+        request,
+      );
+      throw fastify.httpErrors.unauthorized('Account is deactivated — contact an administrator');
     }
 
     const accessToken = await generateAccessToken({

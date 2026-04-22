@@ -19,6 +19,7 @@ import { settingsRoutes } from './routes/foundation/settings.js';
 import { adminRoutes } from './routes/foundation/admin.js';
 import { adminEmbeddingLocksRoutes } from './routes/foundation/admin-embedding-locks.js';
 import { rbacRoutes } from './routes/foundation/rbac.js';
+import { adminUsersRoutes } from './routes/foundation/admin-users.js';
 // Confluence routes
 import { spacesRoutes } from './routes/confluence/spaces.js';
 import { syncRoutes } from './routes/confluence/sync.js';
@@ -246,6 +247,7 @@ export async function buildApp() {
   await app.register(adminRoutes, { prefix: '/api' });
   await app.register(adminEmbeddingLocksRoutes, { prefix: '/api' });
   await app.register(rbacRoutes, { prefix: '/api' });
+  await app.register(adminUsersRoutes, { prefix: '/api' });
 
   // Community-mode license endpoint fallback.
   // Skip if the enterprise plugin registered its own richer version via registerRoutes().
