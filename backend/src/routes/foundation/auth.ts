@@ -141,7 +141,34 @@ export async function authRoutes(fastify: FastifyInstance) {
       role: user.role as 'user' | 'admin',
     });
 
-    await logAuditEvent(user.id, 'LOGIN', 'user', user.id, {}, request);
+    // Stamp last_login_at (#307 P0a). Fire-and-forget — audit emission
+    // + session creation must not be blocked on this write. Wrapped in an
+    // IIFE + try/catch so unit-test mocks that return undefined here don't
+    // surface `Cannot read properties of undefined (reading 'catch')`.
+    (async () => {
+      try {
+        await query('UPDATE users SET last_login_at = NOW() WHERE id = $1', [user.id]);
+      } catch (err) {
+        logger.warn({ err, userId: user.id }, 'Failed to update users.last_login_at');
+      }
+    })();
+
+    await logAuditEvent(
+      user.id,
+      'LOGIN',
+      'user',
+      user.id,
+      { auth_method: 'local' },
+      request,
+    );
+    await logAuditEvent(
+      user.id,
+      'SESSION_CREATED',
+      'user',
+      user.id,
+      { auth_method: 'local' },
+      request,
+    );
 
     reply
       .setCookie(REFRESH_COOKIE, refreshToken, {
@@ -281,6 +308,14 @@ export async function authRoutes(fastify: FastifyInstance) {
       try {
         await revokeAllUserTokens(userId);
         await logAuditEvent(userId, 'LOGOUT', 'user', userId, {}, request);
+        await logAuditEvent(
+          userId,
+          'SESSION_REVOKED',
+          'user',
+          userId,
+          { reason: 'logout' },
+          request,
+        );
       } catch {
         // Best effort
       }

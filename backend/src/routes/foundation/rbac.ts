@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { query } from '../../core/db/postgres.js';
 import { invalidateRbacCache, userHasPermission, getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
+import { logAuditEvent } from '../../core/services/audit-service.js';
 
 // ---- Zod schemas ----
 
@@ -206,6 +207,14 @@ export async function rbacRoutes(fastify: FastifyInstance) {
 
       await invalidateRbacCache();
       const row = result.rows[0]!;
+      await logAuditEvent(
+        request.userId,
+        'GROUP_CREATED',
+        'group',
+        String(row.id),
+        { name: row.name },
+        request,
+      );
       reply.status(201);
       return {
         id: row.id,
@@ -248,6 +257,14 @@ export async function rbacRoutes(fastify: FastifyInstance) {
 
       await invalidateRbacCache();
       const row = result.rows[0]!;
+      await logAuditEvent(
+        request.userId,
+        'GROUP_UPDATED',
+        'group',
+        String(row.id),
+        { fields: Object.keys(body) },
+        request,
+      );
       return {
         id: row.id,
         name: row.name,
@@ -268,6 +285,14 @@ export async function rbacRoutes(fastify: FastifyInstance) {
       }
 
       await invalidateRbacCache();
+      await logAuditEvent(
+        request.userId,
+        'GROUP_DELETED',
+        'group',
+        String(id),
+        {},
+        request,
+      );
       return { message: 'Group deleted' };
     });
 
@@ -338,6 +363,15 @@ export async function rbacRoutes(fastify: FastifyInstance) {
       }
 
       await invalidateRbacCache(userId);
+      // Audit event (#307 P0c): group membership added.
+      await logAuditEvent(
+        request.userId,
+        'GROUP_MEMBER_ADDED',
+        'group',
+        String(id),
+        { subjectUserId: userId, groupId: id },
+        request,
+      );
       reply.status(201);
       return { message: 'User added to group' };
     });
@@ -356,6 +390,14 @@ export async function rbacRoutes(fastify: FastifyInstance) {
       }
 
       await invalidateRbacCache(userId);
+      await logAuditEvent(
+        request.userId,
+        'GROUP_MEMBER_REMOVED',
+        'group',
+        String(id),
+        { subjectUserId: userId, groupId: id },
+        request,
+      );
       return { message: 'User removed from group' };
     });
 
@@ -425,6 +467,21 @@ export async function rbacRoutes(fastify: FastifyInstance) {
         );
 
         await invalidateRbacCache();
+        // Audit event (#307 P0c): space-scoped role assigned.
+        await logAuditEvent(
+          request.userId,
+          'SPACE_ACCESS_GRANTED',
+          'space',
+          key,
+          {
+            spaceKey: key,
+            principalType,
+            principalId,
+            roleId,
+            assignmentId: result.rows[0]!.id,
+          },
+          request,
+        );
         reply.status(201);
         return {
           id: result.rows[0]!.id,
@@ -456,6 +513,15 @@ export async function rbacRoutes(fastify: FastifyInstance) {
       if (result.rows.length === 0) {
         throw admin.httpErrors.notFound('Role assignment not found');
       }
+
+      await logAuditEvent(
+        request.userId,
+        'SPACE_ACCESS_REVOKED',
+        'space',
+        key,
+        { spaceKey: key, assignmentId },
+        request,
+      );
 
       await invalidateRbacCache();
       return { message: 'Role assignment removed' };
@@ -517,6 +583,14 @@ export async function rbacRoutes(fastify: FastifyInstance) {
         );
 
         await invalidateRbacCache();
+        await logAuditEvent(
+          request.userId,
+          'ACE_GRANTED',
+          resourceType,
+          String(resourceId),
+          { principalType, principalId, permission, aceId: result.rows[0]!.id },
+          request,
+        );
         reply.status(201);
         return {
           id: result.rows[0]!.id,
@@ -549,6 +623,14 @@ export async function rbacRoutes(fastify: FastifyInstance) {
       }
 
       await invalidateRbacCache();
+      await logAuditEvent(
+        request.userId,
+        'ACE_REVOKED',
+        'ace',
+        String(id),
+        {},
+        request,
+      );
       return { message: 'Access control entry removed' };
     });
 

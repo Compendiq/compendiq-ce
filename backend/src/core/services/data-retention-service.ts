@@ -22,6 +22,7 @@
 import { getPool } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
 import { getAdminAccessDeniedRetentionDays } from './admin-settings-service.js';
+import { logAuditEvent } from './audit-service.js';
 
 export const RETENTION_DEFAULTS: Record<string, number> = {
   audit_log: 365,          // days
@@ -53,6 +54,17 @@ export async function runRetentionCleanup(): Promise<Record<string, number>> {
       results[table] = rowCount ?? 0;
       if (results[table] > 0) {
         logger.info({ table, deleted: results[table], retentionDays }, 'Retention cleanup completed');
+        // #307 P0d: emit RETENTION_PRUNED for every prune cycle that removed
+        // at least one row. Compliance report 6 (Data Retention Attestation)
+        // reads this event; prunes with zero rows are silenced to avoid
+        // noise, since a zero-row prune attests the same as a no-op cron.
+        await logAuditEvent(
+          null,
+          'RETENTION_PRUNED',
+          'table',
+          table,
+          { table, rows_pruned: results[table], retention_days: retentionDays },
+        );
       }
     } catch (err) {
       logger.error({ err, table }, 'Retention cleanup failed for table');
@@ -82,6 +94,13 @@ export async function runRetentionCleanup(): Promise<Record<string, number>> {
     results.page_versions = rowCount ?? 0;
     if (results.page_versions > 0) {
       logger.info({ deleted: results.page_versions, maxVersions }, 'Page versions retention cleanup completed');
+      await logAuditEvent(
+        null,
+        'RETENTION_PRUNED',
+        'table',
+        'page_versions',
+        { table: 'page_versions', rows_pruned: results.page_versions, max_versions: maxVersions },
+      );
     }
   } catch (err) {
     logger.error({ err }, 'Page versions retention cleanup failed');
@@ -150,6 +169,18 @@ async function runAdminAccessDeniedRetention(): Promise<number> {
       logger.info(
         { deleted: totalDeleted, retentionDays: days },
         'ADMIN_ACCESS_DENIED retention cleanup completed',
+      );
+      await logAuditEvent(
+        null,
+        'RETENTION_PRUNED',
+        'table',
+        'audit_log_admin_access_denied',
+        {
+          table: 'audit_log',
+          action_scope: 'ADMIN_ACCESS_DENIED',
+          rows_pruned: totalDeleted,
+          retention_days: days,
+        },
       );
     }
   } catch (err) {

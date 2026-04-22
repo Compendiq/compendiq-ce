@@ -4,6 +4,19 @@ import { logger } from '../utils/logger.js';
 
 /**
  * Defined audit event types for structured logging.
+ *
+ * Compliance-required events (Compendiq/compendiq-ee#115 / CE #307):
+ *   - Session lifecycle:  SESSION_CREATED, SESSION_REVOKED
+ *   - RBAC mutations:     ROLE_ASSIGNED, ROLE_REVOKED, GROUP_MEMBER_ADDED,
+ *                         GROUP_MEMBER_REMOVED, SPACE_ACCESS_GRANTED,
+ *                         SPACE_ACCESS_REVOKED, ACE_GRANTED, ACE_REVOKED
+ *   - Data retention:     RETENTION_PRUNED (+ metadata.table, rows_pruned)
+ *   - MFA:                MFA_ENROLLED, MFA_DISABLED — placeholders for when
+ *                         MFA ships; the Authentication compliance report
+ *                         documents "MFA not yet implemented" until then.
+ *
+ * Login metadata now carries `auth_method: 'local' | 'oidc'` (the OIDC
+ * caller lives in EE).
  */
 export type AuditAction =
   | 'LOGIN'
@@ -12,6 +25,11 @@ export type AuditAction =
   | 'REGISTER'
   | 'TOKEN_REFRESH'
   | 'TOKEN_FAMILY_REVOKED'
+  | 'SESSION_CREATED'
+  | 'SESSION_REVOKED'
+  | 'PASSWORD_RESET'
+  | 'MFA_ENROLLED'
+  | 'MFA_DISABLED'
   | 'SETTINGS_CHANGED'
   | 'PAT_UPDATED'
   | 'PAGE_CREATED'
@@ -36,7 +54,19 @@ export type AuditAction =
   | 'EMBEDDING_RUN_NOW'
   | 'EMBEDDING_RESCAN'
   | 'EMBEDDING_RESET_FAILED'
-  | 'ADMIN_ACCESS_DENIED';
+  | 'ADMIN_ACCESS_DENIED'
+  | 'ROLE_ASSIGNED'
+  | 'ROLE_REVOKED'
+  | 'GROUP_CREATED'
+  | 'GROUP_UPDATED'
+  | 'GROUP_DELETED'
+  | 'GROUP_MEMBER_ADDED'
+  | 'GROUP_MEMBER_REMOVED'
+  | 'SPACE_ACCESS_GRANTED'
+  | 'SPACE_ACCESS_REVOKED'
+  | 'ACE_GRANTED'
+  | 'ACE_REVOKED'
+  | 'RETENTION_PRUNED';
 
 export interface AuditLogEntry {
   id: string;

@@ -171,4 +171,68 @@ describe.skipIf(!dbAvailable)('Audit Service', () => {
       expect(page1Ids).not.toEqual(page2Ids);
     });
   });
+
+  // --------------------------------------------------------------------
+  // #307 — compliance-report audit events
+  // --------------------------------------------------------------------
+  describe('#307 compliance audit events', () => {
+    // The compliance report (Compendiq/compendiq-ee#115) reads these event
+    // types. If any disappear the report breaks. Touch this list only
+    // when deliberately changing the compliance contract.
+    const REQUIRED: AuditAction[] = [
+      'SESSION_CREATED',
+      'SESSION_REVOKED',
+      'PASSWORD_RESET',
+      'MFA_ENROLLED',
+      'MFA_DISABLED',
+      'ROLE_ASSIGNED',
+      'ROLE_REVOKED',
+      'GROUP_CREATED',
+      'GROUP_UPDATED',
+      'GROUP_DELETED',
+      'GROUP_MEMBER_ADDED',
+      'GROUP_MEMBER_REMOVED',
+      'SPACE_ACCESS_GRANTED',
+      'SPACE_ACCESS_REVOKED',
+      'ACE_GRANTED',
+      'ACE_REVOKED',
+      'RETENTION_PRUNED',
+    ];
+
+    it.each(REQUIRED)('persists %s with the expected action string', async (action) => {
+      await logAuditEvent(null, action, 'rt', 'rid', { tag: action });
+      const res = await query<{ action: string }>(
+        `SELECT action FROM audit_log WHERE action = $1`,
+        [action],
+      );
+      expect(res.rows.length).toBe(1);
+    });
+
+    it('login event accepts auth_method metadata for local + oidc', async () => {
+      await logAuditEvent(testUserId, 'LOGIN', 'user', testUserId, { auth_method: 'local' });
+      await logAuditEvent(testUserId, 'LOGIN', 'user', testUserId, { auth_method: 'oidc' });
+      const res = await query<{ metadata: Record<string, unknown> }>(
+        `SELECT metadata FROM audit_log WHERE action = 'LOGIN' ORDER BY created_at`,
+      );
+      expect(res.rows.map((r) => r.metadata['auth_method'])).toEqual(['local', 'oidc']);
+    });
+
+    it('RETENTION_PRUNED captures table + rows_pruned + retention_days', async () => {
+      await logAuditEvent(
+        null,
+        'RETENTION_PRUNED',
+        'table',
+        'audit_log',
+        { table: 'audit_log', rows_pruned: 17, retention_days: 365 },
+      );
+      const res = await query<{ metadata: Record<string, unknown> }>(
+        `SELECT metadata FROM audit_log WHERE action = 'RETENTION_PRUNED'`,
+      );
+      expect(res.rows[0]!.metadata).toEqual({
+        table: 'audit_log',
+        rows_pruned: 17,
+        retention_days: 365,
+      });
+    });
+  });
 });

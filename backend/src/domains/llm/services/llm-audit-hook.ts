@@ -19,6 +19,18 @@ export interface LlmAuditEntry {
   errorMessage?: string;
   inputText?: string;
   outputText?: string;
+  /**
+   * `true` when the prompt-injection heuristic flagged the input before the
+   * LLM call. Undefined at call sites that haven't run the detector.
+   * (#307 P0f — used by the Compliance Report's LLM-safety attestation.)
+   */
+  promptInjectionDetected?: boolean;
+  /**
+   * `true` when `sanitize-llm-input.ts` rewrote the input before sending
+   * to the upstream. Undefined when the sanitiser was not invoked.
+   * (#307 P0f.)
+   */
+  sanitized?: boolean;
 }
 
 /**

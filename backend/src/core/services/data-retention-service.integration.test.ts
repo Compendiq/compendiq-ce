@@ -127,8 +127,13 @@ describe.skipIf(!dbAvailable)('ADMIN_ACCESS_DENIED retention purge (#264)', () =
     // Tighten to 30d. Next call purges the 50-day-old row.
     await setRetentionDays(30);
     await runRetentionCleanup();
+    // Exclude RETENTION_PRUNED (#307): the prune cycle itself writes an audit
+    // row about the prune; the assertion is about the target data, not the
+    // audit-of-prune meta-event.
     expect(
-      (await query<{ c: string }>(`SELECT COUNT(*)::text AS c FROM audit_log`)).rows[0]!.c,
+      (await query<{ c: string }>(
+        `SELECT COUNT(*)::text AS c FROM audit_log WHERE action <> 'RETENTION_PRUNED'`,
+      )).rows[0]!.c,
     ).toBe('0');
   });
 
@@ -148,7 +153,9 @@ describe.skipIf(!dbAvailable)('ADMIN_ACCESS_DENIED retention purge (#264)', () =
     await runRetentionCleanup();
 
     const remaining = await query<{ action: string }>(
-      `SELECT action FROM audit_log ORDER BY action`,
+      // Exclude RETENTION_PRUNED (#307) — the prune cycle writes a
+      // self-attestation row; this test is about untouched actions.
+      `SELECT action FROM audit_log WHERE action <> 'RETENTION_PRUNED' ORDER BY action`,
     );
     expect(remaining.rows.map((r) => r.action)).toEqual(['PAGE_CREATED']);
   });
