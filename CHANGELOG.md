@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Embedding model switch no longer caps at 2000 dimensions.** `POST /api/admin/embedding/reembed` with `newDimensions > 2000` (e.g. switching to `qwen3-embedding:4b` at 2560 dims or `qwen3-embedding:8b` at 4096) previously rolled back the whole transaction with `column cannot have more than 2000 dimensions for hnsw index`. The re-embed path now tiers the column type + index choice: `≤ 2000` keeps the vector+HNSW path unchanged; `2001–4000` uses `halfvec(n)` + HNSW `halfvec_cosine_ops` (float16 storage, ~equivalent recall); `> 4000` stores as `vector(n)` with no HNSW index (sequential scan — correct but slower on large KBs, logged as a warning). DDL order now mirrors migration 048: DROP INDEX → ALTER COLUMN TYPE → CREATE INDEX. HNSW tuning `WITH (m=16, ef_construction=200)` applied consistently. Zod upper bound widened 8192 → 16000 (pgvector's max).
+
 ## [0.3.0] - 2026-04-22
 
 > Customer-facing release notes for v0.3.0 live at [`docs/releases/v0.3.0.md`](docs/releases/v0.3.0.md). The entries below stay in commit voice for engineers.
