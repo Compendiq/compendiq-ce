@@ -1121,7 +1121,7 @@ Standalone (non-Confluence) articles are filtered by the same visibility rules a
 **Scope boundary (CE-only):** This ADR covers space-level RBAC enforcement. Per-space **per-user ACL** (access-control-entries with custom permissions per page) is gated behind the Enterprise Edition `ENTERPRISE_FEATURES.ADVANCED_RBAC` flag and is not covered here; see the v0.4 roadmap.
 
 **Consequences:**
-- Any new retrieval path MUST use `getUserAccessibleSpacesMemoized` (not the raw resolver) to inherit the request-scoped cache.
+- Any new **RAG retrieval** path MUST use `getUserAccessibleSpacesMemoized` (not the raw resolver) to inherit the request-scoped cache. Non-retrieval callers (admin tooling, sync workers, one-shot operations that run outside an authenticated HTTP request scope where `AsyncLocalStorage` has no context) continue to call `getUserAccessibleSpaces` directly — memoisation has no benefit there.
 - RBAC mutation paths MUST invalidate the Redis RBAC cache (`invalidateRbacCache(userId)`) so the next request sees the new ACL within the 60-second global TTL window.
 - Integration test `backend/src/domains/llm/services/rag-service.integration.test.ts` is the regression guard.
 

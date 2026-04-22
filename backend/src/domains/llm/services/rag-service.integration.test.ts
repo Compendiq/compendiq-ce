@@ -215,5 +215,17 @@ describe.skipIf(!dbAvailable)('rag-service integration — space permission enfo
     expect(vectorHits).toHaveLength(0);
     expect(keywordHits).toHaveLength(0);
     expect(hybrid).toHaveLength(0);
+
+    // Positive counterpart: user B (who has the SECRET role from the fixture)
+    // MUST still see the chunk. Without this, a bug that broke retrieval for
+    // everyone would pass the zero-leak assertions above — we want to rule
+    // out "retrieval is broken for everyone" as a false-positive pass.
+    const ownerVectorHits = await vectorSearch(userB, fakeVec(7));
+    const ownerKeywordHits = await keywordSearch(userB, 'launch codes');
+    const ownerHybrid = await hybridSearch(userB, 'launch codes');
+
+    expect(ownerVectorHits.length).toBeGreaterThan(0);
+    expect(ownerKeywordHits.length).toBeGreaterThan(0);
+    expect(ownerHybrid.length).toBeGreaterThan(0);
   });
 });
