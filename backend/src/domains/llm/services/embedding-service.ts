@@ -1038,17 +1038,37 @@ export async function enqueueReembedAll(
   if (opts.newDimensions !== undefined) {
     // pgvector type args must be literal — validate strictly before interpolation.
     const n = Math.floor(opts.newDimensions);
-    if (!Number.isFinite(n) || n < 1 || n > 8192) {
+    if (!Number.isFinite(n) || n < 1 || n > 16000) {
       throw new Error(
         `refused dimension change to non-integer or out-of-range value: ${opts.newDimensions}`,
       );
+    }
+    // pgvector index tiers (pgvector 0.8+):
+    //   HNSW on vector:  max 2000 dims — best recall, fastest, full float32
+    //   HNSW on halfvec: max 4000 dims — float16 storage, ~50% smaller, ~equivalent recall
+    //   no index:        > 4000 dims — sequential scan; correct but slower on large KBs
+    // Large open-source models like qwen3-embedding:4b (2560) or :8b (4096) can't fit
+    // HNSW on plain vector; falling back to halfvec or seq-scan keeps them usable.
+    let columnType: string;
+    let indexSql: string | null;
+    if (n <= 2000) {
+      columnType = `vector(${n})`;
+      indexSql = `CREATE INDEX idx_page_embeddings_hnsw ON page_embeddings USING hnsw (embedding vector_cosine_ops)`;
+    } else if (n <= 4000) {
+      columnType = `halfvec(${n})`;
+      indexSql = `CREATE INDEX idx_page_embeddings_hnsw ON page_embeddings USING hnsw (embedding halfvec_cosine_ops)`;
+    } else {
+      columnType = `vector(${n})`;
+      indexSql = null;
     }
     const client = await getPool().connect();
     try {
       await client.query('BEGIN');
       await client.query(`TRUNCATE page_embeddings`);
+      // USING '...'::type lets Postgres cast from the current type if non-empty
+      // (TRUNCATE above makes the cast unnecessary, but kept for robustness).
       await client.query(
-        `ALTER TABLE page_embeddings ALTER COLUMN embedding TYPE vector(${n})`,
+        `ALTER TABLE page_embeddings ALTER COLUMN embedding TYPE ${columnType} USING embedding::${columnType}`,
       );
       await client.query(
         `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
@@ -1058,9 +1078,14 @@ export async function enqueueReembedAll(
         [String(n)],
       );
       await client.query(`DROP INDEX IF EXISTS idx_page_embeddings_hnsw`);
-      await client.query(
-        `CREATE INDEX idx_page_embeddings_hnsw ON page_embeddings USING hnsw (embedding vector_cosine_ops)`,
-      );
+      if (indexSql) {
+        await client.query(indexSql);
+      } else {
+        logger.warn(
+          { dimensions: n },
+          'embedding dimensions exceed pgvector HNSW limit on halfvec (4000); skipping index. Vector queries will use sequential scan — expect slower retrieval on large knowledge bases.',
+        );
+      }
       await client.query('COMMIT');
     } catch (e) {
       await client.query('ROLLBACK').catch(() => {});
