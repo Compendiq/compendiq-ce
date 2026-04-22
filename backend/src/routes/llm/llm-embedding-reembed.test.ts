@@ -55,9 +55,17 @@ beforeEach(async () => {
   await truncateAllTables();
   // Reset the page_embeddings column to 1024 dims + seed the admin_settings
   // row. An earlier test in this file may have ALTERed the column to a
-  // different dimension; without the reset, the next test's INSERT of a
-  // 1024-length vector would fail.
+  // different dimension (incl. halfvec) or dropped the HNSW index entirely
+  // via the seq-scan-tier path; the reset must DROP INDEX → ALTER → CREATE
+  // in that order to accommodate any prior leftover state, matching the
+  // service's own DDL order in enqueueReembedAll.
+  await query(`DROP INDEX IF EXISTS idx_page_embeddings_hnsw`);
   await query(`ALTER TABLE page_embeddings ALTER COLUMN embedding TYPE vector(1024)`);
+  await query(
+    `CREATE INDEX idx_page_embeddings_hnsw ON page_embeddings
+       USING hnsw (embedding vector_cosine_ops)
+       WITH (m = 16, ef_construction = 200)`,
+  );
   await query(
     `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
      VALUES ('embedding_dimensions', '1024', NOW())
@@ -166,8 +174,96 @@ describe.skipIf(!dbAvailable)('POST /api/admin/embedding/reembed', () => {
       headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
       payload: JSON.stringify({ newDimensions: 99999 }),
     });
-    // Zod rejects at the boundary with 400 (max: 8192)
+    // Zod rejects at the boundary with 400 (max: 16000)
     expect(r.statusCode).toBe(400);
+  });
+
+  it('with newDimensions=2560 (halfvec tier), uses halfvec column + halfvec HNSW index', async () => {
+    // Seed an existing embedding row so the ALTER COLUMN TYPE path is exercised
+    // with non-empty data between TRUNCATE-and-ALTER (the prior order-of-ops
+    // bug only manifested once the index-rebuild-on-ALTER tried to run).
+    const pageResult = await query<{ id: number }>(
+      `INSERT INTO pages (confluence_id, space_key, title, body_text, body_html)
+       VALUES ('p-halfvec', $1, 'Before 2560', 'x', '<p>x</p>') RETURNING id`,
+      ['SPACE1'],
+    );
+    const pageId = pageResult.rows[0]!.id;
+    const v1024 = '[' + new Array(1024).fill('0.01').join(',') + ']';
+    await query(
+      `INSERT INTO page_embeddings (page_id, chunk_index, chunk_text, embedding, metadata)
+       VALUES ($1, 0, 'c', $2::vector, '{}'::jsonb)`,
+      [pageId, v1024],
+    );
+
+    const r = await app.inject({
+      method: 'POST',
+      url: '/api/admin/embedding/reembed',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({ newDimensions: 2560 }),
+    });
+    expect(r.statusCode).toBe(200);
+
+    // Column type should now be halfvec(2560)
+    const typeRows = await query<{ format_type: string }>(
+      `SELECT format_type(a.atttypid, a.atttypmod) AS format_type
+       FROM pg_attribute a
+       WHERE a.attrelid = 'page_embeddings'::regclass AND a.attname = 'embedding'`,
+    );
+    expect(typeRows.rows[0]!.format_type).toBe('halfvec(2560)');
+
+    // HNSW index should exist with the halfvec opclass
+    const indexRows = await query<{ indexdef: string }>(
+      `SELECT indexdef FROM pg_indexes
+       WHERE indexname = 'idx_page_embeddings_hnsw'`,
+    );
+    expect(indexRows.rows).toHaveLength(1);
+    expect(indexRows.rows[0]!.indexdef).toContain('halfvec_cosine_ops');
+
+    const settingRows = await query<{ setting_value: string }>(
+      `SELECT setting_value FROM admin_settings WHERE setting_key='embedding_dimensions'`,
+    );
+    expect(settingRows.rows[0]!.setting_value).toBe('2560');
+  });
+
+  it('with newDimensions=4096 (>4000, seq-scan tier), drops index and falls back to no index', async () => {
+    const pageResult = await query<{ id: number }>(
+      `INSERT INTO pages (confluence_id, space_key, title, body_text, body_html)
+       VALUES ('p-seq', $1, 'Before 4096', 'x', '<p>x</p>') RETURNING id`,
+      ['SPACE1'],
+    );
+    const pageId = pageResult.rows[0]!.id;
+    const v1024 = '[' + new Array(1024).fill('0.01').join(',') + ']';
+    await query(
+      `INSERT INTO page_embeddings (page_id, chunk_index, chunk_text, embedding, metadata)
+       VALUES ($1, 0, 'c', $2::vector, '{}'::jsonb)`,
+      [pageId, v1024],
+    );
+
+    const r = await app.inject({
+      method: 'POST',
+      url: '/api/admin/embedding/reembed',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({ newDimensions: 4096 }),
+    });
+    expect(r.statusCode).toBe(200);
+
+    // Column type switched to vector(4096); no HNSW index exists
+    const typeRows = await query<{ format_type: string }>(
+      `SELECT format_type(a.atttypid, a.atttypmod) AS format_type
+       FROM pg_attribute a
+       WHERE a.attrelid = 'page_embeddings'::regclass AND a.attname = 'embedding'`,
+    );
+    expect(typeRows.rows[0]!.format_type).toBe('vector(4096)');
+
+    const indexRows = await query<{ indexname: string }>(
+      `SELECT indexname FROM pg_indexes WHERE indexname = 'idx_page_embeddings_hnsw'`,
+    );
+    expect(indexRows.rows).toHaveLength(0);
+
+    const settingRows = await query<{ setting_value: string }>(
+      `SELECT setting_value FROM admin_settings WHERE setting_key='embedding_dimensions'`,
+    );
+    expect(settingRows.rows[0]!.setting_value).toBe('4096');
   });
 
   it('returns 403 when caller is not an admin', async () => {

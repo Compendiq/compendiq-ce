@@ -1051,12 +1051,14 @@ export async function enqueueReembedAll(
     // HNSW on plain vector; falling back to halfvec or seq-scan keeps them usable.
     let columnType: string;
     let indexSql: string | null;
+    // HNSW tuning parameters match migration 011 and 048 (m=16, ef_construction=200).
+    const HNSW_PARAMS = `WITH (m = 16, ef_construction = 200)`;
     if (n <= 2000) {
       columnType = `vector(${n})`;
-      indexSql = `CREATE INDEX idx_page_embeddings_hnsw ON page_embeddings USING hnsw (embedding vector_cosine_ops)`;
+      indexSql = `CREATE INDEX idx_page_embeddings_hnsw ON page_embeddings USING hnsw (embedding vector_cosine_ops) ${HNSW_PARAMS}`;
     } else if (n <= 4000) {
       columnType = `halfvec(${n})`;
-      indexSql = `CREATE INDEX idx_page_embeddings_hnsw ON page_embeddings USING hnsw (embedding halfvec_cosine_ops)`;
+      indexSql = `CREATE INDEX idx_page_embeddings_hnsw ON page_embeddings USING hnsw (embedding halfvec_cosine_ops) ${HNSW_PARAMS}`;
     } else {
       columnType = `vector(${n})`;
       indexSql = null;
@@ -1065,10 +1067,15 @@ export async function enqueueReembedAll(
     try {
       await client.query('BEGIN');
       await client.query(`TRUNCATE page_embeddings`);
-      // USING '...'::type lets Postgres cast from the current type if non-empty
-      // (TRUNCATE above makes the cast unnecessary, but kept for robustness).
+      // Order matters — mirrors migration 048's DROP → ALTER → CREATE. If we
+      // ALTER COLUMN TYPE while the old HNSW index (tied to the old opclass,
+      // e.g. vector_cosine_ops) still exists, Postgres tries to rebuild the
+      // index on the new type — which fails when (a) the new type is halfvec
+      // and the opclass only accepts vector, or (b) the new dim is >2000.
+      // Dropping the index first disentangles the ALTER from the rebuild.
+      await client.query(`DROP INDEX IF EXISTS idx_page_embeddings_hnsw`);
       await client.query(
-        `ALTER TABLE page_embeddings ALTER COLUMN embedding TYPE ${columnType} USING embedding::${columnType}`,
+        `ALTER TABLE page_embeddings ALTER COLUMN embedding TYPE ${columnType}`,
       );
       await client.query(
         `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
@@ -1077,7 +1084,6 @@ export async function enqueueReembedAll(
            SET setting_value = EXCLUDED.setting_value, updated_at = NOW()`,
         [String(n)],
       );
-      await client.query(`DROP INDEX IF EXISTS idx_page_embeddings_hnsw`);
       if (indexSql) {
         await client.query(indexSql);
       } else {

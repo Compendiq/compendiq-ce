@@ -14,8 +14,13 @@ const ADMIN_RATE_LIMIT = {
 // embedding_dimensions row in admin_settings, enqueueReembedAll opens a
 // transaction that TRUNCATEs page_embeddings, ALTERs the vector column type,
 // and rebuilds the HNSW index.
+// Upper bound matches pgvector's absolute max for both `vector` and `halfvec`
+// (16000). The service tiers the column type + index path internally:
+//   ≤ 2000  → vector + HNSW vector_cosine_ops
+//   2001-4000 → halfvec + HNSW halfvec_cosine_ops
+//   > 4000  → vector, no index (sequential scan, logged warning)
 const ReembedBodySchema = z.object({
-  newDimensions: z.number().int().min(1).max(8192).optional(),
+  newDimensions: z.number().int().min(1).max(16000).optional(),
 });
 
 const ReembedJobParamsSchema = z.object({
