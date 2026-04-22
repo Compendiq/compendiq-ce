@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-04-22
+
 > Customer-facing release notes for v0.3.0 live at [`docs/releases/v0.3.0.md`](docs/releases/v0.3.0.md). The entries below stay in commit voice for engineers.
 
 ### Added
