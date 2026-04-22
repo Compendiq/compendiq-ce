@@ -27,9 +27,10 @@ Phase 1.2 is **22 implementation issues + 2 epics** across two repos (CE + EE). 
 
 Everything in the §3.20 community-growth track (#296, #297, #298, #299) is documentation-only and can run **in parallel** with engineering from day one.
 
-**Two go/no-go decisions** still open:
-- **PII detection (#119)** — ship only if v0.4 ICP includes regulated buyers; otherwise defer to v0.5 with Microsoft Presidio
-- **Confluence sync history** (P0e of #307) — defer Report 7's sync-history attestation OR add a minimal capture table now
+**Three open decisions** still need resolution (deadlines in §8):
+- **Founder decision (resolve before Sprint 1 end)** — CE #307 P0e: defer sync-history attestation OR add minimal `confluence_sync_history` table
+- **Founder decision (resolve before Sprint 1 end)** — CE #307 P0f: backfill `llm_audit_log` columns via metadata jsonb OR add proper columns
+- **Go/no-go gate (resolve before Sprint 4 start)** — Compendiq/compendiq-ee#119 PII detection: ship in v0.4 (regulated-buyer ICP) OR defer to v0.5 with Microsoft Presidio
 
 ---
 
@@ -47,7 +48,7 @@ Everything in the §3.20 community-growth track (#296, #297, #298, #299) is docu
     admin user CRUD     local_modified   SSRF bootstrap fix   audit-log gaps      growth — fully
         │                   _at              │                    │              independent;
         ↓                   ↓                ↓                    ↓              parallel from
-    EE #116             EE #118          EE #113 Part B-1     EE #115            Sprint 1)
+    Compendiq/compendiq-ee#116             Compendiq/compendiq-ee#118          Compendiq/compendiq-ee#113 Part B-1     Compendiq/compendiq-ee#115            Sprint 1)
     bulk users          sync conflict    cache-bus migrate    compliance          - #296 stewardship
                         resolution           │                                    - #297 roadmap
                                              ↓                                    - #298 case studies
@@ -55,19 +56,19 @@ Everything in the §3.20 community-growth track (#296, #297, #298, #299) is docu
                                          co-presence                                guides
                                              │
                                              ↓
-                                         EE #113 Part A
+                                         Compendiq/compendiq-ee#113 Part A
                                          multi-instance pane
 
     Independent (no upstream blockers):
     - CE #300 paste-from-Confluence
     - CE #302 Draw.io
     - CE #303 PDF dashboard upgrade
-    - EE #111 IP allowlisting
-    - EE #112 per-space RAG ACLs (extends ADR-022 directly)
-    - EE #114 webhook push
-    - EE #117 batch pages (extends existing CE bulk routes)
-    - EE #119 PII detection (conditional)
-    - EE #120 AI output review (couples with #119; can ship first)
+    - Compendiq/compendiq-ee#111 IP allowlisting
+    - Compendiq/compendiq-ee#112 per-space RAG ACLs (extends ADR-022 directly)
+    - Compendiq/compendiq-ee#114 webhook push
+    - Compendiq/compendiq-ee#117 batch pages (extends existing CE bulk routes)
+    - Compendiq/compendiq-ee#119 PII detection (conditional)
+    - Compendiq/compendiq-ee#120 AI output review (couples with #119; can ship first)
 ```
 
 ---
@@ -82,10 +83,10 @@ Five sprints, two weeks each. The release ships at the end of Sprint 5 with a re
 
 | Issue | Blocks | Estimate | Owner notes |
 |-------|--------|----------|-------------|
-| **CE #306** SSRF bootstrap fix | EE #113 Part A; latent multi-pod bug | 0.5–1 d | **Highest priority** — security-relevant, smallest scope |
-| **CE #305** `pages.local_modified_at` | EE #118 | 1–2 d | Latent bug — AI-improved content silently loses to sync today |
-| **CE #304** Per-user admin CRUD | EE #116 | 2–3 d | Includes Settings → Users admin page |
-| **CE #307** Audit-log coverage gaps | EE #115 | 2–3 d | 7 P0 sub-tasks (P0a–g); two open decisions for the founder |
+| **CE #306** SSRF bootstrap fix | Compendiq/compendiq-ee#113 Part A; latent multi-pod bug | 0.5–1 d | **Highest priority** — security-relevant, smallest scope |
+| **CE #305** `pages.local_modified_at` | Compendiq/compendiq-ee#118 | 1–2 d | Latent bug — AI-improved content silently loses to sync today |
+| **CE #304** Per-user admin CRUD | Compendiq/compendiq-ee#116 | 2–3 d | Includes Settings → Users admin page |
+| **CE #307** Audit-log coverage gaps | Compendiq/compendiq-ee#115 | 2–3 d | 7 P0 sub-tasks (P0a–g); two open decisions for the founder |
 | **CE #296** Public stewardship commitment | — | 0.5 d (founder review long-pole) | Documentation-only |
 | **CE #297** Public roadmap (Projects board) | — | 0.5 d (founder click-through) | Documentation-only |
 | **CE #298** Case-studies templates (Phase A) | Phase B may slip to v0.5 | 1 d | Templates only this sprint |
@@ -103,14 +104,14 @@ Five sprints, two weeks each. The release ships at the end of Sprint 5 with a re
 
 | Issue | Estimate | Notes |
 |-------|----------|-------|
-| **EE #112** Per-space RAG ACLs | 5–7 d | Migration **058**; extends ADR-022; reconcile `ADVANCED_RBAC` vs new `PER_PAGE_ACL_ENFORCEMENT` flag (one-line decision) |
-| **EE #111** IP allowlisting | 3–4 d | Reconcile with `app.ts:73`'s blanket `trustProxy: true` (must be tightened to a CIDR list when allowlisting is on) |
+| **Compendiq/compendiq-ee#112** Per-space RAG ACLs | 5–7 d | Migration **058**; extends ADR-022; reconcile `ADVANCED_RBAC` vs new `PER_PAGE_ACL_ENFORCEMENT` flag (one-line decision) |
+| **Compendiq/compendiq-ee#111** IP allowlisting | 3–4 d | Reconcile with `app.ts:73`'s blanket `trustProxy: true` (must be tightened to a CIDR list when allowlisting is on) |
 | **CE #300** Improved paste-from-Confluence | 5–7 d | JIRA + include + @mention + TOC macros (top 4 of 6) |
 | **CE #299** Integration guides | 3 d | Three deployment guides; founder writes nginx + self-signed; air-gapped can defer to Sprint 3 |
 
 **Sprint exit criteria:**
-- EE #112 closed; ADR-023 (per-page ACL enforcement) added; `docs/architecture/09-rag-flow.md` updated.
-- EE #111 closed; admin UI tab functional; lockout safeguards verified.
+- Compendiq/compendiq-ee#112 closed; ADR-023 (per-page ACL enforcement) added; `docs/architecture/09-rag-flow.md` updated.
+- Compendiq/compendiq-ee#111 closed; admin UI tab functional; lockout safeguards verified.
 - CE #300 closed; 4 macros round-trip cleanly with new tests.
 - CE #299 partial (nginx + self-signed shipped; air-gapped guide may slip to Sprint 3).
 
@@ -120,12 +121,12 @@ Five sprints, two weeks each. The release ships at the end of Sprint 5 with a re
 
 | Issue | Estimate | Notes |
 |-------|----------|-------|
-| **EE #114** Webhook push | 7–10 d | Migration **063/064/065** (subscriptions, outbox, deliveries); Standard Webhooks signing |
+| **Compendiq/compendiq-ee#114** Webhook push | 7–10 d | Migration **063/064/065** (subscriptions, outbox, deliveries); Standard Webhooks signing |
 | **CE #302** Draw.io inline editing | 5–8 d | Add `jgraph/drawio` sidecar to compose; XML round-trip; local-page attachment storage |
 | **CE #303** PDF dashboard upgrade + Excel removal | 3–4 d | Upgrade existing minimal PDF; remove `exceljs` dep; add EE-overlay registry |
-| **EE #113 Part B-1** Cache-bus Redis pub/sub | 2 d | Unblocks CE #301 in Sprint 4 |
-| **EE #113 Part B-2** SSRF allowlist runtime pub/sub | 1 d | Built on top of #306 from Sprint 1 |
-| **EE #113 Part B-3** LLM queue admin-settings broadcast | 3 d | |
+| **Compendiq/compendiq-ee#113 Part B-1** Cache-bus Redis pub/sub | 2 d | Unblocks CE #301 in Sprint 4 |
+| **Compendiq/compendiq-ee#113 Part B-2** SSRF allowlist runtime pub/sub | 1 d | Built on top of #306 from Sprint 1 |
+| **Compendiq/compendiq-ee#113 Part B-3** LLM queue admin-settings broadcast | 3 d | |
 
 **Sprint exit criteria:**
 - Webhook push end-to-end; signing verified by integration test against an SDK verifier.
@@ -139,13 +140,13 @@ Five sprints, two weeks each. The release ships at the end of Sprint 5 with a re
 
 | Issue | Estimate | Notes |
 |-------|----------|-------|
-| **EE #113 Part A** Multi-instance mgmt pane | 6–8 d | New tables in `compendiq-mgmt`; CE health-API route + token; instance poller; admin UI |
+| **Compendiq/compendiq-ee#113 Part A** Multi-instance mgmt pane | 6–8 d | New tables in `compendiq-mgmt`; CE health-API route + token; instance poller; admin UI |
 | **CE #301** Real-time co-presence | 3–5 d | Redis SSE pattern; depends on Sprint 3 Part B-1 cache-bus Redis migration |
-| **EE #120** AI output review workflow | 5–7 d | Independent of #119; ships first per coupling note |
-| **EE #119** PII detection (conditional) | 7–10 d | **Go/no-go decision required before Sprint 4 start** — ICP includes regulated buyers? |
-| **EE #118** Sync conflict resolution | 4–5 d | Built on #305 from Sprint 1 |
-| **EE #116** Bulk user operations | 3–4 d | Built on #304 from Sprint 1 |
-| **EE #117** Batch page operations (net-new only) | 2–3 d | Extend existing CE bulk routes |
+| **Compendiq/compendiq-ee#120** AI output review workflow | 5–7 d | Independent of #119; ships first per coupling note |
+| **Compendiq/compendiq-ee#119** PII detection (conditional) | 7–10 d | **Go/no-go decision required before Sprint 4 start** — ICP includes regulated buyers? |
+| **Compendiq/compendiq-ee#118** Sync conflict resolution | 4–5 d | Built on #305 from Sprint 1 |
+| **Compendiq/compendiq-ee#116** Bulk user operations | 3–4 d | Built on #304 from Sprint 1 |
+| **Compendiq/compendiq-ee#117** Batch page operations (net-new only) | 2–3 d | Extend existing CE bulk routes |
 
 **Sprint exit criteria (depends on PII go/no-go):**
 - If PII shipped: all 7 issues above merged to `dev`.
@@ -177,16 +178,16 @@ Coordinate with `dev` HEAD before starting. Current head: `057_admin_settings_ac
 
 | # | Owner issue | Description |
 |---|-------------|-------------|
-| `058` | EE #112 | `page_restrictions_sync` (extends `access_control_entries` with `source` + `synced_at`) |
-| `059` | EE #113 Part A | `health_api_token` |
+| `058` | Compendiq/compendiq-ee#112 | `page_restrictions_sync` (extends `access_control_entries` with `source` + `synced_at`) |
+| `059` | Compendiq/compendiq-ee#113 Part A | `health_api_token` |
 | `060` | CE #305 | `pages_local_modified` (`local_modified_at` + `local_modified_by` + index) |
 | `061` | CE #307 P0a | `users_last_login` (`last_login_at` column) |
-| `062` | EE #118 | `sync_conflict_resolution` (`conflict_pending` + `pending_sync_versions` table) |
-| `063` | EE #114 | `webhook_subscriptions` |
-| `064` | EE #114 | `webhook_outbox` |
-| `065` | EE #114 | `webhook_deliveries` |
-| `066` | EE #119 | `pii_detections` (only if PII ships) |
-| `067` | EE #120 | `ai_output_reviews` |
+| `062` | Compendiq/compendiq-ee#118 | `sync_conflict_resolution` (`conflict_pending` + `pending_sync_versions` table) |
+| `063` | Compendiq/compendiq-ee#114 | `webhook_subscriptions` |
+| `064` | Compendiq/compendiq-ee#114 | `webhook_outbox` |
+| `065` | Compendiq/compendiq-ee#114 | `webhook_deliveries` |
+| `066` | Compendiq/compendiq-ee#119 | `pii_detections` (only if PII ships) |
+| `067` | Compendiq/compendiq-ee#120 | `ai_output_reviews` |
 
 **No two issues should claim the same number.** If a sprint slips and another lands first, the next-up issue takes the next free number and updates this table.
 
@@ -241,7 +242,7 @@ Each subsection assumes the issue body has been read. Notes here are deltas / co
 
 - Place the call **after** `getPool()` is ready and **before** `app.listen()` (Fastify lifecycle: in the `app.ready()` hook or just before `listen`).
 - `bootstrapSsrfAllowlist` is currently exported from `sync-service.ts:686` — verify; if not, export it.
-- Pub/sub channel name: `confluence:allowlist:changed` (avoid colliding with the `provider:cache:bump` namespace from EE #113).
+- Pub/sub channel name: `confluence:allowlist:changed` (avoid colliding with the `provider:cache:bump` namespace from Compendiq/compendiq-ee#113).
 - **node-redis v5 API for the subscriber** (verified via Ref MCP):
   ```typescript
   const subscriber = client.duplicate();
@@ -299,14 +300,14 @@ Each subsection assumes the issue body has been read. Notes here are deltas / co
 
 ### 4.2 Sprint 2 — Independent EE + CE features
 
-#### EE #112 — Per-space RAG ACLs
+#### Compendiq/compendiq-ee#112 — Per-space RAG ACLs
 
 - **Flag reconciliation:** ADR-022 commits to `ADVANCED_RBAC` — but the issue body proposes a new `PER_PAGE_ACL_ENFORCEMENT` flag. Reviewer flagged this. Decision: **add `PER_PAGE_ACL_ENFORCEMENT`** as a separate flag; `ADVANCED_RBAC` covers the broader custom-roles surface, this flag is specific to the RAG-time per-page check. Update ADR-022 with a follow-up note (or supersede with ADR-023).
 - **Migration 058** adds `source TEXT` + `synced_at TIMESTAMPTZ` to `access_control_entries`. Default `source='local'` for existing rows (safe — admin-UI created).
 - **Sync rate-limit budget**: 60 RPM is shared with the rest of sync — the conditional fetch optimisation (only call `/restriction` when page metadata indicates restrictions exist) is **mandatory**, not nice-to-have.
 - **RAG post-filter location**: per reviewer, this is **after RRF merging** (lines 139–179 of `rag-service.ts`), not in `vectorSearch`. The existing `userCanAccessPage()` call is a single function — drop it into the post-merge loop with an overfetch multiplier of 1.5×.
 
-#### EE #111 — IP allowlisting
+#### Compendiq/compendiq-ee#111 — IP allowlisting
 
 - **`trustProxy` reconciliation**: `app.ts:73` currently sets `trustProxy: true` (blanket trust). Tighten to the configured `trusted_proxies` CIDR list **only when** the IP-allowlist feature is enabled and the list is non-empty. Otherwise leave `true` for backward compat.
 - **Lockout safeguards** are not optional — `/api/health` and `/api/admin/license` must be hardcoded exceptions in the hook (cannot be removed via UI).
@@ -327,7 +328,7 @@ Each subsection assumes the issue body has been read. Notes here are deltas / co
 
 ### 4.3 Sprint 3 — Webhooks, Draw.io, dashboards, multi-instance Part B
 
-#### EE #114 — Webhook push
+#### Compendiq/compendiq-ee#114 — Webhook push
 
 - **Standard Webhooks** signing (verified spec text from §10 of the issue body):
   - Headers: `webhook-id` (UUID, stable across retries), `webhook-timestamp` (Unix seconds), `webhook-signature` (`v1,base64(HMAC-SHA256(secret, "${id}.${timestamp}.${rawBody}"))`)
@@ -358,7 +359,7 @@ Each subsection assumes the issue body has been read. Notes here are deltas / co
 - **EE-overlay registry pattern** must mirror `setLlmAuditHook` so EE can register its enterprise dashboards without touching CE files
 - **Excel removal**: `exceljs` is currently the only consumer of `exportToExcel()` — remove from `frontend/package.json` after the rip-out; measure bundle size delta in CHANGELOG (~200–250 kB gzipped expected)
 
-#### EE #113 Part B-1: Cache-bus Redis pub/sub
+#### Compendiq/compendiq-ee#113 Part B-1: Cache-bus Redis pub/sub
 
 - **node-redis v5 dedicated subscriber pattern** (verified via Ref MCP):
   ```typescript
@@ -393,7 +394,7 @@ Each subsection assumes the issue body has been read. Notes here are deltas / co
 
 ### 4.4 Sprint 4 — Multi-instance Part A, co-presence, AI safety, sync, bulk
 
-#### EE #113 Part A: Multi-instance pane in `compendiq-mgmt`
+#### Compendiq/compendiq-ee#113 Part A: Multi-instance pane in `compendiq-mgmt`
 
 - New tables in `compendiq-mgmt` Postgres (separate from CE Postgres): `instances`, `instance_metrics`
 - New CE migration **059**: `health_api_token` row in `admin_settings`, generated on first boot if absent
@@ -408,14 +409,14 @@ Each subsection assumes the issue body has been read. Notes here are deltas / co
 - Heartbeat 10s, ZRANGEBYSCORE cutoff 20s, key TTL 30s (defence in depth)
 - RBAC check **before** writing the `200 text/event-stream` header (cannot 403 after headers sent)
 
-#### EE #120 — AI output review workflow
+#### Compendiq/compendiq-ee#120 — AI output review workflow
 
 - Ships **before or with** #119 — #119's `block-publication` mode requires this queue. Decoupled cleanly via nullable `pii_findings_id` FK.
 - Migration **067**: `ai_output_reviews` table
 - Publish-to-Confluence chokepoint at `pages-crud.ts:1243` (per reviewer) — must check for pending review and 409 if found
 - New notification type `ai_review_pending` — `notification-service.ts` accepts arbitrary type strings (per reviewer)
 
-#### EE #119 — PII detection (CONDITIONAL)
+#### Compendiq/compendiq-ee#119 — PII detection (CONDITIONAL)
 
 - **Go/no-go gate before Sprint 4 start**
 - If GO:
@@ -427,7 +428,7 @@ Each subsection assumes the issue body has been read. Notes here are deltas / co
   - German regex patterns sourced from BFDI specifications (do not trust gemini-suggested npm package names)
 - If NO-GO: defer entirely; reopen as v0.5 issue with Microsoft Presidio path; close #119 with rationale comment
 
-#### EE #118 — Sync conflict resolution
+#### Compendiq/compendiq-ee#118 — Sync conflict resolution
 
 - Built on CE #305 (`pages.local_modified_at`)
 - Migration **062**: adds `conflict_pending`, `conflict_detected_at` to `pages` + new `pending_sync_versions` table
@@ -435,7 +436,7 @@ Each subsection assumes the issue body has been read. Notes here are deltas / co
 - Sync-service insertion point: lines 248–330 (verified clean spot per reviewer)
 - Diff UI: use `jsdiff` (`kpdecker/jsdiff` per Ref MCP) — ~30 KB, mature, MIT
 
-#### EE #116 — Bulk user operations
+#### Compendiq/compendiq-ee#116 — Bulk user operations
 
 - Built on CE #304 (per-user admin CRUD)
 - **`papaparse` v5** (verified via Ref MCP):
@@ -446,7 +447,7 @@ Each subsection assumes the issue body has been read. Notes here are deltas / co
 - Email lowercase before lookup (matches CE #304 pattern)
 - Single transaction for the apply step; preview is read-only
 
-#### EE #117 — Batch page operations (net-new only)
+#### Compendiq/compendiq-ee#117 — Batch page operations (net-new only)
 
 - **Out of scope** (already shipped in CE — verified at `pages-crud.ts:1360-1664`): bulk/delete, bulk/sync, bulk/embed, bulk/tag, BulkOperations.tsx
 - **In scope** (net-new): `bulk/replace-tags` (CE), `bulk/permission` (EE-gated), filter-based selection with `expectedCount` race guard, SSE progress UI for large operations
@@ -463,7 +464,7 @@ Each subsection assumes the issue body has been read. Notes here are deltas / co
 | `jgraph/drawio` (Docker image) | **`26.0.4`** (pin full version) | Ref MCP — `jgraph/drawio` repo | #302 | Apache 2.0. Compose template variants live in separate `jgraph/docker-drawio` repo. Do **not** pin `latest`. |
 | `@huggingface/transformers` | v3 | Ref MCP — `huggingface/transformers.js` v3 | #119 | ONNX Runtime via `onnxruntime-node`; `dtype: 'q8'` for size-quantized models. WebGPU support exists but Compendiq is CPU-only. |
 | `papaparse` | ^5.x | Ref MCP — `mholt/papaparse` | #304 (export), #116 | Node streaming via `Papa.parse(Papa.NODE_STREAM_INPUT, options)`. Zero dependencies. RFC 4180 compliant. |
-| `jsdiff` | latest | Ref MCP — `kpdecker/jsdiff` | #118 | Side-by-side diff in manual-review pane. ~30 KB. MIT. |
+| `diff` (`kpdecker/jsdiff`) | **already in stack** — `frontend/package.json` has `diff ^8.0.3` | Ref MCP — `kpdecker/jsdiff` | #118 | Side-by-side diff in manual-review pane. **No new dep needed.** |
 | `archiver` | latest | (Ref MCP no result; verify before use) | #115 | ZIP packaging for compliance reports. Alternative: `node:zlib` + manual zip for the small file counts. |
 | `undici` | (in stack) | (existing) | #114 | Webhook delivery. Use `undici.fetch` with `AbortSignal.timeout` + `redirect: 'error'`. |
 | `ip-cidr` or `node:net.BlockList` | built-in (Node 15+) for BlockList | (existing) | #111 | IPv4 + IPv6 CIDR matching. Prefer built-in `BlockList`. |
@@ -485,7 +486,7 @@ Each subsection assumes the issue body has been read. Notes here are deltas / co
 | AI output review queue creates UX friction | Medium | Medium | Auto-expire pending reviews after 30d (configurable); aggregate notifications instead of one-per-item |
 | `local_modified_at` write-site missed | Medium | High | DB trigger as belt-and-braces (recommended approach in §4.1 #305 notes); integration test asserts every LLM write path sets the column |
 | Two open founder decisions (sync history table; llm_audit_log columns) block #115 | Low | Medium | Resolve before Sprint 1 end (decision-by-default: defer sync history; backfill via metadata jsonb) |
-| EE #119 go/no-go decision delayed | Medium | Medium | Sprint 4 start triggers the decision deadline; if no decision by then, default to NO-GO and reschedule for v0.5 |
+| Compendiq/compendiq-ee#119 go/no-go decision delayed | Medium | Medium | Sprint 4 start triggers the decision deadline; if no decision by then, default to NO-GO and reschedule for v0.5 |
 | Confluence DC `/rest/experimental/restriction` API removed | Low | Medium | Graceful 4xx fallback to space-level enforcement; cached ACEs continue to work; log warning |
 | `bootstrapSsrfAllowlist` was never called → first sync hits a 403 | Already true today | Low | Fix in Sprint 1 (#306) — small scope, high security value |
 | Founder time on case studies + integration guides exceeds budget | High | Low | Phase A/B split on #298 already absorbs this; integration guides air-gapped variant can slip |
@@ -526,7 +527,7 @@ Each subsection assumes the issue body has been read. Notes here are deltas / co
 ## 8. Notes for the implementer
 
 - **Read each issue body before starting** — the issues capture the per-issue research depth (gemini briefs, codebase verification, schema sketches). This plan is sprint-organisation + cross-cutting context, not a replacement for the issue bodies.
-- **Use `superpowers:writing-plans` per-issue** if a single issue's implementation needs a detailed step-by-step (e.g. EE #114 webhook outbox pattern is non-trivial).
+- **Use `superpowers:writing-plans` per-issue** if a single issue's implementation needs a detailed step-by-step (e.g. Compendiq/compendiq-ee#114 webhook outbox pattern is non-trivial).
 - **Spawn `code-implementer` agents** for individual sub-tasks once per-issue plans are written.
 - **Open a tracking PR comment on the parent epic** when each sub-issue PR opens, so the epic checklist visualises progress.
 - **Migration numbers in §3.1** are reservations — first PR to merge takes the reserved number; later PRs in conflict bump to next free.
@@ -534,7 +535,7 @@ Each subsection assumes the issue body has been read. Notes here are deltas / co
   1. CE #307 P0e: defer sync-history attestation OR add minimal `confluence_sync_history` table?
   2. CE #307 P0f: backfill `llm_audit_log` columns via metadata jsonb OR add proper columns?
 - **One go/no-go decision** (resolve before Sprint 4 start):
-  - EE #119 PII detection: ship in v0.4 (regulated-buyer ICP) OR defer to v0.5 with Presidio?
+  - Compendiq/compendiq-ee#119 PII detection: ship in v0.4 (regulated-buyer ICP) OR defer to v0.5 with Presidio?
 
 ---
 
