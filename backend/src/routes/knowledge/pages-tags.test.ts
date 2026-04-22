@@ -32,6 +32,12 @@ vi.mock('../../domains/knowledge/services/auto-tagger.js', () => ({
   ALLOWED_TAGS: ['architecture', 'deployment', 'troubleshooting', 'how-to', 'api', 'security', 'database', 'monitoring', 'configuration', 'onboarding', 'policy', 'runbook'],
 }));
 
+// --- Mock: llm-provider-resolver (auto_tag use-case resolver) ---
+const mockResolveUsecase = vi.fn();
+vi.mock('../../domains/llm/services/llm-provider-resolver.js', () => ({
+  resolveUsecase: (...args: unknown[]) => mockResolveUsecase(...args),
+}));
+
 // --- Mock: logger ---
 vi.mock('../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
@@ -323,5 +329,120 @@ describe('PUT /api/pages/:id/labels - tag CRUD', () => {
     const existingCount = body.labels.filter((l: string) => l === 'existing');
     expect(existingCount).toHaveLength(1);
     expect(body.labels).toContain('new');
+  });
+});
+
+// =============================================================================
+// Test Suite 4: auto-tag resolver fallback (issue #214)
+// =============================================================================
+
+describe('POST /api/pages/:id/auto-tag — resolver fallback (#214)', () => {
+  let app: ReturnType<typeof Fastify>;
+
+  beforeAll(async () => {
+    app = Fastify({ logger: false });
+    await app.register(sensible);
+
+    app.setErrorHandler((error, _request, reply) => {
+      if (error instanceof ZodError) {
+        reply.status(400).send({
+          error: 'ValidationError',
+          message: error.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; '),
+          statusCode: 400,
+        });
+        return;
+      }
+      reply.status(error.statusCode ?? 500).send({ error: error.message, statusCode: error.statusCode ?? 500 });
+    });
+
+    app.decorate('authenticate', async (request: { userId: string }) => {
+      request.userId = 'test-user-id';
+    });
+    app.decorate('requireAdmin', async () => {});
+    app.decorate('redis', {});
+    app.decorateRequest('userId', '');
+
+    await app.register(pagesTagRoutes, { prefix: '/api' });
+    await app.ready();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('consults the resolver when the client omits `model` and routes with the resolved model', async () => {
+    mockResolveUsecase.mockResolvedValueOnce({
+      config: {
+        providerId: 'p1', id: 'p1', name: 'OpenAI',
+        baseUrl: 'https://api.openai.com/v1', apiKey: 'sk',
+        authType: 'bearer', verifySsl: true, defaultModel: 'resolved-auto-tag-model',
+      },
+      model: 'resolved-auto-tag-model',
+    });
+    mockAutoTagPage.mockResolvedValueOnce({ suggestedTags: [], existingLabels: [] });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/page-1/auto-tag',
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockResolveUsecase).toHaveBeenCalledWith('auto_tag');
+    // The resolved model is passed through to autoTagPage as the override.
+    expect(mockAutoTagPage).toHaveBeenCalledWith(
+      'test-user-id',
+      'page-1',
+      'resolved-auto-tag-model',
+    );
+  });
+
+  it('uses the explicit `model` from the body when provided', async () => {
+    mockResolveUsecase.mockResolvedValueOnce({
+      config: {
+        providerId: 'p1', id: 'p1', name: 'OpenAI',
+        baseUrl: 'https://api.openai.com/v1', apiKey: 'sk',
+        authType: 'bearer', verifySsl: true, defaultModel: 'inherited-model',
+      },
+      model: 'inherited-model',
+    });
+    mockAutoTagPage.mockResolvedValueOnce({ suggestedTags: [], existingLabels: [] });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/page-1/auto-tag',
+      payload: { model: 'explicit-model' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockAutoTagPage).toHaveBeenCalledWith(
+      'test-user-id',
+      'page-1',
+      'explicit-model',
+    );
+  });
+
+  it('returns 400 when `model` is omitted and the resolver returns empty', async () => {
+    mockResolveUsecase.mockResolvedValueOnce({
+      config: {
+        providerId: 'p1', id: 'p1', name: 'X',
+        baseUrl: 'http://x/v1', apiKey: null,
+        authType: 'none', verifySsl: true, defaultModel: null,
+      },
+      model: '',
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/page-1/auto-tag',
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(mockAutoTagPage).not.toHaveBeenCalled();
   });
 });

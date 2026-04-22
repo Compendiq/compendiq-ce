@@ -2,14 +2,18 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { SearchHybridQuerySchema } from '@compendiq/contracts';
 import { query } from '../../core/db/postgres.js';
-import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
+// Use the request-scoped memoised wrapper so the search route and downstream
+// rag-service calls resolve the readable-space set once per request. See
+// ADR-022.
+import { getUserAccessibleSpacesMemoized as getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 import { getFtsLanguage } from '../../core/services/fts-language.js';
 import {
   vectorSearch,
   hybridSearch,
   recordSearchAnalytics,
 } from '../../domains/llm/services/rag-service.js';
-import { providerGenerateEmbedding } from '../../domains/llm/services/llm-provider.js';
+import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
+import { generateEmbedding } from '../../domains/llm/services/openai-compatible-client.js';
 import { logger } from '../../core/utils/logger.js';
 
 /**
@@ -54,7 +58,8 @@ async function generateSearchEmbedding(
   reply: import('fastify').FastifyReply,
 ): Promise<number[] | null> {
   try {
-    const embeddings = await providerGenerateEmbedding(userId, q);
+    const { config, model } = await resolveUsecase('embedding');
+    const embeddings = await generateEmbedding(config, model, q);
     return embeddings[0] ?? null;
   } catch (err) {
     logger.warn({ err }, `Embedding generation failed for ${modeName} search`);

@@ -4,7 +4,9 @@ import * as jose from 'jose';
 import { randomUUID } from 'crypto';
 import { query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
-import { userHasPermission } from '../services/rbac-service.js';
+import { userHasPermission, userHasGlobalPermission } from '../services/rbac-service.js';
+import { enterRbacScope } from '../services/rbac-request-scope.js';
+import { logAuditEvent } from '../services/audit-service.js';
 
 const JWT_ISSUER = 'compendiq';
 const ACCESS_TOKEN_EXPIRY = process.env.ACCESS_TOKEN_EXPIRY ?? '1h';
@@ -32,7 +34,7 @@ declare module 'fastify' {
     userId: string;
     username: string;
     userRole: 'user' | 'admin';
-    userCan: (permission: string, resourceType?: 'space' | 'page', resourceId?: string | number) => Promise<boolean>;
+    userCan: (permission: string, resourceType?: 'space' | 'page' | 'global', resourceId?: string | number) => Promise<boolean>;
   }
   interface FastifyInstance {
     authenticate: (request: FastifyRequest) => Promise<void>;
@@ -188,10 +190,17 @@ export default fp(async (fastify: FastifyInstance) => {
       request.username = payload.username;
       request.userRole = payload.role;
 
+      // Open a request-scoped AsyncLocalStorage frame so RBAC space-resolution
+      // is memoised for the rest of this request. `enterWith` binds the store
+      // to the current async chain without requiring a callback, so the route
+      // handler and every downstream hook inherit the scope automatically.
+      // See ADR-022.
+      enterRbacScope(request.userId);
+
       // Attach RBAC permission checker to request
       request.userCan = async (
         permission: string,
-        resourceType?: 'space' | 'page',
+        resourceType?: 'space' | 'page' | 'global',
         resourceId?: string | number,
       ): Promise<boolean> => {
         // System admin bypasses all checks
@@ -212,7 +221,14 @@ export default fp(async (fastify: FastifyInstance) => {
           return userHasPermission(request.userId, permission, String(resourceId));
         }
 
-        // Global permission check (no resource scope)
+        if (resourceType === 'global') {
+          // Action-level permission (llm:query, sync:trigger, etc.) — resolves
+          // true if the user holds the permission in ANY space assignment.
+          return userHasGlobalPermission(request.userId, permission);
+        }
+
+        // Legacy default: space-scoped check without a space_key returns false
+        // for non-admins (preserves behaviour of callers that predate granular).
         return userHasPermission(request.userId, permission);
       };
     } catch (err) {
@@ -222,8 +238,42 @@ export default fp(async (fastify: FastifyInstance) => {
   });
 
   fastify.decorate('requireAdmin', async (request: FastifyRequest) => {
-    await fastify.authenticate(request);
+    // Audit every denied admin-access attempt, including unauthenticated ones
+    // (#264). The audit write is `await`ed intentionally so tests aren't racey,
+    // but `logAuditEvent` is try/catch-wrapped internally and "never blocks the
+    // main operation" — a DB failure during audit-logging does NOT suppress the
+    // 401/403 to the caller.
+    //
+    // Path A — authentication failure (missing/invalid Bearer). Only reached
+    // when `requireAdmin` is the onRequest hook itself (see admin.ts:48). Routes
+    // that register `addHook('onRequest', authenticate)` + `{ preHandler:
+    // requireAdmin }` short-circuit inside `authenticate` before this decorator
+    // runs — that case is covered by the onRequest chain's own 401 and is out
+    // of scope for this decorator.
+    try {
+      await fastify.authenticate(request);
+    } catch (err) {
+      await logAuditEvent(
+        null,
+        'ADMIN_ACCESS_DENIED',
+        'route',
+        `${request.method} ${request.routeOptions.url ?? request.url}`,
+        { decision: 'denied', reason: 'unauthenticated' },
+        request,
+      );
+      throw err;
+    }
+
+    // Path B — authenticated but lacks the admin role.
     if (request.userRole !== 'admin') {
+      await logAuditEvent(
+        request.userId,
+        'ADMIN_ACCESS_DENIED',
+        'route',
+        `${request.method} ${request.routeOptions.url ?? request.url}`,
+        { decision: 'denied', reason: 'not_admin' },
+        request,
+      );
       throw fastify.httpErrors.forbidden('Admin access required');
     }
   });

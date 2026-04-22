@@ -1,11 +1,14 @@
+import type { Job } from 'bullmq';
 import { query, getPool } from '../../../core/db/postgres.js';
-import { providerGenerateEmbedding } from './llm-provider.js';
+import { resolveUsecase } from './llm-provider-resolver.js';
+import { generateEmbedding } from './openai-compatible-client.js';
 import { htmlToText } from '../../../core/services/content-converter.js';
 import { logger } from '../../../core/utils/logger.js';
-import { invalidateGraphCache, acquireEmbeddingLock, releaseEmbeddingLock, isEmbeddingLocked, getRedisClient } from '../../../core/services/redis-cache.js';
+import { invalidateGraphCache, acquireEmbeddingLock, releaseEmbeddingLock, isEmbeddingLocked, getRedisClient, listActiveEmbeddingLocks } from '../../../core/services/redis-cache.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
-import { CircuitBreakerOpenError, ollamaBreakers, openaiBreakers } from '../../../core/services/circuit-breaker.js';
-import { getSharedLlmSettings } from '../../../core/services/admin-settings-service.js';
+import { CircuitBreakerOpenError, getProviderBreaker } from '../../../core/services/circuit-breaker.js';
+import { getReembedHistoryRetention } from '../../../core/services/admin-settings-service.js';
+import { enqueueJob } from '../../../core/services/queue-service.js';
 import pgvector from 'pgvector';
 
 const CHUNK_SIZE = 500;          // ~500 tokens target
@@ -119,19 +122,22 @@ export function isContextLengthError(err: unknown): boolean {
 }
 
 /**
- * Get the next retry time for the embedding circuit breaker.
- * Checks both ollama and openai breakers and returns the soonest retry time,
- * or null if neither is open.
+ * Get the next retry time for the currently-resolved embedding provider's
+ * circuit breaker. Returns the timestamp at which the breaker will allow a
+ * probe request, or `null` when the breaker is closed (immediate retry) or
+ * when no embedding provider could be resolved. Keyed by per-provider UUID
+ * via `getProviderBreaker`.
  */
-export function getEmbedBreakerNextRetryTime(): number | null {
-  const ollamaStatus = ollamaBreakers.embed.getStatus();
-  const openaiStatus = openaiBreakers.embed.getStatus();
-
-  const times: number[] = [];
-  if (ollamaStatus.nextRetryTime !== null) times.push(ollamaStatus.nextRetryTime);
-  if (openaiStatus.nextRetryTime !== null) times.push(openaiStatus.nextRetryTime);
-
-  return times.length > 0 ? Math.min(...times) : null;
+export async function getEmbedBreakerNextRetryTime(): Promise<number | null> {
+  try {
+    const { config } = await resolveUsecase('embedding');
+    const breaker = getProviderBreaker(config.providerId);
+    return breaker.getStatus().nextRetryTime;
+  } catch {
+    // No default embedding provider configured yet — caller should retry
+    // immediately; we can't locate a breaker to wait on.
+    return null;
+  }
 }
 
 /**
@@ -322,12 +328,18 @@ export async function embedPage(
   const batchSize = 10;
   const allEmbeddings: Array<{ chunkIndex: number; text: string; embedding: number[]; metadata: ChunkMetadata }> = [];
 
+  // Resolve the `embedding` use-case once per page so we don't hit the
+  // resolver cache on every batch. Rotating providers mid-page would mix
+  // incompatible vectors in the same page's embeddings; resolving once
+  // keeps all chunks of one page consistent.
+  const { config: embedConfig, model: embedModel } = await resolveUsecase('embedding');
+
   for (let i = 0; i < chunks.length; i += batchSize) {
     const batch = chunks.slice(i, i + batchSize);
     const texts = batch.map((c) => c.text);
 
     try {
-      const embeddings = await providerGenerateEmbedding(userId, texts);
+      const embeddings = await generateEmbedding(embedConfig, embedModel, texts);
 
       for (let j = 0; j < batch.length; j++) {
         allEmbeddings.push({
@@ -403,11 +415,47 @@ export async function embedPage(
 export const DIRTY_PAGE_BATCH_SIZE = 100;
 
 /**
+ * System lock userId used by the reembed-all worker (plan §2.3/§2.4).
+ * Not a real user — acts as a second distinct key in Redis so the same
+ * locking primitive can coordinate BOTH per-user triggers and the global
+ * reembed-all run, preventing overlap in either direction.
+ */
+const REEMBED_ALL_LOCK_USER = '__reembed_all__';
+
+/**
  * Check if embedding processing is already running for a user.
- * Uses Redis distributed lock instead of in-memory Set.
+ *
+ * Plan §2.4 — bidirectional gate: returns `true` whenever EITHER
+ *   1. the user's own embedding lock is held, OR
+ *   2. the reembed-all system lock is held.
+ *
+ * Route handlers (`/embeddings/process`, `/embeddings/retry-failed`) throw
+ * 409 when this returns true — updating the 409 body text to mention the
+ * global reembed is a one-liner in those handlers, not this predicate.
  */
 export async function isProcessingUser(userId: string): Promise<boolean> {
-  return isEmbeddingLocked(userId);
+  const [mine, reembedAll] = await Promise.all([
+    isEmbeddingLocked(userId),
+    isEmbeddingLocked(REEMBED_ALL_LOCK_USER),
+  ]);
+  return mine || reembedAll;
+}
+
+/**
+ * Options for {@link processDirtyPages}.
+ */
+export interface ProcessDirtyPagesOpts {
+  /**
+   * When set, the caller has already acquired `embedding:lock:${userId}` and
+   * owns its lifecycle. In that case this function must NOT attempt a second
+   * `acquireEmbeddingLock(userId)` (Redis SET NX EX would fail because the
+   * key is held — see issue #257 / #261: `runReembedAllJob` acquires the
+   * `__reembed_all__` lock before calling this function; without this flag,
+   * the inner acquire short-circuits and every eligible page stays dirty),
+   * and must NOT release the lock in the `finally` — the outer caller keeps
+   * ownership and releases after post-embed hooks complete.
+   */
+  lockAlreadyHeld?: boolean;
 }
 
 /**
@@ -419,16 +467,30 @@ export async function isProcessingUser(userId: string): Promise<boolean> {
  *
  * An optional `onProgress` callback receives progress events for SSE streaming.
  *
- * userId is used only for the Redis lock and providerGenerateEmbedding (LLM provider selection).
+ * userId is used only for the Redis embedding-lock. The embedding provider is resolved via resolveUsecase('embedding').
  */
 export async function processDirtyPages(
   userId: string,
   onProgress?: (event: EmbeddingProgressEvent) => void,
+  opts: ProcessDirtyPagesOpts = {},
 ): Promise<{ processed: number; errors: number; alreadyProcessing?: boolean }> {
-  const lockId = await acquireEmbeddingLock(userId);
-  if (!lockId) {
-    logger.warn({ userId }, 'Embedding processing already in progress for user');
-    return { processed: 0, errors: 0, alreadyProcessing: true };
+  // When the caller already holds the lock (e.g. runReembedAllJob for the
+  // `__reembed_all__` system lock), skip re-acquire / release. The inner
+  // SET NX EX would fail and we'd short-circuit without doing any work.
+  // In that case, snapshot the already-stored lockId from Redis so the
+  // holder-epoch guard (plan §2.10) can still detect a force-release or
+  // re-acquire, and skip `releaseEmbeddingLock` in the `finally` block so
+  // the outer caller keeps ownership.
+  let lockId: string | null;
+  if (opts.lockAlreadyHeld) {
+    const redis = getRedisClient();
+    lockId = redis ? await redis.get(`embedding:lock:${userId}`) : null;
+  } else {
+    lockId = await acquireEmbeddingLock(userId);
+    if (!lockId) {
+      logger.warn({ userId }, 'Embedding processing already in progress for user');
+      return { processed: 0, errors: 0, alreadyProcessing: true };
+    }
   }
 
   await setLastEmbeddingRunAt(new Date());
@@ -462,8 +524,41 @@ export async function processDirtyPages(
     let offset = 0;
     let batchAborted = false;
 
+    // Plan §2.10 — holder-epoch write-guard: every GUARD_CHECK_EVERY pages
+    // re-read the Redis lock key and compare against the lockId we originally
+    // acquired. If it's missing (force-released or expired) or mismatched
+    // (re-acquired by another process), break the outer loop cleanly. The
+    // `finally` block's `releaseEmbeddingLock` Lua is a no-op on mismatch, so
+    // no duplicate/destructive release happens.
+    const GUARD_CHECK_EVERY = 20;
+    let pagesProcessedSinceGuardCheck = 0;
+    const guardLockKey = `embedding:lock:${userId}`;
+
     for (;;) {
       if (batchAborted) break;
+
+      // Guard check — evaluated at the top of each batch iteration so it
+      // always runs before the next DB query block, and in the inner page
+      // loop once GUARD_CHECK_EVERY is exceeded.
+      if (pagesProcessedSinceGuardCheck >= GUARD_CHECK_EVERY) {
+        const redis = getRedisClient();
+        if (redis) {
+          try {
+            const stillMine = await redis.get(guardLockKey);
+            if (stillMine !== lockId) {
+              logger.warn(
+                { userId, expected: lockId, actual: stillMine },
+                'Embedding lock was force-released or expired — aborting worker loop',
+              );
+              batchAborted = true;
+              break;
+            }
+          } catch (err) {
+            logger.error({ err, userId }, 'Holder-epoch guard GET failed — continuing');
+          }
+        }
+        pagesProcessedSinceGuardCheck = 0;
+      }
 
       const batch = await query<{
         id: number;
@@ -494,10 +589,35 @@ export async function processDirtyPages(
       );
 
       for (const page of batch.rows) {
+        // Holder-epoch guard (plan §2.10): re-read the lock key every
+        // GUARD_CHECK_EVERY pages from inside the per-page loop too, so a
+        // force-release mid-batch aborts quickly rather than after the
+        // whole batch completes.
+        if (pagesProcessedSinceGuardCheck >= GUARD_CHECK_EVERY) {
+          const redis = getRedisClient();
+          if (redis) {
+            try {
+              const stillMine = await redis.get(guardLockKey);
+              if (stillMine !== lockId) {
+                logger.warn(
+                  { userId, expected: lockId, actual: stillMine },
+                  'Embedding lock was force-released or expired — aborting worker loop',
+                );
+                batchAborted = true;
+                break; // exits the inner per-page loop
+              }
+            } catch (err) {
+              logger.error({ err, userId }, 'Holder-epoch guard GET failed — continuing');
+            }
+          }
+          pagesProcessedSinceGuardCheck = 0;
+        }
+
         try {
 
           await embedPage(userId, page.id, page.title, page.space_key, page.body_html, chunkOpts);
           totalProcessed++;
+          pagesProcessedSinceGuardCheck++;
           processedPageIds.push(page.id);
           consecutiveFailures = 0; // Reset on success
 
@@ -522,7 +642,7 @@ export async function processDirtyPages(
             let cbSuccess = false;
 
             while (cbRetries < MAX_CIRCUIT_BREAKER_RETRIES) {
-              const nextRetry = getEmbedBreakerNextRetryTime();
+              const nextRetry = await getEmbedBreakerNextRetryTime();
               const waitMs = nextRetry !== null
                 ? Math.max(nextRetry - Date.now() + CIRCUIT_BREAKER_WAIT_BUFFER_MS, CIRCUIT_BREAKER_WAIT_BUFFER_MS)
                 : CIRCUIT_BREAKER_WAIT_BUFFER_MS;
@@ -551,6 +671,7 @@ export async function processDirtyPages(
               try {
                 await embedPage(userId, page.id, page.title, page.space_key, page.body_html, chunkOpts);
                 totalProcessed++;
+                pagesProcessedSinceGuardCheck++;
                 processedPageIds.push(page.id);
                 consecutiveFailures = 0;
                 cbSuccess = true;
@@ -610,6 +731,7 @@ export async function processDirtyPages(
           ).catch((updateErr) => logger.error({ err: updateErr }, 'Failed to update embedding_status to failed'));
           totalErrors++;
           batchErrors++;
+          pagesProcessedSinceGuardCheck++;
           consecutiveFailures++;
           errorList.push(`${page.title}: ${errorMessage.slice(0, 200)}`);
 
@@ -670,7 +792,13 @@ export async function processDirtyPages(
       });
     }
   } finally {
-    await releaseEmbeddingLock(userId, lockId);
+    // Only release when we acquired the lock ourselves. When
+    // `opts.lockAlreadyHeld` is set, the outer caller (e.g.
+    // `runReembedAllJob`) owns the lock's lifecycle and will release after
+    // post-embed hooks complete.
+    if (!opts.lockAlreadyHeld && lockId) {
+      await releaseEmbeddingLock(userId, lockId);
+    }
   }
 
   // Post-embed hook: recompute nearest-neighbor relationships (incremental)
@@ -822,7 +950,7 @@ export async function computePageRelationships(changedPageIds?: number[]): Promi
  */
 export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatus> {
   const statusSpaces = await getUserAccessibleSpaces(userId);
-  const [totalResult, dirtyResult, embeddingResult, embeddedPagesResult, isProcessing, sharedSettings, lastRunAt] = await Promise.all([
+  const [totalResult, dirtyResult, embeddingResult, embeddedPagesResult, isProcessing, resolvedEmbedding, lastRunAt] = await Promise.all([
     query<{ count: string }>(
       `SELECT COUNT(*) as count FROM pages cp
        WHERE cp.space_key = ANY($1::text[])
@@ -850,7 +978,7 @@ export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatu
       [statusSpaces],
     ),
     isEmbeddingLocked(userId),
-    getSharedLlmSettings(),
+    resolveUsecase('embedding').catch(() => null),
     getLastEmbeddingRunAt(),
   ]);
 
@@ -869,7 +997,7 @@ export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatu
     totalEmbeddings: parseInt(embeddingRow.count, 10),
     isProcessing,
     lastRunAt: lastRunAt ? lastRunAt.toISOString() : null,
-    model: sharedSettings.embeddingModel,
+    model: resolvedEmbedding?.model ?? '',
   };
 }
 
@@ -888,4 +1016,201 @@ export async function reEmbedAll(): Promise<void> {
   const systemUserId = usersResult.rows[0]?.user_id ?? 'system';
 
   await processDirtyPages(systemUserId);
+}
+
+/**
+ * Enqueue a re-embed job for all pages. When `newDimensions` is supplied it
+ * atomically TRUNCATEs `page_embeddings`, rewrites the pgvector column type,
+ * updates the `embedding_dimensions` admin setting, and rebuilds the HNSW
+ * index before returning the job id.
+ *
+ * Plan §2.3: the BullMQ worker registered under the `reembed-all` queue
+ * actually runs the embedding loop. Fixed `jobId='reembed-all'` + our
+ * `enqueueJob` lazy-removal workaround gives "collapse concurrent POSTs,
+ * re-run cleanly after completion" (issue #257 Q3).
+ */
+export async function enqueueReembedAll(
+  opts: { newDimensions?: number } = {},
+): Promise<string> {
+  // Fixed id — concurrent POSTs collapse onto the same BullMQ record.
+  const jobId = 'reembed-all';
+
+  if (opts.newDimensions !== undefined) {
+    // pgvector type args must be literal — validate strictly before interpolation.
+    const n = Math.floor(opts.newDimensions);
+    if (!Number.isFinite(n) || n < 1 || n > 8192) {
+      throw new Error(
+        `refused dimension change to non-integer or out-of-range value: ${opts.newDimensions}`,
+      );
+    }
+    const client = await getPool().connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`TRUNCATE page_embeddings`);
+      await client.query(
+        `ALTER TABLE page_embeddings ALTER COLUMN embedding TYPE vector(${n})`,
+      );
+      await client.query(
+        `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
+         VALUES ('embedding_dimensions', $1, NOW())
+         ON CONFLICT (setting_key) DO UPDATE
+           SET setting_value = EXCLUDED.setting_value, updated_at = NOW()`,
+        [String(n)],
+      );
+      await client.query(`DROP INDEX IF EXISTS idx_page_embeddings_hnsw`);
+      await client.query(
+        `CREATE INDEX idx_page_embeddings_hnsw ON page_embeddings USING hnsw (embedding vector_cosine_ops)`,
+      );
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw e;
+    } finally {
+      client.release();
+    }
+  }
+
+  // Plan §2.3 Q2 — include currently-held per-user lock userIds as hints
+  // in the job payload so the worker can surface them in its initial
+  // "waiting-on-user-locks" progress event without a second Redis round-trip.
+  const heldBy = (await listActiveEmbeddingLocks())
+    .map((l) => l.userId)
+    .filter((id) => id !== REEMBED_ALL_LOCK_USER);
+
+  // Plan §2.3 Q4 — retention read per-enqueue so runtime admin changes take
+  // effect on the next run (existing queued jobs carry the old retention).
+  const retention = await getReembedHistoryRetention();
+
+  await enqueueJob(
+    'reembed-all',
+    { triggeredAt: new Date().toISOString(), heldBy },
+    { jobId, removeOnComplete: retention, removeOnFail: retention },
+  );
+  return jobId;
+}
+
+/**
+ * BullMQ worker entry point — registered in `core/services/queue-service.ts`
+ * (plan §2.2). Runs a global re-embed of every non-folder, non-deleted page.
+ *
+ * Coordination (plan §2.3 Q2):
+ *   - Before starting, polls `listActiveEmbeddingLocks()` and waits (up to
+ *     `REEMBED_WAIT_LOCKS_MS`, default 10 min) until no per-user locks are
+ *     held. Emits `{ phase: 'waiting-on-user-locks', heldBy }` progress
+ *     events so the admin UI can show who we're blocked on.
+ *   - Acquires the system lock `embedding:lock:__reembed_all__`. While held,
+ *     `isProcessingUser` returns true for ALL users — per-user triggers
+ *     (`/embeddings/process`) see a 409 until the run completes.
+ *
+ * Idempotency (plan §2.3 Q3):
+ *   - `enqueueReembedAll` uses the fixed jobId `reembed-all` +
+ *     `enqueueJob`'s lazy-removal workaround so concurrent POSTs collapse
+ *     and post-completion POSTs start a fresh run.
+ *
+ * Progress throttling (plan §2.3 / §6 acceptance):
+ *   - The per-page `processDirtyPages` callback updates BullMQ progress
+ *     every 100 pages (or on 100%).
+ */
+export async function runReembedAllJob(job: Job): Promise<string> {
+  const WAIT_LOCKS_TIMEOUT_MS = parseInt(
+    process.env.REEMBED_WAIT_LOCKS_MS ?? '600000',
+    10,
+  );
+  const POLL_INTERVAL_MS = 3_000;
+
+  // Wait-on-locks loop — exit when no per-user lock (other than our own
+  // system lock) remains, or timeout.
+  const waitStart = Date.now();
+  for (;;) {
+    const held = (await listActiveEmbeddingLocks())
+      .filter((l) => l.userId !== REEMBED_ALL_LOCK_USER)
+      .map((l) => l.userId);
+    if (held.length === 0) break;
+    if (Date.now() - waitStart > WAIT_LOCKS_TIMEOUT_MS) {
+      throw new Error(
+        `reembed-all aborted: per-user embedding locks still held after ` +
+        `${Math.round(WAIT_LOCKS_TIMEOUT_MS / 60_000)}m by: ${held.join(', ')}`,
+      );
+    }
+    await job.updateProgress({
+      phase: 'waiting-on-user-locks',
+      heldBy: held,
+      waitedMs: Date.now() - waitStart,
+    });
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+  }
+
+  const lockId = await acquireEmbeddingLock(REEMBED_ALL_LOCK_USER);
+  if (!lockId) {
+    // Lost the race between the wait-loop and acquire — another worker is
+    // already running this job. Return a sentinel the admin UI can render.
+    return 'already-running';
+  }
+
+  // Close the TOCTOU window between the wait-loop and the acquire above:
+  // a user could have called `processDirtyPages` (taking their own
+  // `embedding:lock:${userId}`) in the milliseconds between the loop's
+  // final `held.length === 0` check and our `acquireEmbeddingLock`. If so,
+  // two writers would now scan `pages WHERE embedding_dirty = TRUE` in
+  // parallel. Release our system lock and return a sentinel so BullMQ's
+  // retry policy (or a manual re-trigger) can re-enter the wait-loop
+  // cleanly rather than running concurrently.
+  const postAcquire = (await listActiveEmbeddingLocks()).filter(
+    (l) => l.userId !== REEMBED_ALL_LOCK_USER,
+  );
+  if (postAcquire.length > 0) {
+    await releaseEmbeddingLock(REEMBED_ALL_LOCK_USER, lockId);
+    logger.warn(
+      { heldBy: postAcquire.map((l) => l.userId) },
+      'reembed-all: per-user lock appeared between wait-loop and acquire — releasing system lock and backing off',
+    );
+    return 'already-running';
+  }
+
+  try {
+    // Mark every eligible page dirty (matches processDirtyPages' filter).
+    await query(
+      `UPDATE pages
+          SET embedding_dirty = TRUE,
+              embedding_status = 'not_embedded',
+              embedded_at = NULL,
+              embedding_error = NULL
+        WHERE deleted_at IS NULL
+          AND COALESCE(page_type, 'page') != 'folder'`,
+    );
+
+    const countRow = await query<{ c: string }>(
+      `SELECT COUNT(*)::text AS c FROM pages
+        WHERE embedding_dirty = TRUE AND deleted_at IS NULL
+          AND COALESCE(page_type, 'page') != 'folder'`,
+    );
+    const total = parseInt(countRow.rows[0]?.c ?? '0', 10);
+    await job.updateProgress({ total, processed: 0, failed: 0, phase: 'started' });
+
+    let processed = 0;
+    let failed = 0;
+    // `lockAlreadyHeld: true` — we already own the `__reembed_all__` lock
+    // above. Without this, `processDirtyPages`'s inner `acquireEmbeddingLock`
+    // would SET NX against the held key, fail, and short-circuit with
+    // `alreadyProcessing: true`, marking every page dirty but embedding none.
+    await processDirtyPages(
+      REEMBED_ALL_LOCK_USER,
+      (evt) => {
+        if (evt.type === 'progress') {
+          processed = evt.completed;
+          failed = evt.failed;
+          // Throttle: every 100 (processed + failed) pages, or on 100%.
+          if ((processed + failed) % 100 === 0 || evt.percentage === 100) {
+            void job.updateProgress({ total, processed, failed, phase: 'embedding' });
+          }
+        }
+      },
+      { lockAlreadyHeld: true },
+    );
+
+    await job.updateProgress({ total, processed, failed, phase: 'complete' });
+    return `processed=${processed} failed=${failed} total=${total}`;
+  } finally {
+    await releaseEmbeddingLock(REEMBED_ALL_LOCK_USER, lockId);
+  }
 }

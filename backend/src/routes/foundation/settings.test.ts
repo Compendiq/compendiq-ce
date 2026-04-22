@@ -45,10 +45,6 @@ vi.mock('../../core/services/rbac-service.js', () => ({
   invalidateRbacCache: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../../domains/llm/services/ollama-service.js', () => ({
-  setActiveProvider: vi.fn(),
-}));
-
 const mockGetSharedLlmSettings = vi.fn().mockResolvedValue({
   llmProvider: 'ollama',
   ollamaModel: 'qwen3.5',
@@ -501,7 +497,6 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     expect(response.statusCode).toBe(200);
     const body = JSON.parse(response.body);
     expect(body.selectedSpaces).toEqual([]);
-    expect(body.ollamaModel).toBe('qwen3.5');
     expect(body.theme).toBe('glass-dark');
   });
 
@@ -520,33 +515,10 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     expect(dirtyCalls).toHaveLength(0);
   });
 
-  it('GET /settings returns shared admin LLM settings for all users', async () => {
-    mockGetSharedLlmSettings.mockResolvedValueOnce({
-      llmProvider: 'openai',
-      ollamaModel: 'qwen3.5',
-      openaiBaseUrl: 'https://api.openai.com/v1',
-      hasOpenaiApiKey: true,
-      openaiModel: 'gpt-4o-mini',
-    });
-    mockQuery.mockResolvedValueOnce({
-      rows: [{
-        confluence_url: null,
-        confluence_pat: null,
-        theme: 'glass-dark',
-        sync_interval_min: 15,
-        show_space_home_content: true,
-        custom_prompts: {},
-      }],
-    });
-
-    const response = await app.inject({ method: 'GET', url: '/api/settings' });
-    const body = JSON.parse(response.body);
-
-    expect(body.llmProvider).toBe('openai');
-    expect(body.openaiBaseUrl).toBe('https://api.openai.com/v1');
-    expect(body.hasOpenaiApiKey).toBe(true);
-    expect(body.openaiModel).toBe('gpt-4o-mini');
-  });
+  // NOTE: Shared admin LLM settings were removed from /api/settings in ADR-021.
+  // Provider + use-case assignments are now served by
+  // /api/admin/llm-providers and /api/admin/llm-usecases — see the dedicated
+  // tests in `routes/llm/llm-providers.test.ts` + `routes/llm/llm-usecases.test.ts`.
 
   it('PUT /settings updates selectedSpaces via RBAC space_role_assignments', async () => {
     // Query: get editor role

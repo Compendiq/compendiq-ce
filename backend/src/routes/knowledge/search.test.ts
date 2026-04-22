@@ -10,6 +10,9 @@ vi.mock('../../core/utils/logger.js', () => ({
 
 vi.mock('../../core/services/rbac-service.js', () => ({
   getUserAccessibleSpaces: vi.fn().mockResolvedValue(['TEST']),
+  // The search route now imports the memoised wrapper (ADR-022). For these
+  // tests, the scope cache is irrelevant; both forms resolve the same set.
+  getUserAccessibleSpacesMemoized: vi.fn().mockResolvedValue(['TEST']),
 }));
 
 const mockQueryFn = vi.fn();
@@ -31,8 +34,27 @@ vi.mock('../../domains/llm/services/rag-service.js', () => ({
 }));
 
 const mockProviderGenerateEmbedding = vi.fn();
-vi.mock('../../domains/llm/services/llm-provider.js', () => ({
-  providerGenerateEmbedding: (...args: unknown[]) => mockProviderGenerateEmbedding(...args),
+
+vi.mock('../../domains/llm/services/llm-provider-resolver.js', () => ({
+  resolveUsecase: vi.fn().mockResolvedValue({
+    config: {
+      providerId: 'p1', id: 'p1', name: 'X',
+      baseUrl: 'http://x/v1', apiKey: null,
+      authType: 'none', verifySsl: true, defaultModel: 'bge-m3',
+    },
+    model: 'bge-m3',
+  }),
+}));
+
+vi.mock('../../domains/llm/services/openai-compatible-client.js', () => ({
+  // Ignore config+model; re-use the existing spy for assertions on texts.
+  generateEmbedding: (_cfg: unknown, _model: string, text: string | string[]) =>
+    mockProviderGenerateEmbedding('test-user', text),
+  streamChat: vi.fn(),
+  chat: vi.fn(),
+  listModels: vi.fn(),
+  checkHealth: vi.fn(),
+  invalidateDispatcher: vi.fn(),
 }));
 
 // Shared SearchResult shape from rag-service
@@ -379,7 +401,10 @@ describe('Search Routes', () => {
       });
 
       expect(response.statusCode).toBe(200);
-      expect(mockProviderGenerateEmbedding).toHaveBeenCalledWith('test-user-id', 'test');
+      // The embedding path now resolves the provider internally; we only
+      // assert that an embedding was requested for the search query text.
+      expect(mockProviderGenerateEmbedding).toHaveBeenCalled();
+      expect(mockProviderGenerateEmbedding.mock.calls[0]?.[1]).toBe('test');
       expect(mockVectorSearch).toHaveBeenCalledTimes(1);
       const body = response.json();
       expect(body.mode).toBe('semantic');

@@ -6,12 +6,16 @@ import { getAuditLog, logAuditEvent } from '../../core/services/audit-service.js
 import { listErrors, resolveError, getErrorSummary } from '../../core/services/error-tracker.js';
 import { logger } from '../../core/utils/logger.js';
 import { UpdateAdminSettingsSchema } from '@compendiq/contracts';
-import { getSharedLlmSettings, upsertSharedLlmSettings } from '../../core/services/admin-settings-service.js';
+import {
+  getEmbeddingDimensions,
+  getAdminAccessDeniedRetentionDays,
+} from '../../core/services/admin-settings-service.js';
 import { getAiGuardrails, getAiOutputRules, upsertAiGuardrails, upsertAiOutputRules } from '../../core/services/ai-safety-service.js';
 import { getRateLimits, upsertRateLimits } from '../../core/services/rate-limit-service.js';
+import { getStreamCap, invalidateStreamCapCache } from '../../core/services/sse-stream-limiter.js';
 import { sanitizeLlmInput } from '../../core/utils/sanitize-llm-input.js';
-import { setActiveProvider } from '../../domains/llm/services/ollama-service.js';
 import { ALLOWED_FTS_LANGUAGES } from '../../core/services/fts-language.js';
+import { getSmtpConfig, updateSmtpConfig, sendTestEmail } from '../../core/services/email-service.js';
 
 const AuditLogQuerySchema = z.object({
   userId: z.string().optional(),
@@ -226,15 +230,24 @@ export async function adminRoutes(fastify: FastifyInstance) {
 
   // GET /api/admin/settings - retrieve shared admin settings
   fastify.get('/admin/settings', ADMIN_RATE_LIMIT, async () => {
-    const [sharedLlmSettings, guardrails, outputRules, rateLimits] = await Promise.all([
-      getSharedLlmSettings(),
+    const [
+      embeddingDimensions,
+      guardrails,
+      outputRules,
+      rateLimits,
+      llmMaxConcurrentStreamsPerUser,
+      adminAccessDeniedRetentionDays,
+    ] = await Promise.all([
+      getEmbeddingDimensions(),
       getAiGuardrails(),
       getAiOutputRules(),
       getRateLimits(),
+      getStreamCap(),
+      getAdminAccessDeniedRetentionDays(),
     ]);
     const result = await query<{ setting_key: string; setting_value: string }>(
       `SELECT setting_key, setting_value FROM admin_settings
-       WHERE setting_key IN ('embedding_chunk_size', 'embedding_chunk_overlap', 'drawio_embed_url')`,
+       WHERE setting_key IN ('embedding_chunk_size', 'embedding_chunk_overlap', 'drawio_embed_url', 'fts_language', 'reembed_history_retention')`,
     );
 
     const map: Record<string, string> = {};
@@ -243,17 +256,17 @@ export async function adminRoutes(fastify: FastifyInstance) {
     }
 
     return {
-      llmProvider: sharedLlmSettings.llmProvider,
-      ollamaModel: sharedLlmSettings.ollamaModel,
-      openaiBaseUrl: sharedLlmSettings.openaiBaseUrl,
-      hasOpenaiApiKey: sharedLlmSettings.hasOpenaiApiKey,
-      openaiModel: sharedLlmSettings.openaiModel,
-      embeddingModel: sharedLlmSettings.embeddingModel,
-      embeddingDimensions: sharedLlmSettings.embeddingDimensions,
-      ftsLanguage: sharedLlmSettings.ftsLanguage,
+      embeddingDimensions,
+      ftsLanguage: map['fts_language'] ?? process.env.FTS_LANGUAGE ?? 'simple',
       embeddingChunkSize: parseInt(map['embedding_chunk_size'] ?? '500', 10),
       embeddingChunkOverlap: parseInt(map['embedding_chunk_overlap'] ?? '50', 10),
       drawioEmbedUrl: map['drawio_embed_url'] ?? null,
+      // Issue #257 — re-embed-all job history retention (default 150, [10, 10000]).
+      reembedHistoryRetention: parseInt(map['reembed_history_retention'] ?? '150', 10),
+      // Issue #264 — retention for ADMIN_ACCESS_DENIED audit rows
+      // (default 90, [7, 3650]). Resolved via getter so the env fallback
+      // + hard default cascade stay in one place.
+      adminAccessDeniedRetentionDays,
       // AI Safety
       aiGuardrailNoFabrication: guardrails.noFabricationInstruction,
       aiGuardrailNoFabricationEnabled: guardrails.noFabricationEnabled,
@@ -265,6 +278,8 @@ export async function adminRoutes(fastify: FastifyInstance) {
       rateLimitAdmin: rateLimits.admin.max,
       rateLimitLlmStream: rateLimits.llmStream.max,
       rateLimitLlmEmbedding: rateLimits.llmEmbedding.max,
+      // Per-user concurrent SSE-stream cap (#268)
+      llmMaxConcurrentStreamsPerUser,
     };
   });
 
@@ -278,14 +293,6 @@ export async function adminRoutes(fastify: FastifyInstance) {
 
     const hasChunkChanges =
       body.embeddingChunkSize !== undefined || body.embeddingChunkOverlap !== undefined;
-    const hasLlmChanges =
-      body.llmProvider !== undefined
-      || body.ollamaModel !== undefined
-      || body.openaiBaseUrl !== undefined
-      || body.openaiApiKey !== undefined
-      || body.openaiModel !== undefined
-      || body.embeddingModel !== undefined
-      || body.ftsLanguage !== undefined;
 
     // Validate chunk overlap does not exceed 25% of chunk size (only when chunk settings change)
     if (hasChunkChanges) {
@@ -319,20 +326,14 @@ export async function adminRoutes(fastify: FastifyInstance) {
       );
     }
 
-    if (hasLlmChanges) {
-      await upsertSharedLlmSettings({
-        llmProvider: body.llmProvider,
-        ollamaModel: body.ollamaModel,
-        openaiBaseUrl: body.openaiBaseUrl,
-        openaiApiKey: body.openaiApiKey,
-        openaiModel: body.openaiModel,
-        embeddingModel: body.embeddingModel,
-        ftsLanguage: body.ftsLanguage,
-      });
-    }
-
     if (body.ftsLanguage !== undefined) {
-      // Rebuild all tsvectors with the new language
+      // Persist the new fts_language and rebuild all tsvectors with it.
+      await query(
+        `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
+         VALUES ('fts_language', $1, NOW())
+         ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1, updated_at = NOW()`,
+        [body.ftsLanguage],
+      );
       await query(
         `UPDATE pages SET tsv = to_tsvector(
           $1::regconfig,
@@ -351,12 +352,38 @@ export async function adminRoutes(fastify: FastifyInstance) {
       updates.push({ key: 'embedding_chunk_overlap', value: String(body.embeddingChunkOverlap) });
     }
     if (body.drawioEmbedUrl !== undefined) {
-      if (body.drawioEmbedUrl) {
-        updates.push({ key: 'drawio_embed_url', value: body.drawioEmbedUrl });
-      } else {
-        // Empty string clears the setting (falls back to default)
+      if (body.drawioEmbedUrl === null) {
+        // Explicit null clears the setting (falls back to default)
         await query(`DELETE FROM admin_settings WHERE setting_key = 'drawio_embed_url'`);
+      } else {
+        updates.push({ key: 'drawio_embed_url', value: body.drawioEmbedUrl });
       }
+    }
+    // Per-user concurrent SSE-stream cap (#268). Zod already validated the
+    // range [1, 20], so we trust the value here.
+    if (body.llmMaxConcurrentStreamsPerUser !== undefined) {
+      updates.push({
+        key: 'llm_max_concurrent_streams_per_user',
+        value: String(body.llmMaxConcurrentStreamsPerUser),
+      });
+    }
+
+    // Issue #257 — reembed-all job history retention. Zod already enforced
+    // the [10, 10000] integer range at the boundary.
+    if (body.reembedHistoryRetention !== undefined) {
+      updates.push({
+        key: 'reembed_history_retention',
+        value: String(body.reembedHistoryRetention),
+      });
+    }
+
+    // Issue #264 — retention (days) for ADMIN_ACCESS_DENIED audit rows.
+    // Zod already enforced the [7, 3650] integer range at the boundary.
+    if (body.adminAccessDeniedRetentionDays !== undefined) {
+      updates.push({
+        key: 'admin_access_denied_retention_days',
+        value: String(body.adminAccessDeniedRetentionDays),
+      });
     }
 
     for (const { key, value } of updates) {
@@ -368,8 +395,11 @@ export async function adminRoutes(fastify: FastifyInstance) {
       );
     }
 
-    if (body.llmProvider !== undefined) {
-      setActiveProvider(body.llmProvider);
+    // Invalidate the SSE-stream cap cache in-process so the new value takes
+    // effect immediately in this worker. Other workers pick it up within the
+    // 60-second TTL (same contract as `rate-limit-service`).
+    if (body.llmMaxConcurrentStreamsPerUser !== undefined) {
+      invalidateStreamCapCache();
     }
 
     // AI Safety settings
@@ -423,10 +453,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
       logger.info({ userId: request.userId, updates }, 'Admin chunk settings changed, all pages marked dirty');
     }
 
-    const auditDetails = {
-      ...body,
-      ...(body.openaiApiKey !== undefined ? { openaiApiKey: '[REDACTED]' } : {}),
-    };
+    const auditDetails = { ...body };
 
     await logAuditEvent(
       request.userId,
@@ -441,5 +468,62 @@ export async function adminRoutes(fastify: FastifyInstance) {
       return { message: 'Admin settings updated, all pages queued for re-embedding' };
     }
     return { message: 'Admin settings updated' };
+  });
+
+  // ── SMTP / Email settings ───────────────────────────────────────────────
+
+  // GET /api/admin/smtp - Get current SMTP configuration
+  fastify.get('/admin/smtp', async () => {
+    return getSmtpConfig();
+  });
+
+  // PUT /api/admin/smtp - Update SMTP configuration
+  const SmtpUpdateSchema = z.object({
+    host: z.string().optional(),
+    port: z.number().int().min(1).max(65535).optional(),
+    secure: z.boolean().optional(),
+    user: z.string().optional(),
+    pass: z.string().optional(),
+    from: z.string().optional(),
+    enabled: z.boolean().optional(),
+  });
+
+  fastify.put('/admin/smtp', async (request) => {
+    const body = SmtpUpdateSchema.parse(request.body);
+    updateSmtpConfig(body);
+
+    // Persist to admin_settings table
+    const entries: Array<{ key: string; value: string }> = [];
+    if (body.host !== undefined) entries.push({ key: 'smtp_host', value: body.host });
+    if (body.port !== undefined) entries.push({ key: 'smtp_port', value: String(body.port) });
+    if (body.secure !== undefined) entries.push({ key: 'smtp_secure', value: String(body.secure) });
+    if (body.user !== undefined) entries.push({ key: 'smtp_user', value: body.user });
+    if (body.pass !== undefined && body.pass !== '••••••••') entries.push({ key: 'smtp_pass', value: body.pass });
+    if (body.from !== undefined) entries.push({ key: 'smtp_from', value: body.from });
+    if (body.enabled !== undefined) entries.push({ key: 'smtp_enabled', value: String(body.enabled) });
+
+    if (entries.length > 0) {
+      const keys = entries.map((e) => e.key);
+      const values = entries.map((e) => e.value);
+      await query(
+        `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
+         SELECT key, value, NOW()
+         FROM unnest($1::text[], $2::text[]) AS t(key, value)
+         ON CONFLICT (setting_key) DO UPDATE
+         SET setting_value = EXCLUDED.setting_value, updated_at = NOW()`,
+        [keys, values],
+      );
+    }
+
+    await logAuditEvent(request.userId, 'ADMIN_ACTION', 'admin_settings', undefined, { action: 'update_smtp_settings' }, request);
+    return { message: 'SMTP settings updated' };
+  });
+
+  // POST /api/admin/smtp/test - Send test email
+  const SmtpTestSchema = z.object({ to: z.string().email() });
+
+  fastify.post('/admin/smtp/test', async (request) => {
+    const { to } = SmtpTestSchema.parse(request.body);
+    return sendTestEmail(to);
   });
 }

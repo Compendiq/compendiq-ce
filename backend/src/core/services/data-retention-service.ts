@@ -6,14 +6,22 @@
  *   - search_analytics (time-based: default 90 days)
  *   - error_log       (time-based: default 30 days)
  *   - page_versions   (count-based: keep last N per page, default 50)
+ *   - audit_log rows where action='ADMIN_ACCESS_DENIED' (#264): targeted
+ *       time-based purge with an admin-configurable window (default 90d).
+ *       Narrower than the umbrella audit_log sweep; rows that survive the
+ *       narrow sweep still fall under the umbrella 365d policy.
  *
  * Retention periods are configurable via environment variables:
  *   RETENTION_AUDIT_LOG_DAYS, RETENTION_SEARCH_ANALYTICS_DAYS,
- *   RETENTION_ERROR_LOG_DAYS, RETENTION_VERSIONS_MAX
+ *   RETENTION_ERROR_LOG_DAYS, RETENTION_VERSIONS_MAX,
+ *   RETENTION_ADMIN_ACCESS_DENIED_DAYS (env fallback for the admin-configurable
+ *   `admin_access_denied_retention_days` setting — consulted only when the DB
+ *   row is absent).
  */
 
 import { getPool } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
+import { getAdminAccessDeniedRetentionDays } from './admin-settings-service.js';
 
 export const RETENTION_DEFAULTS: Record<string, number> = {
   audit_log: 365,          // days
@@ -52,6 +60,14 @@ export async function runRetentionCleanup(): Promise<Record<string, number>> {
     }
   }
 
+  // Targeted retention for ADMIN_ACCESS_DENIED audit rows (#264).
+  // Runs after the umbrella `audit_log: 365 days` sweep above; rows that
+  // survived the umbrella AND are older than the (narrower) admin-configured
+  // window AND have action='ADMIN_ACCESS_DENIED' are purged here.
+  // Scoped by action so the umbrella retention policy for every other audit
+  // action remains independently tunable.
+  results['audit_log_admin_access_denied'] = await runAdminAccessDeniedRetention();
+
   // Count-based retention for page_versions
   const maxVersions = parseInt(process.env.RETENTION_VERSIONS_MAX ?? '50', 10);
   try {
@@ -73,6 +89,73 @@ export async function runRetentionCleanup(): Promise<Record<string, number>> {
   }
 
   return results;
+}
+
+/**
+ * Purge `audit_log` rows with `action = 'ADMIN_ACCESS_DENIED'` that are older
+ * than the admin-configured retention window (days).
+ *
+ * Issue #264. Batched (LIMIT 10_000) to avoid long DELETE locks on large audit
+ * tables — ~10 req/s of brute-forced admin attempts produces ~860k rows/day,
+ * so an unbatched DELETE of months of data could hold the table for minutes.
+ * Parameterised SQL only.
+ *
+ * Intentionally scoped to a single `action` — does NOT touch rows with other
+ * action values, preserving whatever umbrella policy governs them (the
+ * `audit_log: 365 days` entry in `RETENTION_DEFAULTS` continues to apply to
+ * every audit action separately).
+ *
+ * Returns the total number of rows deleted across all batches. Never throws
+ * (errors are logged and the promise resolves).
+ */
+const ADMIN_ACCESS_DENIED_PURGE_BATCH_SIZE = 10_000;
+
+async function runAdminAccessDeniedRetention(): Promise<number> {
+  let days: number;
+  try {
+    days = await getAdminAccessDeniedRetentionDays();
+  } catch (err) {
+    logger.error({ err }, 'Failed to resolve admin_access_denied_retention_days; skipping purge');
+    return 0;
+  }
+
+  const pool = getPool();
+  let totalDeleted = 0;
+
+  try {
+    for (;;) {
+      const { rowCount } = await pool.query(
+        `DELETE FROM audit_log
+           WHERE id IN (
+             SELECT id FROM audit_log
+              WHERE action = 'ADMIN_ACCESS_DENIED'
+                AND created_at < NOW() - INTERVAL '1 day' * $1
+              LIMIT $2
+           )`,
+        [days, ADMIN_ACCESS_DENIED_PURGE_BATCH_SIZE],
+      );
+      const n = rowCount ?? 0;
+      totalDeleted += n;
+      if (n > 0) {
+        logger.debug(
+          { batch: n, totalSoFar: totalDeleted, retentionDays: days },
+          'ADMIN_ACCESS_DENIED retention batch deleted',
+        );
+      }
+      // A short batch signals drained — break out rather than loop again on
+      // a guaranteed-empty DELETE.
+      if (n < ADMIN_ACCESS_DENIED_PURGE_BATCH_SIZE) break;
+    }
+    if (totalDeleted > 0) {
+      logger.info(
+        { deleted: totalDeleted, retentionDays: days },
+        'ADMIN_ACCESS_DENIED retention cleanup completed',
+      );
+    }
+  } catch (err) {
+    logger.error({ err, retentionDays: days }, 'ADMIN_ACCESS_DENIED retention cleanup failed');
+  }
+  return totalDeleted;
 }
 
 // ── Scheduler ────────────────────────────────────────────────────────────────

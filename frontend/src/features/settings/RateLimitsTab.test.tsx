@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { RateLimitsTab } from './RateLimitsTab';
@@ -34,7 +34,7 @@ function mockFetchWith(settings: Record<string, unknown>) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
     if (url.includes('/admin/settings')) {
-      if ((input as Request)?.method === 'PUT' || (typeof input === 'string' && false)) {
+      if ((input as Request)?.method === 'PUT') {
         return new Response(JSON.stringify({ message: 'Updated' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       return new Response(JSON.stringify(settings), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -56,11 +56,10 @@ function createWrapper() {
 
 describe('RateLimitsTab', () => {
   afterEach(() => {
-    cleanup();
     vi.restoreAllMocks();
   });
 
-  it('renders all 6 rate limit categories', async () => {
+  it('renders all 5 rate limit categories', async () => {
     mockFetchWith(defaultSettings);
     render(<RateLimitsTab />, { wrapper: createWrapper() });
 

@@ -2,10 +2,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   CircuitBreaker,
   CircuitBreakerOpenError,
-  getOllamaCircuitBreakerStatus,
-  getOpenaiCircuitBreakerStatus,
-  ollamaBreakers,
-  openaiBreakers,
+  getProviderBreaker,
+  invalidateProviderBreaker,
+  listProviderBreakers,
 } from './circuit-breaker.js';
 
 describe('CircuitBreaker', () => {
@@ -170,119 +169,92 @@ describe('CircuitBreaker', () => {
   });
 });
 
-describe('getOllamaCircuitBreakerStatus', () => {
-  beforeEach(() => {
-    ollamaBreakers.chat.reset();
-    ollamaBreakers.embed.reset();
-    ollamaBreakers.list.reset();
+// ─── Per-provider breaker lifecycle (cache-bus invalidation) ────────────────
+// This covers the cache-bus contract: when provider config changes, the
+// resolver calls `invalidateProviderBreaker(id)` so the next request starts
+// with a fresh CLOSED breaker instead of inheriting stale failure state
+// against the old configuration.
+describe('provider breaker lifecycle', () => {
+  it('returns the same instance on subsequent calls for the same providerId', () => {
+    const id = 'lifecycle-same-' + Math.random().toString(36).slice(2);
+    invalidateProviderBreaker(id);
+    const a = getProviderBreaker(id);
+    const b = getProviderBreaker(id);
+    expect(a).toBe(b);
   });
 
-  it('should return status for all three breakers', () => {
-    const status = getOllamaCircuitBreakerStatus();
-    expect(status).toHaveProperty('chat');
-    expect(status).toHaveProperty('embed');
-    expect(status).toHaveProperty('list');
+  it('invalidateProviderBreaker drops OPEN state — next get() returns a fresh CLOSED breaker', () => {
+    const id = 'lifecycle-reset-' + Math.random().toString(36).slice(2);
+    invalidateProviderBreaker(id); // start clean
 
-    expect(status.chat.state).toBe('CLOSED');
-    expect(status.embed.state).toBe('CLOSED');
-    expect(status.list.state).toBe('CLOSED');
+    // Trip the breaker to OPEN
+    const first = getProviderBreaker(id);
+    for (let i = 0; i < 3; i++) first.recordFailure();
+    expect(first.getStatus().state).toBe('OPEN');
+
+    // Simulate cache-bus bump: invalidate, then retrieve again.
+    invalidateProviderBreaker(id);
+    const fresh = getProviderBreaker(id);
+
+    // Must be a different instance AND in the CLOSED initial state —
+    // no carry-over of failureCount or lastFailureTime.
+    expect(fresh).not.toBe(first);
+    const status = fresh.getStatus();
+    expect(status.state).toBe('CLOSED');
+    expect(status.failureCount).toBe(0);
+    expect(status.lastFailureTime).toBeNull();
+    expect(status.nextRetryTime).toBeNull();
   });
 
-  it('should reflect individual breaker states', async () => {
-    // Trip the chat breaker
-    for (let i = 0; i < 3; i++) {
-      ollamaBreakers.chat.recordFailure();
-    }
+  it('listProviderBreakers omits a providerId after it is invalidated', () => {
+    const id = 'lifecycle-list-' + Math.random().toString(36).slice(2);
+    invalidateProviderBreaker(id);
+    // Touch once so it appears in the map.
+    getProviderBreaker(id);
+    expect(listProviderBreakers().some((b) => b.providerId === id)).toBe(true);
 
-    const status = getOllamaCircuitBreakerStatus();
-    expect(status.chat.state).toBe('OPEN');
-    expect(status.embed.state).toBe('CLOSED');
-    expect(status.list.state).toBe('CLOSED');
-  });
-});
-
-describe('openaiBreakers (separate from ollamaBreakers)', () => {
-  beforeEach(() => {
-    ollamaBreakers.chat.reset();
-    ollamaBreakers.embed.reset();
-    ollamaBreakers.list.reset();
-    openaiBreakers.chat.reset();
-    openaiBreakers.embed.reset();
-  });
-
-  it('should have separate chat and embed breakers', () => {
-    const status = getOpenaiCircuitBreakerStatus();
-    expect(status).toHaveProperty('chat');
-    expect(status).toHaveProperty('embed');
-    expect(status.chat.state).toBe('CLOSED');
-    expect(status.embed.state).toBe('CLOSED');
-  });
-
-  it('should be independent from ollama breakers -- tripping openai does not trip ollama', async () => {
-    // Trip the openai chat breaker
-    for (let i = 0; i < 3; i++) {
-      openaiBreakers.chat.recordFailure();
-    }
-
-    // OpenAI chat should be OPEN
-    expect(getOpenaiCircuitBreakerStatus().chat.state).toBe('OPEN');
-    // Ollama chat should still be CLOSED
-    expect(getOllamaCircuitBreakerStatus().chat.state).toBe('CLOSED');
-  });
-
-  it('should be independent from ollama breakers -- tripping ollama does not trip openai', async () => {
-    // Trip the ollama embed breaker (embed breakers have threshold of 5)
-    for (let i = 0; i < 5; i++) {
-      ollamaBreakers.embed.recordFailure();
-    }
-
-    // Ollama embed should be OPEN
-    expect(getOllamaCircuitBreakerStatus().embed.state).toBe('OPEN');
-    // OpenAI embed should still be CLOSED
-    expect(getOpenaiCircuitBreakerStatus().embed.state).toBe('CLOSED');
-  });
-
-  it('should have different names for openai breakers', () => {
-    expect(openaiBreakers.chat.name).toBe('openai-chat');
-    expect(openaiBreakers.embed.name).toBe('openai-embed');
-    expect(ollamaBreakers.chat.name).toBe('ollama-chat');
-    expect(ollamaBreakers.embed.name).toBe('ollama-embed');
+    invalidateProviderBreaker(id);
+    expect(listProviderBreakers().some((b) => b.providerId === id)).toBe(false);
   });
 });
 
-describe('embed breakers have higher failure threshold', () => {
-  beforeEach(() => {
-    ollamaBreakers.embed.reset();
-    openaiBreakers.embed.reset();
-    ollamaBreakers.chat.reset();
-  });
+// ─── Issue #267: provider-deletion event drops breaker map entry ─────────────
+// Prior to the fix, `providerBreakers` kept entries for deleted providers
+// forever (O(n) memory leak over process lifetime). The fix emits a
+// `providerDeleted(id)` signal on the cache-bus that the resolver listens for
+// and routes to `invalidateBreaker`/`invalidateDispatcher`. The test pins the
+// whole wiring end-to-end, not just `invalidateProviderBreaker` in isolation.
+describe('provider deletion event drops breaker entry via cache-bus', () => {
+  it('emitProviderDeleted drops the breaker — listProviderBreakers no longer sees the id', async () => {
+    // Importing the resolver module registers its `onProviderDeleted` listener
+    // as a module-evaluation side effect. This mirrors how the listener is
+    // wired in production via `llm-provider-bootstrap.ts`.
+    await import('../../domains/llm/services/llm-provider-resolver.js');
+    const { emitProviderDeleted } = await import('../../domains/llm/services/cache-bus.js');
 
-  it('ollama embed breaker should stay CLOSED after 3 failures (threshold is 5)', () => {
+    const id = 'provider-to-delete-267';
+    // Start from a clean slate in case another test created a breaker for this id.
+    invalidateProviderBreaker(id);
+
+    // Trip the breaker to OPEN so we can prove the freshly-created replacement
+    // is CLOSED (no state bleed from the old instance).
+    const breaker = getProviderBreaker(id);
     for (let i = 0; i < 3; i++) {
-      ollamaBreakers.embed.recordFailure();
+      await breaker.execute(() => Promise.reject(new Error('boom'))).catch(() => {});
     }
-    expect(ollamaBreakers.embed.getStatus().state).toBe('CLOSED');
-    expect(ollamaBreakers.embed.getStatus().failureCount).toBe(3);
-  });
+    expect(breaker.getStatus().state).toBe('OPEN');
+    expect(listProviderBreakers().find((b) => b.providerId === id)).toBeDefined();
 
-  it('ollama embed breaker should trip to OPEN after 5 failures', () => {
-    for (let i = 0; i < 5; i++) {
-      ollamaBreakers.embed.recordFailure();
-    }
-    expect(ollamaBreakers.embed.getStatus().state).toBe('OPEN');
-  });
+    // Act — emit the deletion event. Synchronous: must be gone on the next tick.
+    emitProviderDeleted(id);
 
-  it('openai embed breaker should trip to OPEN after 5 failures', () => {
-    for (let i = 0; i < 5; i++) {
-      openaiBreakers.embed.recordFailure();
-    }
-    expect(openaiBreakers.embed.getStatus().state).toBe('OPEN');
-  });
+    expect(listProviderBreakers().find((b) => b.providerId === id)).toBeUndefined();
 
-  it('chat breakers still use default threshold of 3', () => {
-    for (let i = 0; i < 3; i++) {
-      ollamaBreakers.chat.recordFailure();
-    }
-    expect(ollamaBreakers.chat.getStatus().state).toBe('OPEN');
+    // Re-create with the same id → fresh CLOSED breaker, no state bleed.
+    // (Data model uses DB UUIDs so this is exotic in practice, but the issue
+    // body calls it out as an acceptance criterion.)
+    const reborn = getProviderBreaker(id);
+    expect(reborn.getStatus().state).toBe('CLOSED');
+    expect(reborn).not.toBe(breaker);
   });
 });

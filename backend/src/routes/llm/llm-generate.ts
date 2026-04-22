@@ -1,11 +1,13 @@
 import { FastifyInstance } from 'fastify';
-import { SystemPromptKey } from '../../domains/llm/services/ollama-service.js';
-import { providerStreamChat } from '../../domains/llm/services/llm-provider.js';
+import { SystemPromptKey } from '../../domains/llm/services/prompts.js';
+import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
+import { streamChat } from '../../domains/llm/services/openai-compatible-client.js';
 import { LlmCache, buildLlmCacheKey } from '../../domains/llm/services/llm-cache.js';
 import { fetchWebSources, formatWebContext, type WebSource } from './_web-search-helper.js';
 import { GenerateRequestSchema } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
+import { emitLlmAudit, estimateTokens } from '../../domains/llm/services/llm-audit-hook.js';
 import {
   resolveSystemPrompt,
   checkCacheWithLock,
@@ -17,6 +19,8 @@ import {
   MAX_INPUT_LENGTH,
   MAX_PDF_TEXT_FOR_LLM,
 } from './_helpers.js';
+import { requireGlobalPermission } from '../../core/utils/rbac-guards.js';
+import { acquireStreamSlot } from '../../core/services/sse-stream-limiter.js';
 
 export async function llmGenerateRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -24,7 +28,18 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
   const llmCache = new LlmCache(fastify.redis);
 
   // POST /api/llm/generate - stream generated article
-  fastify.post('/llm/generate', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
+  fastify.post('/llm/generate', { ...LLM_STREAM_RATE_LIMIT, preHandler: requireGlobalPermission('llm:generate') }, async (request, reply) => {
+    // Per-user concurrent SSE-stream cap (#268).
+    const slot = await acquireStreamSlot(request.userId);
+    if (!slot.acquired) {
+      return reply.code(429).send({
+        error: 'too_many_concurrent_streams',
+        message: 'You have reached the per-user concurrent AI-stream limit. Close an existing stream and try again.',
+      });
+    }
+
+    try {
+    const auditStart = Date.now();
     const body = GenerateRequestSchema.parse(request.body);
     const { prompt, model, template, pdfText } = body;
     const userId = request.userId;
@@ -89,26 +104,66 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
       })),
     } : undefined;
 
+    // Resolve the `chat` use-case up-front so the cache key includes the
+    // resolved provider+model. Queue + per-provider breakers wrap streamChat().
+    const { config: chatConfig, model: resolvedModel } = await resolveUsecase('chat');
+    logger.debug(
+      { userId, bodyModel: model, providerId: chatConfig.providerId, resolvedModel },
+      'Resolved chat usecase assignment',
+    );
+
     // Check LLM cache with stampede protection
-    const cacheKey = buildLlmCacheKey(model, systemPrompt, userContent);
+    const cacheKey = buildLlmCacheKey(resolvedModel, systemPrompt, userContent, chatConfig.providerId);
     const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
       sendCachedSSE(reply, cached.content);
       return;
     }
 
+    const generateMessages = [
+      { role: 'system' as const, content: systemPrompt },
+      { role: 'user' as const, content: userContent },
+    ];
+
     try {
       const postProcess = await buildOutputPostProcessor(genWebSources.map((s) => s.url));
 
-      // Resolve per-user LLM provider and stream
-      const generator = providerStreamChat(userId, model, [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userContent },
-      ]);
+      const generator = streamChat(chatConfig, resolvedModel, generateMessages);
 
-      await streamSSE(request, reply, generator, genExtras, { llmCache, cacheKey, postProcess });
+      const accumulated = await streamSSE(request, reply, generator, genExtras, { llmCache, cacheKey, postProcess });
+
+      emitLlmAudit({
+        userId,
+        action: 'generate',
+        model: resolvedModel,
+        provider: 'openai',
+        inputTokens: estimateTokens(generateMessages.map(m => m.content).join('')),
+        outputTokens: estimateTokens(accumulated),
+        inputMessages: generateMessages.map(m => ({ role: m.role, contentLength: m.content.length })),
+        retrievedChunkIds: [],
+        durationMs: Date.now() - auditStart,
+        status: 'success',
+      });
+    } catch (err) {
+      emitLlmAudit({
+        userId,
+        action: 'generate',
+        model: resolvedModel,
+        provider: 'openai',
+        inputTokens: estimateTokens(generateMessages.map(m => m.content).join('')),
+        outputTokens: 0,
+        inputMessages: generateMessages.map(m => ({ role: m.role, contentLength: m.content.length })),
+        retrievedChunkIds: [],
+        durationMs: Date.now() - auditStart,
+        status: 'error',
+        errorMessage: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
     } finally {
       if (lockAcquired) await llmCache.releaseLock(cacheKey);
+    }
+    } finally {
+      await slot.release();
     }
   });
 }

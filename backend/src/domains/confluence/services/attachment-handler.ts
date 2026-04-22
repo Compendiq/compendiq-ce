@@ -34,13 +34,14 @@ export const STREAM_THRESHOLD_BYTES = 5 * 1024 * 1024;
 export const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 
 /**
- * Attachments are now stored in a shared directory keyed only by pageId.
- * The userId parameter is kept in public-facing functions for backward
- * compatibility with callers, but is no longer used in the path.
+ * Attachments are stored in a shared directory keyed only by pageId.
+ * The public-facing functions still accept a `userId` argument for
+ * backward compatibility / observability, but the on-disk path no longer
+ * depends on it.
  */
-function attachmentDir(_userId: string, pageId: string): string {
+function attachmentDir(pageId: string): string {
   // Sanitize pageId to prevent path traversal (e.g. "../../etc")
-  const safeId = pageId.replace(/[/\\..]+/g, '_').replace(/^_+|_+$/g, '');
+  const safeId = pageId.replace(/[/\\.]+/g, '_').replace(/^_+|_+$/g, '');
   if (!safeId) {
     throw new Error('Invalid page ID');
   }
@@ -52,10 +53,10 @@ function attachmentDir(_userId: string, pageId: string): string {
   return dir;
 }
 
-function attachmentPath(userId: string, pageId: string, filename: string): string {
+function attachmentPath(_userId: string, pageId: string, filename: string): string {
   // Sanitize filename to prevent path traversal
   const safe = path.basename(filename);
-  return path.join(attachmentDir(userId, pageId), safe);
+  return path.join(attachmentDir(pageId), safe);
 }
 
 /**
@@ -74,7 +75,7 @@ export async function cacheAttachment(
   filename: string,
   fileSizeHint?: number,
 ): Promise<string> {
-  const dir = attachmentDir(userId, pageId);
+  const dir = attachmentDir(pageId);
   await fs.mkdir(dir, { recursive: true });
 
   const filePath = attachmentPath(userId, pageId, filename);
@@ -121,7 +122,7 @@ export async function readAttachment(userId: string, pageId: string, filename: s
 
   // Search for .xref- variants: "foo.jpg" matches "foo.xref-{hash}.jpg"
   const safe = path.basename(filename);
-  const dir = attachmentDir('', pageId);
+  const dir = attachmentDir(pageId);
   const ext = path.extname(safe);
   const stem = ext ? safe.slice(0, -ext.length) : safe;
   const prefix = `${stem}.xref-`;
@@ -403,7 +404,7 @@ async function cacheExternalImage(
   filename: string,
   url: string,
 ): Promise<string> {
-  const dir = attachmentDir(userId, pageId);
+  const dir = attachmentDir(pageId);
   await fs.mkdir(dir, { recursive: true });
 
   const filePath = attachmentPath(userId, pageId, filename);
@@ -416,7 +417,7 @@ async function downloadExternalImage(url: string): Promise<ExternalImageDownload
   validateUrl(url);
 
   const { statusCode, headers, body } = await request(url, {
-    signal: AbortSignal.timeout(60_000),
+    signal: AbortSignal.timeout(15_000),
   });
 
   if (statusCode !== 200) {
@@ -506,7 +507,7 @@ export async function fetchAndCacheAttachment(
   const fileSize = attachment.extensions?.fileSize;
   const useStreaming = fileSize !== undefined && fileSize > STREAM_THRESHOLD_BYTES;
 
-  const dir = attachmentDir(userId, pageId);
+  const dir = attachmentDir(pageId);
   await fs.mkdir(dir, { recursive: true });
   const filePath = attachmentPath(userId, pageId, safe);
 
@@ -609,7 +610,7 @@ export async function writeAttachmentCache(
   filename: string,
   data: Buffer,
 ): Promise<string> {
-  const dir = attachmentDir(userId, pageId);
+  const dir = attachmentDir(pageId);
   await fs.mkdir(dir, { recursive: true });
   const filePath = attachmentPath(userId, pageId, filename);
   await fs.writeFile(filePath, data);
@@ -622,8 +623,8 @@ export async function writeAttachmentCache(
  * Used by sync-service to decide whether to retry attachment downloads
  * for pages whose content version hasn't changed.
  */
-export async function hasLocalAttachments(userId: string, pageId: string): Promise<boolean> {
-  const dir = attachmentDir(userId, pageId);
+export async function hasLocalAttachments(_userId: string, pageId: string): Promise<boolean> {
+  const dir = attachmentDir(pageId);
   try {
     const entries = await fs.readdir(dir);
     return entries.length > 0;
@@ -672,8 +673,8 @@ export async function getMissingAttachments(
  * Clean up all attachments for a page.
  * Also clears any Redis failure counters so re-synced attachments get a fresh start.
  */
-export async function cleanPageAttachments(userId: string, pageId: string): Promise<void> {
-  const dir = attachmentDir(userId, pageId);
+export async function cleanPageAttachments(_userId: string, pageId: string): Promise<void> {
+  const dir = attachmentDir(pageId);
   try {
     await fs.rm(dir, { recursive: true, force: true });
   } catch {

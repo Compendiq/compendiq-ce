@@ -5,6 +5,7 @@ import { unlink } from 'fs/promises';
 import { validateUrl, addAllowedBaseUrl, resolveConfluenceUrl } from '../../../core/utils/ssrf-guard.js';
 import { logger } from '../../../core/utils/logger.js';
 import { confluenceDispatcher } from '../../../core/utils/tls-config.js';
+import { acquireToken } from './confluence-rate-limiter.js';
 
 interface ConfluenceSpace {
   key: string;
@@ -84,6 +85,7 @@ export class ConfluenceClient {
     body?: unknown;
     signal?: AbortSignal;
   } = {}): Promise<T> {
+    await acquireToken();
     const url = `${this.baseUrl}${path}`;
 
     // SSRF protection: validate URL before every request
@@ -249,6 +251,7 @@ export class ConfluenceClient {
    * Follows redirects (up to 10 hops) and validates the URL for SSRF.
    */
   private async fetchAttachmentBuffer(url: string): Promise<Buffer> {
+    await acquireToken();
     validateUrl(url);
 
     const opts: Record<string, unknown> = {
@@ -323,6 +326,7 @@ export class ConfluenceClient {
     outputPath: string,
     maxSizeBytes: number,
   ): Promise<void> {
+    await acquireToken();
     validateUrl(url);
 
     const opts: Record<string, unknown> = {

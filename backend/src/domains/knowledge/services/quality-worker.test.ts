@@ -11,9 +11,11 @@ import {
 
 const dbAvailable = await isDbAvailable();
 
-// Mock the LLM and content converter to avoid real calls in tests
-vi.mock('../../llm/services/ollama-service.js', () => ({
-  getSystemPrompt: vi.fn().mockReturnValue('You are a quality analyzer.'),
+// Mock the LLM streaming helper and content converter to avoid real calls in tests.
+// The worker streams via `streamChat` from openai-compatible-client; the
+// `getSystemPrompt` helper from prompts.ts is a pure string builder and
+// runs unmocked.
+vi.mock('../../llm/services/openai-compatible-client.js', () => ({
   streamChat: vi.fn().mockImplementation(() => {
     async function* generator() {
       yield {
@@ -24,6 +26,11 @@ vi.mock('../../llm/services/ollama-service.js', () => ({
     }
     return generator();
   }),
+  chat: vi.fn(),
+  generateEmbedding: vi.fn(),
+  listModels: vi.fn(),
+  checkHealth: vi.fn(),
+  invalidateDispatcher: vi.fn(),
 }));
 
 vi.mock('../../../core/utils/sanitize-llm-input.js', () => ({
@@ -34,16 +41,14 @@ vi.mock('../../../core/services/content-converter.js', () => ({
   htmlToMarkdown: vi.fn().mockImplementation((html: string) => html),
 }));
 
-vi.mock('../../../core/services/admin-settings-service.js', () => ({
-  getSharedLlmSettings: vi.fn().mockResolvedValue({
-    llmProvider: 'ollama',
-    ollamaModel: 'qwen3.5',
-    openaiBaseUrl: null,
-    hasOpenaiApiKey: false,
-    openaiModel: null,
-    embeddingModel: 'bge-m3',
-    embeddingDimensions: 1024,
-    ftsLanguage: 'simple',
+vi.mock('../../llm/services/llm-provider-resolver.js', () => ({
+  resolveUsecase: vi.fn().mockResolvedValue({
+    config: {
+      providerId: 'p1', id: 'p1', name: 'X',
+      baseUrl: 'http://x/v1', apiKey: null,
+      authType: 'none', verifySsl: true, defaultModel: 'qwen3.5',
+    },
+    model: 'qwen3.5',
   }),
 }));
 

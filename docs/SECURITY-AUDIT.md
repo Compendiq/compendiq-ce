@@ -111,6 +111,7 @@ Verified every route file for authentication hooks (`onRequest`, `preHandler`) o
 | `auth.ts` /cleanup-tokens | `preHandler: fastify.requireAdmin` | PASS |
 | `settings.ts` | `fastify.addHook('onRequest', fastify.authenticate)` | PASS |
 | `admin.ts` | `fastify.addHook('onRequest', fastify.requireAdmin)` | PASS |
+| `admin-embedding-locks.ts` | `fastify.addHook('onRequest', fastify.requireAdmin)` (#257) | PASS -- force-release audit-logged |
 | `rbac.ts` /permissions/* | `onRequest: fastify.authenticate` per route | PASS |
 | `rbac.ts` admin routes | `admin.addHook('onRequest', admin.requireAdmin)` | PASS |
 | `oidc.ts` /auth/oidc/config | None (exempt) | PASS -- login page needs this |
@@ -265,6 +266,7 @@ function getJwtSecret(): Uint8Array {
 | OIDC routes | 10 req/min | PASS |
 | RBAC admin routes | 30 req/min | PASS |
 | LLM streaming routes | 10 req/min | PASS |
+| LLM concurrent SSE streams per user | 3 concurrent (admin-configurable, 1–20, #268) | PASS -- Redis counter with Lua atomic acquire; 429 on exceed; self-heals on process crash via 1h `EXPIRE` |
 | Embedding routes | 5 req/min | PASS |
 | PDF extraction | 5 req/min | PASS |
 | Setup status (GET) | 20 req/min | PASS (#82) |
@@ -309,6 +311,13 @@ function getJwtSecret(): Uint8Array {
 - **PASS:** Refresh token cookie: httpOnly, secure (in production), sameSite=strict, path-scoped
 - **PASS:** OIDC callback uses sameSite=lax (required for cross-origin IdP redirect)
 
+### Admin-action audit (#264)
+
+- **PASS:** `requireAdmin` writes an `ADMIN_ACCESS_DENIED` audit row on every 401/403 — not just on the success path. Forensic visibility into admin-endpoint probes by non-admins.
+- **PASS:** Each rejection captures `actorUserId` (or null for unauthenticated), `requestIp`, route + method, and `reason: 'not_admin' | 'unauthenticated'`.
+- **PASS:** Retention is admin-configurable (`admin_access_denied_retention_days`, default 90 days, min 7, max 3650, migration 057) and purged by `data-retention-service.ts` via batched `DELETE ... WHERE action = 'ADMIN_ACCESS_DENIED'` — brute-forcers can't grow `audit_log` unbounded without the operator noticing via the retention dial.
+- **PASS:** Force-release of admin embedding locks (`POST /api/admin/embedding/locks/:userId/release`) emits `ADMIN_ACTION.embedding_lock.force_release_embedding_lock` audit events; worker has a holder-epoch guard that re-checks every 20 pages and aborts cleanly if force-released mid-run.
+
 ### Input validation
 
 - **PASS:** Zod schemas from `@compendiq/contracts` on all API boundaries
@@ -348,7 +357,8 @@ function getJwtSecret(): Uint8Array {
 | 2.4 CORS verification | PASS (origin from env var, no wildcard) |
 | 2.5 Startup secret validation | PASS (rejects weak/default secrets in production) |
 | 2.6 Debug/dev route review | PASS (after Swagger fix) |
-| Rate limiting | PASS (all sensitive endpoints rate-limited) |
+| Rate limiting | PASS (all sensitive endpoints rate-limited; per-user concurrent SSE-stream cap added in #268) |
+| Admin-action audit (denied attempts) | PASS (#264 — `ADMIN_ACCESS_DENIED` rows at the `requireAdmin` decorator, 90-day retention) |
 | SSRF protection | PASS (comprehensive IP/hostname/protocol blocking) |
 | LLM prompt injection | PASS (sanitization on all input paths) |
 | PAT encryption | PASS (AES-256-GCM with rotation support) |

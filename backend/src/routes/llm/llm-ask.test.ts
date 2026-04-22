@@ -2,32 +2,34 @@ import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vites
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 
-// --- Mock: ollama-service (streamChat, getSystemPrompt) ---
-const mockStreamChat = vi.fn();
-const mockGetSystemPrompt = vi.fn().mockReturnValue('You are a helpful knowledge base assistant');
+// --- Mock: llm-provider-resolver (resolveUsecase) ---
+const mockResolveUsecase = vi.fn().mockResolvedValue({
+  config: {
+    providerId: 'p1',
+    baseUrl: 'http://x/v1',
+    apiKey: null,
+    authType: 'none',
+    verifySsl: true,
+    name: 'X',
+    defaultModel: 'm',
+  },
+  model: 'm',
+});
 
-vi.mock('../../domains/llm/services/ollama-service.js', () => ({
-  listModels: vi.fn(),
-  checkHealth: vi.fn(),
-  streamChat: (...args: unknown[]) => mockStreamChat(...args),
-  chat: vi.fn(),
-  getSystemPrompt: (...args: unknown[]) => mockGetSystemPrompt(...args),
-  generateEmbedding: vi.fn(),
-  LANGUAGE_PRESERVATION_INSTRUCTION: '',
+vi.mock('../../domains/llm/services/llm-provider-resolver.js', () => ({
+  resolveUsecase: (...args: unknown[]) => mockResolveUsecase(...args),
 }));
 
-// --- Mock: circuit-breaker (used internally by ollama-service/llm-provider) ---
-vi.mock('../../core/services/circuit-breaker.js', () => ({
-  getOllamaCircuitBreakerStatus: vi.fn().mockReturnValue({
-    chat: { state: 'CLOSED' },
-    embed: { state: 'CLOSED' },
-    list: { state: 'CLOSED' },
-  }),
-  ollamaBreakers: {
-    chat: { execute: vi.fn((fn: () => unknown) => fn()) },
-    embed: { execute: vi.fn((fn: () => unknown) => fn()) },
-    list: { execute: vi.fn((fn: () => unknown) => fn()) },
-  },
+// --- Mock: openai-compatible-client (streamChat — queue + breakers wrapped inside) ---
+const mockStreamChatClient = vi.fn();
+
+vi.mock('../../domains/llm/services/openai-compatible-client.js', () => ({
+  streamChat: (...args: unknown[]) => mockStreamChatClient(...args),
+  chat: vi.fn(),
+  generateEmbedding: vi.fn(),
+  listModels: vi.fn(),
+  checkHealth: vi.fn(),
+  invalidateDispatcher: vi.fn(),
 }));
 
 // --- Mock: postgres query ---
@@ -127,6 +129,7 @@ describe('POST /api/llm/ask', () => {
     app.decorateRequest('userId', '');
     app.addHook('onRequest', async (request) => {
       request.userId = 'test-user-123';
+      request.userCan = async () => true;
     });
 
     await app.register(llmAskRoutes, { prefix: '/api' });
@@ -142,11 +145,22 @@ describe('POST /api/llm/ask', () => {
     // Reset to defaults after clearAllMocks
     mockGetCachedResponse.mockResolvedValue(null);
     mockSetCachedResponse.mockResolvedValue(undefined);
-    mockGetSystemPrompt.mockReturnValue('You are a helpful knowledge base assistant');
-    // Default query mock: returns row with id for saveConversation INSERT,
-    // and empty llm_provider so resolveUserProvider falls back to Ollama
+    // Default query mock: returns row with id for saveConversation INSERT
     mockQuery.mockResolvedValue({ rows: [{ id: 'test-conv-id' }] });
     mockBuildRagContext.mockReturnValue('Relevant context from the knowledge base.');
+    // Default resolveUsecase: provider 'p1' with model 'm'
+    mockResolveUsecase.mockResolvedValue({
+      config: {
+        providerId: 'p1',
+        baseUrl: 'http://x/v1',
+        apiKey: null,
+        authType: 'none',
+        verifySsl: true,
+        name: 'X',
+        defaultModel: 'm',
+      },
+      model: 'm',
+    });
   });
 
   // ─── Validation tests ────────────────────────────────────────────────────
@@ -202,7 +216,7 @@ describe('POST /api/llm/ask', () => {
       },
     ];
     mockHybridSearch.mockResolvedValue(fakeResults);
-    mockStreamChat.mockReturnValue(singleChunkGenerator('The deployment process uses CI/CD.'));
+    mockStreamChatClient.mockReturnValue(singleChunkGenerator('The deployment process uses CI/CD.'));
 
     // Act
     const response = await app.inject({
@@ -242,7 +256,7 @@ describe('POST /api/llm/ask', () => {
   it('should call hybridSearch with the user question', async () => {
     mockHybridSearch.mockResolvedValue([]);
     mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
-    mockStreamChat.mockReturnValue(singleChunkGenerator('I could not find relevant information.'));
+    mockStreamChatClient.mockReturnValue(singleChunkGenerator('I could not find relevant information.'));
 
     await app.inject({
       method: 'POST',
@@ -301,7 +315,7 @@ describe('POST /api/llm/ask', () => {
     expect(sources[0].confluenceId).toBe('page-xyz');
 
     // The LLM should NOT have been called
-    expect(mockStreamChat).not.toHaveBeenCalled();
+    expect(mockStreamChatClient).not.toHaveBeenCalled();
   });
 
   // ─── Empty results test ──────────────────────────────────────────────────
@@ -310,7 +324,7 @@ describe('POST /api/llm/ask', () => {
     // Arrange: no RAG results → buildRagContext returns "no context" message
     mockHybridSearch.mockResolvedValue([]);
     mockBuildRagContext.mockReturnValue('No relevant context found in the knowledge base.');
-    mockStreamChat.mockReturnValue(singleChunkGenerator('I do not have enough context to answer.'));
+    mockStreamChatClient.mockReturnValue(singleChunkGenerator('I do not have enough context to answer.'));
 
     // Act
     const response = await app.inject({
@@ -338,5 +352,54 @@ describe('POST /api/llm/ask', () => {
     const sources = finalEvent!.sources as Array<unknown>;
     expect(Array.isArray(sources)).toBe(true);
     expect(sources).toHaveLength(0);
+  });
+
+  // ─── Use-case resolution ─────────────────────────────────────────────────
+
+  describe('chat use-case resolution', () => {
+    it('consults resolveUsecase("chat") on every request', async () => {
+      mockHybridSearch.mockResolvedValue([]);
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+
+      await app.inject({
+        method: 'POST',
+        url: '/api/llm/ask',
+        payload: { question: 'hi', model: 'llama3' },
+      });
+
+      expect(mockResolveUsecase).toHaveBeenCalledWith('chat');
+    });
+
+    it('streams via the resolved provider config + model', async () => {
+      mockHybridSearch.mockResolvedValue([]);
+      mockResolveUsecase.mockResolvedValue({
+        config: {
+          providerId: 'provider-openai',
+          baseUrl: 'https://api.openai.com/v1',
+          apiKey: 'sk-test',
+          authType: 'bearer',
+          verifySsl: true,
+          name: 'OpenAI',
+          defaultModel: 'gpt-4o-mini',
+        },
+        model: 'gpt-4o-mini',
+      });
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('answer'));
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/llm/ask',
+        payload: { question: 'hi', model: 'ignored-body-model' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockStreamChatClient).toHaveBeenCalledTimes(1);
+      const [cfg, usedModel] = mockStreamChatClient.mock.calls[0] as [
+        { providerId: string },
+        string,
+      ];
+      expect(cfg.providerId).toBe('provider-openai');
+      expect(usedModel).toBe('gpt-4o-mini');
+    });
   });
 });

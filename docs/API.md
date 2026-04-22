@@ -62,10 +62,10 @@ Response:
     "redis": true,
     "llm": true
   },
-  "llmProvider": "ollama",
   "circuitBreakers": {
-    "ollama": "closed",
-    "openai": "closed"
+    "providers": [
+      { "providerId": "<uuid>", "name": "OpenAI Prod", "state": "closed", "failures": 0 }
+    ]
   },
   "version": "1.0.0",
   "uptime": 3600.123

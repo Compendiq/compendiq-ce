@@ -1,6 +1,7 @@
 import { query } from '../db/postgres.js';
 import { getRedisClient } from './redis-cache.js';
 import { logger } from '../utils/logger.js';
+import { getScopedSpaces, setScopedSpaces } from './rbac-request-scope.js';
 
 const RBAC_CACHE_TTL = 60; // 60 seconds
 
@@ -16,6 +17,10 @@ function spacesAccessCacheKey(userId: string): string {
 
 function adminCacheKey(userId: string): string {
   return `rbac:admin:${userId}`;
+}
+
+function globalPermsCacheKey(userId: string): string {
+  return `rbac:global:${userId}`;
 }
 
 async function getCached<T>(key: string): Promise<T | null> {
@@ -179,6 +184,69 @@ export async function userHasPermission(
 }
 
 /**
+ * Check whether a user has a specific permission in ANY space (global check).
+ *
+ * Used for action-level permissions that aren't tied to a specific resource,
+ * e.g. `llm:query`, `llm:generate`, `sync:trigger`. If the user holds the
+ * permission via any role assignment (direct or group-based) in any space,
+ * this returns true.
+ *
+ * System admins always pass. Results are cached in Redis for 60s under
+ * `rbac:global:<userId>`. Cache is flushed by `invalidateRbacCache(userId)`.
+ *
+ * NOTE: Granular permission IDs are plain strings stored in `roles.permissions
+ * TEXT[]`. No whitelist — the caller picks the ID. Validity against
+ * `permission_definitions` is enforced only when roles are created/updated
+ * (see `overlay/.../rbac-extensions-service.validatePermissions`).
+ */
+export async function userHasGlobalPermission(
+  userId: string,
+  permission: string,
+): Promise<boolean> {
+  // System admin bypass
+  if (await isSystemAdmin(userId)) return true;
+
+  // Check cache — single flattened permission set across all spaces for this user
+  const cacheKey = globalPermsCacheKey(userId);
+  const cached = await getCached<string[]>(cacheKey);
+  if (cached !== null) {
+    return cached.includes(permission);
+  }
+
+  const permissions = new Set<string>();
+
+  // Direct user assignments across all spaces
+  const directCheck = await query<{ permissions: string[] }>(
+    `SELECT r.permissions
+     FROM space_role_assignments sra
+     JOIN roles r ON r.id = sra.role_id
+     WHERE sra.principal_type = 'user' AND sra.principal_id = $1`,
+    [userId],
+  );
+  for (const row of directCheck.rows) {
+    for (const p of row.permissions) permissions.add(p);
+  }
+
+  // Group-based assignments across all spaces
+  const groupCheck = await query<{ permissions: string[] }>(
+    `SELECT r.permissions
+     FROM space_role_assignments sra
+     JOIN roles r ON r.id = sra.role_id
+     JOIN group_memberships gm ON (sra.principal_id ~ '^\\d+$' AND gm.group_id = sra.principal_id::INTEGER)
+     WHERE sra.principal_type = 'group' AND gm.user_id = $1`,
+    [userId],
+  );
+  for (const row of groupCheck.rows) {
+    for (const p of row.permissions) permissions.add(p);
+  }
+
+  const permsArray = Array.from(permissions);
+  await setCache(cacheKey, permsArray);
+
+  return permissions.has(permission);
+}
+
+/**
  * Returns the highest-privilege role name the user holds in a given space,
  * determined by the role with the most permissions.
  * Returns null if the user has no role in the space.
@@ -259,6 +327,25 @@ export async function getUserAccessibleSpaces(userId: string): Promise<string[]>
 
   await setCache(cacheKey, spaceKeys);
   return spaceKeys;
+}
+
+/**
+ * Request-scoped wrapper around `getUserAccessibleSpaces`. Callers that run
+ * inside a Fastify request (entered via `enterRbacScope` from the auth plugin)
+ * pay at most one resolver hit per request, regardless of how many retrieval
+ * paths consult the readable-space set. Outside a scope (workers, tests that
+ * do not opt in) this falls through to the normal resolver with no change in
+ * behaviour.
+ *
+ * Signature matches `getUserAccessibleSpaces` exactly so call sites can swap
+ * the import without touching the call site.
+ */
+export async function getUserAccessibleSpacesMemoized(userId: string): Promise<string[]> {
+  const scoped = getScopedSpaces(userId);
+  if (scoped) return scoped;
+  const spaces = await getUserAccessibleSpaces(userId);
+  setScopedSpaces(spaces);
+  return spaces;
 }
 
 /**

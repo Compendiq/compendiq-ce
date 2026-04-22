@@ -1,5 +1,6 @@
 import { query } from '../../../core/db/postgres.js';
-import { chat } from '../../llm/services/ollama-service.js';
+import { resolveUsecase } from '../../llm/services/llm-provider-resolver.js';
+import { chat } from '../../llm/services/openai-compatible-client.js';
 import { htmlToMarkdown } from '../../../core/services/content-converter.js';
 import { sanitizeLlmInput } from '../../../core/utils/sanitize-llm-input.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
@@ -144,7 +145,8 @@ ${sanitized1}
 ## Version ${v2} (Title: "${version2.title}")
 ${sanitized2}`;
 
-  return chat(model, [
+  const { config, model: resolvedModel } = await resolveUsecase('chat');
+  return chat(config, model || resolvedModel, [
     { role: 'system', content: systemPrompt },
     { role: 'user', content: userPrompt },
   ]);

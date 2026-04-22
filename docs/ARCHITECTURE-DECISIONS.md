@@ -842,35 +842,69 @@ const DrawioDiagram = Node.create({
 ### Context
 The app needs several background tasks: Confluence sync, embedding generation, article quality analysis, and auto-summarization. Fastify has no built-in job scheduler.
 
-### Decision: **Simple `setInterval` with lock flags**
+### Decision: **BullMQ (Redis-backed) primary; legacy `setInterval` behind `USE_BULLMQ=false`**
 
-All four workers follow the same pattern: `setInterval` with an in-memory lock flag to prevent concurrent execution, configurable interval and batch size via env vars, and a 30-second delayed initial batch on startup.
+All recurring background work runs on BullMQ queues, registered in `backend/src/core/services/queue-service.ts`. Each queue gets a dedicated `Worker` with its own concurrency, and a repeatable-job scheduler drives it at a configurable cadence. A feature flag (`USE_BULLMQ`, default `true`) gates the behaviour: setting `USE_BULLMQ=false` falls back to the legacy `setInterval` code path, which remains in tree as a single-process escape hatch for dev environments where Redis is unavailable.
 
 ```typescript
-// In index.ts after server start
-let syncRunning = false;
-setInterval(async () => {
-  if (syncRunning) return;
-  syncRunning = true;
-  try {
-    await syncService.runForAllUsers();
-    await embeddingService.processAllDirtyPages();
-  } finally {
-    syncRunning = false;
-  }
-}, SYNC_INTERVAL_MS);
+// queue-service.ts (excerpt)
+registerWorkerDef({
+  queueName: 'sync',
+  concurrency: 3,
+  repeatPattern: { every: syncInterval * 60 * 1000 },
+  processor: async () => {
+    const { runScheduledSync } = await import(
+      '../../domains/confluence/services/sync-service.js'
+    );
+    const result = await runScheduledSync();
+    return `Synced ${result} users`;
+  },
+});
 ```
 
-#### Workers
+#### Queue inventory
+
+| Queue | Concurrency | Schedule | Purpose |
+|-------|-------------|----------|---------|
+| `sync` | 3 | `SYNC_INTERVAL_MIN` (15 min) | Confluence delta sync |
+| `quality` | 2 | `QUALITY_CHECK_INTERVAL_MINUTES` (60 min) | Quality scoring batch |
+| `summary` | 2 | `SUMMARY_CHECK_INTERVAL_MINUTES` (60 min) | Summary generation batch |
+| `maintenance` | 1 | `TOKEN_CLEANUP_INTERVAL_HOURS` (24 h) + 24 h data-retention | Token cleanup + retention |
+| `reembed-all` | 1 | on-demand (#257) | One-shot reembed-all run, admin-triggered |
+| `analytics-aggregation` | — | registered-only | Reserved for EE analytics workers |
+
+Worker definitions live in `registerAllWorkers()` (`queue-service.ts:337–429`). Job history is persisted to the `job_history` table on every completion / failure (`queue-service.ts:63–81`).
+
+#### Why BullMQ over the old `setInterval`
+
+- **Multi-process safety.** The embedding path uses a Redis SET-NX lock (`redis-cache.ts:55–71`); PR #261 adds per-user lock visibility. In-memory `let running = false` flags don't generalise.
+- **Job history and observability.** BullMQ's `Worker` events + `recordJobHistory` sink give admins a real audit trail; dashboard consumes via `getQueueMetrics()`.
+- **On-demand jobs.** The `reembed-all` queue (#257) is a one-shot job admin UI triggers via `enqueueJob('reembed-all', …)` and polls via `getJobStatus(jobId)`. `setInterval` can't express "run once, now, track progress".
+- **Feature-flag escape hatch.** `USE_BULLMQ=false` keeps the legacy path alive for envs without Redis.
+
+#### Superseded rationale (preserved for audit trail)
+
+The original ADR argued for `setInterval`:
+
+> *4-15 users, ~1000 pages total. A simple interval is sufficient.*
+> *No distributed workers needed (single backend instance).*
+> *Redis-based job queues add complexity for zero benefit at this scale.*
+
+That argument no longer holds as of issue #256 (multi-LLM-provider) and #257 (admin-triggered reembed-all). On-demand jobs, multi-provider fan-out, and per-user lock visibility can't be absorbed without re-inventing a queue. Paragraphs retained so the decision trail stays auditable.
+
+#### Legacy worker inventory (USE_BULLMQ=false fallback)
 
 | Worker | Interval | Batch Size | Model Env Var | Retry Limit |
 |--------|----------|------------|---------------|-------------|
 | Sync | `SYNC_INTERVAL_MINUTES` (15) | All changed pages | N/A | N/A |
 | Embedding | After sync | All dirty pages | `EMBEDDING_MODEL` | N/A |
+| Re-embed-all (#257) | On-demand via `POST /api/admin/embedding/reembed` | All non-folder pages | `EMBEDDING_MODEL` | No automatic retry (fixed `jobId='reembed-all'` collapses concurrent POSTs; admin can re-trigger after completion) |
 | Quality Analysis | `QUALITY_CHECK_INTERVAL_MINUTES` (60) | `QUALITY_BATCH_SIZE` (5) | `QUALITY_MODEL` → `DEFAULT_LLM_MODEL` → `qwen3:4b` | 3 (`quality_retry_count`) |
 | Summary | `SUMMARY_CHECK_INTERVAL_MINUTES` (60) | `SUMMARY_BATCH_SIZE` (5) | `SUMMARY_MODEL` → `DEFAULT_LLM_MODEL` | 3 (`summary_retry_count`) |
 
-#### Worker Lifecycle
+#### Legacy worker lifecycle (USE_BULLMQ=false fallback)
+
+Describes the `setInterval` path only; the primary BullMQ path is driven by the repeatable-job scheduler and `Worker` events documented above.
 
 1. **Startup**: `startXxxWorker()` called from `index.ts`, registers `setInterval`
 2. **Initial batch**: Runs 30 seconds after startup via `triggerXxxBatch()` (lock-guarded)
@@ -885,11 +919,6 @@ Scores articles across 6 dimensions (overall, completeness, clarity, structure, 
 #### Summary Worker
 
 Generates plain-text and HTML summaries by sending article content to the LLM. Detects content changes via SHA-256 hash comparison (using PostgreSQL built-in `sha256()`, no pgcrypto extension needed). Status: `pending → summarizing → summarized | failed | skipped`.
-
-**Why not bullmq/pg-boss?**
-- 4-15 users, ~1000 pages total. A simple interval is sufficient.
-- No distributed workers needed (single backend instance).
-- Redis-based job queues add complexity for zero benefit at this scale.
 
 **Crash recovery**: On restart, all status flags and `embedding_dirty` markers are still set in PostgreSQL. The next interval picks them up automatically. No work is lost. Failed pages retry up to 3 times before being left in `failed` state.
 
@@ -1046,6 +1075,58 @@ The app was originally a Confluence-only cache — every article required a `con
 
 ---
 
+## ADR-021: Multi-LLM-Provider Configuration
+
+### Context
+Until this ADR the app supported exactly two LLM backends selected by the `LLM_PROVIDER` env var (`ollama` | `openai`) with the credentials and model name stored as scalar rows in `admin_settings`. Operators who wanted to point different use-cases (chat, summary, quality, auto-tag, embedding) at different backends had no way to express that without editing the source. The design spec at `docs/superpowers/specs/2026-04-20-multi-llm-providers-design.md` captures the full requirements gathering.
+
+### Decision: **`llm_providers` table + per-use-case assignments + OpenAI-compatible client everywhere**
+
+**Providers are rows, not env vars**: The new `llm_providers` table (migration 054) stores one row per configured upstream endpoint (`id`, `name`, `base_url`, `api_key` (AES-256-GCM encrypted), `auth_type`, `verify_ssl`, `default_model`, `is_default`). Admins CRUD these in Settings → LLM. Ollama is just an OpenAI-compatible provider whose base URL points at the local Ollama server — no separate client library.
+
+**Per-use-case assignments**: The new `llm_usecase_assignments` table maps each of `chat | summary | quality | auto_tag | embedding` to a `(provider_id, model)` pair. Either field can be `NULL` to inherit from the provider's default or the globally-default provider. The resolver (`llm-provider-resolver.ts`) combines both inheritance paths in a single cached lookup.
+
+**Unified client**: `openai-compatible-client.ts` replaces both `ollama-service.ts` and `openai-service.ts`. It queues requests (`LLM_CONCURRENCY`) and wraps calls in per-provider circuit breakers. Rate-limit and retry behavior is per-provider, not per-call-site.
+
+**Embedding dimension safety**: Changing the embedding model to one that returns a different vector length requires an `ALTER TABLE ... TYPE vector(N)` plus `CREATE INDEX ... USING hnsw (embedding vector_cosine_ops)` — a two-step confirmation banner in the UI drives a dedicated `/admin/embedding/probe` + `/admin/embedding/reembed {newDimensions}` flow.
+
+**First-boot seed**: `llm-provider-bootstrap.ts` seeds one row from legacy env vars (`OLLAMA_BASE_URL`, `OPENAI_BASE_URL`, …) when `llm_providers` is empty. On subsequent boots the env vars are ignored.
+
+### Alternatives Considered
+1. **Keep two-slot `llm_provider='ollama'|'openai'` enum** — rejected because it blocks multi-endpoint deployments (e.g. production chat + a sandboxed summary model on a GPU host).
+2. **Multiple concrete clients (one per provider family)** — rejected because every major provider exposes an OpenAI-compatible API; maintaining three code paths triples the test surface for no gain.
+3. **Resolver on every call-site** — rejected; the resolver is one function in one service, queued requests share a client instance, and per-provider circuit breakers live inside the client.
+
+### Consequences
+- Every LLM route now calls `resolveUsecase(usecase)` instead of reading `admin_settings.llm_provider`; the resolver cache is busted on provider writes via `llm-cache-bus.ts`.
+- The legacy `llmProvider`, `ollamaModel`, `openaiModel`, `openaiBaseUrl`, `openaiApiKey`, `embeddingModel` fields were removed from the `admin_settings` row (migration 054 + `AdminSettings` contract in `packages/contracts`).
+- Deleting a provider that's assigned to any use-case returns HTTP 409. The default provider cannot be deleted.
+- Embedding dimension changes are irreversibly destructive (TRUNCATE `page_embeddings` + `ALTER TABLE` + rebuild HNSW); the UI requires explicit confirmation.
+- Frontend settings page uses three new components: `ProviderListSection`, `UsecaseAssignmentsSection`, `EmbeddingReembedBanner`, composed from `LlmTab.tsx`.
+
+---
+
+## ADR-022: RAG retrieval honours per-user space permissions
+
+**Date:** 2026-04-21
+**Status:** Accepted
+**Context:** Confluence instances can host spaces with restricted read access. When multiple users share a Compendiq instance, RAG must not surface a chunk from a space the querying user cannot read in Confluence, even if a different user on the same instance synced that space.
+
+**Decision:** Enforce per-user space permissions as a **post-filter** on both vector (pgvector HNSW) and keyword (PostgreSQL FTS) candidate sets, before reciprocal-rank fusion. The allowed space set is resolved from `space_role_assignments` + `group_memberships` via `rbac-service.getUserAccessibleSpaces(userId)` and memoised for the lifetime of the request via `AsyncLocalStorage` so downstream callers pay a single DB round-trip regardless of how many retrieval paths execute per request.
+
+Standalone (non-Confluence) articles are filtered by the same visibility rules already enforced in the knowledge-search route: `shared` articles are visible to all authenticated users; `private` articles are visible only to their creator.
+
+**Why post-filter, not query-time HNSW index filter:** pgvector HNSW has a selectivity penalty when the filter column is sparse; adding `space_key = ANY(...)` as an ORDER-BY-time predicate would force oversampled top-K per call. Post-filter with candidate overfetch is simpler, keeps the vector index unconditioned on per-user state, and is adequate while per-user readable sets stay small (typically < 50 spaces per user in observed deployments).
+
+**Scope boundary (CE-only):** This ADR covers space-level RBAC enforcement. Per-space **per-user ACL** (access-control-entries with custom permissions per page) is gated behind the Enterprise Edition `ENTERPRISE_FEATURES.ADVANCED_RBAC` flag and is not covered here; see the v0.4 roadmap.
+
+**Consequences:**
+- Any new **RAG retrieval** path MUST use `getUserAccessibleSpacesMemoized` (not the raw resolver) to inherit the request-scoped cache. Non-retrieval callers (admin tooling, sync workers, one-shot operations that run outside an authenticated HTTP request scope where `AsyncLocalStorage` has no context) continue to call `getUserAccessibleSpaces` directly — memoisation has no benefit there.
+- RBAC mutation paths MUST invalidate the Redis RBAC cache (`invalidateRbacCache(userId)`) so the next request sees the new ACL within the 60-second global TTL window.
+- Integration test `backend/src/domains/llm/services/rag-service.integration.test.ts` is the regression guard.
+
+---
+
 ## Summary of All Decisions
 
 | # | Decision | Choice | Key Rationale |
@@ -1070,3 +1151,5 @@ The app was originally a Confluence-only cache — every article required a `con
 | 018 | Draw.io Image Storage | Local filesystem cache + Docker volume | Fast, no Confluence dependency for viewing |
 | 019 | Admin Role & Re-embed | Simple role column, first user is admin | Protects destructive re-embed operation |
 | 020 | Standalone KB Articles | Shared `pages` table + `source` discriminator + universal SERIAL FK | All features work on standalone articles; no dual-identifier problem |
+| 021 | Multi-LLM-Provider | `llm_providers` table + per-use-case assignments + one OpenAI-compatible client | Supports multi-endpoint deployments; no triplication of client code |
+| 022 | RAG Permission Enforcement | Post-filter retrieval by RBAC-readable spaces + request-scoped AsyncLocalStorage cache | Prevents cross-user leakage in shared deployments; single resolver hit per request |

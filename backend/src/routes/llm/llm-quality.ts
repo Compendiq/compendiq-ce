@@ -1,9 +1,11 @@
 import { FastifyInstance } from 'fastify';
-import { getSystemPrompt } from '../../domains/llm/services/ollama-service.js';
-import { providerStreamChat } from '../../domains/llm/services/llm-provider.js';
+import { getSystemPrompt } from '../../domains/llm/services/prompts.js';
+import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
+import { streamChat } from '../../domains/llm/services/openai-compatible-client.js';
 import { LlmCache, buildLlmCacheKey } from '../../domains/llm/services/llm-cache.js';
 import { AnalyzeQualityRequestSchema } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
+import { logger } from '../../core/utils/logger.js';
 import {
   assembleContextIfNeeded,
   checkCacheWithLock,
@@ -13,6 +15,7 @@ import {
   LLM_STREAM_RATE_LIMIT,
   MAX_INPUT_LENGTH,
 } from './_helpers.js';
+import { acquireStreamSlot } from '../../core/services/sse-stream-limiter.js';
 
 export async function llmQualityRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -21,6 +24,17 @@ export async function llmQualityRoutes(fastify: FastifyInstance) {
 
   // POST /api/llm/analyze-quality - stream article quality analysis
   fastify.post('/llm/analyze-quality', LLM_STREAM_RATE_LIMIT, async (request, reply) => {
+    // Per-user concurrent SSE-stream cap (#268). Must fire BEFORE reply.hijack()
+    // so rejections can be returned as a normal JSON 429.
+    const slot = await acquireStreamSlot(request.userId);
+    if (!slot.acquired) {
+      return reply.code(429).send({
+        error: 'too_many_concurrent_streams',
+        message: 'You have reached the per-user concurrent AI-stream limit. Close an existing stream and try again.',
+      });
+    }
+
+    try {
     const body = AnalyzeQualityRequestSchema.parse(request.body);
     const { content, model, includeSubPages } = body;
     const userId = request.userId;
@@ -39,8 +53,16 @@ export async function llmQualityRoutes(fastify: FastifyInstance) {
 
     const systemPrompt = getSystemPrompt('analyze_quality') + multiPageSuffix;
 
+    // Resolve the `quality` use-case up-front so the cache key can include the
+    // resolved provider+model. Queue + per-provider breakers wrap streamChat().
+    const { config: qualityConfig, model: resolvedModel } = await resolveUsecase('quality');
+    logger.debug(
+      { userId, bodyModel: model, providerId: qualityConfig.providerId, resolvedModel },
+      'Resolved quality usecase assignment',
+    );
+
     // Check LLM cache with stampede protection
-    const cacheKey = buildLlmCacheKey(model, systemPrompt, sanitized);
+    const cacheKey = buildLlmCacheKey(resolvedModel, systemPrompt, sanitized, qualityConfig.providerId);
     const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
       sendCachedSSE(reply, cached.content);
@@ -48,15 +70,18 @@ export async function llmQualityRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      // Resolve per-user LLM provider and stream
-      const generator = providerStreamChat(userId, model, [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: sanitized },
-      ]);
+      const qualityMessages = [
+        { role: 'system' as const, content: systemPrompt },
+        { role: 'user' as const, content: sanitized },
+      ];
+      const generator = streamChat(qualityConfig, resolvedModel, qualityMessages);
 
       await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
     } finally {
       if (lockAcquired) await llmCache.releaseLock(cacheKey);
+    }
+    } finally {
+      await slot.release();
     }
   });
 }

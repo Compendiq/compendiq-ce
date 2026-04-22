@@ -11,6 +11,8 @@ import {
   acquireEmbeddingLock,
   releaseEmbeddingLock,
   isEmbeddingLocked,
+  listActiveEmbeddingLocks,
+  forceReleaseEmbeddingLock,
   recordAttachmentFailure,
   getAttachmentFailureCount,
   clearAttachmentFailures,
@@ -35,6 +37,11 @@ function createMockRedisClient() {
     ping: vi.fn(),
     incr: vi.fn(),
     expire: vi.fn(),
+    pTTL: vi.fn(),
+    sMembers: vi.fn(),
+    sAdd: vi.fn(),
+    sRem: vi.fn(),
+    multi: vi.fn(),
   };
 }
 
@@ -68,22 +75,42 @@ describe('redis-cache embedding lock', () => {
   });
 
   describe('acquireEmbeddingLock', () => {
-    it('should return a lock identifier when lock is acquired (SET NX returns OK)', async () => {
-      mockRedis.set.mockResolvedValue('OK');
+    it('should return the lock identifier when Lua script returns it (acquired)', async () => {
+      // The acquire Lua script returns ARGV[1] (the lockId) on success.
+      mockRedis.eval.mockImplementation(
+        async (_script: string, opts: { arguments: string[] }) => opts.arguments[0],
+      );
 
       const lockId = await acquireEmbeddingLock('user-42');
 
       expect(lockId).toBeTypeOf('string');
       expect(lockId).toBeTruthy();
-      expect(mockRedis.set).toHaveBeenCalledWith(
-        'embedding:lock:user-42',
-        expect.any(String),
-        { NX: true, EX: 3600 },
-      );
     });
 
-    it('should return null when lock is already held (SET NX returns null)', async () => {
-      mockRedis.set.mockResolvedValue(null);
+    it('atomically adds userId to embedding:locks:active on success (plan RED #1)', async () => {
+      mockRedis.eval.mockImplementation(
+        async (_script: string, opts: { arguments: string[] }) => opts.arguments[0],
+      );
+
+      await acquireEmbeddingLock('user-a');
+
+      expect(mockRedis.eval).toHaveBeenCalledWith(
+        expect.stringContaining('sadd'),
+        expect.objectContaining({
+          keys: ['embedding:lock:user-a', 'embedding:locks:active'],
+          // lockId, userId, ttl
+          arguments: expect.arrayContaining(['user-a', '3600']),
+        }),
+      );
+      // Lua script must be gated on SET NX so SADD does not run if already locked.
+      const script = mockRedis.eval.mock.calls[0][0] as string;
+      expect(script.toLowerCase()).toContain('set');
+      expect(script.toLowerCase()).toContain('nx');
+      expect(script.toLowerCase()).toContain('sadd');
+    });
+
+    it('should return null when lock is already held (Lua returns nil) — plan RED #1b', async () => {
+      mockRedis.eval.mockResolvedValue(null);
 
       const lockId = await acquireEmbeddingLock('user-42');
 
@@ -91,32 +118,38 @@ describe('redis-cache embedding lock', () => {
     });
 
     it('should return null when Redis throws', async () => {
-      mockRedis.set.mockRejectedValue(new Error('Redis connection refused'));
+      mockRedis.eval.mockRejectedValue(new Error('Redis connection refused'));
 
       const lockId = await acquireEmbeddingLock('user-42');
 
       expect(lockId).toBeNull();
     });
 
-    it('should use 1 hour TTL for safety', async () => {
-      mockRedis.set.mockResolvedValue('OK');
+    it('should pass 1 hour TTL (3600 s) to the Lua script', async () => {
+      mockRedis.eval.mockImplementation(
+        async (_script: string, opts: { arguments: string[] }) => opts.arguments[0],
+      );
 
       await acquireEmbeddingLock('user-99');
 
-      const setCall = mockRedis.set.mock.calls[0];
-      expect(setCall[2]).toEqual({ NX: true, EX: 3600 });
+      const call = mockRedis.eval.mock.calls[0];
+      const opts = call[1] as { arguments: string[] };
+      // arguments = [lockId, userId, ttl]
+      expect(opts.arguments[2]).toBe('3600');
     });
 
-    it('should store a UUID as lock value (not PID)', async () => {
-      mockRedis.set.mockResolvedValue('OK');
+    it('should pass a UUID as lockId', async () => {
+      mockRedis.eval.mockImplementation(
+        async (_script: string, opts: { arguments: string[] }) => opts.arguments[0],
+      );
 
       const lockId = await acquireEmbeddingLock('user-1');
 
-      const setCall = mockRedis.set.mock.calls[0];
-      // Lock value stored in Redis should match the returned identifier
-      expect(setCall[1]).toBe(lockId);
-      // Should be a UUID format
-      expect(setCall[1]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+      const call = mockRedis.eval.mock.calls[0];
+      const opts = call[1] as { arguments: string[] };
+      // The returned lockId comes from ARGV[1]; it is the argument passed to the script.
+      expect(opts.arguments[0]).toBe(lockId);
+      expect(opts.arguments[0]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
     });
 
     it('should return a lock identifier when Redis client is not available', async () => {
@@ -131,19 +164,20 @@ describe('redis-cache embedding lock', () => {
   });
 
   describe('releaseEmbeddingLock', () => {
-    it('should use Lua script to verify ownership before deleting', async () => {
+    it('uses Lua script that verifies ownership and SREMs the active set atomically (plan RED #2)', async () => {
       mockRedis.eval.mockResolvedValue(1);
       const lockId = 'test-lock-id-123';
 
       await releaseEmbeddingLock('user-42', lockId);
 
-      expect(mockRedis.eval).toHaveBeenCalledWith(
-        expect.stringContaining('redis.call("get", KEYS[1]) == ARGV[1]'),
-        {
-          keys: ['embedding:lock:user-42'],
-          arguments: [lockId],
-        },
-      );
+      expect(mockRedis.eval).toHaveBeenCalledTimes(1);
+      const [script, opts] = mockRedis.eval.mock.calls[0];
+      expect(script).toEqual(expect.stringContaining('redis.call("get", KEYS[1]) == ARGV[1]'));
+      expect((script as string).toLowerCase()).toContain('srem');
+      expect(opts).toEqual({
+        keys: ['embedding:lock:user-42', 'embedding:locks:active'],
+        arguments: [lockId, 'user-42'],
+      });
     });
 
     it('should not call del directly (uses Lua script instead)', async () => {
@@ -201,6 +235,165 @@ describe('redis-cache embedding lock', () => {
       const locked = await isEmbeddingLocked('user-1');
 
       expect(locked).toBe(false);
+    });
+  });
+
+  // ─── Issue #265 — SMEMBERS-based listing with lazy self-heal ─────────────
+  describe('listActiveEmbeddingLocks', () => {
+    /**
+     * Build a chainable MULTI mock whose `exec()` resolves to `replies`,
+     * interleaved [GET, PTTL, GET, PTTL, ...] — matching the implementation
+     * order for each SMEMBERS entry.
+     */
+    function mockMulti(replies: Array<string | number | null>) {
+      const chain = {
+        get: vi.fn().mockReturnThis(),
+        pTTL: vi.fn().mockReturnThis(),
+        exec: vi.fn().mockResolvedValue(replies),
+      };
+      mockRedis.multi.mockReturnValue(chain);
+      return chain;
+    }
+
+    it('returns empty array when Redis client is not available', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      setRedisClient(null as any);
+      const locks = await listActiveEmbeddingLocks();
+      expect(locks).toEqual([]);
+    });
+
+    it('returns empty array when the active-locks set is empty (SMEMBERS → [])', async () => {
+      mockRedis.sMembers.mockResolvedValueOnce([]);
+      const locks = await listActiveEmbeddingLocks();
+      expect(locks).toEqual([]);
+      expect(mockRedis.sMembers).toHaveBeenCalledWith('embedding:locks:active');
+      // Must NOT fall back to SCAN.
+      expect(mockRedis.scan).not.toHaveBeenCalled();
+    });
+
+    it('returns EmbeddingLockSnapshot[] for each member (parity with SCAN version) — plan RED #3', async () => {
+      mockRedis.sMembers.mockResolvedValueOnce(['alice', 'bob']);
+      mockMulti(['uuid-alice', 3_000_000, 'uuid-bob', 2_500_000]);
+
+      const locks = await listActiveEmbeddingLocks();
+
+      // Shape parity: same EmbeddingLockSnapshot[] as the old SCAN version.
+      expect(locks).toEqual(
+        expect.arrayContaining([
+          { userId: 'alice', holderEpoch: 'uuid-alice', ttlRemainingMs: 3_000_000 },
+          { userId: 'bob', holderEpoch: 'uuid-bob', ttlRemainingMs: 2_500_000 },
+        ]),
+      );
+      expect(locks).toHaveLength(2);
+    });
+
+    it('self-heals a stale set member (key expired, SREM never ran) — plan RED #4', async () => {
+      mockRedis.sMembers.mockResolvedValueOnce(['alice', 'stale-user']);
+      // Replies interleaved [GET, PTTL, GET, PTTL]. `null` GET = expired key.
+      mockMulti(['uuid-alice', 3_000_000, null, -2]);
+      mockRedis.sRem.mockResolvedValue(1);
+
+      const locks = await listActiveEmbeddingLocks();
+
+      // Snapshot returned synchronously includes the stale entry with parity -2 TTL.
+      expect(locks).toContainEqual({ userId: 'alice', holderEpoch: 'uuid-alice', ttlRemainingMs: 3_000_000 });
+      expect(locks).toContainEqual({ userId: 'stale-user', holderEpoch: '', ttlRemainingMs: -2 });
+
+      // Lazy async self-heal fires SREM for the stale member(s) — not awaited, but
+      // the microtask is scheduled synchronously by the promise chain. Yield once.
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(mockRedis.sRem).toHaveBeenCalledWith('embedding:locks:active', ['stale-user']);
+    });
+
+    it('does NOT call SREM when no stale members are present', async () => {
+      mockRedis.sMembers.mockResolvedValueOnce(['alice']);
+      mockMulti(['uuid-alice', 3_000_000]);
+      mockRedis.sRem.mockResolvedValue(0);
+
+      await listActiveEmbeddingLocks();
+      await Promise.resolve();
+
+      expect(mockRedis.sRem).not.toHaveBeenCalled();
+    });
+
+    it('returns empty array when SMEMBERS throws', async () => {
+      mockRedis.sMembers.mockRejectedValue(new Error('Redis down'));
+      const locks = await listActiveEmbeddingLocks();
+      expect(locks).toEqual([]);
+    });
+
+    it('returns empty array when MULTI.exec throws', async () => {
+      mockRedis.sMembers.mockResolvedValueOnce(['alice']);
+      const chain = {
+        get: vi.fn().mockReturnThis(),
+        pTTL: vi.fn().mockReturnThis(),
+        exec: vi.fn().mockRejectedValue(new Error('Pipeline failed')),
+      };
+      mockRedis.multi.mockReturnValue(chain);
+
+      const locks = await listActiveEmbeddingLocks();
+      expect(locks).toEqual([]);
+    });
+  });
+
+  // ─── Issue #265 — forceReleaseEmbeddingLock via Lua (key + SREM atomic) ───
+  describe('forceReleaseEmbeddingLock', () => {
+    it('returns { released: false, previousHolderEpoch: null } when Redis is unavailable', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      setRedisClient(null as any);
+      const result = await forceReleaseEmbeddingLock('alice');
+      expect(result).toEqual({ released: false, previousHolderEpoch: null });
+    });
+
+    it('returns { released: true, previousHolderEpoch: "<uuid>" } when the key existed', async () => {
+      // Lua returns the previous holder epoch on successful DEL.
+      mockRedis.eval.mockResolvedValueOnce('uuid-alice');
+
+      const result = await forceReleaseEmbeddingLock('alice');
+
+      expect(result).toEqual({ released: true, previousHolderEpoch: 'uuid-alice' });
+      expect(mockRedis.eval).toHaveBeenCalledWith(
+        expect.stringContaining('srem'),
+        expect.objectContaining({
+          keys: ['embedding:lock:alice', 'embedding:locks:active'],
+          arguments: ['alice'],
+        }),
+      );
+    });
+
+    it('SREMs the active set even when the key was already gone (plan RED #5, idempotent)', async () => {
+      // Lua returns nil when key did not exist; SREM still runs to scrub drift.
+      mockRedis.eval.mockResolvedValueOnce(null);
+
+      const result = await forceReleaseEmbeddingLock('ghost');
+
+      expect(result).toEqual({ released: false, previousHolderEpoch: null });
+      expect(mockRedis.eval).toHaveBeenCalledWith(
+        expect.stringContaining('srem'),
+        expect.objectContaining({
+          keys: ['embedding:lock:ghost', 'embedding:locks:active'],
+          arguments: ['ghost'],
+        }),
+      );
+    });
+
+    it('returns { released: false, previousHolderEpoch: null } when Redis throws', async () => {
+      mockRedis.eval.mockRejectedValueOnce(new Error('Redis down'));
+
+      const result = await forceReleaseEmbeddingLock('alice');
+
+      expect(result).toEqual({ released: false, previousHolderEpoch: null });
+    });
+
+    it('uses the embedding:lock:<userId> key pattern', async () => {
+      mockRedis.eval.mockResolvedValueOnce('uuid');
+
+      await forceReleaseEmbeddingLock('user-with-hyphens');
+
+      const call = mockRedis.eval.mock.calls[0];
+      const opts = call[1] as { keys: string[] };
+      expect(opts.keys[0]).toBe('embedding:lock:user-with-hyphens');
     });
   });
 
@@ -319,19 +512,28 @@ describe('redis-cache embedding lock', () => {
   });
 
   describe('lock key format', () => {
-    it('should use embedding:lock:<userId> format', async () => {
-      mockRedis.set.mockResolvedValue('OK');
+    it('should use embedding:lock:<userId> format alongside embedding:locks:active', async () => {
+      mockRedis.eval.mockImplementation(
+        async (_script: string, opts: { arguments: string[] }) => opts.arguments[0],
+      );
       mockRedis.exists.mockResolvedValue(1);
-      mockRedis.eval.mockResolvedValue(1);
 
       const lockId = await acquireEmbeddingLock('test-user');
       await isEmbeddingLocked('test-user');
       await releaseEmbeddingLock('test-user', lockId!);
 
-      expect(mockRedis.set.mock.calls[0][0]).toBe('embedding:lock:test-user');
-      expect(mockRedis.exists.mock.calls[0][0]).toBe('embedding:lock:test-user');
+      // Acquire eval — call 0
       expect(mockRedis.eval.mock.calls[0][1]).toEqual(
-        expect.objectContaining({ keys: ['embedding:lock:test-user'] }),
+        expect.objectContaining({
+          keys: ['embedding:lock:test-user', 'embedding:locks:active'],
+        }),
+      );
+      expect(mockRedis.exists.mock.calls[0][0]).toBe('embedding:lock:test-user');
+      // Release eval — call 1
+      expect(mockRedis.eval.mock.calls[1][1]).toEqual(
+        expect.objectContaining({
+          keys: ['embedding:lock:test-user', 'embedding:locks:active'],
+        }),
       );
     });
   });

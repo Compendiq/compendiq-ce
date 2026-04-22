@@ -1,6 +1,9 @@
 import { query, getVectorPool } from '../../../core/db/postgres.js';
-import { providerGenerateEmbedding } from './llm-provider.js';
-import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
+import { resolveUsecase } from './llm-provider-resolver.js';
+import { generateEmbedding } from './openai-compatible-client.js';
+// Use the request-scoped memoised wrapper so a single hybrid request resolves
+// the readable-space set once across vectorSearch + keywordSearch. See ADR-022.
+import { getUserAccessibleSpacesMemoized as getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { CircuitBreakerOpenError } from '../../../core/services/circuit-breaker.js';
 import { getFtsLanguage } from '../../../core/services/fts-language.js';
 import pgvector from 'pgvector';
@@ -216,8 +219,10 @@ export async function hybridSearch(
   const keywordPromise = keywordSearch(userId, question);
 
   try {
-    // Generate question embedding using the user's configured provider
-    const embeddings = await providerGenerateEmbedding(userId, question);
+    // Resolve the `embedding` use-case to the provider+model that generated
+    // the stored embeddings, so query-time embedding stays compatible.
+    const { config, model } = await resolveUsecase('embedding');
+    const embeddings = await generateEmbedding(config, model, question);
     const questionEmbedding = embeddings[0]!;
     vectorResults = await vectorSearch(userId, questionEmbedding);
   } catch (err) {

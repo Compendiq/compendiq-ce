@@ -15,11 +15,13 @@ import {
   generateRefreshToken,
 } from '../../core/plugins/auth.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
-import { getProvider } from '../../domains/llm/services/ollama-service.js';
-import { OllamaProvider } from '../../domains/llm/services/ollama-provider.js';
-import { getSharedLlmSettings } from '../../core/services/admin-settings-service.js';
+import {
+  checkHealth as providerCheckHealth,
+  listModels as providerListModels,
+  type ProviderConfig,
+} from '../../domains/llm/services/openai-compatible-client.js';
+import { decryptPat } from '../../core/utils/crypto.js';
 import { logger } from '../../core/utils/logger.js';
-import type { LlmProviderType } from '../../domains/llm/services/llm-provider.js';
 
 const SALT_ROUNDS = 12;
 const REFRESH_COOKIE = 'kb_refresh';
@@ -68,18 +70,36 @@ export async function setupRoutes(fastify: FastifyInstance) {
     const adminExists = parseInt(adminResult.rows[0]?.count ?? '0', 10) > 0;
     const confluenceConnected = parseInt(confluenceResult.rows[0]?.count ?? '0', 10) > 0;
 
-    // Check LLM health — best-effort, don't let it fail the whole response
+    // Check LLM health — best-effort, don't let it fail the whole response.
+    // Uses the currently default provider from `llm_providers` (if any).
     let llmConnected = false;
     try {
-      const sharedLlmSettings = await getSharedLlmSettings();
-      const provider = getProvider(sharedLlmSettings.llmProvider);
-      const health = await Promise.race([
-        provider.checkHealth(),
-        new Promise<{ connected: false }>((_, reject) =>
-          setTimeout(() => reject(new Error('timeout')), 5000),
-        ),
-      ]);
-      llmConnected = health.connected;
+      const row = await query<{
+        base_url: string; api_key: string | null;
+        auth_type: 'bearer' | 'none'; verify_ssl: boolean;
+      }>(
+        `SELECT id, base_url, api_key, auth_type, verify_ssl
+         FROM llm_providers WHERE is_default = TRUE LIMIT 1`,
+      );
+      const p = row.rows[0];
+      if (p) {
+        let apiKey: string | null = null;
+        try { apiKey = p.api_key ? decryptPat(p.api_key) : null; } catch { /* treat as no key */ }
+        const cfg: ProviderConfig = {
+          providerId: 'bootstrap',
+          baseUrl: p.base_url,
+          apiKey,
+          authType: p.auth_type,
+          verifySsl: p.verify_ssl,
+        };
+        const health = await Promise.race([
+          providerCheckHealth(cfg),
+          new Promise<{ connected: false }>((_, reject) =>
+            setTimeout(() => reject(new Error('timeout')), 5000),
+          ),
+        ]);
+        llmConnected = health.connected;
+      }
     } catch {
       // llmConnected remains false
     }
@@ -172,55 +192,36 @@ export async function setupRoutes(fastify: FastifyInstance) {
   }, async (request) => {
     const body = LlmTestSchema.parse(request.body);
 
-    const providerType = body.provider as LlmProviderType;
+    // Normalize the base URL to end in /v1 — all providers expose OpenAI-
+    // compatible endpoints under /v1 (Ollama's /v1 shim is also OK).
+    let baseUrl = (body.baseUrl ?? '').replace(/\/+$/, '');
+    if (!baseUrl) {
+      baseUrl = body.provider === 'openai' ? 'https://api.openai.com/v1' : 'http://localhost:11434/v1';
+    }
+    if (!baseUrl.endsWith('/v1')) baseUrl += '/v1';
+
+    const cfg: ProviderConfig = {
+      providerId: 'setup-wizard',
+      baseUrl,
+      apiKey: body.apiKey ?? null,
+      authType: body.apiKey ? 'bearer' : 'none',
+      verifySsl: true,
+    };
 
     try {
-      // Create a temporary provider with the user-provided config so the test
-      // actually validates what the user entered, not the server defaults.
-      let provider;
-      if (providerType === 'ollama' && body.baseUrl) {
-        provider = new OllamaProvider({ host: body.baseUrl });
-      } else if (providerType === 'openai' && (body.baseUrl || body.apiKey)) {
-        // For OpenAI with custom config, test connectivity directly since
-        // OpenAIProvider uses module-level config that can't be overridden.
-        let baseUrl = (body.baseUrl ?? 'https://api.openai.com/v1').replace(/\/+$/, '');
-        if (!baseUrl.endsWith('/v1')) baseUrl += '/v1';
-        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-        if (body.apiKey) headers['Authorization'] = `Bearer ${body.apiKey}`;
-
-        const response = await fetch(`${baseUrl}/models`, {
-          headers,
-          signal: AbortSignal.timeout(10_000),
-        });
-        if (!response.ok) {
-          const text = await response.text();
-          return { success: false, error: `HTTP ${response.status}: ${text.slice(0, 200)}`, models: [] };
-        }
-        const data = (await response.json()) as { data: Array<{ id: string }> };
-        return {
-          success: true,
-          models: (data.data ?? []).map((m) => ({ name: m.id, size: 0 })),
-        };
-      } else {
-        provider = getProvider(providerType);
-      }
-
       const [health, models] = await Promise.all([
-        provider.checkHealth(),
-        provider.listModels().catch(() => []),
+        providerCheckHealth(cfg),
+        providerListModels(cfg).catch(() => []),
       ]);
 
       return {
         success: health.connected,
         error: health.error,
-        models: models.map((m) => ({
-          name: m.name,
-          size: m.size,
-        })),
+        models: models.map((m) => ({ name: m.name, size: 0 })),
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Connection test failed';
-      logger.debug({ err, provider: providerType }, 'LLM connection test failed');
+      logger.debug({ err, provider: body.provider }, 'LLM connection test failed');
       return {
         success: false,
         error: message,

@@ -30,10 +30,13 @@ describe('Sync routes', () => {
     app = Fastify({ logger: false });
     await app.register(sensible);
 
-    app.decorate('authenticate', async (request: { userId: string; username: string; userRole: string }) => {
+    app.decorate('authenticate', async (request: { userId: string; username: string; userRole: string; userCan: (p: string, t?: string) => Promise<boolean> }) => {
       request.userId = 'test-user-id';
       request.username = 'testuser';
       request.userRole = 'user';
+      // Mock userCan — grants all permissions for routes tested here.
+      // Individual tests can override if they need to test denial.
+      request.userCan = async () => true;
     });
 
     await app.register(syncRoutes, { prefix: '/api' });

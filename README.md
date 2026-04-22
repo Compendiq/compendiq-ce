@@ -21,6 +21,7 @@
   <a href="#what-it-does">Features</a> &middot;
   <a href="#architecture">Architecture</a> &middot;
   <a href="docs/USER-GUIDE.md">Docs</a> &middot;
+  <a href="docs/releases/v0.3.0.md">v0.3 release notes</a> &middot;
   <a href="https://github.com/Compendiq/compendiq-ce/discussions">Community</a> &middot;
   <a href="SECURITY.md">Security</a>
 </p>
@@ -121,10 +122,10 @@ Bidirectional sync with XHTML storage format conversion. Round-trip support for 
 | Category | What you get |
 |----------|-------------|
 | **Editor** | TipTap v3 with Vim mode, drag-and-drop blocks, find-and-replace, image/table captions, header numbering, code block language detection, clipboard image paste |
-| **AI** | Multi-provider LLM (Ollama default, or any OpenAI-compatible API), real-time SSE streaming, conversation history, content summarization, knowledge gap detection, duplicate page detection |
+| **AI** | Multi-provider LLM (Ollama default, or any OpenAI-compatible API), real-time SSE streaming, conversation history, content summarization, knowledge gap detection, duplicate page detection, LLM request backpressure, audit hook extension point |
 | **Security** | AES-256-GCM PAT encryption, JWT with refresh token rotation, RBAC with custom roles, OIDC/SSO (Enterprise), rate limiting, SSRF protection, prompt injection guard |
 | **Analytics** | Page views, engagement metrics, search pattern tracking, knowledge graph visualization |
-| **Operations** | PDF import/export, page verification workflow, knowledge requests, audit logging, OpenTelemetry tracing |
+| **Operations** | PDF import/export, page verification workflow, knowledge requests, audit logging, OpenTelemetry tracing, background job queue (BullMQ), email notifications (SMTP), Confluence API rate limiting |
 
 ---
 
@@ -135,10 +136,13 @@ Confluence Data Center (XHTML Storage Format)
     |  REST API v1 (Bearer PAT)
     v
 Backend (Fastify 5 + TypeScript + Node.js 22)
+    |-- Queue Service ........... BullMQ job queues (sync, quality, summary, maintenance)
     |-- Sync Service ............ polls Confluence, stores in PostgreSQL
     |-- Content Converter ....... XHTML <-> HTML <-> Markdown
     |-- Embedding Service ....... chunks text, generates vectors via Ollama
     |-- RAG Service ............. hybrid search (pgvector + FTS + RRF)
+    |-- LLM Queue ............... backpressure + concurrency control for LLM calls
+    |-- Email Service ........... SMTP notifications via Nodemailer
     |-- Redis Cache ............. hot cache with TTL eviction
     v
 Frontend (React 19 + Vite + TailwindCSS 4)
@@ -151,7 +155,7 @@ Frontend (React 19 + Vite + TailwindCSS 4)
 
 | Layer | Technology |
 |-------|-----------|
-| **Backend** | Fastify 5, TypeScript, Node.js 22+ |
+| **Backend** | Fastify 5, TypeScript, Node.js 22+, BullMQ |
 | **Frontend** | React 19, Vite 7, TailwindCSS 4, Radix UI, Zustand, TanStack Query, Framer Motion |
 | **Editor** | TipTap v3 (ProseMirror) |
 | **Database** | PostgreSQL 17 + pgvector |
@@ -159,8 +163,9 @@ Frontend (React 19 + Vite + TailwindCSS 4)
 | **AI/ML** | Ollama (local) or OpenAI-compatible APIs, bge-m3 embeddings (1024 dims) |
 | **Auth** | JWT (jose) + bcrypt + optional OIDC/SSO |
 | **Validation** | Zod schemas shared via @compendiq/contracts |
+| **Job Queue** | BullMQ (Redis-backed), with setInterval fallback |
 | **Testing** | Vitest, Playwright, @testing-library/react |
-| **Infra** | Docker Compose (4 services), multi-stage Dockerfiles, GHCR |
+| **Infra** | Docker Compose (4+ services), multi-stage Dockerfiles, GHCR |
 
 ### Data Flow
 
@@ -252,11 +257,9 @@ All configuration is via environment variables. Key settings:
 |----------|:---:|-------------|
 | `JWT_SECRET` | Yes | JWT signing secret (32+ characters) |
 | `PAT_ENCRYPTION_KEY` | Yes | AES-256-GCM key for Confluence PATs (32+ characters) |
-| `OLLAMA_BASE_URL` | -- | Ollama server URL (default: `http://localhost:11434`) |
-| `EMBEDDING_MODEL` | -- | Embedding model (default: `bge-m3`) |
-| `LLM_PROVIDER` | -- | `ollama` (default) or `openai` |
-| `OPENAI_BASE_URL` | -- | OpenAI-compatible API URL (for Azure, LM Studio, vLLM, etc.) |
-| `OPENAI_API_KEY` | -- | API key when using OpenAI provider |
+| `OLLAMA_BASE_URL` | -- | **Deprecated — seed-only.** Used on fresh install to create the first `llm_providers` row. Configure providers in Settings → LLM after first login. |
+| `OPENAI_BASE_URL` | -- | **Deprecated — seed-only.** Same as above for an OpenAI-compatible endpoint. |
+| `OPENAI_API_KEY` | -- | **Deprecated — seed-only.** API key for the seeded OpenAI row. |
 | `POSTGRES_URL` | -- | PostgreSQL connection string |
 | `REDIS_URL` | -- | Redis connection string |
 
@@ -273,10 +276,9 @@ All configuration is via environment variables. Key settings:
 | `POSTGRES_URL` | `postgresql://kb_user:changeme-postgres@localhost:5432/kb_creator` | Full connection string |
 | `REDIS_PASSWORD` | `changeme-redis` | Redis password |
 | `REDIS_URL` | `redis://:changeme-redis@localhost:6379` | Full Redis connection string |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL |
-| `EMBEDDING_MODEL` | `bge-m3` | Server-wide embedding model (1024 dimensions) |
-| `LLM_PROVIDER` | `ollama` | LLM provider: `ollama` or `openai` |
-| `LLM_BEARER_TOKEN` | -- | Bearer token for authenticated Ollama/LLM proxies |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | **Deprecated — seed-only.** Consulted once on fresh install to create the first `llm_providers` row; ignored afterwards. Configure providers via Settings → LLM. |
+| `LLM_PROVIDER` | — | **Removed.** The two-slot `{ollama, openai}` toggle was replaced by the `llm_providers` table + per-use-case assignments. |
+| `LLM_BEARER_TOKEN` | -- | **Deprecated — seed-only.** Bearer token on the seeded Ollama row. |
 | `LLM_VERIFY_SSL` | `true` | Set to `false` for self-signed LLM certs |
 | `LLM_STREAM_TIMEOUT_MS` | `300000` | Streaming request timeout (ms) |
 | `LLM_CACHE_TTL` | `3600` | Redis TTL for LLM cache (seconds) |

@@ -1246,5 +1246,27 @@ describe('attachment-handler', () => {
         cacheAttachment(client, 'user-1', '///', '/download/x.png', 'x.png'),
       ).rejects.toThrow('Invalid page ID');
     });
+
+    it('rejects pageId that is only dots ("...") — was masked by the old duplicate-in-char-class regex', async () => {
+      // Regression for #230: the previous regex /[/\\..]+/g had a duplicate `.`
+      // in the character class. The behaviour was identical (Zod-unrelated
+      // no-op), but leaving the bug in meant anyone editing the pattern later
+      // could misread intent. After the fix to /[/\\.]+/g, "..." still collapses
+      // to a single "_" which then trims to empty → "Invalid page ID".
+      const client = createMockClient();
+      await expect(
+        cacheAttachment(client, 'user-1', '...', '/download/x.png', 'x.png'),
+      ).rejects.toThrow('Invalid page ID');
+    });
+
+    it('preserves pageIds that contain only safe characters (hyphens, digits)', async () => {
+      // Sanity check: common shapes like "page-123" must pass through unchanged.
+      const client = createMockClient();
+      await expect(
+        cacheAttachment(client, 'user-1', 'page-123', '/download/x.png', 'x.png'),
+      ).resolves.toBeDefined();
+      const mkdirCall = vi.mocked(fs.mkdir).mock.calls[0][0] as string;
+      expect(mkdirCall).toContain('page-123');
+    });
   });
 });

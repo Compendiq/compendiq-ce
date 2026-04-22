@@ -1450,6 +1450,7 @@ Use a private GitHub repository that publishes `@compendiq/enterprise` to GitHub
 | `backend/src/core/enterprise/loader.ts` | Dynamic import loader with caching |
 | `backend/src/core/enterprise/noop.ts` | Community-mode noop stub |
 | `backend/src/core/enterprise/loader.test.ts` | Tests for the loader |
+| `backend/src/domains/llm/services/llm-audit-hook.ts` | LLM audit extension point: `LlmAuditEntry` interface, `emitLlmAudit()` fire-and-forget no-op, `setLlmAuditHook()` for EE registration |
 | `frontend/src/shared/enterprise/types.ts` | EnterpriseUI interface |
 | `frontend/src/shared/enterprise/loader.ts` | Frontend dynamic import loader |
 | `frontend/src/shared/enterprise/context.tsx` | EnterpriseContext provider + hook |

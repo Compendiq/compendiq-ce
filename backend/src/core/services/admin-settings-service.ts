@@ -1,164 +1,78 @@
-import { query, getPool } from '../db/postgres.js';
-import { decryptPat, encryptPat } from '../utils/crypto.js';
+import { query } from '../db/postgres.js';
 
-export type SharedLlmProvider = 'ollama' | 'openai';
-
-export interface SharedLlmSettings {
-  llmProvider: SharedLlmProvider;
-  ollamaModel: string;
-  openaiBaseUrl: string | null;
-  hasOpenaiApiKey: boolean;
-  openaiModel: string | null;
-  embeddingModel: string;
-  embeddingDimensions: number;
-  ftsLanguage: string;
-}
-
-const DEFAULTS: SharedLlmSettings = {
-  llmProvider: 'ollama',
-  ollamaModel: 'qwen3.5',
-  openaiBaseUrl: null,
-  hasOpenaiApiKey: false,
-  openaiModel: null,
-  embeddingModel: process.env.EMBEDDING_MODEL ?? 'bge-m3',
-  embeddingDimensions: parseInt(process.env.EMBEDDING_DIMENSIONS ?? '1024', 10),
-  ftsLanguage: process.env.FTS_LANGUAGE ?? 'simple',
-};
-
-const LLM_SETTING_KEYS = [
-  'llm_provider',
-  'ollama_model',
-  'openai_base_url',
-  'openai_api_key',
-  'openai_model',
-  'embedding_model',
-  'embedding_dimensions',
-  'fts_language',
-] as const;
-
-type AdminSettingKey = (typeof LLM_SETTING_KEYS)[number];
-
-async function getAdminSettingsMap(keys: readonly AdminSettingKey[]): Promise<Record<string, string>> {
-  const result = await query<{ setting_key: string; setting_value: string }>(
-    `SELECT setting_key, setting_value
-     FROM admin_settings
-     WHERE setting_key = ANY($1::text[])`,
-    [keys],
+/**
+ * Returns the embedding vector dimension used by the shared `page_embeddings`
+ * column. Falls back to `EMBEDDING_DIMENSIONS` env (1024 default) when the
+ * `embedding_dimensions` row is unset.
+ *
+ * LLM provider configuration previously lived in this file (getSharedLlmSettings,
+ * upsertUsecaseLlmAssignments, etc.) but now lives in the `llm_providers` +
+ * `llm_usecase_assignments` tables. See `domains/llm/services/llm-provider-resolver.ts`.
+ */
+export async function getEmbeddingDimensions(): Promise<number> {
+  const r = await query<{ setting_value: string }>(
+    `SELECT setting_value FROM admin_settings WHERE setting_key='embedding_dimensions'`,
   );
-
-  const map: Record<string, string> = {};
-  for (const row of result.rows) {
-    map[row.setting_key] = row.setting_value;
+  const v = r.rows[0]?.setting_value;
+  if (v) {
+    const n = parseInt(v, 10);
+    if (Number.isFinite(n) && n > 0) return n;
   }
-  return map;
+  return parseInt(process.env.EMBEDDING_DIMENSIONS ?? '1024', 10);
 }
 
-export async function getSharedLlmSettings(): Promise<SharedLlmSettings> {
-  const settings = await getAdminSettingsMap(LLM_SETTING_KEYS);
-  const encryptedOpenaiApiKey = settings['openai_api_key'] ?? null;
-
-  return {
-    llmProvider: settings['llm_provider'] === 'openai' ? 'openai' : DEFAULTS.llmProvider,
-    ollamaModel: settings['ollama_model'] ?? DEFAULTS.ollamaModel,
-    openaiBaseUrl: settings['openai_base_url'] ?? DEFAULTS.openaiBaseUrl,
-    hasOpenaiApiKey: !!encryptedOpenaiApiKey,
-    openaiModel: settings['openai_model'] ?? DEFAULTS.openaiModel,
-    embeddingModel: settings['embedding_model'] ?? DEFAULTS.embeddingModel,
-    embeddingDimensions: settings['embedding_dimensions'] ? parseInt(settings['embedding_dimensions'], 10) : DEFAULTS.embeddingDimensions,
-    ftsLanguage: settings['fts_language'] ?? DEFAULTS.ftsLanguage,
-  };
+/**
+ * Issue #257 — returns the configured re-embed-all job history retention
+ * (how many completed/failed BullMQ job records are kept in Redis before
+ * the oldest get swept). Default 150, clamped to [10, 10000].
+ *
+ * Read per-enqueue inside `enqueueReembedAll` so runtime changes take
+ * effect on the next run. Also consumed by the admin GET/PUT
+ * `/api/admin/settings` surface.
+ */
+export async function getReembedHistoryRetention(): Promise<number> {
+  const r = await query<{ setting_value: string }>(
+    `SELECT setting_value FROM admin_settings WHERE setting_key='reembed_history_retention'`,
+  );
+  const raw = r.rows[0]?.setting_value;
+  const n = raw ? parseInt(raw, 10) : NaN;
+  if (!Number.isFinite(n)) return 150;
+  return Math.max(10, Math.min(10_000, n));
 }
 
-export async function getSharedOpenaiApiKey(): Promise<string | null> {
-  const settings = await getAdminSettingsMap(['openai_api_key'] as const satisfies readonly AdminSettingKey[]);
-  const encrypted = settings['openai_api_key'] ?? null;
-  if (!encrypted) return null;
+/**
+ * Issue #264 — returns the configured retention window (days) for
+ * `audit_log` rows with action='ADMIN_ACCESS_DENIED'. Consumed by the
+ * targeted purge in `data-retention-service.ts ::
+ * runAdminAccessDeniedRetention`. Also consumed by the admin GET/PUT
+ * `/api/admin/settings` surface.
+ *
+ * Read cascade:
+ *   admin_settings.admin_access_denied_retention_days  (authoritative)
+ *     -> env RETENTION_ADMIN_ACCESS_DENIED_DAYS        (optional fallback)
+ *     -> 90                                            (hard default)
+ *
+ * Clamped to [7, 3650]. No caching — the retention scheduler runs once
+ * per 24 h, so a per-tick DB read is negligible and keeps the code
+ * simple (no cache invalidation on PUT).
+ */
+export async function getAdminAccessDeniedRetentionDays(): Promise<number> {
   try {
-    return decryptPat(encrypted);
+    const r = await query<{ setting_value: string }>(
+      `SELECT setting_value FROM admin_settings WHERE setting_key='admin_access_denied_retention_days'`,
+    );
+    const raw = r.rows[0]?.setting_value;
+    if (raw) {
+      const n = parseInt(raw, 10);
+      if (Number.isFinite(n) && n >= 7 && n <= 3650) return n;
+    }
   } catch {
-    return null;
+    // Fall through to env / default — this getter must never throw.
   }
-}
-
-export async function upsertSharedLlmSettings(
-  updates: Partial<Pick<SharedLlmSettings & { openaiApiKey: string | null }, 'llmProvider' | 'ollamaModel' | 'openaiBaseUrl' | 'openaiApiKey' | 'openaiModel' | 'embeddingModel' | 'ftsLanguage'>>,
-): Promise<void> {
-  const client = await getPool().connect();
-  try {
-    await client.query('BEGIN');
-
-    const upsertRows: Array<{ key: string; value: string }> = [];
-    const deleteKeys: string[] = [];
-
-    if (updates.llmProvider !== undefined) {
-      upsertRows.push({ key: 'llm_provider', value: updates.llmProvider });
-    }
-    if (updates.ollamaModel !== undefined) {
-      upsertRows.push({ key: 'ollama_model', value: updates.ollamaModel });
-    }
-    if (updates.openaiBaseUrl !== undefined) {
-      if (updates.openaiBaseUrl) {
-        upsertRows.push({ key: 'openai_base_url', value: updates.openaiBaseUrl });
-      } else {
-        deleteKeys.push('openai_base_url');
-      }
-    }
-    if (updates.openaiApiKey !== undefined) {
-      if (updates.openaiApiKey) {
-        upsertRows.push({ key: 'openai_api_key', value: encryptPat(updates.openaiApiKey) });
-      } else {
-        deleteKeys.push('openai_api_key');
-      }
-    }
-    if (updates.openaiModel !== undefined) {
-      if (updates.openaiModel) {
-        upsertRows.push({ key: 'openai_model', value: updates.openaiModel });
-      } else {
-        deleteKeys.push('openai_model');
-      }
-    }
-    if (updates.embeddingModel !== undefined) {
-      if (updates.embeddingModel) {
-        upsertRows.push({ key: 'embedding_model', value: updates.embeddingModel });
-      } else {
-        deleteKeys.push('embedding_model');
-      }
-    }
-    if (updates.ftsLanguage !== undefined) {
-      if (updates.ftsLanguage) {
-        upsertRows.push({ key: 'fts_language', value: updates.ftsLanguage });
-      } else {
-        deleteKeys.push('fts_language');
-      }
-    }
-
-    // Batch upsert: single INSERT...ON CONFLICT using unnest() (#73)
-    if (upsertRows.length > 0) {
-      const keys = upsertRows.map((r) => r.key);
-      const values = upsertRows.map((r) => r.value);
-      await client.query(
-        `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
-         SELECT key, value, NOW()
-         FROM unnest($1::text[], $2::text[]) AS t(key, value)
-         ON CONFLICT (setting_key) DO UPDATE
-         SET setting_value = EXCLUDED.setting_value, updated_at = NOW()`,
-        [keys, values],
-      );
-    }
-
-    // Batch delete: single DELETE with ANY() (#80)
-    if (deleteKeys.length > 0) {
-      await client.query(
-        `DELETE FROM admin_settings WHERE setting_key = ANY($1::text[])`,
-        [deleteKeys],
-      );
-    }
-
-    await client.query('COMMIT');
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw err;
-  } finally {
-    client.release();
+  const env = process.env.RETENTION_ADMIN_ACCESS_DENIED_DAYS;
+  if (env) {
+    const n = parseInt(env, 10);
+    if (Number.isFinite(n) && n >= 7 && n <= 3650) return n;
   }
+  return 90;
 }

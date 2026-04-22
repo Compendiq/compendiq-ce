@@ -165,12 +165,86 @@ curl http://localhost:3051/api/health
 | `SUMMARY_MODEL` | `DEFAULT_LLM_MODEL` then *(disabled)* | LLM model for summaries. Empty = disabled. |
 | `SYNC_INTERVAL_MIN` | `15` | Background sync scheduler polling interval (minutes) |
 
+### Background Job Queue (BullMQ)
+
+Compendiq uses BullMQ (Redis-backed) for reliable background job processing. Six worker types run as BullMQ queues:
+
+| Queue | Purpose | Default Interval |
+|-------|---------|-----------------|
+| `sync` | Confluence space synchronization | 15 min |
+| `quality` | Page quality analysis (LLM) | 60 min |
+| `summary` | Auto-summary generation (LLM) | 60 min |
+| `maintenance` | Expired token cleanup | 24 hours |
+| `maintenance` | Data retention cleanup | 24 hours |
+| `reembed-all` | Global re-embed of every non-folder page (issue #257) | On-demand |
+
+**Configuration:**
+- `USE_BULLMQ=true` (default) -- set to `false` to fall back to legacy `setInterval` workers
+- Redis `maxmemory-policy` must be `noeviction` (default in the provided Docker config)
+- Job history is stored in the `job_history` PostgreSQL table for observability
+- Queue metrics are exposed via `GET /api/health` under the `queues` key
+- `REEMBED_WAIT_LOCKS_MS=600000` (default 10 min): how long the `reembed-all`
+  worker waits for in-flight per-user embedding runs to finish before
+  aborting the job. Visible in the admin UI via `GET /api/admin/embedding/locks`.
+- `reembed_history_retention` (admin setting, default 150): how many
+  completed/failed `reembed-all` job records BullMQ keeps in Redis before
+  sweeping the oldest. Range [10, 10000]. Takes effect on the next run.
+
+**Monitoring:** The health endpoint returns per-queue counts (waiting, active, completed, failed):
+```bash
+curl http://localhost:3051/api/health | jq '.queues'
+```
+
+### LLM Request Queue
+
+LLM requests are managed through a concurrency-controlled queue with backpressure:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `LLM_CONCURRENCY` | `4` | Max concurrent LLM requests |
+| `LLM_MAX_QUEUE_DEPTH` | `50` | Max queued requests before rejecting |
+| `LLM_STREAM_TIMEOUT_MS` | `300000` | Per-request timeout (5 min) |
+
+Queue metrics are exposed via `GET /api/health` under the `llmQueue` key. When the queue is full, new requests receive a `503` error with a message to retry later.
+
+### Per-User Concurrent SSE-Stream Cap (#268)
+
+Streaming LLM endpoints (`/api/llm/ask`, `generate`, `improve`, `summarize`, `analyze-quality`, `generate-diagram`) intentionally bypass the queue above because streams are long-lived. Without a per-user bound, one user opening many tabs can saturate the upstream LLM.
+
+A Redis counter (`llm:streams:<userId>`) tracks currently-open SSE streams per user. New opens beyond the cap are rejected with **HTTP 429** and body:
+
+```json
+{ "error": "too_many_concurrent_streams", "message": "…" }
+```
+
+| Setting | Default | Range | Description |
+|---------|---------|-------|-------------|
+| **Settings → LLM → Runtime limits** (primary) | `3` | `1`–`20` | Admin-configurable. Changes apply within 60 s in every worker; the local worker sees them immediately. |
+| `LLM_MAX_CONCURRENT_STREAMS_PER_USER` | `3` | `1`–`20` | **Deprecated bootstrap fallback** — consulted only when the `admin_settings` row is absent. |
+
+**Release semantics.** The counter decrements on all four exit paths: normal completion, error, upstream timeout, and client disconnect. A 1-hour TTL self-heals leaked counters from crashed processes.
+
+**Lowering is graceful.** Existing in-flight streams run to completion; only new opens see the lower cap.
+
+**No admin bypass.** Admins share the same cap as regular users. This is intentional to prevent accidental concurrent-usage incidents from power users.
+
+**Interaction with `LLM_STREAM_RATE_LIMIT`.** The rate limit caps requests per minute; this caps concurrently-open connections. Both can 429 — they are distinguished by the response body's `error` string.
+
 ### Confluence
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CONFLUENCE_VERIFY_SSL` | `true` | Set to `false` to disable TLS verification for Confluence connections |
 | `ATTACHMENTS_DIR` | `data/attachments` | Attachment cache directory. Set to an absolute path in production. |
+
+### Confluence API Rate Limiting
+
+A token bucket rate limiter protects your Confluence Data Center instance from being overwhelmed during sync.
+
+- **Default:** 60 requests/minute
+- **Configurable:** via `admin_settings` table (key: `confluence_rate_limit_rpm`)
+- **Behavior:** When the rate limit is hit, requests are queued (not dropped). They resume automatically as tokens refill.
+- **Applied to:** All Confluence API calls including page fetches and attachment downloads
 
 ### Security and Encryption
 
@@ -179,6 +253,30 @@ curl http://localhost:3051/api/health
 | `PAT_ENCRYPTION_KEYS` | *(none)* | JSON array of versioned keys for rotation (see Encryption Key Rotation below) |
 | `PAT_ENCRYPTION_KEY_V1`...`V10` | *(none)* | Numbered env vars for key rotation (alternative to JSON format) |
 | `NODE_EXTRA_CA_CERTS` | *(none)* | PEM CA bundle file path for self-signed certificates |
+
+### Email Notifications (SMTP)
+
+Compendiq can send email notifications for key events. Configure SMTP in **Settings > Email / SMTP**.
+
+**Configuration (env vars or admin UI):**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SMTP_HOST` | _(empty)_ | SMTP server hostname |
+| `SMTP_PORT` | `587` | SMTP port (587 for STARTTLS, 465 for TLS) |
+| `SMTP_SECURE` | `false` | Use TLS/SSL |
+| `SMTP_USER` | _(empty)_ | SMTP username |
+| `SMTP_PASS` | _(empty)_ | SMTP password |
+| `SMTP_FROM` | `noreply@compendiq.local` | Sender address |
+| `SMTP_ENABLED` | `false` | Enable email notifications |
+
+**Email types:**
+- Sync completed / failed
+- Knowledge request assigned
+- Article comment notification
+- License expiry warning (Enterprise)
+
+Settings configured via the admin UI are persisted in the `admin_settings` database table and take precedence over environment variables. Use the **Send Test** button to verify SMTP connectivity.
 
 ### Enterprise
 
@@ -303,6 +401,7 @@ Compendiq provides Kubernetes-compatible health probes:
 | `GET /api/health/ready` | Readiness probe | PostgreSQL + Redis |
 | `GET /api/health/live` | Liveness probe | Always returns 200 (process is alive) |
 | `GET /api/health/start` | Startup probe | Startup complete + PostgreSQL + LLM availability |
+| `GET /api/llm/circuit-breaker-status` | Per-provider circuit-breaker state | Returns a provider-keyed flat map: `{ [providerId]: { state, failureCount, nextRetryTime } }`. Requires auth. |
 
 Example response from `GET /api/health`:
 
@@ -314,10 +413,10 @@ Example response from `GET /api/health`:
     "redis": true,
     "llm": true
   },
-  "llmProvider": "ollama",
   "circuitBreakers": {
-    "ollama": "closed",
-    "openai": "closed"
+    "providers": [
+      { "providerId": "<uuid>", "name": "OpenAI Prod", "state": "closed", "failures": 0 }
+    ]
   },
   "version": "1.0.0",
   "uptime": 3600.123
@@ -407,7 +506,7 @@ Check that the `POSTGRES_URL` and `REDIS_URL` in your `.env` match the container
 2. Check the `OLLAMA_BASE_URL` in `.env`. Inside Docker, use `http://host.docker.internal:11434`.
 3. If using a proxy, set `LLM_BEARER_TOKEN` and `LLM_AUTH_TYPE=bearer`.
 4. For timeout issues with large articles, increase `LLM_STREAM_TIMEOUT_MS`.
-5. Check circuit breaker status via `GET /api/health` -- if `ollama` shows `open`, the circuit breaker has tripped due to repeated failures. It will reset automatically.
+5. Check circuit breaker status via `GET /api/health` (aggregated) or `GET /api/llm/circuit-breaker-status` (per-provider detail) -- if a provider shows `open`, the circuit breaker has tripped due to repeated failures. It will reset automatically.
 
 ### TLS certificate errors
 

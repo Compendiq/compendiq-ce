@@ -1,10 +1,29 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { parseTagResponse, ALLOWED_TAGS, autoTagContent, autoTagPage, applyTags, autoTagAllPages } from './auto-tagger.js';
 
-// Mock llm-provider to avoid real API calls (provider-aware resolution)
-const mockProviderChat = vi.fn();
-vi.mock('../../llm/services/llm-provider.js', () => ({
-  providerChat: (...args: unknown[]) => mockProviderChat(...args),
+// Mock the LLM client + use-case resolver.
+// Auto-tag resolves the `auto_tag` use-case internally and calls
+// `chat(config, model, messages)` on the openai-compatible client.
+const mockChatClient = vi.fn();
+vi.mock('../../llm/services/openai-compatible-client.js', () => ({
+  chat: (...args: unknown[]) => mockChatClient(...args),
+  streamChat: vi.fn(),
+  generateEmbedding: vi.fn(),
+  listModels: vi.fn(),
+  checkHealth: vi.fn(),
+  invalidateDispatcher: vi.fn(),
+}));
+
+const mockResolveUsecase = vi.fn().mockResolvedValue({
+  config: {
+    providerId: 'p1', id: 'p1', name: 'X',
+    baseUrl: 'http://x/v1', apiKey: null,
+    authType: 'none', verifySsl: true, defaultModel: 'qwen3:32b',
+  },
+  model: 'qwen3:32b',
+});
+vi.mock('../../llm/services/llm-provider-resolver.js', () => ({
+  resolveUsecase: (...args: unknown[]) => mockResolveUsecase(...args),
 }));
 
 vi.mock('../../../core/services/content-converter.js', () => ({
@@ -122,47 +141,66 @@ describe('AutoTagger', () => {
   });
 
   describe('autoTagContent', () => {
-    it('should return parsed tags on successful LLM response', async () => {
-      mockProviderChat.mockResolvedValueOnce('["architecture", "deployment"]');
+    beforeEach(() => {
+      vi.clearAllMocks();
+      mockResolveUsecase.mockResolvedValue({
+        config: {
+          providerId: 'p1', id: 'p1', name: 'X',
+          baseUrl: 'http://x/v1', apiKey: null,
+          authType: 'none', verifySsl: true, defaultModel: 'qwen3:32b',
+        },
+        model: 'qwen3:32b',
+      });
+    });
 
-      const result = await autoTagContent('test-user-id', 'qwen3:32b', 'some content');
+    it('should return parsed tags on successful LLM response', async () => {
+      mockChatClient.mockResolvedValueOnce('["architecture", "deployment"]');
+
+      const result = await autoTagContent('test-user-id', 'some content');
       expect(result).toEqual(['architecture', 'deployment']);
-      expect(mockProviderChat).toHaveBeenCalledOnce();
-      // Verify userId is passed as the first argument
-      expect(mockProviderChat).toHaveBeenCalledWith(
-        'test-user-id',
-        'qwen3:32b',
-        expect.any(Array),
-      );
+      expect(mockChatClient).toHaveBeenCalledOnce();
+      const [cfg, model] = mockChatClient.mock.calls[0] as [{ providerId: string }, string];
+      expect(cfg.providerId).toBe('p1');
+      expect(model).toBe('qwen3:32b');
+    });
+
+    it('should honor an explicit model override while using the resolved provider', async () => {
+      mockChatClient.mockResolvedValueOnce('["api"]');
+
+      await autoTagContent('test-user-id', 'some content', { modelOverride: 'gpt-4o-mini' });
+
+      const [cfg, model] = mockChatClient.mock.calls[0] as [{ providerId: string }, string];
+      expect(cfg.providerId).toBe('p1');
+      expect(model).toBe('gpt-4o-mini');
     });
 
     it('should wrap LLM errors with descriptive message', async () => {
-      mockProviderChat.mockRejectedValueOnce(new Error('connect ECONNREFUSED 127.0.0.1:11434'));
+      mockChatClient.mockRejectedValueOnce(new Error('connect ECONNREFUSED 127.0.0.1:11434'));
 
-      await expect(autoTagContent('test-user-id', 'qwen3:32b', 'some content'))
+      await expect(autoTagContent('test-user-id', 'some content'))
         .rejects.toThrow('Auto-tag failed: connect ECONNREFUSED 127.0.0.1:11434');
     });
 
     it('should wrap non-Error LLM failures with descriptive message', async () => {
-      mockProviderChat.mockRejectedValueOnce('string error');
+      mockChatClient.mockRejectedValueOnce('string error');
 
-      await expect(autoTagContent('test-user-id', 'qwen3:32b', 'some content'))
+      await expect(autoTagContent('test-user-id', 'some content'))
         .rejects.toThrow('Auto-tag failed: string error');
     });
 
     it('should wrap fetch failed errors', async () => {
-      mockProviderChat.mockRejectedValueOnce(new TypeError('fetch failed'));
+      mockChatClient.mockRejectedValueOnce(new TypeError('fetch failed'));
 
-      await expect(autoTagContent('test-user-id', 'qwen3:32b', 'some content'))
+      await expect(autoTagContent('test-user-id', 'some content'))
         .rejects.toThrow('Auto-tag failed: fetch failed');
     });
 
     it('should preserve original error as cause', async () => {
       const original = new Error('connect ECONNREFUSED 127.0.0.1:11434');
-      mockProviderChat.mockRejectedValueOnce(original);
+      mockChatClient.mockRejectedValueOnce(original);
 
       try {
-        await autoTagContent('test-user-id', 'qwen3:32b', 'some content');
+        await autoTagContent('test-user-id', 'some content');
         expect.fail('should have thrown');
       } catch (err) {
         expect(err).toBeInstanceOf(Error);
@@ -171,12 +209,12 @@ describe('AutoTagger', () => {
     });
 
     it('should preserve CircuitBreakerOpenError as cause', async () => {
-      const cbError = new Error('ollama-chat: LLM server temporarily unavailable');
+      const cbError = new Error('provider-chat: LLM server temporarily unavailable');
       cbError.name = 'CircuitBreakerOpenError';
-      mockProviderChat.mockRejectedValueOnce(cbError);
+      mockChatClient.mockRejectedValueOnce(cbError);
 
       try {
-        await autoTagContent('test-user-id', 'qwen3:32b', 'some content');
+        await autoTagContent('test-user-id', 'some content');
         expect.fail('should have thrown');
       } catch (err) {
         expect(err).toBeInstanceOf(Error);
@@ -190,6 +228,14 @@ describe('AutoTagger', () => {
   describe('autoTagPage (#442 — integer PK fix)', () => {
     beforeEach(() => {
       vi.clearAllMocks();
+      mockResolveUsecase.mockResolvedValue({
+        config: {
+          providerId: 'p1', id: 'p1', name: 'X',
+          baseUrl: 'http://x/v1', apiKey: null,
+          authType: 'none', verifySsl: true, defaultModel: 'qwen3:32b',
+        },
+        model: 'qwen3:32b',
+      });
     });
 
     it('should use integer PK when given a numeric string id', async () => {
@@ -197,9 +243,9 @@ describe('AutoTagger', () => {
         rows: [{ body_html: '<p>test content</p>', labels: [] }],
         rowCount: 1,
       });
-      mockProviderChat.mockResolvedValueOnce('["architecture"]');
+      mockChatClient.mockResolvedValueOnce('["architecture"]');
 
-      const result = await autoTagPage('test-user-id', '42', 'qwen3:32b');
+      const result = await autoTagPage('test-user-id', '42');
       expect(result.suggestedTags).toEqual(['architecture']);
 
       // Verify query used id = $1 with integer value
@@ -213,9 +259,9 @@ describe('AutoTagger', () => {
         rows: [{ body_html: '<p>test content</p>', labels: [] }],
         rowCount: 1,
       });
-      mockProviderChat.mockResolvedValueOnce('["api"]');
+      mockChatClient.mockResolvedValueOnce('["api"]');
 
-      const result = await autoTagPage('test-user-id', 'conf-abc', 'qwen3:32b');
+      const result = await autoTagPage('test-user-id', 'conf-abc');
       expect(result.suggestedTags).toEqual(['api']);
 
       // Verify query used confluence_id = $1 with string value
@@ -227,7 +273,7 @@ describe('AutoTagger', () => {
     it('should throw when page not found', async () => {
       mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
 
-      await expect(autoTagPage('test-user-id', '999', 'qwen3:32b'))
+      await expect(autoTagPage('test-user-id', '999'))
         .rejects.toThrow('Page not found: 999');
     });
   });
@@ -235,6 +281,14 @@ describe('AutoTagger', () => {
   describe('applyTags (#442 — integer PK fix)', () => {
     beforeEach(() => {
       vi.clearAllMocks();
+      mockResolveUsecase.mockResolvedValue({
+        config: {
+          providerId: 'p1', id: 'p1', name: 'X',
+          baseUrl: 'http://x/v1', apiKey: null,
+          authType: 'none', verifySsl: true, defaultModel: 'qwen3:32b',
+        },
+        model: 'qwen3:32b',
+      });
     });
 
     it('should use integer PK for SELECT and UPDATE when given numeric id', async () => {
@@ -303,6 +357,14 @@ describe('AutoTagger', () => {
   describe('autoTagAllPages (standalone page inclusion)', () => {
     beforeEach(() => {
       vi.clearAllMocks();
+      mockResolveUsecase.mockResolvedValue({
+        config: {
+          providerId: 'p1', id: 'p1', name: 'X',
+          baseUrl: 'http://x/v1', apiKey: null,
+          authType: 'none', verifySsl: true, defaultModel: 'qwen3:32b',
+        },
+        model: 'qwen3:32b',
+      });
     });
 
     it('should include standalone pages (space_key IS NULL) in auto-tag query', async () => {
@@ -327,11 +389,11 @@ describe('AutoTagger', () => {
         })
         .mockResolvedValueOnce({ rows: [], rowCount: 1 }); // UPDATE for page 2
 
-      mockProviderChat
+      mockChatClient
         .mockResolvedValueOnce('["architecture"]')
         .mockResolvedValueOnce('["deployment"]');
 
-      const result = await autoTagAllPages('test-user-id', 'qwen3:32b');
+      const result = await autoTagAllPages('test-user-id');
       expect(result.tagged).toBe(2);
       expect(result.errors).toBe(0);
 

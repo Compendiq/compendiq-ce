@@ -2,35 +2,36 @@ import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vites
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 
-// Mock ollama-service
+// Mock prompts module (getSystemPrompt extracted from the legacy ollama-service)
 const mockStreamChat = vi.fn();
 const mockGetSystemPrompt = vi.fn().mockImplementation((key: string) => `System prompt for: ${key}`);
 
-vi.mock('../../domains/llm/services/ollama-service.js', () => ({
-  listModels: vi.fn(),
-  checkHealth: vi.fn(),
-  streamChat: (...args: unknown[]) => mockStreamChat(...args),
-  chat: vi.fn(),
+vi.mock('../../domains/llm/services/prompts.js', () => ({
   getSystemPrompt: (...args: unknown[]) => mockGetSystemPrompt(...args),
-  generateEmbedding: vi.fn(),
   LANGUAGE_PRESERVATION_INSTRUCTION: '',
 }));
 
-vi.mock('../../domains/llm/services/llm-provider.js', () => ({
-  providerStreamChat: (...args: unknown[]) => mockStreamChat(...args),
+// Mock llm-provider-resolver (resolveUsecase)
+const mockResolveUsecase = vi.fn().mockResolvedValue({
+  config: {
+    providerId: 'p1', baseUrl: 'http://x/v1', apiKey: null,
+    authType: 'none', verifySsl: true, name: 'X', defaultModel: 'm',
+  },
+  model: 'm',
+});
+
+vi.mock('../../domains/llm/services/llm-provider-resolver.js', () => ({
+  resolveUsecase: (...args: unknown[]) => mockResolveUsecase(...args),
 }));
 
-vi.mock('../../core/services/circuit-breaker.js', () => ({
-  getOllamaCircuitBreakerStatus: vi.fn().mockReturnValue({
-    chat: { state: 'CLOSED' },
-    embed: { state: 'CLOSED' },
-    list: { state: 'CLOSED' },
-  }),
-  ollamaBreakers: {
-    chat: { execute: vi.fn((fn: () => unknown) => fn()) },
-    embed: { execute: vi.fn((fn: () => unknown) => fn()) },
-    list: { execute: vi.fn((fn: () => unknown) => fn()) },
-  },
+// Mock openai-compatible-client (streamChat — queue + breakers wrapped inside)
+vi.mock('../../domains/llm/services/openai-compatible-client.js', () => ({
+  streamChat: (...args: unknown[]) => mockStreamChat(...args),
+  chat: vi.fn(),
+  generateEmbedding: vi.fn(),
+  listModels: vi.fn(),
+  checkHealth: vi.fn(),
+  invalidateDispatcher: vi.fn(),
 }));
 
 vi.mock('../../core/db/postgres.js', () => ({
@@ -105,6 +106,7 @@ describe('POST /api/llm/generate with pdfText', () => {
     app.decorateRequest('userId', '');
     app.addHook('onRequest', async (request) => {
       request.userId = 'test-user-123';
+      request.userCan = async () => true;
     });
 
     await app.register(llmGenerateRoutes, { prefix: '/api' });

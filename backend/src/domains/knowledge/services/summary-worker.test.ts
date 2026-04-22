@@ -13,27 +13,41 @@ import {
 
 const dbAvailable = await isDbAvailable();
 
-// Mock the LLM summarization to avoid real LLM calls in tests
-vi.mock('../../llm/services/ollama-service.js', () => ({
-  summarizeContent: vi.fn().mockImplementation(() => {
+// Mock the LLM streaming helper to avoid real LLM calls in tests.
+// The worker streams via `streamChat` from openai-compatible-client using
+// messages it builds itself; `getSystemPrompt` from prompts.ts is a pure
+// string helper and runs unmocked.
+vi.mock('../../llm/services/openai-compatible-client.js', () => ({
+  streamChat: vi.fn().mockImplementation(() => {
     async function* generator() {
       yield { content: 'This is a **test** summary.', done: false };
       yield { content: '', done: true };
     }
     return generator();
   }),
+  chat: vi.fn(),
+  generateEmbedding: vi.fn(),
+  listModels: vi.fn(),
+  checkHealth: vi.fn(),
+  invalidateDispatcher: vi.fn(),
 }));
 
-vi.mock('../../../core/services/admin-settings-service.js', () => ({
-  getSharedLlmSettings: vi.fn().mockResolvedValue({
-    llmProvider: 'ollama',
-    ollamaModel: 'qwen3.5',
-    openaiBaseUrl: null,
-    hasOpenaiApiKey: false,
-    openaiModel: null,
-    embeddingModel: 'bge-m3',
-    embeddingDimensions: 1024,
-    ftsLanguage: 'simple',
+vi.mock('../../../core/utils/sanitize-llm-input.js', () => ({
+  sanitizeLlmInput: vi
+    .fn()
+    .mockImplementation((input: string) => ({ sanitized: input, wasSanitized: false })),
+}));
+
+// Default mock: resolver returns provider p1 with model qwen3.5.
+// Tests that need a different assignment override this per-test.
+vi.mock('../../llm/services/llm-provider-resolver.js', () => ({
+  resolveUsecase: vi.fn().mockResolvedValue({
+    config: {
+      providerId: 'p1', id: 'p1', name: 'X',
+      baseUrl: 'http://x/v1', apiKey: null,
+      authType: 'none', verifySsl: true, defaultModel: 'qwen3.5',
+    },
+    model: 'qwen3.5',
   }),
 }));
 
@@ -300,17 +314,17 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
     });
 
     it('should mark pages as skipped (not disabled) when no model is available anywhere', async () => {
-      // Override the admin settings mock to return empty model
-      const { getSharedLlmSettings } = await import('../../../core/services/admin-settings-service.js');
-      vi.mocked(getSharedLlmSettings).mockResolvedValueOnce({
-        llmProvider: 'ollama',
-        ollamaModel: '',
-        openaiBaseUrl: null,
-        hasOpenaiApiKey: false,
-        openaiModel: null,
-        embeddingModel: 'bge-m3',
-    embeddingDimensions: 1024,
-    ftsLanguage: 'simple',
+      // Override the resolver mock to simulate "no model configured anywhere".
+      const { resolveUsecase } = await import(
+        '../../llm/services/llm-provider-resolver.js'
+      );
+      vi.mocked(resolveUsecase).mockResolvedValueOnce({
+        config: {
+          providerId: 'p1', id: 'p1', name: 'X',
+          baseUrl: 'http://x/v1', apiKey: null,
+          authType: 'none', verifySsl: true, defaultModel: null,
+        },
+        model: '',
       });
 
       await query(

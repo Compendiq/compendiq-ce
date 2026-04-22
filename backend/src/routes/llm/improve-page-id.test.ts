@@ -12,39 +12,31 @@ import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vites
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 
-const mockProviderStreamChat = vi.fn();
 const mockQuery = vi.fn();
 
-vi.mock('../../domains/llm/services/ollama-service.js', () => ({
+// Mock llm-provider-resolver (resolveUsecase)
+const mockResolveUsecase = vi.fn().mockResolvedValue({
+  config: {
+    providerId: 'p1', baseUrl: 'http://x/v1', apiKey: null,
+    authType: 'none', verifySsl: true, name: 'X', defaultModel: 'm',
+  },
+  model: 'm',
+});
+
+vi.mock('../../domains/llm/services/llm-provider-resolver.js', () => ({
+  resolveUsecase: (...args: unknown[]) => mockResolveUsecase(...args),
+}));
+
+// Mock openai-compatible-client (streamChat — queue + breakers wrapped inside)
+const mockProviderStreamChat = vi.fn();
+
+vi.mock('../../domains/llm/services/openai-compatible-client.js', () => ({
+  streamChat: (...args: unknown[]) => mockProviderStreamChat(...args),
+  chat: vi.fn(),
+  generateEmbedding: vi.fn(),
   listModels: vi.fn(),
   checkHealth: vi.fn(),
-  streamChat: vi.fn(),
-  chat: vi.fn(),
-  getSystemPrompt: vi.fn().mockReturnValue('You are a technical writing assistant.'),
-  generateEmbedding: vi.fn(),
-  isLlmVerifySslEnabled: vi.fn().mockReturnValue(true),
-  getLlmAuthType: vi.fn().mockReturnValue('bearer'),
-  getActiveProviderType: vi.fn().mockReturnValue('ollama'),
-  getProvider: vi.fn().mockReturnValue({
-    listModels: vi.fn().mockResolvedValue([]),
-    checkHealth: vi.fn().mockResolvedValue({ connected: true }),
-  }),
-  LANGUAGE_PRESERVATION_INSTRUCTION: 'Keep the text in its ORIGINAL language.',
-}));
-
-vi.mock('../../domains/llm/services/llm-provider.js', () => ({
-  providerStreamChat: (...args: unknown[]) => mockProviderStreamChat(...args),
-  providerGenerateEmbedding: vi.fn(),
-}));
-
-vi.mock('../../core/services/circuit-breaker.js', () => ({
-  getOllamaCircuitBreakerStatus: vi.fn().mockReturnValue({ chat: { state: 'CLOSED' }, embed: { state: 'CLOSED' }, list: { state: 'CLOSED' } }),
-  getOpenaiCircuitBreakerStatus: vi.fn().mockReturnValue({ chat: { state: 'CLOSED' }, embed: { state: 'CLOSED' }, list: { state: 'CLOSED' } }),
-  ollamaBreakers: {
-    chat: { execute: vi.fn((fn: () => unknown) => fn()) },
-    embed: { execute: vi.fn((fn: () => unknown) => fn()) },
-    list: { execute: vi.fn((fn: () => unknown) => fn()) },
-  },
+  invalidateDispatcher: vi.fn(),
 }));
 
 vi.mock('../../core/db/postgres.js', () => ({
@@ -124,6 +116,7 @@ describe('POST /api/llm/improve — page_id resolution (regression: issue #418)'
     app.decorateRequest('userId', '');
     app.addHook('onRequest', async (request) => {
       request.userId = 'user-123';
+      request.userCan = async () => true;
     });
 
     await app.register(llmImproveRoutes, { prefix: '/api' });

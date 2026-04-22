@@ -3,51 +3,72 @@ import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 import { healthRoutes, markStartupComplete } from './health.js';
 
-// Mock the database check
+// `checkLlm` reads the default provider from `llm_providers`. We intercept
+// `query` at the module boundary and hand back a stub row.
+const mockQuery = vi.fn().mockResolvedValue({
+  rows: [
+    {
+      id: 'prov-1',
+      name: 'ollama',
+      base_url: 'http://localhost:11434',
+      api_key: null,
+      auth_type: 'none',
+      verify_ssl: true,
+    },
+  ],
+});
+
 vi.mock('../../core/db/postgres.js', () => ({
   checkConnection: vi.fn().mockResolvedValue(true),
   getPool: vi.fn().mockReturnValue({}),
-  query: vi.fn(),
+  query: (...args: unknown[]) => mockQuery(...args),
   runMigrations: vi.fn(),
   closePool: vi.fn(),
 }));
 
-// Mock Redis plugin check
 vi.mock('../../core/plugins/redis.js', () => ({
   checkRedisConnection: vi.fn().mockResolvedValue(true),
   default: vi.fn(),
 }));
 
-// Mock circuit breakers
-vi.mock('../../core/services/circuit-breaker.js', () => {
-  const closedBreaker = { state: 'CLOSED', failureCount: 0, successCount: 0, lastFailureTime: null, nextRetryTime: null };
-  return {
-    getOllamaCircuitBreakerStatus: vi.fn().mockReturnValue({
-      chat: closedBreaker, embed: closedBreaker, list: closedBreaker,
-    }),
-    getOpenaiCircuitBreakerStatus: vi.fn().mockReturnValue({
-      chat: closedBreaker, embed: closedBreaker, list: closedBreaker,
-    }),
-  };
-});
-
-// Mock the LLM service (provider-aware health check)
-const mockCheckHealth = vi.fn().mockResolvedValue({ connected: true });
-const mockGetProvider = vi.fn().mockReturnValue({ checkHealth: (...args: unknown[]) => mockCheckHealth(...args) });
-
-vi.mock('../../domains/llm/services/ollama-service.js', () => ({
-  getProvider: (...args: unknown[]) => mockGetProvider(...args),
+const mockListProviderBreakers = vi.fn().mockReturnValue([]);
+vi.mock('../../core/services/circuit-breaker.js', () => ({
+  listProviderBreakers: (...args: unknown[]) => mockListProviderBreakers(...args),
 }));
 
-const mockGetSharedLlmSettings = vi.fn().mockResolvedValue({
-  llmProvider: 'ollama',
-});
-vi.mock('../../core/services/admin-settings-service.js', () => ({
-  getSharedLlmSettings: (...args: unknown[]) => mockGetSharedLlmSettings(...args),
+const mockListProviders = vi.fn().mockResolvedValue([]);
+vi.mock('../../domains/llm/services/llm-provider-service.js', () => ({
+  listProviders: (...args: unknown[]) => mockListProviders(...args),
+}));
+
+// Provider-aware health check now lives in `openai-compatible-client.ts`.
+const mockCheckHealth = vi.fn().mockResolvedValue({ connected: true });
+vi.mock('../../domains/llm/services/openai-compatible-client.js', () => ({
+  checkHealth: (...args: unknown[]) => mockCheckHealth(...args),
+  streamChat: vi.fn(),
+  chat: vi.fn(),
+  generateEmbedding: vi.fn(),
+  listModels: vi.fn(),
+  invalidateDispatcher: vi.fn(),
+}));
+
+// decryptPat is called on any non-null api_key in the provider row.
+vi.mock('../../core/utils/crypto.js', () => ({
+  decryptPat: (v: string) => v,
+  encryptPat: (v: string) => v,
 }));
 
 vi.mock('../../core/utils/logger.js', () => ({
   logger: { debug: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn() },
+}));
+
+vi.mock('../../domains/llm/services/llm-queue.js', () => ({
+  getMetrics: () => ({ queueDepth: 0, active: 0, total: 0, errors: 0 }),
+}));
+
+vi.mock('../../core/services/queue-service.js', () => ({
+  getQueueMetrics: () => ({}),
+  isBullMQEnabled: () => false,
 }));
 
 import { checkConnection as mockCheckPg } from '../../core/db/postgres.js';
@@ -73,8 +94,20 @@ describe('Health routes', () => {
     (mockCheckPg as ReturnType<typeof vi.fn>).mockResolvedValue(true);
     (mockCheckRedis as ReturnType<typeof vi.fn>).mockResolvedValue(true);
     mockCheckHealth.mockResolvedValue({ connected: true });
-    mockGetSharedLlmSettings.mockResolvedValue({ llmProvider: 'ollama' });
-    mockGetProvider.mockReturnValue({ checkHealth: (...args: unknown[]) => mockCheckHealth(...args) });
+    mockListProviderBreakers.mockReturnValue([]);
+    mockListProviders.mockResolvedValue([]);
+    mockQuery.mockResolvedValue({
+      rows: [
+        {
+          id: 'prov-1',
+          name: 'ollama',
+          base_url: 'http://localhost:11434',
+          api_key: null,
+          auth_type: 'none',
+          verify_ssl: true,
+        },
+      ],
+    });
   });
 
   describe('GET /api/health/live', () => {
@@ -153,7 +186,18 @@ describe('Health routes', () => {
     });
 
     it('should report correct llmProvider', async () => {
-      mockGetSharedLlmSettings.mockResolvedValueOnce({ llmProvider: 'openai' });
+      mockQuery.mockResolvedValueOnce({
+        rows: [
+          {
+            id: 'prov-openai',
+            name: 'openai',
+            base_url: 'https://api.openai.com/v1',
+            api_key: 'sk-xxxx',
+            auth_type: 'bearer',
+            verify_ssl: true,
+          },
+        ],
+      });
       const response = await app.inject({ method: 'GET', url: '/api/health/start' });
       const body = JSON.parse(response.body);
       expect(body.checks.llmProvider).toBe('openai');
@@ -161,7 +205,7 @@ describe('Health routes', () => {
   });
 
   describe('GET /api/health (backward compat)', () => {
-    it('should return full health status including LLM and circuit breakers', async () => {
+    it('should return full health status including LLM and live per-provider breakers', async () => {
       const response = await app.inject({ method: 'GET', url: '/api/health' });
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
@@ -170,9 +214,43 @@ describe('Health routes', () => {
       expect(body.services).toHaveProperty('redis');
       expect(body.services).toHaveProperty('llm');
       expect(body).toHaveProperty('circuitBreakers');
-      expect(body.circuitBreakers).toHaveProperty('ollama');
-      expect(body.circuitBreakers).toHaveProperty('openai');
+      // New shape: circuitBreakers.providers is an array of live per-provider snapshots.
+      expect(Array.isArray(body.circuitBreakers.providers)).toBe(true);
+      // Dead legacy globals must no longer be reported here.
+      expect(body.circuitBreakers).not.toHaveProperty('ollama');
+      expect(body.circuitBreakers).not.toHaveProperty('openai');
       expect(body).toHaveProperty('llmProvider');
+    });
+
+    it('surfaces live per-provider breaker state enriched with provider names', async () => {
+      mockListProviderBreakers.mockReturnValue([
+        { providerId: 'uuid-a', state: 'closed', failureCount: 0, nextRetryTime: null },
+        { providerId: 'uuid-b', state: 'open', failureCount: 3, nextRetryTime: 99 },
+      ]);
+      mockListProviders.mockResolvedValue([
+        { id: 'uuid-a', name: 'Ollama Local' },
+        { id: 'uuid-b', name: 'OpenAI' },
+      ]);
+
+      const response = await app.inject({ method: 'GET', url: '/api/health' });
+      const body = JSON.parse(response.body);
+      expect(body.circuitBreakers.providers).toEqual([
+        { providerId: 'uuid-a', name: 'Ollama Local', state: 'closed', failures: 0 },
+        { providerId: 'uuid-b', name: 'OpenAI', state: 'open', failures: 3 },
+      ]);
+    });
+
+    it('tolerates a provider with a live breaker but no row (race during delete)', async () => {
+      mockListProviderBreakers.mockReturnValue([
+        { providerId: 'uuid-orphan', state: 'closed', failureCount: 0, nextRetryTime: null },
+      ]);
+      mockListProviders.mockResolvedValue([]);
+
+      const response = await app.inject({ method: 'GET', url: '/api/health' });
+      const body = JSON.parse(response.body);
+      expect(body.circuitBreakers.providers).toEqual([
+        { providerId: 'uuid-orphan', name: null, state: 'closed', failures: 0 },
+      ]);
     });
 
     it('should report llm=false when LLM provider is unreachable', async () => {
@@ -184,14 +262,27 @@ describe('Health routes', () => {
     });
 
     it('should use active provider for health check', async () => {
-      mockGetSharedLlmSettings.mockResolvedValue({ llmProvider: 'openai' });
+      mockQuery.mockResolvedValue({
+        rows: [
+          {
+            id: 'prov-openai',
+            name: 'openai',
+            base_url: 'https://api.openai.com/v1',
+            api_key: 'sk-xxxx',
+            auth_type: 'bearer',
+            verify_ssl: true,
+          },
+        ],
+      });
       mockCheckHealth.mockResolvedValue({ connected: true });
 
       const response = await app.inject({ method: 'GET', url: '/api/health' });
       const body = JSON.parse(response.body);
       expect(body.services.llm).toBe(true);
       expect(body.llmProvider).toBe('openai');
-      expect(mockGetProvider).toHaveBeenCalledWith('openai');
+      expect(mockCheckHealth).toHaveBeenCalledWith(
+        expect.objectContaining({ baseUrl: 'https://api.openai.com/v1' }),
+      );
     });
   });
 });

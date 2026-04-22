@@ -9,13 +9,34 @@
  * configurable batch size and interval.
  *
  * NEVER writes summaries back to Confluence — local DB only.
+ *
+ * `summary_status = 'skipped'` recovery:
+ *   When no summary model can be resolved for the configured provider
+ *   (e.g. admin set provider=openai but no openai_model / usecase model),
+ *   pending pages are transitioned to `'skipped'` rather than sitting
+ *   stuck in `'pending'`. Admin recovery paths, in order of preference:
+ *     1. Set a model: Settings → LLM → Use case assignments → Summary,
+ *        or set the shared `openai_model` / `ollama_model` field.
+ *     2. Hit `POST /api/llm/summary-rescan` (admin-only) — calls
+ *        `rescanAllSummaries()` which resets pages for re-summarization
+ *        and fires an immediate batch.
+ *     3. (Surgical alternative) Re-queue only the skipped pages by SQL:
+ *        `UPDATE pages SET summary_status = 'pending'
+ *           WHERE summary_status = 'skipped' AND deleted_at IS NULL;`
+ *     4. The next batch (runs every SUMMARY_CHECK_INTERVAL_MINUTES, default
+ *        60) will pick them up automatically.
  */
 
 import crypto from 'node:crypto';
 import { query } from '../../../core/db/postgres.js';
-import { summarizeContent } from '../../llm/services/ollama-service.js';
+import { getSystemPrompt } from '../../llm/services/prompts.js';
+import { resolveUsecase } from '../../llm/services/llm-provider-resolver.js';
+import {
+  streamChat,
+  type ProviderConfig,
+} from '../../llm/services/openai-compatible-client.js';
+import { sanitizeLlmInput } from '../../../core/utils/sanitize-llm-input.js';
 import { logger } from '../../../core/utils/logger.js';
-import { getSharedLlmSettings } from '../../../core/services/admin-settings-service.js';
 import { acquireWorkerLock, releaseWorkerLock } from '../../../core/services/redis-cache.js';
 
 // ---------------------------------------------------------------------------
@@ -30,7 +51,6 @@ const SUMMARY_BATCH_SIZE = parseInt(
   process.env.SUMMARY_BATCH_SIZE ?? '5',
   10,
 );
-const SUMMARY_MODEL = process.env.SUMMARY_MODEL ?? process.env.DEFAULT_LLM_MODEL ?? '';
 const MAX_RETRIES = 3;
 const MIN_BODY_LENGTH = 100;
 
@@ -60,20 +80,26 @@ export interface SummaryStatus {
   model: string;
 }
 
+interface SummaryAssignment {
+  config: ProviderConfig & { id: string; name: string; defaultModel: string | null };
+  model: string;
+}
+
 /**
- * Resolve the summary model at runtime: env var > admin settings > empty.
+ * Resolve the `{config, model}` pair for the summary use case via the
+ * use-case resolver (multi-provider). The resolver reads from
+ * `llm_usecase_assignments` + `llm_providers` tables.
  */
-async function resolveSummaryModel(): Promise<string> {
-  if (SUMMARY_MODEL) return SUMMARY_MODEL;
-  const sharedSettings = await getSharedLlmSettings();
-  const model = sharedSettings.llmProvider === 'openai'
-    ? sharedSettings.openaiModel
-    : sharedSettings.ollamaModel;
-  return model || '';
+async function resolveSummaryAssignment(): Promise<SummaryAssignment | null> {
+  try {
+    return await resolveUsecase('summary');
+  } catch {
+    return null;
+  }
 }
 
 export async function getSummaryStatus(): Promise<SummaryStatus> {
-  const [result, model] = await Promise.all([
+  const [result, assignment] = await Promise.all([
     query<{
       total: string;
       summarized: string;
@@ -92,7 +118,7 @@ export async function getSummaryStatus(): Promise<SummaryStatus> {
       FROM pages
       WHERE deleted_at IS NULL
     `),
-    resolveSummaryModel(),
+    resolveSummaryAssignment(),
   ]);
 
   const row = result.rows[0];
@@ -107,7 +133,7 @@ export async function getSummaryStatus(): Promise<SummaryStatus> {
     isProcessing,
     lastRunAt: lastRunAt ? lastRunAt.toISOString() : null,
     intervalMinutes: SUMMARY_CHECK_INTERVAL_MINUTES,
-    model,
+    model: assignment?.model ?? '',
   };
 }
 
@@ -186,14 +212,17 @@ async function findCandidates(batchSize: number): Promise<SummaryCandidate[]> {
   return result.rows;
 }
 
+const SUMMARIZE_LENGTH_INSTRUCTION_SHORT = 'Provide a brief 2-3 sentence summary.';
+
 /**
  * Process a single page: generate summary, convert to HTML, store in DB.
  */
 async function summarizePage(
   candidate: SummaryCandidate,
-  model: string,
+  assignment: SummaryAssignment,
 ): Promise<void> {
   const { id, body_text, title } = candidate;
+  const { config, model } = assignment;
 
   // Skip empty/short content
   if (!body_text || body_text.length < MIN_BODY_LENGTH) {
@@ -217,8 +246,16 @@ async function summarizePage(
   );
 
   try {
-    // Generate summary using the shared LLM service (collect full stream, NOT SSE)
-    const generator = summarizeContent(model, body_text, 'short');
+    // Build summarize messages here (rather than via ollama-service.summarizeContent)
+    // so we can route through the use-case provider override.
+    const { sanitized } = sanitizeLlmInput(body_text);
+    const generator = streamChat(config, model, [
+      {
+        role: 'system',
+        content: `${getSystemPrompt('summarize')} ${SUMMARIZE_LENGTH_INSTRUCTION_SHORT}`,
+      },
+      { role: 'user', content: sanitized },
+    ]);
     const markdownSummary = await collectStream(generator);
 
     if (!markdownSummary.trim()) {
@@ -270,25 +307,36 @@ async function summarizePage(
 
 /**
  * Run one batch cycle: detect stale hashes, then process candidates.
+ *
+ * The optional `model` argument is an override for tests and manual invocations.
+ * When absent, the resolver picks `{provider, model}` from admin settings
+ * (use-case override → shared default → env bootstrap). See issue #214.
  */
-export async function runSummaryBatch(model?: string): Promise<{ processed: number; errors: number }> {
+export async function runSummaryBatch(
+  model?: string,
+): Promise<{ processed: number; errors: number }> {
   lastRunAt = new Date();
-  let resolvedModel = model || SUMMARY_MODEL;
-  // Fall back to admin settings if no model from env vars or explicit parameter
-  if (!resolvedModel) {
-    const sharedSettings = await getSharedLlmSettings();
-    resolvedModel = (sharedSettings.llmProvider === 'openai'
-      ? sharedSettings.openaiModel
-      : sharedSettings.ollamaModel) || '';
-  }
-  if (!resolvedModel) {
-    logger.warn('No summary model configured (SUMMARY_MODEL, DEFAULT_LLM_MODEL, or admin settings). Marking pending pages as skipped.');
-    await query(
+
+  // Resolve the full assignment (config + model) via the use-case resolver.
+  const assignment = await resolveSummaryAssignment();
+  const effectiveModel = model || assignment?.model || '';
+
+  if (!assignment || !effectiveModel) {
+    const flipped = await query(
       `UPDATE pages SET summary_status = 'skipped'
        WHERE summary_status = 'pending' AND deleted_at IS NULL`,
     );
+    logger.warn(
+      { providerId: assignment?.config.providerId, flippedToSkipped: flipped.rowCount ?? 0 },
+      'No summary provider/model configured (Settings → LLM → Use case assignments). Marked pending pages as skipped — admin must POST /api/llm/summary-rescan to reprocess after fixing the config.',
+    );
     return { processed: 0, errors: 0 };
   }
+
+  const effectiveAssignment: SummaryAssignment = {
+    config: assignment.config,
+    model: effectiveModel,
+  };
 
   // Phase 1: Detect content changes via timestamp and mark as pending.
   // Uses last_modified_at > summary_generated_at instead of recomputing
@@ -313,7 +361,7 @@ export async function runSummaryBatch(model?: string): Promise<{ processed: numb
 
   for (const candidate of candidates) {
     try {
-      await summarizePage(candidate, resolvedModel);
+      await summarizePage(candidate, effectiveAssignment);
       processed++;
     } catch (err) {
       errors++;

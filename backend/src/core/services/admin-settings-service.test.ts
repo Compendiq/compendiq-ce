@@ -1,128 +1,70 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// Use vi.hoisted to create mocks that are available in vi.mock factories
-const { mockClientQuery, mockClientRelease } = vi.hoisted(() => ({
-  mockClientQuery: vi.fn(),
-  mockClientRelease: vi.fn(),
-}));
+const mockQuery = vi.fn();
 
 vi.mock('../db/postgres.js', () => ({
-  query: vi.fn(),
-  getPool: vi.fn().mockReturnValue({
-    connect: vi.fn().mockResolvedValue({
-      query: (...args: unknown[]) => mockClientQuery(...args),
-      release: mockClientRelease,
-    }),
-  }),
-  runMigrations: vi.fn(),
-  closePool: vi.fn(),
+  query: (sql: string, params?: unknown[]) => mockQuery(sql, params),
 }));
 
-vi.mock('../utils/crypto.js', () => ({
-  encryptPat: vi.fn((val: string) => `encrypted:${val}`),
-  decryptPat: vi.fn((val: string) => val.replace('encrypted:', '')),
-}));
+import { getAdminAccessDeniedRetentionDays } from './admin-settings-service.js';
 
-import { upsertSharedLlmSettings } from './admin-settings-service.js';
-
-describe('upsertSharedLlmSettings - batch operations', () => {
+describe('getAdminAccessDeniedRetentionDays (#264)', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
-    mockClientQuery.mockResolvedValue({ rows: [] });
+    mockQuery.mockReset();
+    delete process.env.RETENTION_ADMIN_ACCESS_DENIED_DAYS;
   });
 
-  it('should batch upserts into a single INSERT...ON CONFLICT with unnest()', async () => {
-    await upsertSharedLlmSettings({
-      llmProvider: 'openai',
-      ollamaModel: 'llama3',
-      openaiModel: 'gpt-4',
-    });
-
-    // Expect: BEGIN, batch INSERT, COMMIT
-    const calls = mockClientQuery.mock.calls.map((c) => String(c[0]));
-    expect(calls[0]).toBe('BEGIN');
-
-    // The unnest batch INSERT
-    const insertCall = calls.find((sql) => sql.includes('unnest'));
-    expect(insertCall).toBeDefined();
-    expect(insertCall).toContain('INSERT INTO admin_settings');
-    expect(insertCall).toContain('ON CONFLICT');
-
-    // Verify the keys and values were passed as arrays
-    const insertArgs = mockClientQuery.mock.calls.find(
-      (c) => String(c[0]).includes('unnest'),
-    );
-    expect(insertArgs![1]).toEqual([
-      ['llm_provider', 'ollama_model', 'openai_model'],
-      ['openai', 'llama3', 'gpt-4'],
-    ]);
-
-    // No individual INSERT loops
-    const individualInserts = calls.filter(
-      (sql) => sql.includes('INSERT') && !sql.includes('unnest') && sql !== 'BEGIN',
-    );
-    expect(individualInserts).toHaveLength(0);
-
-    expect(calls[calls.length - 1]).toBe('COMMIT');
+  afterEach(() => {
+    delete process.env.RETENTION_ADMIN_ACCESS_DENIED_DAYS;
   });
 
-  it('should batch deletes into a single DELETE with ANY()', async () => {
-    await upsertSharedLlmSettings({
-      openaiBaseUrl: '',
-      openaiApiKey: '',
-      openaiModel: '',
-    });
-
-    const calls = mockClientQuery.mock.calls.map((c) => String(c[0]));
-
-    // The batch DELETE with ANY()
-    const deleteCall = calls.find((sql) => sql.includes('ANY'));
-    expect(deleteCall).toBeDefined();
-    expect(deleteCall).toContain('DELETE FROM admin_settings');
-    expect(deleteCall).toContain('ANY($1::text[])');
-
-    // Verify the keys were passed as a single array
-    const deleteArgs = mockClientQuery.mock.calls.find(
-      (c) => String(c[0]).includes('ANY'),
-    );
-    expect(deleteArgs![1]).toEqual([['openai_base_url', 'openai_api_key', 'openai_model']]);
-
-    // No individual DELETE queries
-    const individualDeletes = calls.filter(
-      (sql) => sql.includes('DELETE') && !sql.includes('ANY'),
-    );
-    expect(individualDeletes).toHaveLength(0);
+  it('returns the persisted admin_settings value when in range', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ setting_value: '30' }] });
+    await expect(getAdminAccessDeniedRetentionDays()).resolves.toBe(30);
   });
 
-  it('should handle mixed upserts and deletes in a single transaction', async () => {
-    await upsertSharedLlmSettings({
-      llmProvider: 'ollama',
-      openaiBaseUrl: '',
-      ollamaModel: 'llama3',
-      openaiApiKey: null,
-    });
-
-    const calls = mockClientQuery.mock.calls.map((c) => String(c[0]));
-    expect(calls[0]).toBe('BEGIN');
-
-    // Should have both batch INSERT and batch DELETE
-    expect(calls.some((sql) => sql.includes('unnest'))).toBe(true);
-    expect(calls.some((sql) => sql.includes('ANY'))).toBe(true);
-
-    expect(calls[calls.length - 1]).toBe('COMMIT');
+  it('honours the env fallback when the admin_settings row is absent', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    process.env.RETENTION_ADMIN_ACCESS_DENIED_DAYS = '45';
+    await expect(getAdminAccessDeniedRetentionDays()).resolves.toBe(45);
   });
 
-  it('should rollback on error', async () => {
-    mockClientQuery
-      .mockResolvedValueOnce({})  // BEGIN
-      .mockRejectedValueOnce(new Error('DB error')); // INSERT fails
+  it('returns the hard default of 90 when both the DB row and the env var are missing', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    await expect(getAdminAccessDeniedRetentionDays()).resolves.toBe(90);
+  });
 
-    await expect(
-      upsertSharedLlmSettings({ llmProvider: 'ollama' }),
-    ).rejects.toThrow('DB error');
+  it('rejects an out-of-range DB value (1) and falls back to env / default', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ setting_value: '1' }] });
+    await expect(getAdminAccessDeniedRetentionDays()).resolves.toBe(90);
+  });
 
-    const calls = mockClientQuery.mock.calls.map((c) => String(c[0]));
-    expect(calls).toContain('ROLLBACK');
-    expect(mockClientRelease).toHaveBeenCalled();
+  it('rejects an out-of-range DB value (4000) and falls back to env / default', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ setting_value: '4000' }] });
+    await expect(getAdminAccessDeniedRetentionDays()).resolves.toBe(90);
+  });
+
+  it('rejects a non-numeric DB value and falls back', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ setting_value: 'banana' }] });
+    await expect(getAdminAccessDeniedRetentionDays()).resolves.toBe(90);
+  });
+
+  it('never throws when the DB query rejects — swallows and falls back', async () => {
+    mockQuery.mockRejectedValueOnce(new Error('pool exhausted'));
+    await expect(getAdminAccessDeniedRetentionDays()).resolves.toBe(90);
+  });
+
+  it('rejects an out-of-range env override and falls through to the hard default', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    process.env.RETENTION_ADMIN_ACCESS_DENIED_DAYS = '6'; // below min
+    await expect(getAdminAccessDeniedRetentionDays()).resolves.toBe(90);
+  });
+
+  it('accepts boundary values — 7 and 3650', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ setting_value: '7' }] });
+    await expect(getAdminAccessDeniedRetentionDays()).resolves.toBe(7);
+
+    mockQuery.mockResolvedValueOnce({ rows: [{ setting_value: '3650' }] });
+    await expect(getAdminAccessDeniedRetentionDays()).resolves.toBe(3650);
   });
 });

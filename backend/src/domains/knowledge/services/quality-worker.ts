@@ -4,32 +4,61 @@
  * Periodically scans pages and runs LLM quality analysis in batches.
  * Modeled after sync-service.ts: setInterval scheduling, in-memory lock,
  * configurable interval and batch size via env vars.
+ *
+ * `quality_status = 'skipped'` recovery:
+ *   Pages are marked `'skipped'` in two situations:
+ *     a) body_text is empty or shorter than the 50-char analysis threshold
+ *        (handled in analyzePageQuality / processBatch), or
+ *     b) no quality model can be resolved for the configured provider
+ *        (e.g. admin set provider=openai but no openai_model / usecase
+ *        model); applying the Ollama-shaped `qwen3:4b` default would fail.
+ *   Admin recovery paths for case (b), in order of preference:
+ *     1. Set a model: Settings → LLM → Use case assignments → Quality,
+ *        or set the shared `openai_model` / `ollama_model` field.
+ *     2. Call `forceQualityRescan()` (exported below) or hit
+ *        `POST /api/admin/quality-rescan` — flips every `'skipped'` /
+ *        `'failed'` / `'analyzed'` page back to `'pending'` so the next
+ *        batch reprocesses them.
+ *     3. (Surgical alternative) Re-queue only the skipped pages by SQL:
+ *        `UPDATE pages SET quality_status = 'pending'
+ *           WHERE quality_status = 'skipped' AND deleted_at IS NULL;`
+ *     4. The next batch (runs every QUALITY_CHECK_INTERVAL_MINUTES, default
+ *        60) will analyze them automatically.
  */
 
 import { query } from '../../../core/db/postgres.js';
-import { getSystemPrompt, streamChat } from '../../llm/services/ollama-service.js';
+import { getSystemPrompt } from '../../llm/services/prompts.js';
+import { resolveUsecase } from '../../llm/services/llm-provider-resolver.js';
+import {
+  streamChat,
+  type ProviderConfig,
+} from '../../llm/services/openai-compatible-client.js';
 import { sanitizeLlmInput } from '../../../core/utils/sanitize-llm-input.js';
 import { htmlToMarkdown } from '../../../core/services/content-converter.js';
 import { logger } from '../../../core/utils/logger.js';
-import { getSharedLlmSettings } from '../../../core/services/admin-settings-service.js';
 import { acquireWorkerLock, releaseWorkerLock } from '../../../core/services/redis-cache.js';
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 
 const QUALITY_BATCH_SIZE = parseInt(process.env.QUALITY_BATCH_SIZE ?? '5', 10);
-const QUALITY_MODEL_ENV = process.env.QUALITY_MODEL ?? process.env.DEFAULT_LLM_MODEL ?? '';
 const MAX_RETRIES = 3;
 
+interface QualityAssignment {
+  config: ProviderConfig & { id: string; name: string; defaultModel: string | null };
+  model: string;
+}
+
 /**
- * Resolve the quality model at runtime: env var > admin settings > hardcoded fallback.
+ * Resolve the `{config, model}` pair for the quality use case via the
+ * use-case resolver. Pulls from `llm_usecase_assignments` + `llm_providers`
+ * tables; picks up runtime admin edits without restart.
  */
-async function resolveQualityModel(): Promise<string> {
-  if (QUALITY_MODEL_ENV) return QUALITY_MODEL_ENV;
-  const sharedSettings = await getSharedLlmSettings();
-  const model = sharedSettings.llmProvider === 'openai'
-    ? sharedSettings.openaiModel
-    : sharedSettings.ollamaModel;
-  return model || 'qwen3:4b';
+async function resolveQualityAssignment(): Promise<QualityAssignment | null> {
+  try {
+    return await resolveUsecase('quality');
+  } catch {
+    return null;
+  }
 }
 
 // ─── State ────────────────────────────────────────────────────────────────────
@@ -99,11 +128,16 @@ export function parseQualityScores(text: string): QualityScores | null {
 /**
  * Collect the full streamed response from the quality analysis LLM call.
  * This is an internal batch job — no SSE, just accumulate chunks.
+ *
+ * Routes via `streamChat` against the resolved use-case provider config.
  */
-async function collectStreamedResponse(model: string, content: string): Promise<string> {
+async function collectStreamedResponse(
+  assignment: QualityAssignment,
+  content: string,
+): Promise<string> {
   const { sanitized } = sanitizeLlmInput(content);
   const systemPrompt = getSystemPrompt('analyze_quality');
-  const generator = streamChat(model, [
+  const generator = streamChat(assignment.config, assignment.model, [
     { role: 'system', content: systemPrompt },
     { role: 'user', content: sanitized },
   ]);
@@ -120,7 +154,7 @@ async function collectStreamedResponse(model: string, content: string): Promise<
  */
 async function analyzePageQuality(
   pageId: number,
-  model: string,
+  assignment: QualityAssignment,
   bodyHtml: string,
   bodyText: string,
   currentRetryCount: number = 0,
@@ -145,7 +179,7 @@ async function analyzePageQuality(
       return;
     }
 
-    const response = await collectStreamedResponse(model, markdown);
+    const response = await collectStreamedResponse(assignment, markdown);
     const scores = parseQualityScores(response);
 
     if (!scores) {
@@ -221,8 +255,25 @@ async function analyzePageQuality(
  */
 export async function processBatch(): Promise<number> {
   lastRunAt = new Date();
-  // Resolve model at runtime: env var > admin settings > hardcoded fallback
-  const model = await resolveQualityModel();
+  // Resolve `{config, model}` at runtime — no cache, picks up admin edits
+  // immediately via the provider cache-bus.
+  const assignment = await resolveQualityAssignment();
+
+  // When no provider/model can be resolved, mark pending pages as skipped
+  // and return rather than making a call with an empty model name (which
+  // would fail downstream and leave pages stuck in 'pending'). Hit when no
+  // default provider is configured or the quality use case has no model set.
+  if (!assignment || !assignment.model) {
+    const flipped = await query(
+      `UPDATE pages SET quality_status = 'skipped'
+       WHERE quality_status = 'pending' AND deleted_at IS NULL`,
+    );
+    logger.warn(
+      { providerId: assignment?.config.providerId, flippedToSkipped: flipped.rowCount ?? 0 },
+      'No quality provider/model configured (Settings → LLM → Use case assignments). Marked pending pages as skipped — admin must call forceQualityRescan() to reprocess after fixing the config.',
+    );
+    return 0;
+  }
 
   // Priority 1: Unscored pages (status = 'pending')
   const pendingResult = await query<{
@@ -303,7 +354,7 @@ export async function processBatch(): Promise<number> {
 
   // Process each page sequentially (LLM calls are resource-intensive)
   for (const page of pages) {
-    await analyzePageQuality(page.id, model, page.body_html, page.body_text, page.quality_retry_count);
+    await analyzePageQuality(page.id, assignment, page.body_html, page.body_text, page.quality_retry_count);
   }
 
   return pages.length;
@@ -341,7 +392,10 @@ export function startQualityWorker(intervalMinutes?: number): void {
     }
   }, intervalMs);
 
-  logger.info({ intervalMinutes: interval, batchSize: QUALITY_BATCH_SIZE, model: QUALITY_MODEL_ENV || '(from admin settings)' }, 'Background quality analysis worker started');
+  logger.info(
+    { intervalMinutes: interval, batchSize: QUALITY_BATCH_SIZE },
+    'Background quality analysis worker started (model resolved at batch time from admin settings)',
+  );
 }
 
 /**
@@ -409,7 +463,7 @@ export async function getQualityStatus(): Promise<{
   intervalMinutes: number;
   model: string;
 }> {
-  const [result, model] = await Promise.all([
+  const [result, assignment] = await Promise.all([
     query<{
       total: string;
       analyzed: string;
@@ -430,7 +484,7 @@ export async function getQualityStatus(): Promise<{
        FROM pages
        WHERE deleted_at IS NULL`,
     ),
-    resolveQualityModel(),
+    resolveQualityAssignment(),
   ]);
 
   const row = result.rows[0];
@@ -448,6 +502,6 @@ export async function getQualityStatus(): Promise<{
     isProcessing,
     lastRunAt: lastRunAt ? lastRunAt.toISOString() : null,
     intervalMinutes,
-    model,
+    model: assignment?.model ?? '',
   };
 }

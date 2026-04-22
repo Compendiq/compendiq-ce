@@ -21,7 +21,7 @@ vi.mock('../utils/logger.js', () => ({
 
 import { query as mockQuery } from '../db/postgres.js';
 import { getRedisClient } from './redis-cache.js';
-import { userHasPermission, getUserSpaceRole, getUserAccessibleSpaces, isSystemAdmin, invalidateRbacCache } from './rbac-service.js';
+import { userHasPermission, userHasGlobalPermission, getUserSpaceRole, getUserAccessibleSpaces, isSystemAdmin, invalidateRbacCache } from './rbac-service.js';
 
 describe('RBAC service', () => {
   beforeEach(() => {
@@ -154,6 +154,73 @@ describe('RBAC service', () => {
 
       const result = await userHasPermission('user-id', 'edit', 'SPACE1', 42);
       expect(result).toBe(true);
+    });
+  });
+
+  describe('userHasGlobalPermission', () => {
+    it('should grant permission to admin users regardless of role assignments', async () => {
+      const queryMock = mockQuery as ReturnType<typeof vi.fn>;
+      queryMock.mockResolvedValueOnce({ rows: [{ id: 1 }] }); // admin check passes
+
+      const result = await userHasGlobalPermission('admin-id', 'llm:query');
+      expect(result).toBe(true);
+    });
+
+    it('should grant permission when user has it via direct assignment in any space', async () => {
+      const queryMock = mockQuery as ReturnType<typeof vi.fn>;
+      queryMock.mockResolvedValueOnce({ rows: [] }); // not admin
+      queryMock.mockResolvedValueOnce({ rows: [{ permissions: ['pages:read', 'llm:query'] }] }); // direct assignments
+      queryMock.mockResolvedValueOnce({ rows: [] }); // no group assignments
+
+      const result = await userHasGlobalPermission('user-id', 'llm:query');
+      expect(result).toBe(true);
+    });
+
+    it('should grant permission when user has it via group membership', async () => {
+      const queryMock = mockQuery as ReturnType<typeof vi.fn>;
+      queryMock.mockResolvedValueOnce({ rows: [] }); // not admin
+      queryMock.mockResolvedValueOnce({ rows: [] }); // no direct assignments
+      queryMock.mockResolvedValueOnce({ rows: [{ permissions: ['sync:trigger'] }] }); // group grants sync
+
+      const result = await userHasGlobalPermission('user-id', 'sync:trigger');
+      expect(result).toBe(true);
+    });
+
+    it('should union permissions across multiple assignments', async () => {
+      const queryMock = mockQuery as ReturnType<typeof vi.fn>;
+      queryMock.mockResolvedValueOnce({ rows: [] }); // not admin
+      queryMock.mockResolvedValueOnce({ rows: [
+        { permissions: ['pages:read'] },
+        { permissions: ['llm:query'] },
+      ]}); // two direct assignments in different spaces
+      queryMock.mockResolvedValueOnce({ rows: [
+        { permissions: ['sync:trigger'] },
+      ]}); // one group assignment
+
+      const result = await userHasGlobalPermission('user-id', 'sync:trigger');
+      expect(result).toBe(true);
+      // Re-query: already cached if Redis was live; here Redis is null, so
+      // we can also verify llm:query resolves — but that would re-query.
+    });
+
+    it('should deny when user has no assignments', async () => {
+      const queryMock = mockQuery as ReturnType<typeof vi.fn>;
+      queryMock.mockResolvedValueOnce({ rows: [] }); // not admin
+      queryMock.mockResolvedValueOnce({ rows: [] }); // no direct
+      queryMock.mockResolvedValueOnce({ rows: [] }); // no group
+
+      const result = await userHasGlobalPermission('user-id', 'llm:query');
+      expect(result).toBe(false);
+    });
+
+    it('should deny when user has roles but not the requested permission', async () => {
+      const queryMock = mockQuery as ReturnType<typeof vi.fn>;
+      queryMock.mockResolvedValueOnce({ rows: [] }); // not admin
+      queryMock.mockResolvedValueOnce({ rows: [{ permissions: ['pages:read'] }] });
+      queryMock.mockResolvedValueOnce({ rows: [] });
+
+      const result = await userHasGlobalPermission('user-id', 'llm:query');
+      expect(result).toBe(false);
     });
   });
 

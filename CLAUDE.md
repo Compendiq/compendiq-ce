@@ -6,7 +6,7 @@ This file provides guidance to Claude Code when working with this repository. AG
 
 **Compendiq** — AI-powered knowledge base management web app that integrates with Confluence Data Center (on-premises) and supports multiple LLM providers (Ollama, OpenAI-compatible APIs) for article improvement, generation, summarization, and RAG-powered Q&A. Multi-user: each user configures their own Confluence PAT and space selections. Monorepo: `backend/` (Fastify 5 + PostgreSQL + Redis) and `frontend/` (React 19 + Vite).
 
-See `@docs/ARCHITECTURE-DECISIONS.md` for all ADRs. See `@docs/ACTION-PLAN.md` for the implementation plan.
+See `@docs/ARCHITECTURE-DECISIONS.md` for all ADRs. See `@docs/ACTION-PLAN.md` for the implementation plan. See `@docs/architecture/` for the Mermaid architecture diagrams (system context, containers, domain boundaries, deployment, ERD, auth/sync/RAG/license flows, content pipeline).
 
 ## Mandatory Rules
 
@@ -15,6 +15,7 @@ See `@docs/ARCHITECTURE-DECISIONS.md` for all ADRs. See `@docs/ACTION-PLAN.md` f
 3. **Never commit secrets** — No `.env`, API keys, PATs, passwords, or credentials.
 4. **Ask before assuming** — If ambiguous, ask for clarification before proceeding.
 5. **Follow the ADRs** — All architectural decisions are in `docs/ARCHITECTURE-DECISIONS.md`. Do not deviate without discussion.
+6. **Keep architecture diagrams in sync** — `docs/architecture/*.md` are part of the source of truth. In the same PR as any code change that affects the system structure, update the affected diagram(s). See `docs/architecture/README.md` for the mapping of code areas → diagrams (e.g. Docker compose → `02-container.md` + `05-deployment.md`; new domain/service or ESLint boundary change → `03-backend-domains.md`; new migration that adds/renames/drops a table or FK → `06-data-model.md`; auth/sync/RAG/license flow changes → the matching `07-`/`08-`/`09-`/`10-*.md`; content-converter changes → `11-content-pipeline.md`). If unsure how to update a diagram, flag it in the PR description rather than leaving it stale.
 
 ## Build Commands
 
@@ -43,18 +44,22 @@ compendiq/
 │   ├── core/                        # Shared infrastructure (no domain imports)
 │   │   ├── enterprise/              # Enterprise plugin loader (types, noop, loader, features)
 │   │   ├── db/postgres.ts           # Connection pool + migration runner
-│   │   ├── db/migrations/           # Sequential SQL files (001-049)
+│   │   ├── db/migrations/           # Sequential SQL files (001-051)
 │   │   ├── plugins/                 # Fastify plugins (auth, correlation-id, redis)
 │   │   ├── services/                # Cross-cutting: redis-cache, audit-service, error-tracker,
 │   │   │                            #   content-converter, circuit-breaker, image-references,
-│   │   │                            #   rbac-service, notification-service,
+│   │   │                            #   rbac-service, notification-service, queue-service,
+│   │   │                            #   email-service, email-templates,
 │   │   │                            #   pdf-service, admin-settings-service, version-snapshot
 │   │   └── utils/                   # crypto, logger, sanitize-llm-input, ssrf-guard, tls-config, llm-config
 │   ├── domains/
 │   │   ├── confluence/services/     # confluence-client, sync-service, attachment-handler,
-│   │   │                            #   subpage-context, sync-overview-service
-│   │   ├── llm/services/            # ollama-service, ollama-provider, openai-service,
-│   │   │                            #   llm-provider, embedding-service, rag-service, llm-cache
+│   │   │                            #   subpage-context, sync-overview-service, confluence-rate-limiter
+│   │   ├── llm/services/            # openai-compatible-client (unified; queue + per-provider breakers),
+│   │   │                            #   llm-provider-service (CRUD), llm-provider-resolver (resolveUsecase),
+│   │   │                            #   llm-provider-bootstrap (env seed on fresh install), cache-bus,
+│   │   │                            #   embedding-service, rag-service, llm-cache, llm-audit-hook,
+│   │   │                            #   llm-queue, prompts
 │   │   └── knowledge/services/      # auto-tagger, quality-worker, summary-worker,
 │   │                                #   version-tracker, duplicate-detector
 │   ├── routes/
@@ -92,12 +97,14 @@ Import restrictions enforced by `eslint-plugin-boundaries`:
 
 ## Tech Stack
 
-- **Backend**: Fastify 5, TypeScript, PostgreSQL 17 (pgvector), Redis 8, `ollama` npm package, `jose` (JWT), `bcrypt`, `pg`, `undici`, `zod`, `pino`
-- **LLM providers**: Ollama (default) + OpenAI-compatible APIs (via `undici`) — configurable per-user or server-wide via `LLM_PROVIDER`
+- **Backend**: Fastify 5, TypeScript, PostgreSQL 17 (pgvector), Redis 8, `ollama` npm package, `jose` (JWT), `bcrypt`, `pg`, `undici`, `zod`, `pino`, `bullmq`, `nodemailer`
+- **LLM providers**: N named `openai-compatible` endpoints configured in Settings → LLM. Ollama is reached via its `/v1` shim — no separate protocol. Each use case (chat/summary/quality/auto_tag/embedding) either inherits a default provider or picks an explicit provider+model. Queue + per-provider circuit breakers wrap every outbound call inside `openai-compatible-client.ts`
 - **Frontend**: React 19, Vite, TailwindCSS 4, Radix UI, Zustand, TanStack Query, Framer Motion, TipTap v3, Sonner
 - **Content conversion**: `turndown` + `jsdom` + `turndown-plugin-gfm` (Confluence XHTML → Markdown), `marked` (Markdown → HTML)
 - **PDF**: `pdf-lib` for PDF export/import processing
 - **RAG**: pgvector (HNSW index), `bge-m3` embeddings (1024 dimensions) via Ollama, hybrid search (vector + keyword)
+- **Job Queue**: BullMQ (Redis-backed) with setInterval fallback, configurable via `USE_BULLMQ` env var
+- **Email**: `nodemailer` for SMTP-based notifications, configurable via admin UI or env vars
 - **Docker**: `pgvector/pgvector:pg17`, `redis:8-alpine`, multi-stage Dockerfiles
 
 ## External Services
@@ -105,8 +112,7 @@ Import restrictions enforced by `eslint-plugin-boundaries`:
 | Service | Connection | Auth |
 |---------|-----------|------|
 | Confluence Data Center 9.2.15 | Per-user URL from `user_settings` | Bearer PAT (AES-256-GCM encrypted at rest) |
-| Ollama | Shared server, `OLLAMA_BASE_URL` env var (default `http://localhost:11434`), `LLM_VERIFY_SSL` (default `true`) | Optional Bearer token via `LLM_BEARER_TOKEN` env var, `LLM_AUTH_TYPE` (`bearer`\|`none`, default `bearer`) |
-| OpenAI-compatible | `OPENAI_BASE_URL` env var (works with OpenAI, Azure OpenAI, LM Studio, vLLM, etc.) | `OPENAI_API_KEY` env var |
+| LLM providers (Ollama, OpenAI, Azure OpenAI, LM Studio, vLLM, llama.cpp, LocalAI, …) | Configured via admin UI (Settings → LLM); rows in `llm_providers` table with per-use-case assignments (ADR-021). Legacy env vars (`OLLAMA_BASE_URL`, `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `LLM_BEARER_TOKEN`, `DEFAULT_LLM_MODEL`, `SUMMARY_MODEL`, `QUALITY_MODEL`, `EMBEDDING_MODEL`) remain as first-boot seed only. | Bearer token (AES-256-GCM encrypted at rest) + `LLM_AUTH_TYPE` (`bearer`\|`none`) + `LLM_VERIFY_SSL` per provider row |
 | PostgreSQL | `POSTGRES_URL` env var | Password via env |
 | Redis | `REDIS_URL` env var | Password via env |
 
@@ -130,6 +136,7 @@ Compendiq uses an open-core model. The CE (Community Edition) is this repo. The 
 | `frontend/src/features/admin/OidcSettingsPage.tsx` | OIDC/SSO admin UI (admin Settings → SSO tab, gated by `isEnterprise`) |
 | `frontend/src/features/auth/OidcCallbackPage.tsx` | Route `/auth/oidc/callback` — exchanges login_code for JWT |
 | `docker/Dockerfile.enterprise` | Multi-stage Dockerfile template for EE builds (Layer 2+3 protection) |
+| `backend/src/domains/llm/services/llm-audit-hook.ts` | `LlmAuditEntry` interface, `emitLlmAudit()` fire-and-forget, `setLlmAuditHook()` for EE registration |
 | `scripts/build-enterprise.sh` | Template script documenting the EE overlay merge process |
 
 **Rules for the enterprise extension points:**
@@ -232,32 +239,44 @@ Copy `.env.example` to `.env`. Key vars:
 - `PAT_ENCRYPTION_KEY` (32+ chars, required)
 - `POSTGRES_URL` (default: `postgresql://kb_user:changeme-postgres@localhost:5432/kb_creator`)
 - `REDIS_URL` (default: `redis://:changeme-redis@localhost:6379`)
-- `OLLAMA_BASE_URL` (default: `http://localhost:11434`)
-- `LLM_PROVIDER` (optional, `ollama` or `openai`, default: `ollama`)
-- `LLM_BEARER_TOKEN` (optional, Bearer token for authenticated Ollama/LLM proxies)
+- `OLLAMA_BASE_URL` (**deprecated — seed-only**; consulted once on fresh install to seed the first `llm_providers` row. After that, configure providers in Settings → LLM.)
+- `LLM_PROVIDER` (**removed** — was the two-slot toggle. Replaced by the `llm_providers` table + per-use-case assignments.)
+- `LLM_BEARER_TOKEN` (**deprecated — seed-only**; Bearer token on the seeded Ollama row, consulted once on fresh install. After that, configure per-provider API keys in Settings → LLM.)
 - `LLM_AUTH_TYPE` (optional, `bearer` or `none`, default: `bearer`)
 - `LLM_VERIFY_SSL` (optional, set to `false` to disable TLS verification for LLM connections)
 - `LLM_STREAM_TIMEOUT_MS` (optional, streaming timeout in ms, default: `300000`)
 - `LLM_CACHE_TTL` (optional, Redis TTL in seconds for LLM cache, default: `3600`)
+- `LLM_CONCURRENCY` (optional, default: `4`, max concurrent LLM requests)
+- `LLM_MAX_QUEUE_DEPTH` (optional, default: `50`, reject when exceeded)
+- `LLM_MAX_CONCURRENT_STREAMS_PER_USER` (deprecated bootstrap fallback — configured in Settings → LLM → Runtime limits, issue #268; consulted only when the `admin_settings` row is absent; fallback-of-last-resort: `3`; range: `1`–`20`)
 - `OPENAI_BASE_URL` (optional, OpenAI-compatible API base URL)
 - `OPENAI_API_KEY` (optional, required when using openai provider)
 - `EMBEDDING_MODEL` (default: `bge-m3`, server-wide, 1024 dims)
 - `EMBEDDING_DIMENSIONS` (default: `1024`, server-wide embedding vector dimensions)
 - `FTS_LANGUAGE` (default: `simple`, PostgreSQL text search configuration -- e.g. `german`, `english`)
-- `DEFAULT_LLM_MODEL` (optional, fallback model for background workers)
+- `DEFAULT_LLM_MODEL` (deprecated bootstrap fallback — configured in Settings → LLM → Use case assignments, issue #214; consulted only when the `admin_settings` row is absent)
 - `QUALITY_CHECK_INTERVAL_MINUTES` (default: `60`)
 - `QUALITY_BATCH_SIZE` (default: `5`, pages per batch)
-- `QUALITY_MODEL` (default: `DEFAULT_LLM_MODEL`, then `qwen3:4b`)
+- `QUALITY_MODEL` (deprecated bootstrap fallback — configured in Settings → LLM → Use case assignments, issue #214; consulted only when the `admin_settings` row is absent; fallback-of-last-resort: `qwen3:4b`)
 - `SUMMARY_CHECK_INTERVAL_MINUTES` (default: `60`)
 - `SUMMARY_BATCH_SIZE` (default: `5`, pages per batch)
-- `SUMMARY_MODEL` (default: `DEFAULT_LLM_MODEL`, then empty = disabled)
+- `SUMMARY_MODEL` (deprecated bootstrap fallback — configured in Settings → LLM → Use case assignments, issue #214; consulted only when the `admin_settings` row is absent)
+- `USE_BULLMQ` (optional, default `true`, set `false` to fall back to legacy setInterval workers)
 - `SYNC_INTERVAL_MIN` (optional, sync scheduler polling interval in minutes, default: `15`)
 - `CONFLUENCE_VERIFY_SSL` (optional, set to `false` to disable TLS for Confluence)
+- `CONFLUENCE_RATE_LIMIT_RPM` (optional, default: `60`, admin-configurable)
 - `ATTACHMENTS_DIR` (optional, attachment cache dir, default: `data/attachments`)
 - `NODE_EXTRA_CA_CERTS` (optional, PEM CA bundle path for self-signed certs)
 - `OTEL_ENABLED` (optional, set to `true` to enable OpenTelemetry tracing)
 - `OTEL_SERVICE_NAME` (optional, default: `compendiq-backend`)
 - `OTEL_EXPORTER_OTLP_ENDPOINT` (optional, OTLP collector endpoint)
+- `SMTP_HOST` (optional, SMTP server hostname)
+- `SMTP_PORT` (optional, default: `587`)
+- `SMTP_SECURE` (optional, set to `true` for TLS)
+- `SMTP_USER` (optional, SMTP username)
+- `SMTP_PASS` (optional, SMTP password)
+- `SMTP_FROM` (optional, sender email address)
+- `SMTP_ENABLED` (optional, set to `true` to enable email notifications; all SMTP vars also configurable via admin UI)
 
 - `COMPENDIQ_LICENSE_KEY` (deprecated bootstrap fallback — new installs should leave this unset and paste the key into Settings → License after first login; the EE plugin persists it in the `admin_settings` table and the env var is only consulted when the DB row is absent)
 
