@@ -223,9 +223,22 @@ erDiagram
 
 - **User ownership is pervasive.** Almost every table carries `user_id`
   (UUID, FK → `users.id`) — Compendiq is multi-tenant at the user level.
-- **pgvector.** `page_embeddings.embedding` is `vector(1024)` with an HNSW
-  index (`m=16`, `ef_construction=64`) for cosine similarity. Query-time
-  `ef_search` is set per request.
+- **pgvector.** `page_embeddings.embedding` defaults to `vector(1024)` with
+  an HNSW index (`m=16`, `ef_construction=200`) for cosine similarity, sized
+  for `bge-m3`. The column type and index path are **dimension-driven** and
+  rewritten by `enqueueReembedAll({ newDimensions })` when the admin switches
+  the embedding model:
+
+  | Dimensions  | Column type   | Index                                           |
+  |-------------|---------------|-------------------------------------------------|
+  | `n ≤ 2000`  | `vector(n)`   | HNSW `vector_cosine_ops` (default tier)         |
+  | `2001–4000` | `halfvec(n)`  | HNSW `halfvec_cosine_ops` (float16, ~50% size)  |
+  | `n > 4000`  | `vector(n)`   | no index (sequential scan; warning logged)      |
+
+  pgvector 0.8 caps HNSW at 2000 dims for `vector` and 4000 dims for `halfvec`;
+  larger models (e.g. `qwen3-embedding:8b` at 4096) fall to the seq-scan tier.
+  Query-time `ef_search` is set per request. Source of truth:
+  `backend/src/domains/llm/services/embedding-service.ts` (`enqueueReembedAll`).
 - **Encryption at rest.** `user_settings.confluence_pat` is stored as a
   ciphertext blob (AES-256-GCM, key from `PAT_ENCRYPTION_KEY`). Never
   log or expose it to the frontend.
