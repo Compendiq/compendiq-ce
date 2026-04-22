@@ -63,7 +63,12 @@ async function uploadLocalImagesToConfluence(
     const pageId = parts[parts.length - 2] ?? '';
     if (!filename || !pageId) continue;
 
-    // Read the file from local attachment cache
+    // Read the file from local attachment cache.
+    // Both `pageId` and `filename` are parsed out of the `src` attribute of
+    // an <img> tag produced by our own editor and are passed through
+    // `path.basename()` to strip any `..` / path separators before
+    // concatenation with the trusted `ATTACHMENTS_BASE` root.
+    // nosemgrep
     const filePath = path.join(ATTACHMENTS_BASE, path.basename(pageId), path.basename(filename));
     let fileData: Buffer;
     try {
@@ -1024,12 +1029,16 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         `UPDATE pages SET
            title = $2, body_html = $3, body_text = $4,
            version = $5, last_modified_at = NOW(), embedding_dirty = TRUE,
-           embedding_status = 'not_embedded', embedded_at = NULL
+           embedding_status = 'not_embedded', embedded_at = NULL,
+           -- Stamp the local-edit markers (#305). Standalone pages have no
+           -- upstream so the markers never clear — they just record who
+           -- touched the page last.
+           local_modified_at = NOW(), local_modified_by = $${body.visibility ? 7 : 6}
            ${body.visibility ? ', visibility = $6' : ''}
          WHERE id = $1`,
         body.visibility
-          ? [id, body.title, body.bodyHtml, bodyText, newVersion, body.visibility]
-          : [id, body.title, body.bodyHtml, bodyText, newVersion],
+          ? [id, body.title, body.bodyHtml, bodyText, newVersion, body.visibility, userId]
+          : [id, body.title, body.bodyHtml, bodyText, newVersion, userId],
       );
 
       await cache.invalidate(userId, 'pages');
@@ -1076,7 +1085,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       `UPDATE pages SET
          title = $2, body_storage = $3, body_html = $4, body_text = $5,
          version = $6, last_synced = NOW(), embedding_dirty = TRUE,
-         embedding_status = 'not_embedded', embedded_at = NULL
+         embedding_status = 'not_embedded', embedded_at = NULL,
+         -- Clear local-edit markers (#305): the Confluence push has
+         -- succeeded, so the local state is now in sync with the remote.
+         local_modified_at = NULL, local_modified_by = NULL
        WHERE id = $1`,
       [id, body.title, confPage.body?.storage?.value ?? storageBody,
        bodyHtml, bodyText, confPage.version.number],
@@ -1289,6 +1301,11 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           version = version + 1, embedding_dirty = TRUE,
           embedding_status = 'not_embedded', embedded_at = NULL,
           last_modified_at = NOW(),
+          -- Stamp local-edit markers (#305): publishing a draft is a local
+          -- edit — the content hits the live columns for the first time
+          -- here, not through sync. Credit goes to the draft author.
+          local_modified_at = NOW(),
+          local_modified_by = COALESCE(draft_updated_by, local_modified_by),
           draft_body_html = NULL, draft_body_text = NULL, draft_body_storage = NULL,
           draft_updated_at = NULL, draft_updated_by = NULL
          WHERE id = $1`,
@@ -1496,7 +1513,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
             `UPDATE pages SET
                title = $2, body_storage = $3, body_html = $4, body_text = $5,
                version = $6, last_synced = NOW(), embedding_dirty = TRUE,
-               embedding_status = 'not_embedded', embedded_at = NULL
+               embedding_status = 'not_embedded', embedded_at = NULL,
+               -- Clear local-edit markers (#305): this is a bulk
+               -- refresh-from-Confluence path (sync-side).
+               local_modified_at = NULL, local_modified_by = NULL
              WHERE confluence_id = $1`,
             [id, page.title, page.body?.storage?.value ?? '', bodyHtml, bodyText, page.version.number],
           );

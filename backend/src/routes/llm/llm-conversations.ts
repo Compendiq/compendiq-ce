@@ -143,9 +143,13 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
         `UPDATE pages SET
            title = $2, body_html = $3, body_text = $4,
            version = $5, last_modified_at = NOW(), embedding_dirty = TRUE,
-           embedding_status = 'not_embedded', embedded_at = NULL
+           embedding_status = 'not_embedded', embedded_at = NULL,
+           -- Stamp local-edit markers (#305): chat write-back is a local
+           -- AI edit. Previously the write was invisible to sync, which
+           -- would overwrite the AI-improved content on the next pull.
+           local_modified_at = NOW(), local_modified_by = $6
          WHERE id = $1`,
-        [existingPage.id, pageTitle, bodyHtml, bodyText, newVersion],
+        [existingPage.id, pageTitle, bodyHtml, bodyText, newVersion, userId],
       );
     } else {
       // --- Confluence page: sync to Confluence ---
@@ -173,7 +177,11 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
         `UPDATE pages SET
            title = $2, body_storage = $3, body_html = $4, body_text = $5,
            version = $6, last_synced = NOW(), embedding_dirty = TRUE,
-           embedding_status = 'not_embedded', embedded_at = NULL
+           embedding_status = 'not_embedded', embedded_at = NULL,
+           -- Clear local-edit markers (#305): the Confluence push for
+           -- the AI-improved content has succeeded, so the local state
+           -- is now in sync with the remote.
+           local_modified_at = NULL, local_modified_by = NULL
          WHERE id = $1`,
         [existingPage.id, pageTitle, page.body?.storage?.value ?? storageBody, updatedBodyHtml, updatedBodyText, newVersion],
       );
