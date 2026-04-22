@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+> Customer-facing release notes for v0.3.0 live at [`docs/releases/v0.3.0.md`](docs/releases/v0.3.0.md). The entries below stay in commit voice for engineers.
+
 ### Added
 
 - **BullMQ re-embed-all worker + admin lock visibility** -- replaces the `TODO(#257)` stub in `enqueueReembedAll` with a real worker. Fixed `jobId='reembed-all'` collapses concurrent triggers; explicit lazy-removal sweep lets a completed jobId be reused on the next POST. Worker waits on per-user embedding locks (up to `REEMBED_WAIT_LOCKS_MS`) and emits `phase: 'waiting-on-user-locks'`. New admin-only `GET /api/admin/embedding/locks` returns `EmbeddingLockSnapshot[]` (userId, holderEpoch, ttlRemainingMs). `POST /api/admin/embedding/locks/:userId/release` is the force-release escape hatch — audit-logged via `ADMIN_ACTION.embedding_lock.force_release_embedding_lock`, with a holder-epoch guard in `processDirtyPages` that re-reads the lock every 20 pages and aborts on mismatch. Configurable `reembed_history_retention` admin setting (default 150, min 10, max 10000, migration 055) drives BullMQ `removeOnComplete`/`removeOnFail`. Frontend `ActiveEmbeddingLocksBanner` with per-row Force-release (inline-confirm pattern). (#257, PR #261)
