@@ -66,8 +66,9 @@ export async function bootstrapLlmProviders(): Promise<void> {
   bumpProviderCacheVersion();
 
   // Allowlist every configured provider URL with the ssrf-guard so client calls
-  // from the resolver path aren't rejected.
-  const { addAllowedBaseUrl } = await import('../../../core/utils/ssrf-guard.js');
+  // from the resolver path aren't rejected. Silent variant — this is a
+  // per-pod startup scan, not a mutation, so there is nothing to propagate.
+  const { addAllowedBaseUrlSilent } = await import('../../../core/utils/ssrf-guard.js');
   const rows = await query<{ base_url: string }>(`SELECT base_url FROM llm_providers`);
-  for (const r of rows.rows) addAllowedBaseUrl(r.base_url);
+  for (const r of rows.rows) addAllowedBaseUrlSilent(r.base_url);
 }

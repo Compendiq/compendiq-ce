@@ -80,7 +80,11 @@ sequenceDiagram
   for the duration of the run, and never logs it.
 - **SSRF guard** — `confluence-client` uses the shared SSRF guard from
   `core/utils/ssrf-guard.ts` to reject URLs pointing at loopback / link-local
-  / metadata IPs.
+  / metadata IPs. Each user-configured Confluence URL is added to a
+  per-pod allowlist; mutations (add / remove via Settings → Confluence or
+  LLM provider CRUD) are broadcast across pods over Redis pub/sub
+  (`ssrf:allowlist:changed`) via `core/services/ssrf-allowlist-bus.ts` so
+  multi-pod deployments stay coherent (issue #306).
 - **TLS** — respects `CONFLUENCE_VERIFY_SSL` (default `true`) and
   `NODE_EXTRA_CA_CERTS` for self-signed internal CAs.
 - **Idempotency** — upsert by `(user_id, confluence_id)`. `version` column

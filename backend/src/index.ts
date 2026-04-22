@@ -3,8 +3,7 @@
 import { initTelemetry, shutdownTelemetry } from './telemetry.js';
 
 import { buildApp } from './app.js';
-import { runMigrations, closePool, closeVectorPool, query } from './core/db/postgres.js';
-import { addAllowedBaseUrl } from './core/utils/ssrf-guard.js';
+import { runMigrations, closePool, closeVectorPool } from './core/db/postgres.js';
 import { startQueueWorkers, stopQueueWorkers } from './core/services/queue-service.js';
 import { markStartupComplete } from './routes/foundation/health.js';
 import { logger } from './core/utils/logger.js';
@@ -36,22 +35,9 @@ async function start() {
   await runMigrations();
   logger.info('Migrations complete');
 
-  // Pre-register all user-configured Confluence URLs so the SSRF guard
-  // allows requests to on-premises instances on private networks (#480).
-  try {
-    const urlRows = await query<{ confluence_url: string }>(
-      'SELECT DISTINCT confluence_url FROM user_settings WHERE confluence_url IS NOT NULL',
-      [],
-    );
-    for (const row of urlRows.rows) {
-      addAllowedBaseUrl(row.confluence_url);
-    }
-    if (urlRows.rows.length > 0) {
-      logger.info({ count: urlRows.rows.length }, 'Registered Confluence URLs in SSRF allowlist');
-    }
-  } catch (err) {
-    logger.warn({ err }, 'Failed to pre-register Confluence URLs in SSRF allowlist');
-  }
+  // SSRF allowlist bootstrap is now wired inside `buildApp()` alongside the
+  // Redis pub/sub subscriber (issue #306) so every pod, in every process,
+  // populates its local allowlist in the same place.
 
   // Legacy single-provider setup (`LLM_PROVIDER`) removed — providers are
   // now registered in `llm_providers` and selected per use-case.

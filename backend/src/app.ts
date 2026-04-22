@@ -66,6 +66,8 @@ import { logger } from './core/utils/logger.js';
 import { APP_VERSION } from './core/utils/version.js';
 import { loadEnterprisePlugin } from './core/enterprise/loader.js';
 import { bootstrapLlmProviders } from './domains/llm/services/llm-provider-bootstrap.js';
+import { bootstrapSsrfAllowlist } from './domains/confluence/services/sync-service.js';
+import { initSsrfAllowlistBus } from './core/services/ssrf-allowlist-bus.js';
 
 export async function buildApp() {
   const app = Fastify({
@@ -149,12 +151,28 @@ export async function buildApp() {
   // Let the enterprise plugin register its own routes (e.g., full license endpoint)
   await enterprise.registerRoutes(app, license);
 
+  // ── SSRF Allowlist Bus (issue #306) ──────────────────────────────
+  // Wire Redis pub/sub so mutations on one pod propagate to peer pods.
+  // Fails soft: if Redis is unavailable the allowlist still works in
+  // single-pod mode via the local `Set<string>`.
+  const teardownSsrfBus = await initSsrfAllowlistBus(app.redis);
+  app.addHook('onClose', async () => {
+    await teardownSsrfBus();
+  });
+
   // ── LLM Provider Bootstrap ───────────────────────────────────────
   // Seed llm_providers from env on fresh installs, rewrite the Ollama
   // sentinel if OLLAMA_BASE_URL changed, and allowlist every provider
   // URL with the SSRF guard. Runs after migrations (index.ts) so the
   // llm_providers table exists.
   await bootstrapLlmProviders();
+
+  // ── Confluence URL SSRF Allowlist Bootstrap (issue #306) ─────────
+  // Read every user-configured Confluence URL into the local allowlist.
+  // Uses the silent variant internally so starting a pod does not flood
+  // the pub/sub channel with N redundant add events (other pods already
+  // populated their sets from the same DB rows on their own boot).
+  await bootstrapSsrfAllowlist();
 
   // Known Fastify HTTP error names that are safe to expose to clients.
   // Anything not in this set could leak internal details (e.g. TypeError, RangeError).
