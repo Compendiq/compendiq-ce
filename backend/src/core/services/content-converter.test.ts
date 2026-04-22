@@ -37,6 +37,10 @@ import {
   SECTION_PIXEL_WIDTH_PAGE,
   ATTACHMENTS_MACRO_PAGE,
   ATTACHMENTS_MACRO_NO_PARAMS_PAGE,
+  JIRA_PAGE,
+  INCLUDE_PAGE,
+  EXCERPT_INCLUDE_PAGE,
+  TOC_WITH_PARAMS_PAGE,
 } from './__fixtures__/confluence-xhtml.js';
 
 describe('content-converter', () => {
@@ -174,15 +178,21 @@ describe('content-converter', () => {
     });
 
     it('wraps unknown macros with data attributes', () => {
+      // `widget-connector` is our canary for "truly unknown" — the top-4
+      // named macros (jira, include, user mention, toc) now have
+      // dedicated paths in #300.
       const html = confluenceToHtml(UNKNOWN_MACRO_PAGE);
       expect(html).toContain('class="confluence-macro-unknown"');
-      expect(html).toContain('data-macro-name="jira"');
-      expect(html).toContain('Related issue');
+      expect(html).toContain('data-macro-name="widget-connector"');
+      expect(html).toContain('Embedded widget');
     });
 
-    it('strips user mentions and emoticons', () => {
+    it('preserves user mentions as @username spans (#300)', () => {
       const html = confluenceToHtml(USER_MENTIONS_PAGE);
-      expect(html).not.toContain('ri:user');
+      // Raw `<ri:user>` is rewritten into `<span class="confluence-user-mention">`.
+      expect(html).not.toContain('ri:user'); // raw tag removed
+      expect(html).toContain('class="confluence-user-mention"');
+      // Emoticons still stripped (no round-trip for those).
       expect(html).not.toContain('ac:emoticon');
       expect(html).toContain('Contact');
     });
@@ -820,28 +830,25 @@ describe('content-converter', () => {
   // ========== Lossy macro documentation ==========
 
   describe('lossy conversion documentation', () => {
-    it('documents what is lost in user mentions', () => {
+    it('user mentions now round-trip back to ri:user (#300)', () => {
       const html = confluenceToHtml(USER_MENTIONS_PAGE);
       const xhtml = htmlToConfluence(html);
-      // User mentions are stripped and cannot be restored
-      expect(xhtml).not.toContain('ri:user');
-      // This is expected - document it
+      expect(xhtml).toContain('<ri:user');
     });
 
-    it('documents what is lost in unknown macros', () => {
+    it('unknown macros (not in the top-4 #300 coverage) are still lossy', () => {
+      // The `widget-connector` fixture is not in the top-4 covered in #300,
+      // so it continues to fall through to the unknown-macro wrapper.
       const html = confluenceToHtml(UNKNOWN_MACRO_PAGE);
       const xhtml = htmlToConfluence(html);
-      // Unknown macros lose their original structure
-      // They become divs with data attributes, not restored to ac:structured-macro
       expect(html).toContain('confluence-macro-unknown');
-      expect(xhtml).not.toContain('ac:name="jira"');
+      expect(xhtml).not.toContain('ac:name="widget-connector"');
     });
 
-    it('documents TOC macro is replaced with placeholder', () => {
+    it('TOC macro now round-trips back to ac:structured-macro[name=toc] (#300)', () => {
       const html = confluenceToHtml(TOC_PAGE);
       const xhtml = htmlToConfluence(html);
-      // TOC becomes a div placeholder, not restored to ac:structured-macro
-      expect(xhtml).not.toContain('ac:name="toc"');
+      expect(xhtml).toContain('ac:name="toc"');
     });
 
     it('documents emoticons are stripped', () => {
@@ -853,6 +860,123 @@ describe('content-converter', () => {
 });
 
 // ========== Figure/Caption pass-through tests (#13) ==========
+
+// ==========================================================================
+// #300 — improved paste-from-Confluence macro coverage
+// ==========================================================================
+
+describe('content-converter: #300 paste-from-Confluence macros', () => {
+  describe('JIRA issue macro', () => {
+    it('forward: renders [JIRA: KEY] span with data attributes', () => {
+      const html = confluenceToHtml(JIRA_PAGE);
+      expect(html).toContain('class="confluence-jira-issue"');
+      expect(html).toContain('data-key="PROJ-123"');
+      expect(html).toContain('data-server-id="abc-123"');
+      expect(html).toContain('[JIRA: PROJ-123]');
+    });
+
+    it('reverse: restores ac:structured-macro[name=jira] with params', () => {
+      const html = confluenceToHtml(JIRA_PAGE);
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toContain('ac:name="jira"');
+      expect(xhtml).toContain('<ac:parameter ac:name="key">PROJ-123</ac:parameter>');
+      expect(xhtml).toContain('<ac:parameter ac:name="serverId">abc-123</ac:parameter>');
+    });
+
+    it('double round-trip preserves the JIRA key', () => {
+      const once = htmlToConfluence(confluenceToHtml(JIRA_PAGE));
+      const twice = htmlToConfluence(confluenceToHtml(once));
+      expect(twice).toContain('PROJ-123');
+      expect(twice).toContain('ac:name="jira"');
+    });
+
+    it('Markdown emit keeps the JIRA key visible (turndown escapes brackets)', () => {
+      const md = htmlToMarkdown(confluenceToHtml(JIRA_PAGE));
+      // turndown escapes `[` / `]` in body text; the key itself must survive.
+      expect(md).toContain('JIRA: PROJ-123');
+    });
+  });
+
+  describe('include / excerpt-include macro', () => {
+    it('include: forward renders [Include: PageName] placeholder', () => {
+      const html = confluenceToHtml(INCLUDE_PAGE);
+      expect(html).toContain('class="confluence-include-macro"');
+      expect(html).toContain('data-macro-name="include"');
+      expect(html).toContain('data-page-title="Backup Procedures"');
+      expect(html).toContain('data-space-key="OPS"');
+      expect(html).toContain('[Include: Backup Procedures]');
+    });
+
+    it('include: reverse restores macro with page reference', () => {
+      const html = confluenceToHtml(INCLUDE_PAGE);
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toContain('ac:name="include"');
+      expect(xhtml).toContain('ri:content-title="Backup Procedures"');
+      expect(xhtml).toContain('ri:space-key="OPS"');
+    });
+
+    it('excerpt-include: preserves the macro name across round-trip', () => {
+      const html = confluenceToHtml(EXCERPT_INCLUDE_PAGE);
+      const xhtml = htmlToConfluence(html);
+      expect(html).toContain('data-macro-name="excerpt-include"');
+      expect(html).toContain('[Excerpt: Quarterly Report]');
+      expect(xhtml).toContain('ac:name="excerpt-include"');
+      expect(xhtml).toContain('ri:content-title="Quarterly Report"');
+    });
+  });
+
+  describe('user mentions', () => {
+    it('forward: renders @<username> span with data attributes', () => {
+      const html = confluenceToHtml(USER_MENTIONS_PAGE);
+      expect(html).toContain('class="confluence-user-mention"');
+      // Fixture uses userkey (deleted-user shape) — span should keep the key.
+      expect(html).toMatch(/data-userkey="user\d+"/);
+    });
+
+    it('reverse: restores ri:user wrapped in ac:link', () => {
+      const html = confluenceToHtml(USER_MENTIONS_PAGE);
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toContain('<ri:user');
+      // JSDOM may serialize `<ri:user/>` as either self-closing or
+      // as an empty element pair — accept both.
+      expect(xhtml).toMatch(/<ac:link>\s*<ri:user[^>]*(?:\/>|><\/ri:user>)\s*<\/ac:link>/);
+    });
+
+    it('preserves username-based mentions (vs userkey-based)', () => {
+      const src = `<p>Contact <ri:user ri:username="alice" /> today.</p>`;
+      const html = confluenceToHtml(src);
+      const xhtml = htmlToConfluence(html);
+      expect(html).toContain('data-username="alice"');
+      expect(html).toContain('@alice');
+      expect(xhtml).toContain('ri:username="alice"');
+    });
+  });
+
+  describe('TOC macro', () => {
+    it('forward: renders confluence-toc placeholder preserving params', () => {
+      const html = confluenceToHtml(TOC_WITH_PARAMS_PAGE);
+      expect(html).toContain('class="confluence-toc"');
+      expect(html).toContain('data-maxlevel="3"');
+      expect(html).toContain('data-outline="true"');
+      expect(html).toContain('[Table of Contents]');
+    });
+
+    it('reverse: restores ac:structured-macro[name=toc] with params', () => {
+      const html = confluenceToHtml(TOC_WITH_PARAMS_PAGE);
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toContain('ac:name="toc"');
+      expect(xhtml).toContain('<ac:parameter ac:name="maxLevel">3</ac:parameter>');
+      expect(xhtml).toContain('<ac:parameter ac:name="outline">true</ac:parameter>');
+    });
+
+    it('double round-trip preserves TOC params', () => {
+      const once = htmlToConfluence(confluenceToHtml(TOC_WITH_PARAMS_PAGE));
+      const twice = htmlToConfluence(confluenceToHtml(once));
+      expect(twice).toContain('ac:name="toc"');
+      expect(twice).toContain('maxLevel');
+    });
+  });
+});
 
 describe('content-converter: figure/caption round-trip (#13)', () => {
   it('passes <figure> and <figcaption> through confluenceToHtml unchanged', () => {

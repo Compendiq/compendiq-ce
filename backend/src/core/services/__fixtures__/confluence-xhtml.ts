@@ -102,9 +102,35 @@ export const TABLE_PAGE = `<h2>Environment Variables</h2>
 </tbody>
 </table>`;
 
-/** Page with unknown/unsupported macros (should be preserved as data attributes) */
-export const UNKNOWN_MACRO_PAGE = `<h2>Jira Integration</h2>
-<ac:structured-macro ac:name="jira"><ac:parameter ac:name="key">PROJ-123</ac:parameter><ac:rich-text-body><p>Related issue</p></ac:rich-text-body></ac:structured-macro>`;
+/**
+ * Page with a truly unknown macro (not in the top-4 JIRA/include/mention/TOC
+ * coverage added in #300). `widget-connector` is a common catch-all for
+ * third-party Confluence plugins and is a stable shape for the "still
+ * falls through to the unknown-macro wrapper" contract.
+ */
+export const UNKNOWN_MACRO_PAGE = `<h2>Third-party integration</h2>
+<ac:structured-macro ac:name="widget-connector"><ac:parameter ac:name="url">https://widget.example.com</ac:parameter><ac:rich-text-body><p>Embedded widget</p></ac:rich-text-body></ac:structured-macro>`;
+
+/** Page with a JIRA issue macro — #300 round-trip target. */
+export const JIRA_PAGE = `<h2>Open issues</h2>
+<p>See <ac:structured-macro ac:name="jira"><ac:parameter ac:name="key">PROJ-123</ac:parameter><ac:parameter ac:name="serverId">abc-123</ac:parameter></ac:structured-macro> for context.</p>`;
+
+/**
+ * Page with an include (transcluded child page) — #300 round-trip target.
+ * Mirrors the common Confluence storage-format encoding where a child
+ * page is embedded via `<ri:page>` inside an `<ac:parameter>`.
+ */
+export const INCLUDE_PAGE = `<h2>Combined runbook</h2>
+<ac:structured-macro ac:name="include"><ac:parameter><ri:page ri:content-title="Backup Procedures" ri:space-key="OPS" /></ac:parameter></ac:structured-macro>
+<p>Continue with the main steps below.</p>`;
+
+/** Page with an excerpt-include macro — same shape as include, different name. */
+export const EXCERPT_INCLUDE_PAGE = `<h2>Summary hub</h2>
+<ac:structured-macro ac:name="excerpt-include"><ac:parameter><ri:page ri:content-title="Quarterly Report" ri:space-key="PLAN" /></ac:parameter></ac:structured-macro>`;
+
+/** Page with a TOC macro that carries parameters — #300 round-trip target. */
+export const TOC_WITH_PARAMS_PAGE = `<ac:structured-macro ac:name="toc"><ac:parameter ac:name="maxLevel">3</ac:parameter><ac:parameter ac:name="outline">true</ac:parameter></ac:structured-macro>
+<h1>Spec</h1><h2>Background</h2><p>…</p>`;
 
 /** Complex page combining multiple macro types (realistic Confluence page) */
 export const COMPLEX_PAGE = `<ac:structured-macro ac:name="toc"></ac:structured-macro>
