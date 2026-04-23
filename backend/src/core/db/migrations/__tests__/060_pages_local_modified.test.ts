@@ -144,9 +144,17 @@ describe.skipIf(!dbAvailable)('Migration 060 — pages.local_modified_at (#305)'
     expect((m.at as Date).getTime()).toBe(firstEdit.getTime());
   });
 
-  it('explicit local_modified_at = NOW() with local_modified_by is respected (no Rule A override)', async () => {
+  it('trigger preserves an explicit NEW.local_modified_at that differs from OLD (OLD-not-null branch)', async () => {
+    // This test exercises the OLD-not-null side of Rule B specifically:
+    // seed with a NON-NULL OLD.local_modified_at, then write a NEW value
+    // that DIFFERS from OLD. Rule B only fires when NEW = OLD; since they
+    // differ here, the caller's explicit timestamp must be preserved
+    // byte-for-byte. If the OLD-not-null branch is removed/broken so that
+    // Rule B starts firing on every dirty-page body write, this test will
+    // fail because m.at will be NOW() instead of explicitTs.
     const userId = await seedUser();
-    const pageId = await seedPage();
+    const oldTs = new Date('2026-03-15T09:00:00Z');
+    const pageId = await seedPage({ localModifiedAt: oldTs, localModifiedBy: userId });
     const explicitTs = new Date('2026-04-01T12:00:00Z');
 
     await query(
@@ -158,11 +166,11 @@ describe.skipIf(!dbAvailable)('Migration 060 — pages.local_modified_at (#305)'
 
     const m = await getMarkers(pageId);
     expect(m.by).toBe(userId);
-    // Rule B fires when NEW = OLD (both were null before in this case, so
-    // Rule A fills in with NOW(), not the caller's explicit value). This
-    // test asserts that an explicit caller value is NOT clobbered when
-    // OLD was not null — simulate that.
-    expect(m.at).not.toBeNull();
+    expect(m.at).toBeInstanceOf(Date);
+    // Strict equality: the caller's explicit timestamp must survive unchanged.
+    expect((m.at as Date).getTime()).toBe(explicitTs.getTime());
+    // And must NOT have been replaced by NOW().
+    expect((m.at as Date).getTime()).not.toBe(oldTs.getTime());
   });
 
   it('user delete cascades local_modified_by to NULL (ON DELETE SET NULL)', async () => {

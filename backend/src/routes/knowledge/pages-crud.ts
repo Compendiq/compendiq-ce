@@ -1025,6 +1025,15 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       const bodyText = htmlToText(body.bodyHtml);
       const newVersion = existingPage.version + 1;
 
+      // Parameter-index layout (must stay in sync with the two branches
+      // of the values array below):
+      //   $1 = id, $2 = title, $3 = bodyHtml, $4 = bodyText, $5 = newVersion
+      // When body.visibility is set   → $6 = visibility, $7 = userId  (7 params)
+      // When body.visibility is unset → $6 = userId                   (6 params)
+      // The `$${body.visibility ? 7 : 6}` expression picks the correct
+      // index for local_modified_by based on whether the visibility
+      // column is being written in the same statement.
+      const userIdParamIndex = body.visibility ? 7 : 6;
       await query(
         `UPDATE pages SET
            title = $2, body_html = $3, body_text = $4,
@@ -1033,7 +1042,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
            -- Stamp the local-edit markers (#305). Standalone pages have no
            -- upstream so the markers never clear — they just record who
            -- touched the page last.
-           local_modified_at = NOW(), local_modified_by = $${body.visibility ? 7 : 6}
+           local_modified_at = NOW(), local_modified_by = $${userIdParamIndex}
            ${body.visibility ? ', visibility = $6' : ''}
          WHERE id = $1`,
         body.visibility

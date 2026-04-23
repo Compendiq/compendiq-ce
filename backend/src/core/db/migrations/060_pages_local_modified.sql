@@ -45,6 +45,19 @@ BEGIN
 
     -- Rule B: page was already dirty and the caller re-wrote the body
     -- without refreshing the timestamp — refresh it.
+    --
+    -- Intent / "equal-timestamp-gets-bumped" semantic: this rule fires
+    -- ONLY when NEW.local_modified_at exactly equals OLD.local_modified_at,
+    -- which happens when the caller's UPDATE statement did not touch the
+    -- `local_modified_at` column (Postgres preserves the OLD value, so
+    -- NEW = OLD). If the caller wants to supply an explicit timestamp
+    -- DIFFERENT from OLD, it will be preserved (NEW != OLD => rule does
+    -- not fire). If the caller deliberately passes the SAME previous
+    -- timestamp (e.g. `local_modified_at = $1` where $1 happens to equal
+    -- the current row value), this rule WILL bump it to NOW() — that is
+    -- intentional: the purpose of Rule B is "body changed again, timestamp
+    -- is now stale, refresh it." Callers who want the timestamp preserved
+    -- should simply omit the column from the UPDATE.
     IF NEW.local_modified_at IS NOT NULL
        AND OLD.local_modified_at IS NOT NULL
        AND NEW.local_modified_at = OLD.local_modified_at THEN
