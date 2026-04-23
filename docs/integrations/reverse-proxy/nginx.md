@@ -133,17 +133,22 @@ Compendiq isn't actually listening on `127.0.0.1:8081`. Run `ss -tlnp | grep 808
 ## Verification
 
 ```bash
-# From the nginx host — basic reachability through the proxy
+# From the nginx host — basic reachability through the proxy.
+# /api/health is unauthenticated and always works, so it's the first thing to try.
 curl -I https://compendiq.corp.example.com/api/health
 # Expect: 200 OK
+```
 
-# SSE works end-to-end (replace <TOKEN>)
+If you also want to confirm SSE isn't being buffered end-to-end, exercise the LLM ask endpoint.
+`POST /api/llm/ask` requires `question` and `model` (see `AskRequestSchema` in `packages/contracts/src/schemas/llm.ts`) — pick a model from `GET /api/llm/models` or the Settings → LLM page. Replace `<TOKEN>` with a valid JWT (grab one from your browser's DevTools → Application → Local Storage → `compendiq-auth` → `state.accessToken` after logging in):
+
+```bash
 curl -N -H "Authorization: Bearer <TOKEN>" \
      -H "Content-Type: application/json" \
      -X POST \
-     -d '{"question":"hello","pageIds":[]}' \
+     -d '{"question":"hello","model":"qwen3:4b"}' \
      https://compendiq.corp.example.com/api/llm/ask
-# Expect: a stream of `data: {...}` lines followed by `data: [DONE]`
+# Expect: a stream of `data: {...}` lines followed by `data: {"done":true,"final":true,...}`
 ```
 
-If the `curl -N` call returns a single blob rather than a stream of lines, the proxy is still buffering — revisit step 2.
+If the `curl -N` call returns a single blob rather than a stream of lines, the proxy is still buffering — revisit step 2. If it returns `400`, double-check the request body matches `AskRequestSchema` (the field is `model`, not `modelId`; there is no `pageIds` array — optional `pageId` is a single string).
