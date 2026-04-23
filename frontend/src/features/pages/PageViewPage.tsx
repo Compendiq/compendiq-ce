@@ -269,14 +269,17 @@ export function PageViewPage() {
     setDrawioEditingDiagram(null);
   }, []);
 
-  const handleDrawioSave = useCallback(async (dataUri: string, _xml: string) => {
+  const handleDrawioSave = useCallback(async (dataUri: string, xml: string) => {
     const attachmentPageId = page?.confluenceId ?? id;
     if (!attachmentPageId || !drawioEditingDiagram) return;
     const filename = `${drawioEditingDiagram}.png`;
     try {
+      // Push BOTH the PNG and the .drawio XML (#302 Gap 2). Without the
+      // XML, Confluence's native draw.io viewer has no way to re-open
+      // the diagram for editing — it sees only the rendered image.
       await apiFetch(`/attachments/${encodeURIComponent(attachmentPageId)}/${encodeURIComponent(filename)}`, {
         method: 'PUT',
-        body: JSON.stringify({ dataUri }),
+        body: JSON.stringify({ dataUri, xml }),
       });
       toast.success('Diagram saved.');
       // Refresh the page data so the updated diagram image is shown
