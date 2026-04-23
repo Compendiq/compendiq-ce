@@ -42,6 +42,7 @@ erDiagram
         timestamptz deactivated_at "non-null => account disabled (#304)"
         uuid deactivated_by FK "admin who disabled (#304)"
         text deactivated_reason "free-form note (#304)"
+        timestamptz last_login_at "last successful login (#307)"
         timestamptz created_at
     }
 
