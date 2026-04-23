@@ -121,8 +121,11 @@ describe('AnalyticsPage', () => {
     expect(aiTab.className).toContain('opacity-50');
   });
 
-  it('renders export button', () => {
+  it('does not render a header-level export dropdown (removed in #303)', () => {
+    // The header-level "Export" dropdown was removed because its click
+    // handlers were dead. Per-dashboard PDF buttons are the real surface.
     renderWithProviders();
-    expect(screen.getByTestId('export-btn')).toBeInTheDocument();
+    expect(screen.queryByTestId('export-btn')).toBeNull();
+    expect(screen.queryByTestId('export-pdf')).toBeNull();
   });
 });

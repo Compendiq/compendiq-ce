@@ -78,7 +78,6 @@ function renderDashboard(
   const defaultProps: DashboardProps = {
     dateRange: defaultDateRange,
     onExportPdf: vi.fn(),
-    onExportExcel: vi.fn(),
     ...props,
   };
   return render(

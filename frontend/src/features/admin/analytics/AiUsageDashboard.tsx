@@ -54,7 +54,7 @@ function StatCard({ label, value, warning }: { label: string; value: string | nu
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
-export function AiUsageDashboard({ dateRange, onExportPdf, onExportExcel }: DashboardProps) {
+export function AiUsageDashboard({ dateRange, onExportPdf }: DashboardProps) {
   const { hasFeature } = useEnterprise();
   const aiUsageEnabled = hasFeature('ai_usage_analytics');
 
@@ -131,18 +131,18 @@ export function AiUsageDashboard({ dateRange, onExportPdf, onExportExcel }: Dash
       {/* Export row */}
       <div className="flex justify-end gap-2">
         <button
-          onClick={() => onExportPdf(flatRows, 'AI Usage')}
+          onClick={() =>
+            onExportPdf(flatRows, 'AI Usage', [
+              { label: 'Total requests', value: totalRequests },
+              { label: 'Total tokens', value: totalTokens },
+              { label: 'Models used', value: modelsUsed },
+              { label: 'Error rate', value: errorRate.toFixed(1), unit: '%' },
+            ])
+          }
           className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
           data-testid="ai-export-pdf"
         >
           <Download className="h-3.5 w-3.5" /> PDF
-        </button>
-        <button
-          onClick={() => onExportExcel(flatRows, 'AI Usage')}
-          className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
-          data-testid="ai-export-excel"
-        >
-          <Download className="h-3.5 w-3.5" /> Excel
         </button>
       </div>
 

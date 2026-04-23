@@ -56,7 +56,7 @@ function ChartSkeleton() {
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
-export function KnowledgeHealthDashboard({ dateRange, onExportPdf, onExportExcel }: DashboardProps) {
+export function KnowledgeHealthDashboard({ dateRange, onExportPdf }: DashboardProps) {
   const { data, isLoading } = useKnowledgeHealth(dateRange);
 
   if (isLoading) {
@@ -96,18 +96,18 @@ export function KnowledgeHealthDashboard({ dateRange, onExportPdf, onExportExcel
       {/* Export row */}
       <div className="flex justify-end gap-2">
         <button
-          onClick={() => onExportPdf(flatRows, 'Knowledge Health')}
+          onClick={() =>
+            onExportPdf(flatRows, 'Knowledge Health', [
+              { label: 'Total pages', value: data.coverageBySpace.reduce((acc, s) => acc + s.pageCount, 0) },
+              { label: 'Spaces', value: data.coverageBySpace.length },
+              { label: 'Stale (>90d)', value: data.staleContent.reduce((acc, s) => acc + s.count, 0) },
+              { label: 'Verification buckets', value: data.verificationStatus.length },
+            ])
+          }
           className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
           data-testid="knowledge-export-pdf"
         >
           <Download className="h-3.5 w-3.5" /> PDF
-        </button>
-        <button
-          onClick={() => onExportExcel(flatRows, 'Knowledge Health')}
-          className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
-          data-testid="knowledge-export-excel"
-        >
-          <Download className="h-3.5 w-3.5" /> Excel
         </button>
       </div>
 
