@@ -84,25 +84,33 @@ function findPendingDiagrams(editor: Editor): PendingDiagram[] {
 /**
  * Upload a single pending diagram and return the resolved server URL that
  * the node's `src` should point at.
+ *
+ * Routes to `/api/attachments/…` for Confluence-backed pages and to
+ * `/api/local-attachments/…` for standalone pages (#302 Gap 4 backend).
+ * Both endpoints accept the same JSON body shape (`dataUri` + optional
+ * `xml`), so the rest of the drain logic stays source-agnostic.
  */
 async function uploadOne(
   diagram: PendingDiagram,
   attachmentPageId: string,
+  pageSource: 'confluence' | 'standalone',
 ): Promise<string> {
   const filename = `${diagram.diagramName}.png`;
-  await apiFetch(
-    `/attachments/${encodeURIComponent(attachmentPageId)}/${encodeURIComponent(filename)}`,
-    {
-      method: 'PUT',
-      body: JSON.stringify({
-        dataUri: diagram.pngDataUri,
-        // Push the XML sibling too per #302 Gap 2 — this gives Confluence's
-        // native draw.io viewer a file it can re-open for editing.
-        ...(diagram.xml ? { xml: diagram.xml } : {}),
-      }),
-    },
-  );
-  return `/api/attachments/${encodeURIComponent(attachmentPageId)}/${encodeURIComponent(filename)}`;
+  const basePath = pageSource === 'standalone' ? '/local-attachments' : '/attachments';
+  const encodedId = encodeURIComponent(attachmentPageId);
+  const encodedName = encodeURIComponent(filename);
+  await apiFetch(`${basePath}/${encodedId}/${encodedName}`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      dataUri: diagram.pngDataUri,
+      // Push the XML sibling too per #302 Gap 2 — the Confluence route
+      // forwards it to Confluence's native draw.io plugin; the local
+      // route stores it as a `.drawio` sibling under the same
+      // ATTACHMENTS_DIR/local tree.
+      ...(diagram.xml ? { xml: diagram.xml } : {}),
+    }),
+  });
+  return `/api${basePath}/${encodedId}/${encodedName}`;
 }
 
 /**
@@ -121,16 +129,6 @@ export async function drainPendingDrawioDiagrams(
   const pending = findPendingDiagrams(editor);
   if (pending.length === 0) return result;
 
-  // Local-page diagrams need the #302 Gap 4 attachment backend — skip for
-  // now but tell the caller so it can surface a friendly message.
-  if (opts.pageSource === 'standalone') {
-    result.skipped = pending.length;
-    result.errors.push(
-      `Diagram persistence for standalone pages is not yet supported (${pending.length} diagram${pending.length === 1 ? '' : 's'} will not survive reload).`,
-    );
-    return result;
-  }
-
   if (!opts.attachmentPageId) {
     result.failed = pending.length;
     result.errors.push('Cannot save diagrams — page has no attachment id.');
@@ -142,7 +140,7 @@ export async function drainPendingDrawioDiagrams(
   // would just trip the per-user rate limit.
   for (const diagram of pending) {
     try {
-      const srcUrl = await uploadOne(diagram, opts.attachmentPageId);
+      const srcUrl = await uploadOne(diagram, opts.attachmentPageId, opts.pageSource);
       // Rewrite the node so the serialised body HTML emits the URL
       // instead of the data URI. We go through the ProseMirror tr API
       // directly (rather than `editor.chain().setNodeAttribute()`, which
