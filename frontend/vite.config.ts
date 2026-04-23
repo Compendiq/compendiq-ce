@@ -71,7 +71,7 @@ export default defineConfig({
           'zustand': ['zustand'],
           'recharts': ['recharts'],
           'pdf': ['pdf-lib'],
-          'excel': ['exceljs'],
+          // The excel chunk was removed in #303 alongside the exceljs dep.
         },
       },
     },

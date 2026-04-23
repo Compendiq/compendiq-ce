@@ -80,7 +80,7 @@ function SeverityDot({ score }: { score: number | null }) {
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
-export function ContentGapsDashboard({ dateRange, onExportPdf, onExportExcel }: DashboardProps) {
+export function ContentGapsDashboard({ dateRange, onExportPdf }: DashboardProps) {
   const { data, isLoading } = useContentGaps(dateRange);
 
   if (isLoading) {
@@ -133,18 +133,17 @@ export function ContentGapsDashboard({ dateRange, onExportPdf, onExportExcel }: 
       {/* Export row */}
       <div className="flex justify-end gap-2">
         <button
-          onClick={() => onExportPdf(flatRows, 'Content Gaps')}
+          onClick={() =>
+            onExportPdf(flatRows, 'Content Gaps', [
+              { label: 'Content gaps', value: totalGaps },
+              { label: 'Duplicate topics', value: totalDuplicates },
+              { label: 'Open requests', value: openRequests },
+            ])
+          }
           className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
           data-testid="gaps-export-pdf"
         >
           <Download className="h-3.5 w-3.5" /> PDF
-        </button>
-        <button
-          onClick={() => onExportExcel(flatRows, 'Content Gaps')}
-          className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
-          data-testid="gaps-export-excel"
-        >
-          <Download className="h-3.5 w-3.5" /> Excel
         </button>
       </div>
 

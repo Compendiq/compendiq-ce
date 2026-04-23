@@ -78,7 +78,7 @@ function GaugeChart({ value, max, label }: { value: number; max: number; label: 
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
-export function SearchEffectivenessDashboard({ dateRange, onExportPdf, onExportExcel }: DashboardProps) {
+export function SearchEffectivenessDashboard({ dateRange, onExportPdf }: DashboardProps) {
   const { data, isLoading } = useSearchEffectiveness(dateRange);
 
   if (isLoading) {
@@ -113,18 +113,24 @@ export function SearchEffectivenessDashboard({ dateRange, onExportPdf, onExportE
       {/* Export row */}
       <div className="flex justify-end gap-2">
         <button
-          onClick={() => onExportPdf(flatRows, 'Search Effectiveness')}
+          onClick={() =>
+            onExportPdf(
+              flatRows,
+              'Search Effectiveness',
+              data.zeroResultRate
+                ? [
+                    { label: 'Total searches', value: data.zeroResultRate.total },
+                    { label: 'Zero-result rate', value: (data.zeroResultRate.rate * 100).toFixed(1), unit: '%' },
+                    { label: 'Top query', value: String(data.topQueries[0]?.query ?? '—') },
+                    { label: 'Distinct daily buckets', value: data.dailyVolume.length },
+                  ]
+                : undefined,
+            )
+          }
           className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
           data-testid="search-export-pdf"
         >
           <Download className="h-3.5 w-3.5" /> PDF
-        </button>
-        <button
-          onClick={() => onExportExcel(flatRows, 'Search Effectiveness')}
-          className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
-          data-testid="search-export-excel"
-        >
-          <Download className="h-3.5 w-3.5" /> Excel
         </button>
       </div>
 

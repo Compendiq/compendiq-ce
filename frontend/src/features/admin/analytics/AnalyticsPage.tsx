@@ -1,9 +1,10 @@
 import { lazy, Suspense, useState, useCallback } from 'react';
 import {
   BarChart3, Brain, Search, AlertTriangle,
-  Download, FileText, FileSpreadsheet,
+  Download, FileText,
 } from 'lucide-react';
 import { useEnterprise } from '../../../shared/enterprise/use-enterprise';
+import { useAuthStore } from '../../../stores/auth-store';
 import { cn } from '../../../shared/lib/cn';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -17,8 +18,17 @@ export interface DateRange {
 
 export interface DashboardProps {
   dateRange: DateRange;
-  onExportPdf: (rows: Record<string, unknown>[], title: string) => Promise<void>;
-  onExportExcel: (rows: Record<string, unknown>[], title: string) => Promise<void>;
+  /**
+   * Export rows to PDF. The `kpis` argument is optional — dashboards that
+   * have headline KPIs can surface them on the cover page; others can
+   * skip it and the cover still renders (title + date range + integrity
+   * hash). Excel export was removed in #303 — CSV opens cleanly in Excel.
+   */
+  onExportPdf: (
+    rows: Record<string, unknown>[],
+    title: string,
+    kpis?: Array<{ label: string; value: string | number; unit?: string }>,
+  ) => Promise<void>;
 }
 
 // ── Lazy-loaded dashboards ─────────────────────────────────────────────────────
@@ -76,29 +86,28 @@ export function AnalyticsPage() {
     endDate: new Date().toISOString().slice(0, 10),
   }));
   const [exportOpen, setExportOpen] = useState(false);
+  const authUser = useAuthStore((s) => s.user);
 
   const handleExportPdf = useCallback(
-    async (rows: Record<string, unknown>[], title: string) => {
+    async (
+      rows: Record<string, unknown>[],
+      title: string,
+      kpis?: Array<{ label: string; value: string | number; unit?: string }>,
+    ) => {
       const { exportToPdf } = await import('../../../shared/lib/export-helpers');
       await exportToPdf(
         `${title.toLowerCase().replace(/\s+/g, '-')}-${dateRange.startDate}.pdf`,
         rows,
-        title,
+        {
+          title,
+          dateRange,
+          generatedBy: authUser?.username,
+          instanceUrl: typeof window !== 'undefined' ? window.location.origin : undefined,
+          kpis,
+        },
       );
     },
-    [dateRange.startDate],
-  );
-
-  const handleExportExcel = useCallback(
-    async (rows: Record<string, unknown>[], title: string) => {
-      const { exportToExcel } = await import('../../../shared/lib/export-helpers');
-      await exportToExcel(
-        `${title.toLowerCase().replace(/\s+/g, '-')}-${dateRange.startDate}.xlsx`,
-        rows,
-        title,
-      );
-    },
-    [dateRange.startDate],
+    [dateRange, authUser],
   );
 
   // Feature gate: require advanced_analytics
@@ -122,7 +131,6 @@ export function AnalyticsPage() {
   const dashboardProps: DashboardProps = {
     dateRange,
     onExportPdf: handleExportPdf,
-    onExportExcel: handleExportExcel,
   };
 
   return (
@@ -180,14 +188,7 @@ export function AnalyticsPage() {
                   <FileText className="h-3.5 w-3.5" />
                   Export as PDF
                 </button>
-                <button
-                  onClick={() => { setExportOpen(false); }}
-                  className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-xs hover:bg-foreground/5 transition-colors"
-                  data-testid="export-excel"
-                >
-                  <FileSpreadsheet className="h-3.5 w-3.5" />
-                  Export as Excel
-                </button>
+                {/* Excel export removed in #303 — CSV opens cleanly in Excel. */}
               </div>
             )}
           </div>

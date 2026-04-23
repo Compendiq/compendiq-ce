@@ -39,7 +39,6 @@
     "clsx": "^2.1.1",
     "diff": "^8.0.3",
     "dompurify": "^3.4.0",
-    "exceljs": "^4.4.0",
     "framer-motion": "^12.34.3",
     "lowlight": "^3.0.0",
     "lucide-react": "^0.575.0",
