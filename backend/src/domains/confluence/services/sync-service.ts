@@ -321,6 +321,13 @@ async function syncPage(
                WHEN body_text IS DISTINCT FROM $5 THEN 'pending'
                ELSE summary_status
              END,
+             -- Clear local-edit markers (#305): the page is now back in
+             -- sync with the upstream Confluence version. The BEFORE
+             -- UPDATE trigger on pages only stamps when the caller leaves
+             -- local_modified_by non-null or local_modified_at unchanged;
+             -- setting both to NULL here suppresses the stamp.
+             local_modified_at = NULL,
+             local_modified_by = NULL,
              deleted_at = NULL
          WHERE confluence_id = $1`,
         [page.id, page.title, bodyStorage, bodyHtml, bodyText, parentId, labels, author, lastModified],
@@ -376,6 +383,10 @@ async function syncPage(
        last_synced = NOW(),
        embedding_dirty = TRUE,
        summary_status = 'pending',
+       -- Clear local-edit markers (#305) — see matching note in the
+       -- version-mismatch branch above.
+       local_modified_at = NULL,
+       local_modified_by = NULL,
        deleted_at = NULL`,
     [page.id, spaceKey, page.title, bodyStorage, bodyHtml, bodyText,
      page.version.number, parentId, labels, author, lastModified],

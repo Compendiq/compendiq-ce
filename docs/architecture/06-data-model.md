@@ -67,6 +67,8 @@ erDiagram
         text visibility "private | shared"
         uuid created_by_user_id FK
         bool embedding_dirty
+        timestamptz local_modified_at "non-null => local edit since last_synced (#305)"
+        uuid local_modified_by FK "who last edited locally (#305)"
         timestamptz deleted_at
     }
 
