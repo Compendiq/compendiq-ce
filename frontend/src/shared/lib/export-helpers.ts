@@ -202,9 +202,10 @@ async function renderPdfCe(
   const cols = rows.length > 0 ? Object.keys(rows[0]!) : [];
   const pagesWritten: Array<{ page: ReturnType<typeof doc.addPage>; pageNo: number }> = [];
   if (rows.length > 0) {
+    const layout = computeColumnLayout(cols, rows, font, boldFont, { portraitSize: A4, margin: MARGIN });
     const dataPageContext = renderDataPages(
-      doc, rows, cols, meta.title,
-      { A4, MARGIN, COLOR_TEXT, COLOR_MUTED, COLOR_HAIR, font, boldFont },
+      doc, rows, cols, meta.title, layout,
+      { MARGIN, COLOR_TEXT, COLOR_MUTED, COLOR_HAIR, font, boldFont },
     );
     pagesWritten.push(...dataPageContext);
   } else {
@@ -245,7 +246,6 @@ function drawKeyValue(
 }
 
 interface RenderCtx {
-  A4: [number, number];
   MARGIN: number;
   COLOR_TEXT: ReturnType<typeof import('pdf-lib')['rgb']>;
   COLOR_MUTED: ReturnType<typeof import('pdf-lib')['rgb']>;
@@ -255,33 +255,32 @@ interface RenderCtx {
 }
 
 /**
- * Paginate rows across landscape-proportioned data pages. Returns the
- * list of pages so the caller can stamp footers.
+ * Paginate rows across data pages. Uses the precomputed `layout` for
+ * per-column widths + page orientation (portrait or landscape) so wide
+ * tables don't overflow the right margin. Returns the list of pages so
+ * the caller can stamp footers.
  */
 function renderDataPages(
   doc: Awaited<ReturnType<typeof import('pdf-lib')['PDFDocument']['create']>>,
   rows: Record<string, unknown>[],
   cols: string[],
   title: string,
+  layout: ColumnLayout,
   ctx: RenderCtx,
 ): Array<{ page: ReturnType<typeof doc.addPage>; pageNo: number }> {
-  const { A4, MARGIN, COLOR_TEXT, COLOR_MUTED, COLOR_HAIR, font, boldFont } = ctx;
+  const { MARGIN, COLOR_TEXT, COLOR_MUTED, COLOR_HAIR, font, boldFont } = ctx;
+  const { pageSize, colWidths } = layout;
   const rowHeight = 12;
   const headerHeight = 20;
-  const available = A4[1] - MARGIN * 2 - headerHeight - 30 /* footer */;
+  const available = pageSize[1] - MARGIN * 2 - headerHeight - 30 /* footer */;
   const rowsPerPage = Math.max(1, Math.floor(available / rowHeight));
-
-  // Compute column widths once based on content. Minimum 40, cap at 180.
-  const contentWidth = A4[0] - MARGIN * 2;
-  const baseColWidth = Math.max(40, Math.min(180, contentWidth / cols.length));
-  const colWidths = cols.map(() => baseColWidth);
 
   const pageCount = Math.ceil(rows.length / rowsPerPage);
   const pages: Array<{ page: ReturnType<typeof doc.addPage>; pageNo: number }> = [];
 
   for (let p = 0; p < pageCount; p++) {
-    const page = doc.addPage(A4);
-    let y = A4[1] - MARGIN;
+    const page = doc.addPage(pageSize);
+    let y = pageSize[1] - MARGIN;
 
     page.drawText(`${title} — data`, {
       x: MARGIN, y, font: boldFont, size: 12, color: COLOR_TEXT,
@@ -296,7 +295,7 @@ function renderDataPages(
       });
     });
     y -= 4;
-    page.drawLine({ start: { x: MARGIN, y }, end: { x: A4[0] - MARGIN, y }, thickness: 0.5, color: COLOR_HAIR });
+    page.drawLine({ start: { x: MARGIN, y }, end: { x: pageSize[0] - MARGIN, y }, thickness: 0.5, color: COLOR_HAIR });
     y -= 10;
 
     // Data rows for this page
@@ -319,6 +318,177 @@ function renderDataPages(
   }
 
   return pages;
+}
+
+// ---------------------------------------------------------------------------
+// Column layout — content-driven widths + portrait/landscape selection.
+// ---------------------------------------------------------------------------
+
+type PdfFont = Awaited<
+  ReturnType<Awaited<ReturnType<typeof import('pdf-lib')['PDFDocument']['create']>>['embedFont']>
+>;
+
+/** Result of the layout pass — what `renderDataPages` consumes. */
+export interface ColumnLayout {
+  /** 'portrait' (A4 595×842) or 'landscape' (A4 842×595). */
+  orientation: 'portrait' | 'landscape';
+  /** Concrete [width, height] page size for the data pages. */
+  pageSize: [number, number];
+  /** Per-column widths in PDF units. Sum ≤ contentWidth. */
+  colWidths: number[];
+}
+
+interface LayoutOptions {
+  /** Default portrait size — `[595, 842]` for A4. */
+  portraitSize?: [number, number];
+  /** Page margin on each side. */
+  margin?: number;
+  /** Minimum column width (keeps even single-char cols readable). */
+  minColWidth?: number;
+  /** Maximum column width per column (prevents one column hogging the row). */
+  maxColWidth?: number;
+  /** At or above this column count, data pages switch to landscape. */
+  landscapeThresholdCols?: number;
+  /** Sample at most this many rows when measuring content. */
+  maxSampleRows?: number;
+  /** Header font size (used for header width measurement). */
+  headerSize?: number;
+  /** Body font size (used for cell width measurement). */
+  bodySize?: number;
+  /** Cell padding added to the widest content width per column. */
+  cellPadding?: number;
+}
+
+/**
+ * Compute per-column widths driven by content + pick an orientation.
+ *
+ * Two-pass algorithm:
+ *   1. For each column measure `max(headerWidth, max(cellWidth over samples))`,
+ *      add padding, clamp to `[min, max]`.
+ *   2. If the sum exceeds portrait content width and we have many columns,
+ *      flip the page to landscape A4 (swap page dimensions). Recompute
+ *      content width.
+ *   3. If the sum still exceeds content width, scale every column down
+ *      proportionally (respecting min-width floor) so the table fits.
+ *
+ * Exported for unit testing + for EE renderers that want to reuse the
+ * same sizing algorithm.
+ */
+export function computeColumnLayout(
+  cols: string[],
+  rows: Record<string, unknown>[],
+  font: PdfFont,
+  boldFont: PdfFont,
+  opts: LayoutOptions = {},
+): ColumnLayout {
+  const portraitSize = opts.portraitSize ?? [595, 842];
+  const margin = opts.margin ?? 50;
+  const minColWidth = opts.minColWidth ?? 40;
+  const maxColWidth = opts.maxColWidth ?? 220;
+  const landscapeThresholdCols = opts.landscapeThresholdCols ?? 11;
+  const maxSampleRows = opts.maxSampleRows ?? 200;
+  const headerSize = opts.headerSize ?? 8;
+  const bodySize = opts.bodySize ?? 7;
+  const cellPadding = opts.cellPadding ?? 6;
+
+  if (cols.length === 0) {
+    return { orientation: 'portrait', pageSize: portraitSize, colWidths: [] };
+  }
+
+  // Measure desired widths. Sample up to `maxSampleRows` evenly-spaced rows
+  // to bound measurement cost on huge datasets.
+  const sampleStep = Math.max(1, Math.ceil(rows.length / maxSampleRows));
+  const desiredRaw = cols.map((col) => {
+    let w = safeWidth(boldFont, col, headerSize);
+    for (let r = 0; r < rows.length; r += sampleStep) {
+      const raw = rows[r]![col];
+      const s = raw == null ? '' : typeof raw === 'object' ? JSON.stringify(raw) : String(raw);
+      const cellW = safeWidth(font, s, bodySize);
+      if (cellW > w) w = cellW;
+    }
+    return w + cellPadding;
+  });
+  const desired = desiredRaw.map((w) => clamp(w, minColWidth, maxColWidth));
+
+  // Pass 1: try portrait.
+  const portraitContentWidth = portraitSize[0] - margin * 2;
+  const total = desired.reduce((a, b) => a + b, 0);
+  const portraitFits = total <= portraitContentWidth;
+  const tooManyCols = cols.length >= landscapeThresholdCols;
+
+  if (portraitFits && !tooManyCols) {
+    return {
+      orientation: 'portrait',
+      pageSize: portraitSize,
+      colWidths: fitToWidth(desired, portraitContentWidth, minColWidth),
+    };
+  }
+
+  // Pass 2: try landscape.
+  const landscapeSize: [number, number] = [portraitSize[1], portraitSize[0]];
+  const landscapeContentWidth = landscapeSize[0] - margin * 2;
+  const landscapeFits = total <= landscapeContentWidth;
+
+  if (tooManyCols || !portraitFits) {
+    if (landscapeFits) {
+      return {
+        orientation: 'landscape',
+        pageSize: landscapeSize,
+        colWidths: fitToWidth(desired, landscapeContentWidth, minColWidth),
+      };
+    }
+    // Still too wide even in landscape — scale down proportionally.
+    return {
+      orientation: 'landscape',
+      pageSize: landscapeSize,
+      colWidths: fitToWidth(desired, landscapeContentWidth, minColWidth),
+    };
+  }
+
+  // Fallback: portrait with proportional scale-down.
+  return {
+    orientation: 'portrait',
+    pageSize: portraitSize,
+    colWidths: fitToWidth(desired, portraitContentWidth, minColWidth),
+  };
+}
+
+/**
+ * Scale a list of desired widths so their sum is exactly `target` — but
+ * never shrink a column below `minWidth`. If even the min-width floors
+ * sum to more than `target`, return all-min (accepting right-edge clip
+ * rather than collapsing columns to zero; in practice the caller has
+ * already picked a wider page when this matters).
+ */
+function fitToWidth(desired: number[], target: number, minWidth: number): number[] {
+  const total = desired.reduce((a, b) => a + b, 0);
+  if (total <= target) {
+    // Distribute the leftover room proportionally so the table fills the
+    // page — easier on the eye than leaving a gap on the right.
+    const extra = target - total;
+    return desired.map((w) => w + (extra * w) / total);
+  }
+  // Shrink proportionally, but respect min-width floor.
+  const minSum = minWidth * desired.length;
+  if (minSum >= target) return desired.map(() => target / desired.length);
+  const shrinkable = total - minSum;
+  const shrinkTarget = total - target;
+  const ratio = shrinkTarget / shrinkable;
+  return desired.map((w) => w - (w - minWidth) * ratio);
+}
+
+function safeWidth(font: PdfFont, text: string, size: number): number {
+  try {
+    return font.widthOfTextAtSize(text, size);
+  } catch {
+    // pdf-lib should never throw for standard fonts, but guard against
+    // future API changes or unusual glyphs. Fall back to a rough estimate.
+    return text.length * size * 0.5;
+  }
+}
+
+function clamp(v: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, v));
 }
 
 function drawFooter(
@@ -364,9 +534,11 @@ function truncateToWidth(
 
 /**
  * Canonical JSON: stable key ordering so the hash is deterministic
- * regardless of object-key iteration order.
+ * regardless of object-key iteration order. Exported so tests — and any
+ * EE renderer — can produce the same hash the CE renderer stamps on the
+ * cover page.
  */
-function canonicalJson(rows: Record<string, unknown>[]): string {
+export function canonicalJson(rows: Record<string, unknown>[]): string {
   return JSON.stringify(rows, (_k, v) => {
     if (v && typeof v === 'object' && !Array.isArray(v)) {
       return Object.fromEntries(
@@ -377,8 +549,8 @@ function canonicalJson(rows: Record<string, unknown>[]): string {
   });
 }
 
-/** Web Crypto SHA-256, formatted as lowercase hex. */
-async function sha256Hex(input: string): Promise<string> {
+/** Web Crypto SHA-256, formatted as lowercase hex. Exported for tests. */
+export async function sha256Hex(input: string): Promise<string> {
   const buf = new TextEncoder().encode(input);
   const digest = await crypto.subtle.digest('SHA-256', buf);
   return Array.from(new Uint8Array(digest))
