@@ -2,6 +2,8 @@
 
 This guide covers day-to-day usage of Compendiq for knowledge base management, AI features, and search.
 
+> **Deploying Compendiq into a non-trivial environment** (corporate reverse proxy, self-signed / private-CA TLS, air-gapped network)? See the [integration guides](integrations/README.md) before running the quickstart installer — they cover the config that the default install skips.
+
 ## Getting Started
 
 ### First-Run Setup

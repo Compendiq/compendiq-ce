@@ -21,6 +21,7 @@
   <a href="#what-it-does">Features</a> &middot;
   <a href="#architecture">Architecture</a> &middot;
   <a href="docs/USER-GUIDE.md">Docs</a> &middot;
+  <a href="docs/integrations/README.md">Integration guides</a> &middot;
   <a href="docs/releases/v0.3.0.md">v0.3 release notes</a> &middot;
   <a href="docs/ROADMAP.md">Roadmap</a> &middot;
   <a href="docs/STEWARDSHIP.md">Stewardship</a> &middot;
@@ -312,6 +313,18 @@ Interactive API documentation is available at `/api/docs` (Swagger UI) when the 
 | `GET/POST /api/admin/*` | Admin settings, audit log, RBAC, LLM config |
 
 All endpoints except `/api/health` and `/api/auth/*` require a JWT Bearer token.
+
+---
+
+## Deployment scenarios
+
+The quickstart installer targets the simplest case — a vanilla HTTPS Confluence DC with a public CA cert and unrestricted outbound internet. Real on-prem environments usually need one or more of the following shapes. Each has a step-by-step guide:
+
+- [**Behind a reverse proxy**](docs/integrations/reverse-proxy/nginx.md) — corporate nginx terminates TLS, forwards to Compendiq over loopback, preserves `X-Forwarded-*` headers, keeps SSE streaming unbuffered.
+- [**Self-signed or private-CA TLS**](docs/integrations/self-signed-tls/README.md) — trust a corporate CA bundle via `NODE_EXTRA_CA_CERTS` so outbound HTTPS to Confluence / Ollama verifies cleanly.
+- [**Air-gapped / disconnected**](docs/integrations/air-gapped/README.md) — side-load container images, disable every feature that reaches external hosts.
+
+See [`docs/integrations/README.md`](docs/integrations/README.md) for the full index. The shapes compose (you can be all three at once).
 
 ---
 
