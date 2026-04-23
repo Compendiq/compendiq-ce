@@ -454,6 +454,62 @@ Compendiq logs user actions and system events. View audit logs in the Admin pane
 - Admin actions (role changes, settings updates)
 - Sync operations
 
+## Managing Users
+
+Admins manage the full user lifecycle from **Settings → Users**. All mutations are audit-logged under `ADMIN_ACTION` events and rate-limited the same as other admin endpoints. Under the hood each action maps to one of the per-user admin endpoints (`POST|PUT|DELETE /api/admin/users/...`) so EE bulk tooling (#116) can compose the same primitives.
+
+### Creating a user
+
+1. Go to **Settings → Users** and click **Add user**.
+2. Fill in username (required), optional email, optional display name, and pick the role (`user` or `admin`).
+3. Choose one of two credential modes:
+   - **Explicit password** — type it into the form. The user signs in with that password on first login.
+   - **Send invitation** — leave the password blank and tick *Send invitation email*. The backend generates a random temporary password and tries to email it to the new user via the configured SMTP server (see `SMTP_*` env vars and the Settings → Email admin tab). When SMTP is not configured the API returns the temporary password in the response so the admin can hand it over out-of-band.
+4. The new user is created immediately — there is no email-verification step in CE.
+
+### Editing a user
+
+From the user's row in the table:
+
+- **Display name, email, role** can be patched via `PUT /api/admin/users/:id`. Changing an email to one that is already in use returns HTTP 409 (`EMAIL_TAKEN`).
+- **Demoting the last active admin** is rejected with HTTP 409 (`LAST_ADMIN`). Promote another admin first.
+- Username and password cannot be changed through this form. Password changes go through the self-service flow from the user's own profile; username is immutable once set.
+
+### Deactivating (soft) vs deleting (hard)
+
+**Deactivate** is the recommended off-boarding path:
+
+- Sets `deactivated_at`, `deactivated_by`, and `deactivated_reason` on the user.
+- Revokes every refresh-token in the same transaction so any open sessions cannot mint new access tokens.
+- Blocks future logins at the auth layer with a generic "Account is deactivated — contact an administrator" message.
+- Preserves all history (audit_log, page authorship, comments, templates) untouched.
+- Is reversible via the **Reactivate** action, which clears the deactivation markers.
+- Rejected with `LAST_ADMIN` if the target is the only remaining active admin, and with `SELF_FORBIDDEN` if an admin tries to deactivate themselves (promote another admin first).
+
+**Delete** is a hard delete — use it only when you need the row gone (accidental imports, GDPR erasure, fresh-install cleanup):
+
+- Removes the `users` row outright.
+- Cascades pages/comments/embeddings/settings that are tied to the user via `ON DELETE CASCADE`.
+- Nulls out historical pointers on rows that are worth keeping: `audit_log.user_id`, `error_log.user_id`, `comments.resolved_by`, `pages.created_by_user_id`, `pages.owner_id`, `pages.verified_by`, `notifications.source_user_id`, and so on. The records survive with `NULL` where the user used to be.
+- Reassigns any templates the user authored to the internal `__system__` sentinel so the NOT NULL FK on `templates.created_by` stays valid.
+- Is refused if the target is the only active admin (`LAST_ADMIN`) or if the admin tries to delete themselves (`SELF_FORBIDDEN`).
+- Cannot be undone. There is no trash / recycle bin — back up PostgreSQL before running hard deletes in bulk.
+
+### Resetting a password
+
+CE does not ship a self-serve "send password reset email" button. To reset a user's password as an admin:
+
+1. From **Settings → Users**, open the user row and click **Edit → Reset password**.
+2. Pick either *Set temporary password* (displayed once, hand over out of band) or *Send invitation email* (requires SMTP configured). Behind the scenes this is the same flow as **Add user** in invitation mode — the user is expected to log in with the temporary password and then change it from their profile page.
+3. All refresh-tokens for the user are revoked as part of the reset, so existing sessions are terminated.
+
+If you need to reset a password without admin UI access (for example the last admin lost their password), set it directly in PostgreSQL with a known bcrypt hash — see **Troubleshooting → Recovering the last admin password** below.
+
+### Self-service limits and the `__system__` user
+
+- An admin cannot deactivate, delete, or demote themselves via the admin API — deliberate, to avoid accidentally locking the install out of admin access.
+- The `__system__` user (UUID `00000000-0000-0000-0000-000000000000`) owns built-in templates. It does not count toward the "last active admin" check and cannot log in — it is an internal sentinel and must not be edited or deleted.
+
 ## Encryption Key Rotation
 
 Compendiq supports zero-downtime rotation of the PAT encryption key:

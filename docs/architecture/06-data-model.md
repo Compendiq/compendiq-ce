@@ -262,4 +262,12 @@ erDiagram
   and invalidates on provider writes via `llm-cache-bus.ts`.
 - **`audit_log`** captures auth events, license changes, RBAC mutations,
   and high-value LLM calls (prompt-injection flags, failed sanitization).
+- **User FK policies on hard delete** (migration 062): `audit_log.user_id`,
+  `error_log.user_id` and `comments.resolved_by` use `ON DELETE SET NULL`
+  so historical rows survive a user delete with a null pointer.
+  `templates.created_by` is `NOT NULL` and cannot use SET NULL, so the
+  admin-CRUD `deleteUser()` service reassigns any templates authored by
+  the target to the `__system__` sentinel user
+  (`00000000-0000-0000-0000-000000000000`) inside the same transaction
+  before issuing the `DELETE FROM users`.
 - **Soft delete** on `pages.deleted_at` — the Trash feature filters on this.
