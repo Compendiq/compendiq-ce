@@ -446,6 +446,44 @@ describe('Auth routes', () => {
       const body = JSON.parse(response.body);
       expect(body.error).toContain('Invalid refresh token');
     });
+
+    // PR #311 Finding #3 — defence-in-depth: deactivated users must not be
+    // able to mint fresh access tokens via /refresh even if their refresh
+    // JTI row somehow survives deactivation.
+    it('should return 401 when user is deactivated', async () => {
+      mockVerifyRefreshToken.mockResolvedValue({
+        sub: TEST_USER.id,
+        username: TEST_USER.username,
+        role: TEST_USER.role,
+        jti: 'some-jti',
+        family: 'some-family',
+      });
+      // User exists but is deactivated
+      mockQuery.mockResolvedValueOnce({
+        rows: [
+          {
+            id: TEST_USER.id,
+            username: TEST_USER.username,
+            role: TEST_USER.role,
+            email: null,
+            display_name: null,
+            deactivated_at: new Date('2026-01-01T00:00:00Z'),
+          },
+        ],
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/auth/refresh',
+        cookies: { kb_refresh: 'valid-token-deactivated-user' },
+      });
+
+      expect(response.statusCode).toBe(401);
+      const body = JSON.parse(response.body);
+      expect(body.error).toContain('Invalid refresh token');
+      // The deactivated-user refresh must not mint a new access token.
+      expect(mockGenerateAccessToken).not.toHaveBeenCalled();
+    });
   });
 
   // ==========================================================================

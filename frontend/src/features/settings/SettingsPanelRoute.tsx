@@ -38,6 +38,7 @@ const LlmPolicyTab = lazy(() => import('../admin/LlmPolicyTab').then((m) => ({ d
 const DataRetentionTab = lazy(() => import('../admin/DataRetentionTab').then((m) => ({ default: m.DataRetentionTab })));
 const LlmAuditPage = lazy(() => import('../admin/LlmAuditPage').then((m) => ({ default: m.LlmAuditPage })));
 const ScimSettingsPage = lazy(() => import('../admin/ScimSettingsPage').then((m) => ({ default: m.ScimSettingsPage })));
+const UsersAdminPage = lazy(() => import('../admin/UsersAdminPage').then((m) => ({ default: m.UsersAdminPage })));
 const SystemTab = lazy(() => import('./panels/SystemTab').then((m) => ({ default: m.SystemTab })));
 
 type PanelRenderer = (ctx: PanelRenderContext) => ReactElement;
@@ -92,6 +93,7 @@ const PANELS: Readonly<Record<string, PanelRenderer>> = {
   'integrations/searxng': () => <SearxngTab />,
   'integrations/mcp-docs': () => <McpDocsTab />,
 
+  'security/users': () => <UsersAdminPage />,
   'security/rate-limits': () => <RateLimitsTab />,
   'security/sso': () => <OidcSettingsPage />,
   'security/scim': () => <ScimSettingsPage />,
