@@ -46,23 +46,34 @@ grep -c "BEGIN CERTIFICATE" corp-ca-bundle.pem
 # → 2
 ```
 
-### 2. Mount it into the backend container
+### 2. Point Compendiq at the bundle
 
-Edit `docker-compose.yml`:
+The bundled `docker/docker-compose.yml` already wires a CA bundle mount through two environment variables — you do **not** need to add a new volume entry. The relevant lines are:
 
 ```yaml
 backend:
-  # …
   environment:
-    # Path inside the container
-    NODE_EXTRA_CA_CERTS: /etc/ssl/certs/corp-ca-bundle.pem
-    # Leave these at their defaults — verification is ON
-    CONFLUENCE_VERIFY_SSL: "true"
-    LLM_VERIFY_SSL: "true"
+    NODE_EXTRA_CA_CERTS: ${CONTAINER_CA_BUNDLE_PATH:-/etc/ssl/certs/ca-certificates.crt}
   volumes:
-    # Path on the host : path in the container (read-only)
-    - ./corp-ca-bundle.pem:/etc/ssl/certs/corp-ca-bundle.pem:ro
+    - "${HOST_CA_BUNDLE_PATH:-/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem}:${CONTAINER_CA_BUNDLE_PATH:-/etc/ssl/certs/ca-certificates.crt}:ro"
 ```
+
+Override the defaults in your `.env` (next to `docker-compose.yml`) to point at your bundle:
+
+```env
+# Host path to the bundle you assembled in step 1
+HOST_CA_BUNDLE_PATH=/absolute/path/to/corp-ca-bundle.pem
+
+# Where it's mounted inside the container — keep the default unless
+# you have a reason to change it
+CONTAINER_CA_BUNDLE_PATH=/etc/ssl/certs/ca-certificates.crt
+
+# Leave these at their defaults — verification is ON
+CONFLUENCE_VERIFY_SSL=true
+LLM_VERIFY_SSL=true
+```
+
+Adding a second `volumes:` entry on top of this one would silently shadow the default mount and is a common source of "I mounted the file but Node still won't load it" tickets. Stick with the env vars.
 
 ### 3. Restart the stack
 
@@ -70,7 +81,16 @@ backend:
 docker compose -f docker/docker-compose.yml up -d
 ```
 
-Node picks up `NODE_EXTRA_CA_CERTS` at process start. Compendiq logs `SSL certificate bundle loaded: /etc/ssl/certs/corp-ca-bundle.pem` — that confirms it's been mounted and parsed.
+Node picks up `NODE_EXTRA_CA_CERTS` at process start. On a fresh boot the backend logs one of:
+
+- `Loaded custom CA bundle from NODE_EXTRA_CA_CERTS` (with `caPath` + `size` fields) — the bundle was found and parsed. This is the success case.
+- `No NODE_EXTRA_CA_CERTS set and no system CA bundle found — using Node.js defaults` — nothing was loaded; double-check the env var and volume mount.
+
+You can grep for the exact string:
+
+```bash
+docker compose -f docker/docker-compose.yml logs backend | grep "custom CA bundle"
+```
 
 ## Path 2 (escape hatch): verification off
 
