@@ -227,7 +227,12 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
   // PUT /api/attachments/:pageId/:filename - update a diagram attachment
   // Accepts a JSON body with { dataUri: "data:image/png;base64,..." }
   // Validates PNG, enforces 10 MB limit, uploads to Confluence, and updates local cache.
-  fastify.put('/attachments/:pageId/:filename', async (request, reply) => {
+  //
+  // `bodyLimit` must be set per-route: Fastify's default JSON body limit is
+  // 1 MB, so the 10 MB in-handler cap is unreachable without this option —
+  // base64 inflates binary by ~33 %, plus small JSON overhead, so 15 MB
+  // comfortably covers the 10 MB binary cap.
+  fastify.put('/attachments/:pageId/:filename', { bodyLimit: 15_000_000 }, async (request, reply) => {
     const { pageId, filename } = request.params as { pageId: string; filename: string };
     const userId = request.userId;
 

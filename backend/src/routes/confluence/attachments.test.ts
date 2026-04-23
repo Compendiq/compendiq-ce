@@ -576,5 +576,28 @@ describe('Attachment routes', () => {
 
       expect(response.statusCode).toBe(500);
     });
+
+    it('accepts a payload above Fastify\'s 1 MB default (bodyLimit raised)', async () => {
+      // 2 MiB of raw PNG data (with valid magic bytes at the front) →
+      // ~2.67 MiB base64-encoded, above Fastify's 1 MB default but below
+      // the 10 MB in-handler cap. Proves the per-route `bodyLimit` option
+      // has lifted the default — otherwise Fastify would reject with a
+      // generic 413 before the handler runs.
+      const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      const padded = Buffer.concat([PNG_MAGIC, Buffer.alloc(2 * 1024 * 1024, 0)]);
+      const largePngDataUri = `data:image/png;base64,${padded.toString('base64')}`;
+
+      mockGetClientForUser.mockResolvedValue(mockClient);
+      mockWriteAttachmentCache.mockResolvedValue('/data/attachments/page-123/big.png');
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/attachments/page-123/big.png',
+        payload: { dataUri: largePngDataUri },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ success: true, filename: 'big.png' });
+    });
   });
 });
