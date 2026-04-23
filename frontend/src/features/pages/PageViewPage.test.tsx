@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { PageViewPage } from './PageViewPage';
 import { useAuthStore } from '../../stores/auth-store';
 import { useArticleViewStore } from '../../stores/article-view-store';
+import { apiFetch } from '../../shared/lib/api';
 
 const mockNavigate = vi.fn();
 const mockUpdatePage = vi.fn();
@@ -105,7 +106,20 @@ vi.mock('../../shared/components/TagEditor', () => ({
 
 
 vi.mock('../../shared/components/diagrams/DrawioEditor', () => ({
-  DrawioEditor: () => <div data-testid="drawio-editor" />,
+  DrawioEditor: ({
+    onSave,
+  }: {
+    onSave?: (dataUri: string, xml: string) => void;
+  }) => (
+    <div data-testid="drawio-editor">
+      <button
+        data-testid="drawio-save-trigger"
+        onClick={() => onSave?.('data:image/png;base64,SAVED', '<mxGraphModel/>')}
+      >
+        Save diagram
+      </button>
+    </div>
+  ),
 }));
 
 vi.mock('../../shared/lib/api', () => ({
@@ -224,6 +238,8 @@ describe('PageViewPage', () => {
     mockPinMutate.mockReset();
     mockUnpinMutate.mockReset();
     mockDeleteMutateAsync.mockReset().mockResolvedValue(undefined);
+    vi.mocked(apiFetch).mockClear();
+    vi.mocked(apiFetch).mockResolvedValue({} as never);
     localStorage.clear();
     Element.prototype.scrollTo = vi.fn();
 
@@ -361,6 +377,125 @@ describe('PageViewPage', () => {
       // The draw.io editor should NOT be opened on fetch failure
       expect(screen.queryByTestId('drawio-editor')).not.toBeInTheDocument();
     });
+
+    fetchSpy.mockRestore();
+  });
+
+  it('routes local-page diagram edit fetch to /api/local-attachments (#302 Gap 4)', async () => {
+    // Standalone/local page: no confluenceId → handleEditDiagram must hit
+    // /api/local-attachments, not /api/attachments (which would 404).
+    currentMockPage = { ...mockPage, confluenceId: null as unknown as string };
+
+    const pngBlob = new Blob(['png-bytes'], { type: 'image/png' });
+    const fakeResponse = {
+      ok: true,
+      status: 200,
+      blob: () => Promise.resolve(pngBlob),
+    } as unknown as Response;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(fakeResponse);
+
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('edit-diagram-trigger'));
+
+    await waitFor(() => {
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    });
+    const [url] = fetchSpy.mock.calls[0];
+    expect(url).toBe('/api/local-attachments/page-1/my-diagram.png');
+    expect(String(url)).not.toMatch(/\/api\/attachments\//);
+
+    fetchSpy.mockRestore();
+  });
+
+  it('routes Confluence-page diagram edit fetch to /api/attachments', async () => {
+    const pngBlob = new Blob(['png-bytes'], { type: 'image/png' });
+    const fakeResponse = {
+      ok: true,
+      status: 200,
+      blob: () => Promise.resolve(pngBlob),
+    } as unknown as Response;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(fakeResponse);
+
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('edit-diagram-trigger'));
+
+    await waitFor(() => {
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    });
+    const [url] = fetchSpy.mock.calls[0];
+    expect(url).toBe('/api/attachments/98765432/my-diagram.png');
+
+    fetchSpy.mockRestore();
+  });
+
+  it('routes local-page diagram save PUT to /local-attachments (#302 Gap 4)', async () => {
+    // Standalone/local page: handleDrawioSave must PUT to /local-attachments.
+    currentMockPage = { ...mockPage, confluenceId: null as unknown as string };
+
+    const pngBlob = new Blob(['png-bytes'], { type: 'image/png' });
+    const fakeResponse = {
+      ok: true,
+      status: 200,
+      blob: () => Promise.resolve(pngBlob),
+    } as unknown as Response;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(fakeResponse);
+
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('edit-diagram-trigger'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('drawio-save-trigger')).toBeInTheDocument();
+    });
+
+    // Clear mount-time apiFetch calls (e.g. /settings/drawio-url) so the
+    // next recorded call is the diagram save.
+    vi.mocked(apiFetch).mockClear();
+    fireEvent.click(screen.getByTestId('drawio-save-trigger'));
+
+    await waitFor(() => {
+      expect(vi.mocked(apiFetch)).toHaveBeenCalled();
+    });
+    const saveCall = vi
+      .mocked(apiFetch)
+      .mock.calls.find(([path]) => String(path).includes('my-diagram.png'));
+    expect(saveCall).toBeDefined();
+    const [path, options] = saveCall!;
+    expect(path).toBe('/local-attachments/page-1/my-diagram.png');
+    expect(options?.method).toBe('PUT');
+    expect(String(path)).not.toMatch(/^\/attachments\//);
+
+    fetchSpy.mockRestore();
+  });
+
+  it('routes Confluence-page diagram save PUT to /attachments', async () => {
+    const pngBlob = new Blob(['png-bytes'], { type: 'image/png' });
+    const fakeResponse = {
+      ok: true,
+      status: 200,
+      blob: () => Promise.resolve(pngBlob),
+    } as unknown as Response;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(fakeResponse);
+
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('edit-diagram-trigger'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('drawio-save-trigger')).toBeInTheDocument();
+    });
+
+    vi.mocked(apiFetch).mockClear();
+    fireEvent.click(screen.getByTestId('drawio-save-trigger'));
+
+    await waitFor(() => {
+      expect(vi.mocked(apiFetch)).toHaveBeenCalled();
+    });
+    const saveCall = vi
+      .mocked(apiFetch)
+      .mock.calls.find(([path]) => String(path).includes('my-diagram.png'));
+    expect(saveCall).toBeDefined();
+    const [path, options] = saveCall!;
+    expect(path).toBe('/attachments/98765432/my-diagram.png');
+    expect(options?.method).toBe('PUT');
 
     fetchSpy.mockRestore();
   });

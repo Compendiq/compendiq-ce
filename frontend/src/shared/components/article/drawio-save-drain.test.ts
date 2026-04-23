@@ -162,19 +162,37 @@ describe('drainPendingDrawioDiagrams (#302 Gap 3)', () => {
     expect(dispatched[1]!.attrs.src).toMatch(/^\/api\/attachments\/conf-page-123\/diagram-\d+-42\.png$/);
   });
 
-  it('skips standalone pages with a friendly error (Gap 4 territory)', async () => {
-    const { editor } = makeEditor([
-      { pos: 5, node: diagramNode({ pngDataUri: 'data:image/png;base64,AAAA' }) },
+  it('routes standalone pages to /api/local-attachments (#302 Gap 4)', async () => {
+    const { editor, dispatched } = makeEditor([
+      {
+        pos: 5,
+        node: diagramNode({
+          diagramName: 'local-flow',
+          pngDataUri: 'data:image/png;base64,AAAA',
+          xml: '<mxfile>local</mxfile>',
+        }),
+      },
     ]);
     const res = await drainPendingDrawioDiagrams(editor as never, {
       attachmentPageId: '42',
       pageSource: 'standalone',
     });
-    expect(res.uploaded).toBe(0);
-    expect(res.skipped).toBe(1);
-    expect(res.errors).toHaveLength(1);
-    expect(res.errors[0]).toMatch(/standalone pages is not yet supported/);
-    expect(globalThis.fetch).not.toHaveBeenCalled();
+
+    expect(res.uploaded).toBe(1);
+    expect(res.skipped).toBe(0);
+    expect(res.failed).toBe(0);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+
+    const call = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    // URL prefix is `/local-attachments`, not `/attachments`
+    expect(call[0]).toContain('/local-attachments/42/local-flow.png');
+    const body = JSON.parse((call[1] as { body: string }).body);
+    expect(body.dataUri).toBe('data:image/png;base64,AAAA');
+    expect(body.xml).toBe('<mxfile>local</mxfile>');
+
+    // Node rewritten with the local URL
+    expect(dispatched).toHaveLength(1);
+    expect(dispatched[0]!.attrs.src).toBe('/api/local-attachments/42/local-flow.png');
   });
 
   it('reports failures without blocking other diagrams', async () => {
