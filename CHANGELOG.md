@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Draw.io diagrams edited inside the TipTap editor now survive page reload (#302 Gap 3).** The editor's `DrawioDiagramNodeView.handleSave` wrote the edited PNG into the node's transient `pngDataUri` attribute, but the page-level save never flushed it to the attachment store. The serialised body_html carried the PNG inline as base64 — it reloaded fine in the editor but bloated the DB row by ~14 MB per edit, and the node's `src` remained null so subsequent edits inflated the row again. New `drawio-save-drain.ts` walks the editor's doc before `handleSave` serialises HTML, uploads every pending diagram (PNG + `.drawio` XML sibling, per Gap 2) to `/api/attachments/:pageId/:filename`, and rewrites the node's attributes with the resolved server URL so the saved HTML references the attachment cheaply. Standalone / local pages currently skip with a friendly toast — those need a separate attachment backend tracked in #302 Gap 4. (#302 Gap 3)
+
+### Fixed
+
 - **Embedding model switch no longer caps at 2000 dimensions.** `POST /api/admin/embedding/reembed` with `newDimensions > 2000` (e.g. switching to `qwen3-embedding:4b` at 2560 dims or `qwen3-embedding:8b` at 4096) previously rolled back the whole transaction with `column cannot have more than 2000 dimensions for hnsw index`. The re-embed path now tiers the column type + index choice: `≤ 2000` keeps the vector+HNSW path unchanged; `2001–4000` uses `halfvec(n)` + HNSW `halfvec_cosine_ops` (float16 storage, ~equivalent recall); `> 4000` stores as `vector(n)` with no HNSW index (sequential scan — correct but slower on large KBs, logged as a warning). DDL order now mirrors migration 048: DROP INDEX → ALTER COLUMN TYPE → CREATE INDEX. HNSW tuning `WITH (m=16, ef_construction=200)` applied consistently. Zod upper bound widened 8192 → 16000 (pgvector's max).
 
 ## [0.3.0] - 2026-04-22

@@ -23,6 +23,7 @@ import { FeatureErrorBoundary } from '../../shared/components/feedback/FeatureEr
 import { QualityScoreBadge } from '../../shared/components/badges/QualityScoreBadge';
 import { Editor, EditorToolbar, TableContextToolbar, LayoutContextToolbar, ColumnContextToolbar, clearDraft, getDraft } from '../../shared/components/article/Editor';
 import type { Editor as EditorType } from '@tiptap/core';
+import { drainPendingDrawioDiagrams } from '../../shared/components/article/drawio-save-drain';
 import { ArticleViewer } from '../../shared/components/article/ArticleViewer';
 import { DrawioEditor } from '../../shared/components/diagrams/DrawioEditor';
 import { apiFetch } from '../../shared/lib/api';
@@ -208,10 +209,26 @@ export function PageViewPage() {
   const handleSave = useCallback(async () => {
     if (!id || !page) return;
     try {
+      // Flush any pending draw.io diagrams edited inside the TipTap
+      // editor before we serialise + save (#302 Gap 3). Without this
+      // the edited PNG ships as a huge base64 data URI inside body_html;
+      // with it, the PNG is uploaded to the attachment store and the
+      // body_html references the small server URL instead.
+      const drain = await drainPendingDrawioDiagrams(editorInstance, {
+        attachmentPageId: page.confluenceId ?? id,
+        pageSource: page.confluenceId ? 'confluence' : 'standalone',
+      });
+      for (const msg of drain.errors) {
+        toast.warning(msg);
+      }
+      // `editor.getHTML()` reflects the newly-committed node attributes,
+      // so pull the post-drain HTML rather than the pre-drain `editHtml`.
+      const bodyToSave = editorInstance?.getHTML() ?? editHtml;
+
       await updateMutation.mutateAsync({
         id,
         title: editTitle,
-        bodyHtml: editHtml,
+        bodyHtml: bodyToSave,
         version: page.version,
       });
       if (draftKey) clearDraft(draftKey);
@@ -234,7 +251,7 @@ export function PageViewPage() {
         toast.error(message);
       }
     }
-  }, [draftKey, editHtml, editTitle, id, page, queryClient, updateMutation]);
+  }, [draftKey, editHtml, editTitle, editorInstance, id, page, queryClient, updateMutation]);
 
   // Draw.io inline editing handlers
   const handleEditDiagram = useCallback(async (diagramName: string) => {
