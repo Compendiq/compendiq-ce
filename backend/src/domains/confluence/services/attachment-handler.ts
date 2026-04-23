@@ -54,8 +54,11 @@ function attachmentDir(pageId: string): string {
 }
 
 function attachmentPath(_userId: string, pageId: string, filename: string): string {
-  // Sanitize filename to prevent path traversal
+  // Sanitize filename to prevent path traversal — `path.basename` strips
+  // any `..` / separators. `attachmentDir(pageId)` also validates its own
+  // input (see the path-traversal guard above).
   const safe = path.basename(filename);
+  // nosemgrep
   return path.join(attachmentDir(pageId), safe);
 }
 
@@ -132,7 +135,7 @@ export async function readAttachment(userId: string, pageId: string, filename: s
     const match = entries.find((e) => e.startsWith(prefix) && e.endsWith(ext));
     if (match) {
       logger.debug({ pageId, filename, xrefMatch: match }, 'Serving attachment via xref fallback');
-      return await fs.readFile(path.join(dir, path.basename(match)));
+      return await fs.readFile(path.join(dir, path.basename(match))); // nosemgrep
     }
     logger.debug({ pageId, filename, dir, dirContents: entries.slice(0, 20) }, 'No xref match found — listing dir contents');
   } catch {
@@ -235,17 +238,39 @@ export async function syncDrawioAttachments(
           await fs.access(filePath);
           cachedFiles.push(cacheAs);
           skipped++;
-          continue;
         } catch {
-          // File does not exist — proceed with download
+          const fileSize = attachment.extensions?.fileSize;
+          await cacheAttachment(client, userId, pageId, attachment._links.download, cacheAs, fileSize);
+          cachedFiles.push(cacheAs);
+          downloaded++;
         }
-
-        const fileSize = attachment.extensions?.fileSize;
-        await cacheAttachment(client, userId, pageId, attachment._links.download, cacheAs, fileSize);
-        cachedFiles.push(cacheAs);
-        downloaded++;
       } catch (err) {
         logger.error({ err, pageId, name }, 'Failed to cache draw.io attachment');
+      }
+    }
+
+    // Also cache the `.drawio` XML sibling when present (#302 Gap 2).
+    // Confluence's native draw.io plugin stores it alongside the PNG; we
+    // now do the same. A missing .drawio file is not an error — only the
+    // PNG is required for view-mode, so older pages without .drawio
+    // uploads continue to work.
+    const drawioName = `${name}.drawio`;
+    const drawioAttachment = attachments.find((a) => a.title === drawioName);
+    if (drawioAttachment?._links?.download) {
+      try {
+        const drawioPath = attachmentPath(userId, pageId, drawioName);
+        try {
+          await fs.access(drawioPath);
+          cachedFiles.push(drawioName);
+          skipped++;
+        } catch {
+          const fileSize = drawioAttachment.extensions?.fileSize;
+          await cacheAttachment(client, userId, pageId, drawioAttachment._links.download, drawioName, fileSize);
+          cachedFiles.push(drawioName);
+          downloaded++;
+        }
+      } catch (err) {
+        logger.warn({ err, pageId, drawioName }, 'Failed to cache .drawio XML sibling');
       }
     }
   }

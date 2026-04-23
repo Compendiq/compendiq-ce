@@ -12,10 +12,19 @@ import { logger } from '../../core/utils/logger.js';
 
 const UpdateAttachmentBodySchema = z.object({
   dataUri: z.string().min(1, 'dataUri is required'),
+  /**
+   * Optional draw.io XML source for the diagram (#302 Gap 2). When
+   * present, the route uploads the XML as a sibling `.drawio` attachment
+   * alongside the rendered PNG so Confluence's native draw.io viewer can
+   * re-open and edit the diagram. Omit for non-draw.io attachments.
+   */
+  xml: z.string().max(25 * 1024 * 1024, 'XML exceeds 25 MB limit').optional(),
 });
 
-/** Maximum allowed attachment upload size: 10 MB */
+/** Maximum allowed PNG upload size: 10 MB. */
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+/** Maximum allowed draw.io XML upload size: 25 MB (XML compresses well). */
+const MAX_XML_BYTES = 25 * 1024 * 1024;
 
 const ATTACHMENTS_BASE = process.env.ATTACHMENTS_DIR ?? 'data/attachments';
 
@@ -245,7 +254,7 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
         message: parseResult.error.issues[0]?.message ?? 'Missing or invalid dataUri in request body',
       });
     }
-    const { dataUri } = parseResult.data;
+    const { dataUri, xml } = parseResult.data;
 
     const pngPrefix = 'data:image/png;base64,';
     if (!dataUri.startsWith(pngPrefix)) {
@@ -315,12 +324,52 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
       });
     }
 
+    // Optionally build the `.drawio` XML sibling attachment. This is what
+    // makes the diagram re-openable in Confluence's native draw.io viewer
+    // (#302 Gap 2). The rendered PNG alone is useless for editing.
+    let xmlBuffer: Buffer | null = null;
+    let xmlFilename: string | null = null;
+    if (xml) {
+      xmlBuffer = Buffer.from(xml, 'utf8');
+      if (xmlBuffer.length > MAX_XML_BYTES) {
+        return reply.status(413).send({
+          statusCode: 413,
+          error: 'Payload Too Large',
+          message: `Draw.io XML exceeds maximum size of ${MAX_XML_BYTES / (1024 * 1024)} MB`,
+        });
+      }
+      // Swap `.png` for `.drawio` to match Confluence's draw.io plugin
+      // naming convention. Non-.png filenames get the .drawio suffix.
+      xmlFilename = filename.toLowerCase().endsWith('.png')
+        ? filename.slice(0, -4) + '.drawio'
+        : `${filename}.drawio`;
+    }
+
     try {
-      // Upload the attachment to Confluence
+      // Upload the PNG to Confluence
       await client.updateAttachment(pageId, filename, pngBuffer, 'image/png');
 
       // Update local cache so the image is served immediately without re-sync
       await writeAttachmentCache(userId, pageId, filename, pngBuffer);
+
+      // Upload the .drawio XML sibling when provided. A failure here must
+      // NOT fail the whole request — the PNG is already uploaded and the
+      // UI gets visual parity. Log and continue.
+      if (xmlBuffer && xmlFilename) {
+        try {
+          await client.updateAttachment(pageId, xmlFilename, xmlBuffer, 'application/xml');
+          await writeAttachmentCache(userId, pageId, xmlFilename, xmlBuffer);
+          logger.info(
+            { userId, pageId, xmlFilename, xmlSize: xmlBuffer.length },
+            'Diagram .drawio XML attachment uploaded alongside PNG (#302)',
+          );
+        } catch (xmlErr) {
+          logger.warn(
+            { err: xmlErr, userId, pageId, xmlFilename },
+            'Failed to upload .drawio XML sibling; PNG uploaded successfully',
+          );
+        }
+      }
 
       // Invalidate Redis page cache so other users get the updated diagram
       try {
@@ -339,6 +388,8 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
         success: true,
         filename,
         size: pngBuffer.length,
+        xmlFilename: xmlFilename ?? undefined,
+        xmlSize: xmlBuffer?.length,
       });
     } catch (err) {
       logger.error({ err, userId, pageId, filename }, 'Failed to update attachment');
