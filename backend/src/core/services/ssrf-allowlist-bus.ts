@@ -35,8 +35,21 @@ export async function initSsrfAllowlistBus(main: RedisClientType): Promise<() =>
     return noopTeardown;
   }
 
-  // Wire the publisher first so any mutation that races the subscriber setup
-  // still broadcasts (other pods will see it; our own set is authoritative).
+  // Wire the publisher BEFORE awaiting `subscriber.connect()` / `subscribe()`.
+  //
+  // Rationale (see PR #309 review, finding #2):
+  //   - Mutations that race the subscriber setup (e.g. a sync worker adds a
+  //     Confluence origin while we're still inside this init) will still be
+  //     broadcast to peer pods — they simply apply the event and stay in sync.
+  //     Our own local `allowedOrigins` is authoritative for this pod regardless.
+  //   - If the subscriber later fails to connect or subscribe, the catch block
+  //     unwires the publisher again and we fall back to single-pod mode. Any
+  //     broadcasts that went out during the race window are correct on peers;
+  //     the only cost is a slightly misleading log sequence.
+  //   - The alternative (wire publisher only after `subscribe()` returns) would
+  //     open a race in the other direction — a mutation between "subscriber
+  //     ready" and "publisher set" would NOT propagate, which is worse for
+  //     coherency. Current ordering is the safer trade-off.
   setSsrfAllowlistPublisher((channel, message) => main.publish(channel, message));
 
   let subscriber: RedisClientType;

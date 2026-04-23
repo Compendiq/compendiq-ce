@@ -123,7 +123,22 @@ export function removeAllowedBaseUrl(baseUrl: string): void {
   }
 }
 
-/** Replace all allowed origins with a fresh set (reconciliation). */
+/**
+ * Replace all allowed origins with a fresh set (reconciliation).
+ *
+ * INTERNAL / TEST-ONLY today (PR #309 review, finding #3): no production caller
+ * currently uses this. It is kept exported for two reasons:
+ *   1. API symmetry with the pub/sub event wire-format (`action: 'replace'`),
+ *      which receivers must handle — see `applyAllowlistEventLocal`.
+ *   2. Future use by a periodic reconciliation job that re-reads
+ *      `user_settings.confluence_url` + `llm_providers.base_url` and calls
+ *      `replaceAllowedBaseUrls(allUrls)` to heal drift after a Redis outage
+ *      (mutations published during the outage are lost otherwise).
+ *
+ * Unlike `addAllowedBaseUrl` / `removeAllowedBaseUrl`, this ALWAYS publishes
+ * (even when the set is unchanged) because the replace semantics are
+ * authoritative — receivers should treat it as "this is the ground truth now".
+ */
 export function replaceAllowedBaseUrls(baseUrls: string[]): void {
   allowedOrigins.clear();
   for (const url of baseUrls) {
