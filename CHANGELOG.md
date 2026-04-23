@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Public stewardship pledge (#296).** New `docs/STEWARDSHIP.md` documents the open-core commitment: every feature shipped under CE (AGPL-3.0) stays under CE, with explicit carve-outs for EE-only features, unmaintainable code paths, bundled third-party deps, security patches, and semantic renames. Canonical CE feature baseline captured against v0.3.0. README links to the doc.
+- **Public roadmap index (#297).** New `docs/ROADMAP.md` documents the cadence and column structure for the org-level GitHub Projects v2 board that will track phase-labelled issues across CE + EE + mgmt. README links to the doc. Live board URL fills in once the project is created.
+- **Case-study scaffolding (#298 Phase A).** New `docs/case-studies/` directory with four reusable templates (`README.md`, `_template.md`, `_consent-template.md`, `_interview-script.md`) that gate the publication workflow: signed consent before interview, 10-business-day customer review window, revocation rights spelled out. Phase B (actual published case studies) ships in v0.4 if the consent loop lands in time; otherwise rolls to v0.5.
+
 ### Fixed
 
 - **Embedding model switch no longer caps at 2000 dimensions.** `POST /api/admin/embedding/reembed` with `newDimensions > 2000` (e.g. switching to `qwen3-embedding:4b` at 2560 dims or `qwen3-embedding:8b` at 4096) previously rolled back the whole transaction with `column cannot have more than 2000 dimensions for hnsw index`. The re-embed path now tiers the column type + index choice: `≤ 2000` keeps the vector+HNSW path unchanged; `2001–4000` uses `halfvec(n)` + HNSW `halfvec_cosine_ops` (float16 storage, ~equivalent recall); `> 4000` stores as `vector(n)` with no HNSW index (sequential scan — correct but slower on large KBs, logged as a warning). DDL order now mirrors migration 048: DROP INDEX → ALTER COLUMN TYPE → CREATE INDEX. HNSW tuning `WITH (m=16, ef_construction=200)` applied consistently. Zod upper bound widened 8192 → 16000 (pgvector's max).
