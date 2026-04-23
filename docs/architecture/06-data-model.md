@@ -23,6 +23,7 @@ erDiagram
     pages ||--o{ comments : "annotated by"
     pages ||--o{ page_relationships : "related via"
     pages ||--o{ knowledge_requests : "fulfils"
+    pages ||--o{ local_attachments : "owns (standalone pages only)"
 
     roles ||--o{ group_memberships : "granted via"
     groups ||--o{ group_memberships : "has"
@@ -201,6 +202,18 @@ erDiagram
         text space_key
         bigint role_id FK
         bigint group_id FK
+    }
+
+    local_attachments {
+        bigint id PK
+        int page_id FK
+        text filename
+        text content_type
+        bigint size_bytes
+        text sha256
+        uuid created_by FK
+        timestamptz created_at
+        timestamptz updated_at
     }
 
     llm_providers ||--o{ llm_usecase_assignments : "referenced by"

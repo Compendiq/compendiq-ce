@@ -60,6 +60,7 @@ import { setupRoutes } from './routes/foundation/setup.js';
 import { knowledgeRequestRoutes } from './routes/knowledge/knowledge-requests.js';
 import { searchRoutes } from './routes/knowledge/search.js';
 import { localSpacesRoutes } from './routes/knowledge/local-spaces.js';
+import { localAttachmentsRoutes } from './routes/knowledge/local-attachments.js';
 
 import { ZodError } from 'zod';
 import { trackError } from './core/services/error-tracker.js';
@@ -313,6 +314,7 @@ export async function buildApp() {
   await app.register(knowledgeRequestRoutes, { prefix: '/api' });
   await app.register(searchRoutes, { prefix: '/api' });
   await app.register(localSpacesRoutes, { prefix: '/api' });
+  await app.register(localAttachmentsRoutes, { prefix: '/api' });
 
   return app;
 }
