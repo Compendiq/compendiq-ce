@@ -120,16 +120,19 @@ describe.skipIf(!dbAvailable)('ADMIN_ACCESS_DENIED retention purge (#264)', () =
     await insertDeniedRow('GET /q', 50);
 
     await runRetentionCleanup();
+    // Exclude RETENTION_PRUNED (#307 Finding #4): each prune branch now emits
+    // a heartbeat RETENTION_PRUNED row even on a zero-row sweep. The assertion
+    // is about the target (ADMIN_ACCESS_DENIED) data, not the audit-of-prune
+    // meta-events written by the cycle itself.
     expect(
-      (await query<{ c: string }>(`SELECT COUNT(*)::text AS c FROM audit_log`)).rows[0]!.c,
+      (await query<{ c: string }>(
+        `SELECT COUNT(*)::text AS c FROM audit_log WHERE action <> 'RETENTION_PRUNED'`,
+      )).rows[0]!.c,
     ).toBe('1');
 
     // Tighten to 30d. Next call purges the 50-day-old row.
     await setRetentionDays(30);
     await runRetentionCleanup();
-    // Exclude RETENTION_PRUNED (#307): the prune cycle itself writes an audit
-    // row about the prune; the assertion is about the target data, not the
-    // audit-of-prune meta-event.
     expect(
       (await query<{ c: string }>(
         `SELECT COUNT(*)::text AS c FROM audit_log WHERE action <> 'RETENTION_PRUNED'`,

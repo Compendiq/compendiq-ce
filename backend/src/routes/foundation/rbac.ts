@@ -467,7 +467,27 @@ export async function rbacRoutes(fastify: FastifyInstance) {
         );
 
         await invalidateRbacCache();
-        // Audit event (#307 P0c): space-scoped role assigned.
+        // Audit events (#307 P0c):
+        //   ROLE_ASSIGNED captures the role-grant act (who + which role + to whom),
+        //   SPACE_ACCESS_GRANTED captures the net resource-view effect.
+        // Both are consumed by the EE compliance report (ee#115). Review
+        // Finding #2 flagged ROLE_ASSIGNED/ROLE_REVOKED as declared-but-unemitted;
+        // this emission site pairs them with the existing SPACE_ACCESS_* events
+        // since CE has no separate global user-role-change route.
+        await logAuditEvent(
+          request.userId,
+          'ROLE_ASSIGNED',
+          'space',
+          key,
+          {
+            spaceKey: key,
+            principalType,
+            principalId,
+            roleId,
+            assignmentId: result.rows[0]!.id,
+          },
+          request,
+        );
         await logAuditEvent(
           request.userId,
           'SPACE_ACCESS_GRANTED',
@@ -514,6 +534,17 @@ export async function rbacRoutes(fastify: FastifyInstance) {
         throw admin.httpErrors.notFound('Role assignment not found');
       }
 
+      // #307 Finding #2: pair ROLE_REVOKED with SPACE_ACCESS_REVOKED so the
+      // compliance report gets both the role-revoke act and the net
+      // resource-view change. See POST /api/spaces/:key/roles for rationale.
+      await logAuditEvent(
+        request.userId,
+        'ROLE_REVOKED',
+        'space',
+        key,
+        { spaceKey: key, assignmentId },
+        request,
+      );
       await logAuditEvent(
         request.userId,
         'SPACE_ACCESS_REVOKED',
@@ -653,6 +684,17 @@ export async function rbacRoutes(fastify: FastifyInstance) {
       }
 
       await invalidateRbacCache();
+      // #307 Finding #3: audit the inherit-perms toggle so every mutating
+      // RBAC route has compliance-report coverage. Metadata captures the
+      // new value so the report can show direction (on → off or off → on).
+      await logAuditEvent(
+        request.userId,
+        'PAGE_INHERIT_PERMS_CHANGED',
+        'page',
+        String(id),
+        { inheritPerms },
+        request,
+      );
       return { message: inheritPerms ? 'Page now inherits space permissions' : 'Page now uses custom permissions' };
     });
 
@@ -661,14 +703,17 @@ export async function rbacRoutes(fastify: FastifyInstance) {
     // ========================
 
     // GET /api/users -- list all users (for admin assignment UIs)
+    // #307 Finding #1: expose `last_login_at` so the user-admin UI (#304)
+    // needs no backend follow-up. Column added by migration 062.
     admin.get('/users', RBAC_RATE_LIMIT, async () => {
       const result = await query<{
         id: string;
         username: string;
         role: string;
         created_at: string;
+        last_login_at: string | null;
       }>(
-        'SELECT id, username, role, created_at FROM users ORDER BY username',
+        'SELECT id, username, role, created_at, last_login_at FROM users ORDER BY username',
       );
 
       return result.rows.map((r) => ({
@@ -676,6 +721,7 @@ export async function rbacRoutes(fastify: FastifyInstance) {
         username: r.username,
         role: r.role,
         createdAt: r.created_at,
+        lastLoginAt: r.last_login_at,
       }));
     });
   }); // end admin routes register block

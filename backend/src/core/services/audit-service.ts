@@ -9,8 +9,12 @@ import { logger } from '../utils/logger.js';
  *   - Session lifecycle:  SESSION_CREATED, SESSION_REVOKED
  *   - RBAC mutations:     ROLE_ASSIGNED, ROLE_REVOKED, GROUP_MEMBER_ADDED,
  *                         GROUP_MEMBER_REMOVED, SPACE_ACCESS_GRANTED,
- *                         SPACE_ACCESS_REVOKED, ACE_GRANTED, ACE_REVOKED
- *   - Data retention:     RETENTION_PRUNED (+ metadata.table, rows_pruned)
+ *                         SPACE_ACCESS_REVOKED, ACE_GRANTED, ACE_REVOKED,
+ *                         PAGE_INHERIT_PERMS_CHANGED
+ *   - Data retention:     RETENTION_PRUNED (+ metadata.table, rows_pruned).
+ *                         Emitted for every retention cycle — including
+ *                         zero-row sweeps — so attestation always has a
+ *                         heartbeat.
  *   - MFA:                MFA_ENROLLED, MFA_DISABLED — placeholders for when
  *                         MFA ships; the Authentication compliance report
  *                         documents "MFA not yet implemented" until then.
@@ -66,6 +70,7 @@ export type AuditAction =
   | 'SPACE_ACCESS_REVOKED'
   | 'ACE_GRANTED'
   | 'ACE_REVOKED'
+  | 'PAGE_INHERIT_PERMS_CHANGED'
   | 'RETENTION_PRUNED';
 
 export interface AuditLogEntry {

@@ -54,18 +54,20 @@ export async function runRetentionCleanup(): Promise<Record<string, number>> {
       results[table] = rowCount ?? 0;
       if (results[table] > 0) {
         logger.info({ table, deleted: results[table], retentionDays }, 'Retention cleanup completed');
-        // #307 P0d: emit RETENTION_PRUNED for every prune cycle that removed
-        // at least one row. Compliance report 6 (Data Retention Attestation)
-        // reads this event; prunes with zero rows are silenced to avoid
-        // noise, since a zero-row prune attests the same as a no-op cron.
-        await logAuditEvent(
-          null,
-          'RETENTION_PRUNED',
-          'table',
-          table,
-          { table, rows_pruned: results[table], retention_days: retentionDays },
-        );
       }
+      // #307 P0d + review Finding #4: emit RETENTION_PRUNED for EVERY prune
+      // cycle, including zero-row ones. Compliance report 6 (Data Retention
+      // Attestation) reads this event; without a heartbeat the auditor
+      // cannot distinguish "we ran retention in April, nothing matched"
+      // from "retention didn't run in April". rows_pruned: 0 is a valid
+      // attestation — it proves the cron ran.
+      await logAuditEvent(
+        null,
+        'RETENTION_PRUNED',
+        'table',
+        table,
+        { table, rows_pruned: results[table], retention_days: retentionDays },
+      );
     } catch (err) {
       logger.error({ err, table }, 'Retention cleanup failed for table');
       results[table] = 0;
@@ -94,14 +96,15 @@ export async function runRetentionCleanup(): Promise<Record<string, number>> {
     results.page_versions = rowCount ?? 0;
     if (results.page_versions > 0) {
       logger.info({ deleted: results.page_versions, maxVersions }, 'Page versions retention cleanup completed');
-      await logAuditEvent(
-        null,
-        'RETENTION_PRUNED',
-        'table',
-        'page_versions',
-        { table: 'page_versions', rows_pruned: results.page_versions, max_versions: maxVersions },
-      );
     }
+    // #307 Finding #4: always emit (heartbeat) — see umbrella loop above.
+    await logAuditEvent(
+      null,
+      'RETENTION_PRUNED',
+      'table',
+      'page_versions',
+      { table: 'page_versions', rows_pruned: results.page_versions, max_versions: maxVersions },
+    );
   } catch (err) {
     logger.error({ err }, 'Page versions retention cleanup failed');
     results.page_versions = 0;
@@ -170,19 +173,21 @@ async function runAdminAccessDeniedRetention(): Promise<number> {
         { deleted: totalDeleted, retentionDays: days },
         'ADMIN_ACCESS_DENIED retention cleanup completed',
       );
-      await logAuditEvent(
-        null,
-        'RETENTION_PRUNED',
-        'table',
-        'audit_log_admin_access_denied',
-        {
-          table: 'audit_log',
-          action_scope: 'ADMIN_ACCESS_DENIED',
-          rows_pruned: totalDeleted,
-          retention_days: days,
-        },
-      );
     }
+    // #307 Finding #4: always emit (heartbeat) — compliance needs proof the
+    // targeted sweep ran, even in months where it purged nothing.
+    await logAuditEvent(
+      null,
+      'RETENTION_PRUNED',
+      'table',
+      'audit_log_admin_access_denied',
+      {
+        table: 'audit_log',
+        action_scope: 'ADMIN_ACCESS_DENIED',
+        rows_pruned: totalDeleted,
+        retention_days: days,
+      },
+    );
   } catch (err) {
     logger.error({ err, retentionDays: days }, 'ADMIN_ACCESS_DENIED retention cleanup failed');
   }

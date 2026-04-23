@@ -135,6 +135,19 @@ export async function verifyRefreshToken(token: string): Promise<RefreshTokenPay
     // Revoke the entire token family
     logger.warn({ jti, family, userId: payload.sub }, 'Refresh token reuse detected - revoking entire family');
     await revokeTokenFamily(family);
+    // #307 Finding #5: emit SESSION_REVOKED so the Authentication
+    // compliance report can surface session-hijack events. Use
+    // `reason: 'token_reuse_detected'` (distinct from `'logout'`) so the
+    // report can separate voluntary logouts from forced revocations.
+    // logAuditEvent is try/catch-wrapped internally so an audit failure
+    // never suppresses the security-response throw below.
+    await logAuditEvent(
+      payload.sub as string,
+      'SESSION_REVOKED',
+      'user',
+      payload.sub as string,
+      { reason: 'token_reuse_detected', family, jti },
+    );
     throw new Error('Refresh token reuse detected - family revoked');
   }
 
