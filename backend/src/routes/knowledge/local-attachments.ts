@@ -132,7 +132,14 @@ export async function localAttachmentsRoutes(fastify: FastifyInstance): Promise<
   });
 
   // PUT create/replace
-  fastify.put('/local-attachments/:pageId/:filename', async (request, reply) => {
+  //
+  // `bodyLimit` MUST be set per-route: Fastify's default JSON body limit is
+  // 1 MB, so without this the 25 MB Zod cap and the in-handler 413 branch
+  // are unreachable — any payload between ~1 MB and 25 MB would be rejected
+  // by Fastify with a generic `FST_ERR_CTP_BODY_TOO_LARGE` 413 before the
+  // handler runs. Base64 inflates binary by ~33 %, plus small JSON overhead,
+  // so 35 MB comfortably covers the 25 MB binary cap.
+  fastify.put('/local-attachments/:pageId/:filename', { bodyLimit: 35_000_000 }, async (request, reply) => {
     const { pageId, filename } = PageIdAndFilenameParamSchema.parse(request.params);
     const body = PutLocalAttachmentBodySchema.parse(request.body);
 
@@ -162,6 +169,8 @@ export async function localAttachmentsRoutes(fastify: FastifyInstance): Promise<
       // .drawio filename so the Confluence native-viewer parity shape
       // (#302 Gap 2) works for local pages too.
       let xmlRecord: Awaited<ReturnType<typeof putLocalAttachment>> | null = null;
+      let xmlWriteFailed = false;
+      let xmlWriteError: string | undefined;
       if (body.xml) {
         const xmlFilename = filename.toLowerCase().endsWith('.png')
           ? filename.slice(0, -4) + '.drawio'
@@ -179,16 +188,30 @@ export async function localAttachmentsRoutes(fastify: FastifyInstance): Promise<
             { err: xmlErr, pageId, filename: xmlFilename },
             'local-attachments: XML sibling write failed (PNG still stored)',
           );
+          // Surface the failure to the caller so the drain helper can
+          // retry. Previously this was silently swallowed, breaking
+          // Confluence parity without any signal to the client.
+          xmlWriteFailed = true;
+          xmlWriteError =
+            xmlErr instanceof LocalAttachmentError
+              ? xmlErr.code
+              : xmlErr instanceof Error
+                ? xmlErr.message
+                : 'unknown error';
         }
       }
 
+      // `success` narrows to whether the PNG write completed. When
+      // `xmlWriteFailed` is true the caller knows the on-disk state
+      // diverged from Confluence parity and can re-send the XML half.
       return {
-        success: true,
+        success: !xmlWriteFailed,
         filename: record.filename,
         size: record.sizeBytes,
         sha256: record.sha256,
         xmlFilename: xmlRecord?.filename,
         xmlSize: xmlRecord?.sizeBytes,
+        ...(xmlWriteFailed ? { xmlWriteFailed: true, xmlWriteError } : {}),
       };
     } catch (err) {
       if (err instanceof LocalAttachmentError) {
