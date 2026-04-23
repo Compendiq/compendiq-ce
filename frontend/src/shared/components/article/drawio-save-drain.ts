@@ -1,6 +1,6 @@
 /**
  * Drain pending draw.io diagrams before the editor-save serialises its HTML
- * (#302 Gap 3).
+ * (#302 Gap 3 + Gap 4).
  *
  * In the TipTap editor, `DrawioDiagramNodeView.handleSave` writes the edited
  * diagram's `pngDataUri` + `xml` into the node's attributes but never
@@ -13,13 +13,17 @@
  * inflates the row again.
  *
  * This module walks the editor's document, finds every `drawioDiagram`
- * node that has a `pngDataUri` but no server-backed `src`, uploads it via
- * `PUT /api/attachments/:pageId/:filename`, and rewrites the node's
- * attributes with the resolved URL. On success, the serialised HTML
- * references the attachment URL (small) instead of the data URI (huge).
+ * node that has a `pngDataUri` but no server-backed `src`, uploads it to
+ * the appropriate attachment backend, and rewrites the node's attributes
+ * with the resolved URL. On success, the serialised HTML references the
+ * attachment URL (small) instead of the data URI (huge).
  *
- * Local (non-Confluence) pages currently have no attachment backend —
- * those are tracked in #302 Gap 4 and are no-ops here for now.
+ * Routing is gated by `pageSource`:
+ *   - `confluence` → `PUT /api/attachments/:pageId/:filename`
+ *   - `standalone` → `PUT /api/local-attachments/:pageId/:filename`
+ *
+ * Both endpoints accept the same JSON shape (`{ dataUri, xml? }`), so the
+ * rest of the drain logic is source-agnostic.
  */
 
 import type { Editor } from '@tiptap/core';
@@ -28,12 +32,18 @@ import { apiFetch } from '../../lib/api';
 export interface DrainOptions {
   /**
    * Attachment-store page id. For Confluence pages this is the
-   * `confluenceId`; for standalone pages it's the numeric DB id. When
-   * standalone-page attachment storage lands (#302 Gap 4) this will route
-   * to a different backend endpoint; until then, standalone pages skip.
+   * `confluenceId`; for standalone pages it's the numeric DB id. Combined
+   * with `pageSource` this selects the backend route:
+   * `/api/attachments/:attachmentPageId/:filename` for Confluence pages and
+   * `/api/local-attachments/:attachmentPageId/:filename` for standalone
+   * pages (see `pageSource` below).
    */
   attachmentPageId: string | null;
-  /** `confluence` or `standalone` — gates the endpoint choice. */
+  /**
+   * `confluence` routes to `/api/attachments/…`; `standalone` routes to
+   * `/api/local-attachments/…` (the Gap 4 backend). Callers typically set
+   * this to `page.confluenceId ? 'confluence' : 'standalone'`.
+   */
   pageSource: 'confluence' | 'standalone';
 }
 
