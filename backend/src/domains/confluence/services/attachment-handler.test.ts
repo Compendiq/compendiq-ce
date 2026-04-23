@@ -112,6 +112,11 @@ describe('attachment-handler', () => {
       expect(getMimeType('diagram.xml')).toBe('application/xml');
     });
 
+    it('returns application/xml for .drawio sibling files (#302)', () => {
+      // Consistency with the PUT-side upload content-type
+      expect(getMimeType('diagram.drawio')).toBe('application/xml');
+    });
+
     it('returns octet-stream for unknown extensions', () => {
       expect(getMimeType('file.xyz')).toBe('application/octet-stream');
     });
@@ -589,6 +594,89 @@ describe('attachment-handler', () => {
       expect(result).toEqual(['new-diagram.png']);
       expect(client.downloadAttachment).toHaveBeenCalledOnce();
       expect(fs.writeFile).toHaveBeenCalledOnce();
+    });
+
+    // ─── #302 Gap 2: .drawio XML sibling DOWNLOAD branch ─────────────
+    it('downloads BOTH the .png and the .drawio XML sibling when present (#302)', async () => {
+      const bodyStorage = `<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">roundtrip</ac:parameter></ac:structured-macro>`;
+      const client = createMockClient();
+      const attachments = makeAttachments([
+        { title: 'roundtrip.png', download: '/download/roundtrip.png' },
+        { title: 'roundtrip.drawio', download: '/download/roundtrip.drawio' },
+      ]);
+
+      const result = await syncDrawioAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
+
+      // Both halves must end up on disk so Compendiq's draw.io viewer can re-open
+      // the diagram for editing (without re-fetching from Confluence).
+      expect(result).toEqual(['roundtrip.png', 'roundtrip.drawio']);
+      expect(client.downloadAttachment).toHaveBeenCalledTimes(2);
+      expect(client.downloadAttachment).toHaveBeenCalledWith('/download/roundtrip.png');
+      expect(client.downloadAttachment).toHaveBeenCalledWith('/download/roundtrip.drawio');
+      // Both files written with their OWN filenames — .drawio stays as .drawio,
+      // not renamed to .png (verifies the sibling is stored alongside, not instead).
+      const writeCalls = vi.mocked(fs.writeFile).mock.calls.map((call) => call[0] as string);
+      expect(writeCalls.some((p) => p.endsWith('roundtrip.png'))).toBe(true);
+      expect(writeCalls.some((p) => p.endsWith('roundtrip.drawio'))).toBe(true);
+    });
+
+    it('falls back to PNG-only when no .drawio sibling exists (back-compat)', async () => {
+      const bodyStorage = `<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">legacy</ac:parameter></ac:structured-macro>`;
+      const client = createMockClient();
+      // Older Confluence pages uploaded only the PNG — no .drawio sibling.
+      const attachments = makeAttachments([
+        { title: 'legacy.png', download: '/download/legacy.png' },
+      ]);
+
+      const result = await syncDrawioAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
+
+      expect(result).toEqual(['legacy.png']);
+      // Only the PNG is fetched — the .drawio branch is skipped silently
+      // because `find(a.title === 'legacy.drawio')` returns undefined.
+      expect(client.downloadAttachment).toHaveBeenCalledTimes(1);
+      expect(client.downloadAttachment).toHaveBeenCalledWith('/download/legacy.png');
+    });
+
+    it('skips .drawio download when the sibling is already cached (idempotent)', async () => {
+      const bodyStorage = `<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">cached</ac:parameter></ac:structured-macro>`;
+      const client = createMockClient();
+      const attachments = makeAttachments([
+        { title: 'cached.png', download: '/download/cached.png' },
+        { title: 'cached.drawio', download: '/download/cached.drawio' },
+      ]);
+
+      // Simulate both PNG and .drawio already cached on disk.
+      // syncDrawioAttachments calls fs.access twice (once per file).
+      vi.mocked(fs.access)
+        .mockResolvedValueOnce(undefined) // cached.png exists
+        .mockResolvedValueOnce(undefined); // cached.drawio exists
+
+      const result = await syncDrawioAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
+
+      expect(result).toEqual(['cached.png', 'cached.drawio']);
+      // Neither file downloaded — both served from cache
+      expect(client.downloadAttachment).not.toHaveBeenCalled();
+      expect(fs.writeFile).not.toHaveBeenCalled();
+    });
+
+    it('keeps the PNG result when the .drawio download fails (failure is non-fatal)', async () => {
+      const bodyStorage = `<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">broken-xml</ac:parameter></ac:structured-macro>`;
+      const client = createMockClient();
+      const attachments = makeAttachments([
+        { title: 'broken-xml.png', download: '/download/broken-xml.png' },
+        { title: 'broken-xml.drawio', download: '/download/broken-xml.drawio' },
+      ]);
+
+      // PNG download succeeds (buffer); .drawio download throws.
+      (client.downloadAttachment as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce(Buffer.from('png-data'))
+        .mockRejectedValueOnce(new Error('Confluence 500'));
+
+      const result = await syncDrawioAttachments(client, 'user-1', 'page-1', bodyStorage, attachments);
+
+      // PNG made it, .drawio failure is logged and swallowed (no throw)
+      expect(result).toEqual(['broken-xml.png']);
+      expect(client.downloadAttachment).toHaveBeenCalledTimes(2);
     });
   });
 

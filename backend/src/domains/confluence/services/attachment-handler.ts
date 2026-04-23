@@ -159,6 +159,11 @@ export function getMimeType(filename: string): string {
     '.webp': 'image/webp',
     '.pdf': 'application/pdf',
     '.xml': 'application/xml',
+    // draw.io XML sibling uploaded by the PUT route with content-type
+    // application/xml — keep the served Content-Type consistent so browsers
+    // don't fall back to octet-stream (download-only) when a user inspects
+    // the cached .drawio file directly.
+    '.drawio': 'application/xml',
   };
   return mimeTypes[ext] ?? 'application/octet-stream';
 }

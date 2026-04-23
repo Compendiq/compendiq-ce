@@ -679,13 +679,13 @@ describe('Attachment routes', () => {
       expect(updateAttachment).toHaveBeenCalledTimes(2);
     });
 
-    it('rejects oversized xml payloads before upload', async () => {
+    it('rejects oversized xml payloads at the Zod boundary before any upload', async () => {
       const updateAttachment = vi.fn().mockResolvedValue({ id: 'att-1' });
       mockGetClientForUser.mockResolvedValue({ updateAttachment });
 
-      // 26 MB exceeds both the Zod schema cap (25 MB) and Fastify's default
-      // body-size limit (1 MB). Whichever fires first, the contract is:
-      // the upload never reaches Confluence.
+      // 26 MB of ASCII exceeds the Zod schema cap (25 MB). The route-level
+      // bodyLimit is 40 MB so Fastify accepts the body, Zod rejects with 400
+      // before the handler runs — PNG upload never fires.
       const tooBig = 'x'.repeat(26 * 1024 * 1024);
       const response = await app.inject({
         method: 'PUT',
@@ -693,7 +693,7 @@ describe('Attachment routes', () => {
         payload: { dataUri: VALID_PNG_DATA_URI, xml: tooBig },
       });
 
-      expect([400, 413]).toContain(response.statusCode);
+      expect(response.statusCode).toBe(400);
       expect(updateAttachment).not.toHaveBeenCalled();
     });
 
