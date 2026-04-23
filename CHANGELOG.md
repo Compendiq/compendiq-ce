@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-04-23
+
 ### Added
 
 - **Public stewardship pledge (#296).** New `docs/STEWARDSHIP.md` documents the open-core commitment: every feature shipped under CE (AGPL-3.0) stays under CE, with explicit carve-outs for EE-only features, unmaintainable code paths, bundled third-party deps, security patches, and semantic renames. Canonical CE feature baseline captured against v0.3.0. README links to the doc.
