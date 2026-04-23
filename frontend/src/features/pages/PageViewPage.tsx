@@ -255,14 +255,17 @@ export function PageViewPage() {
 
   // Draw.io inline editing handlers
   const handleEditDiagram = useCallback(async (diagramName: string) => {
-    // Fetch the diagram PNG from the attachment cache — draw.io can load PNG+XML data URIs
-    // Attachments are stored/served by confluence_id, not the integer PK from the route
+    // Fetch the diagram PNG from the attachment cache — draw.io can load PNG+XML data URIs.
+    // Confluence pages key attachments by confluence_id against /api/attachments; standalone
+    // pages key by the numeric DB id against /api/local-attachments (#302 Gap 4). Without
+    // this branch, standalone pages would 404 against the Confluence route.
     const attachmentPageId = page?.confluenceId ?? id;
     if (!attachmentPageId) return;
+    const basePath = page?.confluenceId ? '/api/attachments' : '/api/local-attachments';
     let dataUri: string;
     try {
       const { accessToken } = (await import('../../stores/auth-store')).useAuthStore.getState();
-      const res = await fetch(`/api/attachments/${encodeURIComponent(attachmentPageId)}/${encodeURIComponent(diagramName)}.png`, {
+      const res = await fetch(`${basePath}/${encodeURIComponent(attachmentPageId)}/${encodeURIComponent(diagramName)}.png`, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       if (!res.ok) {
@@ -290,11 +293,18 @@ export function PageViewPage() {
     const attachmentPageId = page?.confluenceId ?? id;
     if (!attachmentPageId || !drawioEditingDiagram) return;
     const filename = `${drawioEditingDiagram}.png`;
+    // Mirror the routing used by handleEditDiagram + drawio-save-drain so
+    // standalone pages hit /api/local-attachments instead of 404-ing against
+    // the Confluence route (#302 Gap 4).
+    const basePath = page?.confluenceId ? '/attachments' : '/local-attachments';
     try {
       // Push BOTH the PNG and the .drawio XML (#302 Gap 2). Without the
       // XML, Confluence's native draw.io viewer has no way to re-open
       // the diagram for editing — it sees only the rendered image.
-      await apiFetch(`/attachments/${encodeURIComponent(attachmentPageId)}/${encodeURIComponent(filename)}`, {
+      // Routing branches on page.confluenceId so standalone pages hit
+      // /api/local-attachments instead of 404-ing against the Confluence
+      // route (#302 Gap 4).
+      await apiFetch(`${basePath}/${encodeURIComponent(attachmentPageId)}/${encodeURIComponent(filename)}`, {
         method: 'PUT',
         body: JSON.stringify({ dataUri, xml }),
       });
