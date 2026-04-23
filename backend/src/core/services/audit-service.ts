@@ -21,6 +21,19 @@ import { logger } from '../utils/logger.js';
  *
  * Login metadata now carries `auth_method: 'local' | 'oidc'` (the OIDC
  * caller lives in EE).
+ *
+ * AI safety events (EE v0.4 — Compendiq/compendiq-ee#119, #120):
+ *   - PII detection:      PII_DETECTED (per-detection entry; metadata
+ *                         carries span count + categories without the
+ *                         actual text), PII_POLICY_CHANGED.
+ *   - Output review:      AI_REVIEW_SUBMITTED, AI_REVIEW_APPROVED,
+ *                         AI_REVIEW_REJECTED, AI_REVIEW_EDIT_AND_APPROVED
+ *                         (edit preserves the AI-authored original as a
+ *                         separate SUBMITTED entry for provenance),
+ *                         AI_REVIEW_EXPIRED, AI_REVIEW_POLICY_CHANGED.
+ *   Emitters all live in the EE overlay (`overlay/backend/src/enterprise/
+ *   pii-scanner.ts`, `ai-review-service.ts`); the action strings live here
+ *   so CE + EE share a single closed union.
  */
 export type AuditAction =
   | 'LOGIN'
@@ -71,7 +84,17 @@ export type AuditAction =
   | 'ACE_GRANTED'
   | 'ACE_REVOKED'
   | 'PAGE_INHERIT_PERMS_CHANGED'
-  | 'RETENTION_PRUNED';
+  | 'RETENTION_PRUNED'
+  // AI safety — EE #119 PII detection
+  | 'PII_DETECTED'
+  | 'PII_POLICY_CHANGED'
+  // AI safety — EE #120 output review workflow
+  | 'AI_REVIEW_SUBMITTED'
+  | 'AI_REVIEW_APPROVED'
+  | 'AI_REVIEW_REJECTED'
+  | 'AI_REVIEW_EDIT_AND_APPROVED'
+  | 'AI_REVIEW_EXPIRED'
+  | 'AI_REVIEW_POLICY_CHANGED';
 
 export interface AuditLogEntry {
   id: string;
