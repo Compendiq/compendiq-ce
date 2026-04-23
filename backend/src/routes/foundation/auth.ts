@@ -91,8 +91,16 @@ export async function authRoutes(fastify: FastifyInstance) {
   fastify.post('/login', AUTH_RATE_LIMIT, async (request, reply) => {
     const body = LoginSchema.parse(request.body);
 
-    const result = await query<{ id: string; username: string; password_hash: string; role: string; email: string | null; display_name: string | null }>(
-      'SELECT id, username, password_hash, role, email, display_name FROM users WHERE username = $1',
+    const result = await query<{
+      id: string;
+      username: string;
+      password_hash: string;
+      role: string;
+      email: string | null;
+      display_name: string | null;
+      deactivated_at: Date | null;
+    }>(
+      'SELECT id, username, password_hash, role, email, display_name, deactivated_at FROM users WHERE username = $1',
       [body.username],
     );
 
@@ -108,6 +116,20 @@ export async function authRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.unauthorized('Invalid username or password');
     }
 
+    // Deactivated users are rejected (#304). The response message stays
+    // generic to avoid account-enumeration via the error string.
+    if (user.deactivated_at) {
+      await logAuditEvent(
+        user.id,
+        'LOGIN_FAILED',
+        'user',
+        user.id,
+        { reason: 'deactivated' },
+        request,
+      );
+      throw fastify.httpErrors.unauthorized('Account is deactivated — contact an administrator');
+    }
+
     const accessToken = await generateAccessToken({
       sub: user.id,
       username: user.username,
@@ -119,7 +141,34 @@ export async function authRoutes(fastify: FastifyInstance) {
       role: user.role as 'user' | 'admin',
     });
 
-    await logAuditEvent(user.id, 'LOGIN', 'user', user.id, {}, request);
+    // Stamp last_login_at (#307 P0a). Fire-and-forget — audit emission
+    // + session creation must not be blocked on this write. Wrapped in an
+    // IIFE + try/catch so unit-test mocks that return undefined here don't
+    // surface `Cannot read properties of undefined (reading 'catch')`.
+    (async () => {
+      try {
+        await query('UPDATE users SET last_login_at = NOW() WHERE id = $1', [user.id]);
+      } catch (err) {
+        logger.warn({ err, userId: user.id }, 'Failed to update users.last_login_at');
+      }
+    })();
+
+    await logAuditEvent(
+      user.id,
+      'LOGIN',
+      'user',
+      user.id,
+      { auth_method: 'local' },
+      request,
+    );
+    await logAuditEvent(
+      user.id,
+      'SESSION_CREATED',
+      'user',
+      user.id,
+      { auth_method: 'local' },
+      request,
+    );
 
     reply
       .setCookie(REFRESH_COOKIE, refreshToken, {
@@ -151,9 +200,21 @@ export async function authRoutes(fastify: FastifyInstance) {
       // Verify token and check JTI in database (handles reuse detection)
       const payload = await verifyRefreshToken(refreshTokenCookie);
 
-      // Verify user still exists
-      const result = await query<{ id: string; username: string; role: string; email: string | null; display_name: string | null }>(
-        'SELECT id, username, role, email, display_name FROM users WHERE id = $1',
+      // Verify user still exists AND is active. The deactivation flow already
+      // DELETEs refresh_tokens rows so the JTI check above would normally
+      // fail first, but re-reading `deactivated_at` here is defence in depth
+      // for any future path that surfaces a valid JTI (race with token
+      // issue, EE SSO re-issue, bug in the revocation flow). See PR #311
+      // Finding #3.
+      const result = await query<{
+        id: string;
+        username: string;
+        role: string;
+        email: string | null;
+        display_name: string | null;
+        deactivated_at: Date | null;
+      }>(
+        'SELECT id, username, role, email, display_name, deactivated_at FROM users WHERE id = $1',
         [payload.sub],
       );
       if (result.rows.length === 0) {
@@ -161,6 +222,12 @@ export async function authRoutes(fastify: FastifyInstance) {
       }
 
       const user = result.rows[0]!;
+      if (user.deactivated_at) {
+        // Revoke the JTI we just verified so a subsequent reactivation
+        // can't silently reuse the same refresh token.
+        await revokeToken(payload.jti).catch(() => {});
+        throw fastify.httpErrors.unauthorized('Account is deactivated');
+      }
 
       // Token rotation: revoke old JTI
       await revokeToken(payload.jti);
@@ -241,6 +308,14 @@ export async function authRoutes(fastify: FastifyInstance) {
       try {
         await revokeAllUserTokens(userId);
         await logAuditEvent(userId, 'LOGOUT', 'user', userId, {}, request);
+        await logAuditEvent(
+          userId,
+          'SESSION_REVOKED',
+          'user',
+          userId,
+          { reason: 'logout' },
+          request,
+        );
       } catch {
         // Best effort
       }

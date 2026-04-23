@@ -19,6 +19,7 @@ import { settingsRoutes } from './routes/foundation/settings.js';
 import { adminRoutes } from './routes/foundation/admin.js';
 import { adminEmbeddingLocksRoutes } from './routes/foundation/admin-embedding-locks.js';
 import { rbacRoutes } from './routes/foundation/rbac.js';
+import { adminUsersRoutes } from './routes/foundation/admin-users.js';
 // Confluence routes
 import { spacesRoutes } from './routes/confluence/spaces.js';
 import { syncRoutes } from './routes/confluence/sync.js';
@@ -59,6 +60,7 @@ import { setupRoutes } from './routes/foundation/setup.js';
 import { knowledgeRequestRoutes } from './routes/knowledge/knowledge-requests.js';
 import { searchRoutes } from './routes/knowledge/search.js';
 import { localSpacesRoutes } from './routes/knowledge/local-spaces.js';
+import { localAttachmentsRoutes } from './routes/knowledge/local-attachments.js';
 
 import { ZodError } from 'zod';
 import { trackError } from './core/services/error-tracker.js';
@@ -66,6 +68,8 @@ import { logger } from './core/utils/logger.js';
 import { APP_VERSION } from './core/utils/version.js';
 import { loadEnterprisePlugin } from './core/enterprise/loader.js';
 import { bootstrapLlmProviders } from './domains/llm/services/llm-provider-bootstrap.js';
+import { bootstrapSsrfAllowlist } from './domains/confluence/services/sync-service.js';
+import { initSsrfAllowlistBus } from './core/services/ssrf-allowlist-bus.js';
 
 export async function buildApp() {
   const app = Fastify({
@@ -149,12 +153,28 @@ export async function buildApp() {
   // Let the enterprise plugin register its own routes (e.g., full license endpoint)
   await enterprise.registerRoutes(app, license);
 
+  // ── SSRF Allowlist Bus (issue #306) ──────────────────────────────
+  // Wire Redis pub/sub so mutations on one pod propagate to peer pods.
+  // Fails soft: if Redis is unavailable the allowlist still works in
+  // single-pod mode via the local `Set<string>`.
+  const teardownSsrfBus = await initSsrfAllowlistBus(app.redis);
+  app.addHook('onClose', async () => {
+    await teardownSsrfBus();
+  });
+
   // ── LLM Provider Bootstrap ───────────────────────────────────────
   // Seed llm_providers from env on fresh installs, rewrite the Ollama
   // sentinel if OLLAMA_BASE_URL changed, and allowlist every provider
   // URL with the SSRF guard. Runs after migrations (index.ts) so the
   // llm_providers table exists.
   await bootstrapLlmProviders();
+
+  // ── Confluence URL SSRF Allowlist Bootstrap (issue #306) ─────────
+  // Read every user-configured Confluence URL into the local allowlist.
+  // Uses the silent variant internally so starting a pod does not flood
+  // the pub/sub channel with N redundant add events (other pods already
+  // populated their sets from the same DB rows on their own boot).
+  await bootstrapSsrfAllowlist();
 
   // Known Fastify HTTP error names that are safe to expose to clients.
   // Anything not in this set could leak internal details (e.g. TypeError, RangeError).
@@ -228,6 +248,7 @@ export async function buildApp() {
   await app.register(adminRoutes, { prefix: '/api' });
   await app.register(adminEmbeddingLocksRoutes, { prefix: '/api' });
   await app.register(rbacRoutes, { prefix: '/api' });
+  await app.register(adminUsersRoutes, { prefix: '/api' });
 
   // Community-mode license endpoint fallback.
   // Skip if the enterprise plugin registered its own richer version via registerRoutes().
@@ -293,6 +314,7 @@ export async function buildApp() {
   await app.register(knowledgeRequestRoutes, { prefix: '/api' });
   await app.register(searchRoutes, { prefix: '/api' });
   await app.register(localSpacesRoutes, { prefix: '/api' });
+  await app.register(localAttachmentsRoutes, { prefix: '/api' });
 
   return app;
 }

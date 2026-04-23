@@ -23,6 +23,7 @@ import { FeatureErrorBoundary } from '../../shared/components/feedback/FeatureEr
 import { QualityScoreBadge } from '../../shared/components/badges/QualityScoreBadge';
 import { Editor, EditorToolbar, TableContextToolbar, LayoutContextToolbar, ColumnContextToolbar, clearDraft, getDraft } from '../../shared/components/article/Editor';
 import type { Editor as EditorType } from '@tiptap/core';
+import { drainPendingDrawioDiagrams } from '../../shared/components/article/drawio-save-drain';
 import { ArticleViewer } from '../../shared/components/article/ArticleViewer';
 import { DrawioEditor } from '../../shared/components/diagrams/DrawioEditor';
 import { apiFetch } from '../../shared/lib/api';
@@ -208,10 +209,26 @@ export function PageViewPage() {
   const handleSave = useCallback(async () => {
     if (!id || !page) return;
     try {
+      // Flush any pending draw.io diagrams edited inside the TipTap
+      // editor before we serialise + save (#302 Gap 3). Without this
+      // the edited PNG ships as a huge base64 data URI inside body_html;
+      // with it, the PNG is uploaded to the attachment store and the
+      // body_html references the small server URL instead.
+      const drain = await drainPendingDrawioDiagrams(editorInstance, {
+        attachmentPageId: page.confluenceId ?? id,
+        pageSource: page.confluenceId ? 'confluence' : 'standalone',
+      });
+      for (const msg of drain.errors) {
+        toast.warning(msg);
+      }
+      // `editor.getHTML()` reflects the newly-committed node attributes,
+      // so pull the post-drain HTML rather than the pre-drain `editHtml`.
+      const bodyToSave = editorInstance?.getHTML() ?? editHtml;
+
       await updateMutation.mutateAsync({
         id,
         title: editTitle,
-        bodyHtml: editHtml,
+        bodyHtml: bodyToSave,
         version: page.version,
       });
       if (draftKey) clearDraft(draftKey);
@@ -234,18 +251,21 @@ export function PageViewPage() {
         toast.error(message);
       }
     }
-  }, [draftKey, editHtml, editTitle, id, page, queryClient, updateMutation]);
+  }, [draftKey, editHtml, editTitle, editorInstance, id, page, queryClient, updateMutation]);
 
   // Draw.io inline editing handlers
   const handleEditDiagram = useCallback(async (diagramName: string) => {
-    // Fetch the diagram PNG from the attachment cache — draw.io can load PNG+XML data URIs
-    // Attachments are stored/served by confluence_id, not the integer PK from the route
+    // Fetch the diagram PNG from the attachment cache — draw.io can load PNG+XML data URIs.
+    // Confluence pages key attachments by confluence_id against /api/attachments; standalone
+    // pages key by the numeric DB id against /api/local-attachments (#302 Gap 4). Without
+    // this branch, standalone pages would 404 against the Confluence route.
     const attachmentPageId = page?.confluenceId ?? id;
     if (!attachmentPageId) return;
+    const basePath = page?.confluenceId ? '/api/attachments' : '/api/local-attachments';
     let dataUri: string;
     try {
       const { accessToken } = (await import('../../stores/auth-store')).useAuthStore.getState();
-      const res = await fetch(`/api/attachments/${encodeURIComponent(attachmentPageId)}/${encodeURIComponent(diagramName)}.png`, {
+      const res = await fetch(`${basePath}/${encodeURIComponent(attachmentPageId)}/${encodeURIComponent(diagramName)}.png`, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       if (!res.ok) {
@@ -269,14 +289,24 @@ export function PageViewPage() {
     setDrawioEditingDiagram(null);
   }, []);
 
-  const handleDrawioSave = useCallback(async (dataUri: string, _xml: string) => {
+  const handleDrawioSave = useCallback(async (dataUri: string, xml: string) => {
     const attachmentPageId = page?.confluenceId ?? id;
     if (!attachmentPageId || !drawioEditingDiagram) return;
     const filename = `${drawioEditingDiagram}.png`;
+    // Mirror the routing used by handleEditDiagram + drawio-save-drain so
+    // standalone pages hit /api/local-attachments instead of 404-ing against
+    // the Confluence route (#302 Gap 4).
+    const basePath = page?.confluenceId ? '/attachments' : '/local-attachments';
     try {
-      await apiFetch(`/attachments/${encodeURIComponent(attachmentPageId)}/${encodeURIComponent(filename)}`, {
+      // Push BOTH the PNG and the .drawio XML (#302 Gap 2). Without the
+      // XML, Confluence's native draw.io viewer has no way to re-open
+      // the diagram for editing — it sees only the rendered image.
+      // Routing branches on page.confluenceId so standalone pages hit
+      // /api/local-attachments instead of 404-ing against the Confluence
+      // route (#302 Gap 4).
+      await apiFetch(`${basePath}/${encodeURIComponent(attachmentPageId)}/${encodeURIComponent(filename)}`, {
         method: 'PUT',
-        body: JSON.stringify({ dataUri }),
+        body: JSON.stringify({ dataUri, xml }),
       });
       toast.success('Diagram saved.');
       // Refresh the page data so the updated diagram image is shown

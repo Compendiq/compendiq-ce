@@ -4,6 +4,7 @@ export * from './schemas/pages.js';
 export * from './schemas/spaces.js';
 export * from './schemas/llm.js';
 export * from './schemas/admin.js';
+export * from './schemas/admin-users.js';
 export * from './schemas/templates.js';
 export * from './schemas/license.js';
 export * from './types/common.js';

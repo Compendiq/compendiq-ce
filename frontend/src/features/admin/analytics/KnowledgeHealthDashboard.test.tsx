@@ -64,7 +64,6 @@ function renderDashboard(props?: Partial<DashboardProps>) {
   const defaultProps: DashboardProps = {
     dateRange: defaultDateRange,
     onExportPdf: vi.fn(),
-    onExportExcel: vi.fn(),
     ...props,
   };
   return {
@@ -109,11 +108,10 @@ describe('KnowledgeHealthDashboard', () => {
     });
   });
 
-  it('calls export handlers when export buttons are clicked', async () => {
+  it('calls the PDF export handler when the export button is clicked (#303)', async () => {
     mockFetch.mockResolvedValue(mockData);
     const onExportPdf = vi.fn();
-    const onExportExcel = vi.fn();
-    renderDashboard({ onExportPdf, onExportExcel });
+    renderDashboard({ onExportPdf });
 
     await waitFor(() => {
       expect(screen.getByTestId('knowledge-export-pdf')).toBeInTheDocument();
@@ -121,11 +119,12 @@ describe('KnowledgeHealthDashboard', () => {
 
     fireEvent.click(screen.getByTestId('knowledge-export-pdf'));
     expect(onExportPdf).toHaveBeenCalledTimes(1);
-    expect(onExportPdf).toHaveBeenCalledWith(expect.any(Array), 'Knowledge Health');
-
-    fireEvent.click(screen.getByTestId('knowledge-export-excel'));
-    expect(onExportExcel).toHaveBeenCalledTimes(1);
-    expect(onExportExcel).toHaveBeenCalledWith(expect.any(Array), 'Knowledge Health');
+    // 3rd arg is the KPI array surfaced on the PDF cover page.
+    expect(onExportPdf).toHaveBeenCalledWith(
+      expect.any(Array),
+      'Knowledge Health',
+      expect.any(Array),
+    );
   });
 
   it('renders quality distribution chart heading', async () => {

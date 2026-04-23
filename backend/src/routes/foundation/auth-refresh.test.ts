@@ -114,6 +114,30 @@ describe.skipIf(!dbAvailable)('Refresh Token Rotation and Revocation', () => {
       );
       expect(familyTokens.rows.every((r) => r.revoked)).toBe(true);
     });
+
+    // #307 review Finding #5: reuse detection must emit SESSION_REVOKED so
+    // the compliance Authentication report surfaces session-hijack events.
+    it('should emit a SESSION_REVOKED audit event on reuse detection', async () => {
+      const t1 = await generateRefreshToken(testPayload());
+      await generateRefreshToken(testPayload(), t1.family);
+      await revokeToken(t1.jti);
+
+      await expect(verifyRefreshToken(t1.token)).rejects.toThrow(/reuse detected/);
+
+      const audit = await query<{ metadata: Record<string, unknown>; user_id: string | null }>(
+        `SELECT metadata, user_id FROM audit_log
+           WHERE action = 'SESSION_REVOKED'
+             AND resource_id = $1`,
+        [testUserId],
+      );
+      expect(audit.rows.length).toBeGreaterThanOrEqual(1);
+      // Reason must be the compliance-documented token_reuse_detected flag
+      // so reports can distinguish voluntary logouts from hijack responses.
+      const reuseRow = audit.rows.find((r) => r.metadata['reason'] === 'token_reuse_detected');
+      expect(reuseRow).toBeDefined();
+      expect(reuseRow!.metadata['family']).toBe(t1.family);
+      expect(reuseRow!.user_id).toBe(testUserId);
+    });
   });
 
   describe('revokeToken', () => {

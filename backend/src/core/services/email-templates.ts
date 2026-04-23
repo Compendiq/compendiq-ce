@@ -173,6 +173,37 @@ export function licenseExpiry(data: LicenseExpiryData): { subject: string; html:
   };
 }
 
+export interface AccountInvitationData {
+  /** Recipient's display name (falls back to username). */
+  recipientName: string;
+  /** Username to log in with. */
+  username: string;
+  /** Temporary plaintext password — the email asks the user to change it on first login. */
+  temporaryPassword: string;
+  /** Display name of the admin who created the account (for "who invited me"). */
+  invitedByName: string;
+  /** Public login URL (FRONTEND_URL derived). */
+  loginUrl?: string;
+}
+
+export function accountInvitation(data: AccountInvitationData): { subject: string; html: string } {
+  return {
+    subject: 'You have been invited to Compendiq',
+    html: wrap('Welcome to Compendiq', `
+      <p>Hi ${escapeHtml(data.recipientName)},</p>
+      <p><strong>${escapeHtml(data.invitedByName)}</strong> has created a Compendiq account for you.</p>
+      <div style="padding:12px;background:#f0f9ff;border-radius:6px;border:1px solid #bae6fd;margin:16px 0;">
+        <p style="margin:0;"><strong>Username</strong></p>
+        <p style="margin:4px 0 8px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:15px;">${escapeHtml(data.username)}</p>
+        <p style="margin:8px 0 0;"><strong>Temporary password</strong></p>
+        <p style="margin:4px 0 0;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:15px;">${escapeHtml(data.temporaryPassword)}</p>
+      </div>
+      <p style="color:#dc2626;font-weight:600;">For security, change this password immediately after your first login.</p>
+      ${data.loginUrl ? `<p><a href="${escapeHtml(data.loginUrl)}" style="${BUTTON}">Sign in to Compendiq</a></p>` : ''}
+    `),
+  };
+}
+
 function escapeHtml(str: string): string {
   return str
     .replace(/&/g, '&amp;')

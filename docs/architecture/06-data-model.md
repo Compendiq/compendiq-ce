@@ -23,6 +23,7 @@ erDiagram
     pages ||--o{ comments : "annotated by"
     pages ||--o{ page_relationships : "related via"
     pages ||--o{ knowledge_requests : "fulfils"
+    pages ||--o{ local_attachments : "owns (standalone pages only)"
 
     roles ||--o{ group_memberships : "granted via"
     groups ||--o{ group_memberships : "has"
@@ -39,6 +40,10 @@ erDiagram
         text display_name
         text auth_provider "local | oidc"
         text oidc_sub
+        timestamptz deactivated_at "non-null => account disabled (#304)"
+        uuid deactivated_by FK "admin who disabled (#304)"
+        text deactivated_reason "free-form note (#304)"
+        timestamptz last_login_at "last successful login (#307)"
         timestamptz created_at
     }
 
@@ -67,6 +72,8 @@ erDiagram
         text visibility "private | shared"
         uuid created_by_user_id FK
         bool embedding_dirty
+        timestamptz local_modified_at "non-null => local edit since last_synced (#305)"
+        uuid local_modified_by FK "who last edited locally (#305)"
         timestamptz deleted_at
     }
 
@@ -197,6 +204,18 @@ erDiagram
         bigint group_id FK
     }
 
+    local_attachments {
+        bigint id PK
+        int page_id FK
+        text filename
+        text content_type
+        bigint size_bytes
+        text sha256
+        uuid created_by FK
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
     llm_providers ||--o{ llm_usecase_assignments : "referenced by"
     llm_providers {
         uuid id PK
@@ -223,9 +242,22 @@ erDiagram
 
 - **User ownership is pervasive.** Almost every table carries `user_id`
   (UUID, FK → `users.id`) — Compendiq is multi-tenant at the user level.
-- **pgvector.** `page_embeddings.embedding` is `vector(1024)` with an HNSW
-  index (`m=16`, `ef_construction=64`) for cosine similarity. Query-time
-  `ef_search` is set per request.
+- **pgvector.** `page_embeddings.embedding` defaults to `vector(1024)` with
+  an HNSW index (`m=16`, `ef_construction=200`) for cosine similarity, sized
+  for `bge-m3`. The column type and index path are **dimension-driven** and
+  rewritten by `enqueueReembedAll({ newDimensions })` when the admin switches
+  the embedding model:
+
+  | Dimensions  | Column type   | Index                                           |
+  |-------------|---------------|-------------------------------------------------|
+  | `n ≤ 2000`  | `vector(n)`   | HNSW `vector_cosine_ops` (default tier)         |
+  | `2001–4000` | `halfvec(n)`  | HNSW `halfvec_cosine_ops` (float16, ~50% size)  |
+  | `n > 4000`  | `vector(n)`   | no index (sequential scan; warning logged)      |
+
+  pgvector 0.8 caps HNSW at 2000 dims for `vector` and 4000 dims for `halfvec`;
+  larger models (e.g. `qwen3-embedding:8b` at 4096) fall to the seq-scan tier.
+  Query-time `ef_search` is set per request. Source of truth:
+  `backend/src/domains/llm/services/embedding-service.ts` (`enqueueReembedAll`).
 - **Encryption at rest.** `user_settings.confluence_pat` is stored as a
   ciphertext blob (AES-256-GCM, key from `PAT_ENCRYPTION_KEY`). Never
   log or expose it to the frontend.
@@ -244,4 +276,12 @@ erDiagram
   and invalidates on provider writes via `llm-cache-bus.ts`.
 - **`audit_log`** captures auth events, license changes, RBAC mutations,
   and high-value LLM calls (prompt-injection flags, failed sanitization).
+- **User FK policies on hard delete** (migration 062): `audit_log.user_id`,
+  `error_log.user_id` and `comments.resolved_by` use `ON DELETE SET NULL`
+  so historical rows survive a user delete with a null pointer.
+  `templates.created_by` is `NOT NULL` and cannot use SET NULL, so the
+  admin-CRUD `deleteUser()` service reassigns any templates authored by
+  the target to the `__system__` sentinel user
+  (`00000000-0000-0000-0000-000000000000`) inside the same transaction
+  before issuing the `DELETE FROM users`.
 - **Soft delete** on `pages.deleted_at` — the Trash feature filters on this.

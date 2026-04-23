@@ -576,5 +576,140 @@ describe('Attachment routes', () => {
 
       expect(response.statusCode).toBe(500);
     });
+
+    it('accepts a payload above Fastify\'s 1 MB default (bodyLimit raised)', async () => {
+      // 2 MiB of raw PNG data (with valid magic bytes at the front) →
+      // ~2.67 MiB base64-encoded, above Fastify's 1 MB default but below
+      // the 10 MB in-handler cap. Proves the per-route `bodyLimit` option
+      // has lifted the default — otherwise Fastify would reject with a
+      // generic 413 before the handler runs.
+      const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      const padded = Buffer.concat([PNG_MAGIC, Buffer.alloc(2 * 1024 * 1024, 0)]);
+      const largePngDataUri = `data:image/png;base64,${padded.toString('base64')}`;
+
+      mockGetClientForUser.mockResolvedValue(mockClient);
+      mockWriteAttachmentCache.mockResolvedValue('/data/attachments/page-123/big.png');
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/attachments/page-123/big.png',
+        payload: { dataUri: largePngDataUri },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ success: true, filename: 'big.png' });
+    });
+
+    // ─── #302 Gap 2: .drawio XML sibling upload ───────────────────────
+    it('uploads a .drawio XML sibling when the body includes xml (#302)', async () => {
+      const updateAttachment = vi.fn().mockResolvedValue({ id: 'att-1' });
+      mockGetClientForUser.mockResolvedValue({ updateAttachment });
+      mockWriteAttachmentCache.mockResolvedValue('/data/attachments/page-123/diagram.png');
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/attachments/page-123/diagram.png',
+        payload: {
+          dataUri: VALID_PNG_DATA_URI,
+          xml: '<mxfile><diagram>test</diagram></mxfile>',
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        success: true,
+        filename: 'diagram.png',
+        xmlFilename: 'diagram.drawio',
+      });
+
+      // PNG uploaded first
+      expect(updateAttachment).toHaveBeenNthCalledWith(
+        1,
+        'page-123',
+        'diagram.png',
+        expect.any(Buffer),
+        'image/png',
+      );
+      // .drawio XML uploaded second
+      expect(updateAttachment).toHaveBeenNthCalledWith(
+        2,
+        'page-123',
+        'diagram.drawio',
+        expect.any(Buffer),
+        'application/xml',
+      );
+    });
+
+    it('does NOT upload a sibling when xml is omitted (back-compat)', async () => {
+      const updateAttachment = vi.fn().mockResolvedValue({ id: 'att-1' });
+      mockGetClientForUser.mockResolvedValue({ updateAttachment });
+      mockWriteAttachmentCache.mockResolvedValue('/data/attachments/page-123/diagram.png');
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/attachments/page-123/diagram.png',
+        payload: { dataUri: VALID_PNG_DATA_URI },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(updateAttachment).toHaveBeenCalledTimes(1);
+      expect(response.json()).not.toHaveProperty('xmlFilename');
+    });
+
+    it('still returns 200 when XML sibling upload fails (PNG-only fallback)', async () => {
+      const updateAttachment = vi
+        .fn()
+        // PNG succeeds
+        .mockResolvedValueOnce({ id: 'att-1' })
+        // XML sibling fails
+        .mockRejectedValueOnce(new Error('Confluence rejected XML'));
+      mockGetClientForUser.mockResolvedValue({ updateAttachment });
+      mockWriteAttachmentCache.mockResolvedValue('/data/attachments/page-123/diagram.png');
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/attachments/page-123/diagram.png',
+        payload: { dataUri: VALID_PNG_DATA_URI, xml: '<mxfile/>' },
+      });
+
+      // The PNG upload succeeded, so the PUT succeeds; XML failure is
+      // logged but non-fatal. The response body reports the xmlFilename
+      // but clients should treat the overall 200 as "PNG persisted".
+      expect(response.statusCode).toBe(200);
+      expect(updateAttachment).toHaveBeenCalledTimes(2);
+    });
+
+    it('rejects oversized xml payloads at the Zod boundary before any upload', async () => {
+      const updateAttachment = vi.fn().mockResolvedValue({ id: 'att-1' });
+      mockGetClientForUser.mockResolvedValue({ updateAttachment });
+
+      // 26 MB of ASCII exceeds the Zod schema cap (25 MB). The route-level
+      // bodyLimit is 40 MB so Fastify accepts the body, Zod rejects with 400
+      // before the handler runs — PNG upload never fires.
+      const tooBig = 'x'.repeat(26 * 1024 * 1024);
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/attachments/page-123/diagram.png',
+        payload: { dataUri: VALID_PNG_DATA_URI, xml: tooBig },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(updateAttachment).not.toHaveBeenCalled();
+    });
+
+    it('derives .drawio filename from non-.png filename', async () => {
+      const updateAttachment = vi.fn().mockResolvedValue({ id: 'att-1' });
+      mockGetClientForUser.mockResolvedValue({ updateAttachment });
+      mockWriteAttachmentCache.mockResolvedValue('/data/attachments/page-123/custom.svg');
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/attachments/page-123/custom.svg',
+        payload: { dataUri: VALID_PNG_DATA_URI, xml: '<mxfile/>' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ xmlFilename: 'custom.svg.drawio' });
+    });
   });
 });

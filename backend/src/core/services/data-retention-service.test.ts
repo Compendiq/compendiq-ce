@@ -6,6 +6,7 @@ const mockPool = {
 
 vi.mock('../db/postgres.js', () => ({
   getPool: () => mockPool,
+  query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
 }));
 
 vi.mock('../utils/logger.js', () => ({
@@ -18,7 +19,13 @@ vi.mock('./admin-settings-service.js', () => ({
   getAdminAccessDeniedRetentionDays: vi.fn().mockResolvedValue(90),
 }));
 
+// #307 Finding #4: retention heartbeat test spy on audit-service emissions.
+vi.mock('./audit-service.js', () => ({
+  logAuditEvent: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { runRetentionCleanup, startRetentionWorker, stopRetentionWorker, RETENTION_DEFAULTS } from './data-retention-service.js';
+import { logAuditEvent as mockLogAuditEvent } from './audit-service.js';
 
 describe('data-retention-service', () => {
   beforeEach(() => {
@@ -194,6 +201,45 @@ describe('data-retention-service', () => {
       expect(results.audit_log_admin_access_denied).toBe(0);
       // Adjacent sweeps still complete.
       expect(results.page_versions).toBe(0);
+    });
+
+    // ─── #307 Finding #4 — zero-row heartbeat attestation ────────────────
+    it('emits RETENTION_PRUNED for each umbrella table even when zero rows are pruned', async () => {
+      mockPool.query.mockResolvedValue({ rowCount: 0 });
+
+      await runRetentionCleanup();
+
+      const actions = (mockLogAuditEvent as ReturnType<typeof vi.fn>).mock.calls.map(
+        (call) => call[1], // second arg is the action string
+      );
+      // Compliance requires a heartbeat per cycle. The three umbrella
+      // time-based tables + page_versions + audit_log_admin_access_denied
+      // all emit RETENTION_PRUNED so the auditor can tell "ran, nothing
+      // matched" from "job didn't run".
+      expect(actions.filter((a) => a === 'RETENTION_PRUNED').length).toBeGreaterThanOrEqual(3);
+
+      // Each emission includes rows_pruned: 0 in metadata when nothing was pruned.
+      const zeroCalls = (mockLogAuditEvent as ReturnType<typeof vi.fn>).mock.calls.filter(
+        (call) => call[1] === 'RETENTION_PRUNED' && (call[4] as Record<string, unknown>).rows_pruned === 0,
+      );
+      expect(zeroCalls.length).toBeGreaterThanOrEqual(3);
+    });
+
+    it('emits RETENTION_PRUNED with the actual non-zero rows_pruned value when rows are removed', async () => {
+      mockPool.query
+        .mockResolvedValueOnce({ rowCount: 10 }) // audit_log
+        .mockResolvedValueOnce({ rowCount: 5 })  // search_analytics
+        .mockResolvedValueOnce({ rowCount: 3 })  // error_log
+        .mockResolvedValueOnce({ rowCount: 0 })  // ADMIN_ACCESS_DENIED drained
+        .mockResolvedValueOnce({ rowCount: 2 }); // page_versions
+
+      await runRetentionCleanup();
+
+      const auditLogCall = (mockLogAuditEvent as ReturnType<typeof vi.fn>).mock.calls.find(
+        (call) => call[1] === 'RETENTION_PRUNED' && (call[3] as string) === 'audit_log',
+      );
+      expect(auditLogCall).toBeDefined();
+      expect((auditLogCall![4] as Record<string, unknown>).rows_pruned).toBe(10);
     });
   });
 

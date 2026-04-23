@@ -482,5 +482,171 @@ describe('RBAC routes', () => {
 
       expect(response.statusCode).toBe(404);
     });
+
+    // #307 review Finding #2: ROLE_REVOKED must be emitted on role-revoke.
+    it('should emit a ROLE_REVOKED audit event on successful revoke', async () => {
+      const queryMock = mockQuery as ReturnType<typeof vi.fn>;
+      queryMock.mockResolvedValueOnce({ rows: [{ id: 1 }] }); // DELETE returns row
+
+      const response = await app.inject({
+        method: 'DELETE',
+        url: '/api/spaces/ENG/roles/1',
+      });
+
+      expect(response.statusCode).toBe(200);
+
+      // Find the INSERT into audit_log with action=ROLE_REVOKED
+      const auditCall = queryMock.mock.calls.find((call) =>
+        typeof call[0] === 'string' &&
+        call[0].includes('INSERT INTO audit_log') &&
+        Array.isArray(call[1]) &&
+        call[1][1] === 'ROLE_REVOKED',
+      );
+      expect(auditCall).toBeDefined();
+    });
+  });
+
+  // ========================
+  // POST /api/spaces/:key/roles -- ROLE_ASSIGNED emission (#307 Finding #2)
+  // ========================
+
+  describe('POST /api/spaces/:key/roles (audit)', () => {
+    it('should emit a ROLE_ASSIGNED audit event on successful assign', async () => {
+      const queryMock = mockQuery as ReturnType<typeof vi.fn>;
+      queryMock.mockResolvedValueOnce({ rows: [{ id: 3 }] }); // role exists
+      queryMock.mockResolvedValueOnce({
+        rows: [{ id: 1, created_at: '2026-01-01T00:00:00Z' }],
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/spaces/ENG/roles',
+        payload: { principalType: 'user', principalId: 'user-1', roleId: 3 },
+      });
+
+      expect(response.statusCode).toBe(201);
+
+      const auditCall = queryMock.mock.calls.find((call) =>
+        typeof call[0] === 'string' &&
+        call[0].includes('INSERT INTO audit_log') &&
+        Array.isArray(call[1]) &&
+        call[1][1] === 'ROLE_ASSIGNED',
+      );
+      expect(auditCall).toBeDefined();
+    });
+  });
+
+  // ========================
+  // PUT /api/pages/:id/inherit-perms -- audit emission (#307 Finding #3)
+  // ========================
+
+  describe('PUT /api/pages/:id/inherit-perms', () => {
+    it('should toggle inheritance and return 200', async () => {
+      const queryMock = mockQuery as ReturnType<typeof vi.fn>;
+      queryMock.mockResolvedValueOnce({ rows: [{ id: 42 }] }); // UPDATE returns row
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/pages/42/inherit-perms',
+        payload: { inheritPerms: false },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body).message).toBe('Page now uses custom permissions');
+    });
+
+    it('should return 404 when page does not exist', async () => {
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/pages/999/inherit-perms',
+        payload: { inheritPerms: true },
+      });
+
+      expect(response.statusCode).toBe(404);
+    });
+
+    it('should emit a PAGE_INHERIT_PERMS_CHANGED audit event', async () => {
+      const queryMock = mockQuery as ReturnType<typeof vi.fn>;
+      queryMock.mockResolvedValueOnce({ rows: [{ id: 42 }] }); // UPDATE returns row
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/pages/42/inherit-perms',
+        payload: { inheritPerms: false },
+      });
+
+      expect(response.statusCode).toBe(200);
+
+      const auditCall = queryMock.mock.calls.find((call) =>
+        typeof call[0] === 'string' &&
+        call[0].includes('INSERT INTO audit_log') &&
+        Array.isArray(call[1]) &&
+        call[1][1] === 'PAGE_INHERIT_PERMS_CHANGED',
+      );
+      expect(auditCall).toBeDefined();
+      // Metadata should carry the new inheritPerms value so compliance
+      // reports can show the direction of the toggle.
+      const metadata = JSON.parse(auditCall![1][4] as string);
+      expect(metadata.inheritPerms).toBe(false);
+    });
+  });
+
+  // ========================
+  // GET /api/users -- last_login_at surfacing (#307 Finding #1)
+  // ========================
+
+  describe('GET /api/users', () => {
+    it('should return all users with last_login_at', async () => {
+      const queryMock = mockQuery as ReturnType<typeof vi.fn>;
+      queryMock.mockResolvedValueOnce({
+        rows: [
+          {
+            id: VALID_UUID,
+            username: 'alice',
+            role: 'admin',
+            created_at: '2026-01-01T00:00:00Z',
+            last_login_at: '2026-04-20T12:00:00Z',
+          },
+          {
+            id: 'b0eebc99-9c0b-4ef8-bb6d-6bb9bd380a22',
+            username: 'bob',
+            role: 'user',
+            created_at: '2026-02-01T00:00:00Z',
+            last_login_at: null,
+          },
+        ],
+      });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/users',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body).toHaveLength(2);
+      expect(body[0]).toEqual({
+        id: VALID_UUID,
+        username: 'alice',
+        role: 'admin',
+        createdAt: '2026-01-01T00:00:00Z',
+        lastLoginAt: '2026-04-20T12:00:00Z',
+      });
+      expect(body[1].lastLoginAt).toBeNull();
+    });
+
+    it('should issue a SELECT that includes last_login_at', async () => {
+      const queryMock = mockQuery as ReturnType<typeof vi.fn>;
+      queryMock.mockResolvedValueOnce({ rows: [] });
+
+      await app.inject({ method: 'GET', url: '/api/users' });
+
+      const usersCall = queryMock.mock.calls.find((call) =>
+        typeof call[0] === 'string' &&
+        call[0].includes('FROM users'),
+      );
+      expect(usersCall).toBeDefined();
+      expect(usersCall![0]).toContain('last_login_at');
+    });
   });
 });

@@ -12,10 +12,19 @@ import { logger } from '../../core/utils/logger.js';
 
 const UpdateAttachmentBodySchema = z.object({
   dataUri: z.string().min(1, 'dataUri is required'),
+  /**
+   * Optional draw.io XML source for the diagram (#302 Gap 2). When
+   * present, the route uploads the XML as a sibling `.drawio` attachment
+   * alongside the rendered PNG so Confluence's native draw.io viewer can
+   * re-open and edit the diagram. Omit for non-draw.io attachments.
+   */
+  xml: z.string().max(25 * 1024 * 1024, 'XML exceeds 25 MB limit').optional(),
 });
 
-/** Maximum allowed attachment upload size: 10 MB */
+/** Maximum allowed PNG upload size: 10 MB. */
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+/** Maximum allowed draw.io XML upload size: 25 MB (XML compresses well). */
+const MAX_XML_BYTES = 25 * 1024 * 1024;
 
 const ATTACHMENTS_BASE = process.env.ATTACHMENTS_DIR ?? 'data/attachments';
 
@@ -225,9 +234,16 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
   });
 
   // PUT /api/attachments/:pageId/:filename - update a diagram attachment
-  // Accepts a JSON body with { dataUri: "data:image/png;base64,..." }
+  // Accepts a JSON body with { dataUri: "data:image/png;base64,...", xml?: "..." }
   // Validates PNG, enforces 10 MB limit, uploads to Confluence, and updates local cache.
-  fastify.put('/attachments/:pageId/:filename', async (request, reply) => {
+  //
+  // `bodyLimit` must be set per-route: Fastify's default JSON body limit is
+  // 1 MiB, so the in-handler caps (10 MB PNG + 25 MB .drawio XML) would be
+  // unreachable without this option. Base64 inflates binary by ~33 %, plus
+  // JSON overhead for key names and the xml field — 40 MB comfortably
+  // covers the combined 10 MB PNG (base64) + 25 MB XML payload.
+  // Mirrors the same pattern on the local-attachments route (PR #318).
+  fastify.put('/attachments/:pageId/:filename', { bodyLimit: 40 * 1024 * 1024 }, async (request, reply) => {
     const { pageId, filename } = request.params as { pageId: string; filename: string };
     const userId = request.userId;
 
@@ -240,7 +256,7 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
         message: parseResult.error.issues[0]?.message ?? 'Missing or invalid dataUri in request body',
       });
     }
-    const { dataUri } = parseResult.data;
+    const { dataUri, xml } = parseResult.data;
 
     const pngPrefix = 'data:image/png;base64,';
     if (!dataUri.startsWith(pngPrefix)) {
@@ -310,12 +326,62 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
       });
     }
 
+    // Optionally prepare the `.drawio` XML sibling attachment. This is what
+    // makes the diagram re-openable in Confluence's native draw.io viewer
+    // (#302 Gap 2). The rendered PNG alone is useless for editing.
+    //
+    // All XML handling (encoding, size check, upload) is non-fatal: any
+    // failure on the sibling path logs + skips, while the PNG upload
+    // proceeds. See the per-step comments in the try block below.
+    let xmlFilename: string | null = null;
+    if (xml) {
+      // Swap `.png` for `.drawio` to match Confluence's draw.io plugin
+      // naming convention. Non-.png filenames get the .drawio suffix.
+      xmlFilename = filename.toLowerCase().endsWith('.png')
+        ? filename.slice(0, -4) + '.drawio'
+        : `${filename}.drawio`;
+    }
+
+    let uploadedXmlSize: number | undefined;
+
     try {
-      // Upload the attachment to Confluence
+      // Upload the PNG to Confluence
       await client.updateAttachment(pageId, filename, pngBuffer, 'image/png');
 
       // Update local cache so the image is served immediately without re-sync
       await writeAttachmentCache(userId, pageId, filename, pngBuffer);
+
+      // Upload the .drawio XML sibling when provided. A failure here (size
+      // cap, encoding, network) must NOT fail the whole request — the PNG
+      // is already uploaded and the UI gets visual parity. Log and continue.
+      if (xml && xmlFilename) {
+        try {
+          const xmlBuffer = Buffer.from(xml, 'utf8');
+          if (xmlBuffer.length > MAX_XML_BYTES) {
+            // Oversized XML is non-fatal (matches the "XML failure is
+            // non-fatal" principle): skip the sibling and leave the PNG
+            // intact. Zod already caps string length at 25 MB, so this
+            // path only trips when multi-byte UTF-8 inflates past the cap.
+            logger.warn(
+              { userId, pageId, xmlFilename, xmlSize: xmlBuffer.length, limit: MAX_XML_BYTES },
+              'Skipping .drawio XML sibling: payload exceeds size cap after UTF-8 encoding',
+            );
+          } else {
+            await client.updateAttachment(pageId, xmlFilename, xmlBuffer, 'application/xml');
+            await writeAttachmentCache(userId, pageId, xmlFilename, xmlBuffer);
+            uploadedXmlSize = xmlBuffer.length;
+            logger.info(
+              { userId, pageId, xmlFilename, xmlSize: xmlBuffer.length },
+              'Diagram .drawio XML attachment uploaded alongside PNG (#302)',
+            );
+          }
+        } catch (xmlErr) {
+          logger.warn(
+            { err: xmlErr, userId, pageId, xmlFilename },
+            'Failed to upload .drawio XML sibling; PNG uploaded successfully',
+          );
+        }
+      }
 
       // Invalidate Redis page cache so other users get the updated diagram
       try {
@@ -330,10 +396,16 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
 
       logger.info({ userId, pageId, filename, size: pngBuffer.length }, 'Diagram attachment updated');
 
+      // Only surface xmlFilename when the sibling actually persisted —
+      // clients use its presence as a success signal. Preserving the
+      // legacy contract: xmlSize is only set when the upload succeeded.
+      const xmlSucceeded = uploadedXmlSize !== undefined;
       return reply.status(200).send({
         success: true,
         filename,
         size: pngBuffer.length,
+        xmlFilename: xmlSucceeded ? xmlFilename ?? undefined : undefined,
+        xmlSize: uploadedXmlSize,
       });
     } catch (err) {
       logger.error({ err, userId, pageId, filename }, 'Failed to update attachment');
