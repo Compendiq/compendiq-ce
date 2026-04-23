@@ -7,7 +7,7 @@ import { saveVersionSnapshot } from '../../../core/services/version-snapshot.js'
 import { processDirtyPages } from '../../llm/services/embedding-service.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { decryptPat } from '../../../core/utils/crypto.js';
-import { addAllowedBaseUrl } from '../../../core/utils/ssrf-guard.js';
+import { addAllowedBaseUrlSilent } from '../../../core/utils/ssrf-guard.js';
 import { logger } from '../../../core/utils/logger.js';
 import {
   getRedisClient,
@@ -689,7 +689,9 @@ export async function bootstrapSsrfAllowlist(): Promise<void> {
       'SELECT DISTINCT confluence_url FROM user_settings WHERE confluence_url IS NOT NULL',
     );
     for (const row of result.rows) {
-      addAllowedBaseUrl(row.confluence_url);
+      // Silent variant: bootstrap on every pod is expected; re-broadcasting
+      // N add events on every startup would just be noise.
+      addAllowedBaseUrlSilent(row.confluence_url);
     }
     logger.info({ count: result.rows.length }, 'SSRF allowlist bootstrapped from user_settings');
   } catch (err) {

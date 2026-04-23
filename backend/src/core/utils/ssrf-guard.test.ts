@@ -11,10 +11,15 @@ import {
   validateUrlWithDns,
   SsrfError,
   addAllowedBaseUrl,
+  addAllowedBaseUrlSilent,
   removeAllowedBaseUrl,
+  removeAllowedBaseUrlSilent,
   replaceAllowedBaseUrls,
   clearAllowedBaseUrls,
   getAllowedBaseUrlCount,
+  applyAllowlistEventLocal,
+  setSsrfAllowlistPublisher,
+  SSRF_ALLOWLIST_CHANNEL,
 } from './ssrf-guard.js';
 
 describe('SSRF Guard', () => {
@@ -273,6 +278,149 @@ describe('SSRF Guard', () => {
       replaceAllowedBaseUrls([]);
       expect(getAllowedBaseUrlCount()).toBe(0);
       expect(() => validateUrl('http://10.0.0.5:8090/api')).toThrow(SsrfError);
+    });
+  });
+
+  // --------------------------------------------------------------------
+  // Issue #306 — multi-pod pub/sub coherency
+  // --------------------------------------------------------------------
+  describe('multi-pod pub/sub (issue #306)', () => {
+    afterEach(() => {
+      clearAllowedBaseUrls();
+      setSsrfAllowlistPublisher(null);
+    });
+
+    it('addAllowedBaseUrl publishes on the ssrf:allowlist:changed channel on actual change', () => {
+      const publisher = vi.fn().mockResolvedValue(1);
+      setSsrfAllowlistPublisher(publisher);
+
+      addAllowedBaseUrl('http://10.0.0.5:8090');
+
+      expect(publisher).toHaveBeenCalledTimes(1);
+      expect(publisher).toHaveBeenCalledWith(
+        SSRF_ALLOWLIST_CHANNEL,
+        JSON.stringify({ action: 'add', urls: ['http://10.0.0.5:8090'] }),
+      );
+    });
+
+    it('addAllowedBaseUrl does NOT publish on idempotent re-add (no state change)', () => {
+      const publisher = vi.fn().mockResolvedValue(1);
+      setSsrfAllowlistPublisher(publisher);
+
+      addAllowedBaseUrl('http://10.0.0.5:8090');
+      addAllowedBaseUrl('http://10.0.0.5:8090');
+      addAllowedBaseUrl('HTTP://10.0.0.5:8090'); // different case, same origin
+
+      expect(publisher).toHaveBeenCalledTimes(1);
+    });
+
+    it('removeAllowedBaseUrl publishes on actual removal', () => {
+      const publisher = vi.fn().mockResolvedValue(1);
+      addAllowedBaseUrlSilent('http://10.0.0.5:8090');
+      setSsrfAllowlistPublisher(publisher);
+
+      removeAllowedBaseUrl('http://10.0.0.5:8090');
+
+      expect(publisher).toHaveBeenCalledTimes(1);
+      expect(publisher).toHaveBeenCalledWith(
+        SSRF_ALLOWLIST_CHANNEL,
+        JSON.stringify({ action: 'remove', urls: ['http://10.0.0.5:8090'] }),
+      );
+    });
+
+    it('removeAllowedBaseUrl does NOT publish when origin was not present', () => {
+      const publisher = vi.fn().mockResolvedValue(1);
+      setSsrfAllowlistPublisher(publisher);
+
+      removeAllowedBaseUrl('http://never-added.example.com');
+
+      expect(publisher).not.toHaveBeenCalled();
+    });
+
+    it('replaceAllowedBaseUrls publishes the replace event', () => {
+      const publisher = vi.fn().mockResolvedValue(1);
+      setSsrfAllowlistPublisher(publisher);
+
+      replaceAllowedBaseUrls(['http://10.0.0.5:8090', 'http://10.0.0.6:8090']);
+
+      expect(publisher).toHaveBeenCalledWith(
+        SSRF_ALLOWLIST_CHANNEL,
+        JSON.stringify({
+          action: 'replace',
+          urls: ['http://10.0.0.5:8090', 'http://10.0.0.6:8090'],
+        }),
+      );
+    });
+
+    it('silent variants do NOT publish — used for bootstrap paths', () => {
+      const publisher = vi.fn().mockResolvedValue(1);
+      setSsrfAllowlistPublisher(publisher);
+
+      addAllowedBaseUrlSilent('http://10.0.0.5:8090');
+      removeAllowedBaseUrlSilent('http://10.0.0.5:8090');
+
+      expect(publisher).not.toHaveBeenCalled();
+    });
+
+    it('applyAllowlistEventLocal handles add / remove / replace without re-publishing', () => {
+      const publisher = vi.fn().mockResolvedValue(1);
+      setSsrfAllowlistPublisher(publisher);
+
+      applyAllowlistEventLocal({ action: 'add', urls: ['http://10.0.0.5:8090'] });
+      expect(getAllowedBaseUrlCount()).toBe(1);
+      expect(() => validateUrl('http://10.0.0.5:8090/api')).not.toThrow();
+
+      applyAllowlistEventLocal({
+        action: 'replace',
+        urls: ['http://172.16.0.10:8090', 'http://10.0.0.99:8090'],
+      });
+      expect(getAllowedBaseUrlCount()).toBe(2);
+      expect(() => validateUrl('http://10.0.0.5:8090/api')).toThrow(SsrfError);
+
+      applyAllowlistEventLocal({ action: 'remove', urls: ['http://172.16.0.10:8090'] });
+      expect(getAllowedBaseUrlCount()).toBe(1);
+      expect(() => validateUrl('http://172.16.0.10:8090/api')).toThrow(SsrfError);
+
+      // No outbound publishes during any of the above — these are receiver-side only.
+      expect(publisher).not.toHaveBeenCalled();
+    });
+
+    it('simulates two-pod propagation: Pod A add → Pod B sees it via applyAllowlistEventLocal', () => {
+      // Pod A — publisher side
+      const channel: string[] = [];
+      const publisher = vi.fn(async (_c: string, msg: string) => {
+        channel.push(msg);
+        return 1;
+      });
+      setSsrfAllowlistPublisher(publisher);
+
+      addAllowedBaseUrl('http://10.0.0.5:8090');
+
+      // Simulate Pod B receiving the message on the channel
+      clearAllowedBaseUrls(); // Pod B starts with empty set
+      setSsrfAllowlistPublisher(null);
+      expect(getAllowedBaseUrlCount()).toBe(0);
+
+      const event = JSON.parse(channel[0]!);
+      applyAllowlistEventLocal(event);
+
+      expect(getAllowedBaseUrlCount()).toBe(1);
+      expect(() => validateUrl('http://10.0.0.5:8090/api')).not.toThrow();
+    });
+
+    it('publisher failure does not throw — local state stays consistent', () => {
+      const publisher = vi.fn().mockRejectedValue(new Error('redis down'));
+      setSsrfAllowlistPublisher(publisher);
+
+      expect(() => addAllowedBaseUrl('http://10.0.0.5:8090')).not.toThrow();
+      // Local state is updated even though broadcast failed — single-pod semantics preserved.
+      expect(getAllowedBaseUrlCount()).toBe(1);
+    });
+
+    it('no publisher registered = single-pod fallback, no errors', () => {
+      setSsrfAllowlistPublisher(null);
+      expect(() => addAllowedBaseUrl('http://10.0.0.5:8090')).not.toThrow();
+      expect(getAllowedBaseUrlCount()).toBe(1);
     });
   });
 

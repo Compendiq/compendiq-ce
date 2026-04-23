@@ -5,40 +5,161 @@
  * Supports an allowlist of trusted origins (e.g., user-configured Confluence
  * base URLs) that bypass private-network checks while still enforcing
  * protocol restrictions.
+ *
+ * Multi-pod coherency (issue #306): mutations on one pod are propagated to
+ * peer pods via Redis pub/sub on the `ssrf:allowlist:changed` channel.
+ * Each pod keeps a local `Set<string>` for O(1) checks; Redis is only used
+ * to broadcast mutations. Graceful fallback: when no publisher/subscriber is
+ * registered (single-pod, Redis unavailable), local state still works and
+ * lazy `addAllowedBaseUrl` calls from request handlers continue to function.
  */
 
 import { lookup } from 'node:dns/promises';
+import { logger } from './logger.js';
 
 // ---------------------------------------------------------------------------
-// Allowlist of trusted origins (populated from user_settings.confluence_url)
+// Allowlist of trusted origins (populated from user_settings.confluence_url
+// and llm_providers.base_url)
 // ---------------------------------------------------------------------------
 
 const allowedOrigins = new Set<string>();
 
 /**
+ * Channel for multi-pod allowlist coherency. See issue #306.
+ * Broader than just Confluence — also covers LLM provider URLs, hence the
+ * neutral `ssrf:` namespace.
+ */
+export const SSRF_ALLOWLIST_CHANNEL = 'ssrf:allowlist:changed';
+
+/** Wire-format for a pub/sub event broadcasting an allowlist mutation. */
+export interface SsrfAllowlistEvent {
+  action: 'add' | 'remove' | 'replace';
+  urls: string[];
+}
+
+type Publisher = (channel: string, message: string) => Promise<unknown> | unknown;
+let _publisher: Publisher | null = null;
+
+/**
+ * Register the Redis publisher (normally the main Fastify `app.redis` client).
+ * Pass `null` to unregister (used in tests / shutdown).
+ *
+ * When unregistered, `addAllowedBaseUrl` / `removeAllowedBaseUrl` still
+ * update the local set but skip the broadcast (single-pod fallback).
+ */
+export function setSsrfAllowlistPublisher(publisher: Publisher | null): void {
+  _publisher = publisher;
+}
+
+function publish(event: SsrfAllowlistEvent): void {
+  if (!_publisher) return;
+  try {
+    const result = _publisher(SSRF_ALLOWLIST_CHANNEL, JSON.stringify(event));
+    if (result && typeof (result as Promise<unknown>).then === 'function') {
+      (result as Promise<unknown>).catch((err: unknown) => {
+        logger.warn({ err }, 'ssrf-guard: publish failed (local state still updated)');
+      });
+    }
+  } catch (err) {
+    logger.warn({ err }, 'ssrf-guard: publish threw (local state still updated)');
+  }
+}
+
+/** Extract the normalised origin from a URL string, or null if invalid. */
+function normalizeOrigin(baseUrl: string): string | null {
+  try {
+    return new URL(baseUrl).origin.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Silent add — updates local state without broadcasting.
+ *
+ * Use from bootstrap paths (startup DB scan) and pub/sub receivers where
+ * propagation is already handled by the caller or would cause loops.
+ *
+ * Returns true when the origin was added; false when it was already present
+ * or the URL failed to parse.
+ */
+export function addAllowedBaseUrlSilent(baseUrl: string): boolean {
+  const origin = normalizeOrigin(baseUrl);
+  if (!origin) return false;
+  if (allowedOrigins.has(origin)) return false;
+  allowedOrigins.add(origin);
+  return true;
+}
+
+/**
+ * Silent remove — updates local state without broadcasting.
+ * Returns true when the origin was removed; false otherwise.
+ */
+export function removeAllowedBaseUrlSilent(baseUrl: string): boolean {
+  const origin = normalizeOrigin(baseUrl);
+  if (!origin) return false;
+  return allowedOrigins.delete(origin);
+}
+
+/**
  * Register a base URL whose origin should bypass private-network checks.
  * Only the origin (protocol + host + port) is stored -- path is ignored.
+ *
+ * Broadcasts the mutation on the SSRF allowlist pub/sub channel when a
+ * publisher is registered and the local state actually changed. The
+ * publish-only-on-change policy keeps the channel quiet during idempotent
+ * warm-up calls (e.g. `ConfluenceClient` construction).
  */
 export function addAllowedBaseUrl(baseUrl: string): void {
-  try {
-    const parsed = new URL(baseUrl);
-    allowedOrigins.add(parsed.origin.toLowerCase());
-  } catch { /* ignore invalid URLs */ }
+  if (addAllowedBaseUrlSilent(baseUrl)) {
+    publish({ action: 'add', urls: [baseUrl] });
+  }
 }
 
 /** Remove a previously-allowed base URL origin from the allowlist. */
 export function removeAllowedBaseUrl(baseUrl: string): void {
-  try {
-    const parsed = new URL(baseUrl);
-    allowedOrigins.delete(parsed.origin.toLowerCase());
-  } catch { /* ignore invalid URLs */ }
+  if (removeAllowedBaseUrlSilent(baseUrl)) {
+    publish({ action: 'remove', urls: [baseUrl] });
+  }
 }
 
-/** Replace all allowed origins with a fresh set (reconciliation). */
+/**
+ * Replace all allowed origins with a fresh set (reconciliation).
+ *
+ * INTERNAL / TEST-ONLY today (PR #309 review, finding #3): no production caller
+ * currently uses this. It is kept exported for two reasons:
+ *   1. API symmetry with the pub/sub event wire-format (`action: 'replace'`),
+ *      which receivers must handle — see `applyAllowlistEventLocal`.
+ *   2. Future use by a periodic reconciliation job that re-reads
+ *      `user_settings.confluence_url` + `llm_providers.base_url` and calls
+ *      `replaceAllowedBaseUrls(allUrls)` to heal drift after a Redis outage
+ *      (mutations published during the outage are lost otherwise).
+ *
+ * Unlike `addAllowedBaseUrl` / `removeAllowedBaseUrl`, this ALWAYS publishes
+ * (even when the set is unchanged) because the replace semantics are
+ * authoritative — receivers should treat it as "this is the ground truth now".
+ */
 export function replaceAllowedBaseUrls(baseUrls: string[]): void {
   allowedOrigins.clear();
   for (const url of baseUrls) {
-    addAllowedBaseUrl(url);
+    addAllowedBaseUrlSilent(url);
+  }
+  publish({ action: 'replace', urls: baseUrls });
+}
+
+/** Apply an allowlist event to local state without re-publishing. */
+export function applyAllowlistEventLocal(event: SsrfAllowlistEvent): void {
+  switch (event.action) {
+    case 'add':
+      for (const u of event.urls) addAllowedBaseUrlSilent(u);
+      return;
+    case 'remove':
+      for (const u of event.urls) removeAllowedBaseUrlSilent(u);
+      return;
+    case 'replace':
+      allowedOrigins.clear();
+      for (const u of event.urls) addAllowedBaseUrlSilent(u);
+      return;
   }
 }
 
