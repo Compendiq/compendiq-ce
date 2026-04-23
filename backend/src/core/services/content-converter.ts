@@ -25,6 +25,35 @@ function stripCdata(xhtml: string): string {
   });
 }
 
+// JSDOM parses with contentType 'text/html' (the namespaced XHTML we get from
+// Confluence is not a valid XML document because of entity references and
+// mixed-case elements). In HTML mode, self-closing syntax like
+// `<ri:user ri:userkey="x" />` is NOT treated as self-closing — only the HTML
+// void elements (br, img, hr, etc.) are. That means two adjacent
+// `<ri:user ... />` tags NEST: the second becomes a child of the first, and
+// text between them gets swallowed until the next matching close tag (often
+// end-of-body). See PR #314 finding #1.
+//
+// Fix: rewrite `<tag ... />` into `<tag ...></tag>` for the Confluence
+// namespaced elements that commonly appear in self-closing form and are NOT
+// meant to contain children (ri:user, ri:page, ri:attachment, ri:url,
+// ac:emoticon). This is narrow and surgical — it does not touch container
+// elements like ac:structured-macro, ac:rich-text-body, ac:link, etc.
+const SELF_CLOSING_XHTML_TAGS = ['ri:user', 'ri:page', 'ri:attachment', 'ri:url', 'ac:emoticon'];
+
+function expandSelfClosingXhtmlTags(xhtml: string): string {
+  let out = xhtml;
+  for (const tag of SELF_CLOSING_XHTML_TAGS) {
+    // Match <tag ... /> (with optional whitespace before />) and rewrite into
+    // <tag ...></tag>. The attribute body is captured so attribute values
+    // containing `>` (rare for these tags) don't trip us up — Confluence
+    // attribute values are always quoted.
+    const re = new RegExp(`<${tag}((?:\\s+[^>/]*)?)\\s*/>`, 'g');
+    out = out.replace(re, `<${tag}$1></${tag}>`);
+  }
+  return out;
+}
+
 // JSDOM 28 does not support CSS selectors with escaped colons for namespaced
 // elements (ac:structured-macro, ri:page, etc). getElementsByTagName works.
 function byTag(root: Document | Element, tag: string): Element[] {
@@ -58,7 +87,8 @@ function transferInnerHtml(target: Element, source: Element | undefined | null, 
  * Handles common Confluence macros: code blocks, task lists, panels, links, images, draw.io.
  */
 export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey?: string): string {
-  const dom = new JSDOM(`<body>${stripCdata(storageXhtml)}</body>`, { contentType: 'text/html' });
+  const preprocessed = expandSelfClosingXhtmlTags(stripCdata(storageXhtml));
+  const dom = new JSDOM(`<body>${preprocessed}</body>`, { contentType: 'text/html' });
   const doc = dom.window.document;
 
   // Process code blocks: ac:structured-macro[name=code] -> <pre><code>
@@ -131,6 +161,19 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
 
   // Process Confluence links: ac:link -> <a>
   for (const link of byTag(doc, 'ac:link')) {
+    // PR #314 finding #2: `<ac:link><ri:user .../></ac:link>` is the canonical
+    // Confluence on-disk shape for a user mention — AND it is the shape
+    // produced by our own `htmlToConfluence` reverse path. If we process this
+    // `ac:link` as a generic link we emit `<a></a>` and the ri:user handler
+    // below never sees the element (the replaceWith removed it). Detect the
+    // nested ri:user and unwrap the link — leave the ri:user in place so the
+    // dedicated ri:user handler further down converts it to a mention span.
+    const userRef = byTag(link, 'ri:user')[0];
+    if (userRef) {
+      link.replaceWith(userRef);
+      continue;
+    }
+
     const pageRef = byTag(link, 'ri:page')[0];
     const attachRef = byTag(link, 'ri:attachment')[0];
     const bodyEl = byTag(link, 'ac:link-body')[0] ?? byTag(link, 'ac:plain-text-link-body')[0];
@@ -251,12 +294,68 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
     macro.replaceWith(span);
   }
 
-  // Process table of contents macro -> placeholder
+  // Process table of contents macro -> placeholder, preserving key params
+  // (#300). Common TOC params — `maxLevel`, `minLevel`, `outline`, `style`,
+  // `type` — are round-tripped as data attributes so htmlToConfluence can
+  // rebuild the macro losslessly.
+  const tocParamNames = ['maxLevel', 'minLevel', 'outline', 'style', 'type', 'printable', 'absoluteUrl'];
   for (const macro of byTag(doc, 'ac:structured-macro')) {
     if (getMacroName(macro) !== 'toc') continue;
     const div = doc.createElement('div');
     div.className = 'confluence-toc';
     div.textContent = '[Table of Contents]';
+    for (const paramName of tocParamNames) {
+      const val = getParamValue(macro, paramName);
+      if (val !== null && val !== undefined) div.setAttribute(`data-${paramName.toLowerCase()}`, val);
+    }
+    macro.replaceWith(div);
+  }
+
+  // Process JIRA issue macro -> link placeholder (#300). Preserves the
+  // issue key + optional server-id + display mode so the reverse step can
+  // rebuild the macro exactly. If the original macro lists multiple keys
+  // (`ac:parameter[name=key]` with comma-separated values) we keep them
+  // all in data-keys and show the first as the visible link text.
+  for (const macro of byTag(doc, 'ac:structured-macro')) {
+    if (getMacroName(macro) !== 'jira') continue;
+    const issueKey = getParamValue(macro, 'key') ?? '';
+    const serverId = getParamValue(macro, 'serverId');
+    const server = getParamValue(macro, 'server');
+    const columns = getParamValue(macro, 'columns');
+    const displayMode = getParamValue(macro, 'display');
+    const span = doc.createElement('span');
+    span.className = 'confluence-jira-issue';
+    span.setAttribute('data-key', issueKey);
+    if (serverId) span.setAttribute('data-server-id', serverId);
+    if (server) span.setAttribute('data-server', server);
+    if (columns) span.setAttribute('data-columns', columns);
+    if (displayMode) span.setAttribute('data-display', displayMode);
+    // Visible label: [JIRA: KEY] — LLMs and Markdown can keep this text verbatim
+    span.textContent = issueKey ? `[JIRA: ${issueKey}]` : '[JIRA]';
+    macro.replaceWith(span);
+  }
+
+  // Process include-page / excerpt-include macros -> placeholder div (#300).
+  // Stores the referenced page title + space key so the reverse step can
+  // rebuild the `<ri:page>` link exactly. If the reference page no longer
+  // exists on re-import, Confluence shows its own "missing page" message.
+  for (const macro of byTag(doc, 'ac:structured-macro')) {
+    const name = getMacroName(macro);
+    if (name !== 'include' && name !== 'excerpt-include') continue;
+    // Confluence stores the referenced page inside:
+    //   <ac:parameter><ri:page ri:content-title="..." ri:space-key="..."/></ac:parameter>
+    // The parameter name is often omitted so we walk `ri:page` directly.
+    const riPage = byTag(macro, 'ri:page')[0];
+    const pageTitle = riPage?.getAttribute('ri:content-title') ?? '';
+    const spaceKey = riPage?.getAttribute('ri:space-key') ?? '';
+    const div = doc.createElement('div');
+    div.className = 'confluence-include-macro';
+    div.setAttribute('data-macro-name', name);
+    if (pageTitle) div.setAttribute('data-page-title', pageTitle);
+    if (spaceKey) div.setAttribute('data-space-key', spaceKey);
+    div.textContent = pageTitle
+      ? `[${name === 'excerpt-include' ? 'Excerpt' : 'Include'}: ${pageTitle}]`
+      : `[${name === 'excerpt-include' ? 'Excerpt' : 'Include'}]`;
     macro.replaceWith(div);
   }
 
@@ -355,8 +454,24 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
     macro.replaceWith(div);
   }
 
-  // Clean remaining Confluence-specific elements
-  for (const el of [...byTag(doc, 'ac:emoticon'), ...byTag(doc, 'ri:user')]) {
+  // Preserve user mentions as <span class="confluence-user-mention"> (#300).
+  // Confluence stores mentions as `<ri:user ri:username="alice"/>` OR
+  // `<ri:user ri:userkey="<opaque>"/>` (for deleted / renamed accounts).
+  // Previously stripped silently; now round-tripped so `htmlToConfluence`
+  // can rebuild them.
+  for (const el of byTag(doc, 'ri:user')) {
+    const username = el.getAttribute('ri:username');
+    const userkey = el.getAttribute('ri:userkey');
+    const span = el.ownerDocument.createElement('span');
+    span.className = 'confluence-user-mention';
+    if (username) span.setAttribute('data-username', username);
+    if (userkey) span.setAttribute('data-userkey', userkey);
+    span.textContent = username ? `@${username}` : '@<user>';
+    el.replaceWith(span);
+  }
+
+  // Clean remaining Confluence-specific elements (emoticons strip unchanged)
+  for (const el of byTag(doc, 'ac:emoticon')) {
     el.remove();
   }
 
@@ -532,6 +647,93 @@ export function htmlToConfluence(html: string): string {
       macro.appendChild(param);
     }
     div.replaceWith(macro);
+  }
+
+  // Convert TOC placeholders back to ac:structured-macro[name=toc] (#300).
+  // Mirrors the forward pass — the data-* attributes round-trip as macro
+  // parameters. Confluence regenerates the visible table on import.
+  for (const div of doc.querySelectorAll('div.confluence-toc')) {
+    const macro = doc.createElement('ac:structured-macro');
+    macro.setAttribute('ac:name', 'toc');
+    const tocReverseParams: Record<string, string> = {
+      'maxlevel': 'maxLevel',
+      'minlevel': 'minLevel',
+      'outline': 'outline',
+      'style': 'style',
+      'type': 'type',
+      'printable': 'printable',
+      'absoluteurl': 'absoluteUrl',
+    };
+    for (const [dataAttr, paramName] of Object.entries(tocReverseParams)) {
+      const val = div.getAttribute(`data-${dataAttr}`);
+      if (val !== null) {
+        const p = doc.createElement('ac:parameter');
+        p.setAttribute('ac:name', paramName);
+        p.textContent = val;
+        macro.appendChild(p);
+      }
+    }
+    div.replaceWith(macro);
+  }
+
+  // Convert JIRA issue placeholders back to ac:structured-macro[name=jira] (#300).
+  for (const span of doc.querySelectorAll('span.confluence-jira-issue')) {
+    const macro = doc.createElement('ac:structured-macro');
+    macro.setAttribute('ac:name', 'jira');
+    const paramPairs: Array<[string, string]> = [
+      ['data-key', 'key'],
+      ['data-server-id', 'serverId'],
+      ['data-server', 'server'],
+      ['data-columns', 'columns'],
+      ['data-display', 'display'],
+    ];
+    for (const [dataAttr, paramName] of paramPairs) {
+      const val = span.getAttribute(dataAttr);
+      if (val) {
+        const p = doc.createElement('ac:parameter');
+        p.setAttribute('ac:name', paramName);
+        p.textContent = val;
+        macro.appendChild(p);
+      }
+    }
+    span.replaceWith(macro);
+  }
+
+  // Convert include / excerpt-include placeholders back to ac:structured-macro (#300).
+  for (const div of doc.querySelectorAll('div.confluence-include-macro')) {
+    const macro = doc.createElement('ac:structured-macro');
+    const originalName = div.getAttribute('data-macro-name') || 'include';
+    macro.setAttribute('ac:name', originalName);
+    const pageTitle = div.getAttribute('data-page-title');
+    const spaceKey = div.getAttribute('data-space-key');
+    // Confluence wraps the page reference inside <ac:parameter><ri:page …/></ac:parameter>.
+    // The source form omits ac:name on this anonymous parameter — match that
+    // exactly rather than emit ac:name="" (PR #314 finding #3).
+    if (pageTitle) {
+      const param = doc.createElement('ac:parameter');
+      const riPage = doc.createElement('ri:page');
+      riPage.setAttribute('ri:content-title', pageTitle);
+      if (spaceKey) riPage.setAttribute('ri:space-key', spaceKey);
+      param.appendChild(riPage);
+      macro.appendChild(param);
+    }
+    div.replaceWith(macro);
+  }
+
+  // Convert user-mention spans back to <ri:user> (#300). Prefer username
+  // since it's human-readable; fall back to the opaque userkey for
+  // renamed / deleted accounts.
+  for (const span of doc.querySelectorAll('span.confluence-user-mention')) {
+    const username = span.getAttribute('data-username');
+    const userkey = span.getAttribute('data-userkey');
+    const riUser = doc.createElement('ri:user');
+    if (username) riUser.setAttribute('ri:username', username);
+    if (userkey) riUser.setAttribute('ri:userkey', userkey);
+    // Mentions in Confluence are wrapped in `<ac:link>…</ac:link>` — wrap
+    // here so they render correctly in the editor rather than as raw text.
+    const acLink = doc.createElement('ac:link');
+    acLink.appendChild(riUser);
+    span.replaceWith(acLink);
   }
 
   // Convert status badges back to ac:structured-macro[name=status]

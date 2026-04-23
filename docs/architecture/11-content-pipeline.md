@@ -45,14 +45,39 @@ Implemented in `backend/src/core/services/content-converter.ts` using
 
 Custom turndown rules handle Confluence-specific macros:
 
-| Confluence macro            | HTML form                        | Markdown form                 |
-|-----------------------------|----------------------------------|-------------------------------|
-| `ac:structured-macro[code]` | `<pre><code class="language-x">` | ` ```x … ``` ` fenced block   |
-| `ac:task-list`              | `<ul data-task-list>`            | `- [ ]` / `- [x]`             |
-| `ac:panel` (info/note/warn) | `<div class="panel panel-…">`    | `> **INFO:** …` block-quote   |
-| `ri:user`                   | `<span class="mention">@user</span>` | `@user` (inline)          |
-| `ri:page`                   | `<a data-page-link>`             | `[title](compendiq://page/ID)` |
-| `ac:structured-macro[drawio]` | `<img data-drawio>`            | `![diagram](attachment-url)`  |
+| Confluence macro                     | HTML form                                                    | Markdown form                 |
+|--------------------------------------|--------------------------------------------------------------|-------------------------------|
+| `ac:structured-macro[code]`          | `<pre><code class="language-x">`                             | ` ```x … ``` ` fenced block   |
+| `ac:task-list`                       | `<ul data-task-list>`                                        | `- [ ]` / `- [x]`             |
+| `ac:panel` (info/note/warn)          | `<div class="panel panel-…">`                                | `> **INFO:** …` block-quote   |
+| `ri:user`                            | `<span class="confluence-user-mention" data-username="…">@user</span>` | `@user` (inline) |
+| `ri:page`                            | `<a data-page-link>`                                         | `[title](compendiq://page/ID)` |
+| `ac:structured-macro[drawio]`        | `<img data-drawio>`                                          | `![diagram](attachment-url)`  |
+| `ac:structured-macro[jira]`          | `<span class="confluence-jira-issue" data-key="…">[JIRA: KEY]</span>` | `[JIRA: KEY]` (inline) |
+| `ac:structured-macro[include]`       | `<div class="confluence-include-macro" data-page-title="…">[Include: …]</div>` | `[Include: …]` placeholder |
+| `ac:structured-macro[excerpt-include]` | `<div class="confluence-include-macro" data-macro-name="excerpt-include">[Excerpt: …]</div>` | `[Excerpt: …]` placeholder |
+| `ac:structured-macro[toc]`           | `<div class="confluence-toc" data-maxlevel="…">[Table of Contents]</div>` | `[Table of Contents]` placeholder |
+
+### Round-trip notes (issue #300)
+
+- `<ri:user/>` is emitted by Confluence in self-closing form. Because we
+  parse storage XHTML with JSDOM in `text/html` mode (void-element rules
+  apply), adjacent self-closing `<ri:user/>` tags would nest and swallow
+  surrounding text. The forward path pre-expands self-closing
+  `ri:user` / `ri:page` / `ri:attachment` / `ri:url` / `ac:emoticon`
+  tags into explicit close-tag form before parsing.
+- Confluence's canonical on-disk shape for a mention is
+  `<ac:link><ri:user .../></ac:link>`. The forward `ac:link` handler
+  detects a nested `ri:user` and unwraps the link, delegating to the
+  `ri:user` handler so a second round-trip (edit → push-back → re-pull)
+  still produces a mention span instead of an empty `<a>`.
+- `jira`, `include`, `excerpt-include`, and `toc` all round-trip
+  losslessly by stashing the original parameters on `data-*` attributes
+  of the placeholder element; `htmlToConfluence` reads them back to
+  reconstruct the `<ac:structured-macro>` with its parameters. The
+  anonymous `<ac:parameter><ri:page/></ac:parameter>` inside `include` /
+  `excerpt-include` is emitted without an `ac:name=""` attribute to
+  match the source format byte-for-byte.
 
 ## Why store three forms?
 
