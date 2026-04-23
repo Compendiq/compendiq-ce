@@ -923,6 +923,26 @@ describe('content-converter: #300 paste-from-Confluence macros', () => {
       expect(xhtml).toContain('ac:name="excerpt-include"');
       expect(xhtml).toContain('ri:content-title="Quarterly Report"');
     });
+
+    it('reverse: omits empty ac:name attribute on anonymous include parameter (#300)', () => {
+      // Finding #3: when the original macro's <ac:parameter> has no name
+      // (anonymous param wrapping <ri:page/>), the reverse path must NOT
+      // emit `ac:name=""` — it must omit the attribute entirely.
+      const html = confluenceToHtml(INCLUDE_PAGE);
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).not.toContain('ac:name=""');
+      // Sanity: the ri:page child is still present inside an ac:parameter.
+      expect(xhtml).toMatch(/<ac:parameter>\s*<ri:page/);
+    });
+
+    it('double round-trip for include macro preserves the page reference', () => {
+      const once = htmlToConfluence(confluenceToHtml(INCLUDE_PAGE));
+      const twice = htmlToConfluence(confluenceToHtml(once));
+      expect(twice).toContain('ac:name="include"');
+      expect(twice).toContain('ri:content-title="Backup Procedures"');
+      expect(twice).toContain('ri:space-key="OPS"');
+      expect(twice).not.toContain('ac:name=""');
+    });
   });
 
   describe('user mentions', () => {
@@ -949,6 +969,70 @@ describe('content-converter: #300 paste-from-Confluence macros', () => {
       expect(html).toContain('data-username="alice"');
       expect(html).toContain('@alice');
       expect(xhtml).toContain('ri:username="alice"');
+    });
+
+    it('adjacent self-closing ri:user tags preserve both mentions and surrounding text (#300 regression)', () => {
+      // Finding #1: JSDOM in text/html mode does NOT treat `<ri:user ... />` as
+      // self-closing. Two adjacent self-closing `<ri:user/>` tags nest, with the
+      // first swallowing the second plus all text until the next close tag.
+      // Pre-processor must rewrite self-closing ri:* tags to explicit close form.
+      const html = confluenceToHtml(USER_MENTIONS_PAGE);
+      // Both mentions must survive.
+      const mentionCount = (html.match(/confluence-user-mention/g) ?? []).length;
+      expect(mentionCount).toBe(2);
+      expect(html).toContain('data-userkey="user123"');
+      expect(html).toContain('data-userkey="user456"');
+      // Surrounding text must survive too.
+      expect(html).toContain('Contact');
+      expect(html).toContain('or');
+      expect(html).toContain('for questions');
+      // And the following paragraph (after the mention paragraph) must survive.
+      expect(html).toContain('Great job!');
+    });
+
+    it('adjacent username ri:user mentions with text between them round-trip (#300 regression)', () => {
+      const src = `<p>Hey <ri:user ri:username="alice" /> and <ri:user ri:username="bob" />, please review.</p>`;
+      const html = confluenceToHtml(src);
+      const mentionCount = (html.match(/confluence-user-mention/g) ?? []).length;
+      expect(mentionCount).toBe(2);
+      expect(html).toContain('@alice');
+      expect(html).toContain('@bob');
+      expect(html).toContain('Hey');
+      expect(html).toContain('and');
+      expect(html).toContain('please review');
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toContain('ri:username="alice"');
+      expect(xhtml).toContain('ri:username="bob"');
+    });
+
+    it('double round-trip preserves mentions when wrapped in ac:link (#300 regression)', () => {
+      // Finding #2: htmlToConfluence wraps ri:user in ac:link. On a second
+      // forward pass, the ac:link handler must detect the nested ri:user and
+      // delegate to the ri:user handler — NOT emit an empty <a></a>.
+      const src = `<p>Contact <ac:link><ri:user ri:username="alice" /></ac:link> today.</p>`;
+      const html = confluenceToHtml(src);
+      expect(html).toContain('class="confluence-user-mention"');
+      expect(html).toContain('data-username="alice"');
+      expect(html).toContain('@alice');
+      // Full double-round-trip: XHTML → HTML → XHTML → HTML → XHTML must still
+      // carry the mention through.
+      const once = htmlToConfluence(html);
+      const twiceHtml = confluenceToHtml(once);
+      expect(twiceHtml).toContain('class="confluence-user-mention"');
+      expect(twiceHtml).toContain('@alice');
+      const twiceXhtml = htmlToConfluence(twiceHtml);
+      expect(twiceXhtml).toContain('ri:username="alice"');
+    });
+
+    it('double round-trip preserves both mentions on the USER_MENTIONS_PAGE fixture (#300 regression)', () => {
+      const once = htmlToConfluence(confluenceToHtml(USER_MENTIONS_PAGE));
+      const twiceHtml = confluenceToHtml(once);
+      const mentionCount = (twiceHtml.match(/confluence-user-mention/g) ?? []).length;
+      expect(mentionCount).toBe(2);
+      const twiceXhtml = htmlToConfluence(twiceHtml);
+      // Both userkeys must survive the full double round-trip.
+      expect(twiceXhtml).toContain('ri:userkey="user123"');
+      expect(twiceXhtml).toContain('ri:userkey="user456"');
     });
   });
 

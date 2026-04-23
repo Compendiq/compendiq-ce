@@ -25,6 +25,35 @@ function stripCdata(xhtml: string): string {
   });
 }
 
+// JSDOM parses with contentType 'text/html' (the namespaced XHTML we get from
+// Confluence is not a valid XML document because of entity references and
+// mixed-case elements). In HTML mode, self-closing syntax like
+// `<ri:user ri:userkey="x" />` is NOT treated as self-closing — only the HTML
+// void elements (br, img, hr, etc.) are. That means two adjacent
+// `<ri:user ... />` tags NEST: the second becomes a child of the first, and
+// text between them gets swallowed until the next matching close tag (often
+// end-of-body). See PR #314 finding #1.
+//
+// Fix: rewrite `<tag ... />` into `<tag ...></tag>` for the Confluence
+// namespaced elements that commonly appear in self-closing form and are NOT
+// meant to contain children (ri:user, ri:page, ri:attachment, ri:url,
+// ac:emoticon). This is narrow and surgical — it does not touch container
+// elements like ac:structured-macro, ac:rich-text-body, ac:link, etc.
+const SELF_CLOSING_XHTML_TAGS = ['ri:user', 'ri:page', 'ri:attachment', 'ri:url', 'ac:emoticon'];
+
+function expandSelfClosingXhtmlTags(xhtml: string): string {
+  let out = xhtml;
+  for (const tag of SELF_CLOSING_XHTML_TAGS) {
+    // Match <tag ... /> (with optional whitespace before />) and rewrite into
+    // <tag ...></tag>. The attribute body is captured so attribute values
+    // containing `>` (rare for these tags) don't trip us up — Confluence
+    // attribute values are always quoted.
+    const re = new RegExp(`<${tag}((?:\\s+[^>/]*)?)\\s*/>`, 'g');
+    out = out.replace(re, `<${tag}$1></${tag}>`);
+  }
+  return out;
+}
+
 // JSDOM 28 does not support CSS selectors with escaped colons for namespaced
 // elements (ac:structured-macro, ri:page, etc). getElementsByTagName works.
 function byTag(root: Document | Element, tag: string): Element[] {
@@ -58,7 +87,8 @@ function transferInnerHtml(target: Element, source: Element | undefined | null, 
  * Handles common Confluence macros: code blocks, task lists, panels, links, images, draw.io.
  */
 export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey?: string): string {
-  const dom = new JSDOM(`<body>${stripCdata(storageXhtml)}</body>`, { contentType: 'text/html' });
+  const preprocessed = expandSelfClosingXhtmlTags(stripCdata(storageXhtml));
+  const dom = new JSDOM(`<body>${preprocessed}</body>`, { contentType: 'text/html' });
   const doc = dom.window.document;
 
   // Process code blocks: ac:structured-macro[name=code] -> <pre><code>
@@ -131,6 +161,19 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
 
   // Process Confluence links: ac:link -> <a>
   for (const link of byTag(doc, 'ac:link')) {
+    // PR #314 finding #2: `<ac:link><ri:user .../></ac:link>` is the canonical
+    // Confluence on-disk shape for a user mention — AND it is the shape
+    // produced by our own `htmlToConfluence` reverse path. If we process this
+    // `ac:link` as a generic link we emit `<a></a>` and the ri:user handler
+    // below never sees the element (the replaceWith removed it). Detect the
+    // nested ri:user and unwrap the link — leave the ri:user in place so the
+    // dedicated ri:user handler further down converts it to a mention span.
+    const userRef = byTag(link, 'ri:user')[0];
+    if (userRef) {
+      link.replaceWith(userRef);
+      continue;
+    }
+
     const pageRef = byTag(link, 'ri:page')[0];
     const attachRef = byTag(link, 'ri:attachment')[0];
     const bodyEl = byTag(link, 'ac:link-body')[0] ?? byTag(link, 'ac:plain-text-link-body')[0];
@@ -663,10 +706,11 @@ export function htmlToConfluence(html: string): string {
     macro.setAttribute('ac:name', originalName);
     const pageTitle = div.getAttribute('data-page-title');
     const spaceKey = div.getAttribute('data-space-key');
-    // Confluence wraps the page reference inside <ac:parameter><ri:page …/></ac:parameter>
+    // Confluence wraps the page reference inside <ac:parameter><ri:page …/></ac:parameter>.
+    // The source form omits ac:name on this anonymous parameter — match that
+    // exactly rather than emit ac:name="" (PR #314 finding #3).
     if (pageTitle) {
       const param = doc.createElement('ac:parameter');
-      param.setAttribute('ac:name', '');
       const riPage = doc.createElement('ri:page');
       riPage.setAttribute('ri:content-title', pageTitle);
       if (spaceKey) riPage.setAttribute('ri:space-key', spaceKey);
