@@ -7,5 +7,6 @@ export * from './schemas/admin.js';
 export * from './schemas/admin-users.js';
 export * from './schemas/templates.js';
 export * from './schemas/license.js';
+export * from './schemas/ip-allowlist.js';
 export * from './types/common.js';
 export * from './llm.js';
