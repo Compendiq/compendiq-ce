@@ -48,6 +48,7 @@ compendiq.corp.example.com {
         path_regexp sse ^/api/(pages/[^/]+/presence|llm/.*)$
     }
     reverse_proxy @sse 127.0.0.1:8081 {
+        # Belt-and-suspenders: Caddy auto-streams text/event-stream anyway
         flush_interval -1
         transport http {
             read_timeout 1h

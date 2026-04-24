@@ -137,7 +137,7 @@ The generic `server`-level `proxy_buffering off;` above is usually enough, but e
 ```nginx
 # Compendiq's long-lived SSE endpoints:
 #   /api/pages/{id}/presence   — live viewer list (v0.4 #301)
-#   /api/llm/ask, /chat, /summarize, /generate, /quality, /auto-tag, etc.
+#   /api/llm/*                 — all /api/llm/* streaming endpoints
 location ~ ^/api/(pages/[^/]+/presence|llm/) {
     proxy_pass http://127.0.0.1:8081;
 

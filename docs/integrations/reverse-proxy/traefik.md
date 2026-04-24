@@ -1,6 +1,6 @@
 # Compendiq behind Traefik
 
-_last-verified: 2026-04-24 (draft ships with v0.4; founder VM test pending before v0.4.0 tag)_
+_last-verified: 2026-04-24 (corrected after PR #328 review; founder VM test pending before v0.4.0 tag)_
 
 ## Who this is for
 
@@ -72,32 +72,28 @@ services:
       - "traefik.http.services.compendiq.loadBalancer.passHostHeader=true"
 
       # --- SSE-specific router ------------------------------------
-      # Separate router + service for SSE streams so we can disable
-      # response buffering WITHOUT disabling it for the rest of the
-      # app (which benefits from buffering on static assets).
+      # Traefik v3 streams responses by default — there is no
+      # "disable buffering" knob because there is no buffering to
+      # disable on the proxy path. Attaching a `buffering` middleware
+      # is what *introduces* response buffering (see Traefik issue
+      # traefik/traefik#12869 and the Buffering middleware reference
+      # docs: https://doc.traefik.io/traefik/reference/routing-configuration/http/middlewares/buffering/).
+      # We keep a separate SSE router purely for clarity and higher
+      # priority, and to anchor any future streaming-specific config
+      # (HTTP/1.1 pinning, longer timeouts, etc.) without touching
+      # the main router.
       # Routes covered:
       #   /api/pages/*/presence  (live viewer list, v0.4 #301)
-      #   /api/llm/*             (ask / chat / summarize / generate / quality / auto-tag)
+      #   /api/llm/*             (all /api/llm/* streaming endpoints)
       - "traefik.http.routers.compendiq-sse.rule=Host(`compendiq.corp.example.com`) && (PathRegexp(`^/api/pages/[^/]+/presence$`) || PathPrefix(`/api/llm/`))"
       - "traefik.http.routers.compendiq-sse.entrypoints=websecure"
       - "traefik.http.routers.compendiq-sse.tls=true"
       - "traefik.http.routers.compendiq-sse.tls.certresolver=letsencrypt"
       - "traefik.http.routers.compendiq-sse.service=compendiq-sse"
-      - "traefik.http.routers.compendiq-sse.middlewares=compendiq-nobuf@docker"
       - "traefik.http.routers.compendiq-sse.priority=100"   # beats the generic router
 
       - "traefik.http.services.compendiq-sse.loadBalancer.server.port=8081"
       - "traefik.http.services.compendiq-sse.loadBalancer.passHostHeader=true"
-
-      # --- No-buffering middleware (critical for SSE) ------------
-      # maxResponseBodyBytes=0 and memResponseBodyBytes=0 together
-      # disable response buffering so SSE frames flush to the client
-      # as soon as the backend writes them. Without this, Traefik
-      # buffers the entire response and the stream only arrives when
-      # the backend closes the connection — at which point the UI
-      # spinner has long since timed out.
-      - "traefik.http.middlewares.compendiq-nobuf.buffering.maxResponseBodyBytes=0"
-      - "traefik.http.middlewares.compendiq-nobuf.buffering.memResponseBodyBytes=0"
 ```
 
 ### 3. Configure Compendiq's forwarded-headers trust
@@ -136,7 +132,7 @@ docker logs traefik 2>&1 | grep -i acme | tail -20
 ## Troubleshooting
 
 **1. LLM chat spinner never streams text; SSE presence stream cuts off after ~30 s.**
-The buffering middleware isn't bound to the SSE router, so Traefik is holding the response in memory. Verify with `docker inspect <compendiq-frontend-id> | grep nobuf` — you should see both `traefik.http.routers.compendiq-sse.middlewares=compendiq-nobuf@docker` **and** the two `buffering.*=0` middleware labels. The `@docker` provider suffix is required in v3 (in v2 it was implicit). Restart the container after fixing labels — Traefik re-reads them, but the active routing table isn't updated mid-request.
+A `buffering` middleware has been attached to the SSE router (or to the entrypoint / generic router above it) and is holding the response in memory until the backend closes the connection. Traefik v3 does **not** buffer by default — attaching a Buffering middleware is what turns buffering on, and the `maxResponseBodyBytes=0` / `memResponseBodyBytes=0` values mean "no size cap," not "disabled." Verify with `docker inspect <compendiq-frontend-id> | grep buffering` — the output should be empty for this router. If other middleware in your stack (auth, rate-limit, headers) is a `chain` that pulls in `buffering`, either drop `buffering` from the chain or exclude the `compendiq-sse` router from the chain. See the Traefik [Buffering middleware reference](https://doc.traefik.io/traefik/reference/routing-configuration/http/middlewares/buffering/) and tracking issue [traefik/traefik#12869](https://github.com/traefik/traefik/issues/12869).
 
 **2. Browser DevTools shows 404 on WebSocket / EventSource connection.**
 Compendiq doesn't use WebSockets, but the EventSource (SSE) connection fails if the `compendiq-sse` router rule doesn't match. Two common misses:
@@ -161,7 +157,7 @@ Traefik v3 defaults to HTTP/2 on `websecure`. With many concurrent SSE connectio
 curl -I https://compendiq.corp.example.com/api/health
 # Expect: 200 OK, valid TLS cert
 
-# 2. SSE streaming through the no-buffer router. Grab a JWT from the
+# 2. SSE streaming through the dedicated SSE router. Grab a JWT from the
 #    browser (DevTools → Application → Local Storage → `compendiq-auth`
 #    → state.accessToken) and replace <TOKEN>. The presence route is
 #    the easiest to verify because it streams without needing an LLM.
@@ -171,6 +167,6 @@ curl -N -H "Authorization: Bearer <TOKEN>" \
 #         arriving one-by-one, NOT a single buffered blob after close.
 ```
 
-If the `curl -N` call returns a single blob rather than a stream of lines, the `compendiq-nobuf` middleware is not bound to the `compendiq-sse` router — revisit step 2. If the LLM streams work but presence hangs, check that `PathRegexp` matches your actual presence path (the leading anchor is easy to drop).
+If the `curl -N` call returns a single blob rather than a stream of lines, a `buffering` middleware is attached somewhere in the chain — see troubleshooting (#1). If the LLM streams work but presence hangs, check that `PathRegexp` matches your actual presence path (the leading anchor is easy to drop).
 
 > **Before tagging v0.4.0:** the founder should run the full step-by-step on a fresh VM, walk through the `curl` verification, and update the `_last-verified_` stamp at the top of this file with the test date.
