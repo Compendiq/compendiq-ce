@@ -125,6 +125,12 @@ export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
         requiresFeature: 'ip_allowlisting',
         legacyTabId: null,
       }),
+      navItem('webhooks', 'Webhooks', {
+        adminOnly: true,
+        enterpriseOnly: true,
+        requiresFeature: 'webhook_push',
+        legacyTabId: null,
+      }),
       navItem('scim', 'SCIM', {
         adminOnly: true,
         enterpriseOnly: true,

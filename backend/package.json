@@ -47,6 +47,7 @@
     "pgvector": "^0.2.0",
     "pino": "^10.3.1",
     "redis": "^5.11.0",
+    "standardwebhooks": "^1.0.0",
     "turndown": "^7.2.0",
     "turndown-plugin-gfm": "^1.0.2",
     "undici": "^7.24.0",
