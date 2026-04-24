@@ -51,6 +51,11 @@ sequenceDiagram
                 PG-->>RAG: matches
             end
             RAG-->>BE: merged + deduped + ranked
+            opt RAG_PERMISSION_ENFORCEMENT (EE)
+                BE->>RBAC: userCanAccessPage(userId, pageId) for each candidate
+                RBAC-->>BE: filter decision (per-page read ACE honoured)
+                note right of BE: candidates were overfetched 1.5x<br/>at vector/fts stage to compensate
+            end
             opt includeSubPages
                 BE->>SP: assembleSubPageContext(rootPageId)
                 SP->>CF: fetch parent/child tree
@@ -95,6 +100,18 @@ regardless of how many retrieval calls execute. The Fastify `authenticate`
 hook enters the scope on every authenticated request via `enterRbacScope`; the
 memoised wrapper falls back to the raw resolver outside a scope (background
 workers, tests that skip the opt-in).
+
+Per ADR-023 (EE — `RAG_PERMISSION_ENFORCEMENT`), a second post-filter runs
+after the RRF merge when the feature is active. It calls
+`userCanAccessPage(userId, pageId)` for each merged candidate, gating
+retrieval on per-page read ACEs. The sync path (ADR-023) writes Confluence's
+effective read restrictions — resolved through the ancestor chain at sync
+time — into `access_control_entries` with `source='confluence'`, so the
+query-time check is a single consistent `userCanAccessPage` call per
+candidate. Candidates are overfetched at 1.5× `topK` at the vector and FTS
+stages to give the filter headroom. When the feature is off (CE or EE
+without the flag), neither the overfetch nor the second post-filter runs —
+behaviour matches v0.3.
 
 ## Retrieval details
 

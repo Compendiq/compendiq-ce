@@ -323,6 +323,38 @@ Node's dual-stack sockets surface IPv4 peers as IPv4-mapped-IPv6 addresses (`::f
 
 Before v0.4, Fastify was started with `trustProxy: true` (trust every peer's `X-Forwarded-For`). From v0.4, the server reads trusted-proxies from `admin_settings` at boot; when the row is absent or the feature is off, the default trusted list is loopback only (`127.0.0.1/32`, `::1/128`). Deployments behind a non-loopback reverse proxy **must** populate `trusted_proxies` explicitly or `req.ip` will report the proxy's IP rather than the real client's. See the `v0.4` CHANGELOG entry for the full behaviour-change note.
 
+### RAG Per-page ACL Enforcement (Enterprise, v0.4+)
+
+RAG retrieval in CE already post-filters candidate chunks by the user's readable space set (ADR-022). Enterprise deployments additionally enforce per-page view restrictions: if a Confluence page has explicit read restrictions, users outside the allowed list won't see the page's chunks in any RAG response (chat, ask, search-backed AI flows). Feature flag: `rag_permission_enforcement`.
+
+**How it works**
+
+1. The Confluence sync calls `/rest/api/content/{pageId}/restriction` for each page (and walks ancestors — Confluence view restrictions **are** inherited) and writes the effective read list into `access_control_entries` as `source='confluence'` rows with `synced_at=<run start>`.
+2. A stale-ACE sweep at the end of the sync removes any `source='confluence'` row that wasn't refreshed this run — so restrictions removed in Confluence, or users de-listed from a restriction, propagate on the next sync.
+3. The RAG hybrid retrieval (`hybridSearch`) overfetches 1.5× `topK` at the vector + FTS stages. After the RRF merge, a second post-filter calls `userCanAccessPage(userId, pageId)` for each candidate and drops blocked pages. Rank order is preserved.
+4. `source='local'` (admin-created) ACEs are never touched by sync. Manual overrides survive.
+
+**Sync cadence and leak-window behaviour**
+
+Restriction changes in Confluence take effect on Compendiq's next successful sync of the affected page — same cadence as content changes (`SYNC_INTERVAL_MIN`, default 15 min). Within that window, RAG may return stale visibility. This is the trade-off for synchronous sync mode in v0.4; an async-backfill mode (content first, ACLs after) is a future v0.5 option that shrinks the content-sync duration at the cost of a briefly larger leak window.
+
+**Sync duration impact**
+
+Enabling the feature adds at least one Confluence API call per synced page (restriction fetch), plus one per unique ancestor (cached across sibling pages within a sync run). At Confluence's 60 RPM default, a 1000-page space with moderate nesting typically adds 15-25 minutes to the first sync run. Subsequent runs are much faster because the ancestor cache hits and most pages' restrictions haven't changed. For deployments with large restricted spaces, expect the first post-enable sync to take notably longer than historical runs.
+
+**Unmapped Confluence users**
+
+If a Confluence page's read restriction names a user who has never logged into Compendiq (no matching `users` row — most often because the OIDC login flow hasn't provisioned them yet), the sync cannot persist an ACE for that user. The event is logged as an `ACE_SYNC_SKIPPED_UNMAPPED_USER` audit entry with `{ userKey, pageId }`. Safe default: **implicit deny** — the missing user will not match any ACE, so they are denied access. Counter-intuitively this means first-time RAG access for the restricted user happens after they've logged in and the next sync has run. Admin-UI visibility of the skip counter is planned for v0.5.
+
+**Disabling the feature**
+
+Tier-downgrade (license change to a non-enterprise tier) disables the flag. Existing `source='confluence'` ACEs remain in the DB. `userCanAccessPage()` continues to honour them — safe over-restriction. To fully "undo" the sync, manually `DELETE FROM access_control_entries WHERE source='confluence';` after disabling.
+
+**Verification**
+
+- Integration regression guard: `backend/src/domains/confluence/services/sync-service.integration.test.ts` (sync path) and `backend/src/domains/llm/services/rag-service.integration.test.ts` (query path).
+- ADR-023 documents the full design and rationale.
+
 ### Monitoring (OpenTelemetry)
 
 | Variable | Default | Description |

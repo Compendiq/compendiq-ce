@@ -39,6 +39,21 @@ interface ConfluenceAttachment {
   version?: { when: string };
 }
 
+/**
+ * Shape of a single Confluence content restriction entry for one operation
+ * (either `read` or `update`). Normalised from the Confluence DC REST response
+ * (`/rest/api/content/{id}/restriction`) into a shape the sync layer can consume
+ * without having to know about the nested `restrictions.user.results` / `group.results`
+ * envelope or handle the cases where either key is omitted entirely when empty.
+ */
+export interface ConfluenceRestriction {
+  operation: 'read' | 'update';
+  restrictions: {
+    users: Array<{ userKey: string; username: string; displayName?: string }>;
+    groups: Array<{ name: string }>;
+  };
+}
+
 interface PaginatedResponse<T> {
   results: T[];
   start: number;
@@ -188,6 +203,89 @@ export class ConfluenceClient {
     return this.fetch(
       `/rest/api/content/${encodeURIComponent(id)}?expand=body.storage,version,ancestors,metadata.labels`,
     );
+  }
+
+  /**
+   * Fetch the read / update restrictions configured on a Confluence page.
+   *
+   * Primary path: `/rest/api/content/{id}/restriction` (stable; available in DC 9.x
+   * per research cluster-1 item #4 of EE #112).
+   *
+   * Graceful fallback: on any non-200 / non-404 status from the stable path, retry
+   * against the legacy experimental path `/rest/experimental/content/{id}/restriction`.
+   * This lets the sync keep working on older DC builds that haven't backported the
+   * stable route, without silently hiding the primary failure — if BOTH paths fail
+   * the thrown `ConfluenceError` names both attempted URLs so operators can diagnose
+   * a DC version mismatch from the logs.
+   *
+   * `404` on either path is treated as "no restrictions configured" and returns an
+   * empty array — it is NOT an error. The caller (sync-service in Phase C) uses
+   * the empty result to mean the page is not restricted and may fall back to
+   * ancestor-inherited restrictions.
+   *
+   * Returns a normalised list of `ConfluenceRestriction` entries (one per operation).
+   * Handles the DC quirk where `restrictions.user` or `restrictions.group` may be
+   * omitted entirely when empty, as well as the more common case where they are
+   * present but with `results: []`.
+   */
+  async getPageRestrictions(pageId: string): Promise<ConfluenceRestriction[]> {
+    const encodedId = encodeURIComponent(pageId);
+    const primaryPath = `/rest/api/content/${encodedId}/restriction?expand=restrictions.user,restrictions.group`;
+    const fallbackPath = `/rest/experimental/content/${encodedId}/restriction?expand=restrictions.user,restrictions.group`;
+
+    // Primary attempt — stable path
+    try {
+      const body = await this.fetch<PaginatedResponse<RawConfluenceRestriction>>(primaryPath);
+      return parseRestrictionResponse(body);
+    } catch (err) {
+      if (err instanceof ConfluenceError && err.statusCode === 404) {
+        // Page exists but has no restrictions configured — not an error.
+        return [];
+      }
+      // Any other failure on primary: fall through to the experimental path.
+      const primaryStatus = err instanceof ConfluenceError ? err.statusCode : 'unknown';
+      logger.debug(
+        { pageId, primaryStatus, error: err instanceof Error ? err.message : String(err) },
+        'Stable restriction path failed, falling back to experimental',
+      );
+
+      // Fallback attempt — experimental path
+      try {
+        const body = await this.fetch<PaginatedResponse<RawConfluenceRestriction>>(fallbackPath);
+        return parseRestrictionResponse(body);
+      } catch (fallbackErr) {
+        if (fallbackErr instanceof ConfluenceError && fallbackErr.statusCode === 404) {
+          // Older DC without either path — treat as "no restrictions".
+          return [];
+        }
+        const fallbackStatus = fallbackErr instanceof ConfluenceError ? fallbackErr.statusCode : 'unknown';
+        throw new ConfluenceError(
+          `Failed to fetch page restrictions for pageId=${pageId}: stable path ${primaryPath} returned ${primaryStatus}, experimental path ${fallbackPath} returned ${fallbackStatus}`,
+          typeof fallbackStatus === 'number' ? fallbackStatus : 0,
+        );
+      }
+    }
+  }
+
+  /**
+   * Fetch the ancestor chain of a Confluence page.
+   *
+   * Confluence returns ancestors root-first (outermost ancestor at index 0,
+   * immediate parent last). Callers that need to walk "nearest ancestor first"
+   * (e.g. `computeEffectivePageReadRestrictions` in sync-service, Phase C)
+   * must reverse the returned array themselves — this method preserves
+   * Confluence's original order.
+   *
+   * Returns `[]` for top-level pages (no ancestors). On non-200, throws
+   * `ConfluenceError` — callers (sync-service) decide whether to abort the
+   * current page sync or continue; ancestor-fetch failures should NOT abort
+   * the whole sync run.
+   */
+  async getPageAncestors(pageId: string): Promise<Array<{ id: string }>> {
+    const body = await this.fetch<{ ancestors?: Array<{ id: string }> }>(
+      `/rest/api/content/${encodeURIComponent(pageId)}?expand=ancestors`,
+    );
+    return (body.ancestors ?? []).map((a) => ({ id: a.id }));
   }
 
   async getPageAttachments(pageId: string): Promise<PaginatedResponse<ConfluenceAttachment>> {
@@ -747,6 +845,47 @@ export function buildDownloadUrlCandidates(downloadPath: string, baseUrl: string
     }
   }
   return urls;
+}
+
+/**
+ * Raw shape of a single entry in the `results` array returned by
+ * `/rest/api/content/{id}/restriction?expand=restrictions.user,restrictions.group`
+ * (and the experimental equivalent). All nested keys are optional because DC
+ * omits `user` / `group` entirely when the corresponding list is empty.
+ */
+interface RawConfluenceRestriction {
+  operation?: string;
+  restrictions?: {
+    user?: { results?: Array<{ userKey?: string; username?: string; displayName?: string }> };
+    group?: { results?: Array<{ name?: string }> };
+  };
+}
+
+/**
+ * Normalise the Confluence restriction response into a `ConfluenceRestriction[]`.
+ * Filters out entries with unknown operations (defensive against new DC versions
+ * introducing operations we don't model) and coerces missing nested arrays to `[]`.
+ */
+function parseRestrictionResponse(body: PaginatedResponse<RawConfluenceRestriction> | { results?: RawConfluenceRestriction[] } | null | undefined): ConfluenceRestriction[] {
+  const results = body?.results ?? [];
+  const parsed: ConfluenceRestriction[] = [];
+  for (const r of results) {
+    if (r.operation !== 'read' && r.operation !== 'update') continue;
+    const users = (r.restrictions?.user?.results ?? [])
+      .filter((u): u is { userKey: string; username: string; displayName?: string } =>
+        typeof u.userKey === 'string' && typeof u.username === 'string',
+      )
+      .map((u) => ({
+        userKey: u.userKey,
+        username: u.username,
+        ...(u.displayName !== undefined ? { displayName: u.displayName } : {}),
+      }));
+    const groups = (r.restrictions?.group?.results ?? [])
+      .filter((g): g is { name: string } => typeof g.name === 'string')
+      .map((g) => ({ name: g.name }));
+    parsed.push({ operation: r.operation, restrictions: { users, groups } });
+  }
+  return parsed;
 }
 
 export class ConfluenceError extends Error {
