@@ -108,7 +108,7 @@ If you believe this pledge has been violated, open an issue tagged `stewardship`
 
 ## Open process
 
-Beyond the feature pledge, the stewardship of Compendiq is meant to be observable in public. To that end, we maintain a public [GitHub Project board](https://github.com/orgs/Compendiq/projects/TBD) <!-- TODO(#297): update to the real project URL once the board is created --> that shows what is being worked on right now, what is queued for the next phase, what is under consideration, and what has shipped in the last 90 days. If you want to understand where Compendiq is going — or influence it with an issue or a pull request — the board is the canonical answer, and it is updated alongside every release. The roadmap itself is not a commitment in the legal sense of this pledge, but publishing it is: we commit to keeping it honest, keeping it current, and not running a second, hidden roadmap that contradicts it.
+Beyond the feature pledge, the stewardship of Compendiq is meant to be observable in public. The source of truth for "what's being worked on right now, what's queued next, what shipped recently" is the set of open and closed issues in this repository, filtered by phase label. The human-readable index lives at [`docs/ROADMAP.md`](./ROADMAP.md); the raw data lives on the [issue tracker](https://github.com/Compendiq/compendiq-ce/issues). If you want to understand where Compendiq is going — or influence it with an issue or a pull request — those two surfaces are the canonical answer. The roadmap itself is not a commitment in the legal sense of this pledge, but publishing it is: we commit to keeping it honest, keeping it current, and not running a second, hidden roadmap that contradicts it.
 
 ## Changelog
 

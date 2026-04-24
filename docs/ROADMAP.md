@@ -1,70 +1,42 @@
-# Compendiq Public Roadmap
+# Compendiq Roadmap
 
-_Maintained alongside v0.4.0 (CE #297)._
+This file is the stable, human-readable index for what's in flight on Compendiq, what's queued next, and what recently shipped. It is part of the open-process commitment documented in [`STEWARDSHIP.md`](./STEWARDSHIP.md).
 
-The public roadmap lives as a **GitHub Projects v2** board at:
+The source of truth is the [issue tracker](https://github.com/Compendiq/compendiq-ce/issues), filtered by phase label. This file exists so that readers have a one-page answer to "where is Compendiq going" without having to learn the label taxonomy first.
 
-> _[TODO founder — paste the board URL once the org-level project is created, e.g. `https://github.com/orgs/Compendiq/projects/<N>`]_
+## How to browse
 
-This file in the repo is the **stable, human-readable index** that survives board renames and URL changes. It documents:
+| You want to see… | Do this |
+|---|---|
+| What's shipping in the release currently in flight | `is:issue is:open label:phase-1.2` |
+| What's queued for the release after that | `is:issue is:open label:phase-1.3` |
+| What's on the 6-month+ horizon | `is:issue is:open label:phase-2.0 label:phase-3.0` |
+| Open enhancements without a phase yet | `is:issue is:open label:enhancement -label:phase-1.2 -label:phase-1.3 -label:phase-2.0 -label:phase-3.0` |
+| What landed recently | `is:issue is:closed closed:>2026-01-24` (rolling 90 days) |
+| In-flight PRs for the current phase | `is:pr is:open label:phase-1.2` |
 
-1. where the live board lives,
-2. how the columns are organised,
-3. what the maintenance cadence is, and
-4. how to filter for the slice you care about.
+Ready-made queries live under [`github.com/Compendiq/compendiq-ce/issues`](https://github.com/Compendiq/compendiq-ce/issues); copy the filter above into the search bar.
 
-Issue activity itself (the source of truth for "what's planned / what's shipping") always lives on the board.
+## Split by surface
 
----
-
-## Columns
-
-| Column   | Criterion                                                                  |
-|----------|----------------------------------------------------------------------------|
-| **Now**     | Issues tagged `phase-1.2` and open — the release currently in flight.       |
-| **Next**    | Issues tagged `phase-1.3` — the release after `Now`.                        |
-| **Later**   | Issues tagged `phase-2.0` / `phase-3.0` — 6-month+ horizon.                 |
-| **Idea**    | Open enhancements without a phase label — long tail, no schedule.           |
-| **Shipped** | Closed issues from the last 90 days — "what landed recently".              |
-
-The column → label mapping is deterministic: when an issue's phase label changes, the board re-sorts it automatically on the next refresh.
-
-## Filters
-
-Use the board's built-in filters to slice by:
-
-- **`label:backend`** / **`label:frontend`** — split by surface area
-- **`label:enterprise`** — EE-gated issues only
-- **`label:priority:high`** — the hot stuff
-- **`is:pr`** — drop issues and see in-flight PRs against the same phase labels
+- `label:backend` — server-side work
+- `label:frontend` — UI work
+- `label:enterprise` — EE-gated issues (tracked here or in [`compendiq-enterprise`](https://github.com/Compendiq/compendiq-enterprise) depending on where the implementation lives)
+- `label:documentation` — docs-only issues
+- `label:priority:high` — the hot stuff
 
 ## Cadence
 
-- **Monthly** — the maintainer scrubs the board at the start of each month: retire stale `Idea`s older than 1 year, move anything that's picked up into `Now`, and ensure the `Shipped` column reflects the last 90 days.
-- **Per-release** — at every `dev → main` merge, the `Shipped` column is trimmed and the `Now` column is re-populated from the next phase's milestone.
-- **Ad-hoc** — contributors adding a new issue should apply the appropriate `phase-*` label at triage; `gh-issue-reviewer` validates label presence during PR review.
+- **Per-release** — at every `dev → main` merge the release epic issue (e.g. `[phase-1.2 epic]`) is closed and the next phase's milestone starts getting populated. Closed release epics are the best summary of what actually shipped.
+- **Ad-hoc** — contributors adding a new issue should apply the appropriate `phase-*` label at triage; if the label is missing, the maintainer adds it during the normal triage pass.
+- **Stewardship** — material changes to CE scope are always announced on the issue tracker **before** they ship. See [`STEWARDSHIP.md`](./STEWARDSHIP.md) for the full commitment.
 
 ## Cross-repo coverage
 
-The org-level project aggregates issues from:
-- `Compendiq/compendiq-ce` (this repository, AGPL-3.0)
-- `Compendiq/compendiq-enterprise` (private, EE)
-- `Compendiq/compendiq-mgmt` (private, multi-instance management)
+Issue activity relevant to Compendiq is split across three repositories:
 
-If a board filter appears to be missing an issue, check the phase label in the originating repo.
+- [`Compendiq/compendiq-ce`](https://github.com/Compendiq/compendiq-ce) — this repository, AGPL-3.0, the Community Edition
+- [`Compendiq/compendiq-enterprise`](https://github.com/Compendiq/compendiq-enterprise) — private, EE-only
+- `Compendiq/compendiq-mgmt` — private, multi-instance management
 
-## Stewardship link
-
-The public roadmap is part of the open-process commitment documented in [`docs/STEWARDSHIP.md`](./STEWARDSHIP.md). Material changes to CE scope are always announced via the roadmap **before** they ship — see the stewardship doc for the full commitment text.
-
----
-
-<!--
-Founder: to operationalise this file:
-  [ ] Create the org-level GitHub Projects v2 board and paste the URL at the top of this file.
-  [ ] Configure the 5 columns above using "Group by: label" → phase-* with the column names.
-  [ ] Pin the project to the Compendiq org page for discoverability.
-  [ ] Pre-create the `phase-1.3`, `phase-2.0`, `phase-3.0` labels in both CE and EE
-      (colour #0E8A16 to match existing phase labels).
-  [ ] Add a milestone for each future phase and back-label existing open issues.
--->
+If you're hunting an issue that you know is tracked by the Compendiq maintainers but can't find in this repo, it probably lives in one of the other two. Feature parity between repos is not a goal — each repo tracks only work that will land in its own tree.
