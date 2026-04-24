@@ -32,6 +32,8 @@ import type { TocHeading } from '../../shared/components/article/TableOfContents
 import { PageViewSkeleton } from '../../shared/components/feedback/Skeleton';
 import { TagEditor } from '../../shared/components/TagEditor';
 import { ShortcutHint } from '../../shared/components/ShortcutHint';
+import { usePresence } from './use-presence';
+import { PresenceAvatarStack } from './PresenceAvatarStack';
 
 function ImageLightbox({
   alt,
@@ -157,6 +159,13 @@ export function PageViewPage() {
   useEffect(() => {
     setStoreEditing(editing);
   }, [editing, setStoreEditing]);
+
+  // Real-time co-presence (#301). Propagates our editing flag to other viewers
+  // via a 10s heartbeat so the pencil badge toggles for them within one tick.
+  const { viewers: presenceViewers, setEditing: setPresenceEditing } = usePresence(id);
+  useEffect(() => {
+    setPresenceEditing(editing);
+  }, [editing, setPresenceEditing]);
 
   // Sync headings to the shared store (consumed by ArticleRightPane)
   useEffect(() => {
@@ -515,6 +524,7 @@ export function PageViewPage() {
           </span>
 
           <div className="flex shrink-0 items-center gap-1.5">
+            <PresenceAvatarStack viewers={presenceViewers} className="mr-1" />
             {editing ? (
               <>
                 <button
