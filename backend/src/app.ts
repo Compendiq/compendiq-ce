@@ -42,6 +42,7 @@ import { llmEmbeddingProbeRoutes } from './routes/llm/llm-embedding-probe.js';
 import { llmPdfRoutes } from './routes/llm/llm-pdf.js';
 // Knowledge routes
 import { pagesCrudRoutes } from './routes/knowledge/pages-crud.js';
+import { pagesPresenceRoutes } from './routes/knowledge/pages-presence.js';
 import { pagesVersionRoutes } from './routes/knowledge/pages-versions.js';
 import { pagesTagRoutes } from './routes/knowledge/pages-tags.js';
 import { pagesEmbeddingRoutes } from './routes/knowledge/pages-embeddings.js';
@@ -70,6 +71,7 @@ import { loadEnterprisePlugin } from './core/enterprise/loader.js';
 import { bootstrapLlmProviders } from './domains/llm/services/llm-provider-bootstrap.js';
 import { bootstrapSsrfAllowlist } from './domains/confluence/services/sync-service.js';
 import { initSsrfAllowlistBus } from './core/services/ssrf-allowlist-bus.js';
+import { initPresenceBus } from './core/services/presence-service.js';
 
 export async function buildApp() {
   const app = Fastify({
@@ -160,6 +162,15 @@ export async function buildApp() {
   const teardownSsrfBus = await initSsrfAllowlistBus(app.redis);
   app.addHook('onClose', async () => {
     await teardownSsrfBus();
+  });
+
+  // ── Presence bus (issue #301) ────────────────────────────────────
+  // Duplicated Redis subscriber running PSUBSCRIBE presence:page:* so
+  // SSE streams can fan out heartbeats across pods. Fails soft into
+  // single-pod mode if Redis is unreachable.
+  const teardownPresenceBus = await initPresenceBus(app.redis);
+  app.addHook('onClose', async () => {
+    await teardownPresenceBus();
   });
 
   // ── LLM Provider Bootstrap ───────────────────────────────────────
@@ -296,6 +307,7 @@ export async function buildApp() {
 
   // Knowledge routes
   await app.register(pagesCrudRoutes, { prefix: '/api' });
+  await app.register(pagesPresenceRoutes, { prefix: '/api' });
   await app.register(pagesVersionRoutes, { prefix: '/api' });
   await app.register(pagesTagRoutes, { prefix: '/api' });
   await app.register(pagesEmbeddingRoutes, { prefix: '/api' });
