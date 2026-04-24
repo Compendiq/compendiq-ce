@@ -130,6 +130,36 @@ Raise `client_max_body_size 30m;` (or more) in the `server` block. 30 MB is enou
 **5. 502 Bad Gateway from nginx.**
 Compendiq isn't actually listening on `127.0.0.1:8081`. Run `ss -tlnp | grep 8081` on the proxy host; if the port isn't bound, fix the compose `ports:` line and restart.
 
+## Server-Sent Events (SSE) streaming routes
+
+The generic `server`-level `proxy_buffering off;` above is usually enough, but enterprises with a stricter base config often re-enable buffering globally — in which case the SSE routes need their own `location` block to be safe. Add this **above** the generic `location / { ... }` so nginx matches it first:
+
+```nginx
+# Compendiq's long-lived SSE endpoints:
+#   /api/pages/{id}/presence   — live viewer list (v0.4 #301)
+#   /api/llm/ask, /chat, /summarize, /generate, /quality, /auto-tag, etc.
+location ~ ^/api/(pages/[^/]+/presence|llm/) {
+    proxy_pass http://127.0.0.1:8081;
+
+    # Per-route overrides — critical for SSE.
+    proxy_buffering         off;
+    proxy_cache             off;
+    proxy_http_version      1.1;
+    chunked_transfer_encoding off;
+    proxy_read_timeout      3600s;   # SSE connections are long-lived.
+
+    # Preserve the same forwarded headers as the generic location.
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Host  $host;
+    proxy_set_header Connection        "";
+}
+```
+
+Without this block, corporate nginx deployments with `proxy_buffering on;` in the base config will silently break both presence SSE (viewer avatars never update) and LLM streaming (chat responses arrive as one blob or time out). Adding the block is cheap insurance even if the server-level `proxy_buffering off;` is already present — the explicit location wins regardless of what other config snippets do elsewhere.
+
 ## Verification
 
 ```bash
