@@ -72,11 +72,25 @@ import { bootstrapLlmProviders } from './domains/llm/services/llm-provider-boots
 import { bootstrapSsrfAllowlist } from './domains/confluence/services/sync-service.js';
 import { initSsrfAllowlistBus } from './core/services/ssrf-allowlist-bus.js';
 import { initCacheBus, close as closeCacheBus } from './core/services/redis-cache-bus.js';
+import { buildTrustProxyFn } from './core/utils/trusted-proxy.js';
+import {
+  initIpAllowlistService,
+  loadTrustedProxiesFromAdminSettings,
+} from './core/services/ip-allowlist-service.js';
+import ipAllowlistHook from './core/plugins/ip-allowlist-hook.js';
+import { ENTERPRISE_FEATURES } from './core/enterprise/features.js';
 
 export async function buildApp() {
+  // v0.4 epic §3.4 — replace the previous blanket `trustProxy: true` with a
+  // CIDR-bounded function. Default when the IP-allowlist feature is off /
+  // unconfigured: loopback only (127.0.0.1/32, ::1/128). Deployments behind
+  // a non-loopback reverse proxy must populate `trusted_proxies` in
+  // admin_settings explicitly — see CHANGELOG entry for v0.4 for migration.
+  const trustedProxies = await loadTrustedProxiesFromAdminSettings();
+
   const app = Fastify({
     logger: false, // We use our own pino instance
-    trustProxy: true,
+    trustProxy: buildTrustProxyFn(trustedProxies),
   });
 
   // Zod type provider
@@ -172,6 +186,17 @@ export async function buildApp() {
   app.addHook('onClose', async () => {
     await closeCacheBus();
   });
+
+  // ── IP Allowlist (EE #111) ───────────────────────────────────────
+  // Cold-load the persisted config + subscribe the cache-bus for cluster
+  // hot-reload. Must run AFTER initCacheBus. Register the onRequest hook
+  // only when the enterprise feature flag is on — CE builds and EE builds
+  // without the feature never pay the per-request cost.
+  await initIpAllowlistService();
+  if (enterprise.isFeatureEnabled(ENTERPRISE_FEATURES.IP_ALLOWLISTING, license)) {
+    await app.register(ipAllowlistHook);
+    logger.info('IP allowlist hook registered (enterprise feature active)');
+  }
 
   // ── LLM Provider Bootstrap ───────────────────────────────────────
   // Seed llm_providers from env on fresh installs, rewrite the Ollama
