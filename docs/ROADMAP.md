@@ -12,7 +12,7 @@ The source of truth is the [issue tracker](https://github.com/Compendiq/compendi
 | What's queued for the release after that | `is:issue is:open label:phase-1.3` |
 | What's on the 6-month+ horizon | `is:issue is:open label:phase-2.0 label:phase-3.0` |
 | Open enhancements without a phase yet | `is:issue is:open label:enhancement -label:phase-1.2 -label:phase-1.3 -label:phase-2.0 -label:phase-3.0` |
-| What landed recently | `is:issue is:closed closed:>2026-01-24` (rolling 90 days) |
+| What landed recently | `is:issue is:closed closed:>YYYY-MM-DD` where `YYYY-MM-DD` is today minus 90 days (GitHub search has no relative-date literal) |
 | In-flight PRs for the current phase | `is:pr is:open label:phase-1.2` |
 
 Ready-made queries live under [`github.com/Compendiq/compendiq-ce/issues`](https://github.com/Compendiq/compendiq-ce/issues); copy the filter above into the search bar.
