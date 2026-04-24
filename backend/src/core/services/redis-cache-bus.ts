@@ -31,17 +31,17 @@
 import type { RedisClientType } from 'redis';
 import { logger } from '../utils/logger.js';
 
+// Closed union of every channel the generic cache-bus carries. Lifted
+// verbatim from epic §3.1 (.plans/v0.4-epic-2026-04.md in the EE repo);
+// future features extend this list in the same PR they add the publisher.
 export type CacheBusChannel =
-  | 'ip_allowlist:changed'
-  | 'sync_conflict_policy:changed'
-  | 'admin_settings:changed'
-  | 'license:changed'
   | 'provider:cache:bump'
   | 'provider:deleted'
   | 'admin:llm:settings'
-  | 'ai_review_policy:changed'
-  | 'pii_policy:changed'
-  | 'trusted_proxies:changed';
+  | 'ip_allowlist:changed'
+  | 'confluence:allowlist:changed'
+  | 'sync:conflict:policy:changed'
+  | 'license:changed';
 
 type Handler<T = unknown> = (payload: T) => void | Promise<void>;
 
@@ -72,45 +72,53 @@ export async function initCacheBus(main: RedisClientType): Promise<() => Promise
     return close;
   }
 
-  const subscriber = main.duplicate() as RedisClientType;
-
-  const bootState: BusState = {
-    main,
-    subscriber,
-    handlers: new Map(),
-    redisSubscribed: new Set(),
-    reconnectHandlers: new Set(),
-    readySeen: false,
-    active: false,
-  };
-
-  subscriber.on('error', (err: unknown) => {
-    logger.error({ err }, 'redis-cache-bus: subscriber client error');
-  });
-
-  subscriber.on('ready', () => {
-    if (!bootState.readySeen) {
-      bootState.readySeen = true;
-      return;
-    }
-    for (const fn of bootState.reconnectHandlers) {
-      try {
-        const res = fn();
-        if (res && typeof (res as Promise<void>).catch === 'function') {
-          (res as Promise<void>).catch((err) => {
-            logger.warn({ err }, 'redis-cache-bus: reconnect handler rejected');
-          });
-        }
-      } catch (err) {
-        logger.warn({ err }, 'redis-cache-bus: reconnect handler threw');
-      }
-    }
-  });
-
+  // All subscriber setup — including `duplicate()` and event wiring — must
+  // live inside the try/catch so a broken/mocked main client soft-fails to
+  // single-pod mode instead of throwing synchronously. Mirrors the pattern
+  // established by `ssrf-allowlist-bus.ts` (issue #306).
+  let bootState: BusState;
   try {
+    const subscriber = main.duplicate() as RedisClientType;
+
+    bootState = {
+      main,
+      subscriber,
+      handlers: new Map(),
+      redisSubscribed: new Set(),
+      reconnectHandlers: new Set(),
+      readySeen: false,
+      active: false,
+    };
+
+    subscriber.on('error', (err: unknown) => {
+      logger.error({ err }, 'redis-cache-bus: subscriber client error');
+    });
+
+    subscriber.on('ready', () => {
+      if (!bootState.readySeen) {
+        bootState.readySeen = true;
+        return;
+      }
+      for (const fn of bootState.reconnectHandlers) {
+        try {
+          const res = fn();
+          if (res && typeof (res as Promise<void>).catch === 'function') {
+            (res as Promise<void>).catch((err) => {
+              logger.warn({ err }, 'redis-cache-bus: reconnect handler rejected');
+            });
+          }
+        } catch (err) {
+          logger.warn({ err }, 'redis-cache-bus: reconnect handler threw');
+        }
+      }
+    });
+
     await subscriber.connect();
   } catch (err) {
-    logger.warn({ err }, 'redis-cache-bus: subscriber connect failed — falling back to single-pod mode');
+    logger.warn(
+      { err },
+      'redis-cache-bus: subscriber init failed — falling back to single-pod mode',
+    );
     return close;
   }
 

@@ -383,15 +383,49 @@ describe('redis-cache-bus', () => {
   });
 
   describe('type narrowing', () => {
-    it('CacheBusChannel union accepts the canonical v0.4 channels', () => {
-      // Compile-time check — if this file compiles, the type union is wide enough.
+    it('CacheBusChannel union accepts every channel named in epic §3.1', () => {
+      // Compile-time check — if this file compiles, the type union matches the plan.
       const channels: CacheBusChannel[] = [
+        'provider:cache:bump',
+        'provider:deleted',
+        'admin:llm:settings',
         'ip_allowlist:changed',
-        'sync_conflict_policy:changed',
+        'confluence:allowlist:changed',
+        'sync:conflict:policy:changed',
         'license:changed',
-        'admin_settings:changed',
       ];
-      expect(channels).toHaveLength(4);
+      expect(channels).toHaveLength(7);
+    });
+  });
+
+  describe('malformed main client', () => {
+    // Regression: previously `main.duplicate()` was called outside the try/catch,
+    // so a mock client without `duplicate()` threw a TypeError at init time
+    // (broke every test in app.test.ts). Init must soft-fail like any other
+    // subscriber-setup failure.
+    it('soft-fails to single-pod mode when main has no duplicate() method', async () => {
+      const bogusMain = { publish: vi.fn() } as unknown as RedisClientType;
+
+      await expect(initCacheBus(bogusMain)).resolves.toBeTypeOf('function');
+
+      expect(isCacheBusActive()).toBe(false);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ err: expect.any(Error) }),
+        expect.stringContaining('single-pod mode'),
+      );
+    });
+
+    it('soft-fails when duplicate() itself throws synchronously', async () => {
+      const throwingMain = {
+        duplicate: vi.fn(() => {
+          throw new Error('synchronous boom');
+        }),
+        publish: vi.fn(),
+      } as unknown as RedisClientType;
+
+      await initCacheBus(throwingMain);
+
+      expect(isCacheBusActive()).toBe(false);
     });
   });
 });
