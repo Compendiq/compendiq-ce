@@ -577,6 +577,80 @@ If you need to reset a password without admin UI access (for example the last ad
 - An admin cannot deactivate, delete, or demote themselves via the admin API — deliberate, to avoid accidentally locking the install out of admin access.
 - The `__system__` user (UUID `00000000-0000-0000-0000-000000000000`) owns built-in templates. It does not count toward the "last active admin" check and cannot log in — it is an internal sentinel and must not be edited or deleted.
 
+### Bulk user operations (Enterprise, v0.4+)
+
+> Enterprise-only — this section applies only when the licence grants `bulk_user_operations`. The Settings → Users page degrades to the per-user CRUD described above when the feature is unlicensed.
+
+The Settings → Users page surfaces two bulk affordances when the licence grants the feature:
+
+1. **Bulk import** — header button. Opens a three-step CSV import dialog: pick a `.csv` file → preview parsed rows with field-level errors and duplicate detection → confirm and apply with the chosen mode.
+2. **Multi-select bulk actions** — checkboxes on each row plus a select-all in the header. Once at least one row is checked the **Bulk actions** button appears, opening the action dialog (change role, deactivate with optional reason, reactivate, add to group, remove from group). The current admin's row never carries a checkbox so a single mistaken header click cannot bulk-deactivate the operator.
+
+Both flows share the same audit semantics as the per-user CRUD: a wrapper `BULK_USER_IMPORT` event surrounds the per-row `USER_CREATED` / `USER_UPDATED` / `USER_DEACTIVATED` / `USER_REACTIVATED` / `USER_HARD_DELETED` audit entries so the compliance report can reconstruct exactly who triggered which change at the per-user grain.
+
+#### CSV format
+
+| Column | Required | Notes |
+|---|---|---|
+| `username` | yes | 1–50 chars; letters, digits, `.`, `_`, `-` only. Unique. |
+| `email` | yes | RFC-5321 mailbox; max 254 chars. Lower-cased before comparison. Unique. |
+| `displayName` | no | 1–100 chars. Free text. |
+| `role` | yes | `admin` or `user` (lower-case). Per-space role assignment lives in RBAC and is **not** writeable through this CSV. |
+| `initialPassword` | no | When set, the imported user can log in immediately with this password. When blank, the server falls back to the invitation flow if `sendInvitation=true`. |
+| `sendInvitation` | no (default `true`) | When true and SMTP is configured, the new user is emailed a temporary password with a forced reset prompt. When SMTP is not configured the temp password is shown in the import response so the admin can hand it over out-of-band. |
+
+A header row is required and must match the column names verbatim — the parser is column-name driven, not positional.
+
+#### Example CSV
+
+```csv
+username,email,displayName,role,initialPassword,sendInvitation
+alice,alice@corp.example,Alice Smith,user,,true
+bob,bob@corp.example,Bob Jones,admin,ChangeMe!2026,false
+charlie,charlie@corp.example,,user,,true
+diana,diana@corp.example,Diana Prince,user,,true
+eric,eric@corp.example,Eric Engineer,admin,,true
+```
+
+A starter template ships with the repository: [`docs/assets/bulk-users-template.csv`](assets/bulk-users-template.csv). Save a copy and edit the rows to match your roster.
+
+#### Import modes
+
+The confirm step asks which mode to apply:
+
+- **Create only** — the safe default. The server errors out as soon as any row collides with an existing username or email. Use this for first-time onboarding batches where you are sure none of the rows overlap with the live roster.
+- **Upsert** — duplicates are updated in place (display name, role, optionally password); new rows are created. Useful for periodic full-roster syncs from an HRIS export.
+
+Both modes apply atomically against the database — either every row in the batch lands or none of them do (the EE overlay wraps the apply in a single transaction). The preview step is read-only; nothing is written until you press the apply button.
+
+#### Bulk-action catalogue
+
+The multi-select action menu offers:
+
+| Action | Notes |
+|---|---|
+| Change role | Sets `role` for every selected user. Subject to the same `LAST_ADMIN` guard as the per-user route — demoting the only remaining admin is rejected with HTTP 409. |
+| Deactivate (optional reason) | Soft-deactivates each selected user and revokes their refresh tokens. Reason is recorded against every per-row audit entry. |
+| Reactivate | Reverses a previous deactivation. Refresh tokens are not restored — the user signs in fresh. |
+| Add to group | Adds every selected user to the named RBAC group. |
+| Remove from group | Removes every selected user from the named RBAC group. |
+
+The **last-admin** and **self-action** guards from the per-user CRUD apply unchanged: bulk requests that would demote/deactivate/delete the only remaining admin or the calling admin themselves are rejected at the EE overlay layer with HTTP 409 / 400 respectively.
+
+#### CSV injection — operator hardening
+
+Anyone authoring a bulk-user CSV that will later be opened in a spreadsheet should be aware that fields starting with `=`, `+`, `-`, or `@` are interpreted as **formulas** by Excel, Google Sheets, and LibreOffice Calc. A maliciously crafted CSV can therefore execute formulas — including `=HYPERLINK(...)` data-exfiltration payloads — against an unsuspecting admin who opens the file to inspect it before re-uploading.
+
+Mitigations on the operator side:
+
+- Never paste untrusted input directly into a `displayName` cell. If you receive a roster from an external system, sanitise it first (e.g. prefix any cell starting with `= + - @` with a single quote).
+- Open the CSV in a plain-text editor first when in doubt. The Compendiq import dialog only ever reads the file as text — it does not execute formulas.
+- The export side of the bulk feature (when shipped) prefixes any cell starting with the four formula characters with a single quote per OWASP guidance.
+
+#### Inert in CE-only deployments
+
+The CE half of the bulk feature ships the contracts, the UI, and the audit-event names. The actual server implementation lives in the EE overlay and is loaded at runtime when the licence grants `bulk_user_operations`. In a CE-only deployment the routes do not exist and the UI is hidden by the licence gate; the affordance also degrades gracefully to a "requires Enterprise" message if the route ever 404s (for instance, between an EE licence-key install and the next overlay deployment).
+
 ## Encryption Key Rotation
 
 Compendiq supports zero-downtime rotation of the PAT encryption key:

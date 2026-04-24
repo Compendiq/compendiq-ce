@@ -104,7 +104,18 @@ export type AuditAction =
   | 'AI_REVIEW_REJECTED'
   | 'AI_REVIEW_EDIT_AND_APPROVED'
   | 'AI_REVIEW_EXPIRED'
-  | 'AI_REVIEW_POLICY_CHANGED';
+  | 'AI_REVIEW_POLICY_CHANGED'
+  // Bulk + per-user lifecycle — EE #116 bulk user operations + CE #304 per-user
+  // admin CRUD. The 5 USER_* events are the per-row primitives the bulk
+  // wrapper composes; BULK_USER_IMPORT is the wrapper event itself. They
+  // live in the closed CE union so the EE overlay routes can emit them
+  // without forking the type. (epic v0.4 §3.6 consolidation)
+  | 'BULK_USER_IMPORT'
+  | 'USER_CREATED'
+  | 'USER_UPDATED'
+  | 'USER_DEACTIVATED'
+  | 'USER_REACTIVATED'
+  | 'USER_HARD_DELETED';
 
 export interface AuditLogEntry {
   id: string;
