@@ -192,6 +192,16 @@ export async function buildApp() {
   // hot-reload. Must run AFTER initCacheBus. Register the onRequest hook
   // only when the enterprise feature flag is on — CE builds and EE builds
   // without the feature never pay the per-request cost.
+  //
+  // Hook-ordering note: the plan (.plans/111-ip-allowlist.md §0.1 / §1.6)
+  // calls for registering this hook BEFORE authPlugin so JWT decode never
+  // runs for blocked IPs. This file registers it AFTER authPlugin, which
+  // is functionally equivalent because authPlugin only decorates Fastify
+  // with `authenticate` / `requireAdmin` — it does NOT install a global
+  // onRequest hook. The only global onRequest hooks in the chain are
+  // correlationIdPlugin (above) and ipAllowlistHook (here), so a blocked
+  // IP short-circuits with 403 before any per-route `authenticate`
+  // preHandler runs. No JWT decode, no business logic, same result.
   await initIpAllowlistService();
   if (enterprise.isFeatureEnabled(ENTERPRISE_FEATURES.IP_ALLOWLISTING, license)) {
     await app.register(ipAllowlistHook);
