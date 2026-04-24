@@ -53,6 +53,8 @@ async function cleanupKeys(): Promise<void> {
   await main.del([
     `presence:viewers:${TEST_PAGE}`,
     `presence:viewers:${TEST_PAGE_2}`,
+    `presence:editing:${TEST_PAGE}`,
+    `presence:editing:${TEST_PAGE_2}`,
     'presence:meta:user-alice',
     'presence:meta:user-bob',
   ]);
@@ -193,6 +195,46 @@ describe.skipIf(!redisAvailable)('presence-service', () => {
     } finally {
       unsubA();
       unsubB();
+    }
+  });
+
+  it('reflects editing state across conceptually-separate writers on the same page', async () => {
+    // Simulates two pods: each records a heartbeat, then a third reader
+    // (stand-in for a third subscriber) calls getActiveViewers. Before the
+    // Redis-backed editing-set refactor this failed because _editingByPage
+    // was per-process in-memory state — each pod only knew about its own
+    // local writes.
+    await recordHeartbeat(TEST_PAGE, 'user-alice', true, { name: 'Alice', role: 'user' });
+    await recordHeartbeat(TEST_PAGE, 'user-bob', true, { name: 'Bob', role: 'user' });
+
+    const viewers = await getActiveViewers(TEST_PAGE);
+    expect(viewers).toHaveLength(2);
+    expect(viewers.find((v) => v.userId === 'user-alice')?.isEditing).toBe(true);
+    expect(viewers.find((v) => v.userId === 'user-bob')?.isEditing).toBe(true);
+  });
+
+  it('clears editing flag when isEditing=false arrives on a subsequent heartbeat', async () => {
+    await recordHeartbeat(TEST_PAGE, 'user-alice', true, { name: 'Alice', role: 'user' });
+    let viewers = await getActiveViewers(TEST_PAGE);
+    expect(viewers[0]!.isEditing).toBe(true);
+
+    await recordHeartbeat(TEST_PAGE, 'user-alice', false, { name: 'Alice', role: 'user' });
+    viewers = await getActiveViewers(TEST_PAGE);
+    expect(viewers[0]!.isEditing).toBe(false);
+  });
+
+  it('removeViewer drops the user from the editing set as well as the viewers set', async () => {
+    await recordHeartbeat(TEST_PAGE, 'user-alice', true, { name: 'Alice', role: 'user' });
+    await recordHeartbeat(TEST_PAGE, 'user-bob', true, { name: 'Bob', role: 'user' });
+
+    await removeViewer(TEST_PAGE, 'user-alice');
+
+    const viewers = await getActiveViewers(TEST_PAGE);
+    expect(viewers.map((v) => v.userId)).toEqual(['user-bob']);
+    // Alice shouldn't linger in the editing-set either.
+    if (main) {
+      const members = await main.sMembers(`presence:editing:${TEST_PAGE}`);
+      expect(members).not.toContain('user-alice');
     }
   });
 

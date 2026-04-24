@@ -9,6 +9,7 @@
  *
  * Key layout (see issue #301):
  *   presence:viewers:{pageId}  ZSET, member=userId, score=unix-seconds, EXPIRE 30s
+ *   presence:editing:{pageId}  SET of userIds currently editing, EXPIRE 30s
  *   presence:meta:{userId}     HASH (name, role), EXPIRE 90s
  *   presence:page:{pageId}     pub/sub channel, payload = JSON viewer list
  *
@@ -33,6 +34,10 @@ export const META_TTL_SEC = 90;
 
 function viewersKey(pageId: string): string {
   return `presence:viewers:${pageId}`;
+}
+
+function editingKey(pageId: string): string {
+  return `presence:editing:${pageId}`;
 }
 
 function metaKey(userId: string): string {
@@ -65,23 +70,6 @@ let _mainClient: RedisClientType | null = null;
 let _subscriber: RedisClientType | null = null;
 let _subscriberReady: Promise<void> | null = null;
 const _listeners: Map<string, Set<PresenceListener>> = new Map();
-/**
- * Tracks the set of userIds currently in the editing state per page. This is
- * derived from heartbeat payloads and merged into the viewer list published on
- * the pub/sub channel. Kept as soft in-process state; on pod restart the next
- * heartbeat from each viewer restores it. Scoped per-page so a user marked as
- * editing on page A isn't leaked into page B.
- */
-const _editingByPage: Map<string, Set<string>> = new Map();
-
-function getEditingSet(pageId: string): Set<string> {
-  let set = _editingByPage.get(pageId);
-  if (!set) {
-    set = new Set();
-    _editingByPage.set(pageId, set);
-  }
-  return set;
-}
 
 function parseChannel(channel: string): string | null {
   if (!channel.startsWith('presence:page:')) return null;
@@ -142,7 +130,6 @@ async function teardown(): Promise<void> {
   _subscriber = null;
   _subscriberReady = null;
   _listeners.clear();
-  _editingByPage.clear();
   if (!sub) return;
   try {
     await sub.pUnsubscribe(CHANNEL_PATTERN);
@@ -171,9 +158,17 @@ export async function recordHeartbeat(
   }
 
   const now = Math.floor(Date.now() / 1000);
-  const editingSet = getEditingSet(pageId);
-  if (isEditing) editingSet.add(userId);
-  else editingSet.delete(userId);
+
+  // Editing state lives in Redis so publishes are authoritative in multi-pod
+  // deployments — otherwise each pod's local view would cause pencil-badge
+  // oscillation. SREM has no TTL refresh; stale entries age out via the
+  // viewers-key TTL refresh on the next SADD.
+  const editingOp = isEditing
+    ? [
+        client.sAdd(editingKey(pageId), userId),
+        client.expire(editingKey(pageId), VIEWERS_TTL_SEC),
+      ]
+    : [client.sRem(editingKey(pageId), userId)];
 
   try {
     await Promise.all([
@@ -181,6 +176,7 @@ export async function recordHeartbeat(
       client.expire(viewersKey(pageId), VIEWERS_TTL_SEC),
       client.hSet(metaKey(userId), { name: meta.name, role: meta.role }),
       client.expire(metaKey(userId), META_TTL_SEC),
+      ...editingOp,
     ]);
     const viewers = await getActiveViewers(pageId);
     await client.publish(channelFor(pageId), JSON.stringify(viewers));
@@ -205,7 +201,7 @@ export async function getActiveViewers(pageId: string): Promise<PresenceViewer[]
     const userIds = await client.zRangeByScore(viewersKey(pageId), floor, '+inf');
     if (userIds.length === 0) return [];
 
-    const editingSet = _editingByPage.get(pageId) ?? new Set<string>();
+    const editingSet = new Set(await client.sMembers(editingKey(pageId)));
     const out: PresenceViewer[] = [];
 
     // Parallel HGETALL — small N so no pipeline needed.
@@ -243,11 +239,11 @@ export async function removeViewer(pageId: string, userId: string): Promise<void
   const client = _mainClient;
   if (!client) return;
 
-  const editingSet = _editingByPage.get(pageId);
-  if (editingSet) editingSet.delete(userId);
-
   try {
-    await client.zRem(viewersKey(pageId), userId);
+    await Promise.all([
+      client.zRem(viewersKey(pageId), userId),
+      client.sRem(editingKey(pageId), userId),
+    ]);
     const viewers = await getActiveViewers(pageId);
     await client.publish(channelFor(pageId), JSON.stringify(viewers));
   } catch (err) {
