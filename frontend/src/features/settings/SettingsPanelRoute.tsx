@@ -34,6 +34,7 @@ const SearxngTab = lazy(() => import('./SearxngTab').then((m) => ({ default: m.S
 const SmtpSettingsTab = lazy(() => import('./SmtpSettingsTab').then((m) => ({ default: m.SmtpSettingsTab })));
 const LicenseStatusCard = lazy(() => import('../admin/LicenseStatusCard').then((m) => ({ default: m.LicenseStatusCard })));
 const OidcSettingsPage = lazy(() => import('../admin/OidcSettingsPage').then((m) => ({ default: m.OidcSettingsPage })));
+const IpAllowlistTab = lazy(() => import('../admin/IpAllowlistTab').then((m) => ({ default: m.IpAllowlistTab })));
 const LlmPolicyTab = lazy(() => import('../admin/LlmPolicyTab').then((m) => ({ default: m.LlmPolicyTab })));
 const DataRetentionTab = lazy(() => import('../admin/DataRetentionTab').then((m) => ({ default: m.DataRetentionTab })));
 const LlmAuditPage = lazy(() => import('../admin/LlmAuditPage').then((m) => ({ default: m.LlmAuditPage })));
@@ -96,6 +97,7 @@ const PANELS: Readonly<Record<string, PanelRenderer>> = {
   'security/users': () => <UsersAdminPage />,
   'security/rate-limits': () => <RateLimitsTab />,
   'security/sso': () => <OidcSettingsPage />,
+  'security/ip-allowlist': () => <IpAllowlistTab />,
   'security/scim': () => <ScimSettingsPage />,
   'security/retention': () => <DataRetentionTab />,
 

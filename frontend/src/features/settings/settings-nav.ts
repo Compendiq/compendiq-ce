@@ -119,6 +119,12 @@ export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
         adminOnly: true,
         enterpriseOnly: true,
       }),
+      navItem('ip-allowlist', 'IP allowlist', {
+        adminOnly: true,
+        enterpriseOnly: true,
+        requiresFeature: 'ip_allowlisting',
+        legacyTabId: null,
+      }),
       navItem('scim', 'SCIM', {
         adminOnly: true,
         enterpriseOnly: true,

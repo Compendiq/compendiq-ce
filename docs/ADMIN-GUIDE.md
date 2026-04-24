@@ -288,6 +288,41 @@ Settings configured via the admin UI are persisted in the `admin_settings` datab
 
 OIDC is configured entirely via the Admin UI (Settings > OIDC/SSO). No environment variables are required -- all OIDC configuration is stored in the database.
 
+### IP Allowlist (Enterprise, v0.4+)
+
+The IP allowlist is configured entirely via the Admin UI (Settings > IP allowlist) and persisted in the `admin_settings` table. It is an Enterprise-only feature — Community Edition builds ignore the configuration and register no routes. When enabled, a Fastify `onRequest` hook short-circuits requests from client IPs outside the configured CIDR ranges with a `403 ip_blocked` response, before any auth / business logic runs.
+
+**Config fields (admin UI)**
+
+| Field | Description |
+|-------|-------------|
+| Enable toggle | Off by default. When off, all traffic is allowed; the trusted-proxy list still applies (see below). |
+| Allowed CIDRs | IPv4 and IPv6 CIDRs whose client IPs may reach the API. Example: `10.0.0.0/8`, `2001:db8::/32`. |
+| Trusted proxies | CIDRs of reverse-proxy hosts whose `X-Forwarded-For` header will be honoured when resolving the client IP. See the gotcha below. |
+| Exempt paths | Read-only list: `/api/health`, `/api/admin/license`, `/api/auth/`. Always accessible so the health check, license-key rotation, and login flow cannot be locked out. |
+
+**Lockout recovery**
+
+If an admin saves an allowlist that excludes their own IP, the UI's "save button disabled until your IP tests as allowed" guard normally catches it. If you do lock yourself out — for example because the upstream proxy changed its source range after save — recover via one of:
+
+1. **Use an exempt path.** `/api/admin/license` and `/api/auth/login` bypass the allowlist. Authenticate from the exempt path, then use `PUT /api/admin/ip-allowlist` directly with `curl` / `httpie` to restore or widen the CIDR list.
+2. **Connect from an exempt network.** The defaults trust loopback (`127.0.0.1/32`, `::1/128`). Shell into a pod and `curl http://localhost:3000/api/admin/ip-allowlist` to edit locally.
+3. **Last resort — edit Postgres directly.** `UPDATE admin_settings SET setting_value = '…' WHERE setting_key = 'ip_allowlist';` — set `enabled` to `false` to disable the feature entirely, then reconfigure from the UI. Changes propagate cluster-wide via the cache-bus within ~1 second; no restart required.
+
+**Trusted proxies gotcha**
+
+If Compendiq sits behind a reverse proxy (nginx, Traefik, cloud load balancer) that injects `X-Forwarded-For`, you **must** add that proxy's source CIDR to the trusted-proxies list. Otherwise Compendiq sees every request as coming from the proxy itself — so either every request is blocked (proxy not in allowlist) or every request is allowed (proxy happens to be in allowlist, regardless of the real client IP).
+
+The Test panel in the admin UI surfaces the resolved client IP for an arbitrary input; use it to verify the topology matches your expectations before enabling the allowlist.
+
+**IPv6 gotcha**
+
+Node's dual-stack sockets surface IPv4 peers as IPv4-mapped-IPv6 addresses (`::ffff:1.2.3.4`). The allowlist handles this automatically — an IPv4 CIDR will match an IPv4-mapped-IPv6 peer — so you do **not** need to add the `::ffff:…/96` mapped range to your IPv4 CIDRs. Conversely, a pure-IPv6 client that is not IPv4-mapped requires explicit IPv6 CIDR coverage.
+
+**Trust-proxy behaviour change (v0.4)**
+
+Before v0.4, Fastify was started with `trustProxy: true` (trust every peer's `X-Forwarded-For`). From v0.4, the server reads trusted-proxies from `admin_settings` at boot; when the row is absent or the feature is off, the default trusted list is loopback only (`127.0.0.1/32`, `::1/128`). Deployments behind a non-loopback reverse proxy **must** populate `trusted_proxies` explicitly or `req.ip` will report the proxy's IP rather than the real client's. See the `v0.4` CHANGELOG entry for the full behaviour-change note.
+
 ### Monitoring (OpenTelemetry)
 
 | Variable | Default | Description |

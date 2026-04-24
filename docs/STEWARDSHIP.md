@@ -106,6 +106,10 @@ If you believe this pledge has been violated, open an issue tagged `stewardship`
 
 ---
 
+## Open process
+
+Beyond the feature pledge, the stewardship of Compendiq is meant to be observable in public. To that end, we maintain a public [GitHub Project board](https://github.com/orgs/Compendiq/projects/TBD) <!-- TODO(#297): update to the real project URL once the board is created --> that shows what is being worked on right now, what is queued for the next phase, what is under consideration, and what has shipped in the last 90 days. If you want to understand where Compendiq is going — or influence it with an issue or a pull request — the board is the canonical answer, and it is updated alongside every release. The roadmap itself is not a commitment in the legal sense of this pledge, but publishing it is: we commit to keeping it honest, keeping it current, and not running a second, hidden roadmap that contradicts it.
+
 ## Changelog
 
 - **2026-04-23** — initial pledge drafted alongside v0.4.0 preparation (CE #296). _Founder review pending._
