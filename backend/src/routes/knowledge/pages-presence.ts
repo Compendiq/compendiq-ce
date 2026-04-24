@@ -125,17 +125,27 @@ export async function pagesPresenceRoutes(fastify: FastifyInstance) {
         // already torn down
       }
     };
-    request.raw.on('close', onClose);
 
     // Keep the returned promise pending so Fastify doesn't try to finalise
     // the reply — the raw socket is now ours. Resolves on client disconnect.
+    // A single `close` listener handles both unsubscribe/cleanup and promise
+    // resolution so we don't double-register.
     await new Promise<void>((resolve) => {
-      request.raw.on('close', () => resolve());
+      request.raw.on('close', () => {
+        onClose();
+        resolve();
+      });
     });
   });
 
   // POST /api/pages/:id/presence/heartbeat — refresh ZSET + meta
-  fastify.post('/pages/:id/presence/heartbeat', async (request, reply) => {
+  //
+  // Modest per-user rate limit: nominal cadence is one heartbeat per 10s
+  // (~6/min). 30/min gives ~3x headroom for reconnect jitter and page reloads
+  // while still capping the ZADD + PUBLISH + fetchUserMeta trio against abuse.
+  fastify.post('/pages/:id/presence/heartbeat', {
+    config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+  }, async (request, reply) => {
     const { id } = IdParamSchema.parse(request.params);
     const { isEditing } = HeartbeatBodySchema.parse(request.body);
     const userId = request.userId;
