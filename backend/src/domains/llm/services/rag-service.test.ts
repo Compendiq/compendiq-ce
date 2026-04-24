@@ -60,6 +60,11 @@ vi.mock('../../../core/services/rbac-service.js', () => ({
   // exercise resolver behaviour, not the scope cache, so the wrapper just
   // delegates to the same mock.
   getUserAccessibleSpacesMemoized: (...args: unknown[]) => mocks.mockGetUserAccessibleSpaces(...args),
+  // Issue #112 Phase D: the rag-service now calls `userCanAccessPage` in the
+  // flag-on post-filter branch. Tests in this file exercise the flag-off path
+  // (no license registered), so this stub is never called — but the symbol
+  // must exist so the ESM import resolves.
+  userCanAccessPage: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock('pgvector', () => ({

@@ -3,9 +3,14 @@ import { resolveUsecase } from './llm-provider-resolver.js';
 import { generateEmbedding } from './openai-compatible-client.js';
 // Use the request-scoped memoised wrapper so a single hybrid request resolves
 // the readable-space set once across vectorSearch + keywordSearch. See ADR-022.
-import { getUserAccessibleSpacesMemoized as getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
+import {
+  getUserAccessibleSpacesMemoized as getUserAccessibleSpaces,
+  userCanAccessPage,
+} from '../../../core/services/rbac-service.js';
 import { CircuitBreakerOpenError } from '../../../core/services/circuit-breaker.js';
 import { getFtsLanguage } from '../../../core/services/fts-language.js';
+import { isFeatureEnabled } from '../../../core/enterprise/loader.js';
+import { ENTERPRISE_FEATURES } from '../../../core/enterprise/features.js';
 import pgvector from 'pgvector';
 import { logger } from '../../../core/utils/logger.js';
 
@@ -212,11 +217,27 @@ export async function hybridSearch(
 ): Promise<SearchResult[]> {
   logger.info({ userId, question: question.slice(0, 100) }, 'Running hybrid RAG search');
 
+  // Per-page ACL post-filter (EE `rag_permission_enforcement` flag): when
+  // Confluence page-level restrictions have been mirrored to
+  // `access_control_entries` by the sync service (issue #112, Phase C), the
+  // RAG hybrid retrieval must gate candidates through `userCanAccessPage`
+  // before returning them. Resolve the flag once up front so both the
+  // overfetch-compensation call below and the post-filter at the bottom of
+  // this function see a consistent value for this request.
+  const aclEnforced = isFeatureEnabled(ENTERPRISE_FEATURES.RAG_PERMISSION_ENFORCEMENT);
+
+  // Overfetch compensation: when the ACL post-filter is active, some
+  // candidates will be dropped. Bump the per-stage candidate pool by 1.5x
+  // (rounded up) so the post-filter has headroom to still return `topK`
+  // rows. When the flag is OFF we preserve v0.3 behaviour exactly — the
+  // default per-stage limit (10) kicks in because we pass `undefined`.
+  const stageLimit = aclEnforced ? Math.ceil(topK * 1.5) : undefined;
+
   let vectorResults: SearchResult[] = [];
 
   // Start keyword search outside the try block so DB errors in keyword
   // search are not silently caught as "embedding failures".
-  const keywordPromise = keywordSearch(userId, question);
+  const keywordPromise = keywordSearch(userId, question, stageLimit);
 
   try {
     // Resolve the `embedding` use-case to the provider+model that generated
@@ -224,7 +245,7 @@ export async function hybridSearch(
     const { config, model } = await resolveUsecase('embedding');
     const embeddings = await generateEmbedding(config, model, question);
     const questionEmbedding = embeddings[0]!;
-    vectorResults = await vectorSearch(userId, questionEmbedding);
+    vectorResults = await vectorSearch(userId, questionEmbedding, stageLimit);
   } catch (err) {
     // Let circuit breaker errors propagate for proper 503 handling
     if (err instanceof CircuitBreakerOpenError) {
@@ -240,9 +261,40 @@ export async function hybridSearch(
     keywordHits: keywordResults.length,
   }, 'Search results');
 
-  // Combine with RRF — output is already one entry per pageId, so slice to topK
-  const combined = reciprocalRankFusion(vectorResults, keywordResults);
-  const topResults = combined.slice(0, topK);
+  // Combine with RRF — output is already one entry per pageId.
+  const merged = reciprocalRankFusion(vectorResults, keywordResults);
+
+  // Per-page ACL post-filter: when enabled, drop candidates the caller can
+  // no longer read (Confluence restriction added between sync and query,
+  // ACE synced for a page whose space the user lost access to, etc.). The
+  // filter preserves RRF rank order — `userCanAccessPage` is O(small) and
+  // runs N≤ceil(topK*1.5) times, which is acceptable per plan §2.
+  if (aclEnforced) {
+    const filtered: SearchResult[] = [];
+    for (const r of merged) {
+      if (await userCanAccessPage(userId, r.pageId)) {
+        filtered.push(r);
+      }
+    }
+    logger.debug(
+      {
+        userId,
+        candidatesBeforeFilter: merged.length,
+        candidatesAfterFilter: filtered.length,
+      },
+      'RAG per-page ACL post-filter applied',
+    );
+    const topResults = filtered.slice(0, topK);
+
+    // Record search analytics (non-blocking)
+    const searchType = vectorResults.length === 0 && keywordResults.length > 0 ? 'keyword_fallback' : 'hybrid';
+    const maxScore = topResults.length > 0 ? Math.max(...topResults.map((r) => r.score)) : null;
+    recordSearchAnalytics(userId, question, topResults.length, maxScore, searchType).catch(() => {});
+
+    return topResults;
+  }
+
+  const topResults = merged.slice(0, topK);
 
   // Record search analytics (non-blocking)
   // Distinguish keyword-fallback (embedding failed) from true hybrid
