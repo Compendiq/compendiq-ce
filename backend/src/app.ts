@@ -67,7 +67,7 @@ import { ZodError } from 'zod';
 import { trackError } from './core/services/error-tracker.js';
 import { logger } from './core/utils/logger.js';
 import { APP_VERSION } from './core/utils/version.js';
-import { loadEnterprisePlugin } from './core/enterprise/loader.js';
+import { loadEnterprisePlugin, setCurrentLicense } from './core/enterprise/loader.js';
 import { bootstrapLlmProviders } from './domains/llm/services/llm-provider-bootstrap.js';
 import { bootstrapSsrfAllowlist } from './domains/confluence/services/sync-service.js';
 import { initSsrfAllowlistBus } from './core/services/ssrf-allowlist-bus.js';
@@ -165,6 +165,12 @@ export async function buildApp() {
 
   app.decorate('license', license);
   app.decorate('enterprise', enterprise);
+
+  // Publish the license to module-scope callers (background workers, the
+  // Confluence sync loop, BullMQ jobs) that cannot reach `app.license`.
+  // Mirrors the decorate call above — EE paths that hot-reload the license
+  // via `PUT /api/admin/license` are expected to call this again themselves.
+  setCurrentLicense(license);
 
   // Let the enterprise plugin register its own routes (e.g., full license endpoint)
   await enterprise.registerRoutes(app, license);

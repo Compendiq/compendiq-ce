@@ -1,14 +1,23 @@
 import { randomUUID } from 'node:crypto';
-import { query } from '../../../core/db/postgres.js';
-import { ConfluenceClient, ConfluencePage, ConfluenceSpace } from './confluence-client.js';
+import { query, getPool } from '../../../core/db/postgres.js';
+import {
+  ConfluenceClient,
+  ConfluencePage,
+  ConfluenceSpace,
+  ConfluenceRestriction,
+  ConfluenceError,
+} from './confluence-client.js';
 import { confluenceToHtml, htmlToText } from '../../../core/services/content-converter.js';
 import { syncDrawioAttachments, syncImageAttachments, cleanPageAttachments, getMissingAttachments } from './attachment-handler.js';
 import { saveVersionSnapshot } from '../../../core/services/version-snapshot.js';
 import { processDirtyPages } from '../../llm/services/embedding-service.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
+import { logAuditEvent } from '../../../core/services/audit-service.js';
 import { decryptPat } from '../../../core/utils/crypto.js';
 import { addAllowedBaseUrlSilent } from '../../../core/utils/ssrf-guard.js';
 import { logger } from '../../../core/utils/logger.js';
+import { isFeatureEnabled } from '../../../core/enterprise/loader.js';
+import { ENTERPRISE_FEATURES } from '../../../core/enterprise/features.js';
 import {
   getRedisClient,
   recordAttachmentFailure,
@@ -115,13 +124,42 @@ export async function syncUser(userId: string): Promise<void> {
 
   await setSyncStatus(userId, { userId, status: 'syncing' });
 
+  // Per-run state for the per-page restriction sync (EE #112 Phase C). Shared
+  // across every space/page processed in this sync run so:
+  //   - the stale-ACE sweep can identify rows that weren't re-written by
+  //     comparing their `synced_at` to `syncRunStartedAt`;
+  //   - repeated restriction fetches against the same ancestor page (common
+  //     when siblings share a parent) collapse into a single HTTP call.
+  // Both are inert when `RAG_PERMISSION_ENFORCEMENT` is disabled — the
+  // restriction branch short-circuits before writing to the cache or the DB.
+  const syncRunStartedAt = new Date();
+  const ancestorCache = new Map<string, ConfluenceRestriction[]>();
+
   try {
     // Fetch all spaces once to avoid redundant API calls per space
     const allSpaces = await client.getAllSpaces();
     const spacesByKey = new Map(allSpaces.map((s) => [s.key, s]));
 
     for (const spaceKey of spaces) {
-      await syncSpace(client, userId, spaceKey, spacesByKey.get(spaceKey));
+      await syncSpace(
+        client,
+        userId,
+        spaceKey,
+        spacesByKey.get(spaceKey),
+        syncRunStartedAt,
+        ancestorCache,
+      );
+    }
+
+    // Sweep stale Confluence-sourced ACEs for all pages that were (re-)synced
+    // in this run. Rows whose `synced_at` is older than `syncRunStartedAt`
+    // were not refreshed by `syncPageRestrictions`, which means either the
+    // page no longer has restrictions or a principal was removed from the
+    // Confluence restriction list. Either way the stale row is no longer
+    // authoritative and must be removed. Admin-authored rows have
+    // `source='local'` and never appear in this sweep.
+    if (isFeatureEnabled(ENTERPRISE_FEATURES.RAG_PERMISSION_ENFORCEMENT)) {
+      await sweepStaleConfluenceAces(syncRunStartedAt);
     }
 
     // Set status to 'embedding' while processing dirty pages
@@ -157,7 +195,14 @@ export async function syncUser(userId: string): Promise<void> {
   }
 }
 
-async function syncSpace(client: ConfluenceClient, userId: string, spaceKey: string, space?: ConfluenceSpace): Promise<void> {
+async function syncSpace(
+  client: ConfluenceClient,
+  userId: string,
+  spaceKey: string,
+  space: ConfluenceSpace | undefined,
+  syncRunStartedAt: Date,
+  ancestorCache: Map<string, ConfluenceRestriction[]>,
+): Promise<void> {
   logger.info({ userId, spaceKey }, 'Syncing space');
 
   // Upsert shared space metadata (no user_id)
@@ -200,7 +245,7 @@ async function syncSpace(client: ConfluenceClient, userId: string, spaceKey: str
     });
 
     const page = pages[i]!;
-    await syncPage(client, userId, spaceKey, page);
+    await syncPage(client, userId, spaceKey, page, syncRunStartedAt, ancestorCache);
   }
 
   // During incremental sync, also check for pages with missing attachments
@@ -230,6 +275,8 @@ async function syncPage(
   userId: string,
   spaceKey: string,
   pageSummary: ConfluencePage,
+  syncRunStartedAt: Date,
+  ancestorCache: Map<string, ConfluenceRestriction[]>,
 ): Promise<void> {
   // Fetch full page content
   const page = await client.getPage(pageSummary.id);
@@ -259,6 +306,14 @@ async function syncPage(
     // Compare expected filenames (from XHTML) against files on disk, per-file.
     const missing = await getMissingAttachments(userId, page.id, bodyStorage, spaceKey);
     if (missing.length === 0 && !htmlChanged) {
+      // Content + attachments both fully up to date. Still re-evaluate the
+      // Confluence-side view restrictions: they can change independently of
+      // page content (an admin adds/removes a user from the read list
+      // without editing the page), and the conditional-fetch optimization
+      // from the plan is not wired (see §1.4 TODO below). `syncPageRestrictions`
+      // is a no-op when the feature flag is disabled, so CE builds pay zero
+      // extra cost here.
+      await syncPageRestrictions(client, page, syncRunStartedAt, ancestorCache);
       return;
     }
 
@@ -334,6 +389,10 @@ async function syncPage(
       );
     }
 
+    // Version-unchanged branch: still re-evaluate restrictions. See note at
+    // the earlier early-return above. Safe/cheap because `syncPageRestrictions`
+    // short-circuits on the feature flag.
+    await syncPageRestrictions(client, page, syncRunStartedAt, ancestorCache);
     return;
   }
 
@@ -391,6 +450,319 @@ async function syncPage(
     [page.id, spaceKey, page.title, bodyStorage, bodyHtml, bodyText,
      page.version.number, parentId, labels, author, lastModified],
   );
+
+  // Sync Confluence view restrictions → access_control_entries. Runs after
+  // the page upsert so `pages.id` is guaranteed to exist (the ACE foreign
+  // key on `resource_id` points at that SERIAL). No-op when the
+  // `RAG_PERMISSION_ENFORCEMENT` feature flag is off.
+  await syncPageRestrictions(client, page, syncRunStartedAt, ancestorCache);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+//  Per-page restriction sync (EE #112 Phase C)
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Compute the effective `read` restriction for a Confluence page.
+ *
+ * Confluence view restrictions are inherited DOWN the ancestor chain (unlike
+ * edit restrictions). A page's OWN `read` restriction overrides anything
+ * inherited; only when the page has no own read restriction do we walk its
+ * ancestors nearest-first and use the first non-empty read restriction we
+ * find. Returns `null` when nothing in the chain is restricted — i.e. the
+ * page is effectively public.
+ *
+ * `ancestorCache` is shared across the whole sync run so siblings that share
+ * a parent only fetch that parent's restrictions once.
+ */
+async function computeEffectivePageReadRestrictions(
+  page: ConfluencePage,
+  client: ConfluenceClient,
+  ancestorCache: Map<string, ConfluenceRestriction[]>,
+): Promise<{
+  users: Array<{ userKey: string; username: string }>;
+  groups: Array<{ name: string }>;
+  inheritedFromAncestor: string | null;
+} | null> {
+  const own = await client.getPageRestrictions(page.id);
+  const ownRead = own.find((r) => r.operation === 'read');
+  if (
+    ownRead &&
+    ownRead.restrictions.users.length + ownRead.restrictions.groups.length > 0
+  ) {
+    return {
+      users: ownRead.restrictions.users.map((u) => ({ userKey: u.userKey, username: u.username })),
+      groups: ownRead.restrictions.groups.map((g) => ({ name: g.name })),
+      inheritedFromAncestor: null,
+    };
+  }
+
+  // No own restriction — walk ancestors nearest-first. Confluence returns
+  // ancestors root-first, so reverse to put the immediate parent at index 0.
+  const ancestors = await client.getPageAncestors(page.id);
+  for (const a of [...ancestors].reverse()) {
+    let arestr = ancestorCache.get(a.id);
+    if (!arestr) {
+      arestr = await client.getPageRestrictions(a.id);
+      ancestorCache.set(a.id, arestr);
+    }
+    const aread = arestr.find((r) => r.operation === 'read');
+    if (aread && aread.restrictions.users.length + aread.restrictions.groups.length > 0) {
+      return {
+        users: aread.restrictions.users.map((u) => ({ userKey: u.userKey, username: u.username })),
+        groups: aread.restrictions.groups.map((g) => ({ name: g.name })),
+        inheritedFromAncestor: a.id,
+      };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Mirror the effective Confluence read restriction for a single page into
+ * `access_control_entries`. Gated by the `RAG_PERMISSION_ENFORCEMENT` feature
+ * flag — CE builds and un-licensed EE builds skip the fetch and the DB write
+ * entirely (preserves v0.3 behaviour exactly).
+ *
+ * Behaviour:
+ *  - Effective restriction is null (no own restriction, no restricted
+ *    ancestor): set `pages.inherit_perms = TRUE` and write no ACEs. The
+ *    stale-sweep at the end of `syncUser` removes any leftover ACEs from a
+ *    prior run.
+ *  - Effective restriction is non-null: resolve each userKey/group name to
+ *    Compendiq `users.id` / `groups.id`. Unmapped principals are SKIPPED and
+ *    audited as `ACE_SYNC_SKIPPED_UNMAPPED_USER` — NOT persisted, because
+ *    creating an ACE for an unknown principal would grant access to nobody
+ *    (safer default: implicitly deny by omission). UPSERT each resolved
+ *    principal and bump `synced_at` so the sweep preserves it. Set
+ *    `pages.inherit_perms = FALSE` so `userCanAccessPage()` consults the
+ *    page-level ACEs instead of the space-level roles.
+ *
+ * TODO(EE #112 Phase C): the plan's §1.4 conditional-fetch optimization
+ * ("skip when `pages.metadata.restrictions.updated` hasn't changed since
+ * `pages.last_synced`") is not wired. The `ConfluencePage` type in
+ * `confluence-client.ts` does not expose the `metadata.restrictions.updated`
+ * timestamp, and adding it requires changing both the type and the
+ * `expand=` query string used by `getPage` / `getAllPagesInSpace` /
+ * `getModifiedPages`. Out of scope for Phase C (the brief explicitly
+ * forbids touching `confluence-client.ts`). Effect: one extra
+ * `getPageRestrictions` call per page per sync run, plus potentially one
+ * per ancestor. Bounded by the 60 RPM rate limiter and collapsed by the
+ * `ancestorCache`; acceptable for v0.4, flagged here for the follow-up.
+ *
+ * On a `ConfluenceError` from `getPageRestrictions` / `getPageAncestors` we
+ * log + continue — the sync run completes, this page's ACEs just aren't
+ * written this round and the stale-sweep leaves any pre-existing ACEs
+ * alone (their `synced_at` hasn't been bumped but hasn't been aged out
+ * either — they stay authoritative until a later successful sync rewrites
+ * them). Non-ConfluenceError exceptions propagate; they indicate a bug or
+ * DB outage the caller must see.
+ */
+async function syncPageRestrictions(
+  client: ConfluenceClient,
+  page: ConfluencePage,
+  syncRunStartedAt: Date,
+  ancestorCache: Map<string, ConfluenceRestriction[]>,
+): Promise<void> {
+  if (!isFeatureEnabled(ENTERPRISE_FEATURES.RAG_PERMISSION_ENFORCEMENT)) {
+    return;
+  }
+
+  // Resolve the INTEGER `pages.id` for this Confluence page. The INSERT/
+  // UPDATE paths in `syncPage` run before this call so the row is
+  // guaranteed to exist. A missing row means the INSERT silently failed
+  // upstream — log and bail rather than plough on with a bogus resource_id.
+  const pageRow = await query<{ id: number }>(
+    `SELECT id FROM pages WHERE confluence_id = $1`,
+    [page.id],
+  );
+  if (pageRow.rows.length === 0) {
+    logger.warn(
+      { confluenceId: page.id },
+      'Page restriction sync: pages row not found after upsert — skipping',
+    );
+    return;
+  }
+  const pageDbId = pageRow.rows[0]!.id;
+
+  let effective: Awaited<ReturnType<typeof computeEffectivePageReadRestrictions>>;
+  try {
+    effective = await computeEffectivePageReadRestrictions(page, client, ancestorCache);
+  } catch (err) {
+    if (err instanceof ConfluenceError) {
+      logger.warn(
+        {
+          err: err.message,
+          statusCode: err.statusCode,
+          confluenceId: page.id,
+          pageDbId,
+        },
+        'Failed to fetch Confluence restrictions for page — skipping this round; pre-existing ACEs untouched',
+      );
+      return;
+    }
+    throw err;
+  }
+
+  if (effective === null) {
+    // Page is effectively public: no own restriction, no ancestor
+    // restriction. Flip `inherit_perms` back to TRUE — `userCanAccessPage`
+    // will fall through to the space-level role check. No ACE writes; the
+    // end-of-run sweep cleans up any leftover rows from a prior sync.
+    await query(`UPDATE pages SET inherit_perms = TRUE WHERE id = $1`, [pageDbId]);
+    return;
+  }
+
+  // Resolve principals → compendiq IDs. Unmapped = skip with audit; do NOT
+  // write an ACE for a userKey/username that doesn't correspond to a
+  // Compendiq user. Doing so would either fail the FK check or — worse —
+  // silently grant access to nobody (UUID mismatch).
+  const resolvedUsers: string[] = [];
+  for (const u of effective.users) {
+    const uid = await resolveConfluenceUser(u.userKey, u.username);
+    if (uid === null) {
+      await logAuditEvent(null, 'ACE_SYNC_SKIPPED_UNMAPPED_USER', 'page', String(pageDbId), {
+        userKey: u.userKey,
+        username: u.username,
+        pageId: pageDbId,
+        pageConfluenceId: page.id,
+      });
+      continue;
+    }
+    resolvedUsers.push(uid);
+  }
+
+  const resolvedGroups: number[] = [];
+  for (const g of effective.groups) {
+    const gid = await resolveConfluenceGroup(g.name);
+    if (gid === null) {
+      await logAuditEvent(null, 'ACE_SYNC_SKIPPED_UNMAPPED_USER', 'page', String(pageDbId), {
+        groupName: g.name,
+        pageId: pageDbId,
+        pageConfluenceId: page.id,
+      });
+      continue;
+    }
+    resolvedGroups.push(gid);
+  }
+
+  // Open a short transaction so a crash mid-resolve doesn't leave a
+  // half-written ACE set visible to the RAG post-filter. Both principal
+  // tables (users, groups) are read-only here; the only writes are against
+  // `access_control_entries` and `pages.inherit_perms`.
+  const pool = getPool();
+  const dbClient = await pool.connect();
+  try {
+    await dbClient.query('BEGIN');
+
+    for (const uid of resolvedUsers) {
+      await dbClient.query(
+        `INSERT INTO access_control_entries
+           (resource_type, resource_id, principal_type, principal_id,
+            permission, source, synced_at)
+         VALUES ('page', $1, 'user', $2, 'read', 'confluence', $3)
+         ON CONFLICT (resource_type, resource_id, principal_type,
+                      principal_id, permission)
+         DO UPDATE SET synced_at = EXCLUDED.synced_at,
+                       source = EXCLUDED.source`,
+        [pageDbId, uid, syncRunStartedAt],
+      );
+    }
+    for (const gid of resolvedGroups) {
+      await dbClient.query(
+        `INSERT INTO access_control_entries
+           (resource_type, resource_id, principal_type, principal_id,
+            permission, source, synced_at)
+         VALUES ('page', $1, 'group', $2, 'read', 'confluence', $3)
+         ON CONFLICT (resource_type, resource_id, principal_type,
+                      principal_id, permission)
+         DO UPDATE SET synced_at = EXCLUDED.synced_at,
+                       source = EXCLUDED.source`,
+        [pageDbId, String(gid), syncRunStartedAt],
+      );
+    }
+    await dbClient.query(
+      `UPDATE pages SET inherit_perms = FALSE WHERE id = $1`,
+      [pageDbId],
+    );
+    await dbClient.query('COMMIT');
+  } catch (err) {
+    await dbClient.query('ROLLBACK').catch(() => {
+      /* rollback failures are not actionable; original error already surfacing */
+    });
+    throw err;
+  } finally {
+    dbClient.release();
+  }
+
+  await logAuditEvent(null, 'ACE_SYNCED', 'page', String(pageDbId), {
+    pageId: pageDbId,
+    pageConfluenceId: page.id,
+    userCount: resolvedUsers.length,
+    groupCount: resolvedGroups.length,
+    inheritedFromAncestor: effective.inheritedFromAncestor,
+  });
+}
+
+/**
+ * Resolve a Confluence userKey/username pair to a Compendiq `users.id`.
+ *
+ * Compendiq has no dedicated `confluence_user_key` column; the closest
+ * invariant is `users.username`, which matches the Confluence username used
+ * for PAT issuance and — for OIDC-provisioned users — the OIDC `preferred_username`.
+ * Returns `null` when no user matches (callers skip + emit
+ * `ACE_SYNC_SKIPPED_UNMAPPED_USER`).
+ */
+async function resolveConfluenceUser(
+  _userKey: string,
+  username: string,
+): Promise<string | null> {
+  const res = await query<{ id: string }>(
+    `SELECT id FROM users WHERE username = $1`,
+    [username],
+  );
+  return res.rows[0]?.id ?? null;
+}
+
+/**
+ * Resolve a Confluence group name to a Compendiq `groups.id` (SERIAL). The
+ * `groups.name` column is UNIQUE. Returns `null` when no group matches.
+ */
+async function resolveConfluenceGroup(name: string): Promise<number | null> {
+  const res = await query<{ id: number }>(
+    `SELECT id FROM groups WHERE name = $1`,
+    [name],
+  );
+  return res.rows[0]?.id ?? null;
+}
+
+/**
+ * Delete Confluence-sourced ACEs that weren't refreshed by this sync run.
+ *
+ * "Page no longer restricted" AND "a specific principal was removed from a
+ * restriction list" collapse to the same condition: their ACE's `synced_at`
+ * stays behind `syncRunStartedAt` because nothing re-UPSERTed them. The
+ * partial index on `(source, synced_at) WHERE source = 'confluence'` keeps
+ * this scan O(stale rows) regardless of how many admin-authored ACEs
+ * exist. Runs once at the end of `syncUser`, outside any per-page
+ * transaction, so a partial sync doesn't wipe ACEs for pages we never got
+ * to.
+ */
+async function sweepStaleConfluenceAces(syncRunStartedAt: Date): Promise<void> {
+  const res = await query(
+    `DELETE FROM access_control_entries
+     WHERE resource_type = 'page'
+       AND source = 'confluence'
+       AND (synced_at IS NULL OR synced_at < $1)`,
+    [syncRunStartedAt],
+  );
+  if (res.rowCount && res.rowCount > 0) {
+    logger.info(
+      { deleted: res.rowCount, cutoff: syncRunStartedAt.toISOString() },
+      'Stale Confluence ACEs swept',
+    );
+  }
 }
 
 /**
@@ -712,3 +1084,17 @@ export async function bootstrapSsrfAllowlist(): Promise<void> {
     );
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+//  Test-only exports (EE #112 Phase C)
+// ─────────────────────────────────────────────────────────────────────────
+// These helpers stay private to the module for production callers — they
+// are only invoked indirectly via `syncUser`/`syncPage`. The integration
+// test file reaches into them directly so the test matrix (inheritance,
+// ancestor cache, stale sweep, unmapped principals) can exercise each
+// branch without spinning up an entire Confluence sync harness.
+export const __internal = {
+  syncPageRestrictions,
+  sweepStaleConfluenceAces,
+  computeEffectivePageReadRestrictions,
+};
