@@ -5,6 +5,21 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { UsersAdminPage } from './UsersAdminPage';
 import { useAuthStore } from '../../stores/auth-store';
 
+// EE #116 — bulk UI is feature-gated. The default implementation here
+// keeps `bulk_user_operations` off so the existing CE #304 tests
+// describe the unchanged single-user CRUD path. Each test that asserts
+// the bulk affordances flips the flag explicitly.
+let mockHasFeature: (f: string) => boolean = () => false;
+vi.mock('../../shared/enterprise/use-enterprise', () => ({
+  useEnterprise: () => ({
+    isEnterprise: false,
+    hasFeature: (f: string) => mockHasFeature(f),
+    ui: null,
+    license: null,
+    isLoading: false,
+  }),
+}));
+
 function createWrapper() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -47,6 +62,10 @@ const mockUsers = [
 
 describe('UsersAdminPage', () => {
   beforeEach(() => {
+    // Default: bulk feature OFF. Tests that need the bulk UI flip this
+    // before render.
+    mockHasFeature = () => false;
+
     // Pretend we're logged in as alice so self-actions are hidden.
     useAuthStore.setState({
       user: {
@@ -112,5 +131,63 @@ describe('UsersAdminPage', () => {
     // Cancel + Create submit buttons are rendered in the dialog
     expect(screen.getByText('Cancel')).toBeInTheDocument();
     expect(screen.getByText('Create', { selector: 'button[type="submit"]' })).toBeInTheDocument();
+  });
+
+  // ── EE #116 — bulk UI gating ───────────────────────────────────────────
+
+  it('does not show bulk import or select checkboxes when feature is off', async () => {
+    mockHasFeature = () => false;
+    render(<UsersAdminPage />, { wrapper: createWrapper() });
+    await waitFor(() => screen.getByText('alice'));
+
+    expect(
+      screen.queryByTestId('users-bulk-import-btn'),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId('users-select-all')).not.toBeInTheDocument();
+  });
+
+  it('shows bulk import button + select-all checkbox when feature is on', async () => {
+    mockHasFeature = (f: string) => f === 'bulk_user_operations';
+    render(<UsersAdminPage />, { wrapper: createWrapper() });
+    await waitFor(() => screen.getByText('alice'));
+
+    expect(screen.getByTestId('users-bulk-import-btn')).toBeInTheDocument();
+    expect(screen.getByTestId('users-select-all')).toBeInTheDocument();
+
+    // Bulk-actions button only appears once a row is selected
+    expect(
+      screen.queryByTestId('users-bulk-action-btn'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('reveals the Bulk actions button after selecting a row (feature on)', async () => {
+    mockHasFeature = (f: string) => f === 'bulk_user_operations';
+    render(<UsersAdminPage />, { wrapper: createWrapper() });
+    await waitFor(() => screen.getByText('alice'));
+
+    // Bob is the non-current user, so his checkbox is rendered.
+    const bobCheckbox = screen.getByTestId(
+      'users-select-bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb',
+    );
+    fireEvent.click(bobCheckbox);
+
+    expect(
+      screen.getByTestId('users-bulk-action-btn'),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('users-bulk-action-btn')).toHaveTextContent(
+      'Bulk actions (1)',
+    );
+  });
+
+  it('opens the bulk import modal when the Bulk import button is clicked', async () => {
+    mockHasFeature = (f: string) => f === 'bulk_user_operations';
+    render(<UsersAdminPage />, { wrapper: createWrapper() });
+    await waitFor(() => screen.getByText('alice'));
+
+    fireEvent.click(screen.getByTestId('users-bulk-import-btn'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('bulk-import-modal')).toBeInTheDocument();
+    });
   });
 });

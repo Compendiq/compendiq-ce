@@ -6,12 +6,15 @@
  * deactivate / reactivate, delete.
  */
 
-import { useState, type FormEvent } from 'react';
+import { useMemo, useState, type ChangeEvent, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { apiFetch } from '../../shared/lib/api';
 import type { AdminUser, AdminUserRole } from '@compendiq/contracts';
 import { useAuthStore } from '../../stores/auth-store';
+import { useEnterprise } from '../../shared/enterprise/use-enterprise';
+import { BulkUserImportModal } from './BulkUserImportModal';
+import { UserBulkActionDialog } from './UserBulkActionDialog';
 
 interface AdminUserListResponse {
   users: AdminUser[];
@@ -25,8 +28,17 @@ interface CreateUserResponse {
 export function UsersAdminPage() {
   const queryClient = useQueryClient();
   const currentUserId = useAuthStore((s) => s.user?.id);
+  const { hasFeature } = useEnterprise();
+  // EE #116: bulk import + multi-select bulk actions are gated by the
+  // `bulk_user_operations` feature flag. The whole UI degrades to the
+  // CE #304 single-user CRUD when the flag is off — no bulk button, no
+  // checkboxes, no behaviour change.
+  const bulkEnabled = hasFeature('bulk_user_operations');
   const [showCreate, setShowCreate] = useState(false);
   const [lastTempPassword, setLastTempPassword] = useState<{ username: string; password: string } | null>(null);
+  const [showBulkImport, setShowBulkImport] = useState(false);
+  const [showBulkAction, setShowBulkAction] = useState(false);
+  const [selectedUserIds, setSelectedUserIds] = useState<Set<string>>(new Set());
 
   const { data, isLoading } = useQuery<AdminUserListResponse>({
     queryKey: ['admin', 'users'],
@@ -94,6 +106,41 @@ export function UsersAdminPage() {
     onError: (err: Error) => toast.error(err.message),
   });
 
+  // Multi-select helpers (EE #116). Selection is keyed by user id so it
+  // survives a list refetch — re-pruning out stale ids is cheap.
+  // The current user is excluded from select-all so an admin can never
+  // accidentally bulk-deactivate themselves with a single header click.
+  const selectableIds = useMemo(
+    () =>
+      (data?.users ?? [])
+        .filter((u) => u.id !== currentUserId)
+        .map((u) => u.id),
+    [data?.users, currentUserId],
+  );
+  const allSelected =
+    selectableIds.length > 0 &&
+    selectableIds.every((id) => selectedUserIds.has(id));
+  const someSelected = selectedUserIds.size > 0;
+
+  const toggleSelect = (id: string) => {
+    setSelectedUserIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = (e: ChangeEvent<HTMLInputElement>) => {
+    if (e.target.checked) {
+      setSelectedUserIds(new Set(selectableIds));
+    } else {
+      setSelectedUserIds(new Set());
+    }
+  };
+
+  const clearSelection = () => setSelectedUserIds(new Set());
+
   return (
     <section className="space-y-6">
       <header className="flex items-start justify-between gap-4">
@@ -104,13 +151,35 @@ export function UsersAdminPage() {
             <a className="underline" href="/settings/security/rbac">RBAC</a>.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => setShowCreate(true)}
-          className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
-        >
-          Create user
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {bulkEnabled && someSelected && (
+            <button
+              type="button"
+              onClick={() => setShowBulkAction(true)}
+              className="rounded-md border border-border/60 px-4 py-2 text-sm font-medium hover:bg-foreground/5"
+              data-testid="users-bulk-action-btn"
+            >
+              Bulk actions ({selectedUserIds.size})
+            </button>
+          )}
+          {bulkEnabled && (
+            <button
+              type="button"
+              onClick={() => setShowBulkImport(true)}
+              className="rounded-md border border-border/60 px-4 py-2 text-sm font-medium hover:bg-foreground/5"
+              data-testid="users-bulk-import-btn"
+            >
+              Bulk import
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setShowCreate(true)}
+            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+          >
+            Create user
+          </button>
+        </div>
       </header>
 
       {lastTempPassword && (
@@ -139,6 +208,17 @@ export function UsersAdminPage() {
           <table className="w-full text-sm">
             <thead className="bg-muted/40 text-left text-xs uppercase tracking-wide">
               <tr>
+                {bulkEnabled && (
+                  <th className="w-10 p-3">
+                    <input
+                      type="checkbox"
+                      aria-label="Select all users"
+                      checked={allSelected}
+                      onChange={toggleSelectAll}
+                      data-testid="users-select-all"
+                    />
+                  </th>
+                )}
                 <th className="p-3">Username</th>
                 <th className="p-3">Email</th>
                 <th className="p-3">Role</th>
@@ -149,6 +229,19 @@ export function UsersAdminPage() {
             <tbody>
               {data.users.map((u) => (
                 <tr key={u.id} className="border-t">
+                  {bulkEnabled && (
+                    <td className="p-3">
+                      {u.id !== currentUserId && (
+                        <input
+                          type="checkbox"
+                          aria-label={`Select user ${u.username}`}
+                          checked={selectedUserIds.has(u.id)}
+                          onChange={() => toggleSelect(u.id)}
+                          data-testid={`users-select-${u.id}`}
+                        />
+                      )}
+                    </td>
+                  )}
                   <td className="p-3">
                     <div className="font-medium">{u.username}</div>
                     {u.displayName && <div className="text-xs text-muted-foreground">{u.displayName}</div>}
@@ -231,6 +324,27 @@ export function UsersAdminPage() {
           isSubmitting={createUser.isPending}
         />
       )}
+
+      {/* EE #116 — bulk import. Components self-gate on hasFeature so a
+          missing flag short-circuits to null even if `bulkEnabled` flips
+          stale between license refreshes. */}
+      <BulkUserImportModal
+        open={showBulkImport}
+        onClose={() => setShowBulkImport(false)}
+      />
+      <UserBulkActionDialog
+        open={showBulkAction}
+        onClose={() => {
+          setShowBulkAction(false);
+          // Selection is preserved if the dialog was cancelled, but
+          // cleared on a successful submit (the dialog handles the
+          // close + the queryInvalidate; the selection clear is local).
+          // We clear on close to keep the state simple — operators can
+          // re-select after seeing the refreshed list.
+          clearSelection();
+        }}
+        selectedUserIds={Array.from(selectedUserIds)}
+      />
     </section>
   );
 }
