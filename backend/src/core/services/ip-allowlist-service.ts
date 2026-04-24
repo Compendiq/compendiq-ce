@@ -157,6 +157,26 @@ export async function updateConfig(
 }
 
 /**
+ * Fresh DB read of the persisted config used by the admin REST routes
+ * (EE #111 Phase D). Unlike `isAllowed`/`isTrustedProxy`/`isExemptPath`,
+ * the admin GET/PUT/test endpoints are cold paths — they must return the
+ * authoritative persisted value regardless of whether
+ * `initIpAllowlistService` has run yet (Phase D lands the routes; the
+ * service init is wired in Phase E). Falls back to the default config if
+ * the row is absent or the DB call fails.
+ */
+export async function getPersistedConfig(): Promise<IpAllowlistConfig> {
+  try {
+    const r = await query<{ setting_value: string }>(
+      `SELECT setting_value FROM admin_settings WHERE setting_key = 'ip_allowlist'`,
+    );
+    return parseRawConfig(r.rows[0]?.setting_value ?? null);
+  } catch {
+    return DEFAULT_IP_ALLOWLIST_CONFIG;
+  }
+}
+
+/**
  * One-shot bootstrap read used by `app.ts` at Fastify construction to pick
  * the initial `trustProxy` CIDRs. Runs BEFORE the cache-bus is up and
  * BEFORE `initIpAllowlistService`; must never throw (startup must not fail
