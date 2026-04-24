@@ -86,6 +86,15 @@ export function usePresence(pageId: string | null | undefined): {
           },
           signal: abort.signal,
         });
+        if (res.status === 401 || res.status === 403) {
+          // Session is broken — retrying won't help. Park until unmount.
+          cancelled = true;
+          if (heartbeatTimer) {
+            clearInterval(heartbeatTimer);
+            heartbeatTimer = null;
+          }
+          return;
+        }
         if (!res.ok || !res.body) {
           throw new Error(`Presence stream failed: ${res.status}`);
         }

@@ -180,6 +180,51 @@ describe('usePresence', () => {
     unmount();
   });
 
+  it('does not reconnect after a 401 from the SSE endpoint', async () => {
+    let sseOpens = 0;
+    let heartbeats = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+      const urlStr = typeof url === 'string' ? url : (url as URL).toString();
+      if (init?.method === 'POST' && urlStr.includes('/heartbeat')) {
+        heartbeats += 1;
+        return new Response(null, { status: 204 });
+      }
+      if (init?.method === 'DELETE') return new Response(null, { status: 204 });
+      sseOpens += 1;
+      return new Response(null, { status: 401 });
+    });
+
+    const { unmount } = renderHook(() => usePresence('page-1'));
+    await waitFor(() => expect(sseOpens).toBe(1));
+
+    // Advance past the full 30s backoff cap — no reconnect should be scheduled.
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(sseOpens).toBe(1);
+    // Heartbeat interval should not fire either (auth is busted, no point spamming).
+    expect(heartbeats).toBe(0);
+
+    unmount();
+  });
+
+  it('does not reconnect after a 403 from the SSE endpoint', async () => {
+    let sseOpens = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+      const urlStr = typeof url === 'string' ? url : (url as URL).toString();
+      if (init?.method === 'POST' && urlStr.includes('/heartbeat')) return new Response(null, { status: 204 });
+      if (init?.method === 'DELETE') return new Response(null, { status: 204 });
+      sseOpens += 1;
+      return new Response(null, { status: 403 });
+    });
+
+    const { unmount } = renderHook(() => usePresence('page-1'));
+    await waitFor(() => expect(sseOpens).toBe(1));
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(sseOpens).toBe(1);
+
+    unmount();
+  });
+
   it('does not open a stream when pageId is null', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 204 }));
     const { result } = renderHook(() => usePresence(null));
