@@ -265,6 +265,63 @@ Compendiq supports both dark and light themes:
 - Toggle manually via the theme switch in the user menu.
 - The glassmorphic UI design works well in both modes.
 
+## Webhook Integrations (Enterprise)
+
+Enterprise administrators can configure outbound webhooks so external systems receive a signed HTTP POST whenever specific events happen in Compendiq (page created / updated / deleted, sync completed, AI quality / summary complete). Configuration lives at **Settings → Webhooks**.
+
+### Event catalogue (v0.4)
+
+| Event type | Fires when |
+|------------|-----------|
+| `page.created` | A new page is created (local or synced) |
+| `page.updated` | A page body or metadata changes |
+| `page.deleted` | A page is deleted (soft or hard) |
+| `sync.completed` | A Confluence sync run finishes |
+| `ai.quality.complete` | The AI quality worker finishes a page |
+| `ai.summary.complete` | The AI summary worker finishes a page |
+
+### Signing verification (receiver-side)
+
+Deliveries follow the [Standard Webhooks](https://www.standardwebhooks.com) specification. Each request carries three headers:
+
+```
+webhook-id:        <uuid, stable across retries — use as your dedup key>
+webhook-timestamp: <unix seconds>
+webhook-signature: v1,<base64 HMAC-SHA256>
+```
+
+Verify with the Standard Webhooks library for your language (example: Node.js):
+
+```js
+import { Webhook } from 'standardwebhooks';
+
+const wh = new Webhook(secret, { format: 'raw' }); // plaintext secret, not base64
+
+app.post('/webhook', (req, res) => {
+  try {
+    wh.verify(req.rawBody, {
+      'webhook-id':        req.headers['webhook-id'],
+      'webhook-timestamp': req.headers['webhook-timestamp'],
+      'webhook-signature': req.headers['webhook-signature'],
+    });
+  } catch (err) {
+    return res.status(401).send('invalid signature');
+  }
+  // ...handle the event (idempotent — use webhook-id as dedup key)
+  res.status(204).end();
+});
+```
+
+The receiver MUST:
+- Verify the signature on every request.
+- Check `webhook-timestamp` is within your tolerance window (we recommend 5 minutes) to reject replay.
+- Use `webhook-id` as an **idempotency key** — Compendiq retries on transient failures, and the same `webhook-id` may arrive more than once.
+- Return `2xx` within 10 seconds. Non-2xx responses are retried up to 8 times with exponential backoff (5 s → 5 h); `408` and `429` are retried, other `4xx` are treated as permanent failures.
+
+### Secret rotation
+
+Under **Settings → Webhooks**, click **Rotate secret** to stage a new primary while keeping the old one as a secondary signer for a grace window. Receivers should accept *either* signature during the window. When all receivers are updated, click **Complete rotation** (or let the window expire) to drop the old secret.
+
 ## Tips
 
 - Use the **Command Palette** (`Ctrl+K`) for quick navigation to any page, space, or action.
