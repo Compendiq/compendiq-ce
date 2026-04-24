@@ -40,6 +40,7 @@ export const ENTERPRISE_FEATURES = {
   UNLIMITED_SPACES: 'unlimited_spaces',
   MULTI_INSTANCE: 'multi_instance',
   BULK_USER_OPERATIONS: 'bulk_user_operations',
+  SYNC_CONFLICT_RESOLUTION: 'sync_conflict_resolution',
   BATCH_PAGE_OPERATIONS: 'batch_page_operations',
 
   // ── Integrations ──
