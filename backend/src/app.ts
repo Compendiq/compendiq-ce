@@ -70,6 +70,7 @@ import { loadEnterprisePlugin } from './core/enterprise/loader.js';
 import { bootstrapLlmProviders } from './domains/llm/services/llm-provider-bootstrap.js';
 import { bootstrapSsrfAllowlist } from './domains/confluence/services/sync-service.js';
 import { initSsrfAllowlistBus } from './core/services/ssrf-allowlist-bus.js';
+import { initCacheBus, close as closeCacheBus } from './core/services/redis-cache-bus.js';
 
 export async function buildApp() {
   const app = Fastify({
@@ -160,6 +161,15 @@ export async function buildApp() {
   const teardownSsrfBus = await initSsrfAllowlistBus(app.redis);
   app.addHook('onClose', async () => {
     await teardownSsrfBus();
+  });
+
+  // ── Generic cache-bus (v0.4 epic §3.1) ───────────────────────────
+  // Cluster-wide invalidation channel used by cached admin_settings
+  // (see makeCachedSetting) and future hot-reload consumers. Fails soft
+  // into single-pod mode if Redis is unreachable.
+  await initCacheBus(app.redis);
+  app.addHook('onClose', async () => {
+    await closeCacheBus();
   });
 
   // ── LLM Provider Bootstrap ───────────────────────────────────────
