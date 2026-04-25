@@ -15,6 +15,10 @@ const validReadPayload = {
   drawioEmbedUrl: null,
   reembedHistoryRetention: 150,
   adminAccessDeniedRetentionDays: 90,
+  // Compendiq/compendiq-ee#113 Phase B-3 — required on read so a GET response
+  // can never silently drop the cluster-wide LLM queue settings.
+  llmConcurrency: 4,
+  llmMaxQueueDepth: 50,
 } as const;
 
 describe('AdminSettingsSchema (read)', () => {
@@ -211,6 +215,129 @@ describe('adminAccessDeniedRetentionDays (issue #264)', () => {
       expect(() =>
         UpdateAdminSettingsSchema.parse({ adminAccessDeniedRetentionDays: 30.5 }),
       ).toThrow();
+    });
+  });
+});
+
+// ─── #113 Phase B-3 — llmConcurrency / llmMaxQueueDepth validation ─────────
+describe('llmConcurrency (Compendiq/compendiq-ee#113 Phase B-3)', () => {
+  describe('read schema', () => {
+    it('accepts a valid integer within [1, 100]', () => {
+      const parsed = AdminSettingsSchema.parse({
+        ...validReadPayload,
+        llmConcurrency: 7,
+      });
+      expect(parsed.llmConcurrency).toBe(7);
+    });
+
+    it('accepts boundary values — 1 and 100', () => {
+      expect(
+        AdminSettingsSchema.parse({ ...validReadPayload, llmConcurrency: 1 }).llmConcurrency,
+      ).toBe(1);
+      expect(
+        AdminSettingsSchema.parse({ ...validReadPayload, llmConcurrency: 100 }).llmConcurrency,
+      ).toBe(100);
+    });
+
+    it('rejects 0 (would deadlock pLimit)', () => {
+      expect(() =>
+        AdminSettingsSchema.parse({ ...validReadPayload, llmConcurrency: 0 }),
+      ).toThrow();
+    });
+
+    it('rejects values above 100', () => {
+      expect(() =>
+        AdminSettingsSchema.parse({ ...validReadPayload, llmConcurrency: 101 }),
+      ).toThrow();
+    });
+
+    it('rejects non-integer values', () => {
+      expect(() =>
+        AdminSettingsSchema.parse({ ...validReadPayload, llmConcurrency: 4.5 }),
+      ).toThrow();
+    });
+
+    it('requires the field on read', () => {
+      const { llmConcurrency: _c, ...without } = validReadPayload;
+      expect(() => AdminSettingsSchema.parse(without)).toThrow();
+    });
+  });
+
+  describe('update schema', () => {
+    it('accepts a valid integer within [1, 100]', () => {
+      const parsed = UpdateAdminSettingsSchema.parse({ llmConcurrency: 10 });
+      expect(parsed.llmConcurrency).toBe(10);
+    });
+
+    it('treats omitted field as undefined (leave unchanged)', () => {
+      const parsed = UpdateAdminSettingsSchema.parse({});
+      expect(parsed.llmConcurrency).toBeUndefined();
+    });
+
+    it('rejects 0', () => {
+      expect(() => UpdateAdminSettingsSchema.parse({ llmConcurrency: 0 })).toThrow();
+    });
+
+    it('rejects values above 100', () => {
+      expect(() => UpdateAdminSettingsSchema.parse({ llmConcurrency: 101 })).toThrow();
+    });
+  });
+});
+
+describe('llmMaxQueueDepth (Compendiq/compendiq-ee#113 Phase B-3)', () => {
+  describe('read schema', () => {
+    it('accepts a valid integer within [1, 1000]', () => {
+      const parsed = AdminSettingsSchema.parse({
+        ...validReadPayload,
+        llmMaxQueueDepth: 200,
+      });
+      expect(parsed.llmMaxQueueDepth).toBe(200);
+    });
+
+    it('accepts boundary values — 1 and 1000', () => {
+      expect(
+        AdminSettingsSchema.parse({ ...validReadPayload, llmMaxQueueDepth: 1 }).llmMaxQueueDepth,
+      ).toBe(1);
+      expect(
+        AdminSettingsSchema.parse({ ...validReadPayload, llmMaxQueueDepth: 1000 }).llmMaxQueueDepth,
+      ).toBe(1000);
+    });
+
+    it('rejects 0', () => {
+      expect(() =>
+        AdminSettingsSchema.parse({ ...validReadPayload, llmMaxQueueDepth: 0 }),
+      ).toThrow();
+    });
+
+    it('rejects values above 1000', () => {
+      expect(() =>
+        AdminSettingsSchema.parse({ ...validReadPayload, llmMaxQueueDepth: 1001 }),
+      ).toThrow();
+    });
+
+    it('requires the field on read', () => {
+      const { llmMaxQueueDepth: _d, ...without } = validReadPayload;
+      expect(() => AdminSettingsSchema.parse(without)).toThrow();
+    });
+  });
+
+  describe('update schema', () => {
+    it('accepts a valid integer within [1, 1000]', () => {
+      const parsed = UpdateAdminSettingsSchema.parse({ llmMaxQueueDepth: 75 });
+      expect(parsed.llmMaxQueueDepth).toBe(75);
+    });
+
+    it('treats omitted field as undefined (leave unchanged)', () => {
+      const parsed = UpdateAdminSettingsSchema.parse({});
+      expect(parsed.llmMaxQueueDepth).toBeUndefined();
+    });
+
+    it('rejects 0', () => {
+      expect(() => UpdateAdminSettingsSchema.parse({ llmMaxQueueDepth: 0 })).toThrow();
+    });
+
+    it('rejects values above 1000', () => {
+      expect(() => UpdateAdminSettingsSchema.parse({ llmMaxQueueDepth: 1001 })).toThrow();
     });
   });
 });

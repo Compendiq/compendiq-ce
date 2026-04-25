@@ -9,7 +9,13 @@ import { UpdateAdminSettingsSchema } from '@compendiq/contracts';
 import {
   getEmbeddingDimensions,
   getAdminAccessDeniedRetentionDays,
+  getLlmConcurrency,
+  getLlmMaxQueueDepth,
 } from '../../core/services/admin-settings-service.js';
+import {
+  setLlmConcurrencyClusterWide,
+  setLlmMaxQueueDepthClusterWide,
+} from '../../domains/llm/services/llm-queue.js';
 import { getAiGuardrails, getAiOutputRules, upsertAiGuardrails, upsertAiOutputRules } from '../../core/services/ai-safety-service.js';
 import { getRateLimits, upsertRateLimits } from '../../core/services/rate-limit-service.js';
 import { getStreamCap, invalidateStreamCapCache } from '../../core/services/sse-stream-limiter.js';
@@ -280,6 +286,13 @@ export async function adminRoutes(fastify: FastifyInstance) {
       rateLimitLlmEmbedding: rateLimits.llmEmbedding.max,
       // Per-user concurrent SSE-stream cap (#268)
       llmMaxConcurrentStreamsPerUser,
+      // Compendiq/compendiq-ee#113 Phase B-3 — cluster-wide LLM queue settings.
+      // Read via the cached getters so the response reflects the same value
+      // every pod's `_limiter` is using (or will be using within ~1s of any
+      // PUT). Both fall back to env / hardcoded defaults when the
+      // admin_settings row is absent.
+      llmConcurrency: getLlmConcurrency(),
+      llmMaxQueueDepth: getLlmMaxQueueDepth(),
     };
   });
 
@@ -393,6 +406,24 @@ export async function adminRoutes(fastify: FastifyInstance) {
          ON CONFLICT (setting_key) DO UPDATE SET setting_value = $2, updated_at = NOW()`,
         [key, value],
       );
+    }
+
+    // ─── #113 Phase B-3 — cluster-wide LLM queue settings ─────────────────
+    // These do NOT go through the `updates` UPSERT loop above — the
+    // dedicated setters in `llm-queue.ts` UPSERT the row AND publish on
+    // the `admin:llm:settings` cache-bus channel so every other pod
+    // re-reads + swaps its `pLimit` limiter. The local pod's limiter is
+    // also swapped via the same subscriber path; the route handler does
+    // NOT call `setConcurrency()` directly.
+    //
+    // Zod has already validated the ranges ([1, 100] and [1, 1000]); the
+    // setters defensively clamp again to keep the queue safe even if a
+    // future caller bypasses Zod.
+    if (body.llmConcurrency !== undefined) {
+      await setLlmConcurrencyClusterWide(body.llmConcurrency);
+    }
+    if (body.llmMaxQueueDepth !== undefined) {
+      await setLlmMaxQueueDepthClusterWide(body.llmMaxQueueDepth);
     }
 
     // Invalidate the SSE-stream cap cache in-process so the new value takes
