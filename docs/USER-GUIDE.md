@@ -205,6 +205,16 @@ A rejection is final for that particular review row, but the author is free to r
 
 Pending reviews that nobody acts on are auto-expired after the policy's configured window (default 30 days). The author is notified; the proposed content is discarded — there is **no implicit auto-approval**. This protects against stale AI output sneaking onto a page weeks after the human context that produced it.
 
+## PII Protection (Enterprise)
+
+When your administrator has enabled PII detection, AI output (Chat, Improve, Generate, Summary, Auto-tag) is scanned for personally identifiable information before it reaches you. Depending on the per-action policy your admin configured, you may notice one of three things:
+
+- **Flag only** (the default) — output looks unchanged, but findings are recorded in the audit log so admins can review patterns over time.
+- **Redact & publish** — sensitive spans are replaced with `[REDACTED:CATEGORY]` placeholders in the output you see (e.g. `[REDACTED:EMAIL_ADDRESS]`). The original AI text is not stored.
+- **Block publication** — the AI request fails with a notice that PII was detected. The proposed output is queued for admin review (see *AI Output Review* above) rather than applied directly.
+
+The scanner detects person names, locations, organisations, email addresses, phone numbers, IBANs, credit-card numbers, German tax IDs, German Rentenversicherungsnummer, and German Personalausweis numbers. If you believe a redaction was a false positive, ask an admin to lower the confidence threshold or remove the affected category from the policy.
+
 ## Search
 
 Compendiq supports three search modes:

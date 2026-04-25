@@ -444,6 +444,49 @@ Six new event types under the existing closed `AuditAction` union — query them
 
 In CE-only deployments the routes 404 — the overlay isn't loaded, so there's nothing to enqueue against. The CE `enqueueAiReview` hook returns `{ mode: 'auto-publish' }` and the AI surfaces fall through to their legacy direct-write behaviour. The admin tab surfaces a non-fatal "EE only" notice rather than crashing.
 
+### PII Detection (Enterprise, v0.4+)
+
+When the PII detector is licensed and enabled, every AI inference response is scanned for personally identifiable information before it reaches the end user. Three layers run on every inference: regex (German + generic checksum-validated rules — IBAN, credit card, DE Tax ID, DE Personalausweis, DE RVNR), Transformers.js NER (`Davlan/distilbert-base-multilingual-cased-ner-hrl`, q8 ONNX, CPU-only, multilingual — covers PERSON / LOCATION / ORGANIZATION), and an optional asynchronous LLM-as-judge for ambiguous spans. Configure the policy at **Settings → AI → PII detection**.
+
+**Per-use-case actions**
+
+The five inference call sites (`chat`, `improve`, `summary`, `generate`, `auto_tag`) each carry an independent action mode so you can be strict on Improve / Generate while staying lightweight on Auto-tag:
+
+| Mode | Behaviour | When to use |
+|------|-----------|-------------|
+| `off` | Skip the scanner entirely. Output passes through with no findings recorded. | Auto-tag and other low-risk surfaces where the cost of every-call scanning isn't worth the false-positive noise. |
+| `flag-only` | Run the scanner and persist findings, but pass content through unmodified. Findings appear in the LLM Audit page. | The default — gives you the audit trail without ever altering AI output. |
+| `redact-and-publish` | Splice detected spans out of the output and replace each with `[REDACTED:CATEGORY]`. End users see the redacted version; findings persist for audit. | Customer-facing actions where leaks must be prevented but human review would be too slow. |
+| `block-publication` | Reject the inference response with a 409 when findings are present. Integrates with the AI review queue (#120) — blocked outputs surface there for human review before reaching the page. | High-stakes, regulated content. Pair with the `review-required-with-blocking-pii` AI review policy mode. |
+
+**Confidence threshold**
+
+NER findings below the configured threshold (0..1, default 0.7) are dropped before policy actions apply. Higher = fewer false positives, more false negatives. Regex findings always emit `confidence: 1.0` and are unaffected.
+
+**Asynchronous LLM-as-judge**
+
+The optional second pass calls the configured LLM through the chosen `LlmUsecase` (defaults to `quality` — typically the cheap classification model). It runs on a low-priority BullMQ queue so it never blocks the user's request; findings are merged into the audit entry on completion. Three modes: `off` (default), `flagged-only` (only when regex+NER produced findings — minimises cost), `always` (every scan).
+
+**Categories to flag**
+
+Closed union of categories the scanner can emit. Uncheck a category to drop its findings before any action runs (regex still matches; the result is just discarded). Adding a new category requires extending the `PII_CATEGORIES` union in `@compendiq/contracts/src/schemas/pii-policy.ts`.
+
+**Cluster-wide hot reload**
+
+Saves publish on the new `pii:policy:changed` cache-bus channel; other pods invalidate their cached policy view within ~1 s. No restart required.
+
+**Audit trail**
+
+Every PUT emits `PII_POLICY_CHANGED` with the previous and next policy in metadata. Per-finding `PII_DETECTED` events are emitted by the inference call sites and queryable via the standard audit-log filters.
+
+**Air-gapped deployments**
+
+The EE Docker image bundles the NER model (`/app/.cache/huggingface`, ~67 MB) at build time so the runtime never reaches `huggingface.co`. Set `PII_SCANNER_NO_REMOTE=1` to fail loud if the bundle is missing rather than silently re-downloading. Honours `TRANSFORMERS_CACHE_DIR` / `HF_HOME` for operators relocating the bundle.
+
+**CE-only deployments**
+
+In CE-only deployments the `GET`/`PUT /api/admin/pii-policy` routes 404 — the EE overlay isn't loaded. The admin tab surfaces a non-fatal "API not registered yet" notice rather than crashing, mirroring the IP allowlist / webhooks / AI review tabs.
+
 ### Monitoring (OpenTelemetry)
 
 | Variable | Default | Description |
