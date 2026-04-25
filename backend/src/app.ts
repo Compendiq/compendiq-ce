@@ -81,6 +81,8 @@ import {
 } from './core/services/ip-allowlist-service.js';
 import ipAllowlistHook from './core/plugins/ip-allowlist-hook.js';
 import { initSyncConflictPolicyService } from './core/services/sync-conflict-policy-service.js';
+import { initLlmQueueSettings } from './core/services/admin-settings-service.js';
+import { initLlmQueueClusterCoordination } from './domains/llm/services/llm-queue.js';
 import { ENTERPRISE_FEATURES } from './core/enterprise/features.js';
 
 export async function buildApp() {
@@ -233,6 +235,16 @@ export async function buildApp() {
   // CE pods receive the invalidation and re-read just like any other
   // pod. The cold-load happens here before sync workers can run.
   await initSyncConflictPolicyService();
+
+  // LLM queue cluster-wide settings (Compendiq/compendiq-ee#113 Phase B-3).
+  // Cold-loads `llm_concurrency` + `llm_max_queue_depth` from admin_settings
+  // and subscribes to the `admin:llm:settings` cache-bus channel. Then
+  // primes the queue's `_limiter` from those cached values + wires the
+  // module-level subscriber that swaps `_limiter` on every PUT from any
+  // pod. Must run AFTER initCacheBus and BEFORE the queue starts handling
+  // traffic.
+  await initLlmQueueSettings();
+  initLlmQueueClusterCoordination();
 
   // ── LLM Provider Bootstrap ───────────────────────────────────────
   // Seed llm_providers from env on fresh installs, rewrite the Ollama
