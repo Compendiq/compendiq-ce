@@ -14,6 +14,7 @@ import { processDirtyPages } from '../../llm/services/embedding-service.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { logAuditEvent } from '../../../core/services/audit-service.js';
 import { emitWebhookEvent } from '../../../core/services/webhook-emit-hook.js';
+import { getSyncConflictPolicy } from '../../../core/services/sync-conflict-policy-service.js';
 import { decryptPat } from '../../../core/utils/crypto.js';
 import { addAllowedBaseUrlSilent } from '../../../core/utils/ssrf-guard.js';
 import { logger } from '../../../core/utils/logger.js';
@@ -136,6 +137,14 @@ export async function syncUser(userId: string): Promise<void> {
   const syncRunStartedAt = new Date();
   const ancestorCache = new Map<string, ConfluenceRestriction[]>();
 
+  // Sync run id (Compendiq/compendiq-ee#118). Stamped onto every
+  // `pending_sync_versions` row inserted during this run so the conflict-
+  // resolution UI / retention sweep can group rows by run ("the 12
+  // conflicts detected during yesterday's 14:00 sync"). One UUID per
+  // syncUser invocation across all spaces — a sync run is logically the
+  // user's invocation, not the per-space loop.
+  const syncRunId = randomUUID();
+
   try {
     // Fetch all spaces once to avoid redundant API calls per space
     const allSpaces = await client.getAllSpaces();
@@ -149,6 +158,7 @@ export async function syncUser(userId: string): Promise<void> {
         spacesByKey.get(spaceKey),
         syncRunStartedAt,
         ancestorCache,
+        syncRunId,
       );
     }
 
@@ -215,6 +225,7 @@ async function syncSpace(
   space: ConfluenceSpace | undefined,
   syncRunStartedAt: Date,
   ancestorCache: Map<string, ConfluenceRestriction[]>,
+  syncRunId: string,
 ): Promise<void> {
   const spaceStartedAt = Date.now();
   const counts: SyncSpaceCounts = { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 };
@@ -261,7 +272,7 @@ async function syncSpace(
     });
 
     const page = pages[i]!;
-    await syncPage(client, userId, spaceKey, page, syncRunStartedAt, ancestorCache, counts);
+    await syncPage(client, userId, spaceKey, page, syncRunStartedAt, ancestorCache, counts, syncRunId);
   }
 
   // During incremental sync, also check for pages with missing attachments
@@ -309,6 +320,7 @@ async function syncPage(
   syncRunStartedAt: Date,
   ancestorCache: Map<string, ConfluenceRestriction[]>,
   counts: SyncSpaceCounts,
+  syncRunId: string,
 ): Promise<void> {
   // Fetch full page content
   const page = await client.getPage(pageSummary.id);
@@ -324,14 +336,49 @@ async function syncPage(
   const author = page.version?.by?.displayName ?? null;
   const lastModified = page.version?.when ? new Date(page.version.when) : new Date();
 
-  // Check if page exists and has changed (shared table, no user_id)
-  const existing = await query<{ version: number; title: string; body_html: string; body_text: string }>(
-    'SELECT version, title, body_html, body_text FROM pages WHERE confluence_id = $1',
+  // Check if page exists and has changed (shared table, no user_id).
+  //
+  // SELECT-list extended (Compendiq/compendiq-ee#118) to also fetch
+  // `local_modified_at` (CE #305) + `last_synced` so the conflict-detection
+  // branch below can decide whether a Confluence version delta is actually
+  // a conflict (local edits exist) or a routine inbound update (no local
+  // edits, just a remote change to apply).
+  //
+  // Lost-update fix (Compendiq/compendiq-ee#118 reviewer finding): the
+  // SELECT used to be a bare read; a second concurrent `syncPage` call on
+  // the same Confluence page (e.g. two pods running the sync scheduler at
+  // the same time for users with overlapping spaces, or a manual sync
+  // racing the scheduler) could each read the same `version` /
+  // `local_modified_at`, each decide independently to apply the
+  // policy-driven UPDATE, and clobber each other's writes. We close the
+  // race by reading the row with a row-level lock inside a transaction:
+  // the second concurrent caller blocks on `FOR UPDATE` until the first
+  // commits — its subsequent SELECT then sees the post-write state
+  // (incremented version, cleared `local_modified_at`) and either
+  // short-circuits the htmlChanged comparison or queues a fresh
+  // pending_sync_versions row reflecting the post-merge truth.
+  //
+  // The full htmlChanged-path UPDATE / pending-version INSERT runs inside
+  // this transaction. Subsequent post-commit work (attachment download,
+  // restriction sync) runs unlocked — those are HTTP calls and we don't
+  // want to hold the row lock for the duration.
+  const existing = await query<{
+    version: number;
+    title: string;
+    body_html: string;
+    body_text: string;
+    local_modified_at: Date | null;
+    last_synced: Date | null;
+  }>(
+    `SELECT version, title, body_html, body_text, local_modified_at, last_synced
+       FROM pages
+      WHERE confluence_id = $1`,
     [page.id],
   );
 
   if (existing.rows.length > 0 && existing.rows[0]!.version >= page.version.number) {
-    const htmlChanged = existing.rows[0]!.body_html !== bodyHtml || existing.rows[0]!.body_text !== bodyText;
+    const existingRow = existing.rows[0]!;
+    const htmlChanged = existingRow.body_html !== bodyHtml || existingRow.body_text !== bodyText;
 
     // Page content hasn't changed, but check if all expected attachments are cached.
     // Previous syncs may have failed to download some/all attachments (transient errors).
@@ -389,37 +436,20 @@ async function syncPage(
     }
 
     if (htmlChanged) {
-      await query(
-        `UPDATE pages
-         SET title = $2,
-             body_storage = $3,
-             body_html = $4,
-             body_text = $5,
-             parent_id = $6,
-             labels = $7,
-             author = $8,
-             last_modified_at = $9,
-             last_synced = NOW(),
-             embedding_dirty = CASE
-               WHEN body_text IS DISTINCT FROM $5 THEN TRUE
-               ELSE embedding_dirty
-             END,
-             summary_status = CASE
-               WHEN body_text IS DISTINCT FROM $5 THEN 'pending'
-               ELSE summary_status
-             END,
-             -- Clear local-edit markers (#305): the page is now back in
-             -- sync with the upstream Confluence version. The BEFORE
-             -- UPDATE trigger on pages only stamps when the caller leaves
-             -- local_modified_by non-null or local_modified_at unchanged;
-             -- setting both to NULL here suppresses the stamp.
-             local_modified_at = NULL,
-             local_modified_by = NULL,
-             deleted_at = NULL
-         WHERE confluence_id = $1`,
-        [page.id, page.title, bodyStorage, bodyHtml, bodyText, parentId, labels, author, lastModified],
-      );
-      counts.pagesUpdated++;
+      await applyConflictPolicyForExistingPage({
+        confluenceId: page.id,
+        confluenceVersion: page.version.number,
+        pageDbTitle: page.title,
+        bodyStorage,
+        bodyHtml,
+        bodyText,
+        parentId,
+        labels,
+        author,
+        lastModified,
+        syncRunId,
+        counts,
+      });
     }
 
     // Version-unchanged branch: still re-evaluate restrictions. See note at
@@ -495,6 +525,264 @@ async function syncPage(
   // key on `resource_id` points at that SERIAL). No-op when the
   // `RAG_PERMISSION_ENFORCEMENT` feature flag is off.
   await syncPageRestrictions(client, page, syncRunStartedAt, ancestorCache);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+//  Conflict-detection branch (Compendiq/compendiq-ee#118)
+// ─────────────────────────────────────────────────────────────────────────
+
+interface ApplyConflictPolicyArgs {
+  confluenceId: string;
+  /** Incoming Confluence version (`page.version.number`) — recorded on
+   *  the queued pending-version row so the resolution UI knows which
+   *  upstream version the stashed content reflects. */
+  confluenceVersion: number;
+  pageDbTitle: string;
+  bodyStorage: string;
+  bodyHtml: string;
+  bodyText: string;
+  parentId: string | null;
+  labels: string[];
+  author: string | null;
+  lastModified: Date;
+  syncRunId: string;
+  counts: SyncSpaceCounts;
+}
+
+/**
+ * Apply the active sync-conflict policy to a single page where the
+ * Confluence-side body has diverged from the local body.
+ *
+ * Runs inside a single transaction with `SELECT … FOR UPDATE` on the
+ * target page row, which closes the lost-update race the EE #118 reviewer
+ * flagged: two concurrent `syncPage` calls on the same page would
+ * otherwise both read the same `local_modified_at` snapshot, both decide
+ * (independently) to overwrite the local row, and the second commit
+ * silently clobbers the first (or vice-versa). With `FOR UPDATE`, the
+ * second caller blocks until the first commits and then sees the
+ * post-write state — its conflict check now reflects the resolved row
+ * and either short-circuits (htmlChanged false post-write) or queues a
+ * fresh pending_sync_versions row reflecting the new truth.
+ *
+ * Three policy branches:
+ *   - 'confluence-wins' (default): apply the incoming Confluence content
+ *     to the live row, exactly as before #118. If `local_modified_at >
+ *     last_synced` we additionally emit `SYNC_OVERWROTE_LOCAL_EDITS` so
+ *     the audit trail records that we discarded an unpublished local
+ *     edit. No event when there were no local edits — that path is
+ *     simply "routine inbound sync."
+ *   - 'compendiq-wins': skip the inbound write, leaving the local row
+ *     intact. If `local_modified_at > last_synced` we emit
+ *     `SYNC_CONFLICT_DETECTED` with `{ resolution: 'kept_local' }`. If
+ *     there were no local edits we transparently fall through to
+ *     confluence-wins behaviour — there's nothing local to preserve, so
+ *     the incoming change should land.
+ *   - 'manual-review': only kicks in when `local_modified_at >
+ *     last_synced`. Inserts the full incoming Confluence content into
+ *     `pending_sync_versions`, flips `pages.conflict_pending = TRUE`,
+ *     stamps `pages.conflict_detected_at = NOW()`, and emits
+ *     `SYNC_CONFLICT_DETECTED`. The live row stays unchanged. When there
+ *     are no local edits we again fall through to confluence-wins so the
+ *     queue isn't padded with non-conflicts.
+ *
+ * Test coverage lives in `sync-service-conflicts.integration.test.ts`.
+ */
+async function applyConflictPolicyForExistingPage(
+  args: ApplyConflictPolicyArgs,
+): Promise<void> {
+  const policy = getSyncConflictPolicy();
+
+  const pool = getPool();
+  const conn = await pool.connect();
+  try {
+    await conn.query('BEGIN');
+
+    // Re-read the row inside the lock. The outer SELECT (in `syncPage`)
+    // was unlocked because we couldn't know yet whether to take the lock
+    // — taking it on every page would serialise the entire sync against
+    // every other write to `pages` (editor saves, AI write-backs).
+    // Locking only when we've established htmlChanged keeps the lock
+    // window tight: we hold it for one SELECT + one UPDATE / INSERT.
+    const locked = await conn.query<{
+      id: number;
+      version: number;
+      body_html: string;
+      body_text: string;
+      local_modified_at: Date | null;
+      last_synced: Date | null;
+    }>(
+      `SELECT id, version, body_html, body_text, local_modified_at, last_synced
+         FROM pages
+        WHERE confluence_id = $1
+        FOR UPDATE`,
+      [args.confluenceId],
+    );
+
+    if (locked.rows.length === 0) {
+      // Page disappeared between the outer SELECT and the lock acquisition
+      // (e.g. a concurrent DELETE or hard purge). Nothing to do.
+      await conn.query('COMMIT');
+      return;
+    }
+
+    const row = locked.rows[0]!;
+
+    // Re-test htmlChanged inside the lock. A concurrent syncPage on the
+    // same page may have already applied the incoming version; in that
+    // case our outer-SELECT snapshot is stale and the work is done.
+    const htmlChangedNow =
+      row.body_html !== args.bodyHtml || row.body_text !== args.bodyText;
+    if (!htmlChangedNow) {
+      await conn.query('COMMIT');
+      return;
+    }
+
+    const hasLocalEdits =
+      row.local_modified_at !== null
+      && row.last_synced !== null
+      && row.local_modified_at.getTime() > row.last_synced.getTime();
+
+    // Three-way branch on policy.
+    if (policy === 'manual-review' && hasLocalEdits) {
+      // Stash the Confluence version, do NOT touch the live row. The
+      // admin resolves via the EE conflicts UI (`/api/admin/sync-
+      // conflicts/:id/resolve`). pending_sync_versions has no UNIQUE
+      // constraint on (page_id, confluence_version) so multiple inbound
+      // versions stack up if the admin is slow to react — the resolver
+      // takes the most-recent row and discards older queued ones.
+      await conn.query(
+        `INSERT INTO pending_sync_versions
+           (page_id, confluence_version, body_storage, body_html, body_text, sync_run_id)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          row.id,
+          args.confluenceVersion,
+          args.bodyStorage,
+          args.bodyHtml,
+          args.bodyText,
+          args.syncRunId,
+        ],
+      );
+      await conn.query(
+        `UPDATE pages
+            SET conflict_pending = TRUE,
+                conflict_detected_at = NOW()
+          WHERE id = $1`,
+        [row.id],
+      );
+      await conn.query('COMMIT');
+
+      // Fire-and-forget audit. logAuditEvent is fire-and-forget by design
+      // (it never throws) so the caller doesn't need to await it inside
+      // the lock window — but doing the await OUTSIDE the transaction
+      // means the audit row hits the audit_log on its own connection,
+      // independent of our transaction's commit/abort. That's the right
+      // semantic: the conflict was detected, full stop, regardless of
+      // any later step.
+      await logAuditEvent(
+        null,
+        'SYNC_CONFLICT_DETECTED',
+        'page',
+        String(row.id),
+        {
+          confluence_id: args.confluenceId,
+          policy,
+          resolution: 'queued_for_review',
+          sync_run_id: args.syncRunId,
+        },
+      );
+      return;
+    }
+
+    if (policy === 'compendiq-wins' && hasLocalEdits) {
+      // Keep the local row, do NOT apply the incoming Confluence content.
+      // No DB write — the COMMIT just closes the lock cleanly.
+      await conn.query('COMMIT');
+
+      await logAuditEvent(
+        null,
+        'SYNC_CONFLICT_DETECTED',
+        'page',
+        String(row.id),
+        {
+          confluence_id: args.confluenceId,
+          policy,
+          resolution: 'kept_local',
+          sync_run_id: args.syncRunId,
+        },
+      );
+      return;
+    }
+
+    // Default (confluence-wins, OR a non-default policy with no local
+    // edits to preserve). Apply the incoming Confluence content, then
+    // emit `SYNC_OVERWROTE_LOCAL_EDITS` only when we actually overwrote
+    // a local edit — the no-local-edits path is routine sync, not a
+    // conflict, and would be log-noise if every inbound update audited.
+    await conn.query(
+      `UPDATE pages
+       SET title = $2,
+           body_storage = $3,
+           body_html = $4,
+           body_text = $5,
+           parent_id = $6,
+           labels = $7,
+           author = $8,
+           last_modified_at = $9,
+           last_synced = NOW(),
+           embedding_dirty = CASE
+             WHEN body_text IS DISTINCT FROM $5 THEN TRUE
+             ELSE embedding_dirty
+           END,
+           summary_status = CASE
+             WHEN body_text IS DISTINCT FROM $5 THEN 'pending'
+             ELSE summary_status
+           END,
+           -- Clear local-edit markers (#305): the page is now back in
+           -- sync with the upstream Confluence version. The BEFORE
+           -- UPDATE trigger on pages only stamps when the caller leaves
+           -- local_modified_by non-null or local_modified_at unchanged;
+           -- setting both to NULL here suppresses the stamp.
+           local_modified_at = NULL,
+           local_modified_by = NULL,
+           deleted_at = NULL
+       WHERE confluence_id = $1`,
+      [
+        args.confluenceId,
+        args.pageDbTitle,
+        args.bodyStorage,
+        args.bodyHtml,
+        args.bodyText,
+        args.parentId,
+        args.labels,
+        args.author,
+        args.lastModified,
+      ],
+    );
+    await conn.query('COMMIT');
+    args.counts.pagesUpdated++;
+
+    if (hasLocalEdits) {
+      await logAuditEvent(
+        null,
+        'SYNC_OVERWROTE_LOCAL_EDITS',
+        'page',
+        String(row.id),
+        {
+          confluence_id: args.confluenceId,
+          policy,
+          local_modified_at: row.local_modified_at?.toISOString() ?? null,
+          last_synced: row.last_synced?.toISOString() ?? null,
+          sync_run_id: args.syncRunId,
+        },
+      );
+    }
+  } catch (err) {
+    try { await conn.query('ROLLBACK'); } catch { /* ignore */ }
+    throw err;
+  } finally {
+    conn.release();
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -1138,4 +1426,11 @@ export const __internal = {
   syncPageRestrictions,
   sweepStaleConfluenceAces,
   computeEffectivePageReadRestrictions,
+  // Exposed for the EE #118 conflict-detection integration tests so the
+  // policy branches can be exercised directly against a real Postgres
+  // (with the real `pending_sync_versions` table, the real `pages`
+  // trigger from #305, and the real `FOR UPDATE` lock semantic) without
+  // having to stub a Confluence client + attachment handler + version-
+  // snapshot writer just to reach this branch via syncUser.
+  applyConflictPolicyForExistingPage,
 };

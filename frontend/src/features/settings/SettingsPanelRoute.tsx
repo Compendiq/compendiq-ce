@@ -41,6 +41,8 @@ const DataRetentionTab = lazy(() => import('../admin/DataRetentionTab').then((m)
 const LlmAuditPage = lazy(() => import('../admin/LlmAuditPage').then((m) => ({ default: m.LlmAuditPage })));
 const ScimSettingsPage = lazy(() => import('../admin/ScimSettingsPage').then((m) => ({ default: m.ScimSettingsPage })));
 const UsersAdminPage = lazy(() => import('../admin/UsersAdminPage').then((m) => ({ default: m.UsersAdminPage })));
+const SyncConflictPolicyTab = lazy(() => import('../admin/SyncConflictPolicyTab').then((m) => ({ default: m.SyncConflictPolicyTab })));
+const SyncConflictsPage = lazy(() => import('../admin/SyncConflictsPage').then((m) => ({ default: m.SyncConflictsPage })));
 const SystemTab = lazy(() => import('./panels/SystemTab').then((m) => ({ default: m.SystemTab })));
 
 type PanelRenderer = (ctx: PanelRenderContext) => ReactElement;
@@ -82,6 +84,8 @@ const PANELS: Readonly<Record<string, PanelRenderer>> = {
     );
   },
   'content/sync': () => <SyncTab />,
+  'content/sync-conflict-policy': () => <SyncConflictPolicyTab />,
+  'content/sync-conflicts': () => <SyncConflictsPage />,
   'content/labels': () => <LabelManager />,
 
   'ai/llm': () => <LlmTab />,

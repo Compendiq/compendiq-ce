@@ -355,6 +355,52 @@ Tier-downgrade (license change to a non-enterprise tier) disables the flag. Exis
 - Integration regression guard: `backend/src/domains/confluence/services/sync-service.integration.test.ts` (sync path) and `backend/src/domains/llm/services/rag-service.integration.test.ts` (query path).
 - ADR-023 documents the full design and rationale.
 
+### Sync conflict resolution (Enterprise, v0.4+)
+
+Confluence is the system of record for synced pages, but Compendiq supports local edits — the in-app editor, AI improve / generate / apply-improvement write-backs, and draft publishing all stamp `pages.local_modified_at` to mark the row as having unpublished local changes (CE #305). The next inbound sync pulls a Confluence-side change for that same page, and the question becomes: which side wins? The sync conflict policy answers that question per-page.
+
+**Three policies (Settings → Content → Sync conflict policy)**
+
+| Policy | Behaviour | When to use |
+|--------|-----------|-------------|
+| `Confluence wins` (default) | Apply the Confluence-side change; discard the local edit. Audit emits `SYNC_OVERWROTE_LOCAL_EDITS` whenever a local edit was actually present so you have a forensic record. No queue. | Compendiq is read-mostly — admins rarely edit pages locally, and Confluence remains the canonical source. The legacy v0.3 behaviour. |
+| `Compendiq wins` | Skip the inbound write; preserve the local edit. Audit emits `SYNC_CONFLICT_DETECTED` with `resolution: 'kept_local'`. The local edit must be pushed back to Confluence manually (the editor's "Publish to Confluence" button) — otherwise the two systems drift further apart on every sync cycle. | Short-window edits where you definitely want the local copy to take precedence (e.g. an AI-improvement run is mid-publish and you don't want a remote overwrite to land on top of it). Use sparingly: drift compounds. |
+| `Manual review` | Stash the inbound Confluence body in `pending_sync_versions`, flip `pages.conflict_pending = TRUE`, and surface the page in **Settings → Content → Sync conflicts** for admin review. The live row stays unchanged until the admin diff-reviews and picks. Audit emits `SYNC_CONFLICT_DETECTED` with `resolution: 'queued_for_review'`. | High-control workflows where every conflict needs explicit review (regulated documentation, contractual content). Trades sync latency for safety. |
+
+**Important fall-through**: the policy only kicks in when there are *actual* local edits (`local_modified_at > last_synced`). If the page has no local edits, both `compendiq-wins` and `manual-review` transparently fall through to `confluence-wins` — there's nothing to preserve, so the queue isn't padded with non-conflicts and the routine sync rate isn't degraded.
+
+**Resolution flow (manual-review)**
+
+1. Sync detects a conflict; the page lands in the conflicts list.
+2. Admin opens **Settings → Content → Sync conflicts**, clicks **Review** on a row.
+3. The dialog shows a side-by-side / unified diff of the local body against the queued Confluence body.
+4. Admin picks one of three actions:
+   - **Keep local** — drop the queued Confluence version, keep the local row. Audit emits `SYNC_CONFLICT_RESOLVED_LOCAL`.
+   - **Take Confluence** — apply the queued version to the live row, clear `local_modified_at`. Audit emits `SYNC_CONFLICT_RESOLVED_REMOTE`.
+   - **Cancel** — close the dialog without resolving; the queue row remains.
+5. The row clears from the conflicts list; if the page had multiple queued versions, the flag stays on until all are resolved.
+
+**Retention**
+
+`pending_sync_versions` rows are pruned by the daily retention worker after `pending_sync_versions_retention_days` (`admin_settings` key, default **90 days**). Resolution deletes rows immediately, so the retention sweep only catches genuinely-abandoned conflicts. Override the default via the env fallback `RETENTION_PENDING_SYNC_VERSIONS_DAYS` (consulted only when the `admin_settings` row is absent). Clamp range: `[7, 3650]`.
+
+**Audit trail**
+
+Five new event types under the existing closed `AuditAction` union — query them via the standard audit-log filters:
+
+- `SYNC_POLICY_CHANGED` — policy radio saved (metadata: `{ previous, next }`).
+- `SYNC_CONFLICT_DETECTED` — emitted on every per-page conflict for the `compendiq-wins` and `manual-review` policies (metadata: `{ confluence_id, policy, resolution, sync_run_id }`). Not emitted for the `confluence-wins` no-local-edits path — that's routine sync, not a conflict.
+- `SYNC_OVERWROTE_LOCAL_EDITS` — `confluence-wins` policy applied an inbound update on top of an actual local edit (metadata includes `local_modified_at` and `last_synced` so post-hoc analysis can compute the drift window).
+- `SYNC_CONFLICT_RESOLVED_LOCAL` / `SYNC_CONFLICT_RESOLVED_REMOTE` — admin clicked "Keep local" / "Take Confluence" in the resolve dialog.
+
+**Cluster-wide hot-reload**
+
+Saving a new policy publishes on the `sync:conflict:policy:changed` cache-bus channel; every other pod re-reads from `admin_settings` and switches to the new policy on its next sync run. The change does NOT retro-apply to a sync run already in flight — that run completes under the policy it started with. This is by design: midstream policy switches would create a hybrid trail of audit events that's hard to reason about.
+
+**Lost-update guard**
+
+The conflict-detection branch in `sync-service.ts::syncPage` runs the inbound-update UPDATE inside a transaction that opens with `SELECT … FOR UPDATE`. Two concurrent sync runs that touch the same page now serialise on the row lock — the second caller blocks until the first commits, then re-reads and either short-circuits (the first run already applied the same content) or queues a fresh `pending_sync_versions` row reflecting the post-merge truth. Without this lock, a second concurrent run could read the same `local_modified_at` snapshot, decide independently to apply the policy-driven UPDATE, and silently clobber the first run's writes.
+
 ### Monitoring (OpenTelemetry)
 
 | Variable | Default | Description |

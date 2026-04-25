@@ -76,3 +76,40 @@ export async function getAdminAccessDeniedRetentionDays(): Promise<number> {
   }
   return 90;
 }
+
+/**
+ * Compendiq/compendiq-ee#118 — returns the configured retention window
+ * (days) for `pending_sync_versions` rows. Stale conflict-pending versions
+ * older than this are pruned by `data-retention-service.ts`.
+ *
+ * Read cascade:
+ *   admin_settings.pending_sync_versions_retention_days  (authoritative)
+ *     -> env RETENTION_PENDING_SYNC_VERSIONS_DAYS        (optional fallback)
+ *     -> 90                                              (hard default)
+ *
+ * Clamped to [7, 3650]. No caching — the retention scheduler runs once per
+ * 24 h, so the per-tick DB read is negligible (matches the pattern used by
+ * `getAdminAccessDeniedRetentionDays`). Resolution deletes the pending row
+ * synchronously, so the retention sweep only catches genuinely-abandoned
+ * conflict queues.
+ */
+export async function getPendingSyncVersionsRetentionDays(): Promise<number> {
+  try {
+    const r = await query<{ setting_value: string }>(
+      `SELECT setting_value FROM admin_settings WHERE setting_key='pending_sync_versions_retention_days'`,
+    );
+    const raw = r.rows[0]?.setting_value;
+    if (raw) {
+      const n = parseInt(raw, 10);
+      if (Number.isFinite(n) && n >= 7 && n <= 3650) return n;
+    }
+  } catch {
+    // Fall through to env / default — this getter must never throw.
+  }
+  const env = process.env.RETENTION_PENDING_SYNC_VERSIONS_DAYS;
+  if (env) {
+    const n = parseInt(env, 10);
+    if (Number.isFinite(n) && n >= 7 && n <= 3650) return n;
+  }
+  return 90;
+}

@@ -24,6 +24,8 @@ import { LlmPolicyTab } from '../admin/LlmPolicyTab';
 import { DataRetentionTab } from '../admin/DataRetentionTab';
 import { LlmAuditPage } from '../admin/LlmAuditPage';
 import { ScimSettingsPage } from '../admin/ScimSettingsPage';
+import { SyncConflictPolicyTab } from '../admin/SyncConflictPolicyTab';
+import { SyncConflictsPage } from '../admin/SyncConflictsPage';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 import {
   ConfluenceTab,
@@ -38,7 +40,7 @@ import {
 // `OllamaTab` from the SettingsPage module.
 export { OllamaTab } from './panels';
 
-type TabId = 'confluence' | 'sync' | 'ollama' | 'ai-prompts' | 'ai-safety' | 'rate-limits' | 'spaces' | 'theme' | 'labels' | 'errors' | 'embedding' | 'workers' | 'mcp-docs' | 'searxng' | 'email' | 'license' | 'sso' | 'ip-allowlist' | 'webhooks' | 'llm-policy' | 'retention' | 'llm-audit' | 'scim' | 'system';
+type TabId = 'confluence' | 'sync' | 'sync-conflict-policy' | 'sync-conflicts' | 'ollama' | 'ai-prompts' | 'ai-safety' | 'rate-limits' | 'spaces' | 'theme' | 'labels' | 'errors' | 'embedding' | 'workers' | 'mcp-docs' | 'searxng' | 'email' | 'license' | 'sso' | 'ip-allowlist' | 'webhooks' | 'llm-policy' | 'retention' | 'llm-audit' | 'scim' | 'system';
 
 export function SettingsPage() {
   const queryClient = useQueryClient();
@@ -62,6 +64,8 @@ export function SettingsPage() {
   const tabs: { id: TabId; label: string; adminOnly?: boolean; enterpriseOnly?: boolean; requiresFeature?: string }[] = [
     { id: 'confluence', label: 'Confluence' },
     { id: 'sync', label: 'Sync' },
+    { id: 'sync-conflict-policy', label: 'Sync conflict policy', adminOnly: true, enterpriseOnly: true, requiresFeature: 'sync_conflict_resolution' },
+    { id: 'sync-conflicts', label: 'Sync conflicts', adminOnly: true, enterpriseOnly: true, requiresFeature: 'sync_conflict_resolution' },
     { id: 'spaces', label: 'Spaces' },
     { id: 'ollama', label: 'LLM', adminOnly: true },
     { id: 'ai-prompts', label: 'AI Prompts' },
@@ -124,12 +128,16 @@ export function SettingsPage() {
         </div>
 
         <div className="p-6">
-          {(isLoading || !settings) && activeTab !== 'labels' && activeTab !== 'errors' && activeTab !== 'theme' && activeTab !== 'embedding' && activeTab !== 'sync' && activeTab !== 'workers' && activeTab !== 'mcp-docs' && activeTab !== 'ai-safety' && activeTab !== 'rate-limits' && activeTab !== 'searxng' && activeTab !== 'email' && activeTab !== 'license' && activeTab !== 'sso' && activeTab !== 'ip-allowlist' && activeTab !== 'webhooks' && activeTab !== 'llm-policy' && activeTab !== 'retention' && activeTab !== 'llm-audit' && activeTab !== 'scim' ? (
+          {(isLoading || !settings) && activeTab !== 'labels' && activeTab !== 'errors' && activeTab !== 'theme' && activeTab !== 'embedding' && activeTab !== 'sync' && activeTab !== 'sync-conflict-policy' && activeTab !== 'sync-conflicts' && activeTab !== 'workers' && activeTab !== 'mcp-docs' && activeTab !== 'ai-safety' && activeTab !== 'rate-limits' && activeTab !== 'searxng' && activeTab !== 'email' && activeTab !== 'license' && activeTab !== 'sso' && activeTab !== 'ip-allowlist' && activeTab !== 'webhooks' && activeTab !== 'llm-policy' && activeTab !== 'retention' && activeTab !== 'llm-audit' && activeTab !== 'scim' ? (
             <SkeletonFormFields />
           ) : activeTab === 'confluence' ? (
             <ConfluenceTab settings={settings!} onSave={(v) => updateSettings.mutate(v)} />
           ) : activeTab === 'sync' ? (
             <SyncTab />
+          ) : activeTab === 'sync-conflict-policy' && isAdmin && isEnterprise ? (
+            <SyncConflictPolicyTab />
+          ) : activeTab === 'sync-conflicts' && isAdmin && isEnterprise ? (
+            <SyncConflictsPage />
           ) : activeTab === 'spaces' ? (
             <SpacesTab
               selectedSpaces={settings?.selectedSpaces ?? []}
