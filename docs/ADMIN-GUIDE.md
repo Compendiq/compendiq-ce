@@ -401,6 +401,49 @@ Saving a new policy publishes on the `sync:conflict:policy:changed` cache-bus ch
 
 The conflict-detection branch in `sync-service.ts::syncPage` runs the inbound-update UPDATE inside a transaction that opens with `SELECT … FOR UPDATE`. Two concurrent sync runs that touch the same page now serialise on the row lock — the second caller blocks until the first commits, then re-reads and either short-circuits (the first run already applied the same content) or queues a fresh `pending_sync_versions` row reflecting the post-merge truth. Without this lock, a second concurrent run could read the same `local_modified_at` snapshot, decide independently to apply the policy-driven UPDATE, and silently clobber the first run's writes.
 
+### AI Review Policy (Enterprise, v0.4+)
+
+When the AI review workflow is enabled, AI-generated output is queued in `ai_output_reviews` rather than being written straight to the page draft. A reviewer must explicitly approve, reject, or edit-and-approve each row before the proposed content is applied. Configure the policy at **Settings → AI → AI review policy**.
+
+**Three modes (per-action overridable)**
+
+| Mode | Behaviour | When to use |
+|------|-----------|-------------|
+| `auto-publish` | Bypasses the queue entirely. AI output is applied to the draft as soon as the AI worker finishes. No audit gate, no human review. | Low-risk actions where you trust the model — typically `auto_tag` and `summary`. The fastest path; this is the legacy v0.3 behaviour. |
+| `review-required` | Inserts a `pending` row in `ai_output_reviews`. The page draft is **not** updated until a reviewer approves or edit-and-approves. Audit emits `AI_REVIEW_SUBMITTED` on enqueue and `AI_REVIEW_APPROVED` / `AI_REVIEW_REJECTED` / `AI_REVIEW_EDIT_AND_APPROVED` on action. | Default for editable content actions (`improve`, `generate`, `apply_improvement`). The right balance for most teams. |
+| `review-required-with-blocking-pii` | Same as `review-required`, plus: if the PII detector flagged the proposed content, the row is blocked from approval until the findings are cleared. Falls back transparently to plain `review-required` when the PII detector is disabled or absent (graceful degrade — `pii_findings_id` is nullable on the table). | Regulated content; high-stakes pages where personally identifiable data must not slip through unreviewed. Requires the `pii_detection` feature to be active for full effect. |
+
+**Per-action configuration**
+
+The `default_mode` applies to every action that doesn't have an explicit override. Per-action overrides let you trust low-risk surfaces while gating riskier ones in the same deployment. Example: `default_mode = 'review-required'` plus an override of `auto_tag = 'auto-publish'` and `summary = 'auto-publish'` gives you human review on Improve / Generate / Apply-improvement while letting tag-suggestion and summary land directly. Set an action's mode select to **Inherit default** to remove its override.
+
+The closed set of actions: `improve`, `summary`, `generate`, `auto_tag`, `apply_improvement`. Adding a new AI surface requires extending the `AiReviewAction` union in both `ce/backend/src/core/services/ai-review-hook.ts` and the `per_action_overrides` Zod schema in `@compendiq/contracts/src/schemas/ai-review.ts`.
+
+**Expiry semantics**
+
+A pending review that nobody acts on is auto-expired after `expire_after_days` days (default 30, range 1–365). The author is notified and the proposed content is discarded — there is **no implicit auto-approval on expiry**. The expire job is a daily BullMQ scheduler tick that runs `UPDATE … SET status = 'expired' WHERE status = 'pending' AND now() > expires_at` and aggregates author notifications into a single digest per author per run.
+
+Rejected and expired rows linger in `ai_output_reviews` for forensic review for an additional 30 days (the cleanup retention window — adjust per the data-retention policy if you have one configured), then the daily retention sweep removes them. Approved and edit-and-approved rows live for the standard audit-retention window because they're the provenance trail for content that landed on a real page.
+
+**Reviewer-roles design**
+
+For v0.4 the reviewer access gate is admin-only, controlled by `fastify.requireAdmin` on every queue / detail / action route in the EE overlay. The original brief proposed a per-space scope (any user with `editor` on the page's space can review), but the matching `getUserAccessibleSpaces` helper isn't wired through yet — that lands in v0.5. Until then, treat the queue as an admin tool. A dedicated `reviewer` role (separate from admin) is also v0.5+ if customer demand surfaces.
+
+**Audit trail**
+
+Six new event types under the existing closed `AuditAction` union — query them via the standard audit-log filters:
+
+- `AI_REVIEW_SUBMITTED` — emitted by the EE overlay when an AI run is gated behind the review policy and a `pending` row is inserted (metadata: `{ actionType, pageId }`).
+- `AI_REVIEW_APPROVED` — reviewer clicked **Approve**. The proposed content has been applied to `pages.draft_body_*`. Subsequent publish to Confluence is gated by the standard publish flow.
+- `AI_REVIEW_REJECTED` — reviewer clicked **Reject**. No page mutation. Optional `notes` field surfaces in the author's notification so they can re-run with better instructions.
+- `AI_REVIEW_EDIT_AND_APPROVED` — reviewer modified the proposed content before approving. Two audit rows are recorded — the original AI authorship plus the reviewer modification — preserving full provenance.
+- `AI_REVIEW_EXPIRED` — daily expire job swept a stale pending row. Aggregated per-author notifications follow.
+- `AI_REVIEW_POLICY_CHANGED` — admin saved a new policy via the policy tab (metadata: `{ previous, next }`).
+
+**CE-only deployments**
+
+In CE-only deployments the routes 404 — the overlay isn't loaded, so there's nothing to enqueue against. The CE `enqueueAiReview` hook returns `{ mode: 'auto-publish' }` and the AI surfaces fall through to their legacy direct-write behaviour. The admin tab surfaces a non-fatal "EE only" notice rather than crashing.
+
 ### Monitoring (OpenTelemetry)
 
 | Variable | Default | Description |

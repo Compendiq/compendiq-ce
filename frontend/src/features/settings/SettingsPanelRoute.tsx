@@ -43,6 +43,8 @@ const ScimSettingsPage = lazy(() => import('../admin/ScimSettingsPage').then((m)
 const UsersAdminPage = lazy(() => import('../admin/UsersAdminPage').then((m) => ({ default: m.UsersAdminPage })));
 const SyncConflictPolicyTab = lazy(() => import('../admin/SyncConflictPolicyTab').then((m) => ({ default: m.SyncConflictPolicyTab })));
 const SyncConflictsPage = lazy(() => import('../admin/SyncConflictsPage').then((m) => ({ default: m.SyncConflictsPage })));
+const AiReviewPolicyTab = lazy(() => import('../admin/AiReviewPolicyTab').then((m) => ({ default: m.AiReviewPolicyTab })));
+const ReviewerQueuePage = lazy(() => import('../ai/ReviewerQueuePage').then((m) => ({ default: m.ReviewerQueuePage })));
 const SystemTab = lazy(() => import('./panels/SystemTab').then((m) => ({ default: m.SystemTab })));
 
 type PanelRenderer = (ctx: PanelRenderContext) => ReactElement;
@@ -94,6 +96,8 @@ const PANELS: Readonly<Record<string, PanelRenderer>> = {
   'ai/workers': () => <WorkersTab />,
   'ai/llm-policy': () => <LlmPolicyTab />,
   'ai/llm-audit': () => <LlmAuditPage />,
+  'ai/ai-reviews': () => <ReviewerQueuePage />,
+  'ai/ai-review-policy': () => <AiReviewPolicyTab />,
 
   'integrations/email': () => <SmtpSettingsTab />,
   'integrations/searxng': () => <SearxngTab />,

@@ -113,6 +113,23 @@ export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
         enterpriseOnly: true,
         requiresFeature: 'llm_audit_trail',
       }),
+      // AI output review (Compendiq/compendiq-ee#120). Two adjacent
+      // settings panels: the reviewer queue (a list) and the policy
+      // configuration (per-action modes + expiry). The detail diff
+      // view is a full-page route at `/settings/ai-reviews/:id`,
+      // outside the SettingsLayout — see App.tsx.
+      navItem('ai-reviews', 'AI review queue', {
+        adminOnly: true,
+        enterpriseOnly: true,
+        requiresFeature: 'ai_output_review',
+        legacyTabId: null,
+      }),
+      navItem('ai-review-policy', 'AI review policy', {
+        adminOnly: true,
+        enterpriseOnly: true,
+        requiresFeature: 'ai_output_review',
+        legacyTabId: null,
+      }),
     ],
   },
   {

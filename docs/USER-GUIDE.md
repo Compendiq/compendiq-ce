@@ -161,6 +161,50 @@ Compendiq automatically analyzes page quality in the background:
 - Low-quality pages are highlighted for improvement.
 - View quality scores in the page list or on individual pages.
 
+## AI Output Review (Enterprise)
+
+When the **AI review policy** is enabled, AI-generated output (improve, generate, summarise, auto-tag, apply-improvement) is queued in a review list before it lands on the underlying page. A reviewer must explicitly **approve**, **reject**, or **edit-and-approve** each entry. This sits between the AI worker and the persistence layer — the proposed content is stored in `ai_output_reviews` rather than written directly to the page.
+
+### Who reviews
+
+For v0.4, any admin can act on the queue. (Per-space scoping based on editor-on-space lands in v0.5; until then the access gate is admin-only — see the EE overlay route file for the exact policy.)
+
+### What the queue looks like
+
+Open **Settings → AI → AI review queue**. Each row shows:
+
+- The action type chip (Improve, Summary, Generate, Auto-tag, Apply improvement).
+- The page id the review targets, plus the page title once you click into the detail.
+- A short id of the author who triggered the AI run.
+- A relative submitted-at timestamp (e.g. `5h ago`, `2d ago`).
+- The current status (Pending / Approved / Rejected / Edited & approved / Expired).
+
+Filter the queue by status or action. The queue defaults to the **Pending** status — that's the work to act on. The Approved / Rejected / Expired statuses are useful for spot-checking past decisions.
+
+### How the diff view works
+
+Clicking **Review** opens the detail page at `/settings/ai-reviews/<id>` (full viewport). The header shows the page title, action type, current status, and — for pending rows — the auto-expiry timestamp.
+
+The diff is rendered side-by-side. The default view is a **text diff** of the page's current `body_text` against the AI's proposed `body_text`, line-by-line. Removed lines are highlighted red on the left; added lines are highlighted green on the right. Lines that match are shown unmodified on both sides.
+
+Toggle to **HTML** view to see the raw HTML from both sides in two columns. The HTML view is intentionally not diff-highlighted — accurate HTML-aware diffing is out of scope for this iteration (the upstream `htmldiff-js` library is unmaintained), so we render the HTML pair as-is for visual scanning rather than risking misleading red/green spans on attribute-reorder noise.
+
+If the AI run flagged personally identifiable information, the header shows a **PII findings** badge. PII gating only blocks approval when the policy mode is **Review required (block on PII)**.
+
+### What each action does
+
+- **Approve** — applies the AI's proposed content to the page draft and records a single audit row (`AI_REVIEW_APPROVED`). The page's draft is what gets pushed to Confluence on the next publish; nothing is auto-published as part of approval.
+- **Reject** — discards the proposed content. Optionally leave a short note for the author (max 4000 chars) so they can re-run the AI with better instructions. Records `AI_REVIEW_REJECTED`.
+- **Edit and approve** — opens a fullscreen editor pre-loaded with the proposed body text. Make any changes you like, optionally add a note, then save. Two audit rows are recorded: the original AI authorship plus your reviewer modification (`AI_REVIEW_EDIT_AND_APPROVED`). The edited content — not the AI's original — is what lands on the page.
+
+### Handling rejected output
+
+A rejection is final for that particular review row, but the author is free to re-run the AI. The reviewer note is the right place to give the author a steer (e.g. "tone is too casual; prefer the existing prose style"). The author sees pending and rejected counts in the **AuthorPendingBanner** at the top of any page-edit view.
+
+### Auto-expiry
+
+Pending reviews that nobody acts on are auto-expired after the policy's configured window (default 30 days). The author is notified; the proposed content is discarded — there is **no implicit auto-approval**. This protects against stale AI output sneaking onto a page weeks after the human context that produced it.
+
 ## Search
 
 Compendiq supports three search modes:
