@@ -73,6 +73,23 @@ export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
     items: [
       navItem('spaces', 'Spaces'),
       navItem('sync', 'Sync'),
+      // Sync conflict resolution (Compendiq/compendiq-ee#118). Two
+      // adjacent panels: the policy radio (always visible to EE admins
+      // with the feature licensed) and the conflicts queue (same gating
+      // — the queue is empty unless the policy is `manual-review`, and
+      // the empty state is harmless to render).
+      navItem('sync-conflict-policy', 'Sync conflict policy', {
+        adminOnly: true,
+        enterpriseOnly: true,
+        requiresFeature: 'sync_conflict_resolution',
+        legacyTabId: null,
+      }),
+      navItem('sync-conflicts', 'Sync conflicts', {
+        adminOnly: true,
+        enterpriseOnly: true,
+        requiresFeature: 'sync_conflict_resolution',
+        legacyTabId: null,
+      }),
       navItem('labels', 'Labels', { adminOnly: true }),
     ],
   },

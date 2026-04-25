@@ -80,6 +80,7 @@ import {
   loadTrustedProxiesFromAdminSettings,
 } from './core/services/ip-allowlist-service.js';
 import ipAllowlistHook from './core/plugins/ip-allowlist-hook.js';
+import { initSyncConflictPolicyService } from './core/services/sync-conflict-policy-service.js';
 import { ENTERPRISE_FEATURES } from './core/enterprise/features.js';
 
 export async function buildApp() {
@@ -224,6 +225,14 @@ export async function buildApp() {
     await app.register(ipAllowlistHook);
     logger.info('IP allowlist hook registered (enterprise feature active)');
   }
+
+  // Sync-conflict policy cache (Compendiq/compendiq-ee#118). Always
+  // initialised — CE-only deployments use the default 'confluence-wins'
+  // value, which preserves the legacy sync behaviour. The EE overlay's
+  // PUT handler writes to admin_settings + publishes on the cache-bus;
+  // CE pods receive the invalidation and re-read just like any other
+  // pod. The cold-load happens here before sync workers can run.
+  await initSyncConflictPolicyService();
 
   // ── LLM Provider Bootstrap ───────────────────────────────────────
   // Seed llm_providers from env on fresh installs, rewrite the Ollama
