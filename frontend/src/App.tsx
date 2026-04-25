@@ -75,6 +75,14 @@ const AnalyticsPage = lazy(() =>
     default: m.AnalyticsPage,
   })),
 );
+// AI review detail (Compendiq/compendiq-ee#120). Lives at the app
+// level rather than inside SettingsLayout because the side-by-side
+// diff needs the full viewport.
+const ReviewDetailPage = lazy(() =>
+  import('./features/ai/ReviewDetailPage').then((m) => ({
+    default: m.ReviewDetailPage,
+  })),
+);
 export function PageLoadingFallback() {
   return (
     <div className="flex items-center justify-center h-64">
@@ -155,6 +163,10 @@ export function App() {
                           <Route path="/spaces/new" element={<NewSpacePage />} />
                           <Route path="/spaces/:key/settings" element={<SpaceSettingsPage />} />
                           <Route path="/admin/analytics" element={<AnalyticsPage />} />
+                          <Route
+                            path="/settings/ai-reviews/:id"
+                            element={<ReviewDetailPage />}
+                          />
                           <Route path="/settings" element={<SettingsLayout />}>
                             <Route index element={<SettingsIndexRedirect />} />
                             <Route
