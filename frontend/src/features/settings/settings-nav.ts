@@ -130,6 +130,16 @@ export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
         requiresFeature: 'ai_output_review',
         legacyTabId: null,
       }),
+      // PII detection policy (Compendiq/compendiq-ee#119, Phase I).
+      // Companion EE overlay route GET/PUT /api/admin/pii-policy ships
+      // alongside this entry; the PiiPolicyTab handles the 404 path
+      // gracefully when only the CE half is deployed.
+      navItem('pii-policy', 'PII detection', {
+        adminOnly: true,
+        enterpriseOnly: true,
+        requiresFeature: 'pii_detection',
+        legacyTabId: null,
+      }),
     ],
   },
   {

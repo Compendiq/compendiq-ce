@@ -27,6 +27,7 @@ import { ScimSettingsPage } from '../admin/ScimSettingsPage';
 import { SyncConflictPolicyTab } from '../admin/SyncConflictPolicyTab';
 import { SyncConflictsPage } from '../admin/SyncConflictsPage';
 import { AiReviewPolicyTab } from '../admin/AiReviewPolicyTab';
+import { PiiPolicyTab } from '../admin/PiiPolicyTab';
 import { ReviewerQueuePage } from '../ai/ReviewerQueuePage';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 import {
@@ -42,7 +43,7 @@ import {
 // `OllamaTab` from the SettingsPage module.
 export { OllamaTab } from './panels';
 
-type TabId = 'confluence' | 'sync' | 'sync-conflict-policy' | 'sync-conflicts' | 'ollama' | 'ai-prompts' | 'ai-safety' | 'rate-limits' | 'spaces' | 'theme' | 'labels' | 'errors' | 'embedding' | 'workers' | 'mcp-docs' | 'searxng' | 'email' | 'license' | 'sso' | 'ip-allowlist' | 'webhooks' | 'llm-policy' | 'retention' | 'llm-audit' | 'ai-reviews' | 'ai-review-policy' | 'scim' | 'system';
+type TabId = 'confluence' | 'sync' | 'sync-conflict-policy' | 'sync-conflicts' | 'ollama' | 'ai-prompts' | 'ai-safety' | 'rate-limits' | 'spaces' | 'theme' | 'labels' | 'errors' | 'embedding' | 'workers' | 'mcp-docs' | 'searxng' | 'email' | 'license' | 'sso' | 'ip-allowlist' | 'webhooks' | 'llm-policy' | 'retention' | 'llm-audit' | 'ai-reviews' | 'ai-review-policy' | 'pii-policy' | 'scim' | 'system';
 
 export function SettingsPage() {
   const queryClient = useQueryClient();
@@ -93,6 +94,7 @@ export function SettingsPage() {
     { id: 'llm-audit', label: 'LLM Audit', adminOnly: true, enterpriseOnly: true, requiresFeature: 'llm_audit_trail' },
     { id: 'ai-reviews', label: 'AI review queue', adminOnly: true, enterpriseOnly: true, requiresFeature: 'ai_output_review' },
     { id: 'ai-review-policy', label: 'AI review policy', adminOnly: true, enterpriseOnly: true, requiresFeature: 'ai_output_review' },
+    { id: 'pii-policy', label: 'PII detection', adminOnly: true, enterpriseOnly: true, requiresFeature: 'pii_detection' },
     { id: 'scim', label: 'SCIM', adminOnly: true, enterpriseOnly: true, requiresFeature: 'scim_provisioning' },
     { id: 'system', label: 'System', adminOnly: true },
   ];
@@ -132,7 +134,7 @@ export function SettingsPage() {
         </div>
 
         <div className="p-6">
-          {(isLoading || !settings) && activeTab !== 'labels' && activeTab !== 'errors' && activeTab !== 'theme' && activeTab !== 'embedding' && activeTab !== 'sync' && activeTab !== 'sync-conflict-policy' && activeTab !== 'sync-conflicts' && activeTab !== 'workers' && activeTab !== 'mcp-docs' && activeTab !== 'ai-safety' && activeTab !== 'rate-limits' && activeTab !== 'searxng' && activeTab !== 'email' && activeTab !== 'license' && activeTab !== 'sso' && activeTab !== 'ip-allowlist' && activeTab !== 'webhooks' && activeTab !== 'llm-policy' && activeTab !== 'retention' && activeTab !== 'llm-audit' && activeTab !== 'ai-reviews' && activeTab !== 'ai-review-policy' && activeTab !== 'scim' ? (
+          {(isLoading || !settings) && activeTab !== 'labels' && activeTab !== 'errors' && activeTab !== 'theme' && activeTab !== 'embedding' && activeTab !== 'sync' && activeTab !== 'sync-conflict-policy' && activeTab !== 'sync-conflicts' && activeTab !== 'workers' && activeTab !== 'mcp-docs' && activeTab !== 'ai-safety' && activeTab !== 'rate-limits' && activeTab !== 'searxng' && activeTab !== 'email' && activeTab !== 'license' && activeTab !== 'sso' && activeTab !== 'ip-allowlist' && activeTab !== 'webhooks' && activeTab !== 'llm-policy' && activeTab !== 'retention' && activeTab !== 'llm-audit' && activeTab !== 'ai-reviews' && activeTab !== 'ai-review-policy' && activeTab !== 'pii-policy' && activeTab !== 'scim' ? (
             <SkeletonFormFields />
           ) : activeTab === 'confluence' ? (
             <ConfluenceTab settings={settings!} onSave={(v) => updateSettings.mutate(v)} />
@@ -190,6 +192,8 @@ export function SettingsPage() {
             <ReviewerQueuePage />
           ) : activeTab === 'ai-review-policy' && isAdmin && isEnterprise ? (
             <AiReviewPolicyTab />
+          ) : activeTab === 'pii-policy' && isAdmin && isEnterprise ? (
+            <PiiPolicyTab />
           ) : activeTab === 'scim' && isAdmin ? (
             <ScimSettingsPage />
           ) : activeTab === 'system' && isAdmin ? (

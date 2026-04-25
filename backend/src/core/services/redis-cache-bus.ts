@@ -41,6 +41,7 @@ export type CacheBusChannel =
   | 'ip_allowlist:changed'
   | 'confluence:allowlist:changed'
   | 'sync:conflict:policy:changed'
+  | 'pii:policy:changed'
   | 'license:changed';
 
 type Handler<T = unknown> = (payload: T) => void | Promise<void>;
