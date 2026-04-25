@@ -13,6 +13,7 @@ import { saveVersionSnapshot } from '../../../core/services/version-snapshot.js'
 import { processDirtyPages } from '../../llm/services/embedding-service.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { logAuditEvent } from '../../../core/services/audit-service.js';
+import { emitWebhookEvent } from '../../../core/services/webhook-emit-hook.js';
 import { decryptPat } from '../../../core/utils/crypto.js';
 import { addAllowedBaseUrlSilent } from '../../../core/utils/ssrf-guard.js';
 import { logger } from '../../../core/utils/logger.js';
@@ -195,6 +196,18 @@ export async function syncUser(userId: string): Promise<void> {
   }
 }
 
+/**
+ * Per-space counters for the `sync.completed` webhook event (#114).
+ * Mutated in-place by `syncPage` / `detectDeletedPages` so the totals visible
+ * to `emitWebhookEvent` cover every page touched in this sync run for this
+ * space.
+ */
+interface SyncSpaceCounts {
+  pagesCreated: number;
+  pagesUpdated: number;
+  pagesDeleted: number;
+}
+
 async function syncSpace(
   client: ConfluenceClient,
   userId: string,
@@ -203,6 +216,9 @@ async function syncSpace(
   syncRunStartedAt: Date,
   ancestorCache: Map<string, ConfluenceRestriction[]>,
 ): Promise<void> {
+  const spaceStartedAt = Date.now();
+  const counts: SyncSpaceCounts = { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 };
+
   logger.info({ userId, spaceKey }, 'Syncing space');
 
   // Upsert shared space metadata (no user_id)
@@ -245,7 +261,7 @@ async function syncSpace(
     });
 
     const page = pages[i]!;
-    await syncPage(client, userId, spaceKey, page, syncRunStartedAt, ancestorCache);
+    await syncPage(client, userId, spaceKey, page, syncRunStartedAt, ancestorCache, counts);
   }
 
   // During incremental sync, also check for pages with missing attachments
@@ -257,7 +273,7 @@ async function syncSpace(
 
   // Detect deleted pages (only during full sync)
   if (!lastSynced || (Date.now() - lastSynced.getTime()) >= 24 * 60 * 60 * 1000) {
-    await detectDeletedPages(client, spaceKey, pages);
+    await detectDeletedPages(client, spaceKey, pages, counts);
   }
 
   // Purge pages that have been soft-deleted for more than 30 days
@@ -268,6 +284,21 @@ async function syncSpace(
     'UPDATE spaces SET last_synced = NOW() WHERE space_key = $1',
     [spaceKey],
   );
+
+  // Emit sync.completed webhook for this space (#114). Aggregate counters
+  // mean receivers don't need per-page page.created/updated/deleted from
+  // sync (those would double-fire alongside this event).
+  emitWebhookEvent({
+    eventType: 'sync.completed',
+    payload: {
+      spaceKey,
+      pagesCreated: counts.pagesCreated,
+      pagesUpdated: counts.pagesUpdated,
+      pagesDeleted: counts.pagesDeleted,
+      durationMs: Date.now() - spaceStartedAt,
+      completedAt: new Date().toISOString(),
+    },
+  });
 }
 
 async function syncPage(
@@ -277,6 +308,7 @@ async function syncPage(
   pageSummary: ConfluencePage,
   syncRunStartedAt: Date,
   ancestorCache: Map<string, ConfluenceRestriction[]>,
+  counts: SyncSpaceCounts,
 ): Promise<void> {
   // Fetch full page content
   const page = await client.getPage(pageSummary.id);
@@ -387,6 +419,7 @@ async function syncPage(
          WHERE confluence_id = $1`,
         [page.id, page.title, bodyStorage, bodyHtml, bodyText, parentId, labels, author, lastModified],
       );
+      counts.pagesUpdated++;
     }
 
     // Version-unchanged branch: still re-evaluate restrictions. See note at
@@ -423,6 +456,7 @@ async function syncPage(
   // Upsert page (shared table, no user_id)
   // deleted_at = NULL restores pages that were previously soft-deleted
   // (e.g. page was restored from Confluence trash)
+  const wasFreshCreate = existing.rows.length === 0;
   await query(
     `INSERT INTO pages
        (confluence_id, space_key, title, body_storage, body_html, body_text,
@@ -450,6 +484,11 @@ async function syncPage(
     [page.id, spaceKey, page.title, bodyStorage, bodyHtml, bodyText,
      page.version.number, parentId, labels, author, lastModified],
   );
+  if (wasFreshCreate) {
+    counts.pagesCreated++;
+  } else {
+    counts.pagesUpdated++;
+  }
 
   // Sync Confluence view restrictions → access_control_entries. Runs after
   // the page upsert so `pages.id` is guaranteed to exist (the ACE foreign
@@ -849,6 +888,7 @@ async function detectDeletedPages(
   _client: ConfluenceClient,
   spaceKey: string,
   currentPages: ConfluencePage[],
+  counts: SyncSpaceCounts,
 ): Promise<void> {
   // Only delete pages when exactly one user has this space assigned via RBAC.
   // If multiple users share the space, one user's limited-permission sync
@@ -880,6 +920,7 @@ async function detectDeletedPages(
       );
       await cleanPageAttachments('', confluence_id);
       await clearPageFailures(confluence_id);
+      counts.pagesDeleted++;
     }
   }
 }

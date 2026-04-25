@@ -51,6 +51,13 @@ vi.mock('../../llm/services/llm-provider-resolver.js', () => ({
   }),
 }));
 
+// Webhook emit-call-site (#114). The hook is a CE-side no-op; we mock it
+// to assert call shape from the worker's success path.
+const mockEmitWebhookEvent = vi.fn();
+vi.mock('../../../core/services/webhook-emit-hook.js', () => ({
+  emitWebhookEvent: (...args: unknown[]) => mockEmitWebhookEvent(...args),
+}));
+
 describe.skipIf(!dbAvailable)('Summary Worker', () => {
   let testUserId: string;
   const testSpaceKey = 'TEST';
@@ -365,6 +372,52 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
       expect(result.rows[0].summary_status).toBe('summarized');
       expect(result.rows[0].summary_text).toBeTruthy();
       expect(result.rows[0].summary_model).toBe('test-model');
+    });
+  });
+
+  describe('ai.summary.complete webhook emit (#114)', () => {
+    beforeEach(() => {
+      mockEmitWebhookEvent.mockReset();
+    });
+
+    it('emits ai.summary.complete with the generated summary on success', async () => {
+      const longContent = 'D'.repeat(200);
+      const insertResult = await query<{ id: number }>(
+        `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status)
+         VALUES ('w-summary', $1, 'Summary Webhook Page', $2, 'pending')
+         RETURNING id`,
+        [testSpaceKey, longContent],
+      );
+      const pageId = insertResult.rows[0].id;
+
+      const { processed, errors } = await runSummaryBatch('test-model');
+      expect(processed).toBe(1);
+      expect(errors).toBe(0);
+
+      const completedCalls = mockEmitWebhookEvent.mock.calls.filter(
+        (c) => c[0]?.eventType === 'ai.summary.complete',
+      );
+      expect(completedCalls).toHaveLength(1);
+      const event = completedCalls[0]![0];
+      expect(event.payload).toMatchObject({ pageId });
+      expect(typeof event.payload.summary).toBe('string');
+      expect(event.payload.summary.length).toBeGreaterThan(0);
+      expect(typeof event.payload.completedAt).toBe('string');
+    });
+
+    it('does NOT emit ai.summary.complete when content is too short (skipped)', async () => {
+      await query(
+        `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status)
+         VALUES ('w-summary-short', $1, 'Short Page', 'tiny', 'pending')`,
+        [testSpaceKey],
+      );
+
+      await runSummaryBatch('test-model');
+
+      const completedCalls = mockEmitWebhookEvent.mock.calls.filter(
+        (c) => c[0]?.eventType === 'ai.summary.complete',
+      );
+      expect(completedCalls).toHaveLength(0);
     });
   });
 

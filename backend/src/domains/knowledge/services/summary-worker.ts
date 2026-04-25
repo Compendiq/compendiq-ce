@@ -29,6 +29,7 @@
 
 import crypto from 'node:crypto';
 import { query } from '../../../core/db/postgres.js';
+import { emitWebhookEvent } from '../../../core/services/webhook-emit-hook.js';
 import { getSystemPrompt } from '../../llm/services/prompts.js';
 import { resolveUsecase } from '../../llm/services/llm-provider-resolver.js';
 import {
@@ -280,6 +281,15 @@ async function summarizePage(
        WHERE id = $5`,
       [summaryText, summaryHtml, contentHash, model, id],
     );
+
+    emitWebhookEvent({
+      eventType: 'ai.summary.complete',
+      payload: {
+        pageId: id,
+        summary: summaryText,
+        completedAt: new Date().toISOString(),
+      },
+    });
 
     logger.info({ pageId: id, title, model }, 'Summary generated');
   } catch (err) {
