@@ -6,6 +6,7 @@ import { getClientForUser } from '../../domains/confluence/services/sync-service
 import { htmlToConfluence, confluenceToHtml } from '../../core/services/content-converter.js';
 import { cleanPageAttachments, writeAttachmentCache } from '../../domains/confluence/services/attachment-handler.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
+import { emitWebhookEvent } from '../../core/services/webhook-emit-hook.js';
 import { processDirtyPages, isProcessingUser } from '../../domains/llm/services/embedding-service.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 import { PageListQuerySchema, PageTreeQuerySchema, CreatePageSchema, UpdatePageSchema, SaveDraftSchema } from '@compendiq/contracts';
@@ -922,6 +923,17 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       await logAuditEvent(userId, 'PAGE_CREATED', 'page', String(newPage.id),
         { source: 'standalone', title: body.title, visibility: body.visibility ?? 'shared', spaceKey, pageType }, request);
 
+      emitWebhookEvent({
+        eventType: 'page.created',
+        payload: {
+          pageId: newPage.id,
+          title: newPage.title,
+          spaceKey,
+          isLocal: true,
+          createdAt: new Date().toISOString(),
+        },
+      });
+
       return { id: newPage.id, title: newPage.title, version: newPage.version, source: 'standalone', pageType };
     }
 
@@ -971,6 +983,17 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     await cache.invalidate(userId, 'spaces');
 
     await logAuditEvent(userId, 'PAGE_CREATED', 'page', page.id, { spaceKey: body.spaceKey, title: body.title }, request);
+
+    emitWebhookEvent({
+      eventType: 'page.created',
+      payload: {
+        pageId: page.id,
+        title: page.title,
+        spaceKey: body.spaceKey ?? null,
+        isLocal: false,
+        createdAt: new Date().toISOString(),
+      },
+    });
 
     return { id: page.id, title: page.title, version: page.version.number, source: 'confluence' };
   });
@@ -1053,6 +1076,16 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       await cache.invalidate(userId, 'pages');
       await logAuditEvent(userId, 'PAGE_UPDATED', 'page', String(id), { source: 'standalone', title: body.title }, request);
 
+      emitWebhookEvent({
+        eventType: 'page.updated',
+        payload: {
+          pageId: existingPage.id,
+          title: body.title,
+          spaceKey: existingPage.space_key,
+          updatedAt: new Date().toISOString(),
+        },
+      });
+
       return { id: existingPage.id, title: body.title, version: newVersion, source: 'standalone' };
     }
 
@@ -1108,6 +1141,16 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     await logAuditEvent(userId, 'PAGE_UPDATED', 'page', String(id), { title: body.title }, request);
 
+    emitWebhookEvent({
+      eventType: 'page.updated',
+      payload: {
+        pageId: existingPage.id,
+        title: body.title,
+        spaceKey: existingPage.space_key,
+        updatedAt: new Date().toISOString(),
+      },
+    });
+
     return { id: existingPage.id, title: body.title, version: confPage.version.number, source: 'confluence' };
   });
 
@@ -1154,6 +1197,14 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       await logAuditEvent(userId, 'PAGE_DELETED', 'page', String(id),
         { source: 'standalone', permanent: queryParams.permanent === 'true' }, request);
 
+      emitWebhookEvent({
+        eventType: 'page.deleted',
+        payload: {
+          pageId: existingPage.id,
+          isHardDelete: queryParams.permanent === 'true',
+        },
+      });
+
       return { message: queryParams.permanent === 'true' ? 'Page permanently deleted' : 'Page moved to trash' };
     }
 
@@ -1185,6 +1236,14 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     await cache.invalidate(userId, 'spaces');
 
     await logAuditEvent(userId, 'PAGE_DELETED', 'page', String(id), {}, request);
+
+    emitWebhookEvent({
+      eventType: 'page.deleted',
+      payload: {
+        pageId: existingPage.id,
+        isHardDelete: true,
+      },
+    });
 
     return { message: 'Page deleted' };
   });
@@ -1270,10 +1329,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       id: number; version: number; title: string;
       body_html: string | null; body_text: string | null; body_storage: string | null;
       source: string; created_by_user_id: string | null;
-      visibility: string; confluence_id: string | null;
+      visibility: string; confluence_id: string | null; space_key: string | null;
       draft_body_html: string | null; draft_body_storage: string | null;
     }>(
-      `SELECT id, version, title, body_html, body_text, body_storage, source, created_by_user_id, visibility, confluence_id, draft_body_html, draft_body_storage FROM pages WHERE id = $1 AND deleted_at IS NULL`,
+      `SELECT id, version, title, body_html, body_text, body_storage, source, created_by_user_id, visibility, confluence_id, space_key, draft_body_html, draft_body_storage FROM pages WHERE id = $1 AND deleted_at IS NULL`,
       [pageId],
     );
     if (!existing.rows.length) throw fastify.httpErrors.notFound('Page not found');
@@ -1346,6 +1405,16 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     await cache.invalidate(userId, 'pages');
     await logAuditEvent(userId, 'DRAFT_PUBLISHED', 'page', String(page.id),
       { version: page.version + 1 }, request);
+
+    emitWebhookEvent({
+      eventType: 'page.updated',
+      payload: {
+        pageId: page.id,
+        title: page.title,
+        spaceKey: page.space_key,
+        updatedAt: new Date().toISOString(),
+      },
+    });
 
     return { id: page.id, version: page.version + 1, published: true };
   });
@@ -1425,6 +1494,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         query('UPDATE pages SET deleted_at = NOW() WHERE id = ANY($1::int[])', [standaloneNumericIds]),
         query('DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = ANY($2::int[])', [userId, standaloneNumericIds]),
       ]);
+      // Bulk delete is a soft-delete (move to trash) for standalone pages.
+      for (const pageId of standaloneNumericIds) {
+        emitWebhookEvent({
+          eventType: 'page.deleted',
+          payload: { pageId, isHardDelete: false },
+        });
+      }
     }
     const standaloneSucceeded = standaloneNumericIds.length;
 
@@ -1466,6 +1542,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
             query('DELETE FROM pages WHERE confluence_id = ANY($1)', [deletedConfluenceIds]),
           ]);
           await Promise.allSettled(deletedConfluenceIds.map((id) => bulkLimit(() => cleanPageAttachments(userId, id))));
+          // Confluence bulk delete is always a hard delete (Confluence API + local row removal).
+          for (const pageId of deletedConfluenceNumericIds) {
+            emitWebhookEvent({
+              eventType: 'page.deleted',
+              payload: { pageId, isHardDelete: true },
+            });
+          }
         }
       }
     }

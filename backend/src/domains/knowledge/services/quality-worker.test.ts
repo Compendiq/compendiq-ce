@@ -52,6 +52,13 @@ vi.mock('../../llm/services/llm-provider-resolver.js', () => ({
   }),
 }));
 
+// Webhook emit-call-site (#114). The hook is a CE-side no-op; we mock it
+// to assert call shape from the worker's success path.
+const mockEmitWebhookEvent = vi.fn();
+vi.mock('../../../core/services/webhook-emit-hook.js', () => ({
+  emitWebhookEvent: (...args: unknown[]) => mockEmitWebhookEvent(...args),
+}));
+
 describe('parseQualityScores', () => {
   it('parses a complete well-formed quality report', () => {
     const text = `
@@ -311,6 +318,52 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
       // LLM mock returns valid scores, so page should be analyzed
       expect(result.rows[0].quality_status).toBe('analyzed');
       expect(result.rows[0].quality_retry_count).toBe(0); // reset on success
+    });
+
+    describe('ai.quality.complete webhook emit (#114)', () => {
+      beforeEach(() => {
+        mockEmitWebhookEvent.mockReset();
+      });
+
+      it('emits ai.quality.complete with the parsed score on success', async () => {
+        const longContent = 'This is a sufficiently long article body that exceeds the fifty character minimum threshold for quality analysis processing.';
+        const insertResult = await query<{ id: number }>(
+          `INSERT INTO pages (confluence_id, space_key, title, body_text, body_html, quality_status)
+           VALUES ('w1', $1, 'Webhook Page', $2, $3, 'pending')
+           RETURNING id`,
+          [testSpaceKey, longContent, `<p>${longContent}</p>`],
+        );
+        const pageId = insertResult.rows[0].id;
+
+        await processBatch();
+
+        const completedCalls = mockEmitWebhookEvent.mock.calls.filter(
+          (c) => c[0]?.eventType === 'ai.quality.complete',
+        );
+        expect(completedCalls).toHaveLength(1);
+        const event = completedCalls[0]![0];
+        expect(event.payload).toMatchObject({
+          pageId,
+          score: 75,
+        });
+        expect(typeof event.payload.summary).toBe('string');
+        expect(typeof event.payload.completedAt).toBe('string');
+      });
+
+      it('does NOT emit ai.quality.complete when content is too short (skipped)', async () => {
+        await query(
+          `INSERT INTO pages (confluence_id, space_key, title, body_text, body_html, quality_status)
+           VALUES ('w-short', $1, 'Short Page', 'tiny', '<p>tiny</p>', 'pending')`,
+          [testSpaceKey],
+        );
+
+        await processBatch();
+
+        const completedCalls = mockEmitWebhookEvent.mock.calls.filter(
+          (c) => c[0]?.eventType === 'ai.quality.complete',
+        );
+        expect(completedCalls).toHaveLength(0);
+      });
     });
 
     it('should analyze standalone pages with NULL confluence_id', async () => {
