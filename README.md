@@ -196,7 +196,7 @@ Compendiq is open-core. The Community Edition (this repo) is fully functional un
 
 Interested in Enterprise? [Open an issue](https://github.com/Compendiq/compendiq-ce/issues/new?template=enterprise-interest.md) or reach out via [GitHub Discussions](https://github.com/Compendiq/compendiq-ce/discussions).
 
-- **Public roadmap:** see what's in flight and what's next on the [Compendiq GitHub Project board](https://github.com/orgs/Compendiq/projects/TBD) <!-- TODO(#297): update to the real project URL once the board is created -->.
+- **Roadmap:** see [`docs/ROADMAP.md`](docs/ROADMAP.md) — what's in flight, what's next, and how to browse open issues by `phase-*` label.
 
 ---
 
