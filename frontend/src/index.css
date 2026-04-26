@@ -1,6 +1,16 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
+/* Self-hosted brand fonts via @fontsource (no external CDN — privacy-safe).
+   Display: Newsreader (variable opsz axis 6–72) — editorial-authority serif
+   Body:    Hanken Grotesk (variable wght axis) — Swiss-DNA neo-grotesk
+   Mono:    JetBrains Mono (variable) — code blocks
+   Mirrors compendiq-landing/src/styles/fonts.css for cross-surface parity. */
+@import "@fontsource-variable/newsreader/opsz.css";
+@import "@fontsource-variable/newsreader/opsz-italic.css";
+@import "@fontsource-variable/hanken-grotesk/wght.css";
+@import "@fontsource-variable/jetbrains-mono/index.css";
+
 /* ============================================
    Compendiq — Neumorphic Themes (Honey Linen + Graphite Honey)
    Brand: black #0A0A0A + honey #F9C74F. Same honey accent in both themes;
@@ -22,13 +32,25 @@ html {
   font-size: 15px;
 }
 
-/* Premium typography rendering (Obsidian / Notion pattern) */
+/* Premium typography rendering (Obsidian / Notion pattern). Uses the
+   brand body sans (Hanken Grotesk Variable), with system fallbacks if the
+   font failed to load. Headings opt into --font-display in the prose styles. */
 body {
-  font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
   font-feature-settings: "liga" 1, "kern" 1;
+}
+
+/* Editorial serif for display copy (article titles, section headings,
+   marketing-style hero text). Newsreader's optical-size axis is auto, so
+   small headings stay legible while hero sizes get appropriate optical
+   adjustment. */
+h1, h2, h3, h4, h5, h6,
+.prose :where(h1, h2, h3, h4, h5, h6) {
+  font-family: var(--font-display);
+  font-optical-sizing: auto;
 }
 
 /* Thin minimal scrollbars — 5 px, translucent (Obsidian-like) */
@@ -105,6 +127,13 @@ body {
   --color-status-ai: #b89ae0;           /* purple */
   --color-status-disconnected: #e88888; /* red */
   --color-status-inactive: #6a6458;     /* warm gray */
+
+  /* Brand typography — self-hosted via @fontsource (privacy-safe).
+     Tailwind 4 exposes these as font-display / font-sans / font-mono
+     utilities automatically. Mirrors the landing page token contract. */
+  --font-display: 'Newsreader Variable', Georgia, 'Times New Roman', serif;
+  --font-sans: 'Hanken Grotesk Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, 'SF Mono', Consolas, monospace;
 
   /* Code colors — per-language, matched against --code-bg #1a1a18 */
   --color-code-bg: #1a1a18;
