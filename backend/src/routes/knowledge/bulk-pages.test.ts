@@ -877,6 +877,70 @@ describe('Bulk Pages Routes (Parallelized)', () => {
       expect(meta.cancelled).toBe(false);
     });
 
+    it('accepts filter-mode + expectedCount selection (instead of ids)', async () => {
+      // First query: COUNT for drift check → returns 2
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '2' }], rowCount: 1 });
+      // Second query: SELECT resolved rows
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [
+          { id: 1, confluence_id: 'conf-1', space_key: 'OPS', source: 'confluence', labels: ['old'] },
+          { id: 2, confluence_id: 'conf-2', space_key: 'OPS', source: 'confluence', labels: [] },
+        ],
+        rowCount: 2,
+      });
+      mockQueryFn.mockResolvedValue({ rows: [], rowCount: 1 }); // UPDATEs
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/replace-tags',
+        payload: {
+          filter: { spaceKey: 'OPS' },
+          expectedCount: 2,
+          tags: ['canonical'],
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.succeeded).toBe(2);
+      expect(body.failed).toBe(0);
+    });
+
+    it('returns 409 CountDrift when filter actual diverges past tolerance', async () => {
+      // expectedCount = 100, actual = 200 → way past 5% tolerance
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '200' }], rowCount: 1 });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/replace-tags',
+        payload: {
+          filter: { spaceKey: 'OPS' },
+          expectedCount: 100,
+          tags: ['x'],
+        },
+      });
+
+      expect(response.statusCode).toBe(409);
+      const body = JSON.parse(response.body);
+      expect(body.error).toBe('CountDrift');
+      expect(body.expected).toBe(100);
+      expect(body.actual).toBe(200);
+    });
+
+    it('rejects mixing ids and filter (Zod refine)', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/replace-tags',
+        payload: {
+          ids: ['1'],
+          filter: { spaceKey: 'OPS' },
+          expectedCount: 1,
+          tags: ['x'],
+        },
+      });
+      expect(response.statusCode).toBe(400);
+    });
+
     it('partial-apply: emits ONE audit event whose metadata reflects the failure count', async () => {
       // Two pages eligible from RBAC; the first UPDATE rejects (simulated DB
       // failure) so we expect succeeded=1, failed=1 in the single audit row.

@@ -9,9 +9,13 @@ import { logAuditEvent } from '../../core/services/audit-service.js';
 import {
   startBulkJob,
   runBulkInChunks,
-  publishProgress,
-  newJobId,
 } from '../../core/services/bulk-page-progress.js';
+import {
+  BulkPageFilterSchema,
+  resolveBulkSelection,
+  BulkSelectionError,
+  type BulkSelection,
+} from '../../core/services/bulk-page-selection.js';
 import { emitWebhookEvent } from '../../core/services/webhook-emit-hook.js';
 import { processDirtyPages, isProcessingUser } from '../../domains/llm/services/embedding-service.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
@@ -104,11 +108,30 @@ async function uploadLocalImagesToConfluence(
 }
 
 const BulkIdsSchema = z.object({ ids: z.array(z.string().min(1)).min(1).max(100) });
-const BulkTagSchema = z.object({
-  ids: z.array(z.string().min(1)).min(1).max(100),
-  addTags: z.array(z.string()).default([]),
-  removeTags: z.array(z.string()).default([]),
-});
+/**
+ * Bulk-action selection mode (EE #117 slice 1b). Either `ids` (existing wire
+ * shape) OR `filter` + `expectedCount` (new). The two are mutually exclusive
+ * and refined-validated below; the existing `ids` clients keep working.
+ */
+const BulkTagSchema = z
+  .object({
+    ids: z.array(z.string().min(1)).min(1).max(1000).optional(),
+    filter: BulkPageFilterSchema.optional(),
+    expectedCount: z.coerce.number().int().min(0).optional(),
+    driftToleranceFraction: z.coerce.number().min(0).max(1).optional(),
+    addTags: z.array(z.string()).default([]),
+    removeTags: z.array(z.string()).default([]),
+    jobId: z.string().uuid().optional(),
+  })
+  .refine(
+    (v) =>
+      (v.ids && !v.filter && v.expectedCount === undefined) ||
+      (!v.ids && v.filter && v.expectedCount !== undefined),
+    {
+      message:
+        'Provide either { ids } or { filter, expectedCount }; do not mix or omit expectedCount in filter mode',
+    },
+  );
 /**
  * `bulk/replace-tags` (EE #117) — REPLACES the entire label set on each page.
  * Higher-risk than additive tag (`bulk/tag`), so the audit emission gets its
@@ -116,11 +139,24 @@ const BulkTagSchema = z.object({
  * trimmed, de-duplicated) at input to match the existing auto-tagger
  * convention.
  */
-const BulkReplaceTagsSchema = z.object({
-  ids: z.array(z.string().min(1)).min(1).max(100),
-  tags: z.array(z.string()).max(50),
-  jobId: z.string().uuid().optional(),
-});
+const BulkReplaceTagsSchema = z
+  .object({
+    ids: z.array(z.string().min(1)).min(1).max(1000).optional(),
+    filter: BulkPageFilterSchema.optional(),
+    expectedCount: z.coerce.number().int().min(0).optional(),
+    driftToleranceFraction: z.coerce.number().min(0).max(1).optional(),
+    tags: z.array(z.string()).max(50),
+    jobId: z.string().uuid().optional(),
+  })
+  .refine(
+    (v) =>
+      (v.ids && !v.filter && v.expectedCount === undefined) ||
+      (!v.ids && v.filter && v.expectedCount !== undefined),
+    {
+      message:
+        'Provide either { ids } or { filter, expectedCount }; do not mix or omit expectedCount in filter mode',
+    },
+  );
 const IdParamSchema = z.object({ id: z.string().min(1) });
 
 const ImageUploadSchema = z.object({
@@ -1691,8 +1727,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
   });
 
   // POST /api/pages/bulk/tag - add/remove tags on multiple pages
-  fastify.post('/pages/bulk/tag', async (request) => {
-    const { ids, addTags, removeTags } = BulkTagSchema.parse(request.body);
+  fastify.post('/pages/bulk/tag', async (request, reply) => {
+    const parsed = BulkTagSchema.parse(request.body);
+    const { addTags, removeTags } = parsed;
     const userId = request.userId;
 
     if (addTags.length === 0 && removeTags.length === 0) {
@@ -1700,27 +1737,37 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     }
 
     const client = await getClientForUser(userId);
-
-    // Parse IDs as integers (frontend sends stringified integer PKs)
-    const invalidIds = ids.filter((id) => !/^\d+$/.test(id));
-    if (invalidIds.length > 0) {
-      request.log.warn({ invalidIds }, 'Non-numeric page IDs filtered from bulk tag operation');
-    }
-    const numericIds = ids.filter((id) => /^\d+$/.test(id)).map((id) => parseInt(id, 10));
-
-    // Batch fetch labels: single query with RBAC space-based access control
     const tagSpaces = await getUserAccessibleSpaces(userId);
-    const existing = await query<{ id: number; confluence_id: string | null; labels: string[] }>(
-      `SELECT cp.id, cp.confluence_id, cp.labels FROM pages cp
-       WHERE (cp.space_key = ANY($1::text[]) OR cp.space_key IS NULL)
-         AND cp.id = ANY($2::int[])
-         AND cp.deleted_at IS NULL`,
-      [tagSpaces, numericIds],
+
+    const selection: BulkSelection = {
+      ids: parsed.ids,
+      filter: parsed.filter,
+      expectedCount: parsed.expectedCount,
+      driftToleranceFraction: parsed.driftToleranceFraction,
+    };
+
+    let resolved;
+    try {
+      resolved = await resolveBulkSelection(userId, selection, tagSpaces, {
+        idMode: 'numeric-only',
+      });
+    } catch (err) {
+      if (err instanceof BulkSelectionError && err.detail.kind === 'count_drift') {
+        return reply.status(409).send({
+          error: 'CountDrift',
+          message: err.detail.message,
+          expected: err.detail.expected,
+          actual: err.detail.actual,
+        });
+      }
+      throw err;
+    }
+
+    const pageMap = new Map(
+      resolved.rows.map((r) => [String(r.id), { confluenceId: r.confluenceId, labels: r.labels }]),
     );
-    const pageMap = new Map(existing.rows.map((r) => [String(r.id), { confluenceId: r.confluence_id, labels: r.labels || [] }]));
-    const notFoundIds = ids.filter((id) => !pageMap.has(id));
-    const errors: string[] = notFoundIds.map((id) => `Page ${id} not found`);
-    let failed = notFoundIds.length;
+    const errors: string[] = resolved.notFoundIds.map((id) => `Page ${id} not found`);
+    let failed = resolved.notFoundIds.length;
 
     // Process each owned page: compute new labels, update DB, sync to Confluence
     const bulkLimit = pLimit(5);
@@ -1792,7 +1839,14 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       'BULK_PAGE_TAGGED',
       'page',
       undefined,
-      { bulkIds: ids, addTags, removeTags, succeeded, failed },
+      {
+        ...(parsed.ids ? { bulkIds: parsed.ids } : { filter: parsed.filter, expectedCount: parsed.expectedCount }),
+        affectedCount: pageMap.size,
+        addTags,
+        removeTags,
+        succeeded,
+        failed,
+      },
       request,
     );
 
@@ -1807,8 +1861,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
   // absent the route still chunks for memory but skips the publish/cancel
   // path. Tags are normalised (lower-cased, trimmed, de-duplicated) at the
   // boundary to match the existing auto-tagger convention.
-  fastify.post('/pages/bulk/replace-tags', async (request) => {
-    const { ids, tags, jobId } = BulkReplaceTagsSchema.parse(request.body);
+  fastify.post('/pages/bulk/replace-tags', async (request, reply) => {
+    const parsed = BulkReplaceTagsSchema.parse(request.body);
+    const { tags, jobId } = parsed;
     const userId = request.userId;
 
     // Normalise input tags
@@ -1820,29 +1875,38 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       ),
     );
 
-    const invalidIds = ids.filter((id) => !/^\d+$/.test(id));
-    if (invalidIds.length > 0) {
-      request.log.warn({ invalidIds }, 'Non-numeric page IDs filtered from bulk replace-tags');
-    }
-    const numericIds = ids.filter((id) => /^\d+$/.test(id)).map((id) => parseInt(id, 10));
-
-    // RBAC: only pages in user-accessible spaces (or unscoped standalone)
     const accessSpaces = await getUserAccessibleSpaces(userId);
-    const existing = await query<{ id: number; confluence_id: string | null; labels: string[] }>(
-      `SELECT cp.id, cp.confluence_id, cp.labels FROM pages cp
-       WHERE (cp.space_key = ANY($1::text[]) OR cp.space_key IS NULL)
-         AND cp.id = ANY($2::int[])
-         AND cp.deleted_at IS NULL`,
-      [accessSpaces, numericIds],
-    );
-    const pageMap = new Map(
-      existing.rows.map((r) => [r.id, { confluenceId: r.confluence_id, oldLabels: r.labels || [] }]),
-    );
-    const notFoundIds = ids.filter((id) => !pageMap.has(parseInt(id, 10)));
-    const errors: string[] = notFoundIds.map((id) => `Page ${id} not found`);
-    let initialFailed = notFoundIds.length;
+    const selection: BulkSelection = {
+      ids: parsed.ids,
+      filter: parsed.filter,
+      expectedCount: parsed.expectedCount,
+      driftToleranceFraction: parsed.driftToleranceFraction,
+    };
 
-    const eligible = [...pageMap.entries()].map(([id, info]) => ({ id, ...info }));
+    let resolved;
+    try {
+      resolved = await resolveBulkSelection(userId, selection, accessSpaces, {
+        idMode: 'numeric-only',
+      });
+    } catch (err) {
+      if (err instanceof BulkSelectionError && err.detail.kind === 'count_drift') {
+        return reply.status(409).send({
+          error: 'CountDrift',
+          message: err.detail.message,
+          expected: err.detail.expected,
+          actual: err.detail.actual,
+        });
+      }
+      throw err;
+    }
+
+    const errors: string[] = resolved.notFoundIds.map((id) => `Page ${id} not found`);
+    const initialFailed = resolved.notFoundIds.length;
+    const eligible = resolved.rows.map((r) => ({
+      id: r.id,
+      confluenceId: r.confluenceId,
+      oldLabels: r.labels,
+    }));
 
     if (jobId) {
       await startBulkJob(jobId, eligible.length, userId, 'replace-tags');
@@ -1912,7 +1976,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       'page',
       undefined,
       {
-        bulkIds: ids,
+        ...(parsed.ids ? { bulkIds: parsed.ids } : { filter: parsed.filter, expectedCount: parsed.expectedCount }),
+        affectedCount: eligible.length,
         tags: normTags,
         succeeded,
         failed,
