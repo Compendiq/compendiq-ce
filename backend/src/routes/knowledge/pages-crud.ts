@@ -6,6 +6,12 @@ import { getClientForUser } from '../../domains/confluence/services/sync-service
 import { htmlToConfluence, confluenceToHtml } from '../../core/services/content-converter.js';
 import { cleanPageAttachments, writeAttachmentCache } from '../../domains/confluence/services/attachment-handler.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
+import {
+  startBulkJob,
+  runBulkInChunks,
+  publishProgress,
+  newJobId,
+} from '../../core/services/bulk-page-progress.js';
 import { emitWebhookEvent } from '../../core/services/webhook-emit-hook.js';
 import { processDirtyPages, isProcessingUser } from '../../domains/llm/services/embedding-service.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
@@ -102,6 +108,18 @@ const BulkTagSchema = z.object({
   ids: z.array(z.string().min(1)).min(1).max(100),
   addTags: z.array(z.string()).default([]),
   removeTags: z.array(z.string()).default([]),
+});
+/**
+ * `bulk/replace-tags` (EE #117) — REPLACES the entire label set on each page.
+ * Higher-risk than additive tag (`bulk/tag`), so the audit emission gets its
+ * own action: `BULK_PAGE_TAGS_REPLACED`. Tags are normalised (lowercased,
+ * trimmed, de-duplicated) at input to match the existing auto-tagger
+ * convention.
+ */
+const BulkReplaceTagsSchema = z.object({
+  ids: z.array(z.string().min(1)).min(1).max(100),
+  tags: z.array(z.string()).max(50),
+  jobId: z.string().uuid().optional(),
 });
 const IdParamSchema = z.object({ id: z.string().min(1) });
 
@@ -1768,7 +1786,143 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     await cache.invalidate(userId, 'pages');
 
+    // Audit: one event per bulk action, not per row (epic v0.4 §3.6 / R8).
+    await logAuditEvent(
+      userId,
+      'BULK_PAGE_TAGGED',
+      'page',
+      undefined,
+      { bulkIds: ids, addTags, removeTags, succeeded, failed },
+      request,
+    );
+
     return { succeeded, failed, errors };
+  });
+
+  // POST /api/pages/bulk/replace-tags — REPLACE entire tag set on N pages
+  //
+  // Distinct from /bulk/tag (additive) so admins can wipe tags atomically and
+  // the audit log can distinguish the higher-risk operation
+  // (BULK_PAGE_TAGS_REPLACED). Optional `jobId` enables SSE progress; when
+  // absent the route still chunks for memory but skips the publish/cancel
+  // path. Tags are normalised (lower-cased, trimmed, de-duplicated) at the
+  // boundary to match the existing auto-tagger convention.
+  fastify.post('/pages/bulk/replace-tags', async (request) => {
+    const { ids, tags, jobId } = BulkReplaceTagsSchema.parse(request.body);
+    const userId = request.userId;
+
+    // Normalise input tags
+    const normTags = Array.from(
+      new Set(
+        tags
+          .map((t) => t.trim().toLowerCase())
+          .filter((t) => t.length > 0),
+      ),
+    );
+
+    const invalidIds = ids.filter((id) => !/^\d+$/.test(id));
+    if (invalidIds.length > 0) {
+      request.log.warn({ invalidIds }, 'Non-numeric page IDs filtered from bulk replace-tags');
+    }
+    const numericIds = ids.filter((id) => /^\d+$/.test(id)).map((id) => parseInt(id, 10));
+
+    // RBAC: only pages in user-accessible spaces (or unscoped standalone)
+    const accessSpaces = await getUserAccessibleSpaces(userId);
+    const existing = await query<{ id: number; confluence_id: string | null; labels: string[] }>(
+      `SELECT cp.id, cp.confluence_id, cp.labels FROM pages cp
+       WHERE (cp.space_key = ANY($1::text[]) OR cp.space_key IS NULL)
+         AND cp.id = ANY($2::int[])
+         AND cp.deleted_at IS NULL`,
+      [accessSpaces, numericIds],
+    );
+    const pageMap = new Map(
+      existing.rows.map((r) => [r.id, { confluenceId: r.confluence_id, oldLabels: r.labels || [] }]),
+    );
+    const notFoundIds = ids.filter((id) => !pageMap.has(parseInt(id, 10)));
+    const errors: string[] = notFoundIds.map((id) => `Page ${id} not found`);
+    let initialFailed = notFoundIds.length;
+
+    const eligible = [...pageMap.entries()].map(([id, info]) => ({ id, ...info }));
+
+    if (jobId) {
+      await startBulkJob(jobId, eligible.length, userId, 'replace-tags');
+    }
+
+    const client = await getClientForUser(userId);
+    const bulkLimit = pLimit(5);
+
+    const result = await runBulkInChunks(eligible, 100, jobId ?? null, async (chunk) => {
+      let chunkSucceeded = 0;
+      let chunkFailed = 0;
+      const chunkErrors: string[] = [];
+
+      const settled = await Promise.allSettled(
+        chunk.map((page) =>
+          bulkLimit(async () => {
+            await query('UPDATE pages SET labels = $2 WHERE id = $1', [page.id, normTags]);
+
+            // Sync to Confluence: remove labels not in new set, add the rest
+            if (client && page.confluenceId) {
+              const oldSet = new Set(page.oldLabels);
+              const newSet = new Set(normTags);
+              const toAdd = normTags.filter((t) => !oldSet.has(t));
+              const toRemove = page.oldLabels.filter((t) => !newSet.has(t));
+              try {
+                if (toAdd.length > 0) await client.addLabels(page.confluenceId, toAdd);
+                for (const label of toRemove) {
+                  await client.removeLabel(page.confluenceId, label);
+                }
+              } catch (err) {
+                logger.error(
+                  { err, pageId: page.id, confluenceId: page.confluenceId, userId },
+                  'replace-tags: Confluence label sync failed',
+                );
+              }
+            }
+            return page.id;
+          }),
+        ),
+      );
+
+      for (let i = 0; i < settled.length; i++) {
+        const r = settled[i]!;
+        if (r.status === 'fulfilled') {
+          chunkSucceeded++;
+        } else {
+          chunkFailed++;
+          chunkErrors.push(
+            `Page ${chunk[i]!.id}: ${r.reason instanceof Error ? r.reason.message : 'Unknown error'}`,
+          );
+        }
+      }
+
+      return { succeeded: chunkSucceeded, failed: chunkFailed, errors: chunkErrors };
+    });
+
+    errors.push(...result.errors);
+    const succeeded = result.succeeded;
+    const failed = initialFailed + result.failed;
+    const cancelled = result.cancelled;
+
+    await cache.invalidate(userId, 'pages');
+
+    await logAuditEvent(
+      userId,
+      'BULK_PAGE_TAGS_REPLACED',
+      'page',
+      undefined,
+      {
+        bulkIds: ids,
+        tags: normTags,
+        succeeded,
+        failed,
+        cancelled,
+        ...(jobId ? { jobId } : {}),
+      },
+      request,
+    );
+
+    return { succeeded, failed, errors, cancelled, ...(jobId ? { jobId } : {}) };
   });
 
   // POST /api/pages/:id/images - upload a pasted/dropped image for a page

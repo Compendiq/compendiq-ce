@@ -120,7 +120,18 @@ export type AuditAction =
   | 'USER_UPDATED'
   | 'USER_DEACTIVATED'
   | 'USER_REACTIVATED'
-  | 'USER_HARD_DELETED';
+  | 'USER_HARD_DELETED'
+  // Bulk page operations — EE #117. One audit row per bulk action (NOT per
+  // affected page) per epic v0.4 §3.6 / R8 audit-volume mitigation.
+  // BULK_PAGE_TAGGED covers additive tag changes (adds/removes); the dedicated
+  // BULK_PAGE_TAGS_REPLACED entry distinguishes the higher-risk
+  // replace-the-entire-tag-set semantic. BULK_PAGE_PERMISSION_CHANGED is
+  // emitted by the EE-gated bulk-permission route in the overlay and covers
+  // any add/remove/replace of an ACE applied across N pages — including the
+  // implicit `inherit_perms=false` flip when present (recorded in metadata).
+  | 'BULK_PAGE_TAGGED'
+  | 'BULK_PAGE_TAGS_REPLACED'
+  | 'BULK_PAGE_PERMISSION_CHANGED';
 
 export interface AuditLogEntry {
   id: string;

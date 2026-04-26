@@ -713,5 +713,210 @@ describe('Bulk Pages Routes (Parallelized)', () => {
       expect(updateCall).toBeDefined();
       expect(updateCall![0]).toContain('WHERE id = $1');
     });
+
+    // EE #117 — confirm the additive bulk/tag route now emits exactly one
+    // BULK_PAGE_TAGGED audit event per request (not per row). Audit-volume
+    // mitigation per epic v0.4 §3.6 / R8.
+    it('emits exactly one BULK_PAGE_TAGGED audit event for the whole request', async () => {
+      const { logAuditEvent } = await import('../../core/services/audit-service.js');
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [
+          { id: 1, confluence_id: 'conf-1', labels: ['existing-tag'] },
+          { id: 2, confluence_id: 'conf-2', labels: [] },
+          { id: 3, confluence_id: 'conf-3', labels: [] },
+        ],
+        rowCount: 3,
+      });
+
+      await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/tag',
+        payload: { ids: ['1', '2', '3'], addTags: ['shared'] },
+      });
+
+      const calls = vi.mocked(logAuditEvent).mock.calls;
+      const bulkTaggedCalls = calls.filter((c) => c[1] === 'BULK_PAGE_TAGGED');
+      expect(bulkTaggedCalls).toHaveLength(1);
+      const meta = bulkTaggedCalls[0]?.[4] as Record<string, unknown>;
+      expect(meta.bulkIds).toEqual(['1', '2', '3']);
+      expect(meta.addTags).toEqual(['shared']);
+      expect(meta.succeeded).toBe(3);
+      expect(meta.failed).toBe(0);
+    });
+  });
+
+  describe('POST /api/pages/bulk/replace-tags', () => {
+    it('should replace the entire tag set on the targeted pages', async () => {
+      // Page 1 has existing labels ['old-a', 'old-b'] → after replace they are
+      // wiped and ['kept'] survives only because the input contains it.
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ id: 1, confluence_id: 'conf-1', labels: ['old-a', 'old-b'] }],
+        rowCount: 1,
+      });
+      // UPDATE query
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/replace-tags',
+        payload: { ids: ['1'], tags: ['kept'] },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.succeeded).toBe(1);
+      expect(body.failed).toBe(0);
+      expect(body.cancelled).toBe(false);
+
+      // The UPDATE should write the new tag set to the page
+      const updateCall = mockQueryFn.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('UPDATE pages SET labels'),
+      );
+      expect(updateCall).toBeDefined();
+      expect(updateCall![1]).toEqual([1, ['kept']]);
+    });
+
+    it('normalises tags (lowercase, trim, dedupe) before persisting', async () => {
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ id: 1, confluence_id: null, labels: [] }],
+        rowCount: 1,
+      });
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/replace-tags',
+        payload: {
+          ids: ['1'],
+          tags: ['  Bug  ', 'BUG', 'feature', 'feature', '   '],
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const updateCall = mockQueryFn.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('UPDATE pages SET labels'),
+      );
+      expect(updateCall![1]).toEqual([1, ['bug', 'feature']]);
+    });
+
+    it('syncs the diff to Confluence: adds new tags, removes dropped ones', async () => {
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ id: 1, confluence_id: 'conf-1', labels: ['old-a', 'old-b'] }],
+        rowCount: 1,
+      });
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+      await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/replace-tags',
+        payload: { ids: ['1'], tags: ['old-a', 'new'] },
+      });
+
+      const client = await vi.mocked(getClientForUser).mock.results[0].value;
+      expect(client.addLabels).toHaveBeenCalledWith('conf-1', ['new']);
+      expect(client.removeLabel).toHaveBeenCalledWith('conf-1', 'old-b');
+    });
+
+    it('reports not-found pages without aborting the request', async () => {
+      // RBAC fetch returns only page 1; page 999 is not found.
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ id: 1, confluence_id: null, labels: [] }],
+        rowCount: 1,
+      });
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/replace-tags',
+        payload: { ids: ['1', '999'], tags: ['t'] },
+      });
+
+      const body = JSON.parse(response.body);
+      expect(body.succeeded).toBe(1);
+      expect(body.failed).toBe(1);
+      expect(body.errors[0]).toContain('999');
+      expect(body.errors[0]).toContain('not found');
+    });
+
+    it('rejects empty ids', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/replace-tags',
+        payload: { ids: [], tags: ['t'] },
+      });
+      expect(response.statusCode).toBe(400);
+    });
+
+    // Audit-count invariant: one BULK_PAGE_TAGS_REPLACED event per request,
+    // never per affected page (epic v0.4 §3.6 / R8).
+    it('emits exactly one BULK_PAGE_TAGS_REPLACED audit event for the whole request', async () => {
+      const { logAuditEvent } = await import('../../core/services/audit-service.js');
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [
+          { id: 1, confluence_id: 'conf-1', labels: ['old-a'] },
+          { id: 2, confluence_id: 'conf-2', labels: ['old-b'] },
+          { id: 3, confluence_id: null, labels: [] },
+        ],
+        rowCount: 3,
+      });
+      mockQueryFn.mockResolvedValue({ rows: [], rowCount: 1 });
+
+      await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/replace-tags',
+        payload: { ids: ['1', '2', '3'], tags: ['shared'] },
+      });
+
+      const calls = vi.mocked(logAuditEvent).mock.calls;
+      const replacedCalls = calls.filter((c) => c[1] === 'BULK_PAGE_TAGS_REPLACED');
+      expect(replacedCalls).toHaveLength(1);
+      const meta = replacedCalls[0]?.[4] as Record<string, unknown>;
+      expect(meta.tags).toEqual(['shared']);
+      expect(meta.succeeded).toBe(3);
+      expect(meta.failed).toBe(0);
+      expect(meta.cancelled).toBe(false);
+    });
+
+    it('partial-apply: emits ONE audit event whose metadata reflects the failure count', async () => {
+      // Two pages eligible from RBAC; the first UPDATE rejects (simulated DB
+      // failure) so we expect succeeded=1, failed=1 in the single audit row.
+      const { logAuditEvent } = await import('../../core/services/audit-service.js');
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [
+          { id: 1, confluence_id: 'conf-1', labels: [] },
+          { id: 2, confluence_id: 'conf-2', labels: [] },
+        ],
+        rowCount: 2,
+      });
+      // First UPDATE rejects, second succeeds.
+      let updateCallIdx = 0;
+      mockQueryFn.mockImplementation((sql: string) => {
+        if (sql.includes('UPDATE pages SET labels')) {
+          updateCallIdx++;
+          if (updateCallIdx === 1) {
+            return Promise.reject(new Error('simulated DB failure'));
+          }
+          return Promise.resolve({ rows: [], rowCount: 1 });
+        }
+        return Promise.resolve({ rows: [], rowCount: 0 });
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/replace-tags',
+        payload: { ids: ['1', '2'], tags: ['new'] },
+      });
+
+      const body = JSON.parse(response.body);
+      expect(body.succeeded).toBe(1);
+      expect(body.failed).toBe(1);
+      expect(body.errors.some((e: string) => e.includes('simulated DB failure'))).toBe(true);
+
+      const replacedCalls = vi.mocked(logAuditEvent).mock.calls.filter((c) => c[1] === 'BULK_PAGE_TAGS_REPLACED');
+      expect(replacedCalls).toHaveLength(1);
+      const meta = replacedCalls[0]?.[4] as Record<string, unknown>;
+      expect(meta.succeeded).toBe(1);
+      expect(meta.failed).toBe(1);
+    });
   });
 });
