@@ -407,7 +407,7 @@ export function GenerateSavePanel({
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder="Page title..."
-            className="w-full rounded-lg border border-border/40 bg-background/50 px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-primary/30"
+            className="nm-input"
             data-testid="generate-title-input"
           />
         </div>
@@ -590,19 +590,20 @@ export function GenerateModeInput() {
           </label>
         )}
 
-        <div className="flex items-center gap-3">
+        <div className="nm-composer">
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSubmit()}
             placeholder={pdfData ? 'Instructions for generating from PDF...' : 'Describe the article to generate...'}
             disabled={isStreaming}
-            className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+            className="flex-1 bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
           />
           <button
             onClick={handleSubmit}
             disabled={isStreaming || !input.trim() || !model}
-            className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
+            aria-label={isStreaming ? 'Sending...' : 'Send message'}
+            className="shrink-0 flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
           >
             {isStreaming ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
           </button>

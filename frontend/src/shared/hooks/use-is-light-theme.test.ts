@@ -5,38 +5,30 @@ import { useThemeStore } from '../../stores/theme-store';
 
 describe('useIsLightTheme', () => {
   beforeEach(() => {
-    useThemeStore.setState({ theme: 'void-indigo' });
+    useThemeStore.setState({ theme: 'graphite-honey' });
   });
 
-  it('returns false for dark themes', () => {
+  it('returns false for the dark theme (graphite-honey)', () => {
     const { result } = renderHook(() => useIsLightTheme());
     expect(result.current).toBe(false);
   });
 
-  it('returns true when switched to a light theme', () => {
+  it('returns true when switched to honey-linen', () => {
     const { result } = renderHook(() => useIsLightTheme());
     act(() => {
-      useThemeStore.getState().setTheme('polar-slate');
+      useThemeStore.getState().setTheme('honey-linen');
     });
     expect(result.current).toBe(true);
   });
 
-  it('returns false when switched back to dark theme', () => {
-    useThemeStore.setState({ theme: 'polar-slate' });
+  it('returns false when switched back to graphite-honey', () => {
+    useThemeStore.setState({ theme: 'honey-linen' });
     const { result } = renderHook(() => useIsLightTheme());
     expect(result.current).toBe(true);
 
     act(() => {
-      useThemeStore.getState().setTheme('obsidian-violet');
+      useThemeStore.getState().setTheme('graphite-honey');
     });
     expect(result.current).toBe(false);
-  });
-
-  it('returns true for parchment-glow', () => {
-    act(() => {
-      useThemeStore.getState().setTheme('parchment-glow');
-    });
-    const { result } = renderHook(() => useIsLightTheme());
-    expect(result.current).toBe(true);
   });
 });

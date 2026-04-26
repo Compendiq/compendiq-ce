@@ -3,7 +3,7 @@ import { useThemeStore, LIGHT_THEMES, DEFAULT_DARK_THEME } from '../../stores/th
 
 /**
  * Applies the selected theme as a data-theme attribute on <html>.
- * The default theme (void-indigo) uses no attribute so the base CSS variables apply.
+ * The default theme (graphite-honey) uses no attribute so the base @theme CSS variables apply.
  * Also toggles the "dark" class for light vs dark theme compatibility.
  */
 export function useThemeEffect() {

@@ -115,25 +115,25 @@ export function AskModeInput() {
 
       {/* URL input row */}
       {showUrlInput && mcpEnabled && (
-        <div className="mb-2 flex items-center gap-2">
+        <div className="nm-composer mb-2">
           <Link2 size={14} className="shrink-0 text-muted-foreground" />
           <input
             value={urlInput}
             onChange={(e) => setUrlInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && addUrl()}
             placeholder="Paste documentation URL..."
-            className="flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
+            className="flex-1 bg-transparent px-1 py-1 text-xs outline-none placeholder:text-muted-foreground/70"
             data-testid="external-url-input"
           />
           <button
             onClick={addUrl}
-            className="rounded px-2 py-0.5 text-xs text-primary hover:bg-primary/10"
+            className="shrink-0 rounded-md px-2 py-1 text-xs text-primary hover:bg-primary/10"
           >
             <Plus size={12} />
           </button>
           <button
             onClick={() => { setShowUrlInput(false); setUrlInput(''); }}
-            className="text-muted-foreground hover:text-foreground"
+            className="shrink-0 rounded-md p-1 text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
           >
             <X size={12} />
           </button>
@@ -141,14 +141,14 @@ export function AskModeInput() {
       )}
 
       {/* Main input row */}
-      <div className="flex items-center gap-3">
+      <div className="nm-composer">
         {mcpEnabled && (
           <button
             onClick={() => setShowUrlInput(!showUrlInput)}
             title="Attach external documentation URL"
-            className={`shrink-0 rounded-lg p-1.5 transition-colors ${
+            className={`shrink-0 rounded-md p-1.5 transition-colors ${
               showUrlInput || externalUrls.length > 0
-                ? 'bg-primary/10 text-primary'
+                ? 'bg-primary/15 text-primary'
                 : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground'
             }`}
             data-testid="attach-url-button"
@@ -162,13 +162,13 @@ export function AskModeInput() {
           onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSubmit()}
           placeholder="Ask a question..."
           disabled={isStreaming}
-          className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+          className="flex-1 bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
         />
         <button
           onClick={handleSubmit}
           disabled={isStreaming || !input.trim() || !model}
           aria-label={isStreaming ? 'Sending...' : 'Send message'}
-          className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
+          className="shrink-0 flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
         >
           {isStreaming ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
         </button>

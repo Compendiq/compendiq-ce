@@ -104,7 +104,7 @@ interface EditorProps {
   placeholder?: string;
   /** Key for localStorage auto-save (e.g. "page-draft-12345"). Omit to disable. */
   draftKey?: string;
-  /** Remove the glass-card wrapper (use inside an already-styled card). Default false. */
+  /** Remove the nm-card wrapper (use inside an already-styled card). Default false. */
   naked?: boolean;
   /** Callback fired when the TipTap editor instance is ready (or destroyed). */
   onEditorReady?: (editor: EditorType | null) => void;
@@ -1060,9 +1060,9 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
   }, [editor, onEditorReady]);
 
   return (
-    <div className={cn('relative', naked ? '' : 'glass-card', headerNumbering && 'header-numbering')}>
+    <div className={cn('relative', naked ? '' : 'nm-card', headerNumbering && 'header-numbering')}>
       {editable && editor && !hideToolbar && (
-        <div className="sticky top-0 z-30 rounded-t-xl border-b border-border/50 bg-card before:absolute before:-z-10 before:-top-[100px] before:bottom-0 before:left-0 before:right-0 before:bg-background">
+        <div className="sticky top-0 z-30 border-b border-border/30 bg-card px-1">
           <EditorToolbar editor={editor} headerNumbering={headerNumbering} onToggleHeaderNumbering={toggleHeaderNumbering} vimEnabled={vimEnabled} onToggleVim={toggleVim} />
           <TableContextToolbar editor={editor} />
           <LayoutContextToolbar editor={editor} />

@@ -503,7 +503,7 @@ describe('AiAssistantPage', () => {
 
       const buttons = screen.getAllByRole('button');
       // The send button is the last button in the input area
-      const sendBtn = buttons.find((b) => b.closest('.glass-card.mt-4'));
+      const sendBtn = buttons.find((b) => b.closest('.nm-card.mt-4'));
       // It should be disabled because model is empty
       if (sendBtn) {
         expect(sendBtn).toBeDisabled();
@@ -597,7 +597,7 @@ describe('AiAssistantPage', () => {
         // Find the last button in the page (the send button)
         screen.getAllByRole('button');
         // The send button doesn't have text, just an icon, and is in the input area
-        const sendBtnContainer = input.closest('.glass-card');
+        const sendBtnContainer = input.closest('.nm-card');
         const sendBtn = sendBtnContainer?.querySelector('button');
         if (sendBtn) {
           expect(sendBtn).not.toBeDisabled();

@@ -248,7 +248,7 @@ function SyncConflictPolicyTabInner() {
               key={opt.value}
               htmlFor={`policy-${opt.value}`}
               className={cn(
-                'glass-card flex cursor-pointer items-start gap-3 p-4 transition-all',
+                'nm-card flex cursor-pointer items-start gap-3 p-4 transition-all',
                 isActive
                   ? 'ring-1 ring-primary'
                   : 'hover:bg-foreground/[0.03]',

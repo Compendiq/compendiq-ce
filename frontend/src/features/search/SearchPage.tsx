@@ -100,7 +100,7 @@ function SearchResultCard({ item, query, navigate }: {
   return (
     <button
       onClick={() => navigate(`/pages/${item.id}`)}
-      className="glass-card-hover w-full p-4 text-left"
+      className="nm-card-interactive w-full p-4 text-left"
       data-testid={`search-result-${item.id}`}
     >
       <div className="flex items-start gap-3">
@@ -235,7 +235,7 @@ export function SearchPage() {
       </div>
 
       {/* Search bar */}
-      <div className="glass-card p-4">
+      <div className="nm-card p-4">
         <div className="flex items-center gap-3">
           <div className="relative flex-1">
             <Search
@@ -461,7 +461,7 @@ export function SearchPage() {
 
       {/* Results */}
       {!activeQuery ? (
-        <div className="glass-card flex flex-col items-center justify-center py-16 text-center">
+        <div className="nm-card flex flex-col items-center justify-center py-16 text-center">
           <div className="mb-4 rounded-full bg-muted p-3">
             <Search size={32} className="text-muted-foreground" />
           </div>
@@ -478,11 +478,11 @@ export function SearchPage() {
       ) : isLoading ? (
         <div className="space-y-3">
           {Array.from({ length: 5 }).map((_, i) => (
-            <div key={i} className="glass-card h-24 animate-pulse" />
+            <div key={i} className="nm-card h-24 animate-pulse" />
           ))}
         </div>
       ) : displayResults.length === 0 ? (
-        <div className="glass-card flex flex-col items-center justify-center py-16 text-center">
+        <div className="nm-card flex flex-col items-center justify-center py-16 text-center">
           <div className="mb-4 rounded-full bg-muted p-3">
             <Inbox size={32} className="text-muted-foreground" />
           </div>
@@ -520,7 +520,7 @@ export function SearchPage() {
           <button
             onClick={() => setPage((p) => Math.max(1, p - 1))}
             disabled={page <= 1}
-            className="glass-card p-2 disabled:opacity-30"
+            className="nm-card p-2 disabled:opacity-30"
             data-testid="search-prev-page"
           >
             <ChevronLeft size={18} />
@@ -531,7 +531,7 @@ export function SearchPage() {
           <button
             onClick={() => setPage((p) => p + 1)}
             disabled={page >= totalPages}
-            className="glass-card p-2 disabled:opacity-30"
+            className="nm-card p-2 disabled:opacity-30"
             data-testid="search-next-page"
           >
             <ChevronRight size={18} />

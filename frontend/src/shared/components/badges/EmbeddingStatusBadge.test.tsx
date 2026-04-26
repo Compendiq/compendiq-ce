@@ -21,8 +21,8 @@ describe('EmbeddingStatusBadge', () => {
     render(<EmbeddingStatusBadge embeddingStatus="not_embedded" />);
     const badge = screen.getByTestId('embedding-status-badge');
     expect(badge).toHaveTextContent('Not Embedded');
-    expect(badge.className).toContain('text-gray-400');
-    expect(badge.className).toContain('bg-gray-500/20');
+    expect(badge.className).toContain('text-status-inactive');
+    expect(badge.className).toContain('bg-status-inactive/20');
     expect(badge).toHaveAttribute('data-status', 'not_embedded');
   });
 
@@ -30,8 +30,8 @@ describe('EmbeddingStatusBadge', () => {
     render(<EmbeddingStatusBadge embeddingStatus="embedding" />);
     const badge = screen.getByTestId('embedding-status-badge');
     expect(badge).toHaveTextContent('Embedding...');
-    expect(badge.className).toContain('text-blue-400');
-    expect(badge.className).toContain('bg-blue-500/20');
+    expect(badge.className).toContain('text-status-embedding');
+    expect(badge.className).toContain('bg-status-embedding/20');
     expect(badge.className).toContain('animate-pulse');
     expect(badge).toHaveAttribute('data-status', 'embedding');
   });
@@ -40,8 +40,8 @@ describe('EmbeddingStatusBadge', () => {
     render(<EmbeddingStatusBadge embeddingStatus="embedded" />);
     const badge = screen.getByTestId('embedding-status-badge');
     expect(badge).toHaveTextContent('Embedded');
-    expect(badge.className).toContain('text-green-400');
-    expect(badge.className).toContain('bg-green-500/20');
+    expect(badge.className).toContain('text-status-connected');
+    expect(badge.className).toContain('bg-status-connected/20');
     expect(badge).toHaveAttribute('data-status', 'embedded');
   });
 
@@ -56,8 +56,8 @@ describe('EmbeddingStatusBadge', () => {
     render(<EmbeddingStatusBadge embeddingStatus="failed" />);
     const badge = screen.getByTestId('embedding-status-badge');
     expect(badge).toHaveTextContent('Embedding Failed');
-    expect(badge.className).toContain('text-red-400');
-    expect(badge.className).toContain('bg-red-500/20');
+    expect(badge.className).toContain('text-status-disconnected');
+    expect(badge.className).toContain('bg-status-disconnected/20');
     expect(badge).toHaveAttribute('data-status', 'failed');
   });
 

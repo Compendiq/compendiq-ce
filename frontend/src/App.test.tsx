@@ -147,7 +147,7 @@ describe('PageLoadingFallback', () => {
     expect(outerDiv.className).toContain('h-64');
 
     const glassCard = outerDiv.firstElementChild as HTMLElement;
-    expect(glassCard.className).toContain('glass-card');
+    expect(glassCard.className).toContain('nm-card');
     expect(glassCard.className).toContain('p-8');
 
     const loadingText = glassCard.firstElementChild as HTMLElement;

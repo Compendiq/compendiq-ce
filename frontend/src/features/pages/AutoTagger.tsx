@@ -89,7 +89,7 @@ export function AutoTagger({ pageId, currentLabels, model, className }: AutoTagg
       <button
         onClick={() => autoTagMutation.mutate()}
         disabled={autoTagMutation.isPending}
-        className={className ?? "glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5 disabled:opacity-50"}
+        className={className ?? "nm-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5 disabled:opacity-50"}
         title="Suggest tags using AI"
       >
         {autoTagMutation.isPending ? (
@@ -115,7 +115,7 @@ export function AutoTagger({ pageId, currentLabels, model, className }: AutoTagg
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
               onClick={(e) => e.stopPropagation()}
-              className="glass-card mx-4 w-full max-w-md overflow-hidden"
+              className="nm-card mx-4 w-full max-w-md overflow-hidden"
             >
               {/* Dialog header */}
               <div className="flex items-center justify-between border-b border-border/50 px-5 py-4">

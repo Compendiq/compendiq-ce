@@ -3,7 +3,7 @@ import { useThemeStore, isLightTheme, DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME } 
 
 /**
  * Header toggle that switches between dark and light modes.
- * Dark → defaults to void-indigo, Light → defaults to polar-slate.
+ * Dark → graphite-honey, Light → honey-linen.
  */
 export function ThemeToggle() {
   const theme = useThemeStore((s) => s.theme);
@@ -17,7 +17,7 @@ export function ThemeToggle() {
   return (
     <button
       onClick={toggle}
-      className="glass-button-ghost hover:bg-foreground/10"
+      className="nm-icon-button hover:bg-foreground/10"
       aria-label={light ? 'Switch to dark mode' : 'Switch to light mode'}
       title={light ? 'Switch to dark mode' : 'Switch to light mode'}
     >

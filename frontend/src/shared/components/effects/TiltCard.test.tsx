@@ -54,14 +54,14 @@ describe('TiltCard', () => {
   it('applies custom className', () => {
     mockMatchMedia(true, false);
     render(
-      <TiltCard className="glass-card p-4" data-testid="tilt-card">
+      <TiltCard className="nm-card p-4" data-testid="tilt-card">
         <span>Content</span>
       </TiltCard>,
       { wrapper: Wrapper },
     );
 
     const card = screen.getByTestId('tilt-card');
-    expect(card.className).toContain('glass-card');
+    expect(card.className).toContain('nm-card');
   });
 
   it('renders as plain div on touch devices (no hover)', () => {

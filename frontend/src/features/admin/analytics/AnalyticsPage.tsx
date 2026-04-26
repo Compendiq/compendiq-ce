@@ -67,7 +67,7 @@ function DashboardSkeleton() {
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       {Array.from({ length: 4 }).map((_, i) => (
-        <div key={i} className="glass-card h-64 animate-pulse" />
+        <div key={i} className="nm-card h-64 animate-pulse" />
       ))}
     </div>
   );
@@ -116,7 +116,7 @@ export function AnalyticsPage() {
     return (
       <div className="space-y-6" data-testid="analytics-gate">
         <h1 className="text-2xl font-semibold">Enterprise Analytics</h1>
-        <div className="glass-card p-8 text-center">
+        <div className="nm-card p-8 text-center">
           <BarChart3 className="mx-auto mb-3 h-12 w-12 text-muted-foreground/50" />
           <h2 className="text-lg font-medium mb-2">Advanced Analytics</h2>
           <p className="text-sm text-muted-foreground">
@@ -154,7 +154,7 @@ export function AnalyticsPage() {
               value={dateRange.startDate}
               max={dateRange.endDate}
               onChange={(e) => setDateRange((prev) => ({ ...prev, startDate: e.target.value }))}
-              className="glass-card px-2 py-1.5 text-xs"
+              className="nm-card px-2 py-1.5 text-xs"
               data-testid="date-start"
             />
             <span className="text-xs text-muted-foreground">to</span>
@@ -164,7 +164,7 @@ export function AnalyticsPage() {
               min={dateRange.startDate}
               max={today}
               onChange={(e) => setDateRange((prev) => ({ ...prev, endDate: e.target.value }))}
-              className="glass-card px-2 py-1.5 text-xs"
+              className="nm-card px-2 py-1.5 text-xs"
               data-testid="date-end"
             />
           </div>
@@ -177,7 +177,7 @@ export function AnalyticsPage() {
       </div>
 
       {/* Tab bar */}
-      <div className="glass-card p-1.5 flex gap-1" data-testid="analytics-tabs">
+      <div className="nm-card p-1.5 flex gap-1" data-testid="analytics-tabs">
         {TABS.map((tab) => {
           const Icon = tab.icon;
           const isDisabled = tab.requiresFeature ? !hasFeature(tab.requiresFeature) : false;

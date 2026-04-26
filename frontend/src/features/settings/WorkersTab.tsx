@@ -235,7 +235,7 @@ function WorkerCard({ title, statusKey, statusEndpoint, runEndpoint, rescanEndpo
   const workerState = status ? deriveWorkerState(status) : 'idle';
 
   return (
-    <div className="glass-card p-4 space-y-3" data-testid={`worker-card-${statusKey}`}>
+    <div className="nm-card p-4 space-y-3" data-testid={`worker-card-${statusKey}`}>
       {/* Header: title, status badge, action buttons */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">

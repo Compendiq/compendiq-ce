@@ -6,20 +6,20 @@ import { useThemeEffect } from './useThemeEffect';
 
 describe('useThemeEffect', () => {
   beforeEach(() => {
-    useThemeStore.setState({ theme: 'void-indigo' });
+    useThemeStore.setState({ theme: 'graphite-honey' });
     document.documentElement.removeAttribute('data-theme');
     document.documentElement.classList.add('dark');
   });
 
-  it('does not set data-theme for the default void-indigo theme', () => {
+  it('does not set data-theme for the default graphite-honey theme', () => {
     renderHook(() => useThemeEffect());
     expect(document.documentElement.getAttribute('data-theme')).toBeNull();
   });
 
-  it('sets data-theme attribute when a non-default theme is selected', () => {
-    useThemeStore.setState({ theme: 'obsidian-violet' });
+  it('sets data-theme attribute when honey-linen is selected', () => {
+    useThemeStore.setState({ theme: 'honey-linen' });
     renderHook(() => useThemeEffect());
-    expect(document.documentElement.getAttribute('data-theme')).toBe('obsidian-violet');
+    expect(document.documentElement.getAttribute('data-theme')).toBe('honey-linen');
   });
 
   it('updates data-theme when the theme changes', () => {
@@ -27,53 +27,45 @@ describe('useThemeEffect', () => {
     expect(document.documentElement.getAttribute('data-theme')).toBeNull();
 
     act(() => {
-      useThemeStore.getState().setTheme('parchment-glow');
+      useThemeStore.getState().setTheme('honey-linen');
     });
-    expect(document.documentElement.getAttribute('data-theme')).toBe('parchment-glow');
+    expect(document.documentElement.getAttribute('data-theme')).toBe('honey-linen');
   });
 
-  it('removes data-theme when switching back to void-indigo', () => {
-    useThemeStore.setState({ theme: 'obsidian-violet' });
+  it('removes data-theme when switching back to graphite-honey', () => {
+    useThemeStore.setState({ theme: 'honey-linen' });
     renderHook(() => useThemeEffect());
-    expect(document.documentElement.getAttribute('data-theme')).toBe('obsidian-violet');
+    expect(document.documentElement.getAttribute('data-theme')).toBe('honey-linen');
 
     act(() => {
-      useThemeStore.getState().setTheme('void-indigo');
+      useThemeStore.getState().setTheme('graphite-honey');
     });
     expect(document.documentElement.getAttribute('data-theme')).toBeNull();
   });
 
-  it('adds dark class for dark themes', () => {
-    document.documentElement.classList.remove('dark');
-    useThemeStore.setState({ theme: 'obsidian-violet' });
+  it('keeps dark class for graphite-honey', () => {
     renderHook(() => useThemeEffect());
     expect(document.documentElement.classList.contains('dark')).toBe(true);
   });
 
-  it('removes dark class for light themes', () => {
-    useThemeStore.setState({ theme: 'polar-slate' });
+  it('removes dark class for honey-linen', () => {
+    useThemeStore.setState({ theme: 'honey-linen' });
     renderHook(() => useThemeEffect());
     expect(document.documentElement.classList.contains('dark')).toBe(false);
-    expect(document.documentElement.getAttribute('data-theme')).toBe('polar-slate');
+    expect(document.documentElement.getAttribute('data-theme')).toBe('honey-linen');
   });
 
-  it('removes dark class for parchment-glow (light theme)', () => {
-    useThemeStore.setState({ theme: 'parchment-glow' });
-    renderHook(() => useThemeEffect());
-    expect(document.documentElement.classList.contains('dark')).toBe(false);
-  });
-
-  it('toggles dark class when switching between light and dark themes', () => {
+  it('toggles dark class when switching between honey-linen and graphite-honey', () => {
     renderHook(() => useThemeEffect());
     expect(document.documentElement.classList.contains('dark')).toBe(true);
 
     act(() => {
-      useThemeStore.getState().setTheme('polar-slate');
+      useThemeStore.getState().setTheme('honey-linen');
     });
     expect(document.documentElement.classList.contains('dark')).toBe(false);
 
     act(() => {
-      useThemeStore.getState().setTheme('obsidian-violet');
+      useThemeStore.getState().setTheme('graphite-honey');
     });
     expect(document.documentElement.classList.contains('dark')).toBe(true);
   });

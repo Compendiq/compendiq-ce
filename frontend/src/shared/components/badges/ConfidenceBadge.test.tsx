@@ -52,19 +52,19 @@ describe('ConfidenceBadge', () => {
   it('applies emerald classes for high confidence', () => {
     render(<ConfidenceBadge score={0.9} />);
     const badge = screen.getByTestId('confidence-badge');
-    expect(badge.className).toContain('text-emerald-400');
+    expect(badge.className).toContain('text-status-connected');
   });
 
   it('applies amber classes for medium confidence', () => {
     render(<ConfidenceBadge score={0.5} />);
     const badge = screen.getByTestId('confidence-badge');
-    expect(badge.className).toContain('text-amber-400');
+    expect(badge.className).toContain('text-status-syncing');
   });
 
   it('applies red classes for low confidence', () => {
     render(<ConfidenceBadge score={0.15} />);
     const badge = screen.getByTestId('confidence-badge');
-    expect(badge.className).toContain('text-red-400');
+    expect(badge.className).toContain('text-status-disconnected');
   });
 
   it('renders the glowing dot element', () => {

@@ -85,7 +85,7 @@ export function SearchEffectivenessDashboard({ dateRange, onExportPdf }: Dashboa
     return (
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4" data-testid="search-loading">
         {Array.from({ length: 4 }).map((_, i) => (
-          <div key={i} className="glass-card p-4"><ChartSkeleton /></div>
+          <div key={i} className="nm-card p-4"><ChartSkeleton /></div>
         ))}
       </div>
     );
@@ -93,7 +93,7 @@ export function SearchEffectivenessDashboard({ dateRange, onExportPdf }: Dashboa
 
   if (!data) {
     return (
-      <div className="glass-card p-8 text-center text-sm text-muted-foreground" data-testid="search-empty">
+      <div className="nm-card p-8 text-center text-sm text-muted-foreground" data-testid="search-empty">
         No search data available for the selected date range.
       </div>
     );
@@ -136,7 +136,7 @@ export function SearchEffectivenessDashboard({ dateRange, onExportPdf }: Dashboa
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* Zero-Result Rate Gauge */}
-        <div className="glass-card p-4" data-testid="zero-result-gauge">
+        <div className="nm-card p-4" data-testid="zero-result-gauge">
           <h3 className="text-sm font-medium mb-3">Zero-Result Rate</h3>
           {data.zeroResultRate ? (
             <GaugeChart
@@ -152,7 +152,7 @@ export function SearchEffectivenessDashboard({ dateRange, onExportPdf }: Dashboa
         </div>
 
         {/* Daily Search Volume */}
-        <div className="glass-card p-4" data-testid="daily-volume-chart">
+        <div className="nm-card p-4" data-testid="daily-volume-chart">
           <h3 className="text-sm font-medium mb-3">Daily Search Volume</h3>
           <Suspense fallback={<ChartSkeleton />}>
             <ResponsiveContainer width="100%" height={250}>
@@ -170,7 +170,7 @@ export function SearchEffectivenessDashboard({ dateRange, onExportPdf }: Dashboa
         </div>
 
         {/* Click-Through Rates */}
-        <div className="glass-card p-4" data-testid="ctr-chart">
+        <div className="nm-card p-4" data-testid="ctr-chart">
           <h3 className="text-sm font-medium mb-3">Click-Through Rates by Type</h3>
           <Suspense fallback={<ChartSkeleton />}>
             {data.clickThroughRate.length > 0 ? (
@@ -192,7 +192,7 @@ export function SearchEffectivenessDashboard({ dateRange, onExportPdf }: Dashboa
         </div>
 
         {/* Top Queries Table */}
-        <div className="glass-card overflow-hidden" data-testid="top-queries-table">
+        <div className="nm-card overflow-hidden" data-testid="top-queries-table">
           <div className="p-4 border-b border-foreground/5">
             <h3 className="text-sm font-medium">Top Queries</h3>
           </div>

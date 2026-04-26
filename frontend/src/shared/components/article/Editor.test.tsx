@@ -43,11 +43,12 @@ function createMockEditor(): EditorType {
 }
 
 describe('Editor', () => {
-  it('sticky toolbar has a safe ::before mask that covers the scroll gap without overlapping content above', async () => {
-    // The internal toolbar uses before:-z-10 (behind its own content) to mask
-    // the scroll-container padding gap above when the toolbar is stuck.
-    // The old bad pattern (before:bottom-full, no -z-10) created a 200px opaque
-    // pane that covered title inputs and config bars on embedding pages.
+  it('sticky toolbar reads as the top of the article card (#30 overhaul)', async () => {
+    // The internal toolbar must look like the visual top of the article card
+    // below — same bg, rounded only on top, sticks at top:0 when scrolling.
+    // The old bad patterns (before:bottom-full overlapping content above, or
+    // before:bg-background showing the page color through the toolbar) are
+    // structurally impossible now because the ::before strip is gone.
     const { container } = render(
       <Editor content="<p>Hello</p>" editable={true} />,
     );
@@ -59,13 +60,21 @@ describe('Editor', () => {
     const toolbar = container.querySelector('[class*="sticky"]');
     const classes = toolbar?.className ?? '';
 
-    // Must NOT use the old downward-extending pattern that covered page content
-    expect(classes).not.toMatch(/before:bottom-full/);
-    expect(classes).not.toMatch(/before:h-\[/);
+    // Sticky at top:0
+    expect(classes).toMatch(/sticky/);
+    expect(classes).toMatch(/top-0/);
 
-    // Must use the safe behind-content mask with an upward extension
-    expect(classes).toMatch(/before:-z-10/);
-    expect(classes).toMatch(/before:-top-\[/);
+    // Square top corners — definitive fix for the scroll-peek-through bug.
+    // Rounded top corners create transparent cutout areas that reveal
+    // whatever is behind the toolbar (article card edges, page bg, etc.)
+    // when scrolling. Square corners eliminate the cutouts entirely.
+    expect(classes).not.toMatch(/rounded-t-/);
+    expect(classes).toMatch(/bg-card\b/);
+    expect(classes).toMatch(/border-b/);
+    // No ::before pseudo-strip — the old shield/extension patterns are gone.
+    expect(classes).not.toMatch(/before:absolute/);
+    expect(classes).not.toMatch(/before:bottom-full/);
+    expect(classes).not.toMatch(/before:bg-background/);
   });
 
   it('renders Insert Layout toolbar button', async () => {
@@ -180,7 +189,7 @@ describe('Editor', () => {
 
     await waitFor(() => {
       // Wait for editor to render
-      expect(container.querySelector('[class*="glass-card"]')).toBeTruthy();
+      expect(container.querySelector('[class*="nm-card"]')).toBeTruthy();
     });
     expect(container.querySelector('.header-numbering')).toBeFalsy();
   });

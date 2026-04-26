@@ -73,30 +73,30 @@ describe('Zustand selector patterns', () => {
 
   describe('useThemeStore selectors', () => {
     beforeEach(() => {
-      useThemeStore.setState({ theme: 'void-indigo' });
+      useThemeStore.setState({ theme: 'graphite-honey' });
     });
 
     it('theme selector returns current theme', () => {
       const selector = (s: ReturnType<typeof useThemeStore.getState>) => s.theme;
-      expect(selector(useThemeStore.getState())).toBe('void-indigo');
+      expect(selector(useThemeStore.getState())).toBe('graphite-honey');
     });
 
     it('setTheme selector is a stable function', () => {
       const setTheme = useThemeStore.getState().setTheme;
       expect(typeof setTheme).toBe('function');
 
-      setTheme('obsidian-violet');
-      expect(useThemeStore.getState().theme).toBe('obsidian-violet');
+      setTheme('honey-linen');
+      expect(useThemeStore.getState().theme).toBe('honey-linen');
     });
 
     it('theme selector reflects setTheme changes', () => {
       const selector = (s: ReturnType<typeof useThemeStore.getState>) => s.theme;
 
-      useThemeStore.getState().setTheme('polar-slate');
-      expect(selector(useThemeStore.getState())).toBe('polar-slate');
+      useThemeStore.getState().setTheme('honey-linen');
+      expect(selector(useThemeStore.getState())).toBe('honey-linen');
 
-      useThemeStore.getState().setTheme('parchment-glow');
-      expect(selector(useThemeStore.getState())).toBe('parchment-glow');
+      useThemeStore.getState().setTheme('graphite-honey');
+      expect(selector(useThemeStore.getState())).toBe('graphite-honey');
     });
   });
 
@@ -146,7 +146,7 @@ describe('Zustand selector patterns', () => {
         sidebarCollapsed: false,
         treeSidebarCollapsed: false,
       });
-      useThemeStore.setState({ theme: 'void-indigo' });
+      useThemeStore.setState({ theme: 'graphite-honey' });
       useCommandPaletteStore.getState().close();
     });
 
@@ -158,7 +158,7 @@ describe('Zustand selector patterns', () => {
 
     it('changing theme store does not affect ui store', () => {
       const sidebarBefore = useUiStore.getState().sidebarCollapsed;
-      useThemeStore.getState().setTheme('obsidian-violet');
+      useThemeStore.getState().setTheme('honey-linen');
       expect(useUiStore.getState().sidebarCollapsed).toBe(sidebarBefore);
     });
 

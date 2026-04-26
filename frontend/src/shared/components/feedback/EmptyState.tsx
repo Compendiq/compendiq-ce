@@ -14,7 +14,7 @@ interface EmptyStateProps {
 
 export function EmptyState({ icon: Icon, title, description, action, className }: EmptyStateProps) {
   return (
-    <div className={cn('glass-card flex flex-col items-center justify-center py-16 text-center', className)}>
+    <div className={cn('nm-card flex flex-col items-center justify-center py-16 text-center', className)}>
       <div className="mb-4 rounded-full bg-muted p-3">
         <Icon size={32} className="text-muted-foreground" />
       </div>
@@ -25,7 +25,7 @@ export function EmptyState({ icon: Icon, title, description, action, className }
       {action && (
         <button
           onClick={action.onClick}
-          className="glass-button-primary mt-4"
+          className="nm-button-primary mt-4"
         >
           {action.label}
         </button>

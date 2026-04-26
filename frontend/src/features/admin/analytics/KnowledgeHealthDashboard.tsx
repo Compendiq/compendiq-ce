@@ -63,7 +63,7 @@ export function KnowledgeHealthDashboard({ dateRange, onExportPdf }: DashboardPr
     return (
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4" data-testid="knowledge-loading">
         {Array.from({ length: 4 }).map((_, i) => (
-          <div key={i} className="glass-card p-4">
+          <div key={i} className="nm-card p-4">
             <ChartSkeleton />
           </div>
         ))}
@@ -73,7 +73,7 @@ export function KnowledgeHealthDashboard({ dateRange, onExportPdf }: DashboardPr
 
   if (!data) {
     return (
-      <div className="glass-card p-8 text-center text-sm text-muted-foreground" data-testid="knowledge-empty">
+      <div className="nm-card p-8 text-center text-sm text-muted-foreground" data-testid="knowledge-empty">
         No knowledge health data available for the selected date range.
       </div>
     );
@@ -114,7 +114,7 @@ export function KnowledgeHealthDashboard({ dateRange, onExportPdf }: DashboardPr
       {/* Charts grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* Quality Score Distribution */}
-        <div className="glass-card p-4" data-testid="quality-chart">
+        <div className="nm-card p-4" data-testid="quality-chart">
           <h3 className="text-sm font-medium mb-3">Quality Score Distribution</h3>
           <Suspense fallback={<ChartSkeleton />}>
             <ResponsiveContainer width="100%" height={250}>
@@ -134,7 +134,7 @@ export function KnowledgeHealthDashboard({ dateRange, onExportPdf }: DashboardPr
         </div>
 
         {/* Stale Content Breakdown */}
-        <div className="glass-card p-4" data-testid="stale-chart">
+        <div className="nm-card p-4" data-testid="stale-chart">
           <h3 className="text-sm font-medium mb-3">Stale Content Breakdown</h3>
           <Suspense fallback={<ChartSkeleton />}>
             <ResponsiveContainer width="100%" height={250}>
@@ -150,7 +150,7 @@ export function KnowledgeHealthDashboard({ dateRange, onExportPdf }: DashboardPr
         </div>
 
         {/* Coverage by Space (Treemap) */}
-        <div className="glass-card p-4" data-testid="coverage-chart">
+        <div className="nm-card p-4" data-testid="coverage-chart">
           <h3 className="text-sm font-medium mb-3">Coverage by Space</h3>
           <Suspense fallback={<ChartSkeleton />}>
             {data.coverageBySpace.length > 0 ? (
@@ -185,7 +185,7 @@ export function KnowledgeHealthDashboard({ dateRange, onExportPdf }: DashboardPr
         </div>
 
         {/* Verification Status */}
-        <div className="glass-card p-4" data-testid="verification-chart">
+        <div className="nm-card p-4" data-testid="verification-chart">
           <h3 className="text-sm font-medium mb-3">Verification Status</h3>
           <Suspense fallback={<ChartSkeleton />}>
             <ResponsiveContainer width="100%" height={250}>

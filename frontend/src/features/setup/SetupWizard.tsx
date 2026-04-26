@@ -201,7 +201,7 @@ export function SetupWizard() {
         )}
 
         {/* Step content card */}
-        <div className="glass-card p-8" data-testid="setup-wizard">
+        <div className="nm-card p-8" data-testid="setup-wizard">
           <AnimatePresence mode="wait">
             {currentStep === 0 && (
               <WelcomeStep key="welcome" onNext={goNext} />

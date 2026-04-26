@@ -61,7 +61,7 @@ export function DiffView({ original, improved, onAccept, onReject, isAccepting =
     <m.div
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
-      className="glass-card overflow-hidden"
+      className="nm-card overflow-hidden"
     >
       {/* Header */}
       <div className="flex items-center justify-between border-b border-border/50 px-4 py-3">

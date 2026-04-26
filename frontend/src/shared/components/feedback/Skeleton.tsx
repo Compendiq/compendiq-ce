@@ -49,7 +49,7 @@ export function Skeleton({ variant = 'text', width, height, className, count = 1
 /** Skeleton for stat cards on the dashboard */
 export function SkeletonStatCard() {
   return (
-    <div className="glass-card p-5">
+    <div className="nm-card p-5">
       <div className="flex items-center gap-3">
         <div className="skeleton h-10 w-10 rounded-lg" />
         <div className="flex-1 space-y-2">
@@ -64,7 +64,7 @@ export function SkeletonStatCard() {
 /** Skeleton for page list items */
 export function SkeletonPageItem() {
   return (
-    <div className="glass-card flex items-center gap-4 p-4">
+    <div className="nm-card flex items-center gap-4 p-4">
       <div className="skeleton h-5 w-5 rounded" />
       <div className="flex-1 space-y-2">
         <div className="skeleton h-4 w-2/3" />
@@ -93,7 +93,7 @@ export function SkeletonFormFields() {
 /** Content-aware skeleton: article card (title bar + 2 meta chips + 3 excerpt lines) */
 export function SkeletonArticleCard() {
   return (
-    <div className="glass-card p-4 skeleton-article-card" data-testid="skeleton-article-card">
+    <div className="nm-card p-4 skeleton-article-card" data-testid="skeleton-article-card">
       <div className="skeleton skeleton-title h-4 w-[70%] mb-3" />
       <div className="flex gap-2 mb-3">
         <div className="skeleton h-3 w-14 rounded-full" />
@@ -111,7 +111,7 @@ export function SkeletonArticleCard() {
 /** Content-aware skeleton: KPI card (label + number + icon) */
 export function SkeletonKPICard() {
   return (
-    <div className="glass-card p-4 skeleton-kpi-card" data-testid="skeleton-kpi-card">
+    <div className="nm-card p-4 skeleton-kpi-card" data-testid="skeleton-kpi-card">
       <div className="skeleton h-8 w-8 rounded-lg shrink-0" />
       <div className="min-w-0">
         <div className="skeleton h-2.5 w-16 mb-1.5" />
@@ -153,7 +153,7 @@ export function PageViewSkeleton() {
       </div>
 
       {/* Metadata bar: space badge + freshness + author + date + version */}
-      <div className="glass-card flex flex-wrap items-center gap-4 px-4 py-3">
+      <div className="nm-card flex flex-wrap items-center gap-4 px-4 py-3">
         <div className="skeleton h-5 w-12 rounded" />
         <div className="skeleton h-5 w-20 rounded-full" />
         <div className="skeleton h-4 w-24" />
@@ -164,7 +164,7 @@ export function PageViewSkeleton() {
       {/* Content area + sidebar */}
       <div className="flex gap-4">
         {/* Main content */}
-        <div className="glass-card flex-1 p-6 space-y-4">
+        <div className="nm-card flex-1 p-6 space-y-4">
           {/* Heading */}
           <div className="skeleton h-7 w-2/5 mb-2" />
           {/* Paragraph lines */}
@@ -208,7 +208,7 @@ export function SettingsSkeleton() {
   return (
     <div data-testid="settings-skeleton">
       <div className="skeleton h-7 w-32 mb-6" />
-      <div className="glass-card">
+      <div className="nm-card">
         {/* Tab bar */}
         <div className="flex border-b border-border/50 gap-1 px-2 py-2">
           {Array.from({ length: 5 }).map((_, i) => (

@@ -114,7 +114,7 @@ export function SettingsPage() {
     >
       <h1 className="mb-6 text-2xl font-bold tracking-[-0.01em]">Settings</h1>
 
-      <div className="glass-card">
+      <div className="nm-card">
         {/* Tab bar — Obsidian style: no fill on inactive, inset bottom-border on active */}
         <div className="flex overflow-x-auto border-b border-border/40">
           {visibleTabs.map((tab) => (

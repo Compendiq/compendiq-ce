@@ -114,7 +114,7 @@ const OutlineNodeItem = memo(function OutlineNodeItem({
         className={cn(
           'group flex items-center gap-1.5 rounded-[10px] h-9 pr-2 text-sm cursor-pointer transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
           isActive
-            ? 'glass-pill-active text-primary font-medium'
+            ? 'nm-pill-active text-primary font-medium'
             : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
         )}
         style={{ paddingLeft: `${level * 16 + 8}px` }}
@@ -389,7 +389,7 @@ export function ArticleRightPane() {
           animate={{ width: 40, opacity: 1 }}
           exit={{ width: 0, opacity: 0 }}
           transition={reduceEffects ? { duration: 0 } : sidebarSpring}
-          className="flex flex-col items-center rounded-xl glass-sidebar overflow-hidden"
+          className="flex flex-col items-center bg-background border-l border-border overflow-hidden"
           data-testid="article-right-pane-rail"
         >
           <div className="flex h-12 w-full flex-col items-center justify-center gap-0.5">
@@ -416,7 +416,7 @@ export function ArticleRightPane() {
       animate={{ width, opacity: 1 }}
       transition={reduceEffects || isResizing ? { duration: 0 } : sidebarSpring}
       className={cn(
-        'relative flex flex-col glass-sidebar overflow-hidden',
+        'relative flex flex-col bg-background border-l border-border overflow-hidden',
         isResizing && 'select-none',
       )}
       data-testid="article-right-pane"
@@ -478,7 +478,7 @@ export function ArticleRightPane() {
             className={cn(
               'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
               isPinned
-                ? 'glass-pill-active text-primary font-medium'
+                ? 'nm-pill-active text-primary font-medium'
                 : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
             )}
             title={`${isPinned ? 'Unpin' : 'Pin'} (${formatKeysForPlatform(getShortcutHint('pin-page') ?? '', detectMac())})`}
@@ -516,20 +516,20 @@ export function ArticleRightPane() {
           <div className="mx-3 h-px bg-[var(--glass-sidebar-divider)]" />
           <div className="px-3 py-3">
             <div className="flex flex-wrap gap-1.5">
-              <span className="inline-flex items-center gap-1 glass-pill-active rounded-full px-2 py-0.5 text-[10px] text-foreground/80">
+              <span className="inline-flex items-center gap-1 nm-pill-active rounded-full px-2 py-0.5 text-[10px] text-foreground/80">
                 {page.spaceKey}
               </span>
-              <span className="inline-flex items-center gap-1 glass-pill-active rounded-full px-2 py-0.5 text-[10px] text-foreground/80">
+              <span className="inline-flex items-center gap-1 nm-pill-active rounded-full px-2 py-0.5 text-[10px] text-foreground/80">
                 {page.hasChildren
                   ? <><FolderOpen size={10} className="shrink-0 text-muted-foreground/60" /> Folder</>
                   : <><FileText size={10} className="shrink-0 text-muted-foreground/60" /> Article</>}
               </span>
               {page.author && (
-                <span className="inline-flex max-w-[120px] truncate glass-pill-active rounded-full px-2 py-0.5 text-[10px] text-foreground/80">
+                <span className="inline-flex max-w-[120px] truncate nm-pill-active rounded-full px-2 py-0.5 text-[10px] text-foreground/80">
                   {page.author}
                 </span>
               )}
-              <span className="inline-flex glass-pill-active rounded-full px-2 py-0.5 text-[10px] text-foreground/80">
+              <span className="inline-flex nm-pill-active rounded-full px-2 py-0.5 text-[10px] text-foreground/80">
                 v{page.version}
               </span>
               {page.lastModifiedAt && <FreshnessBadge lastModified={page.lastModifiedAt} />}
@@ -556,7 +556,7 @@ export function ArticleRightPane() {
               {page.labels.map((label) => (
                 <span
                   key={label}
-                  className="glass-pill-active rounded-full px-2 py-0.5 text-[10px] text-muted-foreground"
+                  className="nm-pill-active rounded-full px-2 py-0.5 text-[10px] text-muted-foreground"
                 >
                   {label}
                 </span>
@@ -592,7 +592,7 @@ export function ArticleRightPane() {
       )}
 
       {/* Outline tree — with scroll mask */}
-      <div className="flex-1 overflow-y-auto p-1.5 glass-scroll-mask" data-testid="article-outline-tree">
+      <div className="flex-1 overflow-y-auto p-1.5 scroll-mask" data-testid="article-outline-tree">
         {headings.length === 0 ? (
           <div className="px-3 py-6 text-center text-xs text-muted-foreground">
             No headings in this article.

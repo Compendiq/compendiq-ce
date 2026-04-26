@@ -272,7 +272,7 @@ function ReviewerQueuePageInner() {
           {filtered.map((r) => (
             <li
               key={r.id}
-              className="glass-card flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between"
+              className="nm-card flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between"
               data-testid={`ai-review-row-${r.id}`}
             >
               <div className="flex-1">

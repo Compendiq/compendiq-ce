@@ -117,7 +117,7 @@ export function BulkOperations({
 
   return (
     <div className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2" data-testid="bulk-operations-bar">
-      <div className="glass-card flex items-center gap-3 rounded-2xl border border-border/60 bg-card/90 px-6 py-3 shadow-2xl backdrop-blur-xl">
+      <div className="flex items-center gap-3 rounded-2xl border border-border/60 bg-card/90 px-6 py-3 shadow-2xl backdrop-blur-xl">
         {/* Selection count */}
         <span className="text-sm font-medium" data-testid="selection-count">
           {selectedIds.length} page{selectedIds.length !== 1 ? 's' : ''} selected

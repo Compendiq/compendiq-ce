@@ -64,7 +64,7 @@ export function ConfluenceStep({ onNext, onBack }: ConfluenceStepProps) {
             type="url"
             value={confluenceUrl}
             onChange={(e) => setConfluenceUrl(e.target.value)}
-            className="glass-input"
+            className="nm-input"
             placeholder="https://confluence.example.com"
             data-testid="confluence-url"
           />
@@ -79,7 +79,7 @@ export function ConfluenceStep({ onNext, onBack }: ConfluenceStepProps) {
             type="password"
             value={pat}
             onChange={(e) => setPat(e.target.value)}
-            className="glass-input"
+            className="nm-input"
             placeholder="Your Confluence PAT"
             data-testid="confluence-pat"
           />
@@ -107,7 +107,7 @@ export function ConfluenceStep({ onNext, onBack }: ConfluenceStepProps) {
         <button
           type="submit"
           disabled={testing || !confluenceUrl || !pat}
-          className="glass-button-secondary px-4 py-2 text-sm"
+          className="nm-button-ghost px-4 py-2 text-sm"
           data-testid="test-confluence-btn"
         >
           {testing ? 'Testing...' : 'Test Connection'}
@@ -118,7 +118,7 @@ export function ConfluenceStep({ onNext, onBack }: ConfluenceStepProps) {
         <button
           type="button"
           onClick={onBack}
-          className="glass-button-ghost px-4 py-2 text-sm"
+          className="nm-icon-button px-4 py-2 text-sm"
           data-testid="confluence-back-btn"
         >
           Back
@@ -127,7 +127,7 @@ export function ConfluenceStep({ onNext, onBack }: ConfluenceStepProps) {
           <button
             type="button"
             onClick={onNext}
-            className="glass-button-ghost px-4 py-2 text-sm"
+            className="nm-icon-button px-4 py-2 text-sm"
             data-testid="skip-confluence-btn"
           >
             Skip for Now
@@ -136,7 +136,7 @@ export function ConfluenceStep({ onNext, onBack }: ConfluenceStepProps) {
             type="button"
             onClick={onNext}
             disabled={!testSuccess}
-            className="glass-button-primary px-6 py-2.5"
+            className="nm-button-primary px-6 py-2.5"
             data-testid="confluence-next-btn"
           >
             Continue

@@ -19,35 +19,35 @@ function getConfig(status: SummaryStatus): StatusConfig {
       return {
         label: 'Summarized',
         title: 'AI summary available',
-        dotClass: 'bg-green-400',
+        dotClass: 'bg-status-connected',
         animate: false,
       };
     case 'summarizing':
       return {
         label: 'Summarizing',
         title: 'Summary is being generated',
-        dotClass: 'bg-purple-400',
+        dotClass: 'bg-status-ai',
         animate: true,
       };
     case 'pending':
       return {
         label: 'Pending',
         title: 'Summary queued for generation',
-        dotClass: 'bg-yellow-400',
+        dotClass: 'bg-status-syncing',
         animate: false,
       };
     case 'failed':
       return {
         label: 'Failed',
         title: 'Summary generation failed',
-        dotClass: 'bg-red-400',
+        dotClass: 'bg-status-disconnected',
         animate: false,
       };
     case 'skipped':
       return {
         label: 'Skipped',
         title: 'Content too short for summarization',
-        dotClass: 'bg-gray-400',
+        dotClass: 'bg-status-inactive',
         animate: false,
       };
   }

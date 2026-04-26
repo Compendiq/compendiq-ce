@@ -25,24 +25,24 @@ function getConfidenceLevel(score: number): ConfidenceLevel {
 const levelConfig: Record<ConfidenceLevel, { label: string; dotClass: string; bgClass: string; textClass: string; glowClass: string }> = {
   high: {
     label: 'High confidence',
-    dotClass: 'bg-emerald-400',
-    bgClass: 'bg-emerald-400/10',
-    textClass: 'text-emerald-400',
-    glowClass: 'shadow-[0_0_6px_1px_rgba(52,211,153,0.4)]',
+    dotClass: 'bg-status-connected',
+    bgClass: 'bg-status-connected/10',
+    textClass: 'text-status-connected',
+    glowClass: 'shadow-[0_0_6px_1px_var(--color-status-connected)]/40',
   },
   medium: {
     label: 'Medium confidence',
-    dotClass: 'bg-amber-400',
-    bgClass: 'bg-amber-400/10',
-    textClass: 'text-amber-400',
-    glowClass: 'shadow-[0_0_6px_1px_rgba(251,191,36,0.4)]',
+    dotClass: 'bg-status-syncing',
+    bgClass: 'bg-status-syncing/10',
+    textClass: 'text-status-syncing',
+    glowClass: 'shadow-[0_0_6px_1px_var(--color-status-syncing)]/40',
   },
   low: {
     label: 'Low confidence',
-    dotClass: 'bg-red-400',
-    bgClass: 'bg-red-400/10',
-    textClass: 'text-red-400',
-    glowClass: 'shadow-[0_0_6px_1px_rgba(248,113,113,0.4)]',
+    dotClass: 'bg-status-disconnected',
+    bgClass: 'bg-status-disconnected/10',
+    textClass: 'text-status-disconnected',
+    glowClass: 'shadow-[0_0_6px_1px_var(--color-status-disconnected)]/40',
   },
 };
 

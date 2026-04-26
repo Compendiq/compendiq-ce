@@ -35,7 +35,7 @@ export function LoginPage() {
 
   return (
     <div className="bg-background flex min-h-screen items-center justify-center p-4">
-      <div className="glass-card w-full max-w-md p-8">
+      <div className="nm-card w-full max-w-md p-8">
         <div className="mb-2 flex flex-col items-center gap-3">
           <CompendiqLogo size={56} className="text-primary" animated />
           <h1 className="text-center text-2xl font-bold">
@@ -56,7 +56,7 @@ export function LoginPage() {
               onChange={(e) => setUsername(e.target.value)}
               required
               minLength={3}
-              className="glass-input"
+              className="nm-input"
               placeholder="Enter username"
             />
           </div>
@@ -70,7 +70,7 @@ export function LoginPage() {
               onChange={(e) => setPassword(e.target.value)}
               required
               minLength={8}
-              className="glass-input"
+              className="nm-input"
               placeholder="Enter password"
             />
           </div>
@@ -78,7 +78,7 @@ export function LoginPage() {
           <button
             type="submit"
             disabled={loading}
-            className="glass-button-primary w-full py-2.5"
+            className="nm-button-primary w-full py-2.5"
           >
             {loading ? 'Loading...' : isRegister ? 'Create Account' : 'Sign In'}
           </button>

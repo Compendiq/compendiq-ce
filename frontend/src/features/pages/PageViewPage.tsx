@@ -19,6 +19,7 @@ import { useAuthenticatedSrc } from '../../shared/hooks/use-authenticated-src';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { useKeyboardShortcuts, type ShortcutDefinition } from '../../shared/hooks/use-keyboard-shortcuts';
 import { useArticleViewStore } from '../../stores/article-view-store';
+import { cn } from '../../shared/lib/cn';
 import { FeatureErrorBoundary } from '../../shared/components/feedback/FeatureErrorBoundary';
 import { QualityScoreBadge } from '../../shared/components/badges/QualityScoreBadge';
 import { Editor, EditorToolbar, TableContextToolbar, LayoutContextToolbar, ColumnContextToolbar, clearDraft, getDraft } from '../../shared/components/article/Editor';
@@ -136,6 +137,11 @@ export function PageViewPage() {
 
   const [editing, setEditing] = useState(false);
   const [editorInstance, setEditorInstance] = useState<EditorType | null>(null);
+
+  // Ref kept for legacy under-mask sizing — the height-tracking
+  // ResizeObserver was removed when the mask layer transitioned to a sticky
+  // sibling element that no longer needs pixel-perfect height matching.
+  const toolbarCardRef = useRef<HTMLDivElement | null>(null);
   const [editHtml, setEditHtml] = useState('');
   const [editTitle, setEditTitle] = useState('');
   const [headings, setHeadings] = useState<TocHeading[]>([]);
@@ -439,7 +445,7 @@ export function PageViewPage() {
 
   if (!page) {
     return (
-      <div className="glass-card flex min-h-[18rem] flex-col items-center justify-center gap-3 py-16 text-center">
+      <div className="nm-card flex min-h-[18rem] flex-col items-center justify-center gap-3 py-16 text-center">
         <FileText size={42} className="text-muted-foreground" />
         <h1 className="text-xl font-semibold text-foreground">Article not found</h1>
         <p className="max-w-md text-sm text-muted-foreground">
@@ -462,19 +468,73 @@ export function PageViewPage() {
       transition={{ duration: 0.18 }}
       data-testid="article-page"
     >
-      {/* Sticky toolbar — ABOVE the card, sticks at top-0 with no movement */}
-      {editing && editorInstance && (
-        <div className="sticky top-0 z-30 border border-border/25 bg-card rounded-xl shadow-[0_8px_32px_var(--glass-shadow)] before:absolute before:-z-10 before:-top-[100px] before:bottom-0 before:-left-[14px] before:-right-[14px] sm:before:-left-[22px] sm:before:-right-[22px] before:bg-background">
-          <EditorToolbar editor={editorInstance} vimEnabled={vimEnabled} onToggleVim={toggleVim} />
-          <TableContextToolbar editor={editorInstance} />
-          <LayoutContextToolbar editor={editorInstance} />
-          <ColumnContextToolbar editor={editorInstance} />
+      {/* Sticky toolbar with a UNDER-mask that sits behind the toolbar at
+          a lower z-index. The mask is bg-background and reaches from the
+          top of the scroll container (flush against the AppLayout top bar
+          when scrolled) down to the bottom of the toolbar — masking any
+          content that would otherwise be visible through the toolbar's
+          rounded-corner cutouts. */}
+      {editing && (
+        <div className="sticky top-0 z-30 isolate">
+          {/* Under-mask: behind the toolbar (z-[-1]), extends up by 100px so
+              it always reaches the top bar above. Bottom matches toolbar
+              height so mask never extends past the toolbar visually. Rounded
+              bottom corners give the mask its own card-like silhouette. */}
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-x-0 -top-[100px] z-[-1] bg-background rounded-b-xl"
+            style={{ bottom: 0 }}
+          />
+        <div ref={toolbarCardRef} className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm">
+          {editorInstance && (
+            <div className="px-1 border-b border-border/20">
+              <EditorToolbar editor={editorInstance} vimEnabled={vimEnabled} onToggleVim={toggleVim} />
+              <TableContextToolbar editor={editorInstance} />
+              <LayoutContextToolbar editor={editorInstance} />
+              <ColumnContextToolbar editor={editorInstance} />
+            </div>
+          )}
+          {/* Action row — Cancel/Save are aligned to TagEditor's input row
+              (its bottom edge), since the TagEditor stacks existing tag
+              pills above the "Add a tag…" input. items-end keeps the
+              buttons on the same baseline as the Add-tag input/button. */}
+          <div className="flex items-end gap-3 px-3 py-2">
+            <div className="min-w-0 flex-1">
+              <TagEditor
+                tags={page.labels}
+                onAddTag={handleAddTag}
+                onRemoveTag={handleRemoveTag}
+                suggestions={filterOptions?.labels}
+                isLoading={labelsMutation.isPending}
+              />
+            </div>
+            <button
+              onClick={handleCancelEditing}
+              className="shrink-0 rounded-md px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleSave}
+              disabled={updateMutation.isPending}
+              className="shrink-0 flex items-center gap-1 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-60"
+            >
+              {updateMutation.isPending ? 'Saving…' : 'Save'}
+              {!updateMutation.isPending && <ShortcutHint shortcutId="save" />}
+            </button>
+          </div>
+        </div>
         </div>
       )}
-      {/* Single unified document card */}
+      {/* Article card. 25px gap below the toolbar when editing. When not
+          editing, the card sits on its own with no toolbar above.
+          Background tint matches the AI page panes (bg-card at 50% alpha
+          over the page bg + backdrop-blur) for cross-route consistency. */}
       <div
-        className={editing ? 'glass-card-xl rounded-t-none -mt-px' : 'glass-card-xl'}
-        style={editing ? { clipPath: 'inset(0 -100px -100px -100px round 0 0 var(--radius-xl) var(--radius-xl))' } : undefined}
+        className={cn(
+          'overflow-hidden rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm',
+          editing && 'mt-[25px]',
+        )}
       >
         {/* Breadcrumb / action strip */}
         <div className="flex items-center justify-between gap-4 border-b border-border/25 px-5 py-2 sm:px-7">
@@ -525,24 +585,7 @@ export function PageViewPage() {
 
           <div className="flex shrink-0 items-center gap-1.5">
             <PresenceAvatarStack viewers={presenceViewers} className="mr-1" />
-            {editing ? (
-              <>
-                <button
-                  onClick={handleCancelEditing}
-                  className="rounded-md px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleSave}
-                  disabled={updateMutation.isPending}
-                  className="flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-60"
-                >
-                  {updateMutation.isPending ? 'Saving…' : 'Save'}
-                  {!updateMutation.isPending && <ShortcutHint shortcutId="save" />}
-                </button>
-              </>
-            ) : (
+            {editing ? null : (
               <>
                 {/* Publish to Confluence for standalone articles */}
                 {page.spaceKey === '__local__' && (
@@ -590,18 +633,9 @@ export function PageViewPage() {
                   placeholder="Article title…"
                 />
               </div>
-              <div className="mt-4 flex flex-wrap items-center gap-2">
-                <TagEditor
-                  tags={page.labels}
-                  onAddTag={handleAddTag}
-                  onRemoveTag={handleRemoveTag}
-                  suggestions={filterOptions?.labels}
-                  isLoading={labelsMutation.isPending}
-                />
-              </div>
             </div>
 
-            {/* Editor — naked (no inner glass-card, we are already inside glass-card-xl) */}
+            {/* Editor — naked (no inner nm-card, we are already inside nm-card-elevated) */}
             <FeatureErrorBoundary featureName="Editor">
               <Editor content={editHtml} onChange={setEditHtml} draftKey={draftKey} naked onEditorReady={setEditorInstance} hideToolbar pageId={id} onSave={handleSave} vimEnabled={vimEnabled} />
             </FeatureErrorBoundary>

@@ -2,17 +2,12 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { migrateStorageKey } from '../shared/lib/migrate-storage-key';
 
-// One-time migrations for localStorage key renames
 migrateStorageKey('kb-theme', 'compendiq-theme');
 migrateStorageKey('atlasmind-theme', 'compendiq-theme');
 
 export const THEME_IDS = [
-  // Dark themes
-  'void-indigo',
-  'obsidian-violet',
-  // Light themes
-  'polar-slate',
-  'parchment-glow',
+  'graphite-honey',
+  'honey-linen',
 ] as const;
 
 export type ThemeId = (typeof THEME_IDS)[number];
@@ -32,48 +27,29 @@ export interface ThemeMeta {
   };
 }
 
-export const DEFAULT_DARK_THEME: ThemeId = 'void-indigo';
-export const DEFAULT_LIGHT_THEME: ThemeId = 'polar-slate';
+export const DEFAULT_DARK_THEME: ThemeId = 'graphite-honey';
+export const DEFAULT_LIGHT_THEME: ThemeId = 'honey-linen';
 
-export const LIGHT_THEMES: ReadonlySet<ThemeId> = new Set([
-  'polar-slate',
-  'parchment-glow',
-]);
+export const LIGHT_THEMES: ReadonlySet<ThemeId> = new Set(['honey-linen']);
 
 export function isLightTheme(theme: ThemeId): boolean {
   return LIGHT_THEMES.has(theme);
 }
 
 export const THEMES: ThemeMeta[] = [
-  // -- Dark themes --
   {
-    id: 'void-indigo',
-    label: 'Void',
-    description: 'Inky graphite with indigo accents — Linear × GitHub',
+    id: 'graphite-honey',
+    label: 'Graphite Honey',
+    description: 'Graphite surfaces with honey accent — neumorphic dark',
     category: 'dark',
-    preview: { bg: '#2a2a2f', card: '#363640', primary: '#6366f1', accent: '#818cf8' },
+    preview: { bg: '#121211', card: '#22211e', primary: '#f9c74f', accent: '#f5efe0' },
   },
   {
-    id: 'obsidian-violet',
-    label: 'Obsidian',
-    description: 'Warm graphite with violet accents — Raycast × Obsidian',
-    category: 'dark',
-    preview: { bg: '#302e2b', card: '#3b3936', primary: '#a855f7', accent: '#c084fc' },
-  },
-  // -- Light themes --
-  {
-    id: 'polar-slate',
-    label: 'Polar Slate',
-    description: 'Cool slate-white with indigo accents — Vercel × Linear Light',
+    id: 'honey-linen',
+    label: 'Honey Linen',
+    description: 'Linen cream with honey accent — neumorphic light',
     category: 'light',
-    preview: { bg: '#f1f5f9', card: '#ffffff', primary: '#4f46e5', accent: '#6366f1' },
-  },
-  {
-    id: 'parchment-glow',
-    label: 'Parchment Glow',
-    description: 'Warm cream with violet-indigo accents — Notion × Stripe',
-    category: 'light',
-    preview: { bg: '#faf8f5', card: '#ffffff', primary: '#7c3aed', accent: '#8b5cf6' },
+    preview: { bg: '#fbf7ef', card: '#fffdf7', primary: '#f9c74f', accent: '#0a0a0a' },
   },
 ];
 
@@ -87,20 +63,11 @@ interface ThemeState {
   setTheme: (theme: ThemeId) => void;
 }
 
-/**
- * Validate that a persisted theme ID is still valid.
- * Removed themes (from the old 24-theme system) fall back to the default.
- */
 function validateThemeId(id: string): ThemeId {
   if ((THEME_IDS as readonly string[]).includes(id)) return id as ThemeId;
   return DEFAULT_DARK_THEME;
 }
 
-/**
- * Apply the data-theme attribute + data-theme-type to <html>.
- * The CSS uses [data-theme="..."] selectors for theme variables
- * and [data-theme-type="light"] for shared light-theme overrides.
- */
 export function applyThemeToDocument(theme: ThemeId): void {
   const root = document.documentElement;
   root.setAttribute('data-theme', theme);

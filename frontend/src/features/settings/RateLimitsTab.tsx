@@ -173,7 +173,7 @@ export function RateLimitsTab() {
         <button
           onClick={handleSave}
           disabled={!hasChanges || mutation.isPending}
-          className="glass-button-primary"
+          className="nm-button-primary"
           data-testid="rate-limits-save-btn"
         >
           {mutation.isPending ? 'Saving...' : 'Save'}

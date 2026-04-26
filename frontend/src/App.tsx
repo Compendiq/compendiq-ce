@@ -86,7 +86,7 @@ const ReviewDetailPage = lazy(() =>
 export function PageLoadingFallback() {
   return (
     <div className="flex items-center justify-center h-64">
-      <div className="glass-card p-8 text-center">
+      <div className="nm-card p-8 text-center">
         <div className="animate-pulse text-muted-foreground">Loading...</div>
       </div>
     </div>
