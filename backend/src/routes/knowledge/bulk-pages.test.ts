@@ -350,6 +350,29 @@ describe('Bulk Pages Routes (Parallelized)', () => {
     });
   });
 
+  describe('POST /api/pages/bulk/delete (filter-mode)', () => {
+    it('accepts filter-mode + expectedCount selection', async () => {
+      // COUNT → 1; SELECT resolved → 1 row; UPDATE deleted_at + DELETE pinned (parallel)
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '1' }], rowCount: 1 });
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ id: 50, confluence_id: null, space_key: null, source: 'standalone', labels: [] }],
+        rowCount: 1,
+      });
+      mockQueryFn.mockResolvedValue({ rows: [], rowCount: 1 });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/delete',
+        payload: { filter: { source: 'standalone' }, expectedCount: 1 },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.succeeded).toBe(1);
+      expect(body.failed).toBe(0);
+    });
+  });
+
   describe('POST /api/pages/bulk/sync', () => {
     it('should re-sync multiple pages', async () => {
       const response = await app.inject({
@@ -395,8 +418,10 @@ describe('Bulk Pages Routes (Parallelized)', () => {
     });
 
     it('should use batch ownership query with ANY()', async () => {
+      // Resolver SELECT (call 0) returns the eligible row; the route then
+      // issues the UPDATE (call 1). Both use ANY() for batching.
       mockQueryFn.mockResolvedValueOnce({
-        rows: [{ confluence_id: 'page-1', space_key: 'OPS' }],
+        rows: [{ id: 1, confluence_id: 'page-1', space_key: 'OPS', source: 'confluence', labels: [] }],
         rowCount: 1,
       });
 
@@ -406,9 +431,43 @@ describe('Bulk Pages Routes (Parallelized)', () => {
         payload: { ids: ['page-1'] },
       });
 
-      // First query call should be the batch ownership check
+      // Resolver SELECT batches by `ANY($1::int[])` for numeric ids and
+      // `ANY($2::text[])` for confluence ids — both visible in the first call.
       const firstCall = mockQueryFn.mock.calls[0];
-      expect(firstCall[0]).toContain('ANY($2)');
+      expect(firstCall[0]).toContain('ANY($2::text[])');
+    });
+
+    it('accepts filter-mode + expectedCount selection', async () => {
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '1' }], rowCount: 1 });
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ id: 1, confluence_id: 'page-1', space_key: 'OPS', source: 'confluence', labels: [] }],
+        rowCount: 1,
+      });
+      mockQueryFn.mockResolvedValue({ rows: [], rowCount: 1 });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/sync',
+        payload: { filter: { spaceKey: 'OPS' }, expectedCount: 1 },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.succeeded).toBe(1);
+      expect(body.failed).toBe(0);
+    });
+
+    it('returns 409 CountDrift when filter actual diverges past tolerance', async () => {
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '50' }], rowCount: 1 });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/sync',
+        payload: { filter: { spaceKey: 'OPS' }, expectedCount: 10 },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(JSON.parse(response.body).error).toBe('CountDrift');
     });
 
     it('passes cached space keys into confluenceToHtml during bulk sync', async () => {
@@ -490,7 +549,40 @@ describe('Bulk Pages Routes (Parallelized)', () => {
       expect(body.error).toContain('already in progress');
     });
 
+    it('accepts filter-mode + expectedCount selection', async () => {
+      // COUNT (drift check) → 2; SELECT resolved rows → 2 rows; UPDATE → 2 rows
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '2' }], rowCount: 1 });
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [
+          { id: 1, confluence_id: 'page-1', space_key: 'OPS', source: 'confluence', labels: [] },
+          { id: 2, confluence_id: 'page-2', space_key: 'OPS', source: 'confluence', labels: [] },
+        ],
+        rowCount: 2,
+      });
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ confluence_id: 'page-1' }, { confluence_id: 'page-2' }],
+        rowCount: 2,
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/embed',
+        payload: { filter: { spaceKey: 'OPS' }, expectedCount: 2 },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.succeeded).toBe(2);
+      expect(body.failed).toBe(0);
+    });
+
     it('should use single batch UPDATE with ANY() and RETURNING', async () => {
+      // Resolver SELECT (call 0) returns the eligible row; route's UPDATE
+      // (call 1) writes embedding_dirty=TRUE with `ANY($1)` and RETURNING.
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ id: 1, confluence_id: 'page-1', space_key: 'OPS', source: 'confluence', labels: [] }],
+        rowCount: 1,
+      });
       mockQueryFn.mockResolvedValueOnce({
         rows: [{ confluence_id: 'page-1' }],
         rowCount: 1,
@@ -502,11 +594,10 @@ describe('Bulk Pages Routes (Parallelized)', () => {
         payload: { ids: ['page-1'] },
       });
 
-      // The embed endpoint now issues a single UPDATE...RETURNING query
-      // ids are ANY($1), userId is $2 in subquery for space_key access control
-      const embedCall = mockQueryFn.mock.calls[0];
-      expect(embedCall[0]).toContain('ANY($1)');
-      expect(embedCall[0]).toContain('RETURNING');
+      const updateCall = mockQueryFn.mock.calls[1];
+      expect(updateCall![0]).toContain('UPDATE pages SET embedding_dirty');
+      expect(updateCall![0]).toContain('ANY($1)');
+      expect(updateCall![0]).toContain('RETURNING');
     });
   });
 
