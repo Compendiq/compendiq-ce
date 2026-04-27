@@ -438,6 +438,22 @@ export function ArticleRightPane() {
       {/* Divider */}
       <div className="mx-3 h-px bg-[var(--glass-sidebar-divider)]" />
 
+      {/* AI-Tagging — available in BOTH read and edit mode (#354).
+          Authors want to apply labels while editing without leaving the
+          editor; readers want to discover labels for re-tagging. The other
+          actions (Improve, Export, Delete) stay read-mode-only because they
+          act on the saved page state. */}
+      {page && id && activeModel && editing && (
+        <div className="p-2 space-y-0.5" data-testid="article-actions-edit">
+          <AutoTagger
+            pageId={id}
+            currentLabels={page?.labels ?? []}
+            model={activeModel}
+            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+          />
+        </div>
+      )}
+
       {/* Action buttons — glass button style */}
       {!editing && page && (
         <div className="p-2 space-y-0.5" data-testid="article-actions">
