@@ -224,13 +224,15 @@ describe('use-standalone hooks', () => {
   // ---- Verification ----
 
   describe('useVerifyPage', () => {
-    it('sends verify request', async () => {
-      const mock = mockFetch({ message: 'verified' });
+    it('sends POST verify request without body (#357)', async () => {
+      const mock = mockFetch({ success: true });
       const { result } = renderHook(() => useVerifyPage(), { wrapper: createWrapper() });
-      await result.current.mutateAsync({ pageId: 42, verified: true });
+      await result.current.mutateAsync({ pageId: 42 });
       const [url, opts] = mock.mock.calls[0] as [string, RequestInit];
       expect(url).toContain('/pages/42/verify');
-      expect(opts.method).toBe('PUT');
+      expect(opts.method).toBe('POST');
+      // Backend ignores the body; we don't send one.
+      expect(opts.body).toBeUndefined();
     });
   });
 
