@@ -62,7 +62,7 @@ describe('BulkPagePermissionDialog', () => {
   });
 
   it('shows the inherit_perms warning for add and replace, hides for remove', () => {
-    const { rerender } = render(
+    render(
       <BulkPagePermissionDialog {...baseProps} />,
       { wrapper: makeWrapper({ hasBatchOps: true }) },
     );
