@@ -1731,12 +1731,29 @@ pre:hover .code-copy-btn {
 
 .article-viewer .tiptap {
   padding: 1.5rem 2.5rem;
-  overflow-x: auto;
+  /* #349: do NOT scroll the whole article horizontally. Wide tables get
+     their own scroll container via .tableWrapper / .prose :where(table). */
+  overflow-x: hidden;
+  max-width: 100%;
 }
 
-.article-viewer .tiptap table {
-  width: max-content;
-  min-width: 100%;
+/* #349: read-only viewer — let the TipTap-injected .tableWrapper handle
+   horizontal scroll for wide tables, and don't blow out the article pane. */
+.article-viewer .tiptap > table,
+.article-viewer .tiptap .tableWrapper > table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  width: auto;
+  min-width: 0;
+}
+
+@media print {
+  .article-viewer .tiptap > table,
+  .article-viewer .tiptap .tableWrapper > table {
+    display: table;
+    overflow: visible;
+  }
 }
 
 /* TipTap editor styles */
