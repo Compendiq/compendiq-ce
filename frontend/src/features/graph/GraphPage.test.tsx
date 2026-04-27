@@ -124,6 +124,73 @@ describe('GraphPage', () => {
     });
   });
 
+  // ---------- #358 differentiated empty states + admin recompute ----------
+
+  it('shows the "no spaces accessible" empty state when meta.pagesTotal===0', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({
+        nodes: [],
+        edges: [],
+        meta: { pagesTotal: 0, pagesEmbedded: 0, relationshipsTotal: 0, relationshipsByType: {} },
+      }),
+    } as Response);
+
+    render(<GraphPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByText(/No accessible pages in your spaces/)).toBeInTheDocument();
+    });
+  });
+
+  it('shows the "pages not embedded yet" state when pagesTotal>0 but pagesEmbedded===0', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({
+        nodes: [{ id: '1', spaceKey: 'DEV', title: 't', labels: [], embeddingStatus: 'pending', embeddingCount: 0, lastModifiedAt: null }],
+        edges: [],
+        meta: { pagesTotal: 1, pagesEmbedded: 0, relationshipsTotal: 0, relationshipsByType: {} },
+      }),
+    } as Response);
+
+    render(<GraphPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByText(/Pages not embedded yet/)).toBeInTheDocument();
+    });
+  });
+
+  it('shows "no relationships computed yet" with admin recompute button when admin', async () => {
+    // Set admin role on the auth store
+    const { useAuthStore } = await import('../../stores/auth-store');
+    useAuthStore.setState({ user: { id: '1', username: 'a', role: 'admin' }, accessToken: 'tok' });
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({
+        nodes: [{ id: '1', spaceKey: 'DEV', title: 't', labels: [], embeddingStatus: 'embedded', embeddingCount: 1, lastModifiedAt: null }],
+        edges: [],
+        meta: { pagesTotal: 1, pagesEmbedded: 1, relationshipsTotal: 0, relationshipsByType: {} },
+      }),
+    } as Response);
+
+    render(<GraphPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByText(/no relationships computed yet/i)).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('graph-recompute-btn')).toBeInTheDocument();
+
+    // Reset role to avoid leaking into other tests.
+    useAuthStore.setState({ user: null, accessToken: null });
+  });
+
   it('renders error state with error message when fetch fails', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
       ok: false,

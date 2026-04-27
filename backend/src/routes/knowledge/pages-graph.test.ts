@@ -208,6 +208,14 @@ describe('Knowledge Graph API', () => {
       expect(body.edges[0].target).toBe('2');
       expect(body.edges[0].type).toBe('embedding_similarity');
       expect(body.edges[0].score).toBe(0.85);
+
+      // #358: meta block powers the differentiated empty states.
+      expect(body.meta).toEqual({
+        pagesTotal: 2,
+        pagesEmbedded: 2,
+        relationshipsTotal: 1,
+        relationshipsByType: { embedding_similarity: 1 },
+      });
     });
 
     it('should return empty arrays when no pages exist', async () => {
