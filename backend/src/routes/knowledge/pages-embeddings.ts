@@ -8,9 +8,22 @@ import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 /** Graph cache uses a short TTL (5 min) so relationship changes surface quickly. */
 const GRAPH_CACHE_TTL = 300;
 
+// #360 multi-select: spaceKey accepts a comma-separated list. Each value is
+// trimmed and empties are dropped so `?spaceKey=` and `?spaceKey=DEV,,` both
+// degrade gracefully. The values themselves are NOT whitelisted at the
+// schema layer — space keys are user-defined and dynamic — but every key is
+// intersected with the RBAC-accessible set inside the route handler before
+// it reaches SQL. That's the actual security boundary.
+const SpaceKeysSchema = z
+  .string()
+  .optional()
+  .transform((v) =>
+    v ? v.split(',').map((s) => s.trim()).filter(Boolean) : undefined,
+  );
+
 const GraphQuerySchema = z.object({
   view: z.enum(['individual', 'clustered']).default('individual'),
-  spaceKey: z.string().optional(),
+  spaceKey: SpaceKeysSchema,
 });
 
 // #360: filter dimensions on /graph/local. Each is optional and applied at
@@ -54,17 +67,29 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
   // GET /api/pages/graph - nodes (pages) + edges (relationships) for knowledge graph
   fastify.get('/pages/graph', async (request) => {
     const userId = request.userId;
-    const { view, spaceKey: filterSpaceKey } = GraphQuerySchema.parse(request.query);
+    const { view, spaceKey: filterSpaceKeys } = GraphQuerySchema.parse(request.query);
 
-    const cacheKey = `graph:${view}:${filterSpaceKey ?? 'all'}`;
+    // #360: cache key incorporates the sorted multi-key set so different
+    // space selections don't collide in Redis.
+    const cacheSpaceKey =
+      filterSpaceKeys && filterSpaceKeys.length > 0
+        ? [...filterSpaceKeys].sort().join(',')
+        : 'all';
+    const cacheKey = `graph:${view}:${cacheSpaceKey}`;
     const cached = await cache.get(userId, 'pages', cacheKey);
     if (cached) return cached;
 
-    // Fetch accessible spaces (RBAC)
+    // Fetch accessible spaces (RBAC).
+    // #360: when the user supplies one or more `spaceKey` values, intersect
+    // them with the RBAC-accessible set. The intersection IS the security
+    // gate — keys the user can't see are silently dropped, never reaching
+    // SQL. No SQL injection vector here because every value is bound as a
+    // text[] parameter.
     const graphSpaces = await getUserAccessibleSpaces(userId);
-    const effectiveSpaces = filterSpaceKey
-      ? graphSpaces.filter((s: string) => s === filterSpaceKey)
-      : graphSpaces;
+    const effectiveSpaces =
+      filterSpaceKeys && filterSpaceKeys.length > 0
+        ? graphSpaces.filter((s: string) => filterSpaceKeys.includes(s))
+        : graphSpaces;
 
     if (effectiveSpaces.length === 0) {
       return { nodes: [], edges: [] };

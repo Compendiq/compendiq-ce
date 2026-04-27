@@ -383,4 +383,98 @@ describe('GraphPage', () => {
       expect(localCall!).toContain('minScore=0.6');
     });
   });
+
+  // ---------- #360: space filter is multi-select ----------
+
+  it('hydrates multi-space filter from `?space=DEV,OPS` and forwards a comma-separated list (#360)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => mockGraphData,
+    } as Response);
+
+    render(<GraphPage />, {
+      wrapper: createWrapper(['/graph?full=1&space=DEV,OPS']),
+    });
+
+    await waitFor(() => {
+      const calls = fetchSpy.mock.calls.map((c) => String(c[0]));
+      const globalCall = calls.find((u) => u.includes('/pages/graph?'));
+      expect(globalCall).toBeDefined();
+      // Encoded comma — the backend Zod schema splits on `,` after URL
+      // decoding, so DEV and OPS both reach the route handler as separate
+      // entries and are intersected with RBAC.
+      expect(globalCall!).toContain('spaceKey=DEV%2COPS');
+    });
+  });
+
+  it('toggles individual spaces via checkbox and updates the request URL (#360)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => mockGraphData,
+    } as Response);
+
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
+
+    // Open the multi-select. Both spaces from mockGraphData (DEV, OPS) are
+    // available because spaceKeys is derived from the loaded node set.
+    // Note: each space-toggle changes the TanStack Query key and briefly
+    // remounts the page (loading state), so we re-open the dropdown
+    // between toggles. In real usage `placeholderData` would keep the UI
+    // mounted; that's a follow-up.
+    const trigger = await screen.findByTestId('graph-space-filter');
+    fireEvent.click(trigger);
+
+    const opsOption = await screen.findByTestId('graph-space-filter-option-OPS');
+    fireEvent.click(opsOption);
+
+    await waitFor(() => {
+      const calls = fetchSpy.mock.calls.map((c) => String(c[0]));
+      const globalCall = calls.find((u) => u.includes('spaceKey=OPS'));
+      expect(globalCall).toBeDefined();
+    });
+
+    // Re-open the dropdown after the data refetch finishes and the page
+    // remounts — then add DEV. The URL should now carry both spaces.
+    const trigger2 = await screen.findByTestId('graph-space-filter');
+    fireEvent.click(trigger2);
+    const devOption = await screen.findByTestId('graph-space-filter-option-DEV');
+    fireEvent.click(devOption);
+
+    await waitFor(() => {
+      const calls = fetchSpy.mock.calls.map((c) => String(c[0]));
+      const both = calls.find((u) =>
+        u.includes('spaceKey=OPS%2CDEV') || u.includes('spaceKey=DEV%2COPS'),
+      );
+      expect(both).toBeDefined();
+    });
+  });
+
+  it('"Clear all" resets the multi-select selection and drops spaceKey from the URL (#360)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => mockGraphData,
+    } as Response);
+
+    render(<GraphPage />, {
+      wrapper: createWrapper(['/graph?full=1&space=DEV,OPS']),
+    });
+
+    const trigger = await screen.findByTestId('graph-space-filter');
+    fireEvent.click(trigger);
+
+    const clear = await screen.findByTestId('graph-space-filter-clear');
+    fireEvent.click(clear);
+
+    await waitFor(() => {
+      const calls = fetchSpy.mock.calls.map((c) => String(c[0]));
+      const cleared = calls.find((u) => u.includes('/pages/graph?') && !u.includes('spaceKey='));
+      expect(cleared).toBeDefined();
+    });
+  });
 });

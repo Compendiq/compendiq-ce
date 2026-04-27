@@ -79,7 +79,11 @@ export function GraphPage() {
   const initialView = (searchParams.get('view') as ViewMode) || 'individual';
 
   const [viewMode, setViewMode] = useState<ViewMode>(focusPageId ? 'individual' : initialView);
-  const [filterSpace, setFilterSpace] = useState<string | undefined>(searchParams.get('space') ?? undefined);
+  // #360: space filter is now multi-select. Stored as a string[]; URL state
+  // round-trips via comma-separated `?space=DEV,OPS`. Empty array == "no
+  // filter" (RBAC fallback handled server-side).
+  const initialFilterSpaces = (searchParams.get('space') ?? '').split(',').filter(Boolean);
+  const [filterSpaces, setFilterSpaces] = useState<string[]>(initialFilterSpaces);
 
   // #360: filter sidebar state. All optional; mirrored to URL on change
   // so the view is shareable. Empty values = "no filter" (omitted from URL).
@@ -109,9 +113,12 @@ export function GraphPage() {
     sync('minScore', minScore !== undefined ? minScore.toString() : '');
     sync('labels', labels.length > 0 ? labels.join(',') : '');
     sync('full', showFullGraph ? '1' : '');
+    // #360 multi-select: encode the space filter as a comma-separated list
+    // so it round-trips through the URL the same way edgeTypes/labels do.
+    sync('space', filterSpaces.length > 0 ? filterSpaces.join(',') : '');
     setSearchParams(next, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [edgeTypes, minScore, labels, showFullGraph]);
+  }, [edgeTypes, minScore, labels, showFullGraph, filterSpaces]);
 
   const filters = useMemo<LocalGraphFilters>(() => ({
     edgeTypes: edgeTypes.length > 0 ? edgeTypes : undefined,
@@ -122,7 +129,7 @@ export function GraphPage() {
   // #360: only fetch the global graph when the user opted into the
   // hairball view (otherwise we render an article picker instead).
   const wantsGlobal = !focusPageId && showFullGraph;
-  const globalQuery = useGraphData(viewMode, filterSpace, wantsGlobal);
+  const globalQuery = useGraphData(viewMode, filterSpaces, wantsGlobal);
   const localQuery = useLocalGraphData(focusPageId, filters);
   const activeQuery = focusPageId ? localQuery : (wantsGlobal ? globalQuery : null);
 
@@ -181,8 +188,9 @@ export function GraphPage() {
     (node: GraphNode | ClusterNode) => {
       if (isClusterNode(node)) {
         // Expand cluster: switch to individual view filtered by the cluster's space
+        // (#360 multi-select — clicking a cluster scopes to that one space).
         setViewMode('individual');
-        setFilterSpace(node.spaceKey);
+        setFilterSpaces([node.spaceKey]);
         return;
       }
       if (node.id) navigate(`/pages/${node.id}`);
@@ -390,7 +398,7 @@ export function GraphPage() {
           <p className="text-sm text-muted-foreground">
             {data.nodes.length} {viewMode === 'clustered' ? 'clusters' : 'articles'}, {data.edges.length} connections
             {focusPageId && ' (local view)'}
-            {filterSpace && ` in ${filterSpace}`}
+            {filterSpaces.length > 0 && ` in ${filterSpaces.join(', ')}`}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -424,23 +432,16 @@ export function GraphPage() {
             </>
           )}
 
-          {/* Space filter */}
+          {/* Space filter — #360: multi-select. Native <details> gives us
+              keyboard support, click-to-open/close, and ESC-closes for free
+              without pulling a dropdown library. The button label
+              summarises selection ("All spaces" / "DEV" / "DEV +1"). */}
           {!focusPageId && spaceKeys.length > 1 && (
-            <div className="relative">
-              <select
-                value={filterSpace ?? ''}
-                onChange={(e) => setFilterSpace(e.target.value || undefined)}
-                className="nm-icon-button appearance-none py-2 pl-8 pr-3 text-xs"
-                data-testid="graph-space-filter"
-                aria-label="Filter by space"
-              >
-                <option value="">All spaces</option>
-                {spaceKeys.map((sk) => (
-                  <option key={sk} value={sk}>{sk}</option>
-                ))}
-              </select>
-              <Filter size={14} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
-            </div>
+            <SpaceMultiSelect
+              spaceKeys={spaceKeys}
+              selected={filterSpaces}
+              onChange={setFilterSpaces}
+            />
           )}
 
           {/* Clear focus */}
@@ -826,5 +827,112 @@ export function GraphFilterSidebar({
         </div>
       )}
     </aside>
+  );
+}
+
+// ---------- Space multi-select (#360) ----------
+
+interface SpaceMultiSelectProps {
+  spaceKeys: string[];
+  selected: string[];
+  onChange: (next: string[]) => void;
+}
+
+/**
+ * Multi-select dropdown for the header space filter (#360). Replaces the
+ * legacy single-`<select>` so a user can scope the global graph to any
+ * combination of spaces. Behaves like a popover: click the button to
+ * open/close, click anywhere outside to dismiss, ESC also dismisses.
+ *
+ * The button label summarises the selection at a glance — "All spaces"
+ * when nothing is picked, otherwise "<first> +N" — keeping the header
+ * compact even for users with dozens of spaces.
+ */
+function SpaceMultiSelect({ spaceKeys, selected, onChange }: SpaceMultiSelectProps) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  // Close on outside click + ESC, mirroring the rest of the app's neumorphic
+  // dropdowns. Listening only while open keeps the cost negligible.
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onDocClick);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const toggle = (sk: string) => {
+    if (selected.includes(sk)) onChange(selected.filter((s) => s !== sk));
+    else onChange([...selected, sk]);
+  };
+
+  const label = selected.length === 0
+    ? 'All spaces'
+    : selected.length === 1
+      ? selected[0]
+      : `${selected[0]} +${selected.length - 1}`;
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="nm-icon-button flex items-center gap-1.5 px-3 py-2 text-xs"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label="Filter by space (multi-select)"
+        data-testid="graph-space-filter"
+      >
+        <Filter size={12} />
+        <span>{label}</span>
+      </button>
+      {open && (
+        <div
+          role="listbox"
+          aria-multiselectable="true"
+          className="nm-card absolute right-0 top-full z-20 mt-1 max-h-64 w-44 overflow-y-auto p-2 text-xs"
+          data-testid="graph-space-filter-menu"
+        >
+          {selected.length > 0 && (
+            <button
+              type="button"
+              onClick={() => onChange([])}
+              className="mb-1 w-full rounded-md px-2 py-1 text-left text-[11px] text-muted-foreground hover:bg-foreground/5"
+              data-testid="graph-space-filter-clear"
+            >
+              Clear all
+            </button>
+          )}
+          {spaceKeys.map((sk) => {
+            const checked = selected.includes(sk);
+            return (
+              <label
+                key={sk}
+                className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 hover:bg-foreground/5"
+              >
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() => toggle(sk)}
+                  data-testid={`graph-space-filter-option-${sk}`}
+                />
+                <span className="font-mono text-[11px]">{sk}</span>
+              </label>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }

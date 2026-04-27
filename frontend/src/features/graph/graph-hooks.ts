@@ -47,16 +47,44 @@ interface GraphData {
 
 type ViewMode = 'individual' | 'clustered';
 
-export function useGraphData(view: ViewMode, spaceKey?: string, enabled = true) {
+/**
+ * #360 multi-select: `spaceKeys` is an array of space keys, encoded as a
+ * single comma-separated `spaceKey` query param to match the existing
+ * server contract. Empty / undefined means "no filter — RBAC default".
+ *
+ * Back-compat: callers still passing a single string land in the
+ * `typeof === 'string'` branch and get wrapped into a one-element array.
+ */
+export function useGraphData(
+  view: ViewMode,
+  spaceKeys?: string | string[],
+  enabled = true,
+) {
+  const normalised: string[] | undefined =
+    spaceKeys === undefined
+      ? undefined
+      : typeof spaceKeys === 'string'
+        ? spaceKeys
+          ? [spaceKeys]
+          : undefined
+        : spaceKeys.length > 0
+          ? spaceKeys
+          : undefined;
+
   const params = new URLSearchParams();
   params.set('view', view);
-  if (spaceKey) params.set('spaceKey', spaceKey);
+  if (normalised && normalised.length > 0) {
+    params.set('spaceKey', normalised.join(','));
+  }
+
+  // Stable, sorted cache key — `[A,B]` and `[B,A]` are the same selection.
+  const cacheKey = normalised ? [...normalised].sort().join(',') : '';
 
   // #360: `enabled` lets the caller skip the global graph fetch when the
   // user hasn't opted in (article-picker default state). Without this, the
   // hairball would still fire over the wire even though we render the picker.
   return useQuery<GraphData>({
-    queryKey: ['pages', 'graph', view, spaceKey ?? ''],
+    queryKey: ['pages', 'graph', view, cacheKey],
     queryFn: () => apiFetch(`/pages/graph?${params.toString()}`),
     staleTime: 60_000,
     enabled,
