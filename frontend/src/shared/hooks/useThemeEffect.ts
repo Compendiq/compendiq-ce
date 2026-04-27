@@ -1,26 +1,19 @@
 import { useEffect } from 'react';
-import { useThemeStore, LIGHT_THEMES, DEFAULT_DARK_THEME } from '../../stores/theme-store';
+import { applyThemeToDocument, useThemeStore } from '../../stores/theme-store';
 
 /**
- * Applies the selected theme as a data-theme attribute on <html>.
- * The default theme (graphite-honey) uses no attribute so the base @theme CSS variables apply.
- * Also toggles the "dark" class for light vs dark theme compatibility.
+ * Subscribes <html> to store-driven theme changes. The actual mutation is
+ * delegated to the store's `applyThemeToDocument` so there is exactly one
+ * writer for `data-theme`, `data-theme-type`, and the `dark` class.
+ *
+ * `setTheme` already calls `applyThemeToDocument` directly, so this hook is
+ * the safety net that keeps the DOM in sync with externally-driven state
+ * changes (Zustand rehydration, devtools, tests, etc.).
  */
 export function useThemeEffect() {
   const theme = useThemeStore((s) => s.theme);
 
   useEffect(() => {
-    const root = document.documentElement;
-    if (theme === DEFAULT_DARK_THEME) {
-      root.removeAttribute('data-theme');
-    } else {
-      root.setAttribute('data-theme', theme);
-    }
-
-    if (LIGHT_THEMES.has(theme)) {
-      root.classList.remove('dark');
-    } else {
-      root.classList.add('dark');
-    }
+    applyThemeToDocument(theme);
   }, [theme]);
 }

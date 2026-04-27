@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="graphite-honey" data-theme-type="dark">
+<html lang="en" data-theme="graphite-honey" data-theme-type="dark" class="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -28,11 +28,14 @@
     <meta name="twitter:card" content="summary" />
 
     <script>
-      // Prevent FOUC: read persisted theme before React loads. Only the two
-      // current themes are honored; any other persisted value falls through
-      // to the default (graphite-honey) without overriding the data-theme set
-      // on <html> above. Legacy localStorage keys are still checked so users
-      // upgrading from older versions don't lose their preference.
+      // Prevent FOUC: read persisted theme before React loads and apply
+      // data-theme + data-theme-type + the `dark` class together. Doing all
+      // three before first paint keeps Tailwind's `dark:` variants (e.g. the
+      // header logo's `dark:invert`) and the `[data-theme-type]` CSS rules in
+      // lockstep — no flash of dark-on-dark or light-on-light at boot.
+      // Only the two current themes are honored; unknown values fall through
+      // to the defaults already set on <html> above. Legacy localStorage keys
+      // are still checked so upgrading users keep their preference.
       (function() {
         var VALID = { 'graphite-honey': 'dark', 'honey-linen': 'light' };
         try {
@@ -43,8 +46,10 @@
             var parsed = JSON.parse(raw);
             var theme = parsed && parsed.state && parsed.state.theme;
             if (theme && VALID[theme]) {
+              var type = VALID[theme];
               document.documentElement.setAttribute('data-theme', theme);
-              document.documentElement.dataset.themeType = VALID[theme];
+              document.documentElement.dataset.themeType = type;
+              document.documentElement.classList.toggle('dark', type === 'dark');
             }
           }
         } catch(e) {}

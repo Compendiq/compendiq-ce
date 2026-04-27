@@ -7,6 +7,7 @@ import {
   THEME_CATEGORIES,
   isLightTheme,
   applyThemeToDocument,
+  validateThemeId,
   DEFAULT_DARK_THEME,
   DEFAULT_LIGHT_THEME,
   type ThemeId,
@@ -115,6 +116,18 @@ describe('theme-store', () => {
       applyThemeToDocument('honey-linen');
       expect(document.documentElement.dataset.themeType).toBe('light');
     });
+
+    it('adds the dark class when applying a dark theme', () => {
+      document.documentElement.classList.remove('dark');
+      applyThemeToDocument('graphite-honey');
+      expect(document.documentElement.classList.contains('dark')).toBe(true);
+    });
+
+    it('removes the dark class when applying a light theme', () => {
+      document.documentElement.classList.add('dark');
+      applyThemeToDocument('honey-linen');
+      expect(document.documentElement.classList.contains('dark')).toBe(false);
+    });
   });
 
   describe('setTheme applies to document', () => {
@@ -155,6 +168,30 @@ describe('theme-store', () => {
       const validIds = [...THEME_IDS] as string[];
       expect(validIds).toContain('graphite-honey');
       expect(validIds).toContain('honey-linen');
+    });
+
+    it('passes through current theme IDs unchanged', () => {
+      expect(validateThemeId('graphite-honey')).toBe('graphite-honey');
+      expect(validateThemeId('honey-linen')).toBe('honey-linen');
+    });
+
+    it('falls back retired light themes to the light default (no silent dark flip)', () => {
+      // A user who chose a *light* theme on a previous version should land on
+      // the current light default after upgrade — flipping them to dark would
+      // be a worse experience than picking the wrong shade of light.
+      expect(validateThemeId('polar-slate')).toBe(DEFAULT_LIGHT_THEME);
+      expect(validateThemeId('parchment-glow')).toBe(DEFAULT_LIGHT_THEME);
+      expect(validateThemeId('sunrise-cream')).toBe(DEFAULT_LIGHT_THEME);
+      expect(validateThemeId('cloud-white')).toBe(DEFAULT_LIGHT_THEME);
+    });
+
+    it('falls back retired dark/unknown themes to the dark default', () => {
+      expect(validateThemeId('void-indigo')).toBe(DEFAULT_DARK_THEME);
+      expect(validateThemeId('obsidian-violet')).toBe(DEFAULT_DARK_THEME);
+      expect(validateThemeId('midnight-blue')).toBe(DEFAULT_DARK_THEME);
+      expect(validateThemeId('catppuccin-mocha')).toBe(DEFAULT_DARK_THEME);
+      expect(validateThemeId('totally-made-up-id')).toBe(DEFAULT_DARK_THEME);
+      expect(validateThemeId('')).toBe(DEFAULT_DARK_THEME);
     });
   });
 });

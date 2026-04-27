@@ -110,8 +110,26 @@ describe('Theme store ships exactly Graphite Honey + Honey Linen', () => {
     const light = THEMES.find((t) => t.id === 'honey-linen')!;
     expect(dark.preview.bg.toLowerCase()).toBe('#121211');
     expect(dark.preview.primary.toLowerCase()).toBe('#f9c74f');
-    expect(light.preview.bg.toLowerCase()).toBe('#fbf7ef');
+    // Honey Linen background must match the actual rendered surface
+    // (`--color-background` in [data-theme="honey-linen"]), not a brand-y
+    // approximation — the picker chip is the only preview users see.
+    expect(light.preview.bg.toLowerCase()).toBe('#f7f7f4');
     expect(light.preview.primary.toLowerCase()).toBe('#f9c74f');
+  });
+
+  it('honey-linen preview chips match the rendered [data-theme="honey-linen"] surfaces', () => {
+    // The picker chip is the only way users preview a theme before applying
+    // it — chip ↔ surface drift is a UX bug. Pull the canonical values out
+    // of index.css and assert the THEMES metadata matches exactly.
+    const linenBlock = extractBlock(css, '[data-theme="honey-linen"] {');
+    const bgMatch = /--color-background:\s*(#[0-9a-fA-F]{3,8})/.exec(linenBlock);
+    const cardMatch = /--color-card:\s*(#[0-9a-fA-F]{3,8})/.exec(linenBlock);
+    expect(bgMatch).not.toBeNull();
+    expect(cardMatch).not.toBeNull();
+
+    const light = THEMES.find((t) => t.id === 'honey-linen')!;
+    expect(light.preview.bg.toLowerCase()).toBe(bgMatch![1].toLowerCase());
+    expect(light.preview.card.toLowerCase()).toBe(cardMatch![1].toLowerCase());
   });
 });
 

@@ -49,7 +49,10 @@ export const THEMES: ThemeMeta[] = [
     label: 'Honey Linen',
     description: 'Linen cream with honey accent — neumorphic light',
     category: 'light',
-    preview: { bg: '#fbf7ef', card: '#fffdf7', primary: '#f9c74f', accent: '#0a0a0a' },
+    // Hex values must match the actual rendered surfaces in
+    // index.css [data-theme="honey-linen"] — the picker chip is the only
+    // way users see the surface color before applying the theme.
+    preview: { bg: '#f7f7f4', card: '#ffffff', primary: '#f9c74f', accent: '#0a0a0a' },
   },
 ];
 
@@ -63,15 +66,37 @@ interface ThemeState {
   setTheme: (theme: ThemeId) => void;
 }
 
-function validateThemeId(id: string): ThemeId {
+/**
+ * Retired theme IDs whose names hint at light themes. A user who had one of
+ * these persisted should land on the *light* default after upgrade rather than
+ * being silently flipped to dark — that's a worse experience than picking the
+ * wrong shade of light.
+ */
+const RETIRED_LIGHT_THEME_IDS: ReadonlySet<string> = new Set([
+  'polar-slate',
+  'parchment-glow',
+  'sunrise-cream',
+  'cloud-white',
+]);
+
+export function validateThemeId(id: string): ThemeId {
   if ((THEME_IDS as readonly string[]).includes(id)) return id as ThemeId;
+  if (RETIRED_LIGHT_THEME_IDS.has(id)) return DEFAULT_LIGHT_THEME;
   return DEFAULT_DARK_THEME;
 }
 
+/**
+ * Canonical writer for the active theme. Sets `data-theme`, `data-theme-type`,
+ * and toggles the `dark` class on <html> in lockstep. This is the single
+ * source of truth — no other code should mutate these attributes (the
+ * pre-React FOUC script in index.html sets the same triplet for first paint).
+ */
 export function applyThemeToDocument(theme: ThemeId): void {
   const root = document.documentElement;
+  const isLight = isLightTheme(theme);
   root.setAttribute('data-theme', theme);
-  root.dataset.themeType = isLightTheme(theme) ? 'light' : 'dark';
+  root.dataset.themeType = isLight ? 'light' : 'dark';
+  root.classList.toggle('dark', !isLight);
 }
 
 export const useThemeStore = create<ThemeState>()(
