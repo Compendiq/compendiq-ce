@@ -145,6 +145,15 @@ describe('knowledge-admin routes - admin role required', () => {
 
     expect(response.statusCode).toBe(403);
   });
+
+  it('should return 403 for POST /api/llm/summary-regenerate/:pageId without admin role', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/llm/summary-regenerate/page-42',
+    });
+
+    expect(response.statusCode).toBe(403);
+  });
 });
 
 // =============================================================================

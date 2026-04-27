@@ -51,7 +51,10 @@ export async function knowledgeAdminRoutes(fastify: FastifyInstance) {
   });
 
   // POST /api/llm/summary-regenerate/:pageId - re-generate summary for one page
-  fastify.post('/llm/summary-regenerate/:pageId', async (request) => {
+  fastify.post('/llm/summary-regenerate/:pageId', {
+    preHandler: fastify.requireAdmin,
+    config: { rateLimit: { max: adminMax, timeWindow: '1 minute' } },
+  }, async (request) => {
     const { pageId } = z.object({ pageId: z.string().min(1) }).parse(request.params);
 
     // Verify page exists — use id (works for both standalone and Confluence pages)
