@@ -69,12 +69,10 @@ const mockComputePageRelationships = vi.fn().mockResolvedValue(10);
 vi.mock('../../domains/llm/services/embedding-service.js', () => ({
   processDirtyPages: vi.fn().mockResolvedValue({ processed: 0, errors: 0 }),
   isProcessingUser: vi.fn().mockResolvedValue(false),
+  // #359: `computePageRelationships` returns the SUM across all registered
+  // producers (similarity + label_overlap + explicit_link, etc.). The route
+  // no longer calls a separate explicit-link producer.
   computePageRelationships: (...args: unknown[]) => mockComputePageRelationships(...args),
-}));
-
-const mockComputeExplicitLinkEdges = vi.fn().mockResolvedValue(0);
-vi.mock('../../domains/knowledge/services/link-extractor.js', () => ({
-  computeExplicitLinkEdges: (...args: unknown[]) => mockComputeExplicitLinkEdges(...args),
 }));
 
 vi.mock('../../core/utils/logger.js', () => ({

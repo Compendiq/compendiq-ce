@@ -3,7 +3,6 @@ import { z } from 'zod';
 import { query } from '../../core/db/postgres.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { computePageRelationships } from '../../domains/llm/services/embedding-service.js';
-import { computeExplicitLinkEdges } from '../../domains/knowledge/services/link-extractor.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 
 /** Graph cache uses a short TTL (5 min) so relationship changes surface quickly. */
@@ -260,19 +259,14 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
   }, async (request) => {
     const userId = request.userId;
 
-    const similarityCount = await computePageRelationships();
-    // #359: explicit_link edges run after the similarity/label producer
-    // commits — the producer DELETEs all rows up-front, so this re-inserts
-    // explicit links into the freshly-cleared table. Idempotent on its own
-    // unique key.
-    const explicitLinkCount = await computeExplicitLinkEdges();
+    // #359: `computePageRelationships` runs every registered edge producer
+    // inside its transaction — including explicit_link, registered at app
+    // bootstrap via `registerKnowledgeRelationshipProducers()`. Returned
+    // count is the sum across all producers.
+    const edgeCount = await computePageRelationships();
     await cache.invalidate(userId, 'pages');
 
-    return {
-      message: 'Graph relationships refreshed',
-      edges: similarityCount + explicitLinkCount,
-      explicitLinkEdges: explicitLinkCount,
-    };
+    return { message: 'Graph relationships refreshed', edges: edgeCount };
   });
 }
 
