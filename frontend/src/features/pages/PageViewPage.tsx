@@ -138,10 +138,6 @@ export function PageViewPage() {
   const [editing, setEditing] = useState(false);
   const [editorInstance, setEditorInstance] = useState<EditorType | null>(null);
 
-  // Ref kept for legacy under-mask sizing — the height-tracking
-  // ResizeObserver was removed when the mask layer transitioned to a sticky
-  // sibling element that no longer needs pixel-perfect height matching.
-  const toolbarCardRef = useRef<HTMLDivElement | null>(null);
   const [editHtml, setEditHtml] = useState('');
   const [editTitle, setEditTitle] = useState('');
   const [headings, setHeadings] = useState<TocHeading[]>([]);
@@ -485,7 +481,7 @@ export function PageViewPage() {
             className="pointer-events-none absolute inset-x-0 -top-[100px] z-[-1] bg-background rounded-b-xl"
             style={{ bottom: 0 }}
           />
-        <div ref={toolbarCardRef} className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm">
+        <div className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm">
           {editorInstance && (
             <div className="px-1 border-b border-border/20">
               <EditorToolbar editor={editorInstance} vimEnabled={vimEnabled} onToggleVim={toggleVim} />

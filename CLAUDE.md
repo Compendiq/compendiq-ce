@@ -158,15 +158,26 @@ Compendiq uses an open-core model. The CE (Community Edition) is this repo. The 
 5. **Auth on all routes** — `fastify.authenticate` decorator on every protected endpoint. No anonymous access except `/api/health` and `/api/auth/*`.
 6. **Infrastructure Isolation** — Internal services (PostgreSQL, Redis, Ollama) must not be exposed on `0.0.0.0` in production. Use Docker internal networks.
 
-## UI/UX Design (ADR-010)
+## UI/UX Design (ADR-010 v0.4)
 
-Premium glassmorphic dashboard matching `ai-portainer-dashboard`:
-- Backdrop blur cards (`bg-card/80 backdrop-blur-md border-white/10`)
-- Animated gradient mesh background
-- Staggered entrance animations via Framer Motion (`LazyMotion`)
-- Radix UI primitives for all interactive elements
-- TailwindCSS 4 with CSS variables for theming
-- All animations respect `prefers-reduced-motion`
+Premium **neumorphic** dashboard — superseded the v0.3-era glassmorphic
+surfaces in #30. Brand palette is black `#0A0A0A` + honey `#F9C74F`; two
+themes ship — **Graphite Honey** (dark, default) and **Honey Linen** (light) —
+mirroring `compendiq-landing/src/styles/tokens.css` for cross-surface parity.
+- Eleven `nm-*` `@utility` classes (`nm-card`, `nm-card-elevated`,
+  `nm-card-interactive`, `nm-toolbar`, `nm-sidebar`, `nm-header`,
+  `nm-pill-active`, `nm-button-primary`, `nm-button-ghost`,
+  `nm-icon-button`, `nm-input`) built on theme-tinted shadow recipes
+  rather than backdrop blur.
+- Hybrid neumorphism: every interactive surface carries a 1px solid border
+  so chrome stays visible at WCAG 1.4.11 (3:1) and under
+  `forced-colors: active`. Press states swap raised → inset shadow;
+  `prefers-reduced-motion: reduce` strips the press transform.
+- Animated gradient mesh background is preserved on the setup wizard only.
+- Staggered entrance animations via Framer Motion (`LazyMotion`).
+- Radix UI primitives for all interactive elements.
+- TailwindCSS 4 with CSS variables for theming.
+- All animations respect `prefers-reduced-motion`.
 
 **Status colors:** Green=connected, Red=disconnected, Yellow=syncing, Blue=embedding, Purple=AI processing, Gray=inactive.
 

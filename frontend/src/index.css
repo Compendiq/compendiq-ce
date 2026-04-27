@@ -161,8 +161,7 @@ h1, h2, h3, h4, h5, h6,
   --radius-md: 0.5rem;
   --radius-sm: 0.25rem;
 
-  /* Re-anchor text-xs so 0.75rem Tailwind classes stay at 12px with the 15px base.
-     Without this, text-xs (0.75rem × 15px = 11.25px) falls below the 12px minimum. */
+  /* text-xs override — pinned to 0.8rem (12px at the 15px base). */
   --font-size-xs: 0.8rem;
 
   /* Glass utility colors — kept until Phase 5 retires the glass-* @utility blocks */
