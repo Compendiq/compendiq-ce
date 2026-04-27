@@ -1,5 +1,5 @@
-import { useCallback, useState } from 'react';
-import { Send, Loader2, Link2, X, Plus } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Send, Loader2, Link2, X, Plus, Sparkles } from 'lucide-react';
 import { useAiContext, nextMessageId } from '../AiContext';
 import { toast } from 'sonner';
 import { useQuery } from '@tanstack/react-query';
@@ -55,6 +55,15 @@ export function AskModeInput() {
   const removeUrl = (url: string) => {
     setExternalUrls((prev) => prev.filter((u) => u !== url));
   };
+
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // #350: focus input on mount so the user can type immediately. Use a ref +
+  // useEffect rather than autoFocus so it survives StrictMode double-mount and
+  // route transitions reliably.
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
 
   const handleAsk = useCallback(async () => {
     if (!input.trim() || isStreaming) return;
@@ -157,12 +166,14 @@ export function AskModeInput() {
           </button>
         )}
         <input
+          ref={inputRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSubmit()}
           placeholder="Ask a question..."
           disabled={isStreaming}
           className="flex-1 bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
+          data-testid="ask-input"
         />
         <button
           onClick={handleSubmit}
@@ -179,3 +190,53 @@ export function AskModeInput() {
 
 export const ASK_EMPTY_TITLE = 'Ask questions about your knowledge base';
 export const ASK_EMPTY_SUBTITLE = 'Your questions will be answered using RAG over your Confluence pages';
+
+// #350: clickable example prompts shown on the empty state. Each fills the
+// input rather than auto-submits — auto-submit would surprise the user.
+export const ASK_EXAMPLE_PROMPTS: readonly string[] = [
+  'Summarise the most-edited pages in the last 30 days',
+  'Find pages that look like duplicates of each other',
+  'Draft a how-to from pages tagged "onboarding"',
+  'What changed in the engineering space in the last 7 days?',
+];
+
+export function AskExamplePrompts() {
+  const { setInput } = useAiContext();
+
+  const pick = (prompt: string) => {
+    setInput(prompt);
+    // Defer focus to next tick so the input mounts before we focus it.
+    requestAnimationFrame(() => {
+      const el = document.querySelector<HTMLInputElement>('[data-testid="ask-input"]');
+      el?.focus();
+    });
+  };
+
+  return (
+    <div
+      role="list"
+      aria-label="Example prompts"
+      className="mt-6 grid w-full max-w-xl grid-cols-1 gap-2 sm:grid-cols-2"
+    >
+      {ASK_EXAMPLE_PROMPTS.map((prompt) => (
+        <button
+          key={prompt}
+          role="listitem"
+          type="button"
+          onClick={() => pick(prompt)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              pick(prompt);
+            }
+          }}
+          className="nm-card-interactive flex items-start gap-2 rounded-lg p-3 text-left text-xs text-foreground/80 hover:text-foreground"
+          data-testid="ask-example-prompt"
+        >
+          <Sparkles size={14} className="mt-0.5 shrink-0 text-primary" />
+          <span>{prompt}</span>
+        </button>
+      ))}
+    </div>
+  );
+}

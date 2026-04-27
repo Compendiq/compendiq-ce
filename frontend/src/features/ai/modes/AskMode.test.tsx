@@ -3,7 +3,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
-import { AskModeInput, ASK_EMPTY_TITLE, ASK_EMPTY_SUBTITLE } from './AskMode';
+import { AskModeInput, AskExamplePrompts, ASK_EMPTY_TITLE, ASK_EMPTY_SUBTITLE, ASK_EXAMPLE_PROMPTS } from './AskMode';
 import { AiProvider } from '../AiContext';
 import { useAuthStore } from '../../../stores/auth-store';
 
@@ -88,6 +88,35 @@ describe('AskMode', () => {
     render(<AskModeInput />, { wrapper: createWrapper() });
     expect(screen.getByPlaceholderText('Ask a question...')).toBeInTheDocument();
     expect(screen.getByRole('button')).toBeInTheDocument();
+  });
+
+  it('focuses the input on mount (#350)', async () => {
+    render(<AskModeInput />, { wrapper: createWrapper() });
+    const input = screen.getByPlaceholderText('Ask a question...');
+    await waitFor(() => {
+      expect(document.activeElement).toBe(input);
+    });
+  });
+
+  it('renders 4 example prompts and clicking one fills the input (#350)', async () => {
+    const Composed = () => (
+      <>
+        <AskExamplePrompts />
+        <AskModeInput />
+      </>
+    );
+    render(<Composed />, { wrapper: createWrapper() });
+
+    const items = screen.getAllByTestId('ask-example-prompt');
+    expect(items).toHaveLength(4);
+    expect(ASK_EXAMPLE_PROMPTS).toHaveLength(4);
+
+    const input = screen.getByPlaceholderText('Ask a question...') as HTMLInputElement;
+    fireEvent.click(items[0]!);
+
+    await waitFor(() => {
+      expect(input.value).toBe(ASK_EXAMPLE_PROMPTS[0]);
+    });
   });
 
   it('disables send button when input is empty', () => {
