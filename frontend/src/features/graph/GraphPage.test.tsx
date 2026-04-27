@@ -79,7 +79,7 @@ describe('GraphPage', () => {
       () => new Promise(() => {}), // never resolves
     );
 
-    render(<GraphPage />, { wrapper: createWrapper() });
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
 
     expect(screen.getByText('Loading knowledge graph...')).toBeInTheDocument();
   });
@@ -92,7 +92,7 @@ describe('GraphPage', () => {
       json: async () => mockGraphData,
     } as Response);
 
-    render(<GraphPage />, { wrapper: createWrapper() });
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
 
     await waitFor(() => {
       expect(screen.getByText('Knowledge Graph')).toBeInTheDocument();
@@ -117,7 +117,7 @@ describe('GraphPage', () => {
       json: async () => ({ nodes: [], edges: [] }),
     } as Response);
 
-    render(<GraphPage />, { wrapper: createWrapper() });
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
 
     await waitFor(() => {
       expect(screen.getByText(/No pages found/)).toBeInTheDocument();
@@ -132,7 +132,7 @@ describe('GraphPage', () => {
       json: async () => ({ message: 'Internal Server Error' }),
     } as Response);
 
-    render(<GraphPage />, { wrapper: createWrapper() });
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
 
     await waitFor(() => {
       expect(screen.getByText('Failed to load graph data')).toBeInTheDocument();
@@ -153,7 +153,7 @@ describe('GraphPage', () => {
       json: async () => mockGraphData,
     } as Response);
 
-    render(<GraphPage />, { wrapper: createWrapper() });
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
 
     await waitFor(() => {
       expect(screen.getByTestId('graph-zoom-in')).toBeInTheDocument();
@@ -172,7 +172,7 @@ describe('GraphPage', () => {
       json: async () => mockGraphData,
     } as Response);
 
-    render(<GraphPage />, { wrapper: createWrapper() });
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
 
     await waitFor(() => {
       expect(screen.getByTestId('graph-view-individual')).toBeInTheDocument();
@@ -188,7 +188,7 @@ describe('GraphPage', () => {
       json: async () => mockGraphData,
     } as Response);
 
-    render(<GraphPage />, { wrapper: createWrapper() });
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
 
     await waitFor(() => {
       expect(screen.getByTestId('graph-space-filter')).toBeInTheDocument();
@@ -203,7 +203,7 @@ describe('GraphPage', () => {
       json: async () => mockGraphData,
     } as Response);
 
-    render(<GraphPage />, { wrapper: createWrapper() });
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
 
     await waitFor(() => {
       expect(screen.getByTestId('graph-container')).toBeInTheDocument();
@@ -218,7 +218,7 @@ describe('GraphPage', () => {
       json: async () => mockGraphData,
     } as Response);
 
-    render(<GraphPage />, { wrapper: createWrapper() });
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
 
     await waitFor(() => {
       const graph = screen.getByTestId('mock-force-graph');
@@ -241,7 +241,7 @@ describe('GraphPage', () => {
       json: async () => mockGraphData,
     } as Response);
 
-    render(<GraphPage />, { wrapper: createWrapper() });
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
 
     await waitFor(() => {
       expect(screen.getByTestId('mock-force-graph')).toBeInTheDocument();
@@ -308,7 +308,7 @@ describe('GraphPage', () => {
         }),
       } as Response);
 
-    render(<GraphPage />, { wrapper: createWrapper() });
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
 
     await waitFor(() => {
       expect(screen.getByTestId('graph-view-clustered')).toBeInTheDocument();
@@ -318,6 +318,69 @@ describe('GraphPage', () => {
 
     await waitFor(() => {
       expect(screen.getByText(/1 clusters, 0 connections/)).toBeInTheDocument();
+    });
+  });
+
+  // ---------- #360: ego-graph default + filter sidebar + URL state ----------
+
+  it('renders the article-picker landing by default — does NOT fetch the global graph (#360)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => mockGraphData,
+    } as Response);
+
+    render(<GraphPage />, { wrapper: createWrapper(['/graph']) });
+
+    expect(await screen.findByTestId('graph-picker-landing')).toBeInTheDocument();
+    expect(screen.getByTestId('graph-picker-input')).toBeInTheDocument();
+    expect(screen.getByTestId('graph-show-full-btn')).toBeInTheDocument();
+
+    // Critically: no global /pages/graph fetch should have fired in default mode.
+    const calls = fetchSpy.mock.calls.map((c) => String(c[0]));
+    expect(calls.some((u) => u.includes('/pages/graph?'))).toBe(false);
+  });
+
+  it('clicking "Show full graph anyway" sets ?full=1 and fetches the global graph (#360)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => mockGraphData,
+    } as Response);
+
+    render(<GraphPage />, { wrapper: createWrapper(['/graph']) });
+
+    const escape = await screen.findByTestId('graph-show-full-btn');
+    fireEvent.click(escape);
+
+    await waitFor(() => {
+      const calls = fetchSpy.mock.calls.map((c) => String(c[0]));
+      expect(calls.some((u) => u.includes('/pages/graph?'))).toBe(true);
+    });
+  });
+
+  it('focus mode sends edgeTypes and minScore filter params to /graph/local (#360)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({ ...mockGraphData, centerId: '1' }),
+    } as Response);
+
+    render(<GraphPage />, {
+      wrapper: createWrapper([
+        '/graph?focus=1&edgeTypes=embedding_similarity,explicit_link&minScore=0.6',
+      ]),
+    });
+
+    await waitFor(() => {
+      const calls = fetchSpy.mock.calls.map((c) => String(c[0]));
+      const localCall = calls.find((u) => u.includes('/pages/1/graph/local'));
+      expect(localCall).toBeDefined();
+      expect(localCall!).toContain('edgeTypes=embedding_similarity%2Cexplicit_link');
+      expect(localCall!).toContain('minScore=0.6');
     });
   });
 });

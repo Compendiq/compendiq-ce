@@ -13,8 +13,36 @@ const GraphQuerySchema = z.object({
   spaceKey: z.string().optional(),
 });
 
+// #360: filter dimensions on /graph/local. Each is optional and applied at
+// SELECT time so the same producer-side rows can be re-filtered cheaply
+// from the UI slider/multi-select. Validated to a finite, audited set of
+// relationship types so an attacker can't smuggle SQL via the param.
+const VALID_EDGE_TYPES = ['embedding_similarity', 'label_overlap', 'explicit_link', 'parent_child'] as const;
 const LocalGraphQuerySchema = z.object({
   hops: z.coerce.number().int().min(1).max(3).default(2),
+  // Comma-separated list of relationship types; whitespace-tolerant.
+  edgeTypes: z
+    .string()
+    .optional()
+    .transform((v) =>
+      v
+        ? v
+            .split(',')
+            .map((s) => s.trim())
+            .filter((s) => (VALID_EDGE_TYPES as readonly string[]).includes(s))
+        : undefined,
+    ),
+  // Cosine-similarity floor, applied to the score column. 0 = include all,
+  // 1 = exact match only. Defaults to no filter (undefined).
+  minScore: z.coerce.number().min(0).max(1).optional(),
+  // Comma-separated label names; case-sensitive match against pages.labels.
+  // Empty string and whitespace-only entries are dropped.
+  labels: z
+    .string()
+    .optional()
+    .transform((v) =>
+      v ? v.split(',').map((s) => s.trim()).filter(Boolean) : undefined,
+    ),
 });
 
 const IdParamSchema = z.object({ id: z.string().min(1) });
@@ -128,11 +156,12 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
     return response;
   });
 
-  // GET /api/pages/:id/graph/local - local neighborhood graph centered on a page
+  // GET /api/pages/:id/graph/local - local neighborhood graph centered on a page.
+  // #360 query params (all optional): hops, edgeTypes, minScore, labels.
   fastify.get('/pages/:id/graph/local', async (request) => {
     const userId = request.userId;
     const { id } = IdParamSchema.parse(request.params);
-    const { hops } = LocalGraphQuerySchema.parse(request.query);
+    const { hops, edgeTypes, minScore, labels } = LocalGraphQuerySchema.parse(request.query);
 
     // Resolve to integer page ID
     const isNumericId = /^\d+$/.test(id);
@@ -155,7 +184,10 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
       return { nodes: [], edges: [], centerId: String(centerPageId) };
     }
 
-    // Find connected page IDs within N hops via recursive CTE on page_relationships
+    // Find connected page IDs within N hops via recursive CTE on page_relationships.
+    // #360: apply edgeTypes/minScore filters during the BFS so the local subgraph
+    // matches what the user filtered to (otherwise we'd traverse hidden edges
+    // and return ghost nodes that the UI then has to drop).
     const neighborResult = await query<{ page_id: number; hop: number }>(
       `WITH RECURSIVE neighbors AS (
          SELECT $1::int AS page_id, 0 AS hop
@@ -169,11 +201,13 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
          JOIN page_relationships pr
            ON pr.page_id_1 = n.page_id OR pr.page_id_2 = n.page_id
          WHERE n.hop < $2
+           AND ($3::text[] IS NULL OR pr.relationship_type = ANY($3::text[]))
+           AND ($4::real IS NULL OR pr.score >= $4::real)
        )
        SELECT DISTINCT page_id, MIN(hop) AS hop
        FROM neighbors
        GROUP BY page_id`,
-      [centerPageId, hops],
+      [centerPageId, hops, edgeTypes && edgeTypes.length > 0 ? edgeTypes : null, minScore ?? null],
     );
 
     const neighborIds = neighborResult.rows.map((r) => r.page_id);
@@ -181,7 +215,9 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
       neighborIds.push(centerPageId);
     }
 
-    // Fetch node data for all neighbors
+    // Fetch node data for all neighbors. #360: apply label filter here —
+    // the center node is exempt so the user sees their selected article
+    // even if it doesn't carry the filter labels.
     const nodesResult = await query<{
       id: number;
       confluence_id: string | null;
@@ -195,8 +231,11 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
       `SELECT cp.id, cp.confluence_id, cp.space_key, cp.title, cp.labels,
               cp.embedding_status, cp.last_modified_at, cp.parent_id
        FROM pages cp
-       WHERE cp.id = ANY($1::int[]) AND cp.space_key = ANY($2::text[]) AND cp.deleted_at IS NULL`,
-      [neighborIds, graphSpaces],
+       WHERE cp.id = ANY($1::int[])
+         AND cp.space_key = ANY($2::text[])
+         AND cp.deleted_at IS NULL
+         AND ($3::text[] IS NULL OR cp.id = $4::int OR cp.labels && $3::text[])`,
+      [neighborIds, graphSpaces, labels && labels.length > 0 ? labels : null, centerPageId],
     );
 
     // Embedding counts
@@ -215,7 +254,8 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
 
     const nodeIdSet = new Set(nodesResult.rows.map((r) => r.id));
 
-    // Fetch edges between neighbor nodes
+    // Fetch edges between neighbor nodes — apply the same edgeTypes /
+    // minScore filters here so the rendered edges match the BFS scope.
     const edgesResult = await query<{
       page_id_1: number;
       page_id_2: number;
@@ -225,8 +265,14 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
       `SELECT pr.page_id_1, pr.page_id_2, pr.relationship_type, pr.score
        FROM page_relationships pr
        WHERE pr.page_id_1 = ANY($1::int[]) AND pr.page_id_2 = ANY($1::int[])
+         AND ($2::text[] IS NULL OR pr.relationship_type = ANY($2::text[]))
+         AND ($3::real IS NULL OR pr.score >= $3::real)
        ORDER BY pr.score DESC`,
-      [Array.from(nodeIdSet)],
+      [
+        Array.from(nodeIdSet),
+        edgeTypes && edgeTypes.length > 0 ? edgeTypes : null,
+        minScore ?? null,
+      ],
     );
 
     const nodes = nodesResult.rows.map((row) => ({
