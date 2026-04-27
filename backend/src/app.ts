@@ -44,6 +44,7 @@ import { llmPdfRoutes } from './routes/llm/llm-pdf.js';
 // Knowledge routes
 import { pagesCrudRoutes } from './routes/knowledge/pages-crud.js';
 import { pagesPresenceRoutes } from './routes/knowledge/pages-presence.js';
+import { pagesBulkProgressRoutes } from './routes/knowledge/pages-bulk-progress.js';
 import { pagesVersionRoutes } from './routes/knowledge/pages-versions.js';
 import { pagesTagRoutes } from './routes/knowledge/pages-tags.js';
 import { pagesEmbeddingRoutes } from './routes/knowledge/pages-embeddings.js';
@@ -382,6 +383,7 @@ export async function buildApp() {
   // Knowledge routes
   await app.register(pagesCrudRoutes, { prefix: '/api' });
   await app.register(pagesPresenceRoutes, { prefix: '/api' });
+  await app.register(pagesBulkProgressRoutes, { prefix: '/api' });
   await app.register(pagesVersionRoutes, { prefix: '/api' });
   await app.register(pagesTagRoutes, { prefix: '/api' });
   await app.register(pagesEmbeddingRoutes, { prefix: '/api' });

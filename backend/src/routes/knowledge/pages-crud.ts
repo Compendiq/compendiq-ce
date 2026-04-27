@@ -6,6 +6,16 @@ import { getClientForUser } from '../../domains/confluence/services/sync-service
 import { htmlToConfluence, confluenceToHtml } from '../../core/services/content-converter.js';
 import { cleanPageAttachments, writeAttachmentCache } from '../../domains/confluence/services/attachment-handler.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
+import {
+  startBulkJob,
+  runBulkInChunks,
+} from '../../core/services/bulk-page-progress.js';
+import {
+  BulkPageFilterSchema,
+  resolveBulkSelection,
+  BulkSelectionError,
+  type BulkSelection,
+} from '../../core/services/bulk-page-selection.js';
 import { emitWebhookEvent } from '../../core/services/webhook-emit-hook.js';
 import { processDirtyPages, isProcessingUser } from '../../domains/llm/services/embedding-service.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
@@ -97,12 +107,77 @@ async function uploadLocalImagesToConfluence(
   return changed ? doc.body.innerHTML : html;
 }
 
-const BulkIdsSchema = z.object({ ids: z.array(z.string().min(1)).min(1).max(100) });
-const BulkTagSchema = z.object({
-  ids: z.array(z.string().min(1)).min(1).max(100),
-  addTags: z.array(z.string()).default([]),
-  removeTags: z.array(z.string()).default([]),
-});
+/**
+ * Shared schema for the 4 existing bulk routes (delete/sync/embed/tag). Either
+ * `ids` (legacy wire shape) OR `filter + expectedCount` (filter-mode added in
+ * EE #117 slice 1c). Optional `jobId` enables SSE progress observation.
+ */
+const BulkIdsOrFilterSchema = z
+  .object({
+    ids: z.array(z.string().min(1)).min(1).max(1000).optional(),
+    filter: BulkPageFilterSchema.optional(),
+    expectedCount: z.coerce.number().int().min(0).optional(),
+    driftToleranceFraction: z.coerce.number().min(0).max(1).optional(),
+    jobId: z.string().uuid().optional(),
+  })
+  .refine(
+    (v) =>
+      (v.ids && !v.filter && v.expectedCount === undefined) ||
+      (!v.ids && v.filter && v.expectedCount !== undefined),
+    {
+      message:
+        'Provide either { ids } or { filter, expectedCount }; do not mix or omit expectedCount in filter mode',
+    },
+  );
+/**
+ * Bulk-action selection mode (EE #117 slice 1b). Either `ids` (existing wire
+ * shape) OR `filter` + `expectedCount` (new). The two are mutually exclusive
+ * and refined-validated below; the existing `ids` clients keep working.
+ */
+const BulkTagSchema = z
+  .object({
+    ids: z.array(z.string().min(1)).min(1).max(1000).optional(),
+    filter: BulkPageFilterSchema.optional(),
+    expectedCount: z.coerce.number().int().min(0).optional(),
+    driftToleranceFraction: z.coerce.number().min(0).max(1).optional(),
+    addTags: z.array(z.string()).default([]),
+    removeTags: z.array(z.string()).default([]),
+    jobId: z.string().uuid().optional(),
+  })
+  .refine(
+    (v) =>
+      (v.ids && !v.filter && v.expectedCount === undefined) ||
+      (!v.ids && v.filter && v.expectedCount !== undefined),
+    {
+      message:
+        'Provide either { ids } or { filter, expectedCount }; do not mix or omit expectedCount in filter mode',
+    },
+  );
+/**
+ * `bulk/replace-tags` (EE #117) — REPLACES the entire label set on each page.
+ * Higher-risk than additive tag (`bulk/tag`), so the audit emission gets its
+ * own action: `BULK_PAGE_TAGS_REPLACED`. Tags are normalised (lowercased,
+ * trimmed, de-duplicated) at input to match the existing auto-tagger
+ * convention.
+ */
+const BulkReplaceTagsSchema = z
+  .object({
+    ids: z.array(z.string().min(1)).min(1).max(1000).optional(),
+    filter: BulkPageFilterSchema.optional(),
+    expectedCount: z.coerce.number().int().min(0).optional(),
+    driftToleranceFraction: z.coerce.number().min(0).max(1).optional(),
+    tags: z.array(z.string()).max(50),
+    jobId: z.string().uuid().optional(),
+  })
+  .refine(
+    (v) =>
+      (v.ids && !v.filter && v.expectedCount === undefined) ||
+      (!v.ids && v.filter && v.expectedCount !== undefined),
+    {
+      message:
+        'Provide either { ids } or { filter, expectedCount }; do not mix or omit expectedCount in filter mode',
+    },
+  );
 const IdParamSchema = z.object({ id: z.string().min(1) });
 
 const ImageUploadSchema = z.object({
@@ -1452,40 +1527,43 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
   // ======== Bulk Operations (Issue #28, parallelized #192) ========
 
   // POST /api/pages/bulk/delete - delete multiple pages by IDs
-  fastify.post('/pages/bulk/delete', async (request) => {
-    const { ids } = BulkIdsSchema.parse(request.body);
+  fastify.post('/pages/bulk/delete', async (request, reply) => {
+    const parsed = BulkIdsOrFilterSchema.parse(request.body);
     const userId = request.userId;
 
-    // Separate numeric IDs (standalone pages use DB PK) from Confluence string IDs
-    const numericIds = ids.filter((id) => /^\d+$/.test(id)).map(Number);
-    const confluenceStringIds = ids.filter((id) => !/^\d+$/.test(id));
-
-    // Fetch all requested pages with source info; RBAC: standalone owned by user OR in accessible spaces
     const bulkAccessSpaces = await getUserAccessibleSpaces(userId);
-    const existing = await query<{
-      id: number; source: string; confluence_id: string | null; space_key: string | null;
-    }>(
-      `SELECT p.id, p.source, p.confluence_id, p.space_key
-       FROM pages p
-       WHERE (p.id = ANY($1::int[]) OR p.confluence_id = ANY($2::text[]))
-         AND ((p.source = 'standalone' AND p.created_by_user_id = $3)
-              OR p.space_key = ANY($4::text[]))`,
-      [numericIds, confluenceStringIds, userId, bulkAccessSpaces],
-    );
+    const selection: BulkSelection = {
+      ids: parsed.ids,
+      filter: parsed.filter,
+      expectedCount: parsed.expectedCount,
+      driftToleranceFraction: parsed.driftToleranceFraction,
+    };
 
-    // Map found rows back to the original string IDs supplied by the caller
-    const foundOriginalIds = new Set<string>(
-      existing.rows.map((row) =>
-        row.source === 'standalone' ? String(row.id) : (row.confluence_id ?? String(row.id)),
-      ),
-    );
-    const notFoundIds = ids.filter((id) => !foundOriginalIds.has(id));
-    const errors: string[] = notFoundIds.map((id) => `Page ${id} not found`);
-    let failed = notFoundIds.length;
+    let resolved;
+    try {
+      // delete accepts the legacy mixed wire shape (PK for standalone,
+      // confluence_id for synced) so the resolver runs in 'mixed' mode.
+      resolved = await resolveBulkSelection(userId, selection, bulkAccessSpaces);
+    } catch (err) {
+      if (err instanceof BulkSelectionError && err.detail.kind === 'count_drift') {
+        return reply.status(409).send({
+          error: 'CountDrift',
+          message: err.detail.message,
+          expected: err.detail.expected,
+          actual: err.detail.actual,
+        });
+      }
+      throw err;
+    }
+
+    const errors: string[] = resolved.notFoundIds.map((id) => `Page ${id} not found`);
+    let failed = resolved.notFoundIds.length;
 
     // --- Partition by source ---
-    const standalonePages = existing.rows.filter((r) => r.source === 'standalone');
-    const confluencePages = existing.rows.filter((r) => r.source !== 'standalone');
+    const standalonePages = resolved.rows.filter((r) => r.source === 'standalone')
+      .map((r) => ({ id: r.id, source: 'standalone', confluence_id: r.confluenceId, space_key: r.spaceKey }));
+    const confluencePages = resolved.rows.filter((r) => r.source !== 'standalone')
+      .map((r) => ({ id: r.id, source: r.source, confluence_id: r.confluenceId, space_key: r.spaceKey }));
 
     // Soft-delete standalone pages (move to trash)
     const standaloneNumericIds = standalonePages.map((r) => r.id);
@@ -1556,14 +1634,26 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const succeeded = standaloneSucceeded + confluenceSucceeded;
     await cache.invalidate(userId, 'pages');
     await cache.invalidate(userId, 'spaces');
-    await logAuditEvent(userId, 'PAGE_DELETED', 'page', undefined, { bulkIds: ids, succeeded, failed }, request);
+    await logAuditEvent(
+      userId,
+      'PAGE_DELETED',
+      'page',
+      undefined,
+      {
+        ...(parsed.ids ? { bulkIds: parsed.ids } : { filter: parsed.filter, expectedCount: parsed.expectedCount }),
+        affectedCount: resolved.rows.length,
+        succeeded,
+        failed,
+      },
+      request,
+    );
 
     return { succeeded, failed, errors };
   });
 
   // POST /api/pages/bulk/sync - re-sync multiple pages from Confluence
-  fastify.post('/pages/bulk/sync', async (request) => {
-    const { ids } = BulkIdsSchema.parse(request.body);
+  fastify.post('/pages/bulk/sync', async (request, reply) => {
+    const parsed = BulkIdsOrFilterSchema.parse(request.body);
     const userId = request.userId;
 
     const client = await getClientForUser(userId);
@@ -1571,19 +1661,38 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.badRequest('Confluence not configured');
     }
 
-    // Batch verify access: pages in user's accessible spaces (RBAC)
     const bulkAccessSpaces = await getUserAccessibleSpaces(userId);
-    const existing = await query<{ confluence_id: string; space_key: string }>(
-      `SELECT cp.confluence_id, cp.space_key FROM pages cp
-       WHERE cp.space_key = ANY($1::text[])
-         AND cp.confluence_id = ANY($2)`,
-      [bulkAccessSpaces, ids],
+    const selection: BulkSelection = {
+      ids: parsed.ids,
+      filter: parsed.filter,
+      expectedCount: parsed.expectedCount,
+      driftToleranceFraction: parsed.driftToleranceFraction,
+    };
+
+    let resolved;
+    try {
+      resolved = await resolveBulkSelection(userId, selection, bulkAccessSpaces);
+    } catch (err) {
+      if (err instanceof BulkSelectionError && err.detail.kind === 'count_drift') {
+        return reply.status(409).send({
+          error: 'CountDrift',
+          message: err.detail.message,
+          expected: err.detail.expected,
+          actual: err.detail.actual,
+        });
+      }
+      throw err;
+    }
+
+    // Sync only operates on Confluence-sourced pages (standalone pages have no
+    // upstream to re-sync from).
+    const syncableRows = resolved.rows.filter((r) => r.confluenceId !== null);
+    const ownedIds = new Set(syncableRows.map((r) => r.confluenceId as string));
+    const spaceKeysById = new Map(
+      syncableRows.map((r) => [r.confluenceId as string, r.spaceKey ?? '']),
     );
-    const ownedIds = new Set(existing.rows.map((r) => r.confluence_id));
-    const spaceKeysById = new Map(existing.rows.map((r) => [r.confluence_id, r.space_key]));
-    const notFoundIds = ids.filter((id) => !ownedIds.has(id));
-    const errors: string[] = notFoundIds.map((id) => `Page ${id} not found`);
-    let failed = notFoundIds.length;
+    const errors: string[] = resolved.notFoundIds.map((id) => `Page ${id} not found`);
+    let failed = resolved.notFoundIds.length;
 
     // Eager-load htmlToText once (avoid repeated dynamic import)
     const { htmlToText } = await import('../../core/services/content-converter.js');
@@ -1637,8 +1746,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
   });
 
   // POST /api/pages/bulk/embed - re-embed multiple pages
-  fastify.post('/pages/bulk/embed', async (request) => {
-    const { ids } = BulkIdsSchema.parse(request.body);
+  fastify.post('/pages/bulk/embed', async (request, reply) => {
+    const parsed = BulkIdsOrFilterSchema.parse(request.body);
     const userId = request.userId;
 
     // Return 409 if embedding is already in progress for this user
@@ -1646,21 +1755,48 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.conflict('Embedding processing is already in progress for this user');
     }
 
-    // Batch update: single query with ANY() and RETURNING instead of N updates
     const embedSpaces = await getUserAccessibleSpaces(userId);
-    const result = await query<{ confluence_id: string }>(
-      `UPDATE pages SET embedding_dirty = TRUE
-       WHERE confluence_id = ANY($1)
-         AND space_key = ANY($2::text[])
-       RETURNING confluence_id`,
-      [ids, embedSpaces],
-    );
+    const selection: BulkSelection = {
+      ids: parsed.ids,
+      filter: parsed.filter,
+      expectedCount: parsed.expectedCount,
+      driftToleranceFraction: parsed.driftToleranceFraction,
+    };
 
-    const updatedIds = new Set(result.rows.map((r) => r.confluence_id));
-    const succeeded = updatedIds.size;
-    const notFoundIds = ids.filter((id) => !updatedIds.has(id));
-    const failed = notFoundIds.length;
-    const errors: string[] = notFoundIds.map((id) => `Page ${id} not found`);
+    let resolved;
+    try {
+      resolved = await resolveBulkSelection(userId, selection, embedSpaces);
+    } catch (err) {
+      if (err instanceof BulkSelectionError && err.detail.kind === 'count_drift') {
+        return reply.status(409).send({
+          error: 'CountDrift',
+          message: err.detail.message,
+          expected: err.detail.expected,
+          actual: err.detail.actual,
+        });
+      }
+      throw err;
+    }
+
+    // Embedding requires a confluence_id — standalone pages are skipped (their
+    // embeddings live separately).
+    const eligibleIds = resolved.rows
+      .filter((r) => r.confluenceId !== null)
+      .map((r) => r.confluenceId as string);
+
+    let succeeded = 0;
+    if (eligibleIds.length > 0) {
+      const result = await query<{ confluence_id: string }>(
+        `UPDATE pages SET embedding_dirty = TRUE
+         WHERE confluence_id = ANY($1)
+         RETURNING confluence_id`,
+        [eligibleIds],
+      );
+      succeeded = result.rows.length;
+    }
+
+    const errors: string[] = resolved.notFoundIds.map((id) => `Page ${id} not found`);
+    const failed = resolved.notFoundIds.length;
 
     // Fire-and-forget: trigger processing of dirty pages (same pattern as POST /embeddings/process)
     if (succeeded > 0) {
@@ -1673,8 +1809,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
   });
 
   // POST /api/pages/bulk/tag - add/remove tags on multiple pages
-  fastify.post('/pages/bulk/tag', async (request) => {
-    const { ids, addTags, removeTags } = BulkTagSchema.parse(request.body);
+  fastify.post('/pages/bulk/tag', async (request, reply) => {
+    const parsed = BulkTagSchema.parse(request.body);
+    const { addTags, removeTags } = parsed;
     const userId = request.userId;
 
     if (addTags.length === 0 && removeTags.length === 0) {
@@ -1682,27 +1819,37 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     }
 
     const client = await getClientForUser(userId);
-
-    // Parse IDs as integers (frontend sends stringified integer PKs)
-    const invalidIds = ids.filter((id) => !/^\d+$/.test(id));
-    if (invalidIds.length > 0) {
-      request.log.warn({ invalidIds }, 'Non-numeric page IDs filtered from bulk tag operation');
-    }
-    const numericIds = ids.filter((id) => /^\d+$/.test(id)).map((id) => parseInt(id, 10));
-
-    // Batch fetch labels: single query with RBAC space-based access control
     const tagSpaces = await getUserAccessibleSpaces(userId);
-    const existing = await query<{ id: number; confluence_id: string | null; labels: string[] }>(
-      `SELECT cp.id, cp.confluence_id, cp.labels FROM pages cp
-       WHERE (cp.space_key = ANY($1::text[]) OR cp.space_key IS NULL)
-         AND cp.id = ANY($2::int[])
-         AND cp.deleted_at IS NULL`,
-      [tagSpaces, numericIds],
+
+    const selection: BulkSelection = {
+      ids: parsed.ids,
+      filter: parsed.filter,
+      expectedCount: parsed.expectedCount,
+      driftToleranceFraction: parsed.driftToleranceFraction,
+    };
+
+    let resolved;
+    try {
+      resolved = await resolveBulkSelection(userId, selection, tagSpaces, {
+        idMode: 'numeric-only',
+      });
+    } catch (err) {
+      if (err instanceof BulkSelectionError && err.detail.kind === 'count_drift') {
+        return reply.status(409).send({
+          error: 'CountDrift',
+          message: err.detail.message,
+          expected: err.detail.expected,
+          actual: err.detail.actual,
+        });
+      }
+      throw err;
+    }
+
+    const pageMap = new Map(
+      resolved.rows.map((r) => [String(r.id), { confluenceId: r.confluenceId, labels: r.labels }]),
     );
-    const pageMap = new Map(existing.rows.map((r) => [String(r.id), { confluenceId: r.confluence_id, labels: r.labels || [] }]));
-    const notFoundIds = ids.filter((id) => !pageMap.has(id));
-    const errors: string[] = notFoundIds.map((id) => `Page ${id} not found`);
-    let failed = notFoundIds.length;
+    const errors: string[] = resolved.notFoundIds.map((id) => `Page ${id} not found`);
+    let failed = resolved.notFoundIds.length;
 
     // Process each owned page: compute new labels, update DB, sync to Confluence
     const bulkLimit = pLimit(5);
@@ -1768,7 +1915,161 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     await cache.invalidate(userId, 'pages');
 
+    // Audit: one event per bulk action, not per row (epic v0.4 §3.6 / R8).
+    await logAuditEvent(
+      userId,
+      'BULK_PAGE_TAGGED',
+      'page',
+      undefined,
+      {
+        ...(parsed.ids ? { bulkIds: parsed.ids } : { filter: parsed.filter, expectedCount: parsed.expectedCount }),
+        affectedCount: pageMap.size,
+        addTags,
+        removeTags,
+        succeeded,
+        failed,
+      },
+      request,
+    );
+
     return { succeeded, failed, errors };
+  });
+
+  // POST /api/pages/bulk/replace-tags — REPLACE entire tag set on N pages
+  //
+  // Distinct from /bulk/tag (additive) so admins can wipe tags atomically and
+  // the audit log can distinguish the higher-risk operation
+  // (BULK_PAGE_TAGS_REPLACED). Optional `jobId` enables SSE progress; when
+  // absent the route still chunks for memory but skips the publish/cancel
+  // path. Tags are normalised (lower-cased, trimmed, de-duplicated) at the
+  // boundary to match the existing auto-tagger convention.
+  fastify.post('/pages/bulk/replace-tags', async (request, reply) => {
+    const parsed = BulkReplaceTagsSchema.parse(request.body);
+    const { tags, jobId } = parsed;
+    const userId = request.userId;
+
+    // Normalise input tags
+    const normTags = Array.from(
+      new Set(
+        tags
+          .map((t) => t.trim().toLowerCase())
+          .filter((t) => t.length > 0),
+      ),
+    );
+
+    const accessSpaces = await getUserAccessibleSpaces(userId);
+    const selection: BulkSelection = {
+      ids: parsed.ids,
+      filter: parsed.filter,
+      expectedCount: parsed.expectedCount,
+      driftToleranceFraction: parsed.driftToleranceFraction,
+    };
+
+    let resolved;
+    try {
+      resolved = await resolveBulkSelection(userId, selection, accessSpaces, {
+        idMode: 'numeric-only',
+      });
+    } catch (err) {
+      if (err instanceof BulkSelectionError && err.detail.kind === 'count_drift') {
+        return reply.status(409).send({
+          error: 'CountDrift',
+          message: err.detail.message,
+          expected: err.detail.expected,
+          actual: err.detail.actual,
+        });
+      }
+      throw err;
+    }
+
+    const errors: string[] = resolved.notFoundIds.map((id) => `Page ${id} not found`);
+    const initialFailed = resolved.notFoundIds.length;
+    const eligible = resolved.rows.map((r) => ({
+      id: r.id,
+      confluenceId: r.confluenceId,
+      oldLabels: r.labels,
+    }));
+
+    if (jobId) {
+      await startBulkJob(jobId, eligible.length, userId, 'replace-tags');
+    }
+
+    const client = await getClientForUser(userId);
+    const bulkLimit = pLimit(5);
+
+    const result = await runBulkInChunks(eligible, 100, jobId ?? null, async (chunk) => {
+      let chunkSucceeded = 0;
+      let chunkFailed = 0;
+      const chunkErrors: string[] = [];
+
+      const settled = await Promise.allSettled(
+        chunk.map((page) =>
+          bulkLimit(async () => {
+            await query('UPDATE pages SET labels = $2 WHERE id = $1', [page.id, normTags]);
+
+            // Sync to Confluence: remove labels not in new set, add the rest
+            if (client && page.confluenceId) {
+              const oldSet = new Set(page.oldLabels);
+              const newSet = new Set(normTags);
+              const toAdd = normTags.filter((t) => !oldSet.has(t));
+              const toRemove = page.oldLabels.filter((t) => !newSet.has(t));
+              try {
+                if (toAdd.length > 0) await client.addLabels(page.confluenceId, toAdd);
+                for (const label of toRemove) {
+                  await client.removeLabel(page.confluenceId, label);
+                }
+              } catch (err) {
+                logger.error(
+                  { err, pageId: page.id, confluenceId: page.confluenceId, userId },
+                  'replace-tags: Confluence label sync failed',
+                );
+              }
+            }
+            return page.id;
+          }),
+        ),
+      );
+
+      for (let i = 0; i < settled.length; i++) {
+        const r = settled[i]!;
+        if (r.status === 'fulfilled') {
+          chunkSucceeded++;
+        } else {
+          chunkFailed++;
+          chunkErrors.push(
+            `Page ${chunk[i]!.id}: ${r.reason instanceof Error ? r.reason.message : 'Unknown error'}`,
+          );
+        }
+      }
+
+      return { succeeded: chunkSucceeded, failed: chunkFailed, errors: chunkErrors };
+    });
+
+    errors.push(...result.errors);
+    const succeeded = result.succeeded;
+    const failed = initialFailed + result.failed;
+    const cancelled = result.cancelled;
+
+    await cache.invalidate(userId, 'pages');
+
+    await logAuditEvent(
+      userId,
+      'BULK_PAGE_TAGS_REPLACED',
+      'page',
+      undefined,
+      {
+        ...(parsed.ids ? { bulkIds: parsed.ids } : { filter: parsed.filter, expectedCount: parsed.expectedCount }),
+        affectedCount: eligible.length,
+        tags: normTags,
+        succeeded,
+        failed,
+        cancelled,
+        ...(jobId ? { jobId } : {}),
+      },
+      request,
+    );
+
+    return { succeeded, failed, errors, cancelled, ...(jobId ? { jobId } : {}) };
   });
 
   // POST /api/pages/:id/images - upload a pasted/dropped image for a page
