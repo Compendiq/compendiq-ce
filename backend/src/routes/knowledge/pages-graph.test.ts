@@ -550,4 +550,98 @@ describe('Knowledge Graph API', () => {
       expect(mockComputePageRelationships).toHaveBeenCalledWith();
     });
   });
+
+  // ---------- #361 Phase 3: per-hop cap + tiered threshold ----------
+
+  describe('GET /api/pages/:id/graph/local — perHopLimit (#361)', () => {
+    it('forwards the perHopLimit query param into the recursive CTE', async () => {
+      // page lookup
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 1, space_key: 'DEV' }] });
+      // neighbours BFS
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ page_id: 1, hop: 0 }] });
+      // node fetch
+      mockQueryFn.mockResolvedValueOnce({ rows: [] });
+      // embedding count
+      mockQueryFn.mockResolvedValueOnce({ rows: [] });
+      // edges
+      mockQueryFn.mockResolvedValueOnce({ rows: [] });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/pages/1/graph/local?hops=2&perHopLimit=20',
+      });
+      expect(response.statusCode).toBe(200);
+
+      // The 2nd query is the BFS — its $3 binding should be the requested cap.
+      const bfsCall = mockQueryFn.mock.calls[1];
+      expect(bfsCall![1]).toEqual([1, 2, 20]);
+      // The CTE should use a CROSS JOIN LATERAL with LIMIT $3 to actually cap.
+      const sql = bfsCall![0] as string;
+      expect(sql).toContain('CROSS JOIN LATERAL');
+      expect(sql).toContain('LIMIT $3');
+    });
+
+    it('defaults perHopLimit to 50 when omitted', async () => {
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 1, space_key: 'DEV' }] });
+      mockQueryFn.mockResolvedValueOnce({ rows: [] });
+      mockQueryFn.mockResolvedValueOnce({ rows: [] });
+      mockQueryFn.mockResolvedValueOnce({ rows: [] });
+      mockQueryFn.mockResolvedValueOnce({ rows: [] });
+
+      await app.inject({ method: 'GET', url: '/api/pages/1/graph/local' });
+      expect(mockQueryFn.mock.calls[1]![1]).toEqual([1, 2, 50]);
+    });
+
+    it('rejects perHopLimit > 500', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/pages/1/graph/local?perHopLimit=10000',
+      });
+      expect(response.statusCode).toBe(400);
+    });
+  });
+
+  describe('GET /api/pages/graph — tiered similarity threshold (#361)', () => {
+    it('applies a 0.4 floor at < 500 pages (small-corpus tier)', async () => {
+      const smallNodes = Array.from({ length: 10 }, (_, i) => ({
+        id: i + 1,
+        confluence_id: `p-${i + 1}`,
+        space_key: 'DEV',
+        title: `Page ${i + 1}`,
+        labels: [],
+        embedding_status: 'embedded',
+        last_modified_at: new Date(),
+        parent_id: null,
+      }));
+      mockQueryFn.mockResolvedValueOnce({ rows: smallNodes }); // nodes
+      mockQueryFn.mockResolvedValueOnce({ rows: [] });          // embeddings
+      mockQueryFn.mockResolvedValueOnce({ rows: [] });          // edges
+
+      const response = await app.inject({ method: 'GET', url: '/api/pages/graph' });
+      expect(response.statusCode).toBe(200);
+      // 3rd call is the edges query; $2 is the score floor.
+      const edgesCall = mockQueryFn.mock.calls[2];
+      expect(edgesCall![1]![1]).toBe(0.4);
+    });
+
+    it('applies a 0.7 floor at >= 2000 pages (large-corpus tier)', async () => {
+      const bigNodes = Array.from({ length: 2000 }, (_, i) => ({
+        id: i + 1,
+        confluence_id: `p-${i + 1}`,
+        space_key: 'DEV',
+        title: `Page ${i + 1}`,
+        labels: [],
+        embedding_status: 'embedded',
+        last_modified_at: new Date(),
+        parent_id: null,
+      }));
+      mockQueryFn.mockResolvedValueOnce({ rows: bigNodes });
+      mockQueryFn.mockResolvedValueOnce({ rows: [] });
+      mockQueryFn.mockResolvedValueOnce({ rows: [] });
+
+      await app.inject({ method: 'GET', url: '/api/pages/graph' });
+      const edgesCall = mockQueryFn.mock.calls[2];
+      expect(edgesCall![1]![1]).toBe(0.7);
+    });
+  });
 });
