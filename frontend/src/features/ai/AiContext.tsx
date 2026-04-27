@@ -228,36 +228,52 @@ export function AiProvider({ children }: { children: ReactNode }) {
     };
   }, [isThinking]);
 
-  // Load settings, models and conversations on mount
+  // Load settings, models and conversations on mount.
+  // #355: prefer the admin-configured chat use-case default (resolveUsecase
+  // 'chat') over the legacy per-user settings.ollamaModel/openaiModel. The
+  // settings model remains a fallback so the input never shows empty if the
+  // chat use-case isn't configured.
   useEffect(() => {
-    apiFetch<{ llmProvider: string; ollamaModel: string; openaiModel: string | null }>('/settings')
-      .then((settings) => {
-        const provider = settings.llmProvider ?? 'ollama';
-        const preferredModel = provider === 'openai'
-          ? settings.openaiModel ?? ''
-          : settings.ollamaModel ?? '';
+    const loadSettingsFallback = () =>
+      apiFetch<{ llmProvider: string; ollamaModel: string; openaiModel: string | null }>('/settings')
+        .then((settings) => {
+          const provider = settings.llmProvider ?? 'ollama';
+          const fallback = provider === 'openai'
+            ? settings.openaiModel ?? ''
+            : settings.ollamaModel ?? '';
+          return { provider, fallback };
+        })
+        .catch(() => ({ provider: 'ollama', fallback: '' }));
 
-        apiFetch<Array<{ name: string }>>(`/ollama/models?provider=${provider}`)
-          .then((m) => {
-            setModels(m);
-            if (preferredModel) {
-              setModel(preferredModel);
-            } else if (m.length > 0) {
-              setModel((prev) => prev || (m[0]?.name ?? ''));
-            }
-          })
-          .catch(() => {
-            if (preferredModel) setModel(preferredModel);
-          });
-      })
-      .catch(() => {
-        apiFetch<Array<{ name: string }>>('/ollama/models')
-          .then((m) => {
-            setModels(m);
-            if (m.length > 0) setModel((prev) => prev || (m[0]?.name ?? ''));
-          })
-          .catch(() => {});
-      });
+    (async () => {
+      // Try the chat use-case default first.
+      let preferred = '';
+      let provider = 'ollama';
+      try {
+        const def = await apiFetch<{ providerId: string; providerName: string; model: string }>(
+          '/llm/usecase-default?usecase=chat',
+        );
+        preferred = def.model ?? '';
+        // The provider name is informational; we still load models via the
+        // legacy /ollama/models endpoint scoped to llm-provider type.
+      } catch {
+        const fb = await loadSettingsFallback();
+        provider = fb.provider;
+        preferred = fb.fallback;
+      }
+
+      try {
+        const m = await apiFetch<Array<{ name: string }>>(`/ollama/models?provider=${provider}`);
+        setModels(m);
+        if (preferred) {
+          setModel(preferred);
+        } else if (m.length > 0) {
+          setModel((prev) => prev || (m[0]?.name ?? ''));
+        }
+      } catch {
+        if (preferred) setModel(preferred);
+      }
+    })();
 
     apiFetch<Conversation[]>('/llm/conversations')
       .then(setConversations)

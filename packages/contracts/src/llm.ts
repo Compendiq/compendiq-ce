@@ -70,6 +70,21 @@ export const UpdateUsecaseAssignmentsInputSchema = z.object({
 });
 export type UpdateUsecaseAssignmentsInput = z.infer<typeof UpdateUsecaseAssignmentsInputSchema>;
 
+// ─── Read-side resolver output for non-admin callers (#355) ─────────────────
+/**
+ * Shape returned by `GET /llm/usecase-default?usecase=…` — the resolved
+ * provider+model for a given use case, suitable for non-admin UI surfaces
+ * (chat input pane, etc.). Excludes the raw assignment row to avoid leaking
+ * the admin-internal "unset / inherits default" distinction.
+ */
+export const UsecaseDefaultSchema = z.object({
+  usecase: LlmUsecaseSchema,
+  providerId: z.string().uuid(),
+  providerName: z.string(),
+  model: z.string(),
+});
+export type UsecaseDefault = z.infer<typeof UsecaseDefaultSchema>;
+
 // ─── DEPRECATED: old two-slot enum kept for transitional typing only ──────
 /** @deprecated use `LlmProvider.id` (uuid). Removed after Task 36. */
 export const LlmProviderTypeSchema = z.enum(['ollama', 'openai']);
