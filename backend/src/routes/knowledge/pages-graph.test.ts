@@ -72,6 +72,11 @@ vi.mock('../../domains/llm/services/embedding-service.js', () => ({
   computePageRelationships: (...args: unknown[]) => mockComputePageRelationships(...args),
 }));
 
+const mockComputeExplicitLinkEdges = vi.fn().mockResolvedValue(0);
+vi.mock('../../domains/knowledge/services/link-extractor.js', () => ({
+  computeExplicitLinkEdges: (...args: unknown[]) => mockComputeExplicitLinkEdges(...args),
+}));
+
 vi.mock('../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
