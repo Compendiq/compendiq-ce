@@ -64,6 +64,9 @@ const EDGE_COLORS: Record<string, string> = {
   embedding_similarity: 'rgba(124, 140, 245, 0.35)',
   label_overlap: 'rgba(92, 201, 167, 0.45)',
   explicit_link: 'rgba(245, 158, 66, 0.5)',
+  // #362: parent_child edges get a distinct hue and higher opacity so the
+  // hierarchy is legible against the semantic-similarity haze.
+  parent_child: 'rgba(232, 176, 106, 0.7)',
   cluster_relationship: 'rgba(171, 130, 230, 0.4)',
 };
 

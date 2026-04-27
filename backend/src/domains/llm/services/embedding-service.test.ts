@@ -349,23 +349,25 @@ describe('embedding-service', () => {
   });
 
   describe('computePageRelationships', () => {
-    // Transaction call order on mockClient:
-    // [0]=BEGIN, [1]=SET LOCAL statement_timeout, [2]=DELETE, [3]=similarity CTE, [4]=label CTE, [5]=COMMIT
+    // Transaction call order on mockClient (#362 added parent_child INSERT):
+    // [0]=BEGIN, [1]=SET LOCAL statement_timeout, [2]=DELETE,
+    // [3]=similarity CTE, [4]=label CTE, [5]=parent_child INSERT, [6]=COMMIT
 
     it('should delete existing relationships then compute new ones', async () => {
-      // Set up 6 specific client.query responses matching the transaction order
+      // Set up 7 specific client.query responses matching the transaction order
       mockClient.query
         .mockResolvedValueOnce({ rows: [] })                                           // BEGIN
         .mockResolvedValueOnce({ rows: [] })                                           // SET LOCAL statement_timeout
         .mockResolvedValueOnce({ rows: [], rowCount: 0 })                             // DELETE
         .mockResolvedValueOnce({ rows: [{ page_id_1: 'page-1', page_id_2: 'page-2', score: 0.85 }], rowCount: 1 })  // similarity INSERT
         .mockResolvedValueOnce({ rows: [{ page_id_1: 'page-1', page_id_2: 'page-3', score: 0.5 }], rowCount: 1 })   // label INSERT
+        .mockResolvedValueOnce({ rows: [{ page_id_1: 'page-1', page_id_2: 'page-4' }], rowCount: 1 })               // parent_child INSERT (#362)
         .mockResolvedValueOnce({ rows: [] });                                          // COMMIT
 
       const totalEdges = await computePageRelationships();
 
-      expect(totalEdges).toBe(2);
-      expect(mockClient.query).toHaveBeenCalledTimes(6);
+      expect(totalEdges).toBe(3);
+      expect(mockClient.query).toHaveBeenCalledTimes(7);
       expect(mocks.query).not.toHaveBeenCalled();
 
       // calls[0] = BEGIN
@@ -375,8 +377,11 @@ describe('embedding-service', () => {
       // calls[2] = DELETE (global, no params)
       const deleteCall = mockClient.query.mock.calls[2][0] as string;
       expect(deleteCall).toContain('DELETE FROM page_relationships');
-      // calls[5] = COMMIT
-      expect(mockClient.query.mock.calls[5][0]).toBe('COMMIT');
+      // calls[5] = parent_child INSERT (#362)
+      const parentChildCall = mockClient.query.mock.calls[5][0] as string;
+      expect(parentChildCall).toContain("'parent_child'");
+      // calls[6] = COMMIT
+      expect(mockClient.query.mock.calls[6][0]).toBe('COMMIT');
     });
 
     it('should not use userId (global shared tables)', async () => {
