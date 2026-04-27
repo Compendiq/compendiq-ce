@@ -167,7 +167,11 @@ describe('LlmAuditPage', () => {
     mockFetch();
     render(<LlmAuditPage />, { wrapper: createWrapper() });
     expect(screen.getByTestId('llm-audit-gated')).toBeInTheDocument();
-    expect(screen.getByText('Enterprise Feature')).toBeInTheDocument();
+    // #347: clarified copy — explicit about CE-vs-EE ownership and points
+    // CE users at the regular Audit Log for ops events.
+    expect(screen.getByText(/Enterprise feature/i)).toBeInTheDocument();
+    expect(screen.getByText(/Community Edition does not persist/i)).toBeInTheDocument();
+    expect(screen.getByText(/regular/i)).toBeInTheDocument();
   });
 
   it('renders the audit page when feature is enabled', async () => {
