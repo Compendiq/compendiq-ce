@@ -24,6 +24,7 @@ erDiagram
     pages ||--o{ page_relationships : "related via"
     pages ||--o{ knowledge_requests : "fulfils"
     pages ||--o{ local_attachments : "owns (standalone pages only)"
+    pages ||--o{ spaces : "is custom home of (#352)"
 
     roles ||--o{ group_memberships : "granted via"
     groups ||--o{ group_memberships : "has"
