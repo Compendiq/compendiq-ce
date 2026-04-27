@@ -264,35 +264,49 @@ function ColorPickerDropdown({
       <button
         onClick={() => setOpen(!open)}
         title={title}
+        aria-label={title}
+        // #353: trigger sized 32×32 (h-8 w-8) — was ~24×24 from the
+        // previous `p-1.5` which made the colour pickers a tiny target.
+        // Matches the issue acceptance criteria (>=32×32 trigger).
         className={cn(
-          'rounded p-1.5 transition-colors',
+          'flex h-8 w-8 items-center justify-center rounded-md transition-colors',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
           activeColor ? 'ring-1 ring-primary/30' : '',
           'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
         )}
+        data-testid="color-picker-trigger"
       >
         <div className="relative">
           {icon}
           {activeColor && (
-            <div className="absolute -bottom-0.5 left-0.5 right-0.5 h-0.5 rounded-full" style={{ backgroundColor: activeColor }} />
+            <div className="absolute -bottom-1 left-0 right-0 h-0.5 rounded-full" style={{ backgroundColor: activeColor }} />
           )}
         </div>
       </button>
       {open && (
-        <div className="absolute top-full left-0 z-50 mt-1 rounded-lg border border-border bg-card p-2 shadow-lg">
-          <div className="grid grid-cols-4 gap-1">
+        <div
+          className="absolute top-full left-0 z-50 mt-1 rounded-lg border border-border bg-card p-2.5 shadow-lg"
+          role="menu"
+          aria-label={`${title} swatches`}
+        >
+          {/* #353: 28×28 swatches (>=24×24 minimum). 4-col grid keeps the
+              popover compact while making each swatch comfortably clickable. */}
+          <div className="grid grid-cols-4 gap-1.5">
             {PRESET_COLORS.map((c) => (
               <button
                 key={c.value}
                 title={c.label}
+                aria-label={c.label}
                 onClick={() => { onSelect(c.value); setOpen(false); }}
-                className="h-6 w-6 rounded-md border border-border/50 transition-transform hover:scale-110"
+                className="h-7 w-7 rounded-md border border-border/50 transition-transform hover:scale-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
                 style={{ backgroundColor: c.value }}
+                data-testid="color-picker-swatch"
               />
             ))}
           </div>
           <button
             onClick={() => { onReset(); setOpen(false); }}
-            className="mt-1.5 w-full rounded-md px-2 py-0.5 text-xs text-muted-foreground hover:bg-foreground/5"
+            className="mt-2 w-full rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-foreground/5"
           >
             Reset
           </button>
@@ -345,21 +359,23 @@ export function EditorToolbar({ editor, headerNumbering, onToggleHeaderNumbering
 
       <ToolbarSeparator />
 
-      {/* Text color & highlight (#14 #15) */}
-      <ColorPickerDropdown
-        icon={<Palette size={16} />}
-        title="Text Color"
-        activeColor={activeState.textColor}
-        onSelect={(color) => editor.chain().focus().setColor(color).run()}
-        onReset={() => editor.chain().focus().unsetColor().run()}
-      />
-      <ColorPickerDropdown
-        icon={<Highlighter size={16} />}
-        title="Highlight (Ctrl+Shift+H)"
-        activeColor={activeState.highlightColor}
-        onSelect={(color) => editor.chain().focus().toggleHighlight({ color }).run()}
-        onReset={() => editor.chain().focus().unsetHighlight().run()}
-      />
+      {/* #353: Colors group — bigger triggers + ARIA-grouped + testable. */}
+      <div role="group" aria-label="Colors" className="flex items-center gap-0.5" data-toolbar-group="colors">
+        <ColorPickerDropdown
+          icon={<Palette size={16} />}
+          title="Text Color"
+          activeColor={activeState.textColor}
+          onSelect={(color) => editor.chain().focus().setColor(color).run()}
+          onReset={() => editor.chain().focus().unsetColor().run()}
+        />
+        <ColorPickerDropdown
+          icon={<Highlighter size={16} />}
+          title="Highlight (Ctrl+Shift+H)"
+          activeColor={activeState.highlightColor}
+          onSelect={(color) => editor.chain().focus().toggleHighlight({ color }).run()}
+          onReset={() => editor.chain().focus().unsetHighlight().run()}
+        />
+      </div>
 
       <ToolbarSeparator />
 
