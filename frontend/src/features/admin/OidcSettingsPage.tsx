@@ -185,7 +185,7 @@ function ProviderTab({ disabled }: { disabled?: boolean }) {
   return (
     <div className="space-y-6" data-testid="oidc-provider-form">
       {/* Status indicator */}
-      <div className="glass-card p-4">
+      <div className="nm-card p-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className={cn(
@@ -438,7 +438,7 @@ function MappingsTab({ disabled }: { disabled?: boolean }) {
     return (
       <div className="space-y-3">
         {Array.from({ length: 3 }).map((_, i) => (
-          <div key={i} className="glass-card h-16 animate-pulse" />
+          <div key={i} className="nm-card h-16 animate-pulse" />
         ))}
       </div>
     );
@@ -466,7 +466,7 @@ function MappingsTab({ disabled }: { disabled?: boolean }) {
         <m.div
           initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="glass-card space-y-3 p-4"
+          className="nm-card space-y-3 p-4"
           data-testid="create-mapping-form"
         >
           <div className="grid gap-3 sm:grid-cols-3">
@@ -538,11 +538,11 @@ function MappingsTab({ disabled }: { disabled?: boolean }) {
 
       {/* Mappings list */}
       {!mappings?.length ? (
-        <div className="glass-card py-12 text-center text-sm text-muted-foreground">
+        <div className="nm-card py-12 text-center text-sm text-muted-foreground">
           No group mappings configured yet
         </div>
       ) : (
-        <div className="glass-card overflow-hidden">
+        <div className="nm-card overflow-hidden">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">
@@ -634,7 +634,7 @@ export function OidcSettingsPage() {
       </div>
 
       {/* Tabs */}
-      <div className="glass-card p-1.5">
+      <div className="nm-card p-1.5">
         <div className="flex gap-1">
           {TAB_CONFIG.map(({ key, label, icon: Icon }) => (
             <button

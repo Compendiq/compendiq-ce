@@ -36,7 +36,7 @@ export function ConfluenceTab({ settings, onSave }: { settings: SettingsResponse
           type="url"
           value={url}
           onChange={(e) => setUrl(e.target.value)}
-          className="glass-input"
+          className="nm-input"
           placeholder="https://confluence.company.com"
         />
       </div>
@@ -52,7 +52,7 @@ export function ConfluenceTab({ settings, onSave }: { settings: SettingsResponse
           type="password"
           value={pat}
           onChange={(e) => setPat(e.target.value)}
-          className="glass-input"
+          className="nm-input"
           placeholder={settings.hasConfluencePat ? '••••••••••' : 'Enter PAT'}
         />
       </div>
@@ -68,13 +68,13 @@ export function ConfluenceTab({ settings, onSave }: { settings: SettingsResponse
           type="button"
           onClick={testConnection}
           disabled={testing || !url}
-          className="glass-button-secondary"
+          className="nm-button-ghost"
         >
           {testing ? 'Testing...' : 'Test Connection'}
         </button>
         <button
           type="submit"
-          className="glass-button-primary"
+          className="nm-button-primary"
         >
           Save
         </button>

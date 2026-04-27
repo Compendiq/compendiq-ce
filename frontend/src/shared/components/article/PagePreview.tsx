@@ -69,7 +69,7 @@ export function PagePreview({ pageId, children, className }: PagePreviewProps) {
             )}
             data-testid="page-preview-card"
           >
-            <div className="glass-card overflow-hidden p-3 shadow-xl">
+            <div className="nm-card overflow-hidden p-3 shadow-xl">
               {isLoading ? (
                 <div className="space-y-2">
                   <div className="h-4 w-3/4 animate-pulse rounded bg-foreground/10" />

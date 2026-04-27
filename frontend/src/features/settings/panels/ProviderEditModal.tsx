@@ -56,16 +56,16 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
 
   return (
     <div role="dialog" className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <div className="glass-card w-[480px] space-y-3 p-6">
+      <div className="nm-card w-[480px] space-y-3 p-6">
         <h2 className="text-lg font-semibold">{mode === 'create' ? 'Add provider' : 'Edit provider'}</h2>
         <label className="block text-sm">
           Name
-          <input className="glass-input w-full" value={name} onChange={(e) => setName(e.target.value)} />
+          <input className="nm-input w-full" value={name} onChange={(e) => setName(e.target.value)} />
         </label>
         <label className="block text-sm">
           Base URL
           <input
-            className="glass-input w-full"
+            className="nm-input w-full"
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
             placeholder="https://api.openai.com/v1"
@@ -78,7 +78,7 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
           )}
           <input
             type="password"
-            className="glass-input w-full"
+            className="nm-input w-full"
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
             placeholder={initial?.hasApiKey ? 'Replace key…' : ''}
@@ -113,17 +113,17 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
         <label className="block text-sm">
           Default model
           <input
-            className="glass-input w-full"
+            className="nm-input w-full"
             value={defaultModel ?? ''}
             onChange={(e) => setDefaultModel(e.target.value)}
           />
         </label>
         <div className="flex justify-end gap-2">
-          <button className="glass-button-secondary" onClick={onClose}>
+          <button className="nm-button-ghost" onClick={onClose}>
             Cancel
           </button>
           <button
-            className="glass-button-primary"
+            className="nm-button-primary"
             disabled={!canSave || saving}
             onClick={save}
           >

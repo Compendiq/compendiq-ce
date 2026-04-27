@@ -133,7 +133,7 @@ export function LlmTab() {
 
   return (
     <div className="space-y-6">
-      <div className="glass-card border-yellow-500/30 p-3 text-sm text-yellow-400">
+      <div className="nm-card border-yellow-500/30 p-3 text-sm text-yellow-400">
         LLM provider + per-use-case assignments are shared across all users. Only admins can change them here.
       </div>
       <ProviderListSection />
@@ -148,7 +148,7 @@ export function LlmTab() {
       />
       <div className="flex gap-3">
         <button
-          className="glass-button-primary"
+          className="nm-button-primary"
           disabled={save.isPending}
           onClick={handleSave}
         >
@@ -157,7 +157,7 @@ export function LlmTab() {
       </div>
 
       {/* Runtime limits — per-user concurrent-SSE-stream cap (#268) */}
-      <div className="glass-card space-y-4 p-4">
+      <div className="nm-card space-y-4 p-4">
         <div>
           <h3 className="text-base font-semibold">Runtime limits</h3>
           <p className="mt-1 text-xs text-muted-foreground">
@@ -204,7 +204,7 @@ export function LlmTab() {
         <div className="flex gap-3">
           <button
             data-testid="llm-runtime-limits-save"
-            className="glass-button-primary"
+            className="nm-button-primary"
             disabled={!runtimeLimitsDirty || saveRuntimeLimits.isPending}
             onClick={handleSaveRuntimeLimits}
           >

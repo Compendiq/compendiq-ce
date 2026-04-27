@@ -1,8 +1,21 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
+/* Self-hosted brand fonts via @fontsource (no external CDN — privacy-safe).
+   Display: Newsreader (variable opsz axis 6–72) — editorial-authority serif
+   Body:    Hanken Grotesk (variable wght axis) — Swiss-DNA neo-grotesk
+   Mono:    JetBrains Mono (variable) — code blocks
+   Mirrors compendiq-landing/src/styles/fonts.css for cross-surface parity. */
+@import "@fontsource-variable/newsreader/opsz.css";
+@import "@fontsource-variable/newsreader/opsz-italic.css";
+@import "@fontsource-variable/hanken-grotesk/wght.css";
+@import "@fontsource-variable/jetbrains-mono/index.css";
+
 /* ============================================
-   Compendiq - Glassmorphic Themes
+   Compendiq — Neumorphic Themes (Honey Linen + Graphite Honey)
+   Brand: black #0A0A0A + honey #F9C74F. Same honey accent in both themes;
+   neutrals differ. Palette mirrors the public landing page tokens at
+   compendiq-landing/src/styles/tokens.css for cross-surface brand parity.
    ============================================ */
 
 /* Reduce base font from browser default 16px → 15px (~-1px across the app).
@@ -19,13 +32,25 @@ html {
   font-size: 15px;
 }
 
-/* Premium typography rendering (Obsidian / Notion pattern) */
+/* Premium typography rendering (Obsidian / Notion pattern). Uses the
+   brand body sans (Hanken Grotesk Variable), with system fallbacks if the
+   font failed to load. Headings opt into --font-display in the prose styles. */
 body {
-  font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
   font-feature-settings: "liga" 1, "kern" 1;
+}
+
+/* Editorial serif for display copy (article titles, section headings,
+   marketing-style hero text). Newsreader's optical-size axis is auto, so
+   small headings stay legible while hero sizes get appropriate optical
+   adjustment. */
+h1, h2, h3, h4, h5, h6,
+.prose :where(h1, h2, h3, h4, h5, h6) {
+  font-family: var(--font-display);
+  font-optical-sizing: auto;
 }
 
 /* Thin minimal scrollbars — 5 px, translucent (Obsidian-like) */
@@ -66,242 +91,190 @@ body {
 }
 
 @theme {
-  /* Default theme: Void Indigo — graphite with indigo accents (Linear × GitHub) */
-  --color-background: oklch(0.19 0.003 265);
-  --color-foreground: oklch(0.95 0.008 265);
-  --color-card: oklch(0.24 0.003 265);
-  --color-card-foreground: oklch(0.95 0.008 265);
-  --color-primary: oklch(0.62 0.18 270);
-  --color-primary-foreground: oklch(0.98 0 0);
-  --color-secondary: oklch(0.28 0.003 265);
-  --color-secondary-foreground: oklch(0.88 0.008 265);
-  --color-muted: oklch(0.25 0.003 265);
-  --color-muted-foreground: oklch(0.60 0.015 265);
-  --color-accent: oklch(0.30 0.003 270);
-  --color-accent-foreground: oklch(0.95 0.008 265);
-  --color-destructive: oklch(0.55 0.2 25);
-  --color-border: oklch(0.34 0.003 265);
-  --color-ring: oklch(0.62 0.18 270);
-  --color-success: oklch(0.65 0.2 145);
-  --color-warning: oklch(0.7 0.15 80);
-  --color-info: oklch(0.6 0.15 240);
+  /* Default theme: Graphite Honey — graphite surfaces with honey accent (neumorphic dark).
+     Hex values mirror compendiq-landing/src/styles/tokens.css [data-theme='graphite-honey']. */
+  --color-background: #121211;          /* graphite */
+  --color-foreground: #f5efe0;          /* warm cream, not pure white */
+  --color-card: #22211e;
+  --color-card-foreground: #f5efe0;
+  --color-card-elevated: #2a2925;
+  --color-primary: #f9c74f;             /* honey — identical across themes */
+  --color-primary-foreground: #0a0a0a;  /* black on honey for AA contrast */
+  --color-primary-gradient-start: #fdd56d;
+  --color-primary-gradient-end: #f2b72e;
+  --color-primary-glow: rgba(249, 199, 79, 0.35);
+  /* On graphite the brand honey is ~11:1 against text — already AA-safe.
+     --color-primary-ink aliases to --color-primary in dark mode and exists
+     for parity with the light theme where the brand honey must darken. */
+  --color-primary-ink: #f9c74f;
+  --color-secondary: #2a2925;
+  --color-secondary-foreground: #c5bea9;
+  --color-muted: #2a2925;
+  --color-muted-foreground: #8a8472;
+  --color-accent: #2a2925;
+  --color-accent-foreground: #f5efe0;
+  --color-destructive: #e88888;
+  --color-border: #3a3831;
+  --color-ring: #f9c74f;
+  --color-success: #79c088;
+  --color-warning: #e8b06a;
+  --color-info: #8ab4e8;
+
+  /* Status colors — tuned for AA contrast on graphite */
+  --color-status-connected: #79c088;    /* green */
+  --color-status-syncing: #e8b06a;      /* warm amber */
+  --color-status-embedding: #8ab4e8;    /* blue */
+  --color-status-ai: #b89ae0;           /* purple */
+  --color-status-disconnected: #e88888; /* red */
+  --color-status-inactive: #6a6458;     /* warm gray */
+
+  /* Brand typography — self-hosted via @fontsource (privacy-safe).
+     Tailwind 4 exposes these as font-display / font-sans / font-mono
+     utilities automatically. Mirrors the landing page token contract. */
+  --font-display: 'Newsreader Variable', Georgia, 'Times New Roman', serif;
+  --font-sans: 'Hanken Grotesk Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, 'SF Mono', Consolas, monospace;
+
+  /* Code colors — per-language, matched against --code-bg #1a1a18 */
+  --color-code-bg: #1a1a18;
+  --color-code-keyword: #e8b06a;
+  --color-code-string: #9ac890;
+  --color-code-function: #a8c4ec;
+  --color-code-comment: #6a6458;
+  --color-code-number: #ecb86c;
+
+  /* Neumorphic shadow tokens — Graphite Honey.
+     Black shadow + warm-honey-tinted highlight: luminance compression on dark
+     means a cool white highlight reads as glare; the warm tint keeps the
+     two-light-source extrusion legible against near-black surfaces.
+     Alphas halved from the v0.4 first-cut for a softer, less pronounced glow. */
+  --nm-shadow-out: rgba(0, 0, 0, 0.25);
+  --nm-shadow-out-strong: rgba(0, 0, 0, 0.32);
+  --nm-shadow-out-hover: rgba(0, 0, 0, 0.36);
+  --nm-highlight: rgba(110, 92, 58, 0.16);
+  --nm-highlight-strong: rgba(130, 110, 66, 0.21);
+  --nm-highlight-hover: rgba(140, 118, 72, 0.24);
+  --nm-shadow-in: rgba(0, 0, 0, 0.32);
 
   --radius-xl: 1.25rem;
   --radius-lg: 0.75rem;
   --radius-md: 0.5rem;
   --radius-sm: 0.25rem;
 
-  /* Re-anchor text-xs so 0.75rem Tailwind classes stay at 12px with the 15px base.
-     Without this, text-xs (0.75rem × 15px = 11.25px) falls below the 12px minimum. */
+  /* text-xs override — pinned to 0.8rem (12px at the 15px base). */
   --font-size-xs: 0.8rem;
 
-  /* Glass utility colors (overridden for light themes) */
+  /* Glass utility colors — kept until Phase 5 retires the glass-* @utility blocks */
   --glass-border: oklch(1 0 0 / 0.08);
   --glass-border-hover: oklch(1 0 0 / 0.15);
   --glass-shadow: oklch(0 0 0 / 0.2);
   --glass-shadow-hover: oklch(0 0 0 / 0.3);
-
-  /* Liquid Glass sidebar variables (dark default, overridden for light themes) */
   --glass-sidebar-bg: oklch(from var(--color-card) l c h / 0.55);
   --glass-sidebar-blur: 24px;
   --glass-sidebar-border: oklch(1 0 0 / 0.12);
   --glass-sidebar-shadow: 0 8px 32px oklch(0 0 0 / 0.18);
   --glass-sidebar-specular: inset 0 0.5px 0 oklch(1 0 0 / 0.08);
   --glass-sidebar-divider: oklch(1 0 0 / 0.06);
-
-  /* Liquid Pill selection variables */
   --glass-pill-bg: linear-gradient(145deg, oklch(1 0 0 / 0.12) 0%, oklch(1 0 0 / 0.04) 100%);
   --glass-pill-border: oklch(1 0 0 / 0.1);
   --glass-pill-shadow: 0 2px 8px oklch(0 0 0 / 0.12), inset 0 0.5px 0 oklch(1 0 0 / 0.12);
   --glass-pill-hover: oklch(1 0 0 / 0.05);
 
-  /* Inline code color (overridden for light themes) */
-  --inline-code-color: oklch(0.85 0.12 30);
+  --inline-code-color: #e8b06a;  /* warm amber — matches code-keyword */
 }
 
 /* ===========================
-   DARK THEMES
+   LIGHT THEMES — shared overrides
    =========================== */
 
-/* ---- Theme: Obsidian Violet — warm graphite with violet accents (Raycast × Obsidian) ---- */
-[data-theme="obsidian-violet"] {
-  --color-background: oklch(0.21 0.002 60);
-  --color-foreground: oklch(0.93 0.008 60);
-  --color-card: oklch(0.26 0.002 60);
-  --color-card-foreground: oklch(0.93 0.008 60);
-  --color-primary: oklch(0.65 0.22 295);
-  --color-primary-foreground: oklch(0.99 0 0);
-  --color-secondary: oklch(0.30 0.002 60);
-  --color-secondary-foreground: oklch(0.86 0.008 60);
-  --color-muted: oklch(0.28 0.002 60);
-  --color-muted-foreground: oklch(0.58 0.012 60);
-  --color-accent: oklch(0.33 0.002 60);
-  --color-accent-foreground: oklch(0.93 0.008 60);
-  --color-border: oklch(0.36 0.002 60);
-  --color-ring: oklch(0.65 0.22 295);
-}
-
-
-/* ===========================
-   LIGHT THEMES
-   =========================== */
-
-/* Light theme glass overrides (shared via data-theme-type attribute) */
+/* Shared overrides for any light theme (currently only honey-linen).
+   Carries:
+   - light-mode glass tokens (kept until glass-* utilities are retired in Phase 5)
+   - light-mode neumorphic shadow recipe (warm-brown tinted shadow + near-white highlight) */
 [data-theme-type="light"] {
+  /* Glass tokens (light) — kept for in-flight glass-* utilities */
   --glass-border: oklch(0 0 0 / 0.08);
   --glass-border-hover: oklch(0 0 0 / 0.15);
   --glass-shadow: oklch(0 0 0 / 0.06);
   --glass-shadow-hover: oklch(0 0 0 / 0.1);
-  --color-destructive: oklch(0.5 0.22 25);
-  --color-success: oklch(0.55 0.2 145);
-  --color-warning: oklch(0.6 0.18 80);
-  --color-info: oklch(0.5 0.18 240);
-  --inline-code-color: oklch(0.45 0.15 25);
-
-  /* Light-mode Liquid Glass sidebar overrides */
   --glass-sidebar-bg: oklch(from var(--color-card) l c h / 0.7);
   --glass-sidebar-border: oklch(0 0 0 / 0.16);
   --glass-sidebar-shadow: 0 8px 32px oklch(0 0 0 / 0.12);
   --glass-sidebar-specular: inset 0 0.5px 0 oklch(1 0 0 / 0.4);
   --glass-sidebar-divider: oklch(0 0 0 / 0.06);
-
-  /* Light-mode Liquid Pill overrides */
   --glass-pill-bg: linear-gradient(145deg, oklch(1 0 0 / 0.6) 0%, oklch(1 0 0 / 0.25) 100%);
   --glass-pill-border: oklch(1 0 0 / 0.5);
   --glass-pill-shadow: 0 2px 5px oklch(0 0 0 / 0.05), inset 0 0.5px 0 oklch(1 0 0 / 0.7);
   --glass-pill-hover: oklch(0 0 0 / 0.03);
+
+  /* Neumorphic shadow tokens — Honey Linen recipe from the landing page.
+     Warm brown shadow (rgb 50/42/20) so depth blends with linen instead of
+     pulling toward neutral cool gray; near-white highlight.
+     Alphas halved from the v0.4 first-cut for a softer, less pronounced glow. */
+  --nm-shadow-out: rgba(50, 42, 20, 0.05);
+  --nm-shadow-out-strong: rgba(50, 42, 20, 0.09);
+  --nm-shadow-out-hover: rgba(50, 42, 20, 0.11);
+  --nm-highlight: rgba(255, 252, 240, 0.48);
+  --nm-highlight-strong: rgba(255, 253, 245, 0.50);
+  --nm-highlight-hover: rgba(255, 253, 245, 0.50);
+  --nm-shadow-in: rgba(50, 42, 20, 0.09);
 }
 
-/* ---- Theme: Polar Slate (Vercel × Linear Light) ---- */
-[data-theme="polar-slate"] {
-  --color-background: oklch(0.97 0.008 240);
-  --color-foreground: oklch(0.15 0.012 240);
-  --color-card: oklch(1.0 0 0);
-  --color-card-foreground: oklch(0.15 0.012 240);
-  --color-primary: oklch(0.54 0.20 260);
-  --color-primary-foreground: oklch(0.99 0 0);
-  --color-secondary: oklch(0.94 0.008 240);
-  --color-secondary-foreground: oklch(0.25 0.012 240);
-  --color-muted: oklch(0.93 0.006 240);
-  --color-muted-foreground: oklch(0.50 0.015 240);
-  --color-accent: oklch(0.95 0.008 250);
-  --color-accent-foreground: oklch(0.20 0.012 240);
-  --color-destructive: oklch(0.5 0.22 25);
-  --color-border: oklch(0.91 0.010 240);
-  --color-ring: oklch(0.54 0.20 260);
-  --color-success: oklch(0.55 0.2 145);
-  --color-warning: oklch(0.6 0.18 80);
-  --color-info: oklch(0.5 0.18 240);
-}
+/* ---- Theme: Honey Linen — linen cream with honey accent (neumorphic light) ----
+   Hex values mirror compendiq-landing/src/styles/tokens.css [data-theme='honey-linen']. */
+[data-theme="honey-linen"] {
+  --color-background: #f7f7f4;          /* near-neutral white with a whisper of warmth */
+  --color-foreground: #0a0a0a;          /* near-black brand text */
+  --color-card: #ffffff;                /* pure white card */
+  --color-card-foreground: #0a0a0a;
+  --color-card-elevated: #ffffff;
+  --color-primary: #f9c74f;             /* honey — identical to dark theme */
+  --color-primary-foreground: #0a0a0a;  /* black on honey for AA contrast */
+  --color-primary-gradient-start: #fdd56d;
+  --color-primary-gradient-end: #f2b72e;
+  --color-primary-glow: rgba(249, 199, 79, 0.45);
+  /* Honey #F9C74F on the lighter background is ~1.32:1 — unusable for text.
+     This darkened honey hits ~5.5:1 on near-white and reads as the same
+     brand color semantically. Use for: eyebrow labels, feature numerals,
+     check marks, anywhere honey is a *text* color. Keep --color-primary for
+     fills (buttons, pills, borders). */
+  --color-primary-ink: #8a6016;
+  --color-secondary: #efeeea;
+  --color-secondary-foreground: #4a4a48;
+  --color-muted: #efeeea;
+  --color-muted-foreground: #7a7770;
+  --color-accent: #f1f0ec;
+  --color-accent-foreground: #0a0a0a;
+  --color-destructive: #b0322e;
+  --color-border: #dedcd4;
+  --color-ring: #f9c74f;
+  --color-success: #2f7a3a;
+  --color-warning: #b77a1a;
+  --color-info: #2a5bb0;
 
-/* ---- Theme: Parchment Glow (Notion × Stripe) ---- */
-[data-theme="parchment-glow"] {
-  --color-background: oklch(0.98 0.008 75);
-  --color-foreground: oklch(0.20 0.015 60);
-  --color-card: oklch(1.0 0 0);
-  --color-card-foreground: oklch(0.20 0.015 60);
-  --color-primary: oklch(0.56 0.22 275);
-  --color-primary-foreground: oklch(0.99 0 0);
-  --color-secondary: oklch(0.94 0.008 75);
-  --color-secondary-foreground: oklch(0.28 0.015 60);
-  --color-muted: oklch(0.93 0.006 75);
-  --color-muted-foreground: oklch(0.52 0.018 60);
-  --color-accent: oklch(0.95 0.01 80);
-  --color-accent-foreground: oklch(0.22 0.015 60);
-  --color-destructive: oklch(0.5 0.22 25);
-  --color-border: oklch(0.91 0.012 75);
-  --color-ring: oklch(0.56 0.22 275);
-  --color-success: oklch(0.55 0.2 145);
-  --color-warning: oklch(0.6 0.18 80);
-  --color-info: oklch(0.5 0.18 240);
-}
+  /* Status colors — tuned for AA contrast on linen */
+  --color-status-connected: #2f7a3a;
+  --color-status-syncing: #b77a1a;
+  --color-status-embedding: #2a5bb0;
+  --color-status-ai: #6a4ea8;
+  --color-status-disconnected: #b0322e;
+  --color-status-inactive: #a0988a;
 
-/* ===========================
-   GLASSMORPHIC UTILITIES
-   =========================== */
+  /* Code colors — per-language, matched against --code-bg #efe7d0 */
+  --color-code-bg: #efe7d0;
+  --color-code-keyword: #8a6016;
+  --color-code-string: #3d7a3d;
+  --color-code-function: #2a5bb0;
+  --color-code-comment: #a0988a;
+  --color-code-number: #b0571a;
 
-@utility glass-card {
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--glass-border);
-  background: oklch(from var(--color-card) l c h / 0.8);
-  backdrop-filter: blur(12px);
-  box-shadow:
-    inset 0 1px 0 oklch(1 0 0 / 0.08),
-    0 8px 32px var(--glass-shadow);
-}
+  /* Inherits --nm-* from the [data-theme-type="light"] block above; no overrides. */
 
-/* glass-card with --radius-xl (16px) for content cards (article sections). */
-@utility glass-card-xl {
-  border-radius: var(--radius-xl);
-  border: 1px solid var(--glass-border);
-  background: oklch(from var(--color-card) l c h / 0.8);
-  backdrop-filter: blur(12px);
-  box-shadow:
-    inset 0 1px 0 oklch(1 0 0 / 0.08),
-    0 8px 32px var(--glass-shadow);
-}
-
-@utility glass-card-hover {
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--glass-border);
-  background: oklch(from var(--color-card) l c h / 0.8);
-  backdrop-filter: blur(12px);
-  box-shadow:
-    inset 0 1px 0 oklch(1 0 0 / 0.08),
-    0 8px 32px var(--glass-shadow);
-  transition: box-shadow 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
-  &:hover {
-    border-color: var(--glass-border-hover);
-    box-shadow:
-      inset 0 1px 0 oklch(1 0 0 / 0.08),
-      0 0 0 1px oklch(from var(--color-primary) l c h / 0.5),
-      0 0 20px oklch(from var(--color-primary) l c h / 0.15),
-      0 12px 40px var(--glass-shadow-hover);
-    transform: translateY(-1px);
-  }
-}
-
-/* Tier-1 chrome surface: lighter than glass-card, used for toolbars, mode
-   selectors, type selectors, and panel chrome (not main content surfaces). */
-@utility glass-toolbar {
-  border-radius: var(--radius-lg);
-  border: 1px solid oklch(from var(--color-border) l c h / 0.4);
-  background: oklch(from var(--color-card) l c h / 0.5);
-  backdrop-filter: blur(8px);
-}
-
-/* Liquid Glass sidebar material — Apple Tahoe-inspired floating panel.
-   Higher blur + saturate, rounded, floating with specular edge highlight. */
-@utility glass-sidebar {
-  border-radius: var(--radius-xl);
-  background: var(--glass-sidebar-bg);
-  backdrop-filter: blur(var(--glass-sidebar-blur)) saturate(1.3);
-  border: none;
-  box-shadow:
-    var(--glass-sidebar-specular),
-    var(--glass-sidebar-shadow);
-}
-
-/* Liquid Glass header — floating nav bar variant. */
-@utility glass-header {
-  background: var(--glass-sidebar-bg);
-  backdrop-filter: blur(var(--glass-sidebar-blur)) saturate(1.3);
-  border: none;
-  box-shadow:
-    var(--glass-sidebar-specular),
-    0 4px 20px oklch(0 0 0 / 0.1);
-}
-
-/* Liquid Pill — selected state for sidebar/nav items (Tahoe-style glass lens). */
-@utility glass-pill-active {
-  background: var(--glass-pill-bg);
-  border: 0.5px solid var(--glass-pill-border);
-  box-shadow: var(--glass-pill-shadow);
-  backdrop-filter: blur(8px);
+  --inline-code-color: #8a6016;
 }
 
 /* Scroll edge fade mask — applied to scrollable sidebar content areas. */
-@utility glass-scroll-mask {
+@utility scroll-mask {
   mask-image: linear-gradient(
     to bottom,
     transparent 0%,
@@ -351,100 +324,382 @@ body {
 }
 
 /* ===========================
-   BUTTON UTILITIES
+   NEUMORPHIC UTILITIES (#30 — Honey Linen + Graphite Honey)
+
+   Hybrid neumorphism: every interactive surface has a 1px solid border for
+   WCAG 1.4.11 (3:1 non-text contrast) compliance — pure shadow-only borders
+   are not a path to AA. Press states use inset shadows. Focus rings live on
+   :focus-visible with outline-offset so they don't collide with the surface
+   shadow. Forced-colors mode (Windows High Contrast) zeros out box-shadow,
+   so each interactive utility falls back to a system border there.
+
+   Recipes (resolved against --nm-* tokens defined per theme):
+     - raised      : 6px 6px 14px shadow-out, -4px -4px 10px highlight
+     - raised-hover: 10px 10px 22px shadow-out-strong, -6px -6px 16px highlight-strong
+     - inset       : inset 4px 4px 10px shadow-in, inset -2px -2px 6px highlight
+     - flat        : 2px 2px 6px shadow-out, -2px -2px 6px highlight
    =========================== */
 
-@utility glass-button-primary {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.375rem;
+@utility nm-card {
   border-radius: var(--radius-lg);
-  background-color: var(--color-primary);
-  padding: 0.5rem 1rem;
-  font-size: 0.875rem;
-  line-height: 1.25rem;
-  font-weight: 500;
-  color: var(--color-primary-foreground);
-  transition: background-color 0.15s ease, transform 0.1s ease;
-  &:hover { background-color: oklch(from var(--color-primary) l c h / 0.9); }
-  &:active { transform: scale(0.98); }
-  &:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 2px var(--color-background), 0 0 0 4px oklch(from var(--color-primary) l c h / 0.5);
-  }
-  &:disabled { opacity: 0.5; pointer-events: none; }
+  border: 1px solid var(--color-border);
+  background: var(--color-card);
+  box-shadow:
+    6px 6px 14px var(--nm-shadow-out),
+    -4px -4px 10px var(--nm-highlight);
 }
 
-@utility glass-button-secondary {
+@utility nm-card-elevated {
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--color-border);
+  background: var(--color-card-elevated, var(--color-card));
+  box-shadow:
+    10px 10px 22px var(--nm-shadow-out),
+    -6px -6px 16px var(--nm-highlight);
+}
+
+@utility nm-card-interactive {
+  position: relative;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border);
+  background: var(--color-card);
+  cursor: pointer;
+  outline: 2px solid transparent;
+  outline-offset: 3px;
+  box-shadow:
+    6px 6px 14px var(--nm-shadow-out),
+    -4px -4px 10px var(--nm-highlight);
+  transition:
+    box-shadow 0.35s cubic-bezier(0.16, 1, 0.3, 1),
+    transform 0.35s cubic-bezier(0.16, 1, 0.3, 1),
+    border-color 0.2s ease-out;
+  will-change: transform, box-shadow;
+
+  &:hover {
+    border-color: oklch(from var(--color-primary) l c h / 0.5);
+    box-shadow:
+      10px 10px 22px var(--nm-shadow-out-strong),
+      -6px -6px 16px var(--nm-highlight-strong);
+    transform: translateY(-3px);
+  }
+
+  &:active {
+    box-shadow:
+      inset 4px 4px 10px var(--nm-shadow-in),
+      inset -2px -2px 6px var(--nm-highlight);
+    transform: translateY(0) scale(0.985);
+    transition-duration: 0.15s;
+  }
+
+  &:focus-visible {
+    outline-color: var(--color-primary);
+  }
+}
+
+@utility nm-toolbar {
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border);
+  background: var(--color-card);
+  box-shadow:
+    inset 3px 3px 8px var(--nm-shadow-in),
+    inset -1px -1px 4px var(--nm-highlight);
+}
+
+@utility nm-sidebar {
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--color-border);
+  background: var(--color-card);
+  box-shadow:
+    4px 0 16px var(--nm-shadow-out),
+    -2px 0 8px var(--nm-highlight);
+}
+
+@utility nm-header {
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border);
+  background: var(--color-card);
+  box-shadow:
+    0 6px 14px var(--nm-shadow-out),
+    0 -2px 6px var(--nm-highlight);
+}
+
+@utility nm-pill-active {
+  border-radius: var(--radius-md);
+  background: oklch(from var(--color-primary) l c h / 0.12);
+  border: 1px solid oklch(from var(--color-primary) l c h / 0.4);
+  box-shadow:
+    inset 2px 2px 5px var(--nm-shadow-in),
+    inset -1px -1px 3px var(--nm-highlight);
+  color: var(--color-primary);
+}
+
+@utility nm-button-primary {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.625rem 1.25rem;
+  border-radius: var(--radius-md);
+  border: 1px solid oklch(from var(--color-primary) calc(l - 0.06) c h);
+  background: linear-gradient(
+    145deg,
+    oklch(from var(--color-primary) calc(l + 0.04) c h),
+    var(--color-primary)
+  );
+  color: var(--color-primary-foreground);
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  outline: 2px solid transparent;
+  outline-offset: 3px;
+  box-shadow:
+    4px 4px 10px var(--nm-shadow-out-strong),
+    -2px -2px 6px var(--nm-highlight-strong),
+    inset 0 1px 0 oklch(1 0 0 / 0.25);
+  transition:
+    box-shadow 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+    transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+
+  &:hover {
+    box-shadow:
+      6px 6px 16px var(--nm-shadow-out-strong),
+      -3px -3px 10px var(--nm-highlight-strong),
+      inset 0 1px 0 oklch(1 0 0 / 0.35),
+      0 0 20px oklch(from var(--color-primary) l c h / 0.35);
+    transform: translateY(-2px);
+  }
+
+  &:active {
+    box-shadow:
+      inset 3px 3px 6px oklch(0 0 0 / 0.3),
+      inset -1px -1px 3px oklch(1 0 0 / 0.2);
+    transform: translateY(0) scale(0.97);
+    transition-duration: 0.1s;
+  }
+
+  &:focus-visible {
+    outline-color: var(--color-primary);
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    pointer-events: none;
+  }
+}
+
+@utility nm-button-ghost {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 0.375rem;
+  padding: 0.5625rem 1.125rem;
   border-radius: var(--radius-md);
-  border: 1px solid oklch(from var(--color-border) l c h / 0.5);
-  padding: 0.5rem 1rem;
+  border: 1.5px solid var(--color-border);
+  background: transparent;
+  color: var(--color-foreground);
   font-size: 0.875rem;
-  line-height: 1.25rem;
-  transition: background-color 0.15s ease, transform 0.1s ease;
-  &:hover { background-color: oklch(from var(--color-foreground) l c h / 0.05); }
-  &:active { transform: scale(0.98); }
-  &:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 2px var(--color-background), 0 0 0 4px oklch(from var(--color-primary) l c h / 0.5);
+  font-weight: 500;
+  cursor: pointer;
+  outline: 2px solid transparent;
+  outline-offset: 3px;
+  transition:
+    box-shadow 0.25s cubic-bezier(0.16, 1, 0.3, 1),
+    transform 0.25s cubic-bezier(0.16, 1, 0.3, 1),
+    border-color 0.2s ease-out,
+    color 0.2s ease-out;
+
+  &:hover {
+    border-color: var(--color-primary);
+    color: var(--color-primary);
+    box-shadow:
+      3px 3px 8px var(--nm-shadow-out),
+      -2px -2px 6px var(--nm-highlight),
+      0 0 16px oklch(from var(--color-primary) l c h / 0.12);
+    transform: translateY(-1px);
   }
-  &:disabled { opacity: 0.5; pointer-events: none; }
+
+  &:active {
+    box-shadow:
+      inset 2px 2px 5px var(--nm-shadow-in),
+      inset -1px -1px 3px var(--nm-highlight);
+    transform: translateY(0) scale(0.98);
+    transition-duration: 0.1s;
+  }
+
+  &:focus-visible {
+    outline-color: var(--color-primary);
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    pointer-events: none;
+  }
 }
 
-@utility glass-button-ghost {
+@utility nm-icon-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--radius-sm);
-  padding: 0.375rem;
+  width: 2.375rem;
+  height: 2.375rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-card);
   color: var(--color-muted-foreground);
-  transition: background-color 0.15s ease, color 0.15s ease, transform 0.1s ease;
+  cursor: pointer;
+  outline: 2px solid transparent;
+  outline-offset: 3px;
+  box-shadow:
+    3px 3px 8px var(--nm-shadow-out),
+    -2px -2px 6px var(--nm-highlight);
+  transition:
+    box-shadow 0.25s cubic-bezier(0.16, 1, 0.3, 1),
+    transform 0.25s cubic-bezier(0.16, 1, 0.3, 1),
+    color 0.2s ease-out;
+
   &:hover {
-    background-color: oklch(from var(--color-foreground) l c h / 0.05);
-    color: var(--color-foreground);
+    color: var(--color-primary);
+    box-shadow:
+      5px 5px 12px var(--nm-shadow-out-strong),
+      -3px -3px 8px var(--nm-highlight-strong),
+      0 0 14px oklch(from var(--color-primary) l c h / 0.18);
+    transform: translateY(-2px) rotate(-3deg);
   }
-  &:active { transform: scale(0.98); }
+
+  &:active {
+    box-shadow:
+      inset 2px 2px 5px var(--nm-shadow-in),
+      inset -1px -1px 3px var(--nm-highlight);
+    transform: translateY(0) scale(0.92);
+    transition-duration: 0.1s;
+  }
+
   &:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 2px var(--color-background), 0 0 0 4px oklch(from var(--color-primary) l c h / 0.5);
+    outline-color: var(--color-primary);
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    pointer-events: none;
   }
 }
 
-/* ===========================
-   INPUT UTILITIES
-   =========================== */
-
-@utility glass-input {
-  width: 100%;
+/* Composer — multi-element horizontal input wrapper for chat / prompt rows.
+   Same inset depth as nm-input, but designed to host an icon button + input
+   + send button as siblings without each carrying its own border. The
+   :focus-within rule lifts the wrapper when any descendant takes focus. */
+@utility nm-composer {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.375rem 0.5rem;
   border-radius: var(--radius-md);
-  border: 1px solid oklch(from var(--color-border) l c h / 0.5);
-  background-color: oklch(from var(--color-foreground) l c h / 0.05);
-  padding: 0.5rem 0.75rem;
-  font-size: 0.875rem;
-  line-height: 1.25rem;
-  outline: none;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
-  &:focus {
+  border: 1px solid var(--color-border);
+  background: var(--color-card);
+  box-shadow:
+    inset 2px 2px 5px var(--nm-shadow-out),
+    inset -1px -1px 3px var(--nm-highlight);
+  transition: border-color 0.2s ease-out, box-shadow 0.2s ease-out;
+
+  &:focus-within {
     border-color: var(--color-primary);
-    box-shadow: 0 0 0 1px var(--color-primary);
+    box-shadow:
+      inset 2px 2px 5px var(--nm-shadow-out),
+      inset -1px -1px 3px var(--nm-highlight),
+      0 0 0 2px oklch(from var(--color-primary) l c h / 0.3);
   }
 }
 
-@utility glass-select {
+@utility nm-input {
+  width: 100%;
+  padding: 0.6875rem 1rem;
   border-radius: var(--radius-md);
-  background-color: oklch(from var(--color-foreground) l c h / 0.05);
-  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--color-border);
+  background: var(--color-card);
+  color: var(--color-foreground);
   font-size: 0.875rem;
-  line-height: 1.25rem;
   outline: none;
-  transition: box-shadow 0.15s ease;
-  &:focus {
-    box-shadow: 0 0 0 1px var(--color-primary);
+  /* Subtle inset depth — matches landing's .neu-inset-sm recipe. Uses
+     --nm-shadow-out (regular alpha) rather than --nm-shadow-in (strong
+     alpha reserved for press/active states) so resting form fields don't
+     feel like deep wells. */
+  box-shadow:
+    inset 2px 2px 5px var(--nm-shadow-out),
+    inset -1px -1px 3px var(--nm-highlight);
+  transition: border-color 0.2s ease-out, box-shadow 0.2s ease-out;
+
+  &::placeholder {
+    color: var(--color-muted-foreground);
+  }
+
+  &:focus,
+  &:focus-visible {
+    border-color: var(--color-primary);
+    box-shadow:
+      inset 2px 2px 5px var(--nm-shadow-out),
+      inset -1px -1px 3px var(--nm-highlight),
+      0 0 0 2px oklch(from var(--color-primary) l c h / 0.3);
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    pointer-events: none;
+  }
+}
+
+/* Forced-colors fallback — restore borders so neumorphic chrome is not invisible
+   in Windows High Contrast Mode. box-shadow is zeroed out by the browser, so
+   the 1px hybrid border + system colors carry the structure. */
+@media (forced-colors: active) {
+  .nm-card,
+  .nm-card-elevated,
+  .nm-card-interactive,
+  .nm-toolbar,
+  .nm-sidebar,
+  .nm-header,
+  .nm-pill-active,
+  .nm-button-primary,
+  .nm-button-ghost,
+  .nm-icon-button,
+  .nm-input {
+    border: 2px solid ButtonText;
+  }
+  .nm-button-primary {
+    background: ButtonFace;
+    color: ButtonText;
+  }
+  .nm-pill-active {
+    border-color: Highlight;
+    color: Highlight;
+  }
+}
+
+/* Reduced-motion fallback — neumorphic press animations imply Z-axis movement
+   and can trigger vestibular discomfort. Strip the shadow/transform transitions
+   so state changes happen instantly. */
+@media (prefers-reduced-motion: reduce) {
+  .nm-card-interactive,
+  .nm-button-primary,
+  .nm-button-ghost,
+  .nm-icon-button {
+    transition: border-color 0.2s ease-out, color 0.2s ease-out;
+  }
+  .nm-card-interactive:hover,
+  .nm-button-primary:hover,
+  .nm-button-ghost:hover,
+  .nm-icon-button:hover {
+    transform: none;
+  }
+  .nm-icon-button:hover {
+    /* keep no-rotate too */
+    transform: none;
+  }
+  .nm-card-interactive:active,
+  .nm-button-primary:active,
+  .nm-button-ghost:active,
+  .nm-icon-button:active {
+    transform: none;
   }
 }
 
@@ -564,12 +819,6 @@ body {
    GRADIENT BORDERS (Dark Mode)
    Subtle inset top highlight on glass cards.
    =========================== */
-
-@utility glass-gradient-border {
-  box-shadow:
-    inset 0 1px 0 oklch(1 0 0 / 0.08),
-    0 8px 32px var(--glass-shadow);
-}
 
 /* ===========================
    TABULAR NUMERALS

@@ -189,7 +189,7 @@ function SyncConflictsPageInner() {
           {data.conflicts.map((c) => (
             <li
               key={c.id}
-              className="glass-card flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between"
+              className="nm-card flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between"
               data-testid={`sync-conflict-row-${c.id}`}
             >
               <div className="flex-1">

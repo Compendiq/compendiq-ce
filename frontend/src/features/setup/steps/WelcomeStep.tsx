@@ -56,7 +56,7 @@ export function WelcomeStep({ onNext }: WelcomeStepProps) {
         whileHover={{ scale: 1.02 }}
         whileTap={{ scale: 0.98 }}
         onClick={onNext}
-        className="glass-button-primary mt-8 px-8 py-3 text-base"
+        className="nm-button-primary mt-8 px-8 py-3 text-base"
         data-testid="start-setup-btn"
       >
         Start Setup

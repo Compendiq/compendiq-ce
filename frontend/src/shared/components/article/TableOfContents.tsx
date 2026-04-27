@@ -294,7 +294,7 @@ export function TableOfContents({ htmlContent, headings: headingsProp, contentRe
       {/* Sidebar */}
       <div
         className={cn(
-          'glass-card fixed right-0 top-0 z-30 h-full w-64 overflow-y-auto p-4 transition-transform duration-300 lg:sticky lg:top-6 lg:z-0 lg:h-fit lg:max-h-[calc(100vh-4rem)] lg:translate-x-0',
+          'nm-card fixed right-0 top-0 z-30 h-full w-64 overflow-y-auto p-4 transition-transform duration-300 lg:sticky lg:top-6 lg:z-0 lg:h-fit lg:max-h-[calc(100vh-4rem)] lg:translate-x-0',
           isMobileOpen ? 'translate-x-0' : 'translate-x-full lg:translate-x-0',
         )}
         role="navigation"

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="midnight-blue" data-theme-type="dark">
+<html lang="en" data-theme="graphite-honey" data-theme-type="dark" class="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -11,8 +11,8 @@
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/site.webmanifest" />
-    <meta name="theme-color" content="#6366f1" media="(prefers-color-scheme: dark)" />
-    <meta name="theme-color" content="#4f46e5" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#f9c74f" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f9c74f" media="(prefers-color-scheme: light)" />
 
     <!--
       Open Graph — og:image MUST be an absolute URL for social scrapers.
@@ -28,21 +28,28 @@
     <meta name="twitter:card" content="summary" />
 
     <script>
-      // Prevent FOUC: read persisted theme before React loads.
-      // Check new key first, fall back to legacy keys for migration.
+      // Prevent FOUC: read persisted theme before React loads and apply
+      // data-theme + data-theme-type + the `dark` class together. Doing all
+      // three before first paint keeps Tailwind's `dark:` variants (e.g. the
+      // header logo's `dark:invert`) and the `[data-theme-type]` CSS rules in
+      // lockstep — no flash of dark-on-dark or light-on-light at boot.
+      // Only the two current themes are honored; unknown values fall through
+      // to the defaults already set on <html> above. Legacy localStorage keys
+      // are still checked so upgrading users keep their preference.
       (function() {
-        var LIGHT = ['cloud-white','lavender-bloom','mint-fresh','peach-blossom',
-          'sky-blue','lemon-drop','rose-garden','sage-light','sand-dune',
-          'ice-crystal','catppuccin-latte'];
+        var VALID = { 'graphite-honey': 'dark', 'honey-linen': 'light' };
         try {
-          var raw = localStorage.getItem('compendiq-theme') || localStorage.getItem('atlasmind-theme') || localStorage.getItem('kb-theme');
+          var raw = localStorage.getItem('compendiq-theme')
+                  || localStorage.getItem('atlasmind-theme')
+                  || localStorage.getItem('kb-theme');
           if (raw) {
             var parsed = JSON.parse(raw);
             var theme = parsed && parsed.state && parsed.state.theme;
-            if (theme) {
+            if (theme && VALID[theme]) {
+              var type = VALID[theme];
               document.documentElement.setAttribute('data-theme', theme);
-              document.documentElement.dataset.themeType =
-                LIGHT.indexOf(theme) !== -1 ? 'light' : 'dark';
+              document.documentElement.dataset.themeType = type;
+              document.documentElement.classList.toggle('dark', type === 'dark');
             }
           }
         } catch(e) {}

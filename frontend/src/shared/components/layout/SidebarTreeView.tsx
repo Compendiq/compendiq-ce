@@ -135,7 +135,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         className={cn(
           'group flex items-center gap-1.5 rounded-[10px] h-9 pr-2 text-sm cursor-pointer transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
           isActive
-            ? 'glass-pill-active text-primary font-medium scale-[1.01]'
+            ? 'nm-pill-active text-primary font-medium scale-[1.01]'
             : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
         )}
         style={{ paddingLeft: `${level * 16 + 10}px` }}
@@ -380,7 +380,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
           animate={{ width: 40, opacity: 1 }}
           exit={{ width: 0, opacity: 0 }}
           transition={reduceEffects ? { duration: 0 } : sidebarSpring}
-          className="flex flex-col items-center rounded-xl glass-sidebar overflow-hidden"
+          className="flex flex-col items-center bg-background border-r border-border overflow-hidden"
         >
           {/* Expand toggle */}
           <button
@@ -407,7 +407,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
                   className={cn(
                     'rounded-lg p-1.5 transition-all duration-200 active:scale-[0.95]',
                     active
-                      ? 'glass-pill-active text-primary'
+                      ? 'nm-pill-active text-primary'
                       : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
                   )}
                   title={`${label} (${shortcut})`}
@@ -435,7 +435,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
       animate={{ width: treeSidebarWidth, opacity: 1 }}
       transition={reduceEffects || isResizing ? { duration: 0 } : sidebarSpring}
       className={cn(
-        'relative flex flex-col glass-sidebar overflow-hidden',
+        'relative flex flex-col bg-background border-r border-border overflow-hidden',
         isResizing && 'select-none',
       )}
     >
@@ -454,7 +454,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
               className={cn(
                 'flex flex-1 items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs transition-all duration-200 active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
                 active
-                  ? 'glass-pill-active text-primary font-medium'
+                  ? 'nm-pill-active text-primary font-medium'
                   : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
               )}
             >
@@ -521,7 +521,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
             <ChevronsUpDown size={12} className="shrink-0 text-muted-foreground" />
           </button>
           {spaceDropdownOpen && (
-            <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-64 overflow-y-auto rounded-xl glass-sidebar p-1">
+            <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-64 overflow-y-auto rounded-xl nm-sidebar p-1">
               <button
                 onClick={() => {
                   setTreeSidebarSpaceKey(undefined);
@@ -529,7 +529,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
                 }}
                 className={cn(
                   'flex w-full items-center rounded-lg px-2.5 py-1.5 text-xs transition-all duration-200',
-                  !treeSidebarSpaceKey ? 'glass-pill-active text-primary font-medium' : 'text-foreground hover:bg-[var(--glass-pill-hover)]',
+                  !treeSidebarSpaceKey ? 'nm-pill-active text-primary font-medium' : 'text-foreground hover:bg-[var(--glass-pill-hover)]',
                 )}
               >
                 All Spaces
@@ -551,7 +551,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
                       className={cn(
                         'flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs transition-all duration-200',
                         treeSidebarSpaceKey === space.key
-                          ? 'glass-pill-active text-primary font-medium'
+                          ? 'nm-pill-active text-primary font-medium'
                           : 'text-foreground hover:bg-[var(--glass-pill-hover)]',
                       )}
                     >
@@ -581,7 +581,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
                       className={cn(
                         'flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs transition-all duration-200',
                         treeSidebarSpaceKey === space.key
-                          ? 'glass-pill-active text-primary font-medium'
+                          ? 'nm-pill-active text-primary font-medium'
                           : 'text-foreground hover:bg-[var(--glass-pill-hover)]',
                       )}
                     >
@@ -646,7 +646,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
       )}
 
       {/* Tree content with drag-and-drop + scroll mask */}
-      <div className="flex-1 overflow-y-auto p-2 glass-scroll-mask">
+      <div className="flex-1 overflow-y-auto p-2 scroll-mask">
         {isLoading ? (
           <div className="space-y-1.5 p-2">
             {[...Array(8)].map((_, i) => (

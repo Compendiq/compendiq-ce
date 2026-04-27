@@ -6,7 +6,6 @@ import { useCommandPaletteStore } from '../../../stores/command-palette-store';
 import { useKeyboardShortcutsStore } from '../../../stores/keyboard-shortcuts-store';
 import { useUiStore } from '../../../stores/ui-store';
 import { useKeyboardShortcuts, type ShortcutDefinition } from '../../hooks/use-keyboard-shortcuts';
-import { CompendiqLogo } from '../CompendiqLogo';
 import { CommandPalette } from './CommandPalette';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 import { ServiceStatus } from '../badges/ServiceStatus';
@@ -184,23 +183,24 @@ export function AppLayout({ children }: { children: ReactNode }) {
       <CommandPalette />
       <KeyboardShortcutsModal />
 
-      {/* Top navigation bar — Liquid Glass floating header */}
-      <header className="relative z-10 mx-3 mt-3 flex h-11 shrink-0 items-center rounded-xl glass-header px-4">
+      {/* Top navigation bar — full-width flat strip with bottom border. */}
+      <header className="relative z-10 flex h-[55px] shrink-0 items-center bg-background border-b border-border px-4">
         {/* Mobile hamburger — opens sidebar slide-over */}
         <button
           onClick={() => setMobileSidebarOpen((v) => !v)}
-          className="glass-button-ghost mr-2 md:hidden"
+          className="nm-icon-button mr-2 md:hidden"
           aria-label="Toggle sidebar"
         >
           {mobileSidebarOpen ? <X size={18} /> : <Menu size={18} />}
         </button>
 
         {/* Logo - always visible in header */}
-        <Link to="/" className="flex items-center gap-1.5 mr-3 group">
-          <CompendiqLogo size={20} className="text-primary transition-transform duration-200 group-hover:scale-110" />
-          <span className="text-sm font-semibold text-foreground">
-            Compen<span className="font-bold">diq</span>
-          </span>
+        <Link to="/" aria-label="Compendiq home" className="mr-3 flex shrink-0 items-center group">
+          <img
+            src="/compendiq-lockup-horizontal.svg"
+            alt="Compendiq"
+            className="h-7 w-auto transition-transform duration-200 group-hover:scale-105 dark:invert"
+          />
         </Link>
 
         {/* Breadcrumb — gets full width now that nav pills moved to sidebar */}
@@ -274,17 +274,17 @@ export function AppLayout({ children }: { children: ReactNode }) {
         <ServiceStatus />
       </div>
 
-      {/* Below header: sidebar + content area with floating gaps */}
-      <div data-testid="panel-wrapper" className="flex flex-1 gap-2.5 overflow-hidden p-3">
+      {/* Below header: sidebar + content area, edge-to-edge with borders. */}
+      <div data-testid="panel-wrapper" className="flex flex-1 overflow-hidden">
         {/* Left sidebar — always visible on desktop, hidden on mobile (slide-over instead) */}
         <div className="hidden md:flex">
           <SidebarTreeView />
         </div>
 
         {/* Main content area + optional right sidebar */}
-        <div className="flex flex-1 gap-2.5 overflow-hidden">
+        <div className="flex flex-1 overflow-hidden">
           <main className="flex flex-1 flex-col overflow-hidden">
-            <div ref={scrollContainerRef} data-scroll-container className="min-h-0 flex-1 overflow-y-auto px-3 pb-3 [scrollbar-gutter:stable_both-edges]">
+            <div ref={scrollContainerRef} data-scroll-container className="min-h-0 flex-1 overflow-y-auto px-4 pt-4 pb-4 [scrollbar-gutter:stable_both-edges]">
               <PageTransition>
                 <div className={cn('mx-auto w-full', isArticleRoute ? 'max-w-[1400px]' : 'max-w-7xl')}>
                   {children}

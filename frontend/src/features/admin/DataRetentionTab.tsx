@@ -84,14 +84,14 @@ function AdminAccessDeniedRetentionSection() {
 
   if (isLoading) {
     return (
-      <div className="glass-card p-4" data-testid="denied-admin-retention-loading">
+      <div className="nm-card p-4" data-testid="denied-admin-retention-loading">
         <div className="h-10 animate-pulse rounded bg-foreground/5" />
       </div>
     );
   }
 
   return (
-    <div className="glass-card p-4" data-testid="denied-admin-retention-section">
+    <div className="nm-card p-4" data-testid="denied-admin-retention-section">
       <div className="flex items-start gap-3">
         <ShieldAlert size={18} className="mt-0.5 shrink-0 text-muted-foreground" />
         <div className="flex-1">
@@ -280,7 +280,7 @@ export function DataRetentionTab() {
       </div>
 
       {/* Extended retention */}
-      <div className="glass-card space-y-3 p-4">
+      <div className="nm-card space-y-3 p-4">
         <label className="flex items-center gap-2 text-sm">
           <input
             type="checkbox"
@@ -314,7 +314,7 @@ export function DataRetentionTab() {
 
       {/* Per-table rules */}
       {policies.length > 0 ? (
-        <div className="glass-card overflow-hidden">
+        <div className="nm-card overflow-hidden">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">
@@ -363,7 +363,7 @@ export function DataRetentionTab() {
           </table>
         </div>
       ) : (
-        <div className="glass-card py-12 text-center text-sm text-muted-foreground">
+        <div className="nm-card py-12 text-center text-sm text-muted-foreground">
           No retention rules configured.
         </div>
       )}
@@ -396,7 +396,7 @@ export function DataRetentionTab() {
         <m.div
           initial={{ opacity: 0, height: 0 }}
           animate={{ opacity: 1, height: 'auto' }}
-          className="glass-card overflow-hidden"
+          className="nm-card overflow-hidden"
           data-testid="preview-results"
         >
           <div className="border-b border-border/50 px-4 py-2.5 text-xs font-medium text-muted-foreground">

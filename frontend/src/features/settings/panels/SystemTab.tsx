@@ -47,7 +47,7 @@ export function SystemTab() {
         </p>
         <button
           onClick={handleRerunSetup}
-          className="glass-button-secondary mt-3 px-4 py-2 text-sm"
+          className="nm-button-ghost mt-3 px-4 py-2 text-sm"
           data-testid="rerun-setup-btn"
         >
           Re-run Setup Wizard

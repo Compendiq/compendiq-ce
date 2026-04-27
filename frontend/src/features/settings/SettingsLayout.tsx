@@ -69,7 +69,7 @@ export function SettingsLayout() {
     >
       <h1 className="mb-6 text-2xl font-bold tracking-[-0.01em]">Settings</h1>
 
-      <div className="glass-card grid grid-cols-1 md:grid-cols-[240px_1fr]">
+      <div className="nm-card grid grid-cols-1 md:grid-cols-[240px_1fr]">
         <nav
           aria-label="Settings"
           className="border-b border-white/10 p-3 md:border-b-0 md:border-r"

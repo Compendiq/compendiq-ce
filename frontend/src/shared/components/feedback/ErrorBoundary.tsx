@@ -36,7 +36,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
       }
 
       return (
-        <div className="glass-card mx-auto mt-12 max-w-lg p-8 text-center">
+        <div className="nm-card mx-auto mt-12 max-w-lg p-8 text-center">
           <div className="mb-4 flex justify-center">
             <div className="rounded-full bg-destructive/15 p-3">
               <AlertTriangle size={32} className="text-destructive" />
@@ -55,7 +55,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
           )}
           <button
             onClick={this.handleReset}
-            className="glass-button-primary"
+            className="nm-button-primary"
           >
             <RefreshCw size={14} />
             Try Again

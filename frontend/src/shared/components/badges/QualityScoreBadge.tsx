@@ -31,7 +31,7 @@ function getScoreConfig(
   if (status === 'analyzing') {
     return {
       label: 'Analyzing...',
-      badgeClass: 'bg-purple-500/20 text-purple-400 border border-purple-500/30',
+      badgeClass: 'bg-status-ai/20 text-status-ai border border-status-ai/30',
       animate: true,
     };
   }
@@ -39,7 +39,7 @@ function getScoreConfig(
   if (status === 'failed') {
     return {
       label: 'Analysis Failed',
-      badgeClass: 'bg-red-500/20 text-red-400 border border-red-500/30',
+      badgeClass: 'bg-status-disconnected/20 text-status-disconnected border border-status-disconnected/30',
       animate: false,
     };
   }
@@ -47,7 +47,7 @@ function getScoreConfig(
   if (status === 'skipped') {
     return {
       label: 'Skipped',
-      badgeClass: 'bg-gray-500/20 text-gray-400 border border-gray-500/30',
+      badgeClass: 'bg-status-inactive/20 text-status-inactive border border-status-inactive/30',
       animate: false,
     };
   }
@@ -55,7 +55,7 @@ function getScoreConfig(
   if (score === null || score === undefined || status === 'pending' || !status) {
     return {
       label: 'Not Scored',
-      badgeClass: 'bg-gray-500/20 text-gray-400 border border-gray-500/30',
+      badgeClass: 'bg-status-inactive/20 text-status-inactive border border-status-inactive/30',
       animate: false,
     };
   }
@@ -64,7 +64,7 @@ function getScoreConfig(
   if (score >= 90) {
     return {
       label: `${score} Excellent`,
-      badgeClass: 'bg-green-500/20 text-green-400 border border-green-500/30',
+      badgeClass: 'bg-status-connected/20 text-status-connected border border-status-connected/30',
       animate: false,
     };
   }
@@ -72,7 +72,7 @@ function getScoreConfig(
   if (score >= 70) {
     return {
       label: `${score} Good`,
-      badgeClass: 'bg-blue-500/20 text-blue-400 border border-blue-500/30',
+      badgeClass: 'bg-status-embedding/20 text-status-embedding border border-status-embedding/30',
       animate: false,
     };
   }
@@ -80,14 +80,14 @@ function getScoreConfig(
   if (score >= 50) {
     return {
       label: `${score} Needs Work`,
-      badgeClass: 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30',
+      badgeClass: 'bg-status-syncing/20 text-status-syncing border border-status-syncing/30',
       animate: false,
     };
   }
 
   return {
     label: `${score} Poor`,
-    badgeClass: 'bg-red-500/20 text-red-400 border border-red-500/30',
+    badgeClass: 'bg-status-disconnected/20 text-status-disconnected border border-status-disconnected/30',
     animate: false,
   };
 }

@@ -329,7 +329,7 @@ export function IpAllowlistTab() {
       </div>
 
       {/* Enable toggle */}
-      <div className="glass-card flex items-center justify-between p-4" data-testid="ip-allowlist-enabled-row">
+      <div className="nm-card flex items-center justify-between p-4" data-testid="ip-allowlist-enabled-row">
         <div className="flex items-center gap-3">
           <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-foreground/5 text-muted-foreground">
             <Shield size={16} />
@@ -434,7 +434,7 @@ export function IpAllowlistTab() {
       </div>
 
       {/* Test panel */}
-      <div className="glass-card space-y-3 p-4" data-testid="ip-allowlist-test-panel">
+      <div className="nm-card space-y-3 p-4" data-testid="ip-allowlist-test-panel">
         <div>
           <h2 className="flex items-center gap-1.5 text-sm font-semibold">
             <TestTube2 size={14} className="text-muted-foreground" />

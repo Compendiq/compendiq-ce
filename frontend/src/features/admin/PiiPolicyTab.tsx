@@ -23,7 +23,7 @@
  * Feature gate: `useEnterprise().hasFeature('pii_detection')`. Items
  * outside this gate render an upgrade-prompt fallback.
  *
- * Visual idiom: glassmorphic cards (`glass-card`), Framer Motion entrance,
+ * Visual idiom: glassmorphic cards (`nm-card`), Framer Motion entrance,
  * `data-testid` attributes for component-level tests. Mirrors
  * AiReviewPolicyTab so the two enterprise admin surfaces feel consistent.
  */
@@ -267,7 +267,7 @@ function PiiPolicyTabInner() {
 
       {/* Master enabled toggle */}
       <label
-        className="glass-card flex cursor-pointer items-start gap-3 p-4"
+        className="nm-card flex cursor-pointer items-start gap-3 p-4"
         data-testid="pii-policy-enabled-card"
       >
         <input
@@ -291,7 +291,7 @@ function PiiPolicyTabInner() {
 
       {/* Confidence threshold */}
       <div
-        className="space-y-2 glass-card p-4"
+        className="space-y-2 nm-card p-4"
         data-testid="pii-policy-threshold-card"
       >
         <h2 className="text-sm font-semibold">Confidence threshold</h2>
@@ -356,7 +356,7 @@ function PiiPolicyTabInner() {
               <label
                 key={mode}
                 className={cn(
-                  'glass-card flex cursor-pointer items-start gap-3 p-4 transition-all',
+                  'nm-card flex cursor-pointer items-start gap-3 p-4 transition-all',
                   !policy.enabled && 'opacity-60',
                   active
                     ? 'ring-1 ring-primary'
@@ -509,7 +509,7 @@ function PiiPolicyTabInner() {
               <label
                 key={category}
                 className={cn(
-                  'glass-card flex cursor-pointer items-center gap-3 p-3 transition-all',
+                  'nm-card flex cursor-pointer items-center gap-3 p-3 transition-all',
                   !policy.enabled && 'opacity-60',
                   checked
                     ? 'ring-1 ring-primary'

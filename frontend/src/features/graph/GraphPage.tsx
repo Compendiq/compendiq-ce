@@ -278,7 +278,7 @@ export function GraphPage() {
   if (isLoading) {
     return (
       <div className="flex h-full items-center justify-center">
-        <div className="glass-card flex flex-col items-center gap-4 p-8">
+        <div className="nm-card flex flex-col items-center gap-4 p-8">
           <RefreshCw className="h-8 w-8 animate-spin text-primary" />
           <p className="text-muted-foreground">Loading knowledge graph...</p>
         </div>
@@ -291,11 +291,11 @@ export function GraphPage() {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     return (
       <div className="flex h-full items-center justify-center">
-        <div className="glass-card flex flex-col items-center gap-4 p-8 text-center max-w-md">
+        <div className="nm-card flex flex-col items-center gap-4 p-8 text-center max-w-md">
           <Info className="h-8 w-8 text-destructive" />
           <p className="text-destructive font-medium">Failed to load graph data</p>
           <p className="text-sm text-muted-foreground">{errorMessage}</p>
-          <button onClick={() => refetch()} className="glass-button-ghost text-sm" data-testid="graph-retry">
+          <button onClick={() => refetch()} className="nm-icon-button text-sm" data-testid="graph-retry">
             Retry
           </button>
         </div>
@@ -307,7 +307,7 @@ export function GraphPage() {
   if (!data || data.nodes.length === 0) {
     return (
       <div className="flex h-full items-center justify-center">
-        <div className="glass-card flex flex-col items-center gap-4 p-8 text-center">
+        <div className="nm-card flex flex-col items-center gap-4 p-8 text-center">
           <Info className="h-8 w-8 text-muted-foreground" />
           <p className="text-muted-foreground">No pages found. Sync and embed pages to see the knowledge graph.</p>
         </div>
@@ -339,7 +339,7 @@ export function GraphPage() {
               <button
                 onClick={() => setViewMode('individual')}
                 className={cn(
-                  'glass-button-ghost p-2',
+                  'nm-icon-button p-2',
                   viewMode === 'individual' && 'bg-primary/15 text-primary',
                 )}
                 aria-label="Individual view"
@@ -351,7 +351,7 @@ export function GraphPage() {
               <button
                 onClick={() => setViewMode('clustered')}
                 className={cn(
-                  'glass-button-ghost p-2',
+                  'nm-icon-button p-2',
                   viewMode === 'clustered' && 'bg-primary/15 text-primary',
                 )}
                 aria-label="Cluster view"
@@ -369,7 +369,7 @@ export function GraphPage() {
               <select
                 value={filterSpace ?? ''}
                 onChange={(e) => setFilterSpace(e.target.value || undefined)}
-                className="glass-button-ghost appearance-none py-2 pl-8 pr-3 text-xs"
+                className="nm-icon-button appearance-none py-2 pl-8 pr-3 text-xs"
                 data-testid="graph-space-filter"
                 aria-label="Filter by space"
               >
@@ -386,25 +386,25 @@ export function GraphPage() {
           {focusPageId && (
             <button
               onClick={() => navigate('/graph')}
-              className="glass-button-ghost px-3 py-2 text-xs"
+              className="nm-icon-button px-3 py-2 text-xs"
               data-testid="graph-clear-focus"
             >
               Show all
             </button>
           )}
 
-          <button onClick={zoomIn} className="glass-button-ghost p-2" aria-label="Zoom in" data-testid="graph-zoom-in">
+          <button onClick={zoomIn} className="nm-icon-button p-2" aria-label="Zoom in" data-testid="graph-zoom-in">
             <ZoomIn size={16} />
           </button>
-          <button onClick={zoomOut} className="glass-button-ghost p-2" aria-label="Zoom out" data-testid="graph-zoom-out">
+          <button onClick={zoomOut} className="nm-icon-button p-2" aria-label="Zoom out" data-testid="graph-zoom-out">
             <ZoomOut size={16} />
           </button>
-          <button onClick={fitAll} className="glass-button-ghost p-2" aria-label="Fit to screen" data-testid="graph-fit">
+          <button onClick={fitAll} className="nm-icon-button p-2" aria-label="Fit to screen" data-testid="graph-fit">
             <Maximize size={16} />
           </button>
           <button
             onClick={() => refetch()}
-            className="glass-button-ghost p-2"
+            className="nm-icon-button p-2"
             aria-label="Refresh graph"
             data-testid="graph-refresh"
           >

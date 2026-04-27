@@ -1,31 +1,43 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { useThemeStore, THEMES, THEME_IDS, LIGHT_THEMES, THEME_CATEGORIES, isLightTheme, applyThemeToDocument, DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, type ThemeId } from './theme-store';
+import {
+  useThemeStore,
+  THEMES,
+  THEME_IDS,
+  LIGHT_THEMES,
+  THEME_CATEGORIES,
+  isLightTheme,
+  applyThemeToDocument,
+  validateThemeId,
+  DEFAULT_DARK_THEME,
+  DEFAULT_LIGHT_THEME,
+  type ThemeId,
+} from './theme-store';
 
 describe('theme-store', () => {
   beforeEach(() => {
-    useThemeStore.setState({ theme: 'void-indigo' });
+    useThemeStore.setState({ theme: 'graphite-honey' });
   });
 
-  it('has void-indigo as the default theme', () => {
-    expect(useThemeStore.getState().theme).toBe('void-indigo');
+  it('has graphite-honey as the default theme', () => {
+    expect(useThemeStore.getState().theme).toBe('graphite-honey');
   });
 
   it('sets a new theme', () => {
-    useThemeStore.getState().setTheme('obsidian-violet');
-    expect(useThemeStore.getState().theme).toBe('obsidian-violet');
+    useThemeStore.getState().setTheme('honey-linen');
+    expect(useThemeStore.getState().theme).toBe('honey-linen');
   });
 
-  it('defines exactly 4 themes (2 dark + 2 light)', () => {
-    expect(THEMES).toHaveLength(4);
-    expect(THEME_IDS).toHaveLength(4);
+  it('defines exactly 2 themes (1 dark + 1 light)', () => {
+    expect(THEMES).toHaveLength(2);
+    expect(THEME_IDS).toHaveLength(2);
   });
 
-  it('has 2 dark themes', () => {
-    expect(THEMES.filter((t) => t.category === 'dark')).toHaveLength(2);
+  it('has 1 dark theme', () => {
+    expect(THEMES.filter((t) => t.category === 'dark')).toHaveLength(1);
   });
 
-  it('has 2 light themes', () => {
-    expect(THEMES.filter((t) => t.category === 'light')).toHaveLength(2);
+  it('has 1 light theme', () => {
+    expect(THEMES.filter((t) => t.category === 'light')).toHaveLength(1);
   });
 
   it('each theme has required metadata', () => {
@@ -65,88 +77,121 @@ describe('theme-store', () => {
   });
 
   it('exports correct default theme constants', () => {
-    expect(DEFAULT_DARK_THEME).toBe('void-indigo');
-    expect(DEFAULT_LIGHT_THEME).toBe('polar-slate');
+    expect(DEFAULT_DARK_THEME).toBe('graphite-honey');
+    expect(DEFAULT_LIGHT_THEME).toBe('honey-linen');
   });
 
-  it('sets light themes', () => {
-    useThemeStore.getState().setTheme('polar-slate');
-    expect(useThemeStore.getState().theme).toBe('polar-slate');
+  it('sets light theme', () => {
+    useThemeStore.getState().setTheme('honey-linen');
+    expect(useThemeStore.getState().theme).toBe('honey-linen');
   });
 
-  it('sets dark themes', () => {
-    useThemeStore.getState().setTheme('obsidian-violet');
-    expect(useThemeStore.getState().theme).toBe('obsidian-violet');
+  it('sets dark theme', () => {
+    useThemeStore.getState().setTheme('graphite-honey');
+    expect(useThemeStore.getState().theme).toBe('graphite-honey');
   });
 
   describe('isLightTheme', () => {
-    it('returns true for light themes', () => {
-      expect(isLightTheme('polar-slate')).toBe(true);
-      expect(isLightTheme('parchment-glow')).toBe(true);
+    it('returns true for honey-linen', () => {
+      expect(isLightTheme('honey-linen')).toBe(true);
     });
 
-    it('returns false for dark themes', () => {
-      expect(isLightTheme('void-indigo')).toBe(false);
-      expect(isLightTheme('obsidian-violet')).toBe(false);
+    it('returns false for graphite-honey', () => {
+      expect(isLightTheme('graphite-honey')).toBe(false);
     });
   });
 
   describe('applyThemeToDocument', () => {
     it('sets data-theme attribute on document root', () => {
-      applyThemeToDocument('obsidian-violet');
-      expect(document.documentElement.getAttribute('data-theme')).toBe('obsidian-violet');
+      applyThemeToDocument('honey-linen');
+      expect(document.documentElement.getAttribute('data-theme')).toBe('honey-linen');
     });
 
-    it('sets data-theme-type to dark for dark themes', () => {
-      applyThemeToDocument('void-indigo');
+    it('sets data-theme-type to dark for graphite-honey', () => {
+      applyThemeToDocument('graphite-honey');
       expect(document.documentElement.dataset.themeType).toBe('dark');
     });
 
-    it('sets data-theme-type to light for light themes', () => {
-      applyThemeToDocument('polar-slate');
+    it('sets data-theme-type to light for honey-linen', () => {
+      applyThemeToDocument('honey-linen');
       expect(document.documentElement.dataset.themeType).toBe('light');
     });
 
-    it('sets data-theme-type to light for parchment-glow', () => {
-      applyThemeToDocument('parchment-glow');
-      expect(document.documentElement.dataset.themeType).toBe('light');
+    it('adds the dark class when applying a dark theme', () => {
+      document.documentElement.classList.remove('dark');
+      applyThemeToDocument('graphite-honey');
+      expect(document.documentElement.classList.contains('dark')).toBe(true);
     });
 
-    it('sets data-theme-type to dark for obsidian-violet', () => {
-      applyThemeToDocument('obsidian-violet');
-      expect(document.documentElement.dataset.themeType).toBe('dark');
+    it('removes the dark class when applying a light theme', () => {
+      document.documentElement.classList.add('dark');
+      applyThemeToDocument('honey-linen');
+      expect(document.documentElement.classList.contains('dark')).toBe(false);
     });
   });
 
   describe('setTheme applies to document', () => {
-    it('updates data-theme when setTheme is called', () => {
-      useThemeStore.getState().setTheme('obsidian-violet');
-      expect(document.documentElement.getAttribute('data-theme')).toBe('obsidian-violet');
+    it('updates data-theme when setTheme is called (dark)', () => {
+      useThemeStore.getState().setTheme('graphite-honey');
+      expect(document.documentElement.getAttribute('data-theme')).toBe('graphite-honey');
       expect(document.documentElement.dataset.themeType).toBe('dark');
     });
 
-    it('updates data-theme-type to light for light themes', () => {
-      useThemeStore.getState().setTheme('parchment-glow');
-      expect(document.documentElement.getAttribute('data-theme')).toBe('parchment-glow');
+    it('updates data-theme-type to light when switching to honey-linen', () => {
+      useThemeStore.getState().setTheme('honey-linen');
+      expect(document.documentElement.getAttribute('data-theme')).toBe('honey-linen');
       expect(document.documentElement.dataset.themeType).toBe('light');
     });
   });
 
-  describe('validateThemeId (migration)', () => {
-    it('rejects removed theme IDs as invalid', () => {
+  describe('validateThemeId (retirement)', () => {
+    it('rejects retired theme IDs as invalid', () => {
       const validIds = [...THEME_IDS] as string[];
-      const removedIds = ['midnight-blue', 'ocean-depth', 'catppuccin-mocha', 'cloud-white'];
-      for (const id of removedIds) {
+      const retiredIds = [
+        'void-indigo',
+        'obsidian-violet',
+        'polar-slate',
+        'parchment-glow',
+        'ember-dusk',
+        'sunrise-cream',
+        'midnight-blue',
+        'ocean-depth',
+        'catppuccin-mocha',
+        'cloud-white',
+      ];
+      for (const id of retiredIds) {
         expect(validIds).not.toContain(id);
       }
     });
 
-    it('accepts all current theme IDs as valid', () => {
+    it('accepts the two current theme IDs as valid', () => {
       const validIds = [...THEME_IDS] as string[];
-      expect(validIds).toContain('void-indigo');
-      expect(validIds).toContain('obsidian-violet');
-      expect(validIds).toContain('polar-slate');
-      expect(validIds).toContain('parchment-glow');
+      expect(validIds).toContain('graphite-honey');
+      expect(validIds).toContain('honey-linen');
+    });
+
+    it('passes through current theme IDs unchanged', () => {
+      expect(validateThemeId('graphite-honey')).toBe('graphite-honey');
+      expect(validateThemeId('honey-linen')).toBe('honey-linen');
+    });
+
+    it('falls back retired light themes to the light default (no silent dark flip)', () => {
+      // A user who chose a *light* theme on a previous version should land on
+      // the current light default after upgrade — flipping them to dark would
+      // be a worse experience than picking the wrong shade of light.
+      expect(validateThemeId('polar-slate')).toBe(DEFAULT_LIGHT_THEME);
+      expect(validateThemeId('parchment-glow')).toBe(DEFAULT_LIGHT_THEME);
+      expect(validateThemeId('sunrise-cream')).toBe(DEFAULT_LIGHT_THEME);
+      expect(validateThemeId('cloud-white')).toBe(DEFAULT_LIGHT_THEME);
+    });
+
+    it('falls back retired dark/unknown themes to the dark default', () => {
+      expect(validateThemeId('void-indigo')).toBe(DEFAULT_DARK_THEME);
+      expect(validateThemeId('obsidian-violet')).toBe(DEFAULT_DARK_THEME);
+      expect(validateThemeId('midnight-blue')).toBe(DEFAULT_DARK_THEME);
+      expect(validateThemeId('catppuccin-mocha')).toBe(DEFAULT_DARK_THEME);
+      expect(validateThemeId('totally-made-up-id')).toBe(DEFAULT_DARK_THEME);
+      expect(validateThemeId('')).toBe(DEFAULT_DARK_THEME);
     });
   });
 });

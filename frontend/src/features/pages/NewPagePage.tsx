@@ -127,11 +127,11 @@ export function NewPagePage() {
         className="sticky top-0 z-30 relative bg-background space-y-2 before:absolute before:-z-10 before:-top-[100px] before:bottom-0 before:-left-[14px] before:-right-[14px] sm:before:-left-[22px] sm:before:-right-[22px] before:bg-background"
       >
         {/* Panel 1: Actions + Settings */}
-        <div className="glass-card space-y-3 p-3">
+        <div className="nm-card space-y-3 p-3">
           {/* Action bar */}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <button onClick={() => navigate('/pages')} className="glass-button-ghost">
+              <button onClick={() => navigate('/pages')} className="nm-icon-button">
                 <ArrowLeft size={18} />
               </button>
               <h1 className="text-xl font-bold">New Page</h1>
@@ -165,7 +165,7 @@ export function NewPagePage() {
               <button
                 onClick={handleCreate}
                 disabled={isCreateDisabled}
-                className="glass-button-primary"
+                className="nm-button-primary"
               >
                 <Save size={14} /> {createMutation.isPending ? 'Creating...' : 'Create Page'}
               </button>
@@ -212,7 +212,7 @@ export function NewPagePage() {
             <select
               value={spaceKey}
               onChange={(e) => handleSpaceChange(e.target.value)}
-              className="glass-select"
+              className="nm-input"
               data-testid="space-selector"
             >
               <option value="">Select space...</option>
@@ -278,7 +278,7 @@ export function NewPagePage() {
         </div>
 
         {/* Panel 2: Toolbar + Title + Editor */}
-        <div className="glass-card overflow-hidden">
+        <div className="nm-card overflow-hidden">
           {/* Editor toolbar */}
           {editorInstance && (
             <div className="border-b border-border/25 px-1">
@@ -346,7 +346,7 @@ function TemplateGallery({ onSelect, onClose }: { onSelect: (html: string) => vo
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" data-testid="template-gallery-modal">
-      <div className="glass-card w-full max-w-lg p-6">
+      <div className="nm-card w-full max-w-lg p-6">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-lg font-semibold">Choose a Template</h2>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground">&times;</button>
@@ -366,7 +366,7 @@ function TemplateGallery({ onSelect, onClose }: { onSelect: (html: string) => vo
                 key={tpl.id}
                 onClick={() => handleUse(tpl.id)}
                 disabled={useTemplateMutation.isPending}
-                className="glass-card-hover flex w-full items-center justify-between p-3 text-left"
+                className="nm-card-interactive flex w-full items-center justify-between p-3 text-left"
               >
                 <div>
                   <p className="font-medium">{tpl.title}</p>

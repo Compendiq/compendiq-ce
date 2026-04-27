@@ -123,7 +123,7 @@ export function LlmStep({ onNext, onBack }: LlmStepProps) {
                 setBaseUrl('https://api.openai.com');
               }
             }}
-            className="glass-input"
+            className="nm-input"
             data-testid="llm-provider-select"
           >
             <option value="ollama">Ollama (Local)</option>
@@ -141,7 +141,7 @@ export function LlmStep({ onNext, onBack }: LlmStepProps) {
             type="url"
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
-            className="glass-input"
+            className="nm-input"
             placeholder={provider === 'ollama' ? 'http://localhost:11434' : 'https://api.openai.com'}
             data-testid="llm-base-url"
           />
@@ -158,7 +158,7 @@ export function LlmStep({ onNext, onBack }: LlmStepProps) {
               type="password"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
-              className="glass-input"
+              className="nm-input"
               placeholder="sk-..."
               data-testid="llm-api-key"
             />
@@ -170,7 +170,7 @@ export function LlmStep({ onNext, onBack }: LlmStepProps) {
           type="button"
           onClick={handleTest}
           disabled={testing}
-          className="glass-button-secondary px-4 py-2 text-sm"
+          className="nm-button-ghost px-4 py-2 text-sm"
           data-testid="test-llm-btn"
         >
           {testing ? 'Testing...' : 'Test Connection'}
@@ -229,7 +229,7 @@ export function LlmStep({ onNext, onBack }: LlmStepProps) {
         <button
           type="button"
           onClick={onBack}
-          className="glass-button-ghost px-4 py-2 text-sm"
+          className="nm-icon-button px-4 py-2 text-sm"
           data-testid="llm-back-btn"
         >
           Back
@@ -237,7 +237,7 @@ export function LlmStep({ onNext, onBack }: LlmStepProps) {
         <button
           type="button"
           onClick={onNext}
-          className="glass-button-primary px-6 py-2.5"
+          className="nm-button-primary px-6 py-2.5"
           data-testid="llm-next-btn"
         >
           Continue

@@ -67,7 +67,7 @@ const PageListItem = memo(function PageListItem({
     >
       <div
         className={cn(
-          'glass-card-hover flex w-full items-center gap-3 p-4 text-left',
+          'rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm transition-all hover:border-primary/50 flex w-full items-center gap-3 p-4 text-left',
           isSelected && 'border-primary/40 bg-primary/5',
         )}
         data-testid={`article-hover-${pageItem.id}`}
@@ -366,7 +366,7 @@ export function PagesPage() {
         <div className="flex flex-wrap gap-2">
           <button
             onClick={() => navigate('/trash')}
-            className="glass-card flex items-center gap-2 px-4 py-2 text-sm hover:bg-foreground/5"
+            className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm flex items-center gap-2 px-4 py-2 text-sm hover:bg-foreground/5"
             data-testid="trash-link"
           >
             <Trash2 size={16} />
@@ -375,7 +375,7 @@ export function PagesPage() {
           <button
             onClick={() => syncMutation.mutate()}
             disabled={syncStatus?.status === 'syncing'}
-            className="glass-card flex items-center gap-2 px-4 py-2 text-sm hover:bg-foreground/5 disabled:opacity-50"
+            className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm flex items-center gap-2 px-4 py-2 text-sm hover:bg-foreground/5 disabled:opacity-50"
           >
             <RefreshCw size={16} className={cn(syncStatus?.status === 'syncing' && 'animate-spin')} />
             <span className="hidden sm:inline">{syncStatus?.status === 'syncing' ? 'Syncing...' : 'Sync'}</span>
@@ -400,7 +400,7 @@ export function PagesPage() {
 
       {/* Sync progress */}
       {syncStatus?.status === 'syncing' && syncStatus.progress && (
-        <div className="glass-card p-3">
+        <div className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-3">
           <div className="flex items-center justify-between text-sm">
             <span>Syncing {syncStatus.progress.space}...</span>
             <span>{syncStatus.progress.current}/{syncStatus.progress.total}</span>
@@ -416,7 +416,7 @@ export function PagesPage() {
 
       {/* Embedding progress */}
       {embeddingStatusData?.isProcessing && (
-        <div className="glass-card flex items-center gap-3 p-3 border border-primary/30" data-testid="embedding-progress-banner">
+        <div className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm flex items-center gap-3 p-3 border border-primary/30" data-testid="embedding-progress-banner">
           <Loader2 size={16} className="animate-spin text-primary" />
           <span className="text-sm">
             Embedding in progress — {embeddingStatusData.dirtyPages} pages remaining
@@ -439,7 +439,7 @@ export function PagesPage() {
       <PinnedArticlesSection />
 
       {/* Filters */}
-      <div className="glass-card space-y-3 p-4">
+      <div className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm space-y-3 p-4">
         <div className="flex flex-wrap items-center gap-3">
           {/* Search */}
           <div className="relative flex-1 min-w-48">
@@ -459,7 +459,7 @@ export function PagesPage() {
                   setSort('modified');
                 }
               }}
-              className="glass-input pl-10 pr-10"
+              className="nm-input pl-10 pr-10"
             />
             {search && (
               <button
@@ -499,7 +499,7 @@ export function PagesPage() {
           <select
             value={spaceKey}
             onChange={(e) => { setSpaceKey(e.target.value); setPage(1); setForcePageList(false); }}
-            className="glass-select"
+            className="nm-input w-40 shrink-0"
           >
             <option value="">All Spaces</option>
             {spaces?.map((s) => (
@@ -510,7 +510,7 @@ export function PagesPage() {
           <select
             value={sourceFilter}
             onChange={(e) => { setSourceFilter(e.target.value); setPage(1); }}
-            className="glass-select"
+            className="nm-input w-32 shrink-0"
             data-testid="filter-source"
           >
             <option value="">All Sources</option>
@@ -521,7 +521,7 @@ export function PagesPage() {
           <select
             value={sort}
             onChange={(e) => setSort(e.target.value as typeof sort)}
-            className="glass-select"
+            className="nm-input w-40 shrink-0"
           >
             <option value="modified">Last Modified</option>
             <option value="title">Title</option>
@@ -564,7 +564,7 @@ export function PagesPage() {
               <select
                 value={author}
                 onChange={(e) => { setAuthor(e.target.value); setPage(1); }}
-                className="glass-select w-full"
+                className="nm-input w-full"
                 data-testid="filter-author"
               >
                 <option value="">All Authors</option>
@@ -580,7 +580,7 @@ export function PagesPage() {
               <select
                 value={labels}
                 onChange={(e) => { setLabels(e.target.value); setPage(1); }}
-                className="glass-select w-full"
+                className="nm-input w-full"
                 data-testid="filter-labels"
               >
                 <option value="">All Labels</option>
@@ -596,7 +596,7 @@ export function PagesPage() {
               <select
                 value={freshness}
                 onChange={(e) => { setFreshness(e.target.value); setPage(1); }}
-                className="glass-select w-full"
+                className="nm-input w-full"
                 data-testid="filter-freshness"
               >
                 <option value="">Any</option>
@@ -613,7 +613,7 @@ export function PagesPage() {
               <select
                 value={embeddingStatus}
                 onChange={(e) => { setEmbeddingStatus(e.target.value); setPage(1); }}
-                className="glass-select w-full"
+                className="nm-input w-full"
                 data-testid="filter-embedding"
               >
                 <option value="">Any</option>
@@ -628,7 +628,7 @@ export function PagesPage() {
               <select
                 value={qualityFilter}
                 onChange={(e) => { setQualityFilter(e.target.value); setPage(1); }}
-                className="glass-select w-full"
+                className="nm-input w-full"
                 data-testid="filter-quality"
               >
                 <option value="">Any</option>
@@ -646,7 +646,7 @@ export function PagesPage() {
                 type="date"
                 value={dateFrom}
                 onChange={(e) => { setDateFrom(e.target.value); setPage(1); }}
-                className="glass-input w-full"
+                className="nm-input w-full"
                 data-testid="filter-date-from"
               />
             </div>
@@ -656,7 +656,7 @@ export function PagesPage() {
                 type="date"
                 value={dateTo}
                 onChange={(e) => { setDateTo(e.target.value); setPage(1); }}
-                className="glass-input w-full"
+                className="nm-input w-full"
                 data-testid="filter-date-to"
               />
             </div>
@@ -718,7 +718,7 @@ export function PagesPage() {
       {/* Space home content (when enabled and a space is selected) */}
       {showHomeContent && !forcePageList ? (
         homePageLoading ? (
-          <div className="glass-card h-96 animate-pulse" />
+          <div className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm h-96 animate-pulse" />
         ) : homePage ? (
           <m.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-3">
             <div className="flex items-center justify-between">
@@ -726,13 +726,13 @@ export function PagesPage() {
               <div className="flex gap-2">
                 <button
                   onClick={() => navigate(`/pages/${homePage.id}`)}
-                  className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
+                  className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
                 >
                   <FileText size={14} /> View Full Page
                 </button>
                 <button
                   onClick={() => setForcePageList(true)}
-                  className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
+                  className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
                   data-testid="show-page-list"
                 >
                   <List size={14} /> Show All Pages
@@ -740,7 +740,7 @@ export function PagesPage() {
               </div>
             </div>
             <div
-              className={`glass-card prose max-w-none p-6${isLight ? '' : ' prose-invert'}`}
+              className={`rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm prose max-w-none p-6${isLight ? '' : ' prose-invert'}`}
               dangerouslySetInnerHTML={{ __html: sanitizedHomeHtml }}
             />
           </m.div>
@@ -753,7 +753,7 @@ export function PagesPage() {
           {searchResults.isLoadingImmediate && searchResults.immediateResults.length === 0 ? (
             <div className="space-y-3">
               {Array.from({ length: 5 }).map((_, i) => (
-                <div key={i} className="glass-card h-16 animate-pulse" />
+                <div key={i} className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm h-16 animate-pulse" />
               ))}
             </div>
           ) : (() => {
@@ -780,7 +780,7 @@ export function PagesPage() {
                     >
                       <button
                         onClick={() => navigate(`/pages/${item.id}`)}
-                        className="glass-card-hover flex w-full items-center gap-3 p-4 text-left"
+                        className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm transition-all hover:border-primary/50 flex w-full items-center gap-3 p-4 text-left"
                         data-testid={`article-hover-${item.id}`}
                       >
                         <FileText size={18} className="shrink-0 text-muted-foreground" />
@@ -812,7 +812,7 @@ export function PagesPage() {
               <button
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
                 disabled={page <= 1}
-                className="glass-card p-2 disabled:opacity-30"
+                className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-2 disabled:opacity-30"
               >
                 <ChevronLeft size={18} />
               </button>
@@ -822,7 +822,7 @@ export function PagesPage() {
               <button
                 onClick={() => setPage((p) => Math.min(searchResults.totalPages, p + 1))}
                 disabled={page >= searchResults.totalPages}
-                className="glass-card p-2 disabled:opacity-30"
+                className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-2 disabled:opacity-30"
               >
                 <ChevronRight size={18} />
               </button>
@@ -835,7 +835,7 @@ export function PagesPage() {
           {isLoading ? (
             <div className="space-y-3">
               {Array.from({ length: 5 }).map((_, i) => (
-                <div key={i} className="glass-card h-16 animate-pulse" />
+                <div key={i} className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm h-16 animate-pulse" />
               ))}
             </div>
           ) : !pagesData?.items.length ? (
@@ -888,7 +888,7 @@ export function PagesPage() {
               <button
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
                 disabled={page <= 1}
-                className="glass-card p-2 disabled:opacity-30"
+                className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-2 disabled:opacity-30"
               >
                 <ChevronLeft size={18} />
               </button>
@@ -898,7 +898,7 @@ export function PagesPage() {
               <button
                 onClick={() => setPage((p) => Math.min(pagesData.totalPages, p + 1))}
                 disabled={page >= pagesData.totalPages}
-                className="glass-card p-2 disabled:opacity-30"
+                className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-2 disabled:opacity-30"
               >
                 <ChevronRight size={18} />
               </button>

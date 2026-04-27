@@ -7,11 +7,11 @@ describe('migrateStorageKey', () => {
   });
 
   it('copies old key to new key and removes old key', () => {
-    localStorage.setItem('kb-theme', '{"state":{"theme":"obsidian-violet"}}');
+    localStorage.setItem('kb-theme', '{"state":{"theme":"graphite-honey"}}');
 
     migrateStorageKey('kb-theme', 'compendiq-theme');
 
-    expect(localStorage.getItem('compendiq-theme')).toBe('{"state":{"theme":"obsidian-violet"}}');
+    expect(localStorage.getItem('compendiq-theme')).toBe('{"state":{"theme":"graphite-honey"}}');
     expect(localStorage.getItem('kb-theme')).toBeNull();
   });
 

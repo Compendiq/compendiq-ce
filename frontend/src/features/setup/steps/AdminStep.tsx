@@ -73,7 +73,7 @@ export function AdminStep({ onNext, onBack }: AdminStepProps) {
             required
             minLength={3}
             maxLength={50}
-            className="glass-input"
+            className="nm-input"
             placeholder="Choose a username"
             autoComplete="username"
             data-testid="setup-username"
@@ -92,7 +92,7 @@ export function AdminStep({ onNext, onBack }: AdminStepProps) {
             required
             minLength={8}
             maxLength={128}
-            className="glass-input"
+            className="nm-input"
             placeholder="Minimum 8 characters"
             autoComplete="new-password"
             data-testid="setup-password"
@@ -110,7 +110,7 @@ export function AdminStep({ onNext, onBack }: AdminStepProps) {
             onChange={(e) => setConfirmPassword(e.target.value)}
             required
             minLength={8}
-            className="glass-input"
+            className="nm-input"
             placeholder="Re-enter your password"
             autoComplete="new-password"
             data-testid="setup-confirm-password"
@@ -121,7 +121,7 @@ export function AdminStep({ onNext, onBack }: AdminStepProps) {
           <button
             type="button"
             onClick={onBack}
-            className="glass-button-ghost px-4 py-2 text-sm"
+            className="nm-icon-button px-4 py-2 text-sm"
             data-testid="admin-back-btn"
           >
             Back
@@ -129,7 +129,7 @@ export function AdminStep({ onNext, onBack }: AdminStepProps) {
           <button
             type="submit"
             disabled={loading}
-            className="glass-button-primary px-6 py-2.5"
+            className="nm-button-primary px-6 py-2.5"
             data-testid="create-admin-btn"
           >
             {loading ? 'Creating...' : 'Create Account'}

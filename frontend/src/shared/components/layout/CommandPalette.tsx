@@ -202,7 +202,7 @@ export function CommandPalette() {
           >
             <span id="command-palette-title" className="sr-only">Command palette</span>
             <div className={cn(
-              'glass-card overflow-hidden shadow-2xl transition-shadow duration-200',
+              'nm-card overflow-hidden shadow-2xl transition-shadow duration-200',
               isAiMode && 'shadow-[0_0_30px_-5px_rgba(168,85,247,0.4)] ring-1 ring-purple-500/30',
             )}>
               {/* Search input */}

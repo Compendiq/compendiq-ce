@@ -30,7 +30,7 @@ export function UserMenu() {
         <DropdownMenu.Content
           align="end"
           sideOffset={8}
-          className="glass-card min-w-[180px] rounded-lg border border-border/50 p-1.5 shadow-xl backdrop-blur-xl"
+          className="min-w-[180px] rounded-lg border border-border/50 bg-card/90 p-1.5 shadow-xl backdrop-blur-xl"
         >
           <DropdownMenu.Label className="flex items-center gap-2 px-2.5 py-2 text-xs text-muted-foreground">
             <User size={12} />

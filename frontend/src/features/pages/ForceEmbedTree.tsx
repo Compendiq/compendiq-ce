@@ -77,7 +77,7 @@ export function ForceEmbedTree({ pageId, hasChildren }: ForceEmbedTreeProps) {
       <button
         onClick={handleForceEmbed}
         disabled={isRunning}
-        className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5 disabled:opacity-50"
+        className="nm-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5 disabled:opacity-50"
         title="Force embed this page and all sub-pages"
       >
         {isRunning ? (

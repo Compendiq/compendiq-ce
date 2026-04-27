@@ -255,7 +255,7 @@ function AiReviewPolicyTabInner() {
 
       {/* Master enabled toggle */}
       <label
-        className="glass-card flex cursor-pointer items-start gap-3 p-4"
+        className="nm-card flex cursor-pointer items-start gap-3 p-4"
         data-testid="ai-review-policy-enabled-card"
       >
         <input
@@ -294,7 +294,7 @@ function AiReviewPolicyTabInner() {
             <label
               key={mode}
               className={cn(
-                'glass-card flex cursor-pointer items-start gap-3 p-4 transition-all',
+                'nm-card flex cursor-pointer items-start gap-3 p-4 transition-all',
                 !policy.enabled && 'opacity-60',
                 active ? 'ring-1 ring-primary' : 'hover:bg-foreground/[0.03]',
               )}

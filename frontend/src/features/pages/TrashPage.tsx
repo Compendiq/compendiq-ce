@@ -29,7 +29,7 @@ export function TrashPage() {
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center gap-3">
-        <button onClick={() => navigate('/')} className="glass-button-ghost">
+        <button onClick={() => navigate('/')} className="nm-icon-button">
           <ArrowLeft size={18} />
         </button>
         <div>
@@ -44,11 +44,11 @@ export function TrashPage() {
       {isLoading ? (
         <div className="space-y-3">
           {Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} className="glass-card h-16 animate-pulse" />
+            <div key={i} className="nm-card h-16 animate-pulse" />
           ))}
         </div>
       ) : !trashData?.items.length ? (
-        <div className="glass-card flex flex-col items-center justify-center py-16 text-center" data-testid="trash-empty">
+        <div className="nm-card flex flex-col items-center justify-center py-16 text-center" data-testid="trash-empty">
           <Trash2 size={48} className="mb-4 text-muted-foreground" />
           <p className="text-lg font-medium">No articles in trash</p>
           <p className="text-sm text-muted-foreground">
@@ -64,7 +64,7 @@ export function TrashPage() {
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: i * 0.03 }}
             >
-              <div className="glass-card-hover flex w-full items-center gap-4 p-4" data-testid={`trash-item-${item.id}`}>
+              <div className="nm-card-interactive flex w-full items-center gap-4 p-4" data-testid={`trash-item-${item.id}`}>
                 <div className="min-w-0 flex-1">
                   <p className="truncate font-medium">{item.title}</p>
                   <div className="flex items-center gap-3 text-xs text-muted-foreground">

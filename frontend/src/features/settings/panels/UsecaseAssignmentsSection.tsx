@@ -40,7 +40,7 @@ export function UsecaseAssignmentsSection({ assignments, providers, onChange }: 
               )}
             </span>
             <select
-              className="glass-select"
+              className="nm-input"
               value={row.providerId ?? ''}
               onChange={(e) => update(u, { providerId: e.target.value || null })}
               data-testid={`usecase-${u}-provider`}
@@ -89,7 +89,7 @@ function ModelPicker({
   });
   return (
     <select
-      className="glass-select"
+      className="nm-input"
       value={value ?? ''}
       onChange={(e) => onChange(e.target.value || null)}
       data-testid={testId}

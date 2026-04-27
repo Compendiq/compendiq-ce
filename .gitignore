@@ -60,6 +60,11 @@ research/
 frontend/vendor/
 firebase-debug.log
 
+# Superpowers brainstorm — PID/runtime state files leak absolute paths and
+# stale process IDs across machines. The prototype HTML files themselves
+# were moved out of .superpowers/ to docs/design-exploration/ in #30.
+.superpowers/brainstorm/**/state/
+
 # k6 output files
 perf/*.json
 perf/*.html

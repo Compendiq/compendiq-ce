@@ -165,7 +165,7 @@ export function KPICards({ embeddingStatus, spacesCount, lastSynced }: KPICardsP
           variants={fadeUp}
           className="h-full"
         >
-          <TiltCard className="glass-card p-4 h-full" maxTilt={10} data-testid={testId}>
+          <TiltCard className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-4 h-full" maxTilt={10} data-testid={testId}>
             <div className="flex items-center gap-3">
               <div className={`rounded-lg bg-foreground/5 p-2 ${color}`}>
                 <Icon size={16} />
@@ -190,7 +190,7 @@ export function KPICards({ embeddingStatus, spacesCount, lastSynced }: KPICardsP
         variants={fadeUp}
         className="h-full"
       >
-        <TiltCard className="glass-card p-4 h-full" maxTilt={10} data-testid="kpi-embedding-coverage">
+        <TiltCard className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm p-4 h-full" maxTilt={10} data-testid="kpi-embedding-coverage">
           <div className="flex items-center gap-3">
             <EmbeddingCoverageRing
               percent={embeddingStatus ? coveragePercent : 0}

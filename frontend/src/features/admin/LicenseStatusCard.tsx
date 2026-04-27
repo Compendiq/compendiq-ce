@@ -118,7 +118,7 @@ export function LicenseStatusCard() {
       <m.div
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
-        className="glass-card overflow-hidden"
+        className="nm-card overflow-hidden"
       >
         <div className="flex items-center justify-between p-5">
           <div className="flex items-center gap-3">
@@ -181,7 +181,7 @@ export function LicenseStatusCard() {
           backend declares canUpdate (i.e. the EE plugin is loaded). The CE
           noop fallback omits this flag so community deployments stay clean. */}
       {canUpdate && (
-        <div className="glass-card p-5" data-testid="license-key-form">
+        <div className="nm-card p-5" data-testid="license-key-form">
           <div className="mb-3 flex items-center gap-2">
             <KeyRound size={16} className="text-muted-foreground" />
             <h3 className="text-sm font-medium">License Key</h3>
@@ -237,7 +237,7 @@ export function LicenseStatusCard() {
       )}
 
       {/* Features */}
-      <div className="glass-card p-5">
+      <div className="nm-card p-5">
         <h3 className="mb-3 text-sm font-medium">Available Features</h3>
         <div className="space-y-2">
           {[

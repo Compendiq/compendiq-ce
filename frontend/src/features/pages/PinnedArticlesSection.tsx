@@ -52,7 +52,7 @@ export function PinnedArticlesSection() {
                 tabIndex={0}
                 onClick={() => navigate(`/pages/${item.id}`)}
                 onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') navigate(`/pages/${item.id}`); }}
-                className="glass-card-hover group relative flex w-full cursor-pointer flex-col gap-2 p-4 text-left"
+                className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm transition-all hover:border-primary/50 group relative flex w-full cursor-pointer flex-col gap-2 p-4 text-left"
                 data-testid={`pinned-card-${item.id}`}
               >
               {/* Unpin button */}

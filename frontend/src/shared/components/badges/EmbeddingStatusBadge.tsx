@@ -33,14 +33,14 @@ function getStatusConfig(
       return {
         label: 'Not Embedded',
         title: 'Content has not been indexed for AI search',
-        badgeClass: 'bg-gray-500/20 text-gray-400 border border-gray-500/30',
+        badgeClass: 'bg-status-inactive/20 text-status-inactive border border-status-inactive/30',
         animate: false,
       };
     case 'embedding':
       return {
         label: 'Embedding...',
         title: 'Content is being indexed for AI search',
-        badgeClass: 'bg-blue-500/20 text-blue-400 border border-blue-500/30',
+        badgeClass: 'bg-status-embedding/20 text-status-embedding border border-status-embedding/30',
         animate: true,
       };
     case 'embedded':
@@ -49,7 +49,7 @@ function getStatusConfig(
         title: embeddedAt
           ? `Indexed for AI search on ${new Date(embeddedAt).toLocaleString()}`
           : 'Content is indexed for AI search',
-        badgeClass: 'bg-green-500/20 text-green-400 border border-green-500/30',
+        badgeClass: 'bg-status-connected/20 text-status-connected border border-status-connected/30',
         animate: false,
       };
     case 'failed':
@@ -58,7 +58,7 @@ function getStatusConfig(
         title: embeddingError
           ? `Embedding failed: ${embeddingError}`
           : 'Last embedding attempt failed — click retry to try again',
-        badgeClass: 'bg-red-500/20 text-red-400 border border-red-500/30',
+        badgeClass: 'bg-status-disconnected/20 text-status-disconnected border border-status-disconnected/30',
         animate: false,
       };
   }
@@ -99,7 +99,7 @@ export function EmbeddingStatusBadge(props: EmbeddingStatusBadgeProps) {
             e.preventDefault();
             onRetry();
           }}
-          className="ml-0.5 rounded px-1 py-0.5 text-[10px] font-semibold text-red-300 hover:bg-red-500/20 hover:text-red-200"
+          className="ml-0.5 rounded px-1 py-0.5 text-[10px] font-semibold text-status-disconnected hover:bg-status-disconnected/20 hover:text-status-disconnected/80"
           title="Retry embedding"
           data-testid="embedding-retry-button"
         >

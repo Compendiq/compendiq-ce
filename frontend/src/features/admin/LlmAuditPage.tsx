@@ -234,7 +234,7 @@ export function LlmAuditPage() {
         <m.div
           initial={{ opacity: 0, height: 0 }}
           animate={{ opacity: 1, height: 'auto' }}
-          className="glass-card space-y-3 p-4"
+          className="nm-card space-y-3 p-4"
           data-testid="audit-filters"
         >
           <div className="grid gap-3 sm:grid-cols-5">
@@ -305,11 +305,11 @@ export function LlmAuditPage() {
           ))}
         </div>
       ) : items.length === 0 ? (
-        <div className="glass-card py-12 text-center text-sm text-muted-foreground" data-testid="audit-empty">
+        <div className="nm-card py-12 text-center text-sm text-muted-foreground" data-testid="audit-empty">
           No audit entries found
         </div>
       ) : (
-        <div className="glass-card overflow-hidden" data-testid="audit-table">
+        <div className="nm-card overflow-hidden" data-testid="audit-table">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">
@@ -393,7 +393,7 @@ export function LlmAuditPage() {
 
 function StatCard({ label, value, variant = 'default' }: { label: string; value: string; variant?: 'default' | 'warning' }) {
   return (
-    <div className="glass-card p-4">
+    <div className="nm-card p-4">
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className={cn(
         'mt-1 text-xl font-semibold',

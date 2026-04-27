@@ -118,7 +118,7 @@ export function NotificationBell() {
         <DropdownMenu.Content
           align="end"
           sideOffset={8}
-          className="glass-card w-[360px] rounded-xl border border-border/50 shadow-2xl backdrop-blur-xl"
+          className="w-[360px] rounded-xl border border-border/50 bg-card/90 shadow-2xl backdrop-blur-xl"
         >
           {/* Title bar */}
           <div className="flex items-center justify-between border-b border-border/30 px-3 py-2.5">
