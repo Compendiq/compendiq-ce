@@ -6,6 +6,7 @@ import { cn } from '../../lib/cn';
 import { formatRelativeTime } from '../../lib/format-relative-time';
 import { useSummaryRegenerate } from '../../hooks/use-pages';
 import type { SummaryStatus } from '../../hooks/use-pages';
+import { useAuthStore } from '../../../stores/auth-store';
 
 interface ArticleSummaryProps {
   pageId: string;
@@ -44,6 +45,10 @@ export function ArticleSummary({
 }: ArticleSummaryProps) {
   const [collapsed, setCollapsed] = useState(getCollapseState);
   const regenerateMutation = useSummaryRegenerate();
+  // #356: backend route is admin-only (`requireAdmin`). Hide the
+  // Regenerate / Retry buttons for non-admins so we don't ship a
+  // visible-but-403ing control to viewers.
+  const isAdmin = useAuthStore((s) => s.user?.role === 'admin');
 
   // Sanitize LLM-generated HTML to prevent XSS
   const sanitizedHtml = useMemo(
@@ -62,7 +67,17 @@ export function ArticleSummary({
   const handleRegenerate = useCallback(() => {
     regenerateMutation.mutate(pageId, {
       onSuccess: () => toast.success('Summary regeneration queued'),
-      onError: () => toast.error('Failed to queue summary regeneration'),
+      onError: (err) => {
+        // #356: surface the server's specific message instead of a generic
+        // toast (mirrors the #357 verify-button fix). ApiError.message already
+        // carries the backend reply (e.g. "Page not found", "Admin access
+        // required"); fall back to the generic copy only if the error has
+        // no message.
+        const msg = err instanceof Error && err.message
+          ? err.message
+          : 'Failed to queue summary regeneration';
+        toast.error(msg);
+      },
     });
   }, [pageId, regenerateMutation]);
 
@@ -99,15 +114,17 @@ export function ArticleSummary({
             Summary generation failed{summaryError ? `: ${summaryError}` : ''}
           </span>
         </div>
-        <button
-          onClick={handleRegenerate}
-          disabled={regenerateMutation.isPending}
-          className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-red-400 hover:bg-red-500/10"
-          data-testid="summary-retry-button"
-        >
-          <RefreshCw size={12} className={cn(regenerateMutation.isPending && 'animate-spin')} />
-          Retry
-        </button>
+        {isAdmin && (
+          <button
+            onClick={handleRegenerate}
+            disabled={regenerateMutation.isPending}
+            className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-red-400 hover:bg-red-500/10"
+            data-testid="summary-retry-button"
+          >
+            <RefreshCw size={12} className={cn(regenerateMutation.isPending && 'animate-spin')} />
+            Retry
+          </button>
+        )}
       </div>
     );
   }
@@ -142,18 +159,20 @@ export function ArticleSummary({
           )}
         </div>
         <div className="flex items-center gap-1">
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              handleRegenerate();
-            }}
-            disabled={regenerateMutation.isPending}
-            className="rounded-md p-1 text-muted-foreground/60 hover:bg-foreground/5 hover:text-muted-foreground"
-            title="Regenerate summary"
-            data-testid="summary-regenerate-button"
-          >
-            <RefreshCw size={14} className={cn(regenerateMutation.isPending && 'animate-spin')} />
-          </button>
+          {isAdmin && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                handleRegenerate();
+              }}
+              disabled={regenerateMutation.isPending}
+              className="rounded-md p-1 text-muted-foreground/60 hover:bg-foreground/5 hover:text-muted-foreground"
+              title="Regenerate summary"
+              data-testid="summary-regenerate-button"
+            >
+              <RefreshCw size={14} className={cn(regenerateMutation.isPending && 'animate-spin')} />
+            </button>
+          )}
           {collapsed ? (
             <ChevronRight size={16} className="text-muted-foreground" />
           ) : (
