@@ -17,8 +17,52 @@ import {
   listModels as clientListModels,
 } from '../../domains/llm/services/openai-compatible-client.js';
 import { emitLlmAudit } from '../../domains/llm/services/llm-audit-hook.js';
-import { assertNonSsrfUrl, addAllowedBaseUrl, SsrfError } from '../../core/utils/ssrf-guard.js';
+import {
+  validateUrl,
+  addAllowedBaseUrl,
+  removeAllowedBaseUrl,
+  SsrfError,
+} from '../../core/utils/ssrf-guard.js';
 import { getRateLimits } from '../../core/services/rate-limit-service.js';
+import { query } from '../../core/db/postgres.js';
+
+/**
+ * Revoke a per-pod allowlist entry only when no surviving `llm_providers`
+ * row references that origin. Two routes need this:
+ *   - POST: a concurrent successful sibling request may have committed the
+ *     same `base_url` (different `name`); revoking would strip its
+ *     allowlist out from under it.
+ *   - PATCH (baseUrl change): the previous origin may still be configured
+ *     on a different provider.
+ *
+ * The check is by full normalised origin (the same key the SSRF allowlist
+ * uses). Provider rows store the full base URL incl. path; we extract the
+ * origin and compare via `LOWER` on either side so case differences in the
+ * scheme/host don't cause a false negative.
+ */
+async function revokeAllowlistIfUnused(baseUrl: string): Promise<void> {
+  let origin: string;
+  try {
+    origin = new URL(baseUrl).origin;
+  } catch {
+    // If we can't parse it, we can't safely match other rows — bail out
+    // and just remove. A later bootstrap will rebuild from the DB anyway.
+    removeAllowedBaseUrl(baseUrl);
+    return;
+  }
+  // Match on origin so URLs with different paths (`http://h:1234/v1` vs
+  // `http://h:1234/api`) — but the same SSRF-relevant origin — count.
+  const result = await query<{ count: string }>(
+    `SELECT count(*)::text AS count
+       FROM llm_providers
+      WHERE LOWER(SUBSTRING(base_url FROM '^[a-zA-Z][a-zA-Z0-9+.-]*://[^/]*')) = LOWER($1)`,
+    [origin],
+  );
+  const stillUsed = parseInt(result.rows[0]!.count, 10) > 0;
+  if (!stillUsed) {
+    removeAllowedBaseUrl(baseUrl);
+  }
+}
 
 const ADMIN_RATE_LIMIT = {
   config: { rateLimit: { max: async () => (await getRateLimits()).admin.max, timeWindow: '1 minute' } },
@@ -44,18 +88,52 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
     { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT },
     async (request, reply) => {
       const input = LlmProviderInputSchema.parse(request.body);
+      // Allowlist BEFORE validating so private-network LLM endpoints
+      // (LM Studio / Ollama on the LAN, on-prem vLLM, etc.) aren't rejected
+      // by the SSRF guard. Mirrors the Confluence test-connection flow.
+      //
+      // Protocol restrictions (HTTP/HTTPS only) still apply post-allowlist:
+      // `validateUrl` runs the protocol check (`ssrf-guard.ts` —
+      // PROTOCOL_BLOCK) BEFORE the allowlist short-circuit (ALLOWLIST_HIT),
+      // so a swap of those two checks in the future would silently break
+      // this caller's defence-in-depth. That ordering is load-bearing.
+      //
+      // Note on DNS rebinding: `assertNonSsrfUrl` (which performs DNS
+      // resolution + private-IP validation via `resolveAndValidateIp`) is
+      // intentionally NOT called here. We use the sync `validateUrl`
+      // because the allowlist short-circuits before any DNS work would
+      // happen anyway, and once a URL is allowlisted the runtime call
+      // path is exempt from DNS validation by design. The trust model is
+      // "authenticated admin pastes a URL and we trust it" — same as the
+      // Confluence flow. A DNS-rebinding attacker would need admin
+      // credentials to even reach this route. If the threat model ever
+      // requires create-time DNS validation, swap to `assertNonSsrfUrl`
+      // and accept that admins can no longer add `*.local` / private-DNS
+      // hostnames whose A-record currently resolves to a private IP.
+      addAllowedBaseUrl(input.baseUrl);
       try {
-        await assertNonSsrfUrl(input.baseUrl);
+        validateUrl(input.baseUrl);
       } catch (err) {
+        // No DB row to check yet — but if a CONCURRENT sibling request
+        // for the same baseUrl has already committed, we must NOT strip
+        // its allowlist out from under it. Use the unused-origin guard.
+        await revokeAllowlistIfUnused(input.baseUrl);
         if (err instanceof SsrfError) {
           return reply.code(400).send({ error: err.message });
         }
         throw err;
       }
-      const provider = await createProvider(input);
-      // Every configured provider URL must be allowlisted for the ssrf-guard
-      // so that subsequent outbound calls from the service layer aren't rejected.
-      addAllowedBaseUrl(provider.baseUrl);
+      let provider;
+      try {
+        provider = await createProvider(input);
+      } catch (err) {
+        // DB write failed (e.g. unique-name violation) — revoke the
+        // speculative allowlist entry only if no other provider already
+        // owns this origin. Prevents a concurrent successful sibling from
+        // losing its allowlist.
+        await revokeAllowlistIfUnused(input.baseUrl);
+        throw err;
+      }
       emitLlmAudit({
         event: 'llm_provider_created',
         userId: request.userId,
@@ -73,19 +151,45 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
     async (request, reply) => {
       const { id } = IdParamsSchema.parse(request.params);
       const patch = LlmProviderUpdateSchema.parse(request.body);
+      // Capture the previous baseUrl BEFORE we mutate state so a baseUrl
+      // change can revoke the OLD origin's allowlist entry once it's no
+      // longer referenced (mirrors the Confluence flow on URL replace).
+      const previous = patch.baseUrl ? await getProviderById(id) : null;
       if (patch.baseUrl) {
+        // Same allowlist-before-validate ordering as POST so private-network
+        // base URLs can be patched in. Revoke on any downstream failure.
+        addAllowedBaseUrl(patch.baseUrl);
         try {
-          await assertNonSsrfUrl(patch.baseUrl);
+          validateUrl(patch.baseUrl);
         } catch (err) {
+          await revokeAllowlistIfUnused(patch.baseUrl);
           if (err instanceof SsrfError) {
             return reply.code(400).send({ error: err.message });
           }
           throw err;
         }
       }
-      const updated = await updateProvider(id, patch);
-      if (!updated) return reply.code(404).send({ error: 'Provider not found' });
-      if (patch.baseUrl) addAllowedBaseUrl(updated.baseUrl);
+      let updated;
+      try {
+        updated = await updateProvider(id, patch);
+      } catch (err) {
+        if (patch.baseUrl) await revokeAllowlistIfUnused(patch.baseUrl);
+        throw err;
+      }
+      if (!updated) {
+        if (patch.baseUrl) await revokeAllowlistIfUnused(patch.baseUrl);
+        return reply.code(404).send({ error: 'Provider not found' });
+      }
+      // baseUrl actually changed → garbage-collect the previous origin if
+      // no other provider still references it. Without this, repeated
+      // PATCHes leave a growing pile of stale per-pod allowlist entries.
+      if (
+        patch.baseUrl &&
+        previous &&
+        previous.baseUrl !== patch.baseUrl
+      ) {
+        await revokeAllowlistIfUnused(previous.baseUrl);
+      }
       emitLlmAudit({
         event: 'llm_provider_updated',
         userId: request.userId,
