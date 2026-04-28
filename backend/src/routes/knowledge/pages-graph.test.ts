@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vites
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 import { ZodError } from 'zod';
-import { pagesEmbeddingRoutes } from './pages-embeddings.js';
+import { pagesEmbeddingRoutes, __testHelpers } from './pages-embeddings.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 
 // Track cache set calls to verify TTL
@@ -548,6 +548,145 @@ describe('Knowledge Graph API', () => {
       expect(body.message).toBe('Graph relationships refreshed');
       expect(body.edges).toBe(10);
       expect(mockComputePageRelationships).toHaveBeenCalledWith();
+    });
+  });
+
+  // ---------- #361 Phase 3: per-hop cap + tiered threshold ----------
+
+  describe('GET /api/pages/:id/graph/local — perHopLimit (#361)', () => {
+    it('forwards the perHopLimit query param into the recursive CTE', async () => {
+      // page lookup
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 1, space_key: 'DEV' }] });
+      // neighbours BFS
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ page_id: 1, hop: 0 }] });
+      // node fetch
+      mockQueryFn.mockResolvedValueOnce({ rows: [] });
+      // embedding count
+      mockQueryFn.mockResolvedValueOnce({ rows: [] });
+      // edges
+      mockQueryFn.mockResolvedValueOnce({ rows: [] });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/pages/1/graph/local?hops=2&perHopLimit=20',
+      });
+      expect(response.statusCode).toBe(200);
+
+      // The 2nd query is the BFS — its $3 binding should be the requested cap.
+      const bfsCall = mockQueryFn.mock.calls[1];
+      expect(bfsCall![1]).toEqual([1, 2, 20]);
+      // The CTE should use a CROSS JOIN LATERAL with LIMIT $3 to actually cap.
+      const sql = bfsCall![0] as string;
+      expect(sql).toContain('CROSS JOIN LATERAL');
+      expect(sql).toContain('LIMIT $3');
+    });
+
+    it('defaults perHopLimit to 50 when omitted', async () => {
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 1, space_key: 'DEV' }] });
+      mockQueryFn.mockResolvedValueOnce({ rows: [] });
+      mockQueryFn.mockResolvedValueOnce({ rows: [] });
+      mockQueryFn.mockResolvedValueOnce({ rows: [] });
+      mockQueryFn.mockResolvedValueOnce({ rows: [] });
+
+      await app.inject({ method: 'GET', url: '/api/pages/1/graph/local' });
+      expect(mockQueryFn.mock.calls[1]![1]).toEqual([1, 2, 50]);
+    });
+
+    it('rejects perHopLimit > 500', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/pages/1/graph/local?perHopLimit=10000',
+      });
+      expect(response.statusCode).toBe(400);
+    });
+  });
+
+  describe('GET /api/pages/graph — tiered similarity threshold (#361)', () => {
+    it('applies a 0.4 floor at < 500 pages (small-corpus tier)', async () => {
+      const smallNodes = Array.from({ length: 10 }, (_, i) => ({
+        id: i + 1,
+        confluence_id: `p-${i + 1}`,
+        space_key: 'DEV',
+        title: `Page ${i + 1}`,
+        labels: [],
+        embedding_status: 'embedded',
+        last_modified_at: new Date(),
+        parent_id: null,
+      }));
+      mockQueryFn.mockResolvedValueOnce({ rows: smallNodes }); // nodes
+      mockQueryFn.mockResolvedValueOnce({ rows: [] });          // embeddings
+      mockQueryFn.mockResolvedValueOnce({ rows: [] });          // edges
+
+      const response = await app.inject({ method: 'GET', url: '/api/pages/graph' });
+      expect(response.statusCode).toBe(200);
+      // 3rd call is the edges query; $2 is the score floor.
+      const edgesCall = mockQueryFn.mock.calls[2];
+      expect(edgesCall![1]![1]).toBe(0.4);
+    });
+
+    it('applies a 0.6 floor in the 500–1999 medium-corpus tier', async () => {
+      // Use 750 (mid-range medium tier) to assert the 0.6 floor binding.
+      const mediumNodes = Array.from({ length: 750 }, (_, i) => ({
+        id: i + 1,
+        confluence_id: `p-${i + 1}`,
+        space_key: 'DEV',
+        title: `Page ${i + 1}`,
+        labels: [],
+        embedding_status: 'embedded',
+        last_modified_at: new Date(),
+        parent_id: null,
+      }));
+      mockQueryFn.mockResolvedValueOnce({ rows: mediumNodes });
+      mockQueryFn.mockResolvedValueOnce({ rows: [] });
+      mockQueryFn.mockResolvedValueOnce({ rows: [] });
+
+      await app.inject({ method: 'GET', url: '/api/pages/graph' });
+      const edgesCall = mockQueryFn.mock.calls[2];
+      expect(edgesCall![1]![1]).toBe(0.6);
+    });
+
+    it('applies a 0.7 floor at >= 2000 pages (large-corpus tier)', async () => {
+      const bigNodes = Array.from({ length: 2000 }, (_, i) => ({
+        id: i + 1,
+        confluence_id: `p-${i + 1}`,
+        space_key: 'DEV',
+        title: `Page ${i + 1}`,
+        labels: [],
+        embedding_status: 'embedded',
+        last_modified_at: new Date(),
+        parent_id: null,
+      }));
+      mockQueryFn.mockResolvedValueOnce({ rows: bigNodes });
+      mockQueryFn.mockResolvedValueOnce({ rows: [] });
+      mockQueryFn.mockResolvedValueOnce({ rows: [] });
+
+      await app.inject({ method: 'GET', url: '/api/pages/graph' });
+      const edgesCall = mockQueryFn.mock.calls[2];
+      expect(edgesCall![1]![1]).toBe(0.7);
+    });
+  });
+
+  // Direct unit tests for the tier function. These exercise the boundary
+  // conditions in isolation (no Fastify, no mocks, no DB) and are the
+  // reason `__testHelpers` is exported from `pages-embeddings.ts`.
+  describe('tieredMinScoreForCorpus — boundary unit tests (#361)', () => {
+    const { tieredMinScoreForCorpus } = __testHelpers;
+
+    it('returns 0.4 for empty / very small corpora', () => {
+      expect(tieredMinScoreForCorpus(0)).toBe(0.4);
+      expect(tieredMinScoreForCorpus(1)).toBe(0.4);
+      expect(tieredMinScoreForCorpus(499)).toBe(0.4);
+    });
+
+    it('returns 0.6 across the 500–1999 medium tier (boundary inclusive)', () => {
+      expect(tieredMinScoreForCorpus(500)).toBe(0.6); // lower boundary
+      expect(tieredMinScoreForCorpus(1000)).toBe(0.6);
+      expect(tieredMinScoreForCorpus(1999)).toBe(0.6); // upper boundary
+    });
+
+    it('returns 0.7 at the 2000 large-tier boundary and above', () => {
+      expect(tieredMinScoreForCorpus(2000)).toBe(0.7); // boundary
+      expect(tieredMinScoreForCorpus(50_000)).toBe(0.7);
     });
   });
 });
