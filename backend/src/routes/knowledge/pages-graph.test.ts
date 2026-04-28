@@ -3,6 +3,7 @@ import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 import { ZodError } from 'zod';
 import { pagesEmbeddingRoutes } from './pages-embeddings.js';
+import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 
 // Track cache set calls to verify TTL
 const mockCacheSet = vi.fn().mockResolvedValue(undefined);
@@ -235,6 +236,44 @@ describe('Knowledge Graph API', () => {
       const body = JSON.parse(response.body);
       expect(body.nodes).toHaveLength(0);
       expect(body.edges).toHaveLength(0);
+
+      // #358: meta block must be present (with zeros) so the UI can render
+      // the differentiated empty state without a second roundtrip.
+      expect(body.meta).toEqual({
+        pagesTotal: 0,
+        pagesEmbedded: 0,
+        relationshipsTotal: 0,
+        relationshipsByType: {},
+      });
+    });
+
+    it('should short-circuit with zero-meta when RBAC grants no spaces', async () => {
+      // #358: when getUserAccessibleSpaces returns [] (user has no granted
+      // spaces), the route must skip the main query path entirely and emit
+      // the same meta-block contract the UI expects for the
+      // "No accessible pages in your spaces" empty state.
+      vi.mocked(getUserAccessibleSpaces).mockResolvedValueOnce([]);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/pages/graph',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.nodes).toEqual([]);
+      expect(body.edges).toEqual([]);
+      expect(body.meta).toEqual({
+        pagesTotal: 0,
+        pagesEmbedded: 0,
+        relationshipsTotal: 0,
+        relationshipsByType: {},
+      });
+
+      // The short-circuit must NOT hit the database — no nodes/edges/embeddings
+      // queries should run, otherwise we are leaking work for users with
+      // zero accessible spaces.
+      expect(mockQueryFn).not.toHaveBeenCalled();
     });
 
     it('should default embeddingCount to 0 for pages without embeddings', async () => {

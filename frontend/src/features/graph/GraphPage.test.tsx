@@ -191,6 +191,82 @@ describe('GraphPage', () => {
     useAuthStore.setState({ user: null, accessToken: null });
   });
 
+  it('admin recompute click fires POST /api/pages/graph/refresh and triggers re-fetch (AC-3)', async () => {
+    // AC-3: clicking Recompute must (a) call POST /api/pages/graph/refresh
+    // and (b) invalidate the graph query so the UI re-fetches the new data.
+    const { useAuthStore } = await import('../../stores/auth-store');
+    useAuthStore.setState({ user: { id: '1', username: 'a', role: 'admin' }, accessToken: 'tok' });
+
+    const initialEmpty = {
+      nodes: [{ id: '1', spaceKey: 'DEV', title: 't', labels: [], embeddingStatus: 'embedded', embeddingCount: 1, lastModifiedAt: null }],
+      edges: [],
+      meta: { pagesTotal: 1, pagesEmbedded: 1, relationshipsTotal: 0, relationshipsByType: {} },
+    };
+    const recomputed = {
+      nodes: [{ id: '1', spaceKey: 'DEV', title: 't', labels: [], embeddingStatus: 'embedded', embeddingCount: 1, lastModifiedAt: null }],
+      edges: [{ source: '1', target: '1', type: 'embedding_similarity', score: 0.9 }],
+      meta: { pagesTotal: 1, pagesEmbedded: 1, relationshipsTotal: 1, relationshipsByType: { embedding_similarity: 1 } },
+    };
+
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      // 1) initial GET — empty relationships, button visible
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        json: async () => initialEmpty,
+      } as Response)
+      // 2) POST /api/pages/graph/refresh from useRefreshGraph mutation
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        json: async () => ({ message: 'Graph relationships refreshed', edges: 1 }),
+      } as Response)
+      // 3) re-fetch GET triggered by queryClient.invalidateQueries
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        json: async () => recomputed,
+      } as Response);
+
+    render(<GraphPage />, { wrapper: createWrapper() });
+
+    // Wait for the empty-state Recompute button to render.
+    const button = await screen.findByRole('button', { name: /recompute/i });
+    expect(button).toBeInTheDocument();
+
+    // Click the button — fires the mutation.
+    fireEvent.click(button);
+
+    // Assert the POST to /api/pages/graph/refresh was made with method=POST.
+    await waitFor(() => {
+      const refreshCall = fetchSpy.mock.calls.find(
+        ([url]) => typeof url === 'string' && url.includes('/api/pages/graph/refresh'),
+      );
+      expect(refreshCall).toBeDefined();
+      expect((refreshCall![1] as RequestInit | undefined)?.method).toBe('POST');
+    });
+
+    // Assert cache invalidation triggered a re-fetch — the GET to
+    // /api/pages/graph runs again (so the count is at least 2 across the
+    // initial + the post-invalidation reload).
+    await waitFor(() => {
+      const getCalls = fetchSpy.mock.calls.filter(
+        ([url, init]) => {
+          const method = (init as RequestInit | undefined)?.method ?? 'GET';
+          return typeof url === 'string' && url.includes('/api/pages/graph') && !url.includes('/refresh') && method === 'GET';
+        },
+      );
+      expect(getCalls.length).toBeGreaterThanOrEqual(2);
+    });
+
+    // Reset role to avoid leaking into other tests.
+    useAuthStore.setState({ user: null, accessToken: null });
+  });
+
   it('renders error state with error message when fetch fails', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
       ok: false,
