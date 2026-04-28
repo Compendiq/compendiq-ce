@@ -59,7 +59,9 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
 
     // Sanitize question before sending to LLM
     const { sanitized: sanitizedQuestion, warnings } = sanitizeLlmInput(question);
-    if (warnings.length > 0) {
+    const promptInjectionDetected = warnings.length > 0;
+    const wasSanitized = sanitizedQuestion !== question;
+    if (promptInjectionDetected) {
       await logAuditEvent(request.userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/ask' }, request);
     }
 
@@ -287,6 +289,8 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
             retrievedChunkIds: searchResults.map(r => String(r.pageId)),
             durationMs: Date.now() - auditStart,
             status: 'success',
+            promptInjectionDetected,
+            sanitized: wasSanitized,
           });
 
           reply.raw.write(`data: ${JSON.stringify({
@@ -313,6 +317,8 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
             durationMs: Date.now() - auditStart,
             status: 'error',
             errorMessage: err instanceof Error ? err.message : String(err),
+            promptInjectionDetected,
+            sanitized: wasSanitized,
           });
           reply.raw.write(`data: ${JSON.stringify({ error: 'Stream error', done: true })}\n\n`);
         }

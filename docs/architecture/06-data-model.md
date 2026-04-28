@@ -236,6 +236,25 @@ erDiagram
         text model "nullable; null = inherit provider default"
         timestamptz updated_at
     }
+
+    users ||--o{ llm_audit_log : "may originate"
+    llm_providers ||--o{ llm_audit_log : "may originate"
+    llm_audit_log {
+        bigint id PK
+        uuid user_id FK "nullable; SET NULL on user delete"
+        uuid provider_id FK "nullable; SET NULL on provider delete"
+        text provider_name "snapshot — survives provider delete"
+        text model "snapshot at call time"
+        text usecase "chat|summary|quality|auto_tag|ask|improve|generate|…"
+        text prompt_hash "SHA-256 hex; plaintext NEVER stored"
+        int prompt_token_count
+        int completion_token_count
+        bool prompt_injection_detected "Compendiq/compendiq-ee#115 P0f"
+        bool sanitized "Compendiq/compendiq-ee#115 P0f"
+        int latency_ms
+        text error
+        timestamptz created_at
+    }
 ```
 
 ## Notable conventions
