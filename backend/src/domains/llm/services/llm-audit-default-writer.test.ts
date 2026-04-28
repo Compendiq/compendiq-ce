@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../../test-db-helper.js';
+import * as postgres from '../../../core/db/postgres.js';
 import { query } from '../../../core/db/postgres.js';
 import { defaultLlmAuditWriter } from './llm-audit-default-writer.js';
 import type { LlmAuditEntry } from './llm-audit-hook.js';
@@ -115,29 +116,20 @@ describe.skipIf(!dbAvailable)('defaultLlmAuditWriter (CE writer)', () => {
   });
 
   it('does not throw when the underlying insert fails (fire-and-forget contract)', async () => {
-    // Force a failure by dropping the table; the writer must swallow and
-    // resolve so the LLM call path keeps moving.
-    await query(`DROP TABLE llm_audit_log`);
-    await expect(defaultLlmAuditWriter(baseEntry())).resolves.toBeUndefined();
-    // Recreate so the next test (or teardown) isn't broken. Mirrors the
-    // shape from migration 073.
-    await query(`
-      CREATE TABLE llm_audit_log (
-        id BIGSERIAL PRIMARY KEY,
-        user_id UUID NULL REFERENCES users(id) ON DELETE SET NULL,
-        action TEXT NULL,
-        model TEXT NULL,
-        provider TEXT NULL,
-        input_tokens INTEGER NOT NULL DEFAULT 0,
-        output_tokens INTEGER NOT NULL DEFAULT 0,
-        duration_ms INTEGER NOT NULL DEFAULT 0,
-        status TEXT NOT NULL DEFAULT 'success',
-        error_message TEXT NULL,
-        prompt_hash TEXT NULL,
-        prompt_injection_detected BOOLEAN NOT NULL DEFAULT FALSE,
-        sanitized BOOLEAN NOT NULL DEFAULT FALSE,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
+    // Force a single-shot failure via spy rather than DROP TABLE: the
+    // earlier approach left the table in a sub-shape (no indexes) that
+    // could cause cross-file flakiness under non-alphabetical test
+    // ordering. The spy targets the exact same `query` reference the
+    // writer imports, so the rejection lands inside the writer's
+    // try/catch and the swallow is exercised end-to-end.
+    const spy = vi
+      .spyOn(postgres, 'query')
+      .mockRejectedValueOnce(new Error('simulated DB failure'));
+    try {
+      await expect(defaultLlmAuditWriter(baseEntry())).resolves.toBeUndefined();
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
