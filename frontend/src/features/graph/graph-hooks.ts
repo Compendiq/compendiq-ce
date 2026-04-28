@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '../../shared/lib/api';
 
 // ---------- Types ----------
@@ -39,10 +39,24 @@ interface GraphEdge {
   score: number;
 }
 
+/**
+ * #358: meta block on the graph response. The UI uses this to differentiate
+ * empty states ("no spaces accessible" vs "no pages embedded yet" vs
+ * "embedded but no relationships computed yet"). All counts are scoped to the
+ * caller's accessible pages — same RBAC as the nodes/edges arrays.
+ */
+export interface GraphMeta {
+  pagesTotal: number;
+  pagesEmbedded: number;
+  relationshipsTotal: number;
+  relationshipsByType: Record<string, number>;
+}
+
 interface GraphData {
   nodes: (GraphNode | ClusterNode)[];
   edges: GraphEdge[];
   centerId?: string;
+  meta?: GraphMeta;
 }
 
 type ViewMode = 'individual' | 'clustered';
@@ -113,5 +127,20 @@ export function useLocalGraphData(pageId: string | undefined, filters: LocalGrap
     queryFn: () => apiFetch(`/pages/${pageId}/graph/local?${params.toString()}`),
     staleTime: 60_000,
     enabled: !!pageId,
+  });
+}
+
+/**
+ * #358: admin trigger to recompute page_relationships rows. Wraps the
+ * existing POST /api/pages/graph/refresh; returns the new edge count.
+ * On success invalidates the global+local graph queries so the UI re-reads.
+ */
+export function useRefreshGraph() {
+  const queryClient = useQueryClient();
+  return useMutation<{ message: string; edges: number }>({
+    mutationFn: () => apiFetch('/pages/graph/refresh', { method: 'POST' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['pages', 'graph'] });
+    },
   });
 }

@@ -154,6 +154,12 @@ describe('Default @theme block carries Graphite Honey anchors', () => {
     expect(themeBlock).toMatch(/--color-primary-foreground:\s*#0a0a0a/i);
   });
 
+  it('muted-foreground is the #346-lifted #a39e8c (≥ AA on bg-background)', () => {
+    // Pinned by #346: #a39e8c lands at 6.99:1 against --color-background
+    // (#121211). Drift here re-introduces the "too dim" sidebar text bug.
+    expect(themeBlock).toMatch(/--color-muted-foreground:\s*#a39e8c/i);
+  });
+
   it('defines --color-primary-ink for accent-as-text', () => {
     expect(themeBlock).toMatch(/--color-primary-ink/);
   });
@@ -208,6 +214,12 @@ describe('[data-theme="honey-linen"] block', () => {
 
   it('defines darkened --color-primary-ink #8a6016 for AA-safe text use', () => {
     expect(honeyLinenBlock).toMatch(/--color-primary-ink:\s*#8a6016/i);
+  });
+
+  it('muted-foreground is the #346-darkened #5f5c54 (≥ AA on bg-background)', () => {
+    // Pinned by #346: #5f5c54 lands at 6.22:1 against --color-background
+    // (#f7f7f4). Drift here re-introduces the washed-out sidebar text bug.
+    expect(honeyLinenBlock).toMatch(/--color-muted-foreground:\s*#5f5c54/i);
   });
 
   it('overrides status color tokens', () => {

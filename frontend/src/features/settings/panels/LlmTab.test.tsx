@@ -13,6 +13,22 @@ function createWrapper() {
   };
 }
 
+/** Wrapper variant that exposes the QueryClient so assertions can observe
+ *  cache invalidations triggered by mutations. Used by the #355 invalidation
+ *  test (Finding 1, AC-3). */
+function createWrapperWithClient(): {
+  Wrapper: ({ children }: { children: React.ReactNode }) => React.ReactElement;
+  qc: QueryClient;
+} {
+  const qc = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  const Wrapper = ({ children }: { children: React.ReactNode }) => (
+    <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+  );
+  return { Wrapper, qc };
+}
+
 const providerA = {
   id: '11111111-1111-4111-8111-111111111111',
   name: 'Ollama',
@@ -173,6 +189,40 @@ describe('LlmTab', () => {
       expect(putCall).toBeTruthy();
       const body = JSON.parse((putCall![1] as RequestInit).body as string);
       expect(body.chat.providerId).toBe(providerB.id);
+    });
+  });
+
+  // #355 Finding 1, AC-3: saving the use-case assignments must invalidate
+  // the chat-default + use-case-scoped models query keys so the AI chat
+  // input pane (AiContext.tsx) refetches without a hard reload.
+  it('invalidates [llm, usecase-default] and [llm, models] after a successful save', async () => {
+    const { Wrapper, qc } = createWrapperWithClient();
+    mockRoutes();
+
+    // Pre-seed the cache with stale data on the keys we expect to be
+    // invalidated. After save.onSuccess fires, both should be refetched
+    // (i.e. their queryState should be marked invalid/stale).
+    qc.setQueryData(['llm', 'usecase-default', 'chat'], {
+      usecase: 'chat',
+      providerId: providerA.id,
+      providerName: 'Ollama',
+      model: 'qwen3:4b',
+    });
+    qc.setQueryData(['llm', 'models', 'chat'], [{ name: 'qwen3:4b' }]);
+
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByText('Use case assignments');
+    fireEvent.change(screen.getByTestId('usecase-chat-provider'), {
+      target: { value: providerB.id },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /save use-case assignments/i }));
+
+    // After the mutation succeeds, both seeded entries must be invalidated.
+    await waitFor(() => {
+      const usecaseEntry = qc.getQueryState(['llm', 'usecase-default', 'chat']);
+      const modelsEntry = qc.getQueryState(['llm', 'models', 'chat']);
+      expect(usecaseEntry?.isInvalidated).toBe(true);
+      expect(modelsEntry?.isInvalidated).toBe(true);
     });
   });
 

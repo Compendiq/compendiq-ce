@@ -24,6 +24,7 @@ erDiagram
     pages ||--o{ page_relationships : "related via"
     pages ||--o{ knowledge_requests : "fulfils"
     pages ||--o{ local_attachments : "owns (standalone pages only)"
+    pages ||--o{ spaces : "is custom home of (#352)"
 
     roles ||--o{ group_memberships : "granted via"
     groups ||--o{ group_memberships : "has"
@@ -100,10 +101,9 @@ erDiagram
 
     page_relationships {
         bigint id PK
-        uuid user_id FK
         int page_id_1 FK
         int page_id_2 FK
-        text relationship_type
+        text relationship_type "embedding_similarity | label_overlap | explicit_link | parent_child"
         double score
     }
 

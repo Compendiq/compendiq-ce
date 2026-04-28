@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
@@ -53,6 +53,28 @@ function createWrapper(initialEntries = ['/ai']) {
       </QueryClientProvider>
     );
   };
+}
+
+/**
+ * Variant that exposes the QueryClient so the test can manipulate cache state
+ * directly (used by the #355 chat-default-prefill tests below to simulate an
+ * admin-side change without round-tripping through a real PUT).
+ */
+function createWrapperWithClient(initialEntries = ['/ai']): {
+  Wrapper: ({ children }: { children: React.ReactNode }) => React.ReactElement;
+  queryClient: QueryClient;
+} {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  const Wrapper = ({ children }: { children: React.ReactNode }) => (
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={initialEntries}>
+        <LazyMotion features={domAnimation}>{children}</LazyMotion>
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+  return { Wrapper, queryClient };
 }
 
 describe('AiAssistantPage', () => {
@@ -1072,6 +1094,259 @@ describe('AiAssistantPage', () => {
       // (this would fail with index-based keys if React rebinds elements)
       const userMessage = screen.getByText('My question');
       expect(userMessage.closest('.bg-primary\\/10')).toBeTruthy();
+    });
+  });
+
+  // #355 — admin-configured chat use-case default
+  // (Findings 1, 2, 4 from the PR review).
+  describe('chat use-case default pre-fill (#355)', () => {
+    it('pre-fills the model selector from /llm/usecase-default?usecase=chat on mount', async () => {
+      // Arrange: backend returns a chat use-case default that differs from
+      // the legacy /settings.ollamaModel value. The pre-fill must come from
+      // the use-case default, not /settings.
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/llm/usecase-default?usecase=chat') {
+          return Promise.resolve({
+            usecase: 'chat',
+            providerId: '11111111-1111-4111-8111-111111111111',
+            providerName: 'Ollama',
+            model: 'qwen3:8b',
+          });
+        }
+        if (path === '/settings') {
+          // Legacy fallback — should NOT be reached because chat default exists.
+          return Promise.resolve({
+            llmProvider: 'ollama',
+            ollamaModel: 'legacy-llama3',
+            openaiModel: null,
+          });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([
+            { name: 'qwen3:8b' },
+            { name: 'llama3' },
+            { name: 'gpt-4o-mini' },
+          ]);
+        }
+        if (path === '/llm/conversations') return Promise.resolve([]);
+        return Promise.resolve([]);
+      });
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      // Wait for the model dropdown to render (i.e. models loaded).
+      await waitFor(() => {
+        expect(screen.queryByText('Loading models...')).not.toBeInTheDocument();
+      });
+
+      const select = document.querySelector('select') as HTMLSelectElement | null;
+      expect(select).not.toBeNull();
+      expect(select!.value).toBe('qwen3:8b');
+    });
+
+    it('queries /ollama/models with ?usecase=chat (Finding 4 — not ?provider=…)', async () => {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/llm/usecase-default?usecase=chat') {
+          return Promise.resolve({
+            usecase: 'chat',
+            providerId: '11111111-1111-4111-8111-111111111111',
+            providerName: 'Ollama',
+            model: 'qwen3:8b',
+          });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'qwen3:8b' }]);
+        }
+        if (path === '/llm/conversations') return Promise.resolve([]);
+        if (path === '/settings') return Promise.resolve({ llmProvider: 'ollama', ollamaModel: '', openaiModel: null });
+        return Promise.resolve([]);
+      });
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        const modelsCalls = apiFetchMock.mock.calls
+          .map((args) => args[0])
+          .filter((p): p is string => typeof p === 'string' && p.startsWith('/ollama/models'));
+        expect(modelsCalls.length).toBeGreaterThan(0);
+      });
+
+      const modelsCalls = apiFetchMock.mock.calls
+        .map((args) => args[0])
+        .filter((p): p is string => typeof p === 'string' && p.startsWith('/ollama/models'));
+
+      // Backend route at backend/src/routes/llm/llm-models.ts only parses
+      // ?usecase=… — sending ?provider=… silently returns the wrong models.
+      expect(modelsCalls.every((p) => p.includes('usecase=chat'))).toBe(true);
+      expect(modelsCalls.some((p) => p.includes('provider='))).toBe(false);
+    });
+
+    it('falls back to /settings model when chat use-case default is unavailable (404)', async () => {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/llm/usecase-default?usecase=chat') {
+          // Simulate the 404 the backend returns when no provider is configured.
+          return Promise.reject(new Error('No provider resolved for use case "chat"'));
+        }
+        if (path === '/settings') {
+          return Promise.resolve({
+            llmProvider: 'ollama',
+            ollamaModel: 'legacy-llama3',
+            openaiModel: null,
+          });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'legacy-llama3' }]);
+        }
+        if (path === '/llm/conversations') return Promise.resolve([]);
+        return Promise.resolve([]);
+      });
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.queryByText('Loading models...')).not.toBeInTheDocument();
+      });
+
+      const select = document.querySelector('select') as HTMLSelectElement | null;
+      expect(select).not.toBeNull();
+      expect(select!.value).toBe('legacy-llama3');
+    });
+
+    it('propagates an admin-side change to the chat UI without remount (Finding 1, AC-3)', async () => {
+      // First load: chat default is qwen3:8b.
+      let currentChatDefault = {
+        usecase: 'chat',
+        providerId: '11111111-1111-4111-8111-111111111111',
+        providerName: 'Ollama',
+        model: 'qwen3:8b',
+      };
+      let currentModels = [{ name: 'qwen3:8b' }, { name: 'llama3' }];
+
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/llm/usecase-default?usecase=chat') {
+          return Promise.resolve(currentChatDefault);
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve(currentModels);
+        }
+        if (path === '/llm/conversations') return Promise.resolve([]);
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: '', openaiModel: null });
+        }
+        return Promise.resolve([]);
+      });
+
+      const { Wrapper, queryClient } = createWrapperWithClient();
+      render(<AiAssistantPage />, { wrapper: Wrapper });
+
+      // Initial state: dropdown shows qwen3:8b.
+      await waitFor(() => {
+        const select = document.querySelector('select') as HTMLSelectElement | null;
+        expect(select?.value).toBe('qwen3:8b');
+      });
+
+      // Verify dropdown options reflect the initial models list.
+      const initialOptions = Array.from(document.querySelectorAll('select option')).map(
+        (o) => o.textContent,
+      );
+      expect(initialOptions).toEqual(['qwen3:8b', 'llama3']);
+
+      // Admin changes the chat assignment to a different provider+model.
+      // Simulate by updating what the API returns and invalidating the
+      // relevant query keys (which is what LlmTab's save handler does
+      // after a successful PUT /admin/llm-usecases).
+      currentChatDefault = {
+        usecase: 'chat',
+        providerId: '22222222-2222-4222-8222-222222222222',
+        providerName: 'OpenAI',
+        model: 'gpt-4o-mini',
+      };
+      currentModels = [{ name: 'gpt-4o-mini' }, { name: 'gpt-4o' }];
+
+      await act(async () => {
+        await queryClient.invalidateQueries({ queryKey: ['llm', 'usecase-default'] });
+        await queryClient.invalidateQueries({ queryKey: ['llm', 'models'] });
+      });
+
+      // Models dropdown should now reflect the new provider's models —
+      // proving the admin change propagated without a remount.
+      await waitFor(() => {
+        const opts = Array.from(document.querySelectorAll('select option')).map(
+          (o) => o.textContent,
+        );
+        expect(opts).toEqual(['gpt-4o-mini', 'gpt-4o']);
+      });
+    });
+
+    it('startNewConversation resets model to the current chat default (Finding 2, AC-4)', async () => {
+      apiFetchMock.mockImplementation((path: string, opts?: RequestInit) => {
+        if (path === '/llm/usecase-default?usecase=chat') {
+          return Promise.resolve({
+            usecase: 'chat',
+            providerId: '11111111-1111-4111-8111-111111111111',
+            providerName: 'Ollama',
+            model: 'qwen3:8b',
+          });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([
+            { name: 'qwen3:8b' },
+            { name: 'llama3' },
+            { name: 'gpt-4o-mini' },
+          ]);
+        }
+        if (path === '/llm/conversations') return Promise.resolve([]);
+        if (path === '/llm/conversations/conv-1' && (!opts || !opts.method)) {
+          // Loading an old conversation that was created with a different model —
+          // this simulates the per-conversation override that previously leaked.
+          return Promise.resolve({
+            id: 'conv-1',
+            model: 'llama3',
+            messages: [
+              { role: 'user', content: 'old question' },
+              { role: 'assistant', content: 'old answer' },
+            ],
+          });
+        }
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: '', openaiModel: null });
+        }
+        return Promise.resolve([]);
+      });
+
+      // Render the AiContext provider directly so we can call its
+      // startNewConversation() and inspect model state.
+      const { AiProvider, useAiContext } = await import('./AiContext');
+      let captured: ReturnType<typeof useAiContext> | null = null;
+      function Capture() {
+        captured = useAiContext();
+        return null;
+      }
+
+      render(
+        <AiProvider>
+          <Capture />
+        </AiProvider>,
+        { wrapper: createWrapper() },
+      );
+
+      // Wait for chat default to load and pre-fill model.
+      await waitFor(() => {
+        expect(captured?.model).toBe('qwen3:8b');
+      });
+
+      // Simulate the user picking a different model for the current conversation.
+      await act(async () => {
+        captured!.setModel('gpt-4o-mini');
+      });
+      expect(captured?.model).toBe('gpt-4o-mini');
+
+      // Start a new conversation — model must reset to the chat default,
+      // not stay on the per-conversation override.
+      await act(async () => {
+        captured!.startNewConversation();
+      });
+      expect(captured?.model).toBe('qwen3:8b');
     });
   });
 });

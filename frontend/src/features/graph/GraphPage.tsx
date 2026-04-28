@@ -2,10 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { m } from 'framer-motion';
 import ForceGraph2D from 'react-force-graph-2d';
-import { ZoomIn, ZoomOut, Maximize, RefreshCw, Info, Layers, Grid3x3, Filter, Search, X } from 'lucide-react';
+import { toast } from 'sonner';
+import { ZoomIn, ZoomOut, Maximize, RefreshCw, Info, Layers, Grid3x3, Filter, Search, X, Settings, Loader2 } from 'lucide-react';
 import { cn } from '../../shared/lib/cn';
 import { useSearch } from '../../shared/hooks/use-standalone';
-import { useGraphData, useLocalGraphData, type LocalGraphFilters } from './graph-hooks';
+import { useAuthStore } from '../../stores/auth-store';
+import { useGraphData, useLocalGraphData, useRefreshGraph, type LocalGraphFilters } from './graph-hooks';
 
 // ---------- Types ----------
 
@@ -63,6 +65,9 @@ const EDGE_COLORS: Record<string, string> = {
   embedding_similarity: 'rgba(124, 140, 245, 0.35)',
   label_overlap: 'rgba(92, 201, 167, 0.45)',
   explicit_link: 'rgba(245, 158, 66, 0.5)',
+  // #362: parent_child edges get a distinct hue and higher opacity so the
+  // hierarchy is legible against the semantic-similarity haze.
+  parent_child: 'rgba(232, 176, 106, 0.7)',
   cluster_relationship: 'rgba(171, 130, 230, 0.4)',
 };
 
@@ -372,16 +377,10 @@ export function GraphPage() {
     );
   }
 
-  // Empty state
-  if (!data || data.nodes.length === 0) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <div className="nm-card flex flex-col items-center gap-4 p-8 text-center">
-          <Info className="h-8 w-8 text-muted-foreground" />
-          <p className="text-muted-foreground">No pages found. Sync and embed pages to see the knowledge graph.</p>
-        </div>
-      </div>
-    );
+  // #358: differentiate empty states using meta counts so users get an
+  // actionable message instead of a generic "no pages found".
+  if (!data || data.nodes.length === 0 || (data.meta && data.meta.relationshipsTotal === 0)) {
+    return <GraphEmptyState meta={data?.meta} />;
   }
 
   return (
@@ -698,6 +697,86 @@ function ArticlePickerLanding({ onPick, onShowFullGraph }: ArticlePickerLandingP
             Show full graph anyway
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Empty-state branches (#358) ----------
+
+interface GraphEmptyStateProps {
+  meta: import('./graph-hooks').GraphMeta | undefined;
+}
+
+/**
+ * Differentiated empty state for the knowledge graph. Picks a message based
+ * on the meta counts so users know which step they're stuck at:
+ *   - no spaces accessible (RBAC)            → check sync settings
+ *   - no pages embedded yet                  → embed pages from Settings → LLM
+ *   - embedded but no relationships computed → admin can press Recompute
+ * Falls back to a generic message if meta is missing (older backend).
+ */
+function GraphEmptyState({ meta }: GraphEmptyStateProps) {
+  const role = useAuthStore((s) => s.user?.role);
+  const isAdmin = role === 'admin';
+  const refresh = useRefreshGraph();
+
+  const onRecompute = async () => {
+    try {
+      const res = await refresh.mutateAsync();
+      toast.success(`Graph relationships recomputed — ${res.edges} edges`);
+    } catch (err) {
+      const msg = err instanceof Error && err.message ? err.message : 'Failed to recompute graph';
+      toast.error(msg);
+    }
+  };
+
+  let title = 'No pages found';
+  let body =
+    'Sync a Confluence space and run embeddings to see the knowledge graph.';
+
+  if (meta) {
+    if (meta.pagesTotal === 0) {
+      title = 'No accessible pages in your spaces';
+      body =
+        'Sync a Confluence space or check that your role grants access to at least one space, then return here.';
+    } else if (meta.pagesEmbedded === 0) {
+      title = 'Pages not embedded yet';
+      body =
+        'Pages exist but no embeddings have been generated. Configure an embedding provider in Settings → LLM, then run an embedding pass.';
+    } else if (meta.relationshipsTotal === 0) {
+      title = 'Embedded — but no relationships computed yet';
+      body = isAdmin
+        ? 'Press Recompute below to build the relationship graph from current embeddings.'
+        : 'Ask an admin to recompute the relationship graph (Settings → Knowledge → Graph).';
+    }
+  }
+
+  return (
+    <div className="flex h-full items-center justify-center">
+      <div className="nm-card flex flex-col items-center gap-4 p-8 text-center max-w-md" data-testid="graph-empty-state">
+        <Info className="h-8 w-8 text-muted-foreground" />
+        <p className="font-medium">{title}</p>
+        <p className="text-sm text-muted-foreground">{body}</p>
+        {meta && (
+          <p className="text-xs text-muted-foreground/70">
+            {meta.pagesTotal} pages · {meta.pagesEmbedded} embedded · {meta.relationshipsTotal} relationships
+          </p>
+        )}
+        {isAdmin && meta && meta.pagesEmbedded > 0 && meta.relationshipsTotal === 0 && (
+          <button
+            onClick={onRecompute}
+            disabled={refresh.isPending}
+            className="nm-button-primary inline-flex items-center gap-2 px-4 py-2 text-sm"
+            data-testid="graph-recompute-btn"
+          >
+            {refresh.isPending ? (
+              <><Loader2 size={14} className="animate-spin" /> Recomputing…</>
+            ) : (
+              <><Settings size={14} /> Recompute relationships</>
+            )}
+          </button>
+        )}
       </div>
     </div>
   );

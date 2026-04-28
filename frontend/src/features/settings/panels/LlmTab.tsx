@@ -86,6 +86,13 @@ export function LlmTab() {
       apiFetch('/admin/llm-usecases', { method: 'PUT', body: JSON.stringify(diff) }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['llm-usecases'] });
+      // #355 (Finding 1, AC-3): cascade the change to consumers of the
+      // resolved per-use-case default (notably the AI chat input pane in
+      // AiContext.tsx) and the use-case-scoped models list. Prefix-match on
+      // ['llm', 'usecase-default'] and ['llm', 'models'] invalidates every
+      // use-case-keyed entry so dropdowns refresh without a hard reload.
+      qc.invalidateQueries({ queryKey: ['llm', 'usecase-default'] });
+      qc.invalidateQueries({ queryKey: ['llm', 'models'] });
       toast.success('Use-case assignments saved');
     },
     onError: (e: Error) => toast.error(e.message),

@@ -46,11 +46,15 @@ export async function verificationRoutes(fastify: FastifyInstance) {
 
     const pageId = await assertPageAccess(id, userId);
 
+    // #357: clamp review_interval_days defensively. The column is NOT NULL
+    // DEFAULT 90, but if a future bug or partial-migration ever leaves a
+    // 0 or NULL behind, the bare `(col || ' days')::INTERVAL` cast would
+    // throw on the request path. GREATEST + COALESCE keeps verify usable.
     const result = await query(
       `UPDATE pages SET
         verified_by = $1,
         verified_at = NOW(),
-        next_review_at = NOW() + (review_interval_days || ' days')::INTERVAL
+        next_review_at = NOW() + (GREATEST(COALESCE(review_interval_days, 90), 1) || ' days')::INTERVAL
        WHERE id = $2
        RETURNING id`,
       [userId, pageId],

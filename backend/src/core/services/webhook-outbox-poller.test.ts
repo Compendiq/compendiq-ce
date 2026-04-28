@@ -494,6 +494,17 @@ describe.skipIf(!canRun)('webhook-outbox-poller', () => {
       // subsequent tests still have a working queue handle.
       const fresh = getWebhookDeliveryQueue();
       expect(fresh).toBeInstanceOf(Queue);
+
+      // Wait for the rebuilt queue's ioredis client + subscriber connections
+      // to fully establish before we close them. Otherwise `afterAll`'s
+      // `__closeWebhookDeliveryQueueForTests()` races against in-flight
+      // ioredis handshake commands and the close handler rejects them with
+      // `Error: Connection is closed.` — which surfaces as an unhandled
+      // rejection that fails the whole vitest run (see Compendiq/compendiq-ce
+      // PRs #365, #373, #377). Owning the cleanup inside the test that
+      // built the queue eliminates the race entirely.
+      await fresh.waitUntilReady();
+      await __closeWebhookDeliveryQueueForTests();
     });
   });
 });

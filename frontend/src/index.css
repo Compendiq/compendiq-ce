@@ -110,7 +110,15 @@ h1, h2, h3, h4, h5, h6,
   --color-secondary: #2a2925;
   --color-secondary-foreground: #c5bea9;
   --color-muted: #2a2925;
-  --color-muted-foreground: #8a8472;
+  /* #346: lifted from #8a8472 → #a39e8c.
+     Sidebar root uses `bg-background` (solid --color-background = #121211).
+     Old value was ~5.5:1 against that surface — borderline AA on
+     low-contrast monitors and reported as "too dim" on TN panels. New
+     value lands at 6.99:1, comfortably above WCAG AA 4.5:1 while staying
+     visually muted vs --color-foreground (#f5efe0). Token-level change so
+     every text element in the sidebar (counts, hints, secondary labels)
+     inherits the lift. */
+  --color-muted-foreground: #a39e8c;
   --color-accent: #2a2925;
   --color-accent-foreground: #f5efe0;
   --color-destructive: #e88888;
@@ -242,7 +250,14 @@ h1, h2, h3, h4, h5, h6,
   --color-secondary: #efeeea;
   --color-secondary-foreground: #4a4a48;
   --color-muted: #efeeea;
-  --color-muted-foreground: #7a7770;
+  /* #346: darkened from #7a7770 → #5f5c54.
+     Sidebar root uses `bg-background` (solid --color-background = #f7f7f4).
+     Old value was ~4.6:1 against that surface — barely AA and washed out
+     on lower-contrast monitors. New value is 6.22:1 on the same surface,
+     comfortably above AA while still reading as muted relative to
+     --color-foreground (#0a0a0a). Token-level change propagates to every
+     text element in the sidebar. */
+  --color-muted-foreground: #5f5c54;
   --color-accent: #f1f0ec;
   --color-accent-foreground: #0a0a0a;
   --color-destructive: #b0322e;
@@ -1731,12 +1746,28 @@ pre:hover .code-copy-btn {
 
 .article-viewer .tiptap {
   padding: 1.5rem 2.5rem;
-  overflow-x: auto;
 }
 
-.article-viewer .tiptap table {
-  width: max-content;
-  min-width: 100%;
+/* #349: read-only viewer — let the TipTap-injected .tableWrapper handle
+   horizontal scroll for wide tables, and don't blow out the article pane.
+   The article-viewer container itself stays at the default `overflow: visible`
+   so future wide content (mermaid SVGs, draw.io diagrams, oversized images)
+   remains visible rather than silently clipped. */
+.article-viewer .tiptap > table,
+.article-viewer .tiptap .tableWrapper > table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  width: auto;
+  min-width: 0;
+}
+
+@media print {
+  .article-viewer .tiptap > table,
+  .article-viewer .tiptap .tableWrapper > table {
+    display: table;
+    overflow: visible;
+  }
 }
 
 /* TipTap editor styles */
