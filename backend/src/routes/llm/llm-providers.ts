@@ -24,6 +24,45 @@ import {
   SsrfError,
 } from '../../core/utils/ssrf-guard.js';
 import { getRateLimits } from '../../core/services/rate-limit-service.js';
+import { query } from '../../core/db/postgres.js';
+
+/**
+ * Revoke a per-pod allowlist entry only when no surviving `llm_providers`
+ * row references that origin. Two routes need this:
+ *   - POST: a concurrent successful sibling request may have committed the
+ *     same `base_url` (different `name`); revoking would strip its
+ *     allowlist out from under it.
+ *   - PATCH (baseUrl change): the previous origin may still be configured
+ *     on a different provider.
+ *
+ * The check is by full normalised origin (the same key the SSRF allowlist
+ * uses). Provider rows store the full base URL incl. path; we extract the
+ * origin and compare via `LOWER` on either side so case differences in the
+ * scheme/host don't cause a false negative.
+ */
+async function revokeAllowlistIfUnused(baseUrl: string): Promise<void> {
+  let origin: string;
+  try {
+    origin = new URL(baseUrl).origin;
+  } catch {
+    // If we can't parse it, we can't safely match other rows — bail out
+    // and just remove. A later bootstrap will rebuild from the DB anyway.
+    removeAllowedBaseUrl(baseUrl);
+    return;
+  }
+  // Match on origin so URLs with different paths (`http://h:1234/v1` vs
+  // `http://h:1234/api`) — but the same SSRF-relevant origin — count.
+  const result = await query<{ count: string }>(
+    `SELECT count(*)::text AS count
+       FROM llm_providers
+      WHERE LOWER(SUBSTRING(base_url FROM '^[a-zA-Z][a-zA-Z0-9+.-]*://[^/]*')) = LOWER($1)`,
+    [origin],
+  );
+  const stillUsed = parseInt(result.rows[0]!.count, 10) > 0;
+  if (!stillUsed) {
+    removeAllowedBaseUrl(baseUrl);
+  }
+}
 
 const ADMIN_RATE_LIMIT = {
   config: { rateLimit: { max: async () => (await getRateLimits()).admin.max, timeWindow: '1 minute' } },
@@ -59,7 +98,10 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
       try {
         validateUrl(input.baseUrl);
       } catch (err) {
-        removeAllowedBaseUrl(input.baseUrl);
+        // No DB row to check yet — but if a CONCURRENT sibling request
+        // for the same baseUrl has already committed, we must NOT strip
+        // its allowlist out from under it. Use the unused-origin guard.
+        await revokeAllowlistIfUnused(input.baseUrl);
         if (err instanceof SsrfError) {
           return reply.code(400).send({ error: err.message });
         }
@@ -70,8 +112,10 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
         provider = await createProvider(input);
       } catch (err) {
         // DB write failed (e.g. unique-name violation) — revoke the
-        // speculative allowlist entry so it doesn't outlive the failed row.
-        removeAllowedBaseUrl(input.baseUrl);
+        // speculative allowlist entry only if no other provider already
+        // owns this origin. Prevents a concurrent successful sibling from
+        // losing its allowlist.
+        await revokeAllowlistIfUnused(input.baseUrl);
         throw err;
       }
       emitLlmAudit({
@@ -91,6 +135,10 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
     async (request, reply) => {
       const { id } = IdParamsSchema.parse(request.params);
       const patch = LlmProviderUpdateSchema.parse(request.body);
+      // Capture the previous baseUrl BEFORE we mutate state so a baseUrl
+      // change can revoke the OLD origin's allowlist entry once it's no
+      // longer referenced (mirrors the Confluence flow on URL replace).
+      const previous = patch.baseUrl ? await getProviderById(id) : null;
       if (patch.baseUrl) {
         // Same allowlist-before-validate ordering as POST so private-network
         // base URLs can be patched in. Revoke on any downstream failure.
@@ -98,7 +146,7 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
         try {
           validateUrl(patch.baseUrl);
         } catch (err) {
-          removeAllowedBaseUrl(patch.baseUrl);
+          await revokeAllowlistIfUnused(patch.baseUrl);
           if (err instanceof SsrfError) {
             return reply.code(400).send({ error: err.message });
           }
@@ -109,12 +157,22 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
       try {
         updated = await updateProvider(id, patch);
       } catch (err) {
-        if (patch.baseUrl) removeAllowedBaseUrl(patch.baseUrl);
+        if (patch.baseUrl) await revokeAllowlistIfUnused(patch.baseUrl);
         throw err;
       }
       if (!updated) {
-        if (patch.baseUrl) removeAllowedBaseUrl(patch.baseUrl);
+        if (patch.baseUrl) await revokeAllowlistIfUnused(patch.baseUrl);
         return reply.code(404).send({ error: 'Provider not found' });
+      }
+      // baseUrl actually changed → garbage-collect the previous origin if
+      // no other provider still references it. Without this, repeated
+      // PATCHes leave a growing pile of stale per-pod allowlist entries.
+      if (
+        patch.baseUrl &&
+        previous &&
+        previous.baseUrl !== patch.baseUrl
+      ) {
+        await revokeAllowlistIfUnused(previous.baseUrl);
       }
       emitLlmAudit({
         event: 'llm_provider_updated',

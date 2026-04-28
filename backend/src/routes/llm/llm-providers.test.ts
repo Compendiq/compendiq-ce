@@ -149,7 +149,9 @@ describe.skipIf(!dbAvailable)('SSRF guard — private-network base URLs accepted
     expect(r.json().baseUrl).toBe('http://10.0.0.5:1234/v1');
   });
 
-  it('POST with duplicate name revokes the speculative allowlist entry', async () => {
+  it('POST with duplicate name revokes the speculative allowlist entry (verified directly)', async () => {
+    const { validateUrl, SsrfError } = await import('../../core/utils/ssrf-guard.js');
+
     // Seed the row that will collide.
     await app.inject({
       method: 'POST', url: '/api/admin/llm-providers',
@@ -157,20 +159,114 @@ describe.skipIf(!dbAvailable)('SSRF guard — private-network base URLs accepted
       payload: JSON.stringify({ name: 'Dup', baseUrl: 'http://10.0.0.10/v1', authType: 'none', verifySsl: true }),
     });
     // Second POST: same unique name, different (private) baseUrl. The DB
-    // unique-constraint should fail and the route should propagate that.
+    // unique-constraint will fail; the route revokes the speculative
+    // allowlist entry IFF no other provider references it.
     const r = await app.inject({
       method: 'POST', url: '/api/admin/llm-providers',
       headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
       payload: JSON.stringify({ name: 'Dup', baseUrl: 'http://10.0.0.99/v1', authType: 'none', verifySsl: true }),
     });
-    // Either a 4xx or 500 — what we ASSERT here is that no row was created,
-    // so the speculative allowlist entry was revoked (otherwise it'd be a
-    // dangling allowlist over a non-existent provider).
     expect(r.statusCode).toBeGreaterThanOrEqual(400);
-    const list = await query<{ count: string }>(
-      "SELECT count(*)::text AS count FROM llm_providers WHERE base_url = 'http://10.0.0.99/v1'",
-    );
-    expect(list.rows[0]!.count).toBe('0');
+
+    // Direct allowlist assertion: validateUrl on the failed origin must now
+    // throw (allowlist was revoked). Without this, a row-count check could
+    // pass even if revoke logic broke.
+    expect(() => validateUrl('http://10.0.0.99/v1')).toThrow(SsrfError);
+  });
+
+  it('failed POST does NOT revoke the allowlist of a concurrent successful sibling for the same origin', async () => {
+    const { validateUrl } = await import('../../core/utils/ssrf-guard.js');
+
+    // First POST succeeds with origin http://10.0.0.50:1234.
+    const ok = await app.inject({
+      method: 'POST', url: '/api/admin/llm-providers',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({
+        name: 'Sibling-A',
+        baseUrl: 'http://10.0.0.50:1234/v1',
+        authType: 'none', verifySsl: true,
+      }),
+    });
+    expect(ok.statusCode).toBe(201);
+
+    // Second POST: SAME baseUrl, different name that we'll force to fail
+    // by re-using a unique name from the first row. Repurpose: collide on
+    // 'Sibling-A' to trigger the unique-name failure path.
+    const fail = await app.inject({
+      method: 'POST', url: '/api/admin/llm-providers',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({
+        name: 'Sibling-A', // duplicate → fails
+        baseUrl: 'http://10.0.0.50:1234/v2', // same origin, different path
+        authType: 'none', verifySsl: true,
+      }),
+    });
+    expect(fail.statusCode).toBeGreaterThanOrEqual(400);
+
+    // Critical assertion: the allowlist for the SHARED origin must STILL
+    // be present (Sibling-A still owns it). The naïve revoke would have
+    // stripped it.
+    expect(() => validateUrl('http://10.0.0.50:1234/v1')).not.toThrow();
+  });
+
+  it('PATCH that changes baseUrl revokes the old origin when nothing else references it', async () => {
+    const { validateUrl, SsrfError } = await import('../../core/utils/ssrf-guard.js');
+
+    const create = await app.inject({
+      method: 'POST', url: '/api/admin/llm-providers',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({
+        name: 'Migrate',
+        baseUrl: 'http://10.0.0.60/v1',
+        authType: 'none', verifySsl: true,
+      }),
+    });
+    expect(create.statusCode).toBe(201);
+    const { id } = create.json();
+
+    // Pre-condition: old origin is allowlisted.
+    expect(() => validateUrl('http://10.0.0.60/v1')).not.toThrow();
+
+    const patch = await app.inject({
+      method: 'PATCH', url: `/api/admin/llm-providers/${id}`,
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({ baseUrl: 'http://10.0.0.61/v1' }),
+    });
+    expect(patch.statusCode).toBe(200);
+
+    // New origin allowlisted, OLD origin garbage-collected because no
+    // surviving row references it.
+    expect(() => validateUrl('http://10.0.0.61/v1')).not.toThrow();
+    expect(() => validateUrl('http://10.0.0.60/v1')).toThrow(SsrfError);
+  });
+
+  it('PATCH baseUrl change does NOT revoke the old origin when another provider still uses it', async () => {
+    const { validateUrl } = await import('../../core/utils/ssrf-guard.js');
+
+    // Two providers share origin http://10.0.0.70.
+    const a = await app.inject({
+      method: 'POST', url: '/api/admin/llm-providers',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({ name: 'Shared-A', baseUrl: 'http://10.0.0.70/v1', authType: 'none', verifySsl: true }),
+    });
+    expect(a.statusCode).toBe(201);
+    const b = await app.inject({
+      method: 'POST', url: '/api/admin/llm-providers',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({ name: 'Shared-B', baseUrl: 'http://10.0.0.70/v2', authType: 'none', verifySsl: true }),
+    });
+    expect(b.statusCode).toBe(201);
+
+    // Migrate B away from the shared origin. A should still keep it allowlisted.
+    const patch = await app.inject({
+      method: 'PATCH', url: `/api/admin/llm-providers/${b.json().id}`,
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({ baseUrl: 'http://10.0.0.71/v1' }),
+    });
+    expect(patch.statusCode).toBe(200);
+
+    // The shared origin is still owned by Shared-A — must remain allowlisted.
+    expect(() => validateUrl('http://10.0.0.70/v1')).not.toThrow();
   });
 });
 
