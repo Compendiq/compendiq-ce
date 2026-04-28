@@ -386,7 +386,15 @@ const FIRST_PAINT_TIMEOUT_MS = 30_000;
 // settles in ~1–3 s on small graphs, ~5–10 s once the node count climbs.
 // 30 s is a generous upper bound for the 5000-node case.
 const CONVERGENCE_TIMEOUT_MS = 30_000;
-const CONVERGENCE_QUIET_MS = 350;
+// Convergence is detected when the rAF rate drops below `IDLE_RATE_HZ` for
+// `CONVERGENCE_QUIET_MS` consecutive sampling. The page has continuous
+// background rAF activity (Framer Motion, Radix transitions, layout
+// reflows) at ~5–15 Hz, so "rAF goes fully quiet" never trips. The force
+// simulation drives rAF at the screen rate (~60 Hz) while running, so a
+// drop below 25 Hz reliably signals "force layout has stopped".
+const CONVERGENCE_SAMPLE_MS = 100;
+const CONVERGENCE_QUIET_MS = 500;
+const IDLE_RATE_HZ = 25;
 const FPS_WINDOW_MS = 2_000;
 
 /**
@@ -472,27 +480,53 @@ async function runOne(
   });
   const timeToFirstPaintMs = Date.now() - navStart;
 
-  // ─ Convergence: poll until rAF has been idle for CONVERGENCE_QUIET_MS.
-  //   The first paint isn't the start of the simulation — the engine
-  //   warms up after the data fetch resolves — so we use the rAF start
-  //   timestamp captured inside the page.
+  // ─ Convergence: sample the rAF rate over short windows and declare
+  //   the force layout settled when the rate falls below `IDLE_RATE_HZ`
+  //   for `CONVERGENCE_QUIET_MS` of consecutive low samples.
+  //
+  //   The earlier "rAF goes fully quiet" approach didn't work on the
+  //   real page — Framer Motion + Radix transitions + occasional
+  //   reflows keep rAF firing at ~5–15 Hz indefinitely, so the quiet
+  //   window never opens and convergence pegs at the timeout. The
+  //   force simulation drives rAF at the screen rate while running,
+  //   so a drop below 25 Hz reliably distinguishes "simulation
+  //   stopped" from "page is otherwise idle but never silent".
   const layoutConvergenceMs = await page.evaluate(
-    async ({ quietMs, timeoutMs }) => {
+    async ({ quietMs, timeoutMs, sampleMs, idleRateHz }) => {
       const w = window as unknown as Record<string, unknown>;
       const data = w.__bench as Record<string, number>;
       const startedAt = data.startedAt || performance.now();
       const deadline = performance.now() + timeoutMs;
+
+      let prevCount = data.rafCount;
+      let prevAt = performance.now();
+      let quietSince: number | null = null;
+
       while (performance.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 50));
-        if (performance.now() - data.lastRaf >= quietMs) {
-          return Math.max(0, data.lastRaf - startedAt);
+        await new Promise((r) => setTimeout(r, sampleMs));
+        const now = performance.now();
+        const elapsed = now - prevAt;
+        const rate = elapsed > 0 ? ((data.rafCount - prevCount) * 1000) / elapsed : 0;
+        prevCount = data.rafCount;
+        prevAt = now;
+
+        if (rate < idleRateHz) {
+          if (quietSince === null) quietSince = now - elapsed;
+          if (now - quietSince >= quietMs) {
+            return Math.max(0, quietSince - startedAt);
+          }
+        } else {
+          quietSince = null;
         }
       }
-      // If we never see a quiet window, report the elapsed time so
-      // the verdict still flags this size as a Phase-2 candidate.
       return performance.now() - startedAt;
     },
-    { quietMs: CONVERGENCE_QUIET_MS, timeoutMs: CONVERGENCE_TIMEOUT_MS },
+    {
+      quietMs: CONVERGENCE_QUIET_MS,
+      timeoutMs: CONVERGENCE_TIMEOUT_MS,
+      sampleMs: CONVERGENCE_SAMPLE_MS,
+      idleRateHz: IDLE_RATE_HZ,
+    },
   );
 
   // ─ Pan + drag interaction. Drives the renderer + simulation under
