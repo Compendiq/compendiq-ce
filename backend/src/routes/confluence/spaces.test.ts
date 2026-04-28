@@ -25,6 +25,11 @@ vi.mock('../../core/utils/logger.js', () => ({
 
 import { spacesRoutes } from './spaces.js';
 
+// Module-scoped mocks so individual tests can re-arm `scan` to assert the
+// cross-user invalidation path (#352, finding 1).
+const mockRedisScan = vi.fn().mockResolvedValue({ cursor: '0', keys: [] });
+const mockRedisDel = vi.fn().mockResolvedValue(0);
+
 describe('Spaces routes', () => {
   let app: ReturnType<typeof Fastify>;
 
@@ -39,6 +44,12 @@ describe('Spaces routes', () => {
     app.decorate('redis', {
       get: vi.fn().mockResolvedValue(null),
       setEx: vi.fn().mockResolvedValue('OK'),
+      // RedisCache.invalidateAcrossUsers walks SCAN cursors and DELs the
+      // returned keys. Tests need both to assert the cross-user fan-out
+      // pattern; default mocks return an empty page so the SCAN walk
+      // terminates immediately.
+      scan: mockRedisScan,
+      del: mockRedisDel,
     });
 
     await app.register(spacesRoutes, { prefix: '/api' });
@@ -54,6 +65,10 @@ describe('Spaces routes', () => {
     mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
     mockGetUserAccessibleSpaces.mockResolvedValue([]);
     mockUserHasPermission.mockResolvedValue(false);
+    // Re-arm Redis SCAN to terminate immediately for tests that don't
+    // care about cache invalidation; tests that DO care override this.
+    mockRedisScan.mockReset().mockResolvedValue({ cursor: '0', keys: [] });
+    mockRedisDel.mockReset().mockResolvedValue(0);
   });
 
   it('GET /spaces includes selected spaces that are not yet synced', async () => {
@@ -249,6 +264,43 @@ describe('Spaces routes', () => {
       spaceKey: 'DEV',
       customHomePageId: null,
     });
+  });
+
+  it('PUT /spaces/:key/home invalidates the spaces cache across ALL users, not just the admin caller (#352)', async () => {
+    // Two simulated users have a cached `kb:<uid>:spaces:list` entry. The
+    // update must wipe both, otherwise non-admin viewers would keep
+    // reading the old `homepageId` for up to the spaces TTL (15 min).
+    mockUserHasPermission.mockResolvedValueOnce(true);
+    mockGetUserAccessibleSpaces.mockResolvedValueOnce(['DEV']);
+    mockQuery
+      .mockResolvedValueOnce({
+        rows: [{ space_key: 'DEV', source: 'confluence', visibility: null }],
+      })
+      .mockResolvedValueOnce({ rows: [{ space_key: 'DEV' }], rowCount: 1 });
+
+    mockRedisScan.mockResolvedValueOnce({
+      cursor: '0',
+      keys: ['kb:alice:spaces:list', 'kb:bob:spaces:list'],
+    });
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/spaces/DEV/home',
+      headers: { 'content-type': 'application/json' },
+      payload: JSON.stringify({ homePageId: 42 }),
+    });
+
+    expect(response.statusCode).toBe(200);
+    // SCAN walks the shared `kb:*:spaces:*` namespace, NOT the
+    // per-admin `kb:test-user-id:spaces:*` namespace.
+    expect(mockRedisScan).toHaveBeenCalledWith('0', {
+      MATCH: 'kb:*:spaces:*',
+      COUNT: 100,
+    });
+    expect(mockRedisDel).toHaveBeenCalledWith([
+      'kb:alice:spaces:list',
+      'kb:bob:spaces:list',
+    ]);
   });
 
   it('PUT /spaces/:key/home returns 404 when the space is not in the caller\'s accessible set (#352)', async () => {

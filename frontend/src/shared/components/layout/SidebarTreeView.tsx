@@ -345,19 +345,6 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
     }
   }, [activePageId, pages]);
 
-  // When a space is scoped to its homepage, keep that homepage expanded so
-  // the homepage remains clickable while its immediate children stay visible.
-  useEffect(() => {
-    if (!homepageId) return;
-
-    setExpandedIds((prev) => {
-      if (prev.has(homepageId)) return prev;
-      const next = new Set(prev);
-      next.add(homepageId);
-      return next;
-    });
-  }, [homepageId]);
-
   // Auto-select space based on current page
   useEffect(() => {
     if (activePageId && pages.length > 0 && !treeSidebarSpaceKey) {

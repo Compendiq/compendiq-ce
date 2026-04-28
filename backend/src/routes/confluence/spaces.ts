@@ -159,9 +159,12 @@ export async function spacesRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.notFound('Space not found');
     }
 
-    // Invalidate the per-user spaces cache for everyone in the org —
-    // simplest correctness path, the cache is small and rebuilt lazily.
-    await cache.invalidate(userId, 'spaces');
+    // Invalidate every user's spaces cache — the custom home page is
+    // visible to all viewers of the space, so a per-user invalidation
+    // would leave non-admin users staring at the old `homepageId` for
+    // up to the spaces TTL (15 min). See `invalidateAcrossUsers` in
+    // redis-cache.ts for the SCAN-based fan-out.
+    await cache.invalidateAcrossUsers('spaces');
 
     logger.info({ userId, spaceKey: key, homePageId }, 'Space custom home page updated');
 
