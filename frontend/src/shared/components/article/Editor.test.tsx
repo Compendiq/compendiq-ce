@@ -269,4 +269,46 @@ describe('EditorToolbar — header numbering toggle', () => {
 
     expect(screen.queryByTitle('Toggle Header Numbering')).not.toBeInTheDocument();
   });
+
+  // ---------- #353 toolbar grouping + bigger color pickers ----------
+
+  it('renders a labeled Colors group containing both color pickers (#353)', () => {
+    const editor = createMockEditor();
+    render(<EditorToolbar editor={editor} />);
+
+    const group = screen.getByRole('group', { name: 'Colors' });
+    expect(group).toBeInTheDocument();
+    expect(group).toHaveAttribute('data-toolbar-group', 'colors');
+    // Both triggers live inside the group.
+    expect(group.querySelectorAll('[data-testid="color-picker-trigger"]').length).toBe(2);
+  });
+
+  it('color-picker triggers meet the 32x32 minimum target size (#353)', () => {
+    const editor = createMockEditor();
+    render(<EditorToolbar editor={editor} />);
+
+    const triggers = screen.getAllByTestId('color-picker-trigger');
+    expect(triggers.length).toBe(2);
+    for (const trigger of triggers) {
+      // Tailwind h-8 w-8 maps to 32×32 (1rem = 16px).
+      expect(trigger.className).toMatch(/(?:^|\s)h-8(?:\s|$)/);
+      expect(trigger.className).toMatch(/(?:^|\s)w-8(?:\s|$)/);
+    }
+  });
+
+  it('color-picker swatches meet the 24x24 minimum after opening the picker (#353)', () => {
+    const editor = createMockEditor();
+    render(<EditorToolbar editor={editor} />);
+
+    const triggers = screen.getAllByTestId('color-picker-trigger');
+    fireEvent.click(triggers[0]!);
+
+    const swatches = screen.getAllByTestId('color-picker-swatch');
+    expect(swatches.length).toBeGreaterThanOrEqual(8);
+    for (const sw of swatches) {
+      // h-7 w-7 → 28×28 (above the 24 minimum).
+      expect(sw.className).toMatch(/(?:^|\s)h-7(?:\s|$)/);
+      expect(sw.className).toMatch(/(?:^|\s)w-7(?:\s|$)/);
+    }
+  });
 });
