@@ -138,7 +138,7 @@ describe('GraphPage', () => {
       }),
     } as Response);
 
-    render(<GraphPage />, { wrapper: createWrapper() });
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
 
     await waitFor(() => {
       expect(screen.getByText(/No accessible pages in your spaces/)).toBeInTheDocument();
@@ -157,7 +157,7 @@ describe('GraphPage', () => {
       }),
     } as Response);
 
-    render(<GraphPage />, { wrapper: createWrapper() });
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
 
     await waitFor(() => {
       expect(screen.getByText(/Pages not embedded yet/)).toBeInTheDocument();
@@ -180,7 +180,7 @@ describe('GraphPage', () => {
       }),
     } as Response);
 
-    render(<GraphPage />, { wrapper: createWrapper() });
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
 
     await waitFor(() => {
       expect(screen.getByText(/no relationships computed yet/i)).toBeInTheDocument();
@@ -232,7 +232,7 @@ describe('GraphPage', () => {
         json: async () => recomputed,
       } as Response);
 
-    render(<GraphPage />, { wrapper: createWrapper() });
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
 
     // Wait for the empty-state Recompute button to render.
     const button = await screen.findByRole('button', { name: /recompute/i });

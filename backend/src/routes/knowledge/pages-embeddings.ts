@@ -56,9 +56,25 @@ const LocalGraphQuerySchema = z.object({
     .transform((v) =>
       v ? v.split(',').map((s) => s.trim()).filter(Boolean) : undefined,
     ),
+  // #361 Phase 3: per-hop neighbor cap on the recursive BFS so a 3-hop
+  // expansion can't pull most of a 2000-page corpus. Defaults to 50 which
+  // is comfortable for a 1-2-hop ego graph; admins/power users can raise it
+  // when targeted exploration is needed.
+  perHopLimit: z.coerce.number().int().min(1).max(500).default(50),
 });
 
 const IdParamSchema = z.object({ id: z.string().min(1) });
+
+// #361 Phase 3: read-time similarity-score floor tiered by corpus size.
+// The producer-side threshold stays low (0.4) so we don't lose data; the
+// read filter trims the rendered set to keep the graph readable on big
+// corpora. Source-of-truth comment in `embedding-service.ts:842`.
+function tieredMinScoreForCorpus(pagesTotal: number): number {
+  if (pagesTotal < 500) return 0.4;
+  if (pagesTotal < 2000) return 0.6;
+  return 0.7;
+}
+export const __testHelpers = { tieredMinScoreForCorpus };
 
 export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -151,7 +167,13 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
     // Build a set of accessible node IDs to filter edges
     const nodeIdSet = new Set(nodesResult.rows.map((r) => r.id));
 
-    // Fetch pre-computed relationships as edges, filtered to accessible nodes
+    // Fetch pre-computed relationships as edges, filtered to accessible nodes.
+    // #361 Phase 3: tier the read-time similarity-score floor by corpus size
+    // so large knowledge bases stay readable. Producer-side threshold stays
+    // low (0.4) so the underlying data is not lossy. Non-similarity edge
+    // types (label_overlap, explicit_link, parent_child) bypass the score
+    // floor since their score=1.0 is meaningful, not similarity-derived.
+    const minScoreFloor = tieredMinScoreForCorpus(nodesResult.rows.length);
     const edgesResult = await query<{
       page_id_1: number;
       page_id_2: number;
@@ -161,8 +183,9 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
       `SELECT pr.page_id_1, pr.page_id_2, pr.relationship_type, pr.score
        FROM page_relationships pr
        WHERE pr.page_id_1 = ANY($1::int[]) AND pr.page_id_2 = ANY($1::int[])
+         AND (pr.relationship_type <> 'embedding_similarity' OR pr.score >= $2)
        ORDER BY pr.score DESC`,
-      [Array.from(nodeIdSet)],
+      [Array.from(nodeIdSet), minScoreFloor],
     );
 
     const nodes = nodesResult.rows.map((row) => ({
@@ -216,7 +239,7 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
   fastify.get('/pages/:id/graph/local', async (request) => {
     const userId = request.userId;
     const { id } = IdParamSchema.parse(request.params);
-    const { hops, edgeTypes, minScore, labels } = LocalGraphQuerySchema.parse(request.query);
+    const { hops, edgeTypes, minScore, labels, perHopLimit } = LocalGraphQuerySchema.parse(request.query);
 
     // Resolve to integer page ID
     const isNumericId = /^\d+$/.test(id);
@@ -239,30 +262,40 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
       return { nodes: [], edges: [], centerId: String(centerPageId) };
     }
 
-    // Find connected page IDs within N hops via recursive CTE on page_relationships.
-    // #360: apply edgeTypes/minScore filters during the BFS so the local subgraph
-    // matches what the user filtered to (otherwise we'd traverse hidden edges
-    // and return ghost nodes that the UI then has to drop).
+    // Find connected page IDs within N hops via recursive CTE on
+    // page_relationships. #361 Phase 3: cap each hop at $3 neighbours
+    // (LATERAL LIMIT) so a 3-hop expansion can't pull most of a 2000-page
+    // corpus; higher-score edges are preferred via ORDER BY pr.score DESC.
+    // #360: apply edgeTypes/minScore filters INSIDE LATERAL so the local
+    // subgraph matches what the user filtered to (otherwise we'd traverse
+    // hidden edges and return ghost nodes the UI then has to drop).
     const neighborResult = await query<{ page_id: number; hop: number }>(
       `WITH RECURSIVE neighbors AS (
          SELECT $1::int AS page_id, 0 AS hop
          UNION
-         SELECT CASE
-           WHEN pr.page_id_1 = n.page_id THEN pr.page_id_2
-           ELSE pr.page_id_1
-         END AS page_id,
-         n.hop + 1 AS hop
+         SELECT next.page_id, n.hop + 1 AS hop
          FROM neighbors n
-         JOIN page_relationships pr
-           ON pr.page_id_1 = n.page_id OR pr.page_id_2 = n.page_id
+         CROSS JOIN LATERAL (
+           SELECT CASE WHEN pr.page_id_1 = n.page_id THEN pr.page_id_2 ELSE pr.page_id_1 END AS page_id
+           FROM page_relationships pr
+           WHERE (pr.page_id_1 = n.page_id OR pr.page_id_2 = n.page_id)
+             AND ($4::text[] IS NULL OR pr.relationship_type = ANY($4::text[]))
+             AND ($5::real IS NULL OR pr.score >= $5::real)
+           ORDER BY pr.score DESC
+           LIMIT $3
+         ) next
          WHERE n.hop < $2
-           AND ($3::text[] IS NULL OR pr.relationship_type = ANY($3::text[]))
-           AND ($4::real IS NULL OR pr.score >= $4::real)
        )
        SELECT DISTINCT page_id, MIN(hop) AS hop
        FROM neighbors
        GROUP BY page_id`,
-      [centerPageId, hops, edgeTypes && edgeTypes.length > 0 ? edgeTypes : null, minScore ?? null],
+      [
+        centerPageId,
+        hops,
+        perHopLimit,
+        edgeTypes && edgeTypes.length > 0 ? edgeTypes : null,
+        minScore ?? null,
+      ],
     );
 
     const neighborIds = neighborResult.rows.map((r) => r.page_id);
