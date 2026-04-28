@@ -476,7 +476,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
 
       {/* Sidebar header — title + actions */}
       <div className="flex h-8 shrink-0 items-center justify-between px-3">
-        <span className="text-xs font-semibold text-muted-foreground/60">Pages</span>
+        <span className="text-xs font-semibold text-muted-foreground">Pages</span>
         <div className="flex items-center gap-1">
           <button
             onClick={() => {
@@ -538,7 +538,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
               {/* Confluence spaces */}
               {confluenceOptions.length > 0 && (
                 <>
-                  <div className="px-2.5 py-1.5 text-[10px] font-semibold text-muted-foreground/50">
+                  <div className="px-2.5 py-1.5 text-[10px] font-semibold text-muted-foreground">
                     Confluence
                   </div>
                   {confluenceOptions.map((space) => (
@@ -568,7 +568,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
               {/* Local spaces */}
               {localOptions.length > 0 && (
                 <>
-                  <div className="px-2.5 py-1.5 text-[10px] font-semibold text-muted-foreground/50">
+                  <div className="px-2.5 py-1.5 text-[10px] font-semibold text-muted-foreground">
                     Local
                   </div>
                   {localOptions.map((space) => (
@@ -712,7 +712,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
       {/* Footer stats */}
       {treeData && (
         <div className="px-3 py-1.5">
-          <span className="text-[10px] text-muted-foreground/50">
+          <span className="text-[10px] text-muted-foreground">
             {treeData.total} pages{treeSidebarSpaceKey ? ` in ${treeSidebarSpaceKey}` : ''}
           </span>
         </div>
