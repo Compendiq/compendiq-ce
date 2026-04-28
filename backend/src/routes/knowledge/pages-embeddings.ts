@@ -8,13 +8,54 @@ import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 /** Graph cache uses a short TTL (5 min) so relationship changes surface quickly. */
 const GRAPH_CACHE_TTL = 300;
 
+// #360 multi-select: spaceKey accepts a comma-separated list. Each value is
+// trimmed and empties are dropped so `?spaceKey=` and `?spaceKey=DEV,,` both
+// degrade gracefully. The values themselves are NOT whitelisted at the
+// schema layer — space keys are user-defined and dynamic — but every key is
+// intersected with the RBAC-accessible set inside the route handler before
+// it reaches SQL. That's the actual security boundary.
+const SpaceKeysSchema = z
+  .string()
+  .optional()
+  .transform((v) =>
+    v ? v.split(',').map((s) => s.trim()).filter(Boolean) : undefined,
+  );
+
 const GraphQuerySchema = z.object({
   view: z.enum(['individual', 'clustered']).default('individual'),
-  spaceKey: z.string().optional(),
+  spaceKey: SpaceKeysSchema,
 });
 
+// #360: filter dimensions on /graph/local. Each is optional and applied at
+// SELECT time so the same producer-side rows can be re-filtered cheaply
+// from the UI slider/multi-select. Validated to a finite, audited set of
+// relationship types so an attacker can't smuggle SQL via the param.
+const VALID_EDGE_TYPES = ['embedding_similarity', 'label_overlap', 'explicit_link', 'parent_child'] as const;
 const LocalGraphQuerySchema = z.object({
   hops: z.coerce.number().int().min(1).max(3).default(2),
+  // Comma-separated list of relationship types; whitespace-tolerant.
+  edgeTypes: z
+    .string()
+    .optional()
+    .transform((v) =>
+      v
+        ? v
+            .split(',')
+            .map((s) => s.trim())
+            .filter((s) => (VALID_EDGE_TYPES as readonly string[]).includes(s))
+        : undefined,
+    ),
+  // Cosine-similarity floor, applied to the score column. 0 = include all,
+  // 1 = exact match only. Defaults to no filter (undefined).
+  minScore: z.coerce.number().min(0).max(1).optional(),
+  // Comma-separated label names; case-sensitive match against pages.labels.
+  // Empty string and whitespace-only entries are dropped.
+  labels: z
+    .string()
+    .optional()
+    .transform((v) =>
+      v ? v.split(',').map((s) => s.trim()).filter(Boolean) : undefined,
+    ),
   // #361 Phase 3: per-hop neighbor cap on the recursive BFS so a 3-hop
   // expansion can't pull most of a 2000-page corpus. Defaults to 50 which
   // is comfortable for a 1-2-hop ego graph; admins/power users can raise it
@@ -49,17 +90,29 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
   // - relationshipsTotal === 0 (with pagesEmbedded > 0)  → "Embedded but no relationships yet"
   fastify.get('/pages/graph', async (request) => {
     const userId = request.userId;
-    const { view, spaceKey: filterSpaceKey } = GraphQuerySchema.parse(request.query);
+    const { view, spaceKey: filterSpaceKeys } = GraphQuerySchema.parse(request.query);
 
-    const cacheKey = `graph:${view}:${filterSpaceKey ?? 'all'}`;
+    // #360: cache key incorporates the sorted multi-key set so different
+    // space selections don't collide in Redis.
+    const cacheSpaceKey =
+      filterSpaceKeys && filterSpaceKeys.length > 0
+        ? [...filterSpaceKeys].sort().join(',')
+        : 'all';
+    const cacheKey = `graph:${view}:${cacheSpaceKey}`;
     const cached = await cache.get(userId, 'pages', cacheKey);
     if (cached) return cached;
 
-    // Fetch accessible spaces (RBAC)
+    // Fetch accessible spaces (RBAC).
+    // #360: when the user supplies one or more `spaceKey` values, intersect
+    // them with the RBAC-accessible set. The intersection IS the security
+    // gate — keys the user can't see are silently dropped, never reaching
+    // SQL. No SQL injection vector here because every value is bound as a
+    // text[] parameter.
     const graphSpaces = await getUserAccessibleSpaces(userId);
-    const effectiveSpaces = filterSpaceKey
-      ? graphSpaces.filter((s: string) => s === filterSpaceKey)
-      : graphSpaces;
+    const effectiveSpaces =
+      filterSpaceKeys && filterSpaceKeys.length > 0
+        ? graphSpaces.filter((s: string) => filterSpaceKeys.includes(s))
+        : graphSpaces;
 
     if (effectiveSpaces.length === 0) {
       return {
@@ -181,11 +234,12 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
     return response;
   });
 
-  // GET /api/pages/:id/graph/local - local neighborhood graph centered on a page
+  // GET /api/pages/:id/graph/local - local neighborhood graph centered on a page.
+  // #360 query params (all optional): hops, edgeTypes, minScore, labels.
   fastify.get('/pages/:id/graph/local', async (request) => {
     const userId = request.userId;
     const { id } = IdParamSchema.parse(request.params);
-    const { hops, perHopLimit } = LocalGraphQuerySchema.parse(request.query);
+    const { hops, edgeTypes, minScore, labels, perHopLimit } = LocalGraphQuerySchema.parse(request.query);
 
     // Resolve to integer page ID
     const isNumericId = /^\d+$/.test(id);
@@ -209,9 +263,12 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
     }
 
     // Find connected page IDs within N hops via recursive CTE on
-    // page_relationships. #361 Phase 3: cap each hop at $3 neighbours so a
-    // 3-hop expansion can't pull most of a 2000-page corpus. Higher-score
-    // edges are preferred via ORDER BY pr.score DESC inside LATERAL.
+    // page_relationships. #361 Phase 3: cap each hop at $3 neighbours
+    // (LATERAL LIMIT) so a 3-hop expansion can't pull most of a 2000-page
+    // corpus; higher-score edges are preferred via ORDER BY pr.score DESC.
+    // #360: apply edgeTypes/minScore filters INSIDE LATERAL so the local
+    // subgraph matches what the user filtered to (otherwise we'd traverse
+    // hidden edges and return ghost nodes the UI then has to drop).
     const neighborResult = await query<{ page_id: number; hop: number }>(
       `WITH RECURSIVE neighbors AS (
          SELECT $1::int AS page_id, 0 AS hop
@@ -222,6 +279,8 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
            SELECT CASE WHEN pr.page_id_1 = n.page_id THEN pr.page_id_2 ELSE pr.page_id_1 END AS page_id
            FROM page_relationships pr
            WHERE (pr.page_id_1 = n.page_id OR pr.page_id_2 = n.page_id)
+             AND ($4::text[] IS NULL OR pr.relationship_type = ANY($4::text[]))
+             AND ($5::real IS NULL OR pr.score >= $5::real)
            ORDER BY pr.score DESC
            LIMIT $3
          ) next
@@ -230,7 +289,13 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
        SELECT DISTINCT page_id, MIN(hop) AS hop
        FROM neighbors
        GROUP BY page_id`,
-      [centerPageId, hops, perHopLimit],
+      [
+        centerPageId,
+        hops,
+        perHopLimit,
+        edgeTypes && edgeTypes.length > 0 ? edgeTypes : null,
+        minScore ?? null,
+      ],
     );
 
     const neighborIds = neighborResult.rows.map((r) => r.page_id);
@@ -238,7 +303,9 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
       neighborIds.push(centerPageId);
     }
 
-    // Fetch node data for all neighbors
+    // Fetch node data for all neighbors. #360: apply label filter here —
+    // the center node is exempt so the user sees their selected article
+    // even if it doesn't carry the filter labels.
     const nodesResult = await query<{
       id: number;
       confluence_id: string | null;
@@ -252,8 +319,11 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
       `SELECT cp.id, cp.confluence_id, cp.space_key, cp.title, cp.labels,
               cp.embedding_status, cp.last_modified_at, cp.parent_id
        FROM pages cp
-       WHERE cp.id = ANY($1::int[]) AND cp.space_key = ANY($2::text[]) AND cp.deleted_at IS NULL`,
-      [neighborIds, graphSpaces],
+       WHERE cp.id = ANY($1::int[])
+         AND cp.space_key = ANY($2::text[])
+         AND cp.deleted_at IS NULL
+         AND ($3::text[] IS NULL OR cp.id = $4::int OR cp.labels && $3::text[])`,
+      [neighborIds, graphSpaces, labels && labels.length > 0 ? labels : null, centerPageId],
     );
 
     // Embedding counts
@@ -272,7 +342,8 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
 
     const nodeIdSet = new Set(nodesResult.rows.map((r) => r.id));
 
-    // Fetch edges between neighbor nodes
+    // Fetch edges between neighbor nodes — apply the same edgeTypes /
+    // minScore filters here so the rendered edges match the BFS scope.
     const edgesResult = await query<{
       page_id_1: number;
       page_id_2: number;
@@ -282,8 +353,14 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
       `SELECT pr.page_id_1, pr.page_id_2, pr.relationship_type, pr.score
        FROM page_relationships pr
        WHERE pr.page_id_1 = ANY($1::int[]) AND pr.page_id_2 = ANY($1::int[])
+         AND ($2::text[] IS NULL OR pr.relationship_type = ANY($2::text[]))
+         AND ($3::real IS NULL OR pr.score >= $3::real)
        ORDER BY pr.score DESC`,
-      [Array.from(nodeIdSet)],
+      [
+        Array.from(nodeIdSet),
+        edgeTypes && edgeTypes.length > 0 ? edgeTypes : null,
+        minScore ?? null,
+      ],
     );
 
     const nodes = nodesResult.rows.map((row) => ({

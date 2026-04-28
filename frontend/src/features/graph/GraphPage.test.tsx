@@ -79,7 +79,7 @@ describe('GraphPage', () => {
       () => new Promise(() => {}), // never resolves
     );
 
-    render(<GraphPage />, { wrapper: createWrapper() });
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
 
     expect(screen.getByText('Loading knowledge graph...')).toBeInTheDocument();
   });
@@ -92,7 +92,7 @@ describe('GraphPage', () => {
       json: async () => mockGraphData,
     } as Response);
 
-    render(<GraphPage />, { wrapper: createWrapper() });
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
 
     await waitFor(() => {
       expect(screen.getByText('Knowledge Graph')).toBeInTheDocument();
@@ -117,7 +117,7 @@ describe('GraphPage', () => {
       json: async () => ({ nodes: [], edges: [] }),
     } as Response);
 
-    render(<GraphPage />, { wrapper: createWrapper() });
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
 
     await waitFor(() => {
       expect(screen.getByText(/No pages found/)).toBeInTheDocument();
@@ -138,7 +138,7 @@ describe('GraphPage', () => {
       }),
     } as Response);
 
-    render(<GraphPage />, { wrapper: createWrapper() });
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
 
     await waitFor(() => {
       expect(screen.getByText(/No accessible pages in your spaces/)).toBeInTheDocument();
@@ -157,7 +157,7 @@ describe('GraphPage', () => {
       }),
     } as Response);
 
-    render(<GraphPage />, { wrapper: createWrapper() });
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
 
     await waitFor(() => {
       expect(screen.getByText(/Pages not embedded yet/)).toBeInTheDocument();
@@ -180,7 +180,7 @@ describe('GraphPage', () => {
       }),
     } as Response);
 
-    render(<GraphPage />, { wrapper: createWrapper() });
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
 
     await waitFor(() => {
       expect(screen.getByText(/no relationships computed yet/i)).toBeInTheDocument();
@@ -232,7 +232,7 @@ describe('GraphPage', () => {
         json: async () => recomputed,
       } as Response);
 
-    render(<GraphPage />, { wrapper: createWrapper() });
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
 
     // Wait for the empty-state Recompute button to render.
     const button = await screen.findByRole('button', { name: /recompute/i });
@@ -275,7 +275,7 @@ describe('GraphPage', () => {
       json: async () => ({ message: 'Internal Server Error' }),
     } as Response);
 
-    render(<GraphPage />, { wrapper: createWrapper() });
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
 
     await waitFor(() => {
       expect(screen.getByText('Failed to load graph data')).toBeInTheDocument();
@@ -296,7 +296,7 @@ describe('GraphPage', () => {
       json: async () => mockGraphData,
     } as Response);
 
-    render(<GraphPage />, { wrapper: createWrapper() });
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
 
     await waitFor(() => {
       expect(screen.getByTestId('graph-zoom-in')).toBeInTheDocument();
@@ -315,7 +315,7 @@ describe('GraphPage', () => {
       json: async () => mockGraphData,
     } as Response);
 
-    render(<GraphPage />, { wrapper: createWrapper() });
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
 
     await waitFor(() => {
       expect(screen.getByTestId('graph-view-individual')).toBeInTheDocument();
@@ -331,7 +331,7 @@ describe('GraphPage', () => {
       json: async () => mockGraphData,
     } as Response);
 
-    render(<GraphPage />, { wrapper: createWrapper() });
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
 
     await waitFor(() => {
       expect(screen.getByTestId('graph-space-filter')).toBeInTheDocument();
@@ -346,7 +346,7 @@ describe('GraphPage', () => {
       json: async () => mockGraphData,
     } as Response);
 
-    render(<GraphPage />, { wrapper: createWrapper() });
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
 
     await waitFor(() => {
       expect(screen.getByTestId('graph-container')).toBeInTheDocument();
@@ -361,7 +361,7 @@ describe('GraphPage', () => {
       json: async () => mockGraphData,
     } as Response);
 
-    render(<GraphPage />, { wrapper: createWrapper() });
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
 
     await waitFor(() => {
       const graph = screen.getByTestId('mock-force-graph');
@@ -384,7 +384,7 @@ describe('GraphPage', () => {
       json: async () => mockGraphData,
     } as Response);
 
-    render(<GraphPage />, { wrapper: createWrapper() });
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
 
     await waitFor(() => {
       expect(screen.getByTestId('mock-force-graph')).toBeInTheDocument();
@@ -451,7 +451,7 @@ describe('GraphPage', () => {
         }),
       } as Response);
 
-    render(<GraphPage />, { wrapper: createWrapper() });
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
 
     await waitFor(() => {
       expect(screen.getByTestId('graph-view-clustered')).toBeInTheDocument();
@@ -461,6 +461,163 @@ describe('GraphPage', () => {
 
     await waitFor(() => {
       expect(screen.getByText(/1 clusters, 0 connections/)).toBeInTheDocument();
+    });
+  });
+
+  // ---------- #360: ego-graph default + filter sidebar + URL state ----------
+
+  it('renders the article-picker landing by default — does NOT fetch the global graph (#360)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => mockGraphData,
+    } as Response);
+
+    render(<GraphPage />, { wrapper: createWrapper(['/graph']) });
+
+    expect(await screen.findByTestId('graph-picker-landing')).toBeInTheDocument();
+    expect(screen.getByTestId('graph-picker-input')).toBeInTheDocument();
+    expect(screen.getByTestId('graph-show-full-btn')).toBeInTheDocument();
+
+    // Critically: no global /pages/graph fetch should have fired in default mode.
+    const calls = fetchSpy.mock.calls.map((c) => String(c[0]));
+    expect(calls.some((u) => u.includes('/pages/graph?'))).toBe(false);
+  });
+
+  it('clicking "Show full graph anyway" sets ?full=1 and fetches the global graph (#360)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => mockGraphData,
+    } as Response);
+
+    render(<GraphPage />, { wrapper: createWrapper(['/graph']) });
+
+    const escape = await screen.findByTestId('graph-show-full-btn');
+    fireEvent.click(escape);
+
+    await waitFor(() => {
+      const calls = fetchSpy.mock.calls.map((c) => String(c[0]));
+      expect(calls.some((u) => u.includes('/pages/graph?'))).toBe(true);
+    });
+  });
+
+  it('focus mode sends edgeTypes and minScore filter params to /graph/local (#360)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({ ...mockGraphData, centerId: '1' }),
+    } as Response);
+
+    render(<GraphPage />, {
+      wrapper: createWrapper([
+        '/graph?focus=1&edgeTypes=embedding_similarity,explicit_link&minScore=0.6',
+      ]),
+    });
+
+    await waitFor(() => {
+      const calls = fetchSpy.mock.calls.map((c) => String(c[0]));
+      const localCall = calls.find((u) => u.includes('/pages/1/graph/local'));
+      expect(localCall).toBeDefined();
+      expect(localCall!).toContain('edgeTypes=embedding_similarity%2Cexplicit_link');
+      expect(localCall!).toContain('minScore=0.6');
+    });
+  });
+
+  // ---------- #360: space filter is multi-select ----------
+
+  it('hydrates multi-space filter from `?space=DEV,OPS` and forwards a comma-separated list (#360)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => mockGraphData,
+    } as Response);
+
+    render(<GraphPage />, {
+      wrapper: createWrapper(['/graph?full=1&space=DEV,OPS']),
+    });
+
+    await waitFor(() => {
+      const calls = fetchSpy.mock.calls.map((c) => String(c[0]));
+      const globalCall = calls.find((u) => u.includes('/pages/graph?'));
+      expect(globalCall).toBeDefined();
+      // Encoded comma — the backend Zod schema splits on `,` after URL
+      // decoding, so DEV and OPS both reach the route handler as separate
+      // entries and are intersected with RBAC.
+      expect(globalCall!).toContain('spaceKey=DEV%2COPS');
+    });
+  });
+
+  it('toggles individual spaces via checkbox and updates the request URL (#360)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => mockGraphData,
+    } as Response);
+
+    render(<GraphPage />, { wrapper: createWrapper(['/graph?full=1']) });
+
+    // Open the multi-select. Both spaces from mockGraphData (DEV, OPS) are
+    // available because spaceKeys is derived from the loaded node set.
+    // Note: each space-toggle changes the TanStack Query key and briefly
+    // remounts the page (loading state), so we re-open the dropdown
+    // between toggles. In real usage `placeholderData` would keep the UI
+    // mounted; that's a follow-up.
+    const trigger = await screen.findByTestId('graph-space-filter');
+    fireEvent.click(trigger);
+
+    const opsOption = await screen.findByTestId('graph-space-filter-option-OPS');
+    fireEvent.click(opsOption);
+
+    await waitFor(() => {
+      const calls = fetchSpy.mock.calls.map((c) => String(c[0]));
+      const globalCall = calls.find((u) => u.includes('spaceKey=OPS'));
+      expect(globalCall).toBeDefined();
+    });
+
+    // Re-open the dropdown after the data refetch finishes and the page
+    // remounts — then add DEV. The URL should now carry both spaces.
+    const trigger2 = await screen.findByTestId('graph-space-filter');
+    fireEvent.click(trigger2);
+    const devOption = await screen.findByTestId('graph-space-filter-option-DEV');
+    fireEvent.click(devOption);
+
+    await waitFor(() => {
+      const calls = fetchSpy.mock.calls.map((c) => String(c[0]));
+      const both = calls.find((u) =>
+        u.includes('spaceKey=OPS%2CDEV') || u.includes('spaceKey=DEV%2COPS'),
+      );
+      expect(both).toBeDefined();
+    });
+  });
+
+  it('"Clear all" resets the multi-select selection and drops spaceKey from the URL (#360)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => mockGraphData,
+    } as Response);
+
+    render(<GraphPage />, {
+      wrapper: createWrapper(['/graph?full=1&space=DEV,OPS']),
+    });
+
+    const trigger = await screen.findByTestId('graph-space-filter');
+    fireEvent.click(trigger);
+
+    const clear = await screen.findByTestId('graph-space-filter-clear');
+    fireEvent.click(clear);
+
+    await waitFor(() => {
+      const calls = fetchSpy.mock.calls.map((c) => String(c[0]));
+      const cleared = calls.find((u) => u.includes('/pages/graph?') && !u.includes('spaceKey='));
+      expect(cleared).toBeDefined();
     });
   });
 });

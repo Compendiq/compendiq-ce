@@ -536,6 +536,235 @@ describe('Knowledge Graph API', () => {
     });
   });
 
+  // #360: query-param filters on /graph/local. The whitelist for `edgeTypes`
+  // is the security boundary — values outside the audited set MUST be
+  // dropped at the schema layer and never reach SQL parameters. The
+  // assertions below inspect what `mockQueryFn` was actually called with so
+  // a regression that lets a bogus value through fails loudly.
+  describe('GET /api/pages/:id/graph/local — #360 filter params', () => {
+    function primeFiveQueriesForLocalGraph() {
+      // Q1: id resolution
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ id: 1, space_key: 'DEV' }],
+        rowCount: 1,
+      });
+      // Q2: neighbor BFS
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [
+          { page_id: 1, hop: 0 },
+          { page_id: 2, hop: 1 },
+        ],
+        rowCount: 2,
+      });
+      // Q3: node data
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [
+          { id: 1, confluence_id: 'page-1', space_key: 'DEV', title: 'Center', labels: [], embedding_status: 'embedded', last_modified_at: null, parent_id: null },
+          { id: 2, confluence_id: 'page-2', space_key: 'DEV', title: 'Neighbor', labels: ['howto'], embedding_status: 'embedded', last_modified_at: null, parent_id: null },
+        ],
+        rowCount: 2,
+      });
+      // Q4: embedding counts
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      // Q5: edges
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ page_id_1: 1, page_id_2: 2, relationship_type: 'embedding_similarity', score: 0.88 }],
+        rowCount: 1,
+      });
+    }
+
+    it('drops unknown edgeTypes values — they NEVER reach SQL parameters (security)', async () => {
+      primeFiveQueriesForLocalGraph();
+
+      // `foo` and `bar` are not in the whitelist; the literal SQL injection
+      // attempt with `;DROP TABLE` must also be filtered out.
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/pages/1/graph/local?edgeTypes=foo,bar,embedding_similarity%3BDROP%20TABLE%20pages',
+      });
+
+      expect(response.statusCode).toBe(200);
+
+      // The neighbor BFS (call 2 — index 1) and the edges query (call 5 —
+      // index 4) both bind `edgeTypes` as a parameterised text[]. The
+      // unsafe values must be filtered to undefined => null.
+      const neighborCallParams = mockQueryFn.mock.calls[1]![1] as unknown[];
+      const edgesCallParams = mockQueryFn.mock.calls[4]![1] as unknown[];
+
+      // None of the unsafe substrings should appear in any bound param of
+      // any query in the request.
+      const allBoundValues = mockQueryFn.mock.calls.flatMap((c) => (c[1] as unknown[] | undefined) ?? []);
+      const flat = JSON.stringify(allBoundValues);
+      expect(flat).not.toContain('foo');
+      expect(flat).not.toContain('bar');
+      expect(flat).not.toContain('DROP TABLE');
+      expect(flat).not.toContain(';');
+
+      // Specifically, the edgeTypes filter slot should be null when every
+      // supplied value was rejected by the whitelist.
+      expect(neighborCallParams[3]).toBeNull();
+      expect(edgesCallParams[1]).toBeNull();
+    });
+
+    it('mixes valid and invalid edgeTypes — keeps only the whitelisted values', async () => {
+      primeFiveQueriesForLocalGraph();
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/pages/1/graph/local?edgeTypes=embedding_similarity,evil,explicit_link',
+      });
+
+      expect(response.statusCode).toBe(200);
+
+      const neighborCallParams = mockQueryFn.mock.calls[1]![1] as unknown[];
+      expect(neighborCallParams[3]).toEqual(['embedding_similarity', 'explicit_link']);
+
+      const edgesCallParams = mockQueryFn.mock.calls[4]![1] as unknown[];
+      expect(edgesCallParams[1]).toEqual(['embedding_similarity', 'explicit_link']);
+    });
+
+    it('passes valid edgeTypes (happy path) through to SQL as a bound text[]', async () => {
+      primeFiveQueriesForLocalGraph();
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/pages/1/graph/local?edgeTypes=embedding_similarity,parent_child',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.centerId).toBe('1');
+      expect(body.nodes).toHaveLength(2);
+
+      const neighborCallParams = mockQueryFn.mock.calls[1]![1] as unknown[];
+      expect(neighborCallParams[3]).toEqual(['embedding_similarity', 'parent_child']);
+    });
+
+    it('passes empty/missing edgeTypes through as null (default — no filter)', async () => {
+      primeFiveQueriesForLocalGraph();
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/pages/1/graph/local',
+      });
+
+      expect(response.statusCode).toBe(200);
+
+      const neighborCallParams = mockQueryFn.mock.calls[1]![1] as unknown[];
+      const edgesCallParams = mockQueryFn.mock.calls[4]![1] as unknown[];
+      // Null in the filter slot tells the SQL CTE "no edge-type filter"
+      // (the WHERE clause has `($3::text[] IS NULL OR …)`).
+      expect(neighborCallParams[3]).toBeNull();
+      expect(edgesCallParams[1]).toBeNull();
+    });
+
+    it('treats whitespace-only edgeTypes as empty (no filter)', async () => {
+      primeFiveQueriesForLocalGraph();
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/pages/1/graph/local?edgeTypes=%20%2C%20%2C%20', // " , , "
+      });
+
+      expect(response.statusCode).toBe(200);
+      const neighborCallParams = mockQueryFn.mock.calls[1]![1] as unknown[];
+      // Trim + filter(Boolean) yields an empty array; the route maps an
+      // empty array back to null so the SQL CTE skips the filter.
+      expect(neighborCallParams[3]).toBeNull();
+    });
+  });
+
+  // #360: spaceKey is now multi-select. Unlike edgeTypes, the values are
+  // user-defined (space keys come from Confluence) so there's no static
+  // whitelist — the security gate is the intersection with RBAC-accessible
+  // spaces inside the route handler.
+  describe('GET /api/pages/graph — #360 multi-spaceKey', () => {
+    it('accepts a single spaceKey (back-compat)', async () => {
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/pages/graph?spaceKey=DEV',
+      });
+
+      expect(response.statusCode).toBe(200);
+      // RBAC mock yields ['DEV', 'OPS']; the intersection with ['DEV'] is
+      // ['DEV'] — that's what the nodes/edges queries bind.
+      const nodesCallParams = mockQueryFn.mock.calls[0]![1] as unknown[];
+      expect(nodesCallParams[0]).toEqual(['DEV']);
+    });
+
+    it('accepts a comma-separated list of spaceKeys and intersects with RBAC', async () => {
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/pages/graph?spaceKey=DEV,OPS',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const nodesCallParams = mockQueryFn.mock.calls[0]![1] as unknown[];
+      // RBAC = [DEV, OPS]; user = [DEV, OPS]; intersection = [DEV, OPS].
+      expect(nodesCallParams[0]).toEqual(['DEV', 'OPS']);
+    });
+
+    it('drops spaceKey values the user can NOT access (RBAC enforcement)', async () => {
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+      // `SECRET` isn't in the user's accessible space set ([DEV, OPS]) — it
+      // must be dropped before reaching SQL.
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/pages/graph?spaceKey=DEV,SECRET',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const nodesCallParams = mockQueryFn.mock.calls[0]![1] as unknown[];
+      expect(nodesCallParams[0]).toEqual(['DEV']);
+
+      // Belt-and-suspenders: SECRET must not appear in any bound param.
+      const flat = JSON.stringify(mockQueryFn.mock.calls);
+      expect(flat).not.toContain('SECRET');
+    });
+
+    it('returns empty graph when every requested spaceKey is filtered out by RBAC', async () => {
+      // No DB queries should fire — the route short-circuits when
+      // effectiveSpaces is empty.
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/pages/graph?spaceKey=SECRET,UNKNOWN',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.nodes).toEqual([]);
+      expect(body.edges).toEqual([]);
+      expect(mockQueryFn).not.toHaveBeenCalled();
+    });
+
+    it('treats whitespace-only spaceKey as no filter', async () => {
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/pages/graph?spaceKey=%20%2C%20', // " , "
+      });
+
+      expect(response.statusCode).toBe(200);
+      const nodesCallParams = mockQueryFn.mock.calls[0]![1] as unknown[];
+      // Empty list => no filter => full RBAC set.
+      expect(nodesCallParams[0]).toEqual(['DEV', 'OPS']);
+    });
+  });
+
   describe('POST /api/pages/graph/refresh', () => {
     it('should recompute page relationships and return edge count', async () => {
       const response = await app.inject({
@@ -574,7 +803,7 @@ describe('Knowledge Graph API', () => {
 
       // The 2nd query is the BFS — its $3 binding should be the requested cap.
       const bfsCall = mockQueryFn.mock.calls[1];
-      expect(bfsCall![1]).toEqual([1, 2, 20]);
+      expect(bfsCall![1]).toEqual([1, 2, 20, null, null]);
       // The CTE should use a CROSS JOIN LATERAL with LIMIT $3 to actually cap.
       const sql = bfsCall![0] as string;
       expect(sql).toContain('CROSS JOIN LATERAL');
@@ -589,7 +818,7 @@ describe('Knowledge Graph API', () => {
       mockQueryFn.mockResolvedValueOnce({ rows: [] });
 
       await app.inject({ method: 'GET', url: '/api/pages/1/graph/local' });
-      expect(mockQueryFn.mock.calls[1]![1]).toEqual([1, 2, 50]);
+      expect(mockQueryFn.mock.calls[1]![1]).toEqual([1, 2, 50, null, null]);
     });
 
     it('rejects perHopLimit > 500', async () => {
