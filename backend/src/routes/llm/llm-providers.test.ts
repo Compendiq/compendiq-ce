@@ -268,6 +268,74 @@ describe.skipIf(!dbAvailable)('SSRF guard — private-network base URLs accepted
     // The shared origin is still owned by Shared-A — must remain allowlisted.
     expect(() => validateUrl('http://10.0.0.70/v1')).not.toThrow();
   });
+
+  // ──────────────────────────────────────────────────────────────────────
+  // INFO #5: PATCH revoke-on-failure paths now have explicit coverage.
+  // The route does `await revokeAllowlistIfUnused(patch.baseUrl)` in three
+  // branches (catch-on-validate, catch-on-updateProvider, 404-not-found);
+  // only the validate branch was implicitly covered by inspection of POST.
+  // The two tests below pin the remaining branches so a regression that
+  // dropped the revoke from either branch would be caught here.
+  // ──────────────────────────────────────────────────────────────────────
+
+  it('PATCH against a non-existent provider id returns 404 and revokes the speculative allowlist entry', async () => {
+    const { validateUrl, SsrfError } = await import('../../core/utils/ssrf-guard.js');
+
+    // No DB row exists at this UUID — `updateProvider` returns undefined,
+    // taking the `if (!updated) … 404` branch.
+    const r = await app.inject({
+      method: 'PATCH',
+      url: '/api/admin/llm-providers/00000000-0000-4000-8000-000000000000',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({ baseUrl: 'http://10.0.0.99/v1' }),
+    });
+    expect(r.statusCode).toBe(404);
+
+    // The 404 branch must call `revokeAllowlistIfUnused(patch.baseUrl)`.
+    // Nothing else references this origin, so the allowlist entry should
+    // be revoked and `validateUrl` should fall back to the SSRF block.
+    expect(() => validateUrl('http://10.0.0.99/v1')).toThrow(SsrfError);
+  });
+
+  it('PATCH name collision (updateProvider throws) revokes the speculative allowlist entry', async () => {
+    const { validateUrl, SsrfError } = await import('../../core/utils/ssrf-guard.js');
+
+    // Seed two distinct providers with distinct names + non-overlapping origins.
+    const a = await app.inject({
+      method: 'POST', url: '/api/admin/llm-providers',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({ name: 'Throw-A', baseUrl: 'http://10.0.0.80/v1', authType: 'none', verifySsl: true }),
+    });
+    expect(a.statusCode).toBe(201);
+    const b = await app.inject({
+      method: 'POST', url: '/api/admin/llm-providers',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({ name: 'Throw-B', baseUrl: 'http://10.0.0.81/v1', authType: 'none', verifySsl: true }),
+    });
+    expect(b.statusCode).toBe(201);
+
+    // PATCH B's name to collide with A's, and at the same time bring in a
+    // brand-new baseUrl (origin http://10.0.0.82) so the speculative
+    // allowlist entry is observable. `updateProvider` will throw on the
+    // unique-name constraint — taking the catch-on-updateProvider branch.
+    const fail = await app.inject({
+      method: 'PATCH',
+      url: `/api/admin/llm-providers/${b.json().id}`,
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({ name: 'Throw-A', baseUrl: 'http://10.0.0.82/v1' }),
+    });
+    expect(fail.statusCode).toBeGreaterThanOrEqual(400);
+
+    // The catch branch must revoke the speculative allowlist entry —
+    // nothing references the new origin, so it should be revoked.
+    expect(() => validateUrl('http://10.0.0.82/v1')).toThrow(SsrfError);
+    // Provider A's original origin must be untouched.
+    expect(() => validateUrl('http://10.0.0.80/v1')).not.toThrow();
+    // Provider B's original origin must also be untouched (the throw
+    // happens AFTER `previous` is captured but BEFORE the GC-on-success
+    // path runs, so the previous origin stays allowlisted).
+    expect(() => validateUrl('http://10.0.0.81/v1')).not.toThrow();
+  });
 });
 
 describe.skipIf(!dbAvailable)('DELETE race conditions return 409 (not 500)', () => {

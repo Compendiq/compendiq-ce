@@ -91,9 +91,25 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
       // Allowlist BEFORE validating so private-network LLM endpoints
       // (LM Studio / Ollama on the LAN, on-prem vLLM, etc.) aren't rejected
       // by the SSRF guard. Mirrors the Confluence test-connection flow.
-      // Protocol restrictions (HTTP/HTTPS only) still apply post-allowlist
-      // because validateUrl() runs the protocol check before short-circuiting
-      // on the allowlist.
+      //
+      // Protocol restrictions (HTTP/HTTPS only) still apply post-allowlist:
+      // `validateUrl` runs the protocol check (`ssrf-guard.ts` —
+      // PROTOCOL_BLOCK) BEFORE the allowlist short-circuit (ALLOWLIST_HIT),
+      // so a swap of those two checks in the future would silently break
+      // this caller's defence-in-depth. That ordering is load-bearing.
+      //
+      // Note on DNS rebinding: `assertNonSsrfUrl` (which performs DNS
+      // resolution + private-IP validation via `resolveAndValidateIp`) is
+      // intentionally NOT called here. We use the sync `validateUrl`
+      // because the allowlist short-circuits before any DNS work would
+      // happen anyway, and once a URL is allowlisted the runtime call
+      // path is exempt from DNS validation by design. The trust model is
+      // "authenticated admin pastes a URL and we trust it" — same as the
+      // Confluence flow. A DNS-rebinding attacker would need admin
+      // credentials to even reach this route. If the threat model ever
+      // requires create-time DNS validation, swap to `assertNonSsrfUrl`
+      // and accept that admins can no longer add `*.local` / private-DNS
+      // hostnames whose A-record currently resolves to a private IP.
       addAllowedBaseUrl(input.baseUrl);
       try {
         validateUrl(input.baseUrl);
