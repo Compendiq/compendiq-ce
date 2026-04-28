@@ -202,3 +202,108 @@ docker exec compendiq-ee-postgres-1 psql -U kb_user -d kb_creator -c \
   "DELETE FROM admin_settings WHERE setting_key='rate_limit_global_max';"
 docker restart compendiq-ee-backend-1
 ```
+
+---
+
+## Graph performance benchmark (#380 Phase 1)
+
+`scripts/perf-graph-bench.ts` measures the graph page (`/graph?focus=...&full=1`)
+under synthetic loads of 500 / 1000 / 2000 / 5000 nodes with realistic edge
+density (top-K=5 per node, similarity ≥ 0.6 to match the corpus-tiered
+floor from #378). It seeds Postgres directly, drives a Playwright session,
+and writes `perf/graph-bench-results.json`.
+
+### What it records (per size)
+
+- **time-to-first-paint** — navigation → canvas mounted in DOM
+- **layout convergence** — until `requestAnimationFrame` activity stalls
+  (force simulation has finished its `cooldownTicks=100` budget)
+- **fps during pan + drag** of 3 random nodes (2 s sample window)
+- **`performance.memory.usedJSHeapSize`** (Chrome only)
+
+### Decision rule (from the issue, applied to the 2000-node sample)
+
+- < 30 fps drag **OR** > 5 s convergence → Phase 2 (server-side ForceAtlas2)
+  is justified
+- otherwise the per-hop cap + tiered threshold from #378 are sufficient
+  and Phase 2 stays deferred
+
+The verdict is printed at the end of the run and stored in the JSON output.
+
+### Running it
+
+Postgres must be reachable from the host and the dev frontend / backend
+must be up. The fastest path on the local dev stack:
+
+```bash
+# 1. Bring up the dev stack (backend on :3052, frontend on :8081)
+docker compose -f docker/docker-compose.yml up -d --build
+
+# 2. Register a benchmark user once. The script does not touch bcrypt
+#    directly — it logs in through /api/auth/login like a real client.
+curl -X POST http://localhost:3052/api/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"benchuser","password":"benchpass123"}'
+
+# 3. Postgres on the dev compose is bound to host port 5432 by default.
+#    If yours is on the internal-only data-net (EE stack), open a one-off
+#    port-forward via `docker run --network compendiq-ee_data-net ...`
+#    or temporarily expose 5432 in the compose override.
+
+# 4. Run the bench (subset)
+npx tsx scripts/perf-graph-bench.ts --sizes=500,1000,2000
+
+# 5. Full sweep
+npx tsx scripts/perf-graph-bench.ts
+
+# 6. Drop the synthetic fixtures (the script also runs cleanup on exit
+#    unless you pass --keep-fixtures)
+npx tsx scripts/perf-graph-bench.ts --cleanup
+```
+
+### Flags / env
+
+| Flag | Default | Notes |
+|------|---------|-------|
+| `--sizes=500,1000,2000,5000` | full sweep | Comma-separated node counts |
+| `--web-url=URL` | `http://localhost:8081` | Frontend origin Playwright navigates to |
+| `--backend-url=URL` | `http://localhost:3051` | Backend used for `/api/auth/login` |
+| `--username=NAME` | `benchuser` | Must already exist (register once) |
+| `--password=PASS` | `benchpass123` | |
+| `--headless=true|false` | `true` | `false` to watch the browser drive |
+| `--keep-fixtures` | off | Skip cleanup at the end of the run |
+| `--cleanup` | — | Drop fixtures and exit (no measurement) |
+| `POSTGRES_URL` env | `postgresql://kb_user:changeme-postgres@localhost:5432/kb_creator` | |
+
+### Unit tests for the helpers
+
+The pure helpers (`neighbours`, `decide`) carry their own test suite:
+
+```bash
+npx vitest run --config scripts/vitest.config.ts
+```
+
+So the threshold logic and the edge-density invariants can be regressed
+without booting Postgres or a browser.
+
+### Result format
+
+```json
+{
+  "schemaVersion": 1,
+  "issue": "#380",
+  "runAt": "2026-04-28T13:00:00.000Z",
+  "config": { "sizes": [...], "edgesPerNode": 5, "minScore": 0.6, "maxScore": 0.95 },
+  "samples": [
+    { "size": 500, "pageCount": 500, "edgeCount": 1234,
+      "timeToFirstPaintMs": 380, "layoutConvergenceMs": 720,
+      "fpsDuringInteraction": 60, "jsHeapUsedMb": 92.4 },
+    ...
+  ],
+  "verdict": { "phase2Justified": false, "reasons": [] }
+}
+```
+
+Paste the four samples + verdict into the PR comment — that's the
+artefact the issue asks for ("paste numbers in the PR comment, not just
+the verdict").
