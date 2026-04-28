@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { neighbours, decide, EDGES_PER_NODE, type BenchSample } from './perf-graph-bench';
+import {
+  neighbours,
+  decide,
+  benchInitScriptBody,
+  EDGES_PER_NODE,
+  type BenchSample,
+} from './perf-graph-bench';
 
 describe('perf-graph-bench helpers (#380 Phase 1)', () => {
   describe('neighbours', () => {
@@ -98,6 +104,95 @@ describe('perf-graph-bench helpers (#380 Phase 1)', () => {
         sample({ size: 5000, fpsDuringInteraction: 12 }),
       ]);
       expect(verdict.phase2Justified).toBe(false);
+    });
+  });
+
+  // ---- benchInitScriptBody single-shot guarantee ----
+  // Playwright's addInitScript replays the script on every navigation,
+  // and the prior bug shipped a fresh rAF wrapper layer on each replay.
+  // The fix relies on a window-level `__benchInstalled` flag. These
+  // tests pin that contract in a fake-DOM so a regression can't slip
+  // through without the full Playwright lane catching it.
+  describe('benchInitScriptBody single-shot guarantee', () => {
+    function buildFakeWindow(): {
+      rafCalls: Array<(t: number) => void>;
+      windowProxy: Record<string, unknown>;
+    } {
+      const rafCalls: Array<(t: number) => void> = [];
+      const baseRaf = (cb: (t: number) => void) => {
+        rafCalls.push(cb);
+        return rafCalls.length;
+      };
+      const ls = new Map<string, string>();
+      const windowProxy: Record<string, unknown> = {
+        requestAnimationFrame: baseRaf,
+        localStorage: {
+          setItem: (k: string, v: string) => ls.set(k, v),
+          getItem: (k: string) => ls.get(k) ?? null,
+        },
+        performance: { now: () => 0 },
+      };
+      return { rafCalls, windowProxy };
+    }
+
+    function runScript(windowProxy: Record<string, unknown>) {
+      // Simulate Playwright's evaluation: the script body sees the page
+      // window as `window`. Bind a tiny shim so the function body's
+      // `window` references resolve to our fake.
+      const fn = new Function(
+        'window',
+        'localStorage',
+        'performance',
+        `(${benchInitScriptBody.toString()})({ token: 'tok' });`,
+      );
+      fn(windowProxy, windowProxy.localStorage, windowProxy.performance);
+    }
+
+    it('wraps requestAnimationFrame exactly once across multiple replays', () => {
+      const { windowProxy } = buildFakeWindow();
+      const original = windowProxy.requestAnimationFrame;
+
+      // First replay (initial page load).
+      runScript(windowProxy);
+      const afterFirst = windowProxy.requestAnimationFrame;
+      expect(afterFirst).not.toBe(original);
+      expect(windowProxy.__benchInstalled).toBe(true);
+
+      // Second replay (a goto in the same page lifetime).
+      runScript(windowProxy);
+      expect(windowProxy.requestAnimationFrame).toBe(afterFirst);
+
+      // Third replay (next iteration of the size sweep).
+      runScript(windowProxy);
+      expect(windowProxy.requestAnimationFrame).toBe(afterFirst);
+    });
+
+    it('resets the rAF counter on every replay', () => {
+      const { windowProxy } = buildFakeWindow();
+
+      runScript(windowProxy);
+      const bench1 = windowProxy.__bench as Record<string, number>;
+      bench1.rafCount = 42;
+      bench1.lastRaf = 9999;
+
+      runScript(windowProxy);
+      const bench2 = windowProxy.__bench as Record<string, number>;
+      expect(bench2.rafCount).toBe(0);
+      expect(bench2.lastRaf).toBe(0);
+      expect(bench2.startedAt).toBe(0);
+    });
+
+    it('seeds the auth token into localStorage so the SPA boots authenticated', () => {
+      const { windowProxy } = buildFakeWindow();
+      runScript(windowProxy);
+
+      const stored = (windowProxy.localStorage as { getItem: (k: string) => string | null }).getItem(
+        'compendiq-auth',
+      );
+      expect(stored).toBeTruthy();
+      const parsed = JSON.parse(stored!);
+      expect(parsed.state.accessToken).toBe('tok');
+      expect(parsed.state.isAuthenticated).toBe(true);
     });
   });
 });

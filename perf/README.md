@@ -274,6 +274,7 @@ npx tsx scripts/perf-graph-bench.ts --cleanup
 | `--keep-fixtures` | off | Skip cleanup at the end of the run |
 | `--cleanup` | — | Drop fixtures and exit (no measurement) |
 | `POSTGRES_URL` env | `postgresql://kb_user:changeme-postgres@localhost:5432/kb_creator` | |
+| `REDIS_URL` env | unset | Optional. When set, the script flushes the bench user's RBAC space-list cache after seeding so consecutive runs with different `--sizes` don't read a stale 60 s-cached value. |
 
 ### Unit tests for the helpers
 
@@ -285,6 +286,25 @@ npx vitest run --config scripts/vitest.config.ts
 
 So the threshold logic and the edge-density invariants can be regressed
 without booting Postgres or a browser.
+
+### Caveats / known gotchas
+
+- **RBAC cache TTL**: `getUserAccessibleSpaces` caches results in Redis for
+  60 s (per `rbac-service.ts`). If the bench user has been seeded with a
+  *different* set of spaces in the previous 60 s (e.g. you ran the bench
+  with `--sizes=500,1000` and immediately re-ran with `--sizes=2000,5000`),
+  the cached space list may be stale and the global graph endpoint will
+  return rows from spaces that aren't in this run's seed. Either wait
+  60 s between runs that mutate the bench user's space access, or flush
+  the Redis key (`compendiq:cache:<userId>:spaces:list`) between runs.
+- **Reduced motion**: the script pins `reducedMotion: 'no-preference'`
+  on the Playwright context. Without that, the GraphPage's
+  `cooldownTicks={prefersReducedMotion ? 0 : 100}` short-circuits and
+  the convergence sample bottoms out at 0 ms regardless of size.
+- **Postgres reachability**: dev compose binds Postgres on the
+  `data-net` (internal-only on the EE stack, exposed on the CE stack).
+  If your Postgres is internal-only, run the bench inside a sidecar
+  container that joins the data network, or temporarily expose 5432.
 
 ### Result format
 

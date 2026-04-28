@@ -40,6 +40,7 @@
 
 import pg from 'pg';
 import { chromium } from 'playwright';
+import { createClient } from 'redis';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -329,6 +330,41 @@ export interface BenchSample {
   jsHeapUsedMb: number | null;
 }
 
+/**
+ * Best-effort flush of the bench user's RBAC space-list cache.
+ * `getUserAccessibleSpaces` caches under `rbac:spaces:<userId>` for 60 s
+ * (rbac-service.ts:14). If the previous run granted access to a different
+ * set of `PERF-BENCH-<size>` spaces, the cached list can be stale and the
+ * global graph endpoint will surface rows from spaces not in this run's
+ * seed. Falls back to a no-op when REDIS_URL is unset / unreachable —
+ * the bench README documents the manual workaround in that case.
+ */
+async function flushRbacCache(userId: string): Promise<void> {
+  const url = process.env.REDIS_URL;
+  if (!url) {
+    console.log('  (REDIS_URL unset — skipped RBAC cache flush; wait 60 s if re-running with different sizes)');
+    return;
+  }
+  const client = createClient({ url });
+  client.on('error', () => { /* swallow — handled below */ });
+  try {
+    await client.connect();
+    await client.del(`rbac:spaces:${userId}`);
+    await client.del(`rbac:admin:${userId}`);
+    await client.del(`rbac:global:${userId}`);
+    console.log(`  Flushed RBAC cache for user ${userId}.`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.log(`  (RBAC cache flush skipped: ${msg})`);
+  } finally {
+    try {
+      await client.quit();
+    } catch {
+      /* ignore quit errors */
+    }
+  }
+}
+
 async function login(
   page: import('playwright').Page,
   backendUrl: string,
@@ -362,43 +398,46 @@ const FPS_WINDOW_MS = 2_000;
  * decision sample, hiding any Phase-2-justifying regression). The
  * inner `__benchInstalled` guard belt-and-braces against a re-add if
  * this function is ever called twice by mistake.
+ *
+ * The body is exported as `benchInitScriptBody` so a unit test can
+ * exercise the single-shot guarantee against a JSDOM-style fake `window`
+ * — Playwright's `addInitScript` runs this code as-is on every nav.
  */
+export function benchInitScriptBody(this: unknown, { token }: { token: string }): void {
+  const w = window as unknown as Record<string, unknown>;
+  try {
+    // The auth store hydrates from localStorage on mount.
+    localStorage.setItem(
+      'compendiq-auth',
+      JSON.stringify({
+        state: { accessToken: token, isAuthenticated: true, user: null },
+        version: 0,
+      }),
+    );
+  } catch {
+    /* localStorage may be unavailable in some contexts */
+  }
+  // Reset the counters on every navigation; only wrap rAF on the
+  // first install so iterations N>1 don't accumulate wrappers.
+  w.__bench = { rafCount: 0, lastRaf: 0, startedAt: 0 };
+  if (w.__benchInstalled) return;
+  w.__benchInstalled = true;
+  const orig = window.requestAnimationFrame.bind(window);
+  window.requestAnimationFrame = (cb) =>
+    orig((t) => {
+      const data = w.__bench as Record<string, number>;
+      data.rafCount++;
+      data.lastRaf = performance.now();
+      if (data.startedAt === 0) data.startedAt = data.lastRaf;
+      return cb(t);
+    });
+}
+
 async function installBenchInit(
   page: import('playwright').Page,
   accessToken: string,
 ): Promise<void> {
-  await page.addInitScript(
-    ({ token }) => {
-      const w = window as unknown as Record<string, unknown>;
-      try {
-        // The auth store hydrates from localStorage on mount.
-        localStorage.setItem(
-          'compendiq-auth',
-          JSON.stringify({
-            state: { accessToken: token, isAuthenticated: true, user: null },
-            version: 0,
-          }),
-        );
-      } catch {
-        /* localStorage may be unavailable in some contexts */
-      }
-      // Reset the counters on every navigation; only wrap rAF on the
-      // first install so iterations N>1 don't accumulate wrappers.
-      w.__bench = { rafCount: 0, lastRaf: 0, startedAt: 0 };
-      if (w.__benchInstalled) return;
-      w.__benchInstalled = true;
-      const orig = window.requestAnimationFrame.bind(window);
-      window.requestAnimationFrame = (cb) =>
-        orig((t) => {
-          const data = w.__bench as Record<string, number>;
-          data.rafCount++;
-          data.lastRaf = performance.now();
-          if (data.startedAt === 0) data.startedAt = data.lastRaf;
-          return cb(t);
-        });
-    },
-    { token: accessToken },
-  );
+  await page.addInitScript(benchInitScriptBody, { token: accessToken });
 }
 
 async function runOne(
@@ -407,23 +446,22 @@ async function runOne(
   size: number,
   seed: SeedResult,
 ): Promise<BenchSample> {
-  // Reset counters fresh for this iteration. The init script also resets
-  // them on navigation, but we do it here so the values are clean even
-  // if `goto` is fast enough to start the SPA before the init runs.
-  await page.evaluate(() => {
-    const w = window as unknown as Record<string, unknown>;
-    w.__bench = { rafCount: 0, lastRaf: 0, startedAt: 0 };
-  });
-
-  // The bench renders the GLOBAL graph (`?full=1`, no `focus=`). On
+  // The bench renders the GLOBAL graph (`?full=1`, no `focus=`) and
+  // restricts it to THIS iteration's seeded space via `&space=`. On
   // origin/dev (#360 / #375), the GraphPage routes
   //   wantsGlobal = !focusPageId && showFullGraph
   // so combining `focus=…&full=1` would silently downgrade to the
   // ego-graph endpoint (`/pages/{id}/graph/local?hops=2`), which caps
-  // at ~30 nodes regardless of seeded corpus size — every sample would
-  // measure the same ~30-node graph. Dropping the `focus=` param is
-  // what makes the seeded sizes actually matter.
-  const url = `${webUrl}/graph?full=1`;
+  // at ~30 nodes regardless of seeded corpus size.
+  //
+  // The `&space=` filter is load-bearing for the size sweep: `main()`
+  // seeds all four sizes upfront and grants the bench user editor
+  // access to every `PERF-BENCH-<size>` space, so without the filter
+  // the global endpoint would return the union (~8500 nodes) on every
+  // iteration and the four "size buckets" would all measure the same
+  // graph. With `space=` set, the GraphPage forwards `spaceKey=…` to
+  // `/api/pages/graph` and the seeded-size invariant is preserved.
+  const url = `${webUrl}/graph?full=1&space=${encodeURIComponent(seed.spaceKey)}`;
   const navStart = Date.now();
   await page.goto(url, { waitUntil: 'domcontentloaded' });
 
@@ -605,10 +643,26 @@ async function main(): Promise<void> {
     console.log(`OK (${seed.pageCount} pages, ${seed.edgeCount} edges, sample=${seed.samplePageId})`);
   }
 
+  // Best-effort RBAC cache flush so consecutive runs that change the
+  // bench user's space access don't read a stale 60 s-cached space list
+  // from `getUserAccessibleSpaces`. If REDIS_URL is unset or the broker
+  // is unreachable, the script just logs and proceeds — not an error.
+  await flushRbacCache(userId);
+
   const browser = await chromium.launch({ headless: args.headless });
   const samples: BenchSample[] = [];
   try {
-    const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    // `reducedMotion: 'no-preference'` — important. The GraphPage uses
+    // `cooldownTicks={prefersReducedMotion ? 0 : 100}` (and similarly
+    // bumps warmupTicks). If the host's `prefers-reduced-motion: reduce`
+    // setting leaks through, the force simulation runs zero ticks → the
+    // convergence sample bottoms out at 0 ms regardless of corpus size.
+    // Pin the value so the bench measures the rendering path users with
+    // motion enabled actually see.
+    const context = await browser.newContext({
+      viewport: { width: 1440, height: 900 },
+      reducedMotion: 'no-preference',
+    });
     const page = await context.newPage();
     const accessToken = await login(page, args.backendUrl, args.username, args.password);
     // Install the auth-token + rAF instrumentation ONCE for the lifetime
