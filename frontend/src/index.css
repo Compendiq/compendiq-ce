@@ -1731,14 +1731,13 @@ pre:hover .code-copy-btn {
 
 .article-viewer .tiptap {
   padding: 1.5rem 2.5rem;
-  /* #349: do NOT scroll the whole article horizontally. Wide tables get
-     their own scroll container via .tableWrapper / .prose :where(table). */
-  overflow-x: hidden;
-  max-width: 100%;
 }
 
 /* #349: read-only viewer — let the TipTap-injected .tableWrapper handle
-   horizontal scroll for wide tables, and don't blow out the article pane. */
+   horizontal scroll for wide tables, and don't blow out the article pane.
+   The article-viewer container itself stays at the default `overflow: visible`
+   so future wide content (mermaid SVGs, draw.io diagrams, oversized images)
+   remains visible rather than silently clipped. */
 .article-viewer .tiptap > table,
 .article-viewer .tiptap .tableWrapper > table {
   display: block;

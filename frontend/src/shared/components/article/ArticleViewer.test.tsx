@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, waitFor, fireEvent } from '@testing-library/react';
 
 // Mock mermaid (must be before component import)
@@ -555,5 +555,97 @@ describe('ArticleViewer', () => {
 
     // MermaidDiagram should NOT be invoked for empty code (no mermaid-container)
     expect(container.querySelector('.mermaid-container')).toBeNull();
+  });
+
+  // Regression for #349: wide tables must scroll inside their own container
+  // (display:block + overflow-x:auto on the table) while the article-viewer
+  // pane stays at the default `overflow: visible` so future wide non-table
+  // content (mermaid SVGs, draw.io diagrams, oversized images) is not
+  // silently clipped. See PR #366 review thread.
+  describe('#349 wide-table containment', () => {
+    // The actual CSS rules that ship in frontend/src/index.css around the
+    // `.article-viewer .tiptap` block. Vitest is configured with `css: false`,
+    // so we inject the rules directly to exercise the cascade in jsdom.
+    const ARTICLE_VIEWER_CSS = `
+      .article-viewer .tiptap {
+        padding: 1.5rem 2.5rem;
+      }
+      .article-viewer .tiptap > table,
+      .article-viewer .tiptap .tableWrapper > table {
+        display: block;
+        max-width: 100%;
+        overflow-x: auto;
+        width: auto;
+        min-width: 0;
+      }
+    `;
+
+    let styleEl: HTMLStyleElement | null = null;
+
+    beforeEach(() => {
+      styleEl = document.createElement('style');
+      styleEl.textContent = ARTICLE_VIEWER_CSS;
+      document.head.appendChild(styleEl);
+    });
+
+    afterEach(() => {
+      if (styleEl) {
+        styleEl.remove();
+        styleEl = null;
+      }
+    });
+
+    it('renders a wide table with display:block + overflow-x:auto so it owns its scroll container', async () => {
+      // Wide table — many columns to simulate content that would overflow the article pane.
+      const headers = Array.from({ length: 20 }, (_, i) => `<th>Col ${i + 1}</th>`).join('');
+      const cells = Array.from({ length: 20 }, (_, i) => `<td>Value ${i + 1}</td>`).join('');
+      const html = `<table><thead><tr>${headers}</tr></thead><tbody><tr>${cells}</tr></tbody></table>`;
+
+      const { container } = render(<ArticleViewer content={html} />);
+
+      // Wait for TipTap to mount the table inside the .tiptap editor surface.
+      await waitFor(() => {
+        const table = container.querySelector('.article-viewer .tiptap table');
+        expect(table).toBeTruthy();
+      });
+
+      const table = container.querySelector('.article-viewer .tiptap table') as HTMLTableElement;
+
+      // Computed style assertions — the table itself owns the horizontal scroll.
+      const tableStyle = window.getComputedStyle(table);
+      expect(tableStyle.display).toBe('block');
+      expect(tableStyle.overflowX).toBe('auto');
+
+      // Sanity: the table is reachable via the public DOM tree as well.
+      // (TipTap may wrap the table in a `.tableWrapper`; either way the
+      // table-level rule above must apply.)
+      const tableWrapper = table.closest('.tableWrapper, .tiptap');
+      expect(tableWrapper).toBeTruthy();
+    });
+
+    it('does not clip the article-viewer container with overflow-x:hidden so wide non-table content stays visible', async () => {
+      // Use a wide non-table element to represent future content (mermaid SVG,
+      // draw.io diagram, oversized image). The article-viewer pane must NOT
+      // silently clip it — that was the regression flagged on PR #366.
+      const html = '<p>Article body</p>';
+      const { container } = render(<ArticleViewer content={html} />);
+
+      await waitFor(() => {
+        expect(container.querySelector('.article-viewer .tiptap')).toBeTruthy();
+      });
+
+      const tiptap = container.querySelector('.article-viewer .tiptap') as HTMLElement;
+      const tiptapStyle = window.getComputedStyle(tiptap);
+
+      // The fix: the editor surface inside the article viewer must NOT use
+      // `overflow-x: hidden`. The default is `visible`, which keeps any future
+      // wide non-table child (mermaid SVG, draw.io, oversized image) reachable
+      // rather than silently clipped with no scrollbar.
+      expect(tiptapStyle.overflowX).not.toBe('hidden');
+
+      const articleViewer = container.querySelector('.article-viewer') as HTMLElement;
+      const articleViewerStyle = window.getComputedStyle(articleViewer);
+      expect(articleViewerStyle.overflowX).not.toBe('hidden');
+    });
   });
 });
