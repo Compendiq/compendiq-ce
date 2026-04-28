@@ -458,17 +458,26 @@ describe('embedding-service', () => {
     });
 
     it('should delete only affected rows when changedPageIds is provided (incremental)', async () => {
+      // 7 query slots: BEGIN, SET LOCAL, DELETE, similarity INSERT, label INSERT,
+      // parent_child INSERT (#362), COMMIT. Each must be explicitly mocked so the
+      // assertions below pin the bind params for the new edge type instead of
+      // relying on the beforeEach catch-all (which would silently absorb a missing
+      // slot and let a regression slip through).
       mockClient.query
-        .mockResolvedValueOnce({ rows: [] })                                     // BEGIN
-        .mockResolvedValueOnce({ rows: [] })                                     // SET LOCAL statement_timeout
-        .mockResolvedValueOnce({ rows: [], rowCount: 2 })                       // DELETE WHERE page_id_1 = ANY($1) OR page_id_2 = ANY($1)
-        .mockResolvedValueOnce({ rows: [{ page_id_1: 1, page_id_2: 2, score: 0.9 }], rowCount: 1 })  // similarity INSERT
-        .mockResolvedValueOnce({ rows: [], rowCount: 0 })                       // label INSERT
-        .mockResolvedValueOnce({ rows: [] });                                    // COMMIT
+        .mockResolvedValueOnce({ rows: [] })                                                          // BEGIN
+        .mockResolvedValueOnce({ rows: [] })                                                          // SET LOCAL statement_timeout
+        .mockResolvedValueOnce({ rows: [], rowCount: 2 })                                             // DELETE WHERE page_id_1 = ANY($1) OR page_id_2 = ANY($1)
+        .mockResolvedValueOnce({ rows: [{ page_id_1: 1, page_id_2: 2, score: 0.9 }], rowCount: 1 })   // similarity INSERT
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 })                                             // label INSERT
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 })                                             // parent_child INSERT (#362)
+        .mockResolvedValueOnce({ rows: [] });                                                         // COMMIT
 
       const totalEdges = await computePageRelationships([1, 3]);
 
       expect(totalEdges).toBe(1);
+      // Sanity: pin the slot count so a future producer that adds another query
+      // can't quietly shift the assertions below to the wrong call index.
+      expect(mockClient.query).toHaveBeenCalledTimes(7);
 
       // DELETE should contain ANY($1)
       const deleteCall = mockClient.query.mock.calls[2][0] as string;
@@ -482,6 +491,16 @@ describe('embedding-service', () => {
       // label query $1 should be changedPageIds
       const labelCall = mockClient.query.mock.calls[4];
       expect(labelCall[1][0]).toEqual([1, 3]);
+
+      // parent_child query (#362) $1 should be changedPageIds — pins the
+      // incremental contract for the new edge type.
+      const parentChildCall = mockClient.query.mock.calls[5];
+      expect(parentChildCall[0]).toContain("'parent_child'");
+      expect(parentChildCall[1][0]).toEqual([1, 3]);
+
+      // COMMIT must be the final call (would silently fall through to the
+      // beforeEach catch-all if the slot count above were wrong).
+      expect(mockClient.query.mock.calls[6][0]).toBe('COMMIT');
     });
   });
 
