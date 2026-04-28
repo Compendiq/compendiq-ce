@@ -23,7 +23,14 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
   const cache = new RedisCache(fastify.redis);
 
-  // GET /api/pages/graph - nodes (pages) + edges (relationships) for knowledge graph
+  // GET /api/pages/graph - nodes (pages) + edges (relationships) for knowledge graph.
+  // Response shape:
+  //   { nodes, edges, meta: { pagesTotal, pagesEmbedded, relationshipsTotal,
+  //     relationshipsByType: { embedding_similarity, label_overlap, explicit_link?, parent_child? } } }
+  // The meta block is what powers the differentiated empty states in #358:
+  // - pagesTotal === 0  → "No accessible pages in selected spaces"
+  // - pagesEmbedded === 0 (with pagesTotal > 0)  → "Pages not embedded yet"
+  // - relationshipsTotal === 0 (with pagesEmbedded > 0)  → "Embedded but no relationships yet"
   fastify.get('/pages/graph', async (request) => {
     const userId = request.userId;
     const { view, spaceKey: filterSpaceKey } = GraphQuerySchema.parse(request.query);
@@ -39,7 +46,11 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
       : graphSpaces;
 
     if (effectiveSpaces.length === 0) {
-      return { nodes: [], edges: [] };
+      return {
+        nodes: [],
+        edges: [],
+        meta: { pagesTotal: 0, pagesEmbedded: 0, relationshipsTotal: 0, relationshipsByType: {} },
+      };
     }
 
     if (view === 'clustered') {
@@ -123,7 +134,26 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
         score: row.score,
       }));
 
-    const response = { nodes, edges };
+    // #358: meta counts so the UI can differentiate empty states without
+    // a second roundtrip. pagesEmbedded counts pages that have at least
+    // one row in page_embeddings; relationshipsByType breaks the edge
+    // count down per relationship_type for diagnostics.
+    const pagesEmbedded = embeddingCountMap.size;
+    const relationshipsByType: Record<string, number> = {};
+    for (const e of edges) {
+      relationshipsByType[e.type] = (relationshipsByType[e.type] ?? 0) + 1;
+    }
+
+    const response = {
+      nodes,
+      edges,
+      meta: {
+        pagesTotal: nodes.length,
+        pagesEmbedded,
+        relationshipsTotal: edges.length,
+        relationshipsByType,
+      },
+    };
     await cache.set(userId, 'pages', cacheKey, response, GRAPH_CACHE_TTL);
     return response;
   });
