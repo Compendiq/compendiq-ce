@@ -17,7 +17,12 @@ import {
   listModels as clientListModels,
 } from '../../domains/llm/services/openai-compatible-client.js';
 import { emitLlmAudit } from '../../domains/llm/services/llm-audit-hook.js';
-import { assertNonSsrfUrl, addAllowedBaseUrl, SsrfError } from '../../core/utils/ssrf-guard.js';
+import {
+  validateUrl,
+  addAllowedBaseUrl,
+  removeAllowedBaseUrl,
+  SsrfError,
+} from '../../core/utils/ssrf-guard.js';
 import { getRateLimits } from '../../core/services/rate-limit-service.js';
 
 const ADMIN_RATE_LIMIT = {
@@ -44,18 +49,31 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
     { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT },
     async (request, reply) => {
       const input = LlmProviderInputSchema.parse(request.body);
+      // Allowlist BEFORE validating so private-network LLM endpoints
+      // (LM Studio / Ollama on the LAN, on-prem vLLM, etc.) aren't rejected
+      // by the SSRF guard. Mirrors the Confluence test-connection flow.
+      // Protocol restrictions (HTTP/HTTPS only) still apply post-allowlist
+      // because validateUrl() runs the protocol check before short-circuiting
+      // on the allowlist.
+      addAllowedBaseUrl(input.baseUrl);
       try {
-        await assertNonSsrfUrl(input.baseUrl);
+        validateUrl(input.baseUrl);
       } catch (err) {
+        removeAllowedBaseUrl(input.baseUrl);
         if (err instanceof SsrfError) {
           return reply.code(400).send({ error: err.message });
         }
         throw err;
       }
-      const provider = await createProvider(input);
-      // Every configured provider URL must be allowlisted for the ssrf-guard
-      // so that subsequent outbound calls from the service layer aren't rejected.
-      addAllowedBaseUrl(provider.baseUrl);
+      let provider;
+      try {
+        provider = await createProvider(input);
+      } catch (err) {
+        // DB write failed (e.g. unique-name violation) — revoke the
+        // speculative allowlist entry so it doesn't outlive the failed row.
+        removeAllowedBaseUrl(input.baseUrl);
+        throw err;
+      }
       emitLlmAudit({
         event: 'llm_provider_created',
         userId: request.userId,
@@ -74,18 +92,30 @@ export async function llmProviderRoutes(fastify: FastifyInstance) {
       const { id } = IdParamsSchema.parse(request.params);
       const patch = LlmProviderUpdateSchema.parse(request.body);
       if (patch.baseUrl) {
+        // Same allowlist-before-validate ordering as POST so private-network
+        // base URLs can be patched in. Revoke on any downstream failure.
+        addAllowedBaseUrl(patch.baseUrl);
         try {
-          await assertNonSsrfUrl(patch.baseUrl);
+          validateUrl(patch.baseUrl);
         } catch (err) {
+          removeAllowedBaseUrl(patch.baseUrl);
           if (err instanceof SsrfError) {
             return reply.code(400).send({ error: err.message });
           }
           throw err;
         }
       }
-      const updated = await updateProvider(id, patch);
-      if (!updated) return reply.code(404).send({ error: 'Provider not found' });
-      if (patch.baseUrl) addAllowedBaseUrl(updated.baseUrl);
+      let updated;
+      try {
+        updated = await updateProvider(id, patch);
+      } catch (err) {
+        if (patch.baseUrl) removeAllowedBaseUrl(patch.baseUrl);
+        throw err;
+      }
+      if (!updated) {
+        if (patch.baseUrl) removeAllowedBaseUrl(patch.baseUrl);
+        return reply.code(404).send({ error: 'Provider not found' });
+      }
       emitLlmAudit({
         event: 'llm_provider_updated',
         userId: request.userId,

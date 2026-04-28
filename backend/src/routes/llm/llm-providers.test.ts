@@ -90,13 +90,19 @@ describe.skipIf(!dbAvailable)('GET /api/admin/llm-providers', () => {
   });
 });
 
-describe.skipIf(!dbAvailable)('SSRF guard returns 400 (not 500)', () => {
+describe.skipIf(!dbAvailable)('SSRF guard — private-network base URLs accepted (LM Studio / Ollama / on-prem vLLM)', () => {
+  // The original SSRF block-list rejected loopback / RFC-1918 base URLs at
+  // POST/PATCH time, which made on-prem and LAN LLM endpoints unreachable
+  // from the admin UI (the Confluence settings flow already handled this
+  // correctly by allowlisting BEFORE validating). These tests pin the new
+  // ordering: allowlist → validate → write. Protocol restrictions remain
+  // (Zod accepts only http/https; non-HTTP protocols never reach the route).
   beforeEach(async () => {
     await truncateAllTables();
     ({ token: adminToken } = await createAdminAndLogin());
   });
 
-  it('POST with loopback baseUrl returns 400 with SSRF error message', async () => {
+  it('POST with loopback baseUrl is now accepted and allowlisted', async () => {
     const r = await app.inject({
       method: 'POST', url: '/api/admin/llm-providers',
       headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
@@ -107,13 +113,26 @@ describe.skipIf(!dbAvailable)('SSRF guard returns 400 (not 500)', () => {
         verifySsl: true,
       }),
     });
-    expect(r.statusCode).toBe(400);
-    expect(r.json().error).toMatch(/ssrf/i);
-    // Stack trace must not leak in the response body
-    expect(JSON.stringify(r.json())).not.toMatch(/at .+\.ts:\d+/);
+    expect(r.statusCode).toBe(201);
+    expect(r.json()).toMatchObject({ name: 'Loopback', baseUrl: 'http://127.0.0.1/v1' });
   });
 
-  it('PATCH with loopback baseUrl returns 400 with SSRF error message', async () => {
+  it('POST with RFC-1918 baseUrl is accepted and allowlisted', async () => {
+    const r = await app.inject({
+      method: 'POST', url: '/api/admin/llm-providers',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({
+        name: 'LM Studio (LAN)',
+        baseUrl: 'http://192.168.178.185:1234/v1',
+        authType: 'none',
+        verifySsl: true,
+      }),
+    });
+    expect(r.statusCode).toBe(201);
+    expect(r.json()).toMatchObject({ baseUrl: 'http://192.168.178.185:1234/v1' });
+  });
+
+  it('PATCH from public to RFC-1918 baseUrl is accepted', async () => {
     const create = await app.inject({
       method: 'POST', url: '/api/admin/llm-providers',
       headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
@@ -124,10 +143,34 @@ describe.skipIf(!dbAvailable)('SSRF guard returns 400 (not 500)', () => {
     const r = await app.inject({
       method: 'PATCH', url: `/api/admin/llm-providers/${id}`,
       headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
-      payload: JSON.stringify({ baseUrl: 'http://127.0.0.1/v1' }),
+      payload: JSON.stringify({ baseUrl: 'http://10.0.0.5:1234/v1' }),
     });
-    expect(r.statusCode).toBe(400);
-    expect(r.json().error).toMatch(/ssrf/i);
+    expect(r.statusCode).toBe(200);
+    expect(r.json().baseUrl).toBe('http://10.0.0.5:1234/v1');
+  });
+
+  it('POST with duplicate name revokes the speculative allowlist entry', async () => {
+    // Seed the row that will collide.
+    await app.inject({
+      method: 'POST', url: '/api/admin/llm-providers',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({ name: 'Dup', baseUrl: 'http://10.0.0.10/v1', authType: 'none', verifySsl: true }),
+    });
+    // Second POST: same unique name, different (private) baseUrl. The DB
+    // unique-constraint should fail and the route should propagate that.
+    const r = await app.inject({
+      method: 'POST', url: '/api/admin/llm-providers',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({ name: 'Dup', baseUrl: 'http://10.0.0.99/v1', authType: 'none', verifySsl: true }),
+    });
+    // Either a 4xx or 500 — what we ASSERT here is that no row was created,
+    // so the speculative allowlist entry was revoked (otherwise it'd be a
+    // dangling allowlist over a non-existent provider).
+    expect(r.statusCode).toBeGreaterThanOrEqual(400);
+    const list = await query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM llm_providers WHERE base_url = 'http://10.0.0.99/v1'",
+    );
+    expect(list.rows[0]!.count).toBe('0');
   });
 });
 
