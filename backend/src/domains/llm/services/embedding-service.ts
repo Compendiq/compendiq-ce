@@ -932,6 +932,36 @@ export async function computePageRelationships(changedPageIds?: number[]): Promi
       [useIncremental ? changedPageIds : null],
     );
 
+    // #362: parent_child edges. pages.parent_id is TEXT (a Confluence id)
+    // while page_relationships.page_id_1/2 is INT FK to pages.id after
+    // migration 030. Join via confluence_id to translate.
+    // Pairs are stored canonically (lower id first) so the unique key
+    // (page_id_1, page_id_2, relationship_type) catches both directions.
+    // Score = 1.0 since these edges are deterministic, not similarity-derived.
+    const parentChildResult = await client.query<{ page_id_1: number; page_id_2: number }>(
+      `WITH parent_links AS (
+         SELECT child.id AS child_id,
+                parent.id AS parent_id
+         FROM pages child
+         JOIN pages parent ON parent.confluence_id = child.parent_id
+         WHERE child.deleted_at IS NULL
+           AND parent.deleted_at IS NULL
+           AND child.parent_id IS NOT NULL
+           AND ($1::int[] IS NULL OR child.id = ANY($1) OR parent.id = ANY($1))
+       )
+       INSERT INTO page_relationships (page_id_1, page_id_2, relationship_type, score)
+       SELECT
+         LEAST(child_id, parent_id),
+         GREATEST(child_id, parent_id),
+         'parent_child',
+         1.0
+       FROM parent_links
+       WHERE child_id <> parent_id
+       ON CONFLICT (page_id_1, page_id_2, relationship_type) DO NOTHING
+       RETURNING page_id_1, page_id_2`,
+      [useIncremental ? changedPageIds : null],
+    );
+
     // #359: cross-domain producers (registered at app bootstrap) run inside
     // the same transaction. ESLint forbids `llm → knowledge` imports, so the
     // explicit_link producer registers itself via `registerRelationshipProducer`
@@ -947,11 +977,16 @@ export async function computePageRelationships(changedPageIds?: number[]): Promi
 
     await client.query('COMMIT');
 
-    const totalEdges = similarityResult.rows.length + labelResult.rows.length + extraEdges;
+    const totalEdges =
+      similarityResult.rows.length +
+      labelResult.rows.length +
+      parentChildResult.rows.length +
+      extraEdges;
     logger.info(
       {
         embeddingSimilarity: similarityResult.rows.length,
         labelOverlap: labelResult.rows.length,
+        parentChild: parentChildResult.rows.length,
         ...extraCounts,
       },
       'Page relationships computed',

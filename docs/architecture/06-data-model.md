@@ -101,10 +101,9 @@ erDiagram
 
     page_relationships {
         bigint id PK
-        uuid user_id FK
         int page_id_1 FK
         int page_id_2 FK
-        text relationship_type
+        text relationship_type "embedding_similarity | label_overlap | explicit_link | parent_child"
         double score
     }
 
