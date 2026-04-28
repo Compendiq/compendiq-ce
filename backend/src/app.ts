@@ -14,6 +14,7 @@ import authPlugin from './core/plugins/auth.js';
 import redisPlugin from './core/plugins/redis.js';
 // Foundation routes
 import { healthRoutes } from './routes/foundation/health.js';
+import { healthApiRoutes } from './routes/foundation/health-api.js';
 import { authRoutes } from './routes/foundation/auth.js';
 import { settingsRoutes } from './routes/foundation/settings.js';
 import { adminRoutes } from './routes/foundation/admin.js';
@@ -336,6 +337,7 @@ export async function buildApp() {
 
   // Foundation routes
   await app.register(healthRoutes, { prefix: '/api' });
+  await app.register(healthApiRoutes, { prefix: '/api' });
   await app.register(authRoutes, { prefix: '/api/auth' });
   await app.register(settingsRoutes, { prefix: '/api' });
   await app.register(adminRoutes, { prefix: '/api' });
