@@ -36,27 +36,38 @@ describe.skipIf(!dbAvailable)('defaultLlmAuditWriter (CE writer)', () => {
       }),
     );
     const r = await query<{
-      provider_name: string;
+      action: string;
       model: string;
-      usecase: string;
+      provider: string;
+      input_tokens: number;
+      output_tokens: number;
+      duration_ms: number;
+      status: string;
+      error_message: string | null;
       prompt_hash: string;
-      prompt_token_count: number;
-      completion_token_count: number;
       prompt_injection_detected: boolean;
       sanitized: boolean;
-      latency_ms: number;
-      error: string | null;
     }>(`SELECT * FROM llm_audit_log ORDER BY id DESC LIMIT 1`);
     const row = r.rows[0]!;
-    expect(row.provider_name).toBe('ollama');
+    expect(row.action).toBe('ask');
+    expect(row.provider).toBe('ollama');
     expect(row.model).toBe('qwen3:4b');
-    expect(row.usecase).toBe('ask');
-    expect(row.prompt_token_count).toBe(42);
-    expect(row.completion_token_count).toBe(84);
-    expect(row.latency_ms).toBe(123);
-    expect(row.error).toBeNull();
+    expect(row.input_tokens).toBe(42);
+    expect(row.output_tokens).toBe(84);
+    expect(row.duration_ms).toBe(123);
+    expect(row.status).toBe('success');
+    expect(row.error_message).toBeNull();
     // SHA-256 hex of 'Hello, world!' (sanity-check the writer hashes plaintext, not stores it).
     expect(row.prompt_hash).toBe('315f5bdb76d078c43b8ac0064e4a0164612b1fce77c869345bfc94c75894edd3');
+  });
+
+  it('never persists plaintext prompts, even when inputText is set', async () => {
+    const secretPrompt = 'PLEASE-DO-NOT-LEAK-THIS-INTO-THE-DB';
+    await defaultLlmAuditWriter(baseEntry({ inputText: secretPrompt }));
+    const r = await query<{ row: string }>(
+      `SELECT to_jsonb(t)::text AS row FROM llm_audit_log t ORDER BY id DESC LIMIT 1`,
+    );
+    expect(r.rows[0]?.row).not.toContain(secretPrompt);
   });
 
   it('records prompt_injection_detected = TRUE when the entry flags it', async () => {
@@ -79,7 +90,7 @@ describe.skipIf(!dbAvailable)('defaultLlmAuditWriter (CE writer)', () => {
     expect(r.rows[0]).toEqual({ prompt_injection_detected: false, sanitized: true });
   });
 
-  it('records error string and zeroed completion tokens on a failed call', async () => {
+  it('records error_message string on a failed call', async () => {
     await defaultLlmAuditWriter(
       baseEntry({
         status: 'error',
@@ -87,11 +98,12 @@ describe.skipIf(!dbAvailable)('defaultLlmAuditWriter (CE writer)', () => {
         errorMessage: 'upstream HTTP 500',
       }),
     );
-    const r = await query<{ error: string; completion_token_count: number }>(
-      `SELECT error, completion_token_count FROM llm_audit_log ORDER BY id DESC LIMIT 1`,
+    const r = await query<{ error_message: string; output_tokens: number; status: string }>(
+      `SELECT error_message, output_tokens, status FROM llm_audit_log ORDER BY id DESC LIMIT 1`,
     );
-    expect(r.rows[0]?.error).toBe('upstream HTTP 500');
-    expect(r.rows[0]?.completion_token_count).toBe(0);
+    expect(r.rows[0]?.error_message).toBe('upstream HTTP 500');
+    expect(r.rows[0]?.output_tokens).toBe(0);
+    expect(r.rows[0]?.status).toBe('error');
   });
 
   it('flags default to FALSE when the entry omits them (older call sites)', async () => {
@@ -103,35 +115,27 @@ describe.skipIf(!dbAvailable)('defaultLlmAuditWriter (CE writer)', () => {
   });
 
   it('does not throw when the underlying insert fails (fire-and-forget contract)', async () => {
-    // Simulate a hard failure by passing an invalid value for a NOT NULL column.
-    // The writer must swallow and resolve cleanly so the LLM call path keeps moving.
-    const bad = baseEntry();
-    // Force the writer to attempt to insert NULL into prompt_hash by stripping
-    // the source. We can't directly null the hash from outside, but we can
-    // exercise the catch by sending an entry whose hash material is empty —
-    // the insert still succeeds, so instead we drop the table to force a real
-    // failure path and assert no throw escapes.
+    // Force a failure by dropping the table; the writer must swallow and
+    // resolve so the LLM call path keeps moving.
     await query(`DROP TABLE llm_audit_log`);
-    await expect(defaultLlmAuditWriter(bad)).resolves.toBeUndefined();
-    // Recreate the table so the afterAll teardown / next test isn't broken.
-    // setupTestDb() ran once and is idempotent — re-run runMigrations via
-    // a fresh setup is overkill; the simplest path is a manual recreate
-    // identical to migration 073's body.
+    await expect(defaultLlmAuditWriter(baseEntry())).resolves.toBeUndefined();
+    // Recreate so the next test (or teardown) isn't broken. Mirrors the
+    // shape from migration 073.
     await query(`
       CREATE TABLE llm_audit_log (
         id BIGSERIAL PRIMARY KEY,
         user_id UUID NULL REFERENCES users(id) ON DELETE SET NULL,
-        provider_id UUID NULL REFERENCES llm_providers(id) ON DELETE SET NULL,
-        provider_name TEXT NULL,
+        action TEXT NULL,
         model TEXT NULL,
-        usecase TEXT NULL,
-        prompt_hash TEXT NOT NULL,
-        prompt_token_count INTEGER NULL,
-        completion_token_count INTEGER NULL,
+        provider TEXT NULL,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        duration_ms INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'success',
+        error_message TEXT NULL,
+        prompt_hash TEXT NULL,
         prompt_injection_detected BOOLEAN NOT NULL DEFAULT FALSE,
         sanitized BOOLEAN NOT NULL DEFAULT FALSE,
-        latency_ms INTEGER NULL,
-        error TEXT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);

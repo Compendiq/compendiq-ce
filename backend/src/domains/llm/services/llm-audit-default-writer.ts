@@ -6,10 +6,20 @@
  * Contract (Compendiq/compendiq-ee#115 P0f):
  *   - Fire-and-forget. Never throws into the LLM call path; insertion errors
  *     are logged at WARN and swallowed.
- *   - Plaintext prompts are NEVER persisted — only the SHA-256 hex hash of
- *     the concatenated input messages.
+ *   - Plaintext prompts are NEVER persisted by this writer — only the SHA-256
+ *     hex hash of the concatenated input messages goes into `prompt_hash`.
+ *     EE writers that elect to persist plaintext (gated by an admin
+ *     setting) write to the `input_text` / `output_text` columns introduced
+ *     by EE migration 060; the CE writer does not touch those columns.
  *   - `prompt_injection_detected` and `sanitized` come straight from the
  *     entry's optional flags (undefined → FALSE column default).
+ *
+ * Column choice rationale: the column names below intentionally match
+ * the columns shared between CE migration 073 and the pre-existing EE
+ * migration 060 so this writer works in both deployments without
+ * runtime schema detection. The new P0f columns (`prompt_hash`,
+ * `prompt_injection_detected`, `sanitized`) are added to the EE table
+ * by 073 via `ALTER TABLE ADD COLUMN IF NOT EXISTS`.
  */
 import { createHash } from 'node:crypto';
 import { query } from '../../../core/db/postgres.js';
@@ -35,18 +45,6 @@ function hashPromptFromEntry(entry: LlmAuditEntry): string {
 }
 
 /**
- * Map a `LlmAuditEntry.action` into the `llm_audit_log.usecase` column.
- * The taxonomy in `llm_usecase_assignments.usecase` is
- * `chat | summary | quality | auto_tag | embedding`; the audit hook's
- * `action` is broader (`ask`, `improve`, `generate`, `tag`, `diagram` …),
- * so we keep the action verbatim. The column is intentionally TEXT so
- * EE consumers can layer additional values without a schema change.
- */
-function usecaseFromAction(action: LlmAuditEntry['action']): string {
-  return action;
-}
-
-/**
  * The CE default writer. Inserts one row per call. Errors never propagate.
  *
  * Returns a Promise so `emitLlmAudit()`'s `.catch(() => {})` chain works,
@@ -57,35 +55,31 @@ export async function defaultLlmAuditWriter(entry: LlmAuditEntry): Promise<void>
     await query(
       `INSERT INTO llm_audit_log (
          user_id,
-         provider_id,
-         provider_name,
+         action,
          model,
-         usecase,
+         provider,
+         input_tokens,
+         output_tokens,
+         duration_ms,
+         status,
+         error_message,
          prompt_hash,
-         prompt_token_count,
-         completion_token_count,
          prompt_injection_detected,
-         sanitized,
-         latency_ms,
-         error
+         sanitized
        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
       [
         entry.userId,
-        // CE writer does not currently surface a provider UUID through the
-        // audit entry shape; EE writers that need the FK can override the
-        // hook entirely. We snapshot the human-readable provider name for
-        // Report 5 consumption.
-        null,
-        entry.provider,
+        entry.action,
         entry.model,
-        usecaseFromAction(entry.action),
-        hashPromptFromEntry(entry),
+        entry.provider,
         entry.inputTokens,
         entry.outputTokens,
+        entry.durationMs,
+        entry.status,
+        entry.status === 'error' ? entry.errorMessage ?? 'unknown error' : null,
+        hashPromptFromEntry(entry),
         entry.promptInjectionDetected ?? false,
         entry.sanitized ?? false,
-        entry.durationMs,
-        entry.status === 'error' ? entry.errorMessage ?? 'unknown error' : null,
       ],
     );
   } catch (err) {

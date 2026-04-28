@@ -238,21 +238,20 @@ erDiagram
     }
 
     users ||--o{ llm_audit_log : "may originate"
-    llm_providers ||--o{ llm_audit_log : "may originate"
     llm_audit_log {
         bigint id PK
         uuid user_id FK "nullable; SET NULL on user delete"
-        uuid provider_id FK "nullable; SET NULL on provider delete"
-        text provider_name "snapshot — survives provider delete"
+        text action "chat|ask|improve|generate|summarize|embed|quality|tag|diagram"
         text model "snapshot at call time"
-        text usecase "chat|summary|quality|auto_tag|ask|improve|generate|…"
-        text prompt_hash "SHA-256 hex; plaintext NEVER stored"
-        int prompt_token_count
-        int completion_token_count
-        bool prompt_injection_detected "Compendiq/compendiq-ee#115 P0f"
-        bool sanitized "Compendiq/compendiq-ee#115 P0f"
-        int latency_ms
-        text error
+        text provider "snapshot — survives provider delete"
+        int input_tokens "default 0"
+        int output_tokens "default 0"
+        int duration_ms "default 0"
+        text status "success|error; default success"
+        text error_message "nullable; populated on failures"
+        text prompt_hash "SHA-256 hex; plaintext NEVER stored by CE writer"
+        bool prompt_injection_detected "Compendiq/compendiq-ee#115 P0f; default FALSE"
+        bool sanitized "Compendiq/compendiq-ee#115 P0f; default FALSE"
         timestamptz created_at
     }
 ```
