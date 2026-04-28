@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vites
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 import { ZodError } from 'zod';
-import { pagesEmbeddingRoutes } from './pages-embeddings.js';
+import { pagesEmbeddingRoutes, __testHelpers } from './pages-embeddings.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 
 // Track cache set calls to verify TTL
@@ -624,6 +624,27 @@ describe('Knowledge Graph API', () => {
       expect(edgesCall![1]![1]).toBe(0.4);
     });
 
+    it('applies a 0.6 floor in the 500–1999 medium-corpus tier', async () => {
+      // Use 750 (mid-range medium tier) to assert the 0.6 floor binding.
+      const mediumNodes = Array.from({ length: 750 }, (_, i) => ({
+        id: i + 1,
+        confluence_id: `p-${i + 1}`,
+        space_key: 'DEV',
+        title: `Page ${i + 1}`,
+        labels: [],
+        embedding_status: 'embedded',
+        last_modified_at: new Date(),
+        parent_id: null,
+      }));
+      mockQueryFn.mockResolvedValueOnce({ rows: mediumNodes });
+      mockQueryFn.mockResolvedValueOnce({ rows: [] });
+      mockQueryFn.mockResolvedValueOnce({ rows: [] });
+
+      await app.inject({ method: 'GET', url: '/api/pages/graph' });
+      const edgesCall = mockQueryFn.mock.calls[2];
+      expect(edgesCall![1]![1]).toBe(0.6);
+    });
+
     it('applies a 0.7 floor at >= 2000 pages (large-corpus tier)', async () => {
       const bigNodes = Array.from({ length: 2000 }, (_, i) => ({
         id: i + 1,
@@ -642,6 +663,30 @@ describe('Knowledge Graph API', () => {
       await app.inject({ method: 'GET', url: '/api/pages/graph' });
       const edgesCall = mockQueryFn.mock.calls[2];
       expect(edgesCall![1]![1]).toBe(0.7);
+    });
+  });
+
+  // Direct unit tests for the tier function. These exercise the boundary
+  // conditions in isolation (no Fastify, no mocks, no DB) and are the
+  // reason `__testHelpers` is exported from `pages-embeddings.ts`.
+  describe('tieredMinScoreForCorpus — boundary unit tests (#361)', () => {
+    const { tieredMinScoreForCorpus } = __testHelpers;
+
+    it('returns 0.4 for empty / very small corpora', () => {
+      expect(tieredMinScoreForCorpus(0)).toBe(0.4);
+      expect(tieredMinScoreForCorpus(1)).toBe(0.4);
+      expect(tieredMinScoreForCorpus(499)).toBe(0.4);
+    });
+
+    it('returns 0.6 across the 500–1999 medium tier (boundary inclusive)', () => {
+      expect(tieredMinScoreForCorpus(500)).toBe(0.6); // lower boundary
+      expect(tieredMinScoreForCorpus(1000)).toBe(0.6);
+      expect(tieredMinScoreForCorpus(1999)).toBe(0.6); // upper boundary
+    });
+
+    it('returns 0.7 at the 2000 large-tier boundary and above', () => {
+      expect(tieredMinScoreForCorpus(2000)).toBe(0.7); // boundary
+      expect(tieredMinScoreForCorpus(50_000)).toBe(0.7);
     });
   });
 });
