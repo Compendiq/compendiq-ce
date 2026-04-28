@@ -1,7 +1,8 @@
 /* eslint-disable react-refresh/only-export-components */
 import { createContext, useContext, useState, useRef, useEffect, useCallback, type ReactNode } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import type { UsecaseDefault } from '@compendiq/contracts';
 import { apiFetch } from '../../shared/lib/api';
 import { streamSSE } from '../../shared/lib/sse';
 import { usePage, useEmbeddingStatus, type EmbeddingStatusData } from '../../shared/hooks/use-pages';
@@ -162,7 +163,6 @@ export function AiProvider({ children }: { children: ReactNode }) {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [model, setModel] = useState('');
-  const [models, setModels] = useState<Array<{ name: string }>>([]);
   const [includeSubPages, setIncludeSubPages] = useState(false);
   const [thinkingMode, setThinkingModeState] = useState(() => localStorage.getItem('ai-thinking-mode') === 'true');
   const handleSetThinkingMode = useCallback((v: boolean) => {
@@ -228,41 +228,95 @@ export function AiProvider({ children }: { children: ReactNode }) {
     };
   }, [isThinking]);
 
-  // Load settings, models and conversations on mount
+  // Load settings, models and conversations on mount.
+  // #355: prefer the admin-configured chat use-case default (resolveUsecase
+  // 'chat') over the legacy per-user settings.ollamaModel/openaiModel. The
+  // settings model remains a fallback so the input never shows empty if the
+  // chat use-case isn't configured.
+  //
+  // Refactored to TanStack Query (Finding 1, AC-3) so admin-side changes to
+  // the chat use-case assignment propagate to the chat UI without a hard
+  // reload. LlmTab's save handler invalidates ['llm', 'usecase-default'] and
+  // ['llm', 'models'], which causes these queries to refetch automatically.
+  const chatDefaultQuery = useQuery<UsecaseDefault>({
+    queryKey: ['llm', 'usecase-default', 'chat'],
+    queryFn: () => apiFetch<UsecaseDefault>('/llm/usecase-default?usecase=chat'),
+    // Returns 404 when no provider is configured for chat — that's a legitimate
+    // "no default" signal that we should fall through to the legacy /settings
+    // path; do not retry it as an error.
+    retry: false,
+    staleTime: 30_000,
+  });
+  const chatDefault = chatDefaultQuery.data;
+  const isChatDefaultSettled = !chatDefaultQuery.isLoading;
+
+  // Legacy fallback only consulted when the chat use-case has no configured
+  // default. Skipped while the primary query is still in flight so we don't
+  // race-set the wrong model.
+  const settingsFallbackQuery = useQuery<{
+    llmProvider: string;
+    ollamaModel: string;
+    openaiModel: string | null;
+  }>({
+    queryKey: ['settings', 'llm-fallback'],
+    queryFn: () =>
+      apiFetch('/settings'),
+    enabled: isChatDefaultSettled && !chatDefault?.model,
+    retry: false,
+    staleTime: 30_000,
+  });
+
+  // Models for the chat use case. Finding 4: the backend route at
+  // backend/src/routes/llm/llm-models.ts only parses ?usecase=… — it ignores
+  // ?provider=… entirely. Calling with the wrong query param silently returned
+  // the default provider's models, which broke when chat was assigned to a
+  // non-default provider.
+  const modelsQuery = useQuery<Array<{ name: string }>>({
+    queryKey: ['llm', 'models', 'chat'],
+    queryFn: () => apiFetch<Array<{ name: string }>>('/ollama/models?usecase=chat'),
+    retry: false,
+    staleTime: 30_000,
+  });
+  const models = modelsQuery.data ?? [];
+
+  const conversationsQuery = useQuery<Conversation[]>({
+    queryKey: ['llm', 'conversations'],
+    queryFn: () => apiFetch<Conversation[]>('/llm/conversations'),
+    retry: false,
+    staleTime: 30_000,
+  });
   useEffect(() => {
-    apiFetch<{ llmProvider: string; ollamaModel: string; openaiModel: string | null }>('/settings')
-      .then((settings) => {
-        const provider = settings.llmProvider ?? 'ollama';
-        const preferredModel = provider === 'openai'
-          ? settings.openaiModel ?? ''
-          : settings.ollamaModel ?? '';
+    if (conversationsQuery.data) setConversations(conversationsQuery.data);
+  }, [conversationsQuery.data]);
 
-        apiFetch<Array<{ name: string }>>(`/ollama/models?provider=${provider}`)
-          .then((m) => {
-            setModels(m);
-            if (preferredModel) {
-              setModel(preferredModel);
-            } else if (m.length > 0) {
-              setModel((prev) => prev || (m[0]?.name ?? ''));
-            }
-          })
-          .catch(() => {
-            if (preferredModel) setModel(preferredModel);
-          });
-      })
-      .catch(() => {
-        apiFetch<Array<{ name: string }>>('/ollama/models')
-          .then((m) => {
-            setModels(m);
-            if (m.length > 0) setModel((prev) => prev || (m[0]?.name ?? ''));
-          })
-          .catch(() => {});
-      });
-
-    apiFetch<Conversation[]>('/llm/conversations')
-      .then(setConversations)
-      .catch(() => {});
-  }, []);
+  // Initial model selection. Runs once when the resolved default (or its
+  // fallback chain) becomes available. Subsequent admin-side changes update
+  // the dropdown options live, but the *selected* model only resets on the
+  // next startNewConversation() call — see Finding 2.
+  const modelInitializedRef = useRef(false);
+  useEffect(() => {
+    if (modelInitializedRef.current) return;
+    if (chatDefault?.model) {
+      setModel(chatDefault.model);
+      modelInitializedRef.current = true;
+      return;
+    }
+    if (settingsFallbackQuery.data) {
+      const s = settingsFallbackQuery.data;
+      const provider = s.llmProvider ?? 'ollama';
+      const fb = provider === 'openai' ? s.openaiModel ?? '' : s.ollamaModel ?? '';
+      if (fb) {
+        setModel(fb);
+        modelInitializedRef.current = true;
+        return;
+      }
+    }
+    const modelsList = modelsQuery.data;
+    if (modelsList && modelsList.length > 0) {
+      setModel((prev) => prev || (modelsList[0]?.name ?? ''));
+      modelInitializedRef.current = true;
+    }
+  }, [chatDefault, settingsFallbackQuery.data, modelsQuery.data]);
 
   useEffect(() => {
     if (messages.length === 0) return;
@@ -283,7 +337,15 @@ export function AiProvider({ children }: { children: ReactNode }) {
     setMessages([]);
     setConversationId(null);
     setInput('');
-  }, []);
+    // #355 (Finding 2, AC-4): reset the model selector to the current chat
+    // default so a per-conversation override (set via loadConversation or the
+    // dropdown) doesn't leak into newly-started conversations. We read from
+    // the live TanStack Query result so admin-side changes are picked up
+    // without remounting.
+    if (chatDefault?.model) {
+      setModel(chatDefault.model);
+    }
+  }, [chatDefault]);
 
   const loadConversation = useCallback(async (id: string) => {
     try {

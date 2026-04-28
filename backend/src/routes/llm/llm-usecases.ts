@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
-import { UpdateUsecaseAssignmentsInputSchema, type LlmUsecase } from '@compendiq/contracts';
+import { z } from 'zod';
+import { LlmUsecaseSchema, UpdateUsecaseAssignmentsInputSchema, type LlmUsecase } from '@compendiq/contracts';
 import { query, getPool } from '../../core/db/postgres.js';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
 import { bumpProviderCacheVersion } from '../../domains/llm/services/cache-bus.js';
@@ -14,6 +15,27 @@ const USECASES: readonly LlmUsecase[] = ['chat', 'summary', 'quality', 'auto_tag
 
 export async function llmUsecaseRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
+
+  // GET /llm/usecase-default?usecase=chat — non-admin: resolved default for a
+  // single use case. Used by the AI chat input pane to pre-fill its model
+  // selector with the admin-configured chat default (#355). Returns the same
+  // shape that resolveUsecase produces, excluding the raw assignment row.
+  fastify.get('/llm/usecase-default', async (req, reply) => {
+    const { usecase } = z.object({ usecase: LlmUsecaseSchema }).parse(req.query);
+    try {
+      const resolved = await resolveUsecase(usecase);
+      return {
+        usecase,
+        providerId: resolved.config.providerId,
+        providerName: resolved.config.name,
+        model: resolved.model,
+      };
+    } catch {
+      return reply.code(404).send({
+        error: `No provider resolved for use case "${usecase}". Configure one in Settings → LLM.`,
+      });
+    }
+  });
 
   // GET /admin/llm-usecases — return all 5 use-cases with raw + resolved values.
   fastify.get(
