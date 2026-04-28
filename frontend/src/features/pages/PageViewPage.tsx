@@ -793,10 +793,13 @@ function VerifyButton({ pageId }: { pageId: string | undefined }) {
   const handleVerify = async () => {
     if (!pageId) return;
     try {
-      await verifyMutation.mutateAsync({ pageId: Number(pageId), verified: true });
-      toast.success('Page verified');
-    } catch {
-      toast.error('Failed to verify page');
+      await verifyMutation.mutateAsync({ pageId: Number(pageId) });
+      toast.success('Page verified — next review reminder rescheduled');
+    } catch (err) {
+      // #357: surface the server's specific message instead of a generic
+      // toast. ApiError.message already carries the backend reply.
+      const msg = err instanceof Error && err.message ? err.message : 'Failed to verify page';
+      toast.error(msg);
     }
   };
 
@@ -804,6 +807,8 @@ function VerifyButton({ pageId }: { pageId: string | undefined }) {
     <button
       onClick={handleVerify}
       disabled={verifyMutation.isPending}
+      title="Mark this page as up-to-date. Resets the next review reminder based on the configured review interval."
+      aria-label="Mark page as verified"
       className="rounded-md px-2.5 py-1 text-xs text-emerald-500 transition-colors hover:bg-emerald-500/10 disabled:opacity-50"
       data-testid="verify-btn"
     >

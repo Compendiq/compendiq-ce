@@ -231,14 +231,17 @@ export function useMarkAllRead() {
 
 // ======== Verification ========
 
+/**
+ * Mark a page as human-reviewed (#357). Backend exposes POST
+ * /api/pages/:id/verify and ignores the body — the previous PUT call with a
+ * `{ verified: boolean }` body was the source of the generic "Failed to
+ * verify page" toast (404 from Fastify, no PUT route registered).
+ */
 export function useVerifyPage() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ pageId, verified }: { pageId: number; verified: boolean }) =>
-      apiFetch(`/pages/${pageId}/verify`, {
-        method: 'PUT',
-        body: JSON.stringify({ verified }),
-      }),
+    mutationFn: ({ pageId }: { pageId: number }) =>
+      apiFetch(`/pages/${pageId}/verify`, { method: 'POST' }),
     onSuccess: (_data, { pageId }) => {
       queryClient.invalidateQueries({ queryKey: ['pages', String(pageId)] });
     },
