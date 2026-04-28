@@ -4,6 +4,7 @@ import { RefreshCw, CheckSquare, Square, Loader2 } from 'lucide-react';
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
 import { toast } from 'sonner';
+import { SpaceHomePicker } from './SpaceHomePicker';
 
 interface AvailableSpace {
   key: string;
@@ -16,6 +17,10 @@ interface SyncedSpace {
   name: string;
   lastSynced: string | null;
   pageCount: number;
+  /** #352: resolved home (custom override OR Confluence default). */
+  homepageId?: string | null;
+  /** #352: raw custom override (null when falling back to Confluence default). */
+  customHomePageId?: number | null;
 }
 
 interface SpacesTabProps {
@@ -133,15 +138,18 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
         </button>
       </div>
 
-      {/* Space list */}
+      {/* Space list. Each row mixes a selection toggle (the whole row) with
+          a per-space home picker (#379). Nested <button> inside <button>
+          would be invalid HTML, so the row is a div with role=listitem
+          plus an inner <button> for the toggle, and the home picker is a
+          sibling that calls stopPropagation in its own click handler. */}
       {allSpaces.length > 0 ? (
         <div className="space-y-1.5" role="list" aria-label="Spaces list">
           {allSpaces.map((space) => {
             const isSelected = selected.has(space.key);
             return (
-              <button
+              <div
                 key={space.key}
-                onClick={() => toggleSpace(space.key)}
                 className={cn(
                   'flex w-full items-center gap-3 rounded-lg border px-4 py-3 text-left transition-colors',
                   isSelected
@@ -150,22 +158,39 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
                 )}
                 role="listitem"
               >
-                {isSelected ? (
-                  <CheckSquare size={18} className="shrink-0 text-primary" />
-                ) : (
-                  <Square size={18} className="shrink-0 text-muted-foreground" />
-                )}
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium">{space.name}</p>
-                  <p className="text-xs text-muted-foreground">{space.key}</p>
-                </div>
-                {space.lastSynced && (
-                  <div className="text-right text-xs text-muted-foreground">
-                    <p>{space.pageCount} pages</p>
-                    <p>Synced: {new Date(space.lastSynced).toLocaleDateString()}</p>
+                <button
+                  type="button"
+                  onClick={() => toggleSpace(space.key)}
+                  className="flex min-w-0 flex-1 items-center gap-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 rounded-md"
+                  aria-pressed={isSelected}
+                  aria-label={`${isSelected ? 'Deselect' : 'Select'} ${space.name}`}
+                >
+                  {isSelected ? (
+                    <CheckSquare size={18} className="shrink-0 text-primary" />
+                  ) : (
+                    <Square size={18} className="shrink-0 text-muted-foreground" />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium">{space.name}</p>
+                    <p className="text-xs text-muted-foreground">{space.key}</p>
                   </div>
+                  {space.lastSynced && (
+                    <div className="text-right text-xs text-muted-foreground">
+                      <p>{space.pageCount} pages</p>
+                      <p>Synced: {new Date(space.lastSynced).toLocaleDateString()}</p>
+                    </div>
+                  )}
+                </button>
+                {/* #379: home picker only renders for synced spaces — an
+                    unsynced space has no pages locally to choose from. */}
+                {space.lastSynced && (
+                  <SpaceHomePicker
+                    spaceKey={space.key}
+                    resolvedHomePageId={space.homepageId ?? null}
+                    customHomePageId={space.customHomePageId ?? null}
+                  />
                 )}
-              </button>
+              </div>
             );
           })}
         </div>
@@ -208,6 +233,8 @@ function mergeSpaces(available: AvailableSpace[], synced: SyncedSpace[], selecte
     name: string;
     lastSynced?: string | null;
     pageCount?: number;
+    homepageId?: string | null;
+    customHomePageId?: number | null;
   }> = [];
   const seen = new Set<string>();
 
@@ -219,6 +246,8 @@ function mergeSpaces(available: AvailableSpace[], synced: SyncedSpace[], selecte
       name: space.name,
       lastSynced: syncInfo?.lastSynced,
       pageCount: syncInfo?.pageCount,
+      homepageId: syncInfo?.homepageId ?? null,
+      customHomePageId: syncInfo?.customHomePageId ?? null,
     });
     seen.add(space.key);
   }
@@ -231,6 +260,8 @@ function mergeSpaces(available: AvailableSpace[], synced: SyncedSpace[], selecte
         name: space.name,
         lastSynced: space.lastSynced,
         pageCount: space.pageCount,
+        homepageId: space.homepageId ?? null,
+        customHomePageId: space.customHomePageId ?? null,
       });
       seen.add(space.key);
     }
