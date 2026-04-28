@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
+import * as Popover from '@radix-ui/react-popover';
 import { useEditor, useEditorState, EditorContent } from '@tiptap/react';
 import DragHandle from '@tiptap/extension-drag-handle-react';
 import StarterKit from '@tiptap/starter-kit';
@@ -148,7 +149,20 @@ function ToolbarButton({
 }
 
 function ToolbarSeparator() {
-  return <div className="mx-1 h-5 w-px bg-foreground/10" />;
+  return <div role="separator" aria-orientation="vertical" className="mx-1 h-5 w-px bg-foreground/10" />;
+}
+
+function ToolbarGroup({ name, children }: { name: string; children: React.ReactNode }) {
+  return (
+    <div
+      role="group"
+      aria-label={name}
+      data-testid={`toolbar-group-${name}`}
+      className="flex items-center gap-0.5"
+    >
+      {children}
+    </div>
+  );
 }
 
 const STATUS_COLORS = [
@@ -234,6 +248,14 @@ const PRESET_COLORS = [
   { label: 'Grey', value: '#6b7280' },
 ];
 
+/**
+ * #353: Color picker built on Radix Popover so keyboard / screen-reader
+ * users get proper focus management (Escape to close, focus returns to
+ * trigger, click-outside dismiss). Trigger is 36×36 and swatches are
+ * 28×28 — both comfortably above the issue's >=32×32 / >=24×24 minimums
+ * and the WCAG 2.5.5 24×24 target-size guideline. Each swatch carries
+ * `aria-label` with the colour name.
+ */
 function ColorPickerDropdown({
   onSelect,
   onReset,
@@ -248,71 +270,71 @@ function ColorPickerDropdown({
   title: string;
 }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [open]);
 
   return (
-    <div className="relative" ref={ref}>
-      <button
-        onClick={() => setOpen(!open)}
-        title={title}
-        aria-label={title}
-        // #353: trigger sized 32×32 (h-8 w-8) — was ~24×24 from the
-        // previous `p-1.5` which made the colour pickers a tiny target.
-        // Matches the issue acceptance criteria (>=32×32 trigger).
-        className={cn(
-          'flex h-8 w-8 items-center justify-center rounded-md transition-colors',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
-          activeColor ? 'ring-1 ring-primary/30' : '',
-          'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
-        )}
-        data-testid="color-picker-trigger"
-      >
-        <div className="relative">
-          {icon}
-          {activeColor && (
-            <div className="absolute -bottom-1 left-0 right-0 h-0.5 rounded-full" style={{ backgroundColor: activeColor }} />
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Trigger asChild>
+        <button
+          type="button"
+          title={title}
+          aria-label={title}
+          aria-haspopup="dialog"
+          data-testid="color-picker-trigger"
+          className={cn(
+            'flex h-9 w-9 items-center justify-center rounded-md transition-colors',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-1',
+            activeColor ? 'ring-1 ring-primary/30' : '',
+            'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
           )}
-        </div>
-      </button>
-      {open && (
-        <div
-          className="absolute top-full left-0 z-50 mt-1 rounded-lg border border-border bg-card p-2.5 shadow-lg"
-          role="menu"
-          aria-label={`${title} swatches`}
         >
-          {/* #353: 28×28 swatches (>=24×24 minimum). 4-col grid keeps the
-              popover compact while making each swatch comfortably clickable. */}
+          <div className="relative">
+            {icon}
+            {activeColor && (
+              <div
+                className="absolute -bottom-1 left-0 right-0 h-1 rounded-full"
+                style={{ backgroundColor: activeColor }}
+              />
+            )}
+          </div>
+        </button>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          align="start"
+          sideOffset={4}
+          aria-label={`${title} swatches`}
+          className="z-50 rounded-lg border border-border bg-card p-2.5 shadow-lg outline-none"
+        >
           <div className="grid grid-cols-4 gap-1.5">
             {PRESET_COLORS.map((c) => (
               <button
                 key={c.value}
+                type="button"
                 title={c.label}
                 aria-label={c.label}
-                onClick={() => { onSelect(c.value); setOpen(false); }}
-                className="h-7 w-7 rounded-md border border-border/50 transition-transform hover:scale-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
-                style={{ backgroundColor: c.value }}
                 data-testid="color-picker-swatch"
+                onClick={() => {
+                  onSelect(c.value);
+                  setOpen(false);
+                }}
+                className="h-7 w-7 rounded-md border border-border/50 transition-transform hover:scale-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                style={{ backgroundColor: c.value }}
               />
             ))}
           </div>
           <button
-            onClick={() => { onReset(); setOpen(false); }}
-            className="mt-2 w-full rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-foreground/5"
+            type="button"
+            onClick={() => {
+              onReset();
+              setOpen(false);
+            }}
+            className="mt-2 w-full rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
           >
             Reset
           </button>
-        </div>
-      )}
-    </div>
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }
 
@@ -340,213 +362,231 @@ export function EditorToolbar({ editor, headerNumbering, onToggleHeaderNumbering
   });
 
   return (
-    <div className="flex flex-wrap items-center gap-0.5 px-2 py-1.5">
-      <ToolbarButton onClick={() => editor.chain().focus().toggleBold().run()} active={activeState.bold} title="Bold (Ctrl+B)">
-        <Bold size={16} />
-      </ToolbarButton>
-      <ToolbarButton onClick={() => editor.chain().focus().toggleItalic().run()} active={activeState.italic} title="Italic (Ctrl+I)">
-        <Italic size={16} />
-      </ToolbarButton>
-      <ToolbarButton onClick={() => editor.chain().focus().toggleStrike().run()} active={activeState.strike} title="Strikethrough (Ctrl+Shift+X)">
-        <Strikethrough size={16} />
-      </ToolbarButton>
-      <ToolbarButton onClick={() => editor.chain().focus().toggleUnderline().run()} active={activeState.underline} title="Underline (Ctrl+U)">
-        <Underline size={16} />
-      </ToolbarButton>
-      <ToolbarButton onClick={() => editor.chain().focus().toggleCode().run()} active={activeState.code} title="Inline Code (Ctrl+E)">
-        <Code size={16} />
-      </ToolbarButton>
+    // #353: order is conventional editor IA — inline → block → lists → insert
+    // → captions/index → colors → utilities. Each segment is wrapped in a
+    // `<ToolbarGroup>` (role=group + aria-label + data-testid) and separated
+    // by a vertical `ToolbarSeparator`, so the toolbar reads as clusters
+    // rather than a flat row of icons. `flex-wrap` is preserved so narrow
+    // viewports gracefully wrap to a second row inside the toolbar (no
+    // overflow into article content).
+    <div
+      role="toolbar"
+      aria-label="Article editor toolbar"
+      className="flex flex-wrap items-center gap-0.5 px-2 py-1.5"
+    >
+      <ToolbarGroup name="inline">
+        <ToolbarButton onClick={() => editor.chain().focus().toggleBold().run()} active={activeState.bold} title="Bold (Ctrl+B)">
+          <Bold size={16} />
+        </ToolbarButton>
+        <ToolbarButton onClick={() => editor.chain().focus().toggleItalic().run()} active={activeState.italic} title="Italic (Ctrl+I)">
+          <Italic size={16} />
+        </ToolbarButton>
+        <ToolbarButton onClick={() => editor.chain().focus().toggleUnderline().run()} active={activeState.underline} title="Underline (Ctrl+U)">
+          <Underline size={16} />
+        </ToolbarButton>
+        <ToolbarButton onClick={() => editor.chain().focus().toggleStrike().run()} active={activeState.strike} title="Strikethrough (Ctrl+Shift+X)">
+          <Strikethrough size={16} />
+        </ToolbarButton>
+        <ToolbarButton onClick={() => editor.chain().focus().toggleCode().run()} active={activeState.code} title="Inline Code (Ctrl+E)">
+          <Code size={16} />
+        </ToolbarButton>
+      </ToolbarGroup>
 
       <ToolbarSeparator />
 
-      {/* #353: Colors group — bigger triggers + ARIA-grouped + testable. */}
-      <div role="group" aria-label="Colors" className="flex items-center gap-0.5" data-toolbar-group="colors">
+      <ToolbarGroup name="block">
+        <ToolbarButton onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()} active={activeState.h1} title="Heading 1 (Ctrl+Alt+1)">
+          <Heading1 size={16} />
+        </ToolbarButton>
+        <ToolbarButton onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()} active={activeState.h2} title="Heading 2 (Ctrl+Alt+2)">
+          <Heading2 size={16} />
+        </ToolbarButton>
+        <ToolbarButton onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()} active={activeState.h3} title="Heading 3 (Ctrl+Alt+3)">
+          <Heading3 size={16} />
+        </ToolbarButton>
+        {onToggleHeaderNumbering && (
+          <ToolbarButton onClick={onToggleHeaderNumbering} active={headerNumbering} title="Toggle Header Numbering">
+            <Hash size={16} />
+          </ToolbarButton>
+        )}
+        <ToolbarButton onClick={() => editor.chain().focus().toggleBlockquote().run()} active={activeState.blockquote} title="Blockquote">
+          <Quote size={16} />
+        </ToolbarButton>
+        <ToolbarButton onClick={() => editor.chain().focus().toggleCodeBlock().run()} active={activeState.codeBlock} title="Code Block">
+          <CodeSquare size={16} />
+        </ToolbarButton>
+        <ToolbarButton onClick={() => editor.chain().focus().setHorizontalRule().run()} title="Horizontal Rule">
+          <Minus size={16} />
+        </ToolbarButton>
+      </ToolbarGroup>
+
+      <ToolbarSeparator />
+
+      <ToolbarGroup name="lists">
+        <ToolbarButton onClick={() => editor.chain().focus().toggleBulletList().run()} active={activeState.bulletList} title="Bullet List (Ctrl+Shift+8)">
+          <List size={16} />
+        </ToolbarButton>
+        <ToolbarButton onClick={() => editor.chain().focus().toggleOrderedList().run()} active={activeState.orderedList} title="Ordered List (Ctrl+Shift+7)">
+          <ListOrdered size={16} />
+        </ToolbarButton>
+        <ToolbarButton onClick={() => editor.chain().focus().toggleTaskList().run()} active={activeState.taskList} title="Task List">
+          <CheckSquare size={16} />
+        </ToolbarButton>
+      </ToolbarGroup>
+
+      <ToolbarSeparator />
+
+      <ToolbarGroup name="insert">
+        <ToolbarButton
+          onClick={() => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}
+          title="Insert Table"
+        >
+          <TableIcon size={16} />
+        </ToolbarButton>
+        <ToolbarButton
+          onClick={() => {
+            const url = window.prompt('Image URL:');
+            if (url) editor.chain().focus().setImage({ src: url }).run();
+          }}
+          title="Insert Image"
+        >
+          <ImageIcon size={16} />
+        </ToolbarButton>
+        <ToolbarButton
+          onClick={() => editor.chain().focus().insertDrawioDiagram().run()}
+          title="Insert Draw.io Diagram"
+        >
+          <Workflow size={16} />
+        </ToolbarButton>
+        <StatusLabelInsert editor={editor} />
+        <ToolbarButton
+          onClick={() => {
+            editor.chain().focus().insertContent({
+              type: 'details',
+              content: [
+                { type: 'detailsSummary', content: [{ type: 'text', text: 'Click to expand' }] },
+                { type: 'paragraph', content: [{ type: 'text', text: 'Content here...' }] },
+              ],
+            }).run();
+          }}
+          title="Insert Expand/Collapse Section"
+        >
+          <ChevronsUpDown size={16} />
+        </ToolbarButton>
+        <ToolbarButton
+          onClick={() => {
+            editor.chain().focus().insertContent({
+              type: 'confluenceAttachments',
+              attrs: { upload: 'false', old: 'false' },
+            }).run();
+          }}
+          title="Insert Attachments Block"
+        >
+          <Paperclip size={16} />
+        </ToolbarButton>
+        <ToolbarButton
+          onClick={() => {
+            editor.chain().focus().insertContent({ type: 'confluenceChildren' }).run();
+          }}
+          title="Insert Children Pages"
+        >
+          <ListTree size={16} />
+        </ToolbarButton>
+        <LayoutPresetPicker editor={editor} />
+      </ToolbarGroup>
+
+      <ToolbarSeparator />
+
+      {/* Caption & Index tools (#13) — kept as their own segment because they
+          act on already-inserted figures/tables rather than inserting fresh
+          content. */}
+      <ToolbarGroup name="captions">
+        <ToolbarButton
+          onClick={() => {
+            // Wrap selected image in a figure with caption
+            const { from } = editor.state.selection;
+            const node = editor.state.doc.nodeAt(from);
+            if (node?.type.name === 'image') {
+              editor.chain()
+                .deleteRange({ from, to: from + node.nodeSize })
+                .insertContentAt(from, {
+                  type: 'figure',
+                  content: [
+                    { type: 'image', attrs: node.attrs },
+                    { type: 'figcaption' },
+                  ],
+                })
+                .run();
+            }
+          }}
+          title="Add Caption to Selected Image"
+        >
+          <ImagePlus size={16} />
+        </ToolbarButton>
+        <ToolbarButton
+          onClick={() => {
+            // Insert a table caption after the current position
+            editor.chain().focus().insertContent({ type: 'tableCaption' }).run();
+          }}
+          title="Insert Table Caption"
+        >
+          <TableProperties size={16} />
+        </ToolbarButton>
+        <ToolbarButton
+          onClick={() => {
+            editor.chain().focus().insertContent({ type: 'figureIndex' }).run();
+          }}
+          title="Insert List of Figures"
+        >
+          <ListTree size={16} />
+        </ToolbarButton>
+        <ToolbarButton
+          onClick={() => {
+            editor.chain().focus().insertContent({ type: 'tableIndex' }).run();
+          }}
+          title="Insert List of Tables"
+        >
+          <Table2 size={16} />
+        </ToolbarButton>
+      </ToolbarGroup>
+
+      <ToolbarSeparator />
+
+      {/* #353: Colors group placed between insert and utilities so it sits
+          near the formatting affordances. Triggers + swatches are bigger
+          here than in the rest of the toolbar — see ColorPickerDropdown. */}
+      <ToolbarGroup name="colors">
         <ColorPickerDropdown
-          icon={<Palette size={16} />}
+          icon={<Palette size={18} />}
           title="Text Color"
           activeColor={activeState.textColor}
           onSelect={(color) => editor.chain().focus().setColor(color).run()}
           onReset={() => editor.chain().focus().unsetColor().run()}
         />
         <ColorPickerDropdown
-          icon={<Highlighter size={16} />}
+          icon={<Highlighter size={18} />}
           title="Highlight (Ctrl+Shift+H)"
           activeColor={activeState.highlightColor}
           onSelect={(color) => editor.chain().focus().toggleHighlight({ color }).run()}
           onReset={() => editor.chain().focus().unsetHighlight().run()}
         />
-      </div>
-
-      <ToolbarSeparator />
-
-      <ToolbarButton onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()} active={activeState.h1} title="Heading 1 (Ctrl+Alt+1)">
-        <Heading1 size={16} />
-      </ToolbarButton>
-      <ToolbarButton onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()} active={activeState.h2} title="Heading 2 (Ctrl+Alt+2)">
-        <Heading2 size={16} />
-      </ToolbarButton>
-      <ToolbarButton onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()} active={activeState.h3} title="Heading 3 (Ctrl+Alt+3)">
-        <Heading3 size={16} />
-      </ToolbarButton>
-      {onToggleHeaderNumbering && (
-        <ToolbarButton onClick={onToggleHeaderNumbering} active={headerNumbering} title="Toggle Header Numbering">
-          <Hash size={16} />
-        </ToolbarButton>
-      )}
-
-      <ToolbarSeparator />
-
-      <ToolbarButton onClick={() => editor.chain().focus().toggleBulletList().run()} active={activeState.bulletList} title="Bullet List (Ctrl+Shift+8)">
-        <List size={16} />
-      </ToolbarButton>
-      <ToolbarButton onClick={() => editor.chain().focus().toggleOrderedList().run()} active={activeState.orderedList} title="Ordered List (Ctrl+Shift+7)">
-        <ListOrdered size={16} />
-      </ToolbarButton>
-      <ToolbarButton onClick={() => editor.chain().focus().toggleTaskList().run()} active={activeState.taskList} title="Task List">
-        <CheckSquare size={16} />
-      </ToolbarButton>
-
-      <ToolbarSeparator />
-
-      <ToolbarButton onClick={() => editor.chain().focus().toggleBlockquote().run()} active={activeState.blockquote} title="Blockquote">
-        <Quote size={16} />
-      </ToolbarButton>
-      <ToolbarButton onClick={() => editor.chain().focus().toggleCodeBlock().run()} active={activeState.codeBlock} title="Code Block">
-        <CodeSquare size={16} />
-      </ToolbarButton>
-      <ToolbarButton onClick={() => editor.chain().focus().setHorizontalRule().run()} title="Horizontal Rule">
-        <Minus size={16} />
-      </ToolbarButton>
-
-      <ToolbarSeparator />
-
-      <ToolbarButton
-        onClick={() => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}
-        title="Insert Table"
-      >
-        <TableIcon size={16} />
-      </ToolbarButton>
-      <ToolbarButton
-        onClick={() => {
-          const url = window.prompt('Image URL:');
-          if (url) editor.chain().focus().setImage({ src: url }).run();
-        }}
-        title="Insert Image"
-      >
-        <ImageIcon size={16} />
-      </ToolbarButton>
-      <ToolbarButton
-        onClick={() => editor.chain().focus().insertDrawioDiagram().run()}
-        title="Insert Draw.io Diagram"
-      >
-        <Workflow size={16} />
-      </ToolbarButton>
-
-      {/* Confluence-compatible content blocks (#6 #7) */}
-      <StatusLabelInsert editor={editor} />
-      <ToolbarButton
-        onClick={() => {
-          editor.chain().focus().insertContent({
-            type: 'details',
-            content: [
-              { type: 'detailsSummary', content: [{ type: 'text', text: 'Click to expand' }] },
-              { type: 'paragraph', content: [{ type: 'text', text: 'Content here...' }] },
-            ],
-          }).run();
-        }}
-        title="Insert Expand/Collapse Section"
-      >
-        <ChevronsUpDown size={16} />
-      </ToolbarButton>
-      <ToolbarButton
-        onClick={() => {
-          editor.chain().focus().insertContent({
-            type: 'confluenceAttachments',
-            attrs: { upload: 'false', old: 'false' },
-          }).run();
-        }}
-        title="Insert Attachments Block"
-      >
-        <Paperclip size={16} />
-      </ToolbarButton>
-      <ToolbarButton
-        onClick={() => {
-          editor.chain().focus().insertContent({ type: 'confluenceChildren' }).run();
-        }}
-        title="Insert Children Pages"
-      >
-        <ListTree size={16} />
-      </ToolbarButton>
-
-      <LayoutPresetPicker editor={editor} />
-
-      <ToolbarSeparator />
-
-      {/* Caption & Index tools (#13) */}
-      <ToolbarButton
-        onClick={() => {
-          // Wrap selected image in a figure with caption
-          const { from } = editor.state.selection;
-          const node = editor.state.doc.nodeAt(from);
-          if (node?.type.name === 'image') {
-            editor.chain()
-              .deleteRange({ from, to: from + node.nodeSize })
-              .insertContentAt(from, {
-                type: 'figure',
-                content: [
-                  { type: 'image', attrs: node.attrs },
-                  { type: 'figcaption' },
-                ],
-              })
-              .run();
-          }
-        }}
-        title="Add Caption to Selected Image"
-      >
-        <ImagePlus size={16} />
-      </ToolbarButton>
-      <ToolbarButton
-        onClick={() => {
-          // Insert a table caption after the current position
-          editor.chain().focus().insertContent({ type: 'tableCaption' }).run();
-        }}
-        title="Insert Table Caption"
-      >
-        <TableProperties size={16} />
-      </ToolbarButton>
-      <ToolbarButton
-        onClick={() => {
-          editor.chain().focus().insertContent({ type: 'figureIndex' }).run();
-        }}
-        title="Insert List of Figures"
-      >
-        <ListTree size={16} />
-      </ToolbarButton>
-      <ToolbarButton
-        onClick={() => {
-          editor.chain().focus().insertContent({ type: 'tableIndex' }).run();
-        }}
-        title="Insert List of Tables"
-      >
-        <Table2 size={16} />
-      </ToolbarButton>
+      </ToolbarGroup>
 
       <div className="flex-1" />
 
-      {onToggleVim && (
-        <ToolbarButton onClick={onToggleVim} active={vimEnabled} title="Toggle Vim Mode">
-          <Terminal size={16} />
+      <ToolbarGroup name="utilities">
+        {onToggleVim && (
+          <ToolbarButton onClick={onToggleVim} active={vimEnabled} title="Toggle Vim Mode">
+            <Terminal size={16} />
+          </ToolbarButton>
+        )}
+        <ToolbarButton onClick={() => editor.chain().focus().undo().run()} disabled={!editor.can().undo()} title="Undo">
+          <Undo2 size={16} />
         </ToolbarButton>
-      )}
-
-      <ToolbarSeparator />
-
-      <ToolbarButton onClick={() => editor.chain().focus().undo().run()} disabled={!editor.can().undo()} title="Undo">
-        <Undo2 size={16} />
-      </ToolbarButton>
-      <ToolbarButton onClick={() => editor.chain().focus().redo().run()} disabled={!editor.can().redo()} title="Redo">
-        <Redo2 size={16} />
-      </ToolbarButton>
+        <ToolbarButton onClick={() => editor.chain().focus().redo().run()} disabled={!editor.can().redo()} title="Redo">
+          <Redo2 size={16} />
+        </ToolbarButton>
+      </ToolbarGroup>
     </div>
   );
 }

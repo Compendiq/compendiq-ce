@@ -272,15 +272,43 @@ describe('EditorToolbar — header numbering toggle', () => {
 
   // ---------- #353 toolbar grouping + bigger color pickers ----------
 
-  it('renders a labeled Colors group containing both color pickers (#353)', () => {
+  it('renders the toolbar groups in the conventional order (#353)', () => {
     const editor = createMockEditor();
     render(<EditorToolbar editor={editor} />);
 
-    const group = screen.getByRole('group', { name: 'Colors' });
-    expect(group).toBeInTheDocument();
-    expect(group).toHaveAttribute('data-toolbar-group', 'colors');
-    // Both triggers live inside the group.
+    // Inline → block → lists → insert → captions → colors → utilities.
+    const groups = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-testid^="toolbar-group-"]'),
+    ).map((el) => el.dataset.testid);
+
+    expect(groups).toEqual([
+      'toolbar-group-inline',
+      'toolbar-group-block',
+      'toolbar-group-lists',
+      'toolbar-group-insert',
+      'toolbar-group-captions',
+      'toolbar-group-colors',
+      'toolbar-group-utilities',
+    ]);
+  });
+
+  it('places both color pickers inside the colors group (#353)', () => {
+    const editor = createMockEditor();
+    render(<EditorToolbar editor={editor} />);
+
+    const group = screen.getByTestId('toolbar-group-colors');
+    expect(group).toHaveAttribute('role', 'group');
+    expect(group).toHaveAttribute('aria-label', 'colors');
     expect(group.querySelectorAll('[data-testid="color-picker-trigger"]').length).toBe(2);
+  });
+
+  it('separates groups with role=separator dividers (#353)', () => {
+    const editor = createMockEditor();
+    const { container } = render(<EditorToolbar editor={editor} />);
+
+    // Six segments → at least five separators between them.
+    const separators = container.querySelectorAll('[role="separator"]');
+    expect(separators.length).toBeGreaterThanOrEqual(5);
   });
 
   it('color-picker triggers meet the 32x32 minimum target size (#353)', () => {
@@ -290,10 +318,22 @@ describe('EditorToolbar — header numbering toggle', () => {
     const triggers = screen.getAllByTestId('color-picker-trigger');
     expect(triggers.length).toBe(2);
     for (const trigger of triggers) {
-      // Tailwind h-8 w-8 maps to 32×32 (1rem = 16px).
-      expect(trigger.className).toMatch(/(?:^|\s)h-8(?:\s|$)/);
-      expect(trigger.className).toMatch(/(?:^|\s)w-8(?:\s|$)/);
+      // Tailwind h-9 w-9 maps to 36×36 (1rem = 16px) — comfortably above
+      // the issue's 32×32 minimum.
+      expect(trigger.className).toMatch(/(?:^|\s)h-9(?:\s|$)/);
+      expect(trigger.className).toMatch(/(?:^|\s)w-9(?:\s|$)/);
     }
+  });
+
+  it('color-picker triggers expose a tooltip and aria-label (#353)', () => {
+    const editor = createMockEditor();
+    render(<EditorToolbar editor={editor} />);
+
+    const triggers = screen.getAllByTestId('color-picker-trigger');
+    expect(triggers[0]).toHaveAttribute('title', 'Text Color');
+    expect(triggers[0]).toHaveAttribute('aria-label', 'Text Color');
+    expect(triggers[1]).toHaveAttribute('title', 'Highlight (Ctrl+Shift+H)');
+    expect(triggers[1]).toHaveAttribute('aria-label', 'Highlight (Ctrl+Shift+H)');
   });
 
   it('color-picker swatches meet the 24x24 minimum after opening the picker (#353)', () => {
@@ -306,9 +346,18 @@ describe('EditorToolbar — header numbering toggle', () => {
     const swatches = screen.getAllByTestId('color-picker-swatch');
     expect(swatches.length).toBeGreaterThanOrEqual(8);
     for (const sw of swatches) {
-      // h-7 w-7 → 28×28 (above the 24 minimum).
+      // h-7 w-7 → 28×28 (above the issue's 24×24 minimum).
       expect(sw.className).toMatch(/(?:^|\s)h-7(?:\s|$)/);
       expect(sw.className).toMatch(/(?:^|\s)w-7(?:\s|$)/);
+      // Each swatch must carry an accessible name (its colour label).
+      expect(sw.getAttribute('aria-label')).toBeTruthy();
     }
+  });
+
+  it('exposes the toolbar landmark with an accessible name (#353)', () => {
+    const editor = createMockEditor();
+    render(<EditorToolbar editor={editor} />);
+    const toolbar = screen.getByRole('toolbar', { name: 'Article editor toolbar' });
+    expect(toolbar).toBeInTheDocument();
   });
 });
