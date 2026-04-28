@@ -48,7 +48,7 @@ describe('perf-graph-bench helpers (#380 Phase 1)', () => {
         size: 2000,
         pageCount: 2000,
         edgeCount: 5000,
-        centerPageId: 1,
+        samplePageId: 1,
         timeToFirstPaintMs: 500,
         layoutConvergenceMs: 2000,
         fpsDuringInteraction: 60,

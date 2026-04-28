@@ -82,7 +82,10 @@ function parseArgs(): Args {
   return {
     sizes,
     webUrl: get('web-url', 'http://localhost:8081').replace(/\/$/, ''),
-    backendUrl: get('backend-url', 'http://localhost:3051').replace(/\/$/, ''),
+    // Default to :3052 — the dev compose maps backend → host port 3052
+    // (BACKEND_HOST_PORT in docker-compose.yml). 3051 is the in-container
+    // port, which isn't reachable from a host-side Playwright run.
+    backendUrl: get('backend-url', 'http://localhost:3052').replace(/\/$/, ''),
     username: get('username', 'benchuser'),
     password: get('password', 'benchpass123'),
     cleanup: flag('cleanup'),
@@ -107,8 +110,8 @@ function randomScore(): number {
  *
  * A node connects to its ±1, ±2 ring plus a `sqrt(n)` long-range hop.
  * That mimics the cluster-with-bridges shape of a real Confluence corpus
- * and keeps the centre node reachable from most others, which is what a
- * focused (`?focus=`) view actually exercises.
+ * and keeps the global graph well-connected, which is what the bench
+ * actually renders (`?full=1`, no `focus=`).
  */
 export function neighbours(i: number, n: number): number[] {
   const offsets = [1, -1, 2, -2, Math.floor(Math.sqrt(n))];
@@ -128,7 +131,10 @@ export function neighbours(i: number, n: number): number[] {
 
 interface SeedResult {
   spaceKey: string;
-  centerPageId: number;
+  /** A representative page id from the seed — used as a stable handle in
+   *  the JSON output. The bench renders the GLOBAL graph (`?full=1`,
+   *  no `focus=`), so this id is not used to route the page. */
+  samplePageId: number;
   pageCount: number;
   edgeCount: number;
 }
@@ -172,16 +178,28 @@ async function grantSpaceAccess(
   userId: string,
   spaceKey: string,
 ): Promise<void> {
+  // RBAC space access is determined solely by `space_role_assignments`
+  // (see rbac-service.ts:`getUserAccessibleSpaces`, which explicitly
+  // states it does NOT consult `user_space_selections`). The earlier
+  // version of this script wrote to `user_space_selections` and the
+  // bench user got back `[]` accessible spaces → the graph endpoint
+  // returned no nodes regardless of how many we seeded. Assign the
+  // bench user the `editor` role for read access to the space.
   await client.query(
-    `INSERT INTO user_space_selections (user_id, space_key)
-     VALUES ($1, $2)
-     ON CONFLICT DO NOTHING`,
-    [userId, spaceKey],
+    `INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
+     SELECT $1, 'user', $2::text, r.id
+     FROM roles r
+     WHERE r.name = 'editor'
+     ON CONFLICT (space_key, principal_type, principal_id) DO NOTHING`,
+    [spaceKey, userId],
   );
 }
 
 async function cleanupSize(client: pg.PoolClient, size: number): Promise<void> {
   const spaceKey = `${SPACE_PREFIX}${size}`;
+  // page_relationships cascades on pages.id; pages don't cascade-delete
+  // role assignments (different lifecycle), so drop those explicitly.
+  await client.query(`DELETE FROM space_role_assignments WHERE space_key = $1`, [spaceKey]);
   await client.query(
     `DELETE FROM pages WHERE confluence_id LIKE $1`,
     [`${PAGE_PREFIX}${size}-%`],
@@ -276,7 +294,7 @@ async function seedSize(
 
     return {
       spaceKey,
-      centerPageId: ids[Math.floor(ids.length / 2)]!,
+      samplePageId: ids[Math.floor(ids.length / 2)]!,
       pageCount: ids.length,
       edgeCount: edgeRows.length,
     };
@@ -294,13 +312,18 @@ export interface BenchSample {
   size: number;
   pageCount: number;
   edgeCount: number;
-  /** Centre page id (the `?focus=` target). */
-  centerPageId: number;
+  /** A representative seeded page id, retained as a stable handle in
+   *  the JSON output. The bench renders the GLOBAL graph; this id is
+   *  not used to route the page. */
+  samplePageId: number;
   /** Time from navigation to the canvas being mounted, in ms. */
   timeToFirstPaintMs: number;
   /** Time from canvas mount until rAF activity stalls (force layout settles), in ms. */
   layoutConvergenceMs: number;
-  /** FPS sampled during the programmatic pan + drag of 3 random nodes. */
+  /** FPS sampled during programmatic pan + drag interaction across the
+   *  canvas. Drives simulation + render workload regardless of where
+   *  individual nodes happen to land in screen space (the renderer's
+   *  internal node positions aren't exposed to the page). */
   fpsDuringInteraction: number;
   /** `performance.memory.usedJSHeapSize` at the end of the run, in MB. */
   jsHeapUsedMb: number | null;
@@ -330,18 +353,23 @@ const CONVERGENCE_TIMEOUT_MS = 30_000;
 const CONVERGENCE_QUIET_MS = 350;
 const FPS_WINDOW_MS = 2_000;
 
-async function runOne(
+/**
+ * Install the auth token + rAF instrumentation ONCE for the lifetime of
+ * the page. Playwright's `addInitScript` is replayed on every navigation
+ * and registrations stack up — calling it inside the per-size loop
+ * meant the rAF wrapper was double/triple/quadruple-installed and the
+ * fps reading was inflated by the same factor (3× at the 2000-node
+ * decision sample, hiding any Phase-2-justifying regression). The
+ * inner `__benchInstalled` guard belt-and-braces against a re-add if
+ * this function is ever called twice by mistake.
+ */
+async function installBenchInit(
   page: import('playwright').Page,
-  webUrl: string,
-  size: number,
-  seed: SeedResult,
   accessToken: string,
-): Promise<BenchSample> {
-  // Inject the auth token + a tiny rAF instrumentation BEFORE the SPA
-  // starts up. The instrumentation timestamps every requestAnimationFrame
-  // tick — convergence is detected by polling for "no rAF in the last N ms".
+): Promise<void> {
   await page.addInitScript(
     ({ token }) => {
+      const w = window as unknown as Record<string, unknown>;
       try {
         // The auth store hydrates from localStorage on mount.
         localStorage.setItem(
@@ -354,12 +382,11 @@ async function runOne(
       } catch {
         /* localStorage may be unavailable in some contexts */
       }
-      const w = window as unknown as Record<string, unknown>;
-      w.__bench = {
-        rafCount: 0,
-        lastRaf: 0,
-        startedAt: 0,
-      };
+      // Reset the counters on every navigation; only wrap rAF on the
+      // first install so iterations N>1 don't accumulate wrappers.
+      w.__bench = { rafCount: 0, lastRaf: 0, startedAt: 0 };
+      if (w.__benchInstalled) return;
+      w.__benchInstalled = true;
       const orig = window.requestAnimationFrame.bind(window);
       window.requestAnimationFrame = (cb) =>
         orig((t) => {
@@ -372,8 +399,31 @@ async function runOne(
     },
     { token: accessToken },
   );
+}
 
-  const url = `${webUrl}/graph?focus=${seed.centerPageId}&full=1`;
+async function runOne(
+  page: import('playwright').Page,
+  webUrl: string,
+  size: number,
+  seed: SeedResult,
+): Promise<BenchSample> {
+  // Reset counters fresh for this iteration. The init script also resets
+  // them on navigation, but we do it here so the values are clean even
+  // if `goto` is fast enough to start the SPA before the init runs.
+  await page.evaluate(() => {
+    const w = window as unknown as Record<string, unknown>;
+    w.__bench = { rafCount: 0, lastRaf: 0, startedAt: 0 };
+  });
+
+  // The bench renders the GLOBAL graph (`?full=1`, no `focus=`). On
+  // origin/dev (#360 / #375), the GraphPage routes
+  //   wantsGlobal = !focusPageId && showFullGraph
+  // so combining `focus=…&full=1` would silently downgrade to the
+  // ego-graph endpoint (`/pages/{id}/graph/local?hops=2`), which caps
+  // at ~30 nodes regardless of seeded corpus size — every sample would
+  // measure the same ~30-node graph. Dropping the `focus=` param is
+  // what makes the seeded sizes actually matter.
+  const url = `${webUrl}/graph?full=1`;
   const navStart = Date.now();
   await page.goto(url, { waitUntil: 'domcontentloaded' });
 
@@ -407,12 +457,16 @@ async function runOne(
     { quietMs: CONVERGENCE_QUIET_MS, timeoutMs: CONVERGENCE_TIMEOUT_MS },
   );
 
-  // ─ Pan + drag interaction. We sample fps over a short window while
-  //   driving programmatic mouse moves on the canvas. The canvas centre
-  //   is used as the pan anchor; the drag is a small wiggle on three
-  //   random nodes — we don't have node screen positions so the wiggle
-  //   is approximated by moves around the canvas centre, which is
-  //   representative of "user interacting with the graph".
+  // ─ Pan + drag interaction. Drives the renderer + simulation under
+  //   load while we sample fps over a short window. We don't reach
+  //   inside react-force-graph-2d for actual node screen positions —
+  //   the gestures land on whatever the canvas is showing at the time.
+  //   That's deliberate: the metric is "rAF rate while the user is
+  //   interacting with the graph", which is what determines whether
+  //   the page feels smooth. The renderer redraws on every tick of the
+  //   force simulation regardless of which pixel the cursor is over,
+  //   so the fps reading is dominated by simulation cost, not by
+  //   whether we happened to grab a node.
   const box = await page
     .locator('[data-testid="graph-container"] canvas')
     .boundingBox();
@@ -435,8 +489,8 @@ async function runOne(
     await page.waitForTimeout(20);
   }
   await page.mouse.up();
-  // 2) Drag 3 "random" nodes. We don't know exact node screen positions
-  //    so we issue drag gestures at offsets around the canvas centre.
+  // 2) Three drag gestures at random canvas offsets — see the comment
+  //    above; these intentionally don't target specific nodes.
   for (let n = 0; n < 3; n++) {
     const dx = (Math.random() - 0.5) * box.width * 0.6;
     const dy = (Math.random() - 0.5) * box.height * 0.6;
@@ -472,7 +526,7 @@ async function runOne(
     size,
     pageCount: seed.pageCount,
     edgeCount: seed.edgeCount,
-    centerPageId: seed.centerPageId,
+    samplePageId: seed.samplePageId,
     timeToFirstPaintMs,
     layoutConvergenceMs: Math.round(layoutConvergenceMs),
     fpsDuringInteraction: Math.round(fpsDuringInteraction * 10) / 10,
@@ -548,7 +602,7 @@ async function main(): Promise<void> {
     process.stdout.write(`Seeding ${size} pages... `);
     const seed = await seedSize(pool, size, userId);
     seeds.set(size, seed);
-    console.log(`OK (${seed.pageCount} pages, ${seed.edgeCount} edges, focus=${seed.centerPageId})`);
+    console.log(`OK (${seed.pageCount} pages, ${seed.edgeCount} edges, sample=${seed.samplePageId})`);
   }
 
   const browser = await chromium.launch({ headless: args.headless });
@@ -557,11 +611,15 @@ async function main(): Promise<void> {
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     const page = await context.newPage();
     const accessToken = await login(page, args.backendUrl, args.username, args.password);
+    // Install the auth-token + rAF instrumentation ONCE for the lifetime
+    // of the page. Calling it inside the iteration loop accumulates
+    // wrappers; see installBenchInit.
+    await installBenchInit(page, accessToken);
 
     for (const size of args.sizes) {
       const seed = seeds.get(size)!;
       console.log(`\nMeasuring ${size} nodes...`);
-      const sample = await runOne(page, args.webUrl, size, seed, accessToken);
+      const sample = await runOne(page, args.webUrl, size, seed);
       samples.push(sample);
       console.log(
         `  ttfp=${sample.timeToFirstPaintMs}ms  conv=${sample.layoutConvergenceMs}ms` +

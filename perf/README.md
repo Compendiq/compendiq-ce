@@ -267,7 +267,7 @@ npx tsx scripts/perf-graph-bench.ts --cleanup
 |------|---------|-------|
 | `--sizes=500,1000,2000,5000` | full sweep | Comma-separated node counts |
 | `--web-url=URL` | `http://localhost:8081` | Frontend origin Playwright navigates to |
-| `--backend-url=URL` | `http://localhost:3051` | Backend used for `/api/auth/login` |
+| `--backend-url=URL` | `http://localhost:3052` | Backend used for `/api/auth/login` (matches dev compose's `BACKEND_HOST_PORT` default) |
 | `--username=NAME` | `benchuser` | Must already exist (register once) |
 | `--password=PASS` | `benchpass123` | |
 | `--headless=true|false` | `true` | `false` to watch the browser drive |
