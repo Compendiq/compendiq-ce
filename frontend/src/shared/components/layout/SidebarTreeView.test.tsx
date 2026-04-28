@@ -138,11 +138,19 @@ describe('SidebarTreeView', () => {
   });
 
   it('positions indent guide at correct depth for nested levels', () => {
+    // #352: pick a space without a homepage so the tree shows all roots.
+    // (With a homepage set the homepage is now hidden — see the dedicated
+    // #352 test below.) Manually expand "Getting Started" by clicking the
+    // chevron (aria-label="Expand") to surface the collapse-affordance
+    // whose left offset we're asserting.
     useUiStore.setState({
       treeSidebarCollapsed: false,
-      treeSidebarSpaceKey: 'DEV',
+      treeSidebarSpaceKey: 'OPS', // OPS has no homepage; tree shows all roots
     });
     render(<SidebarTreeView />, { wrapper: createWrapper() });
+    // Only one root has children (Getting Started → Installation+Configuration)
+    // so there's exactly one "Expand" chevron at this point.
+    fireEvent.click(screen.getByLabelText('Expand'));
     const guide = screen.getByLabelText('Collapse Getting Started');
     // level=0 => left = 0*16+14 = 14px
     expect(guide.style.left).toBe('14px');
@@ -300,16 +308,20 @@ describe('SidebarTreeView', () => {
     expect(hasFolderIcon).toBe(false);
   });
 
-  it('keeps the homepage visible and expands its children when a space with homepageId is selected', () => {
+  it('hides the homepage from the tree but promotes its children + other roots (#352)', () => {
     useUiStore.setState({
       treeSidebarCollapsed: false,
       treeSidebarSpaceKey: 'DEV',
     });
     render(<SidebarTreeView />, { wrapper: createWrapper() });
-    expect(screen.getByText('Getting Started')).toBeInTheDocument();
+    // The homepage itself is hidden — the user reaches it via the dedicated
+    // space "Home" link, not by clicking a tree entry.
+    expect(screen.queryByText('Getting Started')).not.toBeInTheDocument();
+    // Its children are promoted to top-level roots so they remain navigable.
     expect(screen.getByText('Installation')).toBeInTheDocument();
     expect(screen.getByText('Configuration')).toBeInTheDocument();
-    expect(screen.queryByText('API Reference')).not.toBeInTheDocument();
+    // Other roots (siblings of the homepage) stay visible.
+    expect(screen.getByText('API Reference')).toBeInTheDocument();
   });
 
   it('has a New Space button in sidebar header', () => {

@@ -491,6 +491,27 @@ export class RedisCache {
   }
 
   /**
+   * Invalidate every user's cache of the given type.
+   *
+   * Used when an admin/space-owner mutation changes data that is visible to
+   * all users (e.g. setting a space's custom home page — #352). The per-user
+   * `invalidate(userId, type)` only clears the calling admin's cache and
+   * leaves every other user reading stale data for up to TTL seconds.
+   *
+   * Implemented as a single SCAN cursor walk over `kb:*:{type}:*` against the
+   * shared Redis. Works in single-pod and multi-pod deployments without
+   * needing pub/sub — Redis is the authoritative store, so deleting the keys
+   * is sufficient; subsequent reads from any pod miss and re-populate.
+   */
+  async invalidateAcrossUsers(type: CacheType): Promise<void> {
+    try {
+      await this.scanAndDelete(`kb:*:${type}:*`);
+    } catch (err) {
+      logger.error({ err, type }, 'Redis cache invalidate across users error');
+    }
+  }
+
+  /**
    * Cache-aside with stampede protection.
    *
    * On cache miss, acquires a short-lived NX lock so only one caller computes

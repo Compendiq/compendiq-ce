@@ -5,6 +5,8 @@ interface Space {
   key: string;
   name: string;
   homepageId: string | null;
+  /** #352: admin/space-owner override of the Confluence-derived homepage. */
+  customHomePageId?: number | null;
   lastSynced: string | null;
   pageCount: number;
   source: 'confluence' | 'local';

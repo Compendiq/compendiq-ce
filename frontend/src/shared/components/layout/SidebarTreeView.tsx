@@ -60,12 +60,19 @@ function buildTree(pages: PageTreeItem[], homepageId?: string | null): TreeNode[
   }
   sortChildren(roots);
 
-  // If homepageId is provided, keep the homepage itself as the visible root
-  // so it remains clickable as a tree entry.
+  // #352: when a homepage is configured for the space, hide it from the
+  // sidebar tree — it's reachable via the dedicated "Home" link at the top
+  // of the space view, so showing it again in the tree wastes a slot. Its
+  // children are promoted to top-level roots so the rest of the tree
+  // remains navigable.
   if (homepageId) {
     const homepageNode = nodeMap.get(homepageId);
     if (homepageNode) {
-      return [homepageNode];
+      const promoted = homepageNode.children;
+      const withoutHomepage = roots.filter((r) => r.page.id !== homepageId);
+      return [...promoted, ...withoutHomepage].sort((a, b) =>
+        a.page.title.localeCompare(b.page.title),
+      );
     }
   }
 
@@ -337,19 +344,6 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
       }
     }
   }, [activePageId, pages]);
-
-  // When a space is scoped to its homepage, keep that homepage expanded so
-  // the homepage remains clickable while its immediate children stay visible.
-  useEffect(() => {
-    if (!homepageId) return;
-
-    setExpandedIds((prev) => {
-      if (prev.has(homepageId)) return prev;
-      const next = new Set(prev);
-      next.add(homepageId);
-      return next;
-    });
-  }, [homepageId]);
 
   // Auto-select space based on current page
   useEffect(() => {
