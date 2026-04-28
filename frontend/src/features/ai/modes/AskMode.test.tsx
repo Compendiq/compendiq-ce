@@ -3,7 +3,8 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
-import { AskModeInput, AskExamplePrompts, ASK_EMPTY_TITLE, ASK_EMPTY_SUBTITLE, ASK_EXAMPLE_PROMPTS } from './AskMode';
+import { AskModeInput, AskExamplePrompts, ASK_EMPTY_TITLE, ASK_EMPTY_SUBTITLE } from './AskMode';
+import { ASK_EXAMPLE_PROMPTS } from './ask-example-prompts';
 import { AiProvider } from '../AiContext';
 import { useAuthStore } from '../../../stores/auth-store';
 

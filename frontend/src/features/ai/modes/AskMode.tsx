@@ -4,6 +4,7 @@ import { useAiContext, nextMessageId } from '../AiContext';
 import { toast } from 'sonner';
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '../../../shared/lib/api';
+import { ASK_EXAMPLE_PROMPTS } from './ask-example-prompts';
 
 interface McpDocsSettings {
   enabled: boolean;
@@ -191,15 +192,6 @@ export function AskModeInput() {
 export const ASK_EMPTY_TITLE = 'Ask questions about your knowledge base';
 export const ASK_EMPTY_SUBTITLE = 'Your questions will be answered using RAG over your Confluence pages';
 
-// #350: clickable example prompts shown on the empty state. Each fills the
-// input rather than auto-submits — auto-submit would surprise the user.
-export const ASK_EXAMPLE_PROMPTS: readonly string[] = [
-  'Summarise the most-edited pages in the last 30 days',
-  'Find pages that look like duplicates of each other',
-  'Draft a how-to from pages tagged "onboarding"',
-  'What changed in the engineering space in the last 7 days?',
-];
-
 export function AskExamplePrompts() {
   const { setInput } = useAiContext();
 
@@ -212,31 +204,34 @@ export function AskExamplePrompts() {
     });
   };
 
+  // Use real <ul>/<li> elements so each <button> keeps its implicit "button"
+  // role for assistive tech. Previously we set role="listitem" on the buttons,
+  // which stripped the button role and made screen readers announce
+  // "listitem" instead of "button".
   return (
-    <div
-      role="list"
+    <ul
       aria-label="Example prompts"
-      className="mt-6 grid w-full max-w-xl grid-cols-1 gap-2 sm:grid-cols-2"
+      className="mt-6 grid w-full max-w-xl grid-cols-1 gap-2 sm:grid-cols-2 list-none p-0"
     >
       {ASK_EXAMPLE_PROMPTS.map((prompt) => (
-        <button
-          key={prompt}
-          role="listitem"
-          type="button"
-          onClick={() => pick(prompt)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              pick(prompt);
-            }
-          }}
-          className="nm-card-interactive flex items-start gap-2 rounded-lg p-3 text-left text-xs text-foreground/80 hover:text-foreground"
-          data-testid="ask-example-prompt"
-        >
-          <Sparkles size={14} className="mt-0.5 shrink-0 text-primary" />
-          <span>{prompt}</span>
-        </button>
+        <li key={prompt}>
+          <button
+            type="button"
+            onClick={() => pick(prompt)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                pick(prompt);
+              }
+            }}
+            className="nm-card-interactive flex w-full items-start gap-2 rounded-lg p-3 text-left text-xs text-foreground/80 hover:text-foreground"
+            data-testid="ask-example-prompt"
+          >
+            <Sparkles size={14} className="mt-0.5 shrink-0 text-primary" />
+            <span>{prompt}</span>
+          </button>
+        </li>
       ))}
-    </div>
+    </ul>
   );
 }
