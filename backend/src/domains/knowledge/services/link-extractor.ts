@@ -34,7 +34,6 @@
  */
 import { JSDOM } from 'jsdom';
 import type { PoolClient } from 'pg';
-import { query } from '../../../core/db/postgres.js';
 import { logger } from '../../../core/utils/logger.js';
 
 const APP_PAGE_PATH_RE = /^\/pages\/(\d+)(?:\/|$|\?|#)/;
@@ -143,19 +142,35 @@ export function getInternalHosts(): Set<string> {
 
 /**
  * Build the title→id map used by the `#confluence-page:<title>` resolver.
- * Ambiguous titles are dropped so we never emit an edge to a random page.
- * Returns both the map and an `activeIds` set for filtering deleted targets.
+ * Ambiguous titles are dropped from `titleToId` so we never emit an edge to
+ * a random page. Returns three views over the same underlying rows:
+ *
+ * - `titleToId` — title → id, with ambiguous titles **dropped** (used by
+ *   the parser to resolve `#confluence-page:<title>` to a single id).
+ * - `activeIds` — set of all non-deleted page ids (used to filter out
+ *   edges whose target was deleted between scan and write).
+ * - `idToTitle` — id → title, **including** ids whose title is shared by
+ *   another page. The incremental "find referrers" pass needs the title
+ *   of every changed page so it can search for `#confluence-page:<title>`
+ *   substrings, even when the title is ambiguous.
+ *
+ * MUST run on the caller's transactional `client` — the producer contract
+ * (`embedding-relationship-hooks.ts`) requires producers to read inside
+ * the surrounding BEGIN/COMMIT, not on a separate pool connection.
  */
-async function loadTitleIndex(): Promise<{
+async function loadTitleIndex(client: PoolClient): Promise<{
   titleToId: Map<string, number>;
   activeIds: Set<number>;
+  idToTitle: Map<number, string>;
 }> {
-  const titleRows = await query<{ id: number; title: string }>(
+  const titleRows = await client.query<{ id: number; title: string }>(
     `SELECT id, title FROM pages WHERE deleted_at IS NULL AND title IS NOT NULL`,
   );
   const titleToId = new Map<string, number>();
   const seenTitles = new Set<string>();
+  const idToTitle = new Map<number, string>();
   for (const r of titleRows.rows) {
+    idToTitle.set(r.id, r.title);
     if (seenTitles.has(r.title)) {
       titleToId.delete(r.title);
       continue;
@@ -164,7 +179,20 @@ async function loadTitleIndex(): Promise<{
     titleToId.set(r.title, r.id);
   }
   const activeIds = new Set(titleRows.rows.map((r) => r.id));
-  return { titleToId, activeIds };
+  return { titleToId, activeIds, idToTitle };
+}
+
+/**
+ * Escape a string for use as a LIKE pattern *value*. We're parameterising
+ * the pattern (not concatenating into SQL) so this only neutralises LIKE's
+ * own meta-chars (`%`, `_`, `\`) — there is no SQL-injection vector here.
+ *
+ * Used to build the body_html substring filter for the symmetric
+ * incremental rescan. Without escaping, a page title containing `%` or
+ * `_` would silently match unrelated pages.
+ */
+function escapeLikePattern(raw: string): string {
+  return raw.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
 }
 
 /**
@@ -175,9 +203,18 @@ async function loadTitleIndex(): Promise<{
  * similarity / label_overlap / parent_child edges. Caller is responsible for
  * the surrounding transaction.
  *
- * `changedPageIds`: when provided and non-empty, only those pages are
- * scanned as link sources (matches the existing producer's incremental
- * scoping). Pass `null`/`undefined` for a full recompute.
+ * `changedPageIds`: when provided and non-empty, the scan is scoped
+ * **symmetrically** — both
+ *   (a) the changed pages themselves (as link **sources**), AND
+ *   (b) any other page whose `body_html` could reference one of the changed
+ *       pages as a **target** (via `/pages/<id>` or `#confluence-page:<title>`
+ *       substrings).
+ * This mirrors the symmetric DELETE in `computePageRelationships`
+ * (`page_id_1 = ANY($1) OR page_id_2 = ANY($1)`): without (b), an unchanged
+ * page B that links to a changed page C would have its B↔C edge wiped by
+ * the DELETE and never re-emitted, because B's body was never re-scanned.
+ *
+ * Pass `null`/`undefined` for a full recompute.
  *
  * Returns the number of `(source,target)` edges newly inserted (ON CONFLICT
  * DO NOTHING means re-running yields 0).
@@ -186,19 +223,39 @@ export async function runExplicitLinkProducer(
   client: PoolClient,
   changedPageIds?: readonly number[] | null,
 ): Promise<number> {
-  const { titleToId, activeIds } = await loadTitleIndex();
+  const { titleToId, activeIds, idToTitle } = await loadTitleIndex(client);
   const internalHosts = getInternalHosts();
 
   const useIncremental = changedPageIds && changedPageIds.length > 0;
-  const pagesResult = useIncremental
-    ? await client.query<{ id: number; body_html: string | null }>(
-        `SELECT id, body_html FROM pages
-         WHERE id = ANY($1::int[]) AND deleted_at IS NULL`,
-        [Array.from(changedPageIds!)],
-      )
-    : await client.query<{ id: number; body_html: string | null }>(
-        `SELECT id, body_html FROM pages WHERE deleted_at IS NULL`,
-      );
+
+  let pagesResult: { rows: { id: number; body_html: string | null }[] };
+  if (useIncremental) {
+    // Build the LIKE-pattern list for the "find referrers" pass. Anchor
+    // each pattern with `%/pages/<id>%` (catches both relative `/pages/42`
+    // and absolute `https://host/pages/42`) and `%#confluence-page:<title>%`
+    // for the Confluence-sync placeholder shape. Substring patterns are
+    // intentionally loose — any false-positive page just gets re-parsed by
+    // JSDOM and contributes 0 edges, which is correct (idempotent).
+    const idArr = Array.from(changedPageIds!);
+    const patterns: string[] = [];
+    for (const id of idArr) {
+      patterns.push(`%/pages/${id}%`);
+      const title = idToTitle.get(id);
+      if (title && title.length > 0) {
+        patterns.push(`%#confluence-page:${escapeLikePattern(title)}%`);
+      }
+    }
+    pagesResult = await client.query<{ id: number; body_html: string | null }>(
+      `SELECT id, body_html FROM pages
+       WHERE deleted_at IS NULL
+         AND (id = ANY($1::int[]) OR body_html LIKE ANY($2::text[]))`,
+      [idArr, patterns],
+    );
+  } else {
+    pagesResult = await client.query<{ id: number; body_html: string | null }>(
+      `SELECT id, body_html FROM pages WHERE deleted_at IS NULL`,
+    );
+  }
 
   let edgesWritten = 0;
   for (const page of pagesResult.rows) {
