@@ -1,9 +1,10 @@
-import { useCallback, useState } from 'react';
-import { Send, Loader2, Link2, X, Plus } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Send, Loader2, Link2, X, Plus, Sparkles } from 'lucide-react';
 import { useAiContext, nextMessageId } from '../AiContext';
 import { toast } from 'sonner';
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '../../../shared/lib/api';
+import { ASK_EXAMPLE_PROMPTS } from './ask-example-prompts';
 
 interface McpDocsSettings {
   enabled: boolean;
@@ -55,6 +56,15 @@ export function AskModeInput() {
   const removeUrl = (url: string) => {
     setExternalUrls((prev) => prev.filter((u) => u !== url));
   };
+
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // #350: focus input on mount so the user can type immediately. Use a ref +
+  // useEffect rather than autoFocus so it survives StrictMode double-mount and
+  // route transitions reliably.
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
 
   const handleAsk = useCallback(async () => {
     if (!input.trim() || isStreaming) return;
@@ -157,12 +167,14 @@ export function AskModeInput() {
           </button>
         )}
         <input
+          ref={inputRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSubmit()}
           placeholder="Ask a question..."
           disabled={isStreaming}
           className="flex-1 bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
+          data-testid="ask-input"
         />
         <button
           onClick={handleSubmit}
@@ -179,3 +191,47 @@ export function AskModeInput() {
 
 export const ASK_EMPTY_TITLE = 'Ask questions about your knowledge base';
 export const ASK_EMPTY_SUBTITLE = 'Your questions will be answered using RAG over your Confluence pages';
+
+export function AskExamplePrompts() {
+  const { setInput } = useAiContext();
+
+  const pick = (prompt: string) => {
+    setInput(prompt);
+    // Defer focus to next tick so the input mounts before we focus it.
+    requestAnimationFrame(() => {
+      const el = document.querySelector<HTMLInputElement>('[data-testid="ask-input"]');
+      el?.focus();
+    });
+  };
+
+  // Use real <ul>/<li> elements so each <button> keeps its implicit "button"
+  // role for assistive tech. Previously we set role="listitem" on the buttons,
+  // which stripped the button role and made screen readers announce
+  // "listitem" instead of "button".
+  return (
+    <ul
+      aria-label="Example prompts"
+      className="mt-6 grid w-full max-w-xl grid-cols-1 gap-2 sm:grid-cols-2 list-none p-0"
+    >
+      {ASK_EXAMPLE_PROMPTS.map((prompt) => (
+        <li key={prompt}>
+          <button
+            type="button"
+            onClick={() => pick(prompt)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                pick(prompt);
+              }
+            }}
+            className="nm-card-interactive flex w-full items-start gap-2 rounded-lg p-3 text-left text-xs text-foreground/80 hover:text-foreground"
+            data-testid="ask-example-prompt"
+          >
+            <Sparkles size={14} className="mt-0.5 shrink-0 text-primary" />
+            <span>{prompt}</span>
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}

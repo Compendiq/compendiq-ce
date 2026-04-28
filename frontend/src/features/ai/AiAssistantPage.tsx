@@ -14,7 +14,7 @@ import { SourceCitations } from './SourceCitations';
 import { CitationChips } from './CitationChips';
 import { AiProvider, useAiContext, type Mode, type Message } from './AiContext';
 import {
-  AskModeInput, ASK_EMPTY_TITLE, ASK_EMPTY_SUBTITLE,
+  AskModeInput, AskExamplePrompts, ASK_EMPTY_TITLE, ASK_EMPTY_SUBTITLE,
   ImproveTypeSelector, ImproveDiffView, ImproveModeInput, IMPROVE_EMPTY_TITLE, improveEmptySubtitle,
   GenerateModeInput, GENERATE_EMPTY_TITLE, GENERATE_EMPTY_SUBTITLE,
   SummarizeModeInput, SUMMARIZE_EMPTY_TITLE, summarizeEmptySubtitle,
@@ -319,6 +319,7 @@ function AiAssistantInner() {
               <Bot size={44} className="mb-4 text-muted-foreground/50" />
               <p className="text-base font-medium">{getEmptyTitle(mode)}</p>
               <p className="mt-1 max-w-sm text-sm text-muted-foreground">{getEmptySubtitle(mode, page)}</p>
+              {mode === 'ask' && <AskExamplePrompts />}
             </div>
           )}
 
