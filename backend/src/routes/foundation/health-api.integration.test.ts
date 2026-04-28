@@ -118,6 +118,62 @@ describe.skipIf(!dbAvailable)('health-api integration — Compendiq/compendiq-ee
     expect(res.statusCode).toBe(401);
   });
 
+  it('error-rate counts BLOCKED-suffixed actions (regression for LIKE-filter gap)', async () => {
+    // The old `LIKE '%FAILED%' OR LIKE '%DENIED%'` filter missed
+    // `IP_ALLOWLIST_BLOCKED`. This test pins that the explicit
+    // allowlist captures it.
+    await query(
+      `INSERT INTO users (username, password_hash, role) VALUES ('e1', 'h', 'user')`,
+    );
+    const uid = (
+      await query<{ id: string }>(`SELECT id FROM users WHERE username = 'e1'`)
+    ).rows[0]!.id;
+    await query(
+      `INSERT INTO audit_log (user_id, action, resource_type, resource_id, metadata, created_at)
+       VALUES ($1, 'IP_ALLOWLIST_BLOCKED', 'ip', NULL, '{}'::jsonb, NOW()),
+              ($1, 'LOGIN', 'auth', NULL, '{}'::jsonb, NOW()),
+              ($1, 'LOGIN', 'auth', NULL, '{}'::jsonb, NOW()),
+              ($1, 'LOGIN', 'auth', NULL, '{}'::jsonb, NOW())`,
+      [uid],
+    );
+
+    const token = await readToken();
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/internal/health?token=${token}`,
+    });
+    expect(res.statusCode).toBe(200);
+    // 1 BLOCKED out of 4 total = 0.25
+    expect((res.json() as Record<string, unknown>).errorRate24h).toBe(0.25);
+  });
+
+  it('error-rate ignores non-error security signals (PROMPT_INJECTION_DETECTED)', async () => {
+    // `PROMPT_INJECTION_DETECTED` is a security observation, not an
+    // operational error. It must NOT inflate the generic error rate
+    // (kept out of ERROR_AUDIT_ACTIONS deliberately).
+    await query(
+      `INSERT INTO users (username, password_hash, role) VALUES ('e2', 'h', 'user')`,
+    );
+    const uid = (
+      await query<{ id: string }>(`SELECT id FROM users WHERE username = 'e2'`)
+    ).rows[0]!.id;
+    await query(
+      `INSERT INTO audit_log (user_id, action, resource_type, resource_id, metadata, created_at)
+       VALUES ($1, 'PROMPT_INJECTION_DETECTED', 'llm', NULL, '{}'::jsonb, NOW()),
+              ($1, 'LOGIN', 'auth', NULL, '{}'::jsonb, NOW())`,
+      [uid],
+    );
+
+    const token = await readToken();
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/internal/health?token=${token}`,
+    });
+    expect(res.statusCode).toBe(200);
+    // PROMPT_INJECTION_DETECTED is excluded from the numerator.
+    expect((res.json() as Record<string, unknown>).errorRate24h).toBe(0);
+  });
+
   it('returns errorRate24h=0 and lastSyncAt=null on an empty DB', async () => {
     const token = await readToken();
     const res = await app.inject({

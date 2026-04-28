@@ -44,7 +44,12 @@ export const DEFAULT_IP_ALLOWLIST_CONFIG: IpAllowlistConfig = {
   enabled: false,
   cidrs: [],
   trustedProxies: ['127.0.0.1/32', '::1/128'],
-  exceptions: ['/api/health', '/api/admin/license', '/api/auth/'],
+  // `/api/internal/health` is exempt by default so the compendiq-mgmt
+  // poller (Compendiq/compendiq-ee#113 Part A) works out-of-the-box on
+  // EE deployments that turn on the IP allowlist. Operators who want to
+  // restrict mgmt access to specific CIDRs can override this list via
+  // `PUT /api/admin/ip-allowlist`.
+  exceptions: ['/api/health', '/api/internal/health', '/api/admin/license', '/api/auth/'],
 };
 
 let getConfig: (() => IpAllowlistConfig) | null = null;

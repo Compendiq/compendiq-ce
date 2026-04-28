@@ -50,6 +50,25 @@ interface HealthQueryString {
  */
 const TOKEN_HEX_LEN = 64;
 
+/**
+ * Audit actions counted in the `errorRate24h` numerator. Pairs with the
+ * closed `AuditAction` union in `audit-service.ts`; adding a new
+ * error-shaped action requires updating BOTH the union and this list.
+ *
+ * Excludes events that aren't true operational errors (e.g.
+ * `SYNC_CONFLICT_DETECTED` is a workflow signal, not a failure;
+ * `PROMPT_INJECTION_DETECTED` is a security observation worth surfacing
+ * separately, not lumped into the generic error rate).
+ */
+const ERROR_AUDIT_ACTIONS = [
+  'LOGIN_FAILED',
+  'ADMIN_ACCESS_DENIED',
+  'IP_ALLOWLIST_BLOCKED',
+  'WEBHOOK_DELIVERY_FAILED',
+  'WEBHOOK_DELIVERY_DEAD',
+  'EMBEDDING_RESET_FAILED',
+] as const;
+
 async function readHealthApiToken(): Promise<string | null> {
   const r = await query<{ setting_value: string }>(
     `SELECT setting_value FROM admin_settings WHERE setting_key = 'health_api_token'`,
@@ -109,15 +128,24 @@ async function buildHealthReport(fastify: FastifyInstance): Promise<HealthReport
       // `cached_spaces` was renamed to `spaces` in migration 040.
       `SELECT MAX(last_synced) AS ts FROM spaces`,
     ),
-    // Error-rate window: count "*FAILED*" / "*DENIED*" rows over total
-    // audit rows in the last 24 h. Indexed by `idx_audit_log_created`.
-    // Returns 0 when total is 0 (no audit activity in the window).
+    // Error-rate window: count rows with one of the explicitly-listed
+    // error-shaped actions over total audit rows in the last 24 h.
+    // Indexed by `idx_audit_log_created`. Returns 0 when total is 0
+    // (no audit activity in the window).
+    //
+    // Why an explicit allowlist instead of `LIKE '%FAILED%' OR LIKE '%DENIED%'`:
+    // the substring filter caught most error-shaped actions but missed
+    // BLOCKED-suffixed ones (IP_ALLOWLIST_BLOCKED) and would silently
+    // drift as the audit-action vocabulary grows. The explicit list
+    // pairs with the closed `AuditAction` union in `audit-service.ts`;
+    // adding a new error-shaped action requires updating both.
     query<{ failed: string; total: string }>(
       `SELECT
-         COUNT(*) FILTER (WHERE action LIKE '%FAILED%' OR action LIKE '%DENIED%')::text AS failed,
+         COUNT(*) FILTER (WHERE action = ANY($1::text[]))::text AS failed,
          COUNT(*)::text AS total
        FROM audit_log
        WHERE created_at > NOW() - INTERVAL '24 hours'`,
+      [ERROR_AUDIT_ACTIONS],
     ),
   ]);
 

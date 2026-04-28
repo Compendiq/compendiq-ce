@@ -87,6 +87,8 @@ describe('ip-allowlist-service', () => {
       expect(DEFAULT_IP_ALLOWLIST_CONFIG.exceptions).toContain('/api/health');
       expect(DEFAULT_IP_ALLOWLIST_CONFIG.exceptions).toContain('/api/admin/license');
       expect(DEFAULT_IP_ALLOWLIST_CONFIG.exceptions).toContain('/api/auth/');
+      // Compendiq/compendiq-ee#113 Part A — mgmt poller path.
+      expect(DEFAULT_IP_ALLOWLIST_CONFIG.exceptions).toContain('/api/internal/health');
     });
   });
 
