@@ -72,6 +72,7 @@ import { APP_VERSION } from './core/utils/version.js';
 import { loadEnterprisePlugin, setCurrentLicense } from './core/enterprise/loader.js';
 import { bootstrapLlmProviders } from './domains/llm/services/llm-provider-bootstrap.js';
 import { bootstrapSsrfAllowlist } from './domains/confluence/services/sync-service.js';
+import { registerKnowledgeRelationshipProducers } from './domains/knowledge/services/relationship-producers.js';
 import { initSsrfAllowlistBus } from './core/services/ssrf-allowlist-bus.js';
 import { initPresenceBus } from './core/services/presence-service.js';
 import { initCacheBus, close as closeCacheBus } from './core/services/redis-cache-bus.js';
@@ -260,6 +261,13 @@ export async function buildApp() {
   // the pub/sub channel with N redundant add events (other pods already
   // populated their sets from the same DB rows on their own boot).
   await bootstrapSsrfAllowlist();
+
+  // ── Knowledge Relationship Producers (issue #359) ───────────────
+  // Register cross-domain edge producers (e.g. explicit_link from
+  // body_html anchors) into the embedding-service registry so they run
+  // inside `computePageRelationships()`'s transaction. Idempotent: safe
+  // to call once per process.
+  registerKnowledgeRelationshipProducers();
 
   // Known Fastify HTTP error names that are safe to expose to clients.
   // Anything not in this set could leak internal details (e.g. TypeError, RangeError).

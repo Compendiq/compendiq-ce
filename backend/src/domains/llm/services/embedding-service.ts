@@ -9,6 +9,7 @@ import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js'
 import { CircuitBreakerOpenError, getProviderBreaker } from '../../../core/services/circuit-breaker.js';
 import { getReembedHistoryRetention } from '../../../core/services/admin-settings-service.js';
 import { enqueueJob } from '../../../core/services/queue-service.js';
+import { listRelationshipProducers } from './embedding-relationship-hooks.js';
 import pgvector from 'pgvector';
 
 const CHUNK_SIZE = 500;          // ~500 tokens target
@@ -931,11 +932,30 @@ export async function computePageRelationships(changedPageIds?: number[]): Promi
       [useIncremental ? changedPageIds : null],
     );
 
+    // #359: cross-domain producers (registered at app bootstrap) run inside
+    // the same transaction. ESLint forbids `llm → knowledge` imports, so the
+    // explicit_link producer registers itself via `registerRelationshipProducer`
+    // — see `embedding-relationship-hooks.ts`. Producers honour the same
+    // `changedPageIds` scoping; failures bubble up and ROLLBACK below.
+    let extraEdges = 0;
+    const extraCounts: Record<string, number> = {};
+    for (const producer of listRelationshipProducers()) {
+      const inserted = await producer.fn(client, useIncremental ? changedPageIds : null);
+      extraCounts[producer.name] = inserted;
+      extraEdges += inserted;
+    }
+
     await client.query('COMMIT');
 
-    const totalEdges = similarityResult.rows.length + labelResult.rows.length;
-    logger.info({ embeddingSimilarity: similarityResult.rows.length, labelOverlap: labelResult.rows.length },
-      'Page relationships computed');
+    const totalEdges = similarityResult.rows.length + labelResult.rows.length + extraEdges;
+    logger.info(
+      {
+        embeddingSimilarity: similarityResult.rows.length,
+        labelOverlap: labelResult.rows.length,
+        ...extraCounts,
+      },
+      'Page relationships computed',
+    );
     return totalEdges;
   } catch (err) {
     await client.query('ROLLBACK');

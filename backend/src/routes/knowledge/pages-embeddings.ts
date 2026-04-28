@@ -289,6 +289,10 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
   }, async (request) => {
     const userId = request.userId;
 
+    // #359: `computePageRelationships` runs every registered edge producer
+    // inside its transaction — including explicit_link, registered at app
+    // bootstrap via `registerKnowledgeRelationshipProducers()`. Returned
+    // count is the sum across all producers.
     const edgeCount = await computePageRelationships();
     await cache.invalidate(userId, 'pages');
 
