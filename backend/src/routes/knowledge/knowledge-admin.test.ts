@@ -293,4 +293,62 @@ describe('knowledge-admin routes - happy path', () => {
 
     expect(response.statusCode).toBe(404);
   });
+
+  // #356: pages.id is SERIAL — bare `WHERE id = $1` against a non-numeric param
+  // makes Postgres throw 22P02 invalid_text_representation, surfacing as a 500.
+  // Numeric-guard the id branch so non-numeric ids only match confluence_id.
+  it('should treat a non-numeric pageId as a Confluence id (404 when missing, not 500)', async () => {
+    mockQueryFn.mockResolvedValue({ rows: [] });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/llm/summary-regenerate/non-numeric-confluence-id',
+    });
+
+    // Was 500 before #356 fix (Postgres 22P02). Must be a clean 404 now.
+    expect(response.statusCode).toBe(404);
+    // The id branch must not be exercised for non-numeric input; only the
+    // confluence_id-only SELECT runs.
+    expect(mockQueryFn).toHaveBeenCalledWith(
+      'SELECT id FROM pages WHERE confluence_id = $1',
+      ['non-numeric-confluence-id'],
+    );
+  });
+
+  it('should resolve a numeric pageId via the id::int branch', async () => {
+    mockQueryFn.mockResolvedValue({ rows: [{ id: 99 }] });
+    mockRegenerateSummary.mockResolvedValue(undefined);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/llm/summary-regenerate/99',
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockQueryFn).toHaveBeenCalledWith(
+      'SELECT id FROM pages WHERE id = $1::int OR confluence_id = $2',
+      ['99', '99'],
+    );
+    expect(mockRegenerateSummary).toHaveBeenCalledWith(99);
+  });
+
+  // #356 AC: when no provider is configured, the route must still respond
+  // cleanly (the fire-and-forget runSummaryBatch call swallows the
+  // no-provider case internally and marks pending pages as skipped). The
+  // route's contract is: if the page exists, queue regeneration and 200.
+  it('should respond 200 even when summary batch resolver is degraded (no provider)', async () => {
+    mockQueryFn.mockResolvedValue({ rows: [{ id: 7 }] });
+    mockRegenerateSummary.mockResolvedValue(undefined);
+    // Simulate runSummaryBatch's no-provider path (it logs+returns 0/0,
+    // does NOT throw). Route must not 500 because of it.
+    mockRunSummaryBatch.mockResolvedValue({ processed: 0, errors: 0 });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/llm/summary-regenerate/7',
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().message).toContain('queued');
+  });
 });
