@@ -4,6 +4,31 @@ import { query } from '../../postgres.js';
 
 const dbAvailable = await isDbAvailable();
 
+/**
+ * Tests focus on what migration 073 *itself adds* to either deployment:
+ *   - the 3 P0f columns (prompt_hash, prompt_injection_detected, sanitized)
+ *   - the 4 partial indexes
+ *
+ * The base table shape (action / model / provider / input_tokens / etc.)
+ * is owned by whichever migration created the table first. In a CE-only
+ * deployment that's migration 073 itself (CREATE TABLE IF NOT EXISTS).
+ * In a `compendiq-ee` merged build, EE's `060_llm_audit_log.sql` ran
+ * earlier and the CREATE TABLE here is a no-op — so EE's stricter
+ * NOT-NULL constraints on `action`/`model`/`provider` apply. Tests must
+ * not pin nullability/defaults of those columns or they'll diverge
+ * between deployments.
+ */
+async function isEeExtendedSchema(): Promise<boolean> {
+  // EE 060 adds plaintext columns that CE 073 does not. Their presence
+  // is the canonical signal that the table was created by EE's earlier
+  // migration with stricter NOT-NULL constraints on action/model/provider.
+  const r = await query<{ column_name: string }>(
+    `SELECT column_name FROM information_schema.columns
+      WHERE table_name='llm_audit_log' AND column_name='input_text'`,
+  );
+  return r.rows.length > 0;
+}
+
 describe.skipIf(!dbAvailable)('Migration 073 — llm_audit_log + P0f columns (Compendiq/compendiq-ee#115)', () => {
   beforeAll(async () => { await setupTestDb(); });
   afterAll(async () => { await teardownTestDb(); });
@@ -16,46 +41,27 @@ describe.skipIf(!dbAvailable)('Migration 073 — llm_audit_log + P0f columns (Co
     expect(tables.rows).toHaveLength(1);
   });
 
-  it('declares the documented columns with correct nullability + defaults', async () => {
+  it('declares the P0f delta columns with correct nullability + defaults', async () => {
+    // Migration 073 ALTER TABLEs to add three P0f columns regardless of
+    // which migration originally created the table. Pin those exactly;
+    // skip the base-shape columns since they vary CE-only vs EE merged.
     const cols = await query<{
       column_name: string;
-      data_type: string;
       is_nullable: 'YES' | 'NO';
       column_default: string | null;
     }>(
-      `SELECT column_name, data_type, is_nullable, column_default
+      `SELECT column_name, is_nullable, column_default
          FROM information_schema.columns
         WHERE table_name='llm_audit_log'
-        ORDER BY ordinal_position`,
+          AND column_name IN ('prompt_hash','prompt_injection_detected','sanitized')`,
     );
     const byName = Object.fromEntries(cols.rows.map((r) => [r.column_name, r]));
 
-    expect(byName.id?.is_nullable).toBe('NO');
-    expect(byName.user_id?.is_nullable).toBe('YES');
-    expect(byName.action?.is_nullable).toBe('YES');
-    expect(byName.model?.is_nullable).toBe('YES');
-    expect(byName.provider?.is_nullable).toBe('YES');
-    expect(byName.input_tokens?.is_nullable).toBe('NO');
-    expect(byName.output_tokens?.is_nullable).toBe('NO');
-    expect(byName.duration_ms?.is_nullable).toBe('NO');
-    expect(byName.status?.is_nullable).toBe('NO');
-    expect(byName.error_message?.is_nullable).toBe('YES');
-
-    // P0f delta — must be present even on EE-existing tables (added via
-    // ALTER TABLE ADD COLUMN IF NOT EXISTS).
-    expect(byName.prompt_hash?.is_nullable).toBe('YES'); // nullable so EE writers that elect to skip the hash still work
+    expect(byName.prompt_hash?.is_nullable).toBe('YES');
     expect(byName.prompt_injection_detected?.is_nullable).toBe('NO');
     expect(byName.sanitized?.is_nullable).toBe('NO');
-
-    expect(byName.created_at?.is_nullable).toBe('NO');
-
-    // Boolean defaults must be FALSE so the columns work for older callers
-    // that don't pass the new flags.
     expect(byName.prompt_injection_detected?.column_default).toMatch(/false/i);
     expect(byName.sanitized?.column_default).toMatch(/false/i);
-    expect(byName.created_at?.column_default).toMatch(/now\(\)/i);
-    expect(byName.input_tokens?.column_default).toMatch(/^0$/);
-    expect(byName.status?.column_default).toMatch(/'success'/i);
   });
 
   it('declares the documented indexes', async () => {
@@ -85,8 +91,18 @@ describe.skipIf(!dbAvailable)('Migration 073 — llm_audit_log + P0f columns (Co
     expect(fk.rows[0]?.delete_rule).toBe('SET NULL');
   });
 
-  it('accepts a minimal insert; booleans default to FALSE', async () => {
-    await query(`INSERT INTO llm_audit_log DEFAULT VALUES`);
+  it('booleans default to FALSE on minimal insert (deployment-aware)', async () => {
+    // EE 060 makes action/model/provider/input_messages NOT NULL with no
+    // default. Provide them when running against the EE-extended schema;
+    // CE-only deployments accept DEFAULT VALUES.
+    if (await isEeExtendedSchema()) {
+      await query(
+        `INSERT INTO llm_audit_log (action, model, provider, input_messages)
+         VALUES ('test', 'm', 'p', '[]'::jsonb)`,
+      );
+    } else {
+      await query(`INSERT INTO llm_audit_log DEFAULT VALUES`);
+    }
     const r = await query<{
       prompt_injection_detected: boolean;
       sanitized: boolean;
@@ -111,10 +127,18 @@ describe.skipIf(!dbAvailable)('Migration 073 — llm_audit_log + P0f columns (Co
       `INSERT INTO users (username, password_hash, role) VALUES ('audit-u1','h','user') RETURNING id`,
     );
     const uid = u.rows[0]!.id;
-    await query(
-      `INSERT INTO llm_audit_log (user_id, prompt_hash) VALUES ($1, $2)`,
-      [uid, 'b'.repeat(64)],
-    );
+    if (await isEeExtendedSchema()) {
+      await query(
+        `INSERT INTO llm_audit_log (user_id, action, model, provider, input_messages, prompt_hash)
+         VALUES ($1, 'test', 'm', 'p', '[]'::jsonb, $2)`,
+        [uid, 'b'.repeat(64)],
+      );
+    } else {
+      await query(
+        `INSERT INTO llm_audit_log (user_id, prompt_hash) VALUES ($1, $2)`,
+        [uid, 'b'.repeat(64)],
+      );
+    }
     await query(`DELETE FROM users WHERE id = $1`, [uid]);
     const r = await query<{ user_id: string | null }>(
       `SELECT user_id FROM llm_audit_log ORDER BY id DESC LIMIT 1`,
