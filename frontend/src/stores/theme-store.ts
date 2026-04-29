@@ -42,7 +42,7 @@ export const THEMES: ThemeMeta[] = [
     label: 'Graphite Honey',
     description: 'Graphite surfaces with honey accent — neumorphic dark',
     category: 'dark',
-    preview: { bg: '#121211', card: '#22211e', primary: '#f9c74f', accent: '#f5efe0' },
+    preview: { bg: '#121212', card: '#1f1f1f', primary: '#f9c74f', accent: '#ece9e2' },
   },
   {
     id: 'honey-linen',
@@ -52,7 +52,7 @@ export const THEMES: ThemeMeta[] = [
     // Hex values must match the actual rendered surfaces in
     // index.css [data-theme="honey-linen"] — the picker chip is the only
     // way users see the surface color before applying the theme.
-    preview: { bg: '#f7f7f4', card: '#ffffff', primary: '#f9c74f', accent: '#0a0a0a' },
+    preview: { bg: '#f7f7f7', card: '#ffffff', primary: '#f9c74f', accent: '#0a0a0a' },
   },
 ];
 

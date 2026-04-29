@@ -93,11 +93,11 @@ h1, h2, h3, h4, h5, h6,
 @theme {
   /* Default theme: Graphite Honey — graphite surfaces with honey accent (neumorphic dark).
      Hex values mirror compendiq-landing/src/styles/tokens.css [data-theme='graphite-honey']. */
-  --color-background: #121211;          /* graphite */
-  --color-foreground: #f5efe0;          /* warm cream, not pure white */
-  --color-card: #22211e;
-  --color-card-foreground: #f5efe0;
-  --color-card-elevated: #2a2925;
+  --color-background: #121212;          /* neutral graphite (was #121211 — warm tint removed) */
+  --color-foreground: #ece9e2;          /* near-neutral cream (was #f5efe0 — warmth dialled back) */
+  --color-card: #1f1f1f;                /* neutral dark gray pane (was #22211e — warm tint removed) */
+  --color-card-foreground: #ece9e2;
+  --color-card-elevated: #262626;       /* neutral elevated pane (was #2a2925) */
   --color-primary: #f9c74f;             /* honey — identical across themes */
   --color-primary-foreground: #0a0a0a;  /* black on honey for AA contrast */
   --color-primary-gradient-start: #fdd56d;
@@ -231,7 +231,7 @@ h1, h2, h3, h4, h5, h6,
 /* ---- Theme: Honey Linen — linen cream with honey accent (neumorphic light) ----
    Hex values mirror compendiq-landing/src/styles/tokens.css [data-theme='honey-linen']. */
 [data-theme="honey-linen"] {
-  --color-background: #f7f7f4;          /* near-neutral white with a whisper of warmth */
+  --color-background: #f7f7f7;          /* neutral near-white (was #f7f7f4 — warmth removed) */
   --color-foreground: #0a0a0a;          /* near-black brand text */
   --color-card: #ffffff;                /* pure white card */
   --color-card-foreground: #0a0a0a;

@@ -284,9 +284,13 @@ export function AppLayout({ children }: { children: ReactNode }) {
         {/* Main content area + optional right sidebar */}
         <div className="flex flex-1 overflow-hidden">
           <main className="flex flex-1 flex-col overflow-hidden">
-            <div ref={scrollContainerRef} data-scroll-container className="min-h-0 flex-1 overflow-y-auto px-4 pt-4 pb-4 [scrollbar-gutter:stable_both-edges]">
+            <div ref={scrollContainerRef} data-scroll-container className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pt-4 pb-4 [scrollbar-gutter:stable_both-edges]">
               <PageTransition>
-                <div className={cn('mx-auto w-full', isArticleRoute ? 'max-w-[1400px]' : 'max-w-7xl')}>
+                {/* flex flex-1 flex-col so pages that opt in (e.g. /ai) can use
+                    flex-1 on a child to fill the available scroll height
+                    without resorting to a `calc(100vh - chrome)` magic number.
+                    Pages that don't opt in render with natural flow as before. */}
+                <div className={cn('mx-auto flex w-full flex-1 flex-col', isArticleRoute ? 'max-w-[1400px]' : 'max-w-7xl')}>
                   {children}
                 </div>
               </PageTransition>

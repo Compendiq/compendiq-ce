@@ -30,6 +30,7 @@ function loadVersion(): string {
 export interface AppBuildInfo {
   edition: string;
   commit: string;
+  ceCommit?: string;
   builtAt: string;
 }
 
@@ -50,6 +51,7 @@ function loadBuildInfo(): AppBuildInfo {
       return {
         edition: parsed.edition ?? DEFAULT_BUILD_INFO.edition,
         commit: parsed.commit ?? DEFAULT_BUILD_INFO.commit,
+        ceCommit: parsed.ceCommit,
         builtAt: parsed.builtAt ?? DEFAULT_BUILD_INFO.builtAt,
       };
     } catch {

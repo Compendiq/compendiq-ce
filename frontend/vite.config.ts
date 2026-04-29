@@ -13,6 +13,7 @@ const rootPkg = JSON.parse(readFileSync(path.resolve(__dirname, '../package.json
 interface BuildInfo {
   edition: string;
   commit: string;
+  ceCommit?: string;
   builtAt: string;
 }
 let buildInfo: BuildInfo = { edition: 'community', commit: 'unknown', builtAt: '' };
@@ -28,7 +29,11 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   define: {
     __APP_VERSION__: JSON.stringify(rootPkg.version),
-    __APP_COMMIT__: JSON.stringify(buildInfo.commit),
+    // The frontend bundle is built entirely from CE source, even in EE
+    // builds (the EE overlay only patches the backend). Surface the CE
+    // commit as the frontend commit so it accurately reflects what was
+    // compiled. In CE-only builds ceCommit is absent; fall back to commit.
+    __APP_COMMIT__: JSON.stringify(buildInfo.ceCommit ?? buildInfo.commit),
     __APP_EDITION__: JSON.stringify(buildInfo.edition),
     __APP_BUILT_AT__: JSON.stringify(buildInfo.builtAt),
   },

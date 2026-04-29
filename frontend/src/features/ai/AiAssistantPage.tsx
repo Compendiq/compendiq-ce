@@ -201,9 +201,18 @@ function AiAssistantInner() {
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.18 }}
-      className="space-y-3"
+      // flex-1 walks up through the wrapper chain (AppLayout +
+      // PageTransition both opt into a flex column) so this page fills the
+      // available scroll height without depending on a `calc(100vh - chrome)`
+      // magic number that would drift if the header / service-status banner
+      // height changes.
+      className="flex flex-1 flex-col gap-3"
     >
-      {/* Mode selector — Obsidian-like: minimal, no heavy glass */}
+      {/* Sticky sub-header: mode selector + optional type selector.
+          Sits at top-0 of the scroll container so it stays visible as
+          messages grow. backdrop-blur on the inner card keeps the surface
+          legible against the live content scrolling under it. */}
+      <div className="sticky top-0 z-20 -mx-1 space-y-3 bg-background/85 px-1 py-1 backdrop-blur">
       <div className="flex flex-wrap items-center gap-1 rounded-xl border border-border/40 bg-card/50 px-3 py-2 backdrop-blur-sm">
         <div
           role="tablist"
@@ -307,12 +316,16 @@ function AiAssistantInner() {
         </label>
       </div>
 
-      {/* Mode-specific type selectors */}
+      {/* Mode-specific type selectors — included in the sticky header so
+          they stay alongside the tabs while scrolling. */}
       {mode === 'improve' && <ImproveTypeSelector />}
       {mode === 'diagram' && <DiagramTypeSelector />}
+      </div>
 
-      {/* Messages — clean document-like surface, no heavy glass */}
-      <div className="overflow-hidden rounded-xl border border-border/40 bg-card/40 backdrop-blur-sm">
+      {/* Messages — clean document-like surface, no heavy glass.
+          flex-1 so the messages area grows to fill the column, pushing
+          the sticky input bar to the bottom of the page. */}
+      <div className="flex-1 overflow-hidden rounded-xl border border-border/40 bg-card/40 backdrop-blur-sm">
         <div className="min-h-[360px] space-y-4 p-5">
           {messages.length === 0 && (
             <div className="flex min-h-[300px] flex-col items-center justify-center text-center">
@@ -344,13 +357,17 @@ function AiAssistantInner() {
         </div>
       </div>
 
-      {/* Mode-specific input bar */}
-      {mode === 'ask' && <AskModeInput />}
-      {mode === 'improve' && <ImproveModeInput />}
-      {mode === 'generate' && <GenerateModeInput />}
-      {mode === 'summarize' && <SummarizeModeInput />}
-      {mode === 'diagram' && <DiagramModeInput />}
-      {mode === 'quality' && <QualityModeInput />}
+      {/* Mode-specific input bar — sticky at the bottom of the scroll
+          container, with a translucent backdrop so chat content scrolls
+          legibly behind it. */}
+      <div className="sticky bottom-0 z-20 -mx-1 bg-background/85 px-1 py-1 backdrop-blur">
+        {mode === 'ask' && <AskModeInput />}
+        {mode === 'improve' && <ImproveModeInput />}
+        {mode === 'generate' && <GenerateModeInput />}
+        {mode === 'summarize' && <SummarizeModeInput />}
+        {mode === 'diagram' && <DiagramModeInput />}
+        {mode === 'quality' && <QualityModeInput />}
+      </div>
     </m.div>
   );
 }

@@ -108,12 +108,12 @@ describe('Theme store ships exactly Graphite Honey + Honey Linen', () => {
   it('preview hex colors carry the brand anchors', () => {
     const dark = THEMES.find((t) => t.id === 'graphite-honey')!;
     const light = THEMES.find((t) => t.id === 'honey-linen')!;
-    expect(dark.preview.bg.toLowerCase()).toBe('#121211');
+    expect(dark.preview.bg.toLowerCase()).toBe('#121212');
     expect(dark.preview.primary.toLowerCase()).toBe('#f9c74f');
     // Honey Linen background must match the actual rendered surface
     // (`--color-background` in [data-theme="honey-linen"]), not a brand-y
     // approximation — the picker chip is the only preview users see.
-    expect(light.preview.bg.toLowerCase()).toBe('#f7f7f4');
+    expect(light.preview.bg.toLowerCase()).toBe('#f7f7f7');
     expect(light.preview.primary.toLowerCase()).toBe('#f9c74f');
   });
 
@@ -138,12 +138,17 @@ describe('Default @theme block carries Graphite Honey anchors', () => {
     expect(themeBlock).not.toBe('');
   });
 
-  it('background is graphite #121211', () => {
-    expect(themeBlock).toMatch(/--color-background:\s*#121211/i);
+  it('background is neutral graphite #121212', () => {
+    // Neutralised from #121211 in the v0.4 follow-up to remove the warm tint
+    // that bled into translucent panes (`bg-card/50`) and made the surface
+    // read as yellow instead of dark gray. Brand honey accent unchanged.
+    expect(themeBlock).toMatch(/--color-background:\s*#121212/i);
   });
 
-  it('foreground is warm cream #f5efe0', () => {
-    expect(themeBlock).toMatch(/--color-foreground:\s*#f5efe0/i);
+  it('foreground is near-neutral cream #ece9e2', () => {
+    // Dialled back from #f5efe0 in the v0.4 follow-up — same legibility
+    // (still ≥ AA on graphite) without the warm yellow cast.
+    expect(themeBlock).toMatch(/--color-foreground:\s*#ece9e2/i);
   });
 
   it('primary is brand honey #f9c74f', () => {
@@ -194,10 +199,11 @@ describe('[data-theme="honey-linen"] block', () => {
     expect(honeyLinenBlock).not.toBe('');
   });
 
-  it('background is near-white with a hint of warmth', () => {
-    // Was #fbf7ef (warmer linen); shifted to #f7f7f4 — near-neutral white
-    // per the v0.4 refinement to reduce yellow cast in the light theme.
-    expect(honeyLinenBlock).toMatch(/--color-background:\s*#f7f7f4/i);
+  it('background is neutral near-white #f7f7f7', () => {
+    // Was #fbf7ef (warmer linen) → #f7f7f4 (whisper of warmth) → #f7f7f7
+    // (fully neutral) in the v0.4 follow-up. Removes the yellow cast that
+    // bled through translucent `bg-card/50` panes in light mode.
+    expect(honeyLinenBlock).toMatch(/--color-background:\s*#f7f7f7/i);
   });
 
   it('foreground is brand near-black #0a0a0a', () => {
