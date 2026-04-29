@@ -57,9 +57,15 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.badRequest(`Question too large (max ${MAX_INPUT_LENGTH} characters)`);
     }
 
-    // Sanitize question before sending to LLM
+    // Sanitize question before sending to LLM. The two flags below are
+    // mutated by the MCP-fetched-docs sanitize loop further down so the
+    // Report 5 attestation captures injection signals from EITHER input
+    // source, not just the question. (Mirrors `llm-generate.ts`'s
+    // accumulator pattern for `pdfText`.)
     const { sanitized: sanitizedQuestion, warnings } = sanitizeLlmInput(question);
-    if (warnings.length > 0) {
+    let promptInjectionDetected = warnings.length > 0;
+    let wasSanitized = sanitizedQuestion !== question;
+    if (promptInjectionDetected) {
       await logAuditEvent(request.userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/ask' }, request);
     }
 
@@ -113,8 +119,23 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       for (const extUrl of externalUrls) {
         try {
           const doc = await fetchDocumentation(extUrl, userId);
-          // Sanitize fetched content before injecting into LLM prompt
-          const { sanitized: sanitizedDoc } = sanitizeLlmInput(doc.markdown);
+          // Sanitize fetched content before injecting into LLM prompt.
+          // Roll any warnings/modifications into the per-call flags so
+          // Report 5 (LLM Usage attestation) per-route counts don't
+          // undercount injection signals smuggled in via fetched docs.
+          const { sanitized: sanitizedDoc, warnings: docWarnings } = sanitizeLlmInput(doc.markdown);
+          if (docWarnings.length > 0) {
+            await logAuditEvent(
+              request.userId,
+              'PROMPT_INJECTION_DETECTED',
+              'llm',
+              undefined,
+              { warnings: docWarnings, route: '/llm/ask', field: 'externalDoc', url: doc.url },
+              request,
+            );
+            promptInjectionDetected = true;
+          }
+          if (sanitizedDoc !== doc.markdown) wasSanitized = true;
           externalDocs.push({ url: doc.url, title: doc.title, markdown: sanitizedDoc });
         } catch (err) {
           logger.warn({ err, url: extUrl }, 'Failed to fetch external doc via MCP');
@@ -287,6 +308,8 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
             retrievedChunkIds: searchResults.map(r => String(r.pageId)),
             durationMs: Date.now() - auditStart,
             status: 'success',
+            promptInjectionDetected,
+            sanitized: wasSanitized,
           });
 
           reply.raw.write(`data: ${JSON.stringify({
@@ -313,6 +336,8 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
             durationMs: Date.now() - auditStart,
             status: 'error',
             errorMessage: err instanceof Error ? err.message : String(err),
+            promptInjectionDetected,
+            sanitized: wasSanitized,
           });
           reply.raw.write(`data: ${JSON.stringify({ error: 'Stream error', done: true })}\n\n`);
         }

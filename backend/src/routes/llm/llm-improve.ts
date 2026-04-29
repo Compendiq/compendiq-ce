@@ -53,7 +53,9 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
 
     // Sanitize before sending to LLM
     const { sanitized, warnings } = sanitizeLlmInput(markdown);
-    if (warnings.length > 0) {
+    const promptInjectionDetected = warnings.length > 0;
+    const wasSanitized = sanitized !== markdown;
+    if (promptInjectionDetected) {
       await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/improve' }, request);
     }
 
@@ -152,6 +154,8 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
         retrievedChunkIds: [],
         durationMs: Date.now() - auditStart,
         status: 'success',
+        promptInjectionDetected,
+        sanitized: wasSanitized,
       });
     } catch (err) {
       emitLlmAudit({
@@ -166,6 +170,8 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
         durationMs: Date.now() - auditStart,
         status: 'error',
         errorMessage: err instanceof Error ? err.message : String(err),
+        promptInjectionDetected,
+        sanitized: wasSanitized,
       });
       throw err;
     } finally {

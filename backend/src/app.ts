@@ -86,6 +86,8 @@ import ipAllowlistHook from './core/plugins/ip-allowlist-hook.js';
 import { initSyncConflictPolicyService } from './core/services/sync-conflict-policy-service.js';
 import { initLlmQueueSettings } from './core/services/admin-settings-service.js';
 import { initLlmQueueClusterCoordination } from './domains/llm/services/llm-queue.js';
+import { setLlmAuditHook } from './domains/llm/services/llm-audit-hook.js';
+import { defaultLlmAuditWriter } from './domains/llm/services/llm-audit-default-writer.js';
 import { ENTERPRISE_FEATURES } from './core/enterprise/features.js';
 
 export async function buildApp() {
@@ -179,6 +181,14 @@ export async function buildApp() {
   // Mirrors the decorate call above — EE paths that hot-reload the license
   // via `PUT /api/admin/license` are expected to call this again themselves.
   setCurrentLicense(license);
+
+  // ── LLM audit-log default writer (Compendiq/compendiq-ee#115 P0f) ──
+  // Register the CE default writer that persists each `LlmAuditEntry` to
+  // the `llm_audit_log` table (migration 073). Done BEFORE
+  // `enterprise.registerRoutes()` so an EE plugin that wants to override
+  // (e.g. to add encrypted-at-rest plaintext columns) can call
+  // `setLlmAuditHook(...)` from its own bootstrap and win.
+  setLlmAuditHook(defaultLlmAuditWriter);
 
   // Let the enterprise plugin register its own routes (e.g., full license endpoint)
   await enterprise.registerRoutes(app, license);
