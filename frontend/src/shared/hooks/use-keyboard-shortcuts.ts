@@ -103,6 +103,22 @@ export function useKeyboardShortcuts(
     const hasModifier = event.metaKey || event.ctrlKey || event.altKey;
     const editable = isEditableTarget(event);
 
+    // ESC inside a plain input/textarea/select blurs it so the user can
+    // immediately use single-key shortcuts. Limited to native form fields —
+    // contentEditable / TipTap have their own ESC semantics (close menu,
+    // exit cell, etc.) and we leave those alone. We also bail when another
+    // listener already called preventDefault() (e.g. a Radix Dialog that
+    // wants to close on ESC and keep focus management intact) — checking
+    // defaultPrevented is what lets dialog ESC handlers win cleanly.
+    if (event.key === 'Escape' && !hasModifier && !event.defaultPrevented) {
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
+        target!.blur();
+        return;
+      }
+    }
+
     if (!hasModifier && !editable) {
       const key = event.key;
 

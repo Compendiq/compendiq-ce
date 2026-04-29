@@ -116,4 +116,22 @@ describe('PageTransition', () => {
     );
     expect(screen.getByText('Page view')).toBeInTheDocument();
   });
+
+  it('exit motion variant disables pointer-events so transition overlay does not swallow real clicks', async () => {
+    // Regression test for the Settings/AI panel click-loss bug. AnimatePresence
+    // mode="sync" keeps the exiting page mounted with `position: absolute;
+    // inset: 0` for ~220 ms while opacity fades out. Because <Outlet> reads
+    // from the *current* router context, both layers render the same panel —
+    // a real user click during the transition window lands on the
+    // soon-to-unmount overlay and is dropped when React unmounts the node.
+    // The fix is to set `pointerEvents: 'none'` on the exit variant so the
+    // overlay is invisible to hit-testing. Read the source directly so the
+    // test fails loudly if the property is removed by future refactors.
+    const fs = await import('node:fs/promises');
+    const path = await import('node:path');
+    const url = await import('node:url');
+    const here = path.dirname(url.fileURLToPath(import.meta.url));
+    const src = await fs.readFile(path.join(here, 'PageTransition.tsx'), 'utf-8');
+    expect(src).toMatch(/exit=\{[^}]*pointerEvents:\s*['"]none['"]/);
+  });
 });

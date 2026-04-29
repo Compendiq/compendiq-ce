@@ -35,7 +35,7 @@ export function LoginPage() {
 
   return (
     <div className="bg-background flex min-h-screen items-center justify-center p-4">
-      <div className="nm-card w-full max-w-md p-8">
+      <div className="w-full max-w-md rounded-xl border border-border/40 bg-card/50 p-8 backdrop-blur-sm">
         <div className="mb-2 flex flex-col items-center gap-3">
           <CompendiqLogo size={56} className="text-primary" animated />
           <h1 className="text-center text-2xl font-bold">

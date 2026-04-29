@@ -95,6 +95,7 @@ export async function healthRoutes(fastify: FastifyInstance) {
       version: APP_VERSION,
       edition: APP_BUILD_INFO.edition,
       commit: APP_BUILD_INFO.commit,
+      ceCommit: APP_BUILD_INFO.ceCommit,
       builtAt: APP_BUILD_INFO.builtAt,
       uptime: process.uptime(),
     });
@@ -123,6 +124,7 @@ export async function healthRoutes(fastify: FastifyInstance) {
       version: APP_VERSION,
       edition: APP_BUILD_INFO.edition,
       commit: APP_BUILD_INFO.commit,
+      ceCommit: APP_BUILD_INFO.ceCommit,
       builtAt: APP_BUILD_INFO.builtAt,
     });
   });
@@ -176,6 +178,7 @@ export async function healthRoutes(fastify: FastifyInstance) {
         version: APP_VERSION,
         edition: APP_BUILD_INFO.edition,
         commit: APP_BUILD_INFO.commit,
+        ceCommit: APP_BUILD_INFO.ceCommit,
         builtAt: APP_BUILD_INFO.builtAt,
         uptime: process.uptime(),
       });
@@ -192,6 +195,7 @@ export async function healthRoutes(fastify: FastifyInstance) {
         version: APP_VERSION,
         edition: APP_BUILD_INFO.edition,
         commit: APP_BUILD_INFO.commit,
+        ceCommit: APP_BUILD_INFO.ceCommit,
         builtAt: APP_BUILD_INFO.builtAt,
         uptime: process.uptime(),
       });
