@@ -76,7 +76,7 @@ export function PageTransition({ children }: PageTransitionProps) {
         : 0;
 
   return (
-    <div style={{ position: 'relative' }}>
+    <div className="flex flex-1 flex-col" style={{ position: 'relative' }}>
       <AnimatePresence mode="sync" initial={false}>
         <m.div
           key={location.pathname}
@@ -94,7 +94,7 @@ export function PageTransition({ children }: PageTransitionProps) {
             duration: reducedMotion ? 0.1 : DURATION,
             ease: [0.25, 0.1, 0.25, 1], // cubic-bezier for smooth deceleration
           }}
-          className="w-full"
+          className="flex w-full flex-1 flex-col"
           style={animating ? { willChange: 'opacity, transform' } : undefined}
           onAnimationStart={() => setAnimating(true)}
           onAnimationComplete={() => setAnimating(false)}

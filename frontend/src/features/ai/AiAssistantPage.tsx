@@ -201,7 +201,12 @@ function AiAssistantInner() {
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.18 }}
-      className="flex min-h-[calc(100vh-104px)] flex-col gap-3"
+      // flex-1 walks up through the wrapper chain (AppLayout +
+      // PageTransition both opt into a flex column) so this page fills the
+      // available scroll height without depending on a `calc(100vh - chrome)`
+      // magic number that would drift if the header / service-status banner
+      // height changes.
+      className="flex flex-1 flex-col gap-3"
     >
       {/* Sticky sub-header: mode selector + optional type selector.
           Sits at top-0 of the scroll container so it stays visible as

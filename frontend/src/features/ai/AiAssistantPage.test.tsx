@@ -116,12 +116,17 @@ describe('AiAssistantPage', () => {
     expect(screen.getByText('Diagram')).toBeInTheDocument();
   });
 
-  it('uses space-y-4 natural scroll layout without fixed height', () => {
+  it('uses flex-1 column layout so the input bar anchors to the bottom of the viewport', () => {
+    // The AI page opts into the flex column propagated by AppLayout +
+    // PageTransition (both ship `flex flex-1 flex-col` on their wrappers).
+    // That lets this page reach `flex-1` without a `calc(100vh - chrome)`
+    // magic number that would drift with header / service-status height.
     const { container } = render(<AiAssistantPage />, { wrapper: createWrapper() });
     const rootDiv = container.firstElementChild as HTMLElement;
-    expect(rootDiv.className).toContain('space-y-3');
-    expect(rootDiv.className).not.toContain('h-full');
+    expect(rootDiv.className).toContain('flex-1');
+    expect(rootDiv.className).toContain('flex-col');
     expect(rootDiv.className).not.toContain('calc');
+    expect(rootDiv.className).not.toContain('100vh');
   });
 
   it('does not render a conversations sidebar', () => {
