@@ -82,7 +82,14 @@ export function PageTransition({ children }: PageTransitionProps) {
           key={location.pathname}
           initial={{ opacity: 0, x: slideX }}
           animate={{ opacity: 1, x: 0 }}
-          exit={{ opacity: 0, x: -slideX, position: 'absolute', top: 0, left: 0, right: 0 }}
+          // pointerEvents:'none' on exit: AnimatePresence keeps the exiting
+          // element absolutely positioned over the new one for ~220ms. Because
+          // <Outlet> always reads the current router context, both layers
+          // render the same panel — and a real user click during the
+          // transition window lands on the soon-to-unmount overlay, so focus
+          // never sticks. Disabling pointer events on the exit lets clicks
+          // pass through to the live page underneath.
+          exit={{ opacity: 0, x: -slideX, position: 'absolute', top: 0, left: 0, right: 0, pointerEvents: 'none' }}
           transition={{
             duration: reducedMotion ? 0.1 : DURATION,
             ease: [0.25, 0.1, 0.25, 1], // cubic-bezier for smooth deceleration
