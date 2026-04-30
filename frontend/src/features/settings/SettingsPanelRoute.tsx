@@ -40,6 +40,7 @@ const LlmPolicyTab = lazy(() => import('../admin/LlmPolicyTab').then((m) => ({ d
 const DataRetentionTab = lazy(() => import('../admin/DataRetentionTab').then((m) => ({ default: m.DataRetentionTab })));
 const LlmAuditPage = lazy(() => import('../admin/LlmAuditPage').then((m) => ({ default: m.LlmAuditPage })));
 const ScimSettingsPage = lazy(() => import('../admin/ScimSettingsPage').then((m) => ({ default: m.ScimSettingsPage })));
+const ComplianceReportsTab = lazy(() => import('../admin/ComplianceReportsTab').then((m) => ({ default: m.ComplianceReportsTab })));
 const UsersAdminPage = lazy(() => import('../admin/UsersAdminPage').then((m) => ({ default: m.UsersAdminPage })));
 const SyncConflictPolicyTab = lazy(() => import('../admin/SyncConflictPolicyTab').then((m) => ({ default: m.SyncConflictPolicyTab })));
 const SyncConflictsPage = lazy(() => import('../admin/SyncConflictsPage').then((m) => ({ default: m.SyncConflictsPage })));
@@ -112,6 +113,7 @@ const PANELS: Readonly<Record<string, PanelRenderer>> = {
   'security/webhooks': () => <WebhooksTab />,
   'security/scim': () => <ScimSettingsPage />,
   'security/retention': () => <DataRetentionTab />,
+  'security/compliance-reports': () => <ComplianceReportsTab />,
 
   'system/license': () => <LicenseStatusCard />,
   'system/errors': () => <ErrorDashboard />,

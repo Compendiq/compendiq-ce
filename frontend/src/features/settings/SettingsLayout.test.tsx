@@ -123,7 +123,7 @@ describe('SettingsLayout — rail visibility', () => {
     authState.user = { role: 'admin' };
     enterpriseState.isEnterprise = true;
     enterpriseState.hasFeature = (feature) =>
-      ['org_llm_policy', 'llm_audit_trail', 'data_retention_policies', 'scim_provisioning'].includes(feature);
+      ['org_llm_policy', 'llm_audit_trail', 'data_retention_policies', 'scim_provisioning', 'compliance_reports'].includes(feature);
 
     renderLayoutAt('/settings/personal/confluence');
 
@@ -134,6 +134,27 @@ describe('SettingsLayout — rail visibility', () => {
     expect(screen.getByTestId('nav-settings-llm-policy')).toBeInTheDocument();
     expect(screen.getByTestId('nav-settings-llm-audit')).toBeInTheDocument();
     expect(screen.getByTestId('nav-settings-retention')).toBeInTheDocument();
+    // Regression: compliance reports tab was added in #115 Sprint 4 against
+    // the legacy SettingsPage, which is no longer mounted by App.tsx. This
+    // assertion fails if the entry is dropped from settings-nav.ts again.
+    expect(screen.getByTestId('nav-settings-compliance-reports')).toBeInTheDocument();
+  });
+
+  it('hides compliance-reports for an EE admin without the compliance_reports feature', async () => {
+    authState.user = { role: 'admin' };
+    enterpriseState.isEnterprise = true;
+    // Enterprise + SSO + retention but explicitly NOT compliance_reports.
+    // Mirrors a customer on a tier whose feature set excludes the report
+    // generator (e.g. business tier in the EE plugin's TIER_FEATURES map).
+    enterpriseState.hasFeature = (feature) =>
+      ['data_retention_policies'].includes(feature);
+
+    renderLayoutAt('/settings/personal/confluence');
+
+    await waitFor(() => {
+      expect(screen.getByTestId('nav-settings-retention')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('nav-settings-compliance-reports')).not.toBeInTheDocument();
   });
 });
 
@@ -276,6 +297,26 @@ describe('SettingsPanelRoute — EE deep-link loading race (PR #218 review findi
 
     await waitFor(() => {
       expect(screen.getByTestId('nav-settings-confluence')).toHaveAttribute('aria-current', 'page');
+    });
+  });
+
+  it('renders the compliance-reports panel for an EE admin with the feature', async () => {
+    // Pins the routing wiring added for Compendiq/compendiq-ee#115 Sprint 4:
+    // settings-nav.ts must declare the entry AND SettingsPanelRoute.tsx must
+    // map `security/compliance-reports` to ComplianceReportsTab. Either side
+    // missing => bounce to /settings/personal/confluence.
+    authState.user = { role: 'admin' };
+    enterpriseState.isLoading = false;
+    enterpriseState.isEnterprise = true;
+    enterpriseState.hasFeature = (feature) => feature === 'compliance_reports';
+
+    renderLayoutAt('/settings/security/compliance-reports');
+
+    await waitFor(() => {
+      expect(screen.getByTestId('nav-settings-compliance-reports')).toHaveAttribute(
+        'aria-current',
+        'page',
+      );
     });
   });
 });
