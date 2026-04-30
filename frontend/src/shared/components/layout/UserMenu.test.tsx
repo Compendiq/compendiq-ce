@@ -14,10 +14,14 @@ vi.mock('react-router-dom', async () => {
   };
 });
 
+// Mutable across tests so we can flip role between non-admin and admin.
+let mockUser: { username: string; role?: 'user' | 'admin' } | null = {
+  username: 'testuser',
+};
 vi.mock('../../../stores/auth-store', () => ({
   useAuthStore: (selector: (s: Record<string, unknown>) => unknown) =>
     selector({
-      user: { username: 'testuser' },
+      user: mockUser,
     }),
 }));
 
@@ -58,6 +62,8 @@ describe('UserMenu', () => {
     mockOpenShortcuts.mockClear();
     mockSetSingleKeyShortcutsEnabled.mockClear();
     mockSingleKeyShortcutsEnabled = true;
+    // Default to a non-admin signed-in user; admin tests opt in.
+    mockUser = { username: 'testuser' };
   });
 
   afterEach(() => {
@@ -169,6 +175,51 @@ describe('UserMenu', () => {
 
     await vi.waitFor(() => {
       expect(mockLogoutApi).toHaveBeenCalled();
+    });
+  });
+
+  // /admin/analytics is mounted at App.tsx:165 but no UI links to it.
+  // The admin-only Analytics item in this menu is the discoverability fix —
+  // these tests pin the gating so a future refactor doesn't regress it back
+  // to URL-only access.
+  it('does NOT show the Analytics item for a non-admin user', async () => {
+    mockUser = { username: 'testuser', role: 'user' };
+    renderUserMenu();
+    const trigger = screen.getByRole('button');
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' });
+
+    await vi.waitFor(() => {
+      expect(trigger).toHaveAttribute('data-state', 'open');
+    });
+    // Settings is always visible — pin that the menu is fully open.
+    expect(screen.getByText('Settings')).toBeInTheDocument();
+    expect(screen.queryByText('Analytics')).not.toBeInTheDocument();
+  });
+
+  it('shows the Analytics item for an admin user', async () => {
+    mockUser = { username: 'adminuser', role: 'admin' };
+    renderUserMenu();
+    const trigger = screen.getByRole('button');
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' });
+
+    await vi.waitFor(() => {
+      expect(screen.getByText('Analytics')).toBeInTheDocument();
+    });
+  });
+
+  it('navigates to /admin/analytics when Analytics is selected by an admin', async () => {
+    mockUser = { username: 'adminuser', role: 'admin' };
+    renderUserMenu();
+    const trigger = screen.getByRole('button');
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' });
+
+    await vi.waitFor(() => {
+      expect(trigger).toHaveAttribute('data-state', 'open');
+    });
+
+    fireEvent.click(screen.getByText('Analytics'));
+    await vi.waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith('/admin/analytics');
     });
   });
 });
