@@ -5,6 +5,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { LazyMotion, domMax } from 'framer-motion';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { REPORT_IDS } from '@compendiq/contracts';
 import { ComplianceReportsTab } from './ComplianceReportsTab';
 import { useAuthStore } from '../../stores/auth-store';
 
@@ -32,15 +33,11 @@ function createWrapper() {
   };
 }
 
-const ALL_REPORTS = [
-  'user_access',
-  'admin_actions',
-  'sync_data_flow',
-  'auth_session',
-  'ai_usage',
-  'rbac_changes',
-  'data_retention',
-];
+// Use the canonical 7-id tuple from @compendiq/contracts so this test
+// stays in lockstep with the registry / route validator / tab catalogue
+// (gh-pr-reviewer CE #393 INFO). `[...REPORT_IDS]` strips the `readonly`
+// modifier the tuple carries; the test mock only needs the values.
+const ALL_REPORTS = [...REPORT_IDS] as string[];
 
 function setupCatalogue(opts: {
   catalogue?: string[];
@@ -176,6 +173,60 @@ describe('ComplianceReportsTab', () => {
     expect(screen.getByTestId('validation-error-user_access').textContent).toContain(
       'cannot be more than 24 hours in the future',
     );
+  });
+
+  it('rejects from-dates more than 10 years in the past', async () => {
+    setupCatalogue({});
+    render(<ComplianceReportsTab />, { wrapper: createWrapper() });
+
+    await waitFor(() => screen.getByTestId('from-user_access'));
+
+    // Pick a date 11 years in the past — past the 10-year sanity bound
+    // the backend orchestrator enforces.
+    const past = new Date(Date.now() - 11 * 365 * 24 * 60 * 60 * 1000);
+    const pastLocal =
+      `${past.getFullYear()}-${String(past.getMonth() + 1).padStart(2, '0')}-${String(past.getDate()).padStart(2, '0')}` +
+      `T${String(past.getHours()).padStart(2, '0')}:${String(past.getMinutes()).padStart(2, '0')}`;
+
+    fireEvent.change(screen.getByTestId('from-user_access') as HTMLInputElement, {
+      target: { value: pastLocal },
+    });
+
+    expect(screen.getByTestId('validation-error-user_access').textContent).toContain(
+      'cannot be more than 10 years in the past',
+    );
+    const btn = screen.getByTestId('generate-user_access') as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+  });
+
+  it('shows an error toast when /generate rejects with a network error', async () => {
+    const fetchSpy = setupCatalogue({});
+    fetchSpy.mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      if (url.endsWith('/api/admin/compliance-reports')) {
+        return new Response(
+          JSON.stringify({ catalogue: ALL_REPORTS, available: ALL_REPORTS }),
+          { headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      if (url.endsWith('/api/admin/compliance-reports/generate')) {
+        // Simulate a network-layer failure (DNS fail, refused connection,
+        // browser offline). fetch rejects rather than returning a
+        // non-ok response — the catch block in handleGenerate must
+        // surface a user-facing error toast rather than silently
+        // swallowing.
+        throw new TypeError('Failed to fetch');
+      }
+      return new Response('not mocked', { status: 500 });
+    });
+
+    render(<ComplianceReportsTab />, { wrapper: createWrapper() });
+    await waitFor(() => screen.getByTestId('generate-user_access'));
+    fireEvent.click(screen.getByTestId('generate-user_access'));
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith('Failed to fetch');
+    });
   });
 
   it('POSTs to /generate and triggers a blob download on success', async () => {
