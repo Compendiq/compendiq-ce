@@ -123,7 +123,7 @@ describe('SettingsLayout — rail visibility', () => {
     authState.user = { role: 'admin' };
     enterpriseState.isEnterprise = true;
     enterpriseState.hasFeature = (feature) =>
-      ['org_llm_policy', 'llm_audit_trail', 'data_retention_policies', 'scim_provisioning', 'compliance_reports'].includes(feature);
+      ['org_llm_policy', 'llm_audit_trail', 'data_retention_policies', 'scim_provisioning', 'compliance_reports', 'advanced_rbac'].includes(feature);
 
     renderLayoutAt('/settings/personal/confluence');
 
@@ -138,6 +138,11 @@ describe('SettingsLayout — rail visibility', () => {
     // the legacy SettingsPage, which is no longer mounted by App.tsx. This
     // assertion fails if the entry is dropped from settings-nav.ts again.
     expect(screen.getByTestId('nav-settings-compliance-reports')).toBeInTheDocument();
+    // Regression: RbacPage + CustomRoleEditor are a complete admin UI
+    // for the `advanced_rbac` enterprise feature, but were never mounted
+    // in the live IA. This assertion fails if the entry is dropped from
+    // settings-nav.ts again.
+    expect(screen.getByTestId('nav-settings-rbac')).toBeInTheDocument();
   });
 
   it('hides compliance-reports for an EE admin without the compliance_reports feature', async () => {
@@ -155,6 +160,22 @@ describe('SettingsLayout — rail visibility', () => {
       expect(screen.getByTestId('nav-settings-retention')).toBeInTheDocument();
     });
     expect(screen.queryByTestId('nav-settings-compliance-reports')).not.toBeInTheDocument();
+  });
+
+  it('hides rbac for an EE admin without the advanced_rbac feature', async () => {
+    authState.user = { role: 'admin' };
+    enterpriseState.isEnterprise = true;
+    // Enterprise admin on a tier whose feature set excludes advanced_rbac
+    // (e.g. team tier in the EE plugin's TIER_FEATURES map). SSO is
+    // ungated EE so it still appears, pinning the test.
+    enterpriseState.hasFeature = (_feature) => false;
+
+    renderLayoutAt('/settings/personal/confluence');
+
+    await waitFor(() => {
+      expect(screen.getByTestId('nav-settings-sso')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('nav-settings-rbac')).not.toBeInTheDocument();
   });
 });
 
@@ -314,6 +335,26 @@ describe('SettingsPanelRoute — EE deep-link loading race (PR #218 review findi
 
     await waitFor(() => {
       expect(screen.getByTestId('nav-settings-compliance-reports')).toHaveAttribute(
+        'aria-current',
+        'page',
+      );
+    });
+  });
+
+  it('renders the rbac panel for an EE admin with the advanced_rbac feature', async () => {
+    // Pins the routing wiring for the orphaned RbacPage: settings-nav.ts
+    // must declare the entry AND SettingsPanelRoute.tsx must map
+    // `security/rbac` to RbacPage. Either side missing => bounce to
+    // /settings/personal/confluence.
+    authState.user = { role: 'admin' };
+    enterpriseState.isLoading = false;
+    enterpriseState.isEnterprise = true;
+    enterpriseState.hasFeature = (feature) => feature === 'advanced_rbac';
+
+    renderLayoutAt('/settings/security/rbac');
+
+    await waitFor(() => {
+      expect(screen.getByTestId('nav-settings-rbac')).toHaveAttribute(
         'aria-current',
         'page',
       );

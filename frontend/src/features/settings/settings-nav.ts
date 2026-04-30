@@ -158,6 +158,18 @@ export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
       // Per-user admin CRUD (#304). Lives under Security & Access because it
       // governs who can authenticate, not what settings they see.
       navItem('users', 'Users', { adminOnly: true, legacyTabId: null }),
+      // Roles & Permissions (advanced_rbac). RbacPage + CustomRoleEditor
+      // are a fully implemented admin UI for system roles, custom roles,
+      // and per-user assignments — backed by /api/admin/roles*,
+      // /api/admin/permissions, and /api/admin/role-assignments — but
+      // were never mounted in the live IA. Sits next to Users because
+      // both manage who-can-do-what.
+      navItem('rbac', 'Roles & Permissions', {
+        adminOnly: true,
+        enterpriseOnly: true,
+        requiresFeature: 'advanced_rbac',
+        legacyTabId: null,
+      }),
       navItem('rate-limits', 'Rate Limits', { adminOnly: true }),
       navItem('sso', 'SSO / OIDC', {
         adminOnly: true,
