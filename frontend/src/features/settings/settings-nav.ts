@@ -185,6 +185,17 @@ export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
         enterpriseOnly: true,
         requiresFeature: 'data_retention_policies',
       }),
+      // Compliance Reports (Compendiq/compendiq-ee#115). Self-serve PDF +
+      // CSV evidence packets for SOC 2 / ISO 27001 audits — sits next to
+      // Data Retention because both surface auditor-facing evidence.
+      // Backend routes live under /api/admin/compliance-reports/* and are
+      // gated by the `compliance_reports` enterprise feature flag.
+      navItem('compliance-reports', 'Compliance Reports', {
+        adminOnly: true,
+        enterpriseOnly: true,
+        requiresFeature: 'compliance_reports',
+        legacyTabId: null,
+      }),
     ],
   },
   {
