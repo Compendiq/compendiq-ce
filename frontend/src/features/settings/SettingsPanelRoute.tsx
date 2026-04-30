@@ -41,6 +41,7 @@ const DataRetentionTab = lazy(() => import('../admin/DataRetentionTab').then((m)
 const LlmAuditPage = lazy(() => import('../admin/LlmAuditPage').then((m) => ({ default: m.LlmAuditPage })));
 const ScimSettingsPage = lazy(() => import('../admin/ScimSettingsPage').then((m) => ({ default: m.ScimSettingsPage })));
 const ComplianceReportsTab = lazy(() => import('../admin/ComplianceReportsTab').then((m) => ({ default: m.ComplianceReportsTab })));
+const RbacPage = lazy(() => import('../admin/RbacPage').then((m) => ({ default: m.RbacPage })));
 const UsersAdminPage = lazy(() => import('../admin/UsersAdminPage').then((m) => ({ default: m.UsersAdminPage })));
 const SyncConflictPolicyTab = lazy(() => import('../admin/SyncConflictPolicyTab').then((m) => ({ default: m.SyncConflictPolicyTab })));
 const SyncConflictsPage = lazy(() => import('../admin/SyncConflictsPage').then((m) => ({ default: m.SyncConflictsPage })));
@@ -107,6 +108,7 @@ const PANELS: Readonly<Record<string, PanelRenderer>> = {
   'integrations/mcp-docs': () => <McpDocsTab />,
 
   'security/users': () => <UsersAdminPage />,
+  'security/rbac': () => <RbacPage />,
   'security/rate-limits': () => <RateLimitsTab />,
   'security/sso': () => <OidcSettingsPage />,
   'security/ip-allowlist': () => <IpAllowlistTab />,
