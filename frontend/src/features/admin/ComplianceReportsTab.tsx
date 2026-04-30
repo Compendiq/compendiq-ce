@@ -42,28 +42,18 @@ import {
   Loader2,
   ShieldCheck,
 } from 'lucide-react';
+import type { ReportId, ComplianceReportCatalogue } from '@compendiq/contracts';
 import { apiFetch, ApiError } from '../../shared/lib/api';
 import { useAuthStore } from '../../stores/auth-store';
 import { cn } from '../../shared/lib/cn';
 
 // ── Catalogue ──────────────────────────────────────────────────────────
-
-/**
- * The 7 report ids — must stay in sync with the EE overlay's
- * `ReportId` union (overlay/backend/src/enterprise/compliance-reports/
- * types.ts) and the `REPORT_IDS` const in the admin route. The
- * backend's `GET /api/admin/compliance-reports` returns the same list
- * in `catalogue`; we pin a local copy so the UI renders immediately
- * without a round-trip and so type-narrowing on click handlers works.
- */
-type ReportId =
-  | 'user_access'
-  | 'sync_data_flow'
-  | 'rbac_changes'
-  | 'auth_session'
-  | 'ai_usage'
-  | 'data_retention'
-  | 'admin_actions';
+//
+// `ReportId` and the catalogue request/response shapes are sourced from
+// `@compendiq/contracts` (`schemas/compliance-reports.ts`) — the EE
+// overlay route validator and registry use the same module, so adding
+// a new report touches exactly one place. The local `CATALOGUE` below
+// adds the UI-only fields (display copy, control mapping) on top.
 
 interface CatalogueEntry {
   id: ReportId;
@@ -136,16 +126,15 @@ const CATALOGUE: readonly CatalogueEntry[] = [
 ] as const;
 
 // ── Catalogue API ──────────────────────────────────────────────────────
-
-interface CatalogueResponse {
-  catalogue: ReportId[];
-  available: ReportId[];
-}
+//
+// Response shape comes straight from the contracts package
+// (`ComplianceReportCatalogue`). The EE route's response is validated
+// against the same Zod schema, so wire drift surfaces at compile time.
 
 function useCatalogue() {
-  return useQuery<CatalogueResponse>({
+  return useQuery<ComplianceReportCatalogue>({
     queryKey: ['admin', 'compliance-reports', 'catalogue'],
-    queryFn: () => apiFetch<CatalogueResponse>('/admin/compliance-reports'),
+    queryFn: () => apiFetch<ComplianceReportCatalogue>('/admin/compliance-reports'),
     staleTime: 60_000,
     retry: false,
   });
