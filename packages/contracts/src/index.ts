@@ -12,5 +12,6 @@ export * from './schemas/webhooks.js';
 export * from './schemas/bulk-user-ops.js';
 export * from './schemas/ai-review.js';
 export * from './schemas/pii-policy.js';
+export * from './schemas/compliance-reports.js';
 export * from './types/common.js';
 export * from './llm.js';
