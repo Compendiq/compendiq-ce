@@ -58,7 +58,7 @@ export function CommandPalette() {
   const [isSearching, setIsSearching] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchSequenceRef = useRef(0);
 
   // AI mode: activated when query starts with "/ai"
   const isAiMode = query.trimStart().toLowerCase().startsWith('/ai');
@@ -80,29 +80,41 @@ export function CommandPalette() {
 
   // Search pages with debounce (skip in AI mode)
   useEffect(() => {
+    const searchSequence = searchSequenceRef.current + 1;
+    searchSequenceRef.current = searchSequence;
+
     if (!query.trim() || isAiMode) {
       setResults([]);
       setSelectedIndex(0);
+      setIsSearching(false);
       return;
     }
 
-    if (debounceRef.current) clearTimeout(debounceRef.current);
+    const controller = new AbortController();
 
-    debounceRef.current = setTimeout(async () => {
+    const timeoutId = setTimeout(async () => {
       setIsSearching(true);
       try {
-        const data = await apiFetch<{ items: SearchResult[] }>(`/pages?search=${encodeURIComponent(query)}&limit=8`);
+        const data = await apiFetch<{ items: SearchResult[] }>(
+          `/pages?search=${encodeURIComponent(query)}&limit=8`,
+          { signal: controller.signal },
+        );
+        if (searchSequenceRef.current !== searchSequence) return;
         setResults(data.items);
         setSelectedIndex(0);
       } catch {
+        if (controller.signal.aborted || searchSequenceRef.current !== searchSequence) return;
         setResults([]);
       } finally {
-        setIsSearching(false);
+        if (searchSequenceRef.current === searchSequence) {
+          setIsSearching(false);
+        }
       }
     }, 250);
 
     return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current);
+      clearTimeout(timeoutId);
+      controller.abort();
     };
   }, [query, isAiMode]);
 
