@@ -17,6 +17,11 @@
 /**
  * The action type under which the scan is being performed. Matches the
  * llm-audit-hook action taxonomy + 'auto_tag' for the pages-tags path.
+ *
+ * @public Typed contract consumed dynamically via
+ * `await import('@compendiq/enterprise')` and referenced by
+ * `packages/contracts/src/schemas/pii-policy.ts`. Knip cannot see those
+ * consumers from the CE-scoped scan.
  */
 export type PiiScanAction =
   | 'chat'

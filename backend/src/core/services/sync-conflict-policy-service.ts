@@ -30,6 +30,11 @@
 
 import { makeCachedSetting } from './cached-setting.js';
 
+/**
+ * @public Re-exported and consumed by the EE overlay
+ * (`overlay/backend/src/enterprise/sync-conflict-service.ts`). Knip's
+ * CE-scoped scan cannot see that consumer.
+ */
 export type SyncConflictPolicy =
   | 'confluence-wins'
   | 'compendiq-wins'
@@ -41,6 +46,9 @@ const VALID_POLICIES: ReadonlySet<SyncConflictPolicy> = new Set([
   'manual-review',
 ]);
 
+/**
+ * @public Consumed by the EE overlay alongside `SyncConflictPolicy`.
+ */
 export const DEFAULT_SYNC_CONFLICT_POLICY: SyncConflictPolicy = 'confluence-wins';
 
 let getPolicy: (() => SyncConflictPolicy) | null = null;
