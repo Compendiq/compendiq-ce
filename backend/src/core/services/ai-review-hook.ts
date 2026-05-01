@@ -21,6 +21,12 @@ export type AiReviewAction =
   | 'auto_tag'
   | 'apply_improvement';
 
+/**
+ * @public Used by the EE overlay
+ * (`overlay/backend/src/enterprise/ai-review-service.ts`) as the return
+ * type of `submitForReview`, which the EE plugin registers into the CE
+ * hook via `setAiReviewHook(...)`. Knip's CE-scoped scan cannot see it.
+ */
 export type AiReviewDecision =
   | { mode: 'auto-publish' }
   | { mode: 'pending'; reviewId: string };
