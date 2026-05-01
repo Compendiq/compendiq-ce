@@ -9,7 +9,7 @@ export interface LlmAuditEntry {
   userId: string | null;
   action: 'chat' | 'ask' | 'improve' | 'generate' | 'summarize' | 'embed' | 'quality' | 'tag' | 'diagram';
   model: string;
-  provider: 'ollama' | 'openai';
+  provider: string;
   inputTokens: number;
   outputTokens: number;
   inputMessages: { role: string; contentLength: number }[];

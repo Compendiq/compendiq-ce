@@ -81,6 +81,15 @@ vi.mock('../../core/services/audit-service.js', () => ({
   logAuditEvent: vi.fn(),
 }));
 
+const mockEmitLlmAudit = vi.fn();
+vi.mock('../../domains/llm/services/llm-audit-hook.js', async (importActual) => {
+  const actual = await importActual<typeof import('../../domains/llm/services/llm-audit-hook.js')>();
+  return {
+    ...actual,
+    emitLlmAudit: (...args: unknown[]) => mockEmitLlmAudit(...args),
+  };
+});
+
 const mockSanitizeLlmInput = vi.fn((input: string) => ({ sanitized: input, warnings: [] }));
 vi.mock('../../core/utils/sanitize-llm-input.js', () => ({
   sanitizeLlmInput: (...args: unknown[]) => mockSanitizeLlmInput(...args as [string]),
@@ -121,6 +130,13 @@ describe('POST /api/llm/generate with pdfText', () => {
     vi.clearAllMocks();
     mockGetCachedResponse.mockResolvedValue(null);
     mockSanitizeLlmInput.mockImplementation((input: string) => ({ sanitized: input, warnings: [] }));
+    mockResolveUsecase.mockResolvedValue({
+      config: {
+        providerId: 'p1', baseUrl: 'http://x/v1', apiKey: null,
+        authType: 'none', verifySsl: true, name: 'X', defaultModel: 'm',
+      },
+      model: 'm',
+    });
   });
 
   it('should use generate_from_pdf system prompt when pdfText is provided', async () => {
@@ -228,6 +244,42 @@ describe('POST /api/llm/generate with pdfText', () => {
     });
 
     expect(mockGetSystemPrompt).toHaveBeenCalledWith('generate');
+  });
+
+  it('audits the resolved provider id and model, not the request model', async () => {
+    async function* mockGenerator() {
+      yield { content: '# Article', done: true };
+    }
+    mockStreamChat.mockReturnValue(mockGenerator());
+    mockResolveUsecase.mockResolvedValue({
+      config: {
+        providerId: 'custom-provider',
+        baseUrl: 'http://custom/v1',
+        apiKey: null,
+        authType: 'none',
+        verifySsl: true,
+        name: 'Custom Provider',
+        defaultModel: 'resolved-model',
+      },
+      model: 'resolved-model',
+    });
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/llm/generate',
+      payload: {
+        prompt: 'Write about Docker',
+        model: 'ignored-body-model',
+      },
+    });
+
+    expect(mockEmitLlmAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'generate',
+        model: 'resolved-model',
+        provider: 'custom-provider',
+      }),
+    );
   });
 
   it('should log audit event when pdfText contains injection patterns', async () => {

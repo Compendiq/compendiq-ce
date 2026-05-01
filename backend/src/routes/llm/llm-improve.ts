@@ -112,7 +112,7 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
       const insertResult = await query<{ id: string }>(
         `INSERT INTO llm_improvements (user_id, page_id, improvement_type, model, original_content, improved_content, status)
          SELECT $1, p.id, $3, $4, $5, '', 'streaming' FROM pages p WHERE p.confluence_id = $2 RETURNING id`,
-        [userId, body.pageId, type, model, content.slice(0, 10000)],
+        [userId, body.pageId, type, resolvedModel, content.slice(0, 10000)],
       );
       improvementId = insertResult.rows[0]?.id;
     }
@@ -147,7 +147,7 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
         userId,
         action: 'improve',
         model: resolvedModel,
-        provider: 'openai',
+        provider: chatConfig.providerId,
         inputTokens: estimateTokens(improveMessages.map(m => m.content).join('')),
         outputTokens: estimateTokens(accumulated),
         inputMessages: improveMessages.map(m => ({ role: m.role, contentLength: m.content.length })),
@@ -162,7 +162,7 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
         userId,
         action: 'improve',
         model: resolvedModel,
-        provider: 'openai',
+        provider: chatConfig.providerId,
         inputTokens: estimateTokens(improveMessages.map(m => m.content).join('')),
         outputTokens: 0,
         inputMessages: improveMessages.map(m => ({ role: m.role, contentLength: m.content.length })),
