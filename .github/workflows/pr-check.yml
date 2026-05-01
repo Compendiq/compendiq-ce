@@ -89,3 +89,28 @@ jobs:
 
       - name: Contracts tests
         run: npm test -w @compendiq/contracts
+
+  mcp-docs:
+    name: MCP Docs Sidecar
+    if: github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mcp-docs
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: package.json
+          cache: npm
+          cache-dependency-path: mcp-docs/package-lock.json
+
+      - name: Install MCP docs dependencies
+        run: npm ci
+
+      - name: Typecheck MCP docs
+        run: npm run typecheck
+
+      - name: Test MCP docs
+        run: npm test
