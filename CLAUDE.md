@@ -9,7 +9,6 @@ Guidance for Claude Code working in this repo. Codex and other AI tools also rea
 Source-of-truth docs:
 - ADRs → `@docs/ARCHITECTURE-DECISIONS.md`
 - Diagrams → `@docs/architecture/` (Mermaid; see its `README.md` for the code-area → diagram map)
-- Action plan → `@docs/ACTION-PLAN.md`
 - Enterprise design → `@docs/ENTERPRISE-ARCHITECTURE.md`
 
 ## Mandatory Rules
@@ -56,6 +55,8 @@ N named `openai-compatible` providers in `llm_providers` table, configured via S
 
 **Legacy env vars** (`OLLAMA_BASE_URL`, `OPENAI_*`, `LLM_BEARER_TOKEN`, `DEFAULT_LLM_MODEL`, `SUMMARY_MODEL`, `QUALITY_MODEL`, `LLM_MAX_CONCURRENT_STREAMS_PER_USER`, `COMPENDIQ_LICENSE_KEY`) are **deprecated bootstrap fallbacks** — consulted only on fresh install when the DB row / `admin_settings` value is absent. Don't add new env-driven LLM config; extend the providers table or `admin_settings` instead.
 
+**Removed (do not revive):** `LLM_PROVIDER` was the legacy two-slot toggle and is gone — replaced wholesale by the `llm_providers` table + per-use-case assignments.
+
 ## Security (Mandatory)
 
 1. **PAT encryption** — Confluence PATs are AES-256-GCM with `PAT_ENCRYPTION_KEY`. Never store plaintext, never expose to frontend.
@@ -91,7 +92,7 @@ License format: `ATM-{tier}-{seats}-{expiryYYYYMMDD}-{licenseId}.{ed25519Signatu
 
 ## UI/UX (ADR-010 v0.4)
 
-Neumorphic dashboard, brand palette black `#0A0A0A` + honey `#F9C74F`. Themes: **Graphite Honey** (dark, default), **Honey Linen** (light) — mirrors `compendiq-landing/src/styles/tokens.css`. Eleven `nm-*` `@utility` classes (see `frontend/src/index.css`). Hybrid neumorphism: every interactive surface keeps a 1px solid border for WCAG 1.4.11 (3:1) and `forced-colors: active`. Press = inset shadow swap; `prefers-reduced-motion: reduce` strips press transform. Status colors: green=connected, red=disconnected, yellow=syncing, blue=embedding, purple=AI, gray=inactive.
+Neumorphic dashboard, brand palette black `#0A0A0A` + honey `#F9C74F`. Themes: **Graphite Honey** (dark, default), **Honey Linen** (light) — mirrors `compendiq-landing/src/styles/tokens.css`. Eleven `nm-*` `@utility` classes (see `frontend/src/index.css`). Hybrid neumorphism: every interactive surface keeps a 1px solid border for WCAG 1.4.11 (3:1) and `forced-colors: active`. Press = inset shadow swap; `prefers-reduced-motion: reduce` strips press transform. Animated gradient mesh background is preserved on the **setup wizard only** (not the rest of the app). Staggered entrance animations via Framer Motion `LazyMotion` (lazy-load to keep first paint cheap). Status colors: green=connected, red=disconnected, yellow=syncing, blue=embedding, purple=AI, gray=inactive.
 
 ## Content Pipeline (ADR-003)
 
