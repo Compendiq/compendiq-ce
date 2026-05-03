@@ -1,6 +1,6 @@
 import { cn } from '../../lib/cn';
 
-export type ConfidenceLevel = 'high' | 'medium' | 'low';
+type ConfidenceLevel = 'high' | 'medium' | 'low';
 
 interface ConfidenceBadgeProps {
   /** Average similarity score from RAG sources (0-1 scale) */
