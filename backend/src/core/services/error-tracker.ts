@@ -1,14 +1,14 @@
 import { query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
 
-export interface ErrorContext {
+interface ErrorContext {
   userId?: string;
   requestPath?: string;
   correlationId?: string;
   [key: string]: unknown;
 }
 
-export interface ErrorLogEntry {
+interface ErrorLogEntry {
   id: string;
   errorType: string;
   message: string;
@@ -21,13 +21,13 @@ export interface ErrorLogEntry {
   createdAt: string;
 }
 
-export interface ErrorSummary {
+interface ErrorSummary {
   errorType: string;
   count: number;
   lastOccurrence: string;
 }
 
-export interface ErrorSummaryResponse {
+interface ErrorSummaryResponse {
   last24h: ErrorSummary[];
   last7d: ErrorSummary[];
   last30d: ErrorSummary[];
