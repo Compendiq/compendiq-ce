@@ -43,7 +43,7 @@ export class LocalAttachmentError extends Error {
   }
 }
 
-export interface LocalAttachmentRecord {
+interface LocalAttachmentRecord {
   id: number;
   pageId: number;
   filename: string;
