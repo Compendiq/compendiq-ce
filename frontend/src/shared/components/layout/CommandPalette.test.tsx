@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -31,6 +31,22 @@ vi.mock('react-router-dom', async () => {
     useNavigate: () => mockNavigate,
   };
 });
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function jsonResponse(body: unknown) {
+  return new Response(JSON.stringify(body), {
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
 
 describe('CommandPalette', () => {
   beforeEach(() => {
@@ -104,14 +120,11 @@ describe('CommandPalette', () => {
 
   it('searches pages on input with debounce', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          items: [
-            { id: '1', title: 'Test Page', spaceKey: 'TST' },
-          ],
-        }),
-        { headers: { 'Content-Type': 'application/json' } },
-      ),
+      jsonResponse({
+        items: [
+          { id: '1', title: 'Test Page', spaceKey: 'TST' },
+        ],
+      }),
     );
 
     useCommandPaletteStore.getState().open();
@@ -127,6 +140,62 @@ describe('CommandPalette', () => {
       },
       { timeout: 2000 },
     );
+    unmount();
+  });
+
+  it('ignores stale search responses that resolve after the latest query', async () => {
+    const oldSearch = deferred<Response>();
+    const newSearch = deferred<Response>();
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input);
+      if (url.includes('search=old')) return oldSearch.promise;
+      if (url.includes('search=new')) return newSearch.promise;
+      return Promise.resolve(jsonResponse({ items: [] }));
+    });
+
+    useCommandPaletteStore.getState().open();
+    const { unmount } = render(<CommandPalette />, { wrapper: createWrapper() });
+
+    const input = screen.getByLabelText('Search');
+    fireEvent.change(input, { target: { value: 'old' } });
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('/api/pages?search=old&limit=8'),
+        expect.any(Object),
+      );
+    });
+
+    fireEvent.change(input, { target: { value: 'new' } });
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('/api/pages?search=new&limit=8'),
+        expect.any(Object),
+      );
+    });
+
+    await act(async () => {
+      newSearch.resolve(jsonResponse({
+        items: [{ id: 'new-page', title: 'Latest Result', spaceKey: 'NEW' }],
+      }));
+      await newSearch.promise;
+    });
+
+    expect(await screen.findByText('Latest Result')).toBeInTheDocument();
+
+    await act(async () => {
+      oldSearch.resolve(jsonResponse({
+        items: [{ id: 'old-page', title: 'Stale Result', spaceKey: 'OLD' }],
+      }));
+      await oldSearch.promise;
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('Latest Result')).toBeInTheDocument();
+      expect(screen.queryByText('Stale Result')).not.toBeInTheDocument();
+    });
+
     unmount();
   });
 
