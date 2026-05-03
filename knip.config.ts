@@ -6,7 +6,12 @@ const config: KnipConfig = {
       entry: ['src/index.ts', 'src/app.ts'],
       project: ['src/**/*.ts'],
       ignore: ['src/**/*.test.ts', 'src/**/__fixtures__/**'],
-      ignoreDependencies: ['pino-pretty'],
+      ignoreDependencies: [
+        'pino-pretty',
+        // Dynamically imported in core/enterprise/loader.ts; intentionally absent
+        // from package.json (CE doesn't ship the EE package — falls back to noop.ts)
+        '@compendiq/enterprise',
+      ],
     },
     'frontend': {
       entry: ['src/main.tsx'],
