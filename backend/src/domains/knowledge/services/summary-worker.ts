@@ -68,7 +68,7 @@ let lastRunAt: Date | null = null;
 // Public status
 // ---------------------------------------------------------------------------
 
-export interface SummaryStatus {
+interface SummaryStatus {
   totalPages: number;
   summarizedPages: number;
   summarizingPages: number;
