@@ -38,43 +38,43 @@ export default tseslint.config(
           rules: [
             // Core cannot import from any domain or route
             {
-              from: ['core'],
-              disallow: ['confluence', 'llm', 'knowledge', 'routes-foundation', 'routes-confluence', 'routes-llm', 'routes-knowledge'],
+              from: { type: 'core' },
+              disallow: { to: { type: ['confluence', 'llm', 'knowledge', 'routes-foundation', 'routes-confluence', 'routes-llm', 'routes-knowledge'] } },
             },
             // Confluence domain: core + llm (for sync-embedding cross-domain)
             {
-              from: ['confluence'],
-              disallow: ['knowledge', 'routes-foundation', 'routes-confluence', 'routes-llm', 'routes-knowledge'],
+              from: { type: 'confluence' },
+              disallow: { to: { type: ['knowledge', 'routes-foundation', 'routes-confluence', 'routes-llm', 'routes-knowledge'] } },
             },
             // LLM domain: only core
             {
-              from: ['llm'],
-              disallow: ['confluence', 'knowledge', 'routes-foundation', 'routes-confluence', 'routes-llm', 'routes-knowledge'],
+              from: { type: 'llm' },
+              disallow: { to: { type: ['confluence', 'knowledge', 'routes-foundation', 'routes-confluence', 'routes-llm', 'routes-knowledge'] } },
             },
             // Knowledge domain: core + llm + confluence
             {
-              from: ['knowledge'],
-              disallow: ['routes-foundation', 'routes-confluence', 'routes-llm', 'routes-knowledge'],
+              from: { type: 'knowledge' },
+              disallow: { to: { type: ['routes-foundation', 'routes-confluence', 'routes-llm', 'routes-knowledge'] } },
             },
             // Foundation routes: core only
             {
-              from: ['routes-foundation'],
-              disallow: ['confluence', 'llm', 'knowledge', 'routes-confluence', 'routes-llm', 'routes-knowledge'],
+              from: { type: 'routes-foundation' },
+              disallow: { to: { type: ['confluence', 'llm', 'knowledge', 'routes-confluence', 'routes-llm', 'routes-knowledge'] } },
             },
             // Confluence routes: core + confluence domain
             {
-              from: ['routes-confluence'],
-              disallow: ['llm', 'knowledge', 'routes-foundation', 'routes-llm', 'routes-knowledge'],
+              from: { type: 'routes-confluence' },
+              disallow: { to: { type: ['llm', 'knowledge', 'routes-foundation', 'routes-llm', 'routes-knowledge'] } },
             },
             // LLM routes: core + llm domain + confluence (for subpage-context, sync-service)
             {
-              from: ['routes-llm'],
-              disallow: ['knowledge', 'routes-foundation', 'routes-confluence', 'routes-knowledge'],
+              from: { type: 'routes-llm' },
+              disallow: { to: { type: ['knowledge', 'routes-foundation', 'routes-confluence', 'routes-knowledge'] } },
             },
             // Knowledge routes: core + all domains (highest level)
             {
-              from: ['routes-knowledge'],
-              disallow: ['routes-foundation', 'routes-confluence', 'routes-llm'],
+              from: { type: 'routes-knowledge' },
+              disallow: { to: { type: ['routes-foundation', 'routes-confluence', 'routes-llm'] } },
             },
           ],
         },
