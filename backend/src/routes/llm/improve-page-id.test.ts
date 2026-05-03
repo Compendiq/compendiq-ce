@@ -88,6 +88,15 @@ vi.mock('../../core/services/audit-service.js', () => ({
   logAuditEvent: vi.fn(),
 }));
 
+const mockEmitLlmAudit = vi.fn();
+vi.mock('../../domains/llm/services/llm-audit-hook.js', async (importActual) => {
+  const actual = await importActual<typeof import('../../domains/llm/services/llm-audit-hook.js')>();
+  return {
+    ...actual,
+    emitLlmAudit: (...args: unknown[]) => mockEmitLlmAudit(...args),
+  };
+});
+
 vi.mock('../../domains/confluence/services/sync-service.js', () => ({
   getClientForUser: vi.fn(),
 }));
@@ -129,6 +138,13 @@ describe('POST /api/llm/improve — page_id resolution (regression: issue #418)'
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockResolveUsecase.mockResolvedValue({
+      config: {
+        providerId: 'p1', baseUrl: 'http://x/v1', apiKey: null,
+        authType: 'none', verifySsl: true, name: 'X', defaultModel: 'm',
+      },
+      model: 'm',
+    });
   });
 
   it('first-click: INSERT uses page_id subquery (not confluence_id column) when pageId is provided', async () => {
@@ -175,6 +191,67 @@ describe('POST /api/llm/improve — page_id resolution (regression: issue #418)'
     expect(insertSql).toContain('page_id');
     expect(insertSql).toContain('FROM pages p WHERE p.confluence_id');
     expect(insertSql).not.toContain('confluence_id,'); // should not insert directly into confluence_id column
+  });
+
+  it('persists and audits the resolved provider id and model, not the request model', async () => {
+    mockResolveUsecase.mockResolvedValue({
+      config: {
+        providerId: 'custom-provider',
+        baseUrl: 'http://custom/v1',
+        apiKey: null,
+        authType: 'none',
+        verifySsl: true,
+        name: 'Custom Provider',
+        defaultModel: 'resolved-model',
+      },
+      model: 'resolved-model',
+    });
+    mockQuery.mockImplementation((sql: string) => {
+      if (sql.includes('INSERT INTO llm_improvements')) {
+        return Promise.resolve({ rows: [{ id: 'improvement-1' }] });
+      }
+      if (sql.includes('SELECT custom_prompts FROM user_settings')) {
+        return Promise.resolve({ rows: [] });
+      }
+      return Promise.resolve({ rows: [] });
+    });
+
+    async function* mockGenerator() {
+      yield { content: 'Improved content', done: true };
+    }
+    mockProviderStreamChat.mockReturnValue(mockGenerator());
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/llm/improve',
+      payload: {
+        content: '<p>Original content</p>',
+        type: 'grammar',
+        model: 'ignored-body-model',
+        pageId: 'conf-123',
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    const insertCall = (mockQuery.mock.calls as unknown[][]).find(
+      (args) => typeof args[0] === 'string' && (args[0] as string).includes('INSERT INTO llm_improvements'),
+    );
+    expect(insertCall).toBeDefined();
+    expect(insertCall![1]).toEqual([
+      'user-123',
+      'conf-123',
+      'grammar',
+      'resolved-model',
+      '<p>Original content</p>',
+    ]);
+    expect(mockEmitLlmAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'improve',
+        model: 'resolved-model',
+        provider: 'custom-provider',
+      }),
+    );
   });
 
   it('first-click: page not yet synced — INSERT returns 0 rows, no UPDATE attempted, stream returns 200', async () => {

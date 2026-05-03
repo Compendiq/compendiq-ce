@@ -229,7 +229,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         const insertResult = await query<{ id: string }>(
           `INSERT INTO llm_conversations (user_id, model, title, messages)
            VALUES ($1, $2, $3, $4) RETURNING id`,
-          [userId, model, question.slice(0, 100), JSON.stringify(newMessages)],
+          [userId, resolvedModel, question.slice(0, 100), JSON.stringify(newMessages)],
         );
         convId = insertResult.rows[0]!.id;
       }
@@ -301,7 +301,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
             userId,
             action: 'ask',
             model: resolvedModel,
-            provider: 'openai',
+            provider: chatConfig.providerId,
             inputTokens: estimateTokens(messages.map(m => m.content).join('')),
             outputTokens: estimateTokens(fullAnswer),
             inputMessages: messages.map(m => ({ role: m.role, contentLength: m.content.length })),
@@ -328,7 +328,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
             userId,
             action: 'ask',
             model: resolvedModel,
-            provider: 'openai',
+            provider: chatConfig.providerId,
             inputTokens: estimateTokens(messages.map(m => m.content).join('')),
             outputTokens: 0,
             inputMessages: messages.map(m => ({ role: m.role, contentLength: m.content.length })),
