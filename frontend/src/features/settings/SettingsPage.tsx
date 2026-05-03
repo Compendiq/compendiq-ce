@@ -40,10 +40,6 @@ import {
   SystemTab,
 } from './panels';
 
-// Re-export the backward-compatible alias for tests/consumers that import
-// `OllamaTab` from the SettingsPage module.
-export { OllamaTab } from './panels';
-
 type TabId = 'confluence' | 'sync' | 'sync-conflict-policy' | 'sync-conflicts' | 'ollama' | 'ai-prompts' | 'ai-safety' | 'rate-limits' | 'spaces' | 'theme' | 'labels' | 'errors' | 'embedding' | 'workers' | 'mcp-docs' | 'searxng' | 'email' | 'license' | 'sso' | 'ip-allowlist' | 'webhooks' | 'llm-policy' | 'retention' | 'compliance-reports' | 'llm-audit' | 'ai-reviews' | 'ai-review-policy' | 'pii-policy' | 'scim' | 'system';
 
 export function SettingsPage() {
