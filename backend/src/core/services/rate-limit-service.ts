@@ -3,12 +3,12 @@ import { logAuditEvent } from './audit-service.js';
 
 // ─── Rate limit categories ────────────────────────────────────────────────────
 
-export interface RateLimitConfig {
+interface RateLimitConfig {
   max: number;
   timeWindow: string;
 }
 
-export interface RateLimits {
+interface RateLimits {
   global: RateLimitConfig;
   auth: RateLimitConfig;
   admin: RateLimitConfig;
@@ -75,7 +75,7 @@ export async function getRateLimits(): Promise<RateLimits> {
 
 // ─── Setter ───────────────────────────────────────────────────────────────────
 
-export type RateLimitUpdate = Partial<Record<keyof RateLimits, number>>;
+type RateLimitUpdate = Partial<Record<keyof RateLimits, number>>;
 
 const KEY_MAP: Record<keyof RateLimits, string> = {
   global: 'rate_limit_global_max',
