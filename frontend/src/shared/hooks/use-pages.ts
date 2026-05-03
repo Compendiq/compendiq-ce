@@ -1,7 +1,6 @@
-import { useMemo, useState, useCallback, useRef } from 'react';
+import { useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '../lib/api';
-import { streamSSE } from '../lib/sse';
 
 export type EmbeddingStatus = 'not_embedded' | 'embedding' | 'embedded' | 'failed';
 export type QualityStatus = 'pending' | 'analyzing' | 'analyzed' | 'failed' | 'skipped';
@@ -285,108 +284,6 @@ export function useEmbeddingStatus() {
   });
 }
 
-export interface EmbeddingProgress {
-  total: number;
-  completed: number;
-  failed: number;
-  percentage: number;
-  currentPage?: string;
-  errors: string[];
-  isWaiting: boolean;
-  waitReason?: string;
-}
-
-const INITIAL_PROGRESS: EmbeddingProgress = {
-  total: 0, completed: 0, failed: 0, percentage: 0,
-  errors: [], isWaiting: false,
-};
-
-/**
- * Hook to trigger embedding processing with real-time SSE progress.
- * Replaces the old JSON-based useTriggerEmbedding. The backend streams
- * progress events (type: 'progress' | 'complete' | 'waiting' | 'paused')
- * over SSE for the duration of the job.
- */
-export function useEmbeddingProcess() {
-  const queryClient = useQueryClient();
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [progress, setProgress] = useState<EmbeddingProgress>(INITIAL_PROGRESS);
-  const abortRef = useRef<AbortController | null>(null);
-
-  const start = useCallback(async (endpoint: '/embeddings/process' | '/embeddings/retry-failed' = '/embeddings/process') => {
-    if (isProcessing) return;
-    abortRef.current = new AbortController();
-    setIsProcessing(true);
-    setProgress(INITIAL_PROGRESS);
-
-    try {
-      for await (const event of streamSSE<{ type: string; total?: number; completed?: number; failed?: number; percentage?: number; currentPage?: string; reason?: string; errors?: string[] }>(
-        endpoint, {}, abortRef.current.signal,
-      )) {
-        if (event.type === 'progress' || event.type === 'paused') {
-          setProgress({
-            total: event.total ?? 0,
-            completed: event.completed ?? 0,
-            failed: event.failed ?? 0,
-            percentage: event.percentage ?? 0,
-            currentPage: event.currentPage,
-            errors: [],
-            isWaiting: false,
-          });
-        } else if (event.type === 'waiting') {
-          setProgress((prev) => ({ ...prev, isWaiting: true, waitReason: event.reason }));
-        } else if (event.type === 'complete') {
-          setProgress({
-            total: event.total ?? 0,
-            completed: event.completed ?? 0,
-            failed: event.failed ?? 0,
-            percentage: 100,
-            errors: event.errors ?? [],
-            isWaiting: false,
-          });
-        }
-      }
-    } catch (err) {
-      if (err instanceof Error && err.name !== 'AbortError') {
-        throw err;
-      }
-    } finally {
-      setIsProcessing(false);
-      abortRef.current = null;
-      queryClient.invalidateQueries({ queryKey: ['embeddings', 'status'] });
-      queryClient.invalidateQueries({ queryKey: ['pages'], refetchType: 'none' });
-    }
-  }, [isProcessing, queryClient]);
-
-  const cancel = useCallback(() => {
-    abortRef.current?.abort();
-  }, []);
-
-  return { start, cancel, isProcessing, progress };
-}
-
-// ======== Quality Analysis Status ========
-
-export interface QualityStatusData {
-  totalPages: number;
-  analyzedPages: number;
-  pendingPages: number;
-  failedPages: number;
-  skippedPages: number;
-  averageScore: number | null;
-  isProcessing: boolean;
-}
-
-export function useQualityStatus() {
-  return useQuery<QualityStatusData>({
-    queryKey: ['quality', 'status'],
-    queryFn: () => apiFetch('/llm/quality-status'),
-    refetchInterval: (query) => {
-      return query.state.data?.isProcessing ? 5000 : 30_000;
-    },
-  });
-}
-
 // ======== Pinned Pages (Issue #144) ========
 
 export interface PinnedPage {
@@ -492,4 +389,3 @@ export function useSummaryRegenerate() {
   });
 }
 
-export type { PageSummary, PageDetail, PaginatedPages, PageTreeResponse, FilterOptions };
