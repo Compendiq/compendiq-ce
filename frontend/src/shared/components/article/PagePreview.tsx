@@ -106,23 +106,3 @@ export function PagePreview({ pageId, children, className }: PagePreviewProps) {
     </span>
   );
 }
-
-/**
- * Wraps page links inside HTML content with PagePreview hover cards.
- * Returns an array of React elements with page links wrapped in PagePreview.
- */
-// eslint-disable-next-line react-refresh/only-export-components
-export function usePageLinksWithPreview(contentRef: React.RefObject<HTMLElement | null>) {
-  useEffect(() => {
-    if (!contentRef.current) return;
-    // Find all internal page links
-    const links = contentRef.current.querySelectorAll('a[href^="/pages/"]');
-    links.forEach((link) => {
-      const href = link.getAttribute('href') || '';
-      const match = href.match(/^\/pages\/(.+)$/);
-      if (match?.[1]) {
-        link.setAttribute('data-page-id', match[1]);
-      }
-    });
-  }, [contentRef]);
-}
