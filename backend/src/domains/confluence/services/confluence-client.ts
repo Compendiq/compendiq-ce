@@ -62,14 +62,14 @@ interface PaginatedResponse<T> {
   _links?: { next?: string };
 }
 
-export interface RetryOptions {
+interface RetryOptions {
   /** Maximum number of attempts (including the first). Default: 3 */
   maxAttempts?: number;
   /** Base delay in milliseconds before the first retry. Default: 1000 */
   baseDelay?: number;
 }
 
-export interface ConfluenceClientOptions {
+interface ConfluenceClientOptions {
   /** Retry configuration for transient errors. */
   retry?: RetryOptions;
 }
@@ -983,4 +983,4 @@ export async function withRetry<T>(
   throw new Error('withRetry: unreachable');
 }
 
-export type { ConfluenceSpace, ConfluencePage, ConfluenceAttachment, PaginatedResponse };
+export type { ConfluenceSpace, ConfluencePage, ConfluenceAttachment };
