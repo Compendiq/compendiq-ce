@@ -40,10 +40,6 @@ export function enterRbacScope(userId: string): void {
   storage.enterWith({ userId });
 }
 
-export function getCurrentScope(): RbacScope | undefined {
-  return storage.getStore();
-}
-
 export function setScopedSpaces(spaces: string[]): void {
   const scope = storage.getStore();
   if (scope) scope.spaces = spaces;
