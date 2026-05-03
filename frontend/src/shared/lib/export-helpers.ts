@@ -329,7 +329,7 @@ type PdfFont = Awaited<
 >;
 
 /** Result of the layout pass — what `renderDataPages` consumes. */
-export interface ColumnLayout {
+interface ColumnLayout {
   /** 'portrait' (A4 595×842) or 'landscape' (A4 842×595). */
   orientation: 'portrait' | 'landscape';
   /** Concrete [width, height] page size for the data pages. */
