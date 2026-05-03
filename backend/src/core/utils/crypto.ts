@@ -80,7 +80,7 @@ export function getLatestEncryptionKey(): VersionedKey {
  * Returns the encryption key for a specific version.
  * @throws if the requested version is not configured
  */
-export function getEncryptionKeyByVersion(version: number): VersionedKey {
+function getEncryptionKeyByVersion(version: number): VersionedKey {
   const keys = getEncryptionKeys();
   const found = keys.find((k) => k.version === version);
   if (!found) {
