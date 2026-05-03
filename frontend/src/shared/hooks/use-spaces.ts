@@ -12,24 +12,10 @@ interface Space {
   source: 'confluence' | 'local';
 }
 
-interface AvailableSpace {
-  key: string;
-  name: string;
-  type: string;
-}
-
 export function useSpaces() {
   return useQuery<Space[]>({
     queryKey: ['spaces'],
     queryFn: () => apiFetch('/spaces'),
-  });
-}
-
-export function useAvailableSpaces() {
-  return useQuery<AvailableSpace[]>({
-    queryKey: ['spaces', 'available'],
-    queryFn: () => apiFetch('/spaces/available'),
-    enabled: false, // Only fetch when triggered
   });
 }
 
