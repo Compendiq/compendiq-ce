@@ -18,29 +18,19 @@ const CHARS_PER_TOKEN = 3;       // conservative estimate (code/tables can be 1â
 export const CHUNK_HARD_LIMIT = 6_000;  // absolute character ceiling (~1,500â€“2,000 tokens safety cap)
 
 /** Delay between embedding pages to reduce LLM server pressure (ms). */
-export const INTER_PAGE_DELAY_MS = 200;
-
-/**
- * Number of pages to embed concurrently within a batch.
- * Default 1 (sequential) to respect LLM rate limits.
- * Increase only if the embedding server supports parallel requests.
- */
-export const EMBEDDING_CONCURRENCY = Math.max(
-  1,
-  parseInt(process.env.EMBEDDING_CONCURRENCY ?? '1', 10) || 1,
-);
+const INTER_PAGE_DELAY_MS = 200;
 
 /** Max retries when circuit breaker is open before stopping the batch. */
-export const MAX_CIRCUIT_BREAKER_RETRIES = 3;
+const MAX_CIRCUIT_BREAKER_RETRIES = 3;
 
 /** Consecutive non-circuit-breaker failures before pausing. */
-export const CONSECUTIVE_FAILURE_PAUSE_THRESHOLD = 10;
+const CONSECUTIVE_FAILURE_PAUSE_THRESHOLD = 10;
 
 /** Pause duration after consecutive failures (ms). */
-export const CONSECUTIVE_FAILURE_PAUSE_MS = 30_000;
+const CONSECUTIVE_FAILURE_PAUSE_MS = 30_000;
 
 /** Extra wait time added after circuit breaker timeout to give server headroom (ms). */
-export const CIRCUIT_BREAKER_WAIT_BUFFER_MS = 1_000;
+const CIRCUIT_BREAKER_WAIT_BUFFER_MS = 1_000;
 
 interface ChunkMetadata {
   page_title: string;
@@ -279,7 +269,7 @@ export function chunkText(
  * Read chunk settings from admin_settings table.
  * Falls back to module-level defaults if not found.
  */
-export async function getAdminChunkSettings(): Promise<{ chunkSize: number; chunkOverlap: number }> {
+async function getAdminChunkSettings(): Promise<{ chunkSize: number; chunkOverlap: number }> {
   const result = await query<{ setting_key: string; setting_value: string }>(
     `SELECT setting_key, setting_value FROM admin_settings
      WHERE setting_key IN ('embedding_chunk_size', 'embedding_chunk_overlap')`,
@@ -445,7 +435,7 @@ export async function isProcessingUser(userId: string): Promise<boolean> {
 /**
  * Options for {@link processDirtyPages}.
  */
-export interface ProcessDirtyPagesOpts {
+interface ProcessDirtyPagesOpts {
   /**
    * When set, the caller has already acquired `embedding:lock:${userId}` and
    * owns its lifecycle. In that case this function must NOT attempt a second
