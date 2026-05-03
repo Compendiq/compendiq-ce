@@ -92,7 +92,7 @@ License format: `ATM-{tier}-{seats}-{expiryYYYYMMDD}-{licenseId}.{ed25519Signatu
 
 ## UI/UX (ADR-010 v0.4)
 
-Neumorphic dashboard, brand palette black `#0A0A0A` + honey `#F9C74F`. Themes: **Graphite Honey** (dark, default), **Honey Linen** (light) — mirrors `compendiq-landing/src/styles/tokens.css`. Eleven `nm-*` `@utility` classes (see `frontend/src/index.css`). Hybrid neumorphism: every interactive surface keeps a 1px solid border for WCAG 1.4.11 (3:1) and `forced-colors: active`. Press = inset shadow swap; `prefers-reduced-motion: reduce` strips press transform. Animated gradient mesh background is preserved on the **setup wizard only** (not the rest of the app). Staggered entrance animations via Framer Motion `LazyMotion` (lazy-load to keep first paint cheap). Status colors: green=connected, red=disconnected, yellow=syncing, blue=embedding, purple=AI, gray=inactive.
+Neumorphic dashboard, brand palette black `#0A0A0A` + honey `#F9C74F`. Themes: **Graphite Honey** (dark, default), **Honey Linen** (light) — mirrors `compendiq-landing/src/styles/tokens.css`. Twelve `nm-*` `@utility` classes (see `frontend/src/index.css`). Hybrid neumorphism: every interactive surface keeps a 1px solid border for WCAG 1.4.11 (3:1) and `forced-colors: active`. Press = inset shadow swap; `prefers-reduced-motion: reduce` strips press transform. Animated gradient mesh background is preserved on the **setup wizard only** (not the rest of the app). Staggered entrance animations via Framer Motion `LazyMotion` (lazy-load to keep first paint cheap). Status colors: green=connected, red=disconnected, yellow=syncing, blue=embedding, purple=AI, gray=inactive.
 
 ## Content Pipeline (ADR-003)
 
