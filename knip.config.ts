@@ -37,6 +37,8 @@ const config: KnipConfig = {
         '@fontsource-variable/hanken-grotesk',
         '@fontsource-variable/jetbrains-mono',
         '@fontsource-variable/newsreader',
+        // Loaded via Tailwind v4 @plugin directive in src/index.css (not a JS import)
+        '@tailwindcss/typography',
       ],
     },
     'packages/contracts': {
