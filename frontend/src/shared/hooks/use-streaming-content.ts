@@ -7,7 +7,7 @@ import { useRef, useState, useCallback, useEffect } from 'react';
  */
 const FLUSH_INTERVAL_MS = 50;
 
-export interface StreamingContentHandle {
+interface StreamingContentHandle {
   /** The content string that React renders. Updated at most every FLUSH_INTERVAL_MS. */
   displayContent: string;
   /** Whether a stream is currently active. */
