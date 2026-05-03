@@ -41,7 +41,7 @@ const INJECTION_PATTERNS: Array<{ pattern: RegExp; description: string }> = [
   { pattern: /---+\s*\n\s*(system|new\s+instructions)/i, description: 'delimiter injection' },
 ];
 
-export interface SanitizeResult {
+interface SanitizeResult {
   sanitized: string;
   wasModified: boolean;
   warnings: string[];
