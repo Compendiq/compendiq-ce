@@ -13,10 +13,10 @@ export interface ProviderConfig {
   verifySsl: boolean;
 }
 
-export interface LlmModel { name: string; }
-export interface HealthResult { connected: boolean; error?: string; }
+interface LlmModel { name: string; }
+interface HealthResult { connected: boolean; error?: string; }
 export interface ChatMessage { role: 'system' | 'user' | 'assistant'; content: string; }
-export interface StreamChunk { content: string; done: boolean; }
+interface StreamChunk { content: string; done: boolean; }
 
 const dispatchers = new Map<string, Agent>();
 function dispatcherFor(cfg: ProviderConfig): Agent | undefined {
