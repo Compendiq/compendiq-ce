@@ -12,9 +12,9 @@ export const THEME_IDS = [
 
 export type ThemeId = (typeof THEME_IDS)[number];
 
-export type ThemeCategory = 'dark' | 'light';
+type ThemeCategory = 'dark' | 'light';
 
-export interface ThemeMeta {
+interface ThemeMeta {
   id: ThemeId;
   label: string;
   description: string;
