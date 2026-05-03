@@ -30,7 +30,7 @@ export const ACTIVE_WINDOW_SEC = 20;
 export const VIEWERS_TTL_SEC = 30;
 
 /** TTL on the per-user meta HASH — refreshed on every heartbeat. */
-export const META_TTL_SEC = 90;
+const META_TTL_SEC = 90;
 
 function viewersKey(pageId: string): string {
   return `presence:viewers:${pageId}`;
@@ -50,7 +50,7 @@ function channelFor(pageId: string): string {
 
 const CHANNEL_PATTERN = 'presence:page:*';
 
-export interface PresenceMeta {
+interface PresenceMeta {
   name: string;
   role: string;
 }
