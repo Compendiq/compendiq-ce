@@ -12,7 +12,7 @@
  * See docs/plans/215-settings-ia-reorg.md for the design rationale.
  */
 
-export type SettingsCategoryId =
+type SettingsCategoryId =
   | 'personal'
   | 'content'
   | 'ai'
@@ -33,7 +33,7 @@ export interface SettingsNavItem {
   requiresFeature?: string;
 }
 
-export interface SettingsNavGroup {
+interface SettingsNavGroup {
   id: SettingsCategoryId;
   label: string;
   items: SettingsNavItem[];
