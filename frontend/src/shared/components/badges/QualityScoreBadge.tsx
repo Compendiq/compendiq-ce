@@ -2,7 +2,7 @@ import { cn } from '../../lib/cn';
 import { formatRelativeTime } from '../../lib/format-relative-time';
 import type { QualityStatus } from '../../hooks/use-pages';
 
-export interface QualityScoreBadgeProps {
+interface QualityScoreBadgeProps {
   qualityScore: number | null;
   qualityStatus: QualityStatus | null;
   qualityCompleteness?: number | null;
