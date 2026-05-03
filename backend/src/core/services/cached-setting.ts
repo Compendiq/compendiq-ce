@@ -36,7 +36,7 @@ import { query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
 import { subscribe, onReconnect, type CacheBusChannel } from './redis-cache-bus.js';
 
-export interface CachedSettingOptions<T> {
+interface CachedSettingOptions<T> {
   key: string;
   cacheBusChannel: CacheBusChannel;
   parse: (raw: string | null) => T;
