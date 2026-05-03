@@ -26,11 +26,7 @@
     "husky": "^9.1.7",
     "knip": "^6.3.0"
   },
-  "dependencies": {
-    "zod": "^4.3.6"
-  },
   "overrides": {
-    "zod": "^4.3.6",
     "protobufjs": "^7.5.5",
     "@fastify/static": "^9.1.1",
     "hono": "^4.12.14",
