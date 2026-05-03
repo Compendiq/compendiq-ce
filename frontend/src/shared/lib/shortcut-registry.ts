@@ -7,9 +7,9 @@
  * a single source of truth.
  */
 
-export type ShortcutCategory = 'navigation' | 'actions' | 'editor' | 'panels' | 'formatting';
+type ShortcutCategory = 'navigation' | 'actions' | 'editor' | 'panels' | 'formatting';
 
-export interface ShortcutRegistryEntry {
+interface ShortcutRegistryEntry {
   /** Unique identifier used by ShortcutHint to look up a shortcut. */
   id: string;
   /** Human-readable key combo, e.g. "ctrl+k", "alt+n", "esc". */
