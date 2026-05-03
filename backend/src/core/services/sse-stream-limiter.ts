@@ -120,7 +120,7 @@ redis.call("expire", KEYS[1], ARGV[2])
 return 1
 `;
 
-export interface StreamSlot {
+interface StreamSlot {
   acquired: boolean;
   /**
    * Release the slot. Idempotent — calling twice DECRs once. Safe to call
