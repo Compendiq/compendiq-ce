@@ -39,7 +39,7 @@ import { logger } from '../../../core/utils/logger.js';
 const APP_PAGE_PATH_RE = /^\/pages\/(\d+)(?:\/|$|\?|#)/;
 const CONFLUENCE_PAGE_HASH_PREFIX = '#confluence-page:';
 
-export interface ExtractedLink {
+interface ExtractedLink {
   /** Internal pages.id of the link target. */
   targetPageId: number;
 }
