@@ -9,7 +9,7 @@ const DRAWIO_URL = `${DRAWIO_ORIGIN}/drawio/?embed=1&proto=json&spin=1&ui=atlas&
 /** Timeout in ms to wait for the draw.io iframe 'init' event before showing the error state */
 const DRAWIO_INIT_TIMEOUT_MS = 15_000;
 
-export interface DrawioEditorProps {
+interface DrawioEditorProps {
   /** Raw draw.io XML of the diagram to edit */
   xml: string;
   /** Called when the user saves the diagram. Receives the exported PNG data URI and updated XML. */
@@ -257,4 +257,4 @@ export function DrawioEditor({ xml, onSave, onClose, drawioUrl }: DrawioEditorPr
   );
 }
 
-export { DRAWIO_ORIGIN, DRAWIO_URL };
+export { DRAWIO_ORIGIN };
