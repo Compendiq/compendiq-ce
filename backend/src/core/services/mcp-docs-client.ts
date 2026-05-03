@@ -53,7 +53,7 @@ async function disconnect(): Promise<void> {
   connectedUrl = null;
 }
 
-export interface McpDocResult {
+interface McpDocResult {
   markdown: string;
   title: string;
   url: string;
@@ -62,7 +62,7 @@ export interface McpDocResult {
   truncated: boolean;
 }
 
-export interface McpSearchResult {
+interface McpSearchResult {
   title: string;
   url: string;
   snippet: string;
