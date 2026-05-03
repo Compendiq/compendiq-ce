@@ -71,7 +71,7 @@ let lastRunAt: Date | null = null;
 
 // ─── Score parsing ────────────────────────────────────────────────────────────
 
-export interface QualityScores {
+interface QualityScores {
   overall: number;
   completeness: number;
   clarity: number;
