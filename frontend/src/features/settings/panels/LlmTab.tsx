@@ -242,5 +242,3 @@ function diffUsecaseAssignments(
   }
   return diff;
 }
-
-export { LlmTab as OllamaTab };
