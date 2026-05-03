@@ -46,7 +46,7 @@ export async function invalidateGraphCache(userId: string): Promise<void> {
  * compute "held for" without hardcoding the value. 1 hour default —
  * prevents permanent locks on crash.
  */
-export const EMBEDDING_LOCK_TTL = Math.floor(EMBEDDING_LOCK_TTL_MS / 1000);
+const EMBEDDING_LOCK_TTL = Math.floor(EMBEDDING_LOCK_TTL_MS / 1000);
 
 /**
  * Redis Set that mirrors the active set of per-user embedding lock keys.
@@ -152,7 +152,7 @@ export async function isEmbeddingLocked(userId: string): Promise<boolean> {
 // ── Embedding lock visibility + admin escape hatch (plan §2.1) ───────────
 
 /** Snapshot of a single active per-user embedding lock (issue #257). */
-export interface EmbeddingLockSnapshot {
+interface EmbeddingLockSnapshot {
   userId: string;
   /** Lock identity token (random UUID written by `acquireEmbeddingLock`).
    *  Exposed so the worker can verify, before each write, that the lock it
