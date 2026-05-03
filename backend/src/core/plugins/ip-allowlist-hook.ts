@@ -85,10 +85,11 @@ function resolveClientIpFromXff(
 }
 
 /**
- * Resolve the effective client IP for allowlist matching. Exported for unit
- * testing — the hook itself uses this helper internally.
+ * Resolve the effective client IP for allowlist matching. Used internally by
+ * the hook below; behaviour is exercised end-to-end via the plugin tests
+ * rather than directly.
  */
-export function resolveClientIp(req: FastifyRequest): {
+function resolveClientIp(req: FastifyRequest): {
   clientIp: string;
   socketIp: string;
 } {
