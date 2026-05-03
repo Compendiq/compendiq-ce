@@ -1,7 +1,7 @@
 import { query } from '../../core/db/postgres.js';
 import { logger } from '../../core/utils/logger.js';
 
-export interface CreateNotificationParams {
+interface CreateNotificationParams {
   userId: string;
   type: string;
   title: string;
@@ -11,7 +11,7 @@ export interface CreateNotificationParams {
   sourcePageId?: number;
 }
 
-export interface Notification {
+interface Notification {
   id: number;
   userId: string;
   type: string;
@@ -24,7 +24,7 @@ export interface Notification {
   createdAt: Date;
 }
 
-export interface NotificationPreference {
+interface NotificationPreference {
   type: string;
   inApp: boolean;
   email: boolean;
@@ -65,7 +65,7 @@ export async function createNotification(params: CreateNotificationParams): Prom
   }
 }
 
-export interface ListNotificationsFilter {
+interface ListNotificationsFilter {
   userId: string;
   unreadOnly?: boolean;
   type?: string;
@@ -254,15 +254,4 @@ export async function isWatching(pageId: number, userId: string): Promise<boolea
   const row = result.rows[0];
   if (!row) throw new Error('Expected a row from EXISTS query');
   return row.exists;
-}
-
-/**
- * Returns all user IDs watching a given article.
- */
-export async function getArticleWatchers(pageId: number): Promise<string[]> {
-  const result = await query<{ user_id: string }>(
-    'SELECT user_id FROM article_watchers WHERE page_id = $1',
-    [pageId],
-  );
-  return result.rows.map((r) => r.user_id);
 }
