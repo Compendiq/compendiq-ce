@@ -10,6 +10,11 @@ const config: KnipConfig = {
     // wired to npm scripts or CI). Multi-pod presence smoke test for issue #301
     // — invoked manually per docs/releases/v0.4-presence-multipod-smoke.md.
     'scripts/smoke-presence-multipod.mjs',
+    // scripts/vitest.config.ts is invoked dynamically via
+    // `npx vitest run --config scripts/vitest.config.ts` (see perf/README.md)
+    // to exercise the pure helpers in scripts/perf-graph-bench.ts (#380).
+    // Knip cannot see this CLI flag so we ignore the config file explicitly.
+    'scripts/vitest.config.ts',
   ],
   workspaces: {
     'backend': {
