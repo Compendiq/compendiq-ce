@@ -133,7 +133,7 @@ export type AuditAction =
   | 'BULK_PAGE_TAGS_REPLACED'
   | 'BULK_PAGE_PERMISSION_CHANGED';
 
-export interface AuditLogEntry {
+interface AuditLogEntry {
   id: string;
   userId: string | null;
   action: string;
@@ -180,7 +180,7 @@ export async function logAuditEvent(
   }
 }
 
-export interface AuditLogFilter {
+interface AuditLogFilter {
   userId?: string;
   action?: string;
   resourceType?: string;
