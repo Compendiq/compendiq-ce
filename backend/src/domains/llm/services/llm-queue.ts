@@ -42,7 +42,7 @@ import {
 // (see the subscriber comment in that init function) for deterministic
 // ordering vs. the cached-setting's async re-read.
 
-export interface LlmQueueMetrics {
+interface LlmQueueMetrics {
   concurrency: number;
   activeCount: number;
   pendingCount: number;
@@ -92,7 +92,7 @@ export function setMaxQueueDepth(n: number): void {
   _maxQueueDepth = Math.max(1, n);
 }
 
-export function setTimeoutMs(ms: number): void {
+function setTimeoutMs(ms: number): void {
   _timeoutMs = Math.max(1000, ms);
 }
 
@@ -115,7 +115,7 @@ export class QueueFullError extends Error {
   }
 }
 
-export class LlmTimeoutError extends Error {
+class LlmTimeoutError extends Error {
   constructor(timeoutMs: number) {
     super(`LLM request timed out after ${timeoutMs}ms`);
     this.name = 'LlmTimeoutError';
