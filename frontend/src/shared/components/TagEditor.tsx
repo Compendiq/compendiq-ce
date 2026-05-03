@@ -3,7 +3,7 @@ import { X, Plus, Tag } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { normalizeTag, MAX_TAG_LENGTH } from '../lib/tag-utils';
 
-export interface TagEditorProps {
+interface TagEditorProps {
   /** Current tags on the page */
   tags: string[];
   /** Called when a tag is added */
