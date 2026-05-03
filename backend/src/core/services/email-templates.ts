@@ -63,7 +63,7 @@ function wrap(title: string, body: string): string {
 </html>`;
 }
 
-export interface SyncCompletedData {
+interface SyncCompletedData {
   userName: string;
   spacesCount: number;
   pagesCount: number;
@@ -85,7 +85,7 @@ export function syncCompleted(data: SyncCompletedData): { subject: string; html:
   };
 }
 
-export interface SyncFailedData {
+interface SyncFailedData {
   userName: string;
   errorMessage: string;
   spaceKey?: string;
@@ -106,7 +106,7 @@ export function syncFailed(data: SyncFailedData): { subject: string; html: strin
   };
 }
 
-export interface KnowledgeRequestData {
+interface KnowledgeRequestData {
   assigneeName: string;
   requesterName: string;
   title: string;
@@ -129,7 +129,7 @@ export function knowledgeRequestCreated(data: KnowledgeRequestData): { subject: 
   };
 }
 
-export interface CommentData {
+interface CommentData {
   authorName: string;
   recipientName: string;
   articleTitle: string;
@@ -151,7 +151,7 @@ export function articleComment(data: CommentData): { subject: string; html: stri
   };
 }
 
-export interface LicenseExpiryData {
+interface LicenseExpiryData {
   adminName: string;
   daysRemaining: number;
   expiryDate: string;
@@ -173,7 +173,7 @@ export function licenseExpiry(data: LicenseExpiryData): { subject: string; html:
   };
 }
 
-export interface AccountInvitationData {
+interface AccountInvitationData {
   /** Recipient's display name (falls back to username). */
   recipientName: string;
   /** Username to log in with. */
