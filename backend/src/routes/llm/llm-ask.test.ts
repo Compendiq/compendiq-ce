@@ -383,7 +383,7 @@ describe('POST /api/llm/ask', () => {
       mockHybridSearch.mockResolvedValue([]);
       mockResolveUsecase.mockResolvedValue({
         config: {
-          providerId: 'provider-openai',
+          providerId: 'provider-acme',
           baseUrl: 'https://api.openai.com/v1',
           apiKey: 'sk-test',
           authType: 'bearer',
@@ -407,7 +407,7 @@ describe('POST /api/llm/ask', () => {
         { providerId: string },
         string,
       ];
-      expect(cfg.providerId).toBe('provider-openai');
+      expect(cfg.providerId).toBe('provider-acme');
       expect(usedModel).toBe('gpt-4o-mini');
 
       const insertCall = (mockQuery.mock.calls as unknown[][]).find(
@@ -419,7 +419,7 @@ describe('POST /api/llm/ask', () => {
         expect.objectContaining({
           action: 'ask',
           model: 'gpt-4o-mini',
-          provider: 'provider-openai',
+          provider: 'provider-acme',
         }),
       );
     });
