@@ -59,7 +59,7 @@ async function fetchJson<T>(path: string): Promise<T> {
   return res.json();
 }
 
-export interface AuthorPendingBannerProps {
+interface AuthorPendingBannerProps {
   /**
    * For tests — override the polling interval in ms. Default 60_000.
    */
