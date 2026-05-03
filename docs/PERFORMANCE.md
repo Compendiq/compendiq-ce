@@ -98,11 +98,7 @@ Performance is measured at three layers:
    npm run dev
    ```
 
-2. Seed 1,000 test pages for benchmarking:
-   ```bash
-   POSTGRES_URL=postgresql://kb_user:changeme-postgres@localhost:5432/kb_creator \
-     npx tsx scripts/seed-perf-data.ts
-   ```
+2. Seed test pages for benchmarking via a real Confluence sync (the previous standalone seed script was removed in #410 as unused). Trigger an initial sync from the Confluence connector settings; for repeatable benchmarks, point at a Confluence space with ≥1,000 pages.
 
 ### API Latency Tests
 
