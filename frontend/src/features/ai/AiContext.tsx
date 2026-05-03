@@ -27,7 +27,7 @@ export interface Message {
   sources?: Source[];
 }
 
-export interface Conversation {
+interface Conversation {
   id: string;
   title: string;
   model: string;
@@ -36,7 +36,7 @@ export interface Conversation {
 
 export type Mode = 'ask' | 'improve' | 'generate' | 'summarize' | 'diagram' | 'quality';
 
-export interface PageData {
+interface PageData {
   id: string;
   title: string;
   bodyHtml: string;
@@ -45,7 +45,7 @@ export interface PageData {
   hasChildren?: boolean;
 }
 
-export interface AiContextValue {
+interface AiContextValue {
   // Route / query state
   pageId: string | null;
   page: PageData | undefined;
