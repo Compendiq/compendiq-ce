@@ -109,5 +109,3 @@ export function EmbeddingStatusBadge(props: EmbeddingStatusBadgeProps) {
     </span>
   );
 }
-
-export type { EmbeddingStatusBadgeProps };
