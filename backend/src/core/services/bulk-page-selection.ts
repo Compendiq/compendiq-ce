@@ -45,7 +45,7 @@ export const BulkPageFilterSchema = z
   })
   .strict();
 
-export type BulkPageFilter = z.infer<typeof BulkPageFilterSchema>;
+type BulkPageFilter = z.infer<typeof BulkPageFilterSchema>;
 
 /**
  * Wire shape for any bulk route's `selection` body. Routes use this in
@@ -77,7 +77,7 @@ export const BulkSelectionSchema = z
 
 export type BulkSelection = z.infer<typeof BulkSelectionSchema>;
 
-export interface ResolvedBulkRow {
+interface ResolvedBulkRow {
   id: number;
   confluenceId: string | null;
   spaceKey: string | null;
@@ -90,7 +90,7 @@ export interface ResolvedBulkRow {
   labels: string[];
 }
 
-export interface BulkSelectionResolutionError {
+interface BulkSelectionResolutionError {
   /**
    * Discriminator. `count_drift` maps to HTTP 409 in the route layer; the
    * shape is stable so the frontend can render a "the selection changed
@@ -103,7 +103,7 @@ export interface BulkSelectionResolutionError {
   actual?: number;
 }
 
-export interface ResolveBulkSelectionResult {
+interface ResolveBulkSelectionResult {
   rows: ResolvedBulkRow[];
   /** IDs supplied by the caller that did not resolve to any page (only for ids-mode). */
   notFoundIds: string[];
