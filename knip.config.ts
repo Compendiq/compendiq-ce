@@ -31,6 +31,7 @@ const config: KnipConfig = {
         // Consumed via CSS @import in src/index.css (knip cannot trace CSS @imports)
         '@fontsource-variable/hanken-grotesk',
         '@fontsource-variable/jetbrains-mono',
+        '@fontsource-variable/newsreader',
       ],
     },
     'packages/contracts': {
