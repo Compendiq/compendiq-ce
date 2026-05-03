@@ -120,7 +120,7 @@ export function getWebhookDeliveryQueue(): Queue {
 
 // ─── Options & teardown types ────────────────────────────────────────────
 
-export interface OutboxPollerOptions {
+interface OutboxPollerOptions {
   /** ms between polls. Defaults to 5000. */
   pollIntervalMs?: number;
   /** Max rows claimed per cycle. Defaults to 50. */
