@@ -18,9 +18,7 @@ const config: KnipConfig = {
       project: ['src/**/*.ts'],
     },
     'mcp-docs': {
-      entry: ['src/index.ts'],
       project: ['src/**/*.ts'],
-      ignore: ['src/**/*.test.ts'],
       ignoreDependencies: ['pino-pretty'],
     },
   },
