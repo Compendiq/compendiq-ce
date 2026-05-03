@@ -47,7 +47,7 @@ import { timingSafeEqual } from 'node:crypto';
 /** Default skew tolerance matches the Standard Webhooks spec (§5). */
 const DEFAULT_TOLERANCE_SECONDS = 300;
 
-export interface SignWebhookOptions {
+interface SignWebhookOptions {
   /** Decrypted plaintext subscription secret. NOT the encrypted BYTEA. */
   secret: string;
   /** `webhook_outbox.webhook_id` — stable across retries, receiver dedup key. */
@@ -58,13 +58,13 @@ export interface SignWebhookOptions {
   payload: string;
 }
 
-export interface SignedWebhookHeaders {
+interface SignedWebhookHeaders {
   'webhook-id': string;
   'webhook-timestamp': string;
   'webhook-signature': string;
 }
 
-export interface VerifyWebhookOptions {
+interface VerifyWebhookOptions {
   /**
    * Single secret or an array. Arrays let verifiers accept a signature
    * produced under *either* the primary or the secondary secret during
