@@ -6,7 +6,7 @@
 import { query, getPool } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
 
-export interface McpDocsSettings {
+interface McpDocsSettings {
   enabled: boolean;
   url: string;
   domainMode: 'allowlist' | 'blocklist';
