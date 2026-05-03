@@ -97,9 +97,9 @@ const BACKOFF_SECONDS: readonly number[] = [
   5 * 60 * 60,
 ];
 
-// ─── Public option + data types ──────────────────────────────────────────
+// ─── Option + data types ─────────────────────────────────────────────────
 
-export interface WebhookDeliveryOptions {
+interface WebhookDeliveryOptions {
   /** Worker concurrency. Default 16. */
   concurrency?: number;
   /** Per-job overall HTTP deadline (headers + body). Default 10_000 ms. */
@@ -118,7 +118,7 @@ export interface WebhookDeliveryOptions {
  * documented in the delivery spec — tests drive the service with the
  * snake_case form directly.
  */
-export interface OutboxJobData {
+interface OutboxJobData {
   /** `webhook_outbox.id` — UUID. */
   id: string;
   /** `webhook_subscriptions.id` — UUID. */
@@ -130,6 +130,13 @@ export interface OutboxJobData {
   payload: unknown;
 }
 
+/**
+ * @public
+ * Consumed by EE webhook-service via `type` import at:
+ *   overlay/backend/src/enterprise/webhook-service.ts:62-65,810
+ *
+ * Do not remove this `export` without coordinating with the EE repo.
+ */
 export interface DeliveryOutcome {
   outcome: 'success' | 'failure' | 'timeout' | 'ssrf_blocked';
   httpStatus?: number;
@@ -218,6 +225,12 @@ function getWebhookAgent(perJobTimeoutMs: number): Agent {
  * Start the delivery worker. Called from `app.ts` after
  * `initWebhookOutboxPoller`. Idempotent — a second call returns the
  * original teardown without starting a second worker.
+ *
+ * @public
+ * Consumed by the EE plugin via dynamic import at:
+ *   overlay/backend/src/enterprise/plugin.ts:458,477
+ *
+ * Do not remove this `export` without coordinating with the EE repo.
  */
 export async function initWebhookDeliveryWorker(
   opts: WebhookDeliveryOptions = {},
