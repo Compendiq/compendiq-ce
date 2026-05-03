@@ -15,7 +15,7 @@ import { logger } from '../utils/logger.js';
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
-export interface SmtpConfig {
+interface SmtpConfig {
   host: string;
   port: number;
   secure: boolean;
