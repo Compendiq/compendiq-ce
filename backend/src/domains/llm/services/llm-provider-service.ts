@@ -18,7 +18,7 @@ interface ProviderRow {
 }
 
 /** Server-side config — decrypted. NEVER returned from HTTP routes. */
-export interface ProviderConfigRow {
+interface ProviderConfigRow {
   id: string;
   name: string;
   baseUrl: string;
@@ -70,11 +70,6 @@ export async function listProviders(): Promise<LlmProvider[]> {
 
 export async function getProviderById(id: string): Promise<ProviderConfigRow | null> {
   const r = await query<ProviderRow>(`SELECT * FROM llm_providers WHERE id=$1`, [id]);
-  return r.rows[0] ? rowToConfig(r.rows[0]) : null;
-}
-
-export async function getDefaultProvider(): Promise<ProviderConfigRow | null> {
-  const r = await query<ProviderRow>(`SELECT * FROM llm_providers WHERE is_default=TRUE LIMIT 1`);
   return r.rows[0] ? rowToConfig(r.rows[0]) : null;
 }
 
