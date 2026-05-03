@@ -197,7 +197,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
   );
 });
 
-export interface SpaceOption {
+interface SpaceOption {
   key: string;
   name: string;
   pageCount: number;
