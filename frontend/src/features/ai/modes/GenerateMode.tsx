@@ -12,7 +12,7 @@ import { marked } from 'marked';
 import { cn } from '../../../shared/lib/cn';
 
 /** Threshold above which the backend truncates PDF text for the LLM context window. */
-export const PDF_TEXT_TRUNCATION_THRESHOLD = 80_000;
+const PDF_TEXT_TRUNCATION_THRESHOLD = 80_000;
 
 // ---------------------------------------------------------------------------
 // Helpers
