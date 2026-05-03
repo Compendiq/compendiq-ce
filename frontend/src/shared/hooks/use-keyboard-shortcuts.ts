@@ -44,7 +44,7 @@ function isEditableTarget(event: KeyboardEvent): boolean {
   return false;
 }
 
-export interface KeyboardShortcutOptions {
+interface KeyboardShortcutOptions {
   /**
    * When false, shortcuts that use a single key (no Ctrl/Cmd/Alt modifier)
    * are suppressed. Modifier shortcuts always fire regardless.
