@@ -679,14 +679,14 @@ function handleVisualKey(
 // Change callback type for mode notifications
 // ---------------------------------------------------------------------------
 
-export type VimModeChangeCallback = (mode: VimMode) => void;
-export type VimStateChangeCallback = (state: VimState) => void;
+type VimModeChangeCallback = (mode: VimMode) => void;
+type VimStateChangeCallback = (state: VimState) => void;
 
 // ---------------------------------------------------------------------------
 // TipTap Extension
 // ---------------------------------------------------------------------------
 
-export interface VimExtensionOptions {
+interface VimExtensionOptions {
   /** Callback when the vim mode changes (used to update React state). */
   onModeChange?: VimModeChangeCallback;
   /** Callback when full vim state changes (mode, pending keys, command buffer). */
