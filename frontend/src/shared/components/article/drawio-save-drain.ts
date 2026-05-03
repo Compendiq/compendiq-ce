@@ -29,7 +29,7 @@
 import type { Editor } from '@tiptap/core';
 import { apiFetch } from '../../lib/api';
 
-export interface DrainOptions {
+interface DrainOptions {
   /**
    * Attachment-store page id. For Confluence pages this is the
    * `confluenceId`; for standalone pages it's the numeric DB id. Combined
@@ -47,7 +47,7 @@ export interface DrainOptions {
   pageSource: 'confluence' | 'standalone';
 }
 
-export interface DrainResult {
+interface DrainResult {
   uploaded: number;
   skipped: number;
   failed: number;
