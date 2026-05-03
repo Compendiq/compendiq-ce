@@ -93,7 +93,7 @@ export async function getUser(id: string): Promise<AdminUser | null> {
   return res.rows[0] ? rowToAdminUser(res.rows[0]) : null;
 }
 
-export interface CreateUserOptions {
+interface CreateUserOptions {
   username: string;
   email?: string | null;
   displayName?: string | null;
@@ -108,7 +108,7 @@ export interface CreateUserOptions {
   generateRandomPassword?: boolean;
 }
 
-export interface CreateUserResult {
+interface CreateUserResult {
   user: AdminUser;
   /** Populated when `generateRandomPassword: true` — otherwise undefined. */
   temporaryPassword?: string;
@@ -152,7 +152,7 @@ export async function createUser(opts: CreateUserOptions): Promise<CreateUserRes
   }
 }
 
-export interface UpdateUserOptions {
+interface UpdateUserOptions {
   email?: string | null;
   displayName?: string | null;
   role?: AdminUserRole;
@@ -228,7 +228,7 @@ export async function updateUser(id: string, patch: UpdateUserOptions): Promise<
   }
 }
 
-export interface DeactivateOptions {
+interface DeactivateOptions {
   actorUserId: string;
   reason?: string;
 }
@@ -307,7 +307,7 @@ export async function reactivateUser(targetUserId: string): Promise<AdminUser> {
   return rowToAdminUser(res.rows[0]!);
 }
 
-export interface DeleteUserOptions {
+interface DeleteUserOptions {
   actorUserId: string;
 }
 
