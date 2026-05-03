@@ -1,10 +1,16 @@
 import type { KnipConfig } from 'knip';
 
 const config: KnipConfig = {
-  // Root-level ignore: knip can't trace lhci autorun's convention-based
-  // resolution of .lighthouserc.js (consumed via `lighthouse: lhci autorun`
-  // in package.json scripts).
-  ignore: ['.lighthouserc.js'],
+  // Root-level ignore: assets knip can't trace.
+  ignore: [
+    // lhci autorun's convention-based resolution of .lighthouserc.js
+    // (consumed via `lighthouse: lhci autorun` in package.json scripts).
+    '.lighthouserc.js',
+    // Standalone CLI harnesses launched manually (documented smoke tests, not
+    // wired to npm scripts or CI). Multi-pod presence smoke test for issue #301
+    // — invoked manually per docs/releases/v0.4-presence-multipod-smoke.md.
+    'scripts/smoke-presence-multipod.mjs',
+  ],
   workspaces: {
     'backend': {
       entry: ['src/index.ts', 'src/app.ts'],
