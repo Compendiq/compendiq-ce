@@ -120,8 +120,8 @@ export async function getPendingSyncVersionsRetentionDays(): Promise<number> {
 // These wrap `admin_settings.llm_concurrency` and `admin_settings.llm_max_queue_depth`
 // behind the cache-bus channel `admin:llm:settings`. A PUT on one pod publishes
 // on the channel; every other pod's subscriber re-reads from the DB and the
-// llm-queue swaps its `pLimit` limiter. See `domains/llm/services/llm-queue.ts`
-// for the swap logic.
+// llm-queue updates its `pLimit` limiter's `concurrency` in place (see #404).
+// See `domains/llm/services/llm-queue.ts` for the mutation logic.
 //
 // Defaults match the existing env-var fallbacks in `llm-queue.ts` (which the
 // cached-setting bypasses on cold-load when the admin_settings row is absent —

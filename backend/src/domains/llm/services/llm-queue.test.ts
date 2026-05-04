@@ -333,7 +333,7 @@ describe('llm-queue', () => {
         expect(m.maxQueueDepth).toBe(250);
       });
 
-      it('on incoming message, re-reads DB and swaps _limiter via setConcurrency', async () => {
+      it('on incoming message, re-reads DB and updates _limiter.concurrency via setConcurrency', async () => {
         // Initial state: 4. After the cache-bus message, the handler reads
         // `admin_settings` and finds llm_concurrency=20.
         const { initLlmQueueClusterCoordination, getMetrics, _resetClusterCoordinationForTests } =
