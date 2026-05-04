@@ -30,6 +30,7 @@ const config: KnipConfig = {
       ignoreDependencies: [
         // Consumed via CSS @import in src/index.css (knip cannot trace CSS @imports)
         '@fontsource-variable/hanken-grotesk',
+        '@fontsource-variable/jetbrains-mono',
       ],
     },
     'packages/contracts': {
