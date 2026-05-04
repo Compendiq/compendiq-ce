@@ -26,4 +26,6 @@ export const noopPlugin: EnterprisePlugin = {
   },
 
   version: 'community',
+
+  resolveUsecaseOverride: async () => null,
 };
