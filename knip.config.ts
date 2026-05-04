@@ -15,6 +15,10 @@ const config: KnipConfig = {
     // to exercise the pure helpers in scripts/perf-graph-bench.ts (#380).
     // Knip cannot see this CLI flag so we ignore the config file explicitly.
     'scripts/vitest.config.ts',
+    // Standalone tsx-invoked CLI harness; documented as an entry point in
+    // `perf/README.md` (5 references) and `CHANGELOG.md`. Knip can't trace
+    // markdown-documented CLI scripts, so ignore it explicitly.
+    'perf/seed-test-data.ts',
   ],
   workspaces: {
     'backend': {
