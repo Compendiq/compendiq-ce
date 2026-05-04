@@ -189,9 +189,10 @@ let _unsubscribeClusterCoordination: (() => void) | null = null;
  * target and the authoritative cold-loaded value are both in place.
  *
  * On every invalidation message, this re-reads `admin_settings` directly
- * (NOT through the cached getter) and atomically swaps `_limiter` via the
- * existing `setConcurrency` clamp if the concurrency changed. The direct
- * read is intentional: the cached-setting in `admin-settings-service.ts`
+ * (NOT through the cached getter) and updates `_limiter.concurrency` in
+ * place via the existing `setConcurrency` clamp if the concurrency
+ * changed (#404 — see file header). The direct read is intentional: the
+ * cached-setting in `admin-settings-service.ts`
  * also subscribes to this channel and re-reads the same row, but the
  * cache-bus dispatcher does NOT await async handlers between them — going
  * through the cached getter would risk reading a stale value if our

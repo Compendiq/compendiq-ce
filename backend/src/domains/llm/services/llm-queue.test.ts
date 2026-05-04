@@ -114,7 +114,9 @@ describe('llm-queue', () => {
     const { enqueue, setConcurrency, setMaxQueueDepth, getMetrics, QueueFullError } =
       await import('./llm-queue.js');
     setConcurrency(2);
-    setMaxQueueDepth(10); // generous now; tighten later for the backpressure check
+    // Start with generous depth so the initial fill isn't rejected;
+    // tightened later in the test to exercise backpressure.
+    setMaxQueueDepth(10);
 
     // Manually-resolved promise so in-flight jobs stay pending for the
     // entire test — no real timers, no flake risk.
