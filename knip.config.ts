@@ -1,6 +1,10 @@
 import type { KnipConfig } from 'knip';
 
 const config: KnipConfig = {
+  // Root-level ignore: knip can't trace lhci autorun's convention-based
+  // resolution of .lighthouserc.js (consumed via `lighthouse: lhci autorun`
+  // in package.json scripts).
+  ignore: ['.lighthouserc.js'],
   workspaces: {
     'backend': {
       entry: ['src/index.ts', 'src/app.ts'],
