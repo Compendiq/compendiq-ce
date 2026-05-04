@@ -16,6 +16,10 @@ const config: KnipConfig = {
       entry: ['src/main.tsx'],
       project: ['src/**/*.{ts,tsx}'],
       ignore: ['src/**/*.test.{ts,tsx}'],
+      ignoreDependencies: [
+        // Consumed via CSS @import in src/index.css (knip cannot trace CSS @imports)
+        '@fontsource-variable/hanken-grotesk',
+      ],
     },
     'packages/contracts': {
       entry: ['src/index.ts'],
