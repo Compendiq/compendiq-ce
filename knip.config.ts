@@ -43,6 +43,8 @@ const config: KnipConfig = {
         '@fontsource-variable/newsreader',
         // Loaded via Tailwind v4 @plugin directive in src/index.css (not a JS import)
         '@tailwindcss/typography',
+        // Tailwind v4 CSS-first @import in src/index.css (knip cannot trace CSS @imports)
+        'tailwindcss',
       ],
     },
     'packages/contracts': {
