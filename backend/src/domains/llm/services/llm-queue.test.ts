@@ -105,6 +105,68 @@ describe('llm-queue', () => {
     expect(getMetrics().concurrency).toBe(100);
   });
 
+  // Regression for #404 — hot-swapping concurrency must NOT orphan in-flight
+  // or pending jobs from the metrics / backpressure view. Pre-fix,
+  // `setConcurrency` reassigned `_limiter = pLimit(val)`, so the new
+  // limiter's `pendingCount` was 0 and the old limiter's jobs were invisible
+  // to both `getMetrics()` and the `enqueue` queue-full check.
+  it('preserves in-flight + pending jobs in metrics across a concurrency hot-swap', async () => {
+    const { enqueue, setConcurrency, setMaxQueueDepth, getMetrics, QueueFullError } =
+      await import('./llm-queue.js');
+    setConcurrency(2);
+    // Start with generous depth so the initial fill isn't rejected;
+    // tightened later in the test to exercise backpressure.
+    setMaxQueueDepth(10);
+
+    // Manually-resolved promise so in-flight jobs stay pending for the
+    // entire test — no real timers, no flake risk.
+    const release: Array<() => void> = [];
+    const block = () => new Promise<void>((resolve) => { release.push(resolve); });
+    const flushMicrotasks = async () => {
+      for (let i = 0; i < 4; i++) await Promise.resolve();
+    };
+
+    // Fill the limiter: 2 active + 3 pending.
+    const inFlight = [
+      enqueue(block), enqueue(block),
+      enqueue(block), enqueue(block), enqueue(block),
+    ];
+    await flushMicrotasks();
+    expect(getMetrics().activeCount).toBe(2);
+    expect(getMetrics().pendingCount).toBe(3);
+
+    // Hot-swap UP. p-limit's `concurrency` setter mutates the same limiter
+    // and drains pending work on the next microtask, so all 5 jobs become
+    // active without disappearing from `getMetrics()`.
+    setConcurrency(5);
+    await flushMicrotasks();
+    expect(getMetrics().concurrency).toBe(5);
+    expect(getMetrics().activeCount).toBe(5);
+    expect(getMetrics().pendingCount).toBe(0);
+
+    // Hot-swap DOWN. The 5 in-flight jobs continue; new work must queue.
+    // Pre-fix this allocated a fresh pLimit(2) and the 5 active jobs
+    // disappeared from the metrics + backpressure view.
+    setConcurrency(2);
+    await flushMicrotasks();
+    expect(getMetrics().activeCount).toBe(5);
+
+    // Tighten max-queue-depth so backpressure can be exercised. The 3
+    // additional enqueues must queue (active=5 >= concurrency=2, no slot
+    // opens), then the 4th must reject — confirming backpressure correctly
+    // counts the in-flight 5 + queued 3 across the hot-swap.
+    setMaxQueueDepth(3);
+    const noop = () => Promise.resolve();
+    const queued = [enqueue(noop), enqueue(noop), enqueue(noop)];
+    await flushMicrotasks();
+    expect(getMetrics().pendingCount).toBe(3);
+    await expect(enqueue(noop)).rejects.toThrow(QueueFullError);
+
+    // Cleanup — release the in-flight 5; the queued noops then drain.
+    while (release.length) release.shift()!();
+    await Promise.allSettled([...inFlight, ...queued]);
+  }, 10_000);
+
   describe('env-var fallback defaults', () => {
     const originalEnv = { ...process.env };
 
@@ -271,7 +333,7 @@ describe('llm-queue', () => {
         expect(m.maxQueueDepth).toBe(250);
       });
 
-      it('on incoming message, re-reads DB and swaps _limiter via setConcurrency', async () => {
+      it('on incoming message, re-reads DB and updates _limiter.concurrency via setConcurrency', async () => {
         // Initial state: 4. After the cache-bus message, the handler reads
         // `admin_settings` and finds llm_concurrency=20.
         const { initLlmQueueClusterCoordination, getMetrics, _resetClusterCoordinationForTests } =

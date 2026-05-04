@@ -252,10 +252,11 @@ export async function buildApp() {
   // LLM queue cluster-wide settings (Compendiq/compendiq-ee#113 Phase B-3).
   // Cold-loads `llm_concurrency` + `llm_max_queue_depth` from admin_settings
   // and subscribes to the `admin:llm:settings` cache-bus channel. Then
-  // primes the queue's `_limiter` from those cached values + wires the
-  // module-level subscriber that swaps `_limiter` on every PUT from any
-  // pod. Must run AFTER initCacheBus and BEFORE the queue starts handling
-  // traffic.
+  // primes the queue's limiter from those cached values + wires the
+  // module-level subscriber that updates `_limiter.concurrency` in place
+  // on every PUT from any pod (see #404 — preserves activeCount/pendingCount
+  // across hot-swaps). Must run AFTER initCacheBus and BEFORE the queue
+  // starts handling traffic.
   await initLlmQueueSettings();
   initLlmQueueClusterCoordination();
 

@@ -412,9 +412,10 @@ export async function adminRoutes(fastify: FastifyInstance) {
     // These do NOT go through the `updates` UPSERT loop above — the
     // dedicated setters in `llm-queue.ts` UPSERT the row AND publish on
     // the `admin:llm:settings` cache-bus channel so every other pod
-    // re-reads + swaps its `pLimit` limiter. The local pod's limiter is
-    // also swapped via the same subscriber path; the route handler does
-    // NOT call `setConcurrency()` directly.
+    // re-reads and updates its `pLimit` limiter's `concurrency` in place
+    // (see #404). The local pod's limiter is also updated via the same
+    // subscriber path; the route handler does NOT call `setConcurrency()`
+    // directly.
     //
     // Zod has already validated the ranges ([1, 100] and [1, 1000]); the
     // setters defensively clamp again to keep the queue safe even if a
