@@ -143,34 +143,40 @@
 
 **Files:**
 - Modify: `backend/src/domains/llm/services/llm-provider-resolver.ts`
-- Test: `backend/src/domains/llm/services/llm-provider-resolver.test.ts`
+- Create: `backend/src/domains/llm/services/llm-provider-resolver-enterprise.test.ts` (separate file because Vitest's `vi.doMock` + `vi.resetModules` does not compose cleanly with the existing test file's static `import { resolveUsecase }` — keeping the override tests in a fresh-module file avoids the cached-import collision)
 
-- [ ] **Step 1 (RED):** Open the existing test file. Add a new `describe` block at the bottom:
+- [ ] **Step 1 (RED):** Create `backend/src/domains/llm/services/llm-provider-resolver-enterprise.test.ts`. The file has **no top-level static import** of `llm-provider-resolver` — it uses dynamic `await import()` after `vi.doMock` for every test:
 
   ```ts
-  describe.skipIf(!dbAvailable)('resolveUsecase — enterprise override', () => {
-    beforeEach(async () => { /* reuse existing reset helper from this file */ });
+  import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+  // Reuse seed helpers + dbAvailable from the existing test file. They live
+  // alongside the test, so import them by relative path without pulling in
+  // the resolver itself.
+  import { dbAvailable, seedProvider, setUsecaseAssignment, resetLlmTables } from './llm-provider-resolver.test-helpers.js';
+  import { noopPlugin } from '../../../core/enterprise/noop.js';
 
-    it('returns the override provider+model when the enterprise hook resolves a value', async () => {
-      // Arrange: seed two providers; mark provider B as default and assigned to chat
+  describe.skipIf(!dbAvailable)('resolveUsecase — enterprise override', () => {
+    beforeEach(async () => {
+      vi.resetModules();
+      await resetLlmTables();
+    });
+    afterEach(() => vi.doUnmock('../../../core/enterprise/loader.js'));
+
+    it('returns override provider+model when enterprise hook resolves a value', async () => {
       const a = await seedProvider({ name: 'A', baseUrl: 'http://a/v1', defaultModel: 'a-default' });
       const b = await seedProvider({ name: 'B', baseUrl: 'http://b/v1', defaultModel: 'b-default', isDefault: true });
       await setUsecaseAssignment('chat', { providerId: b, model: 'b-assigned' });
 
-      // Stub enterprise.resolveUsecaseOverride to return provider A + a custom model
       vi.doMock('../../../core/enterprise/loader.js', () => ({
-        getEnterprise: () => ({
-          ...noopPlugin,
-          resolveUsecaseOverride: async () => ({ providerId: a, model: 'override-model' }),
-        }),
+        loadEnterprisePlugin: async () => ({ ...noopPlugin, resolveUsecaseOverride: async () => ({ providerId: a, model: 'override-model' }) }),
+        getEnterprisePlugin: () => ({ ...noopPlugin, resolveUsecaseOverride: async () => ({ providerId: a, model: 'override-model' }) }),
+        setCurrentLicense: () => {},
+        isFeatureEnabled: () => false,
+        _resetForTesting: () => {},
       }));
-      vi.resetModules();
-      const { resolveUsecase: r } = await import('./llm-provider-resolver.js');
 
-      // Act
-      const result = await r('chat');
-
-      // Assert: provider A wins, model is override-model — assignment row ignored
+      const { resolveUsecase } = await import('./llm-provider-resolver.js');
+      const result = await resolveUsecase('chat');
       expect(result.config.id).toBe(a);
       expect(result.model).toBe('override-model');
     });
@@ -180,31 +186,36 @@
       await setUsecaseAssignment('chat', { providerId: a, model: 'a-assigned' });
 
       vi.doMock('../../../core/enterprise/loader.js', () => ({
-        getEnterprise: () => ({ ...noopPlugin, resolveUsecaseOverride: async () => null }),
+        loadEnterprisePlugin: async () => ({ ...noopPlugin, resolveUsecaseOverride: async () => null }),
+        getEnterprisePlugin: () => ({ ...noopPlugin, resolveUsecaseOverride: async () => null }),
+        setCurrentLicense: () => {},
+        isFeatureEnabled: () => false,
+        _resetForTesting: () => {},
       }));
-      vi.resetModules();
-      const { resolveUsecase: r } = await import('./llm-provider-resolver.js');
 
-      const result = await r('chat');
+      const { resolveUsecase } = await import('./llm-provider-resolver.js');
+      const result = await resolveUsecase('chat');
       expect(result.config.id).toBe(a);
       expect(result.model).toBe('a-assigned');
     });
   });
   ```
 
-  Adapt `seedProvider` / `setUsecaseAssignment` / `dbAvailable` / reset helper names to whatever the existing file already uses — read the file first.
+  If `llm-provider-resolver.test-helpers.ts` doesn't already exist, extract `dbAvailable`, `seedProvider`, `setUsecaseAssignment`, `resetLlmTables` from the existing `llm-provider-resolver.test.ts` into a shared helper module so both test files use the same scaffolding. Commit the extraction as a separate, mechanical commit before touching test logic.
+
+  The mock must export every symbol the production loader file exports (the production resolver imports `getEnterprisePlugin` only, but partial mocks can break in unexpected ways — list everything the resolver could plausibly need now or after future edits).
 
 - [ ] **Step 2 (RED):** Run the test.
 
   ```bash
-  cd backend && npx vitest run src/domains/llm/services/llm-provider-resolver.test.ts -t 'enterprise override'
+  cd backend && npx vitest run src/domains/llm/services/llm-provider-resolver-enterprise.test.ts
   ```
   Expected: FAIL (override is never consulted).
 
 - [ ] **Step 3 (GREEN):** Modify `llm-provider-resolver.ts`. Add at top:
 
   ```ts
-  import { getEnterprise } from '../../../core/enterprise/loader.js';
+  import { getEnterprisePlugin } from '../../../core/enterprise/loader.js';
   ```
 
   Then at the start of `resolveUsecase`, before the SQL block:
@@ -212,7 +223,7 @@
   ```ts
   // Enterprise override: when org LLM policy is enabled, EE returns the
   // policy's (providerId, model). CE noop always returns null.
-  const override = await getEnterprise().resolveUsecaseOverride?.(usecase);
+  const override = await getEnterprisePlugin().resolveUsecaseOverride?.(usecase);
   if (override) {
     const overrideRows = await query<ResolveRow>(
       `SELECT
@@ -665,7 +676,7 @@
 
 - [ ] **Step 2 (RED):** Run; expect FAIL.
 
-- [ ] **Step 3 (GREEN):** Append to `llm-policy-service.ts`:
+- [ ] **Step 3 (GREEN):** Append to `llm-policy-service.ts`. Atomic delete-with-RETURNING makes the migration safe under concurrent plugin boots (multiple replicas) — only one replica will see a non-empty `RETURNING` set, so only one runs the disable-UPSERT-and-warn path. The early-exit on `org_llm_policy_provider_id` being set matches the design doc's idempotency clause:
 
   ```ts
   /**
@@ -673,27 +684,67 @@
    * to the new provider-id model. Auto-disables the policy and removes the
    * legacy key. Admin must reconfigure via the UI.
    *
-   * Idempotent: running twice is a no-op.
+   * Idempotent and concurrent-safe: re-runs are no-ops; concurrent replica
+   * boots produce at most one warn log via the atomic DELETE...RETURNING.
    */
   export async function migrateLegacyOrgLlmPolicy(): Promise<void> {
-    const legacy = await query<{ setting_value: string }>(
-      `SELECT setting_value FROM admin_settings WHERE setting_key = 'org_llm_policy_provider'`,
+    // Early exit: if the new key already exists, the migration has already run.
+    const newKey = await query<{ setting_value: string }>(
+      `SELECT setting_value FROM admin_settings WHERE setting_key = 'org_llm_policy_provider_id'`,
     );
-    if (legacy.rows.length === 0) return;
-    const val = legacy.rows[0].setting_value;
-    if (val !== 'ollama' && val !== 'openai' && val !== '') {
-      // Unexpected — leave alone, log
-      logger.warn({ val }, 'Skipping LLM policy migration: legacy key has unexpected value');
-      return;
-    }
+    if (newKey.rows.length > 0) return;
+
+    // Atomic: only one of N concurrent replicas will see a deleted row.
+    // Filter on the legacy value set so an unexpected value is left in place
+    // for human inspection rather than silently disabling the policy.
+    const deleted = await query<{ setting_value: string }>(
+      `DELETE FROM admin_settings
+       WHERE setting_key = 'org_llm_policy_provider'
+         AND setting_value IN ('ollama', 'openai', '')
+       RETURNING setting_value`,
+    );
+    if (deleted.rows.length === 0) return;
+
+    const legacyValue = deleted.rows[0].setting_value;
     await query(
       `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
        VALUES ('org_llm_policy_enabled', 'false', NOW())
        ON CONFLICT (setting_key) DO UPDATE SET setting_value = 'false', updated_at = NOW()`,
     );
-    await query(`DELETE FROM admin_settings WHERE setting_key = 'org_llm_policy_provider'`);
-    logger.warn({ legacyValue: val }, 'org LLM policy disabled by migration to provider-id model — admin must reconfigure');
+    logger.warn(
+      { legacyValue },
+      'org LLM policy disabled by migration to provider-id model — admin must reconfigure',
+    );
   }
+  ```
+
+  Test additions to cover the new behaviors:
+
+  ```ts
+  it('does nothing when org_llm_policy_provider_id already exists', async () => {
+    const id = await seedProvider({ name: 'A', baseUrl: 'http://a/v1' });
+    await query(`INSERT INTO admin_settings (setting_key, setting_value) VALUES
+      ('org_llm_policy_enabled', 'true'),
+      ('org_llm_policy_provider', 'ollama'),
+      ('org_llm_policy_provider_id', $1),
+      ('org_llm_policy_model', 'm')`, [id]);
+    await migrateLegacyOrgLlmPolicy();
+    // Legacy key still present (migration short-circuited because new key existed).
+    const legacy = await query(`SELECT 1 FROM admin_settings WHERE setting_key = 'org_llm_policy_provider'`);
+    expect(legacy.rows.length).toBe(1);
+  });
+
+  it('preserves an unexpected legacy value (does not disable)', async () => {
+    await query(`INSERT INTO admin_settings (setting_key, setting_value) VALUES
+      ('org_llm_policy_enabled', 'true'),
+      ('org_llm_policy_provider', 'something-unexpected'),
+      ('org_llm_policy_model', 'm')`);
+    await migrateLegacyOrgLlmPolicy();
+    const enabled = await query(`SELECT setting_value FROM admin_settings WHERE setting_key = 'org_llm_policy_enabled'`);
+    const legacy = await query(`SELECT setting_value FROM admin_settings WHERE setting_key = 'org_llm_policy_provider'`);
+    expect(enabled.rows[0].setting_value).toBe('true');
+    expect(legacy.rows[0].setting_value).toBe('something-unexpected');
+  });
   ```
 
 - [ ] **Step 4 (GREEN):** Run tests.
@@ -843,19 +894,21 @@
   }
   ```
 
-- [ ] **Step 4 (GREEN):** In `plugin.ts`, register the `onRoute` hook so this preHandler attaches to the CE-registered `PUT /api/admin/llm-usecases`. Add inside the EE plugin's Fastify-instance setup (likely in `registerRoutes` or wherever the existing license-middleware is registered):
+- [ ] **Step 4 (GREEN):** Wire the enforcement into `registerRoutes` in `plugin.ts` using the **same global `addHook('preHandler')` + URL/method gate** the existing `createLlmPolicyEnforcement` block uses (see `plugin.ts:249-257`). Do not use `onRoute` — Fastify's `onRoute` strips the `/api` prefix and the existing codebase pattern is the URL-gate hook. Append below the existing settings hook:
 
   ```ts
-  fastify.addHook('onRoute', (routeOptions) => {
-    if (routeOptions.method === 'PUT' && routeOptions.url === '/api/admin/llm-usecases') {
-      const existing = routeOptions.preHandler;
-      const enforce = createUsecaseAssignmentEnforcement();
-      routeOptions.preHandler = existing
-        ? Array.isArray(existing) ? [...existing, enforce] : [existing, enforce]
-        : enforce;
-    }
+  // LLM Policy Enforcement -- block PUT /api/admin/llm-usecases when the
+  // org LLM policy is active (the policy supersedes per-usecase assignments).
+  const { createUsecaseAssignmentEnforcement } = await import('./llm-policy-middleware.js');
+  const enforceUsecaseAssignment = createUsecaseAssignmentEnforcement();
+
+  fastify.addHook('preHandler', async (request, reply) => {
+    if (request.method !== 'PUT' || request.url !== '/api/admin/llm-usecases') return;
+    await enforceUsecaseAssignment(request, reply);
   });
   ```
+
+  CE's `llmUsecaseRoutes` is registered at `app.ts:399`, after `enterprise.registerRoutes` runs at `app.ts:194`. The global preHandler is registered first and fires for every subsequent request to that route.
 
 - [ ] **Step 5:** Run middleware + plugin tests.
 
@@ -1024,7 +1077,7 @@
 
 ---
 
-### Task C2: Baseline the test suite
+### Task C2: Baseline the test suite (with budget gate)
 
 - [ ] **Step 1:** Run with the working-tree compose still uncommitted. Capture results.
 
@@ -1032,11 +1085,16 @@
   npm test 2>&1 | tee /tmp/143-baseline-test.log
   ```
 
-- [ ] **Step 2:** If failures, triage them. Group by root cause. For each unique failure mode, decide: trivial fix (apply on this branch), real bug (apply on this branch), pre-existing flake (note in PR body, do not fix).
+- [ ] **Step 2:** Group failures by **root cause** (not by file). Examples of distinct root causes: "BullMQ Worker not closing in test teardown", "missing env var in test bootstrap", "Slack signature scheme drift", "test asserts removed feature flag", etc.
 
-  No specific code can be planned here without seeing the failures — investigate in-session.
+- [ ] **Step 3 — budget gate:**
 
-- [ ] **Step 3:** Once tests are green (or knowingly-amber with documented exceptions), proceed.
+  - **≤ 3 distinct root causes:** fix them on this branch and proceed. Each fix gets its own focused commit.
+  - **> 3 distinct root causes** *or* any single failure that requires re-architecting a service: **stop fixing**. Commit Task C3 (compose) and Task C4 (TIER_FEATURES test if needed), push, open the PR as a **draft** with the failures catalogued in the PR body under a "Known failures" section, and exit. Do not extend scope to fix this in-session.
+
+  Rationale: this is a months-old branch on which fresh effort is bounded. Better to ship the small mechanical changes and surface the rest for human triage than to spend an unbounded session firefighting.
+
+- [ ] **Step 4:** Once tests are green (or the budget gate fired and we're in draft-PR mode), proceed.
 
 ---
 
