@@ -11,12 +11,17 @@ import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
-type OrgLlmProvider = 'ollama' | 'openai';
-
 interface LlmPolicy {
   enabled: boolean;
-  provider: OrgLlmProvider | null;
+  providerId: string | null;
   model: string | null;
+}
+
+interface LlmProviderOption {
+  id: string;
+  name: string;
+  baseUrl: string;
+  defaultModel: string | null;
 }
 
 // ── Hooks ──────────────────────────────────────────────────────────────────────
@@ -29,15 +34,24 @@ function useLlmPolicy() {
   });
 }
 
+function useLlmProviders() {
+  return useQuery<LlmProviderOption[]>({
+    queryKey: ['admin', 'llm-providers'],
+    queryFn: () => apiFetch('/admin/llm-providers'),
+    staleTime: 30_000,
+  });
+}
+
 // ── Component ──────────────────────────────────────────────────────────────────
 
 export function LlmPolicyTab() {
   const queryClient = useQueryClient();
   const { hasFeature } = useEnterprise();
   const { data: policy, isLoading } = useLlmPolicy();
+  const { data: providers } = useLlmProviders();
 
   const [enabled, setEnabled] = useState(false);
-  const [provider, setProvider] = useState<OrgLlmProvider | null>(null);
+  const [providerId, setProviderId] = useState<string | null>(null);
   const [model, setModel] = useState('');
   const [initialized, setInitialized] = useState(false);
 
@@ -46,7 +60,7 @@ export function LlmPolicyTab() {
   // Populate form when data loads
   if (policy && !initialized) {
     setEnabled(Boolean(policy.enabled));
-    setProvider(policy.provider ?? null);
+    setProviderId(policy.providerId ?? null);
     setModel(policy.model ?? '');
     setInitialized(true);
   }
@@ -64,10 +78,10 @@ export function LlmPolicyTab() {
   const handleSave = useCallback(() => {
     saveMutation.mutate({
       enabled,
-      provider: enabled ? provider : null,
+      providerId: enabled ? providerId : null,
       model: enabled ? (model.trim() || null) : null,
     });
-  }, [enabled, provider, model, saveMutation]);
+  }, [enabled, providerId, model, saveMutation]);
 
   if (!featureEnabled) {
     return (
@@ -98,6 +112,11 @@ export function LlmPolicyTab() {
       </div>
     );
   }
+
+  const selectedProvider = providers?.find((p) => p.id === providerId) ?? null;
+  const modelPlaceholder = selectedProvider?.defaultModel
+    ? `e.g. ${selectedProvider.defaultModel}`
+    : 'e.g. gpt-4o, qwen3:4b';
 
   return (
     <div className="space-y-6" data-testid="llm-policy-form">
@@ -132,38 +151,26 @@ export function LlmPolicyTab() {
 
       {/* Provider */}
       <div className={cn(!enabled && 'opacity-50 pointer-events-none')}>
-        <label className="mb-1.5 flex items-center gap-1.5 text-sm font-medium">
+        <label className="mb-1.5 flex items-center gap-1.5 text-sm font-medium" htmlFor="llm-policy-provider-select">
           <Shield size={14} className="text-muted-foreground" />
           Provider
         </label>
         <p className="mb-2 text-xs text-muted-foreground">
-          Locked LLM provider for the organization.
+          Locked LLM provider for the organization. Choose any provider configured in Settings → LLM.
         </p>
-        <div className="flex gap-3">
-          {(['ollama', 'openai'] as const).map((option) => (
-            <label
-              key={option}
-              className={cn(
-                'flex items-center gap-2 rounded-md border px-4 py-2 text-sm cursor-pointer transition-colors',
-                provider === option
-                  ? 'border-primary/50 bg-primary/10 text-primary'
-                  : 'border-border/50 bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
-              )}
-            >
-              <input
-                type="radio"
-                name="provider"
-                value={option}
-                checked={provider === option}
-                onChange={() => setProvider(option)}
-                disabled={!enabled}
-                className="sr-only"
-                data-testid={`provider-${option}`}
-              />
-              {option.charAt(0).toUpperCase() + option.slice(1)}
-            </label>
+        <select
+          id="llm-policy-provider-select"
+          value={providerId ?? ''}
+          onChange={(e) => setProviderId(e.target.value || null)}
+          disabled={!enabled}
+          className="w-full max-w-md rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary disabled:cursor-not-allowed"
+          data-testid="llm-policy-provider"
+        >
+          <option value="">Select a provider…</option>
+          {(providers ?? []).map((p) => (
+            <option key={p.id} value={p.id}>{p.name}</option>
           ))}
-        </div>
+        </select>
       </div>
 
       {/* Model */}
@@ -178,7 +185,7 @@ export function LlmPolicyTab() {
           type="text"
           value={model}
           onChange={(e) => setModel(e.target.value)}
-          placeholder="e.g. gpt-4o, qwen3:4b"
+          placeholder={modelPlaceholder}
           disabled={!enabled}
           className="w-full max-w-md rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary disabled:cursor-not-allowed"
           data-testid="model-input"

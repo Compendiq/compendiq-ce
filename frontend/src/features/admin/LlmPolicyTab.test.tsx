@@ -39,17 +39,26 @@ function createWrapper() {
   };
 }
 
-// Matches the backend `OrgLlmPolicy` shape exposed by
-// GET /api/admin/llm-policy (see `llm-policy-service.ts`).
+// Matches the new backend `OrgLlmPolicy` shape (provider id + model).
 const mockPolicy = {
   enabled: true,
-  provider: 'openai' as const,
-  model: 'gpt-4o',
+  providerId: 'prov-b',
+  model: 'gpt-4o-mini',
 };
 
-function mockFetch(overrides: Partial<typeof mockPolicy> = {}) {
+const mockProviders = [
+  { id: 'prov-a', name: 'Local Ollama', baseUrl: 'http://o/v1', defaultModel: 'llama3' },
+  { id: 'prov-b', name: 'OpenAI Proxy', baseUrl: 'http://p/v1', defaultModel: 'gpt-4o-mini' },
+];
+
+function mockFetch(overrides: Partial<typeof mockPolicy> = {}, providers = mockProviders) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
     const url = typeof input === 'string' ? input : (input as Request).url;
+    if (url.includes('/admin/llm-providers')) {
+      return new Response(JSON.stringify(providers), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
     if (url.includes('/admin/llm-policy')) {
       return new Response(JSON.stringify({ ...mockPolicy, ...overrides }), {
         headers: { 'Content-Type': 'application/json' },
@@ -104,7 +113,7 @@ describe('LlmPolicyTab', () => {
     });
   });
 
-  it('hydrates the enable toggle, provider, and model from the fetched policy', async () => {
+  it('hydrates the enable toggle, provider dropdown, and model from the fetched policy', async () => {
     mockFetch();
     render(<LlmPolicyTab />, { wrapper: createWrapper() });
 
@@ -115,15 +124,30 @@ describe('LlmPolicyTab', () => {
     const toggle = screen.getByTestId('llm-policy-enabled-toggle') as HTMLInputElement;
     expect(toggle.checked).toBe(true);
 
-    const openaiRadio = screen.getByTestId('provider-openai') as HTMLInputElement;
-    expect(openaiRadio.checked).toBe(true);
+    await waitFor(() => {
+      const select = screen.getByTestId('llm-policy-provider') as HTMLSelectElement;
+      expect(select.value).toBe('prov-b');
+    });
 
     const modelInput = screen.getByTestId('model-input') as HTMLInputElement;
-    expect(modelInput.value).toBe('gpt-4o');
+    expect(modelInput.value).toBe('gpt-4o-mini');
   });
 
-  it('does not crash when the backend returns a disabled policy with null provider/model', async () => {
-    mockFetch({ enabled: false, provider: null as unknown as 'openai', model: null as unknown as string });
+  it('lists all configured providers in the dropdown', async () => {
+    mockFetch();
+    render(<LlmPolicyTab />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('llm-policy-provider')).toBeInTheDocument();
+    });
+
+    const select = screen.getByTestId('llm-policy-provider') as HTMLSelectElement;
+    const optionValues = Array.from(select.options).map((o) => o.value);
+    expect(optionValues).toEqual(expect.arrayContaining(['prov-a', 'prov-b']));
+  });
+
+  it('does not crash when the backend returns a disabled policy with null providerId/model', async () => {
+    mockFetch({ enabled: false, providerId: null as unknown as string, model: null as unknown as string });
     render(<LlmPolicyTab />, { wrapper: createWrapper() });
 
     await waitFor(() => {
@@ -145,7 +169,7 @@ describe('LlmPolicyTab', () => {
     });
   });
 
-  it('submits PUT with { enabled, provider, model } matching the backend schema', async () => {
+  it('submits PUT with { enabled, providerId, model } matching the new backend schema', async () => {
     const fetchSpy = mockFetch();
     render(<LlmPolicyTab />, { wrapper: createWrapper() });
 
@@ -161,11 +185,11 @@ describe('LlmPolicyTab', () => {
       );
       expect(putCall).toBeTruthy();
       const body = JSON.parse((putCall![1] as RequestInit).body as string);
-      expect(body).toEqual({ enabled: true, provider: 'openai', model: 'gpt-4o' });
+      expect(body).toEqual({ enabled: true, providerId: 'prov-b', model: 'gpt-4o-mini' });
     });
   });
 
-  it('sends provider=null and model=null when the policy is toggled off', async () => {
+  it('sends providerId=null and model=null when the policy is toggled off', async () => {
     const fetchSpy = mockFetch();
     render(<LlmPolicyTab />, { wrapper: createWrapper() });
 
@@ -182,7 +206,28 @@ describe('LlmPolicyTab', () => {
       );
       expect(putCall).toBeTruthy();
       const body = JSON.parse((putCall![1] as RequestInit).body as string);
-      expect(body).toEqual({ enabled: false, provider: null, model: null });
+      expect(body).toEqual({ enabled: false, providerId: null, model: null });
+    });
+  });
+
+  it('switching provider via the dropdown is reflected in the PUT body', async () => {
+    const fetchSpy = mockFetch();
+    render(<LlmPolicyTab />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('llm-policy-provider')).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByTestId('llm-policy-provider'), { target: { value: 'prov-a' } });
+    fireEvent.click(screen.getByTestId('llm-policy-save-btn'));
+
+    await waitFor(() => {
+      const putCall = fetchSpy.mock.calls.find(
+        ([, opts]) => opts && typeof opts === 'object' && 'method' in opts && (opts as RequestInit).method === 'PUT',
+      );
+      expect(putCall).toBeTruthy();
+      const body = JSON.parse((putCall![1] as RequestInit).body as string);
+      expect(body.providerId).toBe('prov-a');
     });
   });
 });
