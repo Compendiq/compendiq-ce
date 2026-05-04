@@ -18,15 +18,15 @@
  *   - `initLlmQueueClusterCoordination` (called after `initCacheBus` + the
  *     cached-setting init in `admin-settings-service.ts`) subscribes to the
  *     same channel; on every invalidation, every pod re-reads the cached
- *     getter and atomically swaps `_limiter` with `pLimit(<new value>)`.
+ *     getter and updates `_limiter.concurrency` in place.
  *
- *   TODO(v0.5): swapping `_limiter` while jobs are in-flight on the previous
- *   limiter orphans those jobs on the old limiter (their `pendingCount` /
- *   `activeCount` no longer feed back into the queue's metrics or backpressure
- *   logic). This is a pre-existing race in `setConcurrency()` (the original
- *   per-pod setter has the same bug); this PR keeps the behaviour. Tracking
- *   issue: open in v0.5 to drain the old limiter before swap, e.g. by holding
- *   a queue of historical limiters and routing new work to the head.
+ *   Hot-swap safety (#404): we mutate `_limiter.concurrency` rather than
+ *   allocating a new `pLimit(...)`. p-limit 7's setter keeps the same
+ *   internal queue + activeCount, so in-flight and pending jobs continue to
+ *   feed `getMetrics()` and the `enqueue` backpressure check across
+ *   concurrency changes. Lowering the limit lets in-flight jobs finish
+ *   naturally before new work is admitted; raising it drains pending work
+ *   on the next microtask.
  */
 
 import pLimit, { type LimitFunction } from 'p-limit';
@@ -71,7 +71,7 @@ const DEFAULT_CONCURRENCY = envInt('LLM_CONCURRENCY') ?? HARDCODED_CONCURRENCY;
 const DEFAULT_MAX_QUEUE_DEPTH = envInt('LLM_MAX_QUEUE_DEPTH') ?? HARDCODED_MAX_QUEUE_DEPTH;
 const DEFAULT_TIMEOUT_MS = envInt('LLM_STREAM_TIMEOUT_MS') ?? HARDCODED_TIMEOUT_MS;
 
-let _limiter: LimitFunction = pLimit(DEFAULT_CONCURRENCY);
+const _limiter: LimitFunction = pLimit(DEFAULT_CONCURRENCY);
 let _concurrency = DEFAULT_CONCURRENCY;
 let _maxQueueDepth = DEFAULT_MAX_QUEUE_DEPTH;
 let _timeoutMs = DEFAULT_TIMEOUT_MS;
@@ -83,7 +83,7 @@ export function setConcurrency(n: number): void {
   const val = Math.max(1, Math.min(n, 100));
   if (val !== _concurrency) {
     _concurrency = val;
-    _limiter = pLimit(val);
+    _limiter.concurrency = val;
     logger.info({ concurrency: val }, 'LLM queue concurrency updated');
   }
 }
@@ -248,9 +248,9 @@ export function initLlmQueueClusterCoordination(): void {
           const val = parseInt(row.setting_value, 10);
           if (!Number.isFinite(val) || val < 1) continue;
           if (row.setting_key === 'llm_concurrency' && val !== _concurrency) {
-            // `setConcurrency` clamps to [1, 100] + logs.
-            // TODO(v0.5): see file header — in-flight jobs on the previous
-            // limiter become orphaned. Pre-existing race; not fixed here.
+            // `setConcurrency` clamps to [1, 100] + logs. The limiter is
+            // mutated in place (#404), so any in-flight jobs continue to
+            // count toward `getMetrics()` and backpressure.
             setConcurrency(val);
           }
           if (row.setting_key === 'llm_max_queue_depth' && val !== _maxQueueDepth) {
