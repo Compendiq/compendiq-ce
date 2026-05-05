@@ -19,22 +19,44 @@ interface LlmStepProps {
   onBack: () => void;
 }
 
+// UX-only preset that picks sensible defaults for the test endpoint:
+//   - 'local'  → Ollama-style local URL, no API key
+//   - 'remote' → OpenAI-compatible cloud URL, API key required
+// The deprecated `'ollama' | 'openai'` enum (LlmProviderTypeSchema in
+// @compendiq/contracts) is mapped from this preset only at the API
+// boundary below; nothing else in the wizard touches the legacy strings.
+type LlmKindPreset = 'local' | 'remote';
+
+const PRESET_DEFAULTS: Record<LlmKindPreset, { baseUrl: string }> = {
+  local: { baseUrl: 'http://localhost:11434' },
+  remote: { baseUrl: 'https://api.openai.com' },
+};
+
+// Boundary mapping to the legacy `provider` enum the backend test
+// endpoint still accepts. Remove once `LlmTestSchema.provider` is dropped.
+function presetToLegacyProvider(kind: LlmKindPreset): 'ollama' | 'openai' {
+  return kind === 'local' ? 'ollama' : 'openai';
+}
+
 export function LlmStep({ onNext, onBack }: LlmStepProps) {
-  const [provider, setProvider] = useState<'ollama' | 'openai'>('ollama');
-  const [baseUrl, setBaseUrl] = useState('http://localhost:11434');
+  const [kind, setKind] = useState<LlmKindPreset>('local');
+  const [baseUrl, setBaseUrl] = useState(PRESET_DEFAULTS.local.baseUrl);
   const [apiKey, setApiKey] = useState('');
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<LlmTestResult | null>(null);
   const [autoDetecting, setAutoDetecting] = useState(true);
 
-  // Auto-detect Ollama on mount
+  // Auto-detect a local Ollama on mount
   useEffect(() => {
     let cancelled = false;
     async function autoDetect() {
       try {
         const result = await apiFetch<LlmTestResult>('/setup/llm-test', {
           method: 'POST',
-          body: JSON.stringify({ provider: 'ollama', baseUrl: 'http://localhost:11434' }),
+          body: JSON.stringify({
+            provider: presetToLegacyProvider('local'),
+            baseUrl: PRESET_DEFAULTS.local.baseUrl,
+          }),
         });
         if (!cancelled) {
           setTestResult(result);
@@ -58,7 +80,7 @@ export function LlmStep({ onNext, onBack }: LlmStepProps) {
     setTesting(true);
     setTestResult(null);
     try {
-      const payload: Record<string, string> = { provider };
+      const payload: Record<string, string> = { provider: presetToLegacyProvider(kind) };
       if (baseUrl) payload.baseUrl = baseUrl;
       if (apiKey) payload.apiKey = apiKey;
 
@@ -113,21 +135,18 @@ export function LlmStep({ onNext, onBack }: LlmStepProps) {
           </label>
           <select
             id="llm-provider"
-            value={provider}
+            value={kind}
             onChange={(e) => {
-              setProvider(e.target.value as 'ollama' | 'openai');
+              const next = e.target.value as LlmKindPreset;
+              setKind(next);
               setTestResult(null);
-              if (e.target.value === 'ollama') {
-                setBaseUrl('http://localhost:11434');
-              } else {
-                setBaseUrl('https://api.openai.com');
-              }
+              setBaseUrl(PRESET_DEFAULTS[next].baseUrl);
             }}
             className="nm-input"
             data-testid="llm-provider-select"
           >
-            <option value="ollama">Ollama (Local)</option>
-            <option value="openai">OpenAI-Compatible API</option>
+            <option value="local">Ollama (Local)</option>
+            <option value="remote">OpenAI-Compatible API</option>
           </select>
         </div>
 
@@ -142,13 +161,13 @@ export function LlmStep({ onNext, onBack }: LlmStepProps) {
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
             className="nm-input"
-            placeholder={provider === 'ollama' ? 'http://localhost:11434' : 'https://api.openai.com'}
+            placeholder={PRESET_DEFAULTS[kind].baseUrl}
             data-testid="llm-base-url"
           />
         </div>
 
-        {/* API Key (OpenAI only) */}
-        {provider === 'openai' && (
+        {/* API Key (remote provider only) */}
+        {kind === 'remote' && (
           <div>
             <label htmlFor="llm-api-key" className="mb-1.5 block text-sm font-medium">
               API Key
