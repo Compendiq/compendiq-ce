@@ -131,7 +131,13 @@ export type AuditAction =
   // implicit `inherit_perms=false` flip when present (recorded in metadata).
   | 'BULK_PAGE_TAGGED'
   | 'BULK_PAGE_TAGS_REPLACED'
-  | 'BULK_PAGE_PERMISSION_CHANGED';
+  | 'BULK_PAGE_PERMISSION_CHANGED'
+  // Multi-instance readiness — Compendiq/compendiq-ee#113. Emitted by the
+  // admin-gated POST /api/admin/health-api/rotate route when an admin
+  // rotates the per-instance health-API bearer token. Deliberate admin
+  // action — not counted in `errorRate24h` (see ERROR_AUDIT_ACTIONS in
+  // routes/foundation/health-api.ts).
+  | 'HEALTH_API_TOKEN_ROTATED';
 
 interface AuditLogEntry {
   id: string;

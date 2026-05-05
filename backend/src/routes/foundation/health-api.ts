@@ -34,10 +34,11 @@
  */
 
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import { timingSafeEqual } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { query } from '../../core/db/postgres.js';
 import { logger } from '../../core/utils/logger.js';
 import { APP_VERSION, APP_BUILD_INFO } from '../../core/utils/version.js';
+import { logAuditEvent } from '../../core/services/audit-service.js';
 
 interface HealthQueryString {
   token?: unknown;
@@ -200,6 +201,78 @@ export async function healthApiRoutes(fastify: FastifyInstance) {
         logger.error({ err }, 'health-api: failed to assemble report');
         return reply.status(500).send({ error: 'failed to assemble health report' });
       }
+    },
+  );
+}
+
+/**
+ * Admin-only token-rotation route — Compendiq/compendiq-ee#113 sub-PR 1e.
+ *
+ * `POST /api/admin/health-api/rotate`
+ *   Auth:    fastify.authenticate (onRequest hook) + fastify.requireAdmin (preHandler)
+ *   Body:    (none)
+ *   Effect:  generates a fresh 64-hex token via `crypto.randomBytes(32)`,
+ *            UPDATEs `admin_settings.health_api_token` (the row is seeded by
+ *            migration 072; if it is somehow missing we 503 like the GET path),
+ *            and writes a `HEALTH_API_TOKEN_ROTATED` audit row.
+ *   Returns: 200 { token, rotatedAt } where `rotatedAt` is the ISO timestamp
+ *            written to `admin_settings.updated_at`.
+ *
+ * Why no broadcast / cache-bus message: `readHealthApiToken()` (GET path)
+ * hits Postgres on every inbound request — the rotation is therefore
+ * atomically observable on the next call on every replica without bus
+ * interaction. See plan §1.2 ("Why no broadcast").
+ *
+ * Why this isn't in the same plugin as the GET path: the GET path is
+ * unauthenticated (machine-to-machine bearer token), while rotation MUST be
+ * gated by `fastify.authenticate + fastify.requireAdmin`. Co-locating both
+ * inside one plugin would require per-route auth opt-outs which is more
+ * error-prone than splitting the registration. The admin route is registered
+ * alongside the public route in `app.ts`.
+ */
+export async function healthApiAdminRoutes(fastify: FastifyInstance) {
+  fastify.addHook('onRequest', fastify.authenticate);
+
+  fastify.post(
+    '/admin/health-api/rotate',
+    { preHandler: fastify.requireAdmin },
+    async (request, reply) => {
+      const newToken = randomBytes(32).toString('hex');
+
+      // UPDATE not UPSERT: migration 072 seeded the row. If it is missing
+      // the deployment is broken in the same way the GET path's 503 reports;
+      // surface the same fail-closed signal here rather than silently
+      // INSERT-ing and pretending all is well.
+      const { rowCount } = await query(
+        `UPDATE admin_settings
+            SET setting_value = $1, updated_at = NOW()
+          WHERE setting_key = 'health_api_token'`,
+        [newToken],
+      );
+
+      if (!rowCount) {
+        logger.error(
+          'health-api: rotate called but admin_settings.health_api_token row missing',
+        );
+        return reply.status(503).send({ error: 'health token not initialised' });
+      }
+
+      const rotatedAt = new Date().toISOString();
+
+      // Audit row — actor is request.userId (set by `fastify.authenticate`).
+      // Pattern mirrors `admin-embedding-locks.ts`'s release route and
+      // `admin-users.ts`. Audit failure never blocks the response (the
+      // helper swallows its own errors per `audit-service.ts:178`).
+      await logAuditEvent(
+        request.userId,
+        'HEALTH_API_TOKEN_ROTATED',
+        'health_api_token',
+        undefined,
+        { rotatedAt },
+        request,
+      );
+
+      return reply.status(200).send({ token: newToken, rotatedAt });
     },
   );
 }
