@@ -77,6 +77,7 @@ import { registerKnowledgeRelationshipProducers } from './domains/knowledge/serv
 import { initSsrfAllowlistBus } from './core/services/ssrf-allowlist-bus.js';
 import { initPresenceBus } from './core/services/presence-service.js';
 import { initCacheBus, close as closeCacheBus } from './core/services/redis-cache-bus.js';
+import { initProviderCacheBus } from './domains/llm/services/cache-bus.js';
 import { buildTrustProxyFn } from './core/utils/trusted-proxy.js';
 import {
   initIpAllowlistService,
@@ -219,6 +220,15 @@ export async function buildApp() {
   app.addHook('onClose', async () => {
     await closeCacheBus();
   });
+
+  // ── LLM provider cache-bus subscriber (EE #113 sub-PR 1d) ────────
+  // Wires the cluster subscriber for `provider:cache:bump` and
+  // `provider:deleted`. Must run AFTER initCacheBus (above) and BEFORE
+  // bootstrapLlmProviders() (below) — the bootstrap calls
+  // bumpProviderCacheVersion() at the end of its run, and we want that
+  // boot-path bump to reach a wired subscriber on every replica.
+  // Soft-fails to local fan-out when the bus is inactive (single-pod).
+  initProviderCacheBus();
 
   // ── IP Allowlist (EE #111) ───────────────────────────────────────
   // Cold-load the persisted config + subscribe the cache-bus for cluster

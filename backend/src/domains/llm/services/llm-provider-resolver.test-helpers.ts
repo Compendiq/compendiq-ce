@@ -45,5 +45,5 @@ export async function setUsecaseAssignment(
 
 export async function resetLlmTables(): Promise<void> {
   await truncateAllTables();
-  bumpProviderCacheVersion();
+  await bumpProviderCacheVersion();
 }

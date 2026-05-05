@@ -12,7 +12,7 @@ describe.skipIf(!dbAvailable)('resolveUsecase — truth table', () => {
   afterAll(async () => { await teardownTestDb(); });
   beforeEach(async () => {
     await truncateAllTables();
-    bumpProviderCacheVersion();
+    await bumpProviderCacheVersion();
   });
 
   async function seed() {
