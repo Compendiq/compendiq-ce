@@ -39,6 +39,22 @@ import { query } from '../../core/db/postgres.js';
 import { logger } from '../../core/utils/logger.js';
 import { APP_VERSION, APP_BUILD_INFO } from '../../core/utils/version.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
+import { getRateLimits } from '../../core/services/rate-limit-service.js';
+
+/**
+ * Admin-route rate limit config. Mirrors the convention used by other
+ * `routes/foundation/admin-*.ts` modules so that destructive/security-
+ * sensitive admin actions all share the same per-IP throttling envelope
+ * (the global default is 100/min; admin uses the configured admin cap).
+ */
+const ADMIN_RATE_LIMIT = {
+  config: {
+    rateLimit: {
+      max: async () => (await getRateLimits()).admin.max,
+      timeWindow: '1 minute',
+    },
+  },
+};
 
 interface HealthQueryString {
   token?: unknown;
@@ -235,7 +251,7 @@ export async function healthApiAdminRoutes(fastify: FastifyInstance) {
 
   fastify.post(
     '/admin/health-api/rotate',
-    { preHandler: fastify.requireAdmin },
+    { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT },
     async (request, reply) => {
       const newToken = randomBytes(32).toString('hex');
 
