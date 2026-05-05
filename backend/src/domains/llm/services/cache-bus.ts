@@ -30,15 +30,32 @@
 //    we depend on here.
 //
 // 3. **Per-pod version counter (Option A).** `getProviderCacheVersion()`
-//    returns a strictly-increasing per-pod counter. It is incremented
-//    locally on every direct `bumpProviderCacheVersion()` call AND inside
-//    the cluster-bus subscribe handler when a remote bump arrives, so
-//    every pod observes "version went up — invalidate" deterministically.
+//    returns a strictly-increasing per-pod counter.
+//
+//    * **Single-pod mode** (`isCacheBusActive() === false`): the bump
+//      increments `version` and fires listeners synchronously inside the
+//      `bumpProviderCacheVersion()` call. A subsequent
+//      `getProviderCacheVersion()` on the same call stack observes the
+//      new value.
+//    * **Cluster mode** (`isCacheBusActive() === true`): the bump only
+//      publishes; the local `version++` happens inside the subscribe
+//      handler when the publish round-trips back through Redis. There is
+//      a brief window — between the `await publish()` resolving and the
+//      pub/sub callback firing — during which the publishing pod's
+//      `getProviderCacheVersion()` still returns the OLD value. This is
+//      eventually consistent on the order of a Redis round-trip
+//      (sub-millisecond on a healthy network).
+//
+//    The resolver's `configCache` uses this counter as a "did anything
+//    change since I last looked?" tripwire on the next call, which is
+//    correct for both modes. Any future caller that needs synchronous
+//    read-after-write must either run in single-pod mode or bump
+//    locally before publishing AND deduplicate the round-tripped event
+//    by publisher ID.
+//
 //    The number itself is NOT cluster-coherent (pod A's version 7 may
 //    align to pod B's version 4); only its monotone-increasing property
-//    on a given pod is contractual. The resolver's configCache uses this
-//    counter as a "did anything change since I last looked?" tripwire,
-//    which works fine with per-pod monotonicity.
+//    on a given pod is contractual.
 //
 // 4. **Boot-path subscribe-vs-publish race (benign).** `subscribe()` is
 //    fire-and-forget — node-redis acks the SUBSCRIBE asynchronously. If a
@@ -134,14 +151,23 @@ export function initProviderCacheBus(): void {
 }
 
 /**
- * Bump the provider-config version. In multi-pod mode publishes on
- * `provider:cache:bump`; the local subscriber path bumps the per-pod
- * counter and fires local listeners. In single-pod mode (`isCacheBusActive()
- * === false`) we bump + fan out locally with no publish.
+ * Bump the provider-config version. In cluster mode publishes on
+ * `provider:cache:bump` only; the local `version++` and listener
+ * fan-out happen when the publish round-trips through Redis to this
+ * pod's subscriber. In single-pod mode (`isCacheBusActive() === false`)
+ * we bump + fan out locally with no publish.
  *
  * Returns a Promise<void> because the cluster publish is async; callers
  * must `await` so a publish failure surfaces in logs from the calling
  * context rather than as an unhandled rejection.
+ *
+ * **Read-after-write caveat (cluster mode):** awaiting this Promise
+ * does NOT mean a subsequent `getProviderCacheVersion()` on the same
+ * stack will see the new value — that requires the pub/sub round-trip
+ * to complete. See the module-level note (3) for details. Today's only
+ * consumer (the resolver) re-checks on the next call, so the lag is
+ * invisible; future synchronous read-after-write callers need to
+ * coordinate explicitly.
  */
 export async function bumpProviderCacheVersion(): Promise<void> {
   if (isCacheBusActive()) {
