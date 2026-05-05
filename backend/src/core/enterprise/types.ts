@@ -56,4 +56,12 @@ export interface EnterprisePlugin {
 
   /** Version identifier: semver for enterprise, 'community' for noop. */
   version: string;
+
+  /**
+   * Optional runtime override hook consulted by `resolveUsecase` in the
+   * LLM provider resolver. When EE's org LLM policy is enabled, this
+   * returns the policy's provider id and model; otherwise null. CE noop
+   * always returns null.
+   */
+  resolveUsecaseOverride?(usecase: import('@compendiq/contracts').LlmUsecase): Promise<{ providerId: string; model: string } | null>;
 }

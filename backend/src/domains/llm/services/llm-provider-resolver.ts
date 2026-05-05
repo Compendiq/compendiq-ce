@@ -2,6 +2,7 @@ import { query } from '../../../core/db/postgres.js';
 import { decryptPat } from '../../../core/utils/crypto.js';
 import { invalidateDispatcher, invalidateBreaker, type ProviderConfig } from './openai-compatible-client.js';
 import { getProviderCacheVersion, onProviderCacheBump, onProviderDeleted } from './cache-bus.js';
+import { getEnterprisePlugin } from '../../../core/enterprise/loader.js';
 import type { LlmUsecase } from '@compendiq/contracts';
 
 interface ResolveRow {
@@ -57,6 +58,50 @@ function decryptSafe(s: string | null): string | null {
 }
 
 export async function resolveUsecase(usecase: LlmUsecase): Promise<Resolved> {
+  // Enterprise override: when org LLM policy is enabled, EE returns the
+  // policy's (providerId, model). CE noop always returns null.
+  const override = await getEnterprisePlugin().resolveUsecaseOverride?.(usecase);
+  if (override) {
+    const overrideRows = await query<ResolveRow>(
+      `SELECT
+         NULL::uuid AS usecase_provider_id,
+         NULL::text AS usecase_model,
+         id            AS provider_id,
+         name          AS provider_name,
+         base_url      AS provider_base_url,
+         api_key       AS provider_api_key,
+         auth_type     AS provider_auth_type,
+         verify_ssl    AS provider_verify_ssl,
+         default_model AS provider_default_model,
+         is_default    AS provider_is_default
+       FROM llm_providers WHERE id = $1`,
+      [override.providerId],
+    );
+    const orow = overrideRows.rows[0];
+    if (!orow) {
+      throw new Error('No default provider configured — set one in Settings → LLM.');
+    }
+    const cacheKey = orow.provider_id;
+    let cached = configCache.get(cacheKey);
+    if (!cached || cached.version !== getProviderCacheVersion()) {
+      cached = {
+        version: getProviderCacheVersion(),
+        cfg: {
+          providerId: orow.provider_id,
+          id: orow.provider_id,
+          name: orow.provider_name,
+          baseUrl: orow.provider_base_url,
+          apiKey: decryptSafe(orow.provider_api_key),
+          authType: orow.provider_auth_type,
+          verifySsl: orow.provider_verify_ssl,
+          defaultModel: orow.provider_default_model,
+        },
+      };
+      configCache.set(cacheKey, cached);
+    }
+    return { config: cached.cfg, model: override.model };
+  }
+
   // One round-trip: pull the use-case row + the default provider + the chosen
   // provider (if any) in a single query using a CTE.
   const sql = `
