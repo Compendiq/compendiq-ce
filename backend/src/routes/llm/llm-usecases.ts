@@ -109,7 +109,7 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
       } finally {
         client.release();
       }
-      bumpProviderCacheVersion();
+      await bumpProviderCacheVersion();
       emitLlmAudit({
         event: 'llm_usecase_assignments_updated',
         userId: req.userId,

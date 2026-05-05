@@ -63,7 +63,7 @@ export async function bootstrapLlmProviders(): Promise<void> {
     }
   }
 
-  bumpProviderCacheVersion();
+  await bumpProviderCacheVersion();
 
   // Allowlist every configured provider URL with the ssrf-guard so client calls
   // from the resolver path aren't rejected. Silent variant — this is a
