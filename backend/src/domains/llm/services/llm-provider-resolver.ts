@@ -57,6 +57,30 @@ function decryptSafe(s: string | null): string | null {
   try { return decryptPat(s); } catch { return null; }
 }
 
+function loadProviderFromRow(
+  row: ResolveRow,
+): ProviderConfig & { id: string; name: string; defaultModel: string | null } {
+  const cacheKey = row.provider_id;
+  let cached = configCache.get(cacheKey);
+  if (!cached || cached.version !== getProviderCacheVersion()) {
+    cached = {
+      version: getProviderCacheVersion(),
+      cfg: {
+        providerId: row.provider_id,
+        id: row.provider_id,
+        name: row.provider_name,
+        baseUrl: row.provider_base_url,
+        apiKey: decryptSafe(row.provider_api_key),
+        authType: row.provider_auth_type,
+        verifySsl: row.provider_verify_ssl,
+        defaultModel: row.provider_default_model,
+      },
+    };
+    configCache.set(cacheKey, cached);
+  }
+  return cached.cfg;
+}
+
 export async function resolveUsecase(usecase: LlmUsecase): Promise<Resolved> {
   // Enterprise override: when org LLM policy is enabled, EE returns the
   // policy's (providerId, model). CE noop always returns null.
@@ -79,27 +103,16 @@ export async function resolveUsecase(usecase: LlmUsecase): Promise<Resolved> {
     );
     const orow = overrideRows.rows[0];
     if (!orow) {
-      throw new Error('No default provider configured — set one in Settings → LLM.');
+      throw new Error(
+        `Org LLM policy refers to provider ${override.providerId} which no longer exists. Update the policy in Settings → LLM Policy.`,
+      );
     }
-    const cacheKey = orow.provider_id;
-    let cached = configCache.get(cacheKey);
-    if (!cached || cached.version !== getProviderCacheVersion()) {
-      cached = {
-        version: getProviderCacheVersion(),
-        cfg: {
-          providerId: orow.provider_id,
-          id: orow.provider_id,
-          name: orow.provider_name,
-          baseUrl: orow.provider_base_url,
-          apiKey: decryptSafe(orow.provider_api_key),
-          authType: orow.provider_auth_type,
-          verifySsl: orow.provider_verify_ssl,
-          defaultModel: orow.provider_default_model,
-        },
-      };
-      configCache.set(cacheKey, cached);
-    }
-    return { config: cached.cfg, model: override.model };
+    const cfg = loadProviderFromRow(orow);
+    // Mirror the CTE path's empty-string defense: if the policy's `model` is
+    // empty (UI shouldn't allow this, but defend anyway), fall back to the
+    // provider's `default_model`, then to `''`.
+    const model = override.model || cfg.defaultModel || '';
+    return { config: cfg, model };
   }
 
   // One round-trip: pull the use-case row + the default provider + the chosen
@@ -137,25 +150,7 @@ export async function resolveUsecase(usecase: LlmUsecase): Promise<Resolved> {
   const row = r.rows[0];
   if (!row) throw new Error('No default provider configured — set one in Settings → LLM.');
 
-  const cacheKey = row.provider_id;
-  let cached = configCache.get(cacheKey);
-  if (!cached || cached.version !== getProviderCacheVersion()) {
-    cached = {
-      version: getProviderCacheVersion(),
-      cfg: {
-        providerId: row.provider_id,
-        id: row.provider_id,
-        name: row.provider_name,
-        baseUrl: row.provider_base_url,
-        apiKey: decryptSafe(row.provider_api_key),
-        authType: row.provider_auth_type,
-        verifySsl: row.provider_verify_ssl,
-        defaultModel: row.provider_default_model,
-      },
-    };
-    configCache.set(cacheKey, cached);
-  }
-
-  const model = row.usecase_model ?? cached.cfg.defaultModel ?? '';
-  return { config: cached.cfg, model };
+  const cfg = loadProviderFromRow(row);
+  const model = row.usecase_model ?? cfg.defaultModel ?? '';
+  return { config: cfg, model };
 }

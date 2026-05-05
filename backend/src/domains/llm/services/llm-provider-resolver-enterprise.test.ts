@@ -91,6 +91,36 @@ describe.skipIf(!dbAvailable)('resolveUsecase — enterprise override', () => {
     });
 
     const { resolveUsecase } = await import('./llm-provider-resolver.js');
-    await expect(resolveUsecase('chat')).rejects.toThrow(/no default provider/i);
+    await expect(resolveUsecase('chat')).rejects.toThrow(
+      /Org LLM policy refers to provider .* which no longer exists/,
+    );
+  });
+
+  it('falls back to provider default_model when override.model is empty', async () => {
+    const a = await seedProvider({
+      name: 'A',
+      baseUrl: 'http://a/v1',
+      defaultModel: 'a-default',
+      isDefault: true,
+    });
+
+    vi.doMock('../../../core/enterprise/loader.js', () => {
+      const overridePlugin = {
+        ...noopPlugin,
+        resolveUsecaseOverride: async () => ({ providerId: a, model: '' }),
+      };
+      return {
+        loadEnterprisePlugin: async () => overridePlugin,
+        getEnterprisePlugin: () => overridePlugin,
+        setCurrentLicense: () => {},
+        isFeatureEnabled: () => false,
+        _resetForTesting: () => {},
+      };
+    });
+
+    const { resolveUsecase } = await import('./llm-provider-resolver.js');
+    const result = await resolveUsecase('chat');
+    expect(result.config.id).toBe(a);
+    expect(result.model).toBe('a-default');
   });
 });
