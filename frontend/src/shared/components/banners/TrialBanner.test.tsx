@@ -101,7 +101,7 @@ describe('TrialBanner', () => {
     expect(banner).not.toHaveTextContent('days');
   });
 
-  it('renders a destructive banner when daysRemaining is 0', async () => {
+  it('renders a destructive banner with "today" copy when daysRemaining is 0', async () => {
     mockLicenseFetch({
       tier: 'community',
       type: 'trial',
@@ -111,7 +111,8 @@ describe('TrialBanner', () => {
     });
     render(<TrialBanner />);
     const banner = await screen.findByTestId('trial-banner');
-    expect(banner).toHaveTextContent('Trial expired 0 days ago');
+    expect(banner).toHaveTextContent('Trial expired today');
+    expect(banner).not.toHaveTextContent('0 days');
   });
 
   it('renders a destructive banner with absolute days when daysRemaining is negative', async () => {

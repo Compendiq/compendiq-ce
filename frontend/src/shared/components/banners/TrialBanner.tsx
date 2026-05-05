@@ -54,13 +54,15 @@ export function TrialBanner() {
   const Icon = tone === 'destructive' ? AlertTriangle : Clock;
 
   const message =
-    days <= 0
-      ? `Trial expired ${Math.abs(days)} day${Math.abs(days) === 1 ? '' : 's'} ago — contact sales to upgrade.`
-      : days === 1
-        ? 'Trial — only 1 day left. Contact sales to keep enterprise features.'
-        : days <= 7
-          ? `Trial — only ${days} days left. Contact sales to keep enterprise features.`
-          : `Trial — ${days} days remaining.`;
+    days === 0
+      ? 'Trial expired today — contact sales to upgrade.'
+      : days < 0
+        ? `Trial expired ${Math.abs(days)} day${Math.abs(days) === 1 ? '' : 's'} ago — contact sales to upgrade.`
+        : days === 1
+          ? 'Trial — only 1 day left. Contact sales to keep enterprise features.'
+          : days <= 7
+            ? `Trial — only ${days} days left. Contact sales to keep enterprise features.`
+            : `Trial — ${days} days remaining.`;
 
   return (
     <div
