@@ -131,15 +131,22 @@ flowchart LR
 | Sync conflict / PII / license / per-page-restriction policy | Pub/sub | `sync:conflict:policy:changed`, `pii:policy:changed`, `license:changed` |
 | Recurring jobs (sync tick, retention prune, embedding tick, webhook outbox poll) | BullMQ `upsertJobScheduler` with stable IDs | Redis queue keys |
 | Sync worker leadership | Redis SET-NX lock | `sync:worker:lock` |
-| Embedding locks | Redis SET-NX | `embedding:lock:{model}:{textHash}` |
+| Embedding locks | Redis SET-NX | `embedding:lock:{userId}` (per-user fairness) and `embedding:lock:__reembed_all__` (global re-embed) |
 
 ### Operator requirements
 
-1. **`trustProxy` MUST be set to your LB's CIDR or a hop count — never `true`.**
+1. **`trustProxy` MUST be set to your LB's CIDR — never `true`.**
    `trustProxy: true` lets any client forge `X-Forwarded-For`, breaking
    IP-allowlist enforcement and audit-log accuracy. The default
-   loopback-only configuration is safe for single-replica dev; adjust for
-   your LB topology before scaling.
+   loopback-only configuration (`127.0.0.1/32`, `::1/128`) is safe for
+   single-replica dev. **There is no `TRUST_PROXY_CIDR` env var** — the
+   trusted-proxy CIDRs are loaded from
+   `admin_settings.ip_allowlist.trustedProxies` (a JSONB array of
+   CIDR strings) at boot, with cluster-wide hot-reload via the
+   `ip_allowlist:changed` cache-bus channel. Configure via the
+   Settings → IP allowlist admin tab in Enterprise builds, or via a
+   direct `admin_settings` row for CE-only deployments. See
+   `docs/ADMIN-GUIDE.md` → IP Allowlist → Trust-proxy behaviour.
 
 2. **`stop_grace_period: 60s` on the `backend` service** so SIGTERM has
    time to drain HTTP handlers + finish active BullMQ jobs before
@@ -161,8 +168,11 @@ flowchart LR
    (public, no auth). Use `GET /api/internal/health?token=<t>` for an
    external mgmt poller — token-gated, returns richer diagnostics
    (version, edition, dirty pages, last-sync timestamp, error rate).
-   The token lives in `admin_settings.health_api_token`; rotate via
-   `POST /api/admin/health-api/rotate` (admin-only).
+   The token lives in `admin_settings.health_api_token` (seeded by
+   migration 072). For v0.4 onward, rotate via
+   `POST /api/admin/health-api/rotate` (admin-only) — that route ships
+   in EE#113 sub-PR 1e (CE PR #613); until it merges, rotate manually
+   via `UPDATE admin_settings SET setting_value = ... WHERE setting_key = 'health_api_token'`.
 
 ### Compose example (2 replicas)
 
@@ -171,15 +181,30 @@ flowchart LR
 services:
   backend:
     image: ghcr.io/compendiq/compendiq-ee-backend:dev
-    deploy:
-      replicas: 2          # docker compose up --scale backend=2
-    stop_grace_period: 60s # SIGTERM → drain → SIGKILL
+    stop_grace_period: 60s   # SIGTERM → drain → SIGKILL
     environment:
-      TRUST_PROXY_CIDR: "10.0.0.0/8"   # your LB subnet
-      # … shared envs (POSTGRES_URL, REDIS_URL, JWT_SECRET, PAT_ENCRYPTION_KEY)
+      # Trusted-proxy CIDRs are NOT an env var — set them via
+      # Settings → IP allowlist (admin UI) or by writing the
+      # admin_settings.ip_allowlist row directly. See operator
+      # requirement #1 above.
+      POSTGRES_URL: "postgres://…"
+      REDIS_URL: "redis://redis:6379"
+      JWT_SECRET: "${JWT_SECRET}"
+      PAT_ENCRYPTION_KEY: "${PAT_ENCRYPTION_KEY}"
 ```
 
-The same compose works for CE — drop the `ee-backend` image for
+Bring up two replicas with:
+
+```bash
+docker compose --env-file .env -f docker/docker-compose.ee.yml up -d --scale backend=2
+```
+
+Note: Compose's `deploy.replicas` is Docker Swarm syntax and is
+**ignored** by `docker compose up` — use `--scale backend=N` on the
+command line, or define the replicas in your orchestrator (Kubernetes
+`replicas:`, ECS desired count, Nomad `count`, etc.) for production.
+
+The same compose works for CE — replace the `ee-backend` image with
 `compendiq-ce-backend` and remove EE-only environment variables.
 
 ### Out of scope (v0.4)
