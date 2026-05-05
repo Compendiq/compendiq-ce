@@ -1194,7 +1194,7 @@ The challenge is to deliver multi-replica correctness **without** introducing a 
 
 CE-side primitives (the bus, the BullMQ migration, the p-limit hot-swap, the SSRF allowlist bus) are implemented in CE so the same scale-safety applies to community deployments that choose to run multi-replica. EE does not carry a parallel implementation; it only consumes the primitives.
 
-**Already shipped (verified at CE submodule `9c39311`, EE `2b3aeea`):**
+**Already shipped (per-row Issue/PR citations in the right column are the canonical reference; do not re-cite branch-tip hashes here, they rot every merge):**
 
 | Component | Where | Issue |
 |---|---|---|
