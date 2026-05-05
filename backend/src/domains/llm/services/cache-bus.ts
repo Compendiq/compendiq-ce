@@ -40,6 +40,18 @@
 //    counter as a "did anything change since I last looked?" tripwire,
 //    which works fine with per-pod monotonicity.
 //
+// 4. **Boot-path subscribe-vs-publish race (benign).** `subscribe()` is
+//    fire-and-forget — node-redis acks the SUBSCRIBE asynchronously. If a
+//    `bumpProviderCacheVersion()` runs between `initProviderCacheBus()`
+//    and the subscriber being acked, the publishing pod will not see its
+//    own bump (peer pods will). In practice this happens only on the
+//    boot-path call from `bootstrapLlmProviders()`, where the local
+//    `configCache` is empty anyway — there's nothing to invalidate. The
+//    next direct `resolveUsecase()` reads from DB regardless because the
+//    cached entry is missing. We accept the small window rather than
+//    awaiting an opaque ack handshake; redis-cache-bus's `onReconnect`
+//    hook handles the steady-state reconnection case separately.
+//
 // Existing exports preserved:
 //   - bumpProviderCacheVersion()  → Promise<void>  (was sync)
 //   - emitProviderDeleted(id)     → Promise<void>  (was sync)
@@ -194,12 +206,4 @@ export async function emitProviderDeleted(id: string): Promise<void> {
 export function onProviderDeleted(l: DeletedListener): () => void {
   deletedListeners.add(l);
   return () => deletedListeners.delete(l);
-}
-
-/**
- * Test-only: reset the module's `initialised` latch so tests that wire/un-wire
- * the bus across cases don't bleed state. NOT exported in production paths.
- */
-export function __resetProviderCacheBusForTests(): void {
-  initialised = false;
 }
