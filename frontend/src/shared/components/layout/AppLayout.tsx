@@ -9,6 +9,7 @@ import { useKeyboardShortcuts, type ShortcutDefinition } from '../../hooks/use-k
 import { CommandPalette } from './CommandPalette';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 import { ServiceStatus } from '../badges/ServiceStatus';
+import { TrialBanner } from '../banners/TrialBanner';
 import { Breadcrumb } from './Breadcrumb';
 import { UserMenu } from './UserMenu';
 import { SidebarTreeView } from './SidebarTreeView';
@@ -272,6 +273,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
       {/* Service status banner (Ollama, etc.) — sits between header and panels */}
       <div className="shrink-0 px-4 sm:px-6">
         <ServiceStatus />
+        <TrialBanner />
       </div>
 
       {/* Below header: sidebar + content area, edge-to-edge with borders. */}
