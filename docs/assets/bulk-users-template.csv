@@ -1,0 +1,6 @@
+username,email,displayName,role,initialPassword,sendInvitation
+alice,alice@corp.example,Alice Smith,user,,true
+bob,bob@corp.example,Bob Jones,admin,ChangeMe!2026,false
+charlie,charlie@corp.example,,user,,true
+diana,diana@corp.example,Diana Prince,user,,true
+eric,eric@corp.example,Eric Engineer,admin,,true

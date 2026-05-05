@@ -213,7 +213,7 @@ function RolesTab() {
     return (
       <div className="space-y-3">
         {Array.from({ length: 3 }).map((_, i) => (
-          <div key={i} className="glass-card h-20 animate-pulse" />
+          <div key={i} className="nm-card h-20 animate-pulse" />
         ))}
       </div>
     );
@@ -232,7 +232,7 @@ function RolesTab() {
             Create Custom Role
           </button>
         )}
-        <div className="glass-card py-12 text-center text-sm text-muted-foreground">
+        <div className="nm-card py-12 text-center text-sm text-muted-foreground">
           No roles configured
         </div>
         {advancedRbac && (
@@ -264,7 +264,7 @@ function RolesTab() {
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: i * 0.05 }}
-          className="glass-card p-4"
+          className="nm-card p-4"
           data-testid={`role-${role.id}`}
         >
           <div className="flex items-center gap-2">
@@ -355,7 +355,7 @@ function GroupsTab() {
     return (
       <div className="space-y-3">
         {Array.from({ length: 3 }).map((_, i) => (
-          <div key={i} className="glass-card h-24 animate-pulse" />
+          <div key={i} className="nm-card h-24 animate-pulse" />
         ))}
       </div>
     );
@@ -374,7 +374,7 @@ function GroupsTab() {
           New Group
         </button>
       ) : (
-        <div className="glass-card p-4 space-y-3" data-testid="create-group-form">
+        <div className="nm-card p-4 space-y-3" data-testid="create-group-form">
           <input
             type="text"
             value={newGroupName}
@@ -414,7 +414,7 @@ function GroupsTab() {
 
       {/* Groups list */}
       {!groups?.length ? (
-        <div className="glass-card py-12 text-center text-sm text-muted-foreground">
+        <div className="nm-card py-12 text-center text-sm text-muted-foreground">
           No groups created yet
         </div>
       ) : (
@@ -424,7 +424,7 @@ function GroupsTab() {
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: i * 0.05 }}
-            className="glass-card p-4"
+            className="nm-card p-4"
             data-testid={`group-${group.id}`}
           >
             <div className="flex items-center justify-between">
@@ -572,11 +572,11 @@ function SpacePermissionsTab() {
 
       {/* Permissions display */}
       {!selectedSpace ? (
-        <div className="glass-card py-12 text-center text-sm text-muted-foreground">
+        <div className="nm-card py-12 text-center text-sm text-muted-foreground">
           Select a space to view and manage permissions
         </div>
       ) : isLoading ? (
-        <div className="glass-card h-32 animate-pulse" />
+        <div className="nm-card h-32 animate-pulse" />
       ) : (
         <div className="space-y-4">
           {/* Add assignment button */}
@@ -590,7 +590,7 @@ function SpacePermissionsTab() {
               Assign Role
             </button>
           ) : (
-            <div className="glass-card p-4 space-y-3" data-testid="assign-role-form">
+            <div className="nm-card p-4 space-y-3" data-testid="assign-role-form">
               <div className="grid grid-cols-3 gap-3">
                 <div>
                   <label className="mb-1 block text-xs text-muted-foreground">Type</label>
@@ -657,11 +657,11 @@ function SpacePermissionsTab() {
 
           {/* Assignments table */}
           {!assignments?.length ? (
-            <div className="glass-card py-12 text-center text-sm text-muted-foreground">
+            <div className="nm-card py-12 text-center text-sm text-muted-foreground">
               No permissions configured for this space
             </div>
           ) : (
-            <div className="glass-card overflow-hidden" data-testid="permissions-list">
+            <div className="nm-card overflow-hidden" data-testid="permissions-list">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">
@@ -747,7 +747,7 @@ export function RbacPage() {
       </div>
 
       {/* Tabs */}
-      <div className="glass-card p-1.5">
+      <div className="nm-card p-1.5">
         <div className="flex gap-1">
           {TAB_CONFIG.map(({ key, label, icon: Icon }) => (
             <button

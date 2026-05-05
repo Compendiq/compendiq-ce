@@ -134,7 +134,7 @@ export function FlowchartGenerator({
   const triggerButton = (
     <button
       onClick={toggleOpen}
-      className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
+      className="nm-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
       title="Generate diagram from article"
     >
       <GitBranch size={14} /> <span className="hidden sm:inline">Diagram</span>
@@ -142,7 +142,7 @@ export function FlowchartGenerator({
   );
 
   const panel = (
-    <div className="glass-card space-y-3 p-4">
+    <div className="nm-card space-y-3 p-4">
       <div className="flex items-center justify-between">
         <h3 className="flex items-center gap-2 text-sm font-medium">
           <GitBranch size={16} className="text-primary" /> Generate Diagram

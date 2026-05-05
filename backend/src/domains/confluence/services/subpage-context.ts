@@ -12,7 +12,7 @@ import { htmlToMarkdown } from '../../../core/services/content-converter.js';
 import { logger } from '../../../core/utils/logger.js';
 
 /** Maximum combined context size in characters (approx 60K tokens for most LLMs). */
-export const MAX_COMBINED_CONTEXT_CHARS = 200_000;
+const MAX_COMBINED_CONTEXT_CHARS = 200_000;
 
 /** Maximum depth for recursive sub-page fetching (prevent runaway recursion). */
 const MAX_DEPTH = 5;
@@ -20,14 +20,14 @@ const MAX_DEPTH = 5;
 /** Maximum number of sub-pages to include (prevent huge page trees). */
 const MAX_SUB_PAGES = 50;
 
-export interface PageContent {
+interface PageContent {
   confluenceId: string;
   title: string;
   bodyHtml: string;
   depth: number;
 }
 
-export interface AssembledContext {
+interface AssembledContext {
   /** The combined markdown text with page boundary markers. */
   markdown: string;
   /** Total number of pages included (parent + sub-pages). */

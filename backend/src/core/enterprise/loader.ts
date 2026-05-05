@@ -1,9 +1,18 @@
-import type { EnterprisePlugin } from './types.js';
+import type { EnterprisePlugin, LicenseInfo } from './types.js';
 import { noopPlugin } from './noop.js';
 import { logger } from '../utils/logger.js';
 
 let cached: EnterprisePlugin | null = null;
 let loaded = false;
+
+// Module-level license reference populated by `setCurrentLicense()` from
+// `app.ts` during bootstrap. Needed so non-Fastify callers (background
+// workers like the Confluence sync loop, BullMQ handlers) can query feature
+// gates without routing through `FastifyInstance#license`. Intentionally
+// a simple module-scoped value: the license is effectively immutable for
+// the process (only `/api/admin/license` updates invalidate it, and EE code
+// refreshes its own caches independently).
+let currentLicense: LicenseInfo | null = null;
 
 /**
  * Attempts to load the enterprise plugin via dynamic import.
@@ -54,10 +63,34 @@ export function getEnterprisePlugin(): EnterprisePlugin {
 }
 
 /**
+ * Register the validated license for callers that run outside a Fastify
+ * request context (background workers, sync loops, BullMQ jobs). `app.ts`
+ * invokes this once during bootstrap immediately after `validateLicense()`
+ * returns. Callers that already have `app.license` should keep using that —
+ * this helper only exists to bridge module-scope callers.
+ */
+export function setCurrentLicense(license: LicenseInfo | null): void {
+  currentLicense = license;
+}
+
+/**
+ * Single-argument feature-flag check for module-scope callers that cannot
+ * reach `FastifyInstance#license` (e.g. the Confluence sync worker). Thin
+ * wrapper around `plugin.isFeatureEnabled(feature, currentLicense)` — the
+ * noop plugin in CE always returns `false`, so CE builds are inherently
+ * gated regardless of whether `setCurrentLicense()` has been called.
+ */
+export function isFeatureEnabled(feature: string): boolean {
+  const plugin = cached ?? noopPlugin;
+  return plugin.isFeatureEnabled(feature, currentLicense);
+}
+
+/**
  * Reset internal state. Exposed only for testing.
  * @internal
  */
 export function _resetForTesting(): void {
   cached = null;
   loaded = false;
+  currentLicense = null;
 }

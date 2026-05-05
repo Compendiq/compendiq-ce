@@ -14,10 +14,12 @@ import authPlugin from './core/plugins/auth.js';
 import redisPlugin from './core/plugins/redis.js';
 // Foundation routes
 import { healthRoutes } from './routes/foundation/health.js';
+import { healthApiRoutes, healthApiAdminRoutes } from './routes/foundation/health-api.js';
 import { authRoutes } from './routes/foundation/auth.js';
 import { settingsRoutes } from './routes/foundation/settings.js';
 import { adminRoutes } from './routes/foundation/admin.js';
 import { adminEmbeddingLocksRoutes } from './routes/foundation/admin-embedding-locks.js';
+import { adminIpAllowlistRoutes } from './routes/foundation/admin-ip-allowlist.js';
 import { rbacRoutes } from './routes/foundation/rbac.js';
 import { adminUsersRoutes } from './routes/foundation/admin-users.js';
 // Confluence routes
@@ -42,6 +44,8 @@ import { llmEmbeddingProbeRoutes } from './routes/llm/llm-embedding-probe.js';
 import { llmPdfRoutes } from './routes/llm/llm-pdf.js';
 // Knowledge routes
 import { pagesCrudRoutes } from './routes/knowledge/pages-crud.js';
+import { pagesPresenceRoutes } from './routes/knowledge/pages-presence.js';
+import { pagesBulkProgressRoutes } from './routes/knowledge/pages-bulk-progress.js';
 import { pagesVersionRoutes } from './routes/knowledge/pages-versions.js';
 import { pagesTagRoutes } from './routes/knowledge/pages-tags.js';
 import { pagesEmbeddingRoutes } from './routes/knowledge/pages-embeddings.js';
@@ -66,15 +70,38 @@ import { ZodError } from 'zod';
 import { trackError } from './core/services/error-tracker.js';
 import { logger } from './core/utils/logger.js';
 import { APP_VERSION } from './core/utils/version.js';
-import { loadEnterprisePlugin } from './core/enterprise/loader.js';
+import { loadEnterprisePlugin, setCurrentLicense } from './core/enterprise/loader.js';
 import { bootstrapLlmProviders } from './domains/llm/services/llm-provider-bootstrap.js';
 import { bootstrapSsrfAllowlist } from './domains/confluence/services/sync-service.js';
+import { registerKnowledgeRelationshipProducers } from './domains/knowledge/services/relationship-producers.js';
 import { initSsrfAllowlistBus } from './core/services/ssrf-allowlist-bus.js';
+import { initPresenceBus } from './core/services/presence-service.js';
+import { initCacheBus, close as closeCacheBus } from './core/services/redis-cache-bus.js';
+import { initProviderCacheBus } from './domains/llm/services/cache-bus.js';
+import { buildTrustProxyFn } from './core/utils/trusted-proxy.js';
+import {
+  initIpAllowlistService,
+  loadTrustedProxiesFromAdminSettings,
+} from './core/services/ip-allowlist-service.js';
+import ipAllowlistHook from './core/plugins/ip-allowlist-hook.js';
+import { initSyncConflictPolicyService } from './core/services/sync-conflict-policy-service.js';
+import { initLlmQueueSettings } from './core/services/admin-settings-service.js';
+import { initLlmQueueClusterCoordination } from './domains/llm/services/llm-queue.js';
+import { setLlmAuditHook } from './domains/llm/services/llm-audit-hook.js';
+import { defaultLlmAuditWriter } from './domains/llm/services/llm-audit-default-writer.js';
+import { ENTERPRISE_FEATURES } from './core/enterprise/features.js';
 
 export async function buildApp() {
+  // v0.4 epic §3.4 — replace the previous blanket `trustProxy: true` with a
+  // CIDR-bounded function. Default when the IP-allowlist feature is off /
+  // unconfigured: loopback only (127.0.0.1/32, ::1/128). Deployments behind
+  // a non-loopback reverse proxy must populate `trusted_proxies` in
+  // admin_settings explicitly — see CHANGELOG entry for v0.4 for migration.
+  const trustedProxies = await loadTrustedProxiesFromAdminSettings();
+
   const app = Fastify({
     logger: false, // We use our own pino instance
-    trustProxy: true,
+    trustProxy: buildTrustProxyFn(trustedProxies),
   });
 
   // Zod type provider
@@ -150,6 +177,20 @@ export async function buildApp() {
   app.decorate('license', license);
   app.decorate('enterprise', enterprise);
 
+  // Publish the license to module-scope callers (background workers, the
+  // Confluence sync loop, BullMQ jobs) that cannot reach `app.license`.
+  // Mirrors the decorate call above — EE paths that hot-reload the license
+  // via `PUT /api/admin/license` are expected to call this again themselves.
+  setCurrentLicense(license);
+
+  // ── LLM audit-log default writer (Compendiq/compendiq-ee#115 P0f) ──
+  // Register the CE default writer that persists each `LlmAuditEntry` to
+  // the `llm_audit_log` table (migration 073). Done BEFORE
+  // `enterprise.registerRoutes()` so an EE plugin that wants to override
+  // (e.g. to add encrypted-at-rest plaintext columns) can call
+  // `setLlmAuditHook(...)` from its own bootstrap and win.
+  setLlmAuditHook(defaultLlmAuditWriter);
+
   // Let the enterprise plugin register its own routes (e.g., full license endpoint)
   await enterprise.registerRoutes(app, license);
 
@@ -161,6 +202,73 @@ export async function buildApp() {
   app.addHook('onClose', async () => {
     await teardownSsrfBus();
   });
+
+  // ── Presence bus (issue #301) ────────────────────────────────────
+  // Duplicated Redis subscriber running PSUBSCRIBE presence:page:* so
+  // SSE streams can fan out heartbeats across pods. Fails soft into
+  // single-pod mode if Redis is unreachable.
+  const teardownPresenceBus = await initPresenceBus(app.redis);
+  app.addHook('onClose', async () => {
+    await teardownPresenceBus();
+  });
+
+  // ── Generic cache-bus (v0.4 epic §3.1) ───────────────────────────
+  // Cluster-wide invalidation channel used by cached admin_settings
+  // (see makeCachedSetting) and future hot-reload consumers. Fails soft
+  // into single-pod mode if Redis is unreachable.
+  await initCacheBus(app.redis);
+  app.addHook('onClose', async () => {
+    await closeCacheBus();
+  });
+
+  // ── LLM provider cache-bus subscriber (EE #113 sub-PR 1d) ────────
+  // Wires the cluster subscriber for `provider:cache:bump` and
+  // `provider:deleted`. Must run AFTER initCacheBus (above) and BEFORE
+  // bootstrapLlmProviders() (below) — the bootstrap calls
+  // bumpProviderCacheVersion() at the end of its run, and we want that
+  // boot-path bump to reach a wired subscriber on every replica.
+  // Soft-fails to local fan-out when the bus is inactive (single-pod).
+  initProviderCacheBus();
+
+  // ── IP Allowlist (EE #111) ───────────────────────────────────────
+  // Cold-load the persisted config + subscribe the cache-bus for cluster
+  // hot-reload. Must run AFTER initCacheBus. Register the onRequest hook
+  // only when the enterprise feature flag is on — CE builds and EE builds
+  // without the feature never pay the per-request cost.
+  //
+  // Hook-ordering note: the plan (.plans/111-ip-allowlist.md §0.1 / §1.6)
+  // calls for registering this hook BEFORE authPlugin so JWT decode never
+  // runs for blocked IPs. This file registers it AFTER authPlugin, which
+  // is functionally equivalent because authPlugin only decorates Fastify
+  // with `authenticate` / `requireAdmin` — it does NOT install a global
+  // onRequest hook. The only global onRequest hooks in the chain are
+  // correlationIdPlugin (above) and ipAllowlistHook (here), so a blocked
+  // IP short-circuits with 403 before any per-route `authenticate`
+  // preHandler runs. No JWT decode, no business logic, same result.
+  await initIpAllowlistService();
+  if (enterprise.isFeatureEnabled(ENTERPRISE_FEATURES.IP_ALLOWLISTING, license)) {
+    await app.register(ipAllowlistHook);
+    logger.info('IP allowlist hook registered (enterprise feature active)');
+  }
+
+  // Sync-conflict policy cache (Compendiq/compendiq-ee#118). Always
+  // initialised — CE-only deployments use the default 'confluence-wins'
+  // value, which preserves the legacy sync behaviour. The EE overlay's
+  // PUT handler writes to admin_settings + publishes on the cache-bus;
+  // CE pods receive the invalidation and re-read just like any other
+  // pod. The cold-load happens here before sync workers can run.
+  await initSyncConflictPolicyService();
+
+  // LLM queue cluster-wide settings (Compendiq/compendiq-ee#113 Phase B-3).
+  // Cold-loads `llm_concurrency` + `llm_max_queue_depth` from admin_settings
+  // and subscribes to the `admin:llm:settings` cache-bus channel. Then
+  // primes the queue's limiter from those cached values + wires the
+  // module-level subscriber that updates `_limiter.concurrency` in place
+  // on every PUT from any pod (see #404 — preserves activeCount/pendingCount
+  // across hot-swaps). Must run AFTER initCacheBus and BEFORE the queue
+  // starts handling traffic.
+  await initLlmQueueSettings();
+  initLlmQueueClusterCoordination();
 
   // ── LLM Provider Bootstrap ───────────────────────────────────────
   // Seed llm_providers from env on fresh installs, rewrite the Ollama
@@ -175,6 +283,13 @@ export async function buildApp() {
   // the pub/sub channel with N redundant add events (other pods already
   // populated their sets from the same DB rows on their own boot).
   await bootstrapSsrfAllowlist();
+
+  // ── Knowledge Relationship Producers (issue #359) ───────────────
+  // Register cross-domain edge producers (e.g. explicit_link from
+  // body_html anchors) into the embedding-service registry so they run
+  // inside `computePageRelationships()`'s transaction. Idempotent: safe
+  // to call once per process.
+  registerKnowledgeRelationshipProducers();
 
   // Known Fastify HTTP error names that are safe to expose to clients.
   // Anything not in this set could leak internal details (e.g. TypeError, RangeError).
@@ -243,10 +358,13 @@ export async function buildApp() {
 
   // Foundation routes
   await app.register(healthRoutes, { prefix: '/api' });
+  await app.register(healthApiRoutes, { prefix: '/api' });
+  await app.register(healthApiAdminRoutes, { prefix: '/api' });
   await app.register(authRoutes, { prefix: '/api/auth' });
   await app.register(settingsRoutes, { prefix: '/api' });
   await app.register(adminRoutes, { prefix: '/api' });
   await app.register(adminEmbeddingLocksRoutes, { prefix: '/api' });
+  await app.register(adminIpAllowlistRoutes, { prefix: '/api' });
   await app.register(rbacRoutes, { prefix: '/api' });
   await app.register(adminUsersRoutes, { prefix: '/api' });
 
@@ -296,6 +414,8 @@ export async function buildApp() {
 
   // Knowledge routes
   await app.register(pagesCrudRoutes, { prefix: '/api' });
+  await app.register(pagesPresenceRoutes, { prefix: '/api' });
+  await app.register(pagesBulkProgressRoutes, { prefix: '/api' });
   await app.register(pagesVersionRoutes, { prefix: '/api' });
   await app.register(pagesTagRoutes, { prefix: '/api' });
   await app.register(pagesEmbeddingRoutes, { prefix: '/api' });

@@ -10,12 +10,3 @@ export const logger: Logger = pino({
     },
   }),
 });
-
-/**
- * Create a child logger with additional context (e.g., correlation ID).
- * Use this when you need to attach request-scoped metadata to logs
- * outside of Fastify's request lifecycle.
- */
-export function createChildLogger(bindings: Record<string, unknown>): Logger {
-  return logger.child(bindings);
-}

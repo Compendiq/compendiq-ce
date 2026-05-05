@@ -27,6 +27,7 @@
  */
 
 import { query } from '../../../core/db/postgres.js';
+import { emitWebhookEvent } from '../../../core/services/webhook-emit-hook.js';
 import { getSystemPrompt } from '../../llm/services/prompts.js';
 import { resolveUsecase } from '../../llm/services/llm-provider-resolver.js';
 import {
@@ -70,7 +71,7 @@ let lastRunAt: Date | null = null;
 
 // ─── Score parsing ────────────────────────────────────────────────────────────
 
-export interface QualityScores {
+interface QualityScores {
   overall: number;
   completeness: number;
   clarity: number;
@@ -221,6 +222,16 @@ async function analyzePageQuality(
         scores.summary,
       ],
     );
+
+    emitWebhookEvent({
+      eventType: 'ai.quality.complete',
+      payload: {
+        pageId,
+        score: scores.overall,
+        summary: scores.summary,
+        completedAt: new Date().toISOString(),
+      },
+    });
 
     logger.info({ pageId, score: scores.overall }, 'Quality analysis complete');
   } catch (err) {

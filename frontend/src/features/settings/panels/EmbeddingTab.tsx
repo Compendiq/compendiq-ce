@@ -89,7 +89,7 @@ export function EmbeddingTab() {
       {/* Issue #257 — admin visibility for in-flight per-user embedding locks. */}
       <ActiveEmbeddingLocksBanner />
 
-      <div className="glass-card border-yellow-500/30 p-3 text-sm text-yellow-400">
+      <div className="nm-card border-yellow-500/30 p-3 text-sm text-yellow-400">
         These settings are shared across all users. Changing chunk settings will trigger re-embedding of all pages, which may take several minutes.
       </div>
 
@@ -110,7 +110,7 @@ export function EmbeddingTab() {
           step={64}
           value={effectiveChunkSize}
           onChange={(e) => setChunkSize(Number(e.target.value))}
-          className="glass-input w-40"
+          className="nm-input w-40"
           data-testid="admin-chunk-size-input"
         />
       </div>
@@ -131,14 +131,14 @@ export function EmbeddingTab() {
           step={10}
           value={effectiveChunkOverlap}
           onChange={(e) => setChunkOverlap(Number(e.target.value))}
-          className="glass-input w-40"
+          className="nm-input w-40"
           data-testid="admin-chunk-overlap-input"
         />
       </div>
 
       {hasChunkChanges && (
         <div
-          className="glass-card border-yellow-500/30 p-3 text-sm text-yellow-400"
+          className="nm-card border-yellow-500/30 p-3 text-sm text-yellow-400"
           data-testid="admin-chunk-change-warning"
         >
           Saving will mark all embedded pages dirty and trigger global re-embedding.
@@ -169,7 +169,7 @@ export function EmbeddingTab() {
           placeholder="https://embed.diagrams.net"
           value={effectiveDrawioUrl}
           onChange={(e) => setDrawioEmbedUrl(e.target.value)}
-          className="glass-input w-full max-w-md"
+          className="nm-input w-full max-w-md"
           data-testid="admin-drawio-url-input"
         />
       </div>
@@ -193,7 +193,7 @@ export function EmbeddingTab() {
           step={10}
           value={effectiveRetention}
           onChange={(e) => setReembedHistoryRetention(Number(e.target.value))}
-          className="glass-input w-40"
+          className="nm-input w-40"
           data-testid="admin-reembed-retention-input"
         />
       </div>
@@ -202,7 +202,7 @@ export function EmbeddingTab() {
         <button
           onClick={handleSave}
           disabled={!hasChanges || updateAdminSettings.isPending}
-          className="glass-button-primary"
+          className="nm-button-primary"
           data-testid="admin-chunk-save-btn"
         >
           {updateAdminSettings.isPending ? 'Saving...' : 'Save'}

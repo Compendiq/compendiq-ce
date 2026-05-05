@@ -40,14 +40,14 @@ function mapItems(response: SearchApiResponse): SearchResultItem[] {
   }));
 }
 
-export interface UseSearchParams {
+interface UseSearchParams {
   query: string;
   mode: 'keyword' | 'semantic' | 'hybrid';
   spaceKey?: string;
   page?: number;
 }
 
-export interface UseSearchResult {
+interface UseSearchResult {
   /** Fast keyword results — shown first while semantic is loading */
   immediateResults: SearchResultItem[];
   /** Semantic or hybrid results that augment/replace the immediate results */

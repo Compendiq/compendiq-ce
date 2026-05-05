@@ -50,7 +50,9 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
 
     // Sanitize before sending to LLM
     const { sanitized, warnings } = sanitizeLlmInput(prompt);
-    if (warnings.length > 0) {
+    let promptInjectionDetected = warnings.length > 0;
+    let wasSanitized = sanitized !== prompt;
+    if (promptInjectionDetected) {
       await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/generate' }, request);
     }
 
@@ -60,6 +62,8 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
 
     if (pdfText) {
       const { sanitized: sanitizedPdf, warnings: pdfWarnings } = sanitizeLlmInput(pdfText);
+      promptInjectionDetected = promptInjectionDetected || pdfWarnings.length > 0;
+      wasSanitized = wasSanitized || sanitizedPdf !== pdfText;
       if (pdfWarnings.length > 0) {
         await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, {
           warnings: pdfWarnings, route: '/llm/generate', field: 'pdfText',
@@ -136,20 +140,22 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
         userId,
         action: 'generate',
         model: resolvedModel,
-        provider: 'openai',
+        provider: chatConfig.providerId,
         inputTokens: estimateTokens(generateMessages.map(m => m.content).join('')),
         outputTokens: estimateTokens(accumulated),
         inputMessages: generateMessages.map(m => ({ role: m.role, contentLength: m.content.length })),
         retrievedChunkIds: [],
         durationMs: Date.now() - auditStart,
         status: 'success',
+        promptInjectionDetected,
+        sanitized: wasSanitized,
       });
     } catch (err) {
       emitLlmAudit({
         userId,
         action: 'generate',
         model: resolvedModel,
-        provider: 'openai',
+        provider: chatConfig.providerId,
         inputTokens: estimateTokens(generateMessages.map(m => m.content).join('')),
         outputTokens: 0,
         inputMessages: generateMessages.map(m => ({ role: m.role, contentLength: m.content.length })),
@@ -157,6 +163,8 @@ export async function llmGenerateRoutes(fastify: FastifyInstance) {
         durationMs: Date.now() - auditStart,
         status: 'error',
         errorMessage: err instanceof Error ? err.message : String(err),
+        promptInjectionDetected,
+        sanitized: wasSanitized,
       });
       throw err;
     } finally {

@@ -114,7 +114,7 @@ export function SyncTab() {
           <button
             onClick={() => refetch()}
             disabled={isFetching}
-            className="glass-button-secondary"
+            className="nm-button-ghost"
             data-testid="sync-overview-refresh"
           >
             {isFetching ? 'Refreshing...' : 'Refresh'}
@@ -122,7 +122,7 @@ export function SyncTab() {
           <button
             onClick={() => syncMutation.mutate()}
             disabled={syncMutation.isPending || data.sync.status === 'syncing'}
-            className="glass-button-primary"
+            className="nm-button-primary"
             data-testid="sync-overview-sync-now"
           >
             {data.sync.status === 'syncing' ? 'Syncing...' : syncMutation.isPending ? 'Starting...' : 'Sync Now'}
@@ -276,7 +276,7 @@ export function SyncTab() {
             <button
               onClick={() => qualityRescanMutation.mutate()}
               disabled={qualityRescanMutation.isPending}
-              className="glass-button-secondary whitespace-nowrap"
+              className="nm-button-ghost whitespace-nowrap"
               data-testid="quality-force-rescan"
             >
               {qualityRescanMutation.isPending ? 'Rescanning...' : 'Force Rescan'}
@@ -343,7 +343,7 @@ export function SyncTab() {
             <button
               onClick={() => summaryRescanMutation.mutate()}
               disabled={summaryRescanMutation.isPending}
-              className="glass-button-secondary whitespace-nowrap"
+              className="nm-button-ghost whitespace-nowrap"
               data-testid="summary-force-rescan"
             >
               {summaryRescanMutation.isPending ? 'Rescanning...' : 'Force Rescan'}

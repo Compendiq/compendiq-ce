@@ -21,6 +21,19 @@ import { logger } from '../utils/logger.js';
  *
  * Login metadata now carries `auth_method: 'local' | 'oidc'` (the OIDC
  * caller lives in EE).
+ *
+ * AI safety events (EE v0.4 — Compendiq/compendiq-ee#119, #120):
+ *   - PII detection:      PII_DETECTED (per-detection entry; metadata
+ *                         carries span count + categories without the
+ *                         actual text), PII_POLICY_CHANGED.
+ *   - Output review:      AI_REVIEW_SUBMITTED, AI_REVIEW_APPROVED,
+ *                         AI_REVIEW_REJECTED, AI_REVIEW_EDIT_AND_APPROVED
+ *                         (edit preserves the AI-authored original as a
+ *                         separate SUBMITTED entry for provenance),
+ *                         AI_REVIEW_EXPIRED, AI_REVIEW_POLICY_CHANGED.
+ *   Emitters all live in the EE overlay (`overlay/backend/src/enterprise/
+ *   pii-scanner.ts`, `ai-review-service.ts`); the action strings live here
+ *   so CE + EE share a single closed union.
  */
 export type AuditAction =
   | 'LOGIN'
@@ -35,6 +48,21 @@ export type AuditAction =
   | 'MFA_ENROLLED'
   | 'MFA_DISABLED'
   | 'SETTINGS_CHANGED'
+  | 'IP_ALLOWLIST_CHANGED'
+  | 'IP_ALLOWLIST_BLOCKED'
+  | 'ACE_SYNCED'
+  | 'ACE_SYNC_SKIPPED_UNMAPPED_USER'
+  | 'WEBHOOK_SUBSCRIPTION_CREATED'
+  | 'WEBHOOK_SUBSCRIPTION_UPDATED'
+  | 'WEBHOOK_SUBSCRIPTION_DELETED'
+  | 'WEBHOOK_SECRET_ROTATED'
+  | 'WEBHOOK_DELIVERY_FAILED'
+  | 'WEBHOOK_DELIVERY_DEAD'
+  | 'SYNC_CONFLICT_DETECTED'
+  | 'SYNC_CONFLICT_RESOLVED_LOCAL'
+  | 'SYNC_CONFLICT_RESOLVED_REMOTE'
+  | 'SYNC_OVERWROTE_LOCAL_EDITS'
+  | 'SYNC_POLICY_CHANGED'
   | 'PAT_UPDATED'
   | 'PAGE_CREATED'
   | 'PAGE_UPDATED'
@@ -71,9 +99,47 @@ export type AuditAction =
   | 'ACE_GRANTED'
   | 'ACE_REVOKED'
   | 'PAGE_INHERIT_PERMS_CHANGED'
-  | 'RETENTION_PRUNED';
+  | 'RETENTION_PRUNED'
+  // AI safety — EE #119 PII detection
+  | 'PII_DETECTED'
+  | 'PII_POLICY_CHANGED'
+  // AI safety — EE #120 output review workflow
+  | 'AI_REVIEW_SUBMITTED'
+  | 'AI_REVIEW_APPROVED'
+  | 'AI_REVIEW_REJECTED'
+  | 'AI_REVIEW_EDIT_AND_APPROVED'
+  | 'AI_REVIEW_EXPIRED'
+  | 'AI_REVIEW_POLICY_CHANGED'
+  // Bulk + per-user lifecycle — EE #116 bulk user operations + CE #304 per-user
+  // admin CRUD. The 5 USER_* events are the per-row primitives the bulk
+  // wrapper composes; BULK_USER_IMPORT is the wrapper event itself. They
+  // live in the closed CE union so the EE overlay routes can emit them
+  // without forking the type. (epic v0.4 §3.6 consolidation)
+  | 'BULK_USER_IMPORT'
+  | 'USER_CREATED'
+  | 'USER_UPDATED'
+  | 'USER_DEACTIVATED'
+  | 'USER_REACTIVATED'
+  | 'USER_HARD_DELETED'
+  // Bulk page operations — EE #117. One audit row per bulk action (NOT per
+  // affected page) per epic v0.4 §3.6 / R8 audit-volume mitigation.
+  // BULK_PAGE_TAGGED covers additive tag changes (adds/removes); the dedicated
+  // BULK_PAGE_TAGS_REPLACED entry distinguishes the higher-risk
+  // replace-the-entire-tag-set semantic. BULK_PAGE_PERMISSION_CHANGED is
+  // emitted by the EE-gated bulk-permission route in the overlay and covers
+  // any add/remove/replace of an ACE applied across N pages — including the
+  // implicit `inherit_perms=false` flip when present (recorded in metadata).
+  | 'BULK_PAGE_TAGGED'
+  | 'BULK_PAGE_TAGS_REPLACED'
+  | 'BULK_PAGE_PERMISSION_CHANGED'
+  // Multi-instance readiness — Compendiq/compendiq-ee#113. Emitted by the
+  // admin-gated POST /api/admin/health-api/rotate route when an admin
+  // rotates the per-instance health-API bearer token. Deliberate admin
+  // action — not counted in `errorRate24h` (see ERROR_AUDIT_ACTIONS in
+  // routes/foundation/health-api.ts).
+  | 'HEALTH_API_TOKEN_ROTATED';
 
-export interface AuditLogEntry {
+interface AuditLogEntry {
   id: string;
   userId: string | null;
   action: string;
@@ -120,7 +186,7 @@ export async function logAuditEvent(
   }
 }
 
-export interface AuditLogFilter {
+interface AuditLogFilter {
   userId?: string;
   action?: string;
   resourceType?: string;

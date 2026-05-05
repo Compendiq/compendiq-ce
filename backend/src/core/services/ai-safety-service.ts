@@ -3,14 +3,14 @@ import { logAuditEvent } from './audit-service.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export interface AiGuardrails {
+interface AiGuardrails {
   noFabricationInstruction: string;
   noFabricationEnabled: boolean;
 }
 
 export type ReferenceAction = 'flag' | 'strip' | 'off';
 
-export interface AiOutputRules {
+interface AiOutputRules {
   stripReferences: boolean;
   referenceAction: ReferenceAction;
 }
@@ -197,8 +197,3 @@ export async function upsertAiOutputRules(
   }
 }
 
-/** Exposed for testing — reset both caches */
-export function _resetCache(): void {
-  guardrailCache = null;
-  outputRuleCache = null;
-}

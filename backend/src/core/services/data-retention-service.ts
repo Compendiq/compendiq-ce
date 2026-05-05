@@ -21,7 +21,10 @@
 
 import { getPool } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
-import { getAdminAccessDeniedRetentionDays } from './admin-settings-service.js';
+import {
+  getAdminAccessDeniedRetentionDays,
+  getPendingSyncVersionsRetentionDays,
+} from './admin-settings-service.js';
 import { logAuditEvent } from './audit-service.js';
 
 export const RETENTION_DEFAULTS: Record<string, number> = {
@@ -81,6 +84,15 @@ export async function runRetentionCleanup(): Promise<Record<string, number>> {
   // Scoped by action so the umbrella retention policy for every other audit
   // action remains independently tunable.
   results['audit_log_admin_access_denied'] = await runAdminAccessDeniedRetention();
+
+  // pending_sync_versions retention (Compendiq/compendiq-ee#118).
+  // Drains the conflict-pending queue of rows that nobody resolved and are
+  // older than the admin-configured window. Resolution deletes rows
+  // synchronously, so this sweep only catches genuinely-abandoned
+  // conflicts. The associated `pages.conflict_pending` flag is recomputed
+  // after the delete so the conflicts list page no longer surfaces a row
+  // whose pending versions have all been pruned.
+  results['pending_sync_versions'] = await runPendingSyncVersionsRetention();
 
   // Count-based retention for page_versions
   const maxVersions = parseInt(process.env.RETENTION_VERSIONS_MAX ?? '50', 10);
@@ -192,6 +204,107 @@ async function runAdminAccessDeniedRetention(): Promise<number> {
     logger.error({ err, retentionDays: days }, 'ADMIN_ACCESS_DENIED retention cleanup failed');
   }
   return totalDeleted;
+}
+
+/**
+ * Prune `pending_sync_versions` rows older than the configured retention
+ * window AND recompute `pages.conflict_pending` for any page whose queue
+ * was just drained (Compendiq/compendiq-ee#118).
+ *
+ * The two-step "delete then recompute" approach mirrors how resolution
+ * works at the EE service layer (delete the row, then `UPDATE pages SET
+ * conflict_pending = EXISTS(...)`). We do it here too so an admin who
+ * abandons a conflict doesn't see a stale `conflict_pending = TRUE` flag
+ * on the conflicts list after the row was retention-pruned.
+ *
+ * Emits a single `RETENTION_PRUNED` audit row with the count, including
+ * zero-row sweeps (compliance heartbeat — see Finding #4 in the umbrella
+ * loop). Never throws.
+ */
+async function runPendingSyncVersionsRetention(): Promise<number> {
+  let days: number;
+  try {
+    days = await getPendingSyncVersionsRetentionDays();
+  } catch (err) {
+    logger.error(
+      { err },
+      'Failed to resolve pending_sync_versions_retention_days; skipping prune',
+    );
+    return 0;
+  }
+
+  const pool = getPool();
+  let deleted = 0;
+
+  try {
+    // Capture the affected page_ids in the same statement so the followup
+    // recompute targets only the rows we actually changed (no full-table
+    // scan of `pages`). The CTE delete + RETURNING keeps both halves in
+    // one round-trip.
+    const result = await pool.query<{ page_id: number }>(
+      `WITH deleted AS (
+         DELETE FROM pending_sync_versions
+          WHERE detected_at < NOW() - INTERVAL '1 day' * $1
+          RETURNING page_id
+       )
+       SELECT DISTINCT page_id FROM deleted`,
+      [days],
+    );
+
+    deleted = result.rowCount ?? 0;
+    const affectedPageIds = result.rows.map((r) => r.page_id);
+
+    // Recompute `pages.conflict_pending` for any page whose queue was
+    // just drained. We can't unconditionally set FALSE — a page may have
+    // multiple pending versions and we may have only removed the oldest
+    // one (rare but possible if conflicts pile up faster than the admin
+    // resolves them).
+    if (affectedPageIds.length > 0) {
+      await pool.query(
+        `UPDATE pages
+            SET conflict_pending = EXISTS (
+                  SELECT 1 FROM pending_sync_versions
+                   WHERE pending_sync_versions.page_id = pages.id
+                ),
+                conflict_detected_at = CASE
+                  WHEN EXISTS (
+                    SELECT 1 FROM pending_sync_versions
+                     WHERE pending_sync_versions.page_id = pages.id
+                  ) THEN conflict_detected_at
+                  ELSE NULL
+                END
+          WHERE id = ANY($1::int[])`,
+        [affectedPageIds],
+      );
+    }
+
+    if (deleted > 0) {
+      logger.info(
+        { deleted, retentionDays: days, pages: affectedPageIds.length },
+        'pending_sync_versions retention cleanup completed',
+      );
+    }
+
+    // Heartbeat audit row — see umbrella loop comments for rationale.
+    await logAuditEvent(
+      null,
+      'RETENTION_PRUNED',
+      'table',
+      'pending_sync_versions',
+      {
+        table: 'pending_sync_versions',
+        rows_pruned: deleted,
+        retention_days: days,
+      },
+    );
+  } catch (err) {
+    logger.error(
+      { err, retentionDays: days },
+      'pending_sync_versions retention cleanup failed',
+    );
+  }
+
+  return deleted;
 }
 
 // ── Scheduler ────────────────────────────────────────────────────────────────

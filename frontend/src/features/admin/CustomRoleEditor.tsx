@@ -9,7 +9,7 @@ import { apiFetch } from '../../shared/lib/api';
 
 // --- Types ---
 
-export interface PermissionDefinition {
+interface PermissionDefinition {
   id: string;
   displayName: string;
   description: string;
@@ -37,7 +37,7 @@ interface RoleAssignment {
   createdAt: string;
 }
 
-export interface CustomRoleEditorProps {
+interface CustomRoleEditorProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** Existing role to edit; null = create mode */

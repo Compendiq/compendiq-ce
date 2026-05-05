@@ -102,7 +102,7 @@ export function AiSafetyTab() {
               value={guardrailText}
               onChange={(e) => setGuardrailText(e.target.value)}
               rows={4}
-              className="glass-input w-full resize-y font-mono text-xs"
+              className="nm-input w-full resize-y font-mono text-xs"
               placeholder={DEFAULT_GUARDRAIL_TEXT}
               data-testid="ai-guardrail-text"
             />
@@ -170,7 +170,7 @@ export function AiSafetyTab() {
         <button
           onClick={handleSave}
           disabled={!hasChanges || mutation.isPending}
-          className="glass-button-primary"
+          className="nm-button-primary"
           data-testid="ai-safety-save-btn"
         >
           {mutation.isPending ? 'Saving...' : 'Save'}

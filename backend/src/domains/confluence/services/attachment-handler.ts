@@ -10,7 +10,6 @@ import {
   extractImageReferences,
   SUPPORTED_IMAGE_EXTENSIONS,
   type AttachmentImageSource,
-  type ImageReference,
 } from '../../../core/services/image-references.js';
 import {
   getAttachmentFailureCount,
@@ -294,17 +293,6 @@ interface ExternalImageDownloadResult {
 }
 
 /**
- * Parse image attachment filenames from Confluence XHTML storage format using JSDOM.
- * Handles arbitrary attribute ordering reliably, unlike regex approaches.
- */
-export function extractImageFilenames(bodyStorage: string): string[] {
-  return extractImageReferences(bodyStorage)
-    .filter((ref): ref is ImageReference & { source: AttachmentImageSource } => ref.source.kind === 'attachment')
-    .map((ref) => ref.source.attachmentFilename)
-    .filter((filename) => SUPPORTED_IMAGE_EXTENSIONS.has(path.extname(filename).toLowerCase()));
-}
-
-/**
  * Sync image attachments referenced in a page's XHTML body.
  * Downloads all <ac:image><ri:attachment ri:filename="..."> images from Confluence.
  * Skips download if a cached copy already exists (idempotent).
@@ -559,7 +547,7 @@ export async function fetchAndCacheAttachment(
   return data;
 }
 
-export interface FetchAndCachePageImageOptions {
+interface FetchAndCachePageImageOptions {
   client: ConfluenceClient;
   userId: string;
   pageId: string;
@@ -712,14 +700,4 @@ export async function cleanPageAttachments(_userId: string, pageId: string): Pro
   }
   // Clear Redis failure counters — after a sync the failures are stale
   await clearAttachmentFailures(getRedisClient(), pageId);
-}
-
-/**
- * Clean up all attachments for a user (on PAT change).
- * Attachments are now stored in a shared directory, so this is a no-op.
- * Individual page attachments are cleaned via cleanPageAttachments when pages are deleted.
- */
-export async function cleanUserAttachments(_userId: string): Promise<void> {
-  // No-op: attachments are now shared across users, keyed only by pageId.
-  // Use cleanPageAttachments(userId, pageId) when a specific page is deleted.
 }

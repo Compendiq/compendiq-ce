@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Blush Petal — Neumorphic Hover Effects</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg: #FDF5F2;
+    --bg-subtle: #F5E8E2;
+    --bg-elevated: #FFFAF8;
+    --card: #FFFAF8;
+    --card-alt: #FFF6F3;
+    --text: #3A2828;
+    --text-secondary: #6B5050;
+    --text-muted: #9A7878;
+    --primary: #D08070;
+    --primary-hover: #C07060;
+    --primary-glow: rgba(208, 128, 112, 0.35);
+    --primary-text: #fff;
+    --border: #E8D0CC;
+
+    --shadow-dark: rgba(160, 110, 100, 0.16);
+    --shadow-light: rgba(255, 255, 255, 0.85);
+    --shadow-dark-strong: rgba(160, 110, 100, 0.28);
+    --shadow-light-strong: rgba(255, 255, 255, 1);
+    --shadow-dark-hover: rgba(160, 110, 100, 0.32);
+    --shadow-light-hover: rgba(255, 255, 255, 1);
+
+    --success: #3A8A4A;
+    --warning: #B87830;
+    --destructive: #C05050;
+    --info: #5878B0;
+    --ai-purple: #8868A8;
+
+    --code-bg: #F2E6E2;
+    --code-keyword: #906058;
+    --code-string: #508050;
+    --code-function: #5878A0;
+    --code-comment: #A08888;
+    --code-number: #B07840;
+
+    --glow-1: rgba(208, 128, 112, 0.08);
+    --glow-2: rgba(180, 140, 160, 0.06);
+
+    --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+    --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ===== VAPOR BACKGROUND ===== */
+  .vapor-bg { position: fixed; inset: 0; pointer-events: none; z-index: 0; overflow: hidden; }
+  .vapor-glow { position: absolute; border-radius: 50%; filter: blur(80px); }
+  .vapor-glow-1 { width: 60vw; height: 30vh; background: radial-gradient(ellipse, var(--glow-1) 0%, transparent 70%); top: -5%; left: -10%; animation: drift-1 14s ease-in-out infinite alternate; }
+  .vapor-glow-2 { width: 50vw; height: 25vh; background: radial-gradient(ellipse, var(--glow-2) 0%, transparent 70%); bottom: 10%; right: -10%; animation: drift-2 18s ease-in-out infinite alternate; }
+  @keyframes drift-1 { 0% { transform: translateX(0); } 100% { transform: translateX(15vw); } }
+  @keyframes drift-2 { 0% { transform: translateX(0); } 100% { transform: translateX(-12vw); } }
+
+  /* ===== NEUMORPHIC CARDS — WITH HOVER ===== */
+  .neu-card {
+    background: var(--card);
+    border-radius: 14px;
+    box-shadow:
+      6px 6px 14px var(--shadow-dark),
+      -4px -4px 10px var(--shadow-light);
+    transition:
+      box-shadow 0.35s var(--ease-out),
+      transform 0.35s var(--ease-out);
+    will-change: transform, box-shadow;
+  }
+
+  .neu-card-hover { cursor: pointer; position: relative; }
+
+  .neu-card-hover:hover {
+    box-shadow:
+      10px 10px 22px var(--shadow-dark-hover),
+      -6px -6px 16px var(--shadow-light-hover);
+    transform: translateY(-3px);
+  }
+
+  .neu-card-hover:active {
+    box-shadow:
+      inset 4px 4px 10px var(--shadow-dark-strong),
+      inset -2px -2px 6px var(--shadow-light-strong);
+    transform: translateY(0) scale(0.985);
+    transition-duration: 0.15s;
+  }
+
+  /* ===== NEUMORPHIC SIDEBAR ===== */
+  .neu-sidebar {
+    background: var(--card-alt);
+    box-shadow: 4px 0 16px var(--shadow-dark), -2px 0 8px var(--shadow-light);
+  }
+
+  /* ===== BUTTONS — RICH HOVER ===== */
+  .neu-btn-primary {
+    position: relative;
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 10px 20px;
+    background: linear-gradient(145deg, #D88878, #C07060);
+    color: var(--primary-text);
+    border: none; border-radius: 10px;
+    font-size: 0.86rem; font-weight: 600;
+    cursor: pointer;
+    box-shadow:
+      4px 4px 10px var(--shadow-dark-strong),
+      -2px -2px 6px var(--shadow-light-strong),
+      inset 0 1px 0 rgba(255,255,255,0.25);
+    transition: all 0.3s var(--ease-out);
+    overflow: hidden;
+  }
+  .neu-btn-primary::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(145deg, rgba(255,255,255,0.2), transparent 50%);
+    opacity: 0;
+    transition: opacity 0.3s var(--ease-out);
+  }
+  .neu-btn-primary:hover {
+    box-shadow:
+      6px 6px 16px var(--shadow-dark-hover),
+      -3px -3px 10px var(--shadow-light-hover),
+      inset 0 1px 0 rgba(255,255,255,0.35),
+      0 0 20px var(--primary-glow);
+    transform: translateY(-2px);
+  }
+  .neu-btn-primary:hover::before { opacity: 1; }
+  .neu-btn-primary:active {
+    box-shadow:
+      inset 3px 3px 6px rgba(120,60,50,0.3),
+      inset -1px -1px 3px rgba(255,255,255,0.2);
+    transform: translateY(0) scale(0.97);
+    transition-duration: 0.1s;
+  }
+
+  .neu-btn-ghost {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 9px 18px;
+    background: transparent;
+    color: var(--primary);
+    border: 1.5px solid var(--border);
+    border-radius: 10px;
+    font-size: 0.86rem; font-weight: 500;
+    cursor: pointer;
+    transition: all 0.25s var(--ease-out);
+  }
+  .neu-btn-ghost:hover {
+    background: var(--bg-elevated);
+    border-color: var(--primary);
+    color: var(--primary-hover);
+    box-shadow:
+      3px 3px 8px var(--shadow-dark),
+      -2px -2px 6px var(--shadow-light),
+      0 0 16px rgba(208,128,112,0.12);
+    transform: translateY(-1px);
+  }
+  .neu-btn-ghost:active {
+    box-shadow: inset 2px 2px 5px var(--shadow-dark), inset -1px -1px 3px var(--shadow-light);
+    transform: translateY(0) scale(0.98);
+    transition-duration: 0.1s;
+  }
+
+  /* ===== ICON BUTTONS ===== */
+  .neu-icon-btn {
+    width: 38px; height: 38px;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: var(--card);
+    border: none; border-radius: 10px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    box-shadow: 3px 3px 8px var(--shadow-dark), -2px -2px 6px var(--shadow-light);
+    transition: all 0.25s var(--ease-out);
+  }
+  .neu-icon-btn:hover {
+    color: var(--primary);
+    box-shadow:
+      5px 5px 12px var(--shadow-dark-hover),
+      -3px -3px 8px var(--shadow-light-hover),
+      0 0 14px rgba(208,128,112,0.18);
+    transform: translateY(-2px) rotate(-3deg);
+  }
+  .neu-icon-btn:active {
+    box-shadow: inset 2px 2px 5px var(--shadow-dark), inset -1px -1px 3px var(--shadow-light);
+    transform: translateY(0) scale(0.92);
+    transition-duration: 0.1s;
+  }
+
+  /* ===== INSET INPUT ===== */
+  .neu-input {
+    width: 100%;
+    padding: 11px 16px;
+    border: none;
+    border-radius: 10px;
+    font-size: 0.86rem;
+    color: var(--text);
+    background: var(--bg-subtle);
+    box-shadow:
+      inset 3px 3px 7px var(--shadow-dark),
+      inset -2px -2px 5px var(--shadow-light);
+    outline: none;
+    transition: box-shadow 0.3s var(--ease-out);
+  }
+  .neu-input:hover { box-shadow: inset 3px 3px 8px var(--shadow-dark-strong), inset -2px -2px 6px var(--shadow-light-strong); }
+  .neu-input:focus {
+    box-shadow:
+      inset 3px 3px 7px var(--shadow-dark),
+      inset -2px -2px 5px var(--shadow-light),
+      0 0 0 3px rgba(208,128,112,0.25),
+      0 0 16px rgba(208,128,112,0.15);
+  }
+  .neu-input::placeholder { color: var(--text-muted); }
+
+  /* ===== LAYOUT ===== */
+  .app { display: flex; min-height: 100vh; position: relative; z-index: 1; }
+
+  .sidebar { width: 240px; padding: 20px 14px; display: flex; flex-direction: column; gap: 2px; }
+  .sidebar-logo { font-size: 1.15rem; font-weight: 700; color: var(--text); padding: 10px 10px 18px; display: flex; align-items: center; gap: 10px; }
+  .sidebar-logo .logo-icon {
+    width: 32px; height: 32px; border-radius: 10px;
+    background: linear-gradient(145deg, #E89080, #C06858);
+    display: flex; align-items: center; justify-content: center;
+    color: #fff; font-weight: 800; font-size: 0.9rem;
+    box-shadow: 3px 3px 8px var(--shadow-dark), -2px -2px 6px var(--shadow-light-strong), inset 0 1px 0 rgba(255,255,255,0.3);
+    transition: transform 0.4s var(--ease-spring), box-shadow 0.3s var(--ease-out);
+  }
+  .sidebar-logo:hover .logo-icon { transform: rotate(-8deg) scale(1.08); box-shadow: 4px 4px 12px var(--shadow-dark-hover), -3px -3px 8px var(--shadow-light-strong), 0 0 18px var(--primary-glow); }
+
+  .sidebar-section { font-size: 0.65rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); padding: 18px 10px 8px; }
+
+  .sidebar-item {
+    position: relative;
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    font-size: 0.87rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.25s var(--ease-out);
+    overflow: hidden;
+  }
+  .sidebar-item::before {
+    content: ''; position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+    width: 3px; height: 0; border-radius: 0 2px 2px 0; background: var(--primary);
+    transition: height 0.3s var(--ease-out);
+  }
+  .sidebar-item:hover { background: rgba(208,128,112,0.08); color: var(--text); transform: translateX(3px); }
+  .sidebar-item:hover::before { height: 60%; }
+  .sidebar-item:hover .sidebar-icon { color: var(--primary); transform: scale(1.1); }
+  .sidebar-item.active {
+    background: var(--bg-subtle);
+    color: var(--primary);
+    font-weight: 600;
+    box-shadow: inset 3px 3px 6px var(--shadow-dark), inset -2px -2px 4px var(--shadow-light);
+  }
+  .sidebar-item.active::before { height: 60%; }
+  .sidebar-icon { width: 18px; height: 18px; opacity: 0.7; transition: all 0.25s var(--ease-out); }
+  .sidebar-item.active .sidebar-icon { opacity: 1; color: var(--primary); }
+
+  .main { flex: 1; padding: 28px 36px; overflow-y: auto; }
+
+  .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 28px; }
+  .header h1 { font-size: 1.5rem; font-weight: 700; }
+  .header-actions { display: flex; gap: 12px; align-items: center; }
+
+  /* ===== KPI CARDS WITH HOVER ===== */
+  .kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; margin-bottom: 28px; }
+  .kpi-card { padding: 20px; position: relative; }
+  .kpi-card .kpi-value { transition: transform 0.3s var(--ease-out); }
+  .kpi-card:hover .kpi-value { transform: scale(1.03); }
+
+  .kpi-label { font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 10px; }
+  .kpi-value { font-size: 1.75rem; font-weight: 700; color: var(--text); line-height: 1; display: inline-block; transform-origin: left center; }
+  .kpi-sub { font-size: 0.75rem; color: var(--text-secondary); margin-top: 6px; }
+  .kpi-change { font-size: 0.75rem; font-weight: 600; margin-top: 6px; display: flex; align-items: center; gap: 4px; }
+  .kpi-change.up { color: var(--success); }
+  .kpi-change.down { color: var(--destructive); }
+
+  /* ===== CONTENT GRID ===== */
+  .content-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 18px; }
+
+  .article-list { display: flex; flex-direction: column; gap: 2px; }
+  .article-item {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 16px; border-radius: 10px;
+    cursor: pointer; transition: all 0.25s var(--ease-out);
+    position: relative; overflow: hidden;
+  }
+  .article-item::before {
+    content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+    background: var(--primary);
+    transform: scaleY(0);
+    transition: transform 0.3s var(--ease-out);
+    transform-origin: center;
+  }
+  .article-item:hover {
+    background: rgba(208,128,112,0.06);
+    transform: translateX(4px);
+    box-shadow: inset 2px 2px 4px var(--shadow-dark), inset -1px -1px 2px var(--shadow-light);
+  }
+  .article-item:hover::before { transform: scaleY(1); }
+  .article-title { font-size: 0.9rem; font-weight: 500; color: var(--text); transition: color 0.25s var(--ease-out); }
+  .article-item:hover .article-title { color: var(--primary); }
+  .article-meta { font-size: 0.72rem; color: var(--text-muted); margin-top: 4px; }
+
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; }
+  .status-dot.connected { background: var(--success); box-shadow: 0 0 8px rgba(58,138,74,0.4); }
+  .status-dot.error { background: var(--destructive); box-shadow: 0 0 8px rgba(192,80,80,0.4); }
+  .status-dot.syncing { background: var(--warning); box-shadow: 0 0 8px rgba(184,120,48,0.4); animation: pulse 2s ease-in-out infinite; }
+  .status-dot.embedding { background: var(--info); box-shadow: 0 0 8px rgba(88,120,176,0.4); }
+  .status-dot.ai { background: var(--ai-purple); box-shadow: 0 0 10px rgba(136,104,168,0.5); animation: pulse 2s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.7; transform: scale(0.9); } }
+
+  .badge {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 3px 9px; border-radius: 6px;
+    font-size: 0.68rem; font-weight: 600;
+    transition: all 0.25s var(--ease-out);
+  }
+  .badge:hover { transform: translateY(-1px); }
+  .badge-success { background: rgba(58,138,74,0.12); color: var(--success); }
+  .badge-success:hover { box-shadow: 0 3px 10px rgba(58,138,74,0.18); }
+  .badge-warning { background: rgba(184,120,48,0.12); color: var(--warning); }
+  .badge-warning:hover { box-shadow: 0 3px 10px rgba(184,120,48,0.18); }
+  .badge-info { background: rgba(88,120,176,0.12); color: var(--info); }
+  .badge-info:hover { box-shadow: 0 3px 10px rgba(88,120,176,0.18); }
+  .badge-ai { background: rgba(136,104,168,0.12); color: var(--ai-purple); }
+  .badge-ai:hover { box-shadow: 0 3px 10px rgba(136,104,168,0.18); }
+
+  /* ===== ACTIVITY FEED ===== */
+  .activity-feed { padding: 20px; }
+  .activity-feed h3 { font-size: 0.95rem; font-weight: 600; margin-bottom: 16px; }
+  .activity-item {
+    display: flex; gap: 12px; padding: 10px 0;
+    border-bottom: 1px solid rgba(160,110,100,0.08);
+    transition: all 0.25s var(--ease-out);
+    margin: 0 -6px; padding-left: 6px; padding-right: 6px;
+    border-radius: 6px;
+  }
+  .activity-item:last-child { border-bottom: none; }
+  .activity-item:hover { background: rgba(208,128,112,0.05); transform: translateX(2px); }
+  .activity-dot { width: 10px; height: 10px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; transition: all 0.3s var(--ease-out); }
+  .activity-item:hover .activity-dot { transform: scale(1.3); box-shadow: 0 0 10px currentColor; }
+  .activity-text { font-size: 0.8rem; color: var(--text-secondary); line-height: 1.5; }
+  .activity-time { font-size: 0.68rem; color: var(--text-muted); margin-top: 3px; }
+
+  /* ===== EDITOR PREVIEW ===== */
+  .editor-section { margin-top: 28px; }
+  .editor-section h2 { font-size: 1.15rem; font-weight: 600; margin-bottom: 18px; }
+  .editor-card { padding: 28px; }
+  .editor-card h3 { font-size: 1.2rem; font-weight: 600; margin-bottom: 14px; color: var(--text); }
+  .editor-card > p { font-size: 0.9rem; line-height: 1.75; color: var(--text-secondary); margin-bottom: 18px; }
+
+  .editor-card blockquote {
+    border-left: 3px solid var(--primary); margin: 18px 0; padding: 14px 18px;
+    border-radius: 0 10px 10px 0; background: var(--bg-subtle);
+    box-shadow: inset 3px 3px 6px var(--shadow-dark), inset -2px -2px 4px var(--shadow-light);
+    transition: all 0.3s var(--ease-out);
+  }
+  .editor-card blockquote:hover { border-left-width: 5px; padding-left: 20px; }
+  .editor-card blockquote p { font-size: 0.88rem; color: var(--text-secondary); line-height: 1.65; font-style: italic; }
+
+  .code-block {
+    border-radius: 12px; padding: 18px 20px; margin: 18px 0;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; line-height: 1.75;
+    background: var(--code-bg);
+    box-shadow: inset 3px 3px 6px var(--shadow-dark), inset -2px -2px 4px var(--shadow-light);
+    overflow-x: auto;
+    transition: all 0.3s var(--ease-out);
+  }
+  .code-block:hover { box-shadow: inset 4px 4px 8px var(--shadow-dark-strong), inset -2px -2px 5px var(--shadow-light-strong); }
+  .kw { color: var(--code-keyword); font-weight: 600; }
+  .fn { color: var(--code-function); }
+  .str { color: var(--code-string); }
+  .cmt { color: var(--code-comment); font-style: italic; }
+  .num { color: var(--code-number); }
+
+  .inline-code {
+    font-family: 'JetBrains Mono', monospace; font-size: 0.82em;
+    padding: 2px 7px; border-radius: 5px; background: var(--code-bg);
+    box-shadow: inset 1px 1px 2px var(--shadow-dark), inset -0.5px -0.5px 1px var(--shadow-light);
+    transition: all 0.2s var(--ease-out);
+  }
+  .inline-code:hover { color: var(--primary); }
+
+  .panel {
+    border-radius: 12px; padding: 16px 18px; margin: 18px 0;
+    display: flex; gap: 12px; align-items: flex-start;
+    background: var(--bg-subtle);
+    box-shadow: inset 3px 3px 6px var(--shadow-dark), inset -2px -2px 4px var(--shadow-light);
+    transition: all 0.3s var(--ease-out);
+  }
+  .panel:hover { transform: translateX(2px); }
+  .panel-icon { font-size: 1.05rem; flex-shrink: 0; margin-top: 1px; }
+  .panel-info { border-left: 3px solid var(--info); }
+  .panel-info:hover { box-shadow: inset 3px 3px 6px var(--shadow-dark), inset -2px -2px 4px var(--shadow-light), 0 0 14px rgba(88,120,176,0.15); }
+  .panel-warning { border-left: 3px solid var(--warning); }
+  .panel-warning:hover { box-shadow: inset 3px 3px 6px var(--shadow-dark), inset -2px -2px 4px var(--shadow-light), 0 0 14px rgba(184,120,48,0.15); }
+  .panel-tip { border-left: 3px solid var(--success); }
+  .panel-tip:hover { box-shadow: inset 3px 3px 6px var(--shadow-dark), inset -2px -2px 4px var(--shadow-light), 0 0 14px rgba(58,138,74,0.15); }
+  .panel p { font-size: 0.85rem; line-height: 1.65; color: var(--text-secondary); }
+
+  .editor-table {
+    width: 100%; border-collapse: separate; border-spacing: 0;
+    margin: 18px 0; border-radius: 12px; overflow: hidden;
+    box-shadow: 3px 3px 8px var(--shadow-dark), -2px -2px 5px var(--shadow-light);
+  }
+  .editor-table th {
+    background: var(--bg-subtle); padding: 12px 16px;
+    font-size: 0.78rem; font-weight: 700; text-align: left;
+    color: var(--text); box-shadow: inset 0 -1px 0 var(--border);
+  }
+  .editor-table td {
+    padding: 12px 16px; font-size: 0.84rem; color: var(--text-secondary);
+    background: var(--card); box-shadow: inset 0 -1px 0 rgba(160,110,100,0.06);
+    transition: all 0.2s var(--ease-out);
+  }
+  .editor-table tr:last-child td { box-shadow: none; }
+  .editor-table tr { transition: all 0.2s var(--ease-out); }
+  .editor-table tr:hover td { background: rgba(208,128,112,0.05); color: var(--text); }
+  .editor-table tr:hover td:first-child { box-shadow: inset 3px 0 0 var(--primary), inset 0 -1px 0 rgba(160,110,100,0.06); }
+
+  .search-wrapper { position: relative; width: 300px; }
+  .search-icon { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--text-muted); font-size: 0.9rem; transition: color 0.2s var(--ease-out); }
+  .search-wrapper:focus-within .search-icon { color: var(--primary); }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+</style>
+</head>
+<body>
+
+<div class="vapor-bg">
+  <div class="vapor-glow vapor-glow-1"></div>
+  <div class="vapor-glow vapor-glow-2"></div>
+</div>
+
+<div class="app">
+  <div class="sidebar neu-sidebar">
+    <div class="sidebar-logo">
+      <div class="logo-icon">C</div>
+      Compendiq
+    </div>
+
+    <div class="sidebar-section">Main</div>
+    <div class="sidebar-item active">
+      <svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+      Dashboard
+    </div>
+    <div class="sidebar-item">
+      <svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/></svg>
+      Articles
+    </div>
+    <div class="sidebar-item">
+      <svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+      Search
+    </div>
+    <div class="sidebar-item">
+      <svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+      AI Chat
+    </div>
+
+    <div class="sidebar-section">Confluence</div>
+    <div class="sidebar-item">
+      <svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+      Spaces
+    </div>
+    <div class="sidebar-item">
+      <svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="8.5" cy="7" r="4"/></svg>
+      Sync Status
+    </div>
+
+    <div class="sidebar-section">Settings</div>
+    <div class="sidebar-item">
+      <svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+      Settings
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="header">
+      <h1>Dashboard</h1>
+      <div class="header-actions">
+        <div class="search-wrapper">
+          <span class="search-icon">&#128269;</span>
+          <input class="neu-input" placeholder="Search articles..." style="padding-left: 40px;">
+        </div>
+        <button class="neu-icon-btn" title="Notifications">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
+        </button>
+        <button class="neu-btn-primary">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
+          New Article
+        </button>
+      </div>
+    </div>
+
+    <div class="kpi-grid">
+      <div class="neu-card neu-card-hover kpi-card">
+        <div class="kpi-label">Total Articles</div>
+        <div class="kpi-value">2,847</div>
+        <div class="kpi-change up">&#9650; +12% this month</div>
+      </div>
+      <div class="neu-card neu-card-hover kpi-card">
+        <div class="kpi-label">Synced Spaces</div>
+        <div class="kpi-value">14</div>
+        <div class="kpi-sub">3 syncing now</div>
+      </div>
+      <div class="neu-card neu-card-hover kpi-card">
+        <div class="kpi-label">AI Embeddings</div>
+        <div class="kpi-value">89%</div>
+        <div class="kpi-change up">&#9650; +5% this week</div>
+      </div>
+      <div class="neu-card neu-card-hover kpi-card">
+        <div class="kpi-label">Quality Score</div>
+        <div class="kpi-value">8.4</div>
+        <div class="kpi-sub">Across all articles</div>
+      </div>
+    </div>
+
+    <div class="content-grid">
+      <div class="neu-card" style="padding: 20px;">
+        <h3 style="font-size: 0.95rem; font-weight: 600; margin-bottom: 16px;">Recent Articles</h3>
+        <div class="article-list">
+          <div class="article-item">
+            <div>
+              <div class="article-title">Kubernetes Deployment Best Practices</div>
+              <div class="article-meta">Engineering &bull; Updated 2h ago</div>
+            </div>
+            <span class="badge badge-success"><span class="status-dot connected" style="width:6px;height:6px;box-shadow:none;"></span> Synced</span>
+          </div>
+          <div class="article-item">
+            <div>
+              <div class="article-title">API Authentication Guide v3</div>
+              <div class="article-meta">Security &bull; Updated 5h ago</div>
+            </div>
+            <span class="badge badge-ai"><span class="status-dot ai" style="width:6px;height:6px;box-shadow:none;"></span> Processing</span>
+          </div>
+          <div class="article-item">
+            <div>
+              <div class="article-title">Incident Response Playbook</div>
+              <div class="article-meta">DevOps &bull; Updated 1d ago</div>
+            </div>
+            <span class="badge badge-warning"><span class="status-dot syncing" style="width:6px;height:6px;box-shadow:none;"></span> Syncing</span>
+          </div>
+          <div class="article-item">
+            <div>
+              <div class="article-title">Database Migration Procedures</div>
+              <div class="article-meta">Infrastructure &bull; Updated 2d ago</div>
+            </div>
+            <span class="badge badge-info"><span class="status-dot embedding" style="width:6px;height:6px;box-shadow:none;"></span> Embedding</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="neu-card activity-feed">
+        <h3>Activity</h3>
+        <div class="activity-item">
+          <div class="activity-dot" style="background: var(--success); color: var(--success);"></div>
+          <div>
+            <div class="activity-text">Confluence sync completed for <strong>Engineering</strong> space</div>
+            <div class="activity-time">12 minutes ago</div>
+          </div>
+        </div>
+        <div class="activity-item">
+          <div class="activity-dot" style="background: var(--ai-purple); color: var(--ai-purple);"></div>
+          <div>
+            <div class="activity-text">AI generated summary for <strong>API Auth Guide</strong></div>
+            <div class="activity-time">34 minutes ago</div>
+          </div>
+        </div>
+        <div class="activity-item">
+          <div class="activity-dot" style="background: var(--info); color: var(--info);"></div>
+          <div>
+            <div class="activity-text">Embeddings updated for <strong>42 articles</strong></div>
+            <div class="activity-time">1 hour ago</div>
+          </div>
+        </div>
+        <div class="activity-item">
+          <div class="activity-dot" style="background: var(--warning); color: var(--warning);"></div>
+          <div>
+            <div class="activity-text">Quality check flagged <strong>3 articles</strong> for review</div>
+            <div class="activity-time">2 hours ago</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="editor-section">
+      <h2>Editor Preview</h2>
+      <div class="neu-card editor-card">
+        <h3>Getting Started with Confluence Sync</h3>
+        <p>Compendiq connects to your Confluence Data Center instance and synchronizes spaces, pages, and attachments. Articles are converted from XHTML to Markdown for AI processing via the <span class="inline-code">confluenceToHtml()</span> pipeline.</p>
+
+        <blockquote>
+          <p>Pro tip: Start with a small space to verify your PAT configuration before enabling full sync across all spaces.</p>
+        </blockquote>
+
+        <div class="panel panel-info">
+          <span class="panel-icon">&#8505;&#65039;</span>
+          <p>Confluence PATs are encrypted with AES-256-GCM at rest. They are never sent to the frontend or exposed in API responses.</p>
+        </div>
+
+        <div class="panel panel-tip">
+          <span class="panel-icon">&#9989;</span>
+          <p>Use the <span class="inline-code">SYNC_INTERVAL_MIN</span> environment variable to control how often automatic sync runs.</p>
+        </div>
+
+        <div class="code-block"><span class="cmt">// Configure sync for a space</span>
+<span class="kw">const</span> <span class="fn">config</span> = {
+  spaceKey: <span class="str">'ENG'</span>,
+  syncInterval: <span class="num">15</span>, <span class="cmt">// minutes</span>
+  includeAttachments: <span class="kw">true</span>,
+  embeddingModel: <span class="str">'nomic-embed-text'</span>,
+};
+
+<span class="kw">const</span> <span class="fn">result</span> = <span class="kw">await</span> <span class="fn">syncService</span>.<span class="fn">startSync</span>(<span class="fn">config</span>);
+console.<span class="fn">log</span>(<span class="str">`Synced ${<span class="fn">result</span>.pageCount} pages`</span>);</div>
+
+        <table class="editor-table">
+          <thead>
+            <tr><th>Environment Variable</th><th>Default</th><th>Description</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><span class="inline-code">SYNC_INTERVAL_MIN</span></td><td>15</td><td>Polling interval in minutes</td></tr>
+            <tr><td><span class="inline-code">CONFLUENCE_VERIFY_SSL</span></td><td>true</td><td>TLS verification for Confluence API</td></tr>
+            <tr><td><span class="inline-code">ATTACHMENTS_DIR</span></td><td>data/attachments</td><td>Local cache directory for attachments</td></tr>
+          </tbody>
+        </table>
+
+        <div class="panel panel-warning">
+          <span class="panel-icon">&#9888;&#65039;</span>
+          <p>Never set <span class="inline-code">CONFLUENCE_VERIFY_SSL=false</span> in production. This disables TLS certificate verification and exposes your PAT to MITM attacks.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+</body>
+</html>

@@ -57,6 +57,11 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
     const cached = await cache.get<unknown[]>(userId, 'spaces', cacheKey);
     if (cached) return cached;
 
+    // #352: surface `custom_home_page_id` (and the resolved wire-format
+    // `homepageId`) so the frontend "Show home content" toggle works for
+    // local spaces too — same shape as routes/confluence/spaces.ts. Local
+    // spaces have no Confluence-derived `homepage_id`, so the resolution
+    // collapses to "custom_home_page_id or null".
     const result = await query<{
       space_key: string;
       space_name: string;
@@ -64,9 +69,11 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
       icon: string | null;
       created_by: string | null;
       created_at: Date | null;
+      custom_home_page_id: number | null;
     }>(
       `SELECT cs.space_key, cs.space_name, cs.description, cs.icon, cs.created_by,
-              cs.last_synced AS created_at
+              cs.last_synced AS created_at,
+              cs.custom_home_page_id
        FROM spaces cs
        WHERE cs.source = 'local'
        ORDER BY cs.space_name`,
@@ -91,6 +98,13 @@ export async function localSpacesRoutes(fastify: FastifyInstance) {
       createdAt: row.created_at,
       pageCount: counts.get(row.space_key) ?? 0,
       source: 'local' as const,
+      // #352: matches the wire format used by GET /api/spaces (Confluence
+      // route). Frontend reads `homepageId` for the "Show home content"
+      // toggle in PagesPage.tsx; `customHomePageId` is exposed for the
+      // admin/space-owner override UI.
+      homepageId:
+        row.custom_home_page_id != null ? String(row.custom_home_page_id) : null,
+      customHomePageId: row.custom_home_page_id,
     }));
 
     await cache.set(userId, 'spaces', cacheKey, spaces);

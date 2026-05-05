@@ -34,11 +34,20 @@ const SearxngTab = lazy(() => import('./SearxngTab').then((m) => ({ default: m.S
 const SmtpSettingsTab = lazy(() => import('./SmtpSettingsTab').then((m) => ({ default: m.SmtpSettingsTab })));
 const LicenseStatusCard = lazy(() => import('../admin/LicenseStatusCard').then((m) => ({ default: m.LicenseStatusCard })));
 const OidcSettingsPage = lazy(() => import('../admin/OidcSettingsPage').then((m) => ({ default: m.OidcSettingsPage })));
+const IpAllowlistTab = lazy(() => import('../admin/IpAllowlistTab').then((m) => ({ default: m.IpAllowlistTab })));
+const WebhooksTab = lazy(() => import('../admin/WebhooksTab').then((m) => ({ default: m.WebhooksTab })));
 const LlmPolicyTab = lazy(() => import('../admin/LlmPolicyTab').then((m) => ({ default: m.LlmPolicyTab })));
 const DataRetentionTab = lazy(() => import('../admin/DataRetentionTab').then((m) => ({ default: m.DataRetentionTab })));
 const LlmAuditPage = lazy(() => import('../admin/LlmAuditPage').then((m) => ({ default: m.LlmAuditPage })));
 const ScimSettingsPage = lazy(() => import('../admin/ScimSettingsPage').then((m) => ({ default: m.ScimSettingsPage })));
+const ComplianceReportsTab = lazy(() => import('../admin/ComplianceReportsTab').then((m) => ({ default: m.ComplianceReportsTab })));
+const RbacPage = lazy(() => import('../admin/RbacPage').then((m) => ({ default: m.RbacPage })));
 const UsersAdminPage = lazy(() => import('../admin/UsersAdminPage').then((m) => ({ default: m.UsersAdminPage })));
+const SyncConflictPolicyTab = lazy(() => import('../admin/SyncConflictPolicyTab').then((m) => ({ default: m.SyncConflictPolicyTab })));
+const SyncConflictsPage = lazy(() => import('../admin/SyncConflictsPage').then((m) => ({ default: m.SyncConflictsPage })));
+const AiReviewPolicyTab = lazy(() => import('../admin/AiReviewPolicyTab').then((m) => ({ default: m.AiReviewPolicyTab })));
+const PiiPolicyTab = lazy(() => import('../admin/PiiPolicyTab').then((m) => ({ default: m.PiiPolicyTab })));
+const ReviewerQueuePage = lazy(() => import('../ai/ReviewerQueuePage').then((m) => ({ default: m.ReviewerQueuePage })));
 const SystemTab = lazy(() => import('./panels/SystemTab').then((m) => ({ default: m.SystemTab })));
 
 type PanelRenderer = (ctx: PanelRenderContext) => ReactElement;
@@ -80,6 +89,8 @@ const PANELS: Readonly<Record<string, PanelRenderer>> = {
     );
   },
   'content/sync': () => <SyncTab />,
+  'content/sync-conflict-policy': () => <SyncConflictPolicyTab />,
+  'content/sync-conflicts': () => <SyncConflictsPage />,
   'content/labels': () => <LabelManager />,
 
   'ai/llm': () => <LlmTab />,
@@ -88,16 +99,23 @@ const PANELS: Readonly<Record<string, PanelRenderer>> = {
   'ai/workers': () => <WorkersTab />,
   'ai/llm-policy': () => <LlmPolicyTab />,
   'ai/llm-audit': () => <LlmAuditPage />,
+  'ai/ai-reviews': () => <ReviewerQueuePage />,
+  'ai/ai-review-policy': () => <AiReviewPolicyTab />,
+  'ai/pii-policy': () => <PiiPolicyTab />,
 
   'integrations/email': () => <SmtpSettingsTab />,
   'integrations/searxng': () => <SearxngTab />,
   'integrations/mcp-docs': () => <McpDocsTab />,
 
   'security/users': () => <UsersAdminPage />,
+  'security/rbac': () => <RbacPage />,
   'security/rate-limits': () => <RateLimitsTab />,
   'security/sso': () => <OidcSettingsPage />,
+  'security/ip-allowlist': () => <IpAllowlistTab />,
+  'security/webhooks': () => <WebhooksTab />,
   'security/scim': () => <ScimSettingsPage />,
   'security/retention': () => <DataRetentionTab />,
+  'security/compliance-reports': () => <ComplianceReportsTab />,
 
   'system/license': () => <LicenseStatusCard />,
   'system/errors': () => <ErrorDashboard />,

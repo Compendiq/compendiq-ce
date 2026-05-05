@@ -143,7 +143,7 @@ export function EmbeddingReembedBanner({ currentDimensions, pending }: Props) {
   if (stage === 'confirm') {
     const heavy = newDims !== null && newDims !== currentDimensions;
     return (
-      <div className="glass-card border-red-500/30 p-3 text-sm">
+      <div className="nm-card border-red-500/30 p-3 text-sm">
         {heavy ? (
           <p>
             ⚠ Dimension change: <b>{currentDimensions} → {newDims}</b>. This will{' '}
@@ -157,10 +157,10 @@ export function EmbeddingReembedBanner({ currentDimensions, pending }: Props) {
           </p>
         )}
         <div className="mt-2 flex gap-2">
-          <button className="glass-button-secondary" onClick={() => setStage('idle')}>
+          <button className="nm-button-ghost" onClick={() => setStage('idle')}>
             Cancel
           </button>
-          <button className="glass-button-primary" onClick={confirm}>
+          <button className="nm-button-primary" onClick={confirm}>
             Confirm + re-embed
           </button>
         </div>
@@ -190,7 +190,7 @@ export function EmbeddingReembedBanner({ currentDimensions, pending }: Props) {
     }
     return (
       <div
-        className="glass-card border-blue-500/30 flex items-center justify-between p-3 text-sm"
+        className="nm-card border-blue-500/30 flex items-center justify-between p-3 text-sm"
         data-testid="reembed-progress-banner"
       >
         <span>
@@ -201,10 +201,10 @@ export function EmbeddingReembedBanner({ currentDimensions, pending }: Props) {
   }
 
   return (
-    <div className="glass-card border-yellow-500/30 flex items-center justify-between p-3 text-sm">
+    <div className="nm-card border-yellow-500/30 flex items-center justify-between p-3 text-sm">
       <span>⚠ Embedding provider/model changed. Probe and re-embed required.</span>
       <button
-        className="glass-button-primary"
+        className="nm-button-primary"
         disabled={stage !== 'idle'}
         onClick={start}
       >

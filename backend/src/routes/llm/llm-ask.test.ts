@@ -92,6 +92,15 @@ vi.mock('../../core/services/audit-service.js', () => ({
   logAuditEvent: vi.fn().mockResolvedValue(undefined),
 }));
 
+const mockEmitLlmAudit = vi.fn();
+vi.mock('../../domains/llm/services/llm-audit-hook.js', async (importActual) => {
+  const actual = await importActual<typeof import('../../domains/llm/services/llm-audit-hook.js')>();
+  return {
+    ...actual,
+    emitLlmAudit: (...args: unknown[]) => mockEmitLlmAudit(...args),
+  };
+});
+
 // --- Mock: sanitize-llm-input ---
 vi.mock('../../core/utils/sanitize-llm-input.js', () => ({
   sanitizeLlmInput: vi.fn((input: string) => ({ sanitized: input, warnings: [] })),
@@ -374,7 +383,7 @@ describe('POST /api/llm/ask', () => {
       mockHybridSearch.mockResolvedValue([]);
       mockResolveUsecase.mockResolvedValue({
         config: {
-          providerId: 'provider-openai',
+          providerId: 'provider-acme',
           baseUrl: 'https://api.openai.com/v1',
           apiKey: 'sk-test',
           authType: 'bearer',
@@ -398,8 +407,21 @@ describe('POST /api/llm/ask', () => {
         { providerId: string },
         string,
       ];
-      expect(cfg.providerId).toBe('provider-openai');
+      expect(cfg.providerId).toBe('provider-acme');
       expect(usedModel).toBe('gpt-4o-mini');
+
+      const insertCall = (mockQuery.mock.calls as unknown[][]).find(
+        (args) => typeof args[0] === 'string' && (args[0] as string).includes('INSERT INTO llm_conversations'),
+      );
+      expect(insertCall).toBeDefined();
+      expect((insertCall![1] as unknown[])[1]).toBe('gpt-4o-mini');
+      expect(mockEmitLlmAudit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'ask',
+          model: 'gpt-4o-mini',
+          provider: 'provider-acme',
+        }),
+      );
     });
   });
 });

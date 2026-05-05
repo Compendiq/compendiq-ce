@@ -27,9 +27,10 @@ function loadVersion(): string {
 // to <repo root>/build-info.json. EE builds overwrite the committed CE
 // placeholder with real git commit hashes via scripts/build-enterprise.sh.
 // The runtime image copies this file so we can read it here.
-export interface AppBuildInfo {
+interface AppBuildInfo {
   edition: string;
   commit: string;
+  ceCommit?: string;
   builtAt: string;
 }
 
@@ -50,6 +51,7 @@ function loadBuildInfo(): AppBuildInfo {
       return {
         edition: parsed.edition ?? DEFAULT_BUILD_INFO.edition,
         commit: parsed.commit ?? DEFAULT_BUILD_INFO.commit,
+        ceCommit: parsed.ceCommit,
         builtAt: parsed.builtAt ?? DEFAULT_BUILD_INFO.builtAt,
       };
     } catch {

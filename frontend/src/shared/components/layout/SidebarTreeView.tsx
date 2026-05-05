@@ -60,12 +60,19 @@ function buildTree(pages: PageTreeItem[], homepageId?: string | null): TreeNode[
   }
   sortChildren(roots);
 
-  // If homepageId is provided, keep the homepage itself as the visible root
-  // so it remains clickable as a tree entry.
+  // #352: when a homepage is configured for the space, hide it from the
+  // sidebar tree — it's reachable via the dedicated "Home" link at the top
+  // of the space view, so showing it again in the tree wastes a slot. Its
+  // children are promoted to top-level roots so the rest of the tree
+  // remains navigable.
   if (homepageId) {
     const homepageNode = nodeMap.get(homepageId);
     if (homepageNode) {
-      return [homepageNode];
+      const promoted = homepageNode.children;
+      const withoutHomepage = roots.filter((r) => r.page.id !== homepageId);
+      return [...promoted, ...withoutHomepage].sort((a, b) =>
+        a.page.title.localeCompare(b.page.title),
+      );
     }
   }
 
@@ -135,7 +142,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         className={cn(
           'group flex items-center gap-1.5 rounded-[10px] h-9 pr-2 text-sm cursor-pointer transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
           isActive
-            ? 'glass-pill-active text-primary font-medium scale-[1.01]'
+            ? 'nm-pill-active text-primary font-medium scale-[1.01]'
             : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
         )}
         style={{ paddingLeft: `${level * 16 + 10}px` }}
@@ -190,7 +197,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
   );
 });
 
-export interface SpaceOption {
+interface SpaceOption {
   key: string;
   name: string;
   pageCount: number;
@@ -338,19 +345,6 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
     }
   }, [activePageId, pages]);
 
-  // When a space is scoped to its homepage, keep that homepage expanded so
-  // the homepage remains clickable while its immediate children stay visible.
-  useEffect(() => {
-    if (!homepageId) return;
-
-    setExpandedIds((prev) => {
-      if (prev.has(homepageId)) return prev;
-      const next = new Set(prev);
-      next.add(homepageId);
-      return next;
-    });
-  }, [homepageId]);
-
   // Auto-select space based on current page
   useEffect(() => {
     if (activePageId && pages.length > 0 && !treeSidebarSpaceKey) {
@@ -380,7 +374,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
           animate={{ width: 40, opacity: 1 }}
           exit={{ width: 0, opacity: 0 }}
           transition={reduceEffects ? { duration: 0 } : sidebarSpring}
-          className="flex flex-col items-center rounded-xl glass-sidebar overflow-hidden"
+          className="flex flex-col items-center bg-background border-r border-border overflow-hidden"
         >
           {/* Expand toggle */}
           <button
@@ -407,7 +401,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
                   className={cn(
                     'rounded-lg p-1.5 transition-all duration-200 active:scale-[0.95]',
                     active
-                      ? 'glass-pill-active text-primary'
+                      ? 'nm-pill-active text-primary'
                       : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
                   )}
                   title={`${label} (${shortcut})`}
@@ -435,7 +429,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
       animate={{ width: treeSidebarWidth, opacity: 1 }}
       transition={reduceEffects || isResizing ? { duration: 0 } : sidebarSpring}
       className={cn(
-        'relative flex flex-col glass-sidebar overflow-hidden',
+        'relative flex flex-col bg-background border-r border-border overflow-hidden',
         isResizing && 'select-none',
       )}
     >
@@ -454,7 +448,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
               className={cn(
                 'flex flex-1 items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs transition-all duration-200 active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
                 active
-                  ? 'glass-pill-active text-primary font-medium'
+                  ? 'nm-pill-active text-primary font-medium'
                   : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
               )}
             >
@@ -476,7 +470,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
 
       {/* Sidebar header — title + actions */}
       <div className="flex h-8 shrink-0 items-center justify-between px-3">
-        <span className="text-xs font-semibold text-muted-foreground/60">Pages</span>
+        <span className="text-xs font-semibold text-muted-foreground">Pages</span>
         <div className="flex items-center gap-1">
           <button
             onClick={() => {
@@ -521,7 +515,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
             <ChevronsUpDown size={12} className="shrink-0 text-muted-foreground" />
           </button>
           {spaceDropdownOpen && (
-            <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-64 overflow-y-auto rounded-xl glass-sidebar p-1">
+            <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-64 overflow-y-auto rounded-xl nm-sidebar p-1">
               <button
                 onClick={() => {
                   setTreeSidebarSpaceKey(undefined);
@@ -529,7 +523,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
                 }}
                 className={cn(
                   'flex w-full items-center rounded-lg px-2.5 py-1.5 text-xs transition-all duration-200',
-                  !treeSidebarSpaceKey ? 'glass-pill-active text-primary font-medium' : 'text-foreground hover:bg-[var(--glass-pill-hover)]',
+                  !treeSidebarSpaceKey ? 'nm-pill-active text-primary font-medium' : 'text-foreground hover:bg-[var(--glass-pill-hover)]',
                 )}
               >
                 All Spaces
@@ -538,7 +532,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
               {/* Confluence spaces */}
               {confluenceOptions.length > 0 && (
                 <>
-                  <div className="px-2.5 py-1.5 text-[10px] font-semibold text-muted-foreground/50">
+                  <div className="px-2.5 py-1.5 text-[10px] font-semibold text-muted-foreground">
                     Confluence
                   </div>
                   {confluenceOptions.map((space) => (
@@ -551,7 +545,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
                       className={cn(
                         'flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs transition-all duration-200',
                         treeSidebarSpaceKey === space.key
-                          ? 'glass-pill-active text-primary font-medium'
+                          ? 'nm-pill-active text-primary font-medium'
                           : 'text-foreground hover:bg-[var(--glass-pill-hover)]',
                       )}
                     >
@@ -568,7 +562,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
               {/* Local spaces */}
               {localOptions.length > 0 && (
                 <>
-                  <div className="px-2.5 py-1.5 text-[10px] font-semibold text-muted-foreground/50">
+                  <div className="px-2.5 py-1.5 text-[10px] font-semibold text-muted-foreground">
                     Local
                   </div>
                   {localOptions.map((space) => (
@@ -581,7 +575,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
                       className={cn(
                         'flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs transition-all duration-200',
                         treeSidebarSpaceKey === space.key
-                          ? 'glass-pill-active text-primary font-medium'
+                          ? 'nm-pill-active text-primary font-medium'
                           : 'text-foreground hover:bg-[var(--glass-pill-hover)]',
                       )}
                     >
@@ -646,7 +640,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
       )}
 
       {/* Tree content with drag-and-drop + scroll mask */}
-      <div className="flex-1 overflow-y-auto p-2 glass-scroll-mask">
+      <div className="flex-1 overflow-y-auto p-2 scroll-mask">
         {isLoading ? (
           <div className="space-y-1.5 p-2">
             {[...Array(8)].map((_, i) => (
@@ -712,7 +706,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
       {/* Footer stats */}
       {treeData && (
         <div className="px-3 py-1.5">
-          <span className="text-[10px] text-muted-foreground/50">
+          <span className="text-[10px] text-muted-foreground">
             {treeData.total} pages{treeSidebarSpaceKey ? ` in ${treeSidebarSpaceKey}` : ''}
           </span>
         </div>

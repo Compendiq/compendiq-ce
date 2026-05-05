@@ -25,7 +25,7 @@ const DIAGRAM_TYPES = ['flowchart', 'sequence', 'state', 'mindmap'] as const;
 export function DiagramTypeSelector() {
   const { diagramType, setDiagramType } = useAiContext();
   return (
-    <div className="glass-toolbar mb-4 flex items-center gap-2 p-3">
+    <div className="nm-toolbar mb-4 flex items-center gap-2 p-3">
       <span className="text-sm text-muted-foreground">Type:</span>
       {DIAGRAM_TYPES.map((type) => (
         <button

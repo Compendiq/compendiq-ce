@@ -57,17 +57,17 @@ describe('Skeleton', () => {
 });
 
 describe('SkeletonStatCard', () => {
-  it('renders skeleton elements inside a glass-card', () => {
+  it('renders skeleton elements inside a nm-card', () => {
     const { container } = render(<SkeletonStatCard />);
-    expect(container.querySelector('.glass-card')).toBeInTheDocument();
+    expect(container.querySelector('.nm-card')).toBeInTheDocument();
     expect(container.querySelectorAll('.skeleton').length).toBeGreaterThan(0);
   });
 });
 
 describe('SkeletonPageItem', () => {
-  it('renders skeleton elements inside a glass-card', () => {
+  it('renders skeleton elements inside a nm-card', () => {
     const { container } = render(<SkeletonPageItem />);
-    expect(container.querySelector('.glass-card')).toBeInTheDocument();
+    expect(container.querySelector('.nm-card')).toBeInTheDocument();
     expect(container.querySelectorAll('.skeleton').length).toBeGreaterThan(0);
   });
 });
@@ -85,9 +85,9 @@ describe('SkeletonArticleCard', () => {
     expect(screen.getByTestId('skeleton-article-card')).toBeInTheDocument();
   });
 
-  it('renders inside a glass-card', () => {
+  it('renders inside a nm-card', () => {
     const { container } = render(<SkeletonArticleCard />);
-    expect(container.querySelector('.glass-card')).toBeInTheDocument();
+    expect(container.querySelector('.nm-card')).toBeInTheDocument();
   });
 
   it('renders title, meta chips, and excerpt line skeletons', () => {
@@ -103,9 +103,9 @@ describe('SkeletonKPICard', () => {
     expect(screen.getByTestId('skeleton-kpi-card')).toBeInTheDocument();
   });
 
-  it('renders inside a glass-card', () => {
+  it('renders inside a nm-card', () => {
     const { container } = render(<SkeletonKPICard />);
-    expect(container.querySelector('.glass-card')).toBeInTheDocument();
+    expect(container.querySelector('.nm-card')).toBeInTheDocument();
   });
 
   it('renders icon, label, and number skeletons', () => {
@@ -146,9 +146,9 @@ describe('PageViewSkeleton', () => {
     expect(toolbarSkeletons.length).toBe(6);
   });
 
-  it('renders metadata bar inside a glass-card', () => {
+  it('renders metadata bar inside a nm-card', () => {
     const { container } = render(<PageViewSkeleton />);
-    const glassCards = container.querySelectorAll('.glass-card');
+    const glassCards = container.querySelectorAll('.nm-card');
     // Metadata bar (1) + content area (1) = at least 2 glass-cards
     expect(glassCards.length).toBeGreaterThanOrEqual(2);
   });
@@ -185,9 +185,9 @@ describe('SettingsSkeleton', () => {
     expect(tabSkeletons.length).toBe(5);
   });
 
-  it('renders form fields inside a glass-card', () => {
+  it('renders form fields inside a nm-card', () => {
     const { container } = render(<SettingsSkeleton />);
-    const glassCard = container.querySelector('.glass-card');
+    const glassCard = container.querySelector('.nm-card');
     expect(glassCard).toBeInTheDocument();
     // Form fields: 3 label+input pairs (6) + 1 submit button = 7
     const formSkeletons = glassCard!.querySelector('.p-6')!.querySelectorAll('.skeleton');

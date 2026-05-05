@@ -89,6 +89,7 @@ describe('Local Spaces Routes', () => {
           icon: 'folder',
           created_by: 'test-user-id',
           created_at: new Date('2026-03-01'),
+          custom_home_page_id: null,
         },
       ],
     });
@@ -109,6 +110,50 @@ describe('Local Spaces Routes', () => {
     expect(body[0].name).toBe('Project Docs');
     expect(body[0].source).toBe('local');
     expect(body[0].pageCount).toBe(5);
+    // #352 (finding 2): homepage fields exposed for the "Show home content"
+    // toggle. With no custom override set, both wire fields are null.
+    expect(body[0].homepageId).toBeNull();
+    expect(body[0].customHomePageId).toBeNull();
+  });
+
+  it('should surface homepageId/customHomePageId when an override is set (#352 finding 2)', async () => {
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [
+        {
+          space_key: 'PROJ',
+          space_name: 'Project Docs',
+          description: null,
+          icon: null,
+          created_by: 'test-user-id',
+          created_at: new Date('2026-03-01'),
+          custom_home_page_id: 999,
+        },
+      ],
+    });
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ space_key: 'PROJ', count: '3' }] });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/spaces/local',
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.payload);
+    expect(body[0].homepageId).toBe('999');
+    expect(body[0].customHomePageId).toBe(999);
+  });
+
+  it('SELECTs cs.custom_home_page_id (regression guard for #352 finding 2)', async () => {
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
+
+    await app.inject({ method: 'GET', url: '/api/spaces/local' });
+
+    // The SELECT must include `cs.custom_home_page_id` so the column is
+    // actually returned to JS — without it the response shape silently
+    // drops the field and the frontend toggle can never find a homepage.
+    const listCall = mockQueryFn.mock.calls[0];
+    expect(listCall[0]).toMatch(/cs\.custom_home_page_id/);
   });
 
   it('should return empty array when no local spaces exist', async () => {

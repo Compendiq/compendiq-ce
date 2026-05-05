@@ -442,6 +442,16 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
     layout.replaceWith(div);
   }
 
+  // Drop labels macro (#348). Labels are page metadata fetched via
+  // expand=metadata.labels — never parse them out of the body. The macro is
+  // a rendering placeholder with no body, so dropping it (rather than
+  // round-tripping) is safe; htmlToConfluence's "labels" output is currently
+  // unused.
+  for (const macro of byTag(doc, 'ac:structured-macro')) {
+    if (getMacroName(macro) !== 'labels') continue;
+    macro.remove();
+  }
+
   // Remove remaining unknown macros - preserve as data attributes
   for (const macro of byTag(doc, 'ac:structured-macro')) {
     const name = getMacroName(macro) || 'unknown';

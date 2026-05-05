@@ -72,7 +72,7 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
         className={cn(
           'group flex items-center gap-1.5 rounded-[10px] h-9 pr-2 text-sm cursor-pointer transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
           isActive
-            ? 'glass-pill-active text-primary font-medium scale-[1.01]'
+            ? 'nm-pill-active text-primary font-medium scale-[1.01]'
             : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
         )}
         style={{ paddingLeft: `${level * 16 + 10}px` }}

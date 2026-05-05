@@ -6,6 +6,7 @@ interface HealthResponse {
   version?: string;
   edition?: string;
   commit?: string;
+  ceCommit?: string;
   builtAt?: string;
 }
 
@@ -47,7 +48,7 @@ export function SystemTab() {
         </p>
         <button
           onClick={handleRerunSetup}
-          className="glass-button-secondary mt-3 px-4 py-2 text-sm"
+          className="nm-button-ghost mt-3 px-4 py-2 text-sm"
           data-testid="rerun-setup-btn"
         >
           Re-run Setup Wizard
@@ -71,6 +72,14 @@ export function SystemTab() {
               {backendBuild?.commit ?? '…'}
             </span>
           </div>
+          {backendBuild?.ceCommit && (
+            <div className="flex items-center justify-between">
+              <span>Backend CE commit</span>
+              <span className="font-mono" data-testid="backend-ce-commit">
+                {backendBuild.ceCommit}
+              </span>
+            </div>
+          )}
           <div className="flex items-center justify-between">
             <span>Frontend commit</span>
             <span className="font-mono" data-testid="frontend-commit">{__APP_COMMIT__}</span>

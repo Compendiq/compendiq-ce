@@ -1,21 +1,27 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ArticleSummary } from './ArticleSummary';
+import { useAuthStore } from '../../../stores/auth-store';
 
-// Mock use-pages hooks
-vi.mock('../hooks/use-pages', () => ({
+// Mock use-pages hooks. The mutate fn is overridden per-test where needed
+// to exercise success / error branches.
+const mockMutate = vi.fn();
+vi.mock('../../hooks/use-pages', () => ({
   useSummaryRegenerate: () => ({
-    mutate: vi.fn(),
+    mutate: (pageId: string, opts?: { onSuccess?: () => void; onError?: (err: Error) => void }) =>
+      mockMutate(pageId, opts),
     isPending: false,
   }),
 }));
 
 // Mock sonner toast
+const mockToastSuccess = vi.fn();
+const mockToastError = vi.fn();
 vi.mock('sonner', () => ({
   toast: {
-    success: vi.fn(),
-    error: vi.fn(),
+    success: (...args: unknown[]) => mockToastSuccess(...args),
+    error: (...args: unknown[]) => mockToastError(...args),
   },
 }));
 
@@ -28,9 +34,27 @@ function createWrapper() {
   );
 }
 
+// Helper to set the auth store to a specific role for the duration of a test.
+function setUser(role: 'admin' | 'user' | null) {
+  if (role === null) {
+    useAuthStore.setState({ user: null, accessToken: null, isAuthenticated: false });
+  } else {
+    useAuthStore.setState({
+      user: { id: 'u1', username: 'tester', role },
+      accessToken: 'tok',
+      isAuthenticated: true,
+    });
+  }
+}
+
 describe('ArticleSummary', () => {
   beforeEach(() => {
     localStorage.clear();
+    mockMutate.mockReset();
+    mockToastSuccess.mockReset();
+    mockToastError.mockReset();
+    // Default: admin (preserves existing tests that asserted button visibility).
+    setUser('admin');
   });
 
   it('renders nothing for skipped status', () => {
@@ -80,7 +104,7 @@ describe('ArticleSummary', () => {
     expect(screen.getByText('Generating AI summary...')).toBeInTheDocument();
   });
 
-  it('renders failed state with error message and retry button', () => {
+  it('renders failed state with error message and retry button (admin)', () => {
     render(
       <ArticleSummary
         pageId="p1"
@@ -189,7 +213,7 @@ describe('ArticleSummary', () => {
     expect(container.querySelector('[data-testid="article-summary"]')).not.toBeInTheDocument();
   });
 
-  it('shows regenerate button in summarized state', () => {
+  it('shows regenerate button in summarized state for admins', () => {
     render(
       <ArticleSummary
         pageId="p1"
@@ -202,5 +226,125 @@ describe('ArticleSummary', () => {
       { wrapper: createWrapper() },
     );
     expect(screen.getByTestId('summary-regenerate-button')).toBeInTheDocument();
+  });
+
+  // ---- #356: role-gating ----------------------------------------------------
+
+  it('hides the regenerate button for non-admin viewers (#356)', () => {
+    setUser('user');
+    render(
+      <ArticleSummary
+        pageId="p1"
+        summaryHtml="<p>Summary</p>"
+        summaryStatus="summarized"
+        summaryGeneratedAt={null}
+        summaryModel={null}
+        summaryError={null}
+      />,
+      { wrapper: createWrapper() },
+    );
+    // The summary banner itself is still visible to all users.
+    expect(screen.getByTestId('article-summary')).toBeInTheDocument();
+    // But the admin-only regenerate control is not.
+    expect(screen.queryByTestId('summary-regenerate-button')).not.toBeInTheDocument();
+  });
+
+  it('hides the retry button on the failed banner for non-admin viewers (#356)', () => {
+    setUser('user');
+    render(
+      <ArticleSummary
+        pageId="p1"
+        summaryHtml={null}
+        summaryStatus="failed"
+        summaryGeneratedAt={null}
+        summaryModel={null}
+        summaryError="boom"
+      />,
+      { wrapper: createWrapper() },
+    );
+    expect(screen.getByTestId('article-summary-failed')).toBeInTheDocument();
+    // The error text is still shown, but the retry button is gone.
+    expect(screen.queryByTestId('summary-retry-button')).not.toBeInTheDocument();
+  });
+
+  it('hides the regenerate button when no user is logged in', () => {
+    setUser(null);
+    render(
+      <ArticleSummary
+        pageId="p1"
+        summaryHtml="<p>Summary</p>"
+        summaryStatus="summarized"
+        summaryGeneratedAt={null}
+        summaryModel={null}
+        summaryError={null}
+      />,
+      { wrapper: createWrapper() },
+    );
+    expect(screen.queryByTestId('summary-regenerate-button')).not.toBeInTheDocument();
+  });
+
+  // ---- #356: error-toast surfaces server message ----------------------------
+
+  it('shows the success toast when admin regenerate succeeds', async () => {
+    mockMutate.mockImplementation((_pageId, opts) => {
+      opts?.onSuccess?.();
+    });
+    render(
+      <ArticleSummary
+        pageId="p1"
+        summaryHtml="<p>Summary</p>"
+        summaryStatus="summarized"
+        summaryGeneratedAt={null}
+        summaryModel={null}
+        summaryError={null}
+      />,
+      { wrapper: createWrapper() },
+    );
+    fireEvent.click(screen.getByTestId('summary-regenerate-button'));
+    await waitFor(() => {
+      expect(mockToastSuccess).toHaveBeenCalledWith('Summary regeneration queued');
+    });
+  });
+
+  it('surfaces the server error message in the toast on failure (#356)', async () => {
+    mockMutate.mockImplementation((_pageId, opts) => {
+      opts?.onError?.(new Error('Page not found'));
+    });
+    render(
+      <ArticleSummary
+        pageId="p1"
+        summaryHtml="<p>Summary</p>"
+        summaryStatus="summarized"
+        summaryGeneratedAt={null}
+        summaryModel={null}
+        summaryError={null}
+      />,
+      { wrapper: createWrapper() },
+    );
+    fireEvent.click(screen.getByTestId('summary-regenerate-button'));
+    await waitFor(() => {
+      expect(mockToastError).toHaveBeenCalledWith('Page not found');
+    });
+  });
+
+  it('falls back to the generic toast when the error has no message', async () => {
+    mockMutate.mockImplementation((_pageId, opts) => {
+      opts?.onError?.(new Error(''));
+    });
+    render(
+      <ArticleSummary
+        pageId="p1"
+        summaryHtml="<p>Summary</p>"
+        summaryStatus="summarized"
+        summaryGeneratedAt={null}
+        summaryModel={null}
+        summaryError={null}
+      />,
+      { wrapper: createWrapper() },
+    );
+    fireEvent.click(screen.getByTestId('summary-regenerate-button'));
+    await waitFor(() => {
+      expect(mockToastError).toHaveBeenCalledWith('Failed to queue summary regeneration');
+    });
   });
 });

@@ -47,6 +47,20 @@ vi.mock('../../core/utils/logger.js', () => ({
 vi.mock('../../core/services/admin-settings-service.js', () => ({
   getEmbeddingDimensions: vi.fn().mockResolvedValue(1024),
   getAdminAccessDeniedRetentionDays: vi.fn().mockResolvedValue(90),
+  // #113 Phase B-3 — synchronous cluster-wide cached getters used by the
+  // GET /admin/settings response builder. Test-default values mirror the
+  // hardcoded defaults in `admin-settings-service.ts`.
+  getLlmConcurrency: vi.fn().mockReturnValue(4),
+  getLlmMaxQueueDepth: vi.fn().mockReturnValue(50),
+}));
+
+// #113 Phase B-3 — `setLlmConcurrencyClusterWide` / `setLlmMaxQueueDepthClusterWide`
+// are imported by the PUT /admin/settings handler. Mock to no-ops so the
+// tests don't try to UPSERT or publish through the cache-bus during the
+// route-level assertions.
+vi.mock('../../domains/llm/services/llm-queue.js', () => ({
+  setLlmConcurrencyClusterWide: vi.fn().mockResolvedValue(undefined),
+  setLlmMaxQueueDepthClusterWide: vi.fn().mockResolvedValue(undefined),
 }));
 
 import { listErrors, resolveError, getErrorSummary } from '../../core/services/error-tracker.js';
@@ -407,6 +421,127 @@ describe('Admin routes', () => {
         method: 'PUT',
         url: '/api/admin/settings',
         payload: { llmMaxConcurrentStreamsPerUser: 3.5 },
+      });
+      expect(response.statusCode).toBe(400);
+    });
+  });
+
+  // #113 Phase B-3 — cluster-wide LLM queue settings
+  describe('GET /api/admin/settings - llmConcurrency / llmMaxQueueDepth (#113 Phase B-3)', () => {
+    it('returns the values produced by the cluster-wide cached getters', async () => {
+      const { getLlmConcurrency, getLlmMaxQueueDepth } = await import(
+        '../../core/services/admin-settings-service.js'
+      );
+      (getLlmConcurrency as ReturnType<typeof vi.fn>).mockReturnValueOnce(12);
+      (getLlmMaxQueueDepth as ReturnType<typeof vi.fn>).mockReturnValueOnce(250);
+
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
+      const response = await app.inject({ method: 'GET', url: '/api/admin/settings' });
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.llmConcurrency).toBe(12);
+      expect(body.llmMaxQueueDepth).toBe(250);
+    });
+
+    it('falls back to the default getter values (4 / 50) when nothing is configured', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
+      const response = await app.inject({ method: 'GET', url: '/api/admin/settings' });
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.llmConcurrency).toBe(4);
+      expect(body.llmMaxQueueDepth).toBe(50);
+    });
+  });
+
+  describe('PUT /api/admin/settings - llmConcurrency / llmMaxQueueDepth (#113 Phase B-3)', () => {
+    it('routes llmConcurrency through setLlmConcurrencyClusterWide (DB UPSERT + cache-bus publish)', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [], rowCount: 0 });
+      const { setLlmConcurrencyClusterWide } = await import(
+        '../../domains/llm/services/llm-queue.js'
+      );
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: { llmConcurrency: 10 },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(setLlmConcurrencyClusterWide).toHaveBeenCalledWith(10);
+    });
+
+    it('routes llmMaxQueueDepth through setLlmMaxQueueDepthClusterWide', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [], rowCount: 0 });
+      const { setLlmMaxQueueDepthClusterWide } = await import(
+        '../../domains/llm/services/llm-queue.js'
+      );
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: { llmMaxQueueDepth: 75 },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(setLlmMaxQueueDepthClusterWide).toHaveBeenCalledWith(75);
+    });
+
+    it('does NOT call the cluster-wide setters when the field is omitted', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [], rowCount: 0 });
+      const { setLlmConcurrencyClusterWide, setLlmMaxQueueDepthClusterWide } = await import(
+        '../../domains/llm/services/llm-queue.js'
+      );
+      (setLlmConcurrencyClusterWide as ReturnType<typeof vi.fn>).mockClear();
+      (setLlmMaxQueueDepthClusterWide as ReturnType<typeof vi.fn>).mockClear();
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: { rateLimitGlobal: 5000 },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(setLlmConcurrencyClusterWide).not.toHaveBeenCalled();
+      expect(setLlmMaxQueueDepthClusterWide).not.toHaveBeenCalled();
+    });
+
+    it('rejects llmConcurrency outside [1, 100]', async () => {
+      const low = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: { llmConcurrency: 0 },
+      });
+      expect(low.statusCode).toBe(400);
+
+      const high = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: { llmConcurrency: 101 },
+      });
+      expect(high.statusCode).toBe(400);
+    });
+
+    it('rejects llmMaxQueueDepth outside [1, 1000]', async () => {
+      const low = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: { llmMaxQueueDepth: 0 },
+      });
+      expect(low.statusCode).toBe(400);
+
+      const high = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: { llmMaxQueueDepth: 1001 },
+      });
+      expect(high.statusCode).toBe(400);
+    });
+
+    it('rejects non-integer llmConcurrency', async () => {
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: { llmConcurrency: 4.5 },
       });
       expect(response.statusCode).toBe(400);
     });

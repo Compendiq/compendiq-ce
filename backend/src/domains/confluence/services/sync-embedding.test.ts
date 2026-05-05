@@ -52,6 +52,18 @@ vi.mock('../../../core/utils/logger.js', () => ({
 
 vi.mock('../../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mocks.query(...args),
+  // EE #118 conflict-detection wraps the htmlChanged-path UPDATE in a
+  // transaction with `SELECT ... FOR UPDATE`. The transaction goes
+  // through `getPool().connect()` rather than the global `query`. We
+  // stub the pool with a single shared connection that delegates every
+  // `query` call back to the same `mocks.query` so the test's existing
+  // `mockResolvedValueOnce` queue still drives the order.
+  getPool: () => ({
+    connect: async () => ({
+      query: (...args: unknown[]) => mocks.query(...args),
+      release: () => {},
+    }),
+  }),
 }));
 
 const mockGetUserAccessibleSpaces = vi.fn().mockResolvedValue(['DEV']);
@@ -175,21 +187,81 @@ describe('syncPage attachment cache invalidation', () => {
     body: { storage: { value: '<p>content</p>' } },
   };
 
-  function setupSyncWithPage(existingVersion: number | null, existingBodyHtml = '<p>old</p>', existingBodyText = 'old') {
+  function setupSyncWithPage(
+    existingVersion: number | null,
+    existingBodyHtml = '<p>old</p>',
+    existingBodyText = 'old',
+    /**
+     * When true (the default), enqueue the four extra DB responses the
+     * EE #118 conflict-detection branch consumes (BEGIN, SELECT ... FOR
+     * UPDATE re-read, UPDATE pages, COMMIT) AFTER the initial existing-
+     * page SELECT. Tests that exercise the htmlChanged path (incoming
+     * version equals existing version with different body) MUST set this
+     * — otherwise the conflict branch reads garbage from a later mock.
+     *
+     * Tests that exercise the new-version path (existing version <
+     * incoming version) flow through the bottom-of-`syncPage` upsert,
+     * not the conflict branch, and should pass `enqueueConflictBranch:
+     * false` so we don't leak the unused queued responses to the next
+     * test (vi.clearAllMocks does not clear `mockResolvedValueOnce`
+     * queues, only call history).
+     */
+    enqueueConflictBranch = false,
+  ) {
     mocks.query
       // 1. getClientForUser: user_settings
       .mockResolvedValueOnce({ rows: [{ confluence_url: 'https://conf.example.com', confluence_pat: 'enc' }] })
       // 2. getUserAccessibleSpaces is mocked (returns ['DEV'])
       // 3. last_synced (no previous sync -> full sync; space=undefined so no upsert)
       .mockResolvedValueOnce({ rows: [] })
-      // 4. syncPage: existing page version check
+      // 4. syncPage: existing page version check (extended SELECT-list per
+      //    EE #118 — also pulls local_modified_at + last_synced; both
+      //    null here means "no local edits", so the conflict-detection
+      //    branch falls through to confluence-wins.
       .mockResolvedValueOnce(
         existingVersion !== null
-          ? { rows: [{ version: existingVersion, title: 'Old', body_html: existingBodyHtml, body_text: existingBodyText }] }
+          ? {
+              rows: [{
+                version: existingVersion,
+                title: 'Old',
+                body_html: existingBodyHtml,
+                body_text: existingBodyText,
+                local_modified_at: null,
+                last_synced: null,
+              }],
+            }
           : { rows: [] },
-      )
-      // 5. syncPage: upsert page
-      .mockResolvedValueOnce({ rows: [] })
+      );
+
+    if (enqueueConflictBranch) {
+      mocks.query
+        // EE #118 conflict-detection branch order:
+        // BEGIN, SELECT ... FOR UPDATE re-read, UPDATE pages
+        // (confluence-wins default path), COMMIT.
+        .mockResolvedValueOnce({ rows: [] })  // BEGIN
+        .mockResolvedValueOnce({
+          rows: [{
+            id: 1,
+            version: existingVersion,
+            body_html: existingBodyHtml,
+            body_text: existingBodyText,
+            local_modified_at: null,
+            last_synced: null,
+          }],
+        })                                    // SELECT ... FOR UPDATE
+        .mockResolvedValueOnce({ rows: [] })  // UPDATE pages
+        .mockResolvedValueOnce({ rows: [] }); // COMMIT
+    } else {
+      // The fresh-create / new-version path takes the bottom-of-`syncPage`
+      // INSERT. Only enqueue this when we know the test is going there —
+      // the htmlChanged path returns BEFORE this query, so leaving the
+      // mock queued in that case leaks a stale response into the next
+      // test (vi.clearAllMocks does not clear `.mockResolvedValueOnce`
+      // queues, only call history).
+      mocks.query.mockResolvedValueOnce({ rows: [] }); // INSERT (upsert)
+    }
+
+    mocks.query
       // 6. detectDeletedPages: count of users with this space
       .mockResolvedValueOnce({ rows: [{ count: '1' }] })
       // 7. detectDeletedPages: existing page ids
@@ -226,7 +298,10 @@ describe('syncPage attachment cache invalidation', () => {
   });
 
   it('refreshes cached HTML for unchanged pages when the rendered output changes', async () => {
-    setupSyncWithPage(2);
+    // Same incoming version (2) as existing → htmlChanged path → conflict
+    // branch (default policy 'confluence-wins'). Pass true so the helper
+    // enqueues the BEGIN/SELECT FOR UPDATE/UPDATE/COMMIT responses.
+    setupSyncWithPage(2, '<p>old</p>', 'old', true);
 
     await syncUser('user-html-refresh');
 

@@ -61,7 +61,7 @@ function ChartSkeleton() {
 
 function StatCard({ label, value }: { label: string; value: string | number }) {
   return (
-    <div className="glass-card p-4 text-center" data-testid={`stat-${label.toLowerCase().replace(/\s+/g, '-')}`}>
+    <div className="nm-card p-4 text-center" data-testid={`stat-${label.toLowerCase().replace(/\s+/g, '-')}`}>
       <p className="text-xs text-muted-foreground mb-1">{label}</p>
       <p className="text-2xl font-semibold">{value}</p>
     </div>
@@ -88,17 +88,17 @@ export function ContentGapsDashboard({ dateRange, onExportPdf }: DashboardProps)
       <div className="space-y-4" data-testid="content-gaps-loading">
         <div className="grid grid-cols-3 gap-4">
           {Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} className="glass-card h-20 animate-pulse" />
+            <div key={i} className="nm-card h-20 animate-pulse" />
           ))}
         </div>
-        <div className="glass-card p-4"><ChartSkeleton /></div>
+        <div className="nm-card p-4"><ChartSkeleton /></div>
       </div>
     );
   }
 
   if (!data) {
     return (
-      <div className="glass-card p-8 text-center text-sm text-muted-foreground" data-testid="content-gaps-empty">
+      <div className="nm-card p-8 text-center text-sm text-muted-foreground" data-testid="content-gaps-empty">
         No content gaps data available for the selected date range.
       </div>
     );
@@ -156,7 +156,7 @@ export function ContentGapsDashboard({ dateRange, onExportPdf }: DashboardProps)
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* Request Backlog Pie */}
-        <div className="glass-card p-4" data-testid="backlog-chart">
+        <div className="nm-card p-4" data-testid="backlog-chart">
           <h3 className="text-sm font-medium mb-3">Request Backlog</h3>
           <Suspense fallback={<ChartSkeleton />}>
             {data.requestBacklog.length > 0 ? (
@@ -191,7 +191,7 @@ export function ContentGapsDashboard({ dateRange, onExportPdf }: DashboardProps)
         </div>
 
         {/* Content Gaps Table */}
-        <div className="glass-card overflow-hidden" data-testid="gaps-table">
+        <div className="nm-card overflow-hidden" data-testid="gaps-table">
           <div className="p-4 border-b border-foreground/5">
             <h3 className="text-sm font-medium">Content Gaps</h3>
             <p className="text-xs text-muted-foreground mt-0.5">Queries with low or no results, sorted by frequency</p>
@@ -231,7 +231,7 @@ export function ContentGapsDashboard({ dateRange, onExportPdf }: DashboardProps)
 
       {/* Duplicate Coverage Table */}
       {data.duplicateCoverage.length > 0 && (
-        <div className="glass-card overflow-hidden" data-testid="duplicates-table">
+        <div className="nm-card overflow-hidden" data-testid="duplicates-table">
           <div className="p-4 border-b border-foreground/5">
             <h3 className="text-sm font-medium">Duplicate Coverage</h3>
             <p className="text-xs text-muted-foreground mt-0.5">Topics covered by multiple pages</p>

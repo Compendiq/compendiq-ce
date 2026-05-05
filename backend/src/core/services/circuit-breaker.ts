@@ -1,14 +1,14 @@
 import { logger } from '../utils/logger.js';
 
-export type CircuitBreakerState = 'CLOSED' | 'OPEN' | 'HALF_OPEN';
+type CircuitBreakerState = 'CLOSED' | 'OPEN' | 'HALF_OPEN';
 
-export interface CircuitBreakerConfig {
+interface CircuitBreakerConfig {
   failureThreshold: number;
   successThreshold: number;
   timeout: number; // ms
 }
 
-export interface CircuitBreakerStatus {
+interface CircuitBreakerStatus {
   state: CircuitBreakerState;
   failureCount: number;
   successCount: number;
@@ -184,7 +184,7 @@ export function invalidateProviderBreaker(providerId: string): void {
  * Snapshot of a single live per-provider breaker used for health reporting.
  * `state` is lowercased to match the legacy health payload shape.
  */
-export interface ProviderBreakerSnapshot {
+interface ProviderBreakerSnapshot {
   providerId: string;
   state: string;
   failureCount: number;

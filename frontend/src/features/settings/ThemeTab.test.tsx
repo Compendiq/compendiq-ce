@@ -20,7 +20,7 @@ const mockSettings = {
   selectedSpaces: [],
   ollamaModel: 'qwen3.5',
   embeddingModel: 'bge-m3',
-  theme: 'void-indigo',
+  theme: 'graphite-honey',
   syncIntervalMin: 15,
   confluenceConnected: true,
 };
@@ -44,13 +44,12 @@ describe('ThemeTab', () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    useThemeStore.setState({ theme: 'void-indigo' });
+    useThemeStore.setState({ theme: 'graphite-honey' });
     fetchSpy = vi.spyOn(globalThis, 'fetch');
     fetchSpy.mockImplementation(async (url: string | URL | Request) => {
       const path = typeof url === 'string' ? url : url instanceof URL ? url.toString() : url.url;
 
       if (path.includes('/api/settings') && !path.includes('test-confluence')) {
-        // Check if it's a PUT request
         return new Response(JSON.stringify(mockSettings), {
           headers: { 'Content-Type': 'application/json' },
         });
@@ -92,17 +91,12 @@ describe('ThemeTab', () => {
     expect(screen.getByTestId('theme-category-light')).toBeInTheDocument();
   });
 
-  it('renders all 4 theme options across categories', async () => {
+  it('renders both theme options across categories', async () => {
     render(<SettingsPage />, { wrapper: createWrapper() });
     await navigateToThemeTab();
 
-    // Dark themes
-    expect(screen.getByTestId('theme-void-indigo')).toBeInTheDocument();
-    expect(screen.getByTestId('theme-obsidian-violet')).toBeInTheDocument();
-
-    // Light themes
-    expect(screen.getByTestId('theme-polar-slate')).toBeInTheDocument();
-    expect(screen.getByTestId('theme-parchment-glow')).toBeInTheDocument();
+    expect(screen.getByTestId('theme-graphite-honey')).toBeInTheDocument();
+    expect(screen.getByTestId('theme-honey-linen')).toBeInTheDocument();
   });
 
   it('shows active badge on the current theme', async () => {
@@ -113,44 +107,42 @@ describe('ThemeTab', () => {
     expect(activeBadge).toBeInTheDocument();
     expect(activeBadge).toHaveTextContent('Active');
 
-    // Active badge should be within the void-indigo theme card
-    const voidIndigoCard = screen.getByTestId('theme-void-indigo');
-    expect(voidIndigoCard.querySelector('[data-testid="theme-active-badge"]')).toBeInTheDocument();
+    const emberDuskCard = screen.getByTestId('theme-graphite-honey');
+    expect(emberDuskCard.querySelector('[data-testid="theme-active-badge"]')).toBeInTheDocument();
   });
 
   it('switches theme when clicking a different theme card', async () => {
     render(<SettingsPage />, { wrapper: createWrapper() });
     await navigateToThemeTab();
 
-    fireEvent.click(screen.getByTestId('theme-obsidian-violet'));
+    fireEvent.click(screen.getByTestId('theme-honey-linen'));
 
-    expect(useThemeStore.getState().theme).toBe('obsidian-violet');
+    expect(useThemeStore.getState().theme).toBe('honey-linen');
   });
 
-  it('switches to a light theme', async () => {
+  it('switches to honey-linen (light theme)', async () => {
     render(<SettingsPage />, { wrapper: createWrapper() });
     await navigateToThemeTab();
 
-    fireEvent.click(screen.getByTestId('theme-polar-slate'));
+    fireEvent.click(screen.getByTestId('theme-honey-linen'));
 
-    expect(useThemeStore.getState().theme).toBe('polar-slate');
+    expect(useThemeStore.getState().theme).toBe('honey-linen');
   });
 
   it('calls onSave with the selected theme id', async () => {
     render(<SettingsPage />, { wrapper: createWrapper() });
     await navigateToThemeTab();
 
-    fireEvent.click(screen.getByTestId('theme-parchment-glow'));
+    fireEvent.click(screen.getByTestId('theme-honey-linen'));
 
     await waitFor(() => {
-      // Verify fetch was called with a PUT containing the theme
       const putCalls = fetchSpy.mock.calls.filter((call: unknown[]) => {
         const opts = call[1] as RequestInit | undefined;
         return opts?.method === 'PUT';
       });
       expect(putCalls.length).toBeGreaterThan(0);
       const body = JSON.parse((putCalls[0][1] as RequestInit).body as string);
-      expect(body).toEqual({ theme: 'parchment-glow' });
+      expect(body).toEqual({ theme: 'honey-linen' });
     });
   });
 
@@ -158,11 +150,14 @@ describe('ThemeTab', () => {
     render(<SettingsPage />, { wrapper: createWrapper() });
     await navigateToThemeTab();
 
-    expect(screen.getByText('Void')).toBeInTheDocument();
-    expect(screen.getByText('Inky graphite with indigo accents — Linear \u00d7 GitHub')).toBeInTheDocument();
-    expect(screen.getByText('Obsidian')).toBeInTheDocument();
-    expect(screen.getByText('Polar Slate')).toBeInTheDocument();
-    expect(screen.getByText('Parchment Glow')).toBeInTheDocument();
+    expect(screen.getByText('Graphite Honey')).toBeInTheDocument();
+    expect(screen.getByText('Honey Linen')).toBeInTheDocument();
+    expect(
+      screen.getByText('Graphite surfaces with honey accent — neumorphic dark'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('Linen cream with honey accent — neumorphic light'),
+    ).toBeInTheDocument();
   });
 
   it('displays category headers', async () => {

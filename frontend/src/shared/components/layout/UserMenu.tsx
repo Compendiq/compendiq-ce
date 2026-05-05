@@ -1,6 +1,6 @@
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import * as Switch from '@radix-ui/react-switch';
-import { Keyboard, LogOut, Settings, User } from 'lucide-react';
+import { BarChart3, Keyboard, LogOut, Settings, User } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../../../stores/auth-store';
 import { useKeyboardShortcutsStore } from '../../../stores/keyboard-shortcuts-store';
@@ -30,7 +30,7 @@ export function UserMenu() {
         <DropdownMenu.Content
           align="end"
           sideOffset={8}
-          className="glass-card min-w-[180px] rounded-lg border border-border/50 p-1.5 shadow-xl backdrop-blur-xl"
+          className="min-w-[180px] rounded-lg border border-border/50 bg-card/90 p-1.5 shadow-xl backdrop-blur-xl"
         >
           <DropdownMenu.Label className="flex items-center gap-2 px-2.5 py-2 text-xs text-muted-foreground">
             <User size={12} />
@@ -44,6 +44,20 @@ export function UserMenu() {
             <Settings size={14} />
             Settings
           </DropdownMenu.Item>
+          {user?.role === 'admin' && (
+            // /admin/analytics is mounted in App.tsx but no UI links to it.
+            // Surface it here so admins can reach the search-effectiveness,
+            // content-gap, AI-usage, and knowledge-health dashboards without
+            // having to know the URL. Enterprise gating still happens
+            // server-side on each /admin/analytics/* endpoint.
+            <DropdownMenu.Item
+              onSelect={() => navigate('/admin/analytics')}
+              className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground transition-colors"
+            >
+              <BarChart3 size={14} />
+              Analytics
+            </DropdownMenu.Item>
+          )}
           <DropdownMenu.Item
             onSelect={openShortcuts}
             className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground transition-colors"

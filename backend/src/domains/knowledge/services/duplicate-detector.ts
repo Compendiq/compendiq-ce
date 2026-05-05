@@ -4,7 +4,7 @@ import { logger } from '../../../core/utils/logger.js';
 
 const RAG_EF_SEARCH = parseInt(process.env.RAG_EF_SEARCH ?? '100', 10);
 
-export interface DuplicateCandidate {
+interface DuplicateCandidate {
   confluenceId: string;
   title: string;
   spaceKey: string;

@@ -105,14 +105,14 @@ export async function authRoutes(fastify: FastifyInstance) {
     );
 
     if (result.rows.length === 0) {
-      await logAuditEvent(null, 'LOGIN_FAILED', 'user', undefined, { username: body.username, reason: 'user_not_found' }, request);
+      await logAuditEvent(null, 'LOGIN_FAILED', 'user', undefined, { auth_method: 'local', username: body.username, reason: 'user_not_found' }, request);
       throw fastify.httpErrors.unauthorized('Invalid username or password');
     }
 
     const user = result.rows[0]!;
     const valid = await bcrypt.compare(body.password, user.password_hash);
     if (!valid) {
-      await logAuditEvent(user.id, 'LOGIN_FAILED', 'user', user.id, { reason: 'invalid_password' }, request);
+      await logAuditEvent(user.id, 'LOGIN_FAILED', 'user', user.id, { auth_method: 'local', reason: 'invalid_password' }, request);
       throw fastify.httpErrors.unauthorized('Invalid username or password');
     }
 
@@ -124,7 +124,7 @@ export async function authRoutes(fastify: FastifyInstance) {
         'LOGIN_FAILED',
         'user',
         user.id,
-        { reason: 'deactivated' },
+        { auth_method: 'local', reason: 'deactivated' },
         request,
       );
       throw fastify.httpErrors.unauthorized('Account is deactivated — contact an administrator');

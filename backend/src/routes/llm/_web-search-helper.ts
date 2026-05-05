@@ -16,7 +16,7 @@ export interface WebSource {
   snippet: string;
 }
 
-export interface WebSearchFormat {
+interface WebSearchFormat {
   /** Label prefix for each source, e.g. 'Reference' or 'Web Source' */
   sourceLabel: string;
   /** Header text for the web context section, e.g. 'Verified reference material from web search' */

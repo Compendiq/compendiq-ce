@@ -58,7 +58,7 @@ export function ActiveEmbeddingLocksBanner() {
 
   return (
     <div
-      className="glass-card border-yellow-500/30 p-3 text-sm"
+      className="nm-card border-yellow-500/30 p-3 text-sm"
       data-testid="active-embedding-locks-banner"
     >
       <p className="mb-2 text-yellow-300">

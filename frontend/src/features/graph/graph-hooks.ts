@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '../../shared/lib/api';
 
 // ---------- Types ----------
@@ -39,31 +39,108 @@ interface GraphEdge {
   score: number;
 }
 
+/**
+ * #358: meta block on the graph response. The UI uses this to differentiate
+ * empty states ("no spaces accessible" vs "no pages embedded yet" vs
+ * "embedded but no relationships computed yet"). All counts are scoped to the
+ * caller's accessible pages — same RBAC as the nodes/edges arrays.
+ */
+export interface GraphMeta {
+  pagesTotal: number;
+  pagesEmbedded: number;
+  relationshipsTotal: number;
+  relationshipsByType: Record<string, number>;
+}
+
 interface GraphData {
   nodes: (GraphNode | ClusterNode)[];
   edges: GraphEdge[];
   centerId?: string;
+  meta?: GraphMeta;
 }
 
 type ViewMode = 'individual' | 'clustered';
 
-export function useGraphData(view: ViewMode, spaceKey?: string) {
+/**
+ * #360 multi-select: `spaceKeys` is an array of space keys, encoded as a
+ * single comma-separated `spaceKey` query param to match the existing
+ * server contract. Empty / undefined means "no filter — RBAC default".
+ *
+ * Back-compat: callers still passing a single string land in the
+ * `typeof === 'string'` branch and get wrapped into a one-element array.
+ */
+export function useGraphData(
+  view: ViewMode,
+  spaceKeys?: string | string[],
+  enabled = true,
+) {
+  const normalised: string[] | undefined =
+    spaceKeys === undefined
+      ? undefined
+      : typeof spaceKeys === 'string'
+        ? spaceKeys
+          ? [spaceKeys]
+          : undefined
+        : spaceKeys.length > 0
+          ? spaceKeys
+          : undefined;
+
   const params = new URLSearchParams();
   params.set('view', view);
-  if (spaceKey) params.set('spaceKey', spaceKey);
+  if (normalised && normalised.length > 0) {
+    params.set('spaceKey', normalised.join(','));
+  }
 
+  // Stable, sorted cache key — `[A,B]` and `[B,A]` are the same selection.
+  const cacheKey = normalised ? [...normalised].sort().join(',') : '';
+
+  // #360: `enabled` lets the caller skip the global graph fetch when the
+  // user hasn't opted in (article-picker default state). Without this, the
+  // hairball would still fire over the wire even though we render the picker.
   return useQuery<GraphData>({
-    queryKey: ['pages', 'graph', view, spaceKey ?? ''],
+    queryKey: ['pages', 'graph', view, cacheKey],
     queryFn: () => apiFetch(`/pages/graph?${params.toString()}`),
     staleTime: 60_000,
+    enabled,
   });
 }
 
-export function useLocalGraphData(pageId: string | undefined, hops = 2) {
+/** #360 filter shape for /graph/local. All fields optional; empty arrays
+ * mean "no filter" (backend treats them the same as undefined). */
+export interface LocalGraphFilters {
+  hops?: number;
+  edgeTypes?: string[];
+  minScore?: number;
+  labels?: string[];
+}
+
+export function useLocalGraphData(pageId: string | undefined, filters: LocalGraphFilters = {}) {
+  const { hops = 2, edgeTypes, minScore, labels } = filters;
+  const params = new URLSearchParams();
+  params.set('hops', String(hops));
+  if (edgeTypes && edgeTypes.length > 0) params.set('edgeTypes', edgeTypes.join(','));
+  if (minScore !== undefined) params.set('minScore', String(minScore));
+  if (labels && labels.length > 0) params.set('labels', labels.join(','));
+
   return useQuery<GraphData>({
-    queryKey: ['pages', 'graph', 'local', pageId, hops],
-    queryFn: () => apiFetch(`/pages/${pageId}/graph/local?hops=${hops}`),
+    queryKey: ['pages', 'graph', 'local', pageId, hops, edgeTypes?.join(','), minScore, labels?.join(',')],
+    queryFn: () => apiFetch(`/pages/${pageId}/graph/local?${params.toString()}`),
     staleTime: 60_000,
     enabled: !!pageId,
+  });
+}
+
+/**
+ * #358: admin trigger to recompute page_relationships rows. Wraps the
+ * existing POST /api/pages/graph/refresh; returns the new edge count.
+ * On success invalidates the global+local graph queries so the UI re-reads.
+ */
+export function useRefreshGraph() {
+  const queryClient = useQueryClient();
+  return useMutation<{ message: string; edges: number }>({
+    mutationFn: () => apiFetch('/pages/graph/refresh', { method: 'POST' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['pages', 'graph'] });
+    },
   });
 }

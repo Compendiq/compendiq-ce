@@ -169,7 +169,7 @@ export function KnowledgeRequestsPage() {
       </div>
 
       {/* Tabs + Status filter */}
-      <div className="glass-card p-3">
+      <div className="nm-card p-3">
         <div className="flex flex-wrap items-center gap-3">
           {/* Tabs */}
           <div className="flex gap-1">
@@ -210,11 +210,11 @@ export function KnowledgeRequestsPage() {
       {isLoading ? (
         <div className="space-y-3">
           {Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} className="glass-card h-20 animate-pulse" />
+            <div key={i} className="nm-card h-20 animate-pulse" />
           ))}
         </div>
       ) : !data?.items.length ? (
-        <div className="glass-card flex flex-col items-center justify-center py-16 text-center">
+        <div className="nm-card flex flex-col items-center justify-center py-16 text-center">
           <div className="mb-4 rounded-full bg-muted p-3">
             <Inbox size={32} className="text-muted-foreground" />
           </div>
@@ -240,7 +240,7 @@ export function KnowledgeRequestsPage() {
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: i * 0.03 }}
-                className="glass-card p-4"
+                className="nm-card p-4"
                 data-testid={`request-${request.id}`}
               >
                 <div className="flex items-start justify-between gap-3">
@@ -301,7 +301,7 @@ export function KnowledgeRequestsPage() {
             data-testid="create-modal-backdrop"
           />
           <div className="fixed inset-x-0 top-[15%] z-50 mx-auto w-full max-w-md" data-testid="create-request-modal">
-            <div className="glass-card mx-4 overflow-hidden shadow-2xl">
+            <div className="nm-card mx-4 overflow-hidden shadow-2xl">
               <div className="border-b border-border/50 px-5 py-4">
                 <h2 className="font-semibold">Create Knowledge Request</h2>
               </div>
@@ -374,7 +374,7 @@ export function KnowledgeRequestsPage() {
             data-testid="fulfill-modal-backdrop"
           />
           <div className="fixed inset-x-0 top-[20%] z-50 mx-auto w-full max-w-md" data-testid="fulfill-modal">
-            <div className="glass-card mx-4 overflow-hidden shadow-2xl">
+            <div className="nm-card mx-4 overflow-hidden shadow-2xl">
               <div className="border-b border-border/50 px-5 py-4">
                 <h2 className="font-semibold">Fulfill Request</h2>
                 <p className="text-xs text-muted-foreground mt-1">

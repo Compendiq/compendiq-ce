@@ -86,6 +86,13 @@ export function LlmTab() {
       apiFetch('/admin/llm-usecases', { method: 'PUT', body: JSON.stringify(diff) }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['llm-usecases'] });
+      // #355 (Finding 1, AC-3): cascade the change to consumers of the
+      // resolved per-use-case default (notably the AI chat input pane in
+      // AiContext.tsx) and the use-case-scoped models list. Prefix-match on
+      // ['llm', 'usecase-default'] and ['llm', 'models'] invalidates every
+      // use-case-keyed entry so dropdowns refresh without a hard reload.
+      qc.invalidateQueries({ queryKey: ['llm', 'usecase-default'] });
+      qc.invalidateQueries({ queryKey: ['llm', 'models'] });
       toast.success('Use-case assignments saved');
     },
     onError: (e: Error) => toast.error(e.message),
@@ -133,7 +140,7 @@ export function LlmTab() {
 
   return (
     <div className="space-y-6">
-      <div className="glass-card border-yellow-500/30 p-3 text-sm text-yellow-400">
+      <div className="nm-card border-yellow-500/30 p-3 text-sm text-yellow-400">
         LLM provider + per-use-case assignments are shared across all users. Only admins can change them here.
       </div>
       <ProviderListSection />
@@ -148,7 +155,7 @@ export function LlmTab() {
       />
       <div className="flex gap-3">
         <button
-          className="glass-button-primary"
+          className="nm-button-primary"
           disabled={save.isPending}
           onClick={handleSave}
         >
@@ -157,7 +164,7 @@ export function LlmTab() {
       </div>
 
       {/* Runtime limits — per-user concurrent-SSE-stream cap (#268) */}
-      <div className="glass-card space-y-4 p-4">
+      <div className="nm-card space-y-4 p-4">
         <div>
           <h3 className="text-base font-semibold">Runtime limits</h3>
           <p className="mt-1 text-xs text-muted-foreground">
@@ -204,7 +211,7 @@ export function LlmTab() {
         <div className="flex gap-3">
           <button
             data-testid="llm-runtime-limits-save"
-            className="glass-button-primary"
+            className="nm-button-primary"
             disabled={!runtimeLimitsDirty || saveRuntimeLimits.isPending}
             onClick={handleSaveRuntimeLimits}
           >
@@ -235,5 +242,3 @@ function diffUsecaseAssignments(
   }
   return diff;
 }
-
-export { LlmTab as OllamaTab };

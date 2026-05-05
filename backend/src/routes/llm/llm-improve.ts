@@ -53,7 +53,9 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
 
     // Sanitize before sending to LLM
     const { sanitized, warnings } = sanitizeLlmInput(markdown);
-    if (warnings.length > 0) {
+    const promptInjectionDetected = warnings.length > 0;
+    const wasSanitized = sanitized !== markdown;
+    if (promptInjectionDetected) {
       await logAuditEvent(userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/improve' }, request);
     }
 
@@ -110,7 +112,7 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
       const insertResult = await query<{ id: string }>(
         `INSERT INTO llm_improvements (user_id, page_id, improvement_type, model, original_content, improved_content, status)
          SELECT $1, p.id, $3, $4, $5, '', 'streaming' FROM pages p WHERE p.confluence_id = $2 RETURNING id`,
-        [userId, body.pageId, type, model, content.slice(0, 10000)],
+        [userId, body.pageId, type, resolvedModel, content.slice(0, 10000)],
       );
       improvementId = insertResult.rows[0]?.id;
     }
@@ -145,20 +147,22 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
         userId,
         action: 'improve',
         model: resolvedModel,
-        provider: 'openai',
+        provider: chatConfig.providerId,
         inputTokens: estimateTokens(improveMessages.map(m => m.content).join('')),
         outputTokens: estimateTokens(accumulated),
         inputMessages: improveMessages.map(m => ({ role: m.role, contentLength: m.content.length })),
         retrievedChunkIds: [],
         durationMs: Date.now() - auditStart,
         status: 'success',
+        promptInjectionDetected,
+        sanitized: wasSanitized,
       });
     } catch (err) {
       emitLlmAudit({
         userId,
         action: 'improve',
         model: resolvedModel,
-        provider: 'openai',
+        provider: chatConfig.providerId,
         inputTokens: estimateTokens(improveMessages.map(m => m.content).join('')),
         outputTokens: 0,
         inputMessages: improveMessages.map(m => ({ role: m.role, contentLength: m.content.length })),
@@ -166,6 +170,8 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
         durationMs: Date.now() - auditStart,
         status: 'error',
         errorMessage: err instanceof Error ? err.message : String(err),
+        promptInjectionDetected,
+        sanitized: wasSanitized,
       });
       throw err;
     } finally {

@@ -161,6 +161,60 @@ Compendiq automatically analyzes page quality in the background:
 - Low-quality pages are highlighted for improvement.
 - View quality scores in the page list or on individual pages.
 
+## AI Output Review (Enterprise)
+
+When the **AI review policy** is enabled, AI-generated output (improve, generate, summarise, auto-tag, apply-improvement) is queued in a review list before it lands on the underlying page. A reviewer must explicitly **approve**, **reject**, or **edit-and-approve** each entry. This sits between the AI worker and the persistence layer — the proposed content is stored in `ai_output_reviews` rather than written directly to the page.
+
+### Who reviews
+
+For v0.4, any admin can act on the queue. (Per-space scoping based on editor-on-space lands in v0.5; until then the access gate is admin-only — see the EE overlay route file for the exact policy.)
+
+### What the queue looks like
+
+Open **Settings → AI → AI review queue**. Each row shows:
+
+- The action type chip (Improve, Summary, Generate, Auto-tag, Apply improvement).
+- The page id the review targets, plus the page title once you click into the detail.
+- A short id of the author who triggered the AI run.
+- A relative submitted-at timestamp (e.g. `5h ago`, `2d ago`).
+- The current status (Pending / Approved / Rejected / Edited & approved / Expired).
+
+Filter the queue by status or action. The queue defaults to the **Pending** status — that's the work to act on. The Approved / Rejected / Expired statuses are useful for spot-checking past decisions.
+
+### How the diff view works
+
+Clicking **Review** opens the detail page at `/settings/ai-reviews/<id>` (full viewport). The header shows the page title, action type, current status, and — for pending rows — the auto-expiry timestamp.
+
+The diff is rendered side-by-side. The default view is a **text diff** of the page's current `body_text` against the AI's proposed `body_text`, line-by-line. Removed lines are highlighted red on the left; added lines are highlighted green on the right. Lines that match are shown unmodified on both sides.
+
+Toggle to **HTML** view to see the raw HTML from both sides in two columns. The HTML view is intentionally not diff-highlighted — accurate HTML-aware diffing is out of scope for this iteration (the upstream `htmldiff-js` library is unmaintained), so we render the HTML pair as-is for visual scanning rather than risking misleading red/green spans on attribute-reorder noise.
+
+If the AI run flagged personally identifiable information, the header shows a **PII findings** badge. PII gating only blocks approval when the policy mode is **Review required (block on PII)**.
+
+### What each action does
+
+- **Approve** — applies the AI's proposed content to the page draft and records a single audit row (`AI_REVIEW_APPROVED`). The page's draft is what gets pushed to Confluence on the next publish; nothing is auto-published as part of approval.
+- **Reject** — discards the proposed content. Optionally leave a short note for the author (max 4000 chars) so they can re-run the AI with better instructions. Records `AI_REVIEW_REJECTED`.
+- **Edit and approve** — opens a fullscreen editor pre-loaded with the proposed body text. Make any changes you like, optionally add a note, then save. Two audit rows are recorded: the original AI authorship plus your reviewer modification (`AI_REVIEW_EDIT_AND_APPROVED`). The edited content — not the AI's original — is what lands on the page.
+
+### Handling rejected output
+
+A rejection is final for that particular review row, but the author is free to re-run the AI. The reviewer note is the right place to give the author a steer (e.g. "tone is too casual; prefer the existing prose style"). The author sees pending and rejected counts in the **AuthorPendingBanner** at the top of any page-edit view.
+
+### Auto-expiry
+
+Pending reviews that nobody acts on are auto-expired after the policy's configured window (default 30 days). The author is notified; the proposed content is discarded — there is **no implicit auto-approval**. This protects against stale AI output sneaking onto a page weeks after the human context that produced it.
+
+## PII Protection (Enterprise)
+
+When your administrator has enabled PII detection, AI output (Chat, Improve, Generate, Summary, Auto-tag) is scanned for personally identifiable information before it reaches you. Depending on the per-action policy your admin configured, you may notice one of three things:
+
+- **Flag only** (the default) — output looks unchanged, but findings are recorded in the audit log so admins can review patterns over time.
+- **Redact & publish** — sensitive spans are replaced with `[REDACTED:CATEGORY]` placeholders in the output you see (e.g. `[REDACTED:EMAIL_ADDRESS]`). The original AI text is not stored.
+- **Block publication** — the AI request fails with a notice that PII was detected. The proposed output is queued for admin review (see *AI Output Review* above) rather than applied directly.
+
+The scanner detects person names, locations, organisations, email addresses, phone numbers, IBANs, credit-card numbers, German tax IDs, German Rentenversicherungsnummer, and German Personalausweis numbers. If you believe a redaction was a false positive, ask an admin to lower the confidence threshold or remove the affected category from the policy.
+
 ## Search
 
 Compendiq supports three search modes:
@@ -264,6 +318,63 @@ Compendiq supports both dark and light themes:
 - The theme follows your system preference by default.
 - Toggle manually via the theme switch in the user menu.
 - The glassmorphic UI design works well in both modes.
+
+## Webhook Integrations (Enterprise)
+
+Enterprise administrators can configure outbound webhooks so external systems receive a signed HTTP POST whenever specific events happen in Compendiq (page created / updated / deleted, sync completed, AI quality / summary complete). Configuration lives at **Settings → Webhooks**.
+
+### Event catalogue (v0.4)
+
+| Event type | Fires when |
+|------------|-----------|
+| `page.created` | A new page is created (local or synced) |
+| `page.updated` | A page body or metadata changes |
+| `page.deleted` | A page is deleted (soft or hard) |
+| `sync.completed` | A Confluence sync run finishes |
+| `ai.quality.complete` | The AI quality worker finishes a page |
+| `ai.summary.complete` | The AI summary worker finishes a page |
+
+### Signing verification (receiver-side)
+
+Deliveries follow the [Standard Webhooks](https://www.standardwebhooks.com) specification. Each request carries three headers:
+
+```
+webhook-id:        <uuid, stable across retries — use as your dedup key>
+webhook-timestamp: <unix seconds>
+webhook-signature: v1,<base64 HMAC-SHA256>
+```
+
+Verify with the Standard Webhooks library for your language (example: Node.js):
+
+```js
+import { Webhook } from 'standardwebhooks';
+
+const wh = new Webhook(secret, { format: 'raw' }); // plaintext secret, not base64
+
+app.post('/webhook', (req, res) => {
+  try {
+    wh.verify(req.rawBody, {
+      'webhook-id':        req.headers['webhook-id'],
+      'webhook-timestamp': req.headers['webhook-timestamp'],
+      'webhook-signature': req.headers['webhook-signature'],
+    });
+  } catch (err) {
+    return res.status(401).send('invalid signature');
+  }
+  // ...handle the event (idempotent — use webhook-id as dedup key)
+  res.status(204).end();
+});
+```
+
+The receiver MUST:
+- Verify the signature on every request.
+- Check `webhook-timestamp` is within your tolerance window (we recommend 5 minutes) to reject replay.
+- Use `webhook-id` as an **idempotency key** — Compendiq retries on transient failures, and the same `webhook-id` may arrive more than once.
+- Return `2xx` within 10 seconds. Non-2xx responses are retried up to 8 times with exponential backoff (5 s → 5 h); `408` and `429` are retried, other `4xx` are treated as permanent failures.
+
+### Secret rotation
+
+Under **Settings → Webhooks**, click **Rotate secret** to stage a new primary while keeping the old one as a secondary signer for a grace window. Receivers should accept *either* signature during the window. When all receivers are updated, click **Complete rotation** (or let the window expire) to drop the old secret.
 
 ## Tips
 

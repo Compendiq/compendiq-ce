@@ -1,4 +1,5 @@
 import { query } from '../db/postgres.js';
+import { makeCachedSetting } from './cached-setting.js';
 
 /**
  * Returns the embedding vector dimension used by the shared `page_embeddings`
@@ -75,4 +76,142 @@ export async function getAdminAccessDeniedRetentionDays(): Promise<number> {
     if (Number.isFinite(n) && n >= 7 && n <= 3650) return n;
   }
   return 90;
+}
+
+/**
+ * Compendiq/compendiq-ee#118 — returns the configured retention window
+ * (days) for `pending_sync_versions` rows. Stale conflict-pending versions
+ * older than this are pruned by `data-retention-service.ts`.
+ *
+ * Read cascade:
+ *   admin_settings.pending_sync_versions_retention_days  (authoritative)
+ *     -> env RETENTION_PENDING_SYNC_VERSIONS_DAYS        (optional fallback)
+ *     -> 90                                              (hard default)
+ *
+ * Clamped to [7, 3650]. No caching — the retention scheduler runs once per
+ * 24 h, so the per-tick DB read is negligible (matches the pattern used by
+ * `getAdminAccessDeniedRetentionDays`). Resolution deletes the pending row
+ * synchronously, so the retention sweep only catches genuinely-abandoned
+ * conflict queues.
+ */
+export async function getPendingSyncVersionsRetentionDays(): Promise<number> {
+  try {
+    const r = await query<{ setting_value: string }>(
+      `SELECT setting_value FROM admin_settings WHERE setting_key='pending_sync_versions_retention_days'`,
+    );
+    const raw = r.rows[0]?.setting_value;
+    if (raw) {
+      const n = parseInt(raw, 10);
+      if (Number.isFinite(n) && n >= 7 && n <= 3650) return n;
+    }
+  } catch {
+    // Fall through to env / default — this getter must never throw.
+  }
+  const env = process.env.RETENTION_PENDING_SYNC_VERSIONS_DAYS;
+  if (env) {
+    const n = parseInt(env, 10);
+    if (Number.isFinite(n) && n >= 7 && n <= 3650) return n;
+  }
+  return 90;
+}
+
+// ─── LLM queue settings — cluster-wide cached getters (Compendiq/compendiq-ee#113 Phase B-3) ──
+//
+// These wrap `admin_settings.llm_concurrency` and `admin_settings.llm_max_queue_depth`
+// behind the cache-bus channel `admin:llm:settings`. A PUT on one pod publishes
+// on the channel; every other pod's subscriber re-reads from the DB and the
+// llm-queue updates its `pLimit` limiter's `concurrency` in place (see #404).
+// See `domains/llm/services/llm-queue.ts` for the mutation logic.
+//
+// Defaults match the existing env-var fallbacks in `llm-queue.ts` (which the
+// cached-setting bypasses on cold-load when the admin_settings row is absent —
+// the parse function below honours `LLM_CONCURRENCY` / `LLM_MAX_QUEUE_DEPTH`
+// as a bootstrap fallback so existing single-pod deployments keep working
+// without any DB row).
+//
+// Range bounds mirror `setConcurrency` / `setMaxQueueDepth` in llm-queue.ts:
+//   - concurrency:    [1, 100]
+//   - maxQueueDepth:  [1, ∞)  (effectively bounded by the route schema)
+//
+// Both bounds are enforced in `parseLlm…` so a corrupted/typo'd DB value does
+// not turn into a process-killing pLimit(0).
+
+const HARDCODED_LLM_CONCURRENCY = 4;
+const HARDCODED_LLM_MAX_QUEUE_DEPTH = 50;
+
+function envPositiveInt(name: string): number | undefined {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return undefined;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+function parseLlmConcurrency(raw: string | null): number {
+  if (raw !== null && raw !== '') {
+    const n = parseInt(raw, 10);
+    if (Number.isFinite(n) && n >= 1 && n <= 100) return n;
+  }
+  // Bootstrap fallback: env override → hardcoded default. Mirrors the
+  // env-var precedence in llm-queue.ts so first-boot pods (no admin_settings
+  // row yet) still honour LLM_CONCURRENCY.
+  return envPositiveInt('LLM_CONCURRENCY') ?? HARDCODED_LLM_CONCURRENCY;
+}
+
+function parseLlmMaxQueueDepth(raw: string | null): number {
+  if (raw !== null && raw !== '') {
+    const n = parseInt(raw, 10);
+    if (Number.isFinite(n) && n >= 1) return n;
+  }
+  return envPositiveInt('LLM_MAX_QUEUE_DEPTH') ?? HARDCODED_LLM_MAX_QUEUE_DEPTH;
+}
+
+let _getLlmConcurrency: (() => number) | null = null;
+let _getLlmMaxQueueDepth: (() => number) | null = null;
+
+/**
+ * Initialise the cluster-wide cached LLM queue settings. Must be called
+ * AFTER `initCacheBus(...)` so the subscriber is wired up. Idempotent: a
+ * second call replaces the existing getters (used by tests).
+ *
+ * Soft-fail: if cold-load fails the getter falls back to the env / hardcoded
+ * default — we never throw out of init.
+ */
+export async function initLlmQueueSettings(): Promise<void> {
+  _getLlmConcurrency = await makeCachedSetting<number>({
+    key: 'llm_concurrency',
+    cacheBusChannel: 'admin:llm:settings',
+    parse: parseLlmConcurrency,
+    defaultValue: parseLlmConcurrency(null),
+  });
+  _getLlmMaxQueueDepth = await makeCachedSetting<number>({
+    key: 'llm_max_queue_depth',
+    cacheBusChannel: 'admin:llm:settings',
+    parse: parseLlmMaxQueueDepth,
+    defaultValue: parseLlmMaxQueueDepth(null),
+  });
+}
+
+/**
+ * Synchronous getter for the cluster-wide LLM concurrency. Returns the
+ * env / hardcoded default when the service has not been initialised
+ * (startup-order safety: a callsite that fires before `initLlmQueueSettings`
+ * sees a sane value rather than NaN or 0).
+ */
+export function getLlmConcurrency(): number {
+  if (!_getLlmConcurrency) return parseLlmConcurrency(null);
+  return _getLlmConcurrency();
+}
+
+/** Synchronous getter for the cluster-wide LLM max queue depth (see above). */
+export function getLlmMaxQueueDepth(): number {
+  if (!_getLlmMaxQueueDepth) return parseLlmMaxQueueDepth(null);
+  return _getLlmMaxQueueDepth();
+}
+
+// Test seam — mirrors `_resetForTests()` in `sync-conflict-policy-service.ts`.
+// Lets test suites re-init `makeCachedSetting` against fresh mocks without
+// leaking the previous run's getter closure.
+export function _resetLlmQueueSettingsForTests(): void {
+  _getLlmConcurrency = null;
+  _getLlmMaxQueueDepth = null;
 }

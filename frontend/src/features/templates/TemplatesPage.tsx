@@ -99,7 +99,7 @@ export function TemplatesPage() {
       </div>
 
       {/* Category tabs */}
-      <div className="glass-card flex flex-wrap items-center gap-1 p-1.5">
+      <div className="nm-card flex flex-wrap items-center gap-1 p-1.5">
         {CATEGORIES.map((cat) => (
           <button
             key={cat}
@@ -121,7 +121,7 @@ export function TemplatesPage() {
       {isLoading ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {Array.from({ length: 6 }).map((_, i) => (
-            <div key={i} className="glass-card h-48 animate-pulse" />
+            <div key={i} className="nm-card h-48 animate-pulse" />
           ))}
         </div>
       ) : filtered.length === 0 ? (
@@ -172,7 +172,7 @@ export function TemplatesPage() {
                 />
                 <div className="mt-4 flex justify-end gap-2">
                   <Dialog.Close asChild>
-                    <button className="glass-card px-4 py-2 text-sm hover:bg-foreground/5">
+                    <button className="nm-card px-4 py-2 text-sm hover:bg-foreground/5">
                       Close
                     </button>
                   </Dialog.Close>

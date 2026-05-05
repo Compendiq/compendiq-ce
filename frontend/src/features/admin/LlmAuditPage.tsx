@@ -157,6 +157,12 @@ export function LlmAuditPage() {
   const totalPages = data ? Math.ceil(data.total / pageSize) : 0;
 
   if (!featureEnabled) {
+    // #347: per-call LLM audit (model, tokens, duration, status) is an EE
+    // capability. CE keeps the route mounted so direct-URL access surfaces a
+    // clear upgrade message instead of a 404; the nav entry is already
+    // hidden in settings-nav.ts via enterpriseOnly. Operational events
+    // (login, sync, admin actions) live in the regular audit log and are
+    // CE-available — link the user there.
     return (
       <div className="space-y-6" data-testid="llm-audit-gated">
         <m.div
@@ -165,11 +171,19 @@ export function LlmAuditPage() {
           className="flex items-start gap-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-4"
         >
           <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-500" />
-          <div>
-            <div className="text-sm font-medium text-amber-200">Enterprise Feature</div>
-            <div className="mt-1 text-xs text-muted-foreground">
-              LLM audit trail requires an enterprise license with the Audit Trail feature enabled.
-            </div>
+          <div className="space-y-2">
+            <div className="text-sm font-medium text-amber-200">LLM Audit Trail — Enterprise feature</div>
+            <p className="text-xs text-muted-foreground">
+              Per-LLM-call records (model, tokens, latency, status, prompt
+              redaction) ship with the Enterprise Edition. The Community
+              Edition does not persist these to keep the install lightweight
+              and avoid storing prompt content by default.
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Need basic ops auditing today? Login, sync, admin, and PAT events
+              are recorded in the regular <strong>Audit Log</strong>{' '}
+              (Settings → Security → Audit) on every edition.
+            </p>
           </div>
         </m.div>
       </div>
@@ -234,7 +248,7 @@ export function LlmAuditPage() {
         <m.div
           initial={{ opacity: 0, height: 0 }}
           animate={{ opacity: 1, height: 'auto' }}
-          className="glass-card space-y-3 p-4"
+          className="nm-card space-y-3 p-4"
           data-testid="audit-filters"
         >
           <div className="grid gap-3 sm:grid-cols-5">
@@ -305,11 +319,11 @@ export function LlmAuditPage() {
           ))}
         </div>
       ) : items.length === 0 ? (
-        <div className="glass-card py-12 text-center text-sm text-muted-foreground" data-testid="audit-empty">
+        <div className="nm-card py-12 text-center text-sm text-muted-foreground" data-testid="audit-empty">
           No audit entries found
         </div>
       ) : (
-        <div className="glass-card overflow-hidden" data-testid="audit-table">
+        <div className="nm-card overflow-hidden" data-testid="audit-table">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">
@@ -393,7 +407,7 @@ export function LlmAuditPage() {
 
 function StatCard({ label, value, variant = 'default' }: { label: string; value: string; variant?: 'default' | 'warning' }) {
   return (
-    <div className="glass-card p-4">
+    <div className="nm-card p-4">
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className={cn(
         'mt-1 text-xl font-semibold',

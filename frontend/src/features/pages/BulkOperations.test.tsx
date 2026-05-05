@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { BulkOperations } from './BulkOperations';
@@ -121,5 +121,34 @@ describe('BulkOperations', () => {
     expect(screen.getByTestId('bulk-embed-btn')).toBeInTheDocument();
     expect(screen.getByTestId('bulk-tag-btn')).toBeInTheDocument();
     expect(screen.getByTestId('bulk-delete-btn')).toBeInTheDocument();
+  });
+
+  it('hides the EE Permission button when batch_page_operations is not licensed', () => {
+    // Default wrapper has no EnterpriseContext.Provider → hasFeature() is
+    // false in CE/unlicensed mode (the default context value).
+    render(<BulkOperations {...defaultProps} />, { wrapper: createWrapper() });
+    expect(screen.queryByTestId('bulk-permission-btn')).not.toBeInTheDocument();
+  });
+
+  it('POSTs replace-tags when the user picks the Replace tag action', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    render(<BulkOperations {...defaultProps} />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByTestId('bulk-tag-btn'));
+    fireEvent.click(screen.getByTestId('tag-action-replace'));
+    fireEvent.change(screen.getByTestId('tag-input'), { target: { value: 'on-call, urgent' } });
+    fireEvent.click(screen.getByTestId('tag-submit'));
+
+    await waitFor(() => {
+      const call = fetchSpy.mock.calls.find(
+        (c) => typeof c[0] === 'string' && (c[0] as string).includes('/pages/bulk/replace-tags'),
+      );
+      expect(call).toBeDefined();
+      const body = JSON.parse((call![1] as RequestInit).body as string);
+      // Tags are normalised on the client (lowercase + dedupe + trim) then
+      // re-normalised on the server. The wire shape is the de-duped list.
+      expect(body.tags).toEqual(['on-call', 'urgent']);
+      expect(body.ids).toEqual(['page-1', 'page-2']);
+    });
   });
 });

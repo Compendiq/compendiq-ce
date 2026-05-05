@@ -709,3 +709,59 @@ describe('RedisCache.getOrCompute', () => {
     expect(computeFn).toHaveBeenCalledOnce();
   });
 });
+
+describe('RedisCache.invalidateAcrossUsers (#352)', () => {
+  let mockRedis: ReturnType<typeof createMockRedisClient>;
+  let cache: RedisCache;
+
+  beforeEach(() => {
+    mockRedis = createMockRedisClient();
+    cache = new RedisCache(asRedis(mockRedis));
+  });
+
+  it('SCANs the cross-user pattern and deletes every matching key', async () => {
+    // One SCAN page, two matching keys across two different userIds.
+    mockRedis.scan.mockResolvedValueOnce({
+      cursor: '0',
+      keys: ['kb:alice:spaces:list', 'kb:bob:spaces:list'],
+    });
+    mockRedis.del.mockResolvedValue(2);
+
+    await cache.invalidateAcrossUsers('spaces');
+
+    expect(mockRedis.scan).toHaveBeenCalledWith('0', {
+      MATCH: 'kb:*:spaces:*',
+      COUNT: 100,
+    });
+    expect(mockRedis.del).toHaveBeenCalledWith([
+      'kb:alice:spaces:list',
+      'kb:bob:spaces:list',
+    ]);
+  });
+
+  it('walks the cursor across multiple SCAN pages', async () => {
+    mockRedis.scan
+      .mockResolvedValueOnce({ cursor: '42', keys: ['kb:alice:spaces:list'] })
+      .mockResolvedValueOnce({ cursor: '0', keys: ['kb:bob:spaces:list'] });
+    mockRedis.del.mockResolvedValue(1);
+
+    await cache.invalidateAcrossUsers('spaces');
+
+    expect(mockRedis.scan).toHaveBeenCalledTimes(2);
+    expect(mockRedis.del).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not call DEL when SCAN returns no keys', async () => {
+    mockRedis.scan.mockResolvedValueOnce({ cursor: '0', keys: [] });
+
+    await cache.invalidateAcrossUsers('spaces');
+
+    expect(mockRedis.del).not.toHaveBeenCalled();
+  });
+
+  it('soft-fails when SCAN throws (logs, does not raise)', async () => {
+    mockRedis.scan.mockRejectedValue(new Error('Redis down'));
+
+    await expect(cache.invalidateAcrossUsers('spaces')).resolves.toBeUndefined();
+  });
+});

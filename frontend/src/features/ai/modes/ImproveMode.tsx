@@ -24,7 +24,7 @@ const IMPROVEMENT_DESCRIPTIONS: Record<(typeof IMPROVEMENT_TYPES)[number], strin
 export function ImproveTypeSelector() {
   const { improvementType, setImprovementType } = useAiContext();
   return (
-    <div className="glass-toolbar mb-4 space-y-2 p-3">
+    <div className="nm-toolbar mb-4 space-y-2 p-3">
       <span className="text-sm text-muted-foreground">Improvement type:</span>
       <div className="flex flex-wrap items-center gap-2">
         {IMPROVEMENT_TYPES.map((type) => (
@@ -160,7 +160,7 @@ export function ImproveModeInput() {
         maxLength={10000}
         rows={2}
         disabled={isStreaming}
-        className="w-full resize-y rounded-lg border border-border/40 bg-background/50 px-3 py-2 text-sm placeholder:text-muted-foreground/60 focus:border-primary/50 focus:outline-none disabled:opacity-50"
+        className="nm-input resize-y placeholder:text-muted-foreground/70 disabled:opacity-50"
       />
       {mcpEnabled && (
         <label className="flex items-center gap-2 text-sm text-muted-foreground" data-testid="improve-search-web-toggle">

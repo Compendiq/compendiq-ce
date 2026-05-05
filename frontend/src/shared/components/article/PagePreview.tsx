@@ -69,7 +69,7 @@ export function PagePreview({ pageId, children, className }: PagePreviewProps) {
             )}
             data-testid="page-preview-card"
           >
-            <div className="glass-card overflow-hidden p-3 shadow-xl">
+            <div className="nm-card overflow-hidden p-3 shadow-xl">
               {isLoading ? (
                 <div className="space-y-2">
                   <div className="h-4 w-3/4 animate-pulse rounded bg-foreground/10" />
@@ -105,24 +105,4 @@ export function PagePreview({ pageId, children, className }: PagePreviewProps) {
       </AnimatePresence>
     </span>
   );
-}
-
-/**
- * Wraps page links inside HTML content with PagePreview hover cards.
- * Returns an array of React elements with page links wrapped in PagePreview.
- */
-// eslint-disable-next-line react-refresh/only-export-components
-export function usePageLinksWithPreview(contentRef: React.RefObject<HTMLElement | null>) {
-  useEffect(() => {
-    if (!contentRef.current) return;
-    // Find all internal page links
-    const links = contentRef.current.querySelectorAll('a[href^="/pages/"]');
-    links.forEach((link) => {
-      const href = link.getAttribute('href') || '';
-      const match = href.match(/^\/pages\/(.+)$/);
-      if (match?.[1]) {
-        link.setAttribute('data-page-id', match[1]);
-      }
-    });
-  }, [contentRef]);
 }

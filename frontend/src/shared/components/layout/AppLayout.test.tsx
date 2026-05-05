@@ -278,7 +278,7 @@ describe('AppLayout', () => {
     expect(rootDiv.className).toContain('h-screen');
   });
 
-  it('panel wrapper uses uniform p-3 padding', () => {
+  it('panel wrapper is edge-to-edge (no padding) for flat chrome layout', () => {
     render(
       <AppLayout>
         <div>content</div>
@@ -286,7 +286,10 @@ describe('AppLayout', () => {
       { wrapper: createWrapper('/') },
     );
     const panelWrapper = screen.getByTestId('panel-wrapper');
-    expect(panelWrapper.className).toContain('p-3');
+    // Was p-3 + gap-2.5 in the v0.4-early floating-chrome layout. Now
+    // edge-to-edge, with the scroll container providing inner padding.
+    expect(panelWrapper.className).not.toContain('p-3');
+    expect(panelWrapper.className).not.toContain('gap-2.5');
   });
 
   it('has mobile sidebar toggle button', () => {

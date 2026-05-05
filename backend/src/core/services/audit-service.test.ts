@@ -236,3 +236,25 @@ describe.skipIf(!dbAvailable)('Audit Service', () => {
     });
   });
 });
+
+// Pure type-level test — no DB required. Guards against accidental removal
+// of the v0.4 AI-safety action entries. If the AuditAction union no longer
+// accepts one of these literals, this file fails to compile.
+describe('AuditAction v0.4 AI safety entries', () => {
+  it('accepts PII detection actions (EE #119)', () => {
+    const actions: AuditAction[] = ['PII_DETECTED', 'PII_POLICY_CHANGED'];
+    expect(actions).toHaveLength(2);
+  });
+
+  it('accepts AI output review lifecycle actions (EE #120)', () => {
+    const actions: AuditAction[] = [
+      'AI_REVIEW_SUBMITTED',
+      'AI_REVIEW_APPROVED',
+      'AI_REVIEW_REJECTED',
+      'AI_REVIEW_EDIT_AND_APPROVED',
+      'AI_REVIEW_EXPIRED',
+      'AI_REVIEW_POLICY_CHANGED',
+    ];
+    expect(actions).toHaveLength(6);
+  });
+});

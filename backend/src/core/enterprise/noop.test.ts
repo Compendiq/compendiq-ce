@@ -49,3 +49,17 @@ describe('noopPlugin (community mode)', () => {
     await expect(noopPlugin.registerRoutes({} as never, null)).resolves.toBeUndefined();
   });
 });
+
+describe('noopPlugin.resolveUsecaseOverride', () => {
+  it('returns null for any usecase', async () => {
+    expect(noopPlugin.resolveUsecaseOverride).toBeDefined();
+    const result = await noopPlugin.resolveUsecaseOverride!('chat');
+    expect(result).toBeNull();
+  });
+
+  it('returns null for summary, quality, auto_tag, embedding', async () => {
+    for (const u of ['summary', 'quality', 'auto_tag', 'embedding'] as const) {
+      expect(await noopPlugin.resolveUsecaseOverride!(u)).toBeNull();
+    }
+  });
+});

@@ -57,6 +57,23 @@ export const AdminSettingsSchema = z.object({
    * continue to follow the umbrella `audit_log: 365 days` sweep.
    */
   adminAccessDeniedRetentionDays: z.number().int().min(7).max(3650),
+  /**
+   * Compendiq/compendiq-ee#113 Phase B-3 — cluster-wide LLM queue
+   * concurrency. Persisted in `admin_settings.llm_concurrency` and
+   * broadcast via the `admin:llm:settings` cache-bus channel. Default 4
+   * (matches `LLM_CONCURRENCY` env var fallback in
+   * `domains/llm/services/llm-queue.ts`).
+   */
+  llmConcurrency: z.number().int().min(1).max(100),
+  /**
+   * Compendiq/compendiq-ee#113 Phase B-3 — cluster-wide LLM queue
+   * max-queue-depth (rejects new requests with QueueFullError when the
+   * pending count is at this cap). Persisted in
+   * `admin_settings.llm_max_queue_depth`. Default 50 (matches
+   * `LLM_MAX_QUEUE_DEPTH` env var fallback). Capped at 1000 to keep
+   * per-pod memory bounded; the route handler enforces this same range.
+   */
+  llmMaxQueueDepth: z.number().int().min(1).max(1000),
 });
 
 export const UpdateAdminSettingsSchema = z.object({
@@ -87,6 +104,18 @@ export const UpdateAdminSettingsSchema = z.object({
   llmMaxConcurrentStreamsPerUser: z.number().int().min(1).max(20).optional(),
   /** Issue #264 — optional on update; omitted → leave unchanged. */
   adminAccessDeniedRetentionDays: z.number().int().min(7).max(3650).optional(),
+  /**
+   * Compendiq/compendiq-ee#113 Phase B-3 — optional on update; omitted →
+   * leave the cluster-wide concurrency unchanged. Range mirrors the
+   * `setConcurrency` clamp in `llm-queue.ts` ([1, 100]).
+   */
+  llmConcurrency: z.number().int().min(1).max(100).optional(),
+  /**
+   * Compendiq/compendiq-ee#113 Phase B-3 — optional on update; omitted →
+   * leave the cluster-wide max-queue-depth unchanged. Capped at 1000 to
+   * keep per-pod memory bounded.
+   */
+  llmMaxQueueDepth: z.number().int().min(1).max(1000).optional(),
 });
 
 export type AdminSettings = z.infer<typeof AdminSettingsSchema>;

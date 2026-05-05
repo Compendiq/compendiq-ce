@@ -57,6 +57,7 @@ Custom turndown rules handle Confluence-specific macros:
 | `ac:structured-macro[include]`       | `<div class="confluence-include-macro" data-page-title="…">[Include: …]</div>` | `[Include: …]` placeholder |
 | `ac:structured-macro[excerpt-include]` | `<div class="confluence-include-macro" data-macro-name="excerpt-include">[Excerpt: …]</div>` | `[Excerpt: …]` placeholder |
 | `ac:structured-macro[toc]`           | `<div class="confluence-toc" data-maxlevel="…">[Table of Contents]</div>` | `[Table of Contents]` placeholder |
+| `ac:structured-macro[labels]`        | dropped on import (page metadata, no body)                   | — (not rendered)              |
 
 ### Round-trip notes (issue #300)
 

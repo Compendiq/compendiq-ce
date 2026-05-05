@@ -288,6 +288,275 @@ Settings configured via the admin UI are persisted in the `admin_settings` datab
 
 OIDC is configured entirely via the Admin UI (Settings > OIDC/SSO). No environment variables are required -- all OIDC configuration is stored in the database.
 
+### IP Allowlist (Enterprise, v0.4+)
+
+The IP allowlist is configured entirely via the Admin UI (Settings > IP allowlist) and persisted in the `admin_settings` table. It is an Enterprise-only feature — Community Edition builds ignore the configuration and register no routes. When enabled, a Fastify `onRequest` hook short-circuits requests from client IPs outside the configured CIDR ranges with a `403 ip_blocked` response, before any auth / business logic runs.
+
+**Config fields (admin UI)**
+
+| Field | Description |
+|-------|-------------|
+| Enable toggle | Off by default. When off, all traffic is allowed; the trusted-proxy list still applies (see below). |
+| Allowed CIDRs | IPv4 and IPv6 CIDRs whose client IPs may reach the API. Example: `10.0.0.0/8`, `2001:db8::/32`. |
+| Trusted proxies | CIDRs of reverse-proxy hosts whose `X-Forwarded-For` header will be honoured when resolving the client IP. See the gotcha below. |
+| Exempt paths | Read-only list: `/api/health`, `/api/admin/license`, `/api/auth/`. Always accessible so the health check, license-key rotation, and login flow cannot be locked out. |
+
+**Lockout recovery**
+
+If an admin saves an allowlist that excludes their own IP, the UI's "save button disabled until your IP tests as allowed" guard normally catches it. If you do lock yourself out — for example because the upstream proxy changed its source range after save — recover via one of:
+
+1. **Use an exempt path.** `/api/admin/license` and `/api/auth/login` bypass the allowlist. Authenticate from the exempt path, then use `PUT /api/admin/ip-allowlist` directly with `curl` / `httpie` to restore or widen the CIDR list.
+2. **Connect from an exempt network.** The defaults trust loopback (`127.0.0.1/32`, `::1/128`). Shell into a pod and `curl http://localhost:3000/api/admin/ip-allowlist` to edit locally.
+3. **Last resort — edit Postgres directly.** `UPDATE admin_settings SET setting_value = '…' WHERE setting_key = 'ip_allowlist';` — set `enabled` to `false` to disable the feature entirely, then reconfigure from the UI. Changes propagate cluster-wide via the cache-bus within ~1 second; no restart required.
+
+**Trusted proxies gotcha**
+
+If Compendiq sits behind a reverse proxy (nginx, Traefik, cloud load balancer) that injects `X-Forwarded-For`, you **must** add that proxy's source CIDR to the trusted-proxies list. Otherwise Compendiq sees every request as coming from the proxy itself — so either every request is blocked (proxy not in allowlist) or every request is allowed (proxy happens to be in allowlist, regardless of the real client IP).
+
+The Test panel in the admin UI surfaces the resolved client IP for an arbitrary input; use it to verify the topology matches your expectations before enabling the allowlist.
+
+**IPv6 gotcha**
+
+Node's dual-stack sockets surface IPv4 peers as IPv4-mapped-IPv6 addresses (`::ffff:1.2.3.4`). The allowlist handles this automatically — an IPv4 CIDR will match an IPv4-mapped-IPv6 peer — so you do **not** need to add the `::ffff:…/96` mapped range to your IPv4 CIDRs. Conversely, a pure-IPv6 client that is not IPv4-mapped requires explicit IPv6 CIDR coverage.
+
+**Trust-proxy behaviour change (v0.4)**
+
+Before v0.4, Fastify was started with `trustProxy: true` (trust every peer's `X-Forwarded-For`). From v0.4, the server reads trusted-proxies from `admin_settings` at boot; when the row is absent or the feature is off, the default trusted list is loopback only (`127.0.0.1/32`, `::1/128`). Deployments behind a non-loopback reverse proxy **must** populate `trusted_proxies` explicitly or `req.ip` will report the proxy's IP rather than the real client's. See the `v0.4` CHANGELOG entry for the full behaviour-change note.
+
+### RAG Per-page ACL Enforcement (Enterprise, v0.4+)
+
+RAG retrieval in CE already post-filters candidate chunks by the user's readable space set (ADR-022). Enterprise deployments additionally enforce per-page view restrictions: if a Confluence page has explicit read restrictions, users outside the allowed list won't see the page's chunks in any RAG response (chat, ask, search-backed AI flows). Feature flag: `rag_permission_enforcement`.
+
+**How it works**
+
+1. The Confluence sync calls `/rest/api/content/{pageId}/restriction` for each page (and walks ancestors — Confluence view restrictions **are** inherited) and writes the effective read list into `access_control_entries` as `source='confluence'` rows with `synced_at=<run start>`.
+2. A stale-ACE sweep at the end of the sync removes any `source='confluence'` row that wasn't refreshed this run — so restrictions removed in Confluence, or users de-listed from a restriction, propagate on the next sync.
+3. The RAG hybrid retrieval (`hybridSearch`) overfetches 1.5× `topK` at the vector + FTS stages. After the RRF merge, a second post-filter calls `userCanAccessPage(userId, pageId)` for each candidate and drops blocked pages. Rank order is preserved.
+4. `source='local'` (admin-created) ACEs are never touched by sync. Manual overrides survive.
+
+**Sync cadence and leak-window behaviour**
+
+Restriction changes in Confluence take effect on Compendiq's next successful sync of the affected page — same cadence as content changes (`SYNC_INTERVAL_MIN`, default 15 min). Within that window, RAG may return stale visibility. This is the trade-off for synchronous sync mode in v0.4; an async-backfill mode (content first, ACLs after) is a future v0.5 option that shrinks the content-sync duration at the cost of a briefly larger leak window.
+
+**Sync duration impact**
+
+Enabling the feature adds at least one Confluence API call per synced page (restriction fetch), plus one per unique ancestor (cached across sibling pages within a sync run). At Confluence's 60 RPM default, a 1000-page space with moderate nesting typically adds 15-25 minutes to the first sync run. Subsequent runs are much faster because the ancestor cache hits and most pages' restrictions haven't changed. For deployments with large restricted spaces, expect the first post-enable sync to take notably longer than historical runs.
+
+**Unmapped Confluence users**
+
+If a Confluence page's read restriction names a user who has never logged into Compendiq (no matching `users` row — most often because the OIDC login flow hasn't provisioned them yet), the sync cannot persist an ACE for that user. The event is logged as an `ACE_SYNC_SKIPPED_UNMAPPED_USER` audit entry with `{ userKey, pageId }`. Safe default: **implicit deny** — the missing user will not match any ACE, so they are denied access. Counter-intuitively this means first-time RAG access for the restricted user happens after they've logged in and the next sync has run. Admin-UI visibility of the skip counter is planned for v0.5.
+
+**Disabling the feature**
+
+Tier-downgrade (license change to a non-enterprise tier) disables the flag. Existing `source='confluence'` ACEs remain in the DB. `userCanAccessPage()` continues to honour them — safe over-restriction. To fully "undo" the sync, manually `DELETE FROM access_control_entries WHERE source='confluence';` after disabling.
+
+**Verification**
+
+- Integration regression guard: `backend/src/domains/confluence/services/sync-service.integration.test.ts` (sync path) and `backend/src/domains/llm/services/rag-service.integration.test.ts` (query path).
+- ADR-023 documents the full design and rationale.
+
+### Sync conflict resolution (Enterprise, v0.4+)
+
+Confluence is the system of record for synced pages, but Compendiq supports local edits — the in-app editor, AI improve / generate / apply-improvement write-backs, and draft publishing all stamp `pages.local_modified_at` to mark the row as having unpublished local changes (CE #305). The next inbound sync pulls a Confluence-side change for that same page, and the question becomes: which side wins? The sync conflict policy answers that question per-page.
+
+**Three policies (Settings → Content → Sync conflict policy)**
+
+| Policy | Behaviour | When to use |
+|--------|-----------|-------------|
+| `Confluence wins` (default) | Apply the Confluence-side change; discard the local edit. Audit emits `SYNC_OVERWROTE_LOCAL_EDITS` whenever a local edit was actually present so you have a forensic record. No queue. | Compendiq is read-mostly — admins rarely edit pages locally, and Confluence remains the canonical source. The legacy v0.3 behaviour. |
+| `Compendiq wins` | Skip the inbound write; preserve the local edit. Audit emits `SYNC_CONFLICT_DETECTED` with `resolution: 'kept_local'`. The local edit must be pushed back to Confluence manually (the editor's "Publish to Confluence" button) — otherwise the two systems drift further apart on every sync cycle. | Short-window edits where you definitely want the local copy to take precedence (e.g. an AI-improvement run is mid-publish and you don't want a remote overwrite to land on top of it). Use sparingly: drift compounds. |
+| `Manual review` | Stash the inbound Confluence body in `pending_sync_versions`, flip `pages.conflict_pending = TRUE`, and surface the page in **Settings → Content → Sync conflicts** for admin review. The live row stays unchanged until the admin diff-reviews and picks. Audit emits `SYNC_CONFLICT_DETECTED` with `resolution: 'queued_for_review'`. | High-control workflows where every conflict needs explicit review (regulated documentation, contractual content). Trades sync latency for safety. |
+
+**Important fall-through**: the policy only kicks in when there are *actual* local edits (`local_modified_at > last_synced`). If the page has no local edits, both `compendiq-wins` and `manual-review` transparently fall through to `confluence-wins` — there's nothing to preserve, so the queue isn't padded with non-conflicts and the routine sync rate isn't degraded.
+
+**Resolution flow (manual-review)**
+
+1. Sync detects a conflict; the page lands in the conflicts list.
+2. Admin opens **Settings → Content → Sync conflicts**, clicks **Review** on a row.
+3. The dialog shows a side-by-side / unified diff of the local body against the queued Confluence body.
+4. Admin picks one of three actions:
+   - **Keep local** — drop the queued Confluence version, keep the local row. Audit emits `SYNC_CONFLICT_RESOLVED_LOCAL`.
+   - **Take Confluence** — apply the queued version to the live row, clear `local_modified_at`. Audit emits `SYNC_CONFLICT_RESOLVED_REMOTE`.
+   - **Cancel** — close the dialog without resolving; the queue row remains.
+5. The row clears from the conflicts list; if the page had multiple queued versions, the flag stays on until all are resolved.
+
+**Retention**
+
+`pending_sync_versions` rows are pruned by the daily retention worker after `pending_sync_versions_retention_days` (`admin_settings` key, default **90 days**). Resolution deletes rows immediately, so the retention sweep only catches genuinely-abandoned conflicts. Override the default via the env fallback `RETENTION_PENDING_SYNC_VERSIONS_DAYS` (consulted only when the `admin_settings` row is absent). Clamp range: `[7, 3650]`.
+
+**Audit trail**
+
+Five new event types under the existing closed `AuditAction` union — query them via the standard audit-log filters:
+
+- `SYNC_POLICY_CHANGED` — policy radio saved (metadata: `{ previous, next }`).
+- `SYNC_CONFLICT_DETECTED` — emitted on every per-page conflict for the `compendiq-wins` and `manual-review` policies (metadata: `{ confluence_id, policy, resolution, sync_run_id }`). Not emitted for the `confluence-wins` no-local-edits path — that's routine sync, not a conflict.
+- `SYNC_OVERWROTE_LOCAL_EDITS` — `confluence-wins` policy applied an inbound update on top of an actual local edit (metadata includes `local_modified_at` and `last_synced` so post-hoc analysis can compute the drift window).
+- `SYNC_CONFLICT_RESOLVED_LOCAL` / `SYNC_CONFLICT_RESOLVED_REMOTE` — admin clicked "Keep local" / "Take Confluence" in the resolve dialog.
+
+**Cluster-wide hot-reload**
+
+Saving a new policy publishes on the `sync:conflict:policy:changed` cache-bus channel; every other pod re-reads from `admin_settings` and switches to the new policy on its next sync run. The change does NOT retro-apply to a sync run already in flight — that run completes under the policy it started with. This is by design: midstream policy switches would create a hybrid trail of audit events that's hard to reason about.
+
+**Lost-update guard**
+
+The conflict-detection branch in `sync-service.ts::syncPage` runs the inbound-update UPDATE inside a transaction that opens with `SELECT … FOR UPDATE`. Two concurrent sync runs that touch the same page now serialise on the row lock — the second caller blocks until the first commits, then re-reads and either short-circuits (the first run already applied the same content) or queues a fresh `pending_sync_versions` row reflecting the post-merge truth. Without this lock, a second concurrent run could read the same `local_modified_at` snapshot, decide independently to apply the policy-driven UPDATE, and silently clobber the first run's writes.
+
+### AI Review Policy (Enterprise, v0.4+)
+
+When the AI review workflow is enabled, AI-generated output is queued in `ai_output_reviews` rather than being written straight to the page draft. A reviewer must explicitly approve, reject, or edit-and-approve each row before the proposed content is applied. Configure the policy at **Settings → AI → AI review policy**.
+
+**Three modes (per-action overridable)**
+
+| Mode | Behaviour | When to use |
+|------|-----------|-------------|
+| `auto-publish` | Bypasses the queue entirely. AI output is applied to the draft as soon as the AI worker finishes. No audit gate, no human review. | Low-risk actions where you trust the model — typically `auto_tag` and `summary`. The fastest path; this is the legacy v0.3 behaviour. |
+| `review-required` | Inserts a `pending` row in `ai_output_reviews`. The page draft is **not** updated until a reviewer approves or edit-and-approves. Audit emits `AI_REVIEW_SUBMITTED` on enqueue and `AI_REVIEW_APPROVED` / `AI_REVIEW_REJECTED` / `AI_REVIEW_EDIT_AND_APPROVED` on action. | Default for editable content actions (`improve`, `generate`, `apply_improvement`). The right balance for most teams. |
+| `review-required-with-blocking-pii` | Same as `review-required`, plus: if the PII detector flagged the proposed content, the row is blocked from approval until the findings are cleared. Falls back transparently to plain `review-required` when the PII detector is disabled or absent (graceful degrade — `pii_findings_id` is nullable on the table). | Regulated content; high-stakes pages where personally identifiable data must not slip through unreviewed. Requires the `pii_detection` feature to be active for full effect. |
+
+**Per-action configuration**
+
+The `default_mode` applies to every action that doesn't have an explicit override. Per-action overrides let you trust low-risk surfaces while gating riskier ones in the same deployment. Example: `default_mode = 'review-required'` plus an override of `auto_tag = 'auto-publish'` and `summary = 'auto-publish'` gives you human review on Improve / Generate / Apply-improvement while letting tag-suggestion and summary land directly. Set an action's mode select to **Inherit default** to remove its override.
+
+The closed set of actions: `improve`, `summary`, `generate`, `auto_tag`, `apply_improvement`. Adding a new AI surface requires extending the `AiReviewAction` union in both `ce/backend/src/core/services/ai-review-hook.ts` and the `per_action_overrides` Zod schema in `@compendiq/contracts/src/schemas/ai-review.ts`.
+
+**Expiry semantics**
+
+A pending review that nobody acts on is auto-expired after `expire_after_days` days (default 30, range 1–365). The author is notified and the proposed content is discarded — there is **no implicit auto-approval on expiry**. The expire job is a daily BullMQ scheduler tick that runs `UPDATE … SET status = 'expired' WHERE status = 'pending' AND now() > expires_at` and aggregates author notifications into a single digest per author per run.
+
+Rejected and expired rows linger in `ai_output_reviews` for forensic review for an additional 30 days (the cleanup retention window — adjust per the data-retention policy if you have one configured), then the daily retention sweep removes them. Approved and edit-and-approved rows live for the standard audit-retention window because they're the provenance trail for content that landed on a real page.
+
+**Reviewer-roles design**
+
+For v0.4 the reviewer access gate is admin-only, controlled by `fastify.requireAdmin` on every queue / detail / action route in the EE overlay. The original brief proposed a per-space scope (any user with `editor` on the page's space can review), but the matching `getUserAccessibleSpaces` helper isn't wired through yet — that lands in v0.5. Until then, treat the queue as an admin tool. A dedicated `reviewer` role (separate from admin) is also v0.5+ if customer demand surfaces.
+
+**Audit trail**
+
+Six new event types under the existing closed `AuditAction` union — query them via the standard audit-log filters:
+
+- `AI_REVIEW_SUBMITTED` — emitted by the EE overlay when an AI run is gated behind the review policy and a `pending` row is inserted (metadata: `{ actionType, pageId }`).
+- `AI_REVIEW_APPROVED` — reviewer clicked **Approve**. The proposed content has been applied to `pages.draft_body_*`. Subsequent publish to Confluence is gated by the standard publish flow.
+- `AI_REVIEW_REJECTED` — reviewer clicked **Reject**. No page mutation. Optional `notes` field surfaces in the author's notification so they can re-run with better instructions.
+- `AI_REVIEW_EDIT_AND_APPROVED` — reviewer modified the proposed content before approving. Two audit rows are recorded — the original AI authorship plus the reviewer modification — preserving full provenance.
+- `AI_REVIEW_EXPIRED` — daily expire job swept a stale pending row. Aggregated per-author notifications follow.
+- `AI_REVIEW_POLICY_CHANGED` — admin saved a new policy via the policy tab (metadata: `{ previous, next }`).
+
+**CE-only deployments**
+
+In CE-only deployments the routes 404 — the overlay isn't loaded, so there's nothing to enqueue against. The CE `enqueueAiReview` hook returns `{ mode: 'auto-publish' }` and the AI surfaces fall through to their legacy direct-write behaviour. The admin tab surfaces a non-fatal "EE only" notice rather than crashing.
+
+### PII Detection (Enterprise, v0.4+)
+
+When the PII detector is licensed and enabled, every AI inference response is scanned for personally identifiable information before it reaches the end user. Three layers run on every inference: regex (German + generic checksum-validated rules — IBAN, credit card, DE Tax ID, DE Personalausweis, DE RVNR), Transformers.js NER (`Davlan/distilbert-base-multilingual-cased-ner-hrl`, q8 ONNX, CPU-only, multilingual — covers PERSON / LOCATION / ORGANIZATION), and an optional asynchronous LLM-as-judge for ambiguous spans. Configure the policy at **Settings → AI → PII detection**.
+
+**Per-use-case actions**
+
+The five inference call sites (`chat`, `improve`, `summary`, `generate`, `auto_tag`) each carry an independent action mode so you can be strict on Improve / Generate while staying lightweight on Auto-tag:
+
+| Mode | Behaviour | When to use |
+|------|-----------|-------------|
+| `off` | Skip the scanner entirely. Output passes through with no findings recorded. | Auto-tag and other low-risk surfaces where the cost of every-call scanning isn't worth the false-positive noise. |
+| `flag-only` | Run the scanner and persist findings, but pass content through unmodified. Findings appear in the LLM Audit page. | The default — gives you the audit trail without ever altering AI output. |
+| `redact-and-publish` | Splice detected spans out of the output and replace each with `[REDACTED:CATEGORY]`. End users see the redacted version; findings persist for audit. | Customer-facing actions where leaks must be prevented but human review would be too slow. |
+| `block-publication` | Reject the inference response with a 409 when findings are present. Integrates with the AI review queue (#120) — blocked outputs surface there for human review before reaching the page. | High-stakes, regulated content. Pair with the `review-required-with-blocking-pii` AI review policy mode. |
+
+**Confidence threshold**
+
+NER findings below the configured threshold (0..1, default 0.7) are dropped before policy actions apply. Higher = fewer false positives, more false negatives. Regex findings always emit `confidence: 1.0` and are unaffected.
+
+**Asynchronous LLM-as-judge**
+
+The optional second pass calls the configured LLM through the chosen `LlmUsecase` (defaults to `quality` — typically the cheap classification model). It runs on a low-priority BullMQ queue so it never blocks the user's request; findings are merged into the audit entry on completion. Three modes: `off` (default), `flagged-only` (only when regex+NER produced findings — minimises cost), `always` (every scan).
+
+**Categories to flag**
+
+Closed union of categories the scanner can emit. Uncheck a category to drop its findings before any action runs (regex still matches; the result is just discarded). Adding a new category requires extending the `PII_CATEGORIES` union in `@compendiq/contracts/src/schemas/pii-policy.ts`.
+
+**Cluster-wide hot reload**
+
+Saves publish on the new `pii:policy:changed` cache-bus channel; other pods invalidate their cached policy view within ~1 s. No restart required.
+
+**Audit trail**
+
+Every PUT emits `PII_POLICY_CHANGED` with the previous and next policy in metadata. Per-finding `PII_DETECTED` events are emitted by the inference call sites and queryable via the standard audit-log filters.
+
+**Air-gapped deployments**
+
+The EE Docker image bundles the NER model (`/app/.cache/huggingface`, ~67 MB) at build time so the runtime never reaches `huggingface.co`. Set `PII_SCANNER_NO_REMOTE=1` to fail loud if the bundle is missing rather than silently re-downloading. Honours `TRANSFORMERS_CACHE_DIR` / `HF_HOME` for operators relocating the bundle.
+
+**CE-only deployments**
+
+In CE-only deployments the `GET`/`PUT /api/admin/pii-policy` routes 404 — the EE overlay isn't loaded. The admin tab surfaces a non-fatal "API not registered yet" notice rather than crashing, mirroring the IP allowlist / webhooks / AI review tabs.
+
+### Compliance Reports (Enterprise, v0.4+)
+
+When the `compliance_reports` feature is licensed and enabled, admins can self-serve evidence packets for SOC 2 Type II and ISO 27001:2022 audits at **Settings → Compliance Reports**. Each report produces a ZIP containing a PDF cover sheet (with a SHA-256 integrity hash of the CSV body) and the CSV evidence body. Generation is recorded in the audit log under `ADMIN_ACTION` with `action: 'generate_compliance_report'` for chain-of-custody.
+
+**Customer model**
+
+The buyer is the customer's IT or security manager — not the auditor. The reports are designed to be generated by an admin and handed to a Big Four (or smaller) auditor as evidence, not consumed inside an audit firm's tooling. Output is intentionally portable (PDF + CSV) rather than tied to a specific GRC platform.
+
+**The seven reports**
+
+| # | Report | id | SOC 2 | ISO 27001 | What it attests |
+|---|--------|-----|-------|-----------|-----------------|
+| 1 | **User Access Report** | `user_access` | CC6.2, CC6.6 | A.5.15, A.5.18 | Per-user identity, lifecycle (`created_at`, `last_login_at`, `deactivated_at`), current role + group + space-role assignments, and login activity in the reporting window. |
+| 2 | **Privileged Access Report** | `admin_actions` | CC6.3 | A.8.2 | Every admin-role action in the reporting window — every privileged operation captured by the `ADMIN_ACTION` audit event. |
+| 3 | **Content Modification Report** | `sync_data_flow` | — | A.8.15 | Per-page create / update / delete / restore / move / reorder / draft-publish events plus the three bulk umbrella actions (tag, tag-replace, permission). One row per request for bulk events; per-page rollup lives in `metadata.bulkIds`. |
+| 4 | **Authentication & Session Report** | `auth_session` | CC6.1, CC7.2, CC7.3 | A.8.16 | Logins (success + failure with `auth_method` and `failure_reason`), logouts, token refresh / family revocation, session create/revoke, password resets. MFA columns are reserved (MFA is v0.5+). |
+| 5 | **LLM Usage & Safety Attestation** | `ai_usage` | CC6.7 | A.8.15 | Per-call attestation with the P0f safety flags (`prompt_hash`, `prompt_injection_detected`, `sanitized`). **Plaintext prompts and responses are NEVER exported** — only the SHA-256 fingerprint. |
+| 6 | **RBAC Change Log** | `rbac_changes` | CC6.3 | A.5.18 | Every RBAC mutation: role grants/revokes, group lifecycle + membership, space access, page-level ACEs, page-permission inheritance toggles. |
+| 7 | **Data Retention Attestation** | `data_retention` | — | A.8.15 | Every retention-pruning sweep (`RETENTION_PRUNED` audit event) with the table touched, rows pruned, and retention window applied. Includes zero-row heartbeat sweeps so a clean window proves the cron ran. |
+
+**Generating a report**
+
+1. Open **Settings → Compliance Reports**. The tab is admin-only and gated on a valid Enterprise license with the `compliance_reports` feature.
+2. Pick a from / to window. The default is the last 30 days ending today (00:00 local). Inline validation rejects `from >= to`, `to` more than 24 hours in the future, and `from` more than 10 years in the past — the same bounds the backend orchestrator enforces.
+3. Click **Generate & download**. The browser downloads a ZIP named `compliance-<id>-YYYY-MM-DD.zip`. The success toast surfaces the first 12 characters of the cover sheet's SHA-256 hash for at-a-glance verification.
+
+Each card lists the SOC 2 / ISO 27001 control mapping for the report inline so the right evidence packet can be picked without consulting a separate mapping document.
+
+**Plaintext-safety contract for Report 5**
+
+Report 5 reads from the `llm_audit_log` table but its SQL `SELECT` lists 14 explicit columns — `input_text`, `output_text`, and `input_messages` (the columns EE deployments use to optionally store full prompts when `admin_settings.llm_audit_full_text` is enabled) are **not** projected. Defence-in-depth runs in three layers:
+
+1. The report module's `SELECT` is explicit; no `SELECT *`.
+2. The orchestrator's CSV writer enforces a `FORBIDDEN_CSV_COLUMNS` deny-list that includes `password_hash`, `pat_encrypted`, `oidc_secret`, `webhook_secret`, `signing_key`, `jwt_secret`, `input_text`, `output_text`, `input_messages`. Any column matching the list throws — and the thrown error message never echoes the offending cell value (no log leak).
+3. Every report module declares its column set up front (via the `ReportData.columns` array); the writer asserts that no row introduces a column outside the declared set.
+
+Auditors receive only the SHA-256 `prompt_hash`. To pivot from a hash back to the original call (e.g. during incident investigation), use the same hash on the LLM Audit page (**Settings → LLM Audit**) — that page is gated separately by the `llm_audit_trail` feature and may surface plaintext if `llm_audit_full_text` is on.
+
+**PDF cover sheet integrity**
+
+Every cover sheet prints the SHA-256 of the CSV body bytes and the byte-length. The same hash is also returned in the `X-Report-Sha256` response header for callers verifying the download programmatically. There is no PDF/A signing in v0.4 — the integrity model is "the hash is on the cover, the cover is in the ZIP, the ZIP is the evidence packet." Customers who require a digital signature (Adobe Sign, DocuSign) can sign the ZIP themselves; the v0.5 roadmap evaluates ETSI PAdES-LT signing of the cover.
+
+**Audit-log gap caveats**
+
+Each report's cover sheet prints any caveats discovered at generation time. Common cases:
+
+- **Audit log is empty** — the database has no audit rows at all. The report is empty for any window. Investigate whether audit-event capture is active.
+- **Audit log earliest entry is after window start** — the retention policy pruned older audit rows. The report covers only the visible portion of the window.
+- **Pre-P0f rows in window (Report 5)** — when migration 073 (introducing `prompt_hash` / `prompt_injection_detected` / `sanitized`) landed mid-window, rows from before the migration carry NULL `prompt_hash` and FALSE safety flags by default. The caveat tells auditors to read those as "not attested" rather than "no incidents".
+- **No retention-pruning rows (Report 7)** — the window contains no `RETENTION_PRUNED` audit events but the audit log itself is non-empty. Either the retention worker did not run, or it ran without emitting heartbeats. The cover flags this as a finding-class signal.
+- **MFA not yet implemented (Report 4)** — the columns for `MFA_ENROLLED` / `MFA_DISABLED` are reserved in the audit-action union but no emitter writes them yet (MFA ships in v0.5+). The caveat suppresses itself once the first real MFA row is observed.
+
+**Bulk audit-volume bound (Report 3)**
+
+`BULK_PAGE_TAGGED`, `BULK_PAGE_TAGS_REPLACED`, and `BULK_PAGE_PERMISSION_CHANGED` emit one umbrella row per request, NOT one row per affected page (per epic v0.4 §3.6 / R8). The per-page rollup lives in `metadata.bulkIds` + `metadata.affectedCount`. Auditors needing per-page granularity for a bulk event must dereference `metadata.bulkIds`. Page-permission ACE events (`ACE_GRANTED` / `ACE_REVOKED` / `PAGE_INHERIT_PERMS_CHANGED`) live in Report 6 (RBAC Change Log) and are deliberately not duplicated in Report 3.
+
+**v0.4 scope deferrals**
+
+- **Confluence sync-history attestation** (originally part of Report 7's scope, P0e) — deferred to v0.5. The `confluence_sync_history` table does not yet exist in CE; the cover sheet documents this scope boundary so an auditor doesn't infer it as a coverage gap. Sync-related events (`SYNC_STARTED`, `SYNC_COMPLETED`, `SYNC_CONFLICT_*`) appear in the general audit_log and can be cross-referenced separately during audit prep.
+- **Per-call PDF/A signing** — deferred to v0.5 (see above).
+- **Auditor-facing read-only role** — the v0.4 access gate is admin-only. A separate `auditor` role that can generate reports without other admin powers is on the v0.5+ roadmap if customer demand surfaces.
+
+**Audit trail**
+
+Every generation emits `ADMIN_ACTION` with metadata `{ action: 'generate_compliance_report', reportId, rangeFrom, rangeTo, rowCount, csvBytes, pdfBytes, zipBytes, sha256 }`. Row content is never logged — only the artefact's hash and byte sizes — so an admin running 100 reports does not bloat the audit log or leak content into operational logs.
+
+**CE-only deployments**
+
+In CE-only deployments the `/api/admin/compliance-reports` and `/api/admin/compliance-reports/generate` routes 404 — the EE overlay isn't loaded. The Settings → Compliance Reports tab is hidden by the `requiresFeature: 'compliance_reports'` filter on the tab list; for a defence-in-depth direct URL navigation, the tab itself surfaces an "EE license required" panel.
+
 ### Monitoring (OpenTelemetry)
 
 | Variable | Default | Description |
@@ -509,6 +778,80 @@ If you need to reset a password without admin UI access (for example the last ad
 
 - An admin cannot deactivate, delete, or demote themselves via the admin API — deliberate, to avoid accidentally locking the install out of admin access.
 - The `__system__` user (UUID `00000000-0000-0000-0000-000000000000`) owns built-in templates. It does not count toward the "last active admin" check and cannot log in — it is an internal sentinel and must not be edited or deleted.
+
+### Bulk user operations (Enterprise, v0.4+)
+
+> Enterprise-only — this section applies only when the licence grants `bulk_user_operations`. The Settings → Users page degrades to the per-user CRUD described above when the feature is unlicensed.
+
+The Settings → Users page surfaces two bulk affordances when the licence grants the feature:
+
+1. **Bulk import** — header button. Opens a three-step CSV import dialog: pick a `.csv` file → preview parsed rows with field-level errors and duplicate detection → confirm and apply with the chosen mode.
+2. **Multi-select bulk actions** — checkboxes on each row plus a select-all in the header. Once at least one row is checked the **Bulk actions** button appears, opening the action dialog (change role, deactivate with optional reason, reactivate, add to group, remove from group). The current admin's row never carries a checkbox so a single mistaken header click cannot bulk-deactivate the operator.
+
+Both flows share the same audit semantics as the per-user CRUD: a wrapper `BULK_USER_IMPORT` event surrounds the per-row `USER_CREATED` / `USER_UPDATED` / `USER_DEACTIVATED` / `USER_REACTIVATED` / `USER_HARD_DELETED` audit entries so the compliance report can reconstruct exactly who triggered which change at the per-user grain.
+
+#### CSV format
+
+| Column | Required | Notes |
+|---|---|---|
+| `username` | yes | 1–50 chars; letters, digits, `.`, `_`, `-` only. Unique. |
+| `email` | yes | RFC-5321 mailbox; max 254 chars. Lower-cased before comparison. Unique. |
+| `displayName` | no | 1–100 chars. Free text. |
+| `role` | yes | `admin` or `user` (lower-case). Per-space role assignment lives in RBAC and is **not** writeable through this CSV. |
+| `initialPassword` | no | When set, the imported user can log in immediately with this password. When blank, the server falls back to the invitation flow if `sendInvitation=true`. |
+| `sendInvitation` | no (default `true`) | When true and SMTP is configured, the new user is emailed a temporary password with a forced reset prompt. When SMTP is not configured the temp password is shown in the import response so the admin can hand it over out-of-band. |
+
+A header row is required and must match the column names verbatim — the parser is column-name driven, not positional.
+
+#### Example CSV
+
+```csv
+username,email,displayName,role,initialPassword,sendInvitation
+alice,alice@corp.example,Alice Smith,user,,true
+bob,bob@corp.example,Bob Jones,admin,ChangeMe!2026,false
+charlie,charlie@corp.example,,user,,true
+diana,diana@corp.example,Diana Prince,user,,true
+eric,eric@corp.example,Eric Engineer,admin,,true
+```
+
+A starter template ships with the repository: [`docs/assets/bulk-users-template.csv`](assets/bulk-users-template.csv). Save a copy and edit the rows to match your roster.
+
+#### Import modes
+
+The confirm step asks which mode to apply:
+
+- **Create only** — the safe default. The server errors out as soon as any row collides with an existing username or email. Use this for first-time onboarding batches where you are sure none of the rows overlap with the live roster.
+- **Upsert** — duplicates are updated in place (display name, role, optionally password); new rows are created. Useful for periodic full-roster syncs from an HRIS export.
+
+Both modes apply atomically against the database — either every row in the batch lands or none of them do (the EE overlay wraps the apply in a single transaction). The preview step is read-only; nothing is written until you press the apply button.
+
+#### Bulk-action catalogue
+
+The multi-select action menu offers:
+
+| Action | Notes |
+|---|---|
+| Change role | Sets `role` for every selected user. Subject to the same `LAST_ADMIN` guard as the per-user route — demoting the only remaining admin is rejected with HTTP 409. |
+| Deactivate (optional reason) | Soft-deactivates each selected user and revokes their refresh tokens. Reason is recorded against every per-row audit entry. |
+| Reactivate | Reverses a previous deactivation. Refresh tokens are not restored — the user signs in fresh. |
+| Add to group | Adds every selected user to the named RBAC group. |
+| Remove from group | Removes every selected user from the named RBAC group. |
+
+The **last-admin** and **self-action** guards from the per-user CRUD apply unchanged: bulk requests that would demote/deactivate/delete the only remaining admin or the calling admin themselves are rejected at the EE overlay layer with HTTP 409 / 400 respectively.
+
+#### CSV injection — operator hardening
+
+Anyone authoring a bulk-user CSV that will later be opened in a spreadsheet should be aware that fields starting with `=`, `+`, `-`, or `@` are interpreted as **formulas** by Excel, Google Sheets, and LibreOffice Calc. A maliciously crafted CSV can therefore execute formulas — including `=HYPERLINK(...)` data-exfiltration payloads — against an unsuspecting admin who opens the file to inspect it before re-uploading.
+
+Mitigations on the operator side:
+
+- Never paste untrusted input directly into a `displayName` cell. If you receive a roster from an external system, sanitise it first (e.g. prefix any cell starting with `= + - @` with a single quote).
+- Open the CSV in a plain-text editor first when in doubt. The Compendiq import dialog only ever reads the file as text — it does not execute formulas.
+- The export side of the bulk feature (when shipped) prefixes any cell starting with the four formula characters with a single quote per OWASP guidance.
+
+#### Inert in CE-only deployments
+
+The CE half of the bulk feature ships the contracts, the UI, and the audit-event names. The actual server implementation lives in the EE overlay and is loaded at runtime when the licence grants `bulk_user_operations`. In a CE-only deployment the routes do not exist and the UI is hidden by the licence gate; the affordance also degrades gracefully to a "requires Enterprise" message if the route ever 404s (for instance, between an EE licence-key install and the next overlay deployment).
 
 ## Encryption Key Rotation
 

@@ -312,7 +312,7 @@ Enterprise types are co-located with the plugin loader (`core/enterprise/types.t
 **Critic note:** Running the benchmark requires a seeded database with 1,000 pages AND their embeddings (requires Ollama running with bge-m3). Results will be hardware-specific.
 
 **Tasks:**
-1. Run seed script: `npx tsx scripts/seed-perf-data.ts` (creates 1,000 pages).
+1. Seed ≥1,000 pages via a real Confluence sync (the standalone `scripts/seed-perf-data.ts` was removed in #410 as unused — use the connector flow instead).
 2. Measure hybrid search latency: keyword, semantic, and hybrid modes.
 3. Record results in `docs/PERFORMANCE.md` (file exists but has no measured data).
 4. If p99 > 500ms: investigate query plans, HNSW index status.

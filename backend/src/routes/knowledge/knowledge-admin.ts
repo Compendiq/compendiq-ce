@@ -51,14 +51,28 @@ export async function knowledgeAdminRoutes(fastify: FastifyInstance) {
   });
 
   // POST /api/llm/summary-regenerate/:pageId - re-generate summary for one page
-  fastify.post('/llm/summary-regenerate/:pageId', async (request) => {
+  fastify.post('/llm/summary-regenerate/:pageId', {
+    preHandler: fastify.requireAdmin,
+    config: { rateLimit: { max: adminMax, timeWindow: '1 minute' } },
+  }, async (request) => {
     const { pageId } = z.object({ pageId: z.string().min(1) }).parse(request.params);
 
-    // Verify page exists — use id (works for both standalone and Confluence pages)
-    const pageResult = await query<{ id: number }>(
-      'SELECT id FROM pages WHERE id = $1 OR confluence_id = $1',
-      [pageId],
-    );
+    // Verify page exists. `pages.id` is SERIAL (integer); passing a non-numeric
+    // string (e.g. a Confluence content id) into the bare `WHERE id = $1` cast
+    // makes Postgres throw 22P02 invalid_text_representation, which surfaces as
+    // a 500 to the user (see #356). Numeric-guard the id branch so a non-numeric
+    // pageId only matches the text `confluence_id` column. Pattern mirrors
+    // `pages-crud.ts:1026-1030`.
+    const isNumericId = /^\d+$/.test(pageId);
+    const pageResult = isNumericId
+      ? await query<{ id: number }>(
+          'SELECT id FROM pages WHERE id = $1::int OR confluence_id = $2',
+          [pageId, pageId],
+        )
+      : await query<{ id: number }>(
+          'SELECT id FROM pages WHERE confluence_id = $1',
+          [pageId],
+        );
     if (pageResult.rows.length === 0) {
       throw fastify.httpErrors.notFound('Page not found');
     }

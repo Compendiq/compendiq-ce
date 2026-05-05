@@ -35,7 +35,7 @@ export function TemplateCard({ template, index, onUse, onPreview }: TemplateCard
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: index * 0.04 }}
-      className="glass-card flex flex-col p-5 hover:border-primary/30 transition-colors"
+      className="nm-card flex flex-col p-5 hover:border-primary/30 transition-colors"
       data-testid={`template-card-${template.id}`}
     >
       {/* Header row */}
@@ -75,7 +75,7 @@ export function TemplateCard({ template, index, onUse, onPreview }: TemplateCard
         </button>
         <button
           onClick={() => onPreview(template)}
-          className="glass-card flex items-center gap-1.5 px-3 py-2 text-sm hover:bg-foreground/5 transition-colors"
+          className="nm-card flex items-center gap-1.5 px-3 py-2 text-sm hover:bg-foreground/5 transition-colors"
           data-testid={`template-preview-${template.id}`}
         >
           <Eye size={14} />

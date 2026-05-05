@@ -9,7 +9,7 @@ describe('QualityScoreBadge', () => {
     render(<QualityScoreBadge qualityScore={null} qualityStatus={null} />);
     const badge = screen.getByTestId('quality-score-badge');
     expect(badge).toHaveTextContent('Not Scored');
-    expect(badge.className).toContain('text-gray-400');
+    expect(badge.className).toContain('text-status-inactive');
     expect(badge).toHaveAttribute('data-status', 'pending');
   });
 
@@ -26,8 +26,8 @@ describe('QualityScoreBadge', () => {
     render(<QualityScoreBadge qualityScore={null} qualityStatus="analyzing" />);
     const badge = screen.getByTestId('quality-score-badge');
     expect(badge).toHaveTextContent('Analyzing...');
-    expect(badge.className).toContain('text-purple-400');
-    expect(badge.className).toContain('bg-purple-500/20');
+    expect(badge.className).toContain('text-status-ai');
+    expect(badge.className).toContain('bg-status-ai/20');
     expect(badge.className).toContain('animate-pulse');
     expect(badge).toHaveAttribute('data-status', 'analyzing');
   });
@@ -38,7 +38,7 @@ describe('QualityScoreBadge', () => {
     render(<QualityScoreBadge qualityScore={null} qualityStatus="failed" />);
     const badge = screen.getByTestId('quality-score-badge');
     expect(badge).toHaveTextContent('Analysis Failed');
-    expect(badge.className).toContain('text-red-400');
+    expect(badge.className).toContain('text-status-disconnected');
     expect(badge).toHaveAttribute('data-status', 'failed');
   });
 
@@ -60,7 +60,7 @@ describe('QualityScoreBadge', () => {
     render(<QualityScoreBadge qualityScore={null} qualityStatus="skipped" />);
     const badge = screen.getByTestId('quality-score-badge');
     expect(badge).toHaveTextContent('Skipped');
-    expect(badge.className).toContain('text-gray-400');
+    expect(badge.className).toContain('text-status-inactive');
     expect(badge).toHaveAttribute('data-status', 'skipped');
   });
 
@@ -70,8 +70,8 @@ describe('QualityScoreBadge', () => {
     render(<QualityScoreBadge qualityScore={95} qualityStatus="analyzed" />);
     const badge = screen.getByTestId('quality-score-badge');
     expect(badge).toHaveTextContent('95 Excellent');
-    expect(badge.className).toContain('text-green-400');
-    expect(badge.className).toContain('bg-green-500/20');
+    expect(badge.className).toContain('text-status-connected');
+    expect(badge.className).toContain('bg-status-connected/20');
     expect(badge).toHaveAttribute('data-score', '95');
   });
 
@@ -79,21 +79,21 @@ describe('QualityScoreBadge', () => {
     render(<QualityScoreBadge qualityScore={78} qualityStatus="analyzed" />);
     const badge = screen.getByTestId('quality-score-badge');
     expect(badge).toHaveTextContent('78 Good');
-    expect(badge.className).toContain('text-blue-400');
+    expect(badge.className).toContain('text-status-embedding');
   });
 
   it('renders "Needs Work" with yellow styling for score 50-69', () => {
     render(<QualityScoreBadge qualityScore={55} qualityStatus="analyzed" />);
     const badge = screen.getByTestId('quality-score-badge');
     expect(badge).toHaveTextContent('55 Needs Work');
-    expect(badge.className).toContain('text-yellow-400');
+    expect(badge.className).toContain('text-status-syncing');
   });
 
   it('renders "Poor" with red styling for score 0-49', () => {
     render(<QualityScoreBadge qualityScore={30} qualityStatus="analyzed" />);
     const badge = screen.getByTestId('quality-score-badge');
     expect(badge).toHaveTextContent('30 Poor');
-    expect(badge.className).toContain('text-red-400');
+    expect(badge.className).toContain('text-status-disconnected');
   });
 
   it('renders score 90 as "Excellent" (boundary)', () => {

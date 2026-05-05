@@ -12,7 +12,7 @@
  * See docs/plans/215-settings-ia-reorg.md for the design rationale.
  */
 
-export type SettingsCategoryId =
+type SettingsCategoryId =
   | 'personal'
   | 'content'
   | 'ai'
@@ -33,7 +33,7 @@ export interface SettingsNavItem {
   requiresFeature?: string;
 }
 
-export interface SettingsNavGroup {
+interface SettingsNavGroup {
   id: SettingsCategoryId;
   label: string;
   items: SettingsNavItem[];
@@ -73,6 +73,23 @@ export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
     items: [
       navItem('spaces', 'Spaces'),
       navItem('sync', 'Sync'),
+      // Sync conflict resolution (Compendiq/compendiq-ee#118). Two
+      // adjacent panels: the policy radio (always visible to EE admins
+      // with the feature licensed) and the conflicts queue (same gating
+      // — the queue is empty unless the policy is `manual-review`, and
+      // the empty state is harmless to render).
+      navItem('sync-conflict-policy', 'Sync conflict policy', {
+        adminOnly: true,
+        enterpriseOnly: true,
+        requiresFeature: 'sync_conflict_resolution',
+        legacyTabId: null,
+      }),
+      navItem('sync-conflicts', 'Sync conflicts', {
+        adminOnly: true,
+        enterpriseOnly: true,
+        requiresFeature: 'sync_conflict_resolution',
+        legacyTabId: null,
+      }),
       navItem('labels', 'Labels', { adminOnly: true }),
     ],
   },
@@ -96,6 +113,33 @@ export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
         enterpriseOnly: true,
         requiresFeature: 'llm_audit_trail',
       }),
+      // AI output review (Compendiq/compendiq-ee#120). Two adjacent
+      // settings panels: the reviewer queue (a list) and the policy
+      // configuration (per-action modes + expiry). The detail diff
+      // view is a full-page route at `/settings/ai-reviews/:id`,
+      // outside the SettingsLayout — see App.tsx.
+      navItem('ai-reviews', 'AI review queue', {
+        adminOnly: true,
+        enterpriseOnly: true,
+        requiresFeature: 'ai_output_review',
+        legacyTabId: null,
+      }),
+      navItem('ai-review-policy', 'AI review policy', {
+        adminOnly: true,
+        enterpriseOnly: true,
+        requiresFeature: 'ai_output_review',
+        legacyTabId: null,
+      }),
+      // PII detection policy (Compendiq/compendiq-ee#119, Phase I).
+      // Companion EE overlay route GET/PUT /api/admin/pii-policy ships
+      // alongside this entry; the PiiPolicyTab handles the 404 path
+      // gracefully when only the CE half is deployed.
+      navItem('pii-policy', 'PII detection', {
+        adminOnly: true,
+        enterpriseOnly: true,
+        requiresFeature: 'pii_detection',
+        legacyTabId: null,
+      }),
     ],
   },
   {
@@ -114,10 +158,34 @@ export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
       // Per-user admin CRUD (#304). Lives under Security & Access because it
       // governs who can authenticate, not what settings they see.
       navItem('users', 'Users', { adminOnly: true, legacyTabId: null }),
+      // Roles & Permissions (advanced_rbac). RbacPage + CustomRoleEditor
+      // are a fully implemented admin UI for system roles, custom roles,
+      // and per-user assignments — backed by /api/admin/roles*,
+      // /api/admin/permissions, and /api/admin/role-assignments — but
+      // were never mounted in the live IA. Sits next to Users because
+      // both manage who-can-do-what.
+      navItem('rbac', 'Roles & Permissions', {
+        adminOnly: true,
+        enterpriseOnly: true,
+        requiresFeature: 'advanced_rbac',
+        legacyTabId: null,
+      }),
       navItem('rate-limits', 'Rate Limits', { adminOnly: true }),
       navItem('sso', 'SSO / OIDC', {
         adminOnly: true,
         enterpriseOnly: true,
+      }),
+      navItem('ip-allowlist', 'IP allowlist', {
+        adminOnly: true,
+        enterpriseOnly: true,
+        requiresFeature: 'ip_allowlisting',
+        legacyTabId: null,
+      }),
+      navItem('webhooks', 'Webhooks', {
+        adminOnly: true,
+        enterpriseOnly: true,
+        requiresFeature: 'webhook_push',
+        legacyTabId: null,
       }),
       navItem('scim', 'SCIM', {
         adminOnly: true,
@@ -128,6 +196,17 @@ export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
         adminOnly: true,
         enterpriseOnly: true,
         requiresFeature: 'data_retention_policies',
+      }),
+      // Compliance Reports (Compendiq/compendiq-ee#115). Self-serve PDF +
+      // CSV evidence packets for SOC 2 / ISO 27001 audits — sits next to
+      // Data Retention because both surface auditor-facing evidence.
+      // Backend routes live under /api/admin/compliance-reports/* and are
+      // gated by the `compliance_reports` enterprise feature flag.
+      navItem('compliance-reports', 'Compliance Reports', {
+        adminOnly: true,
+        enterpriseOnly: true,
+        requiresFeature: 'compliance_reports',
+        legacyTabId: null,
       }),
     ],
   },

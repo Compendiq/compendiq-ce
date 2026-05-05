@@ -84,7 +84,7 @@ describe.skipIf(!dbAvailable)('llm-provider-service — write', () => {
 });
 
 describe.skipIf(!dbAvailable)('cache invalidation on writes', () => {
-  beforeEach(async () => { await truncateAllTables(); bumpProviderCacheVersion(); });
+  beforeEach(async () => { await truncateAllTables(); await bumpProviderCacheVersion(); });
   it('updateProvider flips the cached baseUrl on the next resolve', async () => {
     const p = await createProvider({ name: 'A', baseUrl: 'http://a/v1', authType: 'none', verifySsl: true, defaultModel: 'm' });
     await setDefaultProvider(p.id);

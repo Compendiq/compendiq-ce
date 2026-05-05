@@ -9,7 +9,7 @@ export interface LlmAuditEntry {
   userId: string | null;
   action: 'chat' | 'ask' | 'improve' | 'generate' | 'summarize' | 'embed' | 'quality' | 'tag' | 'diagram';
   model: string;
-  provider: 'ollama' | 'openai';
+  provider: string;
   inputTokens: number;
   outputTokens: number;
   inputMessages: { role: string; contentLength: number }[];
@@ -38,6 +38,10 @@ export interface LlmAuditEntry {
  * (provider CRUD, use-case assignment updates, etc.) where there is no
  * inference happening. Metadata is a free-form bag of ids / field names /
  * etc. Kept as a separate shape so the inference hook stays strict.
+ *
+ * @public Forward-compat extension-point payload (PR #259). Five CE
+ * route call sites already emit admin entries through `emitLlmAudit`;
+ * the EE writer will be wired via `setLlmAdminAuditHook`.
  */
 export interface LlmAdminAuditEntry {
   event:
@@ -66,6 +70,9 @@ export function setLlmAuditHook(hook: LlmAuditHook): void {
 /**
  * Register an admin-event audit hook (called by EE plugin at startup).
  * In CE mode this stays null — admin events are a no-op.
+ *
+ * @public Registration surface for the EE plugin; pairs with
+ * `LlmAdminAuditEntry`. Symmetric to `setLlmAuditHook`.
  */
 export function setLlmAdminAuditHook(hook: LlmAdminAuditHook): void {
   _adminHook = hook;

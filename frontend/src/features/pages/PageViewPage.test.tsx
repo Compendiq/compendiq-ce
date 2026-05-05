@@ -126,6 +126,10 @@ vi.mock('../../shared/lib/api', () => ({
   apiFetch: vi.fn().mockResolvedValue({}),
 }));
 
+vi.mock('./use-presence', () => ({
+  usePresence: () => ({ viewers: [], selfIsEditing: false, setEditing: vi.fn() }),
+}));
+
 vi.mock('../../shared/hooks/use-standalone', () => ({
   useSubmitFeedback: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useVerifyPage: () => ({ mutateAsync: vi.fn(), isPending: false }),

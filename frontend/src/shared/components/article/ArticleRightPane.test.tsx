@@ -171,6 +171,23 @@ describe('ArticleRightPane', () => {
     expect(screen.queryByText('AI Improve')).not.toBeInTheDocument();
   });
 
+  it('keeps AI-Tagging available in edit mode (#354)', () => {
+    useArticleViewStore.setState({ editing: true });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    // The read-mode action panel is hidden, but AI-Tagging is rendered
+    // in its own edit-mode wrapper.
+    expect(screen.queryByTestId('article-actions')).not.toBeInTheDocument();
+    const editPanel = screen.getByTestId('article-actions-edit');
+    expect(editPanel).toBeInTheDocument();
+
+    // AutoTagger mock attaches data-* attrs identical to the read-mode case.
+    const autoTagger = screen.getByTestId('auto-tagger');
+    expect(autoTagger).toBeInTheDocument();
+    expect(autoTagger).toHaveAttribute('data-page-id', 'page-1');
+  });
+
   it('navigates to AI Improve when the button is clicked', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 

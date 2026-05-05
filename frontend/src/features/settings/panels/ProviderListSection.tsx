@@ -51,7 +51,7 @@ export function ProviderListSection() {
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold">Providers</h3>
-        <button className="glass-button-primary" onClick={() => setAdding(true)}>
+        <button className="nm-button-primary" onClick={() => setAdding(true)}>
           + Add
         </button>
       </div>

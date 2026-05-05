@@ -101,7 +101,7 @@ export function AiPromptsTab({ settings, onSave, isAdmin }: { settings: Settings
             onChange={(e) => handleChange(pt.key, e.target.value)}
             placeholder={pt.placeholder}
             rows={3}
-            className="glass-input w-full resize-y font-mono text-xs"
+            className="nm-input w-full resize-y font-mono text-xs"
             data-testid={`prompt-${pt.key}`}
           />
           {prompts[pt.key] && (
@@ -119,7 +119,7 @@ export function AiPromptsTab({ settings, onSave, isAdmin }: { settings: Settings
         <button
           onClick={() => onSave({ customPrompts: prompts })}
           disabled={!hasChanges}
-          className="glass-button-primary"
+          className="nm-button-primary"
           data-testid="ai-prompts-save-btn"
         >
           Save

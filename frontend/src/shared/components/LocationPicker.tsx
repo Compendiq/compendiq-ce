@@ -352,7 +352,7 @@ export function LocationPicker({
         <button
           type="button"
           className={cn(
-            'glass-input flex items-center gap-2 text-left text-sm',
+            'nm-input flex items-center gap-2 text-left text-sm',
             disabled && 'cursor-not-allowed opacity-50',
             !spaceKey && 'cursor-not-allowed opacity-50',
           )}
@@ -407,7 +407,7 @@ export function LocationPicker({
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
                       placeholder="Search pages..."
-                      className="glass-input w-full pl-8 pr-8 text-xs"
+                      className="nm-input w-full pl-8 pr-8 text-xs"
                       autoFocus
                     />
                     {searchQuery && (
@@ -457,7 +457,7 @@ export function LocationPicker({
                   <button
                     type="button"
                     onClick={handleConfirm}
-                    className="glass-button-primary text-xs"
+                    className="nm-button-primary text-xs"
                   >
                     <Check size={12} /> Confirm
                   </button>

@@ -45,7 +45,7 @@ function ChartSkeleton() {
 
 function StatCard({ label, value, warning }: { label: string; value: string | number; warning?: boolean }) {
   return (
-    <div className={cn('glass-card p-4 text-center', warning && 'border-amber-500/30')} data-testid={`stat-${label.toLowerCase().replace(/\s+/g, '-')}`}>
+    <div className={cn('nm-card p-4 text-center', warning && 'border-amber-500/30')} data-testid={`stat-${label.toLowerCase().replace(/\s+/g, '-')}`}>
       <p className="text-xs text-muted-foreground mb-1">{label}</p>
       <p className={cn('text-2xl font-semibold', warning && 'text-amber-500')}>{value}</p>
     </div>
@@ -63,7 +63,7 @@ export function AiUsageDashboard({ dateRange, onExportPdf }: DashboardProps) {
   // Feature gate: ai_usage_analytics (separate from outer advanced_analytics)
   if (!aiUsageEnabled) {
     return (
-      <div className="glass-card p-8 text-center" data-testid="ai-usage-gate">
+      <div className="nm-card p-8 text-center" data-testid="ai-usage-gate">
         <Brain className="mx-auto mb-3 h-12 w-12 text-muted-foreground/50" />
         <h2 className="text-lg font-medium mb-2">AI Usage Analytics</h2>
         <p className="text-sm text-muted-foreground">
@@ -78,12 +78,12 @@ export function AiUsageDashboard({ dateRange, onExportPdf }: DashboardProps) {
       <div className="space-y-4" data-testid="ai-usage-loading">
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           {Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} className="glass-card h-20 animate-pulse" />
+            <div key={i} className="nm-card h-20 animate-pulse" />
           ))}
         </div>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <div className="glass-card p-4"><ChartSkeleton /></div>
-          <div className="glass-card p-4"><ChartSkeleton /></div>
+          <div className="nm-card p-4"><ChartSkeleton /></div>
+          <div className="nm-card p-4"><ChartSkeleton /></div>
         </div>
       </div>
     );
@@ -91,7 +91,7 @@ export function AiUsageDashboard({ dateRange, onExportPdf }: DashboardProps) {
 
   if (!data) {
     return (
-      <div className="glass-card p-8 text-center text-sm text-muted-foreground" data-testid="ai-usage-empty">
+      <div className="nm-card p-8 text-center text-sm text-muted-foreground" data-testid="ai-usage-empty">
         No AI usage data available for the selected date range.
       </div>
     );
@@ -100,7 +100,7 @@ export function AiUsageDashboard({ dateRange, onExportPdf }: DashboardProps) {
   // When the llm_audit_log table does not exist
   if (!data.available) {
     return (
-      <div className="glass-card p-6 flex items-start gap-3" data-testid="ai-usage-unavailable">
+      <div className="nm-card p-6 flex items-start gap-3" data-testid="ai-usage-unavailable">
         <Info className="h-5 w-5 text-blue-400 mt-0.5 shrink-0" />
         <div>
           <h3 className="text-sm font-medium mb-1">AI Audit Logging Not Available</h3>
@@ -156,7 +156,7 @@ export function AiUsageDashboard({ dateRange, onExportPdf }: DashboardProps) {
 
       {/* Error rate warning */}
       {errorRateWarning && (
-        <div className="glass-card border-amber-500/30 p-3 flex items-center gap-2 text-sm text-amber-500" data-testid="error-rate-warning">
+        <div className="nm-card border-amber-500/30 p-3 flex items-center gap-2 text-sm text-amber-500" data-testid="error-rate-warning">
           <AlertTriangle className="h-4 w-4 shrink-0" />
           Error rate is above 10% ({errorRate.toFixed(1)}%). Investigate failing requests.
         </div>
@@ -165,7 +165,7 @@ export function AiUsageDashboard({ dateRange, onExportPdf }: DashboardProps) {
       {/* Charts */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* Requests Over Time */}
-        <div className="glass-card p-4" data-testid="requests-chart">
+        <div className="nm-card p-4" data-testid="requests-chart">
           <h3 className="text-sm font-medium mb-3">Requests Over Time</h3>
           <Suspense fallback={<ChartSkeleton />}>
             <ResponsiveContainer width="100%" height={250}>
@@ -183,7 +183,7 @@ export function AiUsageDashboard({ dateRange, onExportPdf }: DashboardProps) {
         </div>
 
         {/* Token Consumption by Model */}
-        <div className="glass-card p-4" data-testid="tokens-chart">
+        <div className="nm-card p-4" data-testid="tokens-chart">
           <h3 className="text-sm font-medium mb-3">Token Consumption by Model</h3>
           <Suspense fallback={<ChartSkeleton />}>
             <ResponsiveContainer width="100%" height={250}>
@@ -203,7 +203,7 @@ export function AiUsageDashboard({ dateRange, onExportPdf }: DashboardProps) {
 
       {/* Model Breakdown Table */}
       {data.modelBreakdown.length > 0 && (
-        <div className="glass-card overflow-hidden" data-testid="model-breakdown-table">
+        <div className="nm-card overflow-hidden" data-testid="model-breakdown-table">
           <div className="p-4 border-b border-foreground/5">
             <h3 className="text-sm font-medium">Model Breakdown</h3>
           </div>

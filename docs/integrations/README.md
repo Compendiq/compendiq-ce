@@ -1,6 +1,6 @@
 # Integration Guides
 
-_Last updated: 2026-04-23_
+_Last updated: 2026-04-24_
 
 The `install.sh` quickstart assumes the easiest deployment shape — a reachable Confluence DC on a vanilla HTTPS URL with a public CA cert and unrestricted outbound internet. Real on-prem customers usually run one of three more interesting shapes. This directory documents each one end-to-end.
 
@@ -8,7 +8,9 @@ The `install.sh` quickstart assumes the easiest deployment shape — a reachable
 
 | Your environment looks like… | Guide |
 |--|--|
-| Compendiq behind a corporate reverse proxy (TLS termination, path routing, auth pass-through) | [`reverse-proxy/nginx.md`](./reverse-proxy/nginx.md) |
+| Compendiq behind corporate nginx (TLS termination, path routing, auth pass-through) | [`reverse-proxy/nginx.md`](./reverse-proxy/nginx.md) |
+| Compendiq behind Traefik v3 (Docker Swarm / Compose, label-driven routing, auto-TLS) | [`reverse-proxy/traefik.md`](./reverse-proxy/traefik.md) |
+| Compendiq behind Caddy (auto-TLS, minimal config) | [`reverse-proxy/caddy.md`](./reverse-proxy/caddy.md) |
 | Confluence DC (or the LLM upstream) uses a self-signed or private-CA cert | [`self-signed-tls/README.md`](./self-signed-tls/README.md) |
 | No outbound internet access at all (air-gapped / disconnected) | [`air-gapped/README.md`](./air-gapped/README.md) |
 

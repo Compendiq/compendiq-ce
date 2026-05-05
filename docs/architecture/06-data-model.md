@@ -24,6 +24,7 @@ erDiagram
     pages ||--o{ page_relationships : "related via"
     pages ||--o{ knowledge_requests : "fulfils"
     pages ||--o{ local_attachments : "owns (standalone pages only)"
+    pages ||--o{ spaces : "is custom home of (#352)"
 
     roles ||--o{ group_memberships : "granted via"
     groups ||--o{ group_memberships : "has"
@@ -100,10 +101,9 @@ erDiagram
 
     page_relationships {
         bigint id PK
-        uuid user_id FK
         int page_id_1 FK
         int page_id_2 FK
-        text relationship_type
+        text relationship_type "embedding_similarity | label_overlap | explicit_link | parent_child"
         double score
     }
 
@@ -235,6 +235,24 @@ erDiagram
         uuid provider_id FK
         text model "nullable; null = inherit provider default"
         timestamptz updated_at
+    }
+
+    users ||--o{ llm_audit_log : "may originate"
+    llm_audit_log {
+        bigint id PK
+        uuid user_id FK "nullable; SET NULL on user delete"
+        text action "chat|ask|improve|generate|summarize|embed|quality|tag|diagram"
+        text model "snapshot at call time"
+        text provider "snapshot — survives provider delete"
+        int input_tokens "default 0"
+        int output_tokens "default 0"
+        int duration_ms "default 0"
+        text status "success|error; default success"
+        text error_message "nullable; populated on failures"
+        text prompt_hash "SHA-256 hex; plaintext NEVER stored by CE writer"
+        bool prompt_injection_detected "Compendiq/compendiq-ee#115 P0f; default FALSE"
+        bool sanitized "Compendiq/compendiq-ee#115 P0f; default FALSE"
+        timestamptz created_at
     }
 ```
 

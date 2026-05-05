@@ -881,6 +881,315 @@ describe('ConfluenceClient', () => {
   });
 });
 
+describe('getPageRestrictions', () => {
+  const baseUrl = 'https://confluence.example.com';
+  const pat = 'test-pat-token';
+  // maxAttempts:1 + short delay so transient-retry-then-fallback tests don't spin the clock
+  const retryOpts = { retry: { maxAttempts: 1, baseDelay: 1 } };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('parses a normal response with read + update restrictions', async () => {
+    const client = new ConfluenceClient(baseUrl, pat, retryOpts);
+    const response = {
+      results: [
+        {
+          operation: 'read',
+          restrictions: {
+            user: {
+              results: [
+                { userKey: 'user-key-alice', username: 'alice', displayName: 'Alice Doe' },
+              ],
+            },
+            group: { results: [{ name: 'confluence-administrators' }] },
+          },
+        },
+        {
+          operation: 'update',
+          restrictions: {
+            user: {
+              results: [
+                { userKey: 'user-key-bob', username: 'bob' },
+              ],
+            },
+            group: { results: [{ name: 'editors' }] },
+          },
+        },
+      ],
+      start: 0,
+      limit: 100,
+      size: 2,
+    };
+    mockRequest.mockResolvedValue({
+      statusCode: 200,
+      headers: {},
+      body: { text: async () => JSON.stringify(response) },
+    } as never);
+
+    const result = await client.getPageRestrictions('12345');
+
+    expect(result).toEqual([
+      {
+        operation: 'read',
+        restrictions: {
+          users: [{ userKey: 'user-key-alice', username: 'alice', displayName: 'Alice Doe' }],
+          groups: [{ name: 'confluence-administrators' }],
+        },
+      },
+      {
+        operation: 'update',
+        restrictions: {
+          users: [{ userKey: 'user-key-bob', username: 'bob' }],
+          groups: [{ name: 'editors' }],
+        },
+      },
+    ]);
+    expect(mockRequest).toHaveBeenCalledTimes(1);
+    const callUrl = mockRequest.mock.calls[0][0] as string;
+    expect(callUrl).toContain('/rest/api/content/12345/restriction');
+    expect(callUrl).toContain('expand=restrictions.user,restrictions.group');
+    expect(callUrl).not.toContain('/experimental/');
+  });
+
+  it('returns [] on 404 from primary path without calling fallback', async () => {
+    const client = new ConfluenceClient(baseUrl, pat, retryOpts);
+    mockRequest.mockResolvedValue({
+      statusCode: 404,
+      headers: {},
+      body: { text: async () => 'Not Found' },
+    } as never);
+
+    const result = await client.getPageRestrictions('12345');
+
+    expect(result).toEqual([]);
+    // Only the primary path attempted — no fallback on 404
+    expect(mockRequest).toHaveBeenCalledTimes(1);
+    const callUrl = mockRequest.mock.calls[0][0] as string;
+    expect(callUrl).not.toContain('/experimental/');
+  });
+
+  it('falls back to the experimental path when primary returns 500', async () => {
+    const client = new ConfluenceClient(baseUrl, pat, retryOpts);
+    let callCount = 0;
+    mockRequest.mockImplementation(async () => {
+      callCount++;
+      if (callCount === 1) {
+        return {
+          statusCode: 500,
+          headers: {},
+          body: { text: async () => 'Internal Server Error' },
+        } as never;
+      }
+      // Experimental path succeeds
+      return {
+        statusCode: 200,
+        headers: {},
+        body: {
+          text: async () => JSON.stringify({
+            results: [
+              {
+                operation: 'read',
+                restrictions: {
+                  user: { results: [{ userKey: 'u1', username: 'alice' }] },
+                  group: { results: [] },
+                },
+              },
+            ],
+            start: 0, limit: 100, size: 1,
+          }),
+        },
+      } as never;
+    });
+
+    const result = await client.getPageRestrictions('12345');
+
+    expect(result).toEqual([
+      {
+        operation: 'read',
+        restrictions: {
+          users: [{ userKey: 'u1', username: 'alice' }],
+          groups: [],
+        },
+      },
+    ]);
+    expect(mockRequest).toHaveBeenCalledTimes(2);
+    const firstUrl = mockRequest.mock.calls[0][0] as string;
+    const secondUrl = mockRequest.mock.calls[1][0] as string;
+    expect(firstUrl).toContain('/rest/api/content/12345/restriction');
+    expect(firstUrl).not.toContain('/experimental/');
+    expect(secondUrl).toContain('/rest/experimental/content/12345/restriction');
+  });
+
+  it('throws ConfluenceError naming both paths when both attempts fail', async () => {
+    const client = new ConfluenceClient(baseUrl, pat, retryOpts);
+    let callCount = 0;
+    mockRequest.mockImplementation(async () => {
+      callCount++;
+      return {
+        statusCode: callCount === 1 ? 500 : 400,
+        headers: {},
+        body: { text: async () => (callCount === 1 ? 'Internal Server Error' : 'Bad Request') },
+      } as never;
+    });
+
+    const err = await client.getPageRestrictions('12345').catch((e) => e);
+
+    expect(err).toBeInstanceOf(ConfluenceError);
+    // Error message must name BOTH attempted URLs so operators can diagnose DC-version mismatches
+    expect((err as Error).message).toContain('/rest/api/content/12345/restriction');
+    expect((err as Error).message).toContain('/rest/experimental/content/12345/restriction');
+    // And include the last status code from the experimental path (400)
+    expect((err as Error).message).toContain('400');
+    expect(mockRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns [] on 404 from the experimental fallback path (older DC)', async () => {
+    const client = new ConfluenceClient(baseUrl, pat, retryOpts);
+    let callCount = 0;
+    mockRequest.mockImplementation(async () => {
+      callCount++;
+      if (callCount === 1) {
+        return {
+          statusCode: 500,
+          headers: {},
+          body: { text: async () => 'Internal Server Error' },
+        } as never;
+      }
+      return {
+        statusCode: 404,
+        headers: {},
+        body: { text: async () => 'Not Found' },
+      } as never;
+    });
+
+    const result = await client.getPageRestrictions('12345');
+
+    expect(result).toEqual([]);
+    expect(mockRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it('handles empty restrictions.user.results and group.results arrays', async () => {
+    const client = new ConfluenceClient(baseUrl, pat, retryOpts);
+    const response = {
+      results: [
+        {
+          operation: 'read',
+          restrictions: {
+            user: { results: [] },
+            group: { results: [] },
+          },
+        },
+      ],
+      start: 0, limit: 100, size: 1,
+    };
+    mockRequest.mockResolvedValue({
+      statusCode: 200,
+      headers: {},
+      body: { text: async () => JSON.stringify(response) },
+    } as never);
+
+    const result = await client.getPageRestrictions('12345');
+
+    expect(result).toEqual([
+      { operation: 'read', restrictions: { users: [], groups: [] } },
+    ]);
+  });
+
+  it('handles DC responses that omit the user / group keys entirely when empty', async () => {
+    const client = new ConfluenceClient(baseUrl, pat, retryOpts);
+    const response = {
+      results: [
+        { operation: 'read', restrictions: {} },       // both keys missing
+        { operation: 'update', restrictions: null },    // restrictions envelope missing
+      ],
+      start: 0, limit: 100, size: 2,
+    };
+    mockRequest.mockResolvedValue({
+      statusCode: 200,
+      headers: {},
+      body: { text: async () => JSON.stringify(response) },
+    } as never);
+
+    const result = await client.getPageRestrictions('12345');
+
+    expect(result).toEqual([
+      { operation: 'read', restrictions: { users: [], groups: [] } },
+      { operation: 'update', restrictions: { users: [], groups: [] } },
+    ]);
+  });
+});
+
+describe('getPageAncestors', () => {
+  const baseUrl = 'https://confluence.example.com';
+  const pat = 'test-pat-token';
+  const retryOpts = { retry: { maxAttempts: 1, baseDelay: 1 } };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns the ancestor array in Confluence root-first order', async () => {
+    const client = new ConfluenceClient(baseUrl, pat, retryOpts);
+    // Confluence returns ancestors root-first: [root, intermediate]
+    mockRequest.mockResolvedValue({
+      statusCode: 200,
+      headers: {},
+      body: {
+        text: async () => JSON.stringify({
+          id: '12345',
+          ancestors: [
+            { id: 'root-1', title: 'Root' },
+            { id: 'parent-1', title: 'Immediate Parent' },
+          ],
+        }),
+      },
+    } as never);
+
+    const result = await client.getPageAncestors('12345');
+
+    expect(result).toEqual([{ id: 'root-1' }, { id: 'parent-1' }]);
+    const callUrl = mockRequest.mock.calls[0][0] as string;
+    expect(callUrl).toContain('/rest/api/content/12345?expand=ancestors');
+  });
+
+  it('returns [] for a top-level page (ancestors key missing or empty)', async () => {
+    const client = new ConfluenceClient(baseUrl, pat, retryOpts);
+
+    // First sub-case: ancestors key entirely absent
+    mockRequest.mockResolvedValueOnce({
+      statusCode: 200,
+      headers: {},
+      body: { text: async () => JSON.stringify({ id: '12345' }) },
+    } as never);
+
+    const missing = await client.getPageAncestors('12345');
+    expect(missing).toEqual([]);
+
+    // Second sub-case: ancestors: []
+    mockRequest.mockResolvedValueOnce({
+      statusCode: 200,
+      headers: {},
+      body: { text: async () => JSON.stringify({ id: '12345', ancestors: [] }) },
+    } as never);
+
+    const empty = await client.getPageAncestors('12345');
+    expect(empty).toEqual([]);
+  });
+
+  it('throws ConfluenceError on non-200 response', async () => {
+    const client = new ConfluenceClient(baseUrl, pat, retryOpts);
+    mockRequest.mockResolvedValue({
+      statusCode: 500,
+      headers: {},
+      body: { text: async () => 'Internal Server Error' },
+    } as never);
+
+    await expect(client.getPageAncestors('12345')).rejects.toThrow(ConfluenceError);
+  });
+});
+
 describe('isTransientError', () => {
   it('should return true for ConfluenceError with status 429', () => {
     expect(isTransientError(new ConfluenceError('Too Many Requests', 429))).toBe(true);

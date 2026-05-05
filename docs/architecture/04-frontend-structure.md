@@ -94,8 +94,17 @@ the backend side.
 
 ## Styling
 
-- **TailwindCSS 4** with CSS variables for theming (light/dark/custom).
-- **Glassmorphic** dashboard aesthetic (ADR-010): `bg-card/80 backdrop-blur-md border-white/10`.
+- **TailwindCSS 4** with CSS variables for theming. Two themes ship —
+  **Graphite Honey** (dark, default) and **Honey Linen** (light) — both
+  anchored on the brand palette (black `#0A0A0A` + honey `#F9C74F`); see
+  ADR-010 v0.4 for the full rationale and the migration away from the
+  v0.3-era glassmorphic surfaces.
+- **Neumorphic** surface system (ADR-010 v0.4): eleven `nm-*` `@utility`
+  classes (`nm-card`, `nm-card-elevated`, `nm-card-interactive`,
+  `nm-toolbar`, `nm-sidebar`, `nm-header`, `nm-pill-active`,
+  `nm-button-primary`, `nm-button-ghost`, `nm-icon-button`, `nm-input`)
+  built on theme-tinted shadow recipes plus a mandatory 1px solid border
+  for visibility under WCAG 1.4.11 and `forced-colors: active`.
 - **Framer Motion** for entrance animations, wrapped in `LazyMotion`;
   all animations respect `prefers-reduced-motion`.
 - **Radix UI** primitives for all interactive elements (menus, dialogs,

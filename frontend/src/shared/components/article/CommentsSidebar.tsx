@@ -116,8 +116,8 @@ export function CommentsSidebar({ pageId, className }: CommentsSidebarProps) {
       <button
         onClick={() => setIsOpen((v) => !v)}
         className={cn(
-          'glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5 transition-colors',
-          isOpen && 'glass-pill-active text-primary',
+          'nm-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5 transition-colors',
+          isOpen && 'nm-pill-active text-primary',
         )}
         data-testid="comments-toggle"
         aria-label={isOpen ? 'Close comments' : 'Open comments'}
@@ -151,7 +151,7 @@ export function CommentsSidebar({ pageId, className }: CommentsSidebarProps) {
               exit={{ x: '100%', opacity: 0 }}
               transition={{ type: 'spring', damping: 30, stiffness: 300 }}
               className={cn(
-                'fixed right-2 top-2 bottom-2 z-50 flex w-full max-w-md flex-col glass-sidebar shadow-2xl',
+                'fixed right-2 top-2 bottom-2 z-50 flex w-full max-w-md flex-col nm-sidebar shadow-2xl',
                 className,
               )}
               data-testid="comments-sidebar"
@@ -193,11 +193,11 @@ export function CommentsSidebar({ pageId, className }: CommentsSidebarProps) {
               <div className="mx-4 h-px bg-[var(--glass-sidebar-divider)]" />
 
               {/* Comments list — with scroll mask */}
-              <div className="flex-1 overflow-y-auto px-4 py-3 glass-scroll-mask">
+              <div className="flex-1 overflow-y-auto px-4 py-3 scroll-mask">
                 {isLoading ? (
                   <div className="space-y-3">
                     {Array.from({ length: 3 }).map((_, i) => (
-                      <div key={i} className="glass-card h-24 animate-pulse" />
+                      <div key={i} className="nm-card h-24 animate-pulse" />
                     ))}
                   </div>
                 ) : unresolvedThreads.length === 0 && resolvedThreads.length === 0 ? (

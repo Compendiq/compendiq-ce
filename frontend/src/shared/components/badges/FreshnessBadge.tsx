@@ -25,7 +25,7 @@ function getFreshnessLevel(lastModified: string): FreshnessLevel {
     return { label: 'Recent', colorClass: 'text-warning', bgClass: 'bg-warning/15' };
   }
   if (diffDays < 90) {
-    return { label: 'Aging', colorClass: 'text-orange-400', bgClass: 'bg-orange-400/15' };
+    return { label: 'Aging', colorClass: 'text-status-syncing', bgClass: 'bg-status-syncing/15' };
   }
   return { label: 'Stale', colorClass: 'text-destructive', bgClass: 'bg-destructive/15' };
 }
@@ -54,4 +54,3 @@ export function FreshnessBadge({ lastModified, className }: FreshnessBadgeProps)
 
 // eslint-disable-next-line react-refresh/only-export-components
 export { getFreshnessLevel };
-export type { FreshnessLevel, FreshnessBadgeProps };

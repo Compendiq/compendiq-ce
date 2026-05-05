@@ -245,8 +245,10 @@ describe('provider deletion event drops breaker entry via cache-bus', () => {
     expect(breaker.getStatus().state).toBe('OPEN');
     expect(listProviderBreakers().find((b) => b.providerId === id)).toBeDefined();
 
-    // Act — emit the deletion event. Synchronous: must be gone on the next tick.
-    emitProviderDeleted(id);
+    // Act — emit the deletion event. Local fan-out runs synchronously
+    // before the publish await resolves (single-pod soft-fail path), so
+    // the breaker is gone by the next assertion regardless.
+    await emitProviderDeleted(id);
 
     expect(listProviderBreakers().find((b) => b.providerId === id)).toBeUndefined();
 

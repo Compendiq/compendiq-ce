@@ -105,7 +105,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
     <Dialog.Root open={open} onOpenChange={setOpen}>
       <Dialog.Trigger asChild>
         <button
-          className="glass-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
+          className="nm-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
           title="Version history"
         >
           <History size={14} />
@@ -116,7 +116,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
         <Dialog.Content
-          className="fixed left-1/2 top-1/2 z-50 w-full max-w-2xl -translate-x-1/2 -translate-y-1/2 glass-card overflow-hidden shadow-xl max-h-[85vh] flex flex-col"
+          className="fixed left-1/2 top-1/2 z-50 w-full max-w-2xl -translate-x-1/2 -translate-y-1/2 nm-card overflow-hidden shadow-xl max-h-[85vh] flex flex-col"
           aria-describedby={undefined}
         >
           {/* Header */}

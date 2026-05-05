@@ -2,7 +2,6 @@ import { Extension } from '@tiptap/core';
 import {
   search as searchPlugin,
   SearchQuery,
-  getSearchState,
   setSearchState,
   findNext,
   findPrev,
@@ -10,7 +9,7 @@ import {
   replaceAll,
 } from 'prosemirror-search';
 
-export { SearchQuery, getSearchState };
+export { SearchQuery };
 
 declare module '@tiptap/core' {
   interface Commands<ReturnType> {

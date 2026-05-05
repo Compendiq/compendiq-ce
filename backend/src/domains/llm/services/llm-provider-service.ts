@@ -18,7 +18,7 @@ interface ProviderRow {
 }
 
 /** Server-side config — decrypted. NEVER returned from HTTP routes. */
-export interface ProviderConfigRow {
+interface ProviderConfigRow {
   id: string;
   name: string;
   baseUrl: string;
@@ -73,11 +73,6 @@ export async function getProviderById(id: string): Promise<ProviderConfigRow | n
   return r.rows[0] ? rowToConfig(r.rows[0]) : null;
 }
 
-export async function getDefaultProvider(): Promise<ProviderConfigRow | null> {
-  const r = await query<ProviderRow>(`SELECT * FROM llm_providers WHERE is_default=TRUE LIMIT 1`);
-  return r.rows[0] ? rowToConfig(r.rows[0]) : null;
-}
-
 export function normalizeBaseUrl(raw: string): string {
   let s = raw.trim().replace(/\/+$/, '');
   if (!/\/v1$/.test(s)) s += '/v1';
@@ -93,7 +88,7 @@ export async function createProvider(input: LlmProviderInput): Promise<LlmProvid
      RETURNING *`,
     [input.name.trim(), baseUrl, apiKey, input.authType, input.verifySsl, input.defaultModel ?? null],
   );
-  bumpProviderCacheVersion();
+  await bumpProviderCacheVersion();
   return rowToDto(r.rows[0]!);
 }
 
@@ -117,7 +112,7 @@ export async function updateProvider(id: string, patch: LlmProviderUpdate): Prom
   const r = await query<ProviderRow>(
     `UPDATE llm_providers SET ${sets.join(', ')} WHERE id=$${i} RETURNING *`, vals,
   );
-  bumpProviderCacheVersion();
+  await bumpProviderCacheVersion();
   return r.rows[0] ? rowToDto(r.rows[0]) : null;
 }
 
@@ -139,8 +134,8 @@ export async function deleteProvider(id: string): Promise<void> {
   // listener only iterates the resolver's configCache and would otherwise
   // miss providers that were contacted (e.g. "Test connection") but never
   // bound to a use-case.
-  emitProviderDeleted(id);
-  bumpProviderCacheVersion();
+  await emitProviderDeleted(id);
+  await bumpProviderCacheVersion();
 }
 
 export async function setDefaultProvider(id: string): Promise<void> {
@@ -153,5 +148,5 @@ export async function setDefaultProvider(id: string): Promise<void> {
     await client.query('COMMIT');
   } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
   finally { client.release(); }
-  bumpProviderCacheVersion();
+  await bumpProviderCacheVersion();
 }

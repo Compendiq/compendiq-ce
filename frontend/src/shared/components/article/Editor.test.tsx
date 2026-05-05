@@ -43,11 +43,12 @@ function createMockEditor(): EditorType {
 }
 
 describe('Editor', () => {
-  it('sticky toolbar has a safe ::before mask that covers the scroll gap without overlapping content above', async () => {
-    // The internal toolbar uses before:-z-10 (behind its own content) to mask
-    // the scroll-container padding gap above when the toolbar is stuck.
-    // The old bad pattern (before:bottom-full, no -z-10) created a 200px opaque
-    // pane that covered title inputs and config bars on embedding pages.
+  it('sticky toolbar reads as the top of the article card (#30 overhaul)', async () => {
+    // The internal toolbar must look like the visual top of the article card
+    // below — same bg, rounded only on top, sticks at top:0 when scrolling.
+    // The old bad patterns (before:bottom-full overlapping content above, or
+    // before:bg-background showing the page color through the toolbar) are
+    // structurally impossible now because the ::before strip is gone.
     const { container } = render(
       <Editor content="<p>Hello</p>" editable={true} />,
     );
@@ -59,13 +60,21 @@ describe('Editor', () => {
     const toolbar = container.querySelector('[class*="sticky"]');
     const classes = toolbar?.className ?? '';
 
-    // Must NOT use the old downward-extending pattern that covered page content
-    expect(classes).not.toMatch(/before:bottom-full/);
-    expect(classes).not.toMatch(/before:h-\[/);
+    // Sticky at top:0
+    expect(classes).toMatch(/sticky/);
+    expect(classes).toMatch(/top-0/);
 
-    // Must use the safe behind-content mask with an upward extension
-    expect(classes).toMatch(/before:-z-10/);
-    expect(classes).toMatch(/before:-top-\[/);
+    // Square top corners — definitive fix for the scroll-peek-through bug.
+    // Rounded top corners create transparent cutout areas that reveal
+    // whatever is behind the toolbar (article card edges, page bg, etc.)
+    // when scrolling. Square corners eliminate the cutouts entirely.
+    expect(classes).not.toMatch(/rounded-t-/);
+    expect(classes).toMatch(/bg-card\b/);
+    expect(classes).toMatch(/border-b/);
+    // No ::before pseudo-strip — the old shield/extension patterns are gone.
+    expect(classes).not.toMatch(/before:absolute/);
+    expect(classes).not.toMatch(/before:bottom-full/);
+    expect(classes).not.toMatch(/before:bg-background/);
   });
 
   it('renders Insert Layout toolbar button', async () => {
@@ -180,7 +189,7 @@ describe('Editor', () => {
 
     await waitFor(() => {
       // Wait for editor to render
-      expect(container.querySelector('[class*="glass-card"]')).toBeTruthy();
+      expect(container.querySelector('[class*="nm-card"]')).toBeTruthy();
     });
     expect(container.querySelector('.header-numbering')).toBeFalsy();
   });
@@ -259,5 +268,96 @@ describe('EditorToolbar — header numbering toggle', () => {
     render(<EditorToolbar editor={editor} />);
 
     expect(screen.queryByTitle('Toggle Header Numbering')).not.toBeInTheDocument();
+  });
+
+  // ---------- #353 toolbar grouping + bigger color pickers ----------
+
+  it('renders the toolbar groups in the conventional order (#353)', () => {
+    const editor = createMockEditor();
+    render(<EditorToolbar editor={editor} />);
+
+    // Inline → block → lists → insert → captions → colors → utilities.
+    const groups = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-testid^="toolbar-group-"]'),
+    ).map((el) => el.dataset.testid);
+
+    expect(groups).toEqual([
+      'toolbar-group-inline',
+      'toolbar-group-block',
+      'toolbar-group-lists',
+      'toolbar-group-insert',
+      'toolbar-group-captions',
+      'toolbar-group-colors',
+      'toolbar-group-utilities',
+    ]);
+  });
+
+  it('places both color pickers inside the colors group (#353)', () => {
+    const editor = createMockEditor();
+    render(<EditorToolbar editor={editor} />);
+
+    const group = screen.getByTestId('toolbar-group-colors');
+    expect(group).toHaveAttribute('role', 'group');
+    expect(group).toHaveAttribute('aria-label', 'colors');
+    expect(group.querySelectorAll('[data-testid="color-picker-trigger"]').length).toBe(2);
+  });
+
+  it('separates groups with role=separator dividers (#353)', () => {
+    const editor = createMockEditor();
+    const { container } = render(<EditorToolbar editor={editor} />);
+
+    // Six segments → at least five separators between them.
+    const separators = container.querySelectorAll('[role="separator"]');
+    expect(separators.length).toBeGreaterThanOrEqual(5);
+  });
+
+  it('color-picker triggers meet the 32x32 minimum target size (#353)', () => {
+    const editor = createMockEditor();
+    render(<EditorToolbar editor={editor} />);
+
+    const triggers = screen.getAllByTestId('color-picker-trigger');
+    expect(triggers.length).toBe(2);
+    for (const trigger of triggers) {
+      // Tailwind h-9 w-9 maps to 36×36 (1rem = 16px) — comfortably above
+      // the issue's 32×32 minimum.
+      expect(trigger.className).toMatch(/(?:^|\s)h-9(?:\s|$)/);
+      expect(trigger.className).toMatch(/(?:^|\s)w-9(?:\s|$)/);
+    }
+  });
+
+  it('color-picker triggers expose a tooltip and aria-label (#353)', () => {
+    const editor = createMockEditor();
+    render(<EditorToolbar editor={editor} />);
+
+    const triggers = screen.getAllByTestId('color-picker-trigger');
+    expect(triggers[0]).toHaveAttribute('title', 'Text Color');
+    expect(triggers[0]).toHaveAttribute('aria-label', 'Text Color');
+    expect(triggers[1]).toHaveAttribute('title', 'Highlight (Ctrl+Shift+H)');
+    expect(triggers[1]).toHaveAttribute('aria-label', 'Highlight (Ctrl+Shift+H)');
+  });
+
+  it('color-picker swatches meet the 24x24 minimum after opening the picker (#353)', () => {
+    const editor = createMockEditor();
+    render(<EditorToolbar editor={editor} />);
+
+    const triggers = screen.getAllByTestId('color-picker-trigger');
+    fireEvent.click(triggers[0]!);
+
+    const swatches = screen.getAllByTestId('color-picker-swatch');
+    expect(swatches.length).toBeGreaterThanOrEqual(8);
+    for (const sw of swatches) {
+      // h-7 w-7 → 28×28 (above the issue's 24×24 minimum).
+      expect(sw.className).toMatch(/(?:^|\s)h-7(?:\s|$)/);
+      expect(sw.className).toMatch(/(?:^|\s)w-7(?:\s|$)/);
+      // Each swatch must carry an accessible name (its colour label).
+      expect(sw.getAttribute('aria-label')).toBeTruthy();
+    }
+  });
+
+  it('exposes the toolbar landmark with an accessible name (#353)', () => {
+    const editor = createMockEditor();
+    render(<EditorToolbar editor={editor} />);
+    const toolbar = screen.getByRole('toolbar', { name: 'Article editor toolbar' });
+    expect(toolbar).toBeInTheDocument();
   });
 });

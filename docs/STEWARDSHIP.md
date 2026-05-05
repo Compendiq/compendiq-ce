@@ -106,6 +106,10 @@ If you believe this pledge has been violated, open an issue tagged `stewardship`
 
 ---
 
+## Open process
+
+Beyond the feature pledge, the stewardship of Compendiq is meant to be observable in public. The source of truth for "what's being worked on right now, what's queued next, what shipped recently" is the set of open and closed issues in this repository, filtered by phase label. The human-readable index lives at [`docs/ROADMAP.md`](./ROADMAP.md); the raw data lives on the [issue tracker](https://github.com/Compendiq/compendiq-ce/issues). If you want to understand where Compendiq is going — or influence it with an issue or a pull request — those two surfaces are the canonical answer. The roadmap itself is not a commitment in the legal sense of this pledge, but publishing it is: we commit to keeping it honest, keeping it current, and not running a second, hidden roadmap that contradicts it.
+
 ## Changelog
 
 - **2026-04-23** — initial pledge drafted alongside v0.4.0 preparation (CE #296). _Founder review pending._

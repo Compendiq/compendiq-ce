@@ -46,7 +46,7 @@ export async function invalidateGraphCache(userId: string): Promise<void> {
  * compute "held for" without hardcoding the value. 1 hour default —
  * prevents permanent locks on crash.
  */
-export const EMBEDDING_LOCK_TTL = Math.floor(EMBEDDING_LOCK_TTL_MS / 1000);
+const EMBEDDING_LOCK_TTL = Math.floor(EMBEDDING_LOCK_TTL_MS / 1000);
 
 /**
  * Redis Set that mirrors the active set of per-user embedding lock keys.
@@ -152,7 +152,7 @@ export async function isEmbeddingLocked(userId: string): Promise<boolean> {
 // ── Embedding lock visibility + admin escape hatch (plan §2.1) ───────────
 
 /** Snapshot of a single active per-user embedding lock (issue #257). */
-export interface EmbeddingLockSnapshot {
+interface EmbeddingLockSnapshot {
   userId: string;
   /** Lock identity token (random UUID written by `acquireEmbeddingLock`).
    *  Exposed so the worker can verify, before each write, that the lock it
@@ -487,6 +487,27 @@ export class RedisCache {
       await this.scanAndDelete(`kb:${userId}:*`);
     } catch (err) {
       logger.error({ err, userId }, 'Redis cache invalidate all error');
+    }
+  }
+
+  /**
+   * Invalidate every user's cache of the given type.
+   *
+   * Used when an admin/space-owner mutation changes data that is visible to
+   * all users (e.g. setting a space's custom home page — #352). The per-user
+   * `invalidate(userId, type)` only clears the calling admin's cache and
+   * leaves every other user reading stale data for up to TTL seconds.
+   *
+   * Implemented as a single SCAN cursor walk over `kb:*:{type}:*` against the
+   * shared Redis. Works in single-pod and multi-pod deployments without
+   * needing pub/sub — Redis is the authoritative store, so deleting the keys
+   * is sufficient; subsequent reads from any pod miss and re-populate.
+   */
+  async invalidateAcrossUsers(type: CacheType): Promise<void> {
+    try {
+      await this.scanAndDelete(`kb:*:${type}:*`);
+    } catch (err) {
+      logger.error({ err, type }, 'Redis cache invalidate across users error');
     }
   }
 

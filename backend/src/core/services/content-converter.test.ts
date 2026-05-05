@@ -187,6 +187,20 @@ describe('content-converter', () => {
       expect(html).toContain('Embedded widget');
     });
 
+    it('drops the labels macro and never leaks "[Confluence macro: labels]" (#348)', () => {
+      const xhtml = `<p>Before</p>
+        <ac:structured-macro ac:name="labels" ac:schema-version="1">
+          <ac:parameter ac:name="showLabels">true</ac:parameter>
+        </ac:structured-macro>
+        <p>After</p>`;
+      const html = confluenceToHtml(xhtml);
+      expect(html).not.toContain('[Confluence macro: labels]');
+      expect(html).not.toContain('confluence-macro-unknown');
+      expect(html).not.toContain('ac:structured-macro');
+      expect(html).toContain('Before');
+      expect(html).toContain('After');
+    });
+
     it('preserves user mentions as @username spans (#300)', () => {
       const html = confluenceToHtml(USER_MENTIONS_PAGE);
       // Raw `<ri:user>` is rewritten into `<span class="confluence-user-mention">`.

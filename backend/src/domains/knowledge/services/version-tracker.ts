@@ -8,7 +8,7 @@ import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js'
 // Re-export from core so existing consumers keep working
 export { saveVersionSnapshot } from '../../../core/services/version-snapshot.js';
 
-export interface PageVersion {
+interface PageVersion {
   id: string;
   pageId: number;
   confluenceId: string | null;

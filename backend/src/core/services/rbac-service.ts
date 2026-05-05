@@ -120,7 +120,8 @@ export async function userHasPermission(
       [pageId],
     );
     if (pageCheck.rows.length > 0 && !pageCheck.rows[0]!.inherit_perms) {
-      // Page has custom ACEs -- check them
+      // Page has custom ACEs -- check them. `group_memberships.user_id` is
+      // UUID, so cast $2 inline; principal_id is TEXT and compared raw.
       const aceCheck = await query<{ permission: string }>(
         `SELECT ace.permission FROM access_control_entries ace
          WHERE ace.resource_type = 'page' AND ace.resource_id = $1
@@ -128,7 +129,7 @@ export async function userHasPermission(
              (ace.principal_type = 'user' AND ace.principal_id = $2)
              OR (ace.principal_type = 'group' AND ace.principal_id ~ '^\\d+$'
                  AND ace.principal_id::INTEGER IN (
-               SELECT group_id FROM group_memberships WHERE user_id = $2
+               SELECT group_id FROM group_memberships WHERE user_id = $2::uuid
              ))
            )`,
         [pageId, userId],
@@ -383,6 +384,10 @@ export async function userCanAccessPage(
 
   // Page-level ACE override
   if (!page.inherit_perms) {
+    // `group_memberships.user_id` is UUID; `access_control_entries.principal_id`
+    // is TEXT (it stores either a user UUID string or a group id string). Pass
+    // userId as text once and cast inline to UUID for the group-membership
+    // join so PostgreSQL picks the right operator in both branches.
     const aceCheck = await query(
       `SELECT 1 FROM access_control_entries ace
        WHERE ace.resource_type = 'page' AND ace.resource_id = $1
@@ -390,7 +395,7 @@ export async function userCanAccessPage(
            (ace.principal_type = 'user' AND ace.principal_id = $2)
            OR (ace.principal_type = 'group' AND ace.principal_id ~ '^\\d+$'
                AND ace.principal_id::INTEGER IN (
-             SELECT group_id FROM group_memberships WHERE user_id = $2
+             SELECT group_id FROM group_memberships WHERE user_id = $2::uuid
            ))
          )
        LIMIT 1`,

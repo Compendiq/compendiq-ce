@@ -114,3 +114,81 @@ describe.skipIf(!dbAvailable)('GET /api/admin/llm-usecases', () => {
     });
   });
 });
+
+describe.skipIf(!dbAvailable)('GET /api/llm/usecase-default', () => {
+  it('returns the resolved chat default for any authenticated user (#355)', async () => {
+    const p = await app.inject({
+      method: 'POST',
+      url: '/api/admin/llm-providers',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({
+        name: 'Chat Provider',
+        baseUrl: 'http://a/v1',
+        authType: 'none',
+        verifySsl: true,
+        defaultModel: 'gpt-4o',
+      }),
+    });
+    const providerId: string = p.json().id;
+    await app.inject({
+      method: 'POST',
+      url: `/api/admin/llm-providers/${providerId}/set-default`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+
+    // Even a non-admin token should be able to read the default — this route
+    // is auth-gated but not admin-gated.
+    const userResult = await query<{ id: string }>(
+      `INSERT INTO users (username, password_hash, role)
+       VALUES ('chat_default_user', 'fakehash', 'user') RETURNING id`,
+    );
+    const userId = userResult.rows[0]!.id;
+    await query('INSERT INTO user_settings (user_id) VALUES ($1)', [userId]);
+    const userToken = await generateAccessToken({
+      sub: userId,
+      username: 'chat_default_user',
+      role: 'user',
+    });
+
+    const r = await app.inject({
+      method: 'GET',
+      url: '/api/llm/usecase-default?usecase=chat',
+      headers: { authorization: `Bearer ${userToken}` },
+    });
+    expect(r.statusCode).toBe(200);
+    expect(r.json()).toMatchObject({
+      usecase: 'chat',
+      providerId,
+      providerName: 'Chat Provider',
+      model: 'gpt-4o',
+    });
+  });
+
+  it('rejects an invalid usecase with 400', async () => {
+    const r = await app.inject({
+      method: 'GET',
+      url: '/api/llm/usecase-default?usecase=bogus',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(r.statusCode).toBe(400);
+  });
+
+  it('returns 401 without auth', async () => {
+    const r = await app.inject({
+      method: 'GET',
+      url: '/api/llm/usecase-default?usecase=chat',
+    });
+    expect(r.statusCode).toBe(401);
+  });
+
+  it('surfaces 404 with a specific message when no provider is configured', async () => {
+    // No provider has been created — resolveUsecase('chat') should reject.
+    const r = await app.inject({
+      method: 'GET',
+      url: '/api/llm/usecase-default?usecase=chat',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(r.statusCode).toBe(404);
+    expect(r.json().error).toMatch(/Settings → LLM/);
+  });
+});

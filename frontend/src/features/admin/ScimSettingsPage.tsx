@@ -178,7 +178,7 @@ export function ScimSettingsPage() {
       </div>
 
       {/* SCIM Base URL */}
-      <div className="glass-card p-4">
+      <div className="nm-card p-4">
         <div className="flex items-center justify-between">
           <div>
             <div className="flex items-center gap-1.5 text-sm font-medium">
@@ -198,7 +198,7 @@ export function ScimSettingsPage() {
         <m.div
           initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="glass-card space-y-4 border border-amber-500/20 p-4"
+          className="nm-card space-y-4 border border-amber-500/20 p-4"
           data-testid="scim-token-reveal"
         >
           <div className="flex items-start gap-3 rounded-lg bg-amber-500/5 p-3">
@@ -270,7 +270,7 @@ export function ScimSettingsPage() {
         <m.div
           initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="glass-card space-y-3 p-4"
+          className="nm-card space-y-3 p-4"
           data-testid="scim-create-form"
         >
           <div className="grid gap-3 sm:grid-cols-2">
@@ -329,11 +329,11 @@ export function ScimSettingsPage() {
 
       {/* Token list */}
       {!tokens?.length ? (
-        <div className="glass-card py-12 text-center text-sm text-muted-foreground">
+        <div className="nm-card py-12 text-center text-sm text-muted-foreground">
           No SCIM tokens
         </div>
       ) : (
-        <div className="glass-card overflow-hidden">
+        <div className="nm-card overflow-hidden">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">

@@ -4,6 +4,43 @@ vi.mock('../../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
+// `redis-cache-bus` is consumed by `initLlmQueueClusterCoordination` and the
+// new cluster-wide setters. Mock both `publish` (assert it fires on the right
+// channel from setters) and `subscribe` (capture the registered handler so
+// tests can simulate an inbound invalidation).
+const mockPublish = vi.fn(async () => undefined);
+let cacheBusHandler: ((payload: unknown) => void | Promise<void>) | null = null;
+const mockSubscribe = vi.fn((channel: string, handler: (payload: unknown) => void | Promise<void>) => {
+  cacheBusHandler = handler;
+  return () => { cacheBusHandler = null; };
+});
+vi.mock('../../../core/services/redis-cache-bus.js', () => ({
+  publish: (...args: unknown[]) => mockPublish(...args as [string, unknown]),
+  subscribe: (channel: string, handler: (payload: unknown) => void | Promise<void>) =>
+    mockSubscribe(channel, handler),
+  // Tests don't exercise the reconnect path — return a noop.
+  onReconnect: () => () => undefined,
+}));
+
+// `getLlmConcurrency` / `getLlmMaxQueueDepth` are imported by `llm-queue.ts`
+// to prime `_limiter` on init. Provide controllable mocks so tests can drive
+// the values returned by `initLlmQueueClusterCoordination`.
+let cachedConcurrency = 4;
+let cachedMaxQueueDepth = 50;
+vi.mock('../../../core/services/admin-settings-service.js', () => ({
+  getLlmConcurrency: () => cachedConcurrency,
+  getLlmMaxQueueDepth: () => cachedMaxQueueDepth,
+}));
+
+// `query` is imported dynamically inside `initLlmQueue` and the new
+// cluster-wide setters / subscriber. We mock it so tests can drive the DB
+// reads on cache-bus invalidation and assert the UPSERT calls from the
+// setters.
+const mockQuery = vi.fn();
+vi.mock('../../../core/db/postgres.js', () => ({
+  query: (sql: string, params?: unknown[]) => mockQuery(sql, params),
+}));
+
 describe('llm-queue', () => {
   beforeEach(() => {
     vi.resetModules();
@@ -68,6 +105,68 @@ describe('llm-queue', () => {
     expect(getMetrics().concurrency).toBe(100);
   });
 
+  // Regression for #404 — hot-swapping concurrency must NOT orphan in-flight
+  // or pending jobs from the metrics / backpressure view. Pre-fix,
+  // `setConcurrency` reassigned `_limiter = pLimit(val)`, so the new
+  // limiter's `pendingCount` was 0 and the old limiter's jobs were invisible
+  // to both `getMetrics()` and the `enqueue` queue-full check.
+  it('preserves in-flight + pending jobs in metrics across a concurrency hot-swap', async () => {
+    const { enqueue, setConcurrency, setMaxQueueDepth, getMetrics, QueueFullError } =
+      await import('./llm-queue.js');
+    setConcurrency(2);
+    // Start with generous depth so the initial fill isn't rejected;
+    // tightened later in the test to exercise backpressure.
+    setMaxQueueDepth(10);
+
+    // Manually-resolved promise so in-flight jobs stay pending for the
+    // entire test — no real timers, no flake risk.
+    const release: Array<() => void> = [];
+    const block = () => new Promise<void>((resolve) => { release.push(resolve); });
+    const flushMicrotasks = async () => {
+      for (let i = 0; i < 4; i++) await Promise.resolve();
+    };
+
+    // Fill the limiter: 2 active + 3 pending.
+    const inFlight = [
+      enqueue(block), enqueue(block),
+      enqueue(block), enqueue(block), enqueue(block),
+    ];
+    await flushMicrotasks();
+    expect(getMetrics().activeCount).toBe(2);
+    expect(getMetrics().pendingCount).toBe(3);
+
+    // Hot-swap UP. p-limit's `concurrency` setter mutates the same limiter
+    // and drains pending work on the next microtask, so all 5 jobs become
+    // active without disappearing from `getMetrics()`.
+    setConcurrency(5);
+    await flushMicrotasks();
+    expect(getMetrics().concurrency).toBe(5);
+    expect(getMetrics().activeCount).toBe(5);
+    expect(getMetrics().pendingCount).toBe(0);
+
+    // Hot-swap DOWN. The 5 in-flight jobs continue; new work must queue.
+    // Pre-fix this allocated a fresh pLimit(2) and the 5 active jobs
+    // disappeared from the metrics + backpressure view.
+    setConcurrency(2);
+    await flushMicrotasks();
+    expect(getMetrics().activeCount).toBe(5);
+
+    // Tighten max-queue-depth so backpressure can be exercised. The 3
+    // additional enqueues must queue (active=5 >= concurrency=2, no slot
+    // opens), then the 4th must reject — confirming backpressure correctly
+    // counts the in-flight 5 + queued 3 across the hot-swap.
+    setMaxQueueDepth(3);
+    const noop = () => Promise.resolve();
+    const queued = [enqueue(noop), enqueue(noop), enqueue(noop)];
+    await flushMicrotasks();
+    expect(getMetrics().pendingCount).toBe(3);
+    await expect(enqueue(noop)).rejects.toThrow(QueueFullError);
+
+    // Cleanup — release the in-flight 5; the queued noops then drain.
+    while (release.length) release.shift()!();
+    await Promise.allSettled([...inFlight, ...queued]);
+  }, 10_000);
+
   describe('env-var fallback defaults', () => {
     const originalEnv = { ...process.env };
 
@@ -127,6 +226,184 @@ describe('llm-queue', () => {
       });
       await Promise.all([enqueue(task), enqueue(task), enqueue(task)]);
       expect(maxRunning).toBe(1);
+    });
+  });
+
+  // ─── #113 Phase B-3 — cluster-wide coordination ─────────────────────────
+  describe('cluster-wide coordination (Phase B-3)', () => {
+    beforeEach(() => {
+      mockPublish.mockReset();
+      mockPublish.mockResolvedValue(undefined);
+      mockSubscribe.mockClear();
+      mockQuery.mockReset();
+      cacheBusHandler = null;
+      cachedConcurrency = 4;
+      cachedMaxQueueDepth = 50;
+      vi.resetModules();
+    });
+
+    describe('setLlmConcurrencyClusterWide', () => {
+      it('UPSERTs admin_settings.llm_concurrency and publishes admin:llm:settings', async () => {
+        mockQuery.mockResolvedValue({ rows: [], rowCount: 1 });
+        const { setLlmConcurrencyClusterWide } = await import('./llm-queue.js');
+
+        await setLlmConcurrencyClusterWide(10);
+
+        // UPSERT — the setter sends the value as a string ('10').
+        const upsertCall = mockQuery.mock.calls.find(
+          ([sql]) =>
+            typeof sql === 'string'
+            && sql.includes('INSERT INTO admin_settings')
+            && sql.includes('llm_concurrency'),
+        );
+        expect(upsertCall).toBeDefined();
+        expect(upsertCall?.[1]).toEqual(['10']);
+
+        // Publish — channel + payload shape (advisory only).
+        expect(mockPublish).toHaveBeenCalledTimes(1);
+        const [channel, payload] = mockPublish.mock.calls[0]!;
+        expect(channel).toBe('admin:llm:settings');
+        expect(payload).toEqual(expect.objectContaining({ at: expect.any(Number) }));
+      });
+
+      it('clamps the concurrency value to [1, 100] before persisting', async () => {
+        mockQuery.mockResolvedValue({ rows: [], rowCount: 1 });
+        const { setLlmConcurrencyClusterWide } = await import('./llm-queue.js');
+
+        await setLlmConcurrencyClusterWide(0);
+        await setLlmConcurrencyClusterWide(500);
+
+        const lowValue = mockQuery.mock.calls.find(
+          ([sql, params]) =>
+            typeof sql === 'string'
+            && sql.includes('llm_concurrency')
+            && Array.isArray(params)
+            && params[0] === '1',
+        );
+        const highValue = mockQuery.mock.calls.find(
+          ([sql, params]) =>
+            typeof sql === 'string'
+            && sql.includes('llm_concurrency')
+            && Array.isArray(params)
+            && params[0] === '100',
+        );
+        expect(lowValue).toBeDefined();
+        expect(highValue).toBeDefined();
+      });
+    });
+
+    describe('setLlmMaxQueueDepthClusterWide', () => {
+      it('UPSERTs admin_settings.llm_max_queue_depth and publishes', async () => {
+        mockQuery.mockResolvedValue({ rows: [], rowCount: 1 });
+        const { setLlmMaxQueueDepthClusterWide } = await import('./llm-queue.js');
+
+        await setLlmMaxQueueDepthClusterWide(75);
+
+        const upsertCall = mockQuery.mock.calls.find(
+          ([sql]) =>
+            typeof sql === 'string'
+            && sql.includes('INSERT INTO admin_settings')
+            && sql.includes('llm_max_queue_depth'),
+        );
+        expect(upsertCall).toBeDefined();
+        expect(upsertCall?.[1]).toEqual(['75']);
+        expect(mockPublish).toHaveBeenCalledWith('admin:llm:settings', expect.any(Object));
+      });
+    });
+
+    describe('initLlmQueueClusterCoordination', () => {
+      it('subscribes to admin:llm:settings and primes _limiter from the cached getter', async () => {
+        cachedConcurrency = 12;
+        cachedMaxQueueDepth = 250;
+
+        const { initLlmQueueClusterCoordination, getMetrics, _resetClusterCoordinationForTests } =
+          await import('./llm-queue.js');
+        _resetClusterCoordinationForTests();
+
+        initLlmQueueClusterCoordination();
+
+        // Subscribed exactly once on the right channel.
+        const channels = mockSubscribe.mock.calls.map((c) => c[0]);
+        expect(channels).toContain('admin:llm:settings');
+
+        // Primed from the cached getter — the limiter swap goes through
+        // `setConcurrency`, which clamps + updates `_concurrency`.
+        const m = getMetrics();
+        expect(m.concurrency).toBe(12);
+        expect(m.maxQueueDepth).toBe(250);
+      });
+
+      it('on incoming message, re-reads DB and updates _limiter.concurrency via setConcurrency', async () => {
+        // Initial state: 4. After the cache-bus message, the handler reads
+        // `admin_settings` and finds llm_concurrency=20.
+        const { initLlmQueueClusterCoordination, getMetrics, _resetClusterCoordinationForTests } =
+          await import('./llm-queue.js');
+        _resetClusterCoordinationForTests();
+
+        // Prime read (concurrency=4 already; cached getters return the default).
+        initLlmQueueClusterCoordination();
+        expect(getMetrics().concurrency).toBe(4);
+
+        // Now the handler runs because pod B PUT a new value. The handler
+        // SELECTs both keys; the mock returns 20 for concurrency and the
+        // existing value for depth.
+        mockQuery.mockResolvedValueOnce({
+          rows: [
+            { setting_key: 'llm_concurrency', setting_value: '20' },
+            { setting_key: 'llm_max_queue_depth', setting_value: '250' },
+          ],
+        });
+
+        expect(cacheBusHandler).not.toBeNull();
+        await cacheBusHandler!({ at: Date.now() });
+
+        const m = getMetrics();
+        expect(m.concurrency).toBe(20);
+        expect(m.maxQueueDepth).toBe(250);
+      });
+
+      it('on incoming message with invalid DB value, leaves _limiter unchanged', async () => {
+        const { initLlmQueueClusterCoordination, getMetrics, _resetClusterCoordinationForTests } =
+          await import('./llm-queue.js');
+        _resetClusterCoordinationForTests();
+        initLlmQueueClusterCoordination();
+
+        const before = getMetrics().concurrency;
+
+        // Corrupted DB row — 0 is below the minimum, the handler must skip.
+        mockQuery.mockResolvedValueOnce({
+          rows: [{ setting_key: 'llm_concurrency', setting_value: '0' }],
+        });
+        await cacheBusHandler!({ at: 1 });
+
+        expect(getMetrics().concurrency).toBe(before);
+      });
+
+      it('is idempotent — second init while active is a no-op', async () => {
+        const { initLlmQueueClusterCoordination, _resetClusterCoordinationForTests } =
+          await import('./llm-queue.js');
+        _resetClusterCoordinationForTests();
+
+        initLlmQueueClusterCoordination();
+        const subsAfterFirst = mockSubscribe.mock.calls.length;
+        initLlmQueueClusterCoordination();
+        expect(mockSubscribe.mock.calls.length).toBe(subsAfterFirst);
+      });
+
+      it('soft-fails when subscribe throws (single-pod / no Redis)', async () => {
+        mockSubscribe.mockImplementationOnce(() => {
+          throw new Error('cache-bus inactive');
+        });
+
+        const { initLlmQueueClusterCoordination, getMetrics, _resetClusterCoordinationForTests } =
+          await import('./llm-queue.js');
+        _resetClusterCoordinationForTests();
+
+        // Should NOT throw — the queue still primes from the cached getter.
+        expect(() => initLlmQueueClusterCoordination()).not.toThrow();
+        // Default cached values applied.
+        expect(getMetrics().concurrency).toBe(4);
+      });
     });
   });
 });
