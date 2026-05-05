@@ -1189,7 +1189,7 @@ The challenge is to deliver multi-replica correctness **without** introducing a 
 1. **Generic Redis pub/sub cache-bus** for cluster-wide invalidation. Advisory-only payloads — handlers re-fetch from the authoritative store on every event. No durable event log.
 2. **BullMQ `upsertJobScheduler`** with stable, semantic IDs for every recurring job, replacing v4's `repeat: { every }` pattern. BullMQ's Redis-side dedup ensures exactly-once-per-tick semantics under N replicas.
 3. **In-place mutation of `_limiter.concurrency`** (p-limit 7) when admin-set LLM concurrency changes, rather than allocating a fresh `pLimit(...)` and orphaning in-flight work.
-4. **Graceful-shutdown order** for the Fastify+BullMQ process: HTTP first, then workers, then queue-events, then queues, then Redis — bounded by a 60s `stop_grace_period` with stall-recovery as the safety net.
+4. **Graceful-shutdown order** for the Fastify+BullMQ process: workers drain first, then HTTP, then DB pools — bounded by a 60s `stop_grace_period` with the BullMQ stall detector as the safety net. Workers-first (not the canonical BullMQ-docs HTTP-first) is the correct choice for this codebase because Compendiq's LLM streaming routes hold an SSE response open while a queued worker job produces chunks; closing HTTP first would abort in-flight streams mid-answer.
 5. **Soft-fail per-pod fallbacks** so single-pod deployments and Redis outages degrade to local-only behaviour rather than hard-erroring the request path.
 
 CE-side primitives (the bus, the BullMQ migration, the p-limit hot-swap, the SSRF allowlist bus) are implemented in CE so the same scale-safety applies to community deployments that choose to run multi-replica. EE does not carry a parallel implementation; it only consumes the primitives.
@@ -1234,18 +1234,32 @@ If the at-most-once trade-off becomes user-visible (e.g. a customer reports cach
 
 **Graceful-shutdown order:**
 
-Bound to a 60s `stop_grace_period` (set in `docker/docker-compose.ee.yml`) with the BullMQ stall detector (`stalledInterval` default 30s) as the safety net for jobs that don't complete:
+Bound to a 60s `stop_grace_period` (set in `docker/docker-compose.ee.yml`) with the BullMQ stall detector (`stalledInterval` default 30s) as the safety net for jobs that don't complete. The actual sequence in `backend/src/index.ts:61-70`:
 
 ```
 SIGTERM
-  → fastify.close()              // stop accepting HTTP, await in-flight handlers
-  → worker.close(force=false)    // stop fetching new jobs, await active jobs
-  → queueEvents.close()          // mandatory — releases blocking XREAD
-  → queue.close()                // close producer pool + internal timers
-  → redis.quit()                 // last
+  → stopQueueWorkers()           // worker.close() awaits in-flight jobs;
+                                 // queue.close() then releases the producer pool.
+                                 // QueueEvents is NOT used in this codebase
+                                 // (`grep -r 'new QueueEvents' ce/backend/src` → 0 hits),
+                                 // so no XREAD connection to release.
+  → closeEmailService()          // synchronous teardown of nodemailer transports
+  → app.close()                  // stop accepting HTTP, await in-flight handlers
+                                 // (Fastify Redis plugin's onClose runs here →
+                                 //  Redis client.quit() is implicit)
+  → closeVectorPool()            // pgvector pool
+  → closePool()                  // primary Postgres pool
+  → shutdownTelemetry()          // OTEL flush + transport close
+  → process.exit(0)
 ```
 
-`QueueEvents.close()` is non-optional even if the application doesn't explicitly use `QueueEvents` — BullMQ may instantiate one internally, and an unreleased blocking `XREAD` will prevent process exit. **No permanently orphaned `active` jobs:** any job that does not finish in 60s is interrupted, but BullMQ's stall detector reclaims and retries it. Long-running LLM streams (`LLM_STREAM_TIMEOUT_MS=300_000`) are accepted as occasional stall-and-retry casualties for v0.4. v0.5 either lowers the timeout default or moves LLM work to a dedicated worker container with a longer grace period.
+**Why workers-first, not the BullMQ-docs HTTP-first?** Compendiq's LLM streaming routes (`/api/llm/*` chat-completion, summary, generate) hold the SSE response open while a queued BullMQ worker produces chunks. Closing HTTP first would abort in-flight streams mid-answer; closing workers first lets the worker's last chunks reach the still-open SSE response, giving users a complete answer before the connection drains. The canonical BullMQ recommendation (HTTP-first) assumes a typical job-queue pattern where the HTTP handler returns immediately after enqueueing — that doesn't match Compendiq's HTTP-bound-to-worker-output streaming model.
+
+**Trade-off accepted:** during the workers-draining window, in-flight HTTP handlers can still call `enqueue()` and add jobs to a closing queue. Those jobs are picked up by the next pod that boots (Redis-persisted) or, if no pod boots within `stalledInterval`, reclaimed and retried via stall detection. The risk is a small backlog at restart — acceptable for v0.4. v0.5 may add an HTTP-side guard that rejects new `enqueue()` calls once shutdown begins.
+
+**No permanently orphaned `active` jobs:** any job that does not finish in 60s is interrupted, but BullMQ's stall detector reclaims and retries it. Long-running LLM streams (`LLM_STREAM_TIMEOUT_MS=300_000`) are accepted as occasional stall-and-retry casualties for v0.4. v0.5 either lowers the timeout default or moves LLM work to a dedicated worker container with a longer grace period.
+
+**No explicit timeout / SIGKILL fallback inside the handler.** If any `await` in the chain hangs, the only backstop is Docker's `stop_grace_period: 60s` followed by SIGKILL. v0.5 could add a `Promise.race(shutdown, timer(50_000))` belt-and-braces; left out of v0.4 to keep the handler simple and observable in logs.
 
 **Trust-proxy posture (cross-reference ADR for #111):**
 
