@@ -22,7 +22,7 @@
   <a href="#architecture">Architecture</a> &middot;
   <a href="docs/USER-GUIDE.md">Docs</a> &middot;
   <a href="docs/integrations/README.md">Integration guides</a> &middot;
-  <a href="docs/releases/v0.3.0.md">v0.3 release notes</a> &middot;
+  <a href="https://github.com/Compendiq/compendiq-ce/releases">Releases</a> &middot;
   <a href="docs/ROADMAP.md">Roadmap</a> &middot;
   <a href="docs/STEWARDSHIP.md">Stewardship</a> &middot;
   <a href="https://github.com/Compendiq/compendiq-ce/discussions">Community</a> &middot;
