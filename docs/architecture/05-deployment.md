@@ -180,7 +180,10 @@ flowchart LR
 # docker/docker-compose.ee.yml — excerpt
 services:
   backend:
-    image: ghcr.io/compendiq/compendiq-ee-backend:dev
+    # `:latest` tracks the latest stable release on `main`; pin to a
+    # versioned tag like `:0.4.0` for reproducible production deploys,
+    # or `:dev` for staging environments that want dev-branch nightlies.
+    image: ghcr.io/compendiq/compendiq-ee-backend:latest
     stop_grace_period: 60s   # SIGTERM → drain → SIGKILL
     environment:
       # Trusted-proxy CIDRs are NOT an env var — set them via
