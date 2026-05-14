@@ -1,0 +1,10 @@
+[real_ip]
+ipv4_prefix = 32
+ipv6_prefix = 56
+
+[botdetection.ip_limit]
+filter_link_local = false
+link_token = false
+
+[botdetection.ip_lists]
+pass_searxng_org = false
