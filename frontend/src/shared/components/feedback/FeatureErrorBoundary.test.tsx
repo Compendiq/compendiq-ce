@@ -132,11 +132,14 @@ describe('FeatureErrorBoundary', () => {
     );
 
     // React itself calls console.error, and our componentDidCatch also logs.
-    // Verify our specific log message was included.
+    // Verify our specific log was included. The boundary now uses a constant
+    // format string with `%s` interpolation (the feature name is passed as
+    // the second argument) — see #640 / unsafe-formatstring lint rule.
     const ourLog = consoleSpy.mock.calls.find(
       (call) =>
         typeof call[0] === 'string' &&
-        call[0].includes('[FeatureErrorBoundary] Article Viewer crashed:'),
+        call[0] === '[FeatureErrorBoundary] %s crashed:' &&
+        call[1] === 'Article Viewer',
     );
     expect(ourLog).toBeDefined();
   });
