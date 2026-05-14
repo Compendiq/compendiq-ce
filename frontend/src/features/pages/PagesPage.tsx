@@ -4,7 +4,6 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { m } from 'framer-motion';
 import { Search, FileText, Plus, RefreshCw, ChevronLeft, ChevronRight, FolderOpen, Filter, X, List, Loader2, Trash2, Lock, Globe, AlertTriangle } from 'lucide-react';
-import DOMPurify from 'dompurify';
 import { toast } from 'sonner';
 import { usePages, usePageFilterOptions, usePage, useEmbeddingStatus, type QualityStatus, type SummaryStatus } from '../../shared/hooks/use-pages';
 import { useSpaces, useSync, useSyncStatus } from '../../shared/hooks/use-spaces';
@@ -21,6 +20,7 @@ import { PinnedArticlesSection } from './PinnedArticlesSection';
 import { cn } from '../../shared/lib/cn';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { ShortcutHint } from '../../shared/components/ShortcutHint';
+import { SanitizedHtml } from '../../shared/components/SanitizedHtml';
 
 // ---------------------------------------------------------------------------
 // Memoized page list item: prevents re-render from embedding-status polling
@@ -200,12 +200,7 @@ export function PagesPage() {
   const { data: homePage, isLoading: homePageLoading } = usePage(
     showHomeContent && !forcePageList ? selectedSpace?.homepageId ?? undefined : undefined,
   );
-  const sanitizedHomeHtml = useMemo(
-    () => (homePage ? DOMPurify.sanitize(homePage.bodyHtml, {
-      ADD_ATTR: ['data-diagram-name', 'data-drawio', 'data-color', 'data-layout-type', 'data-cell-width', 'data-border'],
-    }) : ''),
-    [homePage],
-  );
+  const homeBodyHtml = homePage?.bodyHtml ?? '';
 
   // Map quality filter preset to min/max range
   const qualityRange = useMemo(() => {
@@ -739,9 +734,10 @@ export function PagesPage() {
                 </button>
               </div>
             </div>
-            <div
+            <SanitizedHtml
               className={`rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm prose max-w-none p-6${isLight ? '' : ' prose-invert'}`}
-              dangerouslySetInnerHTML={{ __html: sanitizedHomeHtml }}
+              html={homeBodyHtml}
+              additionalAllowedAttrs={['data-diagram-name', 'data-drawio', 'data-color', 'data-layout-type', 'data-cell-width', 'data-border']}
             />
           </m.div>
         ) : null

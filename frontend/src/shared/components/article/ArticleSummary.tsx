@@ -1,12 +1,12 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback } from 'react';
 import { ChevronDown, ChevronRight, Sparkles, RefreshCw, AlertCircle, Clock } from 'lucide-react';
-import DOMPurify from 'dompurify';
 import { toast } from 'sonner';
 import { cn } from '../../lib/cn';
 import { formatRelativeTime } from '../../lib/format-relative-time';
 import { useSummaryRegenerate } from '../../hooks/use-pages';
 import type { SummaryStatus } from '../../hooks/use-pages';
 import { useAuthStore } from '../../../stores/auth-store';
+import { SanitizedHtml } from '../SanitizedHtml';
 
 interface ArticleSummaryProps {
   pageId: string;
@@ -49,12 +49,6 @@ export function ArticleSummary({
   // Regenerate / Retry buttons for non-admins so we don't ship a
   // visible-but-403ing control to viewers.
   const isAdmin = useAuthStore((s) => s.user?.role === 'admin');
-
-  // Sanitize LLM-generated HTML to prevent XSS
-  const sanitizedHtml = useMemo(
-    () => (summaryHtml ? DOMPurify.sanitize(summaryHtml) : ''),
-    [summaryHtml],
-  );
 
   const toggleCollapse = useCallback(() => {
     setCollapsed((prev) => {
@@ -182,10 +176,10 @@ export function ArticleSummary({
       </div>
 
       {!collapsed && (
-        <div
+        <SanitizedHtml
           className="border-t border-primary/10 px-4 pb-4 pt-2 text-sm text-foreground/90 prose prose-sm max-w-none dark:prose-invert"
           data-testid="article-summary-content"
-          dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
+          html={summaryHtml}
         />
       )}
     </div>

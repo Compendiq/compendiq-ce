@@ -2,7 +2,6 @@ import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { m } from 'framer-motion';
-import DOMPurify from 'dompurify';
 import {
   Search, FileText, ChevronLeft, ChevronRight,
   Filter, X, SlidersHorizontal, Inbox, Loader2, AlertTriangle,
@@ -10,6 +9,7 @@ import {
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
 import { useSearch, type SearchResultItem } from '../../shared/hooks/use-search';
+import { SanitizedHtml } from '../../shared/components/SanitizedHtml';
 
 type SearchMode = 'keyword' | 'semantic' | 'hybrid';
 type SortOption = 'relevance' | 'modified' | 'title';
@@ -55,19 +55,23 @@ function escapeHtml(str: string): string {
 }
 
 /**
- * Highlight search terms in text by wrapping matches in <mark> tags.
+ * Build highlight markup for a search term in text. Returns an HTML string
+ * where all literal segments are HTML-escaped and only matches are wrapped
+ * in <mark>. The caller MUST pass the result through SanitizedHtml (with a
+ * `<mark>`-only allowlist) to render — sanitization is the security boundary,
+ * not this function.
+ *
  * Uses case-insensitive string splitting instead of RegExp to avoid ReDoS.
- * All segments are HTML-escaped before assembly; output is then sanitized
- * with DOMPurify as a secondary defense.
  */
 function highlightText(text: string, query: string): string {
   const trimmed = query.trim();
-  if (!trimmed) return DOMPurify.sanitize(escapeHtml(text));
+  if (!trimmed) return escapeHtml(text);
 
   // If the text already contains server-side <mark> tags (e.g. from ts_headline),
-  // return it sanitized as-is to avoid double-escaping the existing markup.
+  // pass it through unchanged — SanitizedHtml's <mark>-only allowlist will
+  // strip anything else.
   if (/<mark\b[^>]*>/.test(text)) {
-    return DOMPurify.sanitize(text, { ALLOWED_TAGS: ['mark'], ALLOWED_ATTR: ['class'] });
+    return text;
   }
 
   const lowerText = text.toLowerCase();
@@ -89,7 +93,7 @@ function highlightText(text: string, query: string): string {
     cursor = idx + trimmed.length;
   }
 
-  return DOMPurify.sanitize(parts.join(''), { ALLOWED_TAGS: ['mark'], ALLOWED_ATTR: ['class'] });
+  return parts.join('');
 }
 
 function SearchResultCard({ item, query, navigate }: {
@@ -106,24 +110,18 @@ function SearchResultCard({ item, query, navigate }: {
       <div className="flex items-start gap-3">
         <FileText size={18} className="mt-0.5 shrink-0 text-muted-foreground" />
         <div className="min-w-0 flex-1">
-          <p
+          <SanitizedHtml
             className="font-medium"
-            dangerouslySetInnerHTML={{
-              __html: DOMPurify.sanitize(
-                highlightText(item.title, query),
-                { ALLOWED_TAGS: ['mark'], ALLOWED_ATTR: ['class'] },
-              ),
-            }}
+            html={highlightText(item.title, query)}
+            allowedTags={['mark']}
+            allowedAttrs={['class']}
           />
           {item.excerpt && (
-            <p
+            <SanitizedHtml
               className="mt-1 line-clamp-2 text-sm text-muted-foreground"
-              dangerouslySetInnerHTML={{
-                __html: DOMPurify.sanitize(
-                  highlightText(item.excerpt.slice(0, 200), query),
-                  { ALLOWED_TAGS: ['mark'], ALLOWED_ATTR: ['class'] },
-                ),
-              }}
+              html={highlightText(item.excerpt.slice(0, 200), query)}
+              allowedTags={['mark']}
+              allowedAttrs={['class']}
             />
           )}
           <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
