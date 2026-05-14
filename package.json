@@ -30,6 +30,7 @@
   "overrides": {
     "protobufjs": "^7.5.5",
     "@fastify/static": "^9.1.1",
+    "fast-uri": "^3.1.2",
     "hono": "^4.12.14",
     "tmp": "^0.2.4",
     "uuid": "^14.0.0"
