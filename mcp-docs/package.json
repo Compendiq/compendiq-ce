@@ -31,7 +31,8 @@
     "vitest": "^4.0.18"
   },
   "overrides": {
-    "fast-uri": "^3.1.2"
+    "fast-uri": "^3.1.2",
+    "hono": "^4.12.18"
   },
   "engines": {
     "node": ">=22.0.0"
