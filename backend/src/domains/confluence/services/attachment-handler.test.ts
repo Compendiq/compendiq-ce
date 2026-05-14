@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import fs from 'fs/promises';
+import path from 'path';
 import { request } from 'undici';
 import {
   syncImageAttachments,
@@ -1267,38 +1268,33 @@ describe('attachment-handler', () => {
   });
 
   describe('path traversal prevention', () => {
-    it('allows normal pageId values', async () => {
+    it('allows normal numeric pageId values', async () => {
       const client = createMockClient();
-      // A normal pageId should work without errors
       await expect(
         cacheAttachment(client, 'user-1', '12345', '/download/img.png', 'img.png'),
       ).resolves.toBeDefined();
       expect(fs.mkdir).toHaveBeenCalled();
     });
 
-    it('blocks pageId with path traversal sequences (../)', async () => {
+    // Behaviour change vs. the previous permissive sanitiser (#635):
+    // the new helper validates pageId against /^[A-Za-z0-9_-]+$/ and throws on
+    // any character outside that allow-list. Inputs that the old code would
+    // have coerced to a "safe-looking" string now reject up front.
+
+    it('rejects pageId containing path traversal sequences', async () => {
       const client = createMockClient();
-      // After sanitization, "../../../etc" becomes "_.._.._.._etc" which is safe,
-      // but the key protection is the resolved path check
       await expect(
         cacheAttachment(client, 'user-1', '../../../etc/passwd', '/download/x.png', 'x.png'),
-      ).resolves.toBeDefined();
-      // Verify the directory created does NOT contain literal ".."
-      const mkdirCall = vi.mocked(fs.mkdir).mock.calls[0][0] as string;
-      expect(mkdirCall).not.toContain('..');
+      ).rejects.toThrow('Invalid page ID');
     });
 
-    it('sanitizes URL-encoded traversal (..%2F)', async () => {
+    it('rejects URL-encoded traversal in pageId', async () => {
       const client = createMockClient();
-      // "..%2F..%2Fetc" — dots and slashes are stripped; the %2F literal chars
-      // are harmless at the filesystem level but dots are still removed.
+      // `%` is outside the allow-list, so a payload like "..%2F..%2Fetc" is
+      // rejected before it ever reaches path.resolve.
       await expect(
         cacheAttachment(client, 'user-1', '..%2F..%2Fetc', '/download/x.png', 'x.png'),
-      ).resolves.toBeDefined();
-      const mkdirCall = vi.mocked(fs.mkdir).mock.calls[0][0] as string;
-      // Dots and slashes stripped — no traversal sequences remain
-      expect(mkdirCall).not.toContain('..');
-      expect(mkdirCall).not.toContain('/.');
+      ).rejects.toThrow('Invalid page ID');
     });
 
     it('rejects empty pageId', async () => {
@@ -1308,20 +1304,15 @@ describe('attachment-handler', () => {
       ).rejects.toThrow('Invalid page ID');
     });
 
-    it('sanitizes backslashes and dots in pageId', async () => {
+    it('rejects pageId with backslashes or dots', async () => {
       const client = createMockClient();
       await expect(
         cacheAttachment(client, 'user-1', '..\\..\\etc', '/download/x.png', 'x.png'),
-      ).resolves.toBeDefined();
-      const mkdirCall = vi.mocked(fs.mkdir).mock.calls[0][0] as string;
-      // Both dots and backslashes are replaced, no traversal possible
-      expect(mkdirCall).not.toContain('..');
-      expect(mkdirCall).not.toContain('\\');
+      ).rejects.toThrow('Invalid page ID');
     });
 
     it('rejects pageId that is only dots and slashes', async () => {
       const client = createMockClient();
-      // "../../.." becomes all underscores then trimmed — empty after trim
       await expect(
         cacheAttachment(client, 'user-1', '../../..', '/download/x.png', 'x.png'),
       ).rejects.toThrow('Invalid page ID');
@@ -1329,18 +1320,12 @@ describe('attachment-handler', () => {
 
     it('rejects pageId that is only slashes', async () => {
       const client = createMockClient();
-      // "///" becomes "___" then trimmed to empty
       await expect(
         cacheAttachment(client, 'user-1', '///', '/download/x.png', 'x.png'),
       ).rejects.toThrow('Invalid page ID');
     });
 
-    it('rejects pageId that is only dots ("...") — was masked by the old duplicate-in-char-class regex', async () => {
-      // Regression for #230: the previous regex /[/\\..]+/g had a duplicate `.`
-      // in the character class. The behaviour was identical (Zod-unrelated
-      // no-op), but leaving the bug in meant anyone editing the pattern later
-      // could misread intent. After the fix to /[/\\.]+/g, "..." still collapses
-      // to a single "_" which then trims to empty → "Invalid page ID".
+    it('rejects pageId that is only dots', async () => {
       const client = createMockClient();
       await expect(
         cacheAttachment(client, 'user-1', '...', '/download/x.png', 'x.png'),
@@ -1348,13 +1333,121 @@ describe('attachment-handler', () => {
     });
 
     it('preserves pageIds that contain only safe characters (hyphens, digits)', async () => {
-      // Sanity check: common shapes like "page-123" must pass through unchanged.
       const client = createMockClient();
       await expect(
         cacheAttachment(client, 'user-1', 'page-123', '/download/x.png', 'x.png'),
       ).resolves.toBeDefined();
       const mkdirCall = vi.mocked(fs.mkdir).mock.calls[0][0] as string;
       expect(mkdirCall).toContain('page-123');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Direct tests for the internal validators / path helper (#635).
+// ---------------------------------------------------------------------------
+//
+// `cacheAttachment` and friends already exercise these through their public
+// surface, but having a focused suite keeps the invariants pinned even if a
+// future refactor stops calling the helpers from `cacheAttachment` paths.
+
+describe('attachment-handler / safeAttachmentPath internals', () => {
+  // Re-import without the fs mocks so we exercise the real path-string logic.
+  // (`vi.mock('fs/promises', ...)` higher up in this file does not affect the
+  // synchronous `path` module that the validators use.)
+  let __internal: typeof import('./attachment-handler.js').__internal;
+  beforeEach(async () => {
+    ({ __internal } = await import('./attachment-handler.js'));
+  });
+
+  describe('validatePageId', () => {
+    it.each([
+      ['12345'],
+      ['page-1'],
+      ['page_42'],
+      ['ABC-xyz-123'],
+      ['a'],
+    ])('accepts %s', (id) => {
+      expect(__internal.validatePageId(id)).toBe(id);
+    });
+
+    it.each([
+      ['', 'empty'],
+      ['..', 'dot-dot'],
+      ['.', 'single-dot'],
+      ['../etc', 'with traversal'],
+      ['page/sub', 'with slash'],
+      ['page\\sub', 'with backslash'],
+      ['page id', 'with space'],
+      ['page%2F', 'with percent'],
+      ['page\0null', 'with NUL byte'],
+      ['пage', 'with unicode look-alike'],
+    ])('rejects %s (%s)', (id) => {
+      expect(() => __internal.validatePageId(id)).toThrow('Invalid page ID');
+    });
+  });
+
+  describe('validateFilename', () => {
+    it('returns the basename for plain filenames', () => {
+      expect(__internal.validateFilename('image.png')).toBe('image.png');
+      expect(__internal.validateFilename('a.png')).toBe('a.png');
+    });
+
+    it('strips directory components down to the basename', () => {
+      // path.basename strips the leading path. The remaining segment is then
+      // re-validated (non-empty, no NUL, not dotfile).
+      expect(__internal.validateFilename('subdir/img.png')).toBe('img.png');
+      expect(__internal.validateFilename('/abs/img.png')).toBe('img.png');
+    });
+
+    it('rejects traversal that collapses to ".."', () => {
+      // path.basename('../..') is '..', which starts with '.' → rejected.
+      expect(() => __internal.validateFilename('../..')).toThrow('Invalid filename');
+    });
+
+    it('rejects empty filenames', () => {
+      expect(() => __internal.validateFilename('')).toThrow('Invalid filename');
+    });
+
+    it('rejects filenames containing NUL bytes', () => {
+      expect(() => __internal.validateFilename('img\0.png')).toThrow('Invalid filename');
+    });
+
+    it('rejects dotfiles', () => {
+      expect(() => __internal.validateFilename('.env')).toThrow('Invalid filename');
+      expect(() => __internal.validateFilename('.htaccess')).toThrow('Invalid filename');
+    });
+  });
+
+  describe('safeAttachmentPath', () => {
+    it('produces a path under the attachments root for valid inputs', () => {
+      const result = __internal.safeAttachmentPath('page-1', 'img.png');
+      expect(result.startsWith(__internal.ATTACHMENTS_BASE_RESOLVED + path.sep)).toBe(true);
+      expect(result.endsWith(`${path.sep}page-1${path.sep}img.png`)).toBe(true);
+    });
+
+    it('throws for invalid pageId', () => {
+      expect(() => __internal.safeAttachmentPath('../etc', 'img.png')).toThrow('Invalid page ID');
+    });
+
+    it('throws for invalid filename', () => {
+      expect(() => __internal.safeAttachmentPath('page-1', '')).toThrow('Invalid filename');
+    });
+
+    it('throws for filename containing NUL', () => {
+      expect(() => __internal.safeAttachmentPath('page-1', 'img\0.png')).toThrow('Invalid filename');
+    });
+
+    it('rejects unicode look-alike pageId', () => {
+      // Cyrillic "р" (U+0440) looks like Latin "p" but fails the allow-list.
+      expect(() => __internal.safeAttachmentPath('рage-1', 'img.png')).toThrow('Invalid page ID');
+    });
+
+    it('strips dirname from filename before resolving', () => {
+      const result = __internal.safeAttachmentPath('page-1', 'subdir/img.png');
+      expect(result.endsWith(`${path.sep}page-1${path.sep}img.png`)).toBe(true);
+      // No `subdir` segment should survive in the resolved path.
+      expect(result).not.toContain(`${path.sep}subdir${path.sep}`);
     });
   });
 });
