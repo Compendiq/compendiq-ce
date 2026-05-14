@@ -24,7 +24,7 @@ services:
     ports:
       - "${BACKEND_HOST_PORT:-3052}:3051"
     env_file:
-      - ../docker/.env
+      - .env
     environment:
       NODE_ENV: production
       BACKEND_PORT: "3051"

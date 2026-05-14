@@ -1,6 +1,6 @@
-[real_ip]
+[botdetection]
 ipv4_prefix = 32
-ipv6_prefix = 56
+ipv6_prefix = 48
 
 [botdetection.ip_limit]
 filter_link_local = false
