@@ -4,11 +4,11 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
 import { Plus, LayoutGrid, FolderOpen } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
-import DOMPurify from 'dompurify';
 import { toast } from 'sonner';
 import { apiFetch } from '../../shared/lib/api';
 import { TemplateCard, type Template } from './TemplateCard';
 import { EmptyState } from '../../shared/components/feedback/EmptyState';
+import { SanitizedHtml } from '../../shared/components/SanitizedHtml';
 import { cn } from '../../shared/lib/cn';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 
@@ -69,15 +69,7 @@ export function TemplatesPage() {
     setPreviewTemplate(template);
   }, []);
 
-  const sanitizedPreviewHtml = useMemo(
-    () =>
-      previewTemplate
-        ? DOMPurify.sanitize(previewTemplate.bodyHtml, {
-            ADD_ATTR: ['data-diagram-name', 'data-drawio', 'data-color', 'data-layout-type', 'data-cell-width', 'data-border'],
-          })
-        : '',
-    [previewTemplate],
-  );
+  const previewBodyHtml = previewTemplate?.bodyHtml ?? '';
 
   return (
     <div className="space-y-6">
@@ -166,9 +158,10 @@ export function TemplatesPage() {
                 <Dialog.Description className="mb-4 text-sm text-muted-foreground">
                   {previewTemplate.description}
                 </Dialog.Description>
-                <div
+                <SanitizedHtml
                   className={cn('prose max-w-none rounded-lg border border-border/30 bg-foreground/5 p-4', !isLight && 'prose-invert')}
-                  dangerouslySetInnerHTML={{ __html: sanitizedPreviewHtml }}
+                  html={previewBodyHtml}
+                  additionalAllowedAttrs={['data-diagram-name', 'data-drawio', 'data-color', 'data-layout-type', 'data-cell-width', 'data-border']}
                 />
                 <div className="mt-4 flex justify-end gap-2">
                   <Dialog.Close asChild>
