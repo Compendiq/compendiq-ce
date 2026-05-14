@@ -37,7 +37,8 @@ export class FeatureErrorBoundary extends Component<
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
     console.error(
-      `[FeatureErrorBoundary] ${this.props.featureName} crashed:`,
+      '[FeatureErrorBoundary] %s crashed:',
+      this.props.featureName,
       error,
       errorInfo,
     );
