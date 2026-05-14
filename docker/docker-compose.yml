@@ -23,6 +23,8 @@ services:
       - "host.docker.internal:host-gateway"
     ports:
       - "${BACKEND_HOST_PORT:-3052}:3051"
+    env_file:
+      - .env
     environment:
       NODE_ENV: production
       BACKEND_PORT: "3051"
@@ -30,22 +32,13 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD:-changeme-redis}@redis:6379
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
       PAT_ENCRYPTION_KEY: ${PAT_ENCRYPTION_KEY:?PAT_ENCRYPTION_KEY is required}
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
-      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
-      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-bge-m3}
       EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1024}
       FTS_LANGUAGE: ${FTS_LANGUAGE:-simple}
-      LLM_BEARER_TOKEN: ${LLM_BEARER_TOKEN:-}
       LLM_AUTH_TYPE: ${LLM_AUTH_TYPE:-bearer}
       LLM_VERIFY_SSL: ${LLM_VERIFY_SSL:-true}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:8081}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      DEFAULT_LLM_MODEL: ${DEFAULT_LLM_MODEL:-}
-      QUALITY_MODEL: ${QUALITY_MODEL:-}
       QUALITY_CHECK_INTERVAL_MINUTES: ${QUALITY_CHECK_INTERVAL_MINUTES:-60}
       QUALITY_BATCH_SIZE: ${QUALITY_BATCH_SIZE:-5}
-      SUMMARY_MODEL: ${SUMMARY_MODEL:-}
       SUMMARY_CHECK_INTERVAL_MINUTES: ${SUMMARY_CHECK_INTERVAL_MINUTES:-60}
       SUMMARY_BATCH_SIZE: ${SUMMARY_BATCH_SIZE:-5}
       SYNC_INTERVAL_MIN: ${SYNC_INTERVAL_MIN:-15}
@@ -142,7 +135,7 @@ services:
     command: >
       redis-server
       --maxmemory 256mb
-      --maxmemory-policy allkeys-lru
+      --maxmemory-policy noeviction
       --requirepass ${REDIS_PASSWORD:-changeme-redis}
     healthcheck:
       test: ["CMD-SHELL", "REDISCLI_AUTH=${REDIS_PASSWORD:-changeme-redis} redis-cli ping"]
