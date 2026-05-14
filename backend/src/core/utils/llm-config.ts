@@ -1,6 +1,7 @@
 import { readFileSync, existsSync } from 'fs';
 import { Agent, fetch as undiciFetch, type Dispatcher } from 'undici';
 import { logger } from './logger.js';
+import { unsafeDisableTlsVerification } from './unsafe-tls.js';
 
 /**
  * Shared LLM/Ollama connection configuration.
@@ -100,7 +101,7 @@ export interface LlmConnectOptions {
  */
 export function buildLlmConnectOptions(): LlmConnectOptions | undefined {
   if (!verifySsl) {
-    return { rejectUnauthorized: false };
+    return unsafeDisableTlsVerification();
   }
   if (caBundleContents) {
     return { ca: caBundleContents };
