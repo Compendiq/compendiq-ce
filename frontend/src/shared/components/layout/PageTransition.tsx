@@ -1,4 +1,4 @@
-import { type ReactNode, useRef, useState, useMemo } from 'react';
+import { type ReactNode, useRef, useState, useMemo, useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 import { AnimatePresence, m } from 'framer-motion';
 import { useReducedMotion } from 'framer-motion';
@@ -49,21 +49,20 @@ export function PageTransition({ children }: PageTransitionProps) {
 
   // Compute direction synchronously during render so animation reads
   // the correct value on the same frame the location changes.
-  const direction = useMemo(() => {
+  // Note: prevDepthRef is updated in a commit-phase effect below to avoid
+  // mutating a ref inside useMemo (which can re-run in React 19 + StrictMode
+  // and corrupt the direction calculation).
+  const direction = useMemo<'forward' | 'backward' | 'neutral'>(() => {
     const currentDepth = routeDepth(location.pathname);
     const prevDepth = prevDepthRef.current;
 
-    let dir: 'forward' | 'backward' | 'neutral';
-    if (currentDepth > prevDepth) {
-      dir = 'forward';
-    } else if (currentDepth < prevDepth) {
-      dir = 'backward';
-    } else {
-      dir = 'neutral';
-    }
+    if (currentDepth > prevDepth) return 'forward';
+    if (currentDepth < prevDepth) return 'backward';
+    return 'neutral';
+  }, [location.pathname]);
 
-    prevDepthRef.current = currentDepth;
-    return dir;
+  useEffect(() => {
+    prevDepthRef.current = routeDepth(location.pathname);
   }, [location.pathname]);
 
   // Slide offset based on direction (GPU-composited via translateX)
@@ -77,19 +76,17 @@ export function PageTransition({ children }: PageTransitionProps) {
 
   return (
     <div className="flex flex-1 flex-col" style={{ position: 'relative' }}>
-      <AnimatePresence mode="sync" initial={false}>
+      <AnimatePresence mode="wait" initial={false}>
         <m.div
           key={location.pathname}
           initial={{ opacity: 0, x: slideX }}
           animate={{ opacity: 1, x: 0 }}
-          // pointerEvents:'none' on exit: AnimatePresence keeps the exiting
-          // element absolutely positioned over the new one for ~220ms. Because
-          // <Outlet> always reads the current router context, both layers
-          // render the same panel — and a real user click during the
-          // transition window lands on the soon-to-unmount overlay, so focus
-          // never sticks. Disabling pointer events on the exit lets clicks
-          // pass through to the live page underneath.
-          exit={{ opacity: 0, x: -slideX, position: 'absolute', top: 0, left: 0, right: 0, pointerEvents: 'none' }}
+          // mode="wait" + simple opacity/x exit: the previous layer must finish
+          // exiting before the new one mounts, so the two layers never overlap.
+          // This prevents the back/forward race where an interrupted exit could
+          // leave a layer stuck in the DOM with pointer-events:none, blocking
+          // all clicks on the visually-current page.
+          exit={{ opacity: 0, x: -slideX }}
           transition={{
             duration: reducedMotion ? 0.1 : DURATION,
             ease: [0.25, 0.1, 0.25, 1], // cubic-bezier for smooth deceleration
