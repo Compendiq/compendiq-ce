@@ -456,6 +456,95 @@ describe('PagesPage', () => {
     expect(comparison & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  describe('error state (pages query failed)', () => {
+    /** Mock fetch where /pages errors with the given status, but all other
+     *  endpoints return their normal mock responses. */
+    function mockFetchWithPagesError(status: number, message: string) {
+      return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = typeof input === 'string' ? input : (input as Request).url;
+        if (url.includes('/embeddings/status')) {
+          return new Response(JSON.stringify(mockEmbeddingStatusIdle), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/pages/filters')) {
+          return new Response(JSON.stringify(mockFilterOptions), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/spaces')) {
+          return new Response(JSON.stringify(mockSpaces), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/sync/status')) {
+          return new Response(JSON.stringify({ status: 'idle' }), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/pages/pinned')) {
+          return new Response(JSON.stringify({ items: [], total: 0 }), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/settings')) {
+          return new Response(JSON.stringify({}), { headers: { 'Content-Type': 'application/json' } });
+        }
+        // /api/pages list query — fail with the requested status
+        return new Response(JSON.stringify({ message }), {
+          status,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+    }
+
+    it('renders the error panel (not "No pages found") when the pages query fails', async () => {
+      vi.restoreAllMocks();
+      mockFetchWithPagesError(429, 'Rate limit exceeded, retry in 9 seconds');
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      // The error panel must render with the API message — NOT the misleading
+      // "No pages found" empty state (which historically appeared for any
+      // undefined pagesData and tricked users into thinking they had zero
+      // articles when the real cause was a transient 429).
+      expect(await screen.findByTestId('pages-error-state')).toBeInTheDocument();
+      expect(screen.getByText("Couldn't load pages")).toBeInTheDocument();
+      expect(screen.getByText('Rate limit exceeded, retry in 9 seconds')).toBeInTheDocument();
+      expect(screen.queryByTestId('empty-state-title')).not.toBeInTheDocument();
+    });
+
+    it('does not show the misleading empty state even when items array would also be missing', async () => {
+      vi.restoreAllMocks();
+      mockFetchWithPagesError(500, 'Internal Server Error');
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      await screen.findByTestId('pages-error-state');
+      // "No pages found" was the historical lie — never both UIs at once,
+      // and not the empty state when the real issue is a failed fetch.
+      expect(screen.queryByText('No pages found')).not.toBeInTheDocument();
+    });
+
+    it('shows a Retry button that calls refetch (and recovers when the server starts responding again)', async () => {
+      vi.restoreAllMocks();
+      let shouldFail = true;
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = typeof input === 'string' ? input : (input as Request).url;
+        if (url.includes('/embeddings/status')) return new Response(JSON.stringify(mockEmbeddingStatusIdle), { headers: { 'Content-Type': 'application/json' } });
+        if (url.includes('/pages/filters')) return new Response(JSON.stringify(mockFilterOptions), { headers: { 'Content-Type': 'application/json' } });
+        if (url.includes('/spaces')) return new Response(JSON.stringify(mockSpaces), { headers: { 'Content-Type': 'application/json' } });
+        if (url.includes('/sync/status')) return new Response(JSON.stringify({ status: 'idle' }), { headers: { 'Content-Type': 'application/json' } });
+        if (url.includes('/pages/pinned')) return new Response(JSON.stringify({ items: [], total: 0 }), { headers: { 'Content-Type': 'application/json' } });
+        if (url.includes('/settings')) return new Response(JSON.stringify({}), { headers: { 'Content-Type': 'application/json' } });
+        if (shouldFail) {
+          return new Response(JSON.stringify({ message: 'Rate limited' }), {
+            status: 429, headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response(JSON.stringify(mockPagesResponse), { headers: { 'Content-Type': 'application/json' } });
+      });
+
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const retry = await screen.findByTestId('pages-error-retry');
+
+      shouldFail = false;
+      fireEvent.click(retry);
+
+      // After successful refetch the error panel goes away and the article list renders
+      await screen.findByText('Test Page');
+      expect(screen.queryByTestId('pages-error-state')).not.toBeInTheDocument();
+    });
+  });
+
   describe('empty state (no pages)', () => {
     const emptyPages = { items: [], total: 0, page: 1, limit: 50, totalPages: 0 };
 

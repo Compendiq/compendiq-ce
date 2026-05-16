@@ -213,7 +213,7 @@ export function PagesPage() {
     }
   }, [qualityFilter]);
 
-  const { data: pagesData, isLoading, error: pagesError, refetch: refetchPages } = usePages({
+  const { data: pagesData, isLoading, isFetching: isFetchingPages, error: pagesError, refetch: refetchPages } = usePages({
     spaceKey: spaceKey || undefined,
     search: search || undefined,
     author: author || undefined,
@@ -846,10 +846,12 @@ export function PagesPage() {
               </div>
               <button
                 onClick={() => refetchPages()}
-                className="rounded-md bg-destructive/10 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/20"
+                disabled={isFetchingPages}
+                className="flex items-center gap-1.5 rounded-md bg-destructive/10 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/20 disabled:cursor-not-allowed disabled:opacity-60"
                 data-testid="pages-error-retry"
               >
-                Retry
+                {isFetchingPages && <Loader2 size={12} className="animate-spin" />}
+                {isFetchingPages ? 'Retrying…' : 'Retry'}
               </button>
             </div>
           ) : !pagesData?.items.length ? (
