@@ -109,6 +109,11 @@ export function usePages(params: PageFilters = {}) {
   return useQuery<PaginatedPages>({
     queryKey,
     queryFn: () => apiFetch(`/pages${qs ? `?${qs}` : ''}`),
+    // Cache list responses for 30s so rapid back/forward between list and
+    // detail pages reuses cached data instead of firing a fresh request on
+    // every remount — that pattern can otherwise trip the backend's global
+    // rate limit and leave the query in an unrecoverable error state.
+    staleTime: 30_000,
   });
 }
 
