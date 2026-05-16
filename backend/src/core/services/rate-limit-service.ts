@@ -19,7 +19,11 @@ interface RateLimits {
 // ─── Defaults (hardcoded fallbacks) ───────────────────────────────────────────
 
 const DEFAULTS: RateLimits = {
-  global:       { max: 100, timeWindow: '1 minute' },
+  // 100/min was too tight for a SPA: each Pages-list mount fires ~6 GETs
+  // (list, filters, spaces, settings, pinned, embeddings status), so ~17
+  // navigations in a minute already exhausted the budget and left
+  // TanStack queries stuck in error state after retry exhaustion.
+  global:       { max: 300, timeWindow: '1 minute' },
   auth:         { max: 5,   timeWindow: '1 minute' },
   admin:        { max: 20,  timeWindow: '1 minute' },
   llmStream:    { max: 10,  timeWindow: '1 minute' },

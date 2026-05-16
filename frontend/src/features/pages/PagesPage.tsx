@@ -213,7 +213,7 @@ export function PagesPage() {
     }
   }, [qualityFilter]);
 
-  const { data: pagesData, isLoading } = usePages({
+  const { data: pagesData, isLoading, isFetching: isFetchingPages, error: pagesError, refetch: refetchPages } = usePages({
     spaceKey: spaceKey || undefined,
     search: search || undefined,
     author: author || undefined,
@@ -833,6 +833,26 @@ export function PagesPage() {
               {Array.from({ length: 5 }).map((_, i) => (
                 <div key={i} className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm h-16 animate-pulse" />
               ))}
+            </div>
+          ) : pagesError && !pagesData ? (
+            <div
+              className="flex items-start gap-3 rounded-xl border border-destructive/40 bg-destructive/5 p-4 text-sm"
+              data-testid="pages-error-state"
+            >
+              <AlertTriangle size={18} className="mt-0.5 shrink-0 text-destructive" />
+              <div className="flex-1">
+                <p className="font-medium text-destructive">Couldn't load pages</p>
+                <p className="mt-1 text-muted-foreground">{pagesError.message}</p>
+              </div>
+              <button
+                onClick={() => refetchPages()}
+                disabled={isFetchingPages}
+                className="flex items-center gap-1.5 rounded-md bg-destructive/10 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/20 disabled:cursor-not-allowed disabled:opacity-60"
+                data-testid="pages-error-retry"
+              >
+                {isFetchingPages && <Loader2 size={12} className="animate-spin" />}
+                {isFetchingPages ? 'Retrying…' : 'Retry'}
+              </button>
             </div>
           ) : !pagesData?.items.length ? (
             <EmptyState
