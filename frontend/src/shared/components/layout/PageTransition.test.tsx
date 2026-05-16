@@ -83,9 +83,12 @@ describe('PageTransition', () => {
     expect(motionDiv).not.toBeNull();
   });
 
-  it('mounts new content immediately on navigation (mode=sync)', () => {
-    // mode="sync" ensures the entering page mounts right away instead of
-    // waiting 220ms for the exiting page to finish its animation.
+  it('renders new content after navigation', () => {
+    // Under mode="wait" the exiting layer must finish before the new one
+    // mounts. In jsdom animations resolve synchronously, so a rerender
+    // immediately yields the new content — this test guards against a
+    // regression where the new content never appears at all (e.g. a stuck
+    // exit, or AnimatePresence dropping the entering child).
     const { rerender } = render(
       <Wrapper initialPath="/">
         <PageTransition>
@@ -102,7 +105,6 @@ describe('PageTransition', () => {
         </PageTransition>
       </Wrapper>,
     );
-    // New content must be in the DOM immediately, without waiting for exit animation
     expect(screen.getByTestId('page-b')).toBeInTheDocument();
   });
 
@@ -117,21 +119,47 @@ describe('PageTransition', () => {
     expect(screen.getByText('Page view')).toBeInTheDocument();
   });
 
-  it('exit motion variant disables pointer-events so transition overlay does not swallow real clicks', async () => {
-    // Regression test for the Settings/AI panel click-loss bug. AnimatePresence
-    // mode="sync" keeps the exiting page mounted with `position: absolute;
-    // inset: 0` for ~220 ms while opacity fades out. Because <Outlet> reads
-    // from the *current* router context, both layers render the same panel —
-    // a real user click during the transition window lands on the
-    // soon-to-unmount overlay and is dropped when React unmounts the node.
-    // The fix is to set `pointerEvents: 'none'` on the exit variant so the
-    // overlay is invisible to hit-testing. Read the source directly so the
-    // test fails loudly if the property is removed by future refactors.
+  it('uses AnimatePresence mode="wait" so exiting and entering layers never overlap', async () => {
+    // Regression test for the Pages-list click-stuck bug. With mode="sync"
+    // the exiting page sat absolutely positioned over the new one for ~220 ms.
+    // If the same key (location.pathname) reappeared mid-exit (rapid
+    // back/forward), framer-motion could cancel the exit but leave the
+    // inline exit styles (position: absolute; pointer-events: none) applied
+    // to a child that then rendered the current route's content — making
+    // every visible article unclickable.
+    //
+    // The fix is mode="wait": the previous layer must finish exiting before
+    // the next mounts, so the two layers never overlap and the race is
+    // impossible. Read the source directly so the test fails loudly if the
+    // mode is reverted by a future refactor.
     const fs = await import('node:fs/promises');
     const path = await import('node:path');
     const url = await import('node:url');
     const here = path.dirname(url.fileURLToPath(import.meta.url));
     const src = await fs.readFile(path.join(here, 'PageTransition.tsx'), 'utf-8');
-    expect(src).toMatch(/exit=\{[^}]*pointerEvents:\s*['"]none['"]/);
+    expect(src).toMatch(/<AnimatePresence[^>]*mode=["']wait["']/);
+    // The old workaround must not creep back in: with mode="wait" there is
+    // no overlap, so position:absolute / pointer-events:none on exit would
+    // only mask the wrong fix.
+    expect(src).not.toMatch(/exit=\{[^}]*pointerEvents:\s*['"]none['"]/);
+    expect(src).not.toMatch(/exit=\{[^}]*position:\s*['"]absolute['"]/);
+  });
+
+  it('updates prevDepthRef via a commit-phase effect, not inside useMemo', async () => {
+    // Mutating a ref inside useMemo is unsafe in React 19 + StrictMode:
+    // memos may re-run with the same deps, double-mutating the ref and
+    // corrupting the previous-depth tracking that drives slide direction.
+    // The ref update must live in useEffect so it runs exactly once per
+    // commit. Regression test in source form.
+    const fs = await import('node:fs/promises');
+    const path = await import('node:path');
+    const url = await import('node:url');
+    const here = path.dirname(url.fileURLToPath(import.meta.url));
+    const src = await fs.readFile(path.join(here, 'PageTransition.tsx'), 'utf-8');
+    // prevDepthRef.current = ... must appear inside a useEffect, never inside useMemo.
+    const memoBlock = src.match(/useMemo<[^>]*>\(\(\)\s*=>\s*\{[\s\S]*?\}\s*,\s*\[location\.pathname\]\)/);
+    expect(memoBlock).toBeTruthy();
+    expect(memoBlock![0]).not.toMatch(/prevDepthRef\.current\s*=/);
+    expect(src).toMatch(/useEffect\(\(\)\s*=>\s*\{\s*prevDepthRef\.current\s*=/);
   });
 });
