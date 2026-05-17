@@ -826,4 +826,110 @@ describe('PagesPage', () => {
       expect(item.className).toContain('border-primary');
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // Status-pill accessibility (Task 4 of amber-as-AI bundle, bug 1c)
+  //
+  // Three pill variants previously failed WCAG-AA: Recent (3.37:1),
+  // Not Embedded (2.67:1 light), Private (borrowed amber w/o AI semantic).
+  // These tests verify the swap to AA-pass palettes.
+  // ---------------------------------------------------------------------------
+  describe('page row status badges (accessibility)', () => {
+    function makeStandalonePage(visibility: 'private' | 'shared') {
+      return {
+        items: [
+          {
+            id: 'std-1',
+            spaceKey: '__local__',
+            title: 'Standalone Page',
+            version: 1,
+            parentId: null,
+            labels: [],
+            author: 'Alice',
+            lastModifiedAt: '2025-01-15T00:00:00Z',
+            lastSynced: '2025-01-16T00:00:00Z',
+            embeddingDirty: false,
+            embeddingStatus: 'embedded',
+            embeddedAt: '2025-01-16T00:00:00Z',
+            source: 'standalone',
+            visibility,
+          },
+        ],
+        total: 1,
+        page: 1,
+        limit: 50,
+        totalPages: 1,
+      };
+    }
+
+    function mockPagesWithStandalone(visibility: 'private' | 'shared') {
+      vi.restoreAllMocks();
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = typeof input === 'string' ? input : (input as Request).url;
+        if (url.includes('/embeddings/status')) {
+          return new Response(JSON.stringify(mockEmbeddingStatusIdle), {
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        if (url.includes('/pages/filters')) {
+          return new Response(JSON.stringify(mockFilterOptions), {
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        if (url.includes('/spaces')) {
+          return new Response(JSON.stringify(mockSpaces), {
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        if (url.includes('/sync/status')) {
+          return new Response(JSON.stringify({ status: 'idle' }), {
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        if (url.includes('/pages/pinned')) {
+          return new Response(JSON.stringify({ items: [], total: 0 }), {
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        if (url.includes('/settings')) {
+          return new Response(JSON.stringify({}), {
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response(JSON.stringify(makeStandalonePage(visibility)), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+    }
+
+    it('Local badge uses sage tint (AA-pass), not emerald-500', async () => {
+      mockPagesWithStandalone('private');
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const badge = await screen.findByTestId('badge-local');
+      expect(badge).toHaveTextContent('Local');
+      expect(badge.className).toMatch(/bg-\[#e7f2e8\]/);
+      expect(badge.className).toMatch(/text-\[#1f5a2a\]/);
+      expect(badge.className).not.toMatch(/emerald-500|amber|warning|yellow/);
+    });
+
+    it('Private badge uses neutral gray tint, not amber/primary/warning', async () => {
+      mockPagesWithStandalone('private');
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const badge = await screen.findByTestId('badge-private');
+      expect(badge).toHaveTextContent('Private');
+      expect(badge.className).not.toMatch(/amber|warning|yellow|primary/);
+      expect(badge.className).toMatch(/bg-\[#ececea\]/);
+      expect(badge.className).toMatch(/text-\[#4a4a48\]/);
+    });
+
+    it('Shared badge uses cool-blue tinted pill (AA-pass), not sky-500', async () => {
+      mockPagesWithStandalone('shared');
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const badge = await screen.findByTestId('badge-shared');
+      expect(badge).toHaveTextContent('Shared');
+      expect(badge.className).toMatch(/bg-\[#e6effb\]/);
+      expect(badge.className).toMatch(/text-\[#1c3e72\]/);
+      expect(badge.className).not.toMatch(/sky-500|amber|warning|yellow/);
+    });
+  });
 });

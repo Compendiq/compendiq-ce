@@ -93,7 +93,11 @@ const PageListItem = memo(function PageListItem({
               <p className="truncate font-medium">{pageItem.title}</p>
               {/* Source badge */}
               {pageItem.source === 'standalone' ? (
-                <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-500" data-testid={`source-badge-${pageItem.id}`}>
+                <span
+                  className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#e7f2e8] px-2 py-0.5 text-[10px] font-medium text-[#1f5a2a] dark:bg-[#1a2a1d] dark:text-[#9ad4a8]"
+                  data-testid="badge-local"
+                  data-source-badge={pageItem.id}
+                >
                   Local
                 </span>
               ) : (
@@ -104,11 +108,20 @@ const PageListItem = memo(function PageListItem({
               {/* Visibility badge for standalone articles */}
               {pageItem.source === 'standalone' && (
                 (pageItem.visibility === 'shared') ? (
-                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-sky-500/15 px-2 py-0.5 text-[10px] font-medium text-sky-500" data-testid={`visibility-badge-${pageItem.id}`}>
+                  <span
+                    className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#e6effb] px-2 py-0.5 text-[10px] font-medium text-[#1c3e72] dark:bg-[#162236] dark:text-[#a4c2eb]"
+                    data-testid="badge-shared"
+                    data-visibility-badge={pageItem.id}
+                  >
                     <Globe size={10} /> Shared
                   </span>
                 ) : (
-                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-500" data-testid={`visibility-badge-${pageItem.id}`}>
+                  // Private = neutral gray. Was amber, but privacy carries no AI semantic.
+                  <span
+                    className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#ececea] px-2 py-0.5 text-[10px] font-medium text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]"
+                    data-testid="badge-private"
+                    data-visibility-badge={pageItem.id}
+                  >
                     <Lock size={10} /> Private
                   </span>
                 )
