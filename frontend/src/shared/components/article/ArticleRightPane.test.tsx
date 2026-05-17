@@ -250,6 +250,29 @@ describe('ArticleRightPane', () => {
     expect(btn.disabled).toBe(true);
   });
 
+  it('does not toast error when Re-sync silently no-ops (0/0/[])', async () => {
+    // Bulk endpoint can legitimately return zero-everywhere when the page is
+    // skipped server-side (e.g. confluenceId became null between render and
+    // click). That's not a failure — surface as info, not error.
+    const sonner = await import('sonner');
+    const toastErrorSpy = vi.spyOn(sonner.toast, 'error');
+    const toastInfoSpy = vi.spyOn(sonner.toast, 'info');
+    mockResyncPage.mockImplementation((_id: string, opts: { onSuccess: (d: { succeeded: number; failed: number; errors: string[] }) => void }) => {
+      opts.onSuccess({ succeeded: 0, failed: 0, errors: [] });
+    });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('article-resync-btn'));
+
+    await waitFor(() => {
+      expect(toastErrorSpy).not.toHaveBeenCalled();
+      expect(toastInfoSpy).toHaveBeenCalledWith('Nothing to re-sync.');
+    });
+
+    toastErrorSpy.mockRestore();
+    toastInfoSpy.mockRestore();
+  });
+
   it('renders outline headings from the article-view-store', () => {
     useArticleViewStore.setState({
       headings: [

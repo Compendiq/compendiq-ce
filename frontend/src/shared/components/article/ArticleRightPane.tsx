@@ -385,14 +385,21 @@ export function ArticleRightPane() {
 
   // Re-sync this article from Confluence. Mirrors the bulk action on /pages
   // (BulkOperations.tsx) but scoped to a single article via the right pane.
+  //
+  // The bulk endpoint can return `{succeeded: 0, failed: 0, errors: []}` when
+  // the page silently no-ops (e.g. confluenceId became null between render
+  // and click, or the user lost access mid-session). Treat that case as info,
+  // not an error — there's nothing wrong, just nothing to do.
   const handleResync = useCallback(() => {
     if (!id) return;
     resyncMutation.mutate(id, {
       onSuccess: (data) => {
         if (data.succeeded > 0) {
           toast.success('Re-synced from Confluence.');
-        } else {
+        } else if (data.failed > 0 || data.errors.length > 0) {
           toast.error(data.errors[0] ?? 'Re-sync failed.');
+        } else {
+          toast.info('Nothing to re-sync.');
         }
       },
       onError: (err) =>
@@ -401,14 +408,17 @@ export function ArticleRightPane() {
   }, [id, resyncMutation]);
 
   // Re-embed this article for RAG. Same bulk-endpoint passthrough as resync.
+  // Same silent-no-op handling as Re-sync (see comment above).
   const handleReembed = useCallback(() => {
     if (!id) return;
     reembedMutation.mutate(id, {
       onSuccess: (data) => {
         if (data.succeeded > 0) {
           toast.success('Queued for re-embedding.');
-        } else {
+        } else if (data.failed > 0 || data.errors.length > 0) {
           toast.error(data.errors[0] ?? 'Re-embed failed.');
+        } else {
+          toast.info('Nothing to re-embed.');
         }
       },
       onError: (err) => {
