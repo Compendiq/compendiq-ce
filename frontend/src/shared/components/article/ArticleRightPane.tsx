@@ -114,7 +114,7 @@ const OutlineNodeItem = memo(function OutlineNodeItem({
         className={cn(
           'group flex items-center gap-1.5 rounded-[10px] h-9 pr-2 text-sm cursor-pointer transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
           isActive
-            ? 'nm-pill-active text-primary font-medium'
+            ? 'nm-pill-active text-action font-medium'
             : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
         )}
         style={{ paddingLeft: `${level * 16 + 8}px` }}
@@ -138,7 +138,7 @@ const OutlineNodeItem = memo(function OutlineNodeItem({
         ) : (
           <span className="w-[20px] shrink-0" />
         )}
-        <ListTree size={15} className={cn('shrink-0 opacity-70', isActive && 'text-primary opacity-100')} />
+        <ListTree size={15} className={cn('shrink-0 opacity-70', isActive && 'text-action opacity-100')} />
         <span className="truncate text-sm">{heading.text}</span>
       </div>
 
@@ -494,7 +494,7 @@ export function ArticleRightPane() {
             className={cn(
               'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
               isPinned
-                ? 'nm-pill-active text-primary font-medium'
+                ? 'nm-pill-active text-action font-medium'
                 : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
             )}
             title={`${isPinned ? 'Unpin' : 'Pin'} (${formatKeysForPlatform(getShortcutHint('pin-page') ?? '', detectMac())})`}
@@ -598,7 +598,7 @@ export function ArticleRightPane() {
             </div>
             <div className="mt-2 h-1 overflow-hidden rounded-full bg-foreground/8">
               <m.div
-                className="h-full rounded-full bg-primary"
+                className="h-full rounded-full bg-action"
                 style={{ width: `${readingProgress}%` }}
                 transition={{ duration: 0.12 }}
               />
@@ -636,8 +636,8 @@ export function ArticleRightPane() {
         aria-orientation="vertical"
         onMouseDown={handleResizeStart}
         className={cn(
-          'absolute left-0 top-2 bottom-2 w-1 cursor-col-resize rounded-full transition-colors hover:bg-primary/40',
-          isResizing && 'bg-primary/60',
+          'absolute left-0 top-2 bottom-2 w-1 cursor-col-resize rounded-full transition-colors hover:bg-action/40',
+          isResizing && 'bg-action/60',
         )}
       />
     </m.aside>

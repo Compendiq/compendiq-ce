@@ -199,7 +199,8 @@ describe('SidebarTreeView', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper('/ai?pageId=child-1') });
     const installRef = screen.getByText('Installation');
     const row = installRef.parentElement!;
-    expect(row.className).toContain('nm-pill-active');
+    expect(row.className).toContain('bg-action');
+    expect(row.className).toContain('text-action-foreground');
   });
 
   it('shows collapsed state with expand toggle and nav icons when treeSidebarCollapsed is true', () => {

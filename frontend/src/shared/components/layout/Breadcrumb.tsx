@@ -47,7 +47,7 @@ export function Breadcrumb() {
             <span className="flex items-center gap-1 text-muted-foreground">
               {breadcrumbData.source === 'confluence'
                 ? <Globe size={12} className="text-muted-foreground/70" />
-                : <HardDrive size={12} className="text-primary/70" />
+                : <HardDrive size={12} className="text-action/70" />
               }
               <span className="text-xs">{breadcrumbData.spaceName}</span>
             </span>

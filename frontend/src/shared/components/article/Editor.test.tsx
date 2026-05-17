@@ -242,7 +242,8 @@ describe('EditorToolbar — header numbering toggle', () => {
     render(<EditorToolbar editor={editor} headerNumbering={true} onToggleHeaderNumbering={toggle} />);
 
     const btn = screen.getByTitle('Toggle Header Numbering');
-    expect(btn.className).toContain('bg-primary');
+    // Editor-toolbar active-state uses ink-action (Task 5 — amber reserved for AI affordances).
+    expect(btn.className).toContain('bg-action');
   });
 
   it('shows inactive styling when headerNumbering is false', () => {

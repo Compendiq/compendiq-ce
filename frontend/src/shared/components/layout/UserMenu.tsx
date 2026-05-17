@@ -19,7 +19,7 @@ export function UserMenu() {
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>
         <button className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-foreground hover:bg-foreground/5 transition-colors outline-none">
-          <div className="flex h-7 w-7 items-center justify-center rounded-full bg-primary/20 text-xs font-medium text-primary">
+          <div className="flex h-7 w-7 items-center justify-center rounded-full bg-action text-xs font-medium text-action-foreground" data-testid="user-avatar-initial">
             {user?.username?.charAt(0).toUpperCase() ?? '?'}
           </div>
           <span className="text-sm font-medium">{user?.username}</span>
@@ -79,7 +79,7 @@ export function UserMenu() {
               checked={singleKeyEnabled}
               onCheckedChange={setSingleKeyEnabled}
               aria-label="Single-key shortcuts"
-              className="relative h-4 w-7 shrink-0 rounded-full bg-foreground/10 transition-colors data-[state=checked]:bg-primary outline-none"
+              className="relative h-4 w-7 shrink-0 rounded-full bg-foreground/10 transition-colors data-[state=checked]:bg-action outline-none"
               tabIndex={-1}
               onClick={(e) => e.stopPropagation()}
             >

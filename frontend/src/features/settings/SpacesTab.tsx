@@ -125,7 +125,7 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
           onClick={() => onSave({ showSpaceHomeContent: !showSpaceHomeContent })}
           className={cn(
             'relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
-            showSpaceHomeContent ? 'bg-primary' : 'bg-foreground/20',
+            showSpaceHomeContent ? 'bg-action' : 'bg-foreground/20',
           )}
           data-testid="toggle-space-home-content"
         >
@@ -153,7 +153,7 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
                 className={cn(
                   'flex w-full items-center gap-3 rounded-lg border px-4 py-3 text-left transition-colors',
                   isSelected
-                    ? 'border-primary/30 bg-primary/10'
+                    ? 'border-action/30 bg-action/10'
                     : 'border-border/50 bg-foreground/5 hover:bg-foreground/10',
                 )}
                 role="listitem"
@@ -166,7 +166,7 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
                   aria-label={`${isSelected ? 'Deselect' : 'Select'} ${space.name}`}
                 >
                   {isSelected ? (
-                    <CheckSquare size={18} className="shrink-0 text-primary" />
+                    <CheckSquare size={18} className="shrink-0 text-action" />
                   ) : (
                     <Square size={18} className="shrink-0 text-muted-foreground" />
                   )}

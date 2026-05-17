@@ -54,7 +54,7 @@ export function SearxngTab() {
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-3">
-        <Search size={20} className="text-primary" />
+        <Search size={20} className="text-action" />
         <div>
           <h3 className="text-base font-semibold">SearXNG Web Search Engine</h3>
           <p className="text-sm text-muted-foreground">Self-hosted meta-search engine used by the MCP sidecar for web search queries.</p>
@@ -121,7 +121,7 @@ export function SearxngTab() {
       {isDirty && (
         <div className="sticky bottom-0 flex justify-end border-t border-border/40 bg-card/80 pt-4 backdrop-blur-sm">
           <button onClick={() => saveMutation.mutate(form)} disabled={saveMutation.isPending}
-            className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50" data-testid="searxng-save">
+            className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground" data-testid="searxng-save">
             {saveMutation.isPending && <Loader2 size={14} className="animate-spin" />}
             Save SearXNG Settings
           </button>

@@ -175,7 +175,8 @@ describe('SearchAndReplace', () => {
     fireEvent.click(caseBtn);
 
     // The button should now have the active style (primary ring)
-    expect(caseBtn.className).toContain('bg-primary/20');
+    // Search-and-replace toggles are non-AI chrome (Task 5 — amber reserved for AI affordances).
+    expect(caseBtn.className).toContain('bg-action/20');
   });
 
   it('toggles whole word matching', async () => {
@@ -192,7 +193,7 @@ describe('SearchAndReplace', () => {
     const wordBtn = screen.getByTitle('Match Whole Word');
     fireEvent.click(wordBtn);
 
-    expect(wordBtn.className).toContain('bg-primary/20');
+    expect(wordBtn.className).toContain('bg-action/20');
   });
 
   it('toggles regex mode', async () => {
@@ -209,7 +210,7 @@ describe('SearchAndReplace', () => {
     const regexBtn = screen.getByTitle('Use Regular Expression');
     fireEvent.click(regexBtn);
 
-    expect(regexBtn.className).toContain('bg-primary/20');
+    expect(regexBtn.className).toContain('bg-action/20');
   });
 
   it('toggles replace row visibility', async () => {

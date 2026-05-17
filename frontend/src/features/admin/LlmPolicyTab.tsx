@@ -197,7 +197,7 @@ export function LlmPolicyTab() {
         <button
           onClick={handleSave}
           disabled={saveMutation.isPending}
-          className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           data-testid="llm-policy-save-btn"
         >
           {saveMutation.isPending ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}

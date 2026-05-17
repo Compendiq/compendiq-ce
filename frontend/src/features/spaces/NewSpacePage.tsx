@@ -76,8 +76,8 @@ export function NewSpacePage() {
 
       <div className="rounded-xl border border-border/50 bg-card/80 p-6 shadow-lg backdrop-blur-md">
         <div className="mb-6 flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
-            <HardDrive size={20} className="text-primary" />
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-action/10">
+            <HardDrive size={20} className="text-action" />
           </div>
           <div>
             <h1 className="text-lg font-semibold text-foreground">Create Local Space</h1>
@@ -160,7 +160,7 @@ export function NewSpacePage() {
                   onClick={() => setSelectedIcon(selectedIcon === icon.value ? undefined : icon.value)}
                   className={`rounded-md border px-2 py-1 text-[10px] transition-colors ${
                     selectedIcon === icon.value
-                      ? 'border-primary bg-primary/10 text-primary font-medium'
+                      ? 'border-action bg-action/10 text-action font-medium'
                       : 'border-border/30 text-muted-foreground hover:bg-foreground/5 hover:text-foreground'
                   }`}
                   title={icon.label}
@@ -183,7 +183,7 @@ export function NewSpacePage() {
             <button
               type="submit"
               disabled={!name.trim() || !key.trim() || createSpace.isPending}
-              className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
             >
               {createSpace.isPending ? 'Creating...' : 'Create Space'}
             </button>

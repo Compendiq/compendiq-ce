@@ -246,7 +246,7 @@ export function ScimSettingsPage() {
             <button
               onClick={handleDismiss}
               disabled={!copiedConfirmed}
-              className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
               data-testid="scim-dismiss-token"
             >
               <CheckCircle2 size={14} />
@@ -260,7 +260,7 @@ export function ScimSettingsPage() {
       {!showCreateForm ? (
         <button
           onClick={() => setShowCreateForm(true)}
-          className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
           data-testid="generate-token-btn"
         >
           <Plus size={16} />
@@ -307,7 +307,7 @@ export function ScimSettingsPage() {
             <button
               onClick={handleCreate}
               disabled={!tokenName.trim() || createMutation.isPending}
-              className="flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-3 py-1.5 text-sm text-action transition-colors hover:bg-action hover:text-action-foreground disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
               data-testid="scim-create-submit"
             >
               {createMutation.isPending && <Loader2 size={14} className="animate-spin" />}

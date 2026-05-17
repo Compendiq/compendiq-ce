@@ -201,7 +201,7 @@ export function TagEditor({
                 className={cn(
                   'cursor-pointer px-3 py-2 text-sm transition-colors',
                   index === highlightedIndex
-                    ? 'bg-primary/12 text-foreground'
+                    ? 'bg-action/12 text-foreground'
                     : 'text-muted-foreground hover:bg-background/60 hover:text-foreground',
                 )}
                 onMouseDown={(event) => {

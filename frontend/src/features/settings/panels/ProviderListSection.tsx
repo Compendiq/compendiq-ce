@@ -63,7 +63,7 @@ export function ProviderListSection() {
               <div className="text-sm font-medium">
                 {p.name}{' '}
                 {p.isDefault && (
-                  <span className="bg-primary/15 text-primary ml-2 rounded px-1.5 text-xs">
+                  <span className="ml-2 rounded bg-[#ececea] px-1.5 text-xs text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]">
                     default
                   </span>
                 )}

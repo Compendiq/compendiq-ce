@@ -754,7 +754,8 @@ describe('PagesPage', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       const keyword = screen.getByTestId('search-mode-keyword');
       expect(keyword).toHaveAttribute('aria-pressed', 'true');
-      expect(keyword.className).toContain('bg-primary');
+      // Active mode uses ink-action fill (Task 5 — amber reserved for AI affordances; search-mode toggle is non-AI selection).
+      expect(keyword.className).toContain('bg-action');
       expect(keyword.className).toContain('shadow-md');
       expect(keyword.className).toContain('ring-1');
     });
@@ -773,7 +774,8 @@ describe('PagesPage', () => {
       fireEvent.click(semantic);
 
       expect(semantic).toHaveAttribute('aria-pressed', 'true');
-      expect(semantic.className).toContain('bg-primary');
+      // Active mode uses ink-action fill (Task 5).
+      expect(semantic.className).toContain('bg-action');
       expect(semantic.className).toContain('shadow-md');
 
       const keyword = screen.getByTestId('search-mode-keyword');

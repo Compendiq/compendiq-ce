@@ -117,7 +117,7 @@ export function CommentsSidebar({ pageId, className }: CommentsSidebarProps) {
         onClick={() => setIsOpen((v) => !v)}
         className={cn(
           'nm-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5 transition-colors',
-          isOpen && 'nm-pill-active text-primary',
+          isOpen && 'nm-pill-active text-action',
         )}
         data-testid="comments-toggle"
         aria-label={isOpen ? 'Close comments' : 'Open comments'}
@@ -125,7 +125,7 @@ export function CommentsSidebar({ pageId, className }: CommentsSidebarProps) {
         <MessageSquare size={16} />
         Comments
         {totalCount > 0 && (
-          <span className="ml-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-primary/20 px-1 text-[11px] font-medium text-primary">
+          <span className="ml-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-action/20 px-1 text-[11px] font-medium text-action">
             {totalCount}
           </span>
         )}

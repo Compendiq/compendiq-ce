@@ -449,7 +449,7 @@ export function PageViewPage() {
         </p>
         <button
           onClick={() => navigate('/')}
-          className="rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+          className="rounded-xl border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
         >
           Return to pages
         </button>
@@ -513,7 +513,7 @@ export function PageViewPage() {
             <button
               onClick={handleSave}
               disabled={updateMutation.isPending}
-              className="shrink-0 flex items-center gap-1 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-60"
+              className="shrink-0 inline-flex items-center gap-1 rounded-md border border-action bg-transparent px-3 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
             >
               {updateMutation.isPending ? 'Saving…' : 'Save'}
               {!updateMutation.isPending && <ShortcutHint shortcutId="save" />}
@@ -569,9 +569,12 @@ export function PageViewPage() {
                 </span>
               )
             )}
-            {/* Draft indicator */}
+            {/* Draft indicator — neutral private-tier palette (drafts read as personal/private state, not AI). */}
             {'hasDraft' in page && Boolean((page as Record<string, unknown>).hasDraft) && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-orange-500/15 px-2 py-0.5 text-[10px] font-medium text-orange-500" data-testid="draft-indicator">
+              <span
+                className="inline-flex items-center gap-1 rounded-full bg-[#ececea] px-2 py-0.5 text-[10px] font-medium text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]"
+                data-testid="badge-draft"
+              >
                 <AlertCircle size={10} /> Draft
               </span>
             )}
@@ -665,7 +668,7 @@ export function PageViewPage() {
               <p className="text-muted-foreground">This page has no content yet.</p>
               <button
                 onClick={handleStartEditing}
-                className="rounded-xl bg-primary/15 px-4 py-2 text-sm font-medium text-primary transition-colors hover:bg-primary/25"
+                className="rounded-xl border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
                 data-testid="add-content-btn"
               >
                 Add content

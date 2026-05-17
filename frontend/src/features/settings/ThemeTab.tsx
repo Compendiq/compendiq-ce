@@ -36,7 +36,7 @@ export function ThemeTab({ onSave }: ThemeTabProps) {
                     data-testid={`theme-${t.id}`}
                     className={`group relative flex flex-col rounded-lg border p-4 text-left transition-all ${
                       isActive
-                        ? 'border-primary bg-primary/10 ring-1 ring-primary'
+                        ? 'border-action bg-action/10 ring-1 ring-action'
                         : 'border-border/50 hover:border-border hover:bg-muted/50'
                     }`}
                   >
@@ -66,7 +66,7 @@ export function ThemeTab({ onSave }: ThemeTabProps) {
                     <span className="text-sm font-medium">{t.label}</span>
                     <span className="mt-0.5 text-xs text-muted-foreground">{t.description}</span>
                     {isActive && (
-                      <span className="absolute top-2 right-2 text-xs text-primary" data-testid="theme-active-badge">
+                      <span className="absolute top-2 right-2 text-xs text-action" data-testid="theme-active-badge">
                         Active
                       </span>
                     )}

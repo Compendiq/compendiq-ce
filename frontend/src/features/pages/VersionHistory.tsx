@@ -122,7 +122,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
           {/* Header */}
           <div className="flex items-center justify-between border-b border-border/50 px-5 py-4">
             <div className="flex items-center gap-2">
-              <History size={16} className="text-primary" />
+              <History size={16} className="text-action" />
               <Dialog.Title className="font-semibold">Version History</Dialog.Title>
               {versions.length > 0 && (
                 <span className="rounded bg-foreground/5 px-1.5 py-0.5 text-xs text-muted-foreground">
@@ -159,7 +159,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                     className={cn(
                       'flex items-center gap-3 px-5 py-2.5',
                       i !== versions.length - 1 && 'border-b border-border/30',
-                      selectedVersion === version.versionNumber && 'bg-primary/5',
+                      selectedVersion === version.versionNumber && 'bg-action/5',
                     )}
                   >
                     {/* Timeline dot */}
@@ -212,7 +212,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                           </button>
                           <button
                             onClick={() => handleSemanticDiff(versions[i + 1]!.versionNumber, version.versionNumber)}
-                            className="rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-primary"
+                            className="rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-action"
                             title="AI semantic diff with previous version"
                           >
                             <Sparkles size={12} />

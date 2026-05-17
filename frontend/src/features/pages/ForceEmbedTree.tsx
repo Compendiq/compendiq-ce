@@ -113,7 +113,7 @@ export function ForceEmbedTree({ pageId, hasChildren }: ForceEmbedTreeProps) {
               {/* Progress bar */}
               <div className="h-1 w-full rounded-full bg-foreground/10">
                 <div
-                  className="h-1 rounded-full bg-primary transition-all duration-300"
+                  className="h-1 rounded-full bg-action transition-all duration-300"
                   style={{ width: `${progress.total > 0 ? (progress.completed / progress.total) * 100 : 0}%` }}
                 />
               </div>

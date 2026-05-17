@@ -89,7 +89,7 @@ function highlightText(text: string, query: string): string {
       parts.push(escapeHtml(text.slice(cursor, idx)));
     }
     const matched = text.slice(idx, idx + trimmed.length);
-    parts.push(`<mark class="bg-primary/20 text-foreground rounded px-0.5">${escapeHtml(matched)}</mark>`);
+    parts.push(`<mark class="bg-action/20 text-foreground rounded px-0.5">${escapeHtml(matched)}</mark>`);
     cursor = idx + trimmed.length;
   }
 
@@ -240,7 +240,7 @@ export function SearchPage() {
               size={18}
               className={cn(
                 'absolute left-3 top-1/2 -translate-y-1/2',
-                (isLoadingImmediate || isLoadingEnhanced) ? 'text-primary animate-pulse' : 'text-muted-foreground',
+                (isLoadingImmediate || isLoadingEnhanced) ? 'text-action animate-pulse' : 'text-muted-foreground',
               )}
             />
             <input
@@ -281,7 +281,7 @@ export function SearchPage() {
             className={cn(
               'flex items-center gap-1.5 rounded-md px-3 py-3 text-sm transition-colors',
               showFilters || activeFilterCount > 0
-                ? 'bg-primary/15 text-primary'
+                ? 'bg-action/15 text-action'
                 : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
             )}
             data-testid="search-filters-toggle"
@@ -289,7 +289,7 @@ export function SearchPage() {
             <SlidersHorizontal size={14} />
             Filters
             {activeFilterCount > 0 && (
-              <span className="ml-1 flex h-5 w-5 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground">
+              <span className="ml-1 flex h-5 w-5 items-center justify-center rounded-full bg-action text-[10px] font-bold text-action-foreground">
                 {activeFilterCount}
               </span>
             )}
@@ -308,7 +308,7 @@ export function SearchPage() {
                 'rounded-full px-3 py-1 text-xs font-medium transition-colors capitalize',
                 'disabled:cursor-not-allowed disabled:opacity-40',
                 searchMode === m
-                  ? 'bg-primary text-primary-foreground'
+                  ? 'bg-action text-action-foreground'
                   : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
               )}
             >
@@ -319,7 +319,7 @@ export function SearchPage() {
           {isLoadingEnhanced && (
             <Loader2
               size={14}
-              className="ml-1 animate-spin text-primary"
+              className="ml-1 animate-spin text-action"
               data-testid="enhanced-loading-indicator"
             />
           )}
@@ -490,7 +490,7 @@ export function SearchPage() {
           </p>
           <button
             onClick={() => navigate(`/knowledge-requests?title=${encodeURIComponent(activeQuery)}`)}
-            className="mt-4 flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            className="mt-4 inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
             data-testid="request-content-cta"
           >
             <Filter size={14} />
