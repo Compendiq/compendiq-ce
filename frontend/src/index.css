@@ -103,10 +103,17 @@ h1, h2, h3, h4, h5, h6,
   --color-primary-gradient-start: #fdd56d;
   --color-primary-gradient-end: #f2b72e;
   --color-primary-glow: rgba(249, 199, 79, 0.35);
-  /* On graphite the brand honey is ~11:1 against text — already AA-safe.
-     --color-primary-ink aliases to --color-primary in dark mode and exists
-     for parity with the light theme where the brand honey must darken. */
-  --color-primary-ink: #f9c74f;
+  /* In dark mode --color-primary-ink is the SAME-INTENT amber but tuned for
+     amber-text-on-near-black contexts where the brand honey reads slightly
+     too "fluorescent". --color-primary-gradient-start (#fdd56d) gives a
+     softer amber that still hits >7:1 against #121212. */
+  --color-primary-ink: #fdd56d;
+  /* Action ink — primary affordance color for non-AI buttons & active states.
+     Inverted from light mode: light ink on graphite. Reads premium and leaves
+     --color-primary (honey) free to mean "AI is involved here". */
+  --color-action: #ece9e2;             /* matches --color-foreground */
+  --color-action-foreground: #0a0a0a;  /* near-black text on action ink */
+  --color-action-hover: #ffffff;       /* pure white lift on hover */
   --color-secondary: #2a2925;
   --color-secondary-foreground: #c5bea9;
   --color-muted: #2a2925;
@@ -134,7 +141,7 @@ h1, h2, h3, h4, h5, h6,
   --color-status-embedding: #8ab4e8;    /* blue */
   --color-status-ai: #b89ae0;           /* purple */
   --color-status-disconnected: #e88888; /* red */
-  --color-status-inactive: #6a6458;     /* warm gray */
+  --color-status-inactive: #8a8474;     /* warm gray, lifted for AA on #121212 */
 
   /* Brand typography — self-hosted via @fontsource (privacy-safe).
      Tailwind 4 exposes these as font-display / font-sans / font-mono
@@ -247,6 +254,12 @@ h1, h2, h3, h4, h5, h6,
      check marks, anywhere honey is a *text* color. Keep --color-primary for
      fills (buttons, pills, borders). */
   --color-primary-ink: #8a6016;
+  /* Action ink — primary affordance for non-AI buttons & active states.
+     Near-black on linen reads premium (Vercel/Linear style) and leaves
+     --color-primary (honey) free to mean "AI is involved here". */
+  --color-action: #0a0a0a;             /* matches --color-foreground */
+  --color-action-foreground: #ffffff;  /* white text on ink */
+  --color-action-hover: #1f1f1f;       /* slightly lifted ink on hover */
   --color-secondary: #efeeea;
   --color-secondary-foreground: #4a4a48;
   --color-muted: #efeeea;
@@ -264,7 +277,7 @@ h1, h2, h3, h4, h5, h6,
   --color-border: #dedcd4;
   --color-ring: #f9c74f;
   --color-success: #2f7a3a;
-  --color-warning: #b77a1a;
+  --color-warning: #945e0a;             /* darkened from #b77a1a — 5.2:1 vs #f7f7f7, AA-pass */
   --color-info: #2a5bb0;
 
   /* Status colors — tuned for AA contrast on linen */
@@ -273,7 +286,7 @@ h1, h2, h3, h4, h5, h6,
   --color-status-embedding: #2a5bb0;
   --color-status-ai: #6a4ea8;
   --color-status-disconnected: #b0322e;
-  --color-status-inactive: #a0988a;
+  --color-status-inactive: #6b6757;     /* darkened from #a0988a — 5.5:1 vs #f7f7f7, AA-pass */
 
   /* Code colors — per-language, matched against --code-bg #efe7d0 */
   --color-code-bg: #efe7d0;
