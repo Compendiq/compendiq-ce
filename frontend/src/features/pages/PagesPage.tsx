@@ -101,7 +101,11 @@ const PageListItem = memo(function PageListItem({
                   Local
                 </span>
               ) : (
-                <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-blue-500/15 px-2 py-0.5 text-[10px] font-medium text-blue-500" data-testid={`source-badge-${pageItem.id}`}>
+                <span
+                  className="inline-flex shrink-0 items-center gap-1 rounded-full bg-blue-500/15 px-2 py-0.5 text-[10px] font-medium text-blue-500"
+                  data-testid="badge-confluence"
+                  data-source-badge={pageItem.id}
+                >
                   Confluence
                 </span>
               )}

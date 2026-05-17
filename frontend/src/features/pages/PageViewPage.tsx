@@ -546,7 +546,10 @@ export function PageViewPage() {
                 Local
               </span>
             ) : (
-              <span className="inline-flex items-center gap-1 rounded-full bg-blue-500/15 px-2 py-0.5 text-[10px] font-medium text-blue-500" data-testid="source-badge">
+              <span
+                className="inline-flex items-center gap-1 rounded-full bg-blue-500/15 px-2 py-0.5 text-[10px] font-medium text-blue-500"
+                data-testid="badge-confluence"
+              >
                 Confluence
               </span>
             )}
