@@ -132,7 +132,7 @@ function ParentPagePicker({
               }}
               className={cn(
                 'w-full rounded-md px-3 py-1.5 text-left text-sm transition-colors hover:bg-foreground/5',
-                !parentId && 'bg-primary/10 text-primary',
+                !parentId && 'bg-primary/10 text-primary-ink',
               )}
             >
               None (root level)
@@ -153,7 +153,7 @@ function ParentPagePicker({
                 }}
                 className={cn(
                   'w-full rounded-md px-3 py-1.5 text-left text-sm transition-colors hover:bg-foreground/5',
-                  parentId === page.id && 'bg-primary/10 text-primary',
+                  parentId === page.id && 'bg-primary/10 text-primary-ink',
                 )}
               >
                 {page.title}
@@ -292,7 +292,7 @@ function PdfUploadZone({
         className={cn(
           'flex w-full items-center justify-center gap-2 rounded-lg border border-dashed px-4 py-3 text-sm transition-colors',
           isDragOver
-            ? 'border-primary bg-primary/10 text-primary'
+            ? 'border-primary bg-primary/10 text-primary-ink'
             : 'border-border/40 text-muted-foreground hover:border-border/60 hover:text-foreground',
           (isExtracting || disabled) && 'pointer-events-none opacity-50',
         )}

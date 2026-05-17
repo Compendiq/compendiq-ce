@@ -165,7 +165,7 @@ export function FlowchartGenerator({
             className={cn(
               'rounded-md px-2.5 py-1 text-xs capitalize',
               diagramType === type
-                ? 'bg-primary/15 text-primary'
+                ? 'bg-primary/15 text-primary-ink'
                 : 'text-muted-foreground hover:bg-foreground/5',
             )}
           >

@@ -111,7 +111,7 @@ export function AskModeInput() {
           {externalUrls.map((url) => (
             <span
               key={url}
-              className="inline-flex items-center gap-1 rounded-full border border-primary/20 bg-primary/5 px-2 py-0.5 text-xs text-primary"
+              className="inline-flex items-center gap-1 rounded-full border border-primary/20 bg-primary/5 px-2 py-0.5 text-xs text-primary-ink"
             >
               <Link2 size={10} />
               {new URL(url).hostname}
@@ -137,7 +137,7 @@ export function AskModeInput() {
           />
           <button
             onClick={addUrl}
-            className="shrink-0 rounded-md px-2 py-1 text-xs text-primary hover:bg-primary/10"
+            className="shrink-0 rounded-md px-2 py-1 text-xs text-primary-ink hover:bg-primary/10"
           >
             <Plus size={12} />
           </button>
@@ -158,7 +158,7 @@ export function AskModeInput() {
             title="Attach external documentation URL"
             className={`shrink-0 rounded-md p-1.5 transition-colors ${
               showUrlInput || externalUrls.length > 0
-                ? 'bg-primary/15 text-primary'
+                ? 'bg-primary/15 text-primary-ink'
                 : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground'
             }`}
             data-testid="attach-url-button"
