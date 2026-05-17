@@ -383,8 +383,9 @@ export function ArticleRightPane() {
     }
   }, [deleteMutation, id, navigate]);
 
-  // Re-sync this article from Confluence. Mirrors the bulk action on /pages
-  // (BulkOperations.tsx) but scoped to a single article via the right pane.
+  // Re-sync this article from Confluence. Calls the /pages/bulk/sync endpoint
+  // with a singleton ID; the bulk route already does the right per-page
+  // validation (auth, ownership, queue gating).
   //
   // The bulk endpoint can return `{succeeded: 0, failed: 0, errors: []}` when
   // the page silently no-ops (e.g. confluenceId became null between render
