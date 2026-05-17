@@ -401,13 +401,22 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
                   className={cn(
                     'rounded-lg p-1.5 transition-all duration-200 active:scale-[0.95]',
                     active
-                      ? 'nm-pill-active text-primary'
+                      ? 'bg-action text-action-foreground'
                       : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
                   )}
                   title={`${label} (${shortcut})`}
                   aria-label={label}
                 >
-                  <Icon size={16} className={cn(active && 'drop-shadow-[0_1px_2px_oklch(from_var(--color-primary)_l_c_h_/_0.3)]')} />
+                  <Icon
+                    size={16}
+                    className={cn(
+                      active && 'drop-shadow-[0_1px_2px_oklch(0_0_0_/_0.25)]',
+                      // AI tab keeps amber on its icon as the AI signal, but only
+                      // when active (pill is ink) — otherwise amber on light glass
+                      // would fail 3:1 contrast.
+                      active && path === '/ai' && 'text-primary',
+                    )}
+                  />
                 </Link>
               );
             })}
@@ -448,11 +457,21 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
               className={cn(
                 'flex flex-1 items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs transition-all duration-200 active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
                 active
-                  ? 'nm-pill-active text-primary font-medium'
+                  ? 'bg-action text-action-foreground font-medium'
                   : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
               )}
             >
-              <Icon size={14} className={cn(active && 'drop-shadow-[0_1px_2px_oklch(from_var(--color-primary)_l_c_h_/_0.3)]')} />
+              <Icon
+                size={14}
+                className={cn(
+                  active && 'drop-shadow-[0_1px_2px_oklch(0_0_0_/_0.25)]',
+                  // AI tab keeps amber on its icon as the AI signal when active
+                  // (pill is ink, ~7:1+ contrast). When inactive, the icon must
+                  // inherit muted-foreground — amber on light glass is 1.47:1,
+                  // a WCAG failure.
+                  active && path === '/ai' && 'text-primary',
+                )}
+              />
               {label}
             </Link>
           );
