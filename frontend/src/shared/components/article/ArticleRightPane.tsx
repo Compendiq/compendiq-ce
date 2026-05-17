@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   ChevronRight,
+  Cpu,
   ExternalLink,
   FileText,
   FolderOpen,
@@ -11,6 +12,7 @@ import {
   Pin,
   FileDown,
   Loader2,
+  RefreshCw,
   Trash2,
   Wand2,
 } from 'lucide-react';
@@ -30,6 +32,8 @@ import {
   usePage,
   usePinnedPages,
   usePinPage,
+  useReembedPage,
+  useResyncPage,
   useUnpinPage,
 } from '../../hooks/use-pages';
 import { useExportPdf } from '../../hooks/use-standalone';
@@ -190,6 +194,8 @@ export function ArticleRightPane() {
   const deleteMutation = useDeletePage();
   const pinMutation = usePinPage();
   const unpinMutation = useUnpinPage();
+  const resyncMutation = useResyncPage();
+  const reembedMutation = useReembedPage();
 
   const isPinned = pinnedData?.items.some((item) => item.id === id) ?? false;
 
@@ -377,6 +383,45 @@ export function ArticleRightPane() {
     }
   }, [deleteMutation, id, navigate]);
 
+  // Re-sync this article from Confluence. Mirrors the bulk action on /pages
+  // (BulkOperations.tsx) but scoped to a single article via the right pane.
+  const handleResync = useCallback(() => {
+    if (!id) return;
+    resyncMutation.mutate(id, {
+      onSuccess: (data) => {
+        if (data.succeeded > 0) {
+          toast.success('Re-synced from Confluence.');
+        } else {
+          toast.error(data.errors[0] ?? 'Re-sync failed.');
+        }
+      },
+      onError: (err) =>
+        toast.error(err instanceof Error ? err.message : 'Re-sync failed.'),
+    });
+  }, [id, resyncMutation]);
+
+  // Re-embed this article for RAG. Same bulk-endpoint passthrough as resync.
+  const handleReembed = useCallback(() => {
+    if (!id) return;
+    reembedMutation.mutate(id, {
+      onSuccess: (data) => {
+        if (data.succeeded > 0) {
+          toast.success('Queued for re-embedding.');
+        } else {
+          toast.error(data.errors[0] ?? 'Re-embed failed.');
+        }
+      },
+      onError: (err) => {
+        const message = err instanceof Error ? err.message : 'Re-embed failed.';
+        if (message.includes('already in progress')) {
+          toast.info('Embedding is already in progress. Please wait for it to finish.');
+        } else {
+          toast.error(message);
+        }
+      },
+    });
+  }, [id, reembedMutation]);
+
   if (!id) return null;
 
   // Collapsed rail — glass pill style
@@ -514,6 +559,39 @@ export function ArticleRightPane() {
               <span className="truncate">Open in Confluence</span>
             </a>
           )}
+
+          {/* Re-sync from Confluence — only for Confluence-sourced articles.
+              Locally-authored pages have no upstream to pull from. */}
+          {page.confluenceId && (
+            <button
+              onClick={handleResync}
+              disabled={resyncMutation.isPending}
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground disabled:opacity-50"
+              title="Re-sync from Confluence"
+              data-testid="article-resync-btn"
+            >
+              <RefreshCw
+                size={15}
+                className={cn('shrink-0 opacity-70', resyncMutation.isPending && 'animate-spin')}
+              />
+              <span className="truncate">Re-sync</span>
+            </button>
+          )}
+
+          <button
+            onClick={handleReembed}
+            disabled={reembedMutation.isPending}
+            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground disabled:opacity-50"
+            title="Re-embed for RAG"
+            data-testid="article-reembed-btn"
+          >
+            {reembedMutation.isPending ? (
+              <Loader2 size={15} className="shrink-0 animate-spin opacity-70" />
+            ) : (
+              <Cpu size={15} className="shrink-0 opacity-70" />
+            )}
+            <span className="truncate">Re-embed</span>
+          </button>
 
           <button
             onClick={handleDelete}
