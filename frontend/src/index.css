@@ -470,7 +470,14 @@ h1, h2, h3, h4, h5, h6,
   padding: 0.625rem 1.25rem;
   border-radius: var(--radius-md);
   border: 1px solid oklch(from var(--color-primary) calc(l - 0.06) c h);
-  background: linear-gradient(
+  /* Set background-color as a solid fallback in addition to the gradient
+     overlay. Gradients live in background-image only; without an explicit
+     background-color the rendered surface appears amber to users but reads
+     as transparent to automated contrast auditors (which only inspect
+     background-color, not background-image). The visible look is unchanged
+     — the gradient renders on top of the solid color. */
+  background-color: var(--color-primary);
+  background-image: linear-gradient(
     145deg,
     oklch(from var(--color-primary) calc(l + 0.04) c h),
     var(--color-primary)

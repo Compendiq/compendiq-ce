@@ -129,27 +129,35 @@ async function auditPage(
 }
 
 test.describe('WCAG-AA contrast audit', () => {
-  let authToken: string;
-  let authUser: { id: string; username: string; role: string };
+  // Single shared auth across all 12 tests. The audit is read-only against
+  // the rendered DOM — there's no per-test state to isolate — and reusing one
+  // user avoids tripping the backend's per-IP registration rate limit, which
+  // kicks in around ~5 registrations and was silently skipping the remaining
+  // tests.
+  let authToken: string | null = null;
+  let authUser: { id: string; username: string; role: string } | null = null;
 
-  test.beforeEach(async ({ page }) => {
-    // Same registration + localStorage auth pattern as themes.spec.ts.
-    const registerRes = await page.request.post('/api/auth/register', {
+  test.beforeAll(async ({ request }) => {
+    const registerRes = await request.post('/api/auth/register', {
       data: {
-        username: TEST_USER + Math.random().toString(36).slice(2, 6),
+        username: `${TEST_USER}_${Math.random().toString(36).slice(2, 8)}`,
         password: TEST_PASS,
       },
     });
-
     if (!registerRes.ok()) {
-      test.skip();
+      // Leave auth* null; per-test beforeEach will call test.skip().
       return;
     }
-
     const data = await registerRes.json();
     authToken = data.accessToken;
     authUser = data.user;
+  });
 
+  test.beforeEach(async ({ page }) => {
+    if (!authToken || !authUser) {
+      test.skip();
+      return;
+    }
     await page.goto('/login');
     await page.evaluate(
       ({ accessToken, user }) => {
