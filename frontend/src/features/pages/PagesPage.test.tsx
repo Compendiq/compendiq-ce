@@ -816,17 +816,6 @@ describe('PagesPage', () => {
       expect(items.length).toBeLessThan(200);
     });
 
-    it('renders selection state correctly in memoized items', async () => {
-      render(<PagesPage />, { wrapper: createWrapper() });
-      const checkbox = await screen.findByTestId('checkbox-page-1');
-
-      // Click to select
-      fireEvent.click(checkbox);
-
-      // The item should show selected state
-      const item = screen.getByTestId('article-hover-page-1');
-      expect(item.className).toContain('border-primary');
-    });
   });
 
   // ---------------------------------------------------------------------------

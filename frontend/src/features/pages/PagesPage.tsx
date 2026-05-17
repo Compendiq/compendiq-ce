@@ -14,7 +14,6 @@ import { FreshnessBadge } from '../../shared/components/badges/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../../shared/components/badges/EmbeddingStatusBadge';
 import { QualityScoreBadge } from '../../shared/components/badges/QualityScoreBadge';
 import { SummaryStatusBadge } from '../../shared/components/badges/SummaryStatusBadge';
-import { BulkOperations } from './BulkOperations';
 import { KPICards } from './KPICards';
 import { PinnedArticlesSection } from './PinnedArticlesSection';
 import { cn } from '../../shared/lib/cn';
@@ -51,13 +50,11 @@ interface PageListItemProps {
     visibility?: string;
   };
   index: number;
-  isSelected: boolean;
-  onToggleSelection: (id: string, e: React.MouseEvent) => void;
   onNavigate: (id: string) => void;
 }
 
 const PageListItem = memo(function PageListItem({
-  pageItem, index: _index, isSelected, onToggleSelection, onNavigate,
+  pageItem, index: _index, onNavigate,
 }: PageListItemProps) {
   return (
     <m.div
@@ -66,24 +63,9 @@ const PageListItem = memo(function PageListItem({
       transition={{ duration: 0.15 }}
     >
       <div
-        className={cn(
-          'rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm transition-all hover:border-primary/50 flex w-full items-center gap-3 p-4 text-left',
-          isSelected && 'border-action/40 bg-action/5',
-        )}
+        className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm transition-all hover:border-primary/50 flex w-full items-center gap-3 p-4 text-left"
         data-testid={`article-hover-${pageItem.id}`}
       >
-        {/* Checkbox for bulk selection */}
-        <button
-          onClick={(e) => onToggleSelection(pageItem.id, e)}
-          className="shrink-0 flex h-5 w-5 items-center justify-center rounded border border-border hover:border-primary/50"
-          data-testid={`checkbox-${pageItem.id}`}
-          aria-label={`Select ${pageItem.title}`}
-        >
-          {isSelected && (
-            <div className="h-3 w-3 rounded-sm bg-action" />
-          )}
-        </button>
-
         <button
           onClick={() => onNavigate(pageItem.id)}
           className="flex min-w-0 flex-1 items-center gap-4"
@@ -174,14 +156,13 @@ const PageListItem = memo(function PageListItem({
     </m.div>
   );
 }, (prev, next) => {
-  // Only re-render if the page item data or selection state changed
+  // Only re-render if the page-item data changed
   if (prev.pageItem.id !== next.pageItem.id) return false;
   if (prev.pageItem.version !== next.pageItem.version) return false;
   if (prev.pageItem.embeddingDirty !== next.pageItem.embeddingDirty) return false;
   if (prev.pageItem.qualityScore !== next.pageItem.qualityScore) return false;
   if (prev.pageItem.qualityStatus !== next.pageItem.qualityStatus) return false;
   if (prev.pageItem.summaryStatus !== next.pageItem.summaryStatus) return false;
-  if (prev.isSelected !== next.isSelected) return false;
   if (prev.index !== next.index) return false;
   return true;
 });
@@ -204,7 +185,6 @@ export function PagesPage() {
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState<'title' | 'modified' | 'author' | 'quality' | 'relevance'>('modified');
   const [sourceFilter, setSourceFilter] = useState<string>('');
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [searchMode, setSearchMode] = useState<'keyword' | 'semantic' | 'hybrid'>('keyword');
 
   const { data: settings } = useSettings();
@@ -329,32 +309,9 @@ export function PagesPage() {
     setPage(1);
   }, []);
 
-  const toggleSelection = useCallback((id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      return next;
-    });
-  }, []);
-
   const navigateToPage = useCallback((id: string) => {
     navigate(`/pages/${id}`);
   }, [navigate]);
-
-  const selectAll = useCallback(() => {
-    if (pagesData?.items) {
-      setSelectedIds(new Set(pagesData.items.map((p) => p.id)));
-    }
-  }, [pagesData]);
-
-  const deselectAll = useCallback(() => {
-    setSelectedIds(new Set());
-  }, []);
 
   // Virtual scrolling for the keyword/browse page list
   const pageItems = pagesData?.items ?? [];
@@ -908,8 +865,6 @@ export function PagesPage() {
                       <PageListItem
                         pageItem={pageItem}
                         index={virtualRow.index}
-                        isSelected={selectedIds.has(pageItem.id)}
-                        onToggleSelection={toggleSelection}
                         onNavigate={navigateToPage}
                       />
                     </div>
@@ -941,15 +896,6 @@ export function PagesPage() {
               </button>
             </div>
           )}
-
-          {/* Bulk Operations Bar */}
-          <BulkOperations
-            selectedIds={[...selectedIds]}
-            totalCount={pagesData?.items.length ?? 0}
-            onSelectAll={selectAll}
-            onDeselectAll={deselectAll}
-            onClose={deselectAll}
-          />
         </>
       )}
       </>
