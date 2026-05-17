@@ -68,7 +68,7 @@ const PageListItem = memo(function PageListItem({
       <div
         className={cn(
           'rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm transition-all hover:border-primary/50 flex w-full items-center gap-3 p-4 text-left',
-          isSelected && 'border-primary/40 bg-primary/5',
+          isSelected && 'border-action/40 bg-action/5',
         )}
         data-testid={`article-hover-${pageItem.id}`}
       >
@@ -80,7 +80,7 @@ const PageListItem = memo(function PageListItem({
           aria-label={`Select ${pageItem.title}`}
         >
           {isSelected && (
-            <div className="h-3 w-3 rounded-sm bg-primary" />
+            <div className="h-3 w-3 rounded-sm bg-action" />
           )}
         </button>
 
@@ -93,22 +93,39 @@ const PageListItem = memo(function PageListItem({
               <p className="truncate font-medium">{pageItem.title}</p>
               {/* Source badge */}
               {pageItem.source === 'standalone' ? (
-                <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-500" data-testid={`source-badge-${pageItem.id}`}>
+                <span
+                  className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#e7f2e8] px-2 py-0.5 text-[10px] font-medium text-[#1f5a2a] dark:bg-[#1a2a1d] dark:text-[#9ad4a8]"
+                  data-testid="badge-local"
+                  data-source-badge={pageItem.id}
+                >
                   Local
                 </span>
               ) : (
-                <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-blue-500/15 px-2 py-0.5 text-[10px] font-medium text-blue-500" data-testid={`source-badge-${pageItem.id}`}>
+                <span
+                  className="inline-flex shrink-0 items-center gap-1 rounded-full bg-blue-500/15 px-2 py-0.5 text-[10px] font-medium text-blue-500"
+                  data-testid="badge-confluence"
+                  data-source-badge={pageItem.id}
+                >
                   Confluence
                 </span>
               )}
               {/* Visibility badge for standalone articles */}
               {pageItem.source === 'standalone' && (
                 (pageItem.visibility === 'shared') ? (
-                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-sky-500/15 px-2 py-0.5 text-[10px] font-medium text-sky-500" data-testid={`visibility-badge-${pageItem.id}`}>
+                  <span
+                    className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#e6effb] px-2 py-0.5 text-[10px] font-medium text-[#1c3e72] dark:bg-[#162236] dark:text-[#a4c2eb]"
+                    data-testid="badge-shared"
+                    data-visibility-badge={pageItem.id}
+                  >
                     <Globe size={10} /> Shared
                   </span>
                 ) : (
-                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-500" data-testid={`visibility-badge-${pageItem.id}`}>
+                  // Private = neutral gray. Was amber, but privacy carries no AI semantic.
+                  <span
+                    className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#ececea] px-2 py-0.5 text-[10px] font-medium text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]"
+                    data-testid="badge-private"
+                    data-visibility-badge={pageItem.id}
+                  >
                     <Lock size={10} /> Private
                   </span>
                 )
@@ -142,7 +159,11 @@ const PageListItem = memo(function PageListItem({
           {pageItem.labels.length > 0 && (
             <div className="flex gap-1">
               {pageItem.labels.slice(0, 3).map((label) => (
-                <span key={label} className="rounded bg-primary/10 px-2 py-0.5 text-xs text-primary">
+                <span
+                  key={label}
+                  className="rounded bg-[#ececea] px-2 py-0.5 text-xs text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]"
+                  data-testid="label-chip"
+                >
                   {label}
                 </span>
               ))}
@@ -377,11 +398,11 @@ export function PagesPage() {
           </button>
           <button
             onClick={() => navigate('/pages/new')}
-            className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
           >
             <Plus size={16} />
             <span className="hidden sm:inline">New Page</span>
-            <span className="hidden sm:inline"><ShortcutHint shortcutId="new-page" className="border-primary-foreground/30 text-primary-foreground/80" /></span>
+            <span className="hidden sm:inline"><ShortcutHint shortcutId="new-page" className="border-action/30 text-action/80" /></span>
           </button>
         </div>
       </div>
@@ -402,7 +423,7 @@ export function PagesPage() {
           </div>
           <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-foreground/10">
             <div
-              className="h-full rounded-full bg-primary transition-all"
+              className="h-full rounded-full bg-action transition-all"
               style={{ width: `${(syncStatus.progress.current / syncStatus.progress.total) * 100}%` }}
             />
           </div>
@@ -412,14 +433,14 @@ export function PagesPage() {
       {/* Embedding progress */}
       {embeddingStatusData?.isProcessing && (
         <div className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm flex items-center gap-3 p-3 border border-primary/30" data-testid="embedding-progress-banner">
-          <Loader2 size={16} className="animate-spin text-primary" />
+          <Loader2 size={16} className="animate-spin text-action" />
           <span className="text-sm">
             Embedding in progress — {embeddingStatusData.dirtyPages} pages remaining
           </span>
           <div className="ml-auto flex items-center gap-2">
             <div className="h-1.5 w-32 overflow-hidden rounded-full bg-foreground/10">
               <div
-                className="h-full rounded-full bg-primary transition-all"
+                className="h-full rounded-full bg-action transition-all"
                 style={{ width: `${(embeddingStatusData.embeddedPages / Math.max(embeddingStatusData.totalPages, 1)) * 100}%` }}
               />
             </div>
@@ -479,7 +500,7 @@ export function PagesPage() {
                   className={cn(
                     'rounded-full px-3 py-1 text-xs font-medium transition-all capitalize',
                     searchMode === m
-                      ? 'bg-primary text-primary-foreground shadow-md shadow-primary/25 ring-1 ring-primary/50'
+                      ? 'bg-action text-action-foreground shadow-md shadow-action/25 ring-1 ring-action/50'
                       : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10 border border-transparent hover:border-border/40',
                   )}
                 >
@@ -487,7 +508,7 @@ export function PagesPage() {
                 </button>
               ))}
               {searchResults.isLoadingEnhanced && (
-                <Loader2 size={14} className="ml-1 animate-spin text-primary" data-testid="search-enhanced-loading" />
+                <Loader2 size={14} className="ml-1 animate-spin text-action" data-testid="search-enhanced-loading" />
               )}
             </div>
 
@@ -534,7 +555,7 @@ export function PagesPage() {
             className={cn(
               'flex items-center gap-1.5 rounded-md px-3 py-2 text-sm transition-colors',
               showAdvancedFilters || activeFilterCount > 0
-                ? 'bg-primary/15 text-primary'
+                ? 'bg-action/15 text-action'
                 : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
             )}
             data-testid="advanced-filters-toggle"
@@ -542,7 +563,7 @@ export function PagesPage() {
             <Filter size={14} />
             Filters
             {activeFilterCount > 0 && (
-              <span className="ml-1 flex h-5 w-5 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground">
+              <span className="ml-1 flex h-5 w-5 items-center justify-center rounded-full bg-action text-[10px] font-bold text-action-foreground">
                 {activeFilterCount}
               </span>
             )}
@@ -677,7 +698,7 @@ export function PagesPage() {
               <button
                 key={f.key}
                 onClick={() => clearFilter(f.key)}
-                className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary"
+                className="inline-flex items-center gap-1 rounded-full bg-action/10 px-2.5 py-0.5 text-xs font-medium text-action"
                 aria-label={`Remove ${f.label} filter`}
                 data-testid={`filter-pill-${f.key}`}
               >

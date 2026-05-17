@@ -34,7 +34,7 @@ export function ImproveTypeSelector() {
             title={IMPROVEMENT_DESCRIPTIONS[type]}
             className={cn(
               'rounded-md px-2.5 py-1 text-xs capitalize',
-              improvementType === type ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-foreground/5',
+              improvementType === type ? 'bg-primary/15 text-primary-ink' : 'text-muted-foreground hover:bg-foreground/5',
             )}
           >
             {type}

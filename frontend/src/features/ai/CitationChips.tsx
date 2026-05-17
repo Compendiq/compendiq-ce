@@ -29,7 +29,7 @@ export function CitationChips({ sources, className }: CitationChipsProps) {
           title={source.pageTitle}
           className={cn(
             'inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded',
-            'bg-primary/15 px-1.5 text-[10px] font-semibold tabular-nums text-primary',
+            'bg-primary/15 px-1.5 text-[10px] font-semibold tabular-nums text-primary-ink',
             'transition-colors hover:bg-primary/25 focus:outline-none focus:ring-1 focus:ring-primary',
           )}
           data-testid={`citation-chip-${i + 1}`}

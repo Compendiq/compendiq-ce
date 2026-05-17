@@ -100,7 +100,7 @@ export function SpaceHomePicker({
             canManage
               ? 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground'
               : 'cursor-not-allowed opacity-50',
-            customHomePageId != null && 'border-primary/40 text-primary',
+            customHomePageId != null && 'border-action/40 text-action',
           )}
         >
           <Home size={12} />
@@ -134,7 +134,7 @@ export function SpaceHomePicker({
               className="mb-2 flex items-center gap-2 rounded-md bg-foreground/5 px-2 py-1.5"
               data-testid="space-home-picker-current"
             >
-              <Check size={12} className="text-primary" />
+              <Check size={12} className="text-action" />
               <p className="min-w-0 truncate text-xs">
                 <span className="text-muted-foreground">Current: </span>
                 <span className="font-medium">
@@ -193,12 +193,12 @@ export function SpaceHomePicker({
                         className={cn(
                           'flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors',
                           'hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
-                          isCurrent && 'bg-primary/10 text-primary',
+                          isCurrent && 'bg-action/10 text-action',
                         )}
                         data-testid={`space-home-picker-result-${p.id}`}
                       >
                         <span className="flex-1 truncate">{p.title}</span>
-                        {isCurrent && <Check size={12} className="shrink-0 text-primary" />}
+                        {isCurrent && <Check size={12} className="shrink-0 text-action" />}
                       </button>
                     </li>
                   );

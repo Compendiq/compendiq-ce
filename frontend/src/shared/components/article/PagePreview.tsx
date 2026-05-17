@@ -79,7 +79,7 @@ export function PagePreview({ pageId, children, className }: PagePreviewProps) {
               ) : page ? (
                 <>
                   <div className="mb-2 flex items-start gap-2">
-                    <FileText size={14} className="mt-0.5 shrink-0 text-primary" />
+                    <FileText size={14} className="mt-0.5 shrink-0 text-action" />
                     <h4 className="text-sm font-medium leading-tight">{page.title}</h4>
                   </div>
                   {bodyPreview && (
@@ -88,7 +88,7 @@ export function PagePreview({ pageId, children, className }: PagePreviewProps) {
                     </p>
                   )}
                   <div className="flex items-center gap-2">
-                    <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">
+                    <span className="rounded bg-[#ececea] px-1.5 py-0.5 text-[10px] text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]">
                       {page.spaceKey}
                     </span>
                     {page.lastModifiedAt && (

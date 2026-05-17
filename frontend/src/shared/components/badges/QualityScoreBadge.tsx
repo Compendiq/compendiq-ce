@@ -20,6 +20,7 @@ interface ScoreConfig {
   label: string;
   badgeClass: string;
   animate: boolean;
+  testId?: string;
 }
 
 function getScoreConfig(
@@ -39,16 +40,20 @@ function getScoreConfig(
   if (status === 'failed') {
     return {
       label: 'Analysis Failed',
-      badgeClass: 'bg-status-disconnected/20 text-status-disconnected border border-status-disconnected/30',
+      // Soft-red tinted pill, AA-pass in light + dark.
+      badgeClass: 'bg-[#fae2e0] text-[#7a1e1a] dark:bg-[#2a1614] dark:text-[#e89c98]',
       animate: false,
+      testId: 'badge-failed',
     };
   }
 
   if (status === 'skipped') {
     return {
       label: 'Skipped',
-      badgeClass: 'bg-status-inactive/20 text-status-inactive border border-status-inactive/30',
+      // Neutral warm-gray tinted pill, AA-pass in light + dark.
+      badgeClass: 'bg-[#efeeea] text-[#5f5c54] dark:bg-[#262320] dark:text-[#a39e8c]',
       animate: false,
+      testId: 'badge-skipped',
     };
   }
 
@@ -150,7 +155,7 @@ export function QualityScoreBadge(props: QualityScoreBadgeProps) {
   return (
     <span
       title={tooltip}
-      data-testid="quality-score-badge"
+      data-testid={config.testId ?? 'quality-score-badge'}
       data-status={qualityStatus ?? 'pending'}
       data-score={qualityScore ?? ''}
       className={cn(

@@ -124,7 +124,7 @@ function BulkPagePermissionDialogInner({
       >
         <div className="mb-4 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <Shield size={18} className="text-primary" />
+            <Shield size={18} className="text-action" />
             <h2 className="text-lg font-semibold">Bulk Page Permission</h2>
           </div>
           <button
@@ -155,7 +155,7 @@ function BulkPagePermissionDialogInner({
                 className={cn(
                   'flex-1 rounded-md px-3 py-1.5 text-xs font-medium capitalize transition-colors',
                   action === a
-                    ? 'bg-primary/15 text-primary'
+                    ? 'bg-action/15 text-action'
                     : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
                 )}
                 data-testid={`action-${a}`}
@@ -244,7 +244,7 @@ function BulkPagePermissionDialogInner({
           <button
             onClick={() => apply.mutate()}
             disabled={!canSubmit}
-            className="rounded-md bg-primary px-4 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            className="inline-flex items-center justify-center rounded-md border border-action bg-transparent px-4 py-1.5 text-xs font-medium text-action transition-colors hover:bg-action hover:text-action-foreground disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
             data-testid="apply-btn"
           >
             {apply.isPending ? 'Applying…' : 'Apply'}

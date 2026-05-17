@@ -150,7 +150,7 @@ describe('FlowchartGenerator', () => {
 
     await waitFor(() => {
       const flowchartBtn = screen.getByText('flowchart');
-      expect(flowchartBtn).toHaveClass('bg-primary/15', 'text-primary');
+      expect(flowchartBtn).toHaveClass('bg-primary/15', 'text-primary-ink');
     });
   });
 
@@ -211,7 +211,7 @@ describe('FlowchartGenerator', () => {
     fireEvent.click(screen.getByText('sequence'));
 
     // Sequence should now be active
-    expect(screen.getByText('sequence')).toHaveClass('bg-primary/15', 'text-primary');
+    expect(screen.getByText('sequence')).toHaveClass('bg-primary/15', 'text-primary-ink');
     // Flowchart should be inactive
     expect(screen.getByText('flowchart')).not.toHaveClass('bg-primary/15');
   });

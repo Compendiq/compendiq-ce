@@ -139,7 +139,7 @@ export function KPICards({ embeddingStatus, spacesCount, lastSynced }: KPICardsP
       label: 'Spaces Synced',
       value: String(spacesCount),
       numericValue: spacesCount,
-      color: 'text-primary',
+      color: 'text-action',
       testId: 'kpi-spaces-synced',
     },
     {

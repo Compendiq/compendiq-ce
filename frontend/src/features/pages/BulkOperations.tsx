@@ -238,7 +238,7 @@ export function BulkOperations({
                   className={cn(
                     'rounded px-2 py-1 text-xs font-medium transition-colors',
                     tagAction === 'add'
-                      ? 'bg-primary/15 text-primary'
+                      ? 'bg-action/15 text-action'
                       : 'text-muted-foreground hover:text-foreground',
                   )}
                   data-testid="tag-action-add"
@@ -299,7 +299,7 @@ export function BulkOperations({
                     bulkTag.isPending ||
                     bulkReplaceTags.isPending
                   }
-                  className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                  className="inline-flex items-center justify-center rounded-md border border-action bg-transparent px-3 py-1.5 text-xs font-medium text-action transition-colors hover:bg-action hover:text-action-foreground disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
                   data-testid="tag-submit"
                 >
                   Apply

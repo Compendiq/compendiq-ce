@@ -139,7 +139,7 @@ function ToolbarButton({
       title={title}
       className={cn(
         'rounded p-1.5 transition-colors',
-        active ? 'bg-primary/20 text-primary ring-1 ring-primary/30' : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
+        active ? 'bg-action/20 text-action ring-1 ring-action/30' : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
         disabled && 'opacity-30 cursor-not-allowed',
       )}
     >
@@ -227,7 +227,7 @@ function StatusLabelInsert({ editor }: { editor: EditorType }) {
           />
           <button
             onClick={handleInsert}
-            className="w-full rounded-md bg-primary/20 px-2 py-1 text-xs text-primary hover:bg-primary/30"
+            className="w-full rounded-md border border-action bg-transparent px-2 py-1 text-xs text-action transition-colors hover:bg-action hover:text-action-foreground"
           >
             Insert
           </button>
@@ -601,9 +601,9 @@ export function TableContextToolbar({ editor }: { editor: EditorType }) {
   return (
     <div
       data-testid="table-context-toolbar"
-      className="flex flex-wrap items-center gap-0.5 border-t border-primary/20 bg-primary/5 px-2 py-1.5"
+      className="flex flex-wrap items-center gap-0.5 border-t border-action/20 bg-action/5 px-2 py-1.5"
     >
-      <span className="mr-1 text-xs font-semibold text-primary/70 select-none">Table</span>
+      <span className="mr-1 text-xs font-semibold text-action/70 select-none">Table</span>
 
       <ToolbarSeparator />
 
@@ -787,9 +787,9 @@ export function LayoutContextToolbar({ editor }: { editor: EditorType }) {
   return (
     <div
       data-testid="layout-context-toolbar"
-      className="flex flex-wrap items-center gap-0.5 border-t border-primary/20 bg-primary/5 px-2 py-1.5"
+      className="flex flex-wrap items-center gap-0.5 border-t border-action/20 bg-action/5 px-2 py-1.5"
     >
-      <span className="mr-1 text-xs font-semibold text-primary/70 select-none">Layout</span>
+      <span className="mr-1 text-xs font-semibold text-action/70 select-none">Layout</span>
 
       <ToolbarSeparator />
 
@@ -829,9 +829,9 @@ export function ColumnContextToolbar({ editor }: { editor: EditorType }) {
   return (
     <div
       data-testid="column-context-toolbar"
-      className="flex flex-wrap items-center gap-0.5 border-t border-primary/20 bg-primary/5 px-2 py-1.5"
+      className="flex flex-wrap items-center gap-0.5 border-t border-action/20 bg-action/5 px-2 py-1.5"
     >
-      <span className="mr-1 text-xs font-semibold text-primary/70 select-none">Columns</span>
+      <span className="mr-1 text-xs font-semibold text-action/70 select-none">Columns</span>
 
       <ToolbarSeparator />
 

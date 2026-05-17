@@ -88,7 +88,7 @@ export function LoginPage() {
           {isRegister ? 'Already have an account?' : "Don't have an account?"}{' '}
           <button
             onClick={() => setIsRegister(!isRegister)}
-            className="text-primary hover:underline"
+            className="text-action hover:underline"
           >
             {isRegister ? 'Sign in' : 'Create one'}
           </button>

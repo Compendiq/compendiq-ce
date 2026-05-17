@@ -172,9 +172,9 @@ export function SetupWizard() {
                   <div
                     className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-medium transition-colors ${
                       index < currentStep
-                        ? 'bg-primary text-primary-foreground'
+                        ? 'bg-action text-action-foreground'
                         : index === currentStep
-                          ? 'bg-primary/20 text-primary ring-2 ring-primary/40'
+                          ? 'bg-action/20 text-action ring-2 ring-action/40'
                           : 'bg-foreground/10 text-muted-foreground'
                     }`}
                     data-testid={`step-indicator-${step.id}`}
@@ -190,7 +190,7 @@ export function SetupWizard() {
                   {index < STEPS.length - 1 && (
                     <div
                       className={`mx-1 h-0.5 w-6 rounded transition-colors ${
-                        index < currentStep ? 'bg-primary' : 'bg-foreground/10'
+                        index < currentStep ? 'bg-action' : 'bg-foreground/10'
                       }`}
                     />
                   )}

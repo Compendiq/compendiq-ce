@@ -15,6 +15,7 @@ import { UserMenu } from './UserMenu';
 import { SidebarTreeView } from './SidebarTreeView';
 import { ArticleRightPane } from '../article/ArticleRightPane';
 import { ShortcutHint } from '../ShortcutHint';
+import { Logo } from '../Logo';
 import { ThemeToggle } from './ThemeToggle';
 import { PageTransition } from './PageTransition';
 import { cn } from '../../lib/cn';
@@ -197,11 +198,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
 
         {/* Logo - always visible in header */}
         <Link to="/" aria-label="Compendiq home" className="mr-3 flex shrink-0 items-center group">
-          <img
-            src="/compendiq-lockup-horizontal.svg"
-            alt="Compendiq"
-            className="h-7 w-auto transition-transform duration-200 group-hover:scale-105 dark:invert"
-          />
+          <Logo className="h-[26px] w-auto text-foreground" title="Compendiq" />
         </Link>
 
         {/* Breadcrumb — gets full width now that nav pills moved to sidebar */}

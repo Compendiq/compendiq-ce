@@ -33,7 +33,7 @@ export function DiagramTypeSelector() {
           onClick={() => setDiagramType(type)}
           className={cn(
             'rounded-md px-2.5 py-1 text-xs capitalize',
-            diagramType === type ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-foreground/5',
+            diagramType === type ? 'bg-primary/15 text-primary-ink' : 'text-muted-foreground hover:bg-foreground/5',
           )}
         >
           {type}

@@ -211,7 +211,7 @@ export function LlmAuditPage() {
             onClick={() => setShowFilters((v) => !v)}
             className={cn(
               'flex items-center gap-1.5 rounded-md px-3 py-2 text-sm transition-colors',
-              showFilters ? 'bg-primary/15 text-primary' : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
+              showFilters ? 'bg-action/15 text-action' : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
             )}
             data-testid="toggle-filters-btn"
           >
@@ -347,7 +347,7 @@ export function LlmAuditPage() {
                       {entry.user_id ? entry.user_id.slice(0, 8) : '—'}
                     </td>
                     <td className="px-4 py-2.5">
-                      <span className="rounded bg-primary/10 px-2 py-0.5 text-xs text-primary">
+                      <span className="rounded bg-[#ececea] px-2 py-0.5 text-xs text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]">
                         {entry.action}
                       </span>
                     </td>

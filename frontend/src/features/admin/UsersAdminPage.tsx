@@ -175,7 +175,7 @@ export function UsersAdminPage() {
           <button
             type="button"
             onClick={() => setShowCreate(true)}
-            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+            className="rounded-md border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
           >
             Create user
           </button>
@@ -480,7 +480,7 @@ function UserCreateDialog({ onClose, onSubmit, isSubmitting }: UserCreateDialogP
           </button>
           <button
             type="submit"
-            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+            className="rounded-md border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
             disabled={isSubmitting}
           >
             {isSubmitting ? 'Creating…' : 'Create'}

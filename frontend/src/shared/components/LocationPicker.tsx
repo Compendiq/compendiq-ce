@@ -147,7 +147,7 @@ const PickerTreeNode = memo(function PickerTreeNode({
         className={cn(
           'group flex w-full items-center gap-1.5 rounded-md py-1.5 pr-2 text-sm transition-colors',
           isSelected
-            ? 'bg-primary/15 text-primary font-medium'
+            ? 'bg-action/15 text-action font-medium'
             : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
         )}
         style={{ paddingLeft: `${level * 16 + 8}px` }}
@@ -167,16 +167,16 @@ const PickerTreeNode = memo(function PickerTreeNode({
         )}
         {hasChildren ? (
           isExpanded ? (
-            <FolderOpen size={15} className="shrink-0 text-primary/80" />
+            <FolderOpen size={15} className="shrink-0 text-action/80" />
           ) : (
-            <Folder size={15} className="shrink-0 text-primary/70" />
+            <Folder size={15} className="shrink-0 text-action/70" />
           )
         ) : (
           <FileText size={15} className="shrink-0 text-muted-foreground/70" />
         )}
         <span className="truncate">{node.page.title}</span>
         {isSelected && (
-          <Check size={14} className="ml-auto shrink-0 text-primary" />
+          <Check size={14} className="ml-auto shrink-0 text-action" />
         )}
       </button>
 
@@ -358,7 +358,7 @@ export function LocationPicker({
           )}
           aria-label="Select page location"
         >
-          <MapPin size={14} className="shrink-0 text-primary/70" />
+          <MapPin size={14} className="shrink-0 text-action/70" />
           <span className="flex-1 truncate">
             {spaceKey ? (
               <span className="flex items-center gap-1 text-xs">
@@ -431,13 +431,13 @@ export function LocationPicker({
                     className={cn(
                       'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors',
                       !selectedParentId
-                        ? 'bg-primary/15 text-primary font-medium'
+                        ? 'bg-action/15 text-action font-medium'
                         : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
                     )}
                   >
                     <Folder size={14} className="shrink-0" />
                     <span>Root level (no parent)</span>
-                    {!selectedParentId && <Check size={12} className="ml-auto text-primary" />}
+                    {!selectedParentId && <Check size={12} className="ml-auto text-action" />}
                   </button>
                 </div>
 

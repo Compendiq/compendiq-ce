@@ -241,7 +241,7 @@ function AiAssistantInner() {
               className={cn(
                 'flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs transition-colors',
                 mode === key
-                  ? 'bg-primary/12 font-medium text-primary'
+                  ? 'bg-primary font-medium text-primary-foreground'
                   : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
               )}
             >
@@ -280,7 +280,7 @@ function AiAssistantInner() {
           <label
             className={cn(
               'flex cursor-pointer items-center gap-1 rounded-md px-2 py-0.5 text-xs transition-colors',
-              includeSubPages ? 'bg-primary/12 text-primary' : 'text-muted-foreground hover:bg-foreground/5',
+              includeSubPages ? 'bg-primary/12 text-primary-ink' : 'text-muted-foreground hover:bg-foreground/5',
             )}
             title="Include sub-pages in the AI context"
           >
