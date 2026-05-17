@@ -12,6 +12,10 @@ const mockDeletePage = vi.fn();
 const mockPinPage = vi.fn();
 const mockUnpinPage = vi.fn();
 const mockExportPdfAsync = vi.fn();
+const mockResyncPage = vi.fn();
+const mockReembedPage = vi.fn();
+let resyncIsPending = false;
+let reembedIsPending = false;
 
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
@@ -59,6 +63,8 @@ vi.mock('../../hooks/use-pages', () => ({
   usePinnedPages: () => ({ data: { items: [] }, isLoading: false }),
   usePinPage: () => ({ mutate: mockPinPage }),
   useUnpinPage: () => ({ mutate: mockUnpinPage }),
+  useResyncPage: () => ({ mutate: mockResyncPage, isPending: resyncIsPending }),
+  useReembedPage: () => ({ mutate: mockReembedPage, isPending: reembedIsPending }),
 }));
 
 vi.mock('../../hooks/use-settings', () => ({
@@ -121,6 +127,10 @@ describe('ArticleRightPane', () => {
     mockPinPage.mockReset();
     mockUnpinPage.mockReset();
     mockExportPdfAsync.mockReset();
+    mockResyncPage.mockReset();
+    mockReembedPage.mockReset();
+    resyncIsPending = false;
+    reembedIsPending = false;
     localStorage.clear();
     useUiStore.setState({ articleSidebarCollapsed: false, articleSidebarWidth: 280 });
     useArticleViewStore.setState({ headings: [], editing: false });
@@ -194,6 +204,73 @@ describe('ArticleRightPane', () => {
     fireEvent.click(screen.getByText('AI Improve'));
 
     expect(mockNavigate).toHaveBeenCalledWith('/ai?mode=improve&pageId=page-1');
+  });
+
+  it('renders Re-sync and Re-embed buttons for Confluence-sourced articles', () => {
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    expect(screen.getByTestId('article-resync-btn')).toBeInTheDocument();
+    expect(screen.getByTestId('article-reembed-btn')).toBeInTheDocument();
+  });
+
+  it('hides Re-sync for locally-authored articles (no confluenceId)', () => {
+    currentMockPage = { ...mockPage, confluenceId: null };
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    expect(screen.queryByTestId('article-resync-btn')).not.toBeInTheDocument();
+    // Re-embed always available — local pages can still be RAG-indexed.
+    expect(screen.getByTestId('article-reembed-btn')).toBeInTheDocument();
+  });
+
+  it('invokes resync mutation when Re-sync is clicked', () => {
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByTestId('article-resync-btn'));
+
+    expect(mockResyncPage).toHaveBeenCalledTimes(1);
+    expect(mockResyncPage.mock.calls[0]![0]).toBe('page-1');
+  });
+
+  it('invokes reembed mutation when Re-embed is clicked', () => {
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByTestId('article-reembed-btn'));
+
+    expect(mockReembedPage).toHaveBeenCalledTimes(1);
+    expect(mockReembedPage.mock.calls[0]![0]).toBe('page-1');
+  });
+
+  it('disables the Re-sync button while resync is pending', () => {
+    resyncIsPending = true;
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    const btn = screen.getByTestId('article-resync-btn') as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+  });
+
+  it('does not toast error when Re-sync silently no-ops (0/0/[])', async () => {
+    // Bulk endpoint can legitimately return zero-everywhere when the page is
+    // skipped server-side (e.g. confluenceId became null between render and
+    // click). That's not a failure — surface as info, not error.
+    const sonner = await import('sonner');
+    const toastErrorSpy = vi.spyOn(sonner.toast, 'error');
+    const toastInfoSpy = vi.spyOn(sonner.toast, 'info');
+    mockResyncPage.mockImplementation((_id: string, opts: { onSuccess: (d: { succeeded: number; failed: number; errors: string[] }) => void }) => {
+      opts.onSuccess({ succeeded: 0, failed: 0, errors: [] });
+    });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('article-resync-btn'));
+
+    await waitFor(() => {
+      expect(toastErrorSpy).not.toHaveBeenCalled();
+      expect(toastInfoSpy).toHaveBeenCalledWith('Nothing to re-sync.');
+    });
+
+    toastErrorSpy.mockRestore();
+    toastInfoSpy.mockRestore();
   });
 
   it('renders outline headings from the article-view-store', () => {
