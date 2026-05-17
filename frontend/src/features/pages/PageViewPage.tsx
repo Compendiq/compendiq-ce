@@ -635,10 +635,10 @@ export function PageViewPage() {
 
         {editing ? (
           <>
-            {/* Editable title — same 760px reading column as the body so they
+            {/* Editable title — same 950px reading column as the body so they
                 visually align as one document. */}
             <div className="border-b border-border/25 px-5 py-5 sm:px-10">
-              <div className="mx-auto max-w-[760px]">
+              <div className="mx-auto max-w-[950px]">
                 <input
                   value={editTitle}
                   onChange={(event) => setEditTitle(event.target.value)}
@@ -648,9 +648,9 @@ export function PageViewPage() {
               </div>
             </div>
 
-            {/* Editor body — same 760px reading column so the editing
+            {/* Editor body — same 950px reading column so the editing
                 experience matches the reader's line length exactly. */}
-            <div className="mx-auto max-w-[760px]">
+            <div className="mx-auto max-w-[950px]">
               <FeatureErrorBoundary featureName="Editor">
                 <Editor content={editHtml} onChange={setEditHtml} draftKey={draftKey} naked onEditorReady={setEditorInstance} hideToolbar pageId={id} onSave={handleSave} vimEnabled={vimEnabled} />
               </FeatureErrorBoundary>
@@ -660,7 +660,7 @@ export function PageViewPage() {
           /* Empty page — no content yet */
           <div
             ref={contentRef}
-            className="mx-auto max-w-[760px] px-5 pb-16 pt-10 sm:px-10 sm:pt-12"
+            className="mx-auto max-w-[950px] px-5 pb-16 pt-10 sm:px-10 sm:pt-12"
             data-testid="article-content-shell"
           >
             <h1 className="mb-6 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground sm:text-4xl">
@@ -679,11 +679,11 @@ export function PageViewPage() {
             </div>
           </div>
         ) : (
-          /* Reading view — constrained to 760px reading column for optimal
+          /* Reading view — constrained to 950px reading column for optimal
              line length (60–75 characters at the default font scale). */
           <div
             ref={contentRef}
-            className="mx-auto max-w-[760px] px-5 pb-16 pt-10 sm:px-10 sm:pt-12"
+            className="mx-auto max-w-[950px] px-5 pb-16 pt-10 sm:px-10 sm:pt-12"
             data-testid="article-content-shell"
           >
             <h1 className="mb-4 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground sm:text-4xl">
