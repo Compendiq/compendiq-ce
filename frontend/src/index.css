@@ -3,12 +3,15 @@
 
 /* Self-hosted brand fonts via @fontsource (no external CDN — privacy-safe).
    Display: Newsreader (variable opsz axis 6–72) — editorial-authority serif
-   Body:    Hanken Grotesk (variable wght axis) — Swiss-DNA neo-grotesk
+   Body:    Inter (variable wght axis) — screen-tuned UI sans, designed for
+            small sizes; wider x-height + disambiguated glyphs (l/I/1, 0/O)
+            for the IDs, correlation tokens, and inline code we surface.
    Mono:    JetBrains Mono (variable) — code blocks
-   Mirrors compendiq-landing/src/styles/fonts.css for cross-surface parity. */
+   Body font diverges from compendiq-landing (still Hanken Grotesk) — see
+   docs/superpowers/specs/2026-05-17-ui-ux-audit-findings.md for rationale. */
 @import "@fontsource-variable/newsreader/opsz.css";
 @import "@fontsource-variable/newsreader/opsz-italic.css";
-@import "@fontsource-variable/hanken-grotesk/wght.css";
+@import "@fontsource-variable/inter/wght.css";
 @import "@fontsource-variable/jetbrains-mono/index.css";
 
 /* ============================================
@@ -33,8 +36,8 @@ html {
 }
 
 /* Premium typography rendering (Obsidian / Notion pattern). Uses the
-   brand body sans (Hanken Grotesk Variable), with system fallbacks if the
-   font failed to load. Headings opt into --font-display in the prose styles. */
+   brand body sans (Inter Variable), with system fallbacks if the font
+   failed to load. Headings opt into --font-display in the prose styles. */
 body {
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
@@ -138,9 +141,11 @@ h1, h2, h3, h4, h5, h6,
 
   /* Brand typography — self-hosted via @fontsource (privacy-safe).
      Tailwind 4 exposes these as font-display / font-sans / font-mono
-     utilities automatically. Mirrors the landing page token contract. */
+     utilities automatically. Display + mono mirror the landing page tokens;
+     body sans was swapped from Hanken Grotesk → Inter for screen readability
+     (see docs/superpowers/specs/2026-05-17-ui-ux-audit-findings.md). */
   --font-display: 'Newsreader Variable', Georgia, 'Times New Roman', serif;
-  --font-sans: 'Hanken Grotesk Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --font-sans: 'Inter Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, 'SF Mono', Consolas, monospace;
 
   /* Code colors — per-language, matched against --code-bg #1a1a18 */
