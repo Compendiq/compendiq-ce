@@ -79,7 +79,10 @@ export function PageTransition({ children }: PageTransitionProps) {
       <AnimatePresence mode="wait" initial={false}>
         <m.div
           key={location.pathname}
-          initial={{ opacity: 0, x: slideX }}
+          // Enter at opacity:1 — initial.opacity:0 could pin the layer at 0
+          // ("black page" on sidebar click) if the enter tween was interrupted.
+          // Slide carries the transition; exit still fades.
+          initial={{ opacity: 1, x: slideX }}
           animate={{ opacity: 1, x: 0 }}
           // mode="wait" + simple opacity/x exit: the previous layer must finish
           // exiting before the new one mounts, so the two layers never overlap.
