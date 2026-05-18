@@ -422,7 +422,7 @@ export function GenerateSavePanel({
                 setParentId(null);
                 setSelectedPageTitle(null);
               }}
-              className="w-full rounded-lg border border-border/40 bg-background/50 px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-primary/30"
+              className="nm-select-md w-full"
               data-testid="generate-space-select"
             >
               <option value="">Select space...</option>

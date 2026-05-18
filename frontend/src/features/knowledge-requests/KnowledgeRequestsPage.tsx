@@ -194,7 +194,7 @@ export function KnowledgeRequestsPage() {
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value as RequestStatus | '')}
-            className="ml-auto rounded-md bg-foreground/5 px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-primary"
+            className="nm-select-md ml-auto"
             data-testid="status-filter"
           >
             <option value="">All Statuses</option>
@@ -334,7 +334,7 @@ export function KnowledgeRequestsPage() {
                   <select
                     value={newPriority}
                     onChange={(e) => setNewPriority(e.target.value as RequestPriority)}
-                    className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                    className="nm-select-md w-full"
                     data-testid="request-priority-select"
                   >
                     <option value="low">Low</option>

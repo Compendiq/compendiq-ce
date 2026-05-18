@@ -472,7 +472,7 @@ export function PagesPage() {
           <select
             value={spaceKey}
             onChange={(e) => { setSpaceKey(e.target.value); setPage(1); setForcePageList(false); }}
-            className="nm-input w-40 shrink-0"
+            className="nm-select-md w-40 shrink-0"
           >
             <option value="">All Spaces</option>
             {spaces?.map((s) => (
@@ -483,7 +483,7 @@ export function PagesPage() {
           <select
             value={sourceFilter}
             onChange={(e) => { setSourceFilter(e.target.value); setPage(1); }}
-            className="nm-input w-32 shrink-0"
+            className="nm-select-md w-32 shrink-0"
             data-testid="filter-source"
           >
             <option value="">All Sources</option>
@@ -494,7 +494,7 @@ export function PagesPage() {
           <select
             value={sort}
             onChange={(e) => setSort(e.target.value as typeof sort)}
-            className="nm-input w-40 shrink-0"
+            className="nm-select-md w-40 shrink-0"
           >
             <option value="modified">Last Modified</option>
             <option value="title">Title</option>
@@ -537,7 +537,7 @@ export function PagesPage() {
               <select
                 value={author}
                 onChange={(e) => { setAuthor(e.target.value); setPage(1); }}
-                className="nm-input w-full"
+                className="nm-select-md w-full"
                 data-testid="filter-author"
               >
                 <option value="">All Authors</option>
@@ -553,7 +553,7 @@ export function PagesPage() {
               <select
                 value={labels}
                 onChange={(e) => { setLabels(e.target.value); setPage(1); }}
-                className="nm-input w-full"
+                className="nm-select-md w-full"
                 data-testid="filter-labels"
               >
                 <option value="">All Labels</option>
@@ -569,7 +569,7 @@ export function PagesPage() {
               <select
                 value={freshness}
                 onChange={(e) => { setFreshness(e.target.value); setPage(1); }}
-                className="nm-input w-full"
+                className="nm-select-md w-full"
                 data-testid="filter-freshness"
               >
                 <option value="">Any</option>
@@ -586,7 +586,7 @@ export function PagesPage() {
               <select
                 value={embeddingStatus}
                 onChange={(e) => { setEmbeddingStatus(e.target.value); setPage(1); }}
-                className="nm-input w-full"
+                className="nm-select-md w-full"
                 data-testid="filter-embedding"
               >
                 <option value="">Any</option>
@@ -601,7 +601,7 @@ export function PagesPage() {
               <select
                 value={qualityFilter}
                 onChange={(e) => { setQualityFilter(e.target.value); setPage(1); }}
-                className="nm-input w-full"
+                className="nm-select-md w-full"
                 data-testid="filter-quality"
               >
                 <option value="">Any</option>
@@ -619,7 +619,7 @@ export function PagesPage() {
                 type="date"
                 value={dateFrom}
                 onChange={(e) => { setDateFrom(e.target.value); setPage(1); }}
-                className="nm-input w-full"
+                className="nm-select-md w-full"
                 data-testid="filter-date-from"
               />
             </div>
@@ -629,7 +629,7 @@ export function PagesPage() {
                 type="date"
                 value={dateTo}
                 onChange={(e) => { setDateTo(e.target.value); setPage(1); }}
-                className="nm-input w-full"
+                className="nm-select-md w-full"
                 data-testid="filter-date-to"
               />
             </div>

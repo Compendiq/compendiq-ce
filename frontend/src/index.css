@@ -3,15 +3,16 @@
 
 /* Self-hosted brand fonts via @fontsource (no external CDN — privacy-safe).
    Display: Newsreader (variable opsz axis 6–72) — editorial-authority serif
-   Body:    Inter (variable wght axis) — screen-tuned UI sans, designed for
-            small sizes; wider x-height + disambiguated glyphs (l/I/1, 0/O)
+   Body:    IBM Plex Sans (variable wght axis) — humanist sans with a taller
+            x-height than Inter and a slight industrial character that fits a
+            technical knowledge-base context. Disambiguated `l/I/1` and `0/O`
             for the IDs, correlation tokens, and inline code we surface.
    Mono:    JetBrains Mono (variable) — code blocks
-   Body font diverges from compendiq-landing (still Hanken Grotesk) — see
+   Body font diverges from compendiq-landing (Hanken Grotesk) — see
    docs/superpowers/specs/2026-05-17-ui-ux-audit-findings.md for rationale. */
 @import "@fontsource-variable/newsreader/opsz.css";
 @import "@fontsource-variable/newsreader/opsz-italic.css";
-@import "@fontsource-variable/inter/wght.css";
+@import "@fontsource-variable/ibm-plex-sans/wght.css";
 @import "@fontsource-variable/jetbrains-mono/index.css";
 
 /* ============================================
@@ -21,9 +22,11 @@
    compendiq-landing/src/styles/tokens.css for cross-surface brand parity.
    ============================================ */
 
-/* Reduce base font from browser default 16px → 15px (~-1px across the app).
-   rem-based values scale automatically. Elements already below 12px are
-   pinned with explicit font-size overrides further below. */
+/* Base font: browser default 16px. The May-2026 UI/UX audit ran on a 15px
+   base which dragged every rem-based class down ~6% — top-nav pills and
+   stat-card labels rendered at 11.25 px (below the 12 px floor most UIs
+   respect). Reverting to 16 px lifts the entire micro-typography scale
+   without touching individual components. */
 html,
 html body,
 #root {
@@ -32,7 +35,7 @@ html body,
 }
 
 html {
-  font-size: 15px;
+  font-size: 16px;
 }
 
 /* Premium typography rendering (Obsidian / Notion pattern). Uses the
@@ -152,7 +155,7 @@ h1, h2, h3, h4, h5, h6,
      body sans was swapped from Hanken Grotesk → Inter for screen readability
      (see docs/superpowers/specs/2026-05-17-ui-ux-audit-findings.md). */
   --font-display: 'Newsreader Variable', Georgia, 'Times New Roman', serif;
-  --font-sans: 'Inter Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --font-sans: 'IBM Plex Sans Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, 'SF Mono', Consolas, monospace;
 
   /* Code colors — per-language, matched against --code-bg #1a1a18 */
@@ -181,8 +184,9 @@ h1, h2, h3, h4, h5, h6,
   --radius-md: 0.5rem;
   --radius-sm: 0.25rem;
 
-  /* text-xs override — pinned to 0.8rem (12px at the 15px base). */
-  --font-size-xs: 0.8rem;
+  /* text-xs override — 0.8125rem = 13 px at the 16 px base. Lifts the
+     11.25 px outliers (nav pills, stat-card labels) up to a legible floor. */
+  --font-size-xs: 0.8125rem;
 
   /* Glass utility colors — kept until Phase 5 retires the glass-* @utility blocks */
   --glass-border: oklch(1 0 0 / 0.08);
@@ -685,6 +689,82 @@ h1, h2, h3, h4, h5, h6,
   &:disabled {
     opacity: 0.5;
     pointer-events: none;
+  }
+}
+
+/* Select chip — matches the h-7 outlined chips used by the AI sub-header
+   toggles. Native <select> is dressed with `appearance: none` plus an inline
+   SVG chevron so it stops looking like an OS widget next to sibling chips.
+
+   Variants:
+     .nm-select         — chip-size (h-7, text-xs)  — default for toolbar rows.
+     .nm-select-md      — slightly taller (h-9, text-sm) — for form fields. */
+@utility nm-select {
+  appearance: none;
+  height: 1.75rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background-color: oklch(from var(--color-foreground) l c h / 0.03);
+  padding: 0 1.75rem 0 0.625rem;
+  font-size: var(--font-size-xs);
+  line-height: 1;
+  color: var(--color-foreground);
+  outline: none;
+  cursor: pointer;
+  /* Inline chevron — currentColor pinned to muted-foreground via fill. Encoded
+     as a data URI so the asset ships with the CSS and survives the build
+     pipeline. */
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a39e8c' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 0.5rem center;
+  background-size: 12px 12px;
+  transition: background-color 0.2s ease-out, border-color 0.2s ease-out, box-shadow 0.2s ease-out;
+
+  &:hover {
+    background-color: oklch(from var(--color-foreground) l c h / 0.06);
+  }
+
+  &:focus-visible {
+    border-color: oklch(from var(--color-primary) l c h / 0.6);
+    box-shadow: 0 0 0 2px oklch(from var(--color-primary) l c h / 0.3);
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}
+
+@utility nm-select-md {
+  appearance: none;
+  height: 2.25rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background-color: oklch(from var(--color-foreground) l c h / 0.03);
+  padding: 0 2rem 0 0.75rem;
+  font-size: 0.875rem;
+  line-height: 1;
+  color: var(--color-foreground);
+  outline: none;
+  cursor: pointer;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23a39e8c' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 0.625rem center;
+  background-size: 14px 14px;
+  transition: background-color 0.2s ease-out, border-color 0.2s ease-out, box-shadow 0.2s ease-out;
+
+  &:hover {
+    background-color: oklch(from var(--color-foreground) l c h / 0.06);
+  }
+
+  &:focus-visible {
+    border-color: oklch(from var(--color-primary) l c h / 0.6);
+    box-shadow: 0 0 0 2px oklch(from var(--color-primary) l c h / 0.3);
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 }
 

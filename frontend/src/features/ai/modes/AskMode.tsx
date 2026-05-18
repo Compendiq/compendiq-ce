@@ -211,10 +211,15 @@ export function AskExamplePrompts() {
   return (
     <ul
       aria-label="Example prompts"
-      className="mt-6 grid w-full max-w-xl grid-cols-1 gap-2 sm:grid-cols-2 list-none p-0"
+      className="mt-8 grid w-full max-w-2xl grid-cols-1 gap-2 sm:grid-cols-2 list-none p-0"
     >
       {ASK_EXAMPLE_PROMPTS.map((prompt) => (
         <li key={prompt}>
+          {/* Lighter card than nm-card-interactive — the heavy neumorphic
+              extrusion fights the flat composer that sits 80 px below it
+              (May-2026 audit). A 1 px border + faint inset surface keeps the
+              prompts skim-readable as a row of suggestions, not buttons that
+              look more important than the composer. */}
           <button
             type="button"
             onClick={() => pick(prompt)}
@@ -224,10 +229,10 @@ export function AskExamplePrompts() {
                 pick(prompt);
               }
             }}
-            className="nm-card-interactive flex w-full items-start gap-2 rounded-lg p-3 text-left text-xs text-foreground/80 hover:text-foreground"
+            className="group flex w-full items-start gap-2.5 rounded-lg border border-border/45 bg-foreground/[0.03] px-3 py-2.5 text-left text-sm text-foreground/85 transition-colors hover:border-primary/40 hover:bg-foreground/[0.06] hover:text-foreground focus-visible:border-primary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
             data-testid="ask-example-prompt"
           >
-            <Sparkles size={14} className="mt-0.5 shrink-0 text-primary" />
+            <Sparkles size={14} className="mt-0.5 shrink-0 text-primary/80 transition-colors group-hover:text-primary" />
             <span>{prompt}</span>
           </button>
         </li>

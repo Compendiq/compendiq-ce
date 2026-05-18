@@ -35,6 +35,11 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const isArticleRoute = /^\/pages\/[^/]+$/.test(location.pathname);
+  // Settings owns its own left rail (section nav) — mounting the Pages tree
+  // there gives two left rails and wastes ~250 px of viewport width. The
+  // tree stays on /ai because the AI surfaces benefit from quick page
+  // navigation while talking to the assistant.
+  const hideTreeSidebar = /^\/settings(\/|$)/.test(location.pathname);
 
   const closeMobileSidebar = useCallback(() => setMobileSidebarOpen(false), []);
 
@@ -275,10 +280,14 @@ export function AppLayout({ children }: { children: ReactNode }) {
 
       {/* Below header: sidebar + content area, edge-to-edge with borders. */}
       <div data-testid="panel-wrapper" className="flex flex-1 overflow-hidden">
-        {/* Left sidebar — always visible on desktop, hidden on mobile (slide-over instead) */}
-        <div className="hidden md:flex">
-          <SidebarTreeView />
-        </div>
+        {/* Left sidebar — desktop only (mobile uses the slide-over above).
+            Hidden on /settings* and /ai* where the route has its own left
+            rail; the mobile slide-over still works on those routes. */}
+        {!hideTreeSidebar && (
+          <div className="hidden md:flex">
+            <SidebarTreeView />
+          </div>
+        )}
 
         {/* Main content area + optional right sidebar */}
         <div className="flex flex-1 overflow-hidden">
