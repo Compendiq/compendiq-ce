@@ -205,6 +205,12 @@ h1, h2, h3, h4, h5, h6,
   --glass-pill-hover: oklch(1 0 0 / 0.05);
 
   --inline-code-color: #e8b06a;  /* warm amber — matches code-keyword */
+
+  /* Dropdown chevron — dark-theme default. The stroke colour is the
+     dark-theme muted-foreground hex (#a39e8c, URL-escaped to %23a39e8c).
+     Light theme overrides this in the [data-theme-type="light"] block. */
+  --nm-select-chevron-12: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a39e8c' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  --nm-select-chevron-14: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23a39e8c' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
 }
 
 /* ===========================
@@ -242,6 +248,12 @@ h1, h2, h3, h4, h5, h6,
   --nm-highlight-strong: rgba(255, 253, 245, 0.50);
   --nm-highlight-hover: rgba(255, 253, 245, 0.50);
   --nm-shadow-in: rgba(50, 42, 20, 0.09);
+
+  /* Dropdown chevron — darker stroke (#5f5c54, URL-escaped to %235f5c54) to
+     keep the chevron legible against the near-white surface. The default in
+     :root uses the dark-theme muted-foreground which washes out here. */
+  --nm-select-chevron-12: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%235f5c54' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  --nm-select-chevron-14: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%235f5c54' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
 }
 
 /* ---- Theme: Honey Linen — linen cream with honey accent (neumorphic light) ----
@@ -696,6 +708,13 @@ h1, h2, h3, h4, h5, h6,
    toggles. Native <select> is dressed with `appearance: none` plus an inline
    SVG chevron so it stops looking like an OS widget next to sibling chips.
 
+   The chevron color lives in `--nm-select-chevron`, set per theme below.
+   CSS variables can't be interpolated inside `url()` data URIs, so each
+   theme defines a complete `--nm-select-chevron-12` / `-14` data URL with
+   its own stroke colour. Dark theme uses graphite-honey muted-foreground
+   (#a39e8c); light theme uses honey-linen muted-foreground (#5f5c54) so
+   the chevron carries enough contrast against the near-white surface.
+
    Variants:
      .nm-select         — chip-size (h-7, text-xs)  — default for toolbar rows.
      .nm-select-md      — slightly taller (h-9, text-sm) — for form fields. */
@@ -711,10 +730,7 @@ h1, h2, h3, h4, h5, h6,
   color: var(--color-foreground);
   outline: none;
   cursor: pointer;
-  /* Inline chevron — currentColor pinned to muted-foreground via fill. Encoded
-     as a data URI so the asset ships with the CSS and survives the build
-     pipeline. */
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a39e8c' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  background-image: var(--nm-select-chevron-12);
   background-repeat: no-repeat;
   background-position: right 0.5rem center;
   background-size: 12px 12px;
@@ -747,7 +763,7 @@ h1, h2, h3, h4, h5, h6,
   color: var(--color-foreground);
   outline: none;
   cursor: pointer;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23a39e8c' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  background-image: var(--nm-select-chevron-14);
   background-repeat: no-repeat;
   background-position: right 0.625rem center;
   background-size: 14px 14px;
