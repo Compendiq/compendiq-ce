@@ -1,16 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { LazyMotion, domAnimation } from 'framer-motion';
 import { PageTransition, routeDepth } from './PageTransition';
 
 function Wrapper({ children, initialPath = '/' }: { children: React.ReactNode; initialPath?: string }) {
   return (
-    <MemoryRouter initialEntries={[initialPath]}>
-      <LazyMotion features={domAnimation}>
-        {children}
-      </LazyMotion>
-    </MemoryRouter>
+    <MemoryRouter initialEntries={[initialPath]}>{children}</MemoryRouter>
   );
 }
 
@@ -57,45 +52,7 @@ describe('PageTransition', () => {
     expect(screen.getByText('Hello')).toBeInTheDocument();
   });
 
-  it('wraps children in a motion div', () => {
-    render(
-      <Wrapper>
-        <PageTransition>
-          <span>Test content</span>
-        </PageTransition>
-      </Wrapper>,
-    );
-    const content = screen.getByText('Test content');
-    // The content should be wrapped in a div (the m.div from PageTransition)
-    expect(content.parentElement).toBeInstanceOf(HTMLDivElement);
-  });
-
-  it('does not toggle a parent-rendering animating state during transitions', async () => {
-    // Regression guard for the black-article-area bug — re-introducing
-    // useState + onAnimationStart/Complete + willChange in this file
-    // jams AnimatePresence under mode="wait". See PageTransition.tsx for
-    // the why.
-    const fs = await import('node:fs/promises');
-    const path = await import('node:path');
-    const url = await import('node:url');
-    const here = path.dirname(url.fileURLToPath(import.meta.url));
-    const src = await fs.readFile(path.join(here, 'PageTransition.tsx'), 'utf-8');
-    // Strip line comments so the regression matchers don't catch the
-    // explanatory comments above the m.div (which name the banned symbols
-    // intentionally as a warning to future editors).
-    const code = src.replace(/\/\/.*$/gm, '');
-    expect(code).not.toMatch(/useState\b/);
-    expect(code).not.toMatch(/onAnimationStart\s*=/);
-    expect(code).not.toMatch(/onAnimationComplete\s*=/);
-    expect(code).not.toMatch(/willChange/);
-  });
-
   it('renders new content after navigation', () => {
-    // Under mode="wait" the exiting layer must finish before the new one
-    // mounts. In jsdom animations resolve synchronously, so a rerender
-    // immediately yields the new content — this test guards against a
-    // regression where the new content never appears at all (e.g. a stuck
-    // exit, or AnimatePresence dropping the entering child).
     const { rerender } = render(
       <Wrapper initialPath="/">
         <PageTransition>
@@ -126,71 +83,27 @@ describe('PageTransition', () => {
     expect(screen.getByText('Page view')).toBeInTheDocument();
   });
 
-  it('enters at opacity:1 so the new layer is never invisible (black page guard)', async () => {
-    // Regression test for the black-page-on-click bug. With initial.opacity:0
-    // → animate.opacity:1 under mode="wait", the entering m.div could get
-    // stuck at opacity:0 when interrupted (Suspense fallback swapping inside
-    // the entering layer for a lazy route chunk, or parent re-renders from
-    // setAnimating racing the enter tween). The user saw a fully black page
-    // after clicking an article in the sidebar; only a browser reload —
-    // which fires AnimatePresence with initial={false} and skips the enter
-    // animation entirely — restored the article. The fix is to enter at
-    // opacity:1 so the new layer is visible the moment it mounts; the slide
-    // (x axis) alone carries the visual transition. Exit still fades out.
+  it('is a no-op pass-through — no AnimatePresence / motion machinery', async () => {
+    // Regression guard for two consecutive black-article-area bugs caused
+    // by framer-motion-based route transitions in this component:
+    //   - mode="sync" left an exit layer at position:absolute that blocked
+    //     clicks (#660).
+    //   - mode="wait" left the exit layer stuck at opacity:0 indefinitely
+    //     so the new layer never mounted (#669, this fix).
+    // The animation isn't worth the bug surface. Re-introduce only with a
+    // behavioral test that asserts the exit layer actually unmounts in jsdom.
     const fs = await import('node:fs/promises');
     const path = await import('node:path');
     const url = await import('node:url');
     const here = path.dirname(url.fileURLToPath(import.meta.url));
     const src = await fs.readFile(path.join(here, 'PageTransition.tsx'), 'utf-8');
-    // initial must not start at opacity:0 — that's the failure mode.
-    expect(src).not.toMatch(/initial=\{[^}]*opacity:\s*0/);
-    // animate must still settle at opacity:1.
-    expect(src).toMatch(/animate=\{[^}]*opacity:\s*1/);
-    // exit may still fade out (and must, to keep the leave transition).
-    expect(src).toMatch(/exit=\{[^}]*opacity:\s*0/);
-  });
-
-  it('uses AnimatePresence mode="wait" so exiting and entering layers never overlap', async () => {
-    // Regression test for the Pages-list click-stuck bug. With mode="sync"
-    // the exiting page sat absolutely positioned over the new one for ~220 ms.
-    // If the same key (location.pathname) reappeared mid-exit (rapid
-    // back/forward), framer-motion could cancel the exit but leave the
-    // inline exit styles (position: absolute; pointer-events: none) applied
-    // to a child that then rendered the current route's content — making
-    // every visible article unclickable.
-    //
-    // The fix is mode="wait": the previous layer must finish exiting before
-    // the next mounts, so the two layers never overlap and the race is
-    // impossible. Read the source directly so the test fails loudly if the
-    // mode is reverted by a future refactor.
-    const fs = await import('node:fs/promises');
-    const path = await import('node:path');
-    const url = await import('node:url');
-    const here = path.dirname(url.fileURLToPath(import.meta.url));
-    const src = await fs.readFile(path.join(here, 'PageTransition.tsx'), 'utf-8');
-    expect(src).toMatch(/<AnimatePresence[^>]*mode=["']wait["']/);
-    // The old workaround must not creep back in: with mode="wait" there is
-    // no overlap, so position:absolute / pointer-events:none on exit would
-    // only mask the wrong fix.
-    expect(src).not.toMatch(/exit=\{[^}]*pointerEvents:\s*['"]none['"]/);
-    expect(src).not.toMatch(/exit=\{[^}]*position:\s*['"]absolute['"]/);
-  });
-
-  it('updates prevDepthRef via a commit-phase effect, not inside useMemo', async () => {
-    // Mutating a ref inside useMemo is unsafe in React 19 + StrictMode:
-    // memos may re-run with the same deps, double-mutating the ref and
-    // corrupting the previous-depth tracking that drives slide direction.
-    // The ref update must live in useEffect so it runs exactly once per
-    // commit. Regression test in source form.
-    const fs = await import('node:fs/promises');
-    const path = await import('node:path');
-    const url = await import('node:url');
-    const here = path.dirname(url.fileURLToPath(import.meta.url));
-    const src = await fs.readFile(path.join(here, 'PageTransition.tsx'), 'utf-8');
-    // prevDepthRef.current = ... must appear inside a useEffect, never inside useMemo.
-    const memoBlock = src.match(/useMemo<[^>]*>\(\(\)\s*=>\s*\{[\s\S]*?\}\s*,\s*\[location\.pathname\]\)/);
-    expect(memoBlock).toBeTruthy();
-    expect(memoBlock![0]).not.toMatch(/prevDepthRef\.current\s*=/);
-    expect(src).toMatch(/useEffect\(\(\)\s*=>\s*\{\s*prevDepthRef\.current\s*=/);
+    // Strip block + line comments so explanatory text doesn't trip the
+    // matchers (the JSDoc above PageTransition intentionally names the
+    // banned symbols as a warning to future editors).
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    expect(code).not.toMatch(/AnimatePresence/);
+    expect(code).not.toMatch(/from\s+['"]framer-motion['"]/);
+    expect(code).not.toMatch(/\bm\.div\b/);
+    expect(code).not.toMatch(/useState\b/);
   });
 });
