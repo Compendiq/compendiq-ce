@@ -19,26 +19,50 @@ function escapeHtml(str: string): string {
 
 const DIAGRAM_TYPES = ['flowchart', 'sequence', 'state', 'mindmap'] as const;
 
+const DIAGRAM_DESCRIPTIONS: Record<(typeof DIAGRAM_TYPES)[number], string> = {
+  flowchart: 'Boxes-and-arrows process or system overview',
+  sequence: 'Time-ordered interaction between actors or services',
+  state: 'Lifecycle with states and the events that transition between them',
+  mindmap: 'Hierarchical brainstorm radiating from a single root concept',
+};
+
 /**
- * Diagram type selector rendered above the message area.
+ * Diagram type selector rendered just under the mode segmented control.
+ * Visual grammar matches the AI sub-header: a single `rounded-xl border` card
+ * with h-7 outlined chips so all of the AI surfaces feel like one toolbar
+ * stack rather than three different controls.
  */
 export function DiagramTypeSelector() {
   const { diagramType, setDiagramType } = useAiContext();
+  const activeType = DIAGRAM_TYPES.includes(diagramType as (typeof DIAGRAM_TYPES)[number])
+    ? (diagramType as (typeof DIAGRAM_TYPES)[number])
+    : 'flowchart';
   return (
-    <div className="nm-toolbar mb-4 flex items-center gap-2 p-3">
-      <span className="text-sm text-muted-foreground">Type:</span>
-      {DIAGRAM_TYPES.map((type) => (
-        <button
-          key={type}
-          onClick={() => setDiagramType(type)}
-          className={cn(
-            'rounded-md px-2.5 py-1 text-xs capitalize',
-            diagramType === type ? 'bg-primary/15 text-primary-ink' : 'text-muted-foreground hover:bg-foreground/5',
-          )}
-        >
-          {type}
-        </button>
-      ))}
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-border/40 bg-card/50 px-3 py-2 backdrop-blur-sm">
+      <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground/80">
+        Diagram type
+      </span>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {DIAGRAM_TYPES.map((type) => (
+          <button
+            key={type}
+            onClick={() => setDiagramType(type)}
+            title={DIAGRAM_DESCRIPTIONS[type]}
+            aria-pressed={diagramType === type}
+            className={cn(
+              'flex h-7 items-center rounded-md border px-2.5 text-xs capitalize transition-colors',
+              diagramType === type
+                ? 'border-primary/45 bg-primary/15 text-primary-ink font-medium'
+                : 'border-border/40 text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
+            )}
+          >
+            {type}
+          </button>
+        ))}
+      </div>
+      <p className="basis-full text-xs text-muted-foreground/80">
+        {DIAGRAM_DESCRIPTIONS[activeType]}
+      </p>
     </div>
   );
 }

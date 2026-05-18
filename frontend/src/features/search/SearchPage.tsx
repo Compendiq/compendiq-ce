@@ -267,7 +267,7 @@ export function SearchPage() {
           <select
             value={sort}
             onChange={(e) => { setSort(e.target.value as SortOption); setPage(1); }}
-            className="rounded-md bg-foreground/5 px-3 py-3 text-sm outline-none focus:ring-1 focus:ring-primary"
+            className="nm-select-md"
             data-testid="search-sort"
           >
             <option value="relevance">Relevance</option>
@@ -337,7 +337,7 @@ export function SearchPage() {
               <select
                 value={filters.source ?? ''}
                 onChange={(e) => updateFilter('source', e.target.value as SearchFilters['source'])}
-                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="nm-select-md w-full"
                 data-testid="filter-source"
               >
                 <option value="">All Sources</option>
@@ -352,7 +352,7 @@ export function SearchPage() {
               <select
                 value={filters.spaceKey ?? ''}
                 onChange={(e) => updateFilter('spaceKey', e.target.value)}
-                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="nm-select-md w-full"
                 data-testid="filter-space"
               >
                 <option value="">All Spaces</option>
@@ -368,7 +368,7 @@ export function SearchPage() {
               <select
                 value={filters.author ?? ''}
                 onChange={(e) => updateFilter('author', e.target.value)}
-                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="nm-select-md w-full"
                 data-testid="filter-author"
               >
                 <option value="">All Authors</option>
@@ -384,7 +384,7 @@ export function SearchPage() {
               <select
                 value={filters.labels ?? ''}
                 onChange={(e) => updateFilter('labels', e.target.value)}
-                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="nm-select-md w-full"
                 data-testid="filter-labels"
               >
                 <option value="">All Labels</option>
@@ -401,7 +401,7 @@ export function SearchPage() {
                 type="date"
                 value={filters.dateFrom ?? ''}
                 onChange={(e) => updateFilter('dateFrom', e.target.value)}
-                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="nm-select-md w-full"
                 data-testid="filter-date-from"
               />
             </div>
@@ -411,7 +411,7 @@ export function SearchPage() {
                 type="date"
                 value={filters.dateTo ?? ''}
                 onChange={(e) => updateFilter('dateTo', e.target.value)}
-                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="nm-select-md w-full"
                 data-testid="filter-date-to"
               />
             </div>

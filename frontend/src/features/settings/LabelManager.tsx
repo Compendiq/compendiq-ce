@@ -111,7 +111,7 @@ export function LabelManager() {
             <select
               value={mergeTarget}
               onChange={(e) => setMergeTarget(e.target.value)}
-              className="flex-1 rounded-md bg-foreground/5 px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-primary"
+              className="nm-select-md flex-1"
               data-testid="merge-target-select"
             >
               <option value="">Select target label...</option>

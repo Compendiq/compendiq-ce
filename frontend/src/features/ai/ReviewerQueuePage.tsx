@@ -188,7 +188,7 @@ function ReviewerQueuePageInner() {
             onChange={(e) =>
               setStatusFilter(e.target.value as AiReviewStatus)
             }
-            className="rounded-md border border-border/50 bg-background px-2 py-1 text-sm"
+            className="nm-select"
             data-testid="ai-review-queue-status-filter"
           >
             {AI_REVIEW_STATUSES.map((s) => (
@@ -204,7 +204,7 @@ function ReviewerQueuePageInner() {
           <select
             value={actionFilter}
             onChange={(e) => setActionFilter(e.target.value)}
-            className="rounded-md border border-border/50 bg-background px-2 py-1 text-sm"
+            className="nm-select"
             data-testid="ai-review-queue-action-filter"
           >
             <option value="">Any</option>
