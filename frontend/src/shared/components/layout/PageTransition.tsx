@@ -78,17 +78,12 @@ export function PageTransition({ children }: PageTransitionProps) {
       <AnimatePresence mode="wait" initial={false}>
         <m.div
           key={location.pathname}
-          // Enter at opacity:1 (slide only). Defensive — if anything ever pins
-          // the enter tween, the new layer is still visible the moment it mounts.
+          // No onAnimationStart/Complete handlers and no reactive `style` prop:
+          // re-rendering this component during the exit tween jammed
+          // AnimatePresence under mode="wait" (exited layer never unmounted →
+          // black article area on sidebar click).
           initial={{ opacity: 1, x: slideX }}
           animate={{ opacity: 1, x: 0 }}
-          // mode="wait" + simple opacity/x exit: the previous layer must finish
-          // exiting before the new one mounts, so the two layers never overlap.
-          // No onAnimationStart/Complete handlers and no `style` prop: those
-          // re-rendered PageTransition during the exit, which (in framer-motion
-          // 12 + React 19) jammed AnimatePresence — the exiting layer reached
-          // opacity:0 and then never unmounted, blocking the new layer from
-          // ever mounting. User saw a fully black article area until reload.
           exit={{ opacity: 0, x: -slideX }}
           transition={{
             duration: reducedMotion ? 0.1 : DURATION,

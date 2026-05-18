@@ -71,14 +71,10 @@ describe('PageTransition', () => {
   });
 
   it('does not toggle a parent-rendering animating state during transitions', async () => {
-    // Regression guard. A previous version of PageTransition tracked an
-    // `animating` state via onAnimationStart/Complete to toggle a `willChange`
-    // style. Under framer-motion 12 + React 19 + mode="wait", that re-render
-    // during the exit animation jammed AnimatePresence: the exiting layer
-    // reached opacity:0 and never unmounted, so the new layer never mounted —
-    // the user saw a fully black article area on sidebar click. The fix is
-    // to drop the state machine entirely. Re-introducing useState/setState
-    // tied to animation lifecycle handlers re-introduces the bug.
+    // Regression guard for the black-article-area bug — re-introducing
+    // useState + onAnimationStart/Complete + willChange in this file
+    // jams AnimatePresence under mode="wait". See PageTransition.tsx for
+    // the why.
     const fs = await import('node:fs/promises');
     const path = await import('node:path');
     const url = await import('node:url');
