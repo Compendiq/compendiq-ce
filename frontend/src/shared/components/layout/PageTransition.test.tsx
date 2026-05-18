@@ -70,17 +70,28 @@ describe('PageTransition', () => {
     expect(content.parentElement).toBeInstanceOf(HTMLDivElement);
   });
 
-  it('sets will-change style for GPU compositing', () => {
-    render(
-      <Wrapper>
-        <PageTransition>
-          <span>GPU test</span>
-        </PageTransition>
-      </Wrapper>,
-    );
-    const content = screen.getByText('GPU test');
-    const motionDiv = content.closest('div[style]');
-    expect(motionDiv).not.toBeNull();
+  it('does not toggle a parent-rendering animating state during transitions', async () => {
+    // Regression guard. A previous version of PageTransition tracked an
+    // `animating` state via onAnimationStart/Complete to toggle a `willChange`
+    // style. Under framer-motion 12 + React 19 + mode="wait", that re-render
+    // during the exit animation jammed AnimatePresence: the exiting layer
+    // reached opacity:0 and never unmounted, so the new layer never mounted —
+    // the user saw a fully black article area on sidebar click. The fix is
+    // to drop the state machine entirely. Re-introducing useState/setState
+    // tied to animation lifecycle handlers re-introduces the bug.
+    const fs = await import('node:fs/promises');
+    const path = await import('node:path');
+    const url = await import('node:url');
+    const here = path.dirname(url.fileURLToPath(import.meta.url));
+    const src = await fs.readFile(path.join(here, 'PageTransition.tsx'), 'utf-8');
+    // Strip line comments so the regression matchers don't catch the
+    // explanatory comments above the m.div (which name the banned symbols
+    // intentionally as a warning to future editors).
+    const code = src.replace(/\/\/.*$/gm, '');
+    expect(code).not.toMatch(/useState\b/);
+    expect(code).not.toMatch(/onAnimationStart\s*=/);
+    expect(code).not.toMatch(/onAnimationComplete\s*=/);
+    expect(code).not.toMatch(/willChange/);
   });
 
   it('renders new content after navigation', () => {

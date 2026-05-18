@@ -1,4 +1,4 @@
-import { type ReactNode, useRef, useState, useMemo, useEffect } from 'react';
+import { type ReactNode, useRef, useMemo, useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 import { AnimatePresence, m } from 'framer-motion';
 import { useReducedMotion } from 'framer-motion';
@@ -45,7 +45,6 @@ export function PageTransition({ children }: PageTransitionProps) {
   const location = useLocation();
   const reducedMotion = useReducedMotion();
   const prevDepthRef = useRef(routeDepth(location.pathname));
-  const [animating, setAnimating] = useState(false);
 
   // Compute direction synchronously during render so animation reads
   // the correct value on the same frame the location changes.
@@ -79,25 +78,23 @@ export function PageTransition({ children }: PageTransitionProps) {
       <AnimatePresence mode="wait" initial={false}>
         <m.div
           key={location.pathname}
-          // Enter at opacity:1 — initial.opacity:0 could pin the layer at 0
-          // ("black page" on sidebar click) if the enter tween was interrupted.
-          // Slide carries the transition; exit still fades.
+          // Enter at opacity:1 (slide only). Defensive — if anything ever pins
+          // the enter tween, the new layer is still visible the moment it mounts.
           initial={{ opacity: 1, x: slideX }}
           animate={{ opacity: 1, x: 0 }}
           // mode="wait" + simple opacity/x exit: the previous layer must finish
           // exiting before the new one mounts, so the two layers never overlap.
-          // This prevents the back/forward race where an interrupted exit could
-          // leave a layer stuck in the DOM with pointer-events:none, blocking
-          // all clicks on the visually-current page.
+          // No onAnimationStart/Complete handlers and no `style` prop: those
+          // re-rendered PageTransition during the exit, which (in framer-motion
+          // 12 + React 19) jammed AnimatePresence — the exiting layer reached
+          // opacity:0 and then never unmounted, blocking the new layer from
+          // ever mounting. User saw a fully black article area until reload.
           exit={{ opacity: 0, x: -slideX }}
           transition={{
             duration: reducedMotion ? 0.1 : DURATION,
             ease: [0.25, 0.1, 0.25, 1], // cubic-bezier for smooth deceleration
           }}
           className="flex w-full flex-1 flex-col"
-          style={animating ? { willChange: 'opacity, transform' } : undefined}
-          onAnimationStart={() => setAnimating(true)}
-          onAnimationComplete={() => setAnimating(false)}
         >
           {children}
         </m.div>
