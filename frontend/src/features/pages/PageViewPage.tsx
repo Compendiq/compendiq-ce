@@ -459,7 +459,10 @@ export function PageViewPage() {
 
   return (
     <m.div
-      initial={{ opacity: 0, y: 8 }}
+      // Enter at opacity:1 for the same reason as PageTransition: an interrupted
+      // opacity tween could leave the article invisible ("black page"). Slide-up
+      // alone carries the arrival feel.
+      initial={{ opacity: 1, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.18 }}
       data-testid="article-page"
