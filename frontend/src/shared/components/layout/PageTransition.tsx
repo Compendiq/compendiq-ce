@@ -79,7 +79,14 @@ export function PageTransition({ children }: PageTransitionProps) {
       <AnimatePresence mode="wait" initial={false}>
         <m.div
           key={location.pathname}
-          initial={{ opacity: 0, x: slideX }}
+          // Enter at opacity:1 so the new layer is visible the moment it mounts.
+          // Previously initial.opacity:0 → animate.opacity:1 could leave the
+          // layer stuck at 0 (black page) when interrupted by Suspense rendering
+          // the fallback for a lazy route chunk inside the entering m.div,
+          // or by parent re-renders (setAnimating state churn) racing the
+          // enter tween. The slide carries the visual transition; exit still
+          // fades out cleanly because exit always terminates in unmount.
+          initial={{ opacity: 1, x: slideX }}
           animate={{ opacity: 1, x: 0 }}
           // mode="wait" + simple opacity/x exit: the previous layer must finish
           // exiting before the new one mounts, so the two layers never overlap.

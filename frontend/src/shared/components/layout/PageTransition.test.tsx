@@ -119,6 +119,30 @@ describe('PageTransition', () => {
     expect(screen.getByText('Page view')).toBeInTheDocument();
   });
 
+  it('enters at opacity:1 so the new layer is never invisible (black page guard)', async () => {
+    // Regression test for the black-page-on-click bug. With initial.opacity:0
+    // → animate.opacity:1 under mode="wait", the entering m.div could get
+    // stuck at opacity:0 when interrupted (Suspense fallback swapping inside
+    // the entering layer for a lazy route chunk, or parent re-renders from
+    // setAnimating racing the enter tween). The user saw a fully black page
+    // after clicking an article in the sidebar; only a browser reload —
+    // which fires AnimatePresence with initial={false} and skips the enter
+    // animation entirely — restored the article. The fix is to enter at
+    // opacity:1 so the new layer is visible the moment it mounts; the slide
+    // (x axis) alone carries the visual transition. Exit still fades out.
+    const fs = await import('node:fs/promises');
+    const path = await import('node:path');
+    const url = await import('node:url');
+    const here = path.dirname(url.fileURLToPath(import.meta.url));
+    const src = await fs.readFile(path.join(here, 'PageTransition.tsx'), 'utf-8');
+    // initial must not start at opacity:0 — that's the failure mode.
+    expect(src).not.toMatch(/initial=\{[^}]*opacity:\s*0/);
+    // animate must still settle at opacity:1.
+    expect(src).toMatch(/animate=\{[^}]*opacity:\s*1/);
+    // exit may still fade out (and must, to keep the leave transition).
+    expect(src).toMatch(/exit=\{[^}]*opacity:\s*0/);
+  });
+
   it('uses AnimatePresence mode="wait" so exiting and entering layers never overlap', async () => {
     // Regression test for the Pages-list click-stuck bug. With mode="sync"
     // the exiting page sat absolutely positioned over the new one for ~220 ms.
