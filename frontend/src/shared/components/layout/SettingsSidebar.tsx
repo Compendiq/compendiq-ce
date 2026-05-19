@@ -85,29 +85,32 @@ export function SettingsSidebar({ onNavigate }: { onNavigate?: () => void } = {}
         </button>
       </div>
 
-      <div className="flex h-8 shrink-0 items-center px-3">
-        <span className="text-xs font-semibold text-muted-foreground">Settings</span>
-      </div>
+      {/* No standalone "Settings" header here — the page H1 inside
+          SettingsLayout already carries that title. Saves vertical space and
+          avoids redundant titling. */}
 
-      {/* Settings section nav — promoted from SettingsLayout's inner rail.
-          Keeps the same data-testid contract so the existing SettingsLayout
-          tests still pass without changes. */}
+      {/* Settings section nav — group labels get a hairline divider on top
+          (skipped for the first group) so the rail visually segments without
+          relying on uppercase typography alone. */}
       <nav
         aria-label="Settings"
-        className="min-h-0 flex-1 overflow-y-auto px-2 pb-3"
+        className="min-h-0 flex-1 overflow-y-auto px-2 pt-2 pb-3"
       >
-        {SETTINGS_NAV.map((group) => {
+        {SETTINGS_NAV.map((group, groupIdx) => {
           const visible = group.items.filter((i) => canSeeItem(i, ctx));
           if (visible.length === 0) return null;
           return (
             <section
               key={group.id}
               aria-labelledby={`settings-group-${group.id}`}
-              className="mb-3 last:mb-0"
+              className={cn(
+                'pb-2',
+                groupIdx > 0 && 'mt-2 border-t border-border/40 pt-2',
+              )}
             >
               <h2
                 id={`settings-group-${group.id}`}
-                className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground"
+                className="px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80"
               >
                 {group.label}
               </h2>
@@ -120,22 +123,34 @@ export function SettingsSidebar({ onNavigate }: { onNavigate?: () => void } = {}
                         to={href}
                         onClick={onNavigate}
                         data-testid={`nav-settings-${item.id}`}
-                        data-legacy-testid={`tab-${item.id}`}
                         className={({ isActive }) =>
                           cn(
-                            'block rounded-md px-2.5 py-1.5 text-sm motion-safe:transition-colors motion-safe:duration-150',
+                            'group/nav relative block rounded-md px-2.5 py-1.5 text-sm motion-safe:transition-colors motion-safe:duration-150',
                             isActive
-                              ? 'bg-foreground/10 text-foreground'
-                              : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground/80',
+                              ? 'bg-foreground/[0.07] text-foreground font-medium'
+                              : 'text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground/80',
                           )
                         }
                         end
                       >
-                        {item.label}
-                        {item.enterpriseOnly && (
-                          <span className="ml-2 rounded-sm border border-white/10 px-1.5 py-0.5 align-middle text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                            EE
-                          </span>
+                        {({ isActive }) => (
+                          <>
+                            {/* Active-row indicator: 2px honey rule on the
+                                leading edge — quietly reclaims brand colour
+                                in the rail without shouting. */}
+                            {isActive && (
+                              <span
+                                aria-hidden="true"
+                                className="absolute left-0 top-1/2 h-4 w-[2px] -translate-y-1/2 rounded-full bg-[var(--color-primary-ink)]"
+                              />
+                            )}
+                            <span>{item.label}</span>
+                            {item.enterpriseOnly && (
+                              <span className="ml-2 rounded-sm border border-current/30 px-1.5 py-0.5 align-middle text-[10px] font-medium uppercase tracking-wider opacity-70">
+                                EE
+                              </span>
+                            )}
+                          </>
                         )}
                       </NavLink>
                     </li>

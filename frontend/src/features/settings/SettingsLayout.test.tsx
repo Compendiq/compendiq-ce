@@ -59,11 +59,8 @@ vi.mock('../../shared/lib/api', () => ({
 }));
 
 /**
- * Renders both `<SettingsSidebar>` and `<SettingsLayout>` so the tests below
- * — which all assert on the Settings section nav landmarks/testids — keep
- * working after the nav rail was promoted from `SettingsLayout` (where it
- * used to be an inner column) to a top-level sidebar that mounts in
- * `AppLayout` next to the route content.
+ * Mounts the sidebar nav + the route shell so tests can assert on both
+ * rail visibility (sidebar) and panel resolution (panel route).
  */
 function renderLayoutAt(url: string) {
   const queryClient = new QueryClient({
@@ -94,25 +91,30 @@ beforeEach(() => {
   enterpriseState.isLoading = false;
 });
 
-describe('SettingsLayout — rail visibility', () => {
-  it('renders the Personal / Content group headers for a non-admin user', async () => {
+describe('SettingsSidebar — rail visibility', () => {
+  it('shows only the Personal + Knowledge groups for a non-admin user', async () => {
     renderLayoutAt('/settings/personal/confluence');
 
     await waitFor(() => {
       expect(screen.getByRole('navigation', { name: /settings/i })).toBeInTheDocument();
     });
 
-    // User-level categories are always visible.
+    // Personal is unrestricted; Knowledge has one non-admin item ("Spaces & Sync").
     expect(screen.getByRole('heading', { name: 'Personal' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Content' })).toBeInTheDocument();
-    // Admin-only categories are hidden — every item in them has adminOnly.
+    expect(screen.getByRole('heading', { name: 'Knowledge' })).toBeInTheDocument();
+    // Admin-only groups stay hidden.
     expect(screen.queryByRole('heading', { name: 'AI' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Integrations' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Security & Access' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Governance' })).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'System' })).not.toBeInTheDocument();
+
+    // Non-admin sees only Spaces & Sync under Knowledge — Labels and AI Models
+    // are admin-only.
+    expect(screen.getByTestId('nav-settings-spaces')).toBeInTheDocument();
+    expect(screen.queryByTestId('nav-settings-labels')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('nav-settings-models')).not.toBeInTheDocument();
   });
 
-  it('renders admin-only groups for admin users (CE mode)', async () => {
+  it('reveals all five groups for admin users (CE mode), but hides EE-only items', async () => {
     authState.user = { role: 'admin' };
     renderLayoutAt('/settings/personal/confluence');
 
@@ -120,77 +122,35 @@ describe('SettingsLayout — rail visibility', () => {
       expect(screen.getByRole('heading', { name: 'AI' })).toBeInTheDocument();
     });
 
-    expect(screen.getByRole('heading', { name: 'Integrations' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Security & Access' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Governance' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'System' })).toBeInTheDocument();
 
-    // EE-only items stay hidden in CE mode.
-    expect(screen.queryByTestId('nav-settings-sso')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('nav-settings-scim')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('nav-settings-llm-policy')).not.toBeInTheDocument();
+    // CE-visible admin items.
+    expect(screen.getByTestId('nav-settings-labels')).toBeInTheDocument();
+    expect(screen.getByTestId('nav-settings-models')).toBeInTheDocument();
+    expect(screen.getByTestId('nav-settings-ai-safety')).toBeInTheDocument();
+    expect(screen.getByTestId('nav-settings-access')).toBeInTheDocument();
+    expect(screen.getByTestId('nav-settings-integrations')).toBeInTheDocument();
+    expect(screen.getByTestId('nav-settings-license')).toBeInTheDocument();
+    expect(screen.getByTestId('nav-settings-diagnostics')).toBeInTheDocument();
+
+    // Data & Compliance is an all-EE wrapper — hidden in CE.
+    expect(screen.queryByTestId('nav-settings-compliance')).not.toBeInTheDocument();
   });
 
-  it('reveals EE-only items when isEnterprise + hasFeature are true', async () => {
+  it('reveals the Data & Compliance wrapper when EE is licensed', async () => {
     authState.user = { role: 'admin' };
     enterpriseState.isEnterprise = true;
-    enterpriseState.hasFeature = (feature) =>
-      ['org_llm_policy', 'llm_audit_trail', 'data_retention_policies', 'scim_provisioning', 'compliance_reports', 'advanced_rbac'].includes(feature);
 
     renderLayoutAt('/settings/personal/confluence');
 
     await waitFor(() => {
-      expect(screen.getByTestId('nav-settings-sso')).toBeInTheDocument();
+      expect(screen.getByTestId('nav-settings-compliance')).toBeInTheDocument();
     });
-    expect(screen.getByTestId('nav-settings-scim')).toBeInTheDocument();
-    expect(screen.getByTestId('nav-settings-llm-policy')).toBeInTheDocument();
-    expect(screen.getByTestId('nav-settings-llm-audit')).toBeInTheDocument();
-    expect(screen.getByTestId('nav-settings-retention')).toBeInTheDocument();
-    // Regression: compliance reports tab was added in #115 Sprint 4 against
-    // the legacy SettingsPage, which is no longer mounted by App.tsx. This
-    // assertion fails if the entry is dropped from settings-nav.ts again.
-    expect(screen.getByTestId('nav-settings-compliance-reports')).toBeInTheDocument();
-    // Regression: RbacPage + CustomRoleEditor are a complete admin UI
-    // for the `advanced_rbac` enterprise feature, but were never mounted
-    // in the live IA. This assertion fails if the entry is dropped from
-    // settings-nav.ts again.
-    expect(screen.getByTestId('nav-settings-rbac')).toBeInTheDocument();
-  });
-
-  it('hides compliance-reports for an EE admin without the compliance_reports feature', async () => {
-    authState.user = { role: 'admin' };
-    enterpriseState.isEnterprise = true;
-    // Enterprise + SSO + retention but explicitly NOT compliance_reports.
-    // Mirrors a customer on a tier whose feature set excludes the report
-    // generator (e.g. business tier in the EE plugin's TIER_FEATURES map).
-    enterpriseState.hasFeature = (feature) =>
-      ['data_retention_policies'].includes(feature);
-
-    renderLayoutAt('/settings/personal/confluence');
-
-    await waitFor(() => {
-      expect(screen.getByTestId('nav-settings-retention')).toBeInTheDocument();
-    });
-    expect(screen.queryByTestId('nav-settings-compliance-reports')).not.toBeInTheDocument();
-  });
-
-  it('hides rbac for an EE admin without the advanced_rbac feature', async () => {
-    authState.user = { role: 'admin' };
-    enterpriseState.isEnterprise = true;
-    // Enterprise admin on a tier whose feature set excludes advanced_rbac
-    // (e.g. team tier in the EE plugin's TIER_FEATURES map). SSO is
-    // ungated EE so it still appears, pinning the test.
-    enterpriseState.hasFeature = (_feature) => false;
-
-    renderLayoutAt('/settings/personal/confluence');
-
-    await waitFor(() => {
-      expect(screen.getByTestId('nav-settings-sso')).toBeInTheDocument();
-    });
-    expect(screen.queryByTestId('nav-settings-rbac')).not.toBeInTheDocument();
   });
 });
 
-describe('SettingsLayout — aria-current + testid contract', () => {
+describe('SettingsSidebar — aria-current contract', () => {
   it('sets aria-current="page" on the active link', async () => {
     renderLayoutAt('/settings/personal/theme');
 
@@ -204,52 +164,11 @@ describe('SettingsLayout — aria-current + testid contract', () => {
     const confluenceLink = screen.getByTestId('nav-settings-confluence');
     expect(confluenceLink).not.toHaveAttribute('aria-current', 'page');
   });
-
-  it('keeps legacy tab-<id> data attribute on each rail link for one release', async () => {
-    renderLayoutAt('/settings/personal/confluence');
-
-    await waitFor(() => {
-      expect(screen.getByTestId('nav-settings-confluence')).toBeInTheDocument();
-    });
-
-    expect(screen.getByTestId('nav-settings-confluence')).toHaveAttribute(
-      'data-legacy-testid',
-      'tab-confluence',
-    );
-  });
 });
 
 describe('SettingsIndexRedirect', () => {
   it('redirects /settings to /settings/personal/confluence for a non-admin user', async () => {
     renderLayoutAt('/settings');
-
-    // The redirect is an effect, so wait for the confluence tab to become active.
-    await waitFor(() => {
-      expect(screen.getByTestId('nav-settings-confluence')).toHaveAttribute('aria-current', 'page');
-    });
-  });
-});
-
-describe('SettingsLayout — legacy ?tab= redirect', () => {
-  it('redirects /settings?tab=theme → /settings/personal/theme', async () => {
-    renderLayoutAt('/settings?tab=theme');
-
-    await waitFor(() => {
-      expect(screen.getByTestId('nav-settings-theme')).toHaveAttribute('aria-current', 'page');
-    });
-  });
-
-  it('redirects /settings?tab=ollama → /settings/ai/llm (URL-segment rename)', async () => {
-    authState.user = { role: 'admin' };
-    renderLayoutAt('/settings?tab=ollama');
-
-    await waitFor(() => {
-      expect(screen.getByTestId('nav-settings-llm')).toHaveAttribute('aria-current', 'page');
-    });
-  });
-
-  it('ignores unknown ?tab=<x> values and lands on the default panel', async () => {
-    renderLayoutAt('/settings?tab=does-not-exist');
 
     await waitFor(() => {
       expect(screen.getByTestId('nav-settings-confluence')).toHaveAttribute('aria-current', 'page');
@@ -259,8 +178,8 @@ describe('SettingsLayout — legacy ?tab= redirect', () => {
 
 describe('SettingsPanelRoute — gating via direct URL', () => {
   it('bounces a non-admin to the first visible panel when they hit an admin-only URL directly', async () => {
-    // User is non-admin; accessing /settings/ai/llm directly should bounce to /settings/personal/confluence.
-    renderLayoutAt('/settings/ai/llm');
+    // ai/models is admin-only — a non-admin should bounce.
+    renderLayoutAt('/settings/ai/models');
 
     await waitFor(() => {
       expect(screen.getByTestId('nav-settings-confluence')).toHaveAttribute('aria-current', 'page');
@@ -276,99 +195,52 @@ describe('SettingsPanelRoute — gating via direct URL', () => {
   });
 });
 
-describe('SettingsPanelRoute — EE deep-link loading race (PR #218 review finding)', () => {
-  it('does NOT redirect an EE-gated panel while the license fetch is still loading', async () => {
-    // Admin user, EE panel URL, but license fetch not yet resolved.
+describe('SettingsPanelRoute — EE deep-link loading race', () => {
+  it('does NOT redirect an EE-gated wrapper while the license fetch is still loading', async () => {
     authState.user = { role: 'admin' };
     enterpriseState.isLoading = true;
-    enterpriseState.isEnterprise = false; // not yet known
+    enterpriseState.isEnterprise = false;
     enterpriseState.hasFeature = () => false;
 
-    const { queryByTestId } = renderLayoutAt('/settings/ai/llm-policy');
+    const { queryByTestId } = renderLayoutAt('/settings/governance/compliance');
 
     // Must NOT bounce to the default panel during the fetch window.
-    // If the regression returns, this fails because the URL flips and
-    // `nav-settings-confluence` becomes the active link.
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(queryByTestId('nav-settings-confluence')).not.toHaveAttribute('aria-current', 'page');
   });
 
   it('redirects a non-EE user when the license resolves as community', async () => {
-    // Admin user, EE panel URL, license has resolved as non-enterprise.
     authState.user = { role: 'admin' };
     enterpriseState.isLoading = false;
     enterpriseState.isEnterprise = false;
     enterpriseState.hasFeature = () => false;
 
-    renderLayoutAt('/settings/ai/llm-policy');
+    renderLayoutAt('/settings/governance/compliance');
 
-    // After loading resolves as non-EE, the gate fires and bounces to default.
     await waitFor(() => {
       expect(screen.getByTestId('nav-settings-confluence')).toHaveAttribute('aria-current', 'page');
     });
   });
 
-  it('renders the panel once the license resolves as EE with the required feature', async () => {
+  it('renders the Data & Compliance wrapper once the license resolves as EE', async () => {
     authState.user = { role: 'admin' };
     enterpriseState.isLoading = false;
     enterpriseState.isEnterprise = true;
-    enterpriseState.hasFeature = (feature) => feature === 'org_llm_policy';
+    enterpriseState.hasFeature = () => true;
 
-    renderLayoutAt('/settings/ai/llm-policy');
+    renderLayoutAt('/settings/governance/compliance');
 
     await waitFor(() => {
-      expect(screen.getByTestId('nav-settings-llm-policy')).toHaveAttribute('aria-current', 'page');
+      expect(screen.getByTestId('nav-settings-compliance')).toHaveAttribute('aria-current', 'page');
     });
   });
 
   it('still bounces unknown URLs immediately even while license is loading', async () => {
-    // Unknown path should not wait for EE resolution — there's nothing that
-    // could ever grant access. Fast-path fail.
     enterpriseState.isLoading = true;
     renderLayoutAt('/settings/foo/bar');
 
     await waitFor(() => {
       expect(screen.getByTestId('nav-settings-confluence')).toHaveAttribute('aria-current', 'page');
-    });
-  });
-
-  it('renders the compliance-reports panel for an EE admin with the feature', async () => {
-    // Pins the routing wiring added for Compendiq/compendiq-ee#115 Sprint 4:
-    // settings-nav.ts must declare the entry AND SettingsPanelRoute.tsx must
-    // map `security/compliance-reports` to ComplianceReportsTab. Either side
-    // missing => bounce to /settings/personal/confluence.
-    authState.user = { role: 'admin' };
-    enterpriseState.isLoading = false;
-    enterpriseState.isEnterprise = true;
-    enterpriseState.hasFeature = (feature) => feature === 'compliance_reports';
-
-    renderLayoutAt('/settings/security/compliance-reports');
-
-    await waitFor(() => {
-      expect(screen.getByTestId('nav-settings-compliance-reports')).toHaveAttribute(
-        'aria-current',
-        'page',
-      );
-    });
-  });
-
-  it('renders the rbac panel for an EE admin with the advanced_rbac feature', async () => {
-    // Pins the routing wiring for the orphaned RbacPage: settings-nav.ts
-    // must declare the entry AND SettingsPanelRoute.tsx must map
-    // `security/rbac` to RbacPage. Either side missing => bounce to
-    // /settings/personal/confluence.
-    authState.user = { role: 'admin' };
-    enterpriseState.isLoading = false;
-    enterpriseState.isEnterprise = true;
-    enterpriseState.hasFeature = (feature) => feature === 'advanced_rbac';
-
-    renderLayoutAt('/settings/security/rbac');
-
-    await waitFor(() => {
-      expect(screen.getByTestId('nav-settings-rbac')).toHaveAttribute(
-        'aria-current',
-        'page',
-      );
     });
   });
 });

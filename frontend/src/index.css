@@ -322,6 +322,32 @@ h1, h2, h3, h4, h5, h6,
   --inline-code-color: #8a6016;
 }
 
+/* ---- Light-theme warning-text remap ----
+   Many warning/EE-notice callouts in feature panels use Tailwind's literal
+   `text-amber-100..400` / `text-yellow-300..400` shades. Those were tuned for
+   the dark theme — on Honey Linen's near-white surface they're effectively
+   invisible (contrast < 1.5:1). Rather than editing every callsite, remap
+   those text classes to the AA-pass `--color-warning` (#945e0a, 5.2:1 vs
+   #f7f7f7). Same colour the design system already uses for warning panels in
+   Tiptap/prose blocks. Backgrounds and borders stay as-is — only text. */
+[data-theme-type="light"] :is(
+  .text-amber-100,
+  .text-amber-200,
+  .text-amber-300,
+  .text-amber-400,
+  .text-yellow-300,
+  .text-yellow-400,
+  .text-yellow-500
+) {
+  color: var(--color-warning);
+}
+
+/* `text-amber-500` is mid-tone and lands ~4.4:1 on linen — borderline AA for
+   normal text. Nudge it to the same warning ink for consistency. */
+[data-theme-type="light"] .text-amber-500 {
+  color: var(--color-warning);
+}
+
 /* Scroll edge fade mask — applied to scrollable sidebar content areas. */
 @utility scroll-mask {
   mask-image: linear-gradient(

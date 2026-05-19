@@ -106,7 +106,7 @@ export function AuthorPendingBanner({
             : `You have ${data.count} AI outputs awaiting review.`}
         </span>{' '}
         <Link
-          to="/settings/ai/ai-reviews"
+          to="/settings/ai/ai-safety?sub=reviews"
           className="inline-flex items-center gap-1 underline hover:text-amber-50"
           data-testid="author-pending-banner-link"
         >
