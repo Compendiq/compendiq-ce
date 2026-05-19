@@ -1,8 +1,6 @@
 import { memo, useState, useMemo, useCallback, useEffect, useRef, lazy, Suspense } from 'react';
-import { Link, useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import {
-  BookOpen,
-  Bot,
   ChevronRight,
   ChevronDown,
   FileText,
@@ -13,10 +11,10 @@ import {
   Plus,
   Globe,
   HardDrive,
-  Share2,
 } from 'lucide-react';
 import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { ShortcutHint } from '../ShortcutHint';
+import { MainNavStripExpanded, MainNavStripCollapsed } from './MainNavStrip';
 import { usePageTree, useCreatePage } from '../../hooks/use-pages';
 import { useSpaces } from '../../hooks/use-spaces';
 import { useLocalSpaces, useReorderPage } from '../../hooks/use-standalone';
@@ -29,12 +27,6 @@ import type { TreeNode } from './sidebar-types';
 export type { TreeNode };
 
 const DndLocalSpaceTree = lazy(() => import('./DndLocalSpaceTree'));
-
-const navItems = [
-  { icon: BookOpen, label: 'Pages', path: '/', shortcut: 'G then P' },
-  { icon: Bot, label: 'AI', path: '/ai', shortcut: 'G then A' },
-  { icon: Share2, label: 'Graph', path: '/graph', shortcut: 'G then G' },
-] as const;
 
 function buildTree(pages: PageTreeItem[], homepageId?: string | null): TreeNode[] {
   const nodeMap = new Map<string, TreeNode>();
@@ -388,39 +380,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
           </button>
 
           {/* Nav icons */}
-          <nav className="flex flex-col items-center gap-1 pt-1" aria-label="Main navigation">
-            {navItems.map(({ icon: Icon, label, path, shortcut }) => {
-              const active = path === '/'
-                ? location.pathname === '/' || location.pathname.startsWith('/pages')
-                : location.pathname.startsWith(path);
-              return (
-                <Link
-                  key={path}
-                  to={path}
-                  onClick={onNavigate}
-                  className={cn(
-                    'rounded-lg p-1.5 transition-all duration-200 active:scale-[0.95]',
-                    active
-                      ? 'bg-action text-action-foreground'
-                      : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
-                  )}
-                  title={`${label} (${shortcut})`}
-                  aria-label={label}
-                >
-                  <Icon
-                    size={16}
-                    className={cn(
-                      active && 'drop-shadow-[0_1px_2px_oklch(0_0_0_/_0.25)]',
-                      // AI tab keeps amber on its icon as the AI signal, but only
-                      // when active (pill is ink) — otherwise amber on light glass
-                      // would fail 3:1 contrast.
-                      active && path === '/ai' && 'text-primary',
-                    )}
-                  />
-                </Link>
-              );
-            })}
-          </nav>
+          <MainNavStripCollapsed onNavigate={onNavigate} />
         </m.div>
       </AnimatePresence>
     );
@@ -443,39 +403,8 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
       )}
     >
       {/* Nav tabs — main app navigation + collapse toggle */}
-      <nav className="flex shrink-0 items-center gap-0.5 px-2 pt-2 pb-1" aria-label="Main navigation">
-        {navItems.map(({ icon: Icon, label, path, shortcut }) => {
-          const active = path === '/'
-            ? location.pathname === '/' || location.pathname.startsWith('/pages')
-            : location.pathname.startsWith(path);
-          return (
-            <Link
-              key={path}
-              to={path}
-              onClick={onNavigate}
-              title={`${label} (${shortcut})`}
-              className={cn(
-                'flex flex-1 items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs transition-all duration-200 active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
-                active
-                  ? 'bg-action text-action-foreground font-medium'
-                  : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
-              )}
-            >
-              <Icon
-                size={14}
-                className={cn(
-                  active && 'drop-shadow-[0_1px_2px_oklch(0_0_0_/_0.25)]',
-                  // AI tab keeps amber on its icon as the AI signal when active
-                  // (pill is ink, ~7:1+ contrast). When inactive, the icon must
-                  // inherit muted-foreground — amber on light glass is 1.47:1,
-                  // a WCAG failure.
-                  active && path === '/ai' && 'text-primary',
-                )}
-              />
-              {label}
-            </Link>
-          );
-        })}
+      <div className="flex shrink-0 items-center gap-0.5 px-2 pt-2 pb-1">
+        <MainNavStripExpanded onNavigate={onNavigate} />
         <button
           onClick={toggleTreeSidebar}
           className="flex shrink-0 items-center gap-0.5 rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
@@ -485,7 +414,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
           <PanelLeftClose size={14} />
           <ShortcutHint shortcutId="toggle-sidebar" />
         </button>
-      </nav>
+      </div>
 
       {/* Sidebar header — title + actions */}
       <div className="flex h-8 shrink-0 items-center justify-between px-3">

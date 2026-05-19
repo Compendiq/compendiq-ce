@@ -1,10 +1,11 @@
-import { Link, NavLink, useLocation } from 'react-router-dom';
-import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
-import { BookOpen, Share2, Bot, PanelLeftClose, PanelLeft } from 'lucide-react';
+import { NavLink } from 'react-router-dom';
+import { m, useReducedMotion } from 'framer-motion';
+import { PanelLeftClose, PanelLeft } from 'lucide-react';
 import { useUiStore } from '../../../stores/ui-store';
 import { useAuthStore } from '../../../stores/auth-store';
 import { useEnterprise } from '../../enterprise/use-enterprise';
 import { ShortcutHint } from '../ShortcutHint';
+import { MainNavStripExpanded, MainNavStripCollapsed } from './MainNavStrip';
 import {
   SETTINGS_NAV,
   canSeeItem,
@@ -14,25 +15,19 @@ import { cn } from '../../lib/cn';
 
 /**
  * Left sidebar mounted on /settings/* routes — replaces the Pages tree there.
- * Top: the same Pages / Graph / AI main-nav strip used by SidebarTreeView so
- * users keep one-click access to the rest of the app while in Settings.
- * Body:  the Settings section nav (was the inner rail inside SettingsLayout).
+ * Top: the Pages / AI / Graph main-nav strip (shared with SidebarTreeView via
+ * `MainNavStrip`) so users keep one-click access to the rest of the app while
+ * in Settings.
+ * Body: the Settings section nav (was the inner rail inside SettingsLayout).
  *
  * Width / collapse state are shared with SidebarTreeView via useUiStore, so
  * the `,` keyboard shortcut and the chevron toggle both work the same way on
  * Settings as anywhere else.
  */
 
-const navItems = [
-  { icon: BookOpen, label: 'Pages', path: '/', shortcut: 'G then P' },
-  { icon: Share2, label: 'Graph', path: '/graph', shortcut: 'G then G' },
-  { icon: Bot, label: 'AI', path: '/ai', shortcut: 'G then A' },
-] as const;
-
 const sidebarSpring = { type: 'spring' as const, stiffness: 400, damping: 30 };
 
 export function SettingsSidebar({ onNavigate }: { onNavigate?: () => void } = {}) {
-  const location = useLocation();
   const treeSidebarCollapsed = useUiStore((s) => s.treeSidebarCollapsed);
   const toggleTreeSidebar = useUiStore((s) => s.toggleTreeSidebar);
   const treeSidebarWidth = useUiStore((s) => s.treeSidebarWidth);
@@ -45,58 +40,26 @@ export function SettingsSidebar({ onNavigate }: { onNavigate?: () => void } = {}
 
   if (treeSidebarCollapsed) {
     return (
-      <AnimatePresence mode="wait">
-        <m.div
-          key="settings-sidebar-collapsed"
-          data-testid="settings-sidebar"
-          initial={reduceEffects ? false : { width: 0, opacity: 0 }}
-          animate={{ width: 40, opacity: 1 }}
-          exit={{ width: 0, opacity: 0 }}
-          transition={reduceEffects ? { duration: 0 } : sidebarSpring}
-          className="flex flex-col items-center bg-background border-r border-border overflow-hidden"
+      <m.div
+        key="settings-sidebar-collapsed"
+        data-testid="settings-sidebar"
+        initial={reduceEffects ? false : { width: 0, opacity: 0 }}
+        animate={{ width: 40, opacity: 1 }}
+        transition={reduceEffects ? { duration: 0 } : sidebarSpring}
+        className="flex flex-col items-center bg-background border-r border-border overflow-hidden"
+      >
+        <button
+          onClick={toggleTreeSidebar}
+          className="mt-2 flex items-center gap-0.5 rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
+          aria-label="Expand sidebar"
+          title="Expand sidebar (,)"
         >
-          <button
-            onClick={toggleTreeSidebar}
-            className="mt-2 flex items-center gap-0.5 rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
-            aria-label="Expand sidebar"
-            title="Expand sidebar (,)"
-          >
-            <PanelLeft size={16} />
-            <ShortcutHint shortcutId="toggle-sidebar" />
-          </button>
+          <PanelLeft size={16} />
+          <ShortcutHint shortcutId="toggle-sidebar" />
+        </button>
 
-          <nav className="flex flex-col items-center gap-1 pt-1" aria-label="Main navigation">
-            {navItems.map(({ icon: Icon, label, path, shortcut }) => {
-              const active = path === '/'
-                ? location.pathname === '/' || location.pathname.startsWith('/pages')
-                : location.pathname.startsWith(path);
-              return (
-                <Link
-                  key={path}
-                  to={path}
-                  onClick={onNavigate}
-                  className={cn(
-                    'rounded-lg p-1.5 transition-all duration-200 active:scale-[0.95]',
-                    active
-                      ? 'bg-action text-action-foreground'
-                      : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
-                  )}
-                  title={`${label} (${shortcut})`}
-                  aria-label={label}
-                >
-                  <Icon
-                    size={16}
-                    className={cn(
-                      active && 'drop-shadow-[0_1px_2px_oklch(0_0_0_/_0.25)]',
-                      active && path === '/ai' && 'text-primary',
-                    )}
-                  />
-                </Link>
-              );
-            })}
-          </nav>
-        </m.div>
-      </AnimatePresence>
+        <MainNavStripCollapsed onNavigate={onNavigate} />
+      </m.div>
     );
   }
 
@@ -109,37 +72,8 @@ export function SettingsSidebar({ onNavigate }: { onNavigate?: () => void } = {}
       transition={reduceEffects ? { duration: 0 } : sidebarSpring}
       className="relative flex flex-col bg-background border-r border-border overflow-hidden"
     >
-      {/* Main nav strip — identical layout to SidebarTreeView so users see one
-          consistent app-level nav across every route. */}
-      <nav className="flex shrink-0 items-center gap-0.5 px-2 pt-2 pb-1" aria-label="Main navigation">
-        {navItems.map(({ icon: Icon, label, path, shortcut }) => {
-          const active = path === '/'
-            ? location.pathname === '/' || location.pathname.startsWith('/pages')
-            : location.pathname.startsWith(path);
-          return (
-            <Link
-              key={path}
-              to={path}
-              onClick={onNavigate}
-              title={`${label} (${shortcut})`}
-              className={cn(
-                'flex flex-1 items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs transition-all duration-200 active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
-                active
-                  ? 'bg-action text-action-foreground font-medium'
-                  : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
-              )}
-            >
-              <Icon
-                size={14}
-                className={cn(
-                  active && 'drop-shadow-[0_1px_2px_oklch(0_0_0_/_0.25)]',
-                  active && path === '/ai' && 'text-primary',
-                )}
-              />
-              {label}
-            </Link>
-          );
-        })}
+      <div className="flex shrink-0 items-center gap-0.5 px-2 pt-2 pb-1">
+        <MainNavStripExpanded onNavigate={onNavigate} />
         <button
           onClick={toggleTreeSidebar}
           className="flex shrink-0 items-center gap-0.5 rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
@@ -149,15 +83,15 @@ export function SettingsSidebar({ onNavigate }: { onNavigate?: () => void } = {}
           <PanelLeftClose size={14} />
           <ShortcutHint shortcutId="toggle-sidebar" />
         </button>
-      </nav>
+      </div>
 
       <div className="flex h-8 shrink-0 items-center px-3">
         <span className="text-xs font-semibold text-muted-foreground">Settings</span>
       </div>
 
-      {/* Settings section nav — duplicated from the inner rail that used to
-          live in SettingsLayout. Keeps the same data-testid contract so the
-          existing SettingsLayout tests still pass without changes. */}
+      {/* Settings section nav — promoted from SettingsLayout's inner rail.
+          Keeps the same data-testid contract so the existing SettingsLayout
+          tests still pass without changes. */}
       <nav
         aria-label="Settings"
         className="min-h-0 flex-1 overflow-y-auto px-2 pb-3"

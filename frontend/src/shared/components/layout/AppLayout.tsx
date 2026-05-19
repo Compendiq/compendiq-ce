@@ -36,7 +36,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const isArticleRoute = /^\/pages\/[^/]+$/.test(location.pathname);
   // On /settings* we swap the Pages tree for a Settings-specific sidebar so
-  // the main nav (Pages / Graph / AI) stays accessible — otherwise users land
+  // the main nav (Pages / AI / Graph) stays accessible — otherwise users land
   // in Settings with no in-rail path back to the rest of the app, since the
   // header breadcrumb was retired in the same change.
   const isSettingsRoute = /^\/settings(\/|$)/.test(location.pathname);
