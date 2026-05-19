@@ -170,8 +170,8 @@ describe('AppLayout', () => {
     expect(searchRegion.className).toContain('justify-center');
   });
 
-  it('shows tree sidebar on /pages and /ai, hides it on /settings', () => {
-    // Pages root — tree visible
+  it('shows tree sidebar on /pages and /ai, swaps to settings sidebar on /settings', () => {
+    // Pages root — Pages tree visible
     const { unmount } = render(
       <AppLayout>
         <div>page content</div>
@@ -179,9 +179,10 @@ describe('AppLayout', () => {
       { wrapper: createWrapper('/') },
     );
     expect(screen.getByTestId('sidebar-tree-view')).toBeInTheDocument();
+    expect(screen.queryByTestId('settings-sidebar')).not.toBeInTheDocument();
     unmount();
 
-    // AI route — tree stays (quick page navigation while chatting)
+    // AI route — Pages tree stays (quick page navigation while chatting)
     const { unmount: unmount2 } = render(
       <AppLayout>
         <div>ai page</div>
@@ -189,9 +190,11 @@ describe('AppLayout', () => {
       { wrapper: createWrapper('/ai') },
     );
     expect(screen.getByTestId('sidebar-tree-view')).toBeInTheDocument();
+    expect(screen.queryByTestId('settings-sidebar')).not.toBeInTheDocument();
     unmount2();
 
-    // Settings route — tree hidden (Settings section nav owns the left rail)
+    // Settings route — Pages tree replaced by SettingsSidebar so the main
+    // nav strip stays visible alongside the Settings section nav.
     render(
       <AppLayout>
         <div>settings</div>
@@ -199,6 +202,7 @@ describe('AppLayout', () => {
       { wrapper: createWrapper('/settings') },
     );
     expect(screen.queryByTestId('sidebar-tree-view')).not.toBeInTheDocument();
+    expect(screen.getByTestId('settings-sidebar')).toBeInTheDocument();
   });
 
   it('shows tree sidebar on /pages/:id route', () => {

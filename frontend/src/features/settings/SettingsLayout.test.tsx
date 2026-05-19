@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { SettingsLayout, SettingsIndexRedirect } from './SettingsLayout';
 import { SettingsPanelRoute } from './SettingsPanelRoute';
+import { SettingsSidebar } from '../../shared/components/layout/SettingsSidebar';
 
 // --- Mocks ---
 const authState = {
@@ -57,6 +58,13 @@ vi.mock('../../shared/lib/api', () => ({
   apiFetch: vi.fn().mockResolvedValue({}),
 }));
 
+/**
+ * Renders both `<SettingsSidebar>` and `<SettingsLayout>` so the tests below
+ * — which all assert on the Settings section nav landmarks/testids — keep
+ * working after the nav rail was promoted from `SettingsLayout` (where it
+ * used to be an inner column) to a top-level sidebar that mounts in
+ * `AppLayout` next to the route content.
+ */
 function renderLayoutAt(url: string) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -64,13 +72,16 @@ function renderLayoutAt(url: string) {
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[url]}>
-        <Routes>
-          <Route path="/settings" element={<SettingsLayout />}>
-            <Route index element={<SettingsIndexRedirect />} />
-            <Route path=":category/:item" element={<SettingsPanelRoute />} />
-          </Route>
-          <Route path="*" element={<div data-testid="non-settings-page">Non-settings route</div>} />
-        </Routes>
+        <div className="flex">
+          <SettingsSidebar />
+          <Routes>
+            <Route path="/settings" element={<SettingsLayout />}>
+              <Route index element={<SettingsIndexRedirect />} />
+              <Route path=":category/:item" element={<SettingsPanelRoute />} />
+            </Route>
+            <Route path="*" element={<div data-testid="non-settings-page">Non-settings route</div>} />
+          </Routes>
+        </div>
       </MemoryRouter>
     </QueryClientProvider>,
   );
