@@ -30,7 +30,10 @@ export function UserMenu() {
         <DropdownMenu.Content
           align="end"
           sideOffset={8}
-          className="min-w-[180px] rounded-lg border border-border/50 bg-card/90 p-1.5 shadow-xl backdrop-blur-xl"
+          // z-50 sits above the AI sub-header's z-20 sticky strip; without
+          // it the portaled menu is clipped behind that strip when the trigger
+          // is in the top-right of the header on /ai.
+          className="z-50 min-w-[180px] rounded-lg border border-border/50 bg-card/90 p-1.5 shadow-xl backdrop-blur-xl"
         >
           <DropdownMenu.Label className="flex items-center gap-2 px-2.5 py-2 text-xs text-muted-foreground">
             <User size={12} />
