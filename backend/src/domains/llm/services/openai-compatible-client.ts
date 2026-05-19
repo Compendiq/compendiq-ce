@@ -124,8 +124,13 @@ function thinkingExtras(
   if (isStrictOpenAiCompatibleHost(baseUrl)) {
     if (isOpenAiReasoningModel(model)) return { reasoning_effort: 'medium' };
     // Leave a debug breadcrumb so support can answer "why didn't Think do
-    // anything?" without re-deriving the routing rules.
-    logger.debug({ baseUrl, model }, 'Think requested on a strict provider but model is not reasoning-capable — emitting no extras');
+    // anything?" without re-deriving the routing rules. Log the parsed
+    // hostname rather than the raw baseUrl — the latter can legally
+    // contain credentials (`https://user:pass@host/v1`) per WHATWG URL,
+    // which would otherwise leak into centralized log storage.
+    let host: string;
+    try { host = new URL(baseUrl).hostname; } catch { host = '<invalid>'; }
+    logger.debug({ host, model }, 'Think requested on a strict provider but model is not reasoning-capable — emitting no extras');
     return {};
   }
   return { think: true, chat_template_kwargs: { enable_thinking: true } };
