@@ -73,7 +73,7 @@ export async function llmDiagramRoutes(fastify: FastifyInstance) {
         { role: 'system' as const, content: systemPrompt },
         { role: 'user' as const, content: sanitized },
       ];
-      const generator = streamChat(chatConfig, resolvedModel, diagramMessages);
+      const generator = streamChat(chatConfig, resolvedModel, diagramMessages, undefined, { thinking: body.thinking });
 
       await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
     } finally {

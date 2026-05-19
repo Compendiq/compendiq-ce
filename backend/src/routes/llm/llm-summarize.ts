@@ -104,7 +104,7 @@ export async function llmSummarizeRoutes(fastify: FastifyInstance) {
         { role: 'system' as const, content: systemPrompt },
         { role: 'user' as const, content: summarizeContent },
       ];
-      const generator = streamChat(summaryConfig, resolvedModel, summarizeMessages);
+      const generator = streamChat(summaryConfig, resolvedModel, summarizeMessages, undefined, { thinking: body.thinking });
 
       await streamSSE(request, reply, generator, sumExtras, { llmCache, cacheKey, postProcess });
     } finally {

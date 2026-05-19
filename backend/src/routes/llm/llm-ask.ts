@@ -268,7 +268,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       const onClose = () => controller.abort();
       request.raw.on('close', onClose);
 
-      const generator = streamChat(chatConfig, resolvedModel, messages, controller.signal);
+      const generator = streamChat(chatConfig, resolvedModel, messages, controller.signal, { thinking: body.thinking });
       let fullAnswer = '';
 
       reply.hijack();

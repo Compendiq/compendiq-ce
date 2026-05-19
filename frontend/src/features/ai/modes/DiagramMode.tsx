@@ -123,7 +123,7 @@ export function DiagramPreview() {
  * Input bar for diagram mode: a single action button.
  */
 export function DiagramModeInput() {
-  const { isStreaming, page, model, pageId, runStream, diagramType, setDiagramCode } = useAiContext();
+  const { isStreaming, page, model, pageId, thinkingMode, runStream, diagramType, setDiagramCode } = useAiContext();
 
   const handleDiagram = useCallback(async () => {
     if (isStreaming) return;
@@ -140,7 +140,13 @@ export function DiagramModeInput() {
 
     await runStream(
       '/llm/generate-diagram',
-      { content: page.bodyHtml, model, diagramType, pageId: pageId ?? undefined },
+      {
+        content: page.bodyHtml,
+        model,
+        diagramType,
+        pageId: pageId ?? undefined,
+        ...(thinkingMode && { thinking: true }),
+      },
       {
         userMessage: `Generate ${diagramType} diagram: ${page.title}`,
         onComplete: (accumulated) => {
@@ -148,7 +154,7 @@ export function DiagramModeInput() {
         },
       },
     );
-  }, [page, model, diagramType, pageId, isStreaming, runStream, setDiagramCode]);
+  }, [page, model, diagramType, pageId, thinkingMode, isStreaming, runStream, setDiagramCode]);
 
   return (
     <div className="mt-3 flex items-center gap-3 border-t border-border/40 pt-3">

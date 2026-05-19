@@ -53,6 +53,34 @@ function headers(cfg: ProviderConfig): Record<string, string> {
   return h;
 }
 
+/**
+ * Translate a generic `thinking: true` request into the provider-specific
+ * extras understood by the upstream `/chat/completions` endpoint. The CE LLM
+ * surface is OpenAI-compatible, but the convention for "extended reasoning"
+ * differs by backend:
+ *
+ * - OpenAI o-series / gpt-5: `reasoning_effort: 'medium'`
+ * - Ollama 0.6+ (OpenAI shim): top-level `think: true`
+ * - vLLM / SGLang serving open thinking models (Qwen3, DeepSeek-R1):
+ *   `chat_template_kwargs: { enable_thinking: true }`
+ *
+ * We pick by model-name heuristic. Sending the wrong extra to a strict
+ * upstream (OpenAI rejects unknown fields) would 400 the whole request,
+ * so detection — not "send both" — is required.
+ */
+function thinkingExtras(model: string, thinking?: boolean): Record<string, unknown> {
+  if (!thinking) return {};
+  const m = model.toLowerCase();
+  if (/^o[1-9]/.test(m) || m.startsWith('gpt-5')) {
+    return { reasoning_effort: 'medium' };
+  }
+  return { think: true, chat_template_kwargs: { enable_thinking: true } };
+}
+
+export interface StreamChatOptions {
+  thinking?: boolean;
+}
+
 export async function listModels(cfg: ProviderConfig): Promise<LlmModel[]> {
   return enqueue(() =>
     getProviderBreaker(cfg.providerId).execute(async () => {
@@ -75,13 +103,15 @@ export async function checkHealth(cfg: ProviderConfig): Promise<HealthResult> {
   }
 }
 
-export async function chat(cfg: ProviderConfig, model: string, messages: ChatMessage[]): Promise<string> {
+export async function chat(
+  cfg: ProviderConfig, model: string, messages: ChatMessage[], opts?: StreamChatOptions,
+): Promise<string> {
   return enqueue(() =>
     getProviderBreaker(cfg.providerId).execute(async () => {
       const res = await undiciFetch(`${cfg.baseUrl}/chat/completions`, {
         method: 'POST',
         headers: headers(cfg),
-        body: JSON.stringify({ model, messages, stream: false }),
+        body: JSON.stringify({ model, messages, stream: false, ...thinkingExtras(model, opts?.thinking) }),
         dispatcher: dispatcherFor(cfg),
       });
       if (!res.ok) throw new Error(`chat HTTP ${res.status}`);
@@ -101,13 +131,13 @@ export async function chat(cfg: ProviderConfig, model: string, messages: ChatMes
  * circuit subsequent calls.
  */
 export async function* streamChat(
-  cfg: ProviderConfig, model: string, messages: ChatMessage[], signal?: AbortSignal,
+  cfg: ProviderConfig, model: string, messages: ChatMessage[], signal?: AbortSignal, opts?: StreamChatOptions,
 ): AsyncGenerator<StreamChunk> {
   const res = await getProviderBreaker(cfg.providerId).execute(async () => {
     const r = await undiciFetch(`${cfg.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: headers(cfg),
-      body: JSON.stringify({ model, messages, stream: true }),
+      body: JSON.stringify({ model, messages, stream: true, ...thinkingExtras(model, opts?.thinking) }),
       dispatcher: dispatcherFor(cfg),
       signal,
     });

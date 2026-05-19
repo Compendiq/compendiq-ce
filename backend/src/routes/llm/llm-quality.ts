@@ -74,7 +74,7 @@ export async function llmQualityRoutes(fastify: FastifyInstance) {
         { role: 'system' as const, content: systemPrompt },
         { role: 'user' as const, content: sanitized },
       ];
-      const generator = streamChat(qualityConfig, resolvedModel, qualityMessages);
+      const generator = streamChat(qualityConfig, resolvedModel, qualityMessages, undefined, { thinking: body.thinking });
 
       await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
     } finally {
