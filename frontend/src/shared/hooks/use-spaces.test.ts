@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createElement } from 'react';
-import { useSync, useSyncStatus } from './use-spaces';
+import { useSync, useSyncStatus, useForceResyncAll } from './use-spaces';
 
 // Mock auth store
 vi.mock('../../stores/auth-store', () => ({
@@ -104,5 +104,94 @@ describe('useSyncStatus', () => {
     const { result } = renderHook(() => useSyncStatus(), { wrapper: createWrapper() });
 
     await waitFor(() => expect(result.current.data?.status).toBe('idle'));
+  });
+});
+
+describe('useForceResyncAll', () => {
+  beforeEach(() => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ succeeded: 42, failed: 0, errors: [] }), {
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('posts /pages/bulk/sync with confluence filter and the caller-supplied expectedCount', async () => {
+    const { result } = renderHook(() => useForceResyncAll(), { wrapper: createWrapper() });
+
+    await act(async () => {
+      result.current.mutate(123);
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      '/api/pages/bulk/sync',
+      expect.objectContaining({
+        method: 'POST',
+        body: expect.any(String),
+      }),
+    );
+
+    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    const body = JSON.parse((call[1] as RequestInit).body as string);
+    // Filter mode must declare itself with both `filter` and `expectedCount`;
+    // the server's BulkIdsOrFilterSchema refuses requests that mix or omit
+    // either, so this is the wire contract this hook commits to.
+    expect(body).toEqual({
+      filter: { source: 'confluence' },
+      expectedCount: 123,
+      driftToleranceFraction: 1,
+    });
+  });
+
+  it('invalidates sync, embeddings, and pages caches on success', async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    queryClient.setQueryData(['settings', 'sync-overview'], { sync: { status: 'idle' } });
+    queryClient.setQueryData(['embeddings'], { count: 0 });
+    queryClient.setQueryData(['pages'], []);
+
+    const wrapper = ({ children }: { children: React.ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children);
+
+    const { result } = renderHook(() => useForceResyncAll(), { wrapper });
+
+    await act(async () => {
+      result.current.mutate(5);
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(queryClient.getQueryState(['settings', 'sync-overview'])?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(['embeddings'])?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(['pages'])?.isInvalidated).toBe(true);
+  });
+
+  it('surfaces the server result for the caller', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(JSON.stringify({ succeeded: 10, failed: 2, errors: ['Page 7 not found'] }), {
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const { result } = renderHook(() => useForceResyncAll(), { wrapper: createWrapper() });
+
+    await act(async () => {
+      result.current.mutate(12);
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(result.current.data).toEqual({
+      succeeded: 10,
+      failed: 2,
+      errors: ['Page 7 not found'],
+    });
   });
 });

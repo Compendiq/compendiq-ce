@@ -87,7 +87,7 @@ describe('SidebarTreeView', () => {
     });
   });
 
-  it('renders nav tabs (Pages, Graph, AI) at the top of the sidebar', () => {
+  it('renders nav tabs (Pages, AI, Graph) at the top of the sidebar', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
     const nav = screen.getByRole('navigation', { name: 'Main navigation' });
     expect(nav).toBeInTheDocument();

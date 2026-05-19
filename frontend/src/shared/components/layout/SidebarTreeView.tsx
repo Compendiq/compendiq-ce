@@ -32,8 +32,8 @@ const DndLocalSpaceTree = lazy(() => import('./DndLocalSpaceTree'));
 
 const navItems = [
   { icon: BookOpen, label: 'Pages', path: '/', shortcut: 'G then P' },
-  { icon: Share2, label: 'Graph', path: '/graph', shortcut: 'G then G' },
   { icon: Bot, label: 'AI', path: '/ai', shortcut: 'G then A' },
+  { icon: Share2, label: 'Graph', path: '/graph', shortcut: 'G then G' },
 ] as const;
 
 function buildTree(pages: PageTreeItem[], homepageId?: string | null): TreeNode[] {

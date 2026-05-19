@@ -33,6 +33,47 @@ export function useSync() {
   });
 }
 
+interface BulkSyncResult {
+  succeeded: number;
+  failed: number;
+  errors: string[];
+}
+
+/**
+ * Settings → Sync "Force Re-sync All" trigger. Unlike `useSync()` (which runs
+ * the incremental `syncUser` and skips pages whose Confluence version hasn't
+ * changed), this re-fetches every Confluence-sourced page the user can see —
+ * the same UPDATE path as the per-article Re-sync button, just expanded to
+ * filter mode. Pages get `embedding_dirty = TRUE` so embeddings re-run.
+ *
+ * Server caps filter-mode selections at 5000 rows. Callers should pass the
+ * current total page count (e.g. sync-overview.totals.totalPages) so the
+ * server's drift-tolerance check has a sane baseline.
+ */
+export function useForceResyncAll() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (expectedCount: number) =>
+      apiFetch<BulkSyncResult>('/pages/bulk/sync', {
+        method: 'POST',
+        body: JSON.stringify({
+          filter: { source: 'confluence' },
+          expectedCount,
+          // KB-wide refresh — accept any size drift between preview and
+          // execution. We only care that the filter matches our intent
+          // ("every confluence page"), not the exact count.
+          driftToleranceFraction: 1,
+        }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['sync', 'status'] });
+      queryClient.invalidateQueries({ queryKey: ['settings', 'sync-overview'] });
+      queryClient.invalidateQueries({ queryKey: ['embeddings'] });
+      queryClient.invalidateQueries({ queryKey: ['pages'] });
+    },
+  });
+}
+
 /**
  * #379: PUT /api/spaces/:key/home — set the custom home page for a space.
  * Pass `homePageId: null` to clear the override and fall back to the
