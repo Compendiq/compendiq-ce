@@ -83,6 +83,13 @@ export function SyncTab() {
   // version-unchanged guard that incremental Sync Now respects). Heavy enough
   // to warrant a confirmation. The server caps filter-mode selections at 5000;
   // larger KBs need the per-space approach, so call that out before firing.
+  //
+  // We use sync-overview.totalPages as the *upper-bound* preview hint — it
+  // also counts any standalone pages that happen to live in a Confluence
+  // space, but those get filtered out server-side because the bulk request
+  // sends `{ source: 'confluence' }`. The toast on completion reports the
+  // actual succeeded count, so the dialog text deliberately doesn't promise
+  // a precise number.
   const totalPages = data.totals.totalPages;
   const handleForceResyncAll = () => {
     if (totalPages > 5000) {
@@ -92,7 +99,7 @@ export function SyncTab() {
       return;
     }
     const ok = window.confirm(
-      `Force re-sync ${totalPages} pages from Confluence?\n\n` +
+      'Force re-sync every Confluence page?\n\n' +
         'This re-fetches every page even if its Confluence version is ' +
         'unchanged, and marks all embeddings dirty. It may take several minutes.',
     );
@@ -163,19 +170,26 @@ export function SyncTab() {
           >
             {data.sync.status === 'syncing' ? 'Syncing...' : syncMutation.isPending ? 'Starting...' : 'Sync Now'}
           </button>
-          <button
-            onClick={handleForceResyncAll}
-            disabled={
-              forceResyncMutation.isPending ||
-              data.sync.status === 'syncing' ||
-              totalPages === 0
-            }
-            className="nm-button-ghost"
-            title="Re-fetch every Confluence page even when its version hasn't changed"
-            data-testid="sync-overview-force-resync-all"
-          >
-            {forceResyncMutation.isPending ? 'Re-syncing...' : 'Force Re-sync All'}
-          </button>
+          {/* Admin-only — same gate as the Force Rescan triggers in the
+              Quality / Summary sections below. The endpoint itself is not
+              admin-restricted (a regular user with bulk access can run it
+              per-article), but a KB-wide re-fetch on every Confluence page
+              is an operator concern, not a personal action. */}
+          {isAdmin && (
+            <button
+              onClick={handleForceResyncAll}
+              disabled={
+                forceResyncMutation.isPending ||
+                data.sync.status === 'syncing' ||
+                totalPages === 0
+              }
+              className="nm-button-ghost"
+              title="Re-fetch every Confluence page even when its version hasn't changed"
+              data-testid="sync-overview-force-resync-all"
+            >
+              {forceResyncMutation.isPending ? 'Re-syncing...' : 'Force Re-sync All'}
+            </button>
+          )}
         </div>
       </div>
 
