@@ -89,6 +89,119 @@ describe('openai-compatible-client — chat', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Thinking-mode wire format
+//
+// These tests assert the actual bytes sent upstream when callers pass
+// `opts.thinking: true`. Without these assertions, the Think toggle could
+// regress silently (the previous incarnation in this codebase parsed
+// `thinking` off the request but never forwarded it — the toggle did
+// nothing). Re-recording the upstream request body is the only way to
+// catch that regression class.
+// ---------------------------------------------------------------------------
+describe('openai-compatible-client — thinking-mode wire format', () => {
+  let capSrv: Server;
+  let capBase: string;
+  let lastBody: Record<string, unknown> | null = null;
+
+  beforeAll(async () => {
+    capSrv = createServer((req, res) => {
+      if (req.url === '/v1/chat/completions') {
+        let body = '';
+        req.on('data', (c) => (body += c));
+        req.on('end', () => {
+          lastBody = JSON.parse(body);
+          const parsed = lastBody as { stream?: boolean };
+          if (parsed.stream) {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+            res.write('data: ' + JSON.stringify({ choices: [{ delta: { content: 'ok' } }] }) + '\n\n');
+            res.write('data: [DONE]\n\n');
+            res.end();
+          } else {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }));
+          }
+        });
+        return;
+      }
+      res.writeHead(404); res.end();
+    });
+    await new Promise<void>((r) => capSrv.listen(0, r));
+    const { port } = capSrv.address() as AddressInfo;
+    capBase = `http://127.0.0.1:${port}/v1`;
+  });
+  afterAll(() => new Promise<void>((r) => capSrv.close(() => r())));
+
+  async function drainStream(model: string, thinking: boolean) {
+    lastBody = null;
+    for await (const _chunk of streamChat(
+      { ...cfg, baseUrl: capBase, providerId: `thinking-${model}-${thinking}` },
+      model,
+      [{ role: 'user', content: 'hi' }],
+      undefined,
+      { thinking },
+    )) { void _chunk; }
+    return lastBody;
+  }
+
+  it('streamChat without thinking: no reasoning extras', async () => {
+    const body = await drainStream('qwen3:8b', false);
+    expect(body).not.toHaveProperty('think');
+    expect(body).not.toHaveProperty('chat_template_kwargs');
+    expect(body).not.toHaveProperty('reasoning_effort');
+  });
+
+  it('streamChat with thinking=true on an open model uses think + chat_template_kwargs', async () => {
+    const body = await drainStream('qwen3:8b', true);
+    expect(body).toMatchObject({
+      think: true,
+      chat_template_kwargs: { enable_thinking: true },
+    });
+    expect(body).not.toHaveProperty('reasoning_effort');
+  });
+
+  it('streamChat with thinking=true on deepseek-r1 uses think + chat_template_kwargs', async () => {
+    const body = await drainStream('deepseek-r1:14b', true);
+    expect(body).toMatchObject({
+      think: true,
+      chat_template_kwargs: { enable_thinking: true },
+    });
+  });
+
+  it('streamChat with thinking=true on o1 maps to reasoning_effort: medium', async () => {
+    const body = await drainStream('o1-mini', true);
+    expect(body).toMatchObject({ reasoning_effort: 'medium' });
+    expect(body).not.toHaveProperty('think');
+    expect(body).not.toHaveProperty('chat_template_kwargs');
+  });
+
+  it('streamChat with thinking=true on o3 maps to reasoning_effort: medium', async () => {
+    const body = await drainStream('o3', true);
+    expect(body).toMatchObject({ reasoning_effort: 'medium' });
+  });
+
+  it('streamChat with thinking=true on gpt-5 maps to reasoning_effort: medium', async () => {
+    const body = await drainStream('gpt-5-pro', true);
+    expect(body).toMatchObject({ reasoning_effort: 'medium' });
+    expect(body).not.toHaveProperty('think');
+  });
+
+  it('chat (non-streaming) also forwards thinking extras', async () => {
+    lastBody = null;
+    await chat(
+      { ...cfg, baseUrl: capBase, providerId: 'thinking-chat-nonstream' },
+      'qwen3:8b',
+      [{ role: 'user', content: 'hi' }],
+      { thinking: true },
+    );
+    expect(lastBody).toMatchObject({
+      stream: false,
+      think: true,
+      chat_template_kwargs: { enable_thinking: true },
+    });
+  });
+});
+
 describe('openai-compatible-client — embeddings', () => {
   let embSrv: Server;
   let embBase: string;

@@ -484,7 +484,7 @@ export function GenerateSavePanel({
  * After generation completes, shows a save panel to publish to Confluence.
  */
 export function GenerateModeInput() {
-  const { input, setInput, isStreaming, model, setMessages, runStream } = useAiContext();
+  const { input, setInput, isStreaming, model, thinkingMode, setMessages, runStream } = useAiContext();
   const [generatedContent, setGeneratedContent] = useState('');
   const [showSavePanel, setShowSavePanel] = useState(false);
   const [searchWeb, setSearchWeb] = useState(false);
@@ -537,6 +537,9 @@ export function GenerateModeInput() {
     if (searchWeb) {
       body.searchWeb = true;
     }
+    if (thinkingMode) {
+      body.thinking = true;
+    }
 
     await runStream('/llm/generate', body, {
       onComplete: (accumulated) => {
@@ -546,7 +549,7 @@ export function GenerateModeInput() {
         }
       },
     });
-  }, [input, model, isStreaming, pdfData, pdfFilename, searchWeb, setInput, setMessages, runStream]);
+  }, [input, model, isStreaming, pdfData, pdfFilename, searchWeb, thinkingMode, setInput, setMessages, runStream]);
 
   const handleSubmit = () => handleGenerate();
 
