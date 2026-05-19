@@ -54,28 +54,62 @@ function headers(cfg: ProviderConfig): Record<string, string> {
 }
 
 /**
- * Translate a generic `thinking: true` request into the provider-specific
- * extras understood by the upstream `/chat/completions` endpoint. The CE LLM
- * surface is OpenAI-compatible, but the convention for "extended reasoning"
- * differs by backend:
- *
- * - OpenAI o-series / gpt-5: `reasoning_effort: 'medium'`
- * - Ollama 0.6+ (OpenAI shim): top-level `think: true`
- * - vLLM / SGLang serving open thinking models (Qwen3, DeepSeek-R1):
- *   `chat_template_kwargs: { enable_thinking: true }`
- *
- * We pick by model-name heuristic. Sending the wrong extra to a strict
- * upstream (OpenAI rejects unknown fields) would 400 the whole request,
- * so detection — not "send both" — is required.
+ * True when the provider's `baseUrl` points at the real OpenAI API, which
+ * rejects unknown JSON fields with HTTP 400. Self-hosted backends
+ * (Ollama, vLLM, SGLang, LM Studio, llama.cpp's server, TGI, custom shims)
+ * tolerate unknown fields and silently ignore them, so we can be permissive
+ * there. Matching by hostname rather than substring avoids false positives
+ * from proxies that include "openai" in their path or query.
  */
-function thinkingExtras(model: string, thinking?: boolean): Record<string, unknown> {
+function isStrictOpenAiHost(baseUrl: string): boolean {
+  try {
+    return new URL(baseUrl).hostname === 'api.openai.com';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Translate a generic `thinking: true` request into the provider-specific
+ * extras understood by the upstream `/chat/completions` endpoint.
+ *
+ * The constraint that drives the shape isn't the model — it's the server's
+ * strictness toward unknown fields. We branch on the provider, not on the
+ * model name:
+ *
+ * 1. **api.openai.com** (strict): only emit `reasoning_effort: 'medium'`
+ *    when the model is recognized as reasoning-capable (`o[1-9]*`, `gpt-5*`).
+ *    For everything else (gpt-4o, gpt-3.5, custom fine-tunes hosted on
+ *    OpenAI) we emit nothing — the toggle becomes a silent no-op rather
+ *    than a 400. Users can still toggle Think; OpenAI just won't reason
+ *    on models that can't.
+ *
+ * 2. **Anything else** (Ollama, vLLM/SGLang, LM Studio, TGI, custom):
+ *    always emit `think: true` + `chat_template_kwargs.enable_thinking: true`.
+ *    These backends accept arbitrary fields. If the loaded chat template
+ *    has a thinking branch (Qwen3, DeepSeek-R1, Magistral, gpt-oss…), the
+ *    model reasons; otherwise the fields are ignored. Either way no error,
+ *    so any user-installed model works.
+ */
+function thinkingExtras(
+  baseUrl: string,
+  model: string,
+  thinking?: boolean,
+): Record<string, unknown> {
   if (!thinking) return {};
-  const m = model.toLowerCase();
-  if (/^o[1-9]/.test(m) || m.startsWith('gpt-5')) {
-    return { reasoning_effort: 'medium' };
+  if (isStrictOpenAiHost(baseUrl)) {
+    const m = model.toLowerCase();
+    const isReasoningModel = /^o[1-9]/.test(m) || m.startsWith('gpt-5');
+    return isReasoningModel ? { reasoning_effort: 'medium' } : {};
   }
   return { think: true, chat_template_kwargs: { enable_thinking: true } };
 }
+
+// Exported for unit testing only — the wire-format assertions on
+// `streamChat`/`chat` cover the runtime path, but `thinkingExtras` itself
+// has enough branches (strict × non-reasoning, strict × reasoning, tolerant)
+// that direct table-driven tests are clearer than mocking three SSE servers.
+export const __test_only__ = { thinkingExtras, isStrictOpenAiHost };
 
 export interface StreamChatOptions {
   thinking?: boolean;
@@ -111,7 +145,7 @@ export async function chat(
       const res = await undiciFetch(`${cfg.baseUrl}/chat/completions`, {
         method: 'POST',
         headers: headers(cfg),
-        body: JSON.stringify({ model, messages, stream: false, ...thinkingExtras(model, opts?.thinking) }),
+        body: JSON.stringify({ model, messages, stream: false, ...thinkingExtras(cfg.baseUrl, model, opts?.thinking) }),
         dispatcher: dispatcherFor(cfg),
       });
       if (!res.ok) throw new Error(`chat HTTP ${res.status}`);
@@ -137,7 +171,7 @@ export async function* streamChat(
     const r = await undiciFetch(`${cfg.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: headers(cfg),
-      body: JSON.stringify({ model, messages, stream: true, ...thinkingExtras(model, opts?.thinking) }),
+      body: JSON.stringify({ model, messages, stream: true, ...thinkingExtras(cfg.baseUrl, model, opts?.thinking) }),
       dispatcher: dispatcherFor(cfg),
       signal,
     });
