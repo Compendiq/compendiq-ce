@@ -103,36 +103,45 @@ describe('openai-compatible-client — chat', () => {
 // Table-driven so a future provider/model row is one line, not a new it().
 // ---------------------------------------------------------------------------
 describe('thinkingExtras — provider-strictness × model matrix', () => {
-  const { thinkingExtras, isStrictOpenAiHost } = __test_only__;
+  const { thinkingExtras, isStrictOpenAiCompatibleHost, isOpenAiReasoningModel } = __test_only__;
 
   it('returns {} when thinking is off, regardless of provider', () => {
-    expect(thinkingExtras('https://api.openai.com/v1', 'o1-mini', false)).toEqual({});
+    expect(thinkingExtras('https://api.openai.com/v1', 'o3', false)).toEqual({});
     expect(thinkingExtras('http://localhost:11434/v1', 'qwen3:8b', false)).toEqual({});
     expect(thinkingExtras('http://localhost:11434/v1', 'qwen3:8b')).toEqual({});
   });
 
-  describe('OpenAI strict provider', () => {
-    const URL = 'https://api.openai.com/v1';
-
+  describe('Strict providers (OpenAI, Azure OpenAI)', () => {
     it.each([
-      ['o1-mini',   { reasoning_effort: 'medium' }],
-      ['o1',        { reasoning_effort: 'medium' }],
-      ['o3',        { reasoning_effort: 'medium' }],
-      ['o4-mini',   { reasoning_effort: 'medium' }],
-      ['gpt-5-pro', { reasoning_effort: 'medium' }],
-      ['gpt-5',     { reasoning_effort: 'medium' }],
-    ])('emits reasoning_effort for reasoning model %s', (model, expected) => {
-      expect(thinkingExtras(URL, model, true)).toEqual(expected);
+      // [baseUrl, model, expected extras]
+      ['https://api.openai.com/v1',                                 'o3',        { reasoning_effort: 'medium' }],
+      ['https://api.openai.com/v1',                                 'o3-mini',   { reasoning_effort: 'medium' }],
+      ['https://api.openai.com/v1',                                 'o4-mini',   { reasoning_effort: 'medium' }],
+      ['https://api.openai.com/v1',                                 'gpt-5',     { reasoning_effort: 'medium' }],
+      ['https://api.openai.com/v1',                                 'gpt-5-pro', { reasoning_effort: 'medium' }],
+      // Azure OpenAI is strict too — tenant-scoped subdomain.
+      ['https://my-resource.openai.azure.com/openai/deployments/x', 'gpt-5',     { reasoning_effort: 'medium' }],
+      ['https://contoso.openai.azure.com/v1',                       'o3',        { reasoning_effort: 'medium' }],
+    ])('on %s with reasoning model %s → reasoning_effort', (baseUrl, model, expected) => {
+      expect(thinkingExtras(baseUrl, model, true)).toEqual(expected);
     });
 
     it.each([
-      'gpt-4o',
-      'gpt-4',
-      'gpt-4-turbo',
-      'gpt-3.5-turbo',
-      'text-embedding-3-large',
-    ])('emits nothing for non-reasoning model %s (no 400)', (model) => {
-      expect(thinkingExtras(URL, model, true)).toEqual({});
+      // o1 family rejects reasoning_effort (parameter postdates the model) —
+      // must NOT emit it, otherwise OpenAI returns 400.
+      ['https://api.openai.com/v1',                                 'o1'],
+      ['https://api.openai.com/v1',                                 'o1-mini'],
+      ['https://api.openai.com/v1',                                 'o1-preview'],
+      // Non-reasoning OpenAI models — were the 400 source pre-this-PR.
+      ['https://api.openai.com/v1',                                 'gpt-4o'],
+      ['https://api.openai.com/v1',                                 'gpt-4'],
+      ['https://api.openai.com/v1',                                 'gpt-4-turbo'],
+      ['https://api.openai.com/v1',                                 'gpt-3.5-turbo'],
+      ['https://api.openai.com/v1',                                 'text-embedding-3-large'],
+      // Azure tenant hosting a non-reasoning deployment.
+      ['https://my-resource.openai.azure.com/openai/deployments/x', 'gpt-4o'],
+    ])('on %s with non-reasoning model %s → no extras (silent no-op)', (baseUrl, model) => {
+      expect(thinkingExtras(baseUrl, model, true)).toEqual({});
     });
   });
 
@@ -156,14 +165,45 @@ describe('thinkingExtras — provider-strictness × model matrix', () => {
     });
   });
 
-  describe('isStrictOpenAiHost', () => {
-    it('matches api.openai.com exactly, not substrings or proxies', () => {
-      expect(isStrictOpenAiHost('https://api.openai.com/v1')).toBe(true);
-      expect(isStrictOpenAiHost('https://api.openai.com:443/v1')).toBe(true);
-      expect(isStrictOpenAiHost('http://localhost:11434/v1')).toBe(false);
-      expect(isStrictOpenAiHost('https://my-openai-proxy.example/v1')).toBe(false);
-      expect(isStrictOpenAiHost('https://api.openai.com.evil.tld/v1')).toBe(false);
-      expect(isStrictOpenAiHost('not a url')).toBe(false);
+  describe('isStrictOpenAiCompatibleHost', () => {
+    it.each([
+      // strict
+      ['https://api.openai.com/v1',                                 true],
+      ['https://api.openai.com:443/v1',                             true],
+      ['https://my-resource.openai.azure.com/openai/deployments/x', true],
+      ['https://contoso.openai.azure.com/v1',                       true],
+      // tolerant
+      ['http://localhost:11434/v1',                                 false],
+      ['http://192.168.1.10:8000/v1',                               false],
+      // adversarial: substring spoofing must not match
+      ['https://my-openai-proxy.example/v1',                        false],
+      ['https://api.openai.com.evil.tld/v1',                        false],
+      ['https://openai.azure.com.evil.tld/v1',                      false],
+      // garbage in → tolerant fallback (safer than a false strict)
+      ['not a url',                                                 false],
+    ])('%s → strict=%s', (baseUrl, expected) => {
+      expect(isStrictOpenAiCompatibleHost(baseUrl)).toBe(expected);
+    });
+  });
+
+  describe('isOpenAiReasoningModel', () => {
+    it.each([
+      ['o3',         true],
+      ['o3-mini',    true],
+      ['o4-mini',    true],
+      ['o9-future',  true],
+      ['gpt-5',      true],
+      ['gpt-5-pro',  true],
+      // o1 family predates `reasoning_effort` — must NOT be flagged.
+      ['o1',         false],
+      ['o1-mini',    false],
+      ['o1-preview', false],
+      ['o2',         false], // didn't ship; reserved to avoid false-positive on hypothetical naming
+      ['gpt-4o',     false],
+      ['gpt-4',      false],
+      ['gpt-3.5',    false],
+    ])('%s → reasoning=%s', (model, expected) => {
+      expect(isOpenAiReasoningModel(model)).toBe(expected);
     });
   });
 });
