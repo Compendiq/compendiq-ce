@@ -4,6 +4,7 @@ import {
   getProviderBreaker,
   invalidateProviderBreaker,
 } from '../../../core/services/circuit-breaker.js';
+import { logger } from '../../../core/utils/logger.js';
 
 export interface ProviderConfig {
   providerId: string;
@@ -54,28 +55,96 @@ function headers(cfg: ProviderConfig): Record<string, string> {
 }
 
 /**
- * Translate a generic `thinking: true` request into the provider-specific
- * extras understood by the upstream `/chat/completions` endpoint. The CE LLM
- * surface is OpenAI-compatible, but the convention for "extended reasoning"
- * differs by backend:
+ * Hosts that reject unknown JSON fields on `/chat/completions` (HTTP 400).
+ * Exact matches go in `STRICT_HOSTS`; suffix matches (for tenant-scoped
+ * cloud deployments) go in `STRICT_HOST_SUFFIXES`.
  *
- * - OpenAI o-series / gpt-5: `reasoning_effort: 'medium'`
- * - Ollama 0.6+ (OpenAI shim): top-level `think: true`
- * - vLLM / SGLang serving open thinking models (Qwen3, DeepSeek-R1):
- *   `chat_template_kwargs: { enable_thinking: true }`
- *
- * We pick by model-name heuristic. Sending the wrong extra to a strict
- * upstream (OpenAI rejects unknown fields) would 400 the whole request,
- * so detection — not "send both" — is required.
+ * The set is intentionally narrow: every other OpenAI-compatible backend
+ * we know about (Ollama, vLLM/SGLang, LM Studio, llama.cpp's server, TGI,
+ * Together, Groq, Fireworks, OpenRouter, etc.) ignores unknown fields, so
+ * "tolerant" is the safer default. Adding a host here means the toggle
+ * silently no-ops rather than 400s for models that don't support reasoning.
  */
-function thinkingExtras(model: string, thinking?: boolean): Record<string, unknown> {
-  if (!thinking) return {};
+const STRICT_HOSTS: ReadonlySet<string> = new Set(['api.openai.com']);
+const STRICT_HOST_SUFFIXES: ReadonlyArray<string> = ['.openai.azure.com'];
+
+function isStrictOpenAiCompatibleHost(baseUrl: string): boolean {
+  let hostname: string;
+  try {
+    hostname = new URL(baseUrl).hostname;
+  } catch {
+    return false;
+  }
+  if (STRICT_HOSTS.has(hostname)) return true;
+  return STRICT_HOST_SUFFIXES.some((suffix) => hostname.endsWith(suffix));
+}
+
+/**
+ * OpenAI models known to accept `reasoning_effort`. Intentionally excludes
+ * the `o1` family: `o1`, `o1-preview`, and `o1-mini` shipped before the
+ * parameter existed and reject it with 400. The reasoning level on those
+ * older models is fixed by the model itself. If a user picks `o1*` and
+ * toggles Think on, we'd rather no-op than 400, so they fall through to
+ * the strict-non-reasoning branch.
+ */
+function isOpenAiReasoningModel(model: string): boolean {
   const m = model.toLowerCase();
-  if (/^o[1-9]/.test(m) || m.startsWith('gpt-5')) {
-    return { reasoning_effort: 'medium' };
+  return /^o[3-9]/.test(m) || m.startsWith('gpt-5');
+}
+
+/**
+ * Translate a generic `thinking: true` request into the provider-specific
+ * extras understood by the upstream `/chat/completions` endpoint.
+ *
+ * The constraint that drives the shape isn't the model — it's the server's
+ * strictness toward unknown fields. We branch on the provider, not on the
+ * model name:
+ *
+ * 1. **Strict providers** (`api.openai.com`, `*.openai.azure.com`): only
+ *    emit `reasoning_effort: 'medium'` when the model is recognized as
+ *    reasoning-capable (`o[3-9]*`, `gpt-5*`). For everything else
+ *    (`gpt-4o`, `gpt-3.5`, the `o1` family, custom fine-tunes) we emit
+ *    nothing — the toggle becomes a silent no-op rather than a 400.
+ *    Users can still toggle Think; the strict backend just won't reason
+ *    on models that can't.
+ *
+ * 2. **Anything else** (Ollama, vLLM/SGLang, LM Studio, TGI, custom):
+ *    always emit `think: true` + `chat_template_kwargs.enable_thinking: true`.
+ *    These backends accept arbitrary fields. If the loaded chat template
+ *    has a thinking branch (Qwen3, DeepSeek-R1, Magistral, gpt-oss…), the
+ *    model reasons; otherwise the fields are ignored. Either way no error,
+ *    so any user-installed model works.
+ */
+function thinkingExtras(
+  baseUrl: string,
+  model: string,
+  thinking?: boolean,
+): Record<string, unknown> {
+  if (!thinking) return {};
+  if (isStrictOpenAiCompatibleHost(baseUrl)) {
+    if (isOpenAiReasoningModel(model)) return { reasoning_effort: 'medium' };
+    // Leave a debug breadcrumb so support can answer "why didn't Think do
+    // anything?" without re-deriving the routing rules. Log the parsed
+    // hostname rather than the raw baseUrl — the latter can legally
+    // contain credentials (`https://user:pass@host/v1`) per WHATWG URL,
+    // which would otherwise leak into centralized log storage.
+    let host: string;
+    try { host = new URL(baseUrl).hostname; } catch { host = '<invalid>'; }
+    logger.debug({ host, model }, 'Think requested on a strict provider but model is not reasoning-capable — emitting no extras');
+    return {};
   }
   return { think: true, chat_template_kwargs: { enable_thinking: true } };
 }
+
+// Exported for unit testing only — the wire-format assertions on
+// `streamChat`/`chat` cover the runtime path, but `thinkingExtras` itself
+// has enough branches (strict × non-reasoning, strict × reasoning, tolerant)
+// that direct table-driven tests are clearer than mocking three SSE servers.
+export const __test_only__ = {
+  thinkingExtras,
+  isStrictOpenAiCompatibleHost,
+  isOpenAiReasoningModel,
+};
 
 export interface StreamChatOptions {
   thinking?: boolean;
@@ -111,7 +180,7 @@ export async function chat(
       const res = await undiciFetch(`${cfg.baseUrl}/chat/completions`, {
         method: 'POST',
         headers: headers(cfg),
-        body: JSON.stringify({ model, messages, stream: false, ...thinkingExtras(model, opts?.thinking) }),
+        body: JSON.stringify({ model, messages, stream: false, ...thinkingExtras(cfg.baseUrl, model, opts?.thinking) }),
         dispatcher: dispatcherFor(cfg),
       });
       if (!res.ok) throw new Error(`chat HTTP ${res.status}`);
@@ -137,7 +206,7 @@ export async function* streamChat(
     const r = await undiciFetch(`${cfg.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: headers(cfg),
-      body: JSON.stringify({ model, messages, stream: true, ...thinkingExtras(model, opts?.thinking) }),
+      body: JSON.stringify({ model, messages, stream: true, ...thinkingExtras(cfg.baseUrl, model, opts?.thinking) }),
       dispatcher: dispatcherFor(cfg),
       signal,
     });
