@@ -183,6 +183,7 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       externalUrls,
       searchWeb: body.searchWeb,
       provider: chatConfig.providerId,
+      thinking: body.thinking,
     });
 
     const sources = [

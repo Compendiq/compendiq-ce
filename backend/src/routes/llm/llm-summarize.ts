@@ -90,7 +90,7 @@ export async function llmSummarizeRoutes(fastify: FastifyInstance) {
     );
 
     // Check LLM cache with stampede protection
-    const cacheKey = buildLlmCacheKey(resolvedModel, systemPrompt, summarizeContent, summaryConfig.providerId);
+    const cacheKey = buildLlmCacheKey(resolvedModel, systemPrompt, summarizeContent, summaryConfig.providerId, { thinking: body.thinking });
     const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
       sendCachedSSE(reply, cached.content);

@@ -153,4 +153,50 @@ test.describe('Think toggle wires upstream provider extras', () => {
     // strict providers (OpenAI) reject unknown fields.
     expect(askCall!.reasoning_effort).toBeUndefined();
   });
+
+  // Regression guard for the cache-key bug: if `thinking` isn't folded into
+  // the LLM cache key, a warm cache from a prior thinking-off request will
+  // replay when the user toggles Think on, and the upstream LLM never sees
+  // the new request — making the toggle a no-op all over again.
+  test('toggle ON after a warm thinking-off cache → upstream still receives the thinking call', async ({ page }) => {
+    writeFileSync(MOCK_LOG, '');
+    await page.goto('/ai');
+    await expect(page.getByPlaceholder(/Ask a question/i)).toBeVisible({ timeout: 15_000 });
+
+    // Fix the needle so both turns produce the same cache key (modulo thinking).
+    const needle = `cache-bust-${Date.now()}`;
+    const thinkToggle = page.getByRole('checkbox', { name: 'Thinking mode' });
+    const askInput = page.getByTestId('ask-input');
+
+    // Turn 1: thinking OFF — warms the cache under the no-thinking key.
+    if (await thinkToggle.isChecked()) await thinkToggle.uncheck({ force: true });
+    await askInput.fill(`Tell me about ${needle}`);
+    await askInput.press('Enter');
+    await expect(page.getByText('Mocked thinking response.').first()).toBeVisible({ timeout: 20_000 });
+
+    const firstCall = findAskCall(needle);
+    expect(firstCall, 'first (thinking-off) call reached the mock').toBeTruthy();
+    expect(firstCall!.think).toBeUndefined();
+
+    // Turn 2: same question, thinking ON. Must NOT hit the warm cache.
+    // Use a new conversation so the routing is "fresh question, may cache".
+    await page.goto('/ai');
+    await expect(page.getByPlaceholder(/Ask a question/i)).toBeVisible({ timeout: 15_000 });
+    await thinkToggle.check({ force: true });
+    await askInput.fill(`Tell me about ${needle}`);
+    await askInput.press('Enter');
+    await expect(page.getByText('Mocked thinking response.').first()).toBeVisible({ timeout: 20_000 });
+
+    // Mock log now has two entries with this needle. The second one must
+    // carry the thinking extras — proving the cache key separates them.
+    const all = readFileSync(MOCK_LOG, 'utf-8').trim().split('\n').filter(Boolean)
+      .map((l) => JSON.parse(l).body as Record<string, unknown>)
+      .filter((b) =>
+        Array.isArray(b?.messages) &&
+        (b.messages as Array<{ content?: string }>).some((m) => (m.content ?? '').includes(needle)),
+      );
+    expect(all.length, 'two upstream calls — one per Think state').toBe(2);
+    expect(all[1]!.think).toBe(true);
+    expect(all[1]!.chat_template_kwargs).toEqual({ enable_thinking: true });
+  });
 });
