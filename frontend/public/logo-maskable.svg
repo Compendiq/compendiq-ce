@@ -1,36 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
-  <!--
-    AtlasMind maskable icon — padded for PWA safe zone (inner 80%).
-    Background: dark indigo. Mark: white.
-  -->
-  <rect width="512" height="512" rx="0" fill="#1e1b4b"/>
-
-  <!-- Mark scaled to fit inner 80% (safe zone: 51.2–460.8) -->
-  <g transform="translate(256, 256) scale(0.55) translate(-256, -256)">
-    <!-- Hexagonal outline -->
-    <path d="M256 64 L408 160 L408 352 L256 448 L104 352 L104 160 Z"
-          stroke="white" stroke-width="6" stroke-linejoin="round" opacity="0.2" />
-
-    <!-- Radial connections -->
-    <line x1="256" y1="256" x2="256" y2="64"  stroke="white" stroke-width="8" stroke-linecap="round" opacity="0.3"/>
-    <line x1="256" y1="256" x2="104" y2="160" stroke="white" stroke-width="8" stroke-linecap="round" opacity="0.3"/>
-    <line x1="256" y1="256" x2="408" y2="160" stroke="white" stroke-width="8" stroke-linecap="round" opacity="0.3"/>
-    <line x1="256" y1="256" x2="104" y2="352" stroke="white" stroke-width="8" stroke-linecap="round" opacity="0.3"/>
-    <line x1="256" y1="256" x2="408" y2="352" stroke="white" stroke-width="8" stroke-linecap="round" opacity="0.3"/>
-    <line x1="256" y1="256" x2="256" y2="448" stroke="white" stroke-width="8" stroke-linecap="round" opacity="0.3"/>
-
-    <!-- Hub glow -->
-    <circle cx="256" cy="256" r="96" fill="white" opacity="0.08"/>
-
-    <!-- Outer nodes -->
-    <circle cx="256" cy="64"  r="36" fill="white"/>
-    <circle cx="104" cy="160" r="28" fill="white" opacity="0.85"/>
-    <circle cx="408" cy="160" r="28" fill="white" opacity="0.85"/>
-    <circle cx="104" cy="352" r="28" fill="white" opacity="0.85"/>
-    <circle cx="408" cy="352" r="28" fill="white" opacity="0.85"/>
-    <circle cx="256" cy="448" r="36" fill="white"/>
-
-    <!-- Core hub -->
-    <circle cx="256" cy="256" r="48" fill="white"/>
+  <!-- Compendiq maskable icon — C + amber magnifier handle, scaled to fit the
+       PWA safe zone (inner 80% circle). Full-bleed dark fill so platform
+       masking (Android adaptive icons) crops cleanly. -->
+  <rect width="512" height="512" fill="#1a1a1a"/>
+  <g transform="translate(51 51) scale(0.41)">
+    <path d="M500,95c222.176,0 405,182.824 405,405c0,222.176 -182.824,405 -405,405c-222.176,0 -405,-182.824 -405,-405c0,-222.176 182.824,-405 405,-405Zm285.424,301.118c-43.57,-119.717 -158.035,-199.868 -285.434,-199.868c-166.632,0 -303.75,137.118 -303.75,303.75c0,166.632 137.118,303.75 303.75,303.75c127.399,0 241.863,-80.151 285.434,-199.868l-95.074,-48.532c-24.669,86.814 -104.537,147.15 -194.789,147.15c-111.088,0 -202.5,-91.412 -202.5,-202.5c0,-111.088 91.412,-202.5 202.5,-202.5c90.251,0 170.12,60.336 194.789,147.15l95.074,-48.532Z" fill="#fff8e9"/>
+    <path d="M618.125,618.125l165.375,165.375" stroke="#f9c74f" stroke-width="67.5" stroke-linecap="round"/>
   </g>
 </svg>
