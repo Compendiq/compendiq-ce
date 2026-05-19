@@ -3,7 +3,7 @@ import { toast } from 'sonner';
 import type { SyncOverviewResponse, SyncOverviewSpace } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
 import { useAuthStore } from '../../../stores/auth-store';
-import { useSync } from '../../../shared/hooks/use-spaces';
+import { useSync, useForceResyncAll } from '../../../shared/hooks/use-spaces';
 import { SkeletonFormFields } from '../../../shared/components/feedback/Skeleton';
 
 interface QualityStatusResponse {
@@ -31,6 +31,7 @@ export function SyncTab() {
   const isAdmin = user?.role === 'admin';
 
   const syncMutation = useSync();
+  const forceResyncMutation = useForceResyncAll();
   const { data, isLoading, isFetching, refetch } = useQuery<SyncOverviewResponse>({
     queryKey: ['settings', 'sync-overview'],
     queryFn: () => apiFetch('/settings/sync-overview'),
@@ -77,6 +78,41 @@ export function SyncTab() {
   if (isLoading || !data) {
     return <SkeletonFormFields />;
   }
+
+  // Force re-sync every Confluence-sourced page (UPDATE path — bypasses the
+  // version-unchanged guard that incremental Sync Now respects). Heavy enough
+  // to warrant a confirmation. The server caps filter-mode selections at 5000;
+  // larger KBs need the per-space approach, so call that out before firing.
+  const totalPages = data.totals.totalPages;
+  const handleForceResyncAll = () => {
+    if (totalPages > 5000) {
+      toast.error(
+        `Selection exceeds server cap (${totalPages} > 5000). Re-sync per space instead.`,
+      );
+      return;
+    }
+    const ok = window.confirm(
+      `Force re-sync ${totalPages} pages from Confluence?\n\n` +
+        'This re-fetches every page even if its Confluence version is ' +
+        'unchanged, and marks all embeddings dirty. It may take several minutes.',
+    );
+    if (!ok) return;
+    forceResyncMutation.mutate(totalPages, {
+      onSuccess: (res) => {
+        if (res.failed === 0) {
+          toast.success(`Re-synced ${res.succeeded} pages from Confluence.`);
+        } else {
+          toast.warning(
+            `Re-synced ${res.succeeded}; ${res.failed} failed.${
+              res.errors[0] ? ` First error: ${res.errors[0]}` : ''
+            }`,
+          );
+        }
+      },
+      onError: (err) =>
+        toast.error(err instanceof Error ? err.message : 'Force re-sync failed.'),
+    });
+  };
 
   const syncLabel = data.sync.status === 'syncing'
     ? `Syncing${data.sync.progress?.space ? ` ${data.sync.progress.space}` : ''}`
@@ -126,6 +162,19 @@ export function SyncTab() {
             data-testid="sync-overview-sync-now"
           >
             {data.sync.status === 'syncing' ? 'Syncing...' : syncMutation.isPending ? 'Starting...' : 'Sync Now'}
+          </button>
+          <button
+            onClick={handleForceResyncAll}
+            disabled={
+              forceResyncMutation.isPending ||
+              data.sync.status === 'syncing' ||
+              totalPages === 0
+            }
+            className="nm-button-ghost"
+            title="Re-fetch every Confluence page even when its version hasn't changed"
+            data-testid="sync-overview-force-resync-all"
+          >
+            {forceResyncMutation.isPending ? 'Re-syncing...' : 'Force Re-sync All'}
           </button>
         </div>
       </div>
