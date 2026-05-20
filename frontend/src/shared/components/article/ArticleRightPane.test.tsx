@@ -254,6 +254,31 @@ describe('ArticleRightPane', () => {
     expect(screen.getByTestId('article-requality-btn')).toBeInTheDocument();
   });
 
+  it('renders rail actions when collapsed and invokes requality from the rail', () => {
+    useUiStore.setState({ articleSidebarCollapsed: true });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    // Sanity-check the rail rendered with its action stack
+    expect(screen.getByTestId('article-right-pane-rail')).toBeInTheDocument();
+    expect(screen.getByTestId('article-actions-rail')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('article-requality-rail-btn'));
+
+    expect(mockRequalityPage).toHaveBeenCalledTimes(1);
+    expect(mockRequalityPage.mock.calls[0]![0]).toBe('page-1');
+  });
+
+  it('hides rail actions while editing', () => {
+    useUiStore.setState({ articleSidebarCollapsed: true });
+    useArticleViewStore.setState({ editing: true });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    expect(screen.getByTestId('article-right-pane-rail')).toBeInTheDocument();
+    expect(screen.queryByTestId('article-actions-rail')).not.toBeInTheDocument();
+  });
+
   it('invokes reembed mutation when Re-embed is clicked', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 

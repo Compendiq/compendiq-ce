@@ -412,8 +412,9 @@ export function ArticleRightPane() {
   }, [id, resyncMutation]);
 
   // Re-run quality analysis for this article. Bulk-endpoint passthrough; the
-  // route resets quality_status to 'pending' and kicks the worker — results
-  // arrive on the next batch tick (seconds-to-minutes depending on queue).
+  // route resets quality_status to 'pending' and kicks the worker. The trigger
+  // is lock-guarded — if a batch is already running, this re-queue is picked up
+  // on the next interval tick (QUALITY_CHECK_INTERVAL_MINUTES, default 60min).
   // Same silent-no-op handling as Re-sync / Re-embed.
   const handleRequality = useCallback(() => {
     if (!id) return;
@@ -489,8 +490,11 @@ export function ArticleRightPane() {
           {!editing && page && (
             <>
               <div className="my-1 h-px w-6 bg-[var(--glass-sidebar-divider)]" />
+              {/* min-h-0 + overflow-y-auto so the action stack scrolls on
+                  short viewports — without this, the outer overflow-hidden on
+                  the rail would clip the bottom buttons (e.g. Delete). */}
               <div
-                className="flex w-full flex-col items-center gap-0.5 p-1"
+                className="flex min-h-0 w-full flex-1 flex-col items-center gap-0.5 overflow-y-auto p-1"
                 data-testid="article-actions-rail"
               >
                 <button
