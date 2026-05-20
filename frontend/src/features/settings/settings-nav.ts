@@ -2,31 +2,32 @@
  * Settings IA — single source of truth for the left-rail navigation.
  *
  * Used by:
- *   - SettingsLayout (rendering the <nav> landmark with grouped links)
+ *   - SettingsSidebar (rendering the <nav> landmark with grouped links)
  *   - App.tsx route config (generating child routes with per-panel lazy imports)
- *   - SettingsLayout loader (resolving the legacy `?tab=<id>` redirect via legacyTabMap)
  *
  * Category/item IDs are the URL segments: `/settings/<category>/<item>`.
- * Adding a new settings panel = one entry here + one panel file; nothing else.
+ * Items that contain multiple sub-panels render them as in-page sub-tabs
+ * (see SubTabs.tsx).
  *
- * See docs/plans/215-settings-ia-reorg.md for the design rationale.
+ * Consolidation rationale: the previous IA exposed 6 groups × ~32 items,
+ * with many adjacent panels (Spaces / Sync, LLM / Embedding / Workers,
+ * etc.) that are conceptually one configuration surface. Collapsing them
+ * into wrapper-with-sub-tabs panels shrinks the rail to 5 groups × ~12
+ * items without touching the underlying panel components.
  */
 
 type SettingsCategoryId =
   | 'personal'
-  | 'content'
+  | 'knowledge'
   | 'ai'
-  | 'integrations'
-  | 'security'
+  | 'governance'
   | 'system';
 
 export interface SettingsNavItem {
-  /** URL segment + legacy back-compat key. */
+  /** URL segment. */
   id: string;
   /** Human label shown in the rail. */
   label: string;
-  /** Legacy `?tab=<value>` identifier. `null` if the item is new and has no legacy id. */
-  legacyTabId: string | null;
   adminOnly?: boolean;
   enterpriseOnly?: boolean;
   /** Enterprise feature-flag name required to render. Paired with `enterpriseOnly: true`. */
@@ -39,23 +40,17 @@ interface SettingsNavGroup {
   items: SettingsNavItem[];
 }
 
-/**
- * Builds a SettingsNavItem with the common case (`legacyTabId === id`) defaulted.
- * Pass `legacyTabId` in options only when it diverges from the URL segment
- * (e.g. the LLM panel whose legacy `?tab=ollama` predates the rename).
- */
 function navItem(
   id: string,
   label: string,
-  options: Omit<SettingsNavItem, 'id' | 'label' | 'legacyTabId'> & { legacyTabId?: string | null } = {},
+  options: Omit<SettingsNavItem, 'id' | 'label'> = {},
 ): SettingsNavItem {
-  const { legacyTabId = id, ...rest } = options;
-  return { id, label, legacyTabId, ...rest };
+  return { id, label, ...options };
 }
 
 /**
- * Grouped nav config. The order within each group controls rail rendering order;
- * the order of groups controls top-to-bottom rail order.
+ * Grouped nav config. Order within each group controls rail rendering order;
+ * order of groups controls top-to-bottom rail order.
  */
 export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
   {
@@ -64,32 +59,15 @@ export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
     items: [
       navItem('confluence', 'Confluence'),
       navItem('ai-prompts', 'AI Prompts'),
-      navItem('theme', 'Theme'),
+      navItem('theme', 'Appearance'),
     ],
   },
   {
-    id: 'content',
-    label: 'Content',
+    id: 'knowledge',
+    label: 'Knowledge',
     items: [
-      navItem('spaces', 'Spaces'),
-      navItem('sync', 'Sync'),
-      // Sync conflict resolution (Compendiq/compendiq-ee#118). Two
-      // adjacent panels: the policy radio (always visible to EE admins
-      // with the feature licensed) and the conflicts queue (same gating
-      // — the queue is empty unless the policy is `manual-review`, and
-      // the empty state is harmless to render).
-      navItem('sync-conflict-policy', 'Sync conflict policy', {
-        adminOnly: true,
-        enterpriseOnly: true,
-        requiresFeature: 'sync_conflict_resolution',
-        legacyTabId: null,
-      }),
-      navItem('sync-conflicts', 'Sync conflicts', {
-        adminOnly: true,
-        enterpriseOnly: true,
-        requiresFeature: 'sync_conflict_resolution',
-        legacyTabId: null,
-      }),
+      // Wrapper: Spaces / Sync / Conflict Policy (EE) / Conflicts (EE).
+      navItem('spaces', 'Spaces & Sync'),
       navItem('labels', 'Labels', { adminOnly: true }),
     ],
   },
@@ -97,116 +75,27 @@ export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
     id: 'ai',
     label: 'AI',
     items: [
-      // NOTE: the legacy `?tab=ollama` URL maps here. The URL segment is now
-      // `llm` because the panel is provider-agnostic (Ollama + OpenAI).
-      navItem('llm', 'LLM', { legacyTabId: 'ollama', adminOnly: true }),
-      navItem('embedding', 'Embedding', { adminOnly: true }),
+      // Wrapper: LLM / Embedding / Workers.
+      navItem('models', 'AI Models', { adminOnly: true }),
+      // Wrapper: AI Safety / LLM Policy (EE) / PII (EE) / Review Queue (EE) /
+      // Review Policy (EE) / LLM Audit (EE). The first sub-tab (AI Safety)
+      // is CE so the wrapper is admin-visible in CE; EE tabs reveal as
+      // licensing turns on.
       navItem('ai-safety', 'AI Safety', { adminOnly: true }),
-      navItem('workers', 'Workers', { adminOnly: true }),
-      navItem('llm-policy', 'LLM Policy', {
-        adminOnly: true,
-        enterpriseOnly: true,
-        requiresFeature: 'org_llm_policy',
-      }),
-      navItem('llm-audit', 'LLM Audit', {
-        adminOnly: true,
-        enterpriseOnly: true,
-        requiresFeature: 'llm_audit_trail',
-      }),
-      // AI output review (Compendiq/compendiq-ee#120). Two adjacent
-      // settings panels: the reviewer queue (a list) and the policy
-      // configuration (per-action modes + expiry). The detail diff
-      // view is a full-page route at `/settings/ai-reviews/:id`,
-      // outside the SettingsLayout — see App.tsx.
-      navItem('ai-reviews', 'AI review queue', {
-        adminOnly: true,
-        enterpriseOnly: true,
-        requiresFeature: 'ai_output_review',
-        legacyTabId: null,
-      }),
-      navItem('ai-review-policy', 'AI review policy', {
-        adminOnly: true,
-        enterpriseOnly: true,
-        requiresFeature: 'ai_output_review',
-        legacyTabId: null,
-      }),
-      // PII detection policy (Compendiq/compendiq-ee#119, Phase I).
-      // Companion EE overlay route GET/PUT /api/admin/pii-policy ships
-      // alongside this entry; the PiiPolicyTab handles the 404 path
-      // gracefully when only the CE half is deployed.
-      navItem('pii-policy', 'PII detection', {
-        adminOnly: true,
-        enterpriseOnly: true,
-        requiresFeature: 'pii_detection',
-        legacyTabId: null,
-      }),
     ],
   },
   {
-    id: 'integrations',
-    label: 'Integrations',
+    id: 'governance',
+    label: 'Governance',
     items: [
-      navItem('email', 'Email / SMTP', { adminOnly: true }),
-      navItem('searxng', 'SearXNG', { adminOnly: true }),
-      navItem('mcp-docs', 'MCP Docs', { adminOnly: true }),
-    ],
-  },
-  {
-    id: 'security',
-    label: 'Security & Access',
-    items: [
-      // Per-user admin CRUD (#304). Lives under Security & Access because it
-      // governs who can authenticate, not what settings they see.
-      navItem('users', 'Users', { adminOnly: true, legacyTabId: null }),
-      // Roles & Permissions (advanced_rbac). RbacPage + CustomRoleEditor
-      // are a fully implemented admin UI for system roles, custom roles,
-      // and per-user assignments — backed by /api/admin/roles*,
-      // /api/admin/permissions, and /api/admin/role-assignments — but
-      // were never mounted in the live IA. Sits next to Users because
-      // both manage who-can-do-what.
-      navItem('rbac', 'Roles & Permissions', {
+      // Wrapper: Users / RBAC (EE) / SSO (EE) / IP Allowlist (EE) /
+      // Rate Limits. Users + Rate Limits are CE; the rest reveal in EE.
+      navItem('access', 'Access Control', { adminOnly: true }),
+      // Wrapper: Data Retention (EE) / Compliance Reports (EE) /
+      // Webhooks (EE) / SCIM (EE). All-EE wrapper — hidden in CE.
+      navItem('compliance', 'Data & Compliance', {
         adminOnly: true,
         enterpriseOnly: true,
-        requiresFeature: 'advanced_rbac',
-        legacyTabId: null,
-      }),
-      navItem('rate-limits', 'Rate Limits', { adminOnly: true }),
-      navItem('sso', 'SSO / OIDC', {
-        adminOnly: true,
-        enterpriseOnly: true,
-      }),
-      navItem('ip-allowlist', 'IP allowlist', {
-        adminOnly: true,
-        enterpriseOnly: true,
-        requiresFeature: 'ip_allowlisting',
-        legacyTabId: null,
-      }),
-      navItem('webhooks', 'Webhooks', {
-        adminOnly: true,
-        enterpriseOnly: true,
-        requiresFeature: 'webhook_push',
-        legacyTabId: null,
-      }),
-      navItem('scim', 'SCIM', {
-        adminOnly: true,
-        enterpriseOnly: true,
-        requiresFeature: 'scim_provisioning',
-      }),
-      navItem('retention', 'Data Retention', {
-        adminOnly: true,
-        enterpriseOnly: true,
-        requiresFeature: 'data_retention_policies',
-      }),
-      // Compliance Reports (Compendiq/compendiq-ee#115). Self-serve PDF +
-      // CSV evidence packets for SOC 2 / ISO 27001 audits — sits next to
-      // Data Retention because both surface auditor-facing evidence.
-      // Backend routes live under /api/admin/compliance-reports/* and are
-      // gated by the `compliance_reports` enterprise feature flag.
-      navItem('compliance-reports', 'Compliance Reports', {
-        adminOnly: true,
-        enterpriseOnly: true,
-        requiresFeature: 'compliance_reports',
-        legacyTabId: null,
       }),
     ],
   },
@@ -214,26 +103,14 @@ export const SETTINGS_NAV: readonly SettingsNavGroup[] = [
     id: 'system',
     label: 'System',
     items: [
+      // Wrapper: Email / SMTP, SearXNG, MCP Docs.
+      navItem('integrations', 'Integrations', { adminOnly: true }),
       navItem('license', 'License', { adminOnly: true }),
-      navItem('errors', 'Errors', { adminOnly: true }),
-      navItem('system', 'System', { adminOnly: true }),
+      // Wrapper: System status / Errors.
+      navItem('diagnostics', 'Diagnostics', { adminOnly: true }),
     ],
   },
 ] as const;
-
-/**
- * Flat map of `?tab=<legacyId>` → canonical `/settings/<category>/<item>` path.
- * Generated from SETTINGS_NAV so there is no duplication.
- */
-export const legacyTabMap: Readonly<Record<string, string>> = Object.freeze(
-  Object.fromEntries(
-    SETTINGS_NAV.flatMap((group) =>
-      group.items
-        .filter((item) => item.legacyTabId !== null)
-        .map((item) => [item.legacyTabId!, `/settings/${group.id}/${item.id}`] as const),
-    ),
-  ),
-);
 
 export interface AccessContext {
   isAdmin: boolean;

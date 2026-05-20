@@ -214,7 +214,7 @@ function WebhooksTabInner() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="flex items-center gap-2 text-2xl font-bold">
-            <Webhook size={22} className="text-primary" />
+            <Webhook size={22} className="text-action" />
             Webhook endpoints
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
@@ -226,7 +226,7 @@ function WebhooksTabInner() {
         <button
           type="button"
           onClick={() => setModal({ kind: 'create' })}
-          className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
           data-testid="webhooks-new-btn"
         >
           <Plus size={14} />
@@ -379,7 +379,7 @@ function SubscriptionRow({
               checked={sub.active}
               onCheckedChange={(v) => onToggle(v)}
               disabled={toggleBusy}
-              className="relative h-5 w-9 shrink-0 rounded-full bg-foreground/10 transition-colors outline-none data-[state=checked]:bg-primary disabled:opacity-50"
+              className="relative h-5 w-9 shrink-0 rounded-full bg-foreground/10 transition-colors outline-none data-[state=checked]:bg-action disabled:opacity-50"
               data-testid={`webhook-toggle-${sub.id}`}
               aria-label={`${sub.active ? 'Disable' : 'Enable'} webhook ${sub.label ?? sub.url}`}
             >
@@ -739,7 +739,7 @@ function CreateEditDialog({
                   className={cn(
                     'flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors',
                     checked
-                      ? 'bg-primary/10 text-primary'
+                      ? 'bg-action/10 text-action'
                       : 'text-muted-foreground hover:bg-foreground/5',
                   )}
                   data-testid={`webhook-event-option-${ev}`}
@@ -837,7 +837,7 @@ function CreateEditDialog({
             mutation.mutate();
           }}
           disabled={!canSubmit || mutation.isPending}
-          className="flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-3 py-1.5 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           data-testid="webhook-save-btn"
         >
           {mutation.isPending && <Loader2 size={14} className="animate-spin" />}
@@ -993,7 +993,7 @@ function RotateSecretDialog({
               mutation.mutate();
             }}
             disabled={!canSubmit || mutation.isPending}
-            className="flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-3 py-1.5 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
             data-testid="webhook-rotate-submit-btn"
           >
             {mutation.isPending && <Loader2 size={14} className="animate-spin" />}
@@ -1139,7 +1139,7 @@ function TestDeliveryDialog({ subscription, onClose }: TestDialogProps) {
             mutation.mutate();
           }}
           disabled={!eventType || mutation.isPending}
-          className="flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-3 py-1.5 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           data-testid="webhook-test-submit-btn"
         >
           {mutation.isPending ? (

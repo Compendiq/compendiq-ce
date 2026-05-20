@@ -1,6 +1,7 @@
 import { readFileSync, existsSync } from 'fs';
 import { Agent, Dispatcher, interceptors } from 'undici';
 import { logger } from './logger.js';
+import { unsafeDisableTlsVerification } from './unsafe-tls.js';
 
 /**
  * Load custom CA certificates for undici (which doesn't respect NODE_EXTRA_CA_CERTS).
@@ -63,7 +64,7 @@ if (!verifySsl) {
  */
 export function buildConnectOptions(): Record<string, unknown> | undefined {
   if (!verifySsl) {
-    return { rejectUnauthorized: false };
+    return unsafeDisableTlsVerification();
   }
   if (caBundleContents) {
     return { ca: caBundleContents };

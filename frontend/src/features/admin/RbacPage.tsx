@@ -225,7 +225,7 @@ function RolesTab() {
         {advancedRbac && (
           <button
             onClick={handleCreate}
-            className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
             data-testid="create-custom-role-btn"
           >
             <Plus size={16} />
@@ -251,7 +251,7 @@ function RolesTab() {
       {advancedRbac && (
         <button
           onClick={handleCreate}
-          className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
           data-testid="create-custom-role-btn"
         >
           <Plus size={16} />
@@ -268,10 +268,10 @@ function RolesTab() {
           data-testid={`role-${role.id}`}
         >
           <div className="flex items-center gap-2">
-            <Lock size={14} className="text-primary" />
+            <Lock size={14} className="text-action" />
             <h3 className="font-medium">{role.displayName}</h3>
             {role.isSystem && (
-              <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+              <span className="rounded bg-[#ececea] px-1.5 py-0.5 text-[10px] font-medium text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]">
                 System
               </span>
             )}
@@ -367,7 +367,7 @@ function GroupsTab() {
       {!showCreateForm ? (
         <button
           onClick={() => setShowCreateForm(true)}
-          className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
           data-testid="create-group-btn"
         >
           <Plus size={16} />
@@ -396,7 +396,7 @@ function GroupsTab() {
             <button
               onClick={handleCreateGroup}
               disabled={!newGroupName.trim() || createMutation.isPending}
-              className="flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-3 py-1.5 text-sm text-action transition-colors hover:bg-action hover:text-action-foreground disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
               data-testid="submit-group"
             >
               {createMutation.isPending && <Loader2 size={14} className="animate-spin" />}
@@ -430,7 +430,7 @@ function GroupsTab() {
             <div className="flex items-center justify-between">
               <div>
                 <div className="flex items-center gap-2">
-                  <Users size={14} className="text-primary" />
+                  <Users size={14} className="text-action" />
                   <h3 className="font-medium">{group.name}</h3>
                   <span className="text-xs text-muted-foreground">
                     ({group.memberCount} {group.memberCount === 1 ? 'member' : 'members'})
@@ -482,7 +482,7 @@ function GroupsTab() {
                   <button
                     onClick={() => handleAddMember(group.id)}
                     disabled={!selectedUserId || addMemberMutation.isPending}
-                    className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                    className="rounded-md border border-action bg-transparent px-3 py-1.5 text-sm text-action transition-colors hover:bg-action hover:text-action-foreground disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
                     data-testid={`add-member-btn-${group.id}`}
                   >
                     Add
@@ -583,7 +583,7 @@ function SpacePermissionsTab() {
           {!showAssignForm ? (
             <button
               onClick={() => setShowAssignForm(true)}
-              className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+              className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
               data-testid="add-assignment-btn"
             >
               <Plus size={16} />
@@ -639,7 +639,7 @@ function SpacePermissionsTab() {
                 <button
                   onClick={handleAssign}
                   disabled={!principalId || !roleId || assignMutation.isPending}
-                  className="flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                  className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-3 py-1.5 text-sm text-action transition-colors hover:bg-action hover:text-action-foreground disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
                   data-testid="submit-assignment"
                 >
                   {assignMutation.isPending && <Loader2 size={14} className="animate-spin" />}
@@ -677,7 +677,7 @@ function SpacePermissionsTab() {
                       <td className="px-4 py-2.5">
                         <span className={cn(
                           'rounded px-2 py-0.5 text-xs font-medium',
-                          assignment.principalType === 'group' ? 'bg-primary/10 text-primary' : 'bg-info/10 text-info',
+                          assignment.principalType === 'group' ? 'bg-action/10 text-action' : 'bg-info/10 text-info',
                         )}>
                           {assignment.principalType === 'group' ? 'Group' : 'User'}
                         </span>
@@ -715,7 +715,7 @@ function AdminBadge() {
   if (user?.role !== 'admin') return null;
 
   return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary">
+    <span className="inline-flex items-center gap-1 rounded-full bg-action/10 px-2.5 py-1 text-xs font-medium text-action">
       <ShieldCheck size={12} />
       System Admin
     </span>
@@ -756,7 +756,7 @@ export function RbacPage() {
               className={cn(
                 'flex items-center gap-1.5 rounded-md px-4 py-2 text-sm transition-colors',
                 activeTab === key
-                  ? 'bg-primary/15 text-primary font-medium'
+                  ? 'bg-action/15 text-action font-medium'
                   : 'text-muted-foreground hover:bg-foreground/5',
               )}
               data-testid={`rbac-tab-${key}`}

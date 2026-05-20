@@ -20,6 +20,7 @@ import {
 } from '../../../core/services/redis-cache.js';
 
 const ATTACHMENTS_BASE = process.env.ATTACHMENTS_DIR ?? 'data/attachments';
+const ATTACHMENTS_BASE_RESOLVED = path.resolve(ATTACHMENTS_BASE);
 
 /**
  * Files larger than this threshold are streamed directly to disk
@@ -32,6 +33,43 @@ export const STREAM_THRESHOLD_BYTES = 5 * 1024 * 1024;
  */
 export const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 
+// Allowed shape for a Confluence page identifier as we use it on disk.
+// Confluence DC native IDs are numeric; our tests and a few legacy callers
+// also use short kebab-style IDs (e.g. `page-1`). We accept letters, digits,
+// `_`, `-` only — slashes, dots, NUL bytes, and any other separator-like
+// character cause rejection up front, so a malicious pageId can never reach
+// `path.resolve` / `path.join`.
+const PAGE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+function validatePageId(pageId: string): string {
+  if (typeof pageId !== 'string' || pageId.length === 0 || !PAGE_ID_PATTERN.test(pageId)) {
+    throw new Error('Invalid page ID');
+  }
+  return pageId;
+}
+
+function validateFilename(filename: string): string {
+  if (typeof filename !== 'string') {
+    throw new Error('Invalid filename');
+  }
+  // `path.basename` strips any directory components — `../../etc/passwd`
+  // collapses to `passwd`, `/abs/file` to `file`. We then re-validate.
+  const base = path.basename(filename);
+  if (base.length === 0) {
+    throw new Error('Invalid filename');
+  }
+  if (base.includes('\0')) {
+    throw new Error('Invalid filename');
+  }
+  // Reject hidden / metadata files (`.`, `..`, `.htaccess`, …). After
+  // `basename`, `..` and `.` would otherwise round-trip through the
+  // containment check unchanged, which is still safe but pointless.
+  if (base.startsWith('.')) {
+    throw new Error('Invalid filename');
+  }
+  return base;
+}
+
 /**
  * Attachments are stored in a shared directory keyed only by pageId.
  * The public-facing functions still accept a `userId` argument for
@@ -39,26 +77,42 @@ export const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
  * depends on it.
  */
 function attachmentDir(pageId: string): string {
-  // Sanitize pageId to prevent path traversal (e.g. "../../etc")
-  const safeId = pageId.replace(/[/\\.]+/g, '_').replace(/^_+|_+$/g, '');
-  if (!safeId) {
-    throw new Error('Invalid page ID');
-  }
-  const dir = path.join(ATTACHMENTS_BASE, safeId);
-  const resolved = path.resolve(dir);
-  if (!resolved.startsWith(path.resolve(ATTACHMENTS_BASE))) {
+  const safeId = validatePageId(pageId);
+  // safeId is constrained to /^[A-Za-z0-9_-]+$/ by validatePageId above,
+  // so it cannot contain `..`, separators, NUL bytes, or anything else
+  // path.resolve would interpret as an escape.
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- pageId is validated against an allow-list (PAGE_ID_PATTERN) above; containment is asserted below
+  const resolved = path.resolve(ATTACHMENTS_BASE_RESOLVED, safeId);
+  if (!resolved.startsWith(ATTACHMENTS_BASE_RESOLVED + path.sep)) {
     throw new Error('Path traversal detected');
   }
-  return dir;
+  return resolved;
 }
 
-function attachmentPath(_userId: string, pageId: string, filename: string): string {
-  // Sanitize filename to prevent path traversal — `path.basename` strips
-  // any `..` / separators. `attachmentDir(pageId)` also validates its own
-  // input (see the path-traversal guard above).
-  const safe = path.basename(filename);
-  // nosemgrep
-  return path.join(attachmentDir(pageId), safe);
+/**
+ * Build the on-disk path for an attachment, with explicit traversal-safe
+ * validation of both `pageId` and `filename`. Throws on any input that
+ * does not fit the strict allow-list — no unvalidated user-controlled
+ * input reaches `path.resolve`.
+ *
+ * Replaces the previous `attachmentPath(userId, pageId, filename)` helper,
+ * which relied on `path.basename` sanitisation plus a generic `// nosemgrep`
+ * annotation. The new helper makes the invariant explicit and asserts the
+ * resolved path stays under the attachments root (with `path.sep`, so the
+ * `/base-evil` prefix-overlap trick is rejected).
+ */
+function safeAttachmentPath(pageId: string, filename: string): string {
+  const safeFilename = validateFilename(filename);
+  const dir = attachmentDir(pageId);
+  // Both inputs are validated by helpers above: pageId by an allow-list,
+  // filename by basename + checks for empty / NUL / dotfile. The
+  // containment assertion that follows is the final defence-in-depth.
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- both arguments are validated above (validatePageId, validateFilename) and containment is asserted below
+  const resolved = path.resolve(dir, safeFilename);
+  if (!resolved.startsWith(ATTACHMENTS_BASE_RESOLVED + path.sep)) {
+    throw new Error('Path traversal detected');
+  }
+  return resolved;
 }
 
 /**
@@ -80,7 +134,7 @@ export async function cacheAttachment(
   const dir = attachmentDir(pageId);
   await fs.mkdir(dir, { recursive: true });
 
-  const filePath = attachmentPath(userId, pageId, filename);
+  const filePath = safeAttachmentPath(pageId, filename);
 
   const useStreaming = fileSizeHint !== undefined && fileSizeHint > STREAM_THRESHOLD_BYTES;
 
@@ -101,7 +155,7 @@ export async function cacheAttachment(
  */
 export async function attachmentExists(userId: string, pageId: string, filename: string): Promise<boolean> {
   try {
-    await fs.access(attachmentPath(userId, pageId, filename));
+    await fs.access(safeAttachmentPath(pageId, filename));
     return true;
   } catch {
     return false;
@@ -115,7 +169,7 @@ export async function attachmentExists(userId: string, pageId: string, filename:
  * but the sync stored the file with an xref suffix.
  */
 export async function readAttachment(userId: string, pageId: string, filename: string): Promise<Buffer | null> {
-  const fullPath = attachmentPath(userId, pageId, filename);
+  const fullPath = safeAttachmentPath(pageId, filename);
   try {
     return await fs.readFile(fullPath);
   } catch (err) {
@@ -123,7 +177,7 @@ export async function readAttachment(userId: string, pageId: string, filename: s
   }
 
   // Search for .xref- variants: "foo.jpg" matches "foo.xref-{hash}.jpg"
-  const safe = path.basename(filename);
+  const safe = validateFilename(filename);
   const dir = attachmentDir(pageId);
   const ext = path.extname(safe);
   const stem = ext ? safe.slice(0, -ext.length) : safe;
@@ -134,7 +188,7 @@ export async function readAttachment(userId: string, pageId: string, filename: s
     const match = entries.find((e) => e.startsWith(prefix) && e.endsWith(ext));
     if (match) {
       logger.debug({ pageId, filename, xrefMatch: match }, 'Serving attachment via xref fallback');
-      return await fs.readFile(path.join(dir, path.basename(match))); // nosemgrep
+      return await fs.readFile(safeAttachmentPath(pageId, match));
     }
     logger.debug({ pageId, filename, dir, dirContents: entries.slice(0, 20) }, 'No xref match found — listing dir contents');
   } catch {
@@ -235,7 +289,7 @@ export async function syncDrawioAttachments(
 
     if (attachment?._links?.download) {
       try {
-        const filePath = attachmentPath(userId, pageId, cacheAs);
+        const filePath = safeAttachmentPath(pageId, cacheAs);
 
         // Skip download if already cached (idempotent)
         try {
@@ -262,7 +316,7 @@ export async function syncDrawioAttachments(
     const drawioAttachment = attachments.find((a) => a.title === drawioName);
     if (drawioAttachment?._links?.download) {
       try {
-        const drawioPath = attachmentPath(userId, pageId, drawioName);
+        const drawioPath = safeAttachmentPath(pageId, drawioName);
         try {
           await fs.access(drawioPath);
           cachedFiles.push(drawioName);
@@ -317,7 +371,7 @@ export async function syncImageAttachments(
 
   for (const ref of refs) {
     try {
-      const filePath = attachmentPath(userId, pageId, ref.localFilename);
+      const filePath = safeAttachmentPath(pageId, ref.localFilename);
 
       try {
         await fs.access(filePath);
@@ -425,7 +479,7 @@ async function cacheExternalImage(
   const dir = attachmentDir(pageId);
   await fs.mkdir(dir, { recursive: true });
 
-  const filePath = attachmentPath(userId, pageId, filename);
+  const filePath = safeAttachmentPath(pageId, filename);
   const { data } = await downloadExternalImage(url);
   await fs.writeFile(filePath, data);
   return filePath;
@@ -489,7 +543,7 @@ export async function fetchAndCacheAttachment(
   filename: string,
   redis?: RedisClientType | null,
 ): Promise<Buffer | null> {
-  const safe = path.basename(filename);
+  const safe = validateFilename(filename);
 
   // Short-circuit: skip Confluence API call if this attachment has failed too many times.
   // Prevents repeated hammering of Confluence for known-broken attachments across restarts.
@@ -527,7 +581,7 @@ export async function fetchAndCacheAttachment(
 
   const dir = attachmentDir(pageId);
   await fs.mkdir(dir, { recursive: true });
-  const filePath = attachmentPath(userId, pageId, safe);
+  const filePath = safeAttachmentPath(pageId, safe);
 
   if (useStreaming) {
     // Stream large files directly to disk
@@ -561,7 +615,7 @@ export async function fetchAndCachePageImage(
   options: FetchAndCachePageImageOptions,
 ): Promise<Buffer | null> {
   const { client, userId, pageId, localFilename, bodyStorage, currentSpaceKey, redis } = options;
-  const safe = path.basename(localFilename);
+  const safe = validateFilename(localFilename);
   const refs = extractImageReferences(bodyStorage, currentSpaceKey);
   let ref = refs.find((candidate) => candidate.localFilename === safe);
 
@@ -614,7 +668,7 @@ export async function fetchAndCachePageImage(
 
   const fileSize = attachment.extensions?.fileSize;
   await cacheAttachment(client, userId, pageId, attachment._links.download, safe, fileSize);
-  return fs.readFile(attachmentPath(userId, pageId, safe));
+  return fs.readFile(safeAttachmentPath(pageId, safe));
 }
 
 /**
@@ -630,7 +684,7 @@ export async function writeAttachmentCache(
 ): Promise<string> {
   const dir = attachmentDir(pageId);
   await fs.mkdir(dir, { recursive: true });
-  const filePath = attachmentPath(userId, pageId, filename);
+  const filePath = safeAttachmentPath(pageId, filename);
   await fs.writeFile(filePath, data);
   logger.debug({ userId, pageId, filename, size: data.length }, 'Wrote attachment to local cache');
   return filePath;
@@ -701,3 +755,15 @@ export async function cleanPageAttachments(_userId: string, pageId: string): Pro
   // Clear Redis failure counters — after a sync the failures are stale
   await clearAttachmentFailures(getRedisClient(), pageId);
 }
+
+// Test-only: expose validators so unit tests can exercise the validation logic
+// directly without going through the higher-level cache functions (which mock
+// out `fs` and `client`). Not part of the public module surface.
+export const __internal = {
+  validatePageId,
+  validateFilename,
+  safeAttachmentPath,
+  attachmentDir,
+  ATTACHMENTS_BASE,
+  ATTACHMENTS_BASE_RESOLVED,
+};

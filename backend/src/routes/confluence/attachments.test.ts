@@ -322,6 +322,96 @@ describe('Attachment routes', () => {
     });
   });
 
+  describe('GET /api/attachments/:pageId/:filename — traversal payloads map to 404', () => {
+    // Regression: when `safeAttachmentPath` rejects an input it throws a plain
+    // Error with one of three messages. Without route-level handling that
+    // would bubble up as an uncaught 500. The route should map these to a
+    // clean 404 with a warn-level log so the on-disk validation is
+    // indistinguishable from a missing attachment to the client.
+
+    it('returns 404 (not 500) for a pageId containing `..` (validator: Invalid page ID)', async () => {
+      mockReadAttachment.mockRejectedValueOnce(new Error('Invalid page ID'));
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/attachments/..etc/foo.png',
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.json()).toMatchObject({
+        statusCode: 404,
+        error: 'Not Found',
+        message: 'Attachment not found',
+      });
+      expect(mockFetchAndCachePageImage).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 (not 500) for a pageId containing a slash (validator: Invalid page ID)', async () => {
+      // Fastify's router will not match a pageId with a literal `/`, but the
+      // validator still rejects encoded slashes after route parsing. We use
+      // an encoded slash to reach the handler with a value that fails the
+      // PAGE_ID_PATTERN allow-list.
+      mockReadAttachment.mockRejectedValueOnce(new Error('Invalid page ID'));
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/attachments/page%2Fevil/foo.png',
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.json()).toMatchObject({ message: 'Attachment not found' });
+    });
+
+    it('returns 404 (not 500) for a dotfile filename like .htaccess (validator: Invalid filename)', async () => {
+      mockReadAttachment.mockRejectedValueOnce(new Error('Invalid filename'));
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/attachments/page-123/.htaccess',
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.json()).toMatchObject({ message: 'Attachment not found' });
+    });
+
+    it('returns 404 (not 500) for a filename containing a NUL byte (validator: Invalid filename)', async () => {
+      mockReadAttachment.mockRejectedValueOnce(new Error('Invalid filename'));
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/attachments/page-123/foo%00.txt',
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.json()).toMatchObject({ message: 'Attachment not found' });
+    });
+
+    it('returns 404 (not 500) when the resolved path escapes the attachments root (validator: Path traversal detected)', async () => {
+      mockReadAttachment.mockRejectedValueOnce(new Error('Path traversal detected'));
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/attachments/page-123/sneaky.png',
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.json()).toMatchObject({ message: 'Attachment not found' });
+    });
+
+    it('still rethrows non-validation errors (generic Error → 500)', async () => {
+      // A generic filesystem error (e.g. EACCES) must NOT be silently
+      // swallowed into a 404 — that would mask infrastructure problems.
+      mockReadAttachment.mockRejectedValueOnce(new Error('EACCES: permission denied'));
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/attachments/page-123/foo.png',
+      });
+
+      expect(response.statusCode).toBe(500);
+    });
+  });
+
   describe('GET /api/attachments/:pageId/:filename (standalone pages)', () => {
     it('should serve attachment from local cache for standalone page looked up by integer ID', async () => {
       mockQuery

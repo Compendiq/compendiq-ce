@@ -1,8 +1,6 @@
 import { memo, useState, useMemo, useCallback, useEffect, useRef, lazy, Suspense } from 'react';
-import { Link, useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import {
-  BookOpen,
-  Bot,
   ChevronRight,
   ChevronDown,
   FileText,
@@ -13,10 +11,10 @@ import {
   Plus,
   Globe,
   HardDrive,
-  Share2,
 } from 'lucide-react';
 import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { ShortcutHint } from '../ShortcutHint';
+import { MainNavStripExpanded, MainNavStripCollapsed } from './MainNavStrip';
 import { usePageTree, useCreatePage } from '../../hooks/use-pages';
 import { useSpaces } from '../../hooks/use-spaces';
 import { useLocalSpaces, useReorderPage } from '../../hooks/use-standalone';
@@ -29,12 +27,6 @@ import type { TreeNode } from './sidebar-types';
 export type { TreeNode };
 
 const DndLocalSpaceTree = lazy(() => import('./DndLocalSpaceTree'));
-
-const navItems = [
-  { icon: BookOpen, label: 'Pages', path: '/', shortcut: 'G then P' },
-  { icon: Share2, label: 'Graph', path: '/graph', shortcut: 'G then G' },
-  { icon: Bot, label: 'AI', path: '/ai', shortcut: 'G then A' },
-] as const;
 
 function buildTree(pages: PageTreeItem[], homepageId?: string | null): TreeNode[] {
   const nodeMap = new Map<string, TreeNode>();
@@ -142,7 +134,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         className={cn(
           'group flex items-center gap-1.5 rounded-[10px] h-9 pr-2 text-sm cursor-pointer transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
           isActive
-            ? 'nm-pill-active text-primary font-medium scale-[1.01]'
+            ? 'bg-action text-action-foreground font-medium scale-[1.01]'
             : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
         )}
         style={{ paddingLeft: `${level * 16 + 10}px` }}
@@ -159,7 +151,7 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         ) : (
           <span className="w-[20px] shrink-0" />
         )}
-        <FileText size={15} className={cn('shrink-0', isActive ? 'text-primary/80' : 'text-muted-foreground/70')} />
+        <FileText size={15} className={cn('shrink-0', isActive ? 'text-action-foreground/80' : 'text-muted-foreground/70')} />
         <span className="truncate text-sm">{node.page.title}</span>
       </div>
 
@@ -388,30 +380,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
           </button>
 
           {/* Nav icons */}
-          <nav className="flex flex-col items-center gap-1 pt-1" aria-label="Main navigation">
-            {navItems.map(({ icon: Icon, label, path, shortcut }) => {
-              const active = path === '/'
-                ? location.pathname === '/' || location.pathname.startsWith('/pages')
-                : location.pathname.startsWith(path);
-              return (
-                <Link
-                  key={path}
-                  to={path}
-                  onClick={onNavigate}
-                  className={cn(
-                    'rounded-lg p-1.5 transition-all duration-200 active:scale-[0.95]',
-                    active
-                      ? 'nm-pill-active text-primary'
-                      : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
-                  )}
-                  title={`${label} (${shortcut})`}
-                  aria-label={label}
-                >
-                  <Icon size={16} className={cn(active && 'drop-shadow-[0_1px_2px_oklch(from_var(--color-primary)_l_c_h_/_0.3)]')} />
-                </Link>
-              );
-            })}
-          </nav>
+          <MainNavStripCollapsed onNavigate={onNavigate} />
         </m.div>
       </AnimatePresence>
     );
@@ -434,29 +403,8 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
       )}
     >
       {/* Nav tabs — main app navigation + collapse toggle */}
-      <nav className="flex shrink-0 items-center gap-0.5 px-2 pt-2 pb-1" aria-label="Main navigation">
-        {navItems.map(({ icon: Icon, label, path, shortcut }) => {
-          const active = path === '/'
-            ? location.pathname === '/' || location.pathname.startsWith('/pages')
-            : location.pathname.startsWith(path);
-          return (
-            <Link
-              key={path}
-              to={path}
-              onClick={onNavigate}
-              title={`${label} (${shortcut})`}
-              className={cn(
-                'flex flex-1 items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs transition-all duration-200 active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
-                active
-                  ? 'nm-pill-active text-primary font-medium'
-                  : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
-              )}
-            >
-              <Icon size={14} className={cn(active && 'drop-shadow-[0_1px_2px_oklch(from_var(--color-primary)_l_c_h_/_0.3)]')} />
-              {label}
-            </Link>
-          );
-        })}
+      <div className="flex shrink-0 items-center gap-0.5 px-2 pt-2 pb-1">
+        <MainNavStripExpanded onNavigate={onNavigate} />
         <button
           onClick={toggleTreeSidebar}
           className="flex shrink-0 items-center gap-0.5 rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
@@ -466,7 +414,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
           <PanelLeftClose size={14} />
           <ShortcutHint shortcutId="toggle-sidebar" />
         </button>
-      </nav>
+      </div>
 
       {/* Sidebar header — title + actions */}
       <div className="flex h-8 shrink-0 items-center justify-between px-3">
@@ -505,7 +453,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
               {selectedSpaceOption ? (
                 <>
                   {selectedSpaceOption.source === 'local'
-                    ? <HardDrive size={10} className="shrink-0 text-primary/70" />
+                    ? <HardDrive size={10} className="shrink-0 text-action/70" />
                     : <Globe size={10} className="shrink-0 text-muted-foreground/70" />
                   }
                   {selectedSpaceOption.name} ({selectedSpaceOption.key})
@@ -523,7 +471,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
                 }}
                 className={cn(
                   'flex w-full items-center rounded-lg px-2.5 py-1.5 text-xs transition-all duration-200',
-                  !treeSidebarSpaceKey ? 'nm-pill-active text-primary font-medium' : 'text-foreground hover:bg-[var(--glass-pill-hover)]',
+                  !treeSidebarSpaceKey ? 'nm-pill-active text-action font-medium' : 'text-foreground hover:bg-[var(--glass-pill-hover)]',
                 )}
               >
                 All Spaces
@@ -545,7 +493,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
                       className={cn(
                         'flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs transition-all duration-200',
                         treeSidebarSpaceKey === space.key
-                          ? 'nm-pill-active text-primary font-medium'
+                          ? 'nm-pill-active text-action font-medium'
                           : 'text-foreground hover:bg-[var(--glass-pill-hover)]',
                       )}
                     >
@@ -575,12 +523,12 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
                       className={cn(
                         'flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs transition-all duration-200',
                         treeSidebarSpaceKey === space.key
-                          ? 'nm-pill-active text-primary font-medium'
+                          ? 'nm-pill-active text-action font-medium'
                           : 'text-foreground hover:bg-[var(--glass-pill-hover)]',
                       )}
                     >
                       <span className="flex items-center gap-1.5 truncate">
-                        <HardDrive size={10} className="shrink-0 text-primary/70" />
+                        <HardDrive size={10} className="shrink-0 text-action/70" />
                         {space.name}
                       </span>
                       <span className="shrink-0 text-muted-foreground ml-2">{space.pageCount}</span>
@@ -595,7 +543,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
                   setSpaceDropdownOpen(false);
                   navigate('/spaces/new');
                 }}
-                className="flex w-full items-center gap-1.5 border-t border-[var(--glass-sidebar-divider)] mt-1 pt-1 rounded-lg px-2.5 py-1.5 text-xs text-primary hover:bg-[var(--glass-pill-hover)] transition-colors"
+                className="flex w-full items-center gap-1.5 border-t border-[var(--glass-sidebar-divider)] mt-1 pt-1 rounded-lg px-2.5 py-1.5 text-xs text-action hover:bg-[var(--glass-pill-hover)] transition-colors"
               >
                 <Plus size={10} />
                 New Space
@@ -612,7 +560,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
       {showNewFolderInput && (
         <div className="px-2 py-1.5" data-testid="new-folder-input">
           <div className="flex items-center gap-1.5">
-            <FolderPlus size={14} className="shrink-0 text-primary/70" />
+            <FolderPlus size={14} className="shrink-0 text-action/70" />
             <input
               ref={newFolderInputRef}
               value={newFolderName}
@@ -631,7 +579,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
             <button
               onClick={handleCreateFolder}
               disabled={!newFolderName.trim() || createPage.isPending}
-              className="rounded-md bg-primary/15 px-2 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary/25 disabled:opacity-40"
+              className="inline-flex items-center rounded-md border border-action bg-transparent px-2 py-1 text-xs font-medium text-action transition-colors hover:bg-action hover:text-action-foreground disabled:opacity-40"
             >
               {createPage.isPending ? '...' : 'Add'}
             </button>
@@ -665,7 +613,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
             {!treeSidebarSpaceKey && (
               <button
                 onClick={() => navigate('/settings')}
-                className="mt-3 flex items-center gap-1.5 rounded-lg bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary hover:bg-primary/15 transition-colors"
+                className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-action bg-transparent px-3 py-1.5 text-xs font-medium text-action hover:bg-action hover:text-action-foreground transition-colors"
               >
                 <Plus size={12} />
                 Sync a Space
@@ -719,8 +667,8 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
         aria-orientation="vertical"
         onMouseDown={handleResizeStart}
         className={cn(
-          'absolute right-0 top-2 bottom-2 w-1 cursor-col-resize rounded-full transition-colors hover:bg-primary/40',
-          isResizing && 'bg-primary/60',
+          'absolute right-0 top-2 bottom-2 w-1 cursor-col-resize rounded-full transition-colors hover:bg-action/40',
+          isResizing && 'bg-action/60',
         )}
       />
     </m.aside>

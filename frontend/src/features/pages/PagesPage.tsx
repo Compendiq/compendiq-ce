@@ -4,7 +4,6 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { m } from 'framer-motion';
 import { Search, FileText, Plus, RefreshCw, ChevronLeft, ChevronRight, FolderOpen, Filter, X, List, Loader2, Trash2, Lock, Globe, AlertTriangle } from 'lucide-react';
-import DOMPurify from 'dompurify';
 import { toast } from 'sonner';
 import { usePages, usePageFilterOptions, usePage, useEmbeddingStatus, type QualityStatus, type SummaryStatus } from '../../shared/hooks/use-pages';
 import { useSpaces, useSync, useSyncStatus } from '../../shared/hooks/use-spaces';
@@ -15,12 +14,12 @@ import { FreshnessBadge } from '../../shared/components/badges/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../../shared/components/badges/EmbeddingStatusBadge';
 import { QualityScoreBadge } from '../../shared/components/badges/QualityScoreBadge';
 import { SummaryStatusBadge } from '../../shared/components/badges/SummaryStatusBadge';
-import { BulkOperations } from './BulkOperations';
 import { KPICards } from './KPICards';
 import { PinnedArticlesSection } from './PinnedArticlesSection';
 import { cn } from '../../shared/lib/cn';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { ShortcutHint } from '../../shared/components/ShortcutHint';
+import { SanitizedHtml } from '../../shared/components/SanitizedHtml';
 
 // ---------------------------------------------------------------------------
 // Memoized page list item: prevents re-render from embedding-status polling
@@ -51,13 +50,11 @@ interface PageListItemProps {
     visibility?: string;
   };
   index: number;
-  isSelected: boolean;
-  onToggleSelection: (id: string, e: React.MouseEvent) => void;
   onNavigate: (id: string) => void;
 }
 
 const PageListItem = memo(function PageListItem({
-  pageItem, index: _index, isSelected, onToggleSelection, onNavigate,
+  pageItem, index: _index, onNavigate,
 }: PageListItemProps) {
   return (
     <m.div
@@ -66,24 +63,9 @@ const PageListItem = memo(function PageListItem({
       transition={{ duration: 0.15 }}
     >
       <div
-        className={cn(
-          'rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm transition-all hover:border-primary/50 flex w-full items-center gap-3 p-4 text-left',
-          isSelected && 'border-primary/40 bg-primary/5',
-        )}
+        className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm transition-all hover:border-primary/50 flex w-full items-center gap-3 p-4 text-left"
         data-testid={`article-hover-${pageItem.id}`}
       >
-        {/* Checkbox for bulk selection */}
-        <button
-          onClick={(e) => onToggleSelection(pageItem.id, e)}
-          className="shrink-0 flex h-5 w-5 items-center justify-center rounded border border-border hover:border-primary/50"
-          data-testid={`checkbox-${pageItem.id}`}
-          aria-label={`Select ${pageItem.title}`}
-        >
-          {isSelected && (
-            <div className="h-3 w-3 rounded-sm bg-primary" />
-          )}
-        </button>
-
         <button
           onClick={() => onNavigate(pageItem.id)}
           className="flex min-w-0 flex-1 items-center gap-4"
@@ -93,22 +75,39 @@ const PageListItem = memo(function PageListItem({
               <p className="truncate font-medium">{pageItem.title}</p>
               {/* Source badge */}
               {pageItem.source === 'standalone' ? (
-                <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-500" data-testid={`source-badge-${pageItem.id}`}>
+                <span
+                  className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#e7f2e8] px-2 py-0.5 text-[10px] font-medium text-[#1f5a2a] dark:bg-[#1a2a1d] dark:text-[#9ad4a8]"
+                  data-testid="badge-local"
+                  data-source-badge={pageItem.id}
+                >
                   Local
                 </span>
               ) : (
-                <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-blue-500/15 px-2 py-0.5 text-[10px] font-medium text-blue-500" data-testid={`source-badge-${pageItem.id}`}>
+                <span
+                  className="inline-flex shrink-0 items-center gap-1 rounded-full bg-blue-500/15 px-2 py-0.5 text-[10px] font-medium text-blue-500"
+                  data-testid="badge-confluence"
+                  data-source-badge={pageItem.id}
+                >
                   Confluence
                 </span>
               )}
               {/* Visibility badge for standalone articles */}
               {pageItem.source === 'standalone' && (
                 (pageItem.visibility === 'shared') ? (
-                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-sky-500/15 px-2 py-0.5 text-[10px] font-medium text-sky-500" data-testid={`visibility-badge-${pageItem.id}`}>
+                  <span
+                    className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#e6effb] px-2 py-0.5 text-[10px] font-medium text-[#1c3e72] dark:bg-[#162236] dark:text-[#a4c2eb]"
+                    data-testid="badge-shared"
+                    data-visibility-badge={pageItem.id}
+                  >
                     <Globe size={10} /> Shared
                   </span>
                 ) : (
-                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-500" data-testid={`visibility-badge-${pageItem.id}`}>
+                  // Private = neutral gray. Was amber, but privacy carries no AI semantic.
+                  <span
+                    className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#ececea] px-2 py-0.5 text-[10px] font-medium text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]"
+                    data-testid="badge-private"
+                    data-visibility-badge={pageItem.id}
+                  >
                     <Lock size={10} /> Private
                   </span>
                 )
@@ -142,7 +141,11 @@ const PageListItem = memo(function PageListItem({
           {pageItem.labels.length > 0 && (
             <div className="flex gap-1">
               {pageItem.labels.slice(0, 3).map((label) => (
-                <span key={label} className="rounded bg-primary/10 px-2 py-0.5 text-xs text-primary">
+                <span
+                  key={label}
+                  className="rounded bg-[#ececea] px-2 py-0.5 text-xs text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]"
+                  data-testid="label-chip"
+                >
                   {label}
                 </span>
               ))}
@@ -153,14 +156,13 @@ const PageListItem = memo(function PageListItem({
     </m.div>
   );
 }, (prev, next) => {
-  // Only re-render if the page item data or selection state changed
+  // Only re-render if the page-item data changed
   if (prev.pageItem.id !== next.pageItem.id) return false;
   if (prev.pageItem.version !== next.pageItem.version) return false;
   if (prev.pageItem.embeddingDirty !== next.pageItem.embeddingDirty) return false;
   if (prev.pageItem.qualityScore !== next.pageItem.qualityScore) return false;
   if (prev.pageItem.qualityStatus !== next.pageItem.qualityStatus) return false;
   if (prev.pageItem.summaryStatus !== next.pageItem.summaryStatus) return false;
-  if (prev.isSelected !== next.isSelected) return false;
   if (prev.index !== next.index) return false;
   return true;
 });
@@ -183,7 +185,6 @@ export function PagesPage() {
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState<'title' | 'modified' | 'author' | 'quality' | 'relevance'>('modified');
   const [sourceFilter, setSourceFilter] = useState<string>('');
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [searchMode, setSearchMode] = useState<'keyword' | 'semantic' | 'hybrid'>('keyword');
 
   const { data: settings } = useSettings();
@@ -200,12 +201,7 @@ export function PagesPage() {
   const { data: homePage, isLoading: homePageLoading } = usePage(
     showHomeContent && !forcePageList ? selectedSpace?.homepageId ?? undefined : undefined,
   );
-  const sanitizedHomeHtml = useMemo(
-    () => (homePage ? DOMPurify.sanitize(homePage.bodyHtml, {
-      ADD_ATTR: ['data-diagram-name', 'data-drawio', 'data-color', 'data-layout-type', 'data-cell-width', 'data-border'],
-    }) : ''),
-    [homePage],
-  );
+  const homeBodyHtml = homePage?.bodyHtml ?? '';
 
   // Map quality filter preset to min/max range
   const qualityRange = useMemo(() => {
@@ -218,7 +214,7 @@ export function PagesPage() {
     }
   }, [qualityFilter]);
 
-  const { data: pagesData, isLoading } = usePages({
+  const { data: pagesData, isLoading, isFetching: isFetchingPages, error: pagesError, refetch: refetchPages } = usePages({
     spaceKey: spaceKey || undefined,
     search: search || undefined,
     author: author || undefined,
@@ -313,32 +309,9 @@ export function PagesPage() {
     setPage(1);
   }, []);
 
-  const toggleSelection = useCallback((id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      return next;
-    });
-  }, []);
-
   const navigateToPage = useCallback((id: string) => {
     navigate(`/pages/${id}`);
   }, [navigate]);
-
-  const selectAll = useCallback(() => {
-    if (pagesData?.items) {
-      setSelectedIds(new Set(pagesData.items.map((p) => p.id)));
-    }
-  }, [pagesData]);
-
-  const deselectAll = useCallback(() => {
-    setSelectedIds(new Set());
-  }, []);
 
   // Virtual scrolling for the keyword/browse page list
   const pageItems = pagesData?.items ?? [];
@@ -382,11 +355,11 @@ export function PagesPage() {
           </button>
           <button
             onClick={() => navigate('/pages/new')}
-            className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
           >
             <Plus size={16} />
             <span className="hidden sm:inline">New Page</span>
-            <span className="hidden sm:inline"><ShortcutHint shortcutId="new-page" className="border-primary-foreground/30 text-primary-foreground/80" /></span>
+            <span className="hidden sm:inline"><ShortcutHint shortcutId="new-page" className="border-action/30 text-action/80" /></span>
           </button>
         </div>
       </div>
@@ -407,7 +380,7 @@ export function PagesPage() {
           </div>
           <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-foreground/10">
             <div
-              className="h-full rounded-full bg-primary transition-all"
+              className="h-full rounded-full bg-action transition-all"
               style={{ width: `${(syncStatus.progress.current / syncStatus.progress.total) * 100}%` }}
             />
           </div>
@@ -417,14 +390,14 @@ export function PagesPage() {
       {/* Embedding progress */}
       {embeddingStatusData?.isProcessing && (
         <div className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm flex items-center gap-3 p-3 border border-primary/30" data-testid="embedding-progress-banner">
-          <Loader2 size={16} className="animate-spin text-primary" />
+          <Loader2 size={16} className="animate-spin text-action" />
           <span className="text-sm">
             Embedding in progress — {embeddingStatusData.dirtyPages} pages remaining
           </span>
           <div className="ml-auto flex items-center gap-2">
             <div className="h-1.5 w-32 overflow-hidden rounded-full bg-foreground/10">
               <div
-                className="h-full rounded-full bg-primary transition-all"
+                className="h-full rounded-full bg-action transition-all"
                 style={{ width: `${(embeddingStatusData.embeddedPages / Math.max(embeddingStatusData.totalPages, 1)) * 100}%` }}
               />
             </div>
@@ -484,7 +457,7 @@ export function PagesPage() {
                   className={cn(
                     'rounded-full px-3 py-1 text-xs font-medium transition-all capitalize',
                     searchMode === m
-                      ? 'bg-primary text-primary-foreground shadow-md shadow-primary/25 ring-1 ring-primary/50'
+                      ? 'bg-action text-action-foreground shadow-md shadow-action/25 ring-1 ring-action/50'
                       : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10 border border-transparent hover:border-border/40',
                   )}
                 >
@@ -492,14 +465,14 @@ export function PagesPage() {
                 </button>
               ))}
               {searchResults.isLoadingEnhanced && (
-                <Loader2 size={14} className="ml-1 animate-spin text-primary" data-testid="search-enhanced-loading" />
+                <Loader2 size={14} className="ml-1 animate-spin text-action" data-testid="search-enhanced-loading" />
               )}
             </div>
 
           <select
             value={spaceKey}
             onChange={(e) => { setSpaceKey(e.target.value); setPage(1); setForcePageList(false); }}
-            className="nm-input w-40 shrink-0"
+            className="nm-select-md w-40 shrink-0"
           >
             <option value="">All Spaces</option>
             {spaces?.map((s) => (
@@ -510,7 +483,7 @@ export function PagesPage() {
           <select
             value={sourceFilter}
             onChange={(e) => { setSourceFilter(e.target.value); setPage(1); }}
-            className="nm-input w-32 shrink-0"
+            className="nm-select-md w-32 shrink-0"
             data-testid="filter-source"
           >
             <option value="">All Sources</option>
@@ -521,7 +494,7 @@ export function PagesPage() {
           <select
             value={sort}
             onChange={(e) => setSort(e.target.value as typeof sort)}
-            className="nm-input w-40 shrink-0"
+            className="nm-select-md w-40 shrink-0"
           >
             <option value="modified">Last Modified</option>
             <option value="title">Title</option>
@@ -539,7 +512,7 @@ export function PagesPage() {
             className={cn(
               'flex items-center gap-1.5 rounded-md px-3 py-2 text-sm transition-colors',
               showAdvancedFilters || activeFilterCount > 0
-                ? 'bg-primary/15 text-primary'
+                ? 'bg-action/15 text-action'
                 : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
             )}
             data-testid="advanced-filters-toggle"
@@ -547,7 +520,7 @@ export function PagesPage() {
             <Filter size={14} />
             Filters
             {activeFilterCount > 0 && (
-              <span className="ml-1 flex h-5 w-5 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground">
+              <span className="ml-1 flex h-5 w-5 items-center justify-center rounded-full bg-action text-[10px] font-bold text-action-foreground">
                 {activeFilterCount}
               </span>
             )}
@@ -564,7 +537,7 @@ export function PagesPage() {
               <select
                 value={author}
                 onChange={(e) => { setAuthor(e.target.value); setPage(1); }}
-                className="nm-input w-full"
+                className="nm-select-md w-full"
                 data-testid="filter-author"
               >
                 <option value="">All Authors</option>
@@ -580,7 +553,7 @@ export function PagesPage() {
               <select
                 value={labels}
                 onChange={(e) => { setLabels(e.target.value); setPage(1); }}
-                className="nm-input w-full"
+                className="nm-select-md w-full"
                 data-testid="filter-labels"
               >
                 <option value="">All Labels</option>
@@ -596,7 +569,7 @@ export function PagesPage() {
               <select
                 value={freshness}
                 onChange={(e) => { setFreshness(e.target.value); setPage(1); }}
-                className="nm-input w-full"
+                className="nm-select-md w-full"
                 data-testid="filter-freshness"
               >
                 <option value="">Any</option>
@@ -613,7 +586,7 @@ export function PagesPage() {
               <select
                 value={embeddingStatus}
                 onChange={(e) => { setEmbeddingStatus(e.target.value); setPage(1); }}
-                className="nm-input w-full"
+                className="nm-select-md w-full"
                 data-testid="filter-embedding"
               >
                 <option value="">Any</option>
@@ -628,7 +601,7 @@ export function PagesPage() {
               <select
                 value={qualityFilter}
                 onChange={(e) => { setQualityFilter(e.target.value); setPage(1); }}
-                className="nm-input w-full"
+                className="nm-select-md w-full"
                 data-testid="filter-quality"
               >
                 <option value="">Any</option>
@@ -646,7 +619,7 @@ export function PagesPage() {
                 type="date"
                 value={dateFrom}
                 onChange={(e) => { setDateFrom(e.target.value); setPage(1); }}
-                className="nm-input w-full"
+                className="nm-select-md w-full"
                 data-testid="filter-date-from"
               />
             </div>
@@ -656,7 +629,7 @@ export function PagesPage() {
                 type="date"
                 value={dateTo}
                 onChange={(e) => { setDateTo(e.target.value); setPage(1); }}
-                className="nm-input w-full"
+                className="nm-select-md w-full"
                 data-testid="filter-date-to"
               />
             </div>
@@ -682,7 +655,7 @@ export function PagesPage() {
               <button
                 key={f.key}
                 onClick={() => clearFilter(f.key)}
-                className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary"
+                className="inline-flex items-center gap-1 rounded-full bg-action/10 px-2.5 py-0.5 text-xs font-medium text-action"
                 aria-label={`Remove ${f.label} filter`}
                 data-testid={`filter-pill-${f.key}`}
               >
@@ -739,9 +712,10 @@ export function PagesPage() {
                 </button>
               </div>
             </div>
-            <div
+            <SanitizedHtml
               className={`rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm prose max-w-none p-6${isLight ? '' : ' prose-invert'}`}
-              dangerouslySetInnerHTML={{ __html: sanitizedHomeHtml }}
+              html={homeBodyHtml}
+              additionalAllowedAttrs={['data-diagram-name', 'data-drawio', 'data-color', 'data-layout-type', 'data-cell-width', 'data-border']}
             />
           </m.div>
         ) : null
@@ -838,6 +812,26 @@ export function PagesPage() {
                 <div key={i} className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm h-16 animate-pulse" />
               ))}
             </div>
+          ) : pagesError && !pagesData ? (
+            <div
+              className="flex items-start gap-3 rounded-xl border border-destructive/40 bg-destructive/5 p-4 text-sm"
+              data-testid="pages-error-state"
+            >
+              <AlertTriangle size={18} className="mt-0.5 shrink-0 text-destructive" />
+              <div className="flex-1">
+                <p className="font-medium text-destructive">Couldn't load pages</p>
+                <p className="mt-1 text-muted-foreground">{pagesError.message}</p>
+              </div>
+              <button
+                onClick={() => refetchPages()}
+                disabled={isFetchingPages}
+                className="flex items-center gap-1.5 rounded-md bg-destructive/10 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/20 disabled:cursor-not-allowed disabled:opacity-60"
+                data-testid="pages-error-retry"
+              >
+                {isFetchingPages && <Loader2 size={12} className="animate-spin" />}
+                {isFetchingPages ? 'Retrying…' : 'Retry'}
+              </button>
+            </div>
           ) : !pagesData?.items.length ? (
             <EmptyState
               icon={FolderOpen}
@@ -871,8 +865,6 @@ export function PagesPage() {
                       <PageListItem
                         pageItem={pageItem}
                         index={virtualRow.index}
-                        isSelected={selectedIds.has(pageItem.id)}
-                        onToggleSelection={toggleSelection}
                         onNavigate={navigateToPage}
                       />
                     </div>
@@ -904,15 +896,6 @@ export function PagesPage() {
               </button>
             </div>
           )}
-
-          {/* Bulk Operations Bar */}
-          <BulkOperations
-            selectedIds={[...selectedIds]}
-            totalCount={pagesData?.items.length ?? 0}
-            onSelectAll={selectAll}
-            onDeselectAll={deselectAll}
-            onClose={deselectAll}
-          />
         </>
       )}
       </>

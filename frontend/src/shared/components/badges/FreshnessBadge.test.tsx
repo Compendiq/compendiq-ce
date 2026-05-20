@@ -57,6 +57,17 @@ describe('FreshnessBadge', () => {
     expect(badge.className).toContain('text-destructive');
     expect(badge.className).toContain('bg-destructive/15');
   });
+
+  // Recent moved off amber to sage green (Task 4 — amber-as-AI bundle).
+  // Was bg-warning/15 + text-warning (3.37:1 — failed WCAG-AA).
+  it('Recent badge uses sage tint, not amber/primary/warning', () => {
+    render(<FreshnessBadge lastModified="2026-02-15T12:00:00Z" />);
+    const badge = screen.getByTestId('badge-recent');
+    expect(badge).toHaveTextContent('Recent');
+    expect(badge.className).not.toMatch(/amber|warning|yellow|primary/);
+    expect(badge.className).toMatch(/bg-\[#e7f2e8\]/);
+    expect(badge.className).toMatch(/text-\[#1f5a2a\]/);
+  });
 });
 
 describe('getFreshnessLevel', () => {

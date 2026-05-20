@@ -18,6 +18,7 @@ import {
 } from '../../core/services/bulk-page-selection.js';
 import { emitWebhookEvent } from '../../core/services/webhook-emit-hook.js';
 import { processDirtyPages, isProcessingUser } from '../../domains/llm/services/embedding-service.js';
+import { triggerQualityBatch } from '../../domains/knowledge/services/quality-worker.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 import { PageListQuerySchema, PageTreeQuerySchema, CreatePageSchema, UpdatePageSchema, SaveDraftSchema } from '@compendiq/contracts';
 import { z } from 'zod';
@@ -1802,6 +1803,71 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     if (succeeded > 0) {
       processDirtyPages(userId).catch((err) => {
         logger.error({ err, userId }, 'Bulk embed: embedding processing failed');
+      });
+    }
+
+    return { succeeded, failed, errors };
+  });
+
+  // POST /api/pages/bulk/quality - re-queue multiple pages for quality re-analysis.
+  // Resets quality_status to 'pending' (clearing prior score/error/retry) so the
+  // background quality worker picks them up on its next batch. Fires the worker
+  // immediately so the user doesn't wait for the next interval tick. Quality
+  // analysis applies to both Confluence-sourced and standalone pages (the worker
+  // gates on body_text length, not source).
+  fastify.post('/pages/bulk/quality', async (request, reply) => {
+    const parsed = BulkIdsOrFilterSchema.parse(request.body);
+    const userId = request.userId;
+
+    const qualitySpaces = await getUserAccessibleSpaces(userId);
+    const selection: BulkSelection = {
+      ids: parsed.ids,
+      filter: parsed.filter,
+      expectedCount: parsed.expectedCount,
+      driftToleranceFraction: parsed.driftToleranceFraction,
+    };
+
+    let resolved;
+    try {
+      resolved = await resolveBulkSelection(userId, selection, qualitySpaces);
+    } catch (err) {
+      if (err instanceof BulkSelectionError && err.detail.kind === 'count_drift') {
+        return reply.status(409).send({
+          error: 'CountDrift',
+          message: err.detail.message,
+          expected: err.detail.expected,
+          actual: err.detail.actual,
+        });
+      }
+      throw err;
+    }
+
+    const eligibleIds = resolved.rows.map((r) => r.id);
+    let succeeded = 0;
+    if (eligibleIds.length > 0) {
+      const result = await query(
+        `UPDATE pages
+            SET quality_status = 'pending',
+                quality_score = NULL,
+                quality_error = NULL,
+                quality_retry_count = 0
+          WHERE id = ANY($1::int[]) AND deleted_at IS NULL`,
+        [eligibleIds],
+      );
+      succeeded = result.rowCount ?? 0;
+    }
+
+    const errors: string[] = resolved.notFoundIds.map((id) => `Page ${id} not found`);
+    const failed = resolved.notFoundIds.length;
+
+    await cache.invalidate(userId, 'pages');
+
+    // Fire-and-forget: kick the worker so the user sees results without waiting
+    // for the next interval tick. triggerQualityBatch is lock-guarded and no-ops
+    // if a batch is already running.
+    if (succeeded > 0) {
+      triggerQualityBatch().catch((err) => {
+        logger.error({ err, userId }, 'Bulk quality: worker trigger failed');
       });
     }
 

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { checkHealth, listModels, chat, streamChat, generateEmbedding, invalidateBreaker, type ProviderConfig } from './openai-compatible-client.js';
+import { checkHealth, listModels, chat, streamChat, generateEmbedding, invalidateBreaker, __test_only__, type ProviderConfig } from './openai-compatible-client.js';
 
 let srv: Server;
 let baseUrl: string;
@@ -86,6 +86,208 @@ describe('openai-compatible-client — chat', () => {
     }
     expect(out.filter(Boolean).join('')).toBe('hello');
     expect(done).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Thinking-mode pure function — branches on (provider strictness, model)
+//
+// The shape we put on the wire depends on the SERVER, not the model name:
+// - OpenAI rejects unknown fields → strict path, only emit reasoning_effort
+//   when the model is recognized as reasoning-capable; nothing otherwise.
+// - Self-hosted (Ollama/vLLM/SGLang/LM Studio/…) tolerates unknown fields →
+//   always emit think + chat_template_kwargs, regardless of model name.
+//   Any user-installed model is safe: thinking activates if the template
+//   supports it, else silently no-ops.
+//
+// Table-driven so a future provider/model row is one line, not a new it().
+// ---------------------------------------------------------------------------
+describe('thinkingExtras — provider-strictness × model matrix', () => {
+  const { thinkingExtras, isStrictOpenAiCompatibleHost, isOpenAiReasoningModel } = __test_only__;
+
+  it('returns {} when thinking is off, regardless of provider', () => {
+    expect(thinkingExtras('https://api.openai.com/v1', 'o3', false)).toEqual({});
+    expect(thinkingExtras('http://localhost:11434/v1', 'qwen3:8b', false)).toEqual({});
+    expect(thinkingExtras('http://localhost:11434/v1', 'qwen3:8b')).toEqual({});
+  });
+
+  describe('Strict providers (OpenAI, Azure OpenAI)', () => {
+    it.each([
+      // [baseUrl, model, expected extras]
+      ['https://api.openai.com/v1',                                 'o3',        { reasoning_effort: 'medium' }],
+      ['https://api.openai.com/v1',                                 'o3-mini',   { reasoning_effort: 'medium' }],
+      ['https://api.openai.com/v1',                                 'o4-mini',   { reasoning_effort: 'medium' }],
+      ['https://api.openai.com/v1',                                 'gpt-5',     { reasoning_effort: 'medium' }],
+      ['https://api.openai.com/v1',                                 'gpt-5-pro', { reasoning_effort: 'medium' }],
+      // Azure OpenAI is strict too — tenant-scoped subdomain.
+      ['https://my-resource.openai.azure.com/openai/deployments/x', 'gpt-5',     { reasoning_effort: 'medium' }],
+      ['https://contoso.openai.azure.com/v1',                       'o3',        { reasoning_effort: 'medium' }],
+    ])('on %s with reasoning model %s → reasoning_effort', (baseUrl, model, expected) => {
+      expect(thinkingExtras(baseUrl, model, true)).toEqual(expected);
+    });
+
+    it.each([
+      // o1 family rejects reasoning_effort (parameter postdates the model) —
+      // must NOT emit it, otherwise OpenAI returns 400.
+      ['https://api.openai.com/v1',                                 'o1'],
+      ['https://api.openai.com/v1',                                 'o1-mini'],
+      ['https://api.openai.com/v1',                                 'o1-preview'],
+      // Non-reasoning OpenAI models — were the 400 source pre-this-PR.
+      ['https://api.openai.com/v1',                                 'gpt-4o'],
+      ['https://api.openai.com/v1',                                 'gpt-4'],
+      ['https://api.openai.com/v1',                                 'gpt-4-turbo'],
+      ['https://api.openai.com/v1',                                 'gpt-3.5-turbo'],
+      ['https://api.openai.com/v1',                                 'text-embedding-3-large'],
+      // Azure tenant hosting a non-reasoning deployment.
+      ['https://my-resource.openai.azure.com/openai/deployments/x', 'gpt-4o'],
+    ])('on %s with non-reasoning model %s → no extras (silent no-op)', (baseUrl, model) => {
+      expect(thinkingExtras(baseUrl, model, true)).toEqual({});
+    });
+  });
+
+  describe('Self-hosted tolerant provider', () => {
+    // Any user-installed model on Ollama/vLLM/etc. — the toggle is safe
+    // because tolerant servers ignore unknown fields when the chat
+    // template has no thinking branch.
+    it.each([
+      ['http://localhost:11434/v1',         'qwen3:8b'],
+      ['http://localhost:11434/v1',         'deepseek-r1:14b'],
+      ['http://localhost:11434/v1',         'llama3:8b'],          // non-thinking — no-op upstream
+      ['http://localhost:11434/v1',         'my-team/r1-tune:v2'], // custom name with thinking template
+      ['http://192.168.1.10:8000/v1',       'gpt-oss:20b'],        // vLLM-style host
+      ['https://ollama.internal.example/v1','magistral:7b'],       // arbitrary tolerant host
+      ['http://lmstudio.local/v1',          'phi-4'],
+    ])('on %s with model %s emits think + chat_template_kwargs', (baseUrl, model) => {
+      expect(thinkingExtras(baseUrl, model, true)).toEqual({
+        think: true,
+        chat_template_kwargs: { enable_thinking: true },
+      });
+    });
+  });
+
+  describe('isStrictOpenAiCompatibleHost', () => {
+    it.each([
+      // strict
+      ['https://api.openai.com/v1',                                 true],
+      ['https://api.openai.com:443/v1',                             true],
+      ['https://my-resource.openai.azure.com/openai/deployments/x', true],
+      ['https://contoso.openai.azure.com/v1',                       true],
+      // tolerant
+      ['http://localhost:11434/v1',                                 false],
+      ['http://192.168.1.10:8000/v1',                               false],
+      // adversarial: substring spoofing must not match
+      ['https://my-openai-proxy.example/v1',                        false],
+      ['https://api.openai.com.evil.tld/v1',                        false],
+      ['https://openai.azure.com.evil.tld/v1',                      false],
+      // garbage in → tolerant fallback (safer than a false strict)
+      ['not a url',                                                 false],
+    ])('%s → strict=%s', (baseUrl, expected) => {
+      expect(isStrictOpenAiCompatibleHost(baseUrl)).toBe(expected);
+    });
+  });
+
+  describe('isOpenAiReasoningModel', () => {
+    it.each([
+      ['o3',         true],
+      ['o3-mini',    true],
+      ['o4-mini',    true],
+      ['o9-future',  true],
+      ['gpt-5',      true],
+      ['gpt-5-pro',  true],
+      // o1 family predates `reasoning_effort` — must NOT be flagged.
+      ['o1',         false],
+      ['o1-mini',    false],
+      ['o1-preview', false],
+      ['o2',         false], // didn't ship; reserved to avoid false-positive on hypothetical naming
+      ['gpt-4o',     false],
+      ['gpt-4',      false],
+      ['gpt-3.5',    false],
+    ])('%s → reasoning=%s', (model, expected) => {
+      expect(isOpenAiReasoningModel(model)).toBe(expected);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Integration — the streamChat() and chat() wire format actually carries
+// what `thinkingExtras` returns. Local capture server is NOT api.openai.com,
+// so this exercises the tolerant branch end-to-end. The strict branch is
+// proven by the pure-function tests above.
+// ---------------------------------------------------------------------------
+describe('openai-compatible-client — thinking-mode integration via streamChat/chat', () => {
+  let capSrv: Server;
+  let capBase: string;
+  let lastBody: Record<string, unknown> | null = null;
+
+  beforeAll(async () => {
+    capSrv = createServer((req, res) => {
+      if (req.url === '/v1/chat/completions') {
+        let body = '';
+        req.on('data', (c) => (body += c));
+        req.on('end', () => {
+          lastBody = JSON.parse(body);
+          const parsed = lastBody as { stream?: boolean };
+          if (parsed.stream) {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+            res.write('data: ' + JSON.stringify({ choices: [{ delta: { content: 'ok' } }] }) + '\n\n');
+            res.write('data: [DONE]\n\n');
+            res.end();
+          } else {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }));
+          }
+        });
+        return;
+      }
+      res.writeHead(404); res.end();
+    });
+    await new Promise<void>((r) => capSrv.listen(0, r));
+    const { port } = capSrv.address() as AddressInfo;
+    capBase = `http://127.0.0.1:${port}/v1`;
+  });
+  afterAll(() => new Promise<void>((r) => capSrv.close(() => r())));
+
+  async function drainStream(model: string, thinking: boolean) {
+    lastBody = null;
+    for await (const _chunk of streamChat(
+      { ...cfg, baseUrl: capBase, providerId: `thinking-${model}-${thinking}` },
+      model,
+      [{ role: 'user', content: 'hi' }],
+      undefined,
+      { thinking },
+    )) { void _chunk; }
+    return lastBody;
+  }
+
+  it('streamChat with thinking=false: no reasoning extras on the wire', async () => {
+    const body = await drainStream('qwen3:8b', false);
+    expect(body).not.toHaveProperty('think');
+    expect(body).not.toHaveProperty('chat_template_kwargs');
+    expect(body).not.toHaveProperty('reasoning_effort');
+  });
+
+  it('streamChat with thinking=true: tolerant-host extras land on the wire', async () => {
+    const body = await drainStream('qwen3:8b', true);
+    expect(body).toMatchObject({
+      think: true,
+      chat_template_kwargs: { enable_thinking: true },
+    });
+    expect(body).not.toHaveProperty('reasoning_effort');
+  });
+
+  it('chat (non-streaming) also forwards thinking extras', async () => {
+    lastBody = null;
+    await chat(
+      { ...cfg, baseUrl: capBase, providerId: 'thinking-chat-nonstream' },
+      'qwen3:8b',
+      [{ role: 'user', content: 'hi' }],
+      { thinking: true },
+    );
+    expect(lastBody).toMatchObject({
+      stream: false,
+      think: true,
+      chat_template_kwargs: { enable_thinking: true },
+    });
   });
 });
 

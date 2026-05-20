@@ -198,7 +198,7 @@ function ProgressBar({ completed, total }: { completed: number; total: number })
     <div className="flex items-center gap-3" data-testid="progress-bar">
       <div className="h-1.5 flex-1 rounded-full bg-foreground/10 overflow-hidden">
         <m.div
-          className="h-full rounded-full bg-primary"
+          className="h-full rounded-full bg-action"
           animate={{ width: `${percentage}%` }}
           transition={shouldReduce ? { duration: 0 } : { type: 'spring', stiffness: 100, damping: 20 }}
         />
@@ -246,7 +246,7 @@ function WorkerCard({ title, statusKey, statusEndpoint, runEndpoint, rescanEndpo
           <button
             onClick={() => runNow.mutate()}
             disabled={runNow.isPending}
-            className="flex items-center gap-1 rounded-lg bg-primary/10 px-2.5 py-1.5 text-xs font-medium text-primary hover:bg-primary/20 transition-colors disabled:opacity-50"
+            className="inline-flex items-center gap-1 rounded-lg border border-action bg-transparent px-2.5 py-1.5 text-xs font-medium text-action transition-colors hover:bg-action hover:text-action-foreground disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
             title="Process pending items now"
             data-testid={`${statusKey}-run-now`}
           >

@@ -222,4 +222,17 @@ describe('UserMenu', () => {
       expect(mockNavigate).toHaveBeenCalledWith('/admin/analytics');
     });
   });
+
+  // Task 5 — avatar initial bubble is brand chrome (not an AI affordance), so
+  // it must route to ink-action and not amber. The Playwright contrast spec in
+  // Task 6 will catch the colour combo at run-time; this guards the contract
+  // at the unit level so a future regression can't quietly re-amber it.
+  it('user avatar uses ink-action, not amber (avatar is brand chrome, not AI)', () => {
+    mockUser = { username: 'simon', role: 'user' };
+    renderUserMenu();
+    const avatar = screen.getByTestId('user-avatar-initial');
+    expect(avatar.className).not.toMatch(/text-primary|bg-primary/);
+    expect(avatar.className).toMatch(/bg-action/);
+    expect(avatar.className).toMatch(/text-action-foreground/);
+  });
 });

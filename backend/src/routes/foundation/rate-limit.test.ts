@@ -142,16 +142,18 @@ describe.skipIf(!dbAvailable)('Per-route rate limiting', () => {
     });
   });
 
-  describe('Global rate limit (100/min)', () => {
+  describe('Global rate limit (300/min)', () => {
     it('should have global fallback rate limit on health endpoint', async () => {
       const response = await app.inject({
         method: 'GET',
         url: '/api/health',
       });
 
-      // Health route should use global limit (100)
+      // Health route should use global limit (300/min — see DEFAULTS
+      // in rate-limit-service.ts). 100/min was too tight for a SPA where
+      // each Pages-list mount fires ~6 GETs.
       if (response.headers['x-ratelimit-limit']) {
-        expect(parseInt(response.headers['x-ratelimit-limit'] as string, 10)).toBe(100);
+        expect(parseInt(response.headers['x-ratelimit-limit'] as string, 10)).toBe(300);
       }
     });
   });

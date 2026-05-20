@@ -3,7 +3,6 @@ import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useAuthStore } from '../../stores/auth-store';
 import { apiFetch } from '../../shared/lib/api';
-import { CompendiqLogo } from '../../shared/components/CompendiqLogo';
 
 export function LoginPage() {
   const navigate = useNavigate();
@@ -36,11 +35,12 @@ export function LoginPage() {
   return (
     <div className="bg-background flex min-h-screen items-center justify-center p-4">
       <div className="w-full max-w-md rounded-xl border border-border/40 bg-card/50 p-8 backdrop-blur-sm">
-        <div className="mb-2 flex flex-col items-center gap-3">
-          <CompendiqLogo size={56} className="text-primary" animated />
-          <h1 className="text-center text-2xl font-bold">
-            Compendiq
-          </h1>
+        <div className="mb-2 flex flex-col items-center">
+          <img
+            src="/compendiq-lockup-horizontal.svg"
+            alt="Compendiq"
+            className="h-16 w-auto"
+          />
         </div>
         <p className="mb-8 text-center text-sm text-muted-foreground">
           {isRegister ? 'Create your account' : 'Sign in to your account'}
@@ -88,7 +88,7 @@ export function LoginPage() {
           {isRegister ? 'Already have an account?' : "Don't have an account?"}{' '}
           <button
             onClick={() => setIsRegister(!isRegister)}
-            className="text-primary hover:underline"
+            className="text-action hover:underline"
           >
             {isRegister ? 'Sign in' : 'Create one'}
           </button>

@@ -15,40 +15,24 @@ import type { SettingsResponse } from '@compendiq/contracts';
 // Each entry produces its own chunk at `npm run build`. Keep this aligned
 // with `settings-nav.ts`: if a nav entry exists there, it must have a
 // matching key here (enforced at runtime — mismatch renders "unknown panel").
+//
+// The consolidation pass collapsed several adjacent panels into wrapper
+// components that render sub-tabs inside one rail entry.
 // ---------------------------------------------------------------------------
 
 const ConfluenceTab = lazy(() => import('./panels/ConfluenceTab').then((m) => ({ default: m.ConfluenceTab })));
-const SyncTab = lazy(() => import('./panels/SyncTab').then((m) => ({ default: m.SyncTab })));
-const SpacesTab = lazy(() => import('./SpacesTab').then((m) => ({ default: m.SpacesTab })));
-const LlmTab = lazy(() => import('./panels/LlmTab').then((m) => ({ default: m.LlmTab })));
 const AiPromptsTab = lazy(() => import('./panels/AiPromptsTab').then((m) => ({ default: m.AiPromptsTab })));
-const AiSafetyTab = lazy(() => import('./AiSafetyTab').then((m) => ({ default: m.AiSafetyTab })));
-const RateLimitsTab = lazy(() => import('./RateLimitsTab').then((m) => ({ default: m.RateLimitsTab })));
 const ThemeTab = lazy(() => import('./ThemeTab').then((m) => ({ default: m.ThemeTab })));
 const LabelManager = lazy(() => import('./LabelManager').then((m) => ({ default: m.LabelManager })));
-const ErrorDashboard = lazy(() => import('./ErrorDashboard').then((m) => ({ default: m.ErrorDashboard })));
-const EmbeddingTab = lazy(() => import('./panels/EmbeddingTab').then((m) => ({ default: m.EmbeddingTab })));
-const WorkersTab = lazy(() => import('./WorkersTab').then((m) => ({ default: m.WorkersTab })));
-const McpDocsTab = lazy(() => import('./McpDocsTab').then((m) => ({ default: m.McpDocsTab })));
-const SearxngTab = lazy(() => import('./SearxngTab').then((m) => ({ default: m.SearxngTab })));
-const SmtpSettingsTab = lazy(() => import('./SmtpSettingsTab').then((m) => ({ default: m.SmtpSettingsTab })));
 const LicenseStatusCard = lazy(() => import('../admin/LicenseStatusCard').then((m) => ({ default: m.LicenseStatusCard })));
-const OidcSettingsPage = lazy(() => import('../admin/OidcSettingsPage').then((m) => ({ default: m.OidcSettingsPage })));
-const IpAllowlistTab = lazy(() => import('../admin/IpAllowlistTab').then((m) => ({ default: m.IpAllowlistTab })));
-const WebhooksTab = lazy(() => import('../admin/WebhooksTab').then((m) => ({ default: m.WebhooksTab })));
-const LlmPolicyTab = lazy(() => import('../admin/LlmPolicyTab').then((m) => ({ default: m.LlmPolicyTab })));
-const DataRetentionTab = lazy(() => import('../admin/DataRetentionTab').then((m) => ({ default: m.DataRetentionTab })));
-const LlmAuditPage = lazy(() => import('../admin/LlmAuditPage').then((m) => ({ default: m.LlmAuditPage })));
-const ScimSettingsPage = lazy(() => import('../admin/ScimSettingsPage').then((m) => ({ default: m.ScimSettingsPage })));
-const ComplianceReportsTab = lazy(() => import('../admin/ComplianceReportsTab').then((m) => ({ default: m.ComplianceReportsTab })));
-const RbacPage = lazy(() => import('../admin/RbacPage').then((m) => ({ default: m.RbacPage })));
-const UsersAdminPage = lazy(() => import('../admin/UsersAdminPage').then((m) => ({ default: m.UsersAdminPage })));
-const SyncConflictPolicyTab = lazy(() => import('../admin/SyncConflictPolicyTab').then((m) => ({ default: m.SyncConflictPolicyTab })));
-const SyncConflictsPage = lazy(() => import('../admin/SyncConflictsPage').then((m) => ({ default: m.SyncConflictsPage })));
-const AiReviewPolicyTab = lazy(() => import('../admin/AiReviewPolicyTab').then((m) => ({ default: m.AiReviewPolicyTab })));
-const PiiPolicyTab = lazy(() => import('../admin/PiiPolicyTab').then((m) => ({ default: m.PiiPolicyTab })));
-const ReviewerQueuePage = lazy(() => import('../ai/ReviewerQueuePage').then((m) => ({ default: m.ReviewerQueuePage })));
-const SystemTab = lazy(() => import('./panels/SystemTab').then((m) => ({ default: m.SystemTab })));
+
+const SpacesSyncWrapper = lazy(() => import('./wrappers/SpacesSyncWrapper').then((m) => ({ default: m.SpacesSyncWrapper })));
+const AiModelsWrapper = lazy(() => import('./wrappers/AiModelsWrapper').then((m) => ({ default: m.AiModelsWrapper })));
+const AiSafetyWrapper = lazy(() => import('./wrappers/AiSafetyWrapper').then((m) => ({ default: m.AiSafetyWrapper })));
+const AccessControlWrapper = lazy(() => import('./wrappers/AccessControlWrapper').then((m) => ({ default: m.AccessControlWrapper })));
+const ComplianceWrapper = lazy(() => import('./wrappers/ComplianceWrapper').then((m) => ({ default: m.ComplianceWrapper })));
+const IntegrationsWrapper = lazy(() => import('./wrappers/IntegrationsWrapper').then((m) => ({ default: m.IntegrationsWrapper })));
+const DiagnosticsWrapper = lazy(() => import('./wrappers/DiagnosticsWrapper').then((m) => ({ default: m.DiagnosticsWrapper })));
 
 type PanelRenderer = (ctx: PanelRenderContext) => ReactElement;
 
@@ -71,6 +55,7 @@ const renderWithSettings = (Component: ComponentType<{ settings: SettingsRespons
 
 // Map of `<category>/<item>` → panel renderer. Keep in sync with settings-nav.ts.
 const PANELS: Readonly<Record<string, PanelRenderer>> = {
+  // Personal
   'personal/confluence': renderWithSettings(ConfluenceTab),
   'personal/ai-prompts': ({ settings, isLoading, onSaveSettings, isAdmin }) => {
     if (isLoading || !settings) return <SkeletonFormFields />;
@@ -78,48 +63,28 @@ const PANELS: Readonly<Record<string, PanelRenderer>> = {
   },
   'personal/theme': ({ onSaveSettings }) => <ThemeTab onSave={onSaveSettings} />,
 
-  'content/spaces': ({ settings, isLoading, onSaveSettingsAsync }) => {
-    if (isLoading || !settings) return <SkeletonFormFields />;
-    return (
-      <SpacesTab
-        selectedSpaces={settings.selectedSpaces ?? []}
-        showSpaceHomeContent={settings.showSpaceHomeContent ?? true}
-        onSave={onSaveSettingsAsync}
-      />
-    );
-  },
-  'content/sync': () => <SyncTab />,
-  'content/sync-conflict-policy': () => <SyncConflictPolicyTab />,
-  'content/sync-conflicts': () => <SyncConflictsPage />,
-  'content/labels': () => <LabelManager />,
+  // Knowledge
+  'knowledge/spaces': ({ settings, isLoading, onSaveSettingsAsync }) => (
+    <SpacesSyncWrapper
+      settings={settings}
+      isLoading={isLoading}
+      onSaveSettingsAsync={onSaveSettingsAsync}
+    />
+  ),
+  'knowledge/labels': () => <LabelManager />,
 
-  'ai/llm': () => <LlmTab />,
-  'ai/embedding': () => <EmbeddingTab />,
-  'ai/ai-safety': () => <AiSafetyTab />,
-  'ai/workers': () => <WorkersTab />,
-  'ai/llm-policy': () => <LlmPolicyTab />,
-  'ai/llm-audit': () => <LlmAuditPage />,
-  'ai/ai-reviews': () => <ReviewerQueuePage />,
-  'ai/ai-review-policy': () => <AiReviewPolicyTab />,
-  'ai/pii-policy': () => <PiiPolicyTab />,
+  // AI
+  'ai/models': () => <AiModelsWrapper />,
+  'ai/ai-safety': () => <AiSafetyWrapper />,
 
-  'integrations/email': () => <SmtpSettingsTab />,
-  'integrations/searxng': () => <SearxngTab />,
-  'integrations/mcp-docs': () => <McpDocsTab />,
+  // Governance
+  'governance/access': () => <AccessControlWrapper />,
+  'governance/compliance': () => <ComplianceWrapper />,
 
-  'security/users': () => <UsersAdminPage />,
-  'security/rbac': () => <RbacPage />,
-  'security/rate-limits': () => <RateLimitsTab />,
-  'security/sso': () => <OidcSettingsPage />,
-  'security/ip-allowlist': () => <IpAllowlistTab />,
-  'security/webhooks': () => <WebhooksTab />,
-  'security/scim': () => <ScimSettingsPage />,
-  'security/retention': () => <DataRetentionTab />,
-  'security/compliance-reports': () => <ComplianceReportsTab />,
-
+  // System
+  'system/integrations': () => <IntegrationsWrapper />,
   'system/license': () => <LicenseStatusCard />,
-  'system/errors': () => <ErrorDashboard />,
-  'system/system': () => <SystemTab />,
+  'system/diagnostics': () => <DiagnosticsWrapper />,
 };
 
 /**
@@ -146,11 +111,7 @@ export function SettingsPanelRoute() {
     onError: (err: Error) => toast.error(err.message),
   });
 
-  // Gating check: confirm the item in the URL corresponds to a nav entry the
-  // user is allowed to see. This covers:
-  //   - unknown /settings/foo/bar paths (typos, stale bookmarks)
-  //   - an admin-only item accessed by a non-admin via direct URL
-  //   - a feature-flagged item accessed without the feature (downgraded plan)
+  // Gating check against the live nav config.
   const groupId = category;
   const itemId = item;
   const navItem =
@@ -164,12 +125,11 @@ export function SettingsPanelRoute() {
   }
 
   // Defer the EE-gated redirect until the /admin/license fetch resolves.
-  // Without this, a cold deep-link like `/settings/ai/llm-policy` by an EE
-  // admin races the license fetch — `useEnterprise()` returns
+  // Without this, a cold deep-link like `/settings/governance/compliance` by
+  // an EE admin races the license fetch — `useEnterprise()` returns
   // `{ isEnterprise: false, hasFeature: () => false }` for ~50–200ms, and the
   // gate fires before the real license lands, redirecting the user away
-  // from their bookmarked URL. Admin-only (but not EE-only) items don't hit
-  // this path — `isAdmin` is synchronous from the auth store.
+  // from their bookmarked URL.
   const needsEnterpriseResolution = !!(navItem.enterpriseOnly || navItem.requiresFeature);
   if (needsEnterpriseResolution && ctx.isEnterpriseLoading) {
     return <SkeletonFormFields />;
@@ -179,7 +139,6 @@ export function SettingsPanelRoute() {
     return <Navigate to={firstVisiblePath(ctx)} replace />;
   }
 
-  // Also guard on auth store: if user logged out mid-session, bounce.
   if (!user) return <Navigate to="/login" replace />;
 
   const render = PANELS[key];

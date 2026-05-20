@@ -1,8 +1,9 @@
 {
   "name": "backend",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
+  "//hoisting-note": "`p-limit` and `ipaddr.js` are ALSO declared in the root package.json `dependencies` block to force npm to hoist them to root node_modules. The runtime Docker stage only copies the root tree, so any version pinned here that ends up nested under backend/node_modules disappears at runtime. If you change the ranges below, update the root mirror in lockstep — the docker-build smoke step is the safety net but local repros are faster.",
   "scripts": {
     "dev": "tsx watch --env-file=../.env src/index.ts",
     "build": "tsc -p tsconfig.build.json",
@@ -26,8 +27,8 @@
     "@fastify/swagger-ui": "^5.2.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@opentelemetry/api": "^1.9.0",
-    "@opentelemetry/auto-instrumentations-node": "^0.71.0",
-    "@opentelemetry/sdk-node": "^0.213.0",
+    "@opentelemetry/auto-instrumentations-node": "^0.76.0",
+    "@opentelemetry/sdk-node": "^0.218.0",
     "bcrypt": "^6.0.0",
     "bullmq": "^5.76.5",
     "fastify": "^5.8.5",

@@ -105,13 +105,13 @@ export function LabelManager() {
       {mergeSource && (
         <div className="rounded-lg border border-border/50 bg-foreground/5 p-3" data-testid="merge-dialog">
           <p className="mb-2 text-sm">
-            Merge <span className="font-medium text-primary">{mergeSource}</span> into:
+            Merge <span className="font-medium text-action">{mergeSource}</span> into:
           </p>
           <div className="flex gap-2">
             <select
               value={mergeTarget}
               onChange={(e) => setMergeTarget(e.target.value)}
-              className="flex-1 rounded-md bg-foreground/5 px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-primary"
+              className="nm-select-md flex-1"
               data-testid="merge-target-select"
             >
               <option value="">Select target label...</option>
@@ -126,7 +126,7 @@ export function LabelManager() {
             <button
               onClick={handleMerge}
               disabled={!mergeTarget || renameLabel.isPending}
-              className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              className="rounded-md border border-action bg-transparent px-3 py-1.5 text-xs font-medium text-action transition-colors hover:bg-action hover:text-action-foreground disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
               data-testid="merge-confirm-btn"
             >
               Merge

@@ -4,11 +4,11 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
 import { Plus, LayoutGrid, FolderOpen } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
-import DOMPurify from 'dompurify';
 import { toast } from 'sonner';
 import { apiFetch } from '../../shared/lib/api';
 import { TemplateCard, type Template } from './TemplateCard';
 import { EmptyState } from '../../shared/components/feedback/EmptyState';
+import { SanitizedHtml } from '../../shared/components/SanitizedHtml';
 import { cn } from '../../shared/lib/cn';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 
@@ -69,15 +69,7 @@ export function TemplatesPage() {
     setPreviewTemplate(template);
   }, []);
 
-  const sanitizedPreviewHtml = useMemo(
-    () =>
-      previewTemplate
-        ? DOMPurify.sanitize(previewTemplate.bodyHtml, {
-            ADD_ATTR: ['data-diagram-name', 'data-drawio', 'data-color', 'data-layout-type', 'data-cell-width', 'data-border'],
-          })
-        : '',
-    [previewTemplate],
-  );
+  const previewBodyHtml = previewTemplate?.bodyHtml ?? '';
 
   return (
     <div className="space-y-6">
@@ -91,7 +83,7 @@ export function TemplatesPage() {
         </div>
         <button
           onClick={() => navigate('/pages/new')}
-          className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
         >
           <Plus size={16} />
           Create Template
@@ -107,7 +99,7 @@ export function TemplatesPage() {
             className={cn(
               'rounded-md px-3.5 py-1.5 text-sm transition-colors',
               activeCategory === cat
-                ? 'bg-primary/15 font-medium text-primary'
+                ? 'bg-action/15 font-medium text-action'
                 : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
             )}
             data-testid={`category-tab-${cat.toLowerCase()}`}
@@ -166,9 +158,10 @@ export function TemplatesPage() {
                 <Dialog.Description className="mb-4 text-sm text-muted-foreground">
                   {previewTemplate.description}
                 </Dialog.Description>
-                <div
+                <SanitizedHtml
                   className={cn('prose max-w-none rounded-lg border border-border/30 bg-foreground/5 p-4', !isLight && 'prose-invert')}
-                  dangerouslySetInnerHTML={{ __html: sanitizedPreviewHtml }}
+                  html={previewBodyHtml}
+                  additionalAllowedAttrs={['data-diagram-name', 'data-drawio', 'data-color', 'data-layout-type', 'data-cell-width', 'data-border']}
                 />
                 <div className="mt-4 flex justify-end gap-2">
                   <Dialog.Close asChild>
@@ -182,7 +175,7 @@ export function TemplatesPage() {
                         void handleUse(previewTemplate);
                       }
                     }}
-                    className="flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
                   >
                     Use Template
                   </button>

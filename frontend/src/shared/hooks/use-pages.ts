@@ -109,6 +109,11 @@ export function usePages(params: PageFilters = {}) {
   return useQuery<PaginatedPages>({
     queryKey,
     queryFn: () => apiFetch(`/pages${qs ? `?${qs}` : ''}`),
+    // Cache list responses for 30s so rapid back/forward between list and
+    // detail pages reuses cached data instead of firing a fresh request on
+    // every remount — that pattern can otherwise trip the backend's global
+    // rate limit and leave the query in an unrecoverable error state.
+    staleTime: 30_000,
   });
 }
 
@@ -370,6 +375,69 @@ export function useUnpinPage() {
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['pages', 'pinned'] });
+    },
+  });
+}
+
+// ======== Single-page sync / re-embed (PR right-pane parity) ========
+//
+// Both endpoints accept an array of IDs; we pass a singleton. The bulk
+// routes already do the right per-page validation (auth, ownership,
+// queue gating), so wrapping them here is cheaper than adding new
+// single-page routes and keeps backend semantics identical between the
+// bulk-actions toolbar on /pages and the per-article right pane.
+
+interface SinglePageBulkResult {
+  succeeded: number;
+  failed: number;
+  errors: string[];
+}
+
+export function useResyncPage() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<SinglePageBulkResult>('/pages/bulk/sync', {
+        method: 'POST',
+        body: JSON.stringify({ ids: [id] }),
+      }),
+    onSuccess: (_data, id) => {
+      queryClient.invalidateQueries({ queryKey: ['pages', id] });
+      queryClient.invalidateQueries({ queryKey: ['pages'], refetchType: 'none' });
+      queryClient.refetchQueries({ queryKey: ['pages'] });
+    },
+  });
+}
+
+export function useReembedPage() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<SinglePageBulkResult>('/pages/bulk/embed', {
+        method: 'POST',
+        body: JSON.stringify({ ids: [id] }),
+      }),
+    onSuccess: (_data, id) => {
+      queryClient.invalidateQueries({ queryKey: ['pages', id] });
+      queryClient.invalidateQueries({ queryKey: ['embeddings'], refetchType: 'none' });
+      queryClient.invalidateQueries({ queryKey: ['pages'], refetchType: 'none' });
+      queryClient.refetchQueries({ queryKey: ['embeddings'] });
+    },
+  });
+}
+
+export function useRequalityPage() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<SinglePageBulkResult>('/pages/bulk/quality', {
+        method: 'POST',
+        body: JSON.stringify({ ids: [id] }),
+      }),
+    onSuccess: (_data, id) => {
+      queryClient.invalidateQueries({ queryKey: ['pages', id] });
+      queryClient.invalidateQueries({ queryKey: ['pages'], refetchType: 'none' });
+      queryClient.refetchQueries({ queryKey: ['pages'] });
     },
   });
 }

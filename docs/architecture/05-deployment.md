@@ -164,7 +164,15 @@ flowchart LR
    default size × replicas should stay below `max_connections` at the
    Postgres side. Tune `PG_POOL_MAX` if scaling past 4 replicas.
 
-5. **Health probes.** Use `GET /api/health` for the LB readiness probe
+5. **Redis kernel tuning (production hosts only).** On boot, Redis
+   logs `WARNING Memory overcommit must be enabled!`. On dev/test
+   machines this is harmless. For production deployments, set
+   `vm.overcommit_memory=1` on the host
+   (`sysctl vm.overcommit_memory=1`, then persist in
+   `/etc/sysctl.conf`) so background saves don't fail under
+   low-memory conditions.
+
+6. **Health probes.** Use `GET /api/health` for the LB readiness probe
    (public, no auth). Use `GET /api/internal/health?token=<t>` for an
    external mgmt poller — token-gated, returns richer diagnostics
    (version, edition, dirty pages, last-sync timestamp, error rate).

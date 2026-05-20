@@ -2,7 +2,6 @@ import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { m } from 'framer-motion';
-import DOMPurify from 'dompurify';
 import {
   Search, FileText, ChevronLeft, ChevronRight,
   Filter, X, SlidersHorizontal, Inbox, Loader2, AlertTriangle,
@@ -10,6 +9,7 @@ import {
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
 import { useSearch, type SearchResultItem } from '../../shared/hooks/use-search';
+import { SanitizedHtml } from '../../shared/components/SanitizedHtml';
 
 type SearchMode = 'keyword' | 'semantic' | 'hybrid';
 type SortOption = 'relevance' | 'modified' | 'title';
@@ -55,19 +55,23 @@ function escapeHtml(str: string): string {
 }
 
 /**
- * Highlight search terms in text by wrapping matches in <mark> tags.
+ * Build highlight markup for a search term in text. Returns an HTML string
+ * where all literal segments are HTML-escaped and only matches are wrapped
+ * in <mark>. The caller MUST pass the result through SanitizedHtml (with a
+ * `<mark>`-only allowlist) to render — sanitization is the security boundary,
+ * not this function.
+ *
  * Uses case-insensitive string splitting instead of RegExp to avoid ReDoS.
- * All segments are HTML-escaped before assembly; output is then sanitized
- * with DOMPurify as a secondary defense.
  */
 function highlightText(text: string, query: string): string {
   const trimmed = query.trim();
-  if (!trimmed) return DOMPurify.sanitize(escapeHtml(text));
+  if (!trimmed) return escapeHtml(text);
 
   // If the text already contains server-side <mark> tags (e.g. from ts_headline),
-  // return it sanitized as-is to avoid double-escaping the existing markup.
+  // pass it through unchanged — SanitizedHtml's <mark>-only allowlist will
+  // strip anything else.
   if (/<mark\b[^>]*>/.test(text)) {
-    return DOMPurify.sanitize(text, { ALLOWED_TAGS: ['mark'], ALLOWED_ATTR: ['class'] });
+    return text;
   }
 
   const lowerText = text.toLowerCase();
@@ -85,11 +89,11 @@ function highlightText(text: string, query: string): string {
       parts.push(escapeHtml(text.slice(cursor, idx)));
     }
     const matched = text.slice(idx, idx + trimmed.length);
-    parts.push(`<mark class="bg-primary/20 text-foreground rounded px-0.5">${escapeHtml(matched)}</mark>`);
+    parts.push(`<mark class="bg-action/20 text-foreground rounded px-0.5">${escapeHtml(matched)}</mark>`);
     cursor = idx + trimmed.length;
   }
 
-  return DOMPurify.sanitize(parts.join(''), { ALLOWED_TAGS: ['mark'], ALLOWED_ATTR: ['class'] });
+  return parts.join('');
 }
 
 function SearchResultCard({ item, query, navigate }: {
@@ -106,24 +110,18 @@ function SearchResultCard({ item, query, navigate }: {
       <div className="flex items-start gap-3">
         <FileText size={18} className="mt-0.5 shrink-0 text-muted-foreground" />
         <div className="min-w-0 flex-1">
-          <p
+          <SanitizedHtml
             className="font-medium"
-            dangerouslySetInnerHTML={{
-              __html: DOMPurify.sanitize(
-                highlightText(item.title, query),
-                { ALLOWED_TAGS: ['mark'], ALLOWED_ATTR: ['class'] },
-              ),
-            }}
+            html={highlightText(item.title, query)}
+            allowedTags={['mark']}
+            allowedAttrs={['class']}
           />
           {item.excerpt && (
-            <p
+            <SanitizedHtml
               className="mt-1 line-clamp-2 text-sm text-muted-foreground"
-              dangerouslySetInnerHTML={{
-                __html: DOMPurify.sanitize(
-                  highlightText(item.excerpt.slice(0, 200), query),
-                  { ALLOWED_TAGS: ['mark'], ALLOWED_ATTR: ['class'] },
-                ),
-              }}
+              html={highlightText(item.excerpt.slice(0, 200), query)}
+              allowedTags={['mark']}
+              allowedAttrs={['class']}
             />
           )}
           <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
@@ -242,7 +240,7 @@ export function SearchPage() {
               size={18}
               className={cn(
                 'absolute left-3 top-1/2 -translate-y-1/2',
-                (isLoadingImmediate || isLoadingEnhanced) ? 'text-primary animate-pulse' : 'text-muted-foreground',
+                (isLoadingImmediate || isLoadingEnhanced) ? 'text-action animate-pulse' : 'text-muted-foreground',
               )}
             />
             <input
@@ -269,7 +267,7 @@ export function SearchPage() {
           <select
             value={sort}
             onChange={(e) => { setSort(e.target.value as SortOption); setPage(1); }}
-            className="rounded-md bg-foreground/5 px-3 py-3 text-sm outline-none focus:ring-1 focus:ring-primary"
+            className="nm-select-md"
             data-testid="search-sort"
           >
             <option value="relevance">Relevance</option>
@@ -283,7 +281,7 @@ export function SearchPage() {
             className={cn(
               'flex items-center gap-1.5 rounded-md px-3 py-3 text-sm transition-colors',
               showFilters || activeFilterCount > 0
-                ? 'bg-primary/15 text-primary'
+                ? 'bg-action/15 text-action'
                 : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
             )}
             data-testid="search-filters-toggle"
@@ -291,7 +289,7 @@ export function SearchPage() {
             <SlidersHorizontal size={14} />
             Filters
             {activeFilterCount > 0 && (
-              <span className="ml-1 flex h-5 w-5 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground">
+              <span className="ml-1 flex h-5 w-5 items-center justify-center rounded-full bg-action text-[10px] font-bold text-action-foreground">
                 {activeFilterCount}
               </span>
             )}
@@ -310,7 +308,7 @@ export function SearchPage() {
                 'rounded-full px-3 py-1 text-xs font-medium transition-colors capitalize',
                 'disabled:cursor-not-allowed disabled:opacity-40',
                 searchMode === m
-                  ? 'bg-primary text-primary-foreground'
+                  ? 'bg-action text-action-foreground'
                   : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
               )}
             >
@@ -321,7 +319,7 @@ export function SearchPage() {
           {isLoadingEnhanced && (
             <Loader2
               size={14}
-              className="ml-1 animate-spin text-primary"
+              className="ml-1 animate-spin text-action"
               data-testid="enhanced-loading-indicator"
             />
           )}
@@ -339,7 +337,7 @@ export function SearchPage() {
               <select
                 value={filters.source ?? ''}
                 onChange={(e) => updateFilter('source', e.target.value as SearchFilters['source'])}
-                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="nm-select-md w-full"
                 data-testid="filter-source"
               >
                 <option value="">All Sources</option>
@@ -354,7 +352,7 @@ export function SearchPage() {
               <select
                 value={filters.spaceKey ?? ''}
                 onChange={(e) => updateFilter('spaceKey', e.target.value)}
-                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="nm-select-md w-full"
                 data-testid="filter-space"
               >
                 <option value="">All Spaces</option>
@@ -370,7 +368,7 @@ export function SearchPage() {
               <select
                 value={filters.author ?? ''}
                 onChange={(e) => updateFilter('author', e.target.value)}
-                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="nm-select-md w-full"
                 data-testid="filter-author"
               >
                 <option value="">All Authors</option>
@@ -386,7 +384,7 @@ export function SearchPage() {
               <select
                 value={filters.labels ?? ''}
                 onChange={(e) => updateFilter('labels', e.target.value)}
-                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="nm-select-md w-full"
                 data-testid="filter-labels"
               >
                 <option value="">All Labels</option>
@@ -403,7 +401,7 @@ export function SearchPage() {
                 type="date"
                 value={filters.dateFrom ?? ''}
                 onChange={(e) => updateFilter('dateFrom', e.target.value)}
-                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="nm-select-md w-full"
                 data-testid="filter-date-from"
               />
             </div>
@@ -413,7 +411,7 @@ export function SearchPage() {
                 type="date"
                 value={filters.dateTo ?? ''}
                 onChange={(e) => updateFilter('dateTo', e.target.value)}
-                className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                className="nm-select-md w-full"
                 data-testid="filter-date-to"
               />
             </div>
@@ -492,7 +490,7 @@ export function SearchPage() {
           </p>
           <button
             onClick={() => navigate(`/knowledge-requests?title=${encodeURIComponent(activeQuery)}`)}
-            className="mt-4 flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            className="mt-4 inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
             data-testid="request-content-cta"
           >
             <Filter size={14} />

@@ -353,7 +353,7 @@ export function GraphPage() {
     return (
       <div className="flex h-full items-center justify-center">
         <div className="nm-card flex flex-col items-center gap-4 p-8">
-          <RefreshCw className="h-8 w-8 animate-spin text-primary" />
+          <RefreshCw className="h-8 w-8 animate-spin text-action" />
           <p className="text-muted-foreground">Loading knowledge graph...</p>
         </div>
       </div>
@@ -408,7 +408,7 @@ export function GraphPage() {
                 onClick={() => setViewMode('individual')}
                 className={cn(
                   'nm-icon-button p-2',
-                  viewMode === 'individual' && 'bg-primary/15 text-primary',
+                  viewMode === 'individual' && 'bg-action/15 text-action',
                 )}
                 aria-label="Individual view"
                 data-testid="graph-view-individual"
@@ -420,7 +420,7 @@ export function GraphPage() {
                 onClick={() => setViewMode('clustered')}
                 className={cn(
                   'nm-icon-button p-2',
-                  viewMode === 'clustered' && 'bg-primary/15 text-primary',
+                  viewMode === 'clustered' && 'bg-action/15 text-action',
                 )}
                 aria-label="Cluster view"
                 data-testid="graph-view-clustered"
@@ -894,7 +894,7 @@ export function GraphFilterSidebar({
                 className={cn(
                   'rounded-full px-2 py-0.5 text-[10px] transition-colors',
                   labels.includes(label)
-                    ? 'bg-primary/20 text-primary'
+                    ? 'bg-action/20 text-action'
                     : 'bg-foreground/5 text-muted-foreground hover:text-foreground',
                 )}
                 data-testid="filter-label-chip"

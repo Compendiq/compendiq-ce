@@ -141,12 +141,12 @@ describe('NewSpacePage', () => {
     renderPage();
     const codeButton = screen.getByTitle('Code');
 
-    // Select
+    // Select — icon selection is non-AI chrome (Task 5 — amber reserved for AI affordances).
     fireEvent.click(codeButton);
-    expect(codeButton.className).toContain('border-primary');
+    expect(codeButton.className).toContain('border-action');
 
     // Deselect
     fireEvent.click(codeButton);
-    expect(codeButton.className).not.toContain('border-primary');
+    expect(codeButton.className).not.toContain('border-action');
   });
 });

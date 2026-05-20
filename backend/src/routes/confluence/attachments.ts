@@ -28,6 +28,20 @@ const MAX_XML_BYTES = 25 * 1024 * 1024;
 
 const ATTACHMENTS_BASE = process.env.ATTACHMENTS_DIR ?? 'data/attachments';
 
+// Validation errors thrown by `safeAttachmentPath` and its helpers in
+// `attachment-handler.ts`. Used by the GET route to map a rejected
+// attachment path to 404 instead of letting it bubble up as an
+// uncaught 500.
+const ATTACHMENT_VALIDATION_MESSAGES = new Set([
+  'Invalid page ID',
+  'Invalid filename',
+  'Path traversal detected',
+]);
+
+function isAttachmentValidationError(err: unknown): err is Error {
+  return err instanceof Error && ATTACHMENT_VALIDATION_MESSAGES.has(err.message);
+}
+
 export async function attachmentRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
 
@@ -120,8 +134,29 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
       });
     }
 
-    // Try local cache first
-    let data = await readAttachment(userId, pageId, filename);
+    // Try local cache first. `readAttachment` (and the on-demand
+    // `fetchAndCachePageImage` below) call `safeAttachmentPath`, which
+    // throws on inputs that fail the allow-list (`Invalid page ID`,
+    // `Invalid filename`, `Path traversal detected`). Map those throws
+    // to a clean 404 so an unreachable on-disk path is indistinguishable
+    // from a missing attachment to the client, while logging the rejection.
+    let data: Buffer | null;
+    try {
+      data = await readAttachment(userId, pageId, filename);
+    } catch (err) {
+      if (isAttachmentValidationError(err)) {
+        logger.warn(
+          { userId, pageId, filename, reason: err.message },
+          'Rejected attachment request with invalid path',
+        );
+        return reply.status(404).send({
+          statusCode: 404,
+          error: 'Not Found',
+          message: 'Attachment not found',
+        });
+      }
+      throw err;
+    }
     if (data) {
       logger.debug({ pageId, filename, size: data.length }, 'Serving attachment from local cache');
     }

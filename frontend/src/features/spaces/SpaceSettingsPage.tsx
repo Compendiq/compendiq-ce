@@ -69,7 +69,7 @@ export function SpaceSettingsPage() {
         <p className="text-muted-foreground">Space not found or is not a local space.</p>
         <button
           onClick={() => navigate(-1)}
-          className="mt-4 text-sm text-primary hover:text-primary/80 transition-colors"
+          className="mt-4 text-sm text-action hover:text-action/80 transition-colors"
         >
           Go back
         </button>
@@ -89,8 +89,8 @@ export function SpaceSettingsPage() {
 
       <div className="rounded-xl border border-border/50 bg-card/80 p-6 shadow-lg backdrop-blur-md">
         <div className="mb-6 flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
-            <Settings size={20} className="text-primary" />
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-action/10">
+            <Settings size={20} className="text-action" />
           </div>
           <div>
             <h1 className="text-lg font-semibold text-foreground">Space Settings</h1>
@@ -107,7 +107,7 @@ export function SpaceSettingsPage() {
               Space Key
             </label>
             <div className="flex items-center gap-2 rounded-lg border border-border/30 bg-foreground/5 px-3 py-2">
-              <HardDrive size={14} className="text-primary/70" />
+              <HardDrive size={14} className="text-action/70" />
               <span className="font-mono text-sm text-muted-foreground">{key}</span>
             </div>
             <p className="mt-1 text-[10px] text-muted-foreground">
@@ -155,7 +155,7 @@ export function SpaceSettingsPage() {
             <button
               type="submit"
               disabled={!name.trim() || updateSpace.isPending}
-              className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
             >
               {updateSpace.isPending ? 'Saving...' : 'Save Changes'}
             </button>

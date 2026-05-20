@@ -244,7 +244,7 @@ function BulkUserImportModalInner({
         >
           <div className="flex items-center justify-between border-b border-border/50 px-5 py-4">
             <Dialog.Title className="flex items-center gap-2 text-base font-semibold">
-              <Users size={16} className="text-primary" />
+              <Users size={16} className="text-action" />
               Bulk import users
             </Dialog.Title>
             <Dialog.Close asChild>
@@ -525,7 +525,7 @@ function PreviewStep({
           type="button"
           onClick={onSubmit}
           disabled={applying || summary.valid === 0}
-          className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           data-testid="bulk-import-submit"
         >
           {applying && <Loader2 size={14} className="animate-spin" />}

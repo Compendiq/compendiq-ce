@@ -364,7 +364,7 @@ function ReviewDetailContent({
             className={cn(
               'flex items-center gap-1 px-2 py-1',
               !showHtml
-                ? 'bg-primary/15 text-primary'
+                ? 'bg-primary/15 text-primary-ink'
                 : 'text-muted-foreground hover:bg-foreground/5',
             )}
             data-testid="ai-review-detail-text-toggle"
@@ -377,7 +377,7 @@ function ReviewDetailContent({
             className={cn(
               'flex items-center gap-1 px-2 py-1',
               showHtml
-                ? 'bg-primary/15 text-primary'
+                ? 'bg-primary/15 text-primary-ink'
                 : 'text-muted-foreground hover:bg-foreground/5',
             )}
             data-testid="ai-review-detail-html-toggle"
