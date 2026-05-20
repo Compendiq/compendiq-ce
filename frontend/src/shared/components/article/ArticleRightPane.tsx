@@ -6,6 +6,7 @@ import {
   ExternalLink,
   FileText,
   FolderOpen,
+  Gauge,
   ListTree,
   PanelRight,
   PanelRightClose,
@@ -33,6 +34,7 @@ import {
   usePinnedPages,
   usePinPage,
   useReembedPage,
+  useRequalityPage,
   useResyncPage,
   useUnpinPage,
 } from '../../hooks/use-pages';
@@ -196,6 +198,7 @@ export function ArticleRightPane() {
   const unpinMutation = useUnpinPage();
   const resyncMutation = useResyncPage();
   const reembedMutation = useReembedPage();
+  const requalityMutation = useRequalityPage();
 
   const isPinned = pinnedData?.items.some((item) => item.id === id) ?? false;
 
@@ -408,6 +411,27 @@ export function ArticleRightPane() {
     });
   }, [id, resyncMutation]);
 
+  // Re-run quality analysis for this article. Bulk-endpoint passthrough; the
+  // route resets quality_status to 'pending' and kicks the worker — results
+  // arrive on the next batch tick (seconds-to-minutes depending on queue).
+  // Same silent-no-op handling as Re-sync / Re-embed.
+  const handleRequality = useCallback(() => {
+    if (!id) return;
+    requalityMutation.mutate(id, {
+      onSuccess: (data) => {
+        if (data.succeeded > 0) {
+          toast.success('Quality re-check queued.');
+        } else if (data.failed > 0 || data.errors.length > 0) {
+          toast.error(data.errors[0] ?? 'Quality re-check failed.');
+        } else {
+          toast.info('Nothing to re-check.');
+        }
+      },
+      onError: (err) =>
+        toast.error(err instanceof Error ? err.message : 'Quality re-check failed.'),
+    });
+  }, [id, requalityMutation]);
+
   // Re-embed this article for RAG. Same bulk-endpoint passthrough as resync.
   // Same silent-no-op handling as Re-sync (see comment above).
   const handleReembed = useCallback(() => {
@@ -437,6 +461,8 @@ export function ArticleRightPane() {
 
   // Collapsed rail — glass pill style
   if (collapsed) {
+    const railIconBtn =
+      'rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors disabled:opacity-50';
     return (
       <AnimatePresence mode="wait">
         <m.div
@@ -451,7 +477,7 @@ export function ArticleRightPane() {
           <div className="flex h-12 w-full flex-col items-center justify-center gap-0.5">
             <button
               onClick={toggleSidebar}
-              className="rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
+              className={railIconBtn}
               aria-label="Expand article sidebar"
               title="Expand sidebar (.)"
             >
@@ -459,6 +485,127 @@ export function ArticleRightPane() {
             </button>
             <ShortcutHint shortcutId="toggle-right-panel" />
           </div>
+
+          {!editing && page && (
+            <>
+              <div className="my-1 h-px w-6 bg-[var(--glass-sidebar-divider)]" />
+              <div
+                className="flex w-full flex-col items-center gap-0.5 p-1"
+                data-testid="article-actions-rail"
+              >
+                <button
+                  onClick={() => navigate(`/ai?mode=improve&pageId=${encodeURIComponent(id)}`)}
+                  className={railIconBtn}
+                  aria-label="AI Improve"
+                  title={`AI Improve (${formatKeysForPlatform(getShortcutHint('ai-improve') ?? '', detectMac())})`}
+                >
+                  <Wand2 size={16} />
+                </button>
+
+                {activeModel && (
+                  <AutoTagger
+                    pageId={id}
+                    currentLabels={page?.labels ?? []}
+                    model={activeModel}
+                    className={`${railIconBtn} [&>span]:hidden`}
+                  />
+                )}
+
+                <button
+                  onClick={handleExportPdf}
+                  disabled={exportPdf.isPending}
+                  className={railIconBtn}
+                  aria-label="Export PDF"
+                  title="Export as PDF"
+                >
+                  {exportPdf.isPending ? (
+                    <Loader2 size={16} className="animate-spin" />
+                  ) : (
+                    <FileDown size={16} />
+                  )}
+                </button>
+
+                <button
+                  onClick={handlePinToggle}
+                  className={cn(
+                    'rounded-lg p-1.5 transition-colors',
+                    isPinned
+                      ? 'nm-pill-active text-action'
+                      : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
+                  )}
+                  aria-label={isPinned ? 'Unpin' : 'Pin'}
+                  title={`${isPinned ? 'Unpin' : 'Pin'} (${formatKeysForPlatform(getShortcutHint('pin-page') ?? '', detectMac())})`}
+                >
+                  <Pin size={16} className={cn(isPinned && 'fill-current')} />
+                </button>
+
+                {settings?.confluenceUrl && page.confluenceId && (
+                  <a
+                    href={`${settings.confluenceUrl.replace(/\/+$/, '')}/pages/viewpage.action?pageId=${encodeURIComponent(page.confluenceId)}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className={railIconBtn}
+                    aria-label="Open in Confluence"
+                    title="Open in Confluence"
+                  >
+                    <ExternalLink size={16} />
+                  </a>
+                )}
+
+                {page.confluenceId && (
+                  <button
+                    onClick={handleResync}
+                    disabled={resyncMutation.isPending}
+                    className={railIconBtn}
+                    aria-label="Re-sync from Confluence"
+                    title="Re-sync from Confluence"
+                    data-testid="article-resync-rail-btn"
+                  >
+                    <RefreshCw size={16} className={cn(resyncMutation.isPending && 'animate-spin')} />
+                  </button>
+                )}
+
+                <button
+                  onClick={handleReembed}
+                  disabled={reembedMutation.isPending}
+                  className={railIconBtn}
+                  aria-label="Re-embed for RAG"
+                  title="Re-embed for RAG"
+                  data-testid="article-reembed-rail-btn"
+                >
+                  {reembedMutation.isPending ? (
+                    <Loader2 size={16} className="animate-spin" />
+                  ) : (
+                    <Cpu size={16} />
+                  )}
+                </button>
+
+                <button
+                  onClick={handleRequality}
+                  disabled={requalityMutation.isPending}
+                  className={railIconBtn}
+                  aria-label="Re-check quality"
+                  title="Re-check quality"
+                  data-testid="article-requality-rail-btn"
+                >
+                  {requalityMutation.isPending ? (
+                    <Loader2 size={16} className="animate-spin" />
+                  ) : (
+                    <Gauge size={16} />
+                  )}
+                </button>
+
+                <button
+                  onClick={handleDelete}
+                  className="rounded-lg p-1.5 text-destructive/80 transition-colors hover:bg-destructive/8 hover:text-destructive"
+                  aria-label="Delete article"
+                  title={`Delete (${formatKeysForPlatform(getShortcutHint('delete-page') ?? '', detectMac())})`}
+                >
+                  <Trash2 size={16} />
+                </button>
+              </div>
+            </>
+          )}
         </m.div>
       </AnimatePresence>
     );
@@ -602,6 +749,21 @@ export function ArticleRightPane() {
               <Cpu size={15} className="shrink-0 opacity-70" />
             )}
             <span className="truncate">Re-embed</span>
+          </button>
+
+          <button
+            onClick={handleRequality}
+            disabled={requalityMutation.isPending}
+            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground disabled:opacity-50"
+            title="Re-check quality"
+            data-testid="article-requality-btn"
+          >
+            {requalityMutation.isPending ? (
+              <Loader2 size={15} className="shrink-0 animate-spin opacity-70" />
+            ) : (
+              <Gauge size={15} className="shrink-0 opacity-70" />
+            )}
+            <span className="truncate">Re-check Quality</span>
           </button>
 
           <button
