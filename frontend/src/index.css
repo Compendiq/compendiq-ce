@@ -39,8 +39,8 @@ html {
 }
 
 /* Premium typography rendering (Obsidian / Notion pattern). Uses the
-   brand body sans (Inter Variable), with system fallbacks if the font
-   failed to load. Headings opt into --font-display in the prose styles. */
+   brand body sans (IBM Plex Sans Variable), with system fallbacks if the
+   font failed to load. Headings share the same sans stack — see below. */
 body {
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
@@ -49,13 +49,12 @@ body {
   font-feature-settings: "liga" 1, "kern" 1;
 }
 
-/* Editorial serif for display copy (article titles, section headings,
-   marketing-style hero text). Newsreader's optical-size axis is auto, so
-   small headings stay legible while hero sizes get appropriate optical
-   adjustment. */
+/* Headings share the body's sans stack (IBM Plex Sans Variable) so the UI
+   reads as a single typographic system. font-optical-sizing stays on so
+   large-display sizes still pick up the variable font's display cut. */
 h1, h2, h3, h4, h5, h6,
 .prose :where(h1, h2, h3, h4, h5, h6) {
-  font-family: var(--font-display);
+  font-family: var(--font-sans);
   font-optical-sizing: auto;
 }
 
