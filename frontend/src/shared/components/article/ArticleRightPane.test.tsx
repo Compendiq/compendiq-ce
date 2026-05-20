@@ -14,8 +14,10 @@ const mockUnpinPage = vi.fn();
 const mockExportPdfAsync = vi.fn();
 const mockResyncPage = vi.fn();
 const mockReembedPage = vi.fn();
+const mockRequalityPage = vi.fn();
 let resyncIsPending = false;
 let reembedIsPending = false;
+let requalityIsPending = false;
 
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
@@ -65,6 +67,7 @@ vi.mock('../../hooks/use-pages', () => ({
   useUnpinPage: () => ({ mutate: mockUnpinPage }),
   useResyncPage: () => ({ mutate: mockResyncPage, isPending: resyncIsPending }),
   useReembedPage: () => ({ mutate: mockReembedPage, isPending: reembedIsPending }),
+  useRequalityPage: () => ({ mutate: mockRequalityPage, isPending: requalityIsPending }),
 }));
 
 vi.mock('../../hooks/use-settings', () => ({
@@ -129,8 +132,10 @@ describe('ArticleRightPane', () => {
     mockExportPdfAsync.mockReset();
     mockResyncPage.mockReset();
     mockReembedPage.mockReset();
+    mockRequalityPage.mockReset();
     resyncIsPending = false;
     reembedIsPending = false;
+    requalityIsPending = false;
     localStorage.clear();
     useUiStore.setState({ articleSidebarCollapsed: false, articleSidebarWidth: 280 });
     useArticleViewStore.setState({ headings: [], editing: false });
@@ -230,6 +235,48 @@ describe('ArticleRightPane', () => {
 
     expect(mockResyncPage).toHaveBeenCalledTimes(1);
     expect(mockResyncPage.mock.calls[0]![0]).toBe('page-1');
+  });
+
+  it('invokes requality mutation when Re-check Quality is clicked', () => {
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByTestId('article-requality-btn'));
+
+    expect(mockRequalityPage).toHaveBeenCalledTimes(1);
+    expect(mockRequalityPage.mock.calls[0]![0]).toBe('page-1');
+  });
+
+  it('renders Re-check Quality for locally-authored pages too', () => {
+    currentMockPage = { ...mockPage, confluenceId: null };
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    expect(screen.getByTestId('article-requality-btn')).toBeInTheDocument();
+  });
+
+  it('renders rail actions when collapsed and invokes requality from the rail', () => {
+    useUiStore.setState({ articleSidebarCollapsed: true });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    // Sanity-check the rail rendered with its action stack
+    expect(screen.getByTestId('article-right-pane-rail')).toBeInTheDocument();
+    expect(screen.getByTestId('article-actions-rail')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('article-requality-rail-btn'));
+
+    expect(mockRequalityPage).toHaveBeenCalledTimes(1);
+    expect(mockRequalityPage.mock.calls[0]![0]).toBe('page-1');
+  });
+
+  it('hides rail actions while editing', () => {
+    useUiStore.setState({ articleSidebarCollapsed: true });
+    useArticleViewStore.setState({ editing: true });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    expect(screen.getByTestId('article-right-pane-rail')).toBeInTheDocument();
+    expect(screen.queryByTestId('article-actions-rail')).not.toBeInTheDocument();
   });
 
   it('invokes reembed mutation when Re-embed is clicked', () => {

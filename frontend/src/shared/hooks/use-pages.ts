@@ -426,6 +426,22 @@ export function useReembedPage() {
   });
 }
 
+export function useRequalityPage() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<SinglePageBulkResult>('/pages/bulk/quality', {
+        method: 'POST',
+        body: JSON.stringify({ ids: [id] }),
+      }),
+    onSuccess: (_data, id) => {
+      queryClient.invalidateQueries({ queryKey: ['pages', id] });
+      queryClient.invalidateQueries({ queryKey: ['pages'], refetchType: 'none' });
+      queryClient.refetchQueries({ queryKey: ['pages'] });
+    },
+  });
+}
+
 // ======== Summary Regeneration (Issue #323) ========
 
 export function useSummaryRegenerate() {
