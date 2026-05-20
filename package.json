@@ -19,6 +19,11 @@
     "knip": "knip",
     "prepare": "husky || true"
   },
+  "//deps-note": "These mirror two backend prod deps (kept in sync with backend/package.json) so npm hoists them to the root node_modules. Without this, conflicting majors from a root devDep chain (@lhci/cli → express/yargs) push backend's copy down to backend/node_modules, where the runtime Docker stage — which copies only the root tree and flattens backend/dist to /app/dist — can't reach them. The smoke step in .github/workflows/docker-build.yml guards against this regressing silently.",
+  "dependencies": {
+    "ipaddr.js": "^2.3.0",
+    "p-limit": "^7.3.0"
+  },
   "devDependencies": {
     "@lhci/cli": "^0.15.1",
     "@playwright/test": "^1.58.2",

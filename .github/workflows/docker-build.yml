@@ -62,6 +62,21 @@ jobs:
           sbom: true
           provenance: mode=max
 
+      # Smoke-load the runtime image's prod node_modules. Guards against the
+      # class of bug where npm's hoister demotes a backend prod dep to
+      # `backend/node_modules/` — invisible to the runtime stage, which only
+      # copies the root tree. Builds succeed in that case; containers crash on
+      # boot. amd64-only steps suffice; arm64 (tags) shares the same module
+      # graph. Uses the first tag from metadata, which is always present.
+      - name: Smoke-test runtime module resolution
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        env:
+          IMAGE: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
+        run: |
+          docker pull "$IMAGE"
+          docker run --rm --entrypoint node "$IMAGE" --input-type=module -e \
+            "await import('p-limit'); await import('ipaddr.js'); console.log('runtime require smoke ok');"
+
   docker-frontend:
     name: Frontend Image
     if: github.actor != 'dependabot[bot]'
