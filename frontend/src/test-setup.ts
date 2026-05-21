@@ -66,6 +66,29 @@ if (typeof window !== 'undefined' && typeof window.localStorage?.setItem !== 'fu
   });
 }
 
+// Stub `getClientRects` for jsdom. ProseMirror's `scrollToSelection`
+// (which fires after every paste/transaction) calls this on the current
+// selection's DOM node and crashes the test run with a `TypeError:
+// target.getClientRects is not a function` otherwise. The crash propagates
+// as a Vitest "Unhandled Error" which makes CI's `vitest run` exit 1 even
+// when every test assertion passed. An empty DOMRectList-shaped value is
+// enough — ProseMirror only iterates it.
+function emptyDOMRectList(): DOMRectList {
+  const list: { length: number; item: (i: number) => DOMRect | null; [Symbol.iterator]: () => Iterator<DOMRect> } = {
+    length: 0,
+    item: () => null,
+    [Symbol.iterator]: () => ({ next: () => ({ done: true, value: undefined as unknown as DOMRect }) }),
+  };
+  return list as unknown as DOMRectList;
+}
+if (typeof Range !== 'undefined' && !Range.prototype.getClientRects) {
+  Range.prototype.getClientRects = () => emptyDOMRectList();
+}
+if (typeof Range !== 'undefined' && !Range.prototype.getBoundingClientRect) {
+  Range.prototype.getBoundingClientRect = () =>
+    ({ x: 0, y: 0, width: 0, height: 0, top: 0, right: 0, bottom: 0, left: 0, toJSON: () => ({}) }) as DOMRect;
+}
+
 // Mock matchMedia for jsdom (used by useCanHover, prefers-reduced-motion checks, and media query listeners)
 // Default: hover-capable device, no reduced motion
 if (!window.matchMedia) {

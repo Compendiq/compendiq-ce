@@ -599,12 +599,14 @@ describe('Editor', () => {
         expect(document.querySelector('.ProseMirror')).toBeTruthy();
       });
 
-      const handled = dispatchHtmlPaste(
-        '<p><img src="https://cdn.example.com/x.png"></p>',
-      );
-      // The handler returns false (lets TipTap process normally), which the
-      // browser surfaces as the default action not being prevented.
-      expect(handled).toBe(true); // dispatchEvent returns true when default NOT prevented
+      dispatchHtmlPaste('<p><img src="https://cdn.example.com/x.png"></p>');
+
+      // Our handler returns false (no preventDefault from us) so TipTap's
+      // own paste pipeline runs — TipTap may still preventDefault to take
+      // ownership of the insertion. The thing we actually want to test is
+      // that no upload was attempted: without a pageId we have nowhere to
+      // store the bytes.
+      await new Promise((r) => setTimeout(r, 50));
       expect(mockApiFetch).not.toHaveBeenCalled();
     });
 
