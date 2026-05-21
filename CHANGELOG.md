@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-05-21
+
+### Fixed
+
+- **Drag handle now reveals on full-block hover, not only the left edge (#681).** The `.drag-handle` rule in `frontend/src/index.css` keyed off `[style*="display: block"]`, but `@tiptap/extension-drag-handle-react` toggles `visibility`, not `display` — so the selector was dead and the handle stayed at `opacity: 0` unless the cursor happened to land directly on the (invisible) handle box at the left edge of a block. New selector inverts the visibility toggle (`:not([style*="visibility: hidden"])`) so the handle is rendered at `opacity: 0.7` whenever the extension positions it next to a hovered block, restoring the Notion-style behaviour. The existing `:hover` rule still bumps to `opacity: 1` on direct hover. Two new tests in `Editor.test.tsx` pin the regression class: a file-content guard reading `index.css` and a behavioural test that injects the rule and asserts the shown → hidden → shown round-trip via `getComputedStyle`. (#681)
+- **JWT-gated `/api/attachments` images now render in edit mode (#682).** Browser `<img>` tags cannot send `Authorization` headers, so direct loads against `/api/attachments/:pageId/:filename` always returned 401 — pasted uploads and Confluence-synced attachments alike never rendered in the editor (even though the upload itself succeeded and the file served correctly with a JWT). `ArticleViewer` (read mode) already worked around this by rewriting srcs to authenticated blob URLs via `fetchAuthenticatedBlob`; the Editor had no equivalent. A new TipTap `addNodeView()` on the `ConfluenceImage` extension intercepts `/api/attachments/...` and `/api/local-attachments/...` srcs, fetches them with the bearer token, and renders via a blob URL. `node.attrs.src` is never mutated so `editor.getHTML()` (and therefore saves) keeps the canonical `/api/attachments/...` URL — verified end-to-end. Cleanup is symmetric: blob URLs are revoked on src change, on node update, on NodeView destroy, *and* if a fetch resolves after the NodeView has already been torn down (closing a memory-leak race that would otherwise orphan one blob URL per destroyed-while-fetching image). Update path also removes attributes that disappeared from the new node so e.g. clearing `alt` propagates to the DOM. Seven new NodeView tests cover the rewrite paths, the external-src pass-through, the canonical-src-in-`getHTML()` invariant, blob revocation on unmount, the destroy-before-resolve race, and the stale-attribute removal. (#682)
+
+### Known issues
+
+- Imported HTML with relative `<img src="../_images/...">` references (e.g. pasted from Sphinx-style external docs) still renders as broken images — these paths have no backend mapping and the JWT rewriter in #682 only targets `/api/attachments/...` URLs. Tracked in #683.
+
 ## [0.5.0] - 2026-05-20
 
 ### Added
