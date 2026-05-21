@@ -28,6 +28,7 @@ import {
 import { toast } from 'sonner';
 import { cn } from '../../lib/cn';
 import { apiFetch } from '../../lib/api';
+import { fetchAuthenticatedBlob } from '../../hooks/use-authenticated-src';
 import { useIsLightTheme } from '../../hooks/use-is-light-theme';
 import { MermaidBlock } from './MermaidBlockExtension';
 import {
@@ -94,6 +95,90 @@ const ConfluenceImage = Image.extend({
           ? { 'data-confluence-url': attributes['data-confluence-url'] }
           : {},
       },
+    };
+  },
+
+  // Browser `<img>` tags cannot send Authorization headers, so the JWT-gated
+  // `/api/attachments/...` endpoint returns 401 for every direct image load —
+  // both for pasted uploads and for Confluence-synced attachments. The
+  // ArticleViewer (read mode) works around this by rewriting srcs to blob
+  // URLs fetched with `fetchAuthenticatedBlob`. Without this NodeView, images
+  // in edit mode never render. The blob URL is display-only — `node.attrs.src`
+  // remains the canonical `/api/attachments/...` URL so `editor.getHTML()`
+  // serialises the right thing on save.
+  addNodeView() {
+    return ({ node, HTMLAttributes }) => {
+      const dom = document.createElement('img');
+      // Match TipTap's default Image behaviour for selection and drag.
+      dom.setAttribute('contenteditable', 'false');
+      dom.setAttribute('draggable', 'true');
+
+      let blobUrl: string | null = null;
+      let currentSrc = node.attrs.src as string | null;
+
+      function applySrc(src: string | null): void {
+        if (blobUrl) {
+          URL.revokeObjectURL(blobUrl);
+          blobUrl = null;
+        }
+        if (!src) {
+          dom.removeAttribute('src');
+          return;
+        }
+        if (src.startsWith('/api/attachments/') || src.startsWith('/api/local-attachments/')) {
+          // Defer src until the auth fetch resolves to avoid a flash of the
+          // 401 broken-image icon.
+          dom.removeAttribute('src');
+          dom.setAttribute('data-original-src', src);
+          fetchAuthenticatedBlob(src).then((url) => {
+            // Bail if the node was updated/destroyed before the fetch resolved.
+            if (currentSrc !== src) {
+              if (url) URL.revokeObjectURL(url);
+              return;
+            }
+            if (url) {
+              blobUrl = url;
+              dom.setAttribute('src', url);
+            }
+          }).catch(() => {
+            // Swallow — leaving the img without a src renders nothing, which
+            // is the same outcome the unauthenticated direct load produced.
+          });
+        } else {
+          dom.setAttribute('src', src);
+        }
+      }
+
+      // Mirror the non-src attributes that the parent extension would have
+      // rendered. `HTMLAttributes` is the merged set of attributes from
+      // renderHTML — we keep everything except `src` (which we manage above).
+      for (const [key, value] of Object.entries(HTMLAttributes)) {
+        if (key === 'src' || value == null) continue;
+        dom.setAttribute(key, String(value));
+      }
+
+      applySrc(currentSrc);
+
+      return {
+        dom,
+        update(newNode) {
+          if (newNode.type !== node.type) return false;
+          const newSrc = (newNode.attrs.src as string | null) ?? null;
+          if (newSrc !== currentSrc) {
+            currentSrc = newSrc;
+            applySrc(newSrc);
+          }
+          // Sync the remaining attrs so width/alt edits propagate.
+          for (const [key, value] of Object.entries(newNode.attrs)) {
+            if (key === 'src' || value == null) continue;
+            dom.setAttribute(key, String(value));
+          }
+          return true;
+        },
+        destroy() {
+          if (blobUrl) URL.revokeObjectURL(blobUrl);
+        },
+      };
     };
   },
 });
