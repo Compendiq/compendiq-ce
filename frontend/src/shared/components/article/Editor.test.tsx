@@ -220,6 +220,67 @@ describe('Editor', () => {
       const dragHandle = container.querySelector('.drag-handle');
       expect(dragHandle).toBeFalsy();
     });
+
+    // CSS guards. The original bug was a dead selector — `[style*="display:
+    // block"]` — that never matched because the upstream TipTap extension
+    // toggles `visibility`, not `display`. We want to catch any future
+    // change that silently re-introduces the same class of mistake.
+    describe('visibility-toggle CSS rule', () => {
+      it('targets the visibility-hidden inline style (file-content guard)', async () => {
+        const { readFileSync } = await import('node:fs');
+        const { resolve } = await import('node:path');
+        // Cheap, deterministic guard: read the rule out of index.css and
+        // assert the selector covers what the extension actually toggles.
+        // The old broken selector matched `display: block` (which the
+        // extension never sets); this guard ensures the rule still keys off
+        // `visibility: hidden` instead.
+        const cssPath = resolve(__dirname, '../../../index.css');
+        const css = readFileSync(cssPath, 'utf8');
+
+        // Must NOT have reverted to the previous dead-selector form.
+        expect(css).not.toMatch(/\.drag-handle\[style\*="display:\s*block"]/);
+
+        // Must invert the visibility-hidden state — both whitespace variants
+        // (browsers serialize as either `visibility: hidden` or, rarely,
+        // `visibility:hidden`).
+        expect(css).toMatch(/\.drag-handle:not\(\[style\*="visibility:\s*hidden"\]\):not\(\[style\*="visibility:hidden"\]\)/);
+      });
+
+      it('shows the handle when no visibility is set and hides it when visibility: hidden is set (behavioural)', () => {
+        // jsdom does not load `index.css`, so inject the rule we depend on.
+        // The selector copied here is what the file-content guard above
+        // pins down — keep these in sync if the selector changes.
+        const style = document.createElement('style');
+        style.textContent = `
+          .drag-handle { opacity: 0; }
+          .drag-handle:not([style*="visibility: hidden"]):not([style*="visibility:hidden"]) { opacity: 0.7; }
+        `;
+        document.head.appendChild(style);
+
+        const el = document.createElement('div');
+        el.className = 'drag-handle';
+        document.body.appendChild(el);
+
+        try {
+          // Extension's "shown" state — no inline visibility.
+          expect(getComputedStyle(el).opacity).toBe('0.7');
+
+          // Extension's "hidden" state — visibility cleared by setting it
+          // to hidden in the inline style.
+          el.style.visibility = 'hidden';
+          expect(getComputedStyle(el).opacity).toBe('0');
+
+          // Re-shown by clearing the visibility property — must reach 0.7
+          // again (this is the round-trip the user complaint produced when
+          // the cursor left and re-entered the block).
+          el.style.visibility = '';
+          expect(getComputedStyle(el).opacity).toBe('0.7');
+        } finally {
+          el.remove();
+          style.remove();
+        }
+      });
+    });
   });
 });
 
