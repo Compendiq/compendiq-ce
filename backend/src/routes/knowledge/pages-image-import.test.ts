@@ -337,4 +337,165 @@ describe('POST /api/pages/:id/images/import', () => {
     const body = JSON.parse(response.payload);
     expect(body.url).toMatch(/^\/api\/attachments\/42\/imported-\d+-[0-9a-f]+\.png$/);
   });
+
+  it('re-validates redirect Location headers against SSRF guard (chain bypass fix)', async () => {
+    // Regression test for the SSRF-via-redirect bypass found in code review:
+    // before the fix, fetch(url, {redirect: 'follow'}) would silently follow
+    // a 302 → http://192.168.1.1 even though the SSRF guard would have
+    // blocked that URL if submitted directly. The route now uses manual
+    // redirect mode and re-validates each hop.
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ id: 42, source: 'standalone', confluence_id: null, created_by_user_id: 'test-user', space_key: null }],
+    });
+    const { SsrfError } = await vi.importActual<typeof import('../../core/utils/ssrf-guard.js')>(
+      '../../core/utils/ssrf-guard.js',
+    );
+
+    // First call (the initial URL) passes the guard…
+    mockAssertNonSsrfUrl.mockResolvedValueOnce(undefined);
+    // …upstream returns 302 → private IP.
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+      new Response(null, { status: 302, headers: { location: 'http://192.168.1.1/admin' } }),
+    );
+    // …the second guard call (for the Location target) rejects.
+    mockAssertNonSsrfUrl.mockRejectedValueOnce(new SsrfError('SSRF blocked: cannot connect to internal/private network'));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/42/images/import',
+      payload: { url: 'https://cdn.example.com/redir.png' },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.payload).message).toMatch(/redirects to a disallowed/i);
+    // Critical: fetch was called for the FIRST URL but NOT for the private IP.
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    expect(globalThis.fetch).toHaveBeenCalledWith('https://cdn.example.com/redir.png', expect.anything());
+    expect(mockWriteAttachmentCache).not.toHaveBeenCalled();
+  });
+
+  it('follows safe redirect chains (re-validates and re-fetches the final URL)', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ id: 42, source: 'standalone', confluence_id: null, created_by_user_id: 'test-user', space_key: null }],
+    });
+
+    // Both hops pass SSRF — the chain is public-to-public.
+    mockAssertNonSsrfUrl.mockResolvedValueOnce(undefined);
+    mockAssertNonSsrfUrl.mockResolvedValueOnce(undefined);
+
+    (globalThis.fetch as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: 'https://final.example.com/hero.png' } }))
+      .mockResolvedValueOnce(mockUpstream());
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/42/images/import',
+      payload: { url: 'https://short.example.com/r' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+    expect(mockAssertNonSsrfUrl).toHaveBeenCalledTimes(2);
+    expect(mockAssertNonSsrfUrl.mock.calls[1]![0]).toBe('https://final.example.com/hero.png');
+  });
+
+  it('aborts when the body exceeds the size cap mid-stream (lying Content-Length)', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ id: 42, source: 'standalone', confluence_id: null, created_by_user_id: 'test-user', space_key: null }],
+    });
+
+    // Build a ReadableStream that emits chunks summing past 10 MB, while
+    // claiming Content-Length: 100 in the header. Defends against
+    // upstreams that lie about size to bypass the up-front content-length
+    // check.
+    const CHUNK_BYTES = 1024 * 1024; // 1 MB chunks
+    const CHUNK_COUNT = 15;          // → ~15 MB total
+    const stream = new ReadableStream({
+      async start(controller) {
+        for (let i = 0; i < CHUNK_COUNT; i++) {
+          controller.enqueue(new Uint8Array(CHUNK_BYTES));
+          // Yield so the consumer can interleave reads with the cap check.
+          await new Promise((r) => setTimeout(r, 0));
+        }
+        controller.close();
+      },
+    });
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+      new Response(stream, {
+        status: 200,
+        headers: { 'content-type': 'image/png', 'content-length': '100' },
+      }),
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/42/images/import',
+      payload: { url: 'https://cdn.example.com/lying.png' },
+    });
+
+    expect(response.statusCode).toBe(413);
+    expect(JSON.parse(response.payload).message).toMatch(/exceeds maximum size/i);
+    expect(mockWriteAttachmentCache).not.toHaveBeenCalled();
+  });
+
+  it('rejects bodies whose magic bytes do not match the declared Content-Type', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ id: 42, source: 'standalone', confluence_id: null, created_by_user_id: 'test-user', space_key: null }],
+    });
+
+    // Upstream returns `Content-Type: image/png` but the body is plain HTML
+    // bytes (no PNG signature). The route must reject this — otherwise an
+    // attacker can stash anything in our attachment store under a PNG MIME.
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+      new Response(Buffer.from('<!doctype html><script>alert(1)</script>'), {
+        status: 200,
+        headers: { 'content-type': 'image/png', 'content-length': '40' },
+      }),
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/42/images/import',
+      payload: { url: 'https://attacker.example.com/fake.png' },
+    });
+
+    expect(response.statusCode).toBe(415);
+    expect(JSON.parse(response.payload).message).toMatch(/does not match declared/i);
+    expect(mockWriteAttachmentCache).not.toHaveBeenCalled();
+  });
+
+  it('allows Confluence-spaced pages when the user has access to the space (RBAC)', async () => {
+    // Coverage for the non-standalone branch — `getUserAccessibleSpaces`
+    // returns `['DEV', 'OPS']` per the mock at the top of the file.
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ id: 100, source: 'confluence', confluence_id: 'CONFL-100', created_by_user_id: null, space_key: 'DEV' }],
+    });
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce(mockUpstream());
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/CONFL-100/images/import',
+      payload: { url: 'https://cdn.example.com/space-shot.png' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockWriteAttachmentCache).toHaveBeenCalledWith(
+      'test-user', 'CONFL-100', 'space-shot.png', expect.any(Buffer),
+    );
+  });
+
+  it('denies Confluence-spaced pages when the user does not have access', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ id: 200, source: 'confluence', confluence_id: 'CONFL-200', created_by_user_id: null, space_key: 'SECRET' }],
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/CONFL-200/images/import',
+      payload: { url: 'https://cdn.example.com/x.png' },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
 });

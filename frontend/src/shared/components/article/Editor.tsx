@@ -1065,9 +1065,40 @@ function isInternalAttachmentSrc(src: string): boolean {
 }
 
 /**
+ * Tiny FIFO semaphore — caps how many import requests we keep in flight at
+ * once. Pasting HTML with dozens of images would otherwise fire every upload
+ * in parallel and risk tripping the backend's global rate limit (300/min).
+ */
+function makeConcurrencyLimiter(max: number): <T>(fn: () => Promise<T>) => Promise<T> {
+  const queue: Array<() => void> = [];
+  let inFlight = 0;
+  const tryDequeue = () => {
+    if (inFlight >= max) return;
+    const next = queue.shift();
+    if (next) { inFlight++; next(); }
+  };
+  // `<T,>` rather than `<T>` so the .tsx parser doesn't mistake the type
+  // parameter for a JSX tag.
+  return async <T,>(fn: () => Promise<T>): Promise<T> => {
+    if (inFlight >= max) {
+      await new Promise<void>((resolve) => queue.push(resolve));
+    } else {
+      inFlight++;
+    }
+    try {
+      return await fn();
+    } finally {
+      inFlight--;
+      tryDequeue();
+    }
+  };
+}
+
+/**
  * Upload an image referenced by a `data:image/...;base64,...` URI via the
  * existing per-page upload endpoint. Returns the internal `/api/attachments/…`
- * URL on success, or `null` on failure.
+ * URL on success, or `null` on failure (logs a console warning so failures
+ * are triagable from user reports).
  */
 async function importDataUriImage(dataUri: string, pageId: string): Promise<string | null> {
   // Pull the MIME so we can pick a sensible extension; the schema on the
@@ -1084,7 +1115,8 @@ async function importDataUriImage(dataUri: string, pageId: string): Promise<stri
       { method: 'POST', body: JSON.stringify({ dataUri, filename }) },
     );
     return result.url;
-  } catch {
+  } catch (err) {
+    console.warn('[paste-import] data: URI import failed', { mime: mimeMatch[1], err });
     return null;
   }
 }
@@ -1101,10 +1133,16 @@ async function importHttpImage(sourceUrl: string, pageId: string): Promise<strin
       { method: 'POST', body: JSON.stringify({ url: sourceUrl }) },
     );
     return result.url;
-  } catch {
+  } catch (err) {
+    console.warn('[paste-import] http(s) import failed', { sourceUrl, err });
     return null;
   }
 }
+
+/** Max upload requests in flight at once during a single paste. Five is
+ *  a conservative middle ground — well under the backend's 300/min global
+ *  rate limit even when several users paste simultaneously. */
+const PASTE_IMPORT_CONCURRENCY = 5;
 
 /**
  * Walk pasted HTML and replace any non-internal `<img>` srcs with our own
@@ -1112,28 +1150,29 @@ async function importHttpImage(sourceUrl: string, pageId: string): Promise<strin
  * HTML plus a summary of imports for the user-facing toast.
  *
  * Decision tree per src:
- *   - already-internal (`/api/attachments/...`)  → leave alone, count as "kept"
+ *   - already-internal (`/api/attachments/...`)  → leave alone, count as "imported"
  *   - `data:image/...`                           → upload via /api/pages/:id/images
  *   - `http(s)://...`                            → import via /api/pages/:id/images/import
  *   - anything else (relative, file:, …)         → leave src, set `data-import-failed`
  *
- * Failed imports also get `data-import-failed="true"` so the editor's CSS
- * placeholder renders a clear "couldn't import" affordance instead of a
- * native broken-image icon.
+ * Failed imports get `data-import-failed="true"` so the editor's CSS
+ * placeholder renders a "couldn't import" affordance instead of a native
+ * broken-image icon.
+ *
+ * Imports are run through a small concurrency limiter so pasting a 50-image
+ * document doesn't fire 50 simultaneous backend fetches.
  */
 async function rewriteHtmlImageSrcs(
   html: string,
   pageId: string,
-): Promise<{ html: string; imported: number; failed: number; kept: number; total: number }> {
+): Promise<{ html: string; imported: number; failed: number; total: number }> {
   const doc = new DOMParser().parseFromString(html, 'text/html');
   const imgs = Array.from(doc.querySelectorAll('img'));
   let imported = 0;
   let failed = 0;
-  let kept = 0;
+  const limit = makeConcurrencyLimiter(PASTE_IMPORT_CONCURRENCY);
 
-  // Build a parallel list of (img, decisionPromise). Resolving them in
-  // parallel keeps multi-image pastes fast.
-  const pending = imgs.map(async (img) => {
+  const pending = imgs.map((img) => limit(async () => {
     const src = img.getAttribute('src') ?? '';
     if (!src) {
       img.setAttribute('data-import-failed', 'true');
@@ -1141,7 +1180,9 @@ async function rewriteHtmlImageSrcs(
       return;
     }
     if (isInternalAttachmentSrc(src)) {
-      kept += 1;
+      // Already pointing at our backend — nothing to import, count as a
+      // success for the toast's "Imported N of M" math.
+      imported += 1;
       return;
     }
     let newSrc: string | null = null;
@@ -1164,13 +1205,13 @@ async function rewriteHtmlImageSrcs(
       img.setAttribute('data-import-failed', 'true');
       failed += 1;
     }
-  });
+  }));
 
   await Promise.allSettled(pending);
   // `body.innerHTML` is what we want for clipboard HTML — DOMParser wraps the
   // input in `<html><body>`, and the editor's `insertContent` expects bare
   // fragment HTML.
-  return { html: doc.body.innerHTML, imported, failed, kept, total: imgs.length };
+  return { html: doc.body.innerHTML, imported, failed, total: imgs.length };
 }
 
 const AUTO_SAVE_DELAY = 2000;

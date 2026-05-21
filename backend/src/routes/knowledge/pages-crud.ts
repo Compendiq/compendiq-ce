@@ -196,6 +196,171 @@ const ALLOWED_IMAGE_MIMES = new Set([
   'image/webp',
 ]);
 
+const ImportImageSchema = z.object({
+  url: z.string().url().max(2048),
+});
+
+/** Magic-byte signatures for each allowed import MIME. The leading bytes must
+ *  match the declared `Content-Type` from the upstream — otherwise a malicious
+ *  server could serve arbitrary bytes labelled as `image/png` and we'd store
+ *  them. The signatures here only need to cover the formats `ALLOWED_IMAGE_MIMES`
+ *  permits; SVG and other text-based image formats are intentionally absent
+ *  (sniffing them by leading bytes is unreliable). */
+const MAGIC_BYTE_SIGNATURES: Record<string, Array<readonly number[]>> = {
+  'image/png': [[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]],
+  'image/jpeg': [[0xff, 0xd8, 0xff]],
+  'image/jpg': [[0xff, 0xd8, 0xff]],
+  'image/gif': [
+    [0x47, 0x49, 0x46, 0x38, 0x37, 0x61], // GIF87a
+    [0x47, 0x49, 0x46, 0x38, 0x39, 0x61], // GIF89a
+  ],
+  'image/webp': [
+    // RIFF....WEBP — first 4 bytes are "RIFF", bytes 8-11 are "WEBP".
+    // We check the "RIFF" prefix here; the full "WEBP" check is done by
+    // `bufferMatchesMime` because it spans a non-prefix range.
+    [0x52, 0x49, 0x46, 0x46],
+  ],
+};
+
+function bufferMatchesMime(buf: Buffer, mime: string): boolean {
+  const sigs = MAGIC_BYTE_SIGNATURES[mime];
+  if (!sigs) return false;
+  for (const sig of sigs) {
+    if (buf.length < sig.length) continue;
+    let ok = true;
+    for (let i = 0; i < sig.length; i++) {
+      if (buf[i] !== sig[i]) { ok = false; break; }
+    }
+    if (!ok) continue;
+    // WEBP needs an extra check for the "WEBP" magic at bytes 8-11. (Bytes
+    // 4-7 are the little-endian file size — also untrusted, so we don't
+    // assert against it.)
+    if (mime === 'image/webp') {
+      if (buf.length < 12) continue;
+      if (buf[8] !== 0x57 || buf[9] !== 0x45 || buf[10] !== 0x42 || buf[11] !== 0x50) continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+/** Filename for an imported image — sanitised path basename, or a fallback. */
+function pickImportFilename(sourceUrl: string, contentType: string): string {
+  const extByType: Record<string, string> = {
+    'image/png': 'png',
+    'image/jpeg': 'jpg',
+    'image/jpg': 'jpg',
+    'image/gif': 'gif',
+    'image/webp': 'webp',
+  };
+  const fallbackExt = extByType[contentType] ?? 'png';
+  try {
+    const parsed = new URL(sourceUrl);
+    const last = parsed.pathname.split('/').filter(Boolean).pop() ?? '';
+    // Allow only ASCII word chars, dots, and hyphens — same constraint as
+    // `ImageUploadSchema`. Strip anything else.
+    const sanitised = last.replace(/[^\w.-]/g, '').replace(/^\.+/, '').slice(0, 200);
+    if (sanitised && /\.[a-z0-9]{2,5}$/i.test(sanitised)) {
+      return sanitised;
+    }
+  } catch {
+    // Unparseable URL — fall through to a generated name.
+  }
+  const hex = Math.floor(Math.random() * 0xffff).toString(16).padStart(4, '0');
+  return `imported-${Date.now()}-${hex}.${fallbackExt}`;
+}
+
+/** Maximum bytes accepted from any single upstream import. */
+const MAX_IMPORT_BYTES = 10 * 1024 * 1024;
+/** Hard cap on redirect hops. Every Location header is re-validated against
+ *  the SSRF guard before refetching. */
+const MAX_IMPORT_REDIRECTS = 5;
+/** Per-attempt fetch timeout. The full import budget is up to (timeout × hops). */
+const FETCH_TIMEOUT_MS = 15_000;
+
+/**
+ * Server-side `fetch` with manual redirect chain validation. Each `Location`
+ * header is validated through `assertNonSsrfUrl` before the next request
+ * fires — so an upstream that returns `302 Location: http://192.168.1.1/`
+ * (or any other private/internal target) is blocked, not transparently
+ * followed.
+ *
+ * Returns the final non-redirect response, or throws if the chain exceeds
+ * `MAX_IMPORT_REDIRECTS` or any hop fails the SSRF check.
+ */
+async function safeFetchWithSsrfGuardedRedirects(initialUrl: string): Promise<Response> {
+  let currentUrl = initialUrl;
+  for (let hop = 0; hop <= MAX_IMPORT_REDIRECTS; hop++) {
+    // Validate the URL we are about to hit. The initial URL was already
+    // validated by the caller; we re-validate redirects (hop > 0).
+    if (hop > 0) {
+      await assertNonSsrfUrl(currentUrl);
+    }
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    let response: Response;
+    try {
+      response = await fetch(currentUrl, {
+        method: 'GET',
+        signal: controller.signal,
+        redirect: 'manual',
+        headers: { 'user-agent': 'Compendiq-ImageImporter/1.0' },
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
+    // Manual-redirect mode surfaces 3xx responses with the Location header.
+    // Any 3xx-with-Location → re-validate and re-fetch. 3xx-without-Location
+    // is treated as a regular response (caller will handle non-2xx).
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get('location');
+      if (location) {
+        // Resolve relative redirects against the current URL.
+        currentUrl = new URL(location, currentUrl).toString();
+        continue;
+      }
+    }
+    return response;
+  }
+  throw new Error(`Too many redirects (exceeded ${MAX_IMPORT_REDIRECTS} hops)`);
+}
+
+/**
+ * Read a response body chunk-by-chunk, aborting if the accumulated size
+ * exceeds `MAX_IMPORT_BYTES`. Defends against upstreams that lie about
+ * Content-Length (or omit it) and stream arbitrary amounts of data.
+ *
+ * Returns `{ ok: true, buffer }` on success or `{ ok: false, reason }`
+ * when the size cap fires.
+ */
+async function readBodyWithSizeCap(
+  response: Response,
+): Promise<{ ok: true; buffer: Buffer } | { ok: false; reason: 'too-large' | 'read-failed' }> {
+  if (!response.body) {
+    // Older fetch implementations expose null `.body` for empty responses.
+    return { ok: true, buffer: Buffer.alloc(0) };
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_IMPORT_BYTES) {
+        // Best-effort cancel — frees the upstream socket.
+        try { await reader.cancel(); } catch { /* upstream already gone */ }
+        return { ok: false, reason: 'too-large' };
+      }
+      chunks.push(value);
+    }
+  } catch {
+    return { ok: false, reason: 'read-failed' };
+  }
+  return { ok: true, buffer: Buffer.concat(chunks) };
+}
+
 export async function pagesCrudRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
   const cache = new RedisCache(fastify.redis);
@@ -2280,8 +2445,11 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
   // Scope:
   //  - Accepts `http(s)://` URLs only (enforced by `assertNonSsrfUrl`).
   //  - Blocks private/loopback/link-local IPs and DNS rebinding.
-  //  - Caps response size at 10 MB to mirror the inline upload route.
-  //  - Validates `Content-Type: image/*` from the upstream response.
+  //  - Re-validates every redirect hop (no SSRF-via-Location bypass).
+  //  - Streams the body with a mid-flight size cap (defends against lying
+  //    Content-Length) at 10 MB.
+  //  - Validates `Content-Type: image/*` AND matches it against the body's
+  //    magic bytes (no serving HTML/JS masquerading as image/png).
   //  - Stores via the same `writeAttachmentCache` path as the inline upload.
   fastify.post('/pages/:id/images/import', async (request, reply) => {
     const { id } = IdParamSchema.parse(request.params);
@@ -2299,7 +2467,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     // SSRF guard. `assertNonSsrfUrl` enforces protocol = http(s),
     // blocks private/loopback/link-local IPs, blocks RFC 1918 / IPv6
-    // private ranges, and resolves DNS to mitigate rebinding.
+    // private ranges, and resolves DNS to mitigate rebinding. The
+    // redirect-following helper re-validates every subsequent hop.
     try {
       await assertNonSsrfUrl(sourceUrl);
     } catch (err) {
@@ -2360,21 +2529,18 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       });
     }
 
-    // Fetch with a hard timeout. AbortController keeps the upstream from
-    // hanging the request indefinitely.
-    const FETCH_TIMEOUT_MS = 15_000;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     let response: Response;
     try {
-      response = await fetch(sourceUrl, {
-        method: 'GET',
-        signal: controller.signal,
-        redirect: 'follow',
-        headers: { 'user-agent': 'Compendiq-ImageImporter/1.0' },
-      });
+      response = await safeFetchWithSsrfGuardedRedirects(sourceUrl);
     } catch (err) {
-      clearTimeout(timeoutId);
+      if (err instanceof SsrfError) {
+        logger.warn({ userId, pageId: id, sourceUrl, reason: err.message }, 'Image import redirect blocked by SSRF guard');
+        return reply.status(400).send({
+          statusCode: 400,
+          error: 'Bad Request',
+          message: 'Source URL redirects to a disallowed destination',
+        });
+      }
       logger.warn({ err, userId, pageId: id, sourceUrl }, 'Image import fetch failed');
       return reply.status(502).send({
         statusCode: 502,
@@ -2382,7 +2548,6 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         message: 'Failed to fetch source URL',
       });
     }
-    clearTimeout(timeoutId);
 
     if (!response.ok) {
       return reply.status(502).send({
@@ -2392,9 +2557,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       });
     }
 
-    // Content-Type must be `image/*`. We cannot trust this completely —
-    // the magic-byte check below is the real validator — but it's a
-    // cheap first gate that avoids buffering non-image responses.
+    // Content-Type must be in the allowlist. We do NOT trust this completely
+    // — the magic-byte check below is the real validator — but it's a cheap
+    // first gate that avoids streaming non-image responses.
     const contentType = (response.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase();
     if (!contentType.startsWith('image/')) {
       return reply.status(415).send({
@@ -2411,10 +2576,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       });
     }
 
-    // Cap response size. Reading via arrayBuffer() pulls everything into
-    // memory; check the declared Content-Length first to reject obviously
-    // oversized responses without downloading them.
-    const MAX_IMPORT_BYTES = 10 * 1024 * 1024;
+    // Defends against upstreams that lie about Content-Length: read the body
+    // chunk-by-chunk and abort once we cross the cap, rather than buffering
+    // everything before checking.
     const declaredLength = Number(response.headers.get('content-length') ?? 0);
     if (declaredLength > MAX_IMPORT_BYTES) {
       return reply.status(413).send({
@@ -2423,30 +2587,43 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         message: `Source image exceeds maximum size of ${MAX_IMPORT_BYTES / (1024 * 1024)} MB`,
       });
     }
-    let imageBuffer: Buffer;
-    try {
-      const arrayBuf = await response.arrayBuffer();
-      imageBuffer = Buffer.from(arrayBuf);
-    } catch (err) {
-      logger.warn({ err, userId, pageId: id, sourceUrl }, 'Image import body read failed');
+    const readResult = await readBodyWithSizeCap(response);
+    if (!readResult.ok) {
+      if (readResult.reason === 'too-large') {
+        return reply.status(413).send({
+          statusCode: 413,
+          error: 'Payload Too Large',
+          message: `Source image exceeds maximum size of ${MAX_IMPORT_BYTES / (1024 * 1024)} MB`,
+        });
+      }
+      logger.warn({ userId, pageId: id, sourceUrl }, 'Image import body read failed');
       return reply.status(502).send({
         statusCode: 502,
         error: 'Bad Gateway',
         message: 'Failed to read source image body',
       });
     }
-    if (imageBuffer.length > MAX_IMPORT_BYTES) {
-      return reply.status(413).send({
-        statusCode: 413,
-        error: 'Payload Too Large',
-        message: `Source image exceeds maximum size of ${MAX_IMPORT_BYTES / (1024 * 1024)} MB`,
-      });
-    }
+    const imageBuffer = readResult.buffer;
     if (imageBuffer.length === 0) {
       return reply.status(502).send({
         statusCode: 502,
         error: 'Bad Gateway',
         message: 'Source returned an empty body',
+      });
+    }
+
+    // Magic-byte check: the bytes must match what the upstream said the
+    // Content-Type is. Defends against upstreams returning arbitrary bytes
+    // labelled as image/png (the most common "store-and-serve" abuse path).
+    if (!bufferMatchesMime(imageBuffer, contentType)) {
+      logger.warn(
+        { userId, pageId: id, sourceUrl, declaredContentType: contentType },
+        'Image import rejected: body does not match declared Content-Type',
+      );
+      return reply.status(415).send({
+        statusCode: 415,
+        error: 'Unsupported Media Type',
+        message: `Source body does not match declared Content-Type (${contentType})`,
       });
     }
 
@@ -2472,33 +2649,3 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     }
   });
 }
-
-/** Filename for an imported image — sanitised path basename, or a fallback. */
-function pickImportFilename(sourceUrl: string, contentType: string): string {
-  const extByType: Record<string, string> = {
-    'image/png': 'png',
-    'image/jpeg': 'jpg',
-    'image/jpg': 'jpg',
-    'image/gif': 'gif',
-    'image/webp': 'webp',
-  };
-  const fallbackExt = extByType[contentType] ?? 'png';
-  try {
-    const parsed = new URL(sourceUrl);
-    const last = parsed.pathname.split('/').filter(Boolean).pop() ?? '';
-    // Allow only ASCII word chars, dots, and hyphens — same constraint as
-    // `ImageUploadSchema`. Strip anything else.
-    const sanitised = last.replace(/[^\w.-]/g, '').replace(/^\.+/, '').slice(0, 200);
-    if (sanitised && /\.[a-z0-9]{2,5}$/i.test(sanitised)) {
-      return sanitised;
-    }
-  } catch {
-    // Unparseable URL — fall through to a generated name.
-  }
-  const hex = Math.floor(Math.random() * 0xffff).toString(16).padStart(4, '0');
-  return `imported-${Date.now()}-${hex}.${fallbackExt}`;
-}
-
-const ImportImageSchema = z.object({
-  url: z.string().url().max(2048),
-});

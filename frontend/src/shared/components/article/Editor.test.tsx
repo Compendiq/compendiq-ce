@@ -607,6 +607,34 @@ describe('Editor', () => {
       expect(handled).toBe(true); // dispatchEvent returns true when default NOT prevented
       expect(mockApiFetch).not.toHaveBeenCalled();
     });
+
+    it('reports mixed outcomes via the toast (warning when some imports fail)', async () => {
+      // Two http(s) <img>s: first import succeeds, second fails. The toast
+      // helper should land on `toast.warning` with the X-of-Y message.
+      mockApiFetch
+        .mockResolvedValueOnce({ url: '/api/attachments/42/ok.png' })
+        .mockRejectedValueOnce(new Error('502 Bad Gateway'));
+
+      const sonner = await import('sonner');
+      const warningSpy = sonner.toast.warning as ReturnType<typeof vi.fn>;
+      warningSpy.mockClear();
+
+      render(<Editor content="<p>seed</p>" editable={true} pageId="42" />);
+      await waitFor(() => {
+        expect(document.querySelector('.ProseMirror')).toBeTruthy();
+      });
+
+      dispatchHtmlPaste(
+        '<p><img src="https://a.example.com/ok.png"><img src="https://b.example.com/bad.png"></p>',
+      );
+
+      await waitFor(() => {
+        expect(warningSpy).toHaveBeenCalledWith(
+          'Imported 1 of 2 images',
+          expect.objectContaining({ id: 'toast-id-1' }),
+        );
+      });
+    });
   });
 
   describe('drag handle (#49)', () => {
