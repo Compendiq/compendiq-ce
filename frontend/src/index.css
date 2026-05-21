@@ -2295,6 +2295,42 @@ pre:hover .code-copy-btn {
   cursor: help;
 }
 
+/* Unimportable image placeholder (#683).
+   Set on `<img>` by the HTML-paste handler when the src can't be
+   auto-imported — relative paths (`../_images/...`), fetch failures,
+   or unsupported types. Replaces the browser's native broken-image
+   icon with an explicit "couldn't import" affordance + the original
+   src as the hover title so the user can recover manually if needed. */
+.prose img[data-import-failed],
+.tiptap img[data-import-failed] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 88px;
+  min-width: 140px;
+  border: 1px dashed var(--color-warning);
+  background: oklch(from var(--color-warning) l c h / 0.08);
+  border-radius: var(--radius-md);
+  padding: 0.75rem 1rem;
+  color: var(--color-muted-foreground);
+  font-size: 0.8125rem;
+  /* The `content` property + `attr(alt)` makes the alt text (or the original
+     src as fallback) render in place of the broken image — same trick the
+     existing `image-load-error` placeholder uses. */
+  text-align: center;
+}
+.prose img[data-import-failed]::before,
+.tiptap img[data-import-failed]::before {
+  content: "⚠ Couldn't import image: " attr(alt);
+  white-space: normal;
+}
+.prose img[data-import-failed][alt=""]::before,
+.tiptap img[data-import-failed][alt=""]::before,
+.prose img[data-import-failed]:not([alt])::before,
+.tiptap img[data-import-failed]:not([alt])::before {
+  content: "⚠ Couldn't import image";
+}
+
 .tiptap .panel-info,
 .tiptap .panel-warning,
 .tiptap .panel-note,
