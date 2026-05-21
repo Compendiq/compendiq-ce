@@ -5,6 +5,7 @@ import { RedisCache } from '../../core/services/redis-cache.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { htmlToConfluence, confluenceToHtml } from '../../core/services/content-converter.js';
 import { cleanPageAttachments, writeAttachmentCache } from '../../domains/confluence/services/attachment-handler.js';
+import { assertNonSsrfUrl, SsrfError } from '../../core/utils/ssrf-guard.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import {
   startBulkJob,
@@ -2268,4 +2269,236 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.internalServerError('Failed to save image');
     }
   });
+
+  // POST /api/pages/:id/images/import — server-side fetch an external image
+  // URL and store it as a page attachment, returning the internal URL.
+  //
+  // Companion to the upload-on-paste flow (#683): when a user pastes HTML
+  // containing `<img src="https://...">`, the frontend can't fetch the bytes
+  // itself (CORS, no auth). This route is server-side and SSRF-guarded.
+  //
+  // Scope:
+  //  - Accepts `http(s)://` URLs only (enforced by `assertNonSsrfUrl`).
+  //  - Blocks private/loopback/link-local IPs and DNS rebinding.
+  //  - Caps response size at 10 MB to mirror the inline upload route.
+  //  - Validates `Content-Type: image/*` from the upstream response.
+  //  - Stores via the same `writeAttachmentCache` path as the inline upload.
+  fastify.post('/pages/:id/images/import', async (request, reply) => {
+    const { id } = IdParamSchema.parse(request.params);
+    const userId = request.userId;
+
+    const parseResult = ImportImageSchema.safeParse(request.body);
+    if (!parseResult.success) {
+      return reply.status(400).send({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: parseResult.error.issues[0]?.message ?? 'Invalid request body',
+      });
+    }
+    const { url: sourceUrl } = parseResult.data;
+
+    // SSRF guard. `assertNonSsrfUrl` enforces protocol = http(s),
+    // blocks private/loopback/link-local IPs, blocks RFC 1918 / IPv6
+    // private ranges, and resolves DNS to mitigate rebinding.
+    try {
+      await assertNonSsrfUrl(sourceUrl);
+    } catch (err) {
+      if (err instanceof SsrfError) {
+        logger.warn({ userId, pageId: id, sourceUrl, reason: err.message }, 'Image import blocked by SSRF guard');
+        return reply.status(400).send({
+          statusCode: 400,
+          error: 'Bad Request',
+          message: 'Source URL is not reachable or not allowed',
+        });
+      }
+      throw err;
+    }
+
+    // Verify the page exists and the user has access. Mirrors the inline
+    // upload route's logic exactly so the two stay aligned.
+    const isNumericId = /^\d+$/.test(id);
+    const pageResult = await query<{
+      id: number; source: string; confluence_id: string | null;
+      created_by_user_id: string | null; space_key: string | null;
+    }>(
+      `SELECT p.id, p.source, p.confluence_id, p.created_by_user_id, p.space_key
+       FROM pages p
+       WHERE ${isNumericId ? 'p.id = $1' : 'p.confluence_id = $1'}
+         AND p.deleted_at IS NULL`,
+      [isNumericId ? Number(id) : id],
+    );
+    if (pageResult.rows.length === 0) {
+      return reply.status(404).send({
+        statusCode: 404,
+        error: 'Not Found',
+        message: 'Page not found',
+      });
+    }
+    const page = pageResult.rows[0]!;
+    if (page.source === 'standalone') {
+      if (page.created_by_user_id !== userId) {
+        return reply.status(403).send({
+          statusCode: 403,
+          error: 'Forbidden',
+          message: 'Not authorized to import images to this page',
+        });
+      }
+    } else if (page.space_key) {
+      const accessibleSpaces = await getUserAccessibleSpaces(userId);
+      if (!accessibleSpaces.includes(page.space_key)) {
+        return reply.status(403).send({
+          statusCode: 403,
+          error: 'Forbidden',
+          message: 'Not authorized to import images to this page',
+        });
+      }
+    } else {
+      return reply.status(403).send({
+        statusCode: 403,
+        error: 'Forbidden',
+        message: 'Access denied',
+      });
+    }
+
+    // Fetch with a hard timeout. AbortController keeps the upstream from
+    // hanging the request indefinitely.
+    const FETCH_TIMEOUT_MS = 15_000;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    let response: Response;
+    try {
+      response = await fetch(sourceUrl, {
+        method: 'GET',
+        signal: controller.signal,
+        redirect: 'follow',
+        headers: { 'user-agent': 'Compendiq-ImageImporter/1.0' },
+      });
+    } catch (err) {
+      clearTimeout(timeoutId);
+      logger.warn({ err, userId, pageId: id, sourceUrl }, 'Image import fetch failed');
+      return reply.status(502).send({
+        statusCode: 502,
+        error: 'Bad Gateway',
+        message: 'Failed to fetch source URL',
+      });
+    }
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      return reply.status(502).send({
+        statusCode: 502,
+        error: 'Bad Gateway',
+        message: `Source responded with HTTP ${response.status}`,
+      });
+    }
+
+    // Content-Type must be `image/*`. We cannot trust this completely —
+    // the magic-byte check below is the real validator — but it's a
+    // cheap first gate that avoids buffering non-image responses.
+    const contentType = (response.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase();
+    if (!contentType.startsWith('image/')) {
+      return reply.status(415).send({
+        statusCode: 415,
+        error: 'Unsupported Media Type',
+        message: `Source must be an image (got Content-Type: ${contentType || 'unknown'})`,
+      });
+    }
+    if (!ALLOWED_IMAGE_MIMES.has(contentType)) {
+      return reply.status(415).send({
+        statusCode: 415,
+        error: 'Unsupported Media Type',
+        message: `Image type not supported: ${contentType}. Allowed: png, jpg, gif, webp`,
+      });
+    }
+
+    // Cap response size. Reading via arrayBuffer() pulls everything into
+    // memory; check the declared Content-Length first to reject obviously
+    // oversized responses without downloading them.
+    const MAX_IMPORT_BYTES = 10 * 1024 * 1024;
+    const declaredLength = Number(response.headers.get('content-length') ?? 0);
+    if (declaredLength > MAX_IMPORT_BYTES) {
+      return reply.status(413).send({
+        statusCode: 413,
+        error: 'Payload Too Large',
+        message: `Source image exceeds maximum size of ${MAX_IMPORT_BYTES / (1024 * 1024)} MB`,
+      });
+    }
+    let imageBuffer: Buffer;
+    try {
+      const arrayBuf = await response.arrayBuffer();
+      imageBuffer = Buffer.from(arrayBuf);
+    } catch (err) {
+      logger.warn({ err, userId, pageId: id, sourceUrl }, 'Image import body read failed');
+      return reply.status(502).send({
+        statusCode: 502,
+        error: 'Bad Gateway',
+        message: 'Failed to read source image body',
+      });
+    }
+    if (imageBuffer.length > MAX_IMPORT_BYTES) {
+      return reply.status(413).send({
+        statusCode: 413,
+        error: 'Payload Too Large',
+        message: `Source image exceeds maximum size of ${MAX_IMPORT_BYTES / (1024 * 1024)} MB`,
+      });
+    }
+    if (imageBuffer.length === 0) {
+      return reply.status(502).send({
+        statusCode: 502,
+        error: 'Bad Gateway',
+        message: 'Source returned an empty body',
+      });
+    }
+
+    // Derive a filename from the URL's path, falling back to a generated
+    // name if the URL doesn't yield a usable one. Sanitise to the same
+    // character class the inline-upload Zod schema enforces.
+    const filename = pickImportFilename(sourceUrl, contentType);
+
+    // Determine the attachment directory key — same logic as the inline
+    // upload route.
+    const attachmentPageId = page.source === 'standalone'
+      ? String(page.id)
+      : (page.confluence_id ?? String(page.id));
+
+    try {
+      await writeAttachmentCache(userId, attachmentPageId, filename, imageBuffer);
+      const internalUrl = `/api/attachments/${encodeURIComponent(attachmentPageId)}/${encodeURIComponent(filename)}`;
+      logger.info({ userId, pageId: id, attachmentPageId, filename, size: imageBuffer.length, sourceUrl }, 'Image imported from URL');
+      return { url: internalUrl };
+    } catch (err) {
+      logger.error({ err, userId, pageId: id, filename }, 'Failed to save imported image');
+      throw fastify.httpErrors.internalServerError('Failed to save imported image');
+    }
+  });
 }
+
+/** Filename for an imported image — sanitised path basename, or a fallback. */
+function pickImportFilename(sourceUrl: string, contentType: string): string {
+  const extByType: Record<string, string> = {
+    'image/png': 'png',
+    'image/jpeg': 'jpg',
+    'image/jpg': 'jpg',
+    'image/gif': 'gif',
+    'image/webp': 'webp',
+  };
+  const fallbackExt = extByType[contentType] ?? 'png';
+  try {
+    const parsed = new URL(sourceUrl);
+    const last = parsed.pathname.split('/').filter(Boolean).pop() ?? '';
+    // Allow only ASCII word chars, dots, and hyphens — same constraint as
+    // `ImageUploadSchema`. Strip anything else.
+    const sanitised = last.replace(/[^\w.-]/g, '').replace(/^\.+/, '').slice(0, 200);
+    if (sanitised && /\.[a-z0-9]{2,5}$/i.test(sanitised)) {
+      return sanitised;
+    }
+  } catch {
+    // Unparseable URL — fall through to a generated name.
+  }
+  const hex = Math.floor(Math.random() * 0xffff).toString(16).padStart(4, '0');
+  return `imported-${Date.now()}-${hex}.${fallbackExt}`;
+}
+
+const ImportImageSchema = z.object({
+  url: z.string().url().max(2048),
+});
