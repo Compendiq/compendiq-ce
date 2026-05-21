@@ -130,7 +130,18 @@ export async function buildApp() {
 
   await app.register(sensible);
   await app.register(cookie);
-  await app.register(compress);
+  // Compression threshold raised from the @fastify/compress default of 1024
+  // bytes. The shipped EE backend (Node 24.15-alpine, @fastify/compress 8.3.1)
+  // produced empty zstd-encoded bodies for `/api/health` (1042 bytes JSON)
+  // while correctly compressing `/api/pages/:id` (1614 bytes) — deterministic
+  // and reproducible in production, not reproducible against the same plugin
+  // in isolation on Node 26. The smoking gun: response headers carry
+  // `content-encoding: zstd; content-length: 0` and the body is empty. Real
+  // bandwidth wins only start past a few KB anyway (the gzip/br/zstd header
+  // overhead eats most of the savings on sub-2KB payloads), so raising the
+  // floor is a low-cost protective measure even after a fresh image rebuild
+  // hypothetically restores the upstream behaviour.
+  await app.register(compress, { threshold: 4096 });
   await app.register(multipart, {
     limits: {
       fileSize: 20 * 1024 * 1024, // 20 MB
