@@ -15,7 +15,16 @@ vi.mock('../../hooks/use-authenticated-src', () => ({
 }));
 
 vi.mock('sonner', () => ({
-  toast: { error: vi.fn(), success: vi.fn() },
+  toast: {
+    error: vi.fn(),
+    success: vi.fn(),
+    warning: vi.fn(),
+    // `loading` returns a toast id that `dismiss` / `success` / etc. can
+    // target. The HTML paste handler chains `toast.loading(...) → toast.x(...
+    // , { id })`, so the id needs to be a stable value across the mock.
+    loading: vi.fn(() => 'toast-id-1'),
+    dismiss: vi.fn(),
+  },
 }));
 
 import { Editor, EditorToolbar } from './Editor';
@@ -419,6 +428,213 @@ describe('Editor', () => {
       await waitFor(() => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         expect((URL as any).revokeObjectURL).toHaveBeenCalledWith('blob:orphan-after-destroy');
+      });
+    });
+  });
+
+  describe('HTML paste — import non-internal <img> srcs (#683)', () => {
+    // When the user pastes HTML containing `<img>` tags whose srcs are not
+    // already pointing at our backend, the editor rewrites each src to an
+    // internal `/api/attachments/...` URL by routing through the inline
+    // upload endpoint (data: URIs) or the new `/import` endpoint (http(s)).
+    // Unfetchable srcs (relative paths, file:, …) get a `data-import-failed`
+    // attribute the CSS placeholder targets.
+
+    // We need apiFetch as a *mock function*, not just a vi.fn() the import
+    // refers to. The top-level mock at the file head wires `apiFetch: vi.fn()`
+    // — pull the same reference here so each test can mock per-call.
+    let mockApiFetch: ReturnType<typeof vi.fn>;
+
+    beforeEach(async () => {
+      const apiModule = await import('../../lib/api');
+      mockApiFetch = apiModule.apiFetch as ReturnType<typeof vi.fn>;
+      mockApiFetch.mockReset();
+      // Sticky default so the NodeView's auth fetch (which fires for any
+      // /api/attachments src inserted into the editor) doesn't crash on
+      // `.then(undefined)`.
+      mockFetchAuthenticatedBlob.mockResolvedValue('blob:fake');
+    });
+
+    // jsdom does not implement `DataTransfer` / `ClipboardEvent` with full
+    // clipboardData support, so we hand-build the minimal surface our paste
+    // handler reads: `clipboardData.items` (empty array — no inline image)
+    // and `clipboardData.getData('text/html')`.
+    function dispatchHtmlPaste(html: string): boolean {
+      const pm = document.querySelector('.ProseMirror') as HTMLElement | null;
+      if (!pm) throw new Error('ProseMirror element not mounted');
+      const evt = new Event('paste', { bubbles: true, cancelable: true }) as Event & {
+        clipboardData: { items: unknown[]; getData: (type: string) => string };
+      };
+      Object.defineProperty(evt, 'clipboardData', {
+        value: {
+          items: [],
+          getData: (type: string) => (type === 'text/html' ? html : ''),
+        },
+        writable: false,
+      });
+      pm.focus();
+      return pm.dispatchEvent(evt);
+    }
+
+    it('rewrites a single http(s) <img> src via /pages/:id/images/import', async () => {
+      mockApiFetch.mockResolvedValueOnce({ url: '/api/attachments/42/imported.png' });
+
+      render(<Editor content="<p>seed</p>" editable={true} pageId="42" />);
+      await waitFor(() => {
+        expect(document.querySelector('.ProseMirror')).toBeTruthy();
+      });
+
+      dispatchHtmlPaste('<p><img src="https://cdn.example.com/hero.png" alt="hero"></p>');
+
+      await waitFor(() => {
+        expect(mockApiFetch).toHaveBeenCalledWith(
+          '/pages/42/images/import',
+          expect.objectContaining({
+            method: 'POST',
+            body: JSON.stringify({ url: 'https://cdn.example.com/hero.png' }),
+          }),
+        );
+      });
+      await waitFor(() => {
+        const img = document.querySelector('.ProseMirror img');
+        expect(img?.getAttribute('data-original-src')).toBe('/api/attachments/42/imported.png');
+      });
+    });
+
+    it('rewrites a data: URI <img> via /pages/:id/images (existing upload endpoint)', async () => {
+      mockApiFetch.mockResolvedValueOnce({ url: '/api/attachments/42/imported-data.png' });
+
+      render(<Editor content="<p>seed</p>" editable={true} pageId="42" />);
+      await waitFor(() => {
+        expect(document.querySelector('.ProseMirror')).toBeTruthy();
+      });
+
+      dispatchHtmlPaste(
+        '<p><img src="data:image/png;base64,iVBORw0K" alt="data-img"></p>',
+      );
+
+      await waitFor(() => {
+        expect(mockApiFetch).toHaveBeenCalledWith(
+          '/pages/42/images',
+          expect.objectContaining({
+            method: 'POST',
+            // Body is a JSON string with dataUri + a generated filename.
+            body: expect.stringContaining('"dataUri":"data:image/png;base64,iVBORw0K"'),
+          }),
+        );
+      });
+      await waitFor(() => {
+        const img = document.querySelector('.ProseMirror img');
+        expect(img?.getAttribute('data-original-src')).toBe('/api/attachments/42/imported-data.png');
+      });
+    });
+
+    it('marks unfetchable srcs (relative paths, file:, …) with data-import-failed', async () => {
+      render(<Editor content="<p>seed</p>" editable={true} pageId="42" />);
+      await waitFor(() => {
+        expect(document.querySelector('.ProseMirror')).toBeTruthy();
+      });
+
+      dispatchHtmlPaste(
+        '<p><img src="../_images/qs-projects.png" alt="Projects"></p>',
+      );
+
+      await waitFor(() => {
+        const img = document.querySelector('.ProseMirror img');
+        expect(img?.getAttribute('data-import-failed')).toBe('true');
+      });
+      // No upload calls — relative paths are not auto-importable.
+      expect(mockApiFetch).not.toHaveBeenCalled();
+    });
+
+    it('marks failed http(s) imports with data-import-failed', async () => {
+      // /import returns null (apiFetch throws on non-2xx; our helper catches
+      // and returns null, which the rewriter treats as failure).
+      mockApiFetch.mockRejectedValueOnce(new Error('502 Bad Gateway'));
+
+      render(<Editor content="<p>seed</p>" editable={true} pageId="42" />);
+      await waitFor(() => {
+        expect(document.querySelector('.ProseMirror')).toBeTruthy();
+      });
+
+      dispatchHtmlPaste(
+        '<p><img src="https://nope.example.com/missing.png"></p>',
+      );
+
+      await waitFor(() => {
+        const img = document.querySelector('.ProseMirror img');
+        expect(img?.getAttribute('data-import-failed')).toBe('true');
+      });
+    });
+
+    it('leaves already-internal /api/attachments srcs untouched and does not call /import', async () => {
+      render(<Editor content="<p>seed</p>" editable={true} pageId="42" />);
+      await waitFor(() => {
+        expect(document.querySelector('.ProseMirror')).toBeTruthy();
+      });
+
+      dispatchHtmlPaste(
+        '<p><img src="/api/attachments/42/existing.png"></p>',
+      );
+
+      // Give the paste handler a tick to settle.
+      await new Promise((r) => setTimeout(r, 100));
+      // Sanity: the paste-handler import calls (which would hit `/pages/.../
+      // images` or `/pages/.../images/import`) must not have fired. The
+      // NodeView's auth-blob fetcher still runs against fetchAuthenticatedBlob,
+      // not apiFetch — so apiFetch should stay clean here.
+      expect(mockApiFetch).not.toHaveBeenCalledWith(
+        expect.stringContaining('/images/import'),
+        expect.anything(),
+      );
+      expect(mockApiFetch).not.toHaveBeenCalledWith(
+        '/pages/42/images',
+        expect.anything(),
+      );
+    });
+
+    it('falls back to default paste behaviour when no pageId is set', async () => {
+      render(<Editor content="<p>seed</p>" editable={true} /* no pageId */ />);
+      await waitFor(() => {
+        expect(document.querySelector('.ProseMirror')).toBeTruthy();
+      });
+
+      dispatchHtmlPaste('<p><img src="https://cdn.example.com/x.png"></p>');
+
+      // Our handler returns false (no preventDefault from us) so TipTap's
+      // own paste pipeline runs — TipTap may still preventDefault to take
+      // ownership of the insertion. The thing we actually want to test is
+      // that no upload was attempted: without a pageId we have nowhere to
+      // store the bytes.
+      await new Promise((r) => setTimeout(r, 50));
+      expect(mockApiFetch).not.toHaveBeenCalled();
+    });
+
+    it('reports mixed outcomes via the toast (warning when some imports fail)', async () => {
+      // Two http(s) <img>s: first import succeeds, second fails. The toast
+      // helper should land on `toast.warning` with the X-of-Y message.
+      mockApiFetch
+        .mockResolvedValueOnce({ url: '/api/attachments/42/ok.png' })
+        .mockRejectedValueOnce(new Error('502 Bad Gateway'));
+
+      const sonner = await import('sonner');
+      const warningSpy = sonner.toast.warning as ReturnType<typeof vi.fn>;
+      warningSpy.mockClear();
+
+      render(<Editor content="<p>seed</p>" editable={true} pageId="42" />);
+      await waitFor(() => {
+        expect(document.querySelector('.ProseMirror')).toBeTruthy();
+      });
+
+      dispatchHtmlPaste(
+        '<p><img src="https://a.example.com/ok.png"><img src="https://b.example.com/bad.png"></p>',
+      );
+
+      await waitFor(() => {
+        expect(warningSpy).toHaveBeenCalledWith(
+          'Imported 1 of 2 images',
+          expect.objectContaining({ id: 'toast-id-1' }),
+        );
       });
     });
   });

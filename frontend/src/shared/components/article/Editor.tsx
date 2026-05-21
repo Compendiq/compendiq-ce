@@ -95,6 +95,18 @@ const ConfluenceImage = Image.extend({
           ? { 'data-confluence-url': attributes['data-confluence-url'] }
           : {},
       },
+      // Set by the HTML-paste handler (#683) when an inline `<img src=…>` in
+      // pasted HTML can't be auto-imported (relative path, fetch failure,
+      // unsupported type). The CSS placeholder targets this attribute to
+      // render the broken-image affordance instead of letting the browser
+      // show its native 404 icon.
+      'data-import-failed': {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-import-failed'),
+        renderHTML: (attributes) => attributes['data-import-failed']
+          ? { 'data-import-failed': attributes['data-import-failed'] }
+          : {},
+      },
     };
   },
 
@@ -1044,6 +1056,164 @@ async function uploadPastedImage(file: File, pageId: string): Promise<string | n
   }
 }
 
+/**
+ * True when `src` points at one of our own backend attachment routes. We never
+ * try to re-import these — they're already where we want them.
+ */
+function isInternalAttachmentSrc(src: string): boolean {
+  return src.startsWith('/api/attachments/') || src.startsWith('/api/local-attachments/');
+}
+
+/**
+ * Tiny FIFO semaphore — caps how many import requests we keep in flight at
+ * once. Pasting HTML with dozens of images would otherwise fire every upload
+ * in parallel and risk tripping the backend's global rate limit (300/min).
+ */
+function makeConcurrencyLimiter(max: number): <T>(fn: () => Promise<T>) => Promise<T> {
+  const queue: Array<() => void> = [];
+  let inFlight = 0;
+  const tryDequeue = () => {
+    if (inFlight >= max) return;
+    const next = queue.shift();
+    if (next) { inFlight++; next(); }
+  };
+  // `<T,>` rather than `<T>` so the .tsx parser doesn't mistake the type
+  // parameter for a JSX tag.
+  return async <T,>(fn: () => Promise<T>): Promise<T> => {
+    if (inFlight >= max) {
+      await new Promise<void>((resolve) => queue.push(resolve));
+    } else {
+      inFlight++;
+    }
+    try {
+      return await fn();
+    } finally {
+      inFlight--;
+      tryDequeue();
+    }
+  };
+}
+
+/**
+ * Upload an image referenced by a `data:image/...;base64,...` URI via the
+ * existing per-page upload endpoint. Returns the internal `/api/attachments/…`
+ * URL on success, or `null` on failure (logs a console warning so failures
+ * are triagable from user reports).
+ */
+async function importDataUriImage(dataUri: string, pageId: string): Promise<string | null> {
+  // Pull the MIME so we can pick a sensible extension; the schema on the
+  // server requires `^[\w.-]+$` for the filename, so we generate a fresh
+  // one here rather than trusting whatever the source HTML implied.
+  const mimeMatch = /^data:(image\/([a-z+.-]+));base64,/.exec(dataUri);
+  if (!mimeMatch) return null;
+  const ext = MIME_TO_EXT[mimeMatch[1]!] ?? mimeMatch[2]!;
+  const hex = Math.floor(Math.random() * 0xffff).toString(16).padStart(4, '0');
+  const filename = `imported-${Date.now()}-${hex}.${ext}`;
+  try {
+    const result = await apiFetch<{ url: string }>(
+      `/pages/${encodeURIComponent(pageId)}/images`,
+      { method: 'POST', body: JSON.stringify({ dataUri, filename }) },
+    );
+    return result.url;
+  } catch (err) {
+    console.warn('[paste-import] data: URI import failed', { mime: mimeMatch[1], err });
+    return null;
+  }
+}
+
+/**
+ * Server-side fetch + import for an absolute `http(s)://` source URL via the
+ * `/import` endpoint. The backend SSRF-guards the URL and stores it via the
+ * same attachment infrastructure pasted uploads use.
+ */
+async function importHttpImage(sourceUrl: string, pageId: string): Promise<string | null> {
+  try {
+    const result = await apiFetch<{ url: string }>(
+      `/pages/${encodeURIComponent(pageId)}/images/import`,
+      { method: 'POST', body: JSON.stringify({ url: sourceUrl }) },
+    );
+    return result.url;
+  } catch (err) {
+    console.warn('[paste-import] http(s) import failed', { sourceUrl, err });
+    return null;
+  }
+}
+
+/** Max upload requests in flight at once during a single paste. Five is
+ *  a conservative middle ground — well under the backend's 300/min global
+ *  rate limit even when several users paste simultaneously. */
+const PASTE_IMPORT_CONCURRENCY = 5;
+
+/**
+ * Walk pasted HTML and replace any non-internal `<img>` srcs with our own
+ * attachment URLs (#683). Mutates a clone of the input; returns the rewritten
+ * HTML plus a summary of imports for the user-facing toast.
+ *
+ * Decision tree per src:
+ *   - already-internal (`/api/attachments/...`)  → leave alone, count as "imported"
+ *   - `data:image/...`                           → upload via /api/pages/:id/images
+ *   - `http(s)://...`                            → import via /api/pages/:id/images/import
+ *   - anything else (relative, file:, …)         → leave src, set `data-import-failed`
+ *
+ * Failed imports get `data-import-failed="true"` so the editor's CSS
+ * placeholder renders a "couldn't import" affordance instead of a native
+ * broken-image icon.
+ *
+ * Imports are run through a small concurrency limiter so pasting a 50-image
+ * document doesn't fire 50 simultaneous backend fetches.
+ */
+async function rewriteHtmlImageSrcs(
+  html: string,
+  pageId: string,
+): Promise<{ html: string; imported: number; failed: number; total: number }> {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const imgs = Array.from(doc.querySelectorAll('img'));
+  let imported = 0;
+  let failed = 0;
+  const limit = makeConcurrencyLimiter(PASTE_IMPORT_CONCURRENCY);
+
+  const pending = imgs.map((img) => limit(async () => {
+    const src = img.getAttribute('src') ?? '';
+    if (!src) {
+      img.setAttribute('data-import-failed', 'true');
+      failed += 1;
+      return;
+    }
+    if (isInternalAttachmentSrc(src)) {
+      // Already pointing at our backend — nothing to import, count as a
+      // success for the toast's "Imported N of M" math.
+      imported += 1;
+      return;
+    }
+    let newSrc: string | null = null;
+    if (src.startsWith('data:image/')) {
+      newSrc = await importDataUriImage(src, pageId);
+    } else if (/^https?:\/\//i.test(src)) {
+      newSrc = await importHttpImage(src, pageId);
+    } else {
+      // Relative path (`../_images/...`), `file:`, blob:, etc. — no auto-fix.
+      img.setAttribute('data-import-failed', 'true');
+      failed += 1;
+      return;
+    }
+    if (newSrc) {
+      img.setAttribute('src', newSrc);
+      // Strip any pre-existing `data-import-failed` from a previous round.
+      img.removeAttribute('data-import-failed');
+      imported += 1;
+    } else {
+      img.setAttribute('data-import-failed', 'true');
+      failed += 1;
+    }
+  }));
+
+  await Promise.allSettled(pending);
+  // `body.innerHTML` is what we want for clipboard HTML — DOMParser wraps the
+  // input in `<html><body>`, and the editor's `insertContent` expects bare
+  // fragment HTML.
+  return { html: doc.body.innerHTML, imported, failed, total: imgs.length };
+}
+
 const AUTO_SAVE_DELAY = 2000;
 
 // eslint-disable-next-line react-refresh/only-export-components
@@ -1195,11 +1365,55 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       handlePaste(_view, event) {
         const items = Array.from(event.clipboardData?.items ?? []);
         const imageItem = items.find((i) => i.type.startsWith('image/'));
-        if (!imageItem) return false;
+        if (imageItem) {
+          // Single-image paste (Cmd+C on an image in a browser/file viewer) —
+          // existing fast path that uploads the file directly.
+          event.preventDefault();
+          const file = imageItem.getAsFile();
+          if (!file) return false;
+          return handleImageFiles([file]);
+        }
+
+        // Rich HTML paste (#683). If the clipboard carries `text/html` that
+        // contains `<img>` tags with non-internal srcs (relative paths from
+        // imported Sphinx docs, absolute URLs from a wiki, data: URIs), walk
+        // the HTML and rewrite each src to an internal attachment URL we
+        // actually serve. We hold off on inserting the original HTML so the
+        // user never sees the broken-image flash.
+        const htmlPayload = event.clipboardData?.getData('text/html');
+        if (!htmlPayload || !/<img\b/i.test(htmlPayload)) return false;
+
+        const currentPageId = pageIdRef.current;
+        if (!currentPageId) {
+          // No pageId means we can't upload anything — fall back to TipTap's
+          // default paste so the user at least sees the text content.
+          return false;
+        }
+
         event.preventDefault();
-        const file = imageItem.getAsFile();
-        if (!file) return false;
-        return handleImageFiles([file]);
+        const editorInstance = editorRef.current;
+        if (!editorInstance) return true;
+
+        const importToastId = toast.loading('Importing pasted images…');
+        rewriteHtmlImageSrcs(htmlPayload, currentPageId)
+          .then(({ html, imported, failed, total }) => {
+            editorInstance.chain().focus().insertContent(html).run();
+            if (total === 0) {
+              toast.dismiss(importToastId);
+              return;
+            }
+            if (failed === 0) {
+              toast.success(`Imported ${imported} image${imported === 1 ? '' : 's'}`, { id: importToastId });
+            } else if (imported === 0) {
+              toast.error(`Couldn't import ${failed} image${failed === 1 ? '' : 's'}`, { id: importToastId });
+            } else {
+              toast.warning(`Imported ${imported} of ${total} images`, { id: importToastId });
+            }
+          })
+          .catch(() => {
+            toast.error("Couldn't import pasted images", { id: importToastId });
+          });
+        return true;
       },
       handleDrop(_view, event, _slice, moved) {
         // Only handle external drops (not internal drag-and-drop of existing content)
