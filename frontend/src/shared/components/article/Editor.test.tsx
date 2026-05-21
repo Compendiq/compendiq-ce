@@ -9,6 +9,11 @@ vi.mock('../../lib/api', () => ({
   apiFetch: vi.fn(),
 }));
 
+const mockFetchAuthenticatedBlob = vi.fn();
+vi.mock('../../hooks/use-authenticated-src', () => ({
+  fetchAuthenticatedBlob: (...args: unknown[]) => mockFetchAuthenticatedBlob(...args),
+}));
+
 vi.mock('sonner', () => ({
   toast: { error: vi.fn(), success: vi.fn() },
 }));
@@ -43,6 +48,16 @@ function createMockEditor(): EditorType {
 }
 
 describe('Editor', () => {
+  beforeEach(() => {
+    // The ConfluenceImage NodeView calls fetchAuthenticatedBlob() during
+    // editor init for any `/api/attachments/...` src in the initial content.
+    // Tests that don't care about the blob URL still need the mock to return
+    // a thenable, otherwise `.then(...)` on the result crashes the editor.
+    // The NodeView describe overrides this with mockResolvedValue('blob:…')
+    // for tests that DO care.
+    mockFetchAuthenticatedBlob.mockResolvedValue(null);
+  });
+
   it('sticky toolbar reads as the top of the article card (#30 overhaul)', async () => {
     // The internal toolbar must look like the visual top of the article card
     // below — same bg, rounded only on top, sticks at top:0 when scrolling.
@@ -194,6 +209,220 @@ describe('Editor', () => {
     expect(container.querySelector('.header-numbering')).toBeFalsy();
   });
 
+  describe('image NodeView — JWT-gated attachment rewrite', () => {
+    // Browsers can't send Authorization headers on <img> requests, so
+    // `/api/attachments/...` always 401's a direct load. The NodeView
+    // intercepts these srcs, fetches them with the bearer token, and
+    // renders via a blob URL — while leaving `node.attrs.src` (and
+    // therefore `getHTML()`) untouched so saves persist the canonical URL.
+
+    beforeEach(() => {
+      mockFetchAuthenticatedBlob.mockReset();
+      // ProseMirror may re-create the NodeView during editor init (e.g. when
+      // content is parsed-and-re-rendered), causing applySrc to fire twice for
+      // the same image. mockResolvedValueOnce only covers the first call; any
+      // subsequent call would return undefined and crash on `.then`. Set a
+      // safe default; tests that care about a specific URL use
+      // mockResolvedValueOnce to override.
+      mockFetchAuthenticatedBlob.mockResolvedValue(null);
+      // Track URL.createObjectURL/revokeObjectURL so the destroy test can
+      // assert the blob URL is released — jsdom's stub no-ops by default.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (URL as any).createObjectURL = vi.fn(() => `blob:test-${Math.random().toString(36).slice(2, 8)}`);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (URL as any).revokeObjectURL = vi.fn();
+    });
+
+    it('rewrites /api/attachments/... srcs to blob URLs via fetchAuthenticatedBlob', async () => {
+      // Use mockResolvedValue (sticky) — ProseMirror may create the NodeView
+      // more than once while initialising the editor, and `*Once` would only
+      // satisfy the first creation.
+      mockFetchAuthenticatedBlob.mockResolvedValue('blob:fake-attachment');
+
+      const { container } = render(
+        <Editor content='<p><img src="/api/attachments/page-1/screenshot.png" alt="A shot" /></p>' editable={true} />,
+      );
+
+      await waitFor(() => {
+        expect(mockFetchAuthenticatedBlob).toHaveBeenCalledWith('/api/attachments/page-1/screenshot.png');
+      });
+      await waitFor(() => {
+        expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:fake-attachment');
+      });
+
+      const img = container.querySelector('img')!;
+      // Canonical URL kept on the DOM for debugging; the rendered src has
+      // been swapped to the blob URL.
+      expect(img).toHaveAttribute('data-original-src', '/api/attachments/page-1/screenshot.png');
+      // Mirrored stock-Image attrs
+      expect(img).toHaveAttribute('alt', 'A shot');
+    });
+
+    it('also rewrites /api/local-attachments/... srcs', async () => {
+      mockFetchAuthenticatedBlob.mockResolvedValue('blob:fake-local');
+
+      render(
+        <Editor content='<p><img src="/api/local-attachments/42/paste.png" /></p>' editable={true} />,
+      );
+
+      await waitFor(() => {
+        expect(mockFetchAuthenticatedBlob).toHaveBeenCalledWith('/api/local-attachments/42/paste.png');
+      });
+    });
+
+    it('does not auth-fetch external image srcs (renders src directly)', async () => {
+      const { container } = render(
+        <Editor content='<p><img src="https://example.com/external.png" alt="External" /></p>' editable={true} />,
+      );
+
+      await waitFor(() => {
+        expect(container.querySelector('img')).toBeTruthy();
+      });
+
+      // No fetch should fire for non-/api/attachments srcs.
+      expect(mockFetchAuthenticatedBlob).not.toHaveBeenCalled();
+      // Direct src is applied.
+      expect(container.querySelector('img')?.getAttribute('src')).toBe('https://example.com/external.png');
+    });
+
+    it('keeps the canonical /api/attachments src in editor.getHTML() (does not leak blob: URLs on save)', async () => {
+      // This is the core save-safety invariant of the whole NodeView: the
+      // blob URL is DOM-only; `node.attrs.src` (and therefore getHTML /
+      // getJSON) must remain the canonical /api/attachments URL.
+      mockFetchAuthenticatedBlob.mockResolvedValue('blob:fake');
+
+      // Grab the editor instance via onEditorReady so we can call
+      // getHTML/getJSON directly. Previously this test waited on `onChange`,
+      // which only fires on transactions — none were dispatched, so the
+      // assertion was inside a never-taken `if (capturedHtml)` and the test
+      // was a silent no-op.
+      let editor: EditorType | null = null;
+      render(
+        <Editor
+          content='<p><img src="/api/attachments/page-1/foo.png" /></p>'
+          editable={true}
+          onEditorReady={(e) => { editor = e; }}
+        />,
+      );
+
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+      await waitFor(() => {
+        expect(document.querySelector('img')?.getAttribute('src')).toBe('blob:fake');
+      });
+
+      // DOM `<img>` is showing the blob URL, but the editor's serialized
+      // state must still hold the canonical URL.
+      const html = editor!.getHTML();
+      const json = editor!.getJSON();
+      expect(html).not.toContain('blob:');
+      expect(html).toContain('/api/attachments/page-1/foo.png');
+
+      // Walk the JSON tree and assert every image node attrs.src is the
+      // canonical URL — defends against future bugs where a blob URL slips
+      // into the node state itself.
+      const collectImageSrcs = (node: { type: string; attrs?: { src?: string }; content?: unknown[] }, acc: string[] = []): string[] => {
+        if (node.type === 'image' && node.attrs?.src) acc.push(node.attrs.src);
+        if (Array.isArray(node.content)) {
+          for (const child of node.content) collectImageSrcs(child as typeof node, acc);
+        }
+        return acc;
+      };
+      const imageSrcs = collectImageSrcs(json as { type: string; content?: unknown[] });
+      expect(imageSrcs).toEqual(['/api/attachments/page-1/foo.png']);
+    });
+
+    it('removes attributes that disappear from the node on update', async () => {
+      // Regression test for the attr-removal half of #682's follow-up: a
+      // previously-set attribute (e.g. `alt`) that's cleared on the node
+      // must also be removed from the DOM, not linger as a stale value.
+      mockFetchAuthenticatedBlob.mockResolvedValue('blob:rm-attrs');
+
+      let editor: EditorType | null = null;
+      render(
+        <Editor
+          content='<p><img src="/api/attachments/page-1/rm.png" alt="initial-alt" /></p>'
+          editable={true}
+          onEditorReady={(e) => { editor = e; }}
+        />,
+      );
+
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+      await waitFor(() => {
+        expect(document.querySelector('img')?.getAttribute('alt')).toBe('initial-alt');
+      });
+
+      // Find the image node in the doc and clear its `alt` via a transaction
+      // — same mechanism a toolbar control or extension command would use.
+      const tr = editor!.state.tr;
+      editor!.state.doc.descendants((node, pos) => {
+        if (node.type.name === 'image') {
+          tr.setNodeMarkup(pos, undefined, { ...node.attrs, alt: null });
+          return false;
+        }
+        return true;
+      });
+      editor!.view.dispatch(tr);
+
+      // The DOM must reflect the cleared attribute, not just the new node
+      // state. Pre-fix, the stale `alt="initial-alt"` would still be on the
+      // DOM until the editor remounted.
+      await waitFor(() => {
+        expect(document.querySelector('img')?.hasAttribute('alt')).toBe(false);
+      });
+    });
+
+    it('revokes the blob URL when the editor unmounts', async () => {
+      mockFetchAuthenticatedBlob.mockResolvedValue('blob:to-revoke');
+
+      const { unmount } = render(
+        <Editor content='<p><img src="/api/attachments/page-1/bye.png" /></p>' editable={true} />,
+      );
+
+      await waitFor(() => {
+        expect(document.querySelector('img')?.getAttribute('src')).toBe('blob:to-revoke');
+      });
+
+      unmount();
+
+      // The NodeView's destroy() handler must revoke the blob URL.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((URL as any).revokeObjectURL).toHaveBeenCalledWith('blob:to-revoke');
+    });
+
+    it('revokes an in-flight fetch result if the NodeView is destroyed before it resolves', async () => {
+      // Hold the fetch promise open until after unmount.
+      let resolveFetch!: (url: string | null) => void;
+      mockFetchAuthenticatedBlob.mockImplementationOnce(
+        () => new Promise<string | null>((resolve) => { resolveFetch = resolve; }),
+      );
+
+      const { unmount } = render(
+        <Editor content='<p><img src="/api/attachments/page-1/race.png" /></p>' editable={true} />,
+      );
+
+      await waitFor(() => {
+        expect(mockFetchAuthenticatedBlob).toHaveBeenCalled();
+      });
+
+      // Tear down the NodeView while the fetch is still pending.
+      unmount();
+
+      // Now resolve the auth fetch — the NodeView is already destroyed.
+      // The post-destroy guard MUST revoke the orphan blob URL (the
+      // pre-fix behaviour assigned it to `blobUrl` and leaked it forever).
+      resolveFetch('blob:orphan-after-destroy');
+
+      await waitFor(() => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        expect((URL as any).revokeObjectURL).toHaveBeenCalledWith('blob:orphan-after-destroy');
+      });
+    });
+  });
+
   describe('drag handle (#49)', () => {
     it('renders drag handle in edit mode', async () => {
       const { container } = render(
@@ -219,6 +448,67 @@ describe('Editor', () => {
 
       const dragHandle = container.querySelector('.drag-handle');
       expect(dragHandle).toBeFalsy();
+    });
+
+    // CSS guards. The original bug was a dead selector — `[style*="display:
+    // block"]` — that never matched because the upstream TipTap extension
+    // toggles `visibility`, not `display`. We want to catch any future
+    // change that silently re-introduces the same class of mistake.
+    describe('visibility-toggle CSS rule', () => {
+      it('targets the visibility-hidden inline style (file-content guard)', async () => {
+        const { readFileSync } = await import('node:fs');
+        const { resolve } = await import('node:path');
+        // Cheap, deterministic guard: read the rule out of index.css and
+        // assert the selector covers what the extension actually toggles.
+        // The old broken selector matched `display: block` (which the
+        // extension never sets); this guard ensures the rule still keys off
+        // `visibility: hidden` instead.
+        const cssPath = resolve(__dirname, '../../../index.css');
+        const css = readFileSync(cssPath, 'utf8');
+
+        // Must NOT have reverted to the previous dead-selector form.
+        expect(css).not.toMatch(/\.drag-handle\[style\*="display:\s*block"]/);
+
+        // Must invert the visibility-hidden state — both whitespace variants
+        // (browsers serialize as either `visibility: hidden` or, rarely,
+        // `visibility:hidden`).
+        expect(css).toMatch(/\.drag-handle:not\(\[style\*="visibility:\s*hidden"\]\):not\(\[style\*="visibility:hidden"\]\)/);
+      });
+
+      it('shows the handle when no visibility is set and hides it when visibility: hidden is set (behavioural)', () => {
+        // jsdom does not load `index.css`, so inject the rule we depend on.
+        // The selector copied here is what the file-content guard above
+        // pins down — keep these in sync if the selector changes.
+        const style = document.createElement('style');
+        style.textContent = `
+          .drag-handle { opacity: 0; }
+          .drag-handle:not([style*="visibility: hidden"]):not([style*="visibility:hidden"]) { opacity: 0.7; }
+        `;
+        document.head.appendChild(style);
+
+        const el = document.createElement('div');
+        el.className = 'drag-handle';
+        document.body.appendChild(el);
+
+        try {
+          // Extension's "shown" state — no inline visibility.
+          expect(getComputedStyle(el).opacity).toBe('0.7');
+
+          // Extension's "hidden" state — visibility cleared by setting it
+          // to hidden in the inline style.
+          el.style.visibility = 'hidden';
+          expect(getComputedStyle(el).opacity).toBe('0');
+
+          // Re-shown by clearing the visibility property — must reach 0.7
+          // again (this is the round-trip the user complaint produced when
+          // the cursor left and re-entered the block).
+          el.style.visibility = '';
+          expect(getComputedStyle(el).opacity).toBe('0.7');
+        } finally {
+          el.remove();
+          style.remove();
+        }
+      });
     });
   });
 });

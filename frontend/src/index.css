@@ -2022,10 +2022,13 @@ pre:hover .code-copy-btn {
   color: var(--color-primary);
 }
 
-/* Show the handle when it is positioned (visible) by the extension */
-.drag-handle[style*="display: block"],
-.drag-handle[style*="display:block"] {
-  opacity: 0.4;
+/* Show the handle whenever the extension positions it next to a hovered block.
+   The extension toggles `visibility: hidden` to hide, and clears it (no inline
+   visibility property) to show — so inverting that selector makes the handle
+   visible for any block under the cursor, not only when the pointer is on the
+   handle itself. */
+.drag-handle:not([style*="visibility: hidden"]):not([style*="visibility:hidden"]) {
+  opacity: 0.7;
 }
 
 /* ProseMirror drop cursor — the blue line shown during drag */
