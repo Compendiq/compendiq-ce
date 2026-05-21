@@ -286,37 +286,93 @@ describe('Editor', () => {
     });
 
     it('keeps the canonical /api/attachments src in editor.getHTML() (does not leak blob: URLs on save)', async () => {
+      // This is the core save-safety invariant of the whole NodeView: the
+      // blob URL is DOM-only; `node.attrs.src` (and therefore getHTML /
+      // getJSON) must remain the canonical /api/attachments URL.
       mockFetchAuthenticatedBlob.mockResolvedValue('blob:fake');
 
-      let capturedHtml = '';
-      const onChange = vi.fn((html: string) => { capturedHtml = html; });
-
+      // Grab the editor instance via onEditorReady so we can call
+      // getHTML/getJSON directly. Previously this test waited on `onChange`,
+      // which only fires on transactions — none were dispatched, so the
+      // assertion was inside a never-taken `if (capturedHtml)` and the test
+      // was a silent no-op.
+      let editor: EditorType | null = null;
       render(
         <Editor
           content='<p><img src="/api/attachments/page-1/foo.png" /></p>'
           editable={true}
-          onChange={onChange}
+          onEditorReady={(e) => { editor = e; }}
         />,
       );
 
-      // Wait for the blob URL to be applied to the DOM
       await waitFor(() => {
-        expect(mockFetchAuthenticatedBlob).toHaveBeenCalled();
+        expect(editor).not.toBeNull();
       });
       await waitFor(() => {
         expect(document.querySelector('img')?.getAttribute('src')).toBe('blob:fake');
       });
 
-      // Force a state change to flush onChange. The editor's onUpdate fires
-      // on transactions; a simple way to trigger one is to dispatch a paste
-      // event of a no-op string. Easier: directly probe the editor via its
-      // exposed ref. But this Editor exposes onChange — we wait for it.
-      // (If no transaction has fired yet, the test still passes if no
-      // `blob:` leaked into any captured HTML.)
-      if (capturedHtml) {
-        expect(capturedHtml).not.toContain('blob:');
-        expect(capturedHtml).toContain('/api/attachments/page-1/foo.png');
-      }
+      // DOM `<img>` is showing the blob URL, but the editor's serialized
+      // state must still hold the canonical URL.
+      const html = editor!.getHTML();
+      const json = editor!.getJSON();
+      expect(html).not.toContain('blob:');
+      expect(html).toContain('/api/attachments/page-1/foo.png');
+
+      // Walk the JSON tree and assert every image node attrs.src is the
+      // canonical URL — defends against future bugs where a blob URL slips
+      // into the node state itself.
+      const collectImageSrcs = (node: { type: string; attrs?: { src?: string }; content?: unknown[] }, acc: string[] = []): string[] => {
+        if (node.type === 'image' && node.attrs?.src) acc.push(node.attrs.src);
+        if (Array.isArray(node.content)) {
+          for (const child of node.content) collectImageSrcs(child as typeof node, acc);
+        }
+        return acc;
+      };
+      const imageSrcs = collectImageSrcs(json as { type: string; content?: unknown[] });
+      expect(imageSrcs).toEqual(['/api/attachments/page-1/foo.png']);
+    });
+
+    it('removes attributes that disappear from the node on update', async () => {
+      // Regression test for the attr-removal half of #682's follow-up: a
+      // previously-set attribute (e.g. `alt`) that's cleared on the node
+      // must also be removed from the DOM, not linger as a stale value.
+      mockFetchAuthenticatedBlob.mockResolvedValue('blob:rm-attrs');
+
+      let editor: EditorType | null = null;
+      render(
+        <Editor
+          content='<p><img src="/api/attachments/page-1/rm.png" alt="initial-alt" /></p>'
+          editable={true}
+          onEditorReady={(e) => { editor = e; }}
+        />,
+      );
+
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+      await waitFor(() => {
+        expect(document.querySelector('img')?.getAttribute('alt')).toBe('initial-alt');
+      });
+
+      // Find the image node in the doc and clear its `alt` via a transaction
+      // — same mechanism a toolbar control or extension command would use.
+      const tr = editor!.state.tr;
+      editor!.state.doc.descendants((node, pos) => {
+        if (node.type.name === 'image') {
+          tr.setNodeMarkup(pos, undefined, { ...node.attrs, alt: null });
+          return false;
+        }
+        return true;
+      });
+      editor!.view.dispatch(tr);
+
+      // The DOM must reflect the cleared attribute, not just the new node
+      // state. Pre-fix, the stale `alt="initial-alt"` would still be on the
+      // DOM until the editor remounted.
+      await waitFor(() => {
+        expect(document.querySelector('img')?.hasAttribute('alt')).toBe(false);
+      });
     });
 
     it('revokes the blob URL when the editor unmounts', async () => {
