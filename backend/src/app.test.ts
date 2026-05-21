@@ -162,6 +162,69 @@ describe('buildApp — CORS multi-origin support', () => {
   });
 });
 
+describe('buildApp — compression threshold', () => {
+  // Regression guard for the production-only @fastify/compress bug observed in
+  // the EE backend container: a ~1KB JSON response (/api/health, 1042 bytes)
+  // was compressed to an empty body when the client sent
+  // `Accept-Encoding: gzip, br, zstd`, leaving the Diagnostics page unable
+  // to read backend metadata. The fix raises the floor to 4096 so payloads
+  // in the bug-prone size range pass through uncompressed.
+
+  it('does not compress responses below the 4096-byte threshold', async () => {
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+
+    // Synthetic route returning ~1KB JSON — the same size range as the live
+    // /api/health response that triggered the bug in production.
+    app.get('/__test__/small-payload', async (_req, reply) => {
+      const payload = { data: 'x'.repeat(1000), size: 'about-1KB' };
+      return reply.status(200).send(payload);
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/__test__/small-payload',
+      headers: { 'accept-encoding': 'gzip, br, zstd' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    // Below threshold → no content-encoding, body intact.
+    expect(response.headers['content-encoding']).toBeUndefined();
+    expect(response.rawPayload.length).toBeGreaterThan(900);
+    expect(() => JSON.parse(response.rawPayload.toString('utf8'))).not.toThrow();
+
+    await app.close();
+  });
+
+  it('does compress responses above the 4096-byte threshold', async () => {
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+
+    // Synthetic route returning ~5KB JSON — well above the threshold, so
+    // compression should kick in to confirm the plugin is wired up and the
+    // raised threshold isn't equivalent to disabling compression entirely.
+    app.get('/__test__/large-payload', async (_req, reply) => {
+      const payload = { data: 'x'.repeat(5000), size: 'about-5KB' };
+      return reply.status(200).send(payload);
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/__test__/large-payload',
+      headers: { 'accept-encoding': 'gzip, br, zstd' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    // Above threshold → some content-encoding must be set, and the body
+    // must be non-empty (the bug we are guarding against: empty body
+    // alongside an encoding header).
+    expect(response.headers['content-encoding']).toMatch(/^(gzip|br|zstd|deflate)$/);
+    expect(response.rawPayload.length).toBeGreaterThan(0);
+
+    await app.close();
+  });
+});
+
 describe('buildApp — error handler information leakage', () => {
   const originalNodeEnv = process.env.NODE_ENV;
 
