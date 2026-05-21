@@ -115,6 +115,16 @@ const ConfluenceImage = Image.extend({
 
       let blobUrl: string | null = null;
       let currentSrc = node.attrs.src as string | null;
+      // Tracks the keys we've ever written to the DOM (other than `src`), so
+      // we can remove ones that disappear from the node's attrs on update.
+      // Without this, e.g. clearing an `alt` would leave the stale value in
+      // the DOM until the editor remounts.
+      const writtenAttrKeys = new Set<string>();
+      // Set on destroy so any in-flight auth fetch can revoke its blob URL
+      // instead of leaking it. The previous `currentSrc !== src` guard only
+      // covered src-change races, not the case where the NodeView itself was
+      // torn down while a fetch was still pending.
+      let destroyed = false;
 
       function applySrc(src: string | null): void {
         if (blobUrl) {
@@ -131,7 +141,13 @@ const ConfluenceImage = Image.extend({
           dom.removeAttribute('src');
           dom.setAttribute('data-original-src', src);
           fetchAuthenticatedBlob(src).then((url) => {
-            // Bail if the node was updated/destroyed before the fetch resolved.
+            // Three exit paths in priority order. `destroyed` MUST win over
+            // the src-change check — after destroy, currentSrc may still
+            // equal src and would otherwise leak the blob URL.
+            if (destroyed) {
+              if (url) URL.revokeObjectURL(url);
+              return;
+            }
             if (currentSrc !== src) {
               if (url) URL.revokeObjectURL(url);
               return;
@@ -149,13 +165,28 @@ const ConfluenceImage = Image.extend({
         }
       }
 
-      // Mirror the non-src attributes that the parent extension would have
-      // rendered. `HTMLAttributes` is the merged set of attributes from
-      // renderHTML — we keep everything except `src` (which we manage above).
-      for (const [key, value] of Object.entries(HTMLAttributes)) {
-        if (key === 'src' || value == null) continue;
-        dom.setAttribute(key, String(value));
+      function syncAttrs(attrs: Record<string, unknown>): void {
+        // Apply present attrs and track the keys we touched.
+        const seen = new Set<string>();
+        for (const [key, value] of Object.entries(attrs)) {
+          if (key === 'src' || value == null) continue;
+          dom.setAttribute(key, String(value));
+          writtenAttrKeys.add(key);
+          seen.add(key);
+        }
+        // Remove any attr we previously wrote that's gone this time around.
+        for (const key of writtenAttrKeys) {
+          if (!seen.has(key)) {
+            dom.removeAttribute(key);
+            writtenAttrKeys.delete(key);
+          }
+        }
       }
+
+      // Initial render mirrors the merged renderHTML attributes (HTMLAttributes
+      // already includes parent Image's `alt`/`title`/`width`/etc. plus our
+      // custom `data-confluence-*` keys).
+      syncAttrs(HTMLAttributes);
 
       applySrc(currentSrc);
 
@@ -168,14 +199,14 @@ const ConfluenceImage = Image.extend({
             currentSrc = newSrc;
             applySrc(newSrc);
           }
-          // Sync the remaining attrs so width/alt edits propagate.
-          for (const [key, value] of Object.entries(newNode.attrs)) {
-            if (key === 'src' || value == null) continue;
-            dom.setAttribute(key, String(value));
-          }
+          // On update, node.attrs is the canonical source (renderHTML
+          // transforms aren't re-applied here, but our addAttributes uses
+          // identity transforms so the shape matches what we wrote initially).
+          syncAttrs(newNode.attrs as Record<string, unknown>);
           return true;
         },
         destroy() {
+          destroyed = true;
           if (blobUrl) URL.revokeObjectURL(blobUrl);
         },
       };
