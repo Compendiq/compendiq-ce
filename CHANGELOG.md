@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-05-21
+
+### Added
+
+- **Upload-on-paste for HTML pastes containing `<img>` tags (#686, closes #683).** When the user pastes rich HTML into the editor and the `<img>` srcs don't already point at our backend, each src is now rewritten to an internal `/api/attachments/...` URL automatically — data: URIs route through the existing `POST /api/pages/:id/images` upload endpoint; absolute `http(s)://` URLs go through a new `POST /api/pages/:id/images/import` route that fetches server-side. The new import route is SSRF-guarded (blocks private/loopback/link-local IPs *and* re-validates every redirect hop, closing a Location-header bypass), magic-byte-validated (the body must match the declared Content-Type — no HTML/JS masquerading as `image/png`), and streams the body with a mid-flight 10 MB cap that aborts even when the upstream lies about `Content-Length`. Relative paths (`../_images/...` from imported Sphinx docs) and other unfetchable srcs are tagged with `data-import-failed` and rendered through a new CSS placeholder ("⚠ Couldn't import image: {alt}") instead of the browser's native broken-image icon. Frontend imports run through a 5-concurrent semaphore so a 50-image paste doesn't trip the backend's global rate limit. 12 new backend tests + 6 new frontend tests cover the decision tree, SSRF redirect block, lying-Content-Length abort, magic-byte mismatch, RBAC for Confluence-spaced pages, and the mixed-paste "Imported X of Y images" toast. (#683, #686)
+
+### Fixed
+
+- **Backend `@fastify/compress` empty-body regression on `/api/health` (#685).** Deployed EE backend (Node 24.15-alpine, `@fastify/compress` 8.3.1) was returning an empty body with `content-encoding: zstd` and `content-length: 0` to browsers for the 1042-byte `/api/health` JSON, even though larger responses (e.g. `/api/pages/:id` at 1614 bytes) compressed correctly. Reproduced deterministically against the deployed container but not against the same plugin in isolation on Node 26 — likely an interaction with the container's Node 24 zstd encoder or the EE build pipeline that we don't yet fully understand. Workaround: register `compress` with `{ threshold: 4096 }` so payloads in the bug-prone size range pass through uncompressed. User-visible symptom (now fixed): Settings → Diagnostics no longer falls back to "Edition: Community (CE)" / "Backend commit: …" on EE deployments. Two new regression tests in `app.test.ts` pin both halves — sub-4 KB responses must be uncompressed, larger responses must still be compressed (so the threshold doesn't disable compression entirely). (#685)
+- **Test infrastructure: jsdom `Range.prototype.getClientRects` polyfill.** ProseMirror's `scrollToSelection` (which runs after every paste transaction) calls `getClientRects()`; jsdom doesn't implement it, the resulting `TypeError` lands as a Vitest "Unhandled Error", and CI's `vitest run` exits 1 even with all assertions passing. Stubbed in `test-setup.ts` with an empty `DOMRectList`-shaped value. Several other paste-related tests in the suite implicitly benefit. (Companion to #686.)
+
 ## [0.5.1] - 2026-05-21
 
 ### Fixed
