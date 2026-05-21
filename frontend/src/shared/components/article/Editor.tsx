@@ -28,6 +28,7 @@ import {
 import { toast } from 'sonner';
 import { cn } from '../../lib/cn';
 import { apiFetch } from '../../lib/api';
+import { fetchAuthenticatedBlob } from '../../hooks/use-authenticated-src';
 import { useIsLightTheme } from '../../hooks/use-is-light-theme';
 import { MermaidBlock } from './MermaidBlockExtension';
 import {
@@ -94,6 +95,121 @@ const ConfluenceImage = Image.extend({
           ? { 'data-confluence-url': attributes['data-confluence-url'] }
           : {},
       },
+    };
+  },
+
+  // Browser `<img>` tags cannot send Authorization headers, so the JWT-gated
+  // `/api/attachments/...` endpoint returns 401 for every direct image load —
+  // both for pasted uploads and for Confluence-synced attachments. The
+  // ArticleViewer (read mode) works around this by rewriting srcs to blob
+  // URLs fetched with `fetchAuthenticatedBlob`. Without this NodeView, images
+  // in edit mode never render. The blob URL is display-only — `node.attrs.src`
+  // remains the canonical `/api/attachments/...` URL so `editor.getHTML()`
+  // serialises the right thing on save.
+  addNodeView() {
+    return ({ node, HTMLAttributes }) => {
+      const dom = document.createElement('img');
+      // Match TipTap's default Image behaviour for selection and drag.
+      dom.setAttribute('contenteditable', 'false');
+      dom.setAttribute('draggable', 'true');
+
+      let blobUrl: string | null = null;
+      let currentSrc = node.attrs.src as string | null;
+      // Tracks the keys we've ever written to the DOM (other than `src`), so
+      // we can remove ones that disappear from the node's attrs on update.
+      // Without this, e.g. clearing an `alt` would leave the stale value in
+      // the DOM until the editor remounts.
+      const writtenAttrKeys = new Set<string>();
+      // Set on destroy so any in-flight auth fetch can revoke its blob URL
+      // instead of leaking it. The previous `currentSrc !== src` guard only
+      // covered src-change races, not the case where the NodeView itself was
+      // torn down while a fetch was still pending.
+      let destroyed = false;
+
+      function applySrc(src: string | null): void {
+        if (blobUrl) {
+          URL.revokeObjectURL(blobUrl);
+          blobUrl = null;
+        }
+        if (!src) {
+          dom.removeAttribute('src');
+          return;
+        }
+        if (src.startsWith('/api/attachments/') || src.startsWith('/api/local-attachments/')) {
+          // Defer src until the auth fetch resolves to avoid a flash of the
+          // 401 broken-image icon.
+          dom.removeAttribute('src');
+          dom.setAttribute('data-original-src', src);
+          fetchAuthenticatedBlob(src).then((url) => {
+            // Three exit paths in priority order. `destroyed` MUST win over
+            // the src-change check — after destroy, currentSrc may still
+            // equal src and would otherwise leak the blob URL.
+            if (destroyed) {
+              if (url) URL.revokeObjectURL(url);
+              return;
+            }
+            if (currentSrc !== src) {
+              if (url) URL.revokeObjectURL(url);
+              return;
+            }
+            if (url) {
+              blobUrl = url;
+              dom.setAttribute('src', url);
+            }
+          }).catch(() => {
+            // Swallow — leaving the img without a src renders nothing, which
+            // is the same outcome the unauthenticated direct load produced.
+          });
+        } else {
+          dom.setAttribute('src', src);
+        }
+      }
+
+      function syncAttrs(attrs: Record<string, unknown>): void {
+        // Apply present attrs and track the keys we touched.
+        const seen = new Set<string>();
+        for (const [key, value] of Object.entries(attrs)) {
+          if (key === 'src' || value == null) continue;
+          dom.setAttribute(key, String(value));
+          writtenAttrKeys.add(key);
+          seen.add(key);
+        }
+        // Remove any attr we previously wrote that's gone this time around.
+        for (const key of writtenAttrKeys) {
+          if (!seen.has(key)) {
+            dom.removeAttribute(key);
+            writtenAttrKeys.delete(key);
+          }
+        }
+      }
+
+      // Initial render mirrors the merged renderHTML attributes (HTMLAttributes
+      // already includes parent Image's `alt`/`title`/`width`/etc. plus our
+      // custom `data-confluence-*` keys).
+      syncAttrs(HTMLAttributes);
+
+      applySrc(currentSrc);
+
+      return {
+        dom,
+        update(newNode) {
+          if (newNode.type !== node.type) return false;
+          const newSrc = (newNode.attrs.src as string | null) ?? null;
+          if (newSrc !== currentSrc) {
+            currentSrc = newSrc;
+            applySrc(newSrc);
+          }
+          // On update, node.attrs is the canonical source (renderHTML
+          // transforms aren't re-applied here, but our addAttributes uses
+          // identity transforms so the shape matches what we wrote initially).
+          syncAttrs(newNode.attrs as Record<string, unknown>);
+          return true;
+        },
+        destroy() {
+          destroyed = true;
+          if (blobUrl) URL.revokeObjectURL(blobUrl);
+        },
+      };
     };
   },
 });
