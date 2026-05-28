@@ -330,7 +330,7 @@ function ProviderTab({ disabled }: { disabled?: boolean }) {
             type="url"
             value={redirectUri}
             onChange={(e) => setRedirectUri(e.target.value)}
-            placeholder="http://localhost:3000/api/auth/oidc/callback"
+            placeholder={`${window.location.origin}/api/auth/oidc/callback`}
             className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary disabled:opacity-60 disabled:cursor-not-allowed"
             data-testid="oidc-redirect-uri"
             disabled={disabled}
