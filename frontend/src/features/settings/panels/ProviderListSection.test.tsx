@@ -128,4 +128,48 @@ describe('ProviderListSection', () => {
       );
     });
   });
+
+  it('delete requires confirmation before calling the API', async () => {
+    const Wrapper = createWrapper();
+    const spy = mockFetchJson([
+      { match: (url, init) => url.endsWith('/admin/llm-providers') && (init.method ?? 'GET') === 'GET', body: [providerA, providerB] },
+      { match: (url, init) => url.includes(`/admin/llm-providers/${providerB.id}`) && init.method === 'DELETE', body: { ok: true } },
+    ]);
+    render(<ProviderListSection />, { wrapper: Wrapper });
+    await screen.findByText('OpenAI');
+
+    // providerB (index 1) is non-default → deletable.
+    fireEvent.click(screen.getAllByRole('button', { name: /^delete$/i })[1]);
+
+    // No DELETE fired yet — a confirmation step is required.
+    const deletedYet = spy.mock.calls.some(
+      ([url, init]) => String(url).includes(`/admin/llm-providers/${providerB.id}`) && (init as RequestInit)?.method === 'DELETE',
+    );
+    expect(deletedYet).toBe(false);
+
+    fireEvent.click(screen.getByRole('button', { name: /confirm delete/i }));
+    await waitFor(() => {
+      expect(spy).toHaveBeenCalledWith(
+        expect.stringContaining(`/admin/llm-providers/${providerB.id}`),
+        expect.objectContaining({ method: 'DELETE' }),
+      );
+    });
+  });
+
+  it('cancelling the delete confirmation makes no API call', async () => {
+    const Wrapper = createWrapper();
+    const spy = mockFetchJson([
+      { match: (url, init) => url.endsWith('/admin/llm-providers') && (init.method ?? 'GET') === 'GET', body: [providerA, providerB] },
+    ]);
+    render(<ProviderListSection />, { wrapper: Wrapper });
+    await screen.findByText('OpenAI');
+
+    fireEvent.click(screen.getAllByRole('button', { name: /^delete$/i })[1]);
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+
+    // Back to the Delete button, and no DELETE was ever issued.
+    expect(screen.getAllByRole('button', { name: /^delete$/i }).length).toBeGreaterThan(0);
+    const deleted = spy.mock.calls.some(([, init]) => (init as RequestInit)?.method === 'DELETE');
+    expect(deleted).toBe(false);
+  });
 });
