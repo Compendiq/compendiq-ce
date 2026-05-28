@@ -129,6 +129,22 @@ Therefore no restriction change occurred to P since `m` → P's ACEs are current
 Skipping is safe. Anything that breaks an assumption (no audit coverage, mark too
 old, change present, never mirrored) falls through to a fetch.
 
+### Interaction with the global stale-ACE sweep
+
+`syncUser` runs a **global** `sweepStaleConfluenceAces(syncRunStartedAt)` after the
+page loop, deleting every `source='confluence'` page ACE whose `synced_at` is
+older than the run start. Naively skipping a page would leave its ACEs with a
+stale `synced_at`, and the sweep would wrongly **delete** them — turning a
+restricted page public (an inverse disclosure bug).
+
+So the skip path **still bumps** the page's Confluence ACE `synced_at` to
+`syncRunStartedAt` (a cheap local `UPDATE`); it only avoids the rate-limited
+Confluence HTTP fetch + ancestor walk + principal resolution. The set of pages
+with a fresh `synced_at` after a run is therefore identical to today, leaving the
+sweep's behavior unchanged. The optimization is **sweep-neutral**.
+
+Config: `RESTRICTION_CONFIRM_WINDOW_HOURS` (default `168` = 7 days) sets `W`.
+
 ## Fail-safe matrix (all → full fetch; correctness == today)
 
 | Condition | Behavior |
