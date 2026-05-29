@@ -75,20 +75,41 @@ describe('LoginPage', () => {
     expect(screen.queryByTestId('sso-login-btn')).not.toBeInTheDocument();
   });
 
-  it('shows an error toast when redirected back with an OIDC error param', async () => {
+  it('shows a mapped error toast when redirected back with a known OIDC error code', async () => {
     const { toast } = await import('sonner');
     const { apiFetch } = await import('../../shared/lib/api');
     vi.mocked(apiFetch).mockResolvedValueOnce({
       enabled: false,
       issuer: null,
       name: null,
-      enterpriseRequired: false,
+      enterpriseRequired: true,
     } as never);
 
     renderLoginPage('/login?error=access_denied');
 
     await waitFor(() => {
-      expect(vi.mocked(toast.error)).toHaveBeenCalledWith('SSO login failed: access_denied');
+      expect(vi.mocked(toast.error)).toHaveBeenCalledWith('SSO sign-in was cancelled or denied.');
     });
+  });
+
+  it('shows a generic toast (never the raw param) for an unknown OIDC error code', async () => {
+    const { toast } = await import('sonner');
+    const { apiFetch } = await import('../../shared/lib/api');
+    vi.mocked(apiFetch).mockResolvedValueOnce({
+      enabled: false,
+      issuer: null,
+      name: null,
+      enterpriseRequired: true,
+    } as never);
+
+    renderLoginPage('/login?error=<script>alert(1)</script>');
+
+    await waitFor(() => {
+      expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+        'SSO sign-in failed. Please try again or use local login.',
+      );
+    });
+    const echoedRaw = vi.mocked(toast.error).mock.calls.some((c) => String(c[0]).includes('<script>'));
+    expect(echoedRaw).toBe(false);
   });
 });

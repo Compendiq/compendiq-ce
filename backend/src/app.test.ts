@@ -95,6 +95,27 @@ vi.mock('./domains/llm/services/llm-provider-bootstrap.js', () => ({
   bootstrapLlmProviders: bootstrapLlmProvidersSpy,
 }));
 
+describe('buildApp — community OIDC config fallback', () => {
+  it('serves a disabled OIDC config so the shared CE login page hides the SSO button', async () => {
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+
+    try {
+      const response = await app.inject({ method: 'GET', url: '/api/auth/oidc/config' });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        enabled: false,
+        issuer: null,
+        name: null,
+        enterpriseRequired: true,
+      });
+    } finally {
+      await app.close();
+    }
+  });
+});
+
 describe('buildApp — CORS multi-origin support', () => {
   const originalFrontendUrl = process.env.FRONTEND_URL;
 

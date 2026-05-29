@@ -90,6 +90,7 @@ import { initLlmQueueClusterCoordination } from './domains/llm/services/llm-queu
 import { setLlmAuditHook } from './domains/llm/services/llm-audit-hook.js';
 import { defaultLlmAuditWriter } from './domains/llm/services/llm-audit-default-writer.js';
 import { ENTERPRISE_FEATURES } from './core/enterprise/features.js';
+import type { OidcConfig } from '@compendiq/contracts';
 
 export async function buildApp() {
   // v0.4 epic §3.4 — replace the previous blanket `trustProxy: true` with a
@@ -387,6 +388,20 @@ export async function buildApp() {
       tier: 'community',
       valid: true,
       features: [],
+    }));
+  }
+
+  // Community-mode OIDC config fallback.
+  // The EE plugin serves a richer GET /api/auth/oidc/config when OIDC_SSO is
+  // licensed (see the conditional registration below); in community mode we
+  // return a static "disabled" payload so the shared CE login page can hide
+  // the SSO button instead of 404-ing on every load.
+  if (enterprise.version === 'community') {
+    app.get('/api/auth/oidc/config', async (): Promise<OidcConfig> => ({
+      enabled: false,
+      issuer: null,
+      name: null,
+      enterpriseRequired: true,
     }));
   }
 

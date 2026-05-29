@@ -1,15 +1,24 @@
 import { useState, useEffect, type FormEvent } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
+import { OidcConfigSchema, type OidcConfig } from '@compendiq/contracts';
 import { useAuthStore } from '../../stores/auth-store';
 import { apiFetch } from '../../shared/lib/api';
 
-interface OidcConfig {
-  enabled: boolean;
-  issuer: string | null;
-  name: string | null;
-  enterpriseRequired: boolean;
-}
+/**
+ * Friendly copy for the OIDC/OAuth2 error codes an IdP may append to the
+ * post-redirect URL (?error=...). We map known codes and fall back to a
+ * generic message rather than echoing the raw param, which is
+ * attacker-controllable.
+ */
+const OIDC_ERROR_MESSAGES: Record<string, string> = {
+  access_denied: 'SSO sign-in was cancelled or denied.',
+  login_required: 'SSO sign-in could not be completed. Please try again.',
+  interaction_required: 'SSO sign-in could not be completed. Please try again.',
+  consent_required: 'Additional consent is required to sign in via SSO.',
+  server_error: 'The SSO provider reported an error. Please try again later.',
+  temporarily_unavailable: 'SSO is temporarily unavailable. Please try again later.',
+};
 
 export function LoginPage() {
   const navigate = useNavigate();
@@ -24,7 +33,9 @@ export function LoginPage() {
   useEffect(() => {
     const searchError = searchParams.get('error');
     if (searchError) {
-      toast.error(`SSO login failed: ${searchError}`);
+      toast.error(
+        OIDC_ERROR_MESSAGES[searchError] ?? 'SSO sign-in failed. Please try again or use local login.',
+      );
       // Clear the error param so a refresh doesn't re-trigger the toast.
       navigate('/login', { replace: true });
     }
@@ -33,10 +44,10 @@ export function LoginPage() {
   useEffect(() => {
     async function fetchOidcConfig() {
       try {
-        const config = await apiFetch<OidcConfig>('/auth/oidc/config');
+        const config = OidcConfigSchema.parse(await apiFetch('/auth/oidc/config'));
         setOidcConfig(config);
       } catch {
-        // If the config fetch fails (e.g. OIDC route absent in CE), leave the SSO button hidden.
+        // No/invalid config (e.g. the OIDC route is absent in CE) — leave the SSO button hidden.
       }
     }
     fetchOidcConfig();
@@ -120,7 +131,7 @@ export function LoginPage() {
                 window.location.href = '/api/auth/oidc/authorize';
               }}
               data-testid="sso-login-btn"
-              className="w-full rounded-lg border border-border/40 bg-card/30 px-4 py-2.5 text-sm font-medium text-muted-foreground hover:bg-card/60"
+              className="nm-button-ghost w-full py-2.5"
             >
               Sign in with {oidcConfig.name || 'SSO'}
             </button>
