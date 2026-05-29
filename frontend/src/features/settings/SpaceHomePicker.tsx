@@ -42,6 +42,8 @@ export function SpaceHomePicker({
   const [query, setQuery] = useState('');
 
   const setHome = useSetSpaceHome();
+  // Which result row is currently being set as home (for a per-row spinner).
+  const [settingPageId, setSettingPageId] = useState<number | null>(null);
 
   // Show the resolved current home (page title + breadcrumb-ish hint).
   // The search hook is enabled at q.length >= 2 so the page lookup here
@@ -53,6 +55,7 @@ export function SpaceHomePicker({
   const search = useSearch({ q: query.trim(), spaceKey });
 
   const setOverride = (homePageId: number | null) => {
+    if (homePageId !== null) setSettingPageId(homePageId);
     setHome.mutate(
       { spaceKey, homePageId },
       {
@@ -68,6 +71,7 @@ export function SpaceHomePicker({
         onError: (err) => {
           toast.error(err.message || 'Could not update the space home page.');
         },
+        onSettled: () => setSettingPageId(null),
       },
     );
   };
@@ -188,6 +192,7 @@ export function SpaceHomePicker({
                         type="button"
                         role="option"
                         aria-selected={isCurrent}
+                        aria-busy={settingPageId === p.id}
                         disabled={setHome.isPending}
                         onClick={() => setOverride(p.id)}
                         className={cn(
@@ -198,7 +203,11 @@ export function SpaceHomePicker({
                         data-testid={`space-home-picker-result-${p.id}`}
                       >
                         <span className="flex-1 truncate">{p.title}</span>
-                        {isCurrent && <Check size={12} className="shrink-0 text-action" />}
+                        {settingPageId === p.id ? (
+                          <Loader2 size={12} className="shrink-0 animate-spin text-action" />
+                        ) : isCurrent ? (
+                          <Check size={12} className="shrink-0 text-action" />
+                        ) : null}
                       </button>
                     </li>
                   );
