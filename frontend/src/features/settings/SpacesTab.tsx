@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { RefreshCw, CheckSquare, Square, Loader2 } from 'lucide-react';
 import { apiFetch } from '../../shared/lib/api';
@@ -35,17 +35,14 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
   const queryClient = useQueryClient();
   const [selected, setSelected] = useState<Set<string>>(new Set(initialSelected));
 
-  // Stabilize the array reference for the effect dependency
-  const stableSelected = useMemo(
-    () => initialSelected,
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [JSON.stringify(initialSelected)],
-  );
-
-  // Sync selected state when prop changes
+  // Re-sync local selection when the incoming prop's *contents* change. Keying
+  // the effect on a primitive (its JSON serialization) means it only re-runs on real
+  // content changes — not on every render that produces a new array identity —
+  // and reconstructing from that key keeps the dependency list honest.
+  const initialSelectedKey = JSON.stringify(initialSelected);
   useEffect(() => {
-    setSelected(new Set(stableSelected));
-  }, [stableSelected]);
+    setSelected(new Set(JSON.parse(initialSelectedKey) as string[]));
+  }, [initialSelectedKey]);
 
   const { data: availableSpaces, isLoading: loadingAvailable, refetch: fetchSpaces } = useQuery<AvailableSpace[]>({
     queryKey: ['spaces', 'available'],

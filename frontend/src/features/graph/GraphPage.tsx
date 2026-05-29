@@ -107,23 +107,30 @@ export function GraphPage() {
   // in the URL or the user clicking "Show full graph anyway" enables it.
   const [showFullGraph, setShowFullGraph] = useState<boolean>(initialShowFullGraph);
 
-  // Mirror filter state to URL (#360 shareable views).
+  // Mirror filter state to URL (#360 shareable views). Uses the functional
+  // setSearchParams updater so the effect never reads `searchParams` — that
+  // keeps the dependency list complete (no exhaustive-deps escape) and avoids
+  // the update→re-run loop that depending on `searchParams` would cause.
   useEffect(() => {
-    const next = new URLSearchParams(searchParams);
-    const sync = (key: string, value: string | undefined | null) => {
-      if (value === undefined || value === null || value === '') next.delete(key);
-      else next.set(key, value);
-    };
-    sync('edgeTypes', edgeTypes.length > 0 ? edgeTypes.join(',') : '');
-    sync('minScore', minScore !== undefined ? minScore.toString() : '');
-    sync('labels', labels.length > 0 ? labels.join(',') : '');
-    sync('full', showFullGraph ? '1' : '');
-    // #360 multi-select: encode the space filter as a comma-separated list
-    // so it round-trips through the URL the same way edgeTypes/labels do.
-    sync('space', filterSpaces.length > 0 ? filterSpaces.join(',') : '');
-    setSearchParams(next, { replace: true });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [edgeTypes, minScore, labels, showFullGraph, filterSpaces]);
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        const sync = (key: string, value: string | undefined | null) => {
+          if (value === undefined || value === null || value === '') next.delete(key);
+          else next.set(key, value);
+        };
+        sync('edgeTypes', edgeTypes.length > 0 ? edgeTypes.join(',') : '');
+        sync('minScore', minScore !== undefined ? minScore.toString() : '');
+        sync('labels', labels.length > 0 ? labels.join(',') : '');
+        sync('full', showFullGraph ? '1' : '');
+        // #360 multi-select: encode the space filter as a comma-separated list
+        // so it round-trips through the URL the same way edgeTypes/labels do.
+        sync('space', filterSpaces.length > 0 ? filterSpaces.join(',') : '');
+        return next;
+      },
+      { replace: true },
+    );
+  }, [edgeTypes, minScore, labels, showFullGraph, filterSpaces, setSearchParams]);
 
   const filters = useMemo<LocalGraphFilters>(() => ({
     edgeTypes: edgeTypes.length > 0 ? edgeTypes : undefined,
