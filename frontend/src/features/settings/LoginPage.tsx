@@ -20,14 +20,13 @@ export function LoginPage() {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [oidcConfig, setOidcConfig] = useState<OidcConfig | null>(null);
-  const [oidcLoading, setOidcLoading] = useState(true);
 
   useEffect(() => {
     const searchError = searchParams.get('error');
     if (searchError) {
       toast.error(`SSO login failed: ${searchError}`);
+      // Clear the error param so a refresh doesn't re-trigger the toast.
       navigate('/login', { replace: true });
-      return;
     }
   }, [searchParams, navigate]);
 
@@ -37,9 +36,7 @@ export function LoginPage() {
         const config = await apiFetch<OidcConfig>('/auth/oidc/config');
         setOidcConfig(config);
       } catch {
-        // If config fetch fails, don't show SSO button
-      } finally {
-        setOidcLoading(false);
+        // If the config fetch fails (e.g. OIDC route absent in CE), leave the SSO button hidden.
       }
     }
     fetchOidcConfig();
@@ -120,18 +117,12 @@ export function LoginPage() {
             <button
               type="button"
               onClick={() => {
-                const params = new URLSearchParams(window.location.search);
-                if (params.toString()) {
-                  params.delete('error');
-                  window.location.href = `/login?${params.toString()}`;
-                }
                 window.location.href = '/api/auth/oidc/authorize';
               }}
-              disabled={oidcLoading}
               data-testid="sso-login-btn"
               className="w-full rounded-lg border border-border/40 bg-card/30 px-4 py-2.5 text-sm font-medium text-muted-foreground hover:bg-card/60"
             >
-              {oidcLoading ? 'Loading...' : `Sign in with ${oidcConfig.name || 'SSO'}`}
+              Sign in with {oidcConfig.name || 'SSO'}
             </button>
           )}
         </form>

@@ -1,16 +1,24 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { LoginPage } from './LoginPage';
 import { useAuthStore } from '../../stores/auth-store';
+
+vi.mock('../../shared/lib/api', () => ({
+  apiFetch: vi.fn(),
+}));
+
+vi.mock('sonner', () => ({
+  toast: { error: vi.fn(), success: vi.fn() },
+}));
 
 function renderLoginPage(initialEntry = '/login') {
   return render(
     <LazyMotion features={domAnimation}>
       <MemoryRouter initialEntries={[initialEntry]}>
         <LoginPage />
-      </MemoryRouter>,
+      </MemoryRouter>
     </LazyMotion>,
   );
 }
@@ -19,9 +27,6 @@ describe('LoginPage', () => {
   beforeEach(() => {
     useAuthStore.getState().clearAuth();
     vi.resetAllMocks();
-    vi.mock('../../shared/lib/api', () => ({
-      apiFetch: vi.fn(),
-    }));
   });
 
   afterEach(() => {
@@ -68,5 +73,22 @@ describe('LoginPage', () => {
 
     renderLoginPage();
     expect(screen.queryByTestId('sso-login-btn')).not.toBeInTheDocument();
+  });
+
+  it('shows an error toast when redirected back with an OIDC error param', async () => {
+    const { toast } = await import('sonner');
+    const { apiFetch } = await import('../../shared/lib/api');
+    vi.mocked(apiFetch).mockResolvedValueOnce({
+      enabled: false,
+      issuer: null,
+      name: null,
+      enterpriseRequired: false,
+    } as never);
+
+    renderLoginPage('/login?error=access_denied');
+
+    await waitFor(() => {
+      expect(vi.mocked(toast.error)).toHaveBeenCalledWith('SSO login failed: access_denied');
+    });
   });
 });
