@@ -7,6 +7,7 @@ import {
   ConfluenceRestriction,
   ConfluenceError,
 } from './confluence-client.js';
+import { getRestrictionChangeSet, type RestrictionChangeSet } from './restriction-change-tracker.js';
 import { confluenceToHtml, htmlToText } from '../../../core/services/content-converter.js';
 import { syncDrawioAttachments, syncImageAttachments, cleanPageAttachments, getMissingAttachments } from './attachment-handler.js';
 import { saveVersionSnapshot } from '../../../core/services/version-snapshot.js';
@@ -137,6 +138,17 @@ export async function syncUser(userId: string): Promise<void> {
   const syncRunStartedAt = new Date();
   const ancestorCache = new Map<string, ConfluenceRestriction[]>();
 
+  // Audit-log-driven restriction-change detection (perf). When RAG permission
+  // enforcement is on, ask the Confluence audit log which pages' restrictions
+  // changed so `syncPageRestrictions` can skip the per-page fetch for the rest.
+  // Fails safe to a full re-fetch on any uncertainty (no admin access on the
+  // sync token, retention gap, audit error). Inert in CE / un-flagged EE.
+  const restrictionChangeSet: RestrictionChangeSet = isFeatureEnabled(
+    ENTERPRISE_FEATURES.RAG_PERMISSION_ENFORCEMENT,
+  )
+    ? await getRestrictionChangeSet(client, Date.now())
+    : { mode: 'full' };
+
   // Sync run id (Compendiq/compendiq-ee#118). Stamped onto every
   // `pending_sync_versions` row inserted during this run so the conflict-
   // resolution UI / retention sweep can group rows by run ("the 12
@@ -159,6 +171,7 @@ export async function syncUser(userId: string): Promise<void> {
         syncRunStartedAt,
         ancestorCache,
         syncRunId,
+        restrictionChangeSet,
       );
     }
 
@@ -226,6 +239,7 @@ async function syncSpace(
   syncRunStartedAt: Date,
   ancestorCache: Map<string, ConfluenceRestriction[]>,
   syncRunId: string,
+  changeSet: RestrictionChangeSet = { mode: 'full' },
 ): Promise<void> {
   const spaceStartedAt = Date.now();
   const counts: SyncSpaceCounts = { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 };
@@ -272,7 +286,7 @@ async function syncSpace(
     });
 
     const page = pages[i]!;
-    await syncPage(client, userId, spaceKey, page, syncRunStartedAt, ancestorCache, counts, syncRunId);
+    await syncPage(client, userId, spaceKey, page, syncRunStartedAt, ancestorCache, counts, syncRunId, changeSet);
   }
 
   // During incremental sync, also check for pages with missing attachments
@@ -321,6 +335,7 @@ async function syncPage(
   ancestorCache: Map<string, ConfluenceRestriction[]>,
   counts: SyncSpaceCounts,
   syncRunId: string,
+  changeSet: RestrictionChangeSet = { mode: 'full' },
 ): Promise<void> {
   // Fetch full page content
   const page = await client.getPage(pageSummary.id);
@@ -392,7 +407,7 @@ async function syncPage(
       // from the plan is not wired (see §1.4 TODO below). `syncPageRestrictions`
       // is a no-op when the feature flag is disabled, so CE builds pay zero
       // extra cost here.
-      await syncPageRestrictions(client, page, syncRunStartedAt, ancestorCache);
+      await syncPageRestrictions(client, page, syncRunStartedAt, ancestorCache, changeSet);
       return;
     }
 
@@ -455,7 +470,7 @@ async function syncPage(
     // Version-unchanged branch: still re-evaluate restrictions. See note at
     // the earlier early-return above. Safe/cheap because `syncPageRestrictions`
     // short-circuits on the feature flag.
-    await syncPageRestrictions(client, page, syncRunStartedAt, ancestorCache);
+    await syncPageRestrictions(client, page, syncRunStartedAt, ancestorCache, changeSet);
     return;
   }
 
@@ -524,7 +539,7 @@ async function syncPage(
   // the page upsert so `pages.id` is guaranteed to exist (the ACE foreign
   // key on `resource_id` points at that SERIAL). No-op when the
   // `RAG_PERMISSION_ENFORCEMENT` feature flag is off.
-  await syncPageRestrictions(client, page, syncRunStartedAt, ancestorCache);
+  await syncPageRestrictions(client, page, syncRunStartedAt, ancestorCache, changeSet);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -891,6 +906,7 @@ async function syncPageRestrictions(
   page: ConfluencePage,
   syncRunStartedAt: Date,
   ancestorCache: Map<string, ConfluenceRestriction[]>,
+  changeSet: RestrictionChangeSet = { mode: 'full' },
 ): Promise<void> {
   if (!isFeatureEnabled(ENTERPRISE_FEATURES.RAG_PERMISSION_ENFORCEMENT)) {
     return;
@@ -900,8 +916,8 @@ async function syncPageRestrictions(
   // UPDATE paths in `syncPage` run before this call so the row is
   // guaranteed to exist. A missing row means the INSERT silently failed
   // upstream — log and bail rather than plough on with a bogus resource_id.
-  const pageRow = await query<{ id: number }>(
-    `SELECT id FROM pages WHERE confluence_id = $1`,
+  const pageRow = await query<{ id: number; restrictions_synced_at: Date | null }>(
+    `SELECT id, restrictions_synced_at FROM pages WHERE confluence_id = $1`,
     [page.id],
   );
   if (pageRow.rows.length === 0) {
@@ -912,6 +928,27 @@ async function syncPageRestrictions(
     return;
   }
   const pageDbId = pageRow.rows[0]!.id;
+  const restrictionsSyncedAt = pageRow.rows[0]!.restrictions_synced_at;
+
+  // Audit-log-driven skip (perf): when the audit window confirms no restriction
+  // change for this page since we last mirrored it (within the covered window),
+  // skip the rate-limited Confluence fetch. Still bump this page's Confluence ACE
+  // synced_at to the current run so the global stale-ACE sweep keeps the rows —
+  // the optimization is sweep-neutral. Any uncertainty falls through to a fetch.
+  if (
+    changeSet.mode === 'incremental' &&
+    restrictionsSyncedAt !== null &&
+    restrictionsSyncedAt.getTime() >= changeSet.windowStartMs &&
+    !changeSet.changedPageIds.has(page.id)
+  ) {
+    await query(
+      `UPDATE access_control_entries
+          SET synced_at = $1
+        WHERE resource_type = 'page' AND resource_id = $2 AND source = 'confluence'`,
+      [syncRunStartedAt, pageDbId],
+    );
+    return;
+  }
 
   let effective: Awaited<ReturnType<typeof computeEffectivePageReadRestrictions>>;
   try {
@@ -937,7 +974,7 @@ async function syncPageRestrictions(
     // restriction. Flip `inherit_perms` back to TRUE — `userCanAccessPage`
     // will fall through to the space-level role check. No ACE writes; the
     // end-of-run sweep cleans up any leftover rows from a prior sync.
-    await query(`UPDATE pages SET inherit_perms = TRUE WHERE id = $1`, [pageDbId]);
+    await query(`UPDATE pages SET inherit_perms = TRUE, restrictions_synced_at = $2 WHERE id = $1`, [pageDbId, syncRunStartedAt]);
     return;
   }
 
@@ -1010,8 +1047,8 @@ async function syncPageRestrictions(
       );
     }
     await dbClient.query(
-      `UPDATE pages SET inherit_perms = FALSE WHERE id = $1`,
-      [pageDbId],
+      `UPDATE pages SET inherit_perms = FALSE, restrictions_synced_at = $2 WHERE id = $1`,
+      [pageDbId, syncRunStartedAt],
     );
     await dbClient.query('COMMIT');
   } catch (err) {
