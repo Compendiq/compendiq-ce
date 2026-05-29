@@ -13,6 +13,7 @@ export function ProviderListSection() {
   });
   const [editing, setEditing] = useState<LlmProvider | null>(null);
   const [adding, setAdding] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const setDefault = useMutation({
     mutationFn: (id: string) =>
@@ -32,6 +33,7 @@ export function ProviderListSection() {
       toast.success('Provider deleted');
     },
     onError: (e: Error) => toast.error(e.message),
+    onSettled: () => setConfirmDeleteId(null),
   });
 
   const test = useMutation({
@@ -70,15 +72,36 @@ export function ProviderListSection() {
               </div>
               <div className="text-muted-foreground text-xs">{p.baseUrl}</div>
             </div>
-            <div className="flex gap-2 text-xs">
+            <div className="flex items-center gap-2 text-xs">
               <button onClick={() => setEditing(p)}>Edit</button>
-              <button onClick={() => setDefault.mutate(p.id)} disabled={p.isDefault}>
-                Set default
+              <button
+                onClick={() => setDefault.mutate(p.id)}
+                disabled={p.isDefault || (setDefault.isPending && setDefault.variables === p.id)}
+              >
+                {setDefault.isPending && setDefault.variables === p.id ? 'Setting…' : 'Set default'}
               </button>
-              <button onClick={() => test.mutate(p.id)}>Test</button>
-              <button onClick={() => del.mutate(p.id)} disabled={p.isDefault}>
-                Delete
+              <button
+                onClick={() => test.mutate(p.id)}
+                disabled={test.isPending && test.variables === p.id}
+              >
+                {test.isPending && test.variables === p.id ? 'Testing…' : 'Test'}
               </button>
+              {confirmDeleteId === p.id ? (
+                <>
+                  <button
+                    className="text-error"
+                    onClick={() => del.mutate(p.id)}
+                    disabled={del.isPending && del.variables === p.id}
+                  >
+                    {del.isPending && del.variables === p.id ? 'Deleting…' : 'Confirm delete'}
+                  </button>
+                  <button onClick={() => setConfirmDeleteId(null)}>Cancel</button>
+                </>
+              ) : (
+                <button onClick={() => setConfirmDeleteId(p.id)} disabled={p.isDefault}>
+                  Delete
+                </button>
+              )}
             </div>
           </li>
         ))}
