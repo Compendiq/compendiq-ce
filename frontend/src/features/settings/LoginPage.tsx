@@ -1,16 +1,49 @@
-import { useState, type FormEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useEffect, type FormEvent } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useAuthStore } from '../../stores/auth-store';
 import { apiFetch } from '../../shared/lib/api';
 
+interface OidcConfig {
+  enabled: boolean;
+  issuer: string | null;
+  name: string | null;
+  enterpriseRequired: boolean;
+}
+
 export function LoginPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const setAuth = useAuthStore((s) => s.setAuth);
   const [isRegister, setIsRegister] = useState(false);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [oidcConfig, setOidcConfig] = useState<OidcConfig | null>(null);
+  const [oidcLoading, setOidcLoading] = useState(true);
+
+  useEffect(() => {
+    const searchError = searchParams.get('error');
+    if (searchError) {
+      toast.error(`SSO login failed: ${searchError}`);
+      navigate('/login', { replace: true });
+      return;
+    }
+  }, [searchParams, navigate]);
+
+  useEffect(() => {
+    async function fetchOidcConfig() {
+      try {
+        const config = await apiFetch<OidcConfig>('/auth/oidc/config');
+        setOidcConfig(config);
+      } catch {
+        // If config fetch fails, don't show SSO button
+      } finally {
+        setOidcLoading(false);
+      }
+    }
+    fetchOidcConfig();
+  }, []);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -82,6 +115,25 @@ export function LoginPage() {
           >
             {loading ? 'Loading...' : isRegister ? 'Create Account' : 'Sign In'}
           </button>
+
+          {oidcConfig && oidcConfig.enabled && !oidcConfig.enterpriseRequired && (
+            <button
+              type="button"
+              onClick={() => {
+                const params = new URLSearchParams(window.location.search);
+                if (params.toString()) {
+                  params.delete('error');
+                  window.location.href = `/login?${params.toString()}`;
+                }
+                window.location.href = '/api/auth/oidc/authorize';
+              }}
+              disabled={oidcLoading}
+              data-testid="sso-login-btn"
+              className="w-full rounded-lg border border-border/40 bg-card/30 px-4 py-2.5 text-sm font-medium text-muted-foreground hover:bg-card/60"
+            >
+              {oidcLoading ? 'Loading...' : `Sign in with ${oidcConfig.name || 'SSO'}`}
+            </button>
+          )}
         </form>
 
         <p className="mt-6 text-center text-sm text-muted-foreground">

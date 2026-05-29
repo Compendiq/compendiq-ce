@@ -10,7 +10,7 @@ function renderLoginPage(initialEntry = '/login') {
     <LazyMotion features={domAnimation}>
       <MemoryRouter initialEntries={[initialEntry]}>
         <LoginPage />
-      </MemoryRouter>
+      </MemoryRouter>,
     </LazyMotion>,
   );
 }
@@ -18,6 +18,10 @@ function renderLoginPage(initialEntry = '/login') {
 describe('LoginPage', () => {
   beforeEach(() => {
     useAuthStore.getState().clearAuth();
+    vi.resetAllMocks();
+    vi.mock('../../shared/lib/api', () => ({
+      apiFetch: vi.fn(),
+    }));
   });
 
   afterEach(() => {
@@ -32,7 +36,36 @@ describe('LoginPage', () => {
     expect(screen.getByPlaceholderText('Enter password')).toBeInTheDocument();
   });
 
-  it('does not show SSO button (enterprise feature)', () => {
+  it('renders SSO button when OIDC is enabled', async () => {
+    const { apiFetch } = await import('../../shared/lib/api');
+    vi.mocked(apiFetch).mockResolvedValueOnce({
+      enabled: true,
+      issuer: 'https://idp.example.com',
+      name: 'OrgSSO',
+      enterpriseRequired: false,
+    } as never);
+
+    renderLoginPage();
+    expect(await screen.findByRole('button', { name: 'Sign in with OrgSSO' })).toBeInTheDocument();
+  });
+
+  it('does not render SSO button when OIDC is disabled', async () => {
+    const { apiFetch } = await import('../../shared/lib/api');
+    vi.mocked(apiFetch).mockResolvedValueOnce({
+      enabled: false,
+      issuer: null,
+      name: null,
+      enterpriseRequired: false,
+    } as never);
+
+    renderLoginPage();
+    expect(screen.queryByTestId('sso-login-btn')).not.toBeInTheDocument();
+  });
+
+  it('does not render SSO button when OIDC config fetch fails', async () => {
+    const { apiFetch } = await import('../../shared/lib/api');
+    vi.mocked(apiFetch).mockRejectedValueOnce(new Error('Network error'));
+
     renderLoginPage();
     expect(screen.queryByTestId('sso-login-btn')).not.toBeInTheDocument();
   });
