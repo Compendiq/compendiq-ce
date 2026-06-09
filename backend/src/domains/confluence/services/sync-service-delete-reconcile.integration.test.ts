@@ -195,4 +195,42 @@ describe.skipIf(!dbAvailable)('sync-service deletion reconciliation (#706)', () 
     expect(await getDeletedAt('shared-gone')).not.toBeNull();
     expect(counts.pagesDeleted).toBe(1);
   });
+
+  it('defers the WHOLE run (zero soft-deletes) when candidates exceed MAX_DELETION_CONFIRMATIONS=200', async () => {
+    // 201 local rows, none present in the live listing — e.g. a permission change
+    // suddenly hid a large subtree from this principal. The cap must trip BEFORE any
+    // confirmation fetch so we neither hammer Confluence nor risk a mass false delete.
+    const ids = Array.from({ length: 201 }, (_, i) => `cap-${i}`);
+    for (const id of ids) await insertPage(id, 'DEV');
+
+    // Even though every candidate would confirm as a 404, the cap defers first.
+    const client = makeClient({ liveIds: [], goneForGetPage: ids });
+    const counts = { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 };
+
+    await detectDeletedPages(client as never, 'DEV', counts);
+
+    // No confirmation fetches and nothing soft-deleted — the run is deferred whole.
+    expect(client.getPageCalls).toEqual([]);
+    expect(counts.pagesDeleted).toBe(0);
+    const remaining = await query<{ n: string }>(
+      'SELECT COUNT(*) AS n FROM pages WHERE space_key = $1 AND deleted_at IS NULL',
+      ['DEV'],
+    );
+    expect(parseInt(remaining.rows[0]!.n, 10)).toBe(201);
+  });
+
+  it('reconciles normally at the cap boundary (exactly 200 candidates)', async () => {
+    // 200 candidates is within the cap, so the run proceeds: each is confirmed gone
+    // and soft-deleted. Guards against an off-by-one in the > vs >= comparison.
+    const ids = Array.from({ length: 200 }, (_, i) => `edge-${i}`);
+    for (const id of ids) await insertPage(id, 'DEV');
+
+    const client = makeClient({ liveIds: [], goneForGetPage: ids });
+    const counts = { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 };
+
+    await detectDeletedPages(client as never, 'DEV', counts);
+
+    expect(client.getPageCalls).toHaveLength(200);
+    expect(counts.pagesDeleted).toBe(200);
+  });
 });

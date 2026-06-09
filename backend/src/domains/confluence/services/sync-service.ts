@@ -58,6 +58,31 @@ const SYNC_STATUS_TTL = 86_400; // 24 h
  */
 const MAX_DELETION_CONFIRMATIONS = 200;
 
+/**
+ * Per-space dedupe window for deletion reconciliation (#706).
+ *
+ * Reconciliation is invoked once per (user × space) per sync cycle: a space
+ * shared by N users would otherwise issue its `getAllPageIds` + per-candidate
+ * confirmation fetches N times each cycle. This Redis `SET NX EX` guard lets the
+ * FIRST run for a space within the window claim it, so the other users skip the
+ * redundant work that cycle.
+ *
+ * Safety: this can only NARROW work — it never causes a missed or false delete.
+ * A genuinely deleted page returns 404 to every principal, so whichever user
+ * reaches the space first reconciles it; a page merely restricted from one user
+ * is never a 404 and is never deleted regardless of who runs. When Redis is
+ * unavailable the guard is a no-op and reconciliation runs per-user exactly as
+ * before (still bounded by `MAX_DELETION_CONFIRMATIONS`).
+ *
+ * The window is kept comfortably below the sync interval so reconciliation still
+ * runs at least once per cycle (a deletion surfaces within one normal cycle).
+ */
+const RECONCILE_DEDUPE_PREFIX = 'sync:reconcile:';
+const RECONCILE_DEDUPE_TTL = Math.max(
+  60,
+  Math.floor(parseInt(process.env.SYNC_INTERVAL_MIN ?? '15', 10) * 60 * 0.8),
+);
+
 /** Lua script: only delete the lock if the caller owns it (value matches). */
 const RELEASE_LOCK_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`;
 
@@ -99,6 +124,32 @@ const MAX_ATTACHMENT_FAILURES = REDIS_MAX_ATTACHMENT_FAILURES;
 async function clearPageFailures(pageId: string): Promise<void> {
   const redis = getRedisClient();
   await clearAttachmentFailures(redis, pageId);
+}
+
+/**
+ * Try to claim deletion reconciliation for a space this cycle (#706).
+ *
+ * Returns `true` if this caller should run reconciliation now, `false` if another
+ * run already claimed the space within `RECONCILE_DEDUPE_TTL`. When Redis is
+ * unavailable (or errors) we fail OPEN — return `true` — so reconciliation still
+ * runs; the dedupe is a best-effort optimisation, never a correctness gate.
+ */
+async function tryClaimSpaceReconcile(spaceKey: string): Promise<boolean> {
+  const redis = getRedisClient();
+  if (!redis) return true;
+  try {
+    const result = await redis.set(`${RECONCILE_DEDUPE_PREFIX}${spaceKey}`, '1', {
+      NX: true,
+      EX: RECONCILE_DEDUPE_TTL,
+    });
+    return result === 'OK';
+  } catch (err) {
+    logger.debug(
+      { spaceKey, err: err instanceof Error ? err.message : String(err) },
+      'Reconcile dedupe claim failed — proceeding (fail-open)',
+    );
+    return true;
+  }
 }
 
 /**
@@ -1203,12 +1254,24 @@ async function syncMissingAttachments(
  * still exists but is merely hidden from this principal answers 200/403, not 404, so
  * one user's restricted view can no longer nuke pages others can still see. The number
  * of confirmation fetches per run is capped (`MAX_DELETION_CONFIRMATIONS`).
+ *
+ * Per-cycle fan-out: this runs once per (user × space). A shared space would
+ * otherwise re-run the listing + confirmation fetches once per user each cycle, so
+ * a best-effort Redis dedupe (`tryClaimSpaceReconcile`) lets the first run per space
+ * claim the cycle and the rest skip. It fails open (runs) when Redis is absent, and
+ * can only narrow work — see the dedupe constant's note for why it is delete-safe.
  */
 async function detectDeletedPages(
   client: ConfluenceClient,
   spaceKey: string,
   counts: SyncSpaceCounts,
 ): Promise<void> {
+  // Dedupe the per-(user × space) fan-out within a sync cycle (#706). Fail-open.
+  if (!(await tryClaimSpaceReconcile(spaceKey))) {
+    logger.debug({ spaceKey }, 'Skipping deletion reconciliation: already reconciled this cycle');
+    return;
+  }
+
   // Authoritative set of ids Confluence still serves for this space (cheap listing).
   let liveIds: Set<string>;
   try {

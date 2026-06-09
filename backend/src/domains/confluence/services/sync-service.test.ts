@@ -497,6 +497,28 @@ describe('sync-service', () => {
 
       expect(vi.mocked(cleanPageAttachments)).toHaveBeenCalledWith('', 'page-orphan');
     });
+
+    it('skips reconciliation when another run already claimed the space this cycle (#706 dedupe)', async () => {
+      setupSyncMocks({
+        confluencePageIds: [],
+        dbPageIds: ['page-orphan'],
+      });
+      mockRedisGet.mockResolvedValue(null);
+      // The per-space dedupe key (sync:reconcile:*) is already held → claim lost.
+      // The unrelated worker-lock SET still succeeds so the sync run proceeds.
+      mockRedisSet.mockImplementation((key: string) =>
+        Promise.resolve(typeof key === 'string' && key.startsWith('sync:reconcile:') ? null : 'OK'),
+      );
+
+      await syncUser('user-1');
+
+      // No confirmation fetch and no soft-delete — reconciliation was deduped.
+      expect(mockConfluenceClientInstance.getAllPageIds).not.toHaveBeenCalled();
+      const softDeleteCall = vi.mocked(query).mock.calls.find(
+        (call) => typeof call[0] === 'string' && call[0].includes('UPDATE pages SET deleted_at = NOW()'),
+      );
+      expect(softDeleteCall).toBeUndefined();
+    });
   });
 
   describe('purgeDeletedPages', () => {
