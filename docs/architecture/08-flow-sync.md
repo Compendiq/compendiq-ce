@@ -49,6 +49,25 @@ sequenceDiagram
         end
 
         S->>DB: INSERT/UPDATE page_versions (snapshot)
+
+        Note over S,DB: Deletion reconciliation (#706) — every sync, incremental too
+        S->>CL: getAllPageIds(spaceKey)
+        CL->>CF: GET /rest/api/content?spaceKey=… (ids only, no expand)
+        CF-->>CL: authoritative live id set
+        CL-->>S: liveIds
+        S->>DB: SELECT confluence_id FROM pages WHERE space_key=… AND deleted_at IS NULL
+        loop per candidate (local row absent from liveIds)
+            S->>CL: getPage(confluenceId) — confirm gone
+            CL->>CF: GET /rest/api/content/{id}
+            alt 404 (genuinely deleted)
+                CF-->>S: 404
+                S->>DB: UPDATE pages SET deleted_at = NOW()
+            else 200 / 403 (still there / not visible to this principal)
+                CF-->>S: 200 / 403
+                Note over S: leave row in place (shared-space safe)
+            end
+        end
+
         S->>R: DEL sync:worker:lock
         S-->>T: done
     end
@@ -91,6 +110,32 @@ sequenceDiagram
   is written from Confluence's own version counter; no double-writes.
 - **Circuit breaker** — `core/services/circuit-breaker.ts` protects against
   runaway failure against a broken Confluence instance.
+
+## Deletion reconciliation (#706)
+
+Pages removed in Confluence are reflected locally by `detectDeletedPages`, which
+runs on **every** sync — incremental as well as the ≥24h full sync — so deletions
+surface within a normal sync cycle rather than lingering until a rare full run.
+
+- **Bounded cost.** The authoritative live id set comes from a dedicated cheap
+  listing (`getAllPageIds`: ids only, no `expand`), so a candidate set is derived
+  by set difference rather than re-fetching every page. The incremental
+  modified-pages list can't be used for this — it only holds pages that changed.
+- **Shared-space safety.** A page absent from one principal's listing is *not*
+  assumed deleted (it may simply be restricted from that user). Each candidate is
+  confirmed gone via a direct `GET /content/{id}` → **404** before its row is
+  soft-deleted; a `200`/`403` leaves the row untouched, so one user's restricted
+  view can no longer nuke pages others can still see. The number of confirmation
+  fetches per run is capped (`MAX_DELETION_CONFIRMATIONS`); a larger candidate set
+  is deferred to a later run.
+- **Soft delete + purge.** Reconciled rows are soft-deleted (`deleted_at`), then
+  hard-purged after 30 days by `purgeDeletedPages`. A subsequent re-appearance in
+  Confluence revives the row via the sync upsert's `deleted_at = NULL`.
+
+The same 404-tolerance applies to **user-initiated delete** (`DELETE /api/pages/:id`
+and the bulk path): if Confluence answers 404 the remote page is already gone, so
+local cleanup proceeds and the delete succeeds instead of failing with
+"Resource not found". Any non-404 error still surfaces (no silent data loss).
 
 ## Content pipeline hand-off
 

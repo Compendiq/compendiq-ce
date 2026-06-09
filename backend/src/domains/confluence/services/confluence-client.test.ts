@@ -879,6 +879,56 @@ describe('ConfluenceClient', () => {
       expect(mockRequest).toHaveBeenCalledTimes(3);
     });
   });
+
+  describe('getAllPageIds (#706 deletion reconciliation)', () => {
+    it('returns the set of live page ids without expanding body/version', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+      mockRequest.mockResolvedValue({
+        statusCode: 200,
+        body: {
+          text: async () =>
+            JSON.stringify({
+              results: [{ id: '1' }, { id: '2' }, { id: '3' }],
+              start: 0,
+              limit: 200,
+              size: 3,
+            }),
+        },
+      } as never);
+
+      const ids = await client.getAllPageIds('DEV');
+
+      expect(ids).toEqual(new Set(['1', '2', '3']));
+      // Cheap listing: no expand= query (avoids fetching body/version/ancestors).
+      const callUrl = mockRequest.mock.calls[0][0] as string;
+      expect(callUrl).toContain('spaceKey=DEV');
+      expect(callUrl).toContain('type=page');
+      expect(callUrl).not.toContain('expand=');
+    });
+
+    it('paginates until the listing is exhausted', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+      const firstPage = Array.from({ length: 200 }, (_, i) => ({ id: String(i) }));
+      mockRequest
+        .mockResolvedValueOnce({
+          statusCode: 200,
+          body: {
+            text: async () =>
+              JSON.stringify({ results: firstPage, start: 0, limit: 200, size: 200, _links: { next: '/next' } }),
+          },
+        } as never)
+        .mockResolvedValueOnce({
+          statusCode: 200,
+          body: { text: async () => JSON.stringify({ results: [{ id: '200' }], start: 200, limit: 200, size: 1 }) },
+        } as never);
+
+      const ids = await client.getAllPageIds('DEV');
+
+      expect(ids.size).toBe(201);
+      expect(ids.has('200')).toBe(true);
+      expect(mockRequest).toHaveBeenCalledTimes(2);
+    });
+  });
 });
 
 describe('getPageRestrictions', () => {

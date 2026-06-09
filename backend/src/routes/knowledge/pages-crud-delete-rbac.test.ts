@@ -3,6 +3,8 @@ import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 import { ZodError } from 'zod';
 import { pagesCrudRoutes } from './pages-crud.js';
+import { ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
+import { cleanPageAttachments } from '../../domains/confluence/services/attachment-handler.js';
 
 // --- Mocks ---
 
@@ -235,5 +237,92 @@ describe('DELETE /api/pages/:id RBAC space access checks', () => {
 
     expect(response.statusCode).toBe(200);
     expect(mockDeletePage).toHaveBeenCalledWith('page-42');
+  });
+
+  // ── #706: tolerate a Confluence page already deleted remotely ──────────────
+
+  it('succeeds and cleans up locally when the Confluence page is already gone (404)', async () => {
+    // deletePage rejects with a 404 — the remote page no longer exists.
+    const mockDeletePage = vi.fn().mockRejectedValue(new ConfluenceError('Resource not found', 404));
+    mockGetClientForUser.mockResolvedValue({ deletePage: mockDeletePage });
+
+    mockQueryFn.mockImplementation((sql: string) => {
+      if (typeof sql === 'string' && sql.includes('id, source, created_by_user_id')) {
+        return Promise.resolve({
+          rows: [{
+            id: 10,
+            source: 'confluence',
+            created_by_user_id: null,
+            confluence_id: 'page-100',
+            space_key: 'DEV',
+          }],
+        });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    });
+
+    const response = await app.inject({
+      method: 'DELETE',
+      url: '/api/pages/page-100',
+    });
+
+    // A 404 means the desired end state (gone from Confluence) is already true —
+    // the delete must succeed rather than surface "Resource not found".
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body).message).toBe(
+      'Page was already removed in Confluence — removed locally',
+    );
+    expect(mockDeletePage).toHaveBeenCalledWith('page-100');
+
+    // Local cleanup must still run: the page row, pins and attachments are removed.
+    const pageDelete = mockQueryFn.mock.calls.find(
+      (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('DELETE FROM pages WHERE id = $1'),
+    );
+    expect(pageDelete).toBeDefined();
+    const pinDelete = mockQueryFn.mock.calls.find(
+      (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('DELETE FROM pinned_pages'),
+    );
+    expect(pinDelete).toBeDefined();
+    expect(cleanPageAttachments).toHaveBeenCalledWith(TEST_USER, 'page-100');
+  });
+
+  it('surfaces a non-404 Confluence error and does NOT delete locally (no data loss)', async () => {
+    // deletePage rejects with a 5xx — Confluence genuinely failed.
+    const mockDeletePage = vi.fn().mockRejectedValue(
+      new ConfluenceError('Confluence API error: HTTP 503', 503),
+    );
+    mockGetClientForUser.mockResolvedValue({ deletePage: mockDeletePage });
+
+    mockQueryFn.mockImplementation((sql: string) => {
+      if (typeof sql === 'string' && sql.includes('id, source, created_by_user_id')) {
+        return Promise.resolve({
+          rows: [{
+            id: 10,
+            source: 'confluence',
+            created_by_user_id: null,
+            confluence_id: 'page-100',
+            space_key: 'DEV',
+          }],
+        });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    });
+
+    const response = await app.inject({
+      method: 'DELETE',
+      url: '/api/pages/page-100',
+    });
+
+    // The error surfaces (any non-2xx) — it is not swallowed.
+    expect(response.statusCode).toBeGreaterThanOrEqual(400);
+    expect(mockDeletePage).toHaveBeenCalledWith('page-100');
+
+    // Critical: the local row must NOT be deleted when the remote delete failed
+    // for any reason other than 404 — otherwise we silently lose the page.
+    const pageDelete = mockQueryFn.mock.calls.find(
+      (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('DELETE FROM pages WHERE id = $1'),
+    );
+    expect(pageDelete).toBeUndefined();
+    expect(cleanPageAttachments).not.toHaveBeenCalled();
   });
 });

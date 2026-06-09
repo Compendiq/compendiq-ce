@@ -743,6 +743,31 @@ export class ConfluenceClient {
 
     return pages;
   }
+
+  /**
+   * Cheaply list every live page id in a space, with no body / version / ancestor
+   * expansion. Used by deletion reconciliation (#706) to obtain the authoritative
+   * set of ids Confluence still serves for the space — comparing local rows against
+   * this set bounds the cost of detecting deletions during incremental syncs
+   * (one lightweight paginated listing instead of a full content fetch per page).
+   * Uses a larger page size than `getAllPagesInSpace` since each result is tiny.
+   */
+  async getAllPageIds(spaceKey: string): Promise<Set<string>> {
+    const ids = new Set<string>();
+    let start = 0;
+    const limit = 200;
+
+    while (true) {
+      const response = await this.fetch<PaginatedResponse<{ id: string }>>(
+        `/rest/api/content?spaceKey=${encodeURIComponent(spaceKey)}&type=page&start=${start}&limit=${limit}`,
+      );
+      for (const { id } of response.results) ids.add(id);
+      if (response.size < limit || !response._links?.next) break;
+      start += limit;
+    }
+
+    return ids;
+  }
 }
 
 /**
