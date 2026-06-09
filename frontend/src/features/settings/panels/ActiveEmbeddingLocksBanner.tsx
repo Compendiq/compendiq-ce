@@ -12,8 +12,8 @@ import { apiFetch } from '../../../shared/lib/api';
  * Polls `GET /api/admin/embedding/locks` every 5 seconds. When one or more
  * locks are held (the synthetic `__reembed_all__` system lock is already
  * filtered server-side) it renders a per-user row with a "Force release"
- * button, behind an inline confirm — matching the pattern used by
- * `BulkOperations.tsx` delete rather than introducing a new modal primitive.
+ * button, behind an inline confirm — keeping the destructive action one
+ * extra click away without introducing a new modal primitive.
  *
  * On successful force-release the next 5-second poll drops the row; on a
  * non-2xx response a toast surfaces the error and the row remains in place.

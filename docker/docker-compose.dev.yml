@@ -1,0 +1,37 @@
+# Local dev override — exposes data-tier services (postgres, redis) on the
+# host so `npm run dev` can talk to them from outside Docker. Combine with
+# the main compose file:
+#
+#   docker compose -f docker/docker-compose.yml \
+#                  -f docker/docker-compose.dev.yml \
+#                  up -d postgres redis
+#
+# The default ports match `.env.example`:
+#   - Postgres → 5432 (test DB lives on 5433 via docker-compose.test.yml)
+#   - Redis    → 6379
+
+services:
+  postgres:
+    # Host port 5435 → container 5432. Avoids 5432/5433 which are taken on this
+    # machine by other unrelated containers, plus 5434 which Docker Desktop's
+    # port allocator was holding stale. Pair with
+    # `POSTGRES_URL=...@localhost:5435/...` in `.env`.
+    # Long-form needed because the short "host:cont" string is mis-parsed by
+    # Docker Desktop's API client as HostIP when the host is a plain port.
+    ports:
+      - target: 5432
+        host_ip: 0.0.0.0
+        published: 5435
+        protocol: tcp
+        mode: host
+
+  redis:
+    # Host port 6380 → container 6379. Picks an off-default host port because
+    # this machine already runs another Redis on 6379 unrelated to this project.
+    # Pair with `REDIS_URL=redis://:changeme-redis@localhost:6380` in `.env`.
+    ports:
+      - target: 6379
+        host_ip: 0.0.0.0
+        published: 6380
+        protocol: tcp
+        mode: host

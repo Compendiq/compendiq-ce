@@ -42,6 +42,8 @@ export function SpaceHomePicker({
   const [query, setQuery] = useState('');
 
   const setHome = useSetSpaceHome();
+  // Which result row is currently being set as home (for a per-row spinner).
+  const [settingPageId, setSettingPageId] = useState<number | null>(null);
 
   // Show the resolved current home (page title + breadcrumb-ish hint).
   // The search hook is enabled at q.length >= 2 so the page lookup here
@@ -53,6 +55,7 @@ export function SpaceHomePicker({
   const search = useSearch({ q: query.trim(), spaceKey });
 
   const setOverride = (homePageId: number | null) => {
+    if (homePageId !== null) setSettingPageId(homePageId);
     setHome.mutate(
       { spaceKey, homePageId },
       {
@@ -68,6 +71,7 @@ export function SpaceHomePicker({
         onError: (err) => {
           toast.error(err.message || 'Could not update the space home page.');
         },
+        onSettled: () => setSettingPageId(null),
       },
     );
   };
@@ -100,7 +104,7 @@ export function SpaceHomePicker({
             canManage
               ? 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground'
               : 'cursor-not-allowed opacity-50',
-            customHomePageId != null && 'border-primary/40 text-primary',
+            customHomePageId != null && 'border-action/40 text-action',
           )}
         >
           <Home size={12} />
@@ -134,7 +138,7 @@ export function SpaceHomePicker({
               className="mb-2 flex items-center gap-2 rounded-md bg-foreground/5 px-2 py-1.5"
               data-testid="space-home-picker-current"
             >
-              <Check size={12} className="text-primary" />
+              <Check size={12} className="text-action" />
               <p className="min-w-0 truncate text-xs">
                 <span className="text-muted-foreground">Current: </span>
                 <span className="font-medium">
@@ -188,17 +192,22 @@ export function SpaceHomePicker({
                         type="button"
                         role="option"
                         aria-selected={isCurrent}
+                        aria-busy={settingPageId === p.id}
                         disabled={setHome.isPending}
                         onClick={() => setOverride(p.id)}
                         className={cn(
                           'flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors',
                           'hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
-                          isCurrent && 'bg-primary/10 text-primary',
+                          isCurrent && 'bg-action/10 text-action',
                         )}
                         data-testid={`space-home-picker-result-${p.id}`}
                       >
                         <span className="flex-1 truncate">{p.title}</span>
-                        {isCurrent && <Check size={12} className="shrink-0 text-primary" />}
+                        {settingPageId === p.id ? (
+                          <Loader2 size={12} className="shrink-0 animate-spin text-action" />
+                        ) : isCurrent ? (
+                          <Check size={12} className="shrink-0 text-action" />
+                        ) : null}
                       </button>
                     </li>
                   );

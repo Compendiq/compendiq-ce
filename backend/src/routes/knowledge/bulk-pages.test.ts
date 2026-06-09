@@ -76,6 +76,11 @@ vi.mock('../../domains/llm/services/embedding-service.js', () => ({
   computePageRelationships: vi.fn().mockResolvedValue(0),
 }));
 
+const mockTriggerQualityBatch = vi.fn().mockResolvedValue(undefined);
+vi.mock('../../domains/knowledge/services/quality-worker.js', () => ({
+  triggerQualityBatch: (...args: unknown[]) => mockTriggerQualityBatch(...args),
+}));
+
 // Mock the database with a function we can control per test
 vi.mock('../../core/services/rbac-service.js', () => ({
   getUserAccessibleSpaces: vi.fn().mockResolvedValue(['DEV', 'OPS']),
@@ -643,6 +648,58 @@ describe('Bulk Pages Routes (Parallelized)', () => {
       expect(updateCall![0]).toContain('UPDATE pages SET embedding_dirty');
       expect(updateCall![0]).toContain('ANY($1)');
       expect(updateCall![0]).toContain('RETURNING');
+    });
+  });
+
+  describe('POST /api/pages/bulk/quality', () => {
+    it('resets quality_status and fires the worker', async () => {
+      // Resolver SELECT returns the eligible row; UPDATE returns rowCount=1.
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ id: 1, confluence_id: 'page-1', space_key: 'OPS', source: 'confluence', labels: [] }],
+        rowCount: 1,
+      });
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/quality',
+        payload: { ids: ['page-1'] },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.succeeded).toBe(1);
+      expect(body.failed).toBe(0);
+
+      // The UPDATE statement scopes by integer PK and clears prior score/error
+      const updateCall = mockQueryFn.mock.calls[1];
+      expect(updateCall![0]).toContain("quality_status = 'pending'");
+      expect(updateCall![0]).toContain('quality_score = NULL');
+      expect(updateCall![0]).toContain('id = ANY($1::int[])');
+      expect(updateCall![1]).toEqual([[1]]);
+
+      // Fire-and-forget worker trigger
+      await vi.waitFor(() => {
+        expect(mockTriggerQualityBatch).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    it('does not fire the worker when no pages were eligible', async () => {
+      // No resolved rows → nothing to update → no trigger.
+      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/quality',
+        payload: { ids: ['nonexistent'] },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.succeeded).toBe(0);
+      expect(body.failed).toBe(1);
+      expect(body.errors[0]).toContain('not found');
+      expect(mockTriggerQualityBatch).not.toHaveBeenCalled();
     });
   });
 

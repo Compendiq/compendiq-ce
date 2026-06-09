@@ -125,7 +125,7 @@ export function ErrorDashboard() {
             className={cn(
               'rounded-md px-3 py-1.5 text-xs font-medium transition-colors',
               filterResolved === tab
-                ? 'bg-primary/15 text-primary'
+                ? 'bg-action/15 text-action'
                 : 'text-muted-foreground hover:text-foreground',
             )}
             data-testid={`filter-${tab}`}

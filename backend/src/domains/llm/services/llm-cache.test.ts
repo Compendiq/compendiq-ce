@@ -57,6 +57,12 @@ describe('buildLlmCacheKey', () => {
     const keyUndefinedProvider = buildLlmCacheKey('model', 'system', 'content', undefined);
     expect(keyNoProvider).toBe(keyUndefinedProvider);
   });
+
+  it('should differ when thinking is toggled', () => {
+    const off = buildLlmCacheKey('model', 'sys', 'user', 'p');
+    const on  = buildLlmCacheKey('model', 'sys', 'user', 'p', { thinking: true });
+    expect(off).not.toBe(on);
+  });
 });
 
 describe('buildRagCacheKey', () => {
@@ -121,6 +127,21 @@ describe('buildRagCacheKey', () => {
     const keyNoProvider = buildRagCacheKey('model', 'question', ['doc1']);
     const keyEmptyOpts = buildRagCacheKey('model', 'question', ['doc1'], {});
     expect(keyNoProvider).toBe(keyEmptyOpts);
+  });
+
+  // Thinking-on responses must live in a separate cache namespace, otherwise
+  // a prior thinking-off answer is replayed when the user toggles Think on
+  // and the upstream LLM never sees the new request.
+  it('should differ when thinking is toggled', () => {
+    const off = buildRagCacheKey('model', 'q', ['d1'], { provider: 'p' });
+    const on  = buildRagCacheKey('model', 'q', ['d1'], { provider: 'p', thinking: true });
+    expect(off).not.toBe(on);
+  });
+
+  it('should treat thinking:false as equivalent to omitted', () => {
+    const off = buildRagCacheKey('model', 'q', ['d1'], { provider: 'p' });
+    const offExplicit = buildRagCacheKey('model', 'q', ['d1'], { provider: 'p', thinking: false });
+    expect(off).toBe(offExplicit);
   });
 });
 

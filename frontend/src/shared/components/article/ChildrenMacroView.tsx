@@ -68,7 +68,7 @@ export function ChildrenMacroView({ node }: NodeViewProps) {
           <li key={child.id}>
             <Link
               to={`/pages/${child.id}`}
-              className="text-primary hover:underline"
+              className="text-action hover:underline"
             >
               {child.title}
             </Link>

@@ -1,17 +1,57 @@
-import { useState, type FormEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useEffect, type FormEvent } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
+import { OidcConfigSchema, type OidcConfig } from '@compendiq/contracts';
 import { useAuthStore } from '../../stores/auth-store';
 import { apiFetch } from '../../shared/lib/api';
-import { CompendiqLogo } from '../../shared/components/CompendiqLogo';
+
+/**
+ * Friendly copy for the OIDC/OAuth2 error codes an IdP may append to the
+ * post-redirect URL (?error=...). We map known codes and fall back to a
+ * generic message rather than echoing the raw param, which is
+ * attacker-controllable.
+ */
+const OIDC_ERROR_MESSAGES: Record<string, string> = {
+  access_denied: 'SSO sign-in was cancelled or denied.',
+  login_required: 'SSO sign-in could not be completed. Please try again.',
+  interaction_required: 'SSO sign-in could not be completed. Please try again.',
+  consent_required: 'Additional consent is required to sign in via SSO.',
+  server_error: 'The SSO provider reported an error. Please try again later.',
+  temporarily_unavailable: 'SSO is temporarily unavailable. Please try again later.',
+};
 
 export function LoginPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const setAuth = useAuthStore((s) => s.setAuth);
   const [isRegister, setIsRegister] = useState(false);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [oidcConfig, setOidcConfig] = useState<OidcConfig | null>(null);
+
+  useEffect(() => {
+    const searchError = searchParams.get('error');
+    if (searchError) {
+      toast.error(
+        OIDC_ERROR_MESSAGES[searchError] ?? 'SSO sign-in failed. Please try again or use local login.',
+      );
+      // Clear the error param so a refresh doesn't re-trigger the toast.
+      navigate('/login', { replace: true });
+    }
+  }, [searchParams, navigate]);
+
+  useEffect(() => {
+    async function fetchOidcConfig() {
+      try {
+        const config = OidcConfigSchema.parse(await apiFetch('/auth/oidc/config'));
+        setOidcConfig(config);
+      } catch {
+        // No/invalid config (e.g. the OIDC route is absent in CE) — leave the SSO button hidden.
+      }
+    }
+    fetchOidcConfig();
+  }, []);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -36,11 +76,12 @@ export function LoginPage() {
   return (
     <div className="bg-background flex min-h-screen items-center justify-center p-4">
       <div className="w-full max-w-md rounded-xl border border-border/40 bg-card/50 p-8 backdrop-blur-sm">
-        <div className="mb-2 flex flex-col items-center gap-3">
-          <CompendiqLogo size={56} className="text-primary" animated />
-          <h1 className="text-center text-2xl font-bold">
-            Compendiq
-          </h1>
+        <div className="mb-2 flex flex-col items-center">
+          <img
+            src="/compendiq-lockup-horizontal.svg"
+            alt="Compendiq"
+            className="h-16 w-auto"
+          />
         </div>
         <p className="mb-8 text-center text-sm text-muted-foreground">
           {isRegister ? 'Create your account' : 'Sign in to your account'}
@@ -82,13 +123,26 @@ export function LoginPage() {
           >
             {loading ? 'Loading...' : isRegister ? 'Create Account' : 'Sign In'}
           </button>
+
+          {oidcConfig && oidcConfig.enabled && !oidcConfig.enterpriseRequired && (
+            <button
+              type="button"
+              onClick={() => {
+                window.location.href = '/api/auth/oidc/authorize';
+              }}
+              data-testid="sso-login-btn"
+              className="nm-button-ghost w-full py-2.5"
+            >
+              Sign in with {oidcConfig.name || 'SSO'}
+            </button>
+          )}
         </form>
 
         <p className="mt-6 text-center text-sm text-muted-foreground">
           {isRegister ? 'Already have an account?' : "Don't have an account?"}{' '}
           <button
             onClick={() => setIsRegister(!isRegister)}
-            className="text-primary hover:underline"
+            className="text-action hover:underline"
           >
             {isRegister ? 'Sign in' : 'Create one'}
           </button>

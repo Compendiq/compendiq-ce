@@ -99,7 +99,7 @@ export function NotificationDropdown({
         <div className="flex items-center justify-end border-b border-border/30 px-3 py-2">
           <button
             onClick={onMarkAllRead}
-            className="text-xs text-primary hover:text-primary/80 transition-colors"
+            className="text-xs text-action hover:text-action/80 transition-colors"
             data-testid="mark-all-read"
           >
             Mark all as read
@@ -126,7 +126,7 @@ export function NotificationDropdown({
                   onClick={() => onClickNotification(notification)}
                   className={cn(
                     'flex w-full items-start gap-3 px-3 py-2.5 text-left transition-colors hover:bg-foreground/5',
-                    !notification.read && 'bg-primary/5',
+                    !notification.read && 'bg-action/5',
                   )}
                   data-testid={`notification-item-${notification.id}`}
                 >
@@ -139,7 +139,7 @@ export function NotificationDropdown({
                         {notification.title}
                       </span>
                       {!notification.read && (
-                        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
+                        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-action" />
                       )}
                     </div>
                     <p className="mt-0.5 text-xs text-muted-foreground line-clamp-1">

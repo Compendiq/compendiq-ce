@@ -8,7 +8,7 @@ import { toast } from 'sonner';
  * Quality analysis mode: one-click multi-dimensional quality analysis of the selected page.
  */
 export function QualityModeInput() {
-  const { isStreaming, page, model, pageId, includeSubPages, runStream } = useAiContext();
+  const { isStreaming, page, model, pageId, includeSubPages, thinkingMode, runStream } = useAiContext();
 
   const handleQuality = useCallback(async () => {
     if (isStreaming) return;
@@ -23,10 +23,16 @@ export function QualityModeInput() {
 
     await runStream(
       '/llm/analyze-quality',
-      { content: page.bodyHtml, model, pageId: pageId ?? undefined, includeSubPages },
+      {
+        content: page.bodyHtml,
+        model,
+        pageId: pageId ?? undefined,
+        includeSubPages,
+        ...(thinkingMode && { thinking: true }),
+      },
       { userMessage: `Analyze Quality: ${page.title}` },
     );
-  }, [page, model, pageId, isStreaming, includeSubPages, runStream]);
+  }, [page, model, pageId, isStreaming, includeSubPages, thinkingMode, runStream]);
 
   return (
     <div className="mt-3 flex items-center gap-3 border-t border-border/40 pt-3">

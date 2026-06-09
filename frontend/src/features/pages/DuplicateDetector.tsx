@@ -100,9 +100,11 @@ export function DuplicateDetector({ pageId, pageTitle }: DuplicateDetectorProps)
             </div>
             <div className="flex items-center gap-2">
               {!scanning && (
+                // AI affordance: duplicate detection runs on vector embeddings (semantic similarity).
+                // Keep amber per spec semantic rule.
                 <button
                   onClick={handleScan}
-                  className="flex items-center gap-1.5 rounded-md bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary hover:bg-primary/20 transition-colors"
+                  className="flex items-center gap-1.5 rounded-md bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary-ink hover:bg-primary/20 transition-colors"
                 >
                   <Search size={12} /> Find Duplicates
                 </button>

@@ -67,7 +67,7 @@ describe('LicenseStatusCard', () => {
     render(<LicenseStatusCard />, { wrapper: createWrapper() });
 
     expect(await screen.findByText('Community Edition')).toBeInTheDocument();
-    expect(screen.getByText(/Upgrade to unlock/)).toBeInTheDocument();
+    expect(screen.getByText(/Unlock enterprise features/)).toBeInTheDocument();
   });
 
   it('shows enterprise tier with features when licensed', async () => {
@@ -84,7 +84,10 @@ describe('LicenseStatusCard', () => {
     render(<LicenseStatusCard />, { wrapper: createWrapper() });
 
     expect(await screen.findByText('Enterprise Edition')).toBeInTheDocument();
-    expect(screen.getByText('Active')).toBeInTheDocument();
+    // 'Active' appears in both the tier-status pill and each unlocked feature
+    // row's status chip — there can be many. As long as ≥1 is present the
+    // license-status piece of the page rendered correctly.
+    expect(screen.getAllByText('Active').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('50')).toBeInTheDocument();
   });
 
@@ -121,7 +124,7 @@ describe('LicenseStatusCard', () => {
     render(<LicenseStatusCard />, { wrapper: createWrapper() });
 
     expect(await screen.findByText('Enterprise Edition')).toBeInTheDocument();
-    expect(screen.queryByText(/Upgrade to unlock/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Unlock enterprise features/)).not.toBeInTheDocument();
   });
 
   it('does not show seat/expiry stats for community tier', async () => {
@@ -153,7 +156,7 @@ describe('LicenseStatusCard', () => {
     await screen.findByText('Community Edition');
     expect(screen.queryByTestId('license-key-form')).not.toBeInTheDocument();
     // Static upgrade message is shown instead
-    expect(screen.getByText(/Upgrade to unlock/)).toBeInTheDocument();
+    expect(screen.getByText(/Unlock enterprise features/)).toBeInTheDocument();
   });
 
   it('shows key entry form when backend declares canUpdate (EE community)', async () => {

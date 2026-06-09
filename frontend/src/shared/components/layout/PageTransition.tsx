@@ -1,109 +1,45 @@
-import { type ReactNode, useRef, useState, useMemo } from 'react';
-import { useLocation } from 'react-router-dom';
-import { AnimatePresence, m } from 'framer-motion';
-import { useReducedMotion } from 'framer-motion';
+import type { ReactNode } from 'react';
 
 /**
- * Route-depth ordering used to infer navigation direction:
+ * Route-depth ordering preserved for tests + any future use. Not currently
+ * consumed by this component because the AnimatePresence-based slide+fade
+ * was removed (see below).
+ *
  *   /          -> 0  (Pages list)
  *   /pages/new -> 1  (New page)
  *   /pages/:id -> 1  (Page view)
  *   /ai        -> 0  (AI assistant)
  *   /settings  -> 0  (Settings)
- *
- * Forward = depth increases (list -> detail).
- * Backward = depth decreases (detail -> list).
- * Same depth = fade only (no slide).
  */
 function routeDepth(pathname: string): number {
   if (pathname === '/' || pathname === '/ai' || pathname === '/settings' || pathname === '/login') {
     return 0;
   }
-  // /pages/new or /pages/:id
   if (pathname.startsWith('/pages/')) {
     return 1;
   }
   return 0;
 }
 
-const DURATION = 0.22; // 220ms - fast but perceivable
-
 interface PageTransitionProps {
   children: ReactNode;
 }
 
 /**
- * Wraps route content with AnimatePresence to provide smooth enter/exit
- * transitions when navigating between pages.
- *
- * - Forward navigation (e.g. list -> detail): slides left
- * - Backward navigation (e.g. detail -> list): slides right
- * - Same-level navigation: fade only
- * - Respects prefers-reduced-motion: falls back to simple opacity fade
+ * Pass-through wrapper. Previously ran a slide+fade via AnimatePresence
+ * (mode="sync" in #389, mode="wait" in #660). Both modes produced
+ * reproducible black-page bugs under framer-motion 12 + React 19:
+ *   - mode="sync": stuck exit layer with position:absolute blocked clicks
+ *     on the live page (#660).
+ *   - mode="wait": exit completed but the layer never unmounted, so the
+ *     new layer never mounted — fully black article area on sidebar click.
+ *     Multiple attempted fixes (#668, #669) didn't resolve it.
+ * The route transition is a nice-to-have, not load-bearing. Removing the
+ * machinery eliminates the bug surface. Re-introduce only with a fully
+ * reproduced, behavioral test that asserts the exit layer unmounts.
  */
 export function PageTransition({ children }: PageTransitionProps) {
-  const location = useLocation();
-  const reducedMotion = useReducedMotion();
-  const prevDepthRef = useRef(routeDepth(location.pathname));
-  const [animating, setAnimating] = useState(false);
-
-  // Compute direction synchronously during render so animation reads
-  // the correct value on the same frame the location changes.
-  const direction = useMemo(() => {
-    const currentDepth = routeDepth(location.pathname);
-    const prevDepth = prevDepthRef.current;
-
-    let dir: 'forward' | 'backward' | 'neutral';
-    if (currentDepth > prevDepth) {
-      dir = 'forward';
-    } else if (currentDepth < prevDepth) {
-      dir = 'backward';
-    } else {
-      dir = 'neutral';
-    }
-
-    prevDepthRef.current = currentDepth;
-    return dir;
-  }, [location.pathname]);
-
-  // Slide offset based on direction (GPU-composited via translateX)
-  const slideX = reducedMotion
-    ? 0
-    : direction === 'forward'
-      ? 40
-      : direction === 'backward'
-        ? -40
-        : 0;
-
-  return (
-    <div className="flex flex-1 flex-col" style={{ position: 'relative' }}>
-      <AnimatePresence mode="sync" initial={false}>
-        <m.div
-          key={location.pathname}
-          initial={{ opacity: 0, x: slideX }}
-          animate={{ opacity: 1, x: 0 }}
-          // pointerEvents:'none' on exit: AnimatePresence keeps the exiting
-          // element absolutely positioned over the new one for ~220ms. Because
-          // <Outlet> always reads the current router context, both layers
-          // render the same panel — and a real user click during the
-          // transition window lands on the soon-to-unmount overlay, so focus
-          // never sticks. Disabling pointer events on the exit lets clicks
-          // pass through to the live page underneath.
-          exit={{ opacity: 0, x: -slideX, position: 'absolute', top: 0, left: 0, right: 0, pointerEvents: 'none' }}
-          transition={{
-            duration: reducedMotion ? 0.1 : DURATION,
-            ease: [0.25, 0.1, 0.25, 1], // cubic-bezier for smooth deceleration
-          }}
-          className="flex w-full flex-1 flex-col"
-          style={animating ? { willChange: 'opacity, transform' } : undefined}
-          onAnimationStart={() => setAnimating(true)}
-          onAnimationComplete={() => setAnimating(false)}
-        >
-          {children}
-        </m.div>
-      </AnimatePresence>
-    </div>
-  );
+  return <div className="flex flex-1 flex-col">{children}</div>;
 }
 
 // eslint-disable-next-line react-refresh/only-export-components

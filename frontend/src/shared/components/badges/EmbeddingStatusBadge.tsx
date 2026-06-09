@@ -33,7 +33,9 @@ function getStatusConfig(
       return {
         label: 'Not Embedded',
         title: 'Content has not been indexed for AI search',
-        badgeClass: 'bg-status-inactive/20 text-status-inactive border border-status-inactive/30',
+        // Neutral warm-gray tinted pill, AA-pass in light + dark.
+        // Was bg-status-inactive/20 + text-status-inactive (2.67:1 light / 3.19:1 dark — failed AA).
+        badgeClass: 'bg-[#efeeea] text-[#5f5c54] dark:bg-[#262320] dark:text-[#a39e8c]',
         animate: false,
       };
     case 'embedding':
@@ -82,7 +84,7 @@ export function EmbeddingStatusBadge(props: EmbeddingStatusBadgeProps) {
   return (
     <span
       title={config.title}
-      data-testid="embedding-status-badge"
+      data-testid={status === 'not_embedded' ? 'badge-not-embedded' : 'embedding-status-badge'}
       data-status={status}
       className={cn(
         'inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium',
