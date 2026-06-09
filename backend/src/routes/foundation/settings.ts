@@ -6,7 +6,7 @@ import { RedisCache } from '../../core/services/redis-cache.js';
 import { encryptPat, decryptPat } from '../../core/utils/crypto.js';
 import { validateUrl, addAllowedBaseUrl, removeAllowedBaseUrl, resolveConfluenceUrl } from '../../core/utils/ssrf-guard.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
-import { getUserAccessibleSpaces, getSelectedSyncSpaces, invalidateRbacCache } from '../../core/services/rbac-service.js';
+import { getSelectedSyncSpaces, invalidateRbacCache } from '../../core/services/rbac-service.js';
 import { getSyncOverview } from '../../domains/confluence/services/sync-overview-service.js';
 import { logger } from '../../core/utils/logger.js';
 import { confluenceDispatcher } from '../../core/utils/tls-config.js';
