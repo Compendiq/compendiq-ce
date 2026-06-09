@@ -51,7 +51,8 @@ describe('LoginPage', () => {
     } as never);
 
     renderLoginPage();
-    expect(await screen.findByRole('button', { name: 'Sign in with OrgSSO' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Sign in with SSO' })).toBeInTheDocument();
+    expect(screen.getByText('or continue with credentials')).toBeInTheDocument();
   });
 
   it('does not render SSO button when OIDC is disabled', async () => {
@@ -119,6 +120,6 @@ describe('LoginPage', () => {
     vi.mocked(apiFetch).mockResolvedValueOnce({ enabled: true, name: 'OrgSSO' } as never);
 
     renderLoginPage();
-    expect(await screen.findByRole('button', { name: 'Sign in with OrgSSO' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Sign in with SSO' })).toBeInTheDocument();
   });
 });

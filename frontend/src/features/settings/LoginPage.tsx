@@ -88,6 +88,27 @@ export function LoginPage() {
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          {oidcConfig && oidcConfig.enabled && !oidcConfig.enterpriseRequired && (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  window.location.href = '/api/auth/oidc/authorize';
+                }}
+                data-testid="sso-login-btn"
+                className="nm-button-primary w-full py-2.5"
+              >
+                Sign in with SSO
+              </button>
+
+              <div className="flex items-center gap-3 py-1 text-xs text-muted-foreground">
+                <div className="h-px flex-1 bg-border/40" />
+                <span>or continue with credentials</span>
+                <div className="h-px flex-1 bg-border/40" />
+              </div>
+            </>
+          )}
+
           <div>
             <label htmlFor="login-username" className="mb-1.5 block text-sm font-medium">Username</label>
             <input
@@ -119,23 +140,10 @@ export function LoginPage() {
           <button
             type="submit"
             disabled={loading}
-            className="nm-button-primary w-full py-2.5"
+            className="nm-button-ghost w-full py-2.5"
           >
             {loading ? 'Loading...' : isRegister ? 'Create Account' : 'Sign In'}
           </button>
-
-          {oidcConfig && oidcConfig.enabled && !oidcConfig.enterpriseRequired && (
-            <button
-              type="button"
-              onClick={() => {
-                window.location.href = '/api/auth/oidc/authorize';
-              }}
-              data-testid="sso-login-btn"
-              className="nm-button-ghost w-full py-2.5"
-            >
-              Sign in with {oidcConfig.name || 'SSO'}
-            </button>
-          )}
         </form>
 
         <p className="mt-6 text-center text-sm text-muted-foreground">
