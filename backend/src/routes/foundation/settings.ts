@@ -6,7 +6,7 @@ import { RedisCache } from '../../core/services/redis-cache.js';
 import { encryptPat, decryptPat } from '../../core/utils/crypto.js';
 import { validateUrl, addAllowedBaseUrl, removeAllowedBaseUrl, resolveConfluenceUrl } from '../../core/utils/ssrf-guard.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
-import { getUserAccessibleSpaces, invalidateRbacCache } from '../../core/services/rbac-service.js';
+import { getUserAccessibleSpaces, getSelectedSyncSpaces, invalidateRbacCache } from '../../core/services/rbac-service.js';
 import { getSyncOverview } from '../../domains/confluence/services/sync-overview-service.js';
 import { logger } from '../../core/utils/logger.js';
 import { confluenceDispatcher } from '../../core/utils/tls-config.js';
@@ -29,8 +29,10 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       'SELECT confluence_url, confluence_pat, theme, sync_interval_min, show_space_home_content, custom_prompts FROM user_settings WHERE user_id = $1',
       [request.userId],
     );
-    // Fetch accessible spaces from RBAC
-    const selectedSpaces = await getUserAccessibleSpaces(request.userId);
+    // #721: Use explicit editor assignments rather than getUserAccessibleSpaces
+    // so that admins see only the spaces they've chosen to sync — not every
+    // space in the DB (which getUserAccessibleSpaces returns for admins).
+    const selectedSpaces = await getSelectedSyncSpaces(request.userId);
     selectedSpaces.sort();
 
     if (result.rows.length === 0) {
