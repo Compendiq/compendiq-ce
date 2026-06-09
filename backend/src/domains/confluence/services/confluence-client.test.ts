@@ -162,6 +162,27 @@ describe('ConfluenceClient', () => {
         'Confluence API error: HTTP 500: Internal Server Error',
       );
     });
+
+    it('should throw a typed ConfluenceError with a body excerpt for non-JSON 2xx responses (#746)', async () => {
+      const client = new ConfluenceClient(baseUrl, pat);
+      // e.g. a reverse proxy / SSO portal answering 200 with an HTML login page
+      mockRequest.mockResolvedValue({
+        statusCode: 200,
+        body: { text: async () => '<!DOCTYPE html><html><head><title>Sign in</title></head><body>SSO</body></html>' },
+      } as never);
+
+      const err = await client.getSpaces().then(
+        () => null,
+        (e: unknown) => e,
+      );
+
+      expect(err).toBeInstanceOf(ConfluenceError);
+      expect((err as ConfluenceError).statusCode).toBe(200);
+      expect((err as ConfluenceError).message).toContain('non-JSON');
+      expect((err as ConfluenceError).message).toContain('<!DOCTYPE html');
+      // Not a transient error — withRetry must rethrow without retrying.
+      expect(mockRequest).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('getSpaces homepage expansion', () => {

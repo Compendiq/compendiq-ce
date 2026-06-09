@@ -193,7 +193,19 @@ export class ConfluenceClient {
       throw error;
     }
 
-    return JSON.parse(text) as T;
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      // A 2xx response whose body isn't JSON (e.g. a reverse proxy or SSO
+      // portal answering 200 with an HTML login page) must surface as a typed
+      // ConfluenceError with a body excerpt — not a raw SyntaxError whose
+      // opaque "Unexpected token" message aborts the whole sync (#746).
+      logger.error({ statusCode, url, body: text.slice(0, 500) }, 'Confluence API returned non-JSON response');
+      throw new ConfluenceError(
+        `Confluence API returned non-JSON response (HTTP ${statusCode}): ${text.slice(0, 200)}`,
+        statusCode,
+      );
+    }
   }
 
   /**

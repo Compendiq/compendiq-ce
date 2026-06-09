@@ -1,7 +1,17 @@
-import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
+import { mkdtemp, mkdir, writeFile, stat, rm } from 'fs/promises';
+import { tmpdir } from 'os';
+import path from 'path';
 import { setupTestDb, truncateAllTables, teardownTestDb } from '../../../test-db-helper.js';
 import { query, getPool } from '../../../core/db/postgres.js';
-import { unsyncSpace } from './sync-service.js';
+
+// The attachment handler resolves its on-disk root from process.env.ATTACHMENTS_DIR
+// at module-load time, so we point it at a throwaway temp dir BEFORE importing the
+// module under test (hence the dynamic import in beforeAll — same pattern as
+// pasted-image-uploader.test.ts).
+let tmpRoot: string;
+let unsyncSpace: typeof import('./sync-service.js')['unsyncSpace'];
+const originalAttachmentsDir = process.env.ATTACHMENTS_DIR;
 
 /**
  * Seed one row in every space-scoped table for two spaces: `target` (the one we
@@ -73,12 +83,23 @@ async function seedSpace(spaceKey: string): Promise<{ pageId: number; templateId
 }
 
 describe('unsyncSpace', () => {
+  beforeAll(async () => {
+    tmpRoot = await mkdtemp(path.join(tmpdir(), 'unsync-attach-'));
+    process.env.ATTACHMENTS_DIR = tmpRoot;
+    ({ unsyncSpace } = await import('./sync-service.js'));
+  });
   beforeEach(async () => {
     await setupTestDb();
     await truncateAllTables();
   });
   afterAll(async () => {
     await teardownTestDb();
+    await rm(tmpRoot, { recursive: true, force: true });
+    if (originalAttachmentsDir) {
+      process.env.ATTACHMENTS_DIR = originalAttachmentsDir;
+    } else {
+      delete process.env.ATTACHMENTS_DIR;
+    }
   });
 
   it('deletes the space, its pages (cascading versions/embeddings), and role assignments', async () => {
@@ -107,6 +128,39 @@ describe('unsyncSpace', () => {
     expect((await query(`SELECT 1 FROM pages WHERE space_key='ENG'`)).rows).toHaveLength(0);
     expect((await query(`SELECT 1 FROM page_versions WHERE page_id=$1`, [pageId])).rows).toHaveLength(0);
     expect((await query(`SELECT 1 FROM space_role_assignments WHERE space_key='ENG'`)).rows).toHaveLength(0);
+  });
+
+  it('removes attachment dirs keyed by confluence_id, falling back to id for standalone pages (#746)', async () => {
+    await ensureRoles();
+    await query(
+      `INSERT INTO spaces (space_key, space_name, source) VALUES ('ENG','Engineering','confluence')`,
+    );
+    // Confluence-synced page: attachments are cached under data/attachments/<confluence_id>
+    // (see syncImageAttachments and routes/confluence/attachments.ts).
+    await query(
+      `INSERT INTO pages (confluence_id, space_key, title, body_text, body_storage, body_html, source)
+       VALUES ('98765','ENG','Synced','text','','','confluence')`,
+    );
+    // Standalone page: confluence_id IS NULL, attachments keyed by the integer PK.
+    const standalone = await query<{ id: number }>(
+      `INSERT INTO pages (confluence_id, space_key, title, body_text, body_storage, body_html, source)
+       VALUES (NULL,'ENG','Local','text','','','standalone') RETURNING id`,
+    );
+
+    // Test-only paths built from literals/serials under a mkdtemp root. nosemgrep
+    const confDir = path.join(tmpRoot, '98765');
+    const standaloneDir = path.join(tmpRoot, String(standalone.rows[0]!.id));
+    await mkdir(confDir, { recursive: true });
+    await writeFile(path.join(confDir, 'diagram.png'), 'png-bytes');
+    await mkdir(standaloneDir, { recursive: true });
+    await writeFile(path.join(standaloneDir, 'pasted.png'), 'png-bytes');
+
+    const result = await unsyncSpace('ENG');
+    expect(result.pagesDeleted).toBe(2);
+
+    // Both cached attachment directories are swept — no orphaned files on disk.
+    await expect(stat(confDir)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(stat(standaloneDir)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('returns pagesDeleted=0 when the space has no pages', async () => {
