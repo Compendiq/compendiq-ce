@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { RefreshCw, CheckSquare, Square, Loader2 } from 'lucide-react';
+import { RefreshCw, CheckSquare, Square, Loader2, Trash2 } from 'lucide-react';
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
 import { toast } from 'sonner';
@@ -69,6 +69,25 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
     onError: (err) => toast.error(err.message),
   });
 
+  // #721: Permanently remove a synced Confluence space and purge its local
+  // pages. Admin-only on the backend. Read-only against Confluence.
+  const removeSpace = useMutation({
+    mutationFn: (key: string) =>
+      apiFetch(`/spaces/${encodeURIComponent(key)}`, { method: 'DELETE' }),
+    onSuccess: (_d, key) => {
+      setSelected((prev) => {
+        const n = new Set(prev);
+        n.delete(key);
+        return n;
+      });
+      queryClient.invalidateQueries({ queryKey: ['spaces'] });
+      queryClient.invalidateQueries({ queryKey: ['settings'] });
+      queryClient.invalidateQueries({ queryKey: ['pages'] });
+      toast.success('Space removed — its synced pages were deleted locally');
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to remove space'),
+  });
+
   const toggleSpace = (key: string) => {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -81,7 +100,23 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
     });
   };
 
+  const handleRemoveSpace = (key: string, name: string) => {
+    if (
+      window.confirm(
+        `Remove "${name}"? This deletes its synced pages locally. It does NOT delete anything in Confluence.`,
+      )
+    ) {
+      removeSpace.mutate(key);
+    }
+  };
+
   const handleSave = async () => {
+    if (
+      selected.size === 0 &&
+      !window.confirm('Remove all synced spaces from your selection?')
+    ) {
+      return;
+    }
     await onSave({ selectedSpaces: Array.from(selected) });
   };
 
@@ -187,6 +222,19 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
                     customHomePageId={space.customHomePageId ?? null}
                   />
                 )}
+                {/* #721: Remove action — only shown for synced spaces. */}
+                {space.lastSynced && (
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); handleRemoveSpace(space.key, space.name); }}
+                    disabled={removeSpace.isPending}
+                    aria-label={`Remove ${space.name}`}
+                    className="shrink-0 rounded p-1 text-muted-foreground hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+                    title="Remove this space and its synced pages"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                )}
               </div>
             );
           })}
@@ -199,9 +247,9 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
 
       {/* Actions */}
       <div className="flex items-center gap-3">
+        {/* #721: Save enabled at zero — admin may intentionally clear all spaces. */}
         <button
           onClick={handleSave}
-          disabled={selected.size === 0}
           className="nm-button-primary"
         >
           Save Selection ({selected.size})
