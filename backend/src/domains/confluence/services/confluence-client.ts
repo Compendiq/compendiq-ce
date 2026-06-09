@@ -15,6 +15,15 @@ interface ConfluenceSpace {
   homepage?: { id: string; title: string };
 }
 
+/** #722: normalised version metadata from the Confluence version list. */
+export interface ConfluenceVersionMeta {
+  number: number;
+  when: string;
+  author: string | null;
+  message: string | null;
+  minorEdit: boolean;
+}
+
 interface ConfluencePage {
   id: string;
   title: string;
@@ -857,6 +866,35 @@ export class ConfluenceClient {
     }
 
     return ids;
+  }
+
+  /** #722: list a page's full version history (metadata only — cheap). Paginates automatically. */
+  async getPageVersions(pageId: string): Promise<ConfluenceVersionMeta[]> {
+    const out: ConfluenceVersionMeta[] = [];
+    let start = 0;
+    const limit = 100;
+    for (;;) {
+      const res = await this.fetch<{
+        results: Array<{ number: number; when: string; by?: { displayName?: string }; message?: string; minorEdit?: boolean }>;
+        size: number;
+        _links?: { next?: string };
+      }>(`/rest/api/content/${encodeURIComponent(pageId)}/version?expand=by,message&start=${start}&limit=${limit}`, { method: 'GET' });
+      for (const v of res.results) {
+        out.push({ number: v.number, when: v.when, author: v.by?.displayName ?? null, message: v.message ?? null, minorEdit: v.minorEdit ?? false });
+      }
+      if (!res._links?.next) break;
+      start += limit;
+    }
+    return out;
+  }
+
+  /** #722: fetch a historical version's storage-format body (read-only). */
+  async getHistoricalPageBody(pageId: string, version: number): Promise<string> {
+    const res = await this.fetch<{ body?: { storage?: { value?: string } } }>(
+      `/rest/api/content/${encodeURIComponent(pageId)}?status=historical&version=${version}&expand=body.storage`,
+      { method: 'GET' },
+    );
+    return res.body?.storage?.value ?? '';
   }
 }
 
