@@ -40,8 +40,10 @@ import {
   useResyncPage,
   useUnpinPage,
 } from '../../hooks/use-pages';
+import { useQuery } from '@tanstack/react-query';
 import { useExportPdf } from '../../hooks/use-standalone';
 import { useSettings } from '../../hooks/use-settings';
+import { apiFetch } from '../../lib/api';
 import { cn } from '../../lib/cn';
 import type { TocHeading } from './TableOfContents';
 
@@ -204,10 +206,19 @@ export function ArticleRightPane() {
 
   const isPinned = pinnedData?.items.some((item) => item.id === id) ?? false;
 
-  // Derive the active LLM model from settings for auto-tagging
-  const activeModel = settings?.llmProvider === 'openai'
-    ? (settings.openaiModel ?? '')
-    : (settings?.ollamaModel ?? '');
+  // #718: gate the Auto-tag button on the NEW provider source, not the removed
+  // legacy settings.llmProvider/ollamaModel/openaiModel fields (ADR-021 / migration
+  // 054). The backend resolves the auto_tag use-case itself; we only hide the button
+  // when we positively know no provider can serve auto-tag. Default to VISIBLE while
+  // the query is in flight so the button never flickers out on load.
+  const autoTagDefaultQuery = useQuery<{ model?: string | null }>({
+    queryKey: ['llm', 'usecase-default', 'auto_tag'],
+    queryFn: () => apiFetch('/llm/usecase-default?usecase=auto_tag'),
+    retry: false,
+    staleTime: 30_000,
+  });
+  const aiAutoTagAvailable =
+    autoTagDefaultQuery.isLoading || Boolean(autoTagDefaultQuery.data?.model);
 
   // PDF export
   const exportPdf = useExportPdf();
@@ -508,11 +519,10 @@ export function ArticleRightPane() {
                   <Wand2 size={16} />
                 </button>
 
-                {activeModel && (
+                {aiAutoTagAvailable && id && (
                   <AutoTagger
                     pageId={id}
                     currentLabels={page?.labels ?? []}
-                    model={activeModel}
                     className={`${railIconBtn} [&>span]:hidden`}
                   />
                 )}
@@ -652,12 +662,11 @@ export function ArticleRightPane() {
           editor; readers want to discover labels for re-tagging. The other
           actions (Improve, Export, Delete) stay read-mode-only because they
           act on the saved page state. */}
-      {page && id && activeModel && editing && (
+      {page && id && aiAutoTagAvailable && editing && (
         <div className="p-2 space-y-0.5" data-testid="article-actions-edit">
           <AutoTagger
             pageId={id}
             currentLabels={page?.labels ?? []}
-            model={activeModel}
             className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
           />
         </div>
@@ -675,11 +684,10 @@ export function ArticleRightPane() {
             <span className="truncate">AI Improve</span>
           </button>
 
-          {id && activeModel && (
+          {id && aiAutoTagAvailable && (
             <AutoTagger
               pageId={id}
               currentLabels={page?.labels ?? []}
-              model={activeModel}
               className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
             />
           )}
@@ -687,7 +695,6 @@ export function ArticleRightPane() {
           {id && (
             <VersionHistory
               pageId={id}
-              model={activeModel}
               renderTrigger={(historyOpen) => (
                 <button
                   type="button"

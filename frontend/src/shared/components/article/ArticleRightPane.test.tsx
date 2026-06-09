@@ -72,8 +72,15 @@ vi.mock('../../hooks/use-pages', () => ({
 
 vi.mock('../../hooks/use-settings', () => ({
   useSettings: () => ({
-    data: { confluenceUrl: 'https://confluence.example.com', ollamaModel: 'qwen3.5', llmProvider: 'ollama', openaiModel: null },
+    data: { confluenceUrl: 'https://confluence.example.com' },
   }),
+}));
+
+// Stub apiFetch so the usecase-default query resolves "configured" (Auto-tag visible).
+vi.mock('../../lib/api', () => ({
+  apiFetch: vi.fn(async (url: string) =>
+    url.includes('usecase-default') ? { provider: 'p1', model: 'bge-x' } : {},
+  ),
 }));
 
 vi.mock('../../hooks/use-standalone', () => ({
@@ -81,8 +88,8 @@ vi.mock('../../hooks/use-standalone', () => ({
 }));
 
 vi.mock('../../../features/pages/AutoTagger', () => ({
-  AutoTagger: ({ pageId, currentLabels, model }: { pageId: string; currentLabels: string[]; model: string }) => (
-    <div data-testid="auto-tagger" data-page-id={pageId} data-labels={currentLabels.join(',')} data-model={model} />
+  AutoTagger: ({ pageId, currentLabels }: { pageId: string; currentLabels: string[] }) => (
+    <div data-testid="auto-tagger" data-page-id={pageId} data-labels={currentLabels.join(',')} />
   ),
 }));
 
@@ -400,14 +407,19 @@ describe('ArticleRightPane', () => {
   });
 
   // --- AutoTagger ---
-  it('renders AutoTagger with correct props', () => {
+  it('renders AutoTagger with correct props', async () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    const autoTagger = screen.getByTestId('auto-tagger');
+    const autoTagger = await screen.findByTestId('auto-tagger');
     expect(autoTagger).toBeInTheDocument();
     expect(autoTagger).toHaveAttribute('data-page-id', 'page-1');
     expect(autoTagger).toHaveAttribute('data-labels', 'docs');
-    expect(autoTagger).toHaveAttribute('data-model', 'qwen3.5');
+  });
+
+  it('renders the Auto-tag button in read mode without any legacy settings fields (#718 regression)', async () => {
+    // settings mock has no ollamaModel/openaiModel/llmProvider; the button must still appear.
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+    expect(await screen.findByTestId('auto-tagger')).toBeInTheDocument();
   });
 
   // --- PDF Export ---

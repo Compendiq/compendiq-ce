@@ -66,7 +66,7 @@ interface RestoreResponse {
 interface VersionHistoryProps {
   pageId: string;
   currentBodyText?: string;
-  model: string;
+  model?: string;
   /**
    * Custom trigger renderer. Receives the dialog's `open` state so callers can
    * reflect it (e.g. active styling). When omitted, a default `nm-card` button
