@@ -366,19 +366,17 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
   // runs *after* the auto-expand effect renders the node and after tree data
   // loads. We only scroll when the row is genuinely outside the container
   // viewport, leaving mid-session scrolling and navigation to an already-visible
-  // page untouched. A single rAF retry covers the local-space tree, which is
-  // lazy-loaded and may mount one frame after this effect first runs.
+  // page untouched.
   useLayoutEffect(() => {
     if (!activePageId) return;
+    const container = treeScrollRef.current;
+    if (!container) return;
 
-    function scrollActiveIntoView(): boolean {
-      const container = treeScrollRef.current;
-      if (!container) return false;
-
-      const active = container.querySelector<HTMLElement>('[data-active="true"]');
+    function scrollActiveIntoView(scroller: HTMLElement): boolean {
+      const active = scroller.querySelector<HTMLElement>('[data-active="true"]');
       if (!active) return false;
 
-      const containerRect = container.getBoundingClientRect();
+      const containerRect = scroller.getBoundingClientRect();
       const activeRect = active.getBoundingClientRect();
       const isVisible =
         activeRect.top >= containerRect.top && activeRect.bottom <= containerRect.bottom;
@@ -388,14 +386,21 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
       return true;
     }
 
-    if (scrollActiveIntoView()) return;
+    if (scrollActiveIntoView(container)) return;
 
-    // Active row not yet in the DOM (e.g. lazy local-space tree still mounting);
-    // retry on the next frame, then give up so we never fight manual scrolling.
-    const raf = requestAnimationFrame(() => {
-      scrollActiveIntoView();
+    // Active row not yet in the DOM — the local-space tree is lazy-loaded and
+    // its Suspense boundary commits after this effect first runs. Watch the
+    // container for the row to appear, scroll once, then disconnect. The
+    // off-screen guard inside scrollActiveIntoView still prevents yanking a
+    // row that's already visible, so this never fights manual scrolling.
+    const observer = new MutationObserver(() => {
+      if (scrollActiveIntoView(container)) observer.disconnect();
     });
-    return () => cancelAnimationFrame(raf);
+    observer.observe(container, { childList: true, subtree: true });
+    return () => observer.disconnect();
+    // expandedIds is intentionally a dependency: it re-runs this effect so the
+    // active node re-centers once its ancestor path expands, while the
+    // off-screen visibility guard above keeps manual scrolling from being yanked.
   }, [activePageId, expandedIds, pages, reduceEffects]);
 
   const toggleExpand = useCallback((id: string) => {

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SidebarTreeView, SidebarTreeNode } from './SidebarTreeView';
@@ -12,9 +12,15 @@ vi.mock('framer-motion', async () => {
 });
 
 // DndLocalSpaceTree is lazy-loaded; provide a lightweight stub so Suspense
-// resolves synchronously in tests without pulling in @dnd-kit.
+// resolves synchronously in tests without pulling in @dnd-kit. The stub mirrors
+// the real component's `data-active` marker on the active row (#707) so the
+// parent's scroll-into-view effect can find it end-to-end for local spaces.
 vi.mock('./DndLocalSpaceTree', () => ({
-  default: () => <div data-testid="dnd-local-space-tree" />,
+  default: ({ activePageId }: { activePageId?: string }) => (
+    <div data-testid="dnd-local-space-tree">
+      {activePageId && <div data-active="true" data-page-id={activePageId} />}
+    </div>
+  ),
 }));
 
 const mockNavigate = vi.fn();
@@ -415,6 +421,21 @@ describe('SidebarTreeView active-page scroll-into-view (#707)', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper('/') });
 
     expect(scrollIntoView).not.toHaveBeenCalled();
+  });
+
+  it('scrolls the active node into view for a local space (DndLocalSpaceTree) when off-screen', async () => {
+    // Select a local space so the lazy DndLocalSpaceTree branch renders. Its
+    // stub mirrors the real component's data-active marker, so this exercises
+    // the scroll-into-view wiring end-to-end for local spaces. The local tree
+    // is lazy-loaded, so the active row appears after the effect's first pass —
+    // the MutationObserver fallback catches it once it commits.
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: 'NOTES' });
+    rectByTestState = { containerTop: 0, containerBottom: 500, activeTop: 900, activeBottom: 940 };
+    render(<SidebarTreeView />, { wrapper: createWrapper('/pages/p-local') });
+
+    await waitFor(() => {
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center', behavior: 'auto' });
+    });
   });
 });
 
