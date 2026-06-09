@@ -15,12 +15,18 @@
  * and surface the exact `FRONTEND_URL` value the backend must be set to.
  */
 
-/** Extract the origin (`scheme://host[:port]`) from a URL string, or null if unparseable. */
+/**
+ * Extract the origin (`scheme://host[:port]`) from an http(s) URL string, or
+ * null if it isn't a parseable http/https URL. Non-web schemes (`ftp:`,
+ * `file:`, `javascript:`, …) are rejected — a Redirect URI is always http(s).
+ */
 export function originOf(url: string): string | null {
   const trimmed = url.trim();
   if (!trimmed) return null;
   try {
-    return new URL(trimmed).origin;
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    return parsed.origin;
   } catch {
     return null;
   }

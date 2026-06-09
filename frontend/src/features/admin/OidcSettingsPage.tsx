@@ -378,7 +378,14 @@ function ProviderTab({ disabled }: { disabled?: boolean }) {
                   <code className="rounded bg-foreground/10 px-1 py-0.5">
                     FRONTEND_URL={redirectCheck.redirectOrigin}
                   </code>{' '}
-                  and restart the backend.
+                  and restart the backend.{' '}
+                  <code className="rounded bg-foreground/10 px-1 py-0.5">FRONTEND_URL</code>{' '}
+                  doubles as the comma-separated CORS allowlist — if you already set
+                  multiple origins, append this one (
+                  <code className="rounded bg-foreground/10 px-1 py-0.5">
+                    …,{redirectCheck.redirectOrigin}
+                  </code>
+                  ) rather than overwriting the list.
                 </div>
               </div>
             </m.div>

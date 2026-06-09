@@ -299,7 +299,7 @@ These are two independent URLs. If `FRONTEND_URL` is left at its `http://localho
 FRONTEND_URL=https://compendiq.example.com
 ```
 
-(matching the origin of your Redirect URI) and restart the backend. `FRONTEND_URL` also accepts a comma-separated list, which doubles as the CORS allowlist. The Settings > OIDC/SSO page warns inline when the Redirect URI origin diverges from the origin you loaded the app from, and surfaces the exact `FRONTEND_URL` value to set.
+(matching the origin of your Redirect URI) and restart the backend. `FRONTEND_URL` also accepts a comma-separated list, which doubles as the CORS allowlist — so if you already configured multiple origins, **append** the public origin (`…,https://compendiq.example.com`) rather than overwriting the existing list. The Settings > OIDC/SSO page warns inline when the Redirect URI origin diverges from the origin you loaded the app from, and surfaces the exact `FRONTEND_URL` value to set.
 
 ### IP Allowlist (Enterprise, v0.4+)
 

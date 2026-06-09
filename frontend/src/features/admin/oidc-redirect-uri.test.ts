@@ -23,6 +23,12 @@ describe('originOf', () => {
     expect(originOf('not a url')).toBeNull();
     expect(originOf('/api/auth/oidc/callback')).toBeNull();
   });
+
+  it('rejects non-http(s) schemes', () => {
+    expect(originOf('ftp://example.com/x')).toBeNull();
+    expect(originOf('file:///etc/passwd')).toBeNull();
+    expect(originOf('javascript:alert(1)')).toBeNull();
+  });
 });
 
 describe('checkRedirectUriOrigin', () => {

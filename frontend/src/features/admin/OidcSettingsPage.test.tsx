@@ -245,6 +245,9 @@ describe('OidcSettingsPage', () => {
     const warning = screen.getByTestId('oidc-redirect-origin-warning');
     // Surfaces the exact FRONTEND_URL the admin must set.
     expect(warning).toHaveTextContent('FRONTEND_URL=http://localhost:3051');
+    // Advises appending to (not overwriting) the comma-separated CORS allowlist.
+    expect(warning).toHaveTextContent('comma-separated CORS allowlist');
+    expect(warning).toHaveTextContent(',http://localhost:3051');
   });
 
   it('hides the Redirect URI warning when the origin matches the app origin', async () => {
