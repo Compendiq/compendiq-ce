@@ -7,6 +7,7 @@ import { apiFetch } from '../../shared/lib/api';
 import { streamSSE } from '../../shared/lib/sse';
 import { usePage, useEmbeddingStatus, type EmbeddingStatusData } from '../../shared/hooks/use-pages';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
+import { useStreamingContent } from '../../shared/hooks/use-streaming-content';
 import { type Source } from './SourceCitations';
 import { toast } from 'sonner';
 
@@ -78,6 +79,13 @@ interface AiContextValue {
   setInput: (v: string) => void;
   isStreaming: boolean;
   setIsStreaming: (v: boolean) => void;
+  /**
+   * rAF-batched content of the in-flight assistant answer (#747). During a
+   * stream the placeholder assistant message in `messages` stays empty and
+   * the UI renders this value instead; runStream commits the final content
+   * to `messages` once the stream ends.
+   */
+  streamingContent: string;
   isThinking: boolean;
   setIsThinking: (v: boolean) => void;
   thinkingElapsed: boolean;
@@ -201,6 +209,19 @@ export function AiProvider({ children }: { children: ReactNode }) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const isStreamingRef = useRef(false);
+
+  // #747: rAF-batched display buffer for the in-flight assistant answer.
+  // SSE chunks are appended to a ref and flushed to React state at most once
+  // per animation frame (~20x/s), instead of committing every chunk to
+  // `messages` (which re-parsed the full Markdown answer per token).
+  const streaming = useStreamingContent();
+  const {
+    start: streamingStart,
+    append: streamingAppend,
+    replace: streamingReplace,
+    finish: streamingFinish,
+  } = streaming;
+  const streamingDisplayContent = streaming.displayContent;
   const { data: page, isLoading: isPageLoading } = usePage(pageId ?? undefined);
   const { data: embeddingStatus } = useEmbeddingStatus();
   const pageHasChildren = page?.hasChildren ?? false;
@@ -341,13 +362,16 @@ export function AiProvider({ children }: { children: ReactNode }) {
     }
   }, [chatDefault, settingsFallbackQuery.data, modelsQuery.data]);
 
+  // Auto-scroll when committed messages change and on each batched streaming
+  // flush (#747: the in-flight answer renders via streamingDisplayContent and
+  // no longer updates `messages` per SSE chunk).
   useEffect(() => {
-    if (messages.length === 0) return;
+    if (messages.length === 0 && !streamingDisplayContent) return;
     // Skip auto-scroll in improve mode — the page should stay in place
     // so the user can see the full UI instead of jumping to the message area
     if (mode === 'improve') return;
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, mode]);
+  }, [messages, mode, streamingDisplayContent]);
 
   // Scroll to bottom immediately when switching conversations so the latest
   // messages are visible right away (independent of the messages-change effect).
@@ -429,9 +453,30 @@ export function AiProvider({ children }: { children: ReactNode }) {
     let finalSources: Source[] = [];
     let originalMarkdown: string | undefined;
 
-    // Add the placeholder assistant message with a stable ID
+    // Add the placeholder assistant message with a stable ID. It stays empty
+    // during the stream (#747) — the in-flight answer renders through the
+    // rAF-batched streamingContent — and gets the full content committed in
+    // a single update once the stream ends.
     const assistantMsgId = nextMessageId();
     setMessages((prev) => [...prev, { id: assistantMsgId, role: 'assistant', content: '' }]);
+    streamingStart();
+
+    // Commit the accumulated answer (and sources, if any) to the placeholder
+    // assistant message in one state update.
+    const commitToMessages = () => {
+      setMessages((prev) => {
+        const updated = [...prev];
+        const lastMsg = updated[updated.length - 1];
+        if (lastMsg) {
+          updated[updated.length - 1] = {
+            ...lastMsg,
+            content: accumulated,
+            ...(finalSources.length > 0 ? { sources: finalSources } : {}),
+          };
+        }
+        return updated;
+      });
+    };
 
     try {
       for await (const chunk of streamSSE<T>(endpoint, body, controller.signal)) {
@@ -442,23 +487,13 @@ export function AiProvider({ children }: { children: ReactNode }) {
         // Handle finalContent from output post-processing (cleaned content replaces accumulated)
         if ((chunk as Record<string, unknown>).finalContent) {
           accumulated = (chunk as Record<string, unknown>).finalContent as string;
-          setMessages((prev) => {
-            const updated = [...prev];
-            const lastMsg = updated[updated.length - 1];
-            if (lastMsg) updated[updated.length - 1] = { ...lastMsg, content: accumulated };
-            return updated;
-          });
+          streamingReplace(accumulated);
           opts?.onContent?.(accumulated);
         }
         if (chunk.content) {
           setIsThinking(false);
           accumulated += chunk.content;
-          setMessages((prev) => {
-            const updated = [...prev];
-            const lastMsg = updated[updated.length - 1];
-            if (lastMsg) updated[updated.length - 1] = { ...lastMsg, content: accumulated };
-            return updated;
-          });
+          streamingAppend(chunk.content);
           opts?.onContent?.(accumulated);
         }
         if (chunk.conversationId) {
@@ -476,32 +511,30 @@ export function AiProvider({ children }: { children: ReactNode }) {
           originalMarkdown = chunk.originalMarkdown;
         }
       }
-      // Attach sources to the last assistant message
-      if (finalSources.length > 0) {
-        setMessages((prev) => {
-          const updated = [...prev];
-          const lastMsg = updated[updated.length - 1];
-          if (lastMsg) updated[updated.length - 1] = { ...lastMsg, sources: finalSources };
-          return updated;
-        });
-      }
+      commitToMessages();
       opts?.onComplete?.(
         accumulated,
         finalSources.length > 0 ? finalSources : undefined,
         originalMarkdown !== undefined ? { originalMarkdown } : undefined,
       );
     } catch (err) {
-      if (err instanceof DOMException && err.name === 'AbortError') return;
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        // Keep whatever was streamed before the abort (matches the previous
+        // per-chunk-commit behavior).
+        commitToMessages();
+        return;
+      }
       toast.error(err instanceof Error ? err.message : 'Request failed');
       // Always remove the empty assistant message on error — runStream unconditionally
       // adds a placeholder assistant message, regardless of whether userMessage was passed.
       setMessages((prev) => prev.slice(0, -1));
     } finally {
+      streamingFinish();
       isStreamingRef.current = false;
       setIsStreaming(false);
       setIsThinking(false);
     }
-  }, []);
+  }, [streamingStart, streamingAppend, streamingReplace, streamingFinish]);
 
   const value: AiContextValue = {
     pageId,
@@ -527,6 +560,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
     setInput,
     isStreaming,
     setIsStreaming,
+    streamingContent: streamingDisplayContent,
     isThinking,
     setIsThinking,
     thinkingElapsed,

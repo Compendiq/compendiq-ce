@@ -1102,6 +1102,112 @@ describe('AiAssistantPage', () => {
     });
   });
 
+  // #747 item 1 — the in-flight assistant answer renders through the
+  // rAF-batched StreamingMessage path (useStreamingContent) instead of
+  // committing every SSE chunk to the message list; the final committed
+  // message keeps the regular Markdown rendering.
+  describe('batched streaming render (#747)', () => {
+    function mockModelApis() {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) {
+          return Promise.resolve([{ name: 'llama3' }]);
+        }
+        if (path === '/llm/conversations') {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([]);
+      });
+    }
+
+    it('renders the in-flight answer via StreamingMessage and commits it once on completion', async () => {
+      mockModelApis();
+
+      let releaseStream: (() => void) | undefined;
+      const gate = new Promise<void>((resolve) => { releaseStream = resolve; });
+      async function* gatedStream() {
+        yield { content: 'Hello ' };
+        yield { content: '**world**' };
+        await gate;
+      }
+      streamSSEMock.mockReturnValue(gatedStream());
+
+      render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.queryByText('Loading models...')).not.toBeInTheDocument();
+      });
+
+      const input = screen.getByPlaceholderText('Ask a question...');
+      fireEvent.change(input, { target: { value: 'Stream me' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      // While streaming, the in-flight answer renders through the batched
+      // StreamingMessage component (content appears after the rAF flush).
+      await waitFor(() => {
+        expect(screen.getByTestId('streaming-message')).toBeInTheDocument();
+      });
+      await waitFor(() => {
+        expect(screen.getByTestId('streaming-message').textContent).toContain('Hello world');
+      });
+      // Markdown is parsed in the batched path too.
+      expect(screen.getByText('world').tagName).toBe('STRONG');
+
+      // Finish the stream — the final committed message renders through the
+      // regular (non-streaming) Markdown path.
+      await act(async () => {
+        releaseStream?.();
+      });
+
+      await waitFor(() => {
+        expect(screen.queryByTestId('streaming-message')).not.toBeInTheDocument();
+      });
+      expect(screen.getByText('world')).toBeInTheDocument();
+      expect(screen.getByText('world').tagName).toBe('STRONG');
+      expect(screen.queryByTestId('streaming-cursor')).not.toBeInTheDocument();
+    });
+
+    it('commits partial content to the message list when the stream is aborted', async () => {
+      mockModelApis();
+
+      async function* abortingStream() {
+        yield { content: 'partial answer' };
+        throw new DOMException('Aborted', 'AbortError');
+      }
+      streamSSEMock.mockReturnValue(abortingStream());
+
+      const { AiProvider, useAiContext } = await import('./AiContext');
+      let captured: ReturnType<typeof useAiContext> | null = null;
+      function Capture() {
+        captured = useAiContext();
+        return null;
+      }
+
+      render(
+        <AiProvider>
+          <Capture />
+        </AiProvider>,
+        { wrapper: createWrapper() },
+      );
+
+      await waitFor(() => {
+        expect(captured?.model).toBe('llama3');
+      });
+
+      await act(async () => {
+        await captured!.runStream('/llm/ask', { question: 'q', model: 'llama3' });
+      });
+
+      // The partial answer must not be lost on abort.
+      const lastMsg = captured!.messages[captured!.messages.length - 1];
+      expect(lastMsg?.role).toBe('assistant');
+      expect(lastMsg?.content).toBe('partial answer');
+      expect(captured!.isStreaming).toBe(false);
+    });
+  });
+
   // #355 — admin-configured chat use-case default
   // (Findings 1, 2, 4 from the PR review).
   describe('chat use-case default pre-fill (#355)', () => {
