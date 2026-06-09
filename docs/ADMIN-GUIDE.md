@@ -38,7 +38,8 @@ Additionally, you need an **Ollama** server (or OpenAI-compatible API) accessibl
    JWT_SECRET=<random-32-char-string>
    PAT_ENCRYPTION_KEY=<random-32-char-string>
 
-   # Set strong passwords for infrastructure
+   # REQUIRED: strong infrastructure passwords — compose has no defaults
+   # and refuses to start when these are missing
    POSTGRES_PASSWORD=<strong-password>
    REDIS_PASSWORD=<strong-password>
    ```
@@ -97,18 +98,18 @@ curl http://localhost:3051/api/health
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `POSTGRES_URL` | `postgresql://kb_user:changeme-postgres@localhost:5432/kb_creator` | PostgreSQL connection string |
+| `POSTGRES_URL` | `postgresql://kb_user:<password>@localhost:5432/kb_creator` | PostgreSQL connection string |
 | `POSTGRES_TEST_URL` | `postgresql://kb_user:changeme-postgres@localhost:5433/kb_creator_test` | Test database connection (port 5433) |
 | `POSTGRES_USER` | `kb_user` | PostgreSQL username (Docker Compose only) |
-| `POSTGRES_PASSWORD` | `changeme-postgres` | PostgreSQL password (Docker Compose only) |
+| `POSTGRES_PASSWORD` | -- | **Required** PostgreSQL password — Docker Compose refuses to start without it (Docker Compose only) |
 | `POSTGRES_DB` | `kb_creator` | PostgreSQL database name (Docker Compose only) |
 
 ### Redis
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `REDIS_URL` | `redis://:changeme-redis@localhost:6379` | Redis connection string |
-| `REDIS_PASSWORD` | `changeme-redis` | Redis AUTH password (Docker Compose only) |
+| `REDIS_URL` | `redis://:<password>@localhost:6379` | Redis connection string |
+| `REDIS_PASSWORD` | -- | **Required** Redis AUTH password — Docker Compose refuses to start without it (Docker Compose only) |
 
 ### Server
 

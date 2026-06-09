@@ -26,8 +26,7 @@ flowchart LR
     end
 
     host -- "FRONTEND_PORT → 8081" --> fe
-    host -- "BACKEND_HOST_PORT → 3051" --> be
-    fe -- "HTTP" --> be
+    fe -- "HTTP (proxy /api)" --> be
     be -- "HTTP" --> mcp
     mcp -- "HTTP" --> searx
     be -- "SQL" --> pg
@@ -53,9 +52,17 @@ flowchart LR
 | `backend-net` | no       | backend, mcp-docs, searxng      | Backend sidecar services |
 | `data-net`    | **yes**  | postgres, redis (+ backend)     | No external exposure; DB/cache only reachable from backend |
 
-`postgres` and `redis` **must not** publish host ports in production.
-Development overrides (`docker/docker-compose.*.yml`) may expose them for
-debugging — never merge that into production.
+The `backend` container publishes **no host port** — all API traffic goes
+through the frontend nginx proxy, which applies the CSP / security headers
+(`frontend/nginx-security-headers.conf`). `postgres` and `redis` **must
+not** publish host ports in production. Development overrides
+(`docker/docker-compose.*.yml`) may expose them for debugging — bound to
+`127.0.0.1` only, and never merged into production.
+
+`POSTGRES_PASSWORD` and `REDIS_PASSWORD` are required (`${VAR:?...}`) with
+no baked-in defaults; `redis` runs with `maxmemory-policy noeviction`
+because BullMQ stores queue/job state there and eviction would silently
+drop jobs.
 
 ## Volumes
 
