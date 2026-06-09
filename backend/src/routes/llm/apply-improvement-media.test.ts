@@ -137,6 +137,9 @@ describe('POST /api/llm/improvements/apply — drop-guard with REAL restoreMedia
           rows: [{
             id: 42, version: 5, title: 'My Article', space_key: 'OPS',
             source: 'standalone', confluence_id: null, body_html: bodyHtmlWithMedia,
+            // #734: the page-resolve query now returns ownership fields; the
+            // test user must own this private standalone page to write it.
+            created_by_user_id: 'user-123', visibility: 'private',
           }],
         });
       }
@@ -176,6 +179,8 @@ describe('POST /api/llm/improvements/apply — drop-guard with REAL restoreMedia
           rows: [{
             id: 42, version: 5, title: 'My Article', space_key: 'OPS',
             source: 'standalone', confluence_id: null, body_html: bodyHtmlWithMedia,
+            // #734: owner of the private standalone page (see test above).
+            created_by_user_id: 'user-123', visibility: 'private',
           }],
         });
       }
