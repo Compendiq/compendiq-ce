@@ -211,13 +211,21 @@ function AiAssistantInner() {
       {/* Sticky sub-header: mode selector | context + options.
           Sits at top-0 of the scroll container so it stays visible as
           messages grow. backdrop-blur on the inner card keeps the surface
-          legible against the live content scrolling under it.
+          legible against the live content scrolling under it. An opaque
+          UNDER-mask (bg-background, z-[-1]) sits behind the translucent bar
+          and extends 100px UPWARD so chat content scrolling up is fully
+          occluded above the tab row — mirroring PageViewPage's edit toolbar.
 
           Visual grammar: two clear groups separated by a thin divider.
           Group A (left): which mode are we in. Inset segmented control.
           Group B (right): what's the model + what's the context window +
             what options are on. Outlined chips of uniform 28 px height. */}
-      <div className="sticky top-0 z-20 -mx-1 space-y-3 bg-background/85 px-1 py-1 backdrop-blur">
+      <div className="sticky top-0 z-20 isolate -mx-1 space-y-3 bg-background/85 px-1 py-1 backdrop-blur">
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 -top-[100px] z-[-1] bg-background"
+        style={{ bottom: 0 }}
+      />
       <div className="flex flex-wrap items-center gap-x-2 gap-y-2 rounded-xl border border-border/40 bg-card/50 px-3 py-2 backdrop-blur-sm">
         {/* Group A — mode segmented control */}
         <div
@@ -400,8 +408,16 @@ function AiAssistantInner() {
 
       {/* Mode-specific input bar — sticky at the bottom of the scroll
           container, with a translucent backdrop so chat content scrolls
-          legibly behind it. */}
-      <div className="sticky bottom-0 z-20 -mx-1 bg-background/85 px-1 py-1 backdrop-blur">
+          legibly behind it. An opaque UNDER-mask (bg-background, z-[-1]) sits
+          behind the translucent bar and extends 100px DOWNWARD so chat content
+          scrolling down is fully occluded below the input field + submit
+          button — mirroring PageViewPage's edit toolbar (inverted vertically). */}
+      <div className="sticky bottom-0 z-20 isolate -mx-1 bg-background/85 px-1 py-1 backdrop-blur">
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-x-0 -bottom-[100px] z-[-1] bg-background"
+          style={{ top: 0 }}
+        />
         {mode === 'ask' && <AskModeInput />}
         {mode === 'improve' && <ImproveModeInput />}
         {mode === 'generate' && <GenerateModeInput />}

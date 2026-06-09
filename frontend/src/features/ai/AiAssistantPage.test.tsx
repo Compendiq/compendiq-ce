@@ -1354,4 +1354,51 @@ describe('AiAssistantPage', () => {
       expect(captured?.model).toBe('qwen3:8b');
     });
   });
+
+  // #703 — chat content must not bleed through the translucent sticky bars.
+  // Both bars carry an opaque bg-background under-mask (z-[-1]) extending
+  // 100px past the bar, mirroring PageViewPage's edit toolbar, so scrolling
+  // messages are fully occluded above the sub-header and below the input bar.
+  describe('sticky bar under-mask (#703)', () => {
+    it('renders an opaque under-mask behind the top sub-header that extends upward', () => {
+      const { container } = render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      // The sticky sub-header wrapper establishes its own stacking context
+      // (isolate) so the negative-z mask sits behind it, not behind the page.
+      const subHeader = container.querySelector('.sticky.top-0');
+      expect(subHeader).not.toBeNull();
+      expect(subHeader!.className).toContain('isolate');
+
+      // The under-mask is an aria-hidden, opaque bg-background div behind the
+      // bar (z-[-1]) reaching 100px upward so messages scrolling up are hidden
+      // above the tab row.
+      const mask = subHeader!.querySelector('[aria-hidden]');
+      expect(mask).not.toBeNull();
+      expect(mask!.className).toContain('bg-background');
+      expect(mask!.className).not.toContain('bg-background/');
+      expect(mask!.className).toContain('z-[-1]');
+      expect(mask!.className).toContain('-top-[100px]');
+      expect(mask!.className).toContain('pointer-events-none');
+      expect((mask as HTMLElement).style.bottom).toBe('0px');
+    });
+
+    it('renders an opaque under-mask behind the bottom input bar that extends downward', () => {
+      const { container } = render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      const inputBar = container.querySelector('.sticky.bottom-0');
+      expect(inputBar).not.toBeNull();
+      expect(inputBar!.className).toContain('isolate');
+
+      // The under-mask reaches 100px downward so messages scrolling down are
+      // hidden below the input field + submit button.
+      const mask = inputBar!.querySelector('[aria-hidden]');
+      expect(mask).not.toBeNull();
+      expect(mask!.className).toContain('bg-background');
+      expect(mask!.className).not.toContain('bg-background/');
+      expect(mask!.className).toContain('z-[-1]');
+      expect(mask!.className).toContain('-bottom-[100px]');
+      expect(mask!.className).toContain('pointer-events-none');
+      expect((mask as HTMLElement).style.top).toBe('0px');
+    });
+  });
 });
