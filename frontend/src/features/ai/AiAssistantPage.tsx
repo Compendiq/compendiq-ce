@@ -216,118 +216,118 @@ function AiAssistantInner() {
           and extends 100px UPWARD so chat content scrolling up is fully
           occluded above the tab row — mirroring PageViewPage's edit toolbar. */}
       <div className="sticky top-0 z-20 isolate -mx-1 space-y-3 bg-background/85 px-1 py-1 backdrop-blur">
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-x-0 -top-[100px] z-[-1] bg-background"
-        style={{ bottom: 0 }}
-      />
-      <div className="flex flex-wrap items-center gap-1 rounded-xl border border-border/40 bg-card/50 px-3 py-2 backdrop-blur-sm">
         <div
-          role="tablist"
-          aria-label="AI mode"
-          className="flex items-center gap-1"
-          onKeyDown={(e) => {
-            if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
-              e.preventDefault();
-              const keys = MODE_BUTTONS.map((b) => b.key);
-              const idx = keys.indexOf(mode);
-              const next = e.key === 'ArrowRight'
-                ? (idx + 1) % keys.length
-                : (idx - 1 + keys.length) % keys.length;
-              const nextKey = keys[next];
-              if (nextKey) setMode(nextKey);
-            }
-          }}
-        >
-          {MODE_BUTTONS.map(({ key, icon: Icon, label }) => (
-            <button
-              key={key}
-              role="tab"
-              aria-selected={mode === key}
-              tabIndex={mode === key ? 0 : -1}
-              onClick={() => setMode(key)}
-              className={cn(
-                'flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs transition-colors',
-                mode === key
-                  ? 'bg-primary/12 font-medium text-primary'
-                  : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
-              )}
-            >
-              <Icon size={13} /> {label}
-            </button>
-          ))}
-        </div>
-
-        <div className="flex-1" />
-
-        {models.length === 0 ? (
-          <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <Loader2 size={11} className="animate-spin" /> Loading models...
-          </span>
-        ) : (
-          <select
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            className="rounded bg-foreground/5 px-2 py-0.5 text-xs outline-none"
+          aria-hidden
+          className="pointer-events-none absolute inset-x-0 -top-[100px] z-[-1] bg-background"
+          style={{ bottom: 0 }}
+        />
+        <div className="flex flex-wrap items-center gap-1 rounded-xl border border-border/40 bg-card/50 px-3 py-2 backdrop-blur-sm">
+          <div
+            role="tablist"
+            aria-label="AI mode"
+            className="flex items-center gap-1"
+            onKeyDown={(e) => {
+              if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+                e.preventDefault();
+                const keys = MODE_BUTTONS.map((b) => b.key);
+                const idx = keys.indexOf(mode);
+                const next = e.key === 'ArrowRight'
+                  ? (idx + 1) % keys.length
+                  : (idx - 1 + keys.length) % keys.length;
+                const nextKey = keys[next];
+                if (nextKey) setMode(nextKey);
+              }
+            }}
           >
-            {models
-              .filter((m) => !m.name.includes('embed'))
-              .map((m) => (
-                <option key={m.name} value={m.name}>{m.name}</option>
-              ))}
-          </select>
-        )}
+            {MODE_BUTTONS.map(({ key, icon: Icon, label }) => (
+              <button
+                key={key}
+                role="tab"
+                aria-selected={mode === key}
+                tabIndex={mode === key ? 0 : -1}
+                onClick={() => setMode(key)}
+                className={cn(
+                  'flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs transition-colors',
+                  mode === key
+                    ? 'bg-primary/12 font-medium text-primary'
+                    : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
+                )}
+              >
+                <Icon size={13} /> {label}
+              </button>
+            ))}
+          </div>
 
-        {page && (
-          <span className="flex items-center gap-1 rounded bg-foreground/5 px-2 py-0.5 text-[11px] text-muted-foreground">
-            <FileText size={11} /> {page.title}
-          </span>
-        )}
+          <div className="flex-1" />
 
-        {page && pageHasChildren && (
+          {models.length === 0 ? (
+            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Loader2 size={11} className="animate-spin" /> Loading models...
+            </span>
+          ) : (
+            <select
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              className="rounded bg-foreground/5 px-2 py-0.5 text-xs outline-none"
+            >
+              {models
+                .filter((m) => !m.name.includes('embed'))
+                .map((m) => (
+                  <option key={m.name} value={m.name}>{m.name}</option>
+                ))}
+            </select>
+          )}
+
+          {page && (
+            <span className="flex items-center gap-1 rounded bg-foreground/5 px-2 py-0.5 text-[11px] text-muted-foreground">
+              <FileText size={11} /> {page.title}
+            </span>
+          )}
+
+          {page && pageHasChildren && (
+            <label
+              className={cn(
+                'flex cursor-pointer items-center gap-1 rounded-md px-2 py-0.5 text-xs transition-colors',
+                includeSubPages ? 'bg-primary/12 text-primary' : 'text-muted-foreground hover:bg-foreground/5',
+              )}
+              title="Include sub-pages in the AI context"
+            >
+              <input
+                type="checkbox"
+                checked={includeSubPages}
+                onChange={(e) => setIncludeSubPages(e.target.checked)}
+                className="sr-only"
+                aria-label="Include sub-pages"
+              />
+              <Network size={12} />
+              <span>+ Sub-pages</span>
+            </label>
+          )}
+
+          {/* Thinking mode toggle (#20) */}
           <label
             className={cn(
               'flex cursor-pointer items-center gap-1 rounded-md px-2 py-0.5 text-xs transition-colors',
-              includeSubPages ? 'bg-primary/12 text-primary' : 'text-muted-foreground hover:bg-foreground/5',
+              thinkingMode ? 'bg-purple-500/12 text-purple-500' : 'text-muted-foreground hover:bg-foreground/5',
             )}
-            title="Include sub-pages in the AI context"
+            title="Enable extended thinking for more thorough responses"
           >
             <input
               type="checkbox"
-              checked={includeSubPages}
-              onChange={(e) => setIncludeSubPages(e.target.checked)}
+              checked={thinkingMode}
+              onChange={(e) => setThinkingMode(e.target.checked)}
               className="sr-only"
-              aria-label="Include sub-pages"
+              aria-label="Thinking mode"
             />
-            <Network size={12} />
-            <span>+ Sub-pages</span>
+            <Brain size={12} />
+            <span>Think</span>
           </label>
-        )}
+        </div>
 
-        {/* Thinking mode toggle (#20) */}
-        <label
-          className={cn(
-            'flex cursor-pointer items-center gap-1 rounded-md px-2 py-0.5 text-xs transition-colors',
-            thinkingMode ? 'bg-purple-500/12 text-purple-500' : 'text-muted-foreground hover:bg-foreground/5',
-          )}
-          title="Enable extended thinking for more thorough responses"
-        >
-          <input
-            type="checkbox"
-            checked={thinkingMode}
-            onChange={(e) => setThinkingMode(e.target.checked)}
-            className="sr-only"
-            aria-label="Thinking mode"
-          />
-          <Brain size={12} />
-          <span>Think</span>
-        </label>
-      </div>
-
-      {/* Mode-specific type selectors — included in the sticky header so
-          they stay alongside the tabs while scrolling. */}
-      {mode === 'improve' && <ImproveTypeSelector />}
-      {mode === 'diagram' && <DiagramTypeSelector />}
+        {/* Mode-specific type selectors — included in the sticky header so
+            they stay alongside the tabs while scrolling. */}
+        {mode === 'improve' && <ImproveTypeSelector />}
+        {mode === 'diagram' && <DiagramTypeSelector />}
       </div>
 
       {/* Messages — clean document-like surface, no heavy glass.
