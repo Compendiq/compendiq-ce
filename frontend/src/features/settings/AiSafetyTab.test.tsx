@@ -23,10 +23,12 @@ const defaultSettings = {
 };
 
 function mockFetchWith(settings: Record<string, unknown>) {
-  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
     if (url.includes('/admin/settings')) {
-      if ((input as Request)?.method === 'PUT') {
+      // apiFetch calls fetch(stringURL, optionsObject), so the method lives on
+      // the 2nd arg, not on `input`.
+      if ((init as RequestInit)?.method === 'PUT') {
         return new Response(JSON.stringify({ message: 'Updated' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       return new Response(JSON.stringify(settings), { status: 200, headers: { 'Content-Type': 'application/json' } });

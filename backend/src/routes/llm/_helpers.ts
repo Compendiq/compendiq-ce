@@ -232,11 +232,6 @@ export async function streamSSE(
 }
 
 /**
- * Build an output post-processor using the current admin AI output rules.
- * Returns undefined if output processing is disabled, so callers can pass it
- * directly to `streamSSE` options.
- */
-/**
  * Get admin-configured SearXNG max results (reads from admin_settings, defaults to 5).
  */
 export async function getSearxngMaxResults(): Promise<number> {
@@ -246,6 +241,11 @@ export async function getSearxngMaxResults(): Promise<number> {
   return parseInt(result.rows[0]?.setting_value ?? '5', 10);
 }
 
+/**
+ * Build an output post-processor using the current admin AI output rules.
+ * Returns undefined if output processing is disabled, so callers can pass it
+ * directly to `streamSSE` options.
+ */
 export async function buildOutputPostProcessor(
   verifiedSources?: string[],
 ): Promise<((content: string) => OutputSanitizeResult) | undefined> {
