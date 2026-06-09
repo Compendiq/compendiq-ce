@@ -3,7 +3,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
-import { ImproveTypeSelector, ImproveModeInput, IMPROVE_EMPTY_TITLE, improveEmptySubtitle } from './ImproveMode';
+import { ImproveTypeSelector, ImproveModeInput, ImproveDiffView, IMPROVE_EMPTY_TITLE, improveEmptySubtitle } from './ImproveMode';
 import { AiProvider } from '../AiContext';
 import { useAuthStore } from '../../../stores/auth-store';
 
@@ -191,6 +191,78 @@ describe('ImproveMode', () => {
     render(<ImproveModeInput />, { wrapper: createWrapper() });
     const textarea = screen.getByPlaceholderText(/Additional instructions/i) as HTMLTextAreaElement;
     expect(textarea.maxLength).toBe(10000);
+  });
+
+  // #704: the diff must compare the original *markdown* the model was fed
+  // (echoed by the backend on the final SSE event) against the improved
+  // markdown — not the formatting-stripped page.bodyText.
+  describe('#704 diff baseline is original markdown', () => {
+    const ORIGINAL_MD = '# Title\n\nThis sentence have a grammar error.\n\n- item one\n- item two';
+    const IMPROVED_MD = '# Title\n\nThis sentence has a grammar error.\n\n- item one\n- item two';
+
+    async function runImprove() {
+      // Stream the improved markdown, then a final event carrying the original
+      // markdown baseline (mirrors the backend's `improveExtras`).
+      async function* fakeStream() {
+        yield { content: IMPROVED_MD };
+        yield { originalMarkdown: ORIGINAL_MD, done: true, final: true };
+      }
+      streamSSEMock.mockReturnValue(fakeStream());
+
+      render(
+        <>
+          <ImproveModeInput />
+          <ImproveDiffView />
+        </>,
+        { wrapper: createWrapper() },
+      );
+
+      await waitFor(() => {
+        const btn = screen.getByRole('button', { name: /Improve Page/i });
+        expect(btn).not.toBeDisabled();
+      });
+      fireEvent.click(screen.getByRole('button', { name: /Improve Page/i }));
+
+      await waitFor(() => {
+        expect(screen.getByTestId('unified-diff')).toBeInTheDocument();
+      });
+    }
+
+    it('uses the echoed original markdown (with markup) as the diff baseline, not stripped bodyText', async () => {
+      await runImprove();
+
+      const diff = screen.getByTestId('unified-diff');
+      // The markdown markup (`#`, list `-`) must be present in the baseline and
+      // NOT flagged as additions. With a grammar-only edit, the only highlighted
+      // change is the wording — markup carries over unchanged.
+      const addedSpans = diff.querySelectorAll('.text-success');
+      const addedText = Array.from(addedSpans).map((s) => s.textContent).join('');
+
+      // No markup tokens should appear as additions (the old bug surfaced
+      // `#`, `**`, `-` as green additions).
+      expect(addedText).not.toContain('#');
+      expect(addedText).not.toContain('- item');
+      // The genuine grammar edit ("has") is still highlighted.
+      expect(addedText).toContain('has');
+
+      // The full diff text preserves the markdown structure (baseline kept its
+      // headers/lists rather than being whitespace-collapsed plain text).
+      expect(diff.textContent).toContain('# Title');
+      expect(diff.textContent).toContain('- item one');
+    });
+
+    it('marks only the changed word as removed, leaving markup untouched', async () => {
+      await runImprove();
+
+      const diff = screen.getByTestId('unified-diff');
+      const removedSpans = diff.querySelectorAll('.text-destructive');
+      const removedText = Array.from(removedSpans).map((s) => s.textContent).join('');
+
+      // The replaced word is removed; markup is not.
+      expect(removedText).toContain('have');
+      expect(removedText).not.toContain('#');
+      expect(removedText).not.toContain('- item');
+    });
   });
 
   it('disables textarea while streaming', async () => {
