@@ -1,4 +1,4 @@
-import { memo, useState, useMemo, useCallback, useEffect, useRef, lazy, Suspense } from 'react';
+import { memo, useState, useMemo, useCallback, useEffect, useLayoutEffect, useRef, lazy, Suspense } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import {
   BookOpen,
@@ -139,6 +139,10 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
   return (
     <div>
       <div
+        // #707: mark the active row so the scroll container can find it and
+        // scroll it into view on reload (its ancestors are auto-expanded first).
+        data-active={isActive ? 'true' : undefined}
+        data-page-id={node.page.id}
         className={cn(
           'group flex items-center gap-1.5 rounded-[10px] h-9 pr-2 text-sm cursor-pointer transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
           isActive
@@ -277,6 +281,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
   const [showNewFolderInput, setShowNewFolderInput] = useState(false);
   const newFolderInputRef = useRef<HTMLInputElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
+  const treeScrollRef = useRef<HTMLDivElement>(null);
 
   const closeSpaceDropdown = useCallback(() => setSpaceDropdownOpen(false), []);
   const spaceDropdownRef = useClickOutside<HTMLDivElement>(closeSpaceDropdown, spaceDropdownOpen);
@@ -354,6 +359,44 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
       }
     }
   }, [activePageId, pages, treeSidebarSpaceKey, setTreeSidebarSpaceKey]);
+
+  // #707: keep the open page in view. On reload the tree mounts at the top
+  // with the active node's ancestors freshly auto-expanded, so the active row
+  // exists but is scrolled out of view. Re-key on expandedIds + pages so this
+  // runs *after* the auto-expand effect renders the node and after tree data
+  // loads. We only scroll when the row is genuinely outside the container
+  // viewport, leaving mid-session scrolling and navigation to an already-visible
+  // page untouched. A single rAF retry covers the local-space tree, which is
+  // lazy-loaded and may mount one frame after this effect first runs.
+  useLayoutEffect(() => {
+    if (!activePageId) return;
+
+    function scrollActiveIntoView(): boolean {
+      const container = treeScrollRef.current;
+      if (!container) return false;
+
+      const active = container.querySelector<HTMLElement>('[data-active="true"]');
+      if (!active) return false;
+
+      const containerRect = container.getBoundingClientRect();
+      const activeRect = active.getBoundingClientRect();
+      const isVisible =
+        activeRect.top >= containerRect.top && activeRect.bottom <= containerRect.bottom;
+      if (!isVisible) {
+        active.scrollIntoView({ block: 'center', behavior: reduceEffects ? 'auto' : 'smooth' });
+      }
+      return true;
+    }
+
+    if (scrollActiveIntoView()) return;
+
+    // Active row not yet in the DOM (e.g. lazy local-space tree still mounting);
+    // retry on the next frame, then give up so we never fight manual scrolling.
+    const raf = requestAnimationFrame(() => {
+      scrollActiveIntoView();
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [activePageId, expandedIds, pages, reduceEffects]);
 
   const toggleExpand = useCallback((id: string) => {
     setExpandedIds((prev) => {
@@ -640,7 +683,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
       )}
 
       {/* Tree content with drag-and-drop + scroll mask */}
-      <div className="flex-1 overflow-y-auto p-2 scroll-mask">
+      <div ref={treeScrollRef} className="flex-1 overflow-y-auto p-2 scroll-mask">
         {isLoading ? (
           <div className="space-y-1.5 p-2">
             {[...Array(8)].map((_, i) => (

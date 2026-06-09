@@ -349,6 +349,75 @@ describe('SidebarTreeView', () => {
   });
 });
 
+// #707: on reload the tree mounts scrolled to the top; the active page's path
+// is auto-expanded but the row is out of view. The scroll container should
+// scroll the active node into view — unless it is already visible (so manual
+// scrolling and in-session navigation aren't disrupted).
+describe('SidebarTreeView active-page scroll-into-view (#707)', () => {
+  let scrollIntoView: ReturnType<typeof vi.fn>;
+  let rectByTestState: { containerTop: number; containerBottom: number; activeTop: number; activeBottom: number };
+
+  beforeEach(() => {
+    mockNavigate.mockClear();
+    mockTreeData = { ...defaultTreeData };
+    useUiStore.setState({
+      treeSidebarCollapsed: false,
+      // "All Spaces" so the homepage isn't hidden and the full tree renders.
+      treeSidebarSpaceKey: undefined,
+    });
+
+    scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+
+    // jsdom returns zeroed rects, which would read as "always visible". Drive
+    // the visibility check from rectByTestState so each test controls geometry.
+    rectByTestState = { containerTop: 0, containerBottom: 500, activeTop: 0, activeBottom: 40 };
+    Element.prototype.getBoundingClientRect = function (this: Element) {
+      const isContainer = this.classList.contains('overflow-y-auto');
+      const isActive = this.getAttribute('data-active') === 'true';
+      if (isContainer) {
+        return { top: rectByTestState.containerTop, bottom: rectByTestState.containerBottom, left: 0, right: 0, width: 0, height: 0, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+      }
+      if (isActive) {
+        return { top: rectByTestState.activeTop, bottom: rectByTestState.activeBottom, left: 0, right: 0, width: 0, height: 0, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+      }
+      return { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+    };
+  });
+
+  it('scrolls the active node into view on mount when it is below the viewport', () => {
+    // Active row sits below the container's bottom edge → off-screen.
+    rectByTestState = { containerTop: 0, containerBottom: 500, activeTop: 900, activeBottom: 940 };
+    render(<SidebarTreeView />, { wrapper: createWrapper('/pages/child-1') });
+
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center', behavior: 'auto' });
+  });
+
+  it('uses instant scroll (behavior "auto") when prefers-reduced-motion is set', () => {
+    // The file-level framer-motion mock forces useReducedMotion() === true.
+    rectByTestState = { containerTop: 0, containerBottom: 500, activeTop: 900, activeBottom: 940 };
+    render(<SidebarTreeView />, { wrapper: createWrapper('/pages/child-1') });
+
+    expect(scrollIntoView).toHaveBeenCalledWith(expect.objectContaining({ behavior: 'auto' }));
+  });
+
+  it('does not scroll when the active node is already within the viewport', () => {
+    // Active row fully inside the container bounds → already visible.
+    rectByTestState = { containerTop: 0, containerBottom: 500, activeTop: 100, activeBottom: 140 };
+    render(<SidebarTreeView />, { wrapper: createWrapper('/pages/child-1') });
+
+    expect(scrollIntoView).not.toHaveBeenCalled();
+  });
+
+  it('does not scroll when no page is active', () => {
+    rectByTestState = { containerTop: 0, containerBottom: 500, activeTop: 900, activeBottom: 940 };
+    render(<SidebarTreeView />, { wrapper: createWrapper('/') });
+
+    expect(scrollIntoView).not.toHaveBeenCalled();
+  });
+});
+
 describe('SidebarTreeNode memoization', () => {
   beforeEach(() => {
     mockNavigate.mockClear();

@@ -69,6 +69,10 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
   return (
     <div ref={sortable.ref}>
       <div
+        // #707: mark the active row so the scroll container can find it and
+        // scroll it into view on reload (its ancestors are auto-expanded first).
+        data-active={isActive ? 'true' : undefined}
+        data-page-id={node.page.id}
         className={cn(
           'group flex items-center gap-1.5 rounded-[10px] h-9 pr-2 text-sm cursor-pointer transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
           isActive

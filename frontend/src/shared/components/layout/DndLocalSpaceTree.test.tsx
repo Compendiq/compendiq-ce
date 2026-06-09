@@ -119,4 +119,25 @@ describe('DndLocalSpaceTree', () => {
   it('is the default export (compatible with React.lazy)', () => {
     expect(typeof DndLocalSpaceTree).toBe('function');
   });
+
+  // #707: the scroll-into-view logic lives in the parent SidebarTreeView and
+  // finds the open page by its data-active marker. The local-space tree must
+  // tag the active row the same way so reload-positioning works here too.
+  it('marks the active row with data-active="true" so the container can scroll to it', () => {
+    renderTree({ activePageId: 'p1' });
+    const active = document.querySelector('[data-active="true"]');
+    expect(active).not.toBeNull();
+    expect(active?.getAttribute('data-page-id')).toBe('p1');
+  });
+
+  it('does not mark any row active when no page is active', () => {
+    renderTree({ activePageId: undefined });
+    expect(document.querySelector('[data-active="true"]')).toBeNull();
+  });
+
+  it('marks a nested active row when its parent is expanded', () => {
+    renderTree({ activePageId: 'p2-c1', expandedIds: new Set(['p2']) });
+    const active = document.querySelector('[data-active="true"]');
+    expect(active?.getAttribute('data-page-id')).toBe('p2-c1');
+  });
 });
