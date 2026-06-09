@@ -39,6 +39,7 @@ vi.mock('../../core/services/admin-settings-service.js', () => ({
 
 vi.mock('../../core/services/rbac-service.js', () => ({
   getUserAccessibleSpaces: vi.fn().mockResolvedValue([]),
+  getSelectedSyncSpaces: vi.fn().mockResolvedValue([]),
   invalidateRbacCache: vi.fn().mockResolvedValue(undefined),
 }));
 

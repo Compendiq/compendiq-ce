@@ -30,19 +30,28 @@ function mockVersionsResponse() {
         {
           versionNumber: 3,
           title: 'Page v3',
+          editedAt: '2026-03-05T10:00:00Z',
           syncedAt: '2026-03-05T10:00:00Z',
+          author: null,
+          message: null,
           isCurrent: true,
         },
         {
           versionNumber: 2,
           title: 'Page v2',
+          editedAt: '2026-03-04T10:00:00Z',
           syncedAt: '2026-03-04T10:00:00Z',
+          author: 'alice',
+          message: 'Updated intro',
           isCurrent: false,
         },
         {
           versionNumber: 1,
           title: 'Page v1',
+          editedAt: null,
           syncedAt: '2026-03-03T10:00:00Z',
+          author: null,
+          message: null,
           isCurrent: false,
         },
       ],
@@ -340,6 +349,54 @@ describe('VersionHistory', () => {
 
     await waitFor(() => {
       expect(screen.queryByText('Version History')).not.toBeInTheDocument();
+    });
+  });
+
+  it('shows author name for versions with Confluence edit metadata (#722)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockVersionsResponse());
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+
+    await waitFor(() => {
+      // v2 has author 'alice' in the mock
+      expect(screen.getByText('alice')).toBeInTheDocument();
+    });
+  });
+
+  it('shows commit message for versions with Confluence edit metadata (#722)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockVersionsResponse());
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+
+    await waitFor(() => {
+      // v2 has message 'Updated intro' in the mock
+      expect(screen.getByText(/Updated intro/)).toBeInTheDocument();
+    });
+  });
+
+  it('shows Synced prefix for rows without editedAt (#724)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockVersionsResponse());
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+
+    await waitFor(() => {
+      // v1 has editedAt:null, syncedAt:'2026-03-03T10:00:00Z' → shows "Synced ..."
+      expect(screen.getByText(/Synced/)).toBeInTheDocument();
     });
   });
 });

@@ -10,10 +10,18 @@ import {
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { htmlToConfluence } from '../../core/services/content-converter.js';
+import {
+  backfillVersionHistory,
+  getHistoricalBody,
+} from '../../domains/confluence/services/version-backfill.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { emitWebhookEvent } from '../../core/services/webhook-emit-hook.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
-import { RestoreVersionSchema } from '@compendiq/contracts';
+import {
+  RestoreVersionSchema,
+  PageVersionsResponseSchema,
+  PageVersionDetailSchema,
+} from '@compendiq/contracts';
 import { z } from 'zod';
 
 const IdParamSchema = z.object({ id: z.string().min(1) });
@@ -94,7 +102,17 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
     const userId = request.userId;
 
     const ctx = await resolveAndAuthorize(userId, id);
-    if (!ctx) return { versions: [], pageId: id };
+    if (!ctx) return PageVersionsResponseSchema.parse({ versions: [], pageId: id });
+
+    // #722: Best-effort backfill of Confluence version list on dialog open.
+    if (ctx.confluenceId) {
+      try {
+        const client = await getClientForUser(userId);
+        if (client) await backfillVersionHistory(ctx.id, ctx.confluenceId, client);
+      } catch (err) {
+        request.log.warn({ err, pageId: id }, '#722: version backfill skipped (Confluence unavailable)');
+      }
+    }
 
     const versions = await getVersionHistory(ctx.id);
 
@@ -113,7 +131,11 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
       ? {
           versionNumber: currentResult.rows[0].version,
           title: currentResult.rows[0].title,
-          syncedAt: currentResult.rows[0].last_modified_at ?? new Date(),
+          // #724: use real last_modified_at; null means never synced — don't substitute now()
+          editedAt: currentResult.rows[0].last_modified_at?.toISOString() ?? null,
+          syncedAt: currentResult.rows[0].last_modified_at?.toISOString() ?? null,
+          author: null,
+          message: null,
           isCurrent: true,
         }
       : null;
@@ -124,13 +146,21 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
       (v) => !currentVersion || v.versionNumber !== currentVersion.versionNumber,
     );
 
-    return {
+    return PageVersionsResponseSchema.parse({
       versions: [
         ...(currentVersion ? [currentVersion] : []),
-        ...historical.map((v) => ({ ...v, isCurrent: false })),
+        ...historical.map((v) => ({
+          versionNumber: v.versionNumber,
+          title: v.title,
+          editedAt: v.editedAt?.toISOString() ?? null,
+          syncedAt: v.syncedAt.toISOString(),
+          author: v.author ?? null,
+          message: v.message ?? null,
+          isCurrent: false,
+        })),
       ],
       pageId: id,
-    };
+    });
   });
 
   // GET /api/pages/:id/versions/:version - get specific version
@@ -153,14 +183,14 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
     );
 
     if (currentResult.rows.length > 0 && currentResult.rows[0]!.version === versionNum) {
-      return {
+      return PageVersionDetailSchema.parse({
         confluenceId: ctx.confluenceId,
         versionNumber: versionNum,
         title: currentResult.rows[0]!.title,
         bodyHtml: currentResult.rows[0]!.body_html,
         bodyText: currentResult.rows[0]!.body_text,
         isCurrent: true,
-      };
+      });
     }
 
     // Get from version history
@@ -169,15 +199,33 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.notFound(`Version ${versionNum} not found`);
     }
 
-    return {
+    // #722: Lazy-fetch the historical body from Confluence if we stored only metadata.
+    let { bodyHtml, bodyText } = pageVersion;
+    if (bodyHtml === null && ctx.confluenceId) {
+      try {
+        const client = await getClientForUser(userId);
+        if (client) {
+          const fetched = await getHistoricalBody(ctx.id, ctx.confluenceId, versionNum, client);
+          bodyHtml = fetched.bodyHtml;
+          bodyText = fetched.bodyText;
+        }
+      } catch (err) {
+        request.log.warn({ err, pageId: id, version: versionNum }, '#722: lazy body fetch failed');
+      }
+    }
+
+    return PageVersionDetailSchema.parse({
       confluenceId: pageVersion.confluenceId,
       versionNumber: pageVersion.versionNumber,
       title: pageVersion.title,
-      bodyHtml: pageVersion.bodyHtml,
-      bodyText: pageVersion.bodyText,
-      syncedAt: pageVersion.syncedAt,
+      bodyHtml,
+      bodyText,
+      editedAt: pageVersion.editedAt?.toISOString() ?? null,
+      syncedAt: pageVersion.syncedAt?.toISOString() ?? null,
+      author: pageVersion.author,
+      message: pageVersion.message,
       isCurrent: false,
-    };
+    });
   });
 
   // POST /api/pages/:id/versions/semantic-diff - AI-generated diff between two versions
@@ -210,7 +258,19 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
       await saveVersionSnapshotByPageId(ctx.id, row.version, row.title, row.body_html, row.body_text);
     }
 
-    const diff = await getSemanticDiff(ctx.id, v1, v2, model);
+    // #722/#724: pass the Confluence client so getSemanticDiff can lazily fetch
+    // bodies for backfilled (metadata-only) versions — otherwise they diff as
+    // empty strings and the LLM reports "all content removed".
+    let client: Awaited<ReturnType<typeof getClientForUser>> | null = null;
+    if (ctx.confluenceId) {
+      try {
+        client = await getClientForUser(userId);
+      } catch (err) {
+        request.log.warn({ err, pageId: id }, '#722: semantic-diff client unavailable');
+      }
+    }
+
+    const diff = await getSemanticDiff(ctx.id, v1, v2, model, ctx.confluenceId, client);
     return { diff, v1, v2, pageId: id };
   });
 
@@ -243,6 +303,21 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
     // Restoring the live version is a no-op the client shouldn't reach.
     if (targetVersion === ctx.version) {
       throw fastify.httpErrors.badRequest('Cannot restore the current version');
+    }
+
+    // #722/#724 CRITICAL: backfilled version rows are metadata-only
+    // (body_html IS NULL) until previewed. Restoring one as-is would blank the
+    // live page AND push an empty body upstream. Lazily fetch + persist the
+    // historical body BEFORE restoring so we restore real content.
+    const targetBody = await query<{ body_html: string | null }>(
+      'SELECT body_html FROM page_versions WHERE page_id = $1 AND version_number = $2',
+      [ctx.id, targetVersion],
+    );
+    if (targetBody.rows[0]?.body_html === null && ctx.confluenceId) {
+      const client = await getClientForUser(userId);
+      if (client) {
+        await getHistoricalBody(ctx.id, ctx.confluenceId, targetVersion, client);
+      }
     }
 
     const result = await restoreVersion(ctx.id, targetVersion);

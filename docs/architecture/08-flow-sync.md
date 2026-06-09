@@ -151,6 +151,108 @@ and the bulk path): if Confluence answers 404 the remote page is already gone, s
 local cleanup proceeds and the delete succeeds instead of failing with
 "Resource not found". Any non-404 error still surfaces (no silent data loss).
 
+## Version history backfill (#722/#724)
+
+Confluence version metadata (edit time, author, commit message) is not fetched
+during the regular sync — only the latest body and version number are written.
+Full version list import is **lazy-on-open**: when a user opens the Version History
+dialog, `GET /api/pages/:id/versions` calls `backfillVersionHistory` which hits
+`GET /rest/api/content/{id}/version?expand=by,message` and upserts each row into
+`page_versions` via `upsertVersionMetadata` (idempotent ON CONFLICT DO UPDATE with
+COALESCE). The historical body (`body_html`) for each old version is fetched even
+more lazily — only when a user previews or compares that specific version
+(`GET /api/pages/:id/versions/:version` triggers `getHistoricalBody` when
+`body_html IS NULL`). Both calls are best-effort: failures are logged and swallowed
+so the dialog still opens.
+
+The `edited_at` column holds the real Confluence edit timestamp; the existing
+`synced_at` column records when Compendiq last ingested the row. The frontend
+shows `edited_at` directly when present, and falls back to "Synced <syncedAt>"
+to make clear the displayed time is a sync time, not the author's edit time (#724).
+
+## Space unsync / removal (#721)
+
+An admin can permanently remove a synced Confluence space from the local store via
+`DELETE /api/spaces/:key`. The operation is **local-only** — it never contacts
+Confluence. Sequence:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant A as Admin (Settings UI)
+    participant R as DELETE /api/spaces/:key
+    participant SV as sync-service.unsyncSpace
+    participant AH as attachment-handler
+    participant DB as Postgres
+
+    A->>R: DELETE /api/spaces/:key (admin JWT)
+    R->>R: isSystemAdmin guard (403 if not admin)
+    R->>DB: SELECT source FROM spaces WHERE space_key = ?
+    alt space not found
+        DB-->>R: (empty)
+        R-->>A: 404 Not Found
+    else found
+        DB-->>R: row
+        R->>SV: unsyncSpace(spaceKey)
+        SV->>DB: SELECT id FROM pages WHERE space_key = ?
+        loop per page (best-effort, OUTSIDE the transaction)
+            SV->>AH: cleanPageAttachments(pageId) — purge local files
+        end
+        SV->>DB: BEGIN
+        SV->>DB: DELETE FROM pages WHERE space_key = ? (cascades → page_embeddings, page_versions)
+        SV->>DB: DELETE FROM space_role_assignments WHERE space_key = ?
+        SV->>DB: DELETE FROM oidc_group_role_mappings WHERE space_key = ?
+        SV->>DB: UPDATE templates SET space_key = NULL WHERE space_key = ?
+        SV->>DB: UPDATE knowledge_requests SET space_key = NULL WHERE space_key = ?
+        SV->>DB: DELETE FROM spaces WHERE space_key = ?
+        SV->>DB: COMMIT (ROLLBACK + re-throw on any error)
+        SV-->>R: { pagesDeleted }
+        R->>R: invalidateRbacCache + cache.invalidate(userId, 'spaces'/'pages')
+        R->>R: logAuditEvent(SPACE_UNSYNCED)
+        R-->>A: { key, deleted: true, pagesDeleted }
+    end
+```
+
+Key properties:
+
+- **Admin-gated** — `isSystemAdmin` check enforces system-admin role; non-admins receive 403.
+- **Read-only against Confluence** — nothing is written or deleted in Confluence DC.
+- **Atomic** — all row deletes/updates run inside a single `BEGIN…COMMIT` on one
+  pooled client (same pattern as `postgres.ts`). On any error we `ROLLBACK` and
+  re-throw, so a crash mid-purge can never leave a space half-removed.
+- **Cascade** — `DELETE FROM pages` cascades to `page_embeddings` and `page_versions` via FK `ON DELETE CASCADE` (migration 030).
+- **Orphan reconciliation** — several tables reference a space by plain `space_key`
+  with **no** foreign key, so they survive the cascade. Within the same transaction
+  `unsyncSpace` reconciles them so nothing dangles:
+  - `space_role_assignments` (RBAC; also encodes the sync selection since
+    `user_space_selections` was migrated into it and **dropped** in migration 040) —
+    **DELETE** rows for the space.
+  - `oidc_group_role_mappings` (OIDC group→space RBAC mapping, `space_key` nullable) —
+    **DELETE** rows whose `space_key` matches; rows with `space_key IS NULL` are global
+    and left untouched.
+  - `templates` and `knowledge_requests` (may hold **user-authored** content, `space_key`
+    nullable per migrations 032/037) — **NULL the `space_key` (detach)** rather than
+    delete, so unsyncing a space never silently destroys user work. The artifact is
+    retained, just unscoped.
+- **Attachment cleanup** — `cleanPageAttachments` is best-effort and runs per page
+  **before/outside** the DB transaction; filesystem deletes can't be rolled back, so a
+  cleanup failure is logged, never fatal, and never aborts the transaction. Worst case
+  is a few orphaned files (preferable to dangling DB rows), swept again on re-run.
+- **Audit** — every removal emits a `SPACE_UNSYNCED` audit event.
+- **RBAC invalidation** — both the in-process RBAC cache and the per-user query cache are flushed so subsequent requests reflect the removal immediately.
+
+## Spaces tab selection and `getSelectedSyncSpaces` (#721)
+
+`GET /api/settings` previously returned `selectedSpaces` via `getUserAccessibleSpaces`,
+which for system admins returned **all** spaces (not just those explicitly assigned via
+editor role). From #721 onward, the settings endpoint calls `getSelectedSyncSpaces`
+instead, which returns only spaces where the requesting user holds an explicit **editor**
+role assignment (`space_role_assignments JOIN roles WHERE roles.name = 'editor'`).
+
+This means the Spaces tab always reflects the admin's deliberate sync selection,
+not the implicit "can see everything" fallback, and the Remove action correctly
+removes a space from that selection.
+
 ## Content pipeline hand-off
 
 The `confluenceToHtml()` call produces `body_html` and `body_text`. The
@@ -159,9 +261,12 @@ LLM. See [`11-content-pipeline.md`](./11-content-pipeline.md).
 
 ## Key files
 
-- `backend/src/domains/confluence/services/sync-service.ts`
+- `backend/src/domains/confluence/services/sync-service.ts` — `syncSpace`, `unsyncSpace`, `purgeDeletedPages`
 - `backend/src/domains/confluence/services/confluence-client.ts`
 - `backend/src/domains/confluence/services/attachment-handler.ts`
 - `backend/src/domains/confluence/services/sync-overview-service.ts`
 - `backend/src/domains/llm/services/embedding-service.ts`
 - `backend/src/routes/confluence/sync.ts`
+- `backend/src/routes/confluence/spaces.ts` — `DELETE /api/spaces/:key` (unsync)
+- `backend/src/core/services/rbac-service.ts` — `getSelectedSyncSpaces` (explicit editor assignments)
+- `frontend/src/features/settings/SpacesTab.tsx` — Remove action + empty-save guard

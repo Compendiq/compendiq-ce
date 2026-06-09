@@ -40,8 +40,10 @@ vi.mock('../../core/utils/logger.js', () => ({
 }));
 
 const mockGetUserAccessibleSpaces = vi.fn().mockResolvedValue(['DEV', 'DOCS']);
+const mockGetSelectedSyncSpaces = vi.fn().mockResolvedValue(['DEV', 'DOCS']);
 vi.mock('../../core/services/rbac-service.js', () => ({
   getUserAccessibleSpaces: (...args: unknown[]) => mockGetUserAccessibleSpaces(...args),
+  getSelectedSyncSpaces: (...args: unknown[]) => mockGetSelectedSyncSpaces(...args),
   invalidateRbacCache: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -414,6 +416,7 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+    mockGetSelectedSyncSpaces.mockResolvedValue(['DEV', 'DOCS']);
   });
 
   it('GET /settings returns settings from DB with accessible spaces from RBAC', async () => {
@@ -485,8 +488,8 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
   });
 
   it('GET /settings returns defaults when no row exists', async () => {
-    // No spaces accessible for a brand new user
-    mockGetUserAccessibleSpaces.mockResolvedValueOnce([]);
+    // No spaces selected for a brand new user (#721: uses getSelectedSyncSpaces)
+    mockGetSelectedSyncSpaces.mockResolvedValueOnce([]);
     // Query 1: user_settings -> no row
     mockQuery.mockResolvedValueOnce({ rows: [] });
     // Query 2: INSERT default settings
@@ -666,5 +669,31 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     expect(mockRemoveAllowedBaseUrl).not.toHaveBeenCalled();
     // But still re-register it (idempotent)
     expect(mockAddAllowedBaseUrl).toHaveBeenCalledWith('https://confluence.example.com');
+  });
+
+  it('GET /settings returns only explicitly-selected spaces, not all admin-accessible spaces (#721)', async () => {
+    // Simulate an admin who has access to two spaces via RBAC (ENG+OPS),
+    // but has only explicitly selected ENG (i.e. getSelectedSyncSpaces==['ENG']).
+    mockGetSelectedSyncSpaces.mockResolvedValueOnce(['ENG']);
+
+    mockQuery.mockResolvedValueOnce({
+      rows: [{
+        confluence_url: 'https://confluence.example.com',
+        confluence_pat: 'encrypted',
+        theme: 'glass-dark',
+        sync_interval_min: 15,
+        show_space_home_content: true,
+        custom_prompts: {},
+      }],
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/api/settings' });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    // Must be only the explicitly-selected space, NOT all RBAC-accessible spaces.
+    expect(body.selectedSpaces).toEqual(['ENG']);
+    expect(mockGetSelectedSyncSpaces).toHaveBeenCalled();
+    expect(mockGetUserAccessibleSpaces).not.toHaveBeenCalled();
   });
 });

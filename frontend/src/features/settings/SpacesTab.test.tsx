@@ -114,11 +114,12 @@ describe('SpacesTab', () => {
     expect(mockOnSave).toHaveBeenCalledWith({ selectedSpaces: ['DEV'] });
   });
 
-  it('shows save button with zero count when nothing selected', () => {
+  it('allows saving an empty selection — Save button not disabled at zero (#721)', () => {
     render(<SpacesTab onSave={mockOnSave} />, { wrapper: createWrapper() });
     const saveBtn = screen.getByText('Save Selection (0)');
     expect(saveBtn).toBeInTheDocument();
-    expect(saveBtn).toBeDisabled();
+    // #721: Save must be enabled at zero — admin may intentionally clear all spaces.
+    expect(saveBtn).not.toBeDisabled();
   });
 
   it('initializes with previously selected spaces', async () => {
@@ -205,6 +206,64 @@ describe('SpacesTab', () => {
       );
       fireEvent.click(screen.getByTestId('toggle-space-home-content'));
       expect(mockOnSave).toHaveBeenCalledWith({ showSpaceHomeContent: true });
+    });
+  });
+
+  // ---------- #721: Remove action ----------
+
+  it('shows a Remove button for each synced space (#721)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify([
+          { key: 'ENG', name: 'Engineering', lastSynced: '2026-03-01T00:00:00Z', pageCount: 10 },
+        ]),
+        { headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    render(<SpacesTab onSave={mockOnSave} />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByText('Engineering')).toBeInTheDocument();
+    });
+
+    expect(screen.getByRole('button', { name: /remove engineering/i })).toBeInTheDocument();
+  });
+
+  it('calls DELETE /api/spaces/:key when a space is removed and confirmed (#721)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify([
+            { key: 'ENG', name: 'Engineering', lastSynced: '2026-03-01T00:00:00Z', pageCount: 5 },
+          ]),
+          { headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ key: 'ENG', deleted: true, pagesDeleted: 5 }), {
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    render(<SpacesTab onSave={mockOnSave} />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByText('Engineering')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /remove engineering/i }));
+
+    await waitFor(() => {
+      const deleteCalled = fetchSpy.mock.calls.some(
+        ([url, opts]) =>
+          typeof url === 'string' &&
+          url.includes('/spaces/ENG') &&
+          (opts as RequestInit | undefined)?.method === 'DELETE',
+      );
+      expect(deleteCalled).toBe(true);
     });
   });
 });

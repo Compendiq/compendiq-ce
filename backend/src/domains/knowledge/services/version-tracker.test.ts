@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../../test-db-helper.js';
 import { query } from '../../../core/db/postgres.js';
 import {
@@ -7,7 +7,11 @@ import {
   getVersionHistory,
   getVersion,
   restoreVersion,
+  getSemanticDiff,
 } from './version-tracker.js';
+import * as versionBackfill from '../../confluence/services/version-backfill.js';
+import * as openaiClient from '../../llm/services/openai-compatible-client.js';
+import * as providerResolver from '../../llm/services/llm-provider-resolver.js';
 
 const dbAvailable = await isDbAvailable();
 
@@ -224,6 +228,87 @@ describe.skipIf(!dbAvailable)('VersionTracker', () => {
       expect(result).not.toBeNull();
       expect(result!.bodyText).toContain('Hello');
       expect(result!.bodyText).toContain('world');
+    });
+
+    // #722/#724 CRITICAL: a backfilled (metadata-only, body_html IS NULL) row
+    // must NOT be restored as an empty body — that would blank the live page
+    // (and, for Confluence pages, push an empty body upstream). The service is
+    // the last line of defence: if the target body is still NULL it must throw
+    // and leave the live `pages` row untouched.
+    it('refuses to restore a metadata-only (NULL body) version and leaves the page unchanged', async () => {
+      // Live page sits at version 3 with real content.
+      await query(
+        `UPDATE pages SET version = 3, title = 'Live Title', body_html = '<p>live body</p>', body_text = 'live body' WHERE id = $1`,
+        [pageId],
+      );
+      // A backfilled version-2 row with metadata only — no body.
+      await saveVersionSnapshotByPageId(pageId, 2, 'v2', null, null);
+
+      await expect(restoreVersion(pageId, 2)).rejects.toThrow();
+
+      // The live page must be completely untouched (no blanking, no version bump).
+      const live = await query<{ version: number; title: string; body_html: string; body_text: string }>(
+        'SELECT version, title, body_html, body_text FROM pages WHERE id = $1',
+        [pageId],
+      );
+      expect(live.rows[0].version).toBe(3);
+      expect(live.rows[0].title).toBe('Live Title');
+      expect(live.rows[0].body_html).toBe('<p>live body</p>');
+      expect(live.rows[0].body_text).toBe('live body');
+    });
+  });
+
+  describe('getSemanticDiff', () => {
+    it('lazy-fetches NULL bodies before diffing instead of comparing empty strings', async () => {
+      // Live page is at v3. v1 and v2 are backfilled, metadata only (NULL body).
+      await query(`UPDATE pages SET version = 3 WHERE id = $1`, [pageId]);
+      await saveVersionSnapshotByPageId(pageId, 1, 'v1', null, null);
+      await saveVersionSnapshotByPageId(pageId, 2, 'v2', null, null);
+
+      // Mock the Confluence lazy-body helper (HTTP boundary) — it persists via
+      // fillVersionBody and returns the resolved body.
+      const getHistoricalBodySpy = vi
+        .spyOn(versionBackfill, 'getHistoricalBody')
+        .mockImplementation(async (pid, _cid, versionNumber) => {
+          const bodyHtml = `<p>resolved v${versionNumber}</p>`;
+          const bodyText = `resolved v${versionNumber}`;
+          await query(
+            `UPDATE page_versions SET body_html = $3, body_text = $4
+               WHERE page_id = $1 AND version_number = $2 AND body_html IS NULL`,
+            [pid, versionNumber, bodyHtml, bodyText],
+          );
+          return { bodyHtml, bodyText };
+        });
+
+      // Capture what is actually sent to the LLM.
+      let userPromptSent = '';
+      vi.spyOn(providerResolver, 'resolveUsecase').mockResolvedValue({
+        config: {} as never,
+        model: 'test-model',
+      } as never);
+      const chatSpy = vi.spyOn(openaiClient, 'chat').mockImplementation(async (_config, _model, messages) => {
+        userPromptSent = messages.find((m) => m.role === 'user')?.content ?? '';
+        return 'diff result';
+      });
+
+      const fakeClient = {} as never;
+      const diff = await getSemanticDiff(pageId, 1, 2, 'test-model', 'vt-page-1', fakeClient);
+
+      expect(diff).toBe('diff result');
+      // Both versions were lazy-resolved at the HTTP boundary.
+      expect(getHistoricalBodySpy).toHaveBeenCalledTimes(2);
+      // The LLM prompt contains the resolved bodies, NOT empty strings.
+      expect(userPromptSent).toContain('resolved v1');
+      expect(userPromptSent).toContain('resolved v2');
+      // And the bodies were persisted for next time.
+      const persisted = await query<{ version_number: number; body_text: string }>(
+        'SELECT version_number, body_text FROM page_versions WHERE page_id = $1 ORDER BY version_number',
+        [pageId],
+      );
+      expect(persisted.rows.map((r) => r.body_text)).toEqual(['resolved v1', 'resolved v2']);
+
+      chatSpy.mockRestore();
+      getHistoricalBodySpy.mockRestore();
     });
   });
 });
