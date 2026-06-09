@@ -233,6 +233,38 @@ describe('OidcSettingsPage', () => {
     expect(screen.getByTestId('oidc-save-btn')).toBeDisabled();
   });
 
+  it('warns when the Redirect URI origin diverges from the app origin (#710)', async () => {
+    // jsdom serves the page from http://localhost:3000; the mock provider's
+    // Redirect URI origin is http://localhost:3051, so the two diverge.
+    mockFetch();
+    render(<OidcSettingsPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('oidc-redirect-origin-warning')).toBeInTheDocument();
+    });
+    const warning = screen.getByTestId('oidc-redirect-origin-warning');
+    // Surfaces the exact FRONTEND_URL the admin must set.
+    expect(warning).toHaveTextContent('FRONTEND_URL=http://localhost:3051');
+  });
+
+  it('hides the Redirect URI warning when the origin matches the app origin', async () => {
+    mockFetch();
+    render(<OidcSettingsPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('oidc-redirect-uri')).toBeInTheDocument();
+    });
+
+    // Retype the Redirect URI to use jsdom's own origin (http://localhost:3000).
+    fireEvent.change(screen.getByTestId('oidc-redirect-uri'), {
+      target: { value: `${window.location.origin}/api/auth/oidc/callback` },
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('oidc-redirect-origin-warning')).not.toBeInTheDocument();
+    });
+  });
+
   it('shows create mapping form when button clicked', async () => {
     mockFetch();
     render(<OidcSettingsPage />, { wrapper: createWrapper() });

@@ -116,7 +116,7 @@ curl http://localhost:3051/api/health
 |----------|---------|-------------|
 | `NODE_ENV` | `development` | Set to `production` for production deployments |
 | `BACKEND_PORT` | `3051` | Backend server port |
-| `FRONTEND_URL` | `http://localhost:5273` | Used for CORS origin and OIDC redirects |
+| `FRONTEND_URL` | `http://localhost:5273` | CORS origin **and** the origin the post-login OIDC redirect is built from. Behind a reverse proxy with SSO, set this to your public origin (see [OIDC / SSO](#oidc--sso)). |
 | `FRONTEND_PORT` | `5273` | Host port mapped to the frontend container (Docker Compose only) |
 | `LOG_LEVEL` | `info` | Pino log level: `fatal`, `error`, `warn`, `info`, `debug`, `trace` |
 | `ACCESS_TOKEN_EXPIRY` | `1h` | JWT access token lifetime (jose duration format: `30m`, `1h`, `2h`) |
@@ -286,7 +286,20 @@ Settings configured via the admin UI are persisted in the `admin_settings` datab
 
 ### OIDC / SSO
 
-OIDC is configured entirely via the Admin UI (Settings > OIDC/SSO). No environment variables are required -- all OIDC configuration is stored in the database.
+OIDC provider settings (issuer, client ID/secret, group mappings) are configured entirely via the Admin UI (Settings > OIDC/SSO) and stored in the database.
+
+**`FRONTEND_URL` must be your public origin behind a reverse proxy.** OIDC login uses a two-hop callback:
+
+1. The IdP redirects the browser back to the **Redirect URI** you configure in Settings > OIDC/SSO — e.g. `https://compendiq.example.com/api/auth/oidc/callback`. This hits the backend.
+2. The backend exchanges the code and then redirects the browser to the SPA callback route (`/auth/oidc/callback?login_code=…`). It builds **that** redirect from the backend's `FRONTEND_URL` env var — **not** from the Redirect URI.
+
+These are two independent URLs. If `FRONTEND_URL` is left at its `http://localhost:8081` / `http://localhost:5273` default while the admin reaches the app through a public host, a correctly-configured Redirect URI still bounces the browser to `localhost` after the IdP round-trip, dead-ending login. Set:
+
+```
+FRONTEND_URL=https://compendiq.example.com
+```
+
+(matching the origin of your Redirect URI) and restart the backend. `FRONTEND_URL` also accepts a comma-separated list, which doubles as the CORS allowlist. The Settings > OIDC/SSO page warns inline when the Redirect URI origin diverges from the origin you loaded the app from, and surfaces the exact `FRONTEND_URL` value to set.
 
 ### IP Allowlist (Enterprise, v0.4+)
 
