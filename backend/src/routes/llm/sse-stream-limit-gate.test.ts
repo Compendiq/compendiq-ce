@@ -74,6 +74,8 @@ vi.mock('../../core/db/postgres.js', () => ({
 vi.mock('../../core/services/content-converter.js', () => ({
   htmlToMarkdown: vi.fn((s: string) => s),
   markdownToHtml: vi.fn((s: string) => s),
+  protectMedia: vi.fn((html: string) => ({ html, media: [] })),
+  restoreMedia: vi.fn((html: string) => html),
 }));
 
 vi.mock('../../domains/llm/services/embedding-service.js', () => ({

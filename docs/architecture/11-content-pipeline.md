@@ -122,6 +122,53 @@ flowchart LR
     MH -- "sanitized HTML" --> ED
 ```
 
+## AI Improve media protection (#723)
+
+The `/llm/improve` → Accept round-trip runs `body_html` through
+`htmlToMarkdown()` before the LLM and `markdownToHtml()` after — a lossy
+path that discards `<img>` attributes, draw.io wrappers, and layout
+structure. Two safeguards prevent media from being destroyed:
+
+### Placeholder protection (Improve request)
+
+`protectMedia(html)` (exported from `content-converter.ts`) replaces every
+`img`, `div.confluence-drawio`, `div.confluence-mermaid`, `div.mermaid`,
+`div.confluence-section`, and `div.confluence-column` with an opaque token
+`CQ_MEDIA_PLACEHOLDER_<N>` before `htmlToMarkdown()`. Tokens use only
+`[A-Z_0-9]` so they survive turndown, `sanitizeLlmInput`, and the LLM
+verbatim. The replacement map is returned alongside the protected HTML; the
+index is document order, making it deterministic.
+
+`assembleContextIfNeeded` in `_helpers.ts` applies `protectMedia` when the
+caller passes `opts.protectMedia = true` (set by `llmImproveRoutes`).
+
+### Restore + drop-guard (Accept)
+
+On `POST /llm/improvements/apply` the route:
+
+1. Re-derives the same token map from the **current** `body_html` stored in
+   the DB (same deterministic order — no token map needs to be persisted).
+2. Calls `markdownToHtml(improvedMarkdown)` on the LLM output.
+3. Calls `restoreMedia(html, media)` to replace tokens (and their
+   turndown-escaped variants `CQ\_MEDIA\_PLACEHOLDER\_N`) with the original
+   HTML verbatim.
+4. Appends any media entries whose HTML is still missing after restoration
+   (LLM dropped the token entirely) and logs a warning.
+
+### Lossless confluence-drawio turndown rule
+
+A custom turndown rule in `htmlToMarkdown()` converts
+`<div class="confluence-drawio" data-diagram-name="…">` to a fenced
+` ```drawio\nNAME\n``` ` block instead of discarding the wrapper.
+`markdownToHtml()` post-processes the emitted
+`<pre><code class="language-drawio">NAME</code></pre>` back into the
+`<div class="confluence-drawio" data-diagram-name="NAME"></div>` wrapper so
+non-Improve callers (copy/paste, export) also round-trip draw.io losslessly.
+
+| Custom rule | HTML form | Markdown form |
+|-------------|-----------|---------------|
+| `confluenceDrawio` | `<div class="confluence-drawio" data-diagram-name="…">` | ` ```drawio\nNAME\n``` ` |
+
 ## Attachments
 
 Images, drawio diagrams, and PDFs are downloaded during sync to

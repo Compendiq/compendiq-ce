@@ -868,6 +868,98 @@ function pathBasename(urlString: string): string {
   }
 }
 
+export interface ProtectedMedia { token: string; html: string; }
+
+const MEDIA_TOKEN_PREFIX = 'CQ_MEDIA_PLACEHOLDER_';
+const MEDIA_SELECTOR = [
+  'img',
+  'div.confluence-drawio',
+  'div.confluence-mermaid',
+  'div.mermaid',
+  'div.confluence-section',
+  'div.confluence-column',
+].join(',');
+
+/**
+ * #723: Replace rich/media nodes with opaque text tokens before the lossy
+ * HTML→Markdown→HTML round-trip used by AI Improve. Document order makes the
+ * tokens deterministic, so the same source HTML re-protected at Accept time
+ * yields the same tokens — no need to persist the map.
+ */
+export function protectMedia(html: string): { html: string; media: ProtectedMedia[] } {
+  const dom = new JSDOM(`<body>${html}</body>`);
+  const doc = dom.window.document;
+  const media: ProtectedMedia[] = [];
+  // Outermost-first: a div.confluence-drawio contains an <img>; protect the
+  // wrapper and skip its descendants.
+  const nodes = Array.from(doc.body.querySelectorAll(MEDIA_SELECTOR))
+    .filter((n) => !n.parentElement?.closest('div.confluence-drawio, div.confluence-mermaid, div.mermaid'));
+  for (const node of nodes) {
+    const token = `${MEDIA_TOKEN_PREFIX}${media.length}`;
+    media.push({ token, html: (node as Element).outerHTML });
+    node.replaceWith(doc.createTextNode(` ${token} `));
+  }
+  return { html: doc.body.innerHTML, media };
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Re-inject protected media. Replaces `<p>TOKEN</p>` (markdown wrapped the lone
+ * token in a paragraph) and bare TOKEN occurrences with the original HTML.
+ * Also handles the turndown-escaped form (underscores escaped as \_) so that
+ * tokens survive a full htmlToMarkdown→markdownToHtml round-trip.
+ *
+ * #723 correctness:
+ * - Single combined pass via one alternation regex + a *function* replacer.
+ *   Function replacers treat their return value literally, so original media
+ *   HTML containing `$`, `$&`, `$1`, `` $` ``, `$'`, `$$` (legitimate in
+ *   Confluence attachment URLs / encoded query strings) is injected verbatim
+ *   rather than being reinterpreted as String.replace special patterns.
+ * - One pass also makes restoration collision-safe: already-injected media is
+ *   never re-scanned, so an earlier entry whose original HTML literally
+ *   contains a *later* token (e.g. in an `alt` / `data-diagram-name`) can no
+ *   longer be corrupted by a subsequent replacement.
+ * - `<p>TOKEN</p>` is preferred over the bare token via alternation order so
+ *   the wrapping paragraph is consumed too. A `(?![0-9])` boundary on the bare
+ *   form stops `..._1` from matching the prefix of `..._10`.
+ */
+export function restoreMedia(html: string, media: ProtectedMedia[]): string {
+  if (media.length === 0) return html;
+
+  // Map every token spelling (raw + turndown-escaped) back to its original HTML.
+  const byMatch = new Map<string, string>();
+  const wrappedAlts: string[] = [];
+  const bareAlts: string[] = [];
+  for (const { token, html: original } of media) {
+    const escapedToken = token.replace(/_/g, '\\_'); // e.g. CQ\_MEDIA\_PLACEHOLDER\_0
+    for (const t of [token, escapedToken]) {
+      const pat = escapeRegExp(t);
+      // Paragraph-wrapped form is matched first (it consumes the wrapping <p>);
+      // the bare form ends on a non-digit so token N never matches token N0…N9.
+      wrappedAlts.push(`<p>\\s*${pat}\\s*</p>`);
+      bareAlts.push(`${pat}(?![0-9])`);
+      byMatch.set(t, original);
+    }
+  }
+
+  // All wrapped alternatives precede all bare ones so a `<p>TOKEN</p>` is never
+  // partially matched by a bare-token alternative.
+  const combined = new RegExp([...wrappedAlts, ...bareAlts].join('|'), 'g');
+  return html.replace(combined, (matched) => {
+    // Recover the token spelling from the (possibly <p>-wrapped, whitespace-
+    // padded) match, then return the original literally (function replacers do
+    // not interpret `$`-sequences).
+    const inner = matched
+      .replace(/^<p>\s*/, '')
+      .replace(/\s*<\/p>$/, '')
+      .trim();
+    return byMatch.get(inner) ?? matched;
+  });
+}
+
 /**
  * Converts HTML to Markdown (for LLM consumption).
  */
@@ -936,6 +1028,16 @@ export function htmlToMarkdown(html: string): string {
     },
   });
 
+  // #723: draw.io diagrams — emit a fenced block carrying the diagram name so
+  // markdownToHtml can rebuild the .confluence-drawio wrapper losslessly.
+  turndownService.addRule('confluenceDrawio', {
+    filter: (node) => node.nodeName === 'DIV' && node.classList.contains('confluence-drawio'),
+    replacement: (_content, node) => {
+      const name = (node as HTMLElement).getAttribute('data-diagram-name') ?? 'diagram';
+      return `\n\n\`\`\`drawio\n${name}\n\`\`\`\n\n`;
+    },
+  });
+
   return turndownService.turndown(html);
 }
 
@@ -943,7 +1045,19 @@ export function htmlToMarkdown(html: string): string {
  * Converts Markdown to HTML (for LLM output -> editor).
  */
 export async function markdownToHtml(markdown: string): Promise<string> {
-  return await marked(markdown) as string;
+  let html = await marked(markdown) as string;
+
+  // #723: rebuild draw.io wrappers from ```drawio fences.
+  // marked emits: <pre><code class="language-drawio">NAME\n</code></pre>
+  html = html.replace(
+    /<pre><code class="language-drawio">([\s\S]*?)\n?<\/code><\/pre>/g,
+    (_m, name) => {
+      const safe = String(name).trim();
+      return `<div class="confluence-drawio" data-diagram-name="${safe.replace(/"/g, '&quot;')}"></div>`;
+    },
+  );
+
+  return html;
 }
 
 /**
