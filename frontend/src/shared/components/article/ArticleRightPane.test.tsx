@@ -203,6 +203,24 @@ describe('ArticleRightPane', () => {
     expect(autoTagger).toHaveAttribute('data-page-id', 'page-1');
   });
 
+  it('mounts the Version history trigger in the read-mode action list (#709)', () => {
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    const actions = screen.getByTestId('article-actions');
+    expect(actions).toBeInTheDocument();
+    // Glass-styled trigger rendered via VersionHistory's renderTrigger prop.
+    expect(screen.getByText('Version history')).toBeInTheDocument();
+    expect(screen.getByTitle('Version history')).toBeInTheDocument();
+  });
+
+  it('hides the Version history trigger while editing (#709)', () => {
+    useArticleViewStore.setState({ editing: true });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    expect(screen.queryByText('Version history')).not.toBeInTheDocument();
+  });
+
   it('navigates to AI Improve when the button is clicked', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 

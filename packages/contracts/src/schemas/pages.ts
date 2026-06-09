@@ -79,6 +79,30 @@ export const UpdatePageSchema = z.object({
   visibility: PageVisibilityEnum.optional(),
 });
 
+/**
+ * Body for POST /api/pages/:id/versions/:version/restore.
+ *
+ * `version` is the optimistic-concurrency guard: the live page version the
+ * client believed it was reverting from. If the page has since advanced, the
+ * server returns 409 — same contract as {@link UpdatePageSchema}. It is the
+ * *current* version, not the target snapshot (which comes from the URL param).
+ */
+export const RestoreVersionSchema = z.object({
+  version: z.number().int().positive().optional(),
+});
+export type RestoreVersionInput = z.infer<typeof RestoreVersionSchema>;
+
+/** Response shape of a successful version restore. */
+export const RestoreVersionResponseSchema = z.object({
+  id: z.number(),
+  title: z.string(),
+  version: z.number(),
+  restoredFrom: z.number(),
+  source: PageSourceEnum,
+  pushedToConfluence: z.boolean(),
+});
+export type RestoreVersionResponse = z.infer<typeof RestoreVersionResponseSchema>;
+
 // ── Hybrid / semantic search ──────────────────────────────────────────────────
 
 export const SearchModeEnum = z.enum(['keyword', 'semantic', 'hybrid']);
