@@ -98,7 +98,7 @@ export function LoginPage() {
                 data-testid="sso-login-btn"
                 className="nm-button-primary w-full py-2.5"
               >
-                Sign in with SSO
+                Sign in with {oidcConfig.name || 'SSO'}
               </button>
 
               <div className="flex items-center gap-3 py-1 text-xs text-muted-foreground">

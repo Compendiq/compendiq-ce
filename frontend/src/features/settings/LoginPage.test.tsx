@@ -41,7 +41,7 @@ describe('LoginPage', () => {
     expect(screen.getByPlaceholderText('Enter password')).toBeInTheDocument();
   });
 
-  it('renders SSO button when OIDC is enabled', async () => {
+  it('renders SSO button with the configured IdP display name when OIDC is enabled', async () => {
     const { apiFetch } = await import('../../shared/lib/api');
     vi.mocked(apiFetch).mockResolvedValueOnce({
       enabled: true,
@@ -51,8 +51,21 @@ describe('LoginPage', () => {
     } as never);
 
     renderLoginPage();
-    expect(await screen.findByRole('button', { name: 'Sign in with SSO' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Sign in with OrgSSO' })).toBeInTheDocument();
     expect(screen.getByText('or continue with credentials')).toBeInTheDocument();
+  });
+
+  it('falls back to the generic "SSO" label when no IdP display name is configured', async () => {
+    const { apiFetch } = await import('../../shared/lib/api');
+    vi.mocked(apiFetch).mockResolvedValueOnce({
+      enabled: true,
+      issuer: 'https://idp.example.com',
+      name: null,
+      enterpriseRequired: false,
+    } as never);
+
+    renderLoginPage();
+    expect(await screen.findByRole('button', { name: 'Sign in with SSO' })).toBeInTheDocument();
   });
 
   it('does not render SSO button when OIDC is disabled', async () => {
@@ -120,6 +133,6 @@ describe('LoginPage', () => {
     vi.mocked(apiFetch).mockResolvedValueOnce({ enabled: true, name: 'OrgSSO' } as never);
 
     renderLoginPage();
-    expect(await screen.findByRole('button', { name: 'Sign in with SSO' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Sign in with OrgSSO' })).toBeInTheDocument();
   });
 });
