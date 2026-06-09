@@ -12,7 +12,10 @@ import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 interface PageVersionSummary {
   versionNumber: number;
   title: string;
-  syncedAt: string;
+  editedAt: string | null;
+  syncedAt: string | null;
+  author: string | null;
+  message: string | null;
   isCurrent: boolean;
 }
 
@@ -22,6 +25,9 @@ interface PageVersionDetail {
   title: string;
   bodyHtml: string | null;
   bodyText: string | null;
+  editedAt: string | null;
+  author: string | null;
+  message: string | null;
   isCurrent: boolean;
 }
 
@@ -74,6 +80,20 @@ interface VersionHistoryProps {
    * action button matching the other right-pane actions.
    */
   renderTrigger?: (open: boolean) => ReactNode;
+}
+
+/**
+ * Format the timestamp for a version row.
+ *
+ * - Real Confluence edit time: shown directly as locale string.
+ * - Synced-only (no Confluence editedAt): prefixed with "Synced " so the user
+ *   knows it's the local sync time, not the author's edit time (#724).
+ * - Neither: nothing shown.
+ */
+function formatVersionTime(editedAt: string | null, syncedAt: string | null): string {
+  if (editedAt) return new Date(editedAt).toLocaleString();
+  if (syncedAt) return `Synced ${new Date(syncedAt).toLocaleString()}`;
+  return '';
 }
 
 export function VersionHistory({ pageId, currentBodyText: _currentBodyText, model, renderTrigger }: VersionHistoryProps) {
@@ -243,9 +263,19 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                             Current
                           </span>
                         )}
+                        {version.author && (
+                          <span className="text-[10px] text-muted-foreground">{version.author}</span>
+                        )}
                       </div>
                       <p className="truncate text-xs text-muted-foreground">
-                        {version.title} - {new Date(version.syncedAt).toLocaleString()}
+                        {version.title}
+                        {version.message && (
+                          <span className="ml-1 italic">&mdash; {version.message}</span>
+                        )}
+                        {(() => {
+                          const ts = formatVersionTime(version.editedAt, version.syncedAt);
+                          return ts ? ` - ${ts}` : null;
+                        })()}
                       </p>
                     </div>
 
@@ -311,6 +341,9 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                     <div className="flex items-center justify-between mb-2">
                       <h4 className="text-xs font-medium text-muted-foreground">
                         Version {selectedVersionData.versionNumber} Preview
+                        {selectedVersionData.author && (
+                          <span className="ml-1 font-normal">by {selectedVersionData.author}</span>
+                        )}
                       </h4>
                       <div className="flex items-center gap-1">
                         {!selectedVersionData.isCurrent && (
@@ -336,6 +369,11 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                         </button>
                       </div>
                     </div>
+                    {selectedVersionData.message && (
+                      <p className="mb-2 text-xs italic text-muted-foreground">
+                        &ldquo;{selectedVersionData.message}&rdquo;
+                      </p>
+                    )}
                     <div className={cn('prose max-h-48 overflow-y-auto text-xs', !isLight && 'prose-invert')}>
                       <pre className="whitespace-pre-wrap text-xs text-muted-foreground">
                         {selectedVersionData.bodyText ?? 'No content available'}
