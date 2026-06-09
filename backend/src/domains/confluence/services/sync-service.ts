@@ -1398,11 +1398,45 @@ async function purgeDeletedPages(spaceKey: string): Promise<void> {
 
 /**
  * #721: Remove a synced Confluence space and all of its local data. Read-only
- * against Confluence — only local rows/files are deleted. Deleting the `pages`
- * rows cascades to `page_embeddings` and `page_versions` (page_id FK, migration
- * 030). Attachment files/caches are cleaned per page first.
+ * against Confluence — only local rows/files are deleted.
+ *
+ * Atomicity (#721 review WARNING 1): all row deletes run inside a single
+ * BEGIN…COMMIT on one pooled client (the same pattern as `postgres.ts` and
+ * `applyConflictPolicyForExistingPage`). On any error we ROLLBACK and re-throw,
+ * so a crash mid-purge can never leave a space half-removed.
+ *
+ * Ordering note: filesystem attachment cleanup (`cleanPageAttachments`) is
+ * inherently non-transactional — files can't be rolled back. We run it
+ * best-effort BEFORE opening the transaction and never let a file-cleanup
+ * failure abort the DB work (it's logged, not fatal). Worst case is a few
+ * orphaned files if the transaction later rolls back; that is preferable to
+ * leaving DB rows pointing at a deleted space, and a re-run of unsync would
+ * sweep them again.
+ *
+ * Deleting the `pages` rows cascades to `page_embeddings` and `page_versions`
+ * (page_id FK ON DELETE CASCADE, migration 030).
+ *
+ * Orphaned space_key rows (#721 review WARNING 2): several tables reference a
+ * space by plain `space_key` with NO foreign key, so they survive the cascade
+ * and would dangle. Within the same transaction we therefore also reconcile:
+ *   - `space_role_assignments` — RBAC, also encodes the sync selection
+ *     (`user_space_selections` was migrated into this table and DROPPED in
+ *     migration 040). DELETE: scoped entirely to the removed space.
+ *   - `oidc_group_role_mappings` — OIDC group→space RBAC mapping (space_key
+ *     nullable). DELETE only the rows whose `space_key` matches: a non-null
+ *     space_key row exists solely to map a group into THIS space, so it is
+ *     meaningless once the space is gone. Global rows (space_key IS NULL) are
+ *     untouched.
+ *   - `templates` / `knowledge_requests` — may hold USER-AUTHORED content and
+ *     their `space_key` columns are NULLABLE (migrations 032 / 037). We do NOT
+ *     destroy user work: we NULL `space_key` to DETACH the artifact from the
+ *     removed space while retaining the row. Least-surprising option — a
+ *     template or knowledge request authored against a space outlives the
+ *     space, just unscoped.
  */
 export async function unsyncSpace(spaceKey: string): Promise<{ pagesDeleted: number }> {
+  // Best-effort, non-transactional filesystem cleanup BEFORE the DB
+  // transaction. A failure here must never abort the row deletes.
   const pages = await query<{ id: number }>(
     'SELECT id FROM pages WHERE space_key = $1',
     [spaceKey],
@@ -1414,11 +1448,40 @@ export async function unsyncSpace(spaceKey: string): Promise<{ pagesDeleted: num
       logger.warn({ err, pageId: p.id, spaceKey }, 'unsyncSpace: attachment cleanup failed (continuing)');
     }
   }
-  const del = await query('DELETE FROM pages WHERE space_key = $1', [spaceKey]);
-  await query('DELETE FROM space_role_assignments WHERE space_key = $1', [spaceKey]);
-  await query('DELETE FROM spaces WHERE space_key = $1', [spaceKey]);
-  logger.info({ spaceKey, pagesDeleted: del.rowCount ?? 0 }, 'unsyncSpace: purged synced space');
-  return { pagesDeleted: del.rowCount ?? 0 };
+
+  const pool = getPool();
+  const conn = await pool.connect();
+  try {
+    await conn.query('BEGIN');
+
+    // Pages → cascades to page_embeddings + page_versions (migration 030).
+    const del = await conn.query('DELETE FROM pages WHERE space_key = $1', [spaceKey]);
+
+    // RBAC / sync-selection rows for the removed space.
+    await conn.query('DELETE FROM space_role_assignments WHERE space_key = $1', [spaceKey]);
+
+    // OIDC group→space mappings scoped to this space (NULL = global, kept).
+    await conn.query('DELETE FROM oidc_group_role_mappings WHERE space_key = $1', [spaceKey]);
+
+    // User-authored artifacts: detach (retain the row, NULL the space_key)
+    // rather than delete, so unsyncing a space never silently destroys work.
+    await conn.query('UPDATE templates SET space_key = NULL WHERE space_key = $1', [spaceKey]);
+    await conn.query('UPDATE knowledge_requests SET space_key = NULL WHERE space_key = $1', [spaceKey]);
+
+    // Finally the space row itself.
+    await conn.query('DELETE FROM spaces WHERE space_key = $1', [spaceKey]);
+
+    await conn.query('COMMIT');
+    logger.info({ spaceKey, pagesDeleted: del.rowCount ?? 0 }, 'unsyncSpace: purged synced space');
+    return { pagesDeleted: del.rowCount ?? 0 };
+  } catch (err) {
+    await conn.query('ROLLBACK').catch(() => {
+      /* rollback failures are not actionable; original error already surfacing */
+    });
+    throw err;
+  } finally {
+    conn.release();
+  }
 }
 
 /**

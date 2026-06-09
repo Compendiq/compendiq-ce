@@ -176,12 +176,17 @@ sequenceDiagram
         DB-->>R: row
         R->>SV: unsyncSpace(spaceKey)
         SV->>DB: SELECT id FROM pages WHERE space_key = ?
-        loop per page
+        loop per page (best-effort, OUTSIDE the transaction)
             SV->>AH: cleanPageAttachments(pageId) — purge local files
         end
+        SV->>DB: BEGIN
         SV->>DB: DELETE FROM pages WHERE space_key = ? (cascades → page_embeddings, page_versions)
         SV->>DB: DELETE FROM space_role_assignments WHERE space_key = ?
+        SV->>DB: DELETE FROM oidc_group_role_mappings WHERE space_key = ?
+        SV->>DB: UPDATE templates SET space_key = NULL WHERE space_key = ?
+        SV->>DB: UPDATE knowledge_requests SET space_key = NULL WHERE space_key = ?
         SV->>DB: DELETE FROM spaces WHERE space_key = ?
+        SV->>DB: COMMIT (ROLLBACK + re-throw on any error)
         SV-->>R: { pagesDeleted }
         R->>R: invalidateRbacCache + cache.invalidate(userId, 'spaces'/'pages')
         R->>R: logAuditEvent(SPACE_UNSYNCED)
@@ -193,8 +198,27 @@ Key properties:
 
 - **Admin-gated** — `isSystemAdmin` check enforces system-admin role; non-admins receive 403.
 - **Read-only against Confluence** — nothing is written or deleted in Confluence DC.
+- **Atomic** — all row deletes/updates run inside a single `BEGIN…COMMIT` on one
+  pooled client (same pattern as `postgres.ts`). On any error we `ROLLBACK` and
+  re-throw, so a crash mid-purge can never leave a space half-removed.
 - **Cascade** — `DELETE FROM pages` cascades to `page_embeddings` and `page_versions` via FK `ON DELETE CASCADE` (migration 030).
-- **Attachment cleanup** — `cleanPageAttachments` is called per page before the rows are removed, so local files are not orphaned.
+- **Orphan reconciliation** — several tables reference a space by plain `space_key`
+  with **no** foreign key, so they survive the cascade. Within the same transaction
+  `unsyncSpace` reconciles them so nothing dangles:
+  - `space_role_assignments` (RBAC; also encodes the sync selection since
+    `user_space_selections` was migrated into it and **dropped** in migration 040) —
+    **DELETE** rows for the space.
+  - `oidc_group_role_mappings` (OIDC group→space RBAC mapping, `space_key` nullable) —
+    **DELETE** rows whose `space_key` matches; rows with `space_key IS NULL` are global
+    and left untouched.
+  - `templates` and `knowledge_requests` (may hold **user-authored** content, `space_key`
+    nullable per migrations 032/037) — **NULL the `space_key` (detach)** rather than
+    delete, so unsyncing a space never silently destroys user work. The artifact is
+    retained, just unscoped.
+- **Attachment cleanup** — `cleanPageAttachments` is best-effort and runs per page
+  **before/outside** the DB transaction; filesystem deletes can't be rolled back, so a
+  cleanup failure is logged, never fatal, and never aborts the transaction. Worst case
+  is a few orphaned files (preferable to dangling DB rows), swept again on re-run.
 - **Audit** — every removal emits a `SPACE_UNSYNCED` audit event.
 - **RBAC invalidation** — both the in-process RBAC cache and the per-user query cache are flushed so subsequent requests reflect the removal immediately.
 
