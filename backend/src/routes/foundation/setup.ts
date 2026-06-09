@@ -21,6 +21,12 @@ import {
   type ProviderConfig,
 } from '../../domains/llm/services/openai-compatible-client.js';
 import { decryptPat } from '../../core/utils/crypto.js';
+import {
+  addAllowedBaseUrlSilent,
+  removeAllowedBaseUrlSilent,
+  validateUrl,
+  SsrfError,
+} from '../../core/utils/ssrf-guard.js';
 import { logger } from '../../core/utils/logger.js';
 
 const SALT_ROUNDS = 12;
@@ -185,10 +191,16 @@ export async function setupRoutes(fastify: FastifyInstance) {
    * POST /api/setup/llm-test
    *
    * Tests LLM connectivity without persisting any configuration.
-   * Requires authentication (admin must be created first).
+   *
+   * Requires ADMIN (issue #736): the wizard creates and signs in the admin
+   * (POST /setup/admin returns tokens) before this step ever runs, so the
+   * legitimate first-run caller always holds the admin role. Post-setup it
+   * is an admin-only action (wizard rerun / resume). Without this gate any
+   * self-registered user could use the reflected connect/HTTP errors as a
+   * blind SSRF oracle for internal network recon (CWE-918).
    */
   fastify.post('/setup/llm-test', {
-    preHandler: fastify.authenticate,
+    preHandler: [fastify.authenticate, fastify.requireAdmin],
   }, async (request) => {
     const body = LlmTestSchema.parse(request.body);
 
@@ -199,6 +211,36 @@ export async function setupRoutes(fastify: FastifyInstance) {
       baseUrl = body.provider === 'openai' ? 'https://api.openai.com/v1' : 'http://localhost:11434/v1';
     }
     if (!baseUrl.endsWith('/v1')) baseUrl += '/v1';
+
+    // SSRF guard (issue #736) — same policy as the admin LLM-provider routes
+    // (`routes/llm/llm-providers.ts`): allowlist BEFORE validating so
+    // private-network LLM endpoints (local Ollama, LAN LM Studio, on-prem
+    // vLLM — including the wizard's localhost default) aren't rejected by
+    // the private-network checks, while protocol restrictions (HTTP/S only)
+    // still apply because `validateUrl` runs the protocol check before the
+    // allowlist short-circuit. The trust model is "authenticated admin
+    // pastes a URL and we trust the host" — identical to the admin routes.
+    //
+    // Unlike the admin routes, nothing is persisted here, so the allowlist
+    // entry is strictly ephemeral: the *silent* variants skip the multi-pod
+    // broadcast, and the entry is removed after the probe unless the origin
+    // was already allowlisted (e.g. by an existing provider row), so the
+    // test never widens the SSRF allowlist for other flows.
+    const addedToAllowlist = addAllowedBaseUrlSilent(baseUrl);
+    const revokeEphemeralAllowlistEntry = () => {
+      if (addedToAllowlist) removeAllowedBaseUrlSilent(baseUrl);
+    };
+
+    try {
+      validateUrl(baseUrl);
+    } catch (err) {
+      revokeEphemeralAllowlistEntry();
+      if (err instanceof SsrfError) {
+        logger.debug({ provider: body.provider, error: err.message }, 'LLM connection test blocked by SSRF guard');
+        return { success: false, error: err.message, models: [] };
+      }
+      throw err;
+    }
 
     const cfg: ProviderConfig = {
       providerId: 'setup-wizard',
@@ -227,6 +269,8 @@ export async function setupRoutes(fastify: FastifyInstance) {
         error: message,
         models: [],
       };
+    } finally {
+      revokeEphemeralAllowlistEntry();
     }
   });
 }
