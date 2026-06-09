@@ -249,6 +249,7 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
     // Push the restored content upstream for Confluence pages so a subsequent
     // sync doesn't pull the newer remote content back and undo the revert.
     let pushedToConfluence = false;
+    let finalVersion = result.newVersion;
     if (ctx.source === 'confluence' && ctx.confluenceId) {
       try {
         const client = await getClientForUser(userId);
@@ -256,15 +257,21 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
           const storageBody = htmlToConfluence(result.bodyHtml ?? '');
           // updatePage() increments internally, so pass the *previous* live
           // version (newVersion - 1) — the version Confluence currently holds.
-          await client.updatePage(ctx.confluenceId, result.title, storageBody, result.newVersion - 1);
+          const confPage = await client.updatePage(ctx.confluenceId, result.title, storageBody, result.newVersion - 1);
           pushedToConfluence = true;
-          // Persist the pushed storage and clear local-edit markers — local
-          // state is now in sync with the remote (mirrors PUT /pages/:id).
+          // Best-effort reconciliation AFTER the restore transaction committed
+          // and the push succeeded: persist the storage Confluence accepted,
+          // and trust the API-returned version over our locally-computed bump
+          // (mirrors PUT /pages/:id) so local `version` can't drift and
+          // mis-trigger the next sync's conflict guard. Also clear local-edit
+          // markers — local state now matches the remote. If this UPDATE fails
+          // the local restore still stands and the next edit/sync self-heals.
+          finalVersion = confPage.version?.number ?? result.newVersion;
           await query(
-            `UPDATE pages SET body_storage = $2, last_synced = NOW(),
+            `UPDATE pages SET body_storage = $2, version = $3, last_synced = NOW(),
                local_modified_at = NULL, local_modified_by = NULL
              WHERE id = $1`,
-            [ctx.id, storageBody],
+            [ctx.id, storageBody, finalVersion],
           );
         }
       } catch (err) {
@@ -277,7 +284,7 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
 
     await logAuditEvent(userId, 'PAGE_VERSION_RESTORED', 'page', String(ctx.id), {
       restoredFrom: targetVersion,
-      newVersion: result.newVersion,
+      newVersion: finalVersion,
       title: result.title,
       source: ctx.source,
       pushedToConfluence,
@@ -296,7 +303,7 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
     return {
       id: ctx.id,
       title: result.title,
-      version: result.newVersion,
+      version: finalVersion,
       restoredFrom: targetVersion,
       source: ctx.source,
       pushedToConfluence,

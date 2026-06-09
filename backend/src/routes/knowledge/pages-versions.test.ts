@@ -334,29 +334,33 @@ describe('POST /api/pages/:id/versions/:version/restore', () => {
     mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 5 });
     mockRestoreVersion.mockResolvedValue({
       pageId: 7, title: 'Old Title', newVersion: 6,
-      bodyHtml: '<p>old</p>', bodyText: 'old', bodyStorage: '<p>old-storage</p>',
+      bodyHtml: '<p>old</p>', bodyText: 'old',
     });
-    mockUpdatePage.mockResolvedValue({ version: { number: 6 } });
+    // Confluence reports version 8 — different from our local bump (6) — to
+    // prove the route trusts the API-returned version (defends against drift).
+    mockUpdatePage.mockResolvedValue({ version: { number: 8 } });
     mockGetClientForUser.mockResolvedValue({ updatePage: mockUpdatePage });
 
     const r = await app.inject({ method: 'POST', url: '/api/pages/page-1/versions/2/restore', payload: { version: 5 } });
 
     expect(r.statusCode).toBe(200);
     const body = r.json();
-    expect(body).toMatchObject({ id: 7, version: 6, restoredFrom: 2, source: 'confluence', pushedToConfluence: true });
+    // Response reports the API-returned version (8), not the local bump (6).
+    expect(body).toMatchObject({ id: 7, version: 8, restoredFrom: 2, source: 'confluence', pushedToConfluence: true });
 
     expect(mockRestoreVersion).toHaveBeenCalledWith(7, 2);
     // Pushes the PREVIOUS live version (newVersion-1 = 5); client.updatePage bumps internally.
     expect(mockUpdatePage).toHaveBeenCalledWith('page-1', 'Old Title', '<p>storage</p>', 5);
-    // On successful push, local body_storage is persisted + local-edit markers cleared.
+    // On successful push, local body_storage + the API version are persisted and
+    // local-edit markers cleared.
     const storageUpdate = mockQueryFn.mock.calls.find(
-      ([sql]) => typeof sql === 'string' && sql.includes('body_storage = $2') && sql.includes('local_modified_at = NULL'),
+      ([sql]) => typeof sql === 'string' && sql.includes('body_storage = $2') && sql.includes('version = $3') && sql.includes('local_modified_at = NULL'),
     );
     expect(storageUpdate).toBeDefined();
-    expect((storageUpdate as [string, unknown[]])[1]).toEqual([7, '<p>storage</p>']);
+    expect((storageUpdate as [string, unknown[]])[1]).toEqual([7, '<p>storage</p>', 8]);
     expect(mockLogAuditEvent).toHaveBeenCalledWith(
       TEST_USER, 'PAGE_VERSION_RESTORED', 'page', '7',
-      expect.objectContaining({ restoredFrom: 2, newVersion: 6, pushedToConfluence: true }),
+      expect.objectContaining({ restoredFrom: 2, newVersion: 8, pushedToConfluence: true }),
       expect.anything(),
     );
     expect(mockEmitWebhookEvent).toHaveBeenCalledWith(expect.objectContaining({ eventType: 'page.updated' }));
@@ -366,7 +370,7 @@ describe('POST /api/pages/:id/versions/:version/restore', () => {
     mockResolvedPage({ id: 20, source: 'standalone', visibility: 'shared', created_by_user_id: TEST_USER, version: 4 });
     mockRestoreVersion.mockResolvedValue({
       pageId: 20, title: 'Local Old', newVersion: 5,
-      bodyHtml: '<p>x</p>', bodyText: 'x', bodyStorage: null,
+      bodyHtml: '<p>x</p>', bodyText: 'x',
     });
 
     const r = await app.inject({ method: 'POST', url: '/api/pages/20/versions/1/restore', payload: { version: 4 } });
@@ -380,7 +384,7 @@ describe('POST /api/pages/:id/versions/:version/restore', () => {
   it('still succeeds (pushedToConfluence=false) when the Confluence push fails', async () => {
     mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 5 });
     mockRestoreVersion.mockResolvedValue({
-      pageId: 7, title: 'Old', newVersion: 6, bodyHtml: '<p>old</p>', bodyText: 'old', bodyStorage: null,
+      pageId: 7, title: 'Old', newVersion: 6, bodyHtml: '<p>old</p>', bodyText: 'old',
     });
     mockUpdatePage.mockRejectedValue(new Error('Confluence 500'));
     mockGetClientForUser.mockResolvedValue({ updatePage: mockUpdatePage });
