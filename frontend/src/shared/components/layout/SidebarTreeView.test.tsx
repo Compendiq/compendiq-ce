@@ -138,6 +138,53 @@ describe('SidebarTreeView', () => {
     expect(screen.getByText('Installation')).toBeInTheDocument();
   });
 
+  it('keeps the sidebar scroll position when a node is collapsed (snapshot is re-captured per press)', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const scroller = screen.getByTestId('tree-scroll');
+    // Expand first so the node exposes a "Collapse" chevron.
+    fireEvent.click(screen.getAllByLabelText('Expand')[0]);
+    expect(screen.getByText('Installation')).toBeInTheDocument();
+    // A *different* position than the expand test — proves the snapshot is taken
+    // fresh on this press, not reused from an earlier interaction.
+    scroller.scrollTop = 90;
+    const collapseBtn = screen.getByLabelText('Collapse'); // the chevron, not the "Collapse <title>" indent guide
+    fireEvent.mouseDown(collapseBtn);
+    scroller.scrollTop = 0; // emulate the browser's focus-into-view jump
+    fireEvent.click(collapseBtn);
+    expect(scroller.scrollTop).toBe(90);
+    // Sanity: the node actually collapsed.
+    expect(screen.queryByText('Installation')).not.toBeInTheDocument();
+  });
+
+  it('does not restore scroll on auto-expand (navigation); only a node press restores', () => {
+    // OPS has no homepage, so the full tree (incl. root-1 + its children) renders;
+    // setting it explicitly also stops the auto-select-space effect from switching
+    // to DEV (whose homepage root-1 would be hidden).
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: 'OPS' });
+    const { rerender } = render(<SidebarTreeView />, { wrapper: createWrapper('/pages/child-1') });
+    const scroller = screen.getByTestId('tree-scroll');
+    // Viewing child-1 auto-expands its ancestor root-1 on mount — no press involved.
+    expect(screen.getByText('Installation')).toBeInTheDocument();
+
+    // Leave a non-null snapshot behind via a real press (collapse root-1).
+    scroller.scrollTop = 200;
+    const collapseBtn = screen.getByLabelText('Collapse');
+    fireEvent.mouseDown(collapseBtn);
+    fireEvent.click(collapseBtn);
+    expect(screen.queryByText('Installation')).not.toBeInTheDocument();
+
+    // User scrolls; then an auto-expand fires WITHOUT a press — emulated by new
+    // tree data, which re-runs the ancestor auto-expand effect.
+    scroller.scrollTop = 50;
+    mockTreeData = { ...defaultTreeData, items: [...defaultTreeData.items] };
+    rerender(<SidebarTreeView />);
+
+    // The ancestor re-expanded, but the guard left scroll where the user put it —
+    // it was NOT yanked back to the stale 200 snapshot.
+    expect(screen.getByText('Installation')).toBeInTheDocument();
+    expect(scroller.scrollTop).toBe(50);
+  });
+
   it('shows indent guide line when a folder is expanded', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
     const expandBtn = screen.getAllByLabelText('Expand')[0];

@@ -383,12 +383,11 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
   // focus-into-view jump. Runs only after a user expand/collapse — auto-expand
   // on navigation (no preceding press) leaves pendingScrollRestore false.
   useLayoutEffect(() => {
-    if (pendingScrollRestore.current) {
-      if (treeScrollRef.current && scrollTopBeforeToggle.current != null) {
-        treeScrollRef.current.scrollTop = scrollTopBeforeToggle.current;
-      }
-      pendingScrollRestore.current = false;
+    if (!pendingScrollRestore.current) return;
+    if (treeScrollRef.current && scrollTopBeforeToggle.current != null) {
+      treeScrollRef.current.scrollTop = scrollTopBeforeToggle.current;
     }
+    pendingScrollRestore.current = false;
   }, [expandedIds]);
 
   // Collapsed rail -- nav icons + expand toggle
