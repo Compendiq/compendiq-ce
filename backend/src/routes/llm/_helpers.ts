@@ -11,7 +11,7 @@ import { LlmCache, type CachedLlmResponse } from '../../domains/llm/services/llm
 import { getAiGuardrails, getAiOutputRules, SWISS_SPELLING_INSTRUCTION } from '../../core/services/ai-safety-service.js';
 import { sanitizeLlmOutput, type OutputSanitizeResult } from '../../core/utils/sanitize-llm-output.js';
 import { assembleSubPageContext, getMultiPagePromptSuffix } from '../../domains/confluence/services/subpage-context.js';
-import { htmlToMarkdown } from '../../core/services/content-converter.js';
+import { htmlToMarkdown, protectMedia } from '../../core/services/content-converter.js';
 
 export { sanitizeLlmInput };
 
@@ -44,6 +44,7 @@ export async function assembleContextIfNeeded(
   pageId: string | undefined,
   content: string,
   includeSubPages?: boolean,
+  opts?: { protectMedia?: boolean },
 ): Promise<{ markdown: string; multiPageSuffix: string }> {
   if (includeSubPages && pageId) {
     const pageResult = await query<{ title: string }>(
@@ -59,8 +60,9 @@ export async function assembleContextIfNeeded(
     };
   }
 
+  const html = opts?.protectMedia ? protectMedia(content).html : content;
   return {
-    markdown: htmlToMarkdown(content),
+    markdown: htmlToMarkdown(html),
     multiPageSuffix: '',
   };
 }
