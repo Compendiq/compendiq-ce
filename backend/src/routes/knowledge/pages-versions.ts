@@ -184,7 +184,11 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
   fastify.post('/pages/:id/versions/semantic-diff', async (request) => {
     const { id } = IdParamSchema.parse(request.params);
     const userId = request.userId;
-    const { v1, v2, model = 'qwen3:32b' } = SemanticDiffSchema.parse(request.body);
+    // `model` is an optional client override. When omitted, getSemanticDiff
+    // resolves the `chat` use-case server-side (ADR-021) — we deliberately do
+    // NOT inject a hardcoded legacy default here, which would otherwise force a
+    // model the configured provider may not host (issue #718 / PR #725 regression).
+    const { v1, v2, model } = SemanticDiffSchema.parse(request.body);
 
     const ctx = await resolveAndAuthorize(userId, id);
     if (!ctx) throw fastify.httpErrors.notFound('Page not found');
