@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react';
-import { useQuery, useMutation } from '@tanstack/react-query';
+import { useState, useEffect, type ReactNode } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, m } from 'framer-motion';
-import { History, Eye, GitCompare, Sparkles, Loader2, X } from 'lucide-react';
+import { History, Eye, GitCompare, Sparkles, Loader2, X, RotateCcw } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
+import { toast } from 'sonner';
 import { apiFetch } from '../../shared/lib/api';
 import { DiffView } from '../../shared/components/article/DiffView';
 import { cn } from '../../shared/lib/cn';
@@ -53,14 +54,31 @@ function useVersionDetail(pageId: string | undefined, version: number | null) {
   });
 }
 
+interface RestoreResponse {
+  id: number;
+  title: string;
+  version: number;
+  restoredFrom: number;
+  source: string;
+  pushedToConfluence: boolean;
+}
+
 interface VersionHistoryProps {
   pageId: string;
   currentBodyText?: string;
   model: string;
+  /**
+   * Custom trigger renderer. Receives the dialog's `open` state so callers can
+   * reflect it (e.g. active styling). When omitted, a default `nm-card` button
+   * is rendered. Used by `ArticleRightPane` to style the trigger as a glass
+   * action button matching the other right-pane actions.
+   */
+  renderTrigger?: (open: boolean) => ReactNode;
 }
 
-export function VersionHistory({ pageId, currentBodyText: _currentBodyText, model }: VersionHistoryProps) {
+export function VersionHistory({ pageId, currentBodyText: _currentBodyText, model, renderTrigger }: VersionHistoryProps) {
   const isLight = useIsLightTheme();
+  const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
   const [compareVersions, setCompareVersions] = useState<[number, number] | null>(null);
@@ -81,6 +99,43 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
   });
 
   const versions = versionsData?.versions ?? [];
+  const currentVersionNumber = versions.find((v) => v.isCurrent)?.versionNumber;
+
+  const restoreMutation = useMutation({
+    mutationFn: ({ version, expected }: { version: number; expected?: number }) =>
+      apiFetch<RestoreResponse>(`/pages/${pageId}/versions/${version}/restore`, {
+        method: 'POST',
+        body: JSON.stringify(expected !== undefined ? { version: expected } : {}),
+      }),
+    onSuccess: async (result) => {
+      // Refresh the article content and its version timeline so the restored
+      // content (a new version) shows immediately.
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['pages', pageId] }),
+        queryClient.invalidateQueries({ queryKey: ['pages', pageId, 'versions'] }),
+      ]);
+      toast.success(
+        result.pushedToConfluence
+          ? `Restored v${result.restoredFrom} as v${result.version} (pushed to Confluence).`
+          : `Restored v${result.restoredFrom} as new version v${result.version}.`,
+      );
+      setSelectedVersion(null);
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : 'Failed to restore version.');
+    },
+  });
+
+  const handleRestore = (version: number) => {
+    if (restoreMutation.isPending) return;
+    if (!window.confirm(
+      `Restore v${version}? This creates a new version containing the old content. ` +
+      `The current version stays in history.`,
+    )) {
+      return;
+    }
+    restoreMutation.mutate({ version, expected: currentVersionNumber });
+  };
 
   // Reset state when dialog closes
   useEffect(() => {
@@ -104,13 +159,17 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
   return (
     <Dialog.Root open={open} onOpenChange={setOpen}>
       <Dialog.Trigger asChild>
-        <button
-          className="nm-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
-          title="Version history"
-        >
-          <History size={14} />
-          History
-        </button>
+        {renderTrigger ? (
+          renderTrigger(open)
+        ) : (
+          <button
+            className="nm-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
+            title="Version history"
+          >
+            <History size={14} />
+            History
+          </button>
+        )}
       </Dialog.Trigger>
 
       <Dialog.Portal>
@@ -219,6 +278,20 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                           </button>
                         </>
                       )}
+                      {!version.isCurrent && (
+                        <button
+                          onClick={() => handleRestore(version.versionNumber)}
+                          disabled={restoreMutation.isPending}
+                          className="rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-primary disabled:opacity-40"
+                          title="Restore this version"
+                        >
+                          {restoreMutation.isPending && restoreMutation.variables?.version === version.versionNumber ? (
+                            <Loader2 size={12} className="animate-spin" />
+                          ) : (
+                            <RotateCcw size={12} />
+                          )}
+                        </button>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -239,12 +312,29 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                       <h4 className="text-xs font-medium text-muted-foreground">
                         Version {selectedVersionData.versionNumber} Preview
                       </h4>
-                      <button
-                        onClick={() => setSelectedVersion(null)}
-                        className="rounded p-1 text-muted-foreground hover:bg-foreground/5"
-                      >
-                        <X size={12} />
-                      </button>
+                      <div className="flex items-center gap-1">
+                        {!selectedVersionData.isCurrent && (
+                          <button
+                            onClick={() => handleRestore(selectedVersionData.versionNumber)}
+                            disabled={restoreMutation.isPending}
+                            className="flex items-center gap-1 rounded px-2 py-1 text-xs text-primary hover:bg-primary/10 disabled:opacity-40"
+                            title="Restore this version"
+                          >
+                            {restoreMutation.isPending ? (
+                              <Loader2 size={12} className="animate-spin" />
+                            ) : (
+                              <RotateCcw size={12} />
+                            )}
+                            Restore this version
+                          </button>
+                        )}
+                        <button
+                          onClick={() => setSelectedVersion(null)}
+                          className="rounded p-1 text-muted-foreground hover:bg-foreground/5"
+                        >
+                          <X size={12} />
+                        </button>
+                      </div>
                     </div>
                     <div className={cn('prose max-h-48 overflow-y-auto text-xs', !isLight && 'prose-invert')}>
                       <pre className="whitespace-pre-wrap text-xs text-muted-foreground">

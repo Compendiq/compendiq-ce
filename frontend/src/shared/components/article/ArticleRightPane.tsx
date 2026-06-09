@@ -13,8 +13,10 @@ import {
   Loader2,
   Trash2,
   Wand2,
+  History,
 } from 'lucide-react';
 import { AutoTagger } from '../../../features/pages/AutoTagger';
+import { VersionHistory } from '../../../features/pages/VersionHistory';
 import { FreshnessBadge } from '../badges/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../badges/EmbeddingStatusBadge';
 import { QualityScoreBadge } from '../badges/QualityScoreBadge';
@@ -472,6 +474,28 @@ export function ArticleRightPane() {
               currentLabels={page?.labels ?? []}
               model={activeModel}
               className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+            />
+          )}
+
+          {id && (
+            <VersionHistory
+              pageId={id}
+              model={activeModel}
+              renderTrigger={(historyOpen) => (
+                <button
+                  type="button"
+                  className={cn(
+                    'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
+                    historyOpen
+                      ? 'nm-pill-active text-primary font-medium'
+                      : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
+                  )}
+                  title="Version history"
+                >
+                  <History size={15} className="shrink-0 opacity-70" />
+                  <span className="truncate">Version history</span>
+                </button>
+              )}
             />
           )}
 

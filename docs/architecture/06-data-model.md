@@ -9,7 +9,6 @@ per-feature settings) are omitted for readability. See
 erDiagram
     users ||--o| user_settings : "has 1"
     users ||--o{ pages : "owns"
-    users ||--o{ page_versions : "owns"
     users ||--o{ page_embeddings : "owns"
     users ||--o{ llm_conversations : "owns"
     users ||--o{ notifications : "receives"
@@ -80,8 +79,7 @@ erDiagram
 
     page_versions {
         uuid id PK
-        uuid user_id FK
-        text confluence_id
+        int page_id FK "universal FK since migration 030"
         int version_number
         text title
         text body_html
@@ -303,3 +301,15 @@ erDiagram
   (`00000000-0000-0000-0000-000000000000`) inside the same transaction
   before issuing the `DELETE FROM users`.
 - **Soft delete** on `pages.deleted_at` — the Trash feature filters on this.
+- **Version history & restore** (`page_versions`, keyed by `page_id`). Snapshots
+  are written on sync, on draft-publish, and before a restore — so both
+  Confluence-synced and standalone/local pages accumulate history. The
+  right-pane "Version history" UI lists snapshots + the live version, previews
+  any snapshot, and offers a Confluence-style **restore**
+  (`POST /api/pages/:id/versions/:version/restore`): it snapshots the current
+  live state first, then applies the target snapshot as a **new** bumped
+  version (older versions remain), marks `embedding_dirty`, and — for
+  Confluence-sourced pages — pushes the restored content upstream as a new
+  Confluence version so the next sync doesn't clobber the revert. Retention
+  keeps the last `RETENTION_VERSIONS_MAX` (default 50) snapshots per page
+  (`data-retention-service.ts`).
