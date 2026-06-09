@@ -56,6 +56,8 @@ vi.mock('../../core/services/content-converter.js', () => ({
   htmlToConfluence: vi.fn(),
   htmlToText: vi.fn(),
   markdownToHtml: vi.fn(),
+  protectMedia: vi.fn((html: string) => ({ html, media: [] })),
+  restoreMedia: vi.fn((html: string) => html),
 }));
 
 vi.mock('../../domains/llm/services/embedding-service.js', () => ({
