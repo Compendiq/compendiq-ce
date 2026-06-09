@@ -469,7 +469,10 @@ export function AiProvider({ children }: { children: ReactNode }) {
         }
         // Improve route (#704): capture the original markdown baseline so the
         // diff compares like-for-like markdown instead of stripped bodyText.
-        if (chunk.originalMarkdown) {
+        // Use !== undefined (not truthiness) so an intentionally empty baseline
+        // (empty page → htmlToMarkdown('') === '') is preserved rather than
+        // falling back to the also-empty bodyText.
+        if (chunk.originalMarkdown !== undefined) {
           originalMarkdown = chunk.originalMarkdown;
         }
       }
