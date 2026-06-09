@@ -131,15 +131,24 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
 
     // #723: re-derive the same media tokens from the page's CURRENT body_html
     // (deterministic, document order) and re-inject originals verbatim so AI
-    // Improve can never strip images/draw.io. Guard: re-append any media the LLM
-    // dropped entirely (token missing from the improved markdown).
+    // Improve can never strip images/draw.io.
+    //
+    // The Improve-time token set (derived from the editor `content`) and this
+    // Accept-time token set (derived from `body_html`) are decoupled, so they
+    // can diverge — the LLM may also drop tokens entirely. The drop-guard below
+    // is the backstop: any media original not present after restoreMedia
+    // (including the worst case where restoreMedia was a complete no-op because
+    // no tokens survived) is re-appended, so media is never silently lost.
     const { media } = protectMedia(existingPage.body_html ?? '');
     let bodyHtml = await markdownToHtml(improvedMarkdown);
     bodyHtml = restoreMedia(bodyHtml, media);
     const dropped = media.filter((m) => !bodyHtml.includes(m.html));
     if (dropped.length > 0) {
       bodyHtml += dropped.map((m) => m.html).join('\n');
-      fastify.log.warn({ pageId, dropped: dropped.length }, '#723: re-appended media dropped during AI Improve');
+      fastify.log.warn(
+        { pageId, dropped: dropped.length, total: media.length },
+        '#723: re-appended media dropped during AI Improve',
+      );
     }
     const bodyText = htmlToText(bodyHtml);
 

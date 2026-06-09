@@ -34,6 +34,73 @@ describe('protectMedia / restoreMedia', () => {
     expect(back).toContain('confluence-drawio');
     expect(back).toContain('data-confluence-filename');
   });
+
+  it('restores media whose src contains $-replacement sequences byte-identically (#723)', () => {
+    // Confluence attachment URLs / encoded query strings legitimately contain
+    // `$`. As a replacement string, `$&`, `$1`, `` $` ``, `$'`, `$$` would be
+    // interpreted as String.replace special patterns and corrupt the media.
+    const trickyImg =
+      '<img src="/api/attachments/5/a$1$&b$$c$`d$\'e.png" alt="Photo">';
+    const html = `<p>Intro</p>${trickyImg}<p>End</p>`;
+    const { html: protectedHtml, media } = protectMedia(html);
+    expect(protectedHtml).toContain('CQ_MEDIA_PLACEHOLDER_0');
+    // The stored original (outerHTML) carries the literal `$` sequences.
+    const original = media[0]!.html;
+    expect(original).toContain('$1$');
+    expect(original).toContain('$$');
+
+    // Bare-token path must reproduce the original byte-identically.
+    const restored = restoreMedia(protectedHtml, media);
+    expect(restored).toContain(original);
+
+    // And the <p>TOKEN</p> path that markdown produces — must restore to
+    // EXACTLY the original (no `$&`/`$1`/`$$` interpretation leaking garbage).
+    const wrapped = '<p>CQ_MEDIA_PLACEHOLDER_0</p>';
+    expect(restoreMedia(wrapped, media)).toBe(original);
+  });
+
+  it('does not corrupt a later token nested inside an earlier media element (#723)', () => {
+    // An earlier media element whose alt/data-diagram-name literally contains a
+    // *later* placeholder token must not be re-scanned when the later token is
+    // restored, or the injected media would be rewritten in place.
+    const earlier =
+      '<img src="/api/attachments/5/x.png" alt="see CQ_MEDIA_PLACEHOLDER_1 below">';
+    const later = '<img src="/api/attachments/5/y.png" alt="Later">';
+    const html = `<p>Intro</p>${earlier}<p>Mid</p>${later}<p>End</p>`;
+    const { html: protectedHtml, media } = protectMedia(html);
+    expect(media).toHaveLength(2);
+    const [earlierOriginal, laterOriginal] = [media[0]!.html, media[1]!.html];
+    expect(earlierOriginal).toContain('CQ_MEDIA_PLACEHOLDER_1');
+
+    const restored = restoreMedia(protectedHtml, media);
+    // Both originals present verbatim, exactly once each.
+    expect(restored).toContain(earlierOriginal);
+    expect(restored).toContain(laterOriginal);
+    expect(restored.split(laterOriginal).length - 1).toBe(1);
+    // The literal token text inside `earlier`'s alt must survive untouched —
+    // it must NOT have been replaced by `later`'s HTML.
+    expect(restored).toContain('alt="see CQ_MEDIA_PLACEHOLDER_1 below"');
+  });
+
+  it('does not let token N match the prefix of token N0..N9 (#723)', () => {
+    // 11 media so tokens reach CQ_MEDIA_PLACEHOLDER_10. Token 1 must not match
+    // the leading "..._1" of "..._10".
+    const imgs = Array.from(
+      { length: 11 },
+      (_v, i) => `<img src="/api/attachments/5/img${i}.png" alt="i${i}">`,
+    );
+    const html = imgs.map((m, i) => `<p>p${i}</p>${m}`).join('');
+    const { html: protectedHtml, media } = protectMedia(html);
+    expect(media).toHaveLength(11);
+
+    const restored = restoreMedia(protectedHtml, media);
+    for (const m of media) {
+      expect(restored).toContain(m.html);
+      expect(restored.split(m.html).length - 1).toBe(1);
+    }
+    // No leftover token fragments.
+    expect(restored).not.toContain('CQ_MEDIA_PLACEHOLDER_');
+  });
 });
 
 describe('confluence-drawio turndown <-> markdownToHtml round-trip (#723 converter coverage)', () => {

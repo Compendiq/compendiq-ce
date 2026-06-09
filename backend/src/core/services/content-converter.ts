@@ -902,23 +902,62 @@ export function protectMedia(html: string): { html: string; media: ProtectedMedi
   return { html: doc.body.innerHTML, media };
 }
 
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /**
  * Re-inject protected media. Replaces `<p>TOKEN</p>` (markdown wrapped the lone
  * token in a paragraph) and bare TOKEN occurrences with the original HTML.
  * Also handles the turndown-escaped form (underscores escaped as \_) so that
  * tokens survive a full htmlToMarkdown→markdownToHtml round-trip.
+ *
+ * #723 correctness:
+ * - Single combined pass via one alternation regex + a *function* replacer.
+ *   Function replacers treat their return value literally, so original media
+ *   HTML containing `$`, `$&`, `$1`, `` $` ``, `$'`, `$$` (legitimate in
+ *   Confluence attachment URLs / encoded query strings) is injected verbatim
+ *   rather than being reinterpreted as String.replace special patterns.
+ * - One pass also makes restoration collision-safe: already-injected media is
+ *   never re-scanned, so an earlier entry whose original HTML literally
+ *   contains a *later* token (e.g. in an `alt` / `data-diagram-name`) can no
+ *   longer be corrupted by a subsequent replacement.
+ * - `<p>TOKEN</p>` is preferred over the bare token via alternation order so
+ *   the wrapping paragraph is consumed too. A `(?![0-9])` boundary on the bare
+ *   form stops `..._1` from matching the prefix of `..._10`.
  */
 export function restoreMedia(html: string, media: ProtectedMedia[]): string {
-  let out = html;
+  if (media.length === 0) return html;
+
+  // Map every token spelling (raw + turndown-escaped) back to its original HTML.
+  const byMatch = new Map<string, string>();
+  const wrappedAlts: string[] = [];
+  const bareAlts: string[] = [];
   for (const { token, html: original } of media) {
-    // Build an escaped variant that turndown may have produced (e.g. CQ\_MEDIA\_PLACEHOLDER\_0)
-    const escapedToken = token.replace(/_/g, '\\_');
+    const escapedToken = token.replace(/_/g, '\\_'); // e.g. CQ\_MEDIA\_PLACEHOLDER\_0
     for (const t of [token, escapedToken]) {
-      out = out.replace(new RegExp(`<p>\\s*${t.replace(/[\\]/g, '\\\\')}\\s*</p>`, 'g'), original);
-      out = out.split(t).join(original);
+      const pat = escapeRegExp(t);
+      // Paragraph-wrapped form is matched first (it consumes the wrapping <p>);
+      // the bare form ends on a non-digit so token N never matches token N0…N9.
+      wrappedAlts.push(`<p>\\s*${pat}\\s*</p>`);
+      bareAlts.push(`${pat}(?![0-9])`);
+      byMatch.set(t, original);
     }
   }
-  return out;
+
+  // All wrapped alternatives precede all bare ones so a `<p>TOKEN</p>` is never
+  // partially matched by a bare-token alternative.
+  const combined = new RegExp([...wrappedAlts, ...bareAlts].join('|'), 'g');
+  return html.replace(combined, (matched) => {
+    // Recover the token spelling from the (possibly <p>-wrapped, whitespace-
+    // padded) match, then return the original literally (function replacers do
+    // not interpret `$`-sequences).
+    const inner = matched
+      .replace(/^<p>\s*/, '')
+      .replace(/\s*<\/p>$/, '')
+      .trim();
+    return byMatch.get(inner) ?? matched;
+  });
 }
 
 /**
