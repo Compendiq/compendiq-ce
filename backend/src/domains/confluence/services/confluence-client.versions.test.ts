@@ -67,6 +67,29 @@ describe('ConfluenceClient version methods (#722)', () => {
     expect(versions[1]).toMatchObject({ author: 'B', message: null });
   });
 
+  it('getPageVersions stops on an empty page even when a next link persists (pagination guard)', async () => {
+    // Page 1 has data + a next link; page 2 is EMPTY but STILL advertises a
+    // next link (a misbehaving / self-referential API). Without the guard this
+    // would loop forever; the empty-results break stops it after page 2.
+    mockRequest
+      .mockResolvedValueOnce(jsonResponse({
+        results: [{ number: 1, when: '2026-01-01T00:00:00Z' }],
+        size: 1,
+        _links: { next: '/next' },
+      }) as never)
+      .mockResolvedValue(jsonResponse({
+        results: [],
+        size: 0,
+        _links: { next: '/self-referential' },
+      }) as never);
+
+    const client = new ConfluenceClient(baseUrl, pat);
+    const versions = await client.getPageVersions('789');
+    expect(versions).toHaveLength(1);
+    // Exactly two fetches: the data page and the empty page that triggers the break.
+    expect(mockRequest).toHaveBeenCalledTimes(2);
+  });
+
   it('getPageVersions handles missing by field gracefully', async () => {
     mockRequest.mockResolvedValueOnce(jsonResponse({
       results: [{ number: 1, when: '2026-01-01T00:00:00Z' }],

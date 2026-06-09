@@ -873,7 +873,11 @@ export class ConfluenceClient {
     const out: ConfluenceVersionMeta[] = [];
     let start = 0;
     const limit = 100;
-    for (;;) {
+    // Defensive cap: never loop forever on a misbehaving `_links.next` (e.g. a
+    // self-referential next link). 1000 pages × 100 = 100k versions is far
+    // beyond any real page's history.
+    const maxIterations = 1000;
+    for (let i = 0; i < maxIterations; i++) {
       const res = await this.fetch<{
         results: Array<{ number: number; when: string; by?: { displayName?: string }; message?: string; minorEdit?: boolean }>;
         size: number;
@@ -882,7 +886,11 @@ export class ConfluenceClient {
       for (const v of res.results) {
         out.push({ number: v.number, when: v.when, author: v.by?.displayName ?? null, message: v.message ?? null, minorEdit: v.minorEdit ?? false });
       }
-      if (!res._links?.next) break;
+      // Stop on the last page (no `next` link — authoritative) or an empty page
+      // (no progress) — either means there is no more data. The empty-page break
+      // plus the iteration cap above guarantee termination even if a misbehaving
+      // API keeps returning a `next` link.
+      if (!res._links?.next || res.results.length === 0) break;
       start += limit;
     }
     return out;

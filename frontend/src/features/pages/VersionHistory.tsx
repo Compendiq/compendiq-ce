@@ -4,37 +4,18 @@ import { AnimatePresence, m } from 'framer-motion';
 import { History, Eye, GitCompare, Sparkles, Loader2, X, RotateCcw } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { toast } from 'sonner';
+import type {
+  PageVersionsResponse,
+  PageVersionDetail,
+} from '@compendiq/contracts';
 import { apiFetch } from '../../shared/lib/api';
 import { DiffView } from '../../shared/components/article/DiffView';
 import { cn } from '../../shared/lib/cn';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 
-interface PageVersionSummary {
-  versionNumber: number;
-  title: string;
-  editedAt: string | null;
-  syncedAt: string | null;
-  author: string | null;
-  message: string | null;
-  isCurrent: boolean;
-}
-
-interface PageVersionDetail {
-  confluenceId: string;
-  versionNumber: number;
-  title: string;
-  bodyHtml: string | null;
-  bodyText: string | null;
-  editedAt: string | null;
-  author: string | null;
-  message: string | null;
-  isCurrent: boolean;
-}
-
-interface VersionsResponse {
-  versions: PageVersionSummary[];
-  pageId: string;
-}
+// Response/type shapes are the single source of truth in @compendiq/contracts
+// (PageVersionsResponseSchema / PageVersionDetailSchema). Don't re-declare them.
+type VersionsResponse = PageVersionsResponse;
 
 interface SemanticDiffResponse {
   diff: string;

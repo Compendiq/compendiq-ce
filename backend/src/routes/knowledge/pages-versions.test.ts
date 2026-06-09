@@ -382,14 +382,17 @@ describe('POST /api/pages/:id/versions/semantic-diff', () => {
     mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
   });
 
-  it('returns a semantic diff between two versions', async () => {
+  it('returns a semantic diff between two versions and passes the Confluence client for lazy body resolution (#722/#724)', async () => {
     mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 3 });
     mockSaveVersionSnapshotByPageId.mockResolvedValue(undefined);
     mockGetSemanticDiff.mockResolvedValue('Section A was updated.');
+    const mockClient = {};
+    mockGetClientForUser.mockResolvedValue(mockClient);
     const r = await app.inject({ method: 'POST', url: '/api/pages/page-1/versions/semantic-diff', payload: { v1: 1, v2: 2 } });
     expect(r.statusCode).toBe(200);
     expect(r.json().diff).toContain('updated');
-    expect(mockGetSemanticDiff).toHaveBeenCalledWith(7, 1, 2, 'qwen3:32b');
+    // confluenceId + resolved client are forwarded so backfilled rows resolve.
+    expect(mockGetSemanticDiff).toHaveBeenCalledWith(7, 1, 2, 'qwen3:32b', 'page-1', mockClient);
   });
 
   it('403 (not 500) when the user lacks access — no service calls', async () => {
@@ -523,5 +526,57 @@ describe('POST /api/pages/:id/versions/:version/restore', () => {
     mockQueryFn.mockResolvedValue({ rows: [] });
     const r = await app.inject({ method: 'POST', url: '/api/pages/nope/versions/1/restore', payload: {} });
     expect(r.statusCode).toBe(404);
+  });
+
+  it('lazy-fetches the historical body BEFORE restoring when the target row body is NULL (#722/#724 data-loss)', async () => {
+    // Page resolution + a target page_versions row whose body_html IS NULL
+    // (a backfilled, never-previewed version).
+    mockQueryFn.mockImplementation((sql: string) => {
+      if (typeof sql === 'string' && sql.includes('confluence_id, space_key, source, visibility, created_by_user_id, version')) {
+        return Promise.resolve({ rows: [{ id: 7, confluence_id: 'page-1', space_key: 'DEV', source: 'confluence', visibility: 'shared', created_by_user_id: null, version: 5 }] });
+      }
+      // The new pre-restore "is the target body NULL?" probe.
+      if (typeof sql === 'string' && sql.includes('SELECT body_html FROM page_versions')) {
+        return Promise.resolve({ rows: [{ body_html: null }] });
+      }
+      return Promise.resolve({ rows: [] });
+    });
+    const mockClient = { updatePage: vi.fn().mockResolvedValue({ version: { number: 7 } }) };
+    mockGetClientForUser.mockResolvedValue(mockClient);
+    mockGetHistoricalBody.mockResolvedValue({ bodyHtml: '<p>fetched</p>', bodyText: 'fetched' });
+    mockRestoreVersion.mockResolvedValue({
+      pageId: 7, title: 'Old', newVersion: 6, bodyHtml: '<p>fetched</p>', bodyText: 'fetched',
+    });
+
+    const r = await app.inject({ method: 'POST', url: '/api/pages/page-1/versions/2/restore', payload: { version: 5 } });
+
+    expect(r.statusCode).toBe(200);
+    // The body was lazily fetched + persisted BEFORE the restore ran.
+    expect(mockGetHistoricalBody).toHaveBeenCalledWith(7, 'page-1', 2, mockClient);
+    const fetchOrder = mockGetHistoricalBody.mock.invocationCallOrder[0]!;
+    const restoreOrder = mockRestoreVersion.mock.invocationCallOrder[0]!;
+    expect(fetchOrder).toBeLessThan(restoreOrder);
+    expect(mockRestoreVersion).toHaveBeenCalledWith(7, 2);
+  });
+
+  it('does NOT lazy-fetch when the target row already has a body', async () => {
+    mockQueryFn.mockImplementation((sql: string) => {
+      if (typeof sql === 'string' && sql.includes('confluence_id, space_key, source, visibility, created_by_user_id, version')) {
+        return Promise.resolve({ rows: [{ id: 7, confluence_id: 'page-1', space_key: 'DEV', source: 'confluence', visibility: 'shared', created_by_user_id: null, version: 5 }] });
+      }
+      if (typeof sql === 'string' && sql.includes('SELECT body_html FROM page_versions')) {
+        return Promise.resolve({ rows: [{ body_html: '<p>already here</p>' }] });
+      }
+      return Promise.resolve({ rows: [] });
+    });
+    mockGetClientForUser.mockResolvedValue({ updatePage: vi.fn().mockResolvedValue({ version: { number: 6 } }) });
+    mockRestoreVersion.mockResolvedValue({
+      pageId: 7, title: 'Old', newVersion: 6, bodyHtml: '<p>already here</p>', bodyText: 'already here',
+    });
+
+    const r = await app.inject({ method: 'POST', url: '/api/pages/page-1/versions/2/restore', payload: { version: 5 } });
+
+    expect(r.statusCode).toBe(200);
+    expect(mockGetHistoricalBody).not.toHaveBeenCalled();
   });
 });

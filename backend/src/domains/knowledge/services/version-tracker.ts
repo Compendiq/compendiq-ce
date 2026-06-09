@@ -3,6 +3,8 @@ import { resolveUsecase } from '../../llm/services/llm-provider-resolver.js';
 import { chat } from '../../llm/services/openai-compatible-client.js';
 import { htmlToMarkdown, htmlToText } from '../../../core/services/content-converter.js';
 import { sanitizeLlmInput } from '../../../core/utils/sanitize-llm-input.js';
+import { getHistoricalBody } from '../../confluence/services/version-backfill.js';
+import type { ConfluenceClient } from '../../confluence/services/confluence-client.js';
 
 // Re-export from core so existing consumers keep working
 export { saveVersionSnapshot, saveVersionSnapshotByPageId } from '../../../core/services/version-snapshot.js';
@@ -184,6 +186,18 @@ export async function restoreVersion(
     }
     const target = targetRes.rows[0]!;
 
+    // #722/#724 defense-in-depth: never apply an empty body. Backfilled rows are
+    // metadata-only (body_html IS NULL) until lazily fetched; the route fills the
+    // body before calling us. If it is still NULL here, restoring would BLANK the
+    // live page (and, for Confluence pages, push an empty body upstream). Abort
+    // without mutating so no code path can lose content.
+    if (target.body_html === null) {
+      await txClient.query('ROLLBACK');
+      throw new Error(
+        `Cannot restore version ${targetVersion} of page ${pageId}: historical body is unavailable (not yet fetched from Confluence).`,
+      );
+    }
+
     // 1. Snapshot the current live state first (idempotent — DO NOTHING if the
     //    live version already has a snapshot, e.g. from a prior sync).
     await txClient.query(
@@ -224,6 +238,31 @@ export async function restoreVersion(
 }
 
 /**
+ * Resolve a version's `bodyHtml`, lazily fetching it from Confluence and
+ * persisting it when the stored row is metadata-only (body_html IS NULL).
+ *
+ * Returns the resolved HTML, or the row's existing `bodyHtml` (possibly null)
+ * when there is nothing to fetch (no Confluence id / client, or the fetch fails).
+ * Best-effort: a Confluence failure must not break the diff — we fall back to
+ * whatever body we have.
+ */
+async function resolveVersionBodyHtml(
+  pageId: number,
+  version: PageVersion,
+  confluenceId?: string | null,
+  client?: ConfluenceClient | null,
+): Promise<string | null> {
+  if (version.bodyHtml !== null) return version.bodyHtml;
+  if (!confluenceId || !client) return version.bodyHtml;
+  try {
+    const fetched = await getHistoricalBody(pageId, confluenceId, version.versionNumber, client);
+    return fetched.bodyHtml;
+  } catch {
+    return version.bodyHtml;
+  }
+}
+
+/**
  * Generate a semantic diff between two versions using LLM.
  * Sends both versions' text to Ollama and asks for a human-readable description.
  */
@@ -232,6 +271,8 @@ export async function getSemanticDiff(
   v1: number,
   v2: number,
   model: string,
+  confluenceId?: string | null,
+  client?: ConfluenceClient | null,
 ): Promise<string> {
   const [version1, version2] = await Promise.all([
     getVersion(pageId, v1),
@@ -241,9 +282,19 @@ export async function getSemanticDiff(
   if (!version1) throw new Error(`Version ${v1} not found for page ${pageId}`);
   if (!version2) throw new Error(`Version ${v2} not found for page ${pageId}`);
 
+  // #722/#724: backfilled rows are metadata-only (body_html IS NULL) until a
+  // version is previewed. Without this, a never-previewed version would diff as
+  // an empty string and the LLM would report "all content removed". Lazily fetch
+  // (and persist) both bodies from Confluence first — same helper as the restore
+  // path — so the diff compares real content.
+  const [body1, body2] = await Promise.all([
+    resolveVersionBodyHtml(pageId, version1, confluenceId, client),
+    resolveVersionBodyHtml(pageId, version2, confluenceId, client),
+  ]);
+
   // Convert to markdown for LLM consumption
-  const text1 = version1.bodyHtml ? htmlToMarkdown(version1.bodyHtml) : (version1.bodyText ?? '');
-  const text2 = version2.bodyHtml ? htmlToMarkdown(version2.bodyHtml) : (version2.bodyText ?? '');
+  const text1 = body1 ? htmlToMarkdown(body1) : (version1.bodyText ?? '');
+  const text2 = body2 ? htmlToMarkdown(body2) : (version2.bodyText ?? '');
 
   // Truncate to prevent excessive LLM input
   const maxLen = 8000;
