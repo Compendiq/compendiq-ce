@@ -68,6 +68,7 @@ export type AuditAction =
   | 'PAGE_UPDATED'
   | 'PAGE_DELETED'
   | 'PAGE_RESTORED'
+  | 'PAGE_VERSION_RESTORED'
   | 'ADMIN_ACTION'
   | 'SYNC_STARTED'
   | 'SYNC_COMPLETED'

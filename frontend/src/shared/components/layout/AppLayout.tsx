@@ -10,11 +10,12 @@ import { CommandPalette } from './CommandPalette';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 import { ServiceStatus } from '../badges/ServiceStatus';
 import { TrialBanner } from '../banners/TrialBanner';
-import { Breadcrumb } from './Breadcrumb';
 import { UserMenu } from './UserMenu';
 import { SidebarTreeView } from './SidebarTreeView';
+import { SettingsSidebar } from './SettingsSidebar';
 import { ArticleRightPane } from '../article/ArticleRightPane';
 import { ShortcutHint } from '../ShortcutHint';
+import { Logo } from '../Logo';
 import { ThemeToggle } from './ThemeToggle';
 import { PageTransition } from './PageTransition';
 import { cn } from '../../lib/cn';
@@ -34,6 +35,11 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const isArticleRoute = /^\/pages\/[^/]+$/.test(location.pathname);
+  // On /settings* we swap the Pages tree for a Settings-specific sidebar so
+  // the main nav (Pages / AI / Graph) stays accessible — otherwise users land
+  // in Settings with no in-rail path back to the rest of the app, since the
+  // header breadcrumb was retired in the same change.
+  const isSettingsRoute = /^\/settings(\/|$)/.test(location.pathname);
 
   const closeMobileSidebar = useCallback(() => setMobileSidebarOpen(false), []);
 
@@ -197,17 +203,13 @@ export function AppLayout({ children }: { children: ReactNode }) {
 
         {/* Logo - always visible in header */}
         <Link to="/" aria-label="Compendiq home" className="mr-3 flex shrink-0 items-center group">
-          <img
-            src="/compendiq-lockup-horizontal.svg"
-            alt="Compendiq"
-            className="h-7 w-auto transition-transform duration-200 group-hover:scale-105 dark:invert"
-          />
+          <Logo className="h-[26px] w-auto text-foreground" title="Compendiq" />
         </Link>
 
-        {/* Breadcrumb — gets full width now that nav pills moved to sidebar */}
-        <div className="flex min-w-0 flex-1 items-center">
-          <Breadcrumb />
-        </div>
+        {/* Spacer — the in-page breadcrumb was removed; the sidebar carries all
+            navigation context now (main nav strip + tree / settings nav). */}
+        <div className="flex min-w-0 flex-1 items-center" />
+
 
         {/* Center: search bar — absolutely centered in header */}
         <div className="pointer-events-none absolute inset-x-0 hidden justify-center sm:flex" role="search">
@@ -264,7 +266,9 @@ export function AppLayout({ children }: { children: ReactNode }) {
               transition={{ type: 'spring', stiffness: 400, damping: 35 }}
               className="fixed inset-y-0 left-0 z-50 w-72 md:hidden"
             >
-              <SidebarTreeView onNavigate={closeMobileSidebar} />
+              {isSettingsRoute
+                ? <SettingsSidebar onNavigate={closeMobileSidebar} />
+                : <SidebarTreeView onNavigate={closeMobileSidebar} />}
             </m.div>
           </>
         )}
@@ -278,9 +282,11 @@ export function AppLayout({ children }: { children: ReactNode }) {
 
       {/* Below header: sidebar + content area, edge-to-edge with borders. */}
       <div data-testid="panel-wrapper" className="flex flex-1 overflow-hidden">
-        {/* Left sidebar — always visible on desktop, hidden on mobile (slide-over instead) */}
+        {/* Left sidebar — desktop only (mobile uses the slide-over above).
+            On /settings* we swap to SettingsSidebar so the main nav strip
+            stays visible alongside the Settings section nav. */}
         <div className="hidden md:flex">
-          <SidebarTreeView />
+          {isSettingsRoute ? <SettingsSidebar /> : <SidebarTreeView />}
         </div>
 
         {/* Main content area + optional right sidebar */}

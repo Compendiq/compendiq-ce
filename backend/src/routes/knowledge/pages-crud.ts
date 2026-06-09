@@ -5,6 +5,7 @@ import { RedisCache } from '../../core/services/redis-cache.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { htmlToConfluence, confluenceToHtml } from '../../core/services/content-converter.js';
 import { cleanPageAttachments, writeAttachmentCache } from '../../domains/confluence/services/attachment-handler.js';
+import { assertNonSsrfUrl, SsrfError } from '../../core/utils/ssrf-guard.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import {
   startBulkJob,
@@ -18,93 +19,18 @@ import {
 } from '../../core/services/bulk-page-selection.js';
 import { emitWebhookEvent } from '../../core/services/webhook-emit-hook.js';
 import { processDirtyPages, isProcessingUser } from '../../domains/llm/services/embedding-service.js';
+import { triggerQualityBatch } from '../../domains/knowledge/services/quality-worker.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 import { PageListQuerySchema, PageTreeQuerySchema, CreatePageSchema, UpdatePageSchema, SaveDraftSchema } from '@compendiq/contracts';
 import { z } from 'zod';
 import { logger } from '../../core/utils/logger.js';
 import pLimit from 'p-limit';
-import { readFile } from 'fs/promises';
-import path from 'path';
-import type { ConfluenceClient } from '../../domains/confluence/services/confluence-client.js';
-import type { FastifyBaseLogger } from 'fastify';
+import { ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
+import { uploadLocalImagesToConfluence } from '../../domains/confluence/services/pasted-image-uploader.js';
 
 /** Escape ILIKE metacharacters so user input like "100%" doesn't match all rows. */
 function escapeIlikeTerm(term: string): string {
   return term.replace(/[%_\\]/g, '\\$&');
-}
-
-const ATTACHMENTS_BASE = process.env.ATTACHMENTS_DIR ?? 'data/attachments';
-
-const MIME_BY_EXT: Record<string, string> = {
-  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
-};
-
-/**
- * Scan editor HTML for locally-pasted images (those with /api/attachments/ src
- * but missing data-confluence-filename). Upload each to Confluence as a page
- * attachment, then add data-confluence-filename so htmlToConfluence() generates
- * a valid ri:attachment reference.
- */
-async function uploadLocalImagesToConfluence(
-  html: string,
-  confluencePageId: string,
-  client: ConfluenceClient,
-  log: FastifyBaseLogger,
-): Promise<string> {
-  // Quick check — skip DOM parsing if no pasted images
-  if (!html.includes('/api/attachments/')) return html;
-
-  const { JSDOM } = await import('jsdom');
-  const dom = new JSDOM(`<body>${html}</body>`, { contentType: 'text/html' });
-  const doc = dom.window.document;
-
-  const localImages = doc.querySelectorAll('img[src^="/api/attachments/"]');
-  let changed = false;
-
-  for (const img of localImages) {
-    // Skip images that already have a Confluence filename (synced from Confluence)
-    if (img.getAttribute('data-confluence-filename')) continue;
-    if (img.getAttribute('data-confluence-image-source')) continue;
-
-    const src = img.getAttribute('src') ?? '';
-    // src = /api/attachments/{pageId}/{filename}
-    const parts = src.split('/');
-    const filename = decodeURIComponent(parts[parts.length - 1] ?? '');
-    const pageId = parts[parts.length - 2] ?? '';
-    if (!filename || !pageId) continue;
-
-    // Read the file from local attachment cache.
-    // Both `pageId` and `filename` are parsed out of the `src` attribute of
-    // an <img> tag produced by our own editor and are passed through
-    // `path.basename()` to strip any `..` / path separators before
-    // concatenation with the trusted `ATTACHMENTS_BASE` root.
-    // nosemgrep
-    const filePath = path.join(ATTACHMENTS_BASE, path.basename(pageId), path.basename(filename));
-    let fileData: Buffer;
-    try {
-      fileData = await readFile(filePath);
-    } catch {
-      log.warn({ filePath, filename }, 'Local pasted image not found, skipping upload');
-      continue;
-    }
-
-    const ext = path.extname(filename).toLowerCase();
-    const mimeType = MIME_BY_EXT[ext] ?? 'application/octet-stream';
-
-    try {
-      await client.updateAttachment(confluencePageId, filename, fileData, mimeType);
-      // Mark as a Confluence attachment so htmlToConfluence() uses the right filename
-      img.setAttribute('data-confluence-filename', filename);
-      img.setAttribute('data-confluence-image-source', 'attachment');
-      changed = true;
-      log.info({ confluencePageId, filename }, 'Uploaded pasted image to Confluence');
-    } catch (err) {
-      log.error({ err, confluencePageId, filename }, 'Failed to upload pasted image to Confluence');
-    }
-  }
-
-  return changed ? doc.body.innerHTML : html;
 }
 
 /**
@@ -193,6 +119,171 @@ const ALLOWED_IMAGE_MIMES = new Set([
   'image/gif',
   'image/webp',
 ]);
+
+const ImportImageSchema = z.object({
+  url: z.string().url().max(2048),
+});
+
+/** Magic-byte signatures for each allowed import MIME. The leading bytes must
+ *  match the declared `Content-Type` from the upstream — otherwise a malicious
+ *  server could serve arbitrary bytes labelled as `image/png` and we'd store
+ *  them. The signatures here only need to cover the formats `ALLOWED_IMAGE_MIMES`
+ *  permits; SVG and other text-based image formats are intentionally absent
+ *  (sniffing them by leading bytes is unreliable). */
+const MAGIC_BYTE_SIGNATURES: Record<string, Array<readonly number[]>> = {
+  'image/png': [[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]],
+  'image/jpeg': [[0xff, 0xd8, 0xff]],
+  'image/jpg': [[0xff, 0xd8, 0xff]],
+  'image/gif': [
+    [0x47, 0x49, 0x46, 0x38, 0x37, 0x61], // GIF87a
+    [0x47, 0x49, 0x46, 0x38, 0x39, 0x61], // GIF89a
+  ],
+  'image/webp': [
+    // RIFF....WEBP — first 4 bytes are "RIFF", bytes 8-11 are "WEBP".
+    // We check the "RIFF" prefix here; the full "WEBP" check is done by
+    // `bufferMatchesMime` because it spans a non-prefix range.
+    [0x52, 0x49, 0x46, 0x46],
+  ],
+};
+
+function bufferMatchesMime(buf: Buffer, mime: string): boolean {
+  const sigs = MAGIC_BYTE_SIGNATURES[mime];
+  if (!sigs) return false;
+  for (const sig of sigs) {
+    if (buf.length < sig.length) continue;
+    let ok = true;
+    for (let i = 0; i < sig.length; i++) {
+      if (buf[i] !== sig[i]) { ok = false; break; }
+    }
+    if (!ok) continue;
+    // WEBP needs an extra check for the "WEBP" magic at bytes 8-11. (Bytes
+    // 4-7 are the little-endian file size — also untrusted, so we don't
+    // assert against it.)
+    if (mime === 'image/webp') {
+      if (buf.length < 12) continue;
+      if (buf[8] !== 0x57 || buf[9] !== 0x45 || buf[10] !== 0x42 || buf[11] !== 0x50) continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+/** Filename for an imported image — sanitised path basename, or a fallback. */
+function pickImportFilename(sourceUrl: string, contentType: string): string {
+  const extByType: Record<string, string> = {
+    'image/png': 'png',
+    'image/jpeg': 'jpg',
+    'image/jpg': 'jpg',
+    'image/gif': 'gif',
+    'image/webp': 'webp',
+  };
+  const fallbackExt = extByType[contentType] ?? 'png';
+  try {
+    const parsed = new URL(sourceUrl);
+    const last = parsed.pathname.split('/').filter(Boolean).pop() ?? '';
+    // Allow only ASCII word chars, dots, and hyphens — same constraint as
+    // `ImageUploadSchema`. Strip anything else.
+    const sanitised = last.replace(/[^\w.-]/g, '').replace(/^\.+/, '').slice(0, 200);
+    if (sanitised && /\.[a-z0-9]{2,5}$/i.test(sanitised)) {
+      return sanitised;
+    }
+  } catch {
+    // Unparseable URL — fall through to a generated name.
+  }
+  const hex = Math.floor(Math.random() * 0xffff).toString(16).padStart(4, '0');
+  return `imported-${Date.now()}-${hex}.${fallbackExt}`;
+}
+
+/** Maximum bytes accepted from any single upstream import. */
+const MAX_IMPORT_BYTES = 10 * 1024 * 1024;
+/** Hard cap on redirect hops. Every Location header is re-validated against
+ *  the SSRF guard before refetching. */
+const MAX_IMPORT_REDIRECTS = 5;
+/** Per-attempt fetch timeout. The full import budget is up to (timeout × hops). */
+const FETCH_TIMEOUT_MS = 15_000;
+
+/**
+ * Server-side `fetch` with manual redirect chain validation. Each `Location`
+ * header is validated through `assertNonSsrfUrl` before the next request
+ * fires — so an upstream that returns `302 Location: http://192.168.1.1/`
+ * (or any other private/internal target) is blocked, not transparently
+ * followed.
+ *
+ * Returns the final non-redirect response, or throws if the chain exceeds
+ * `MAX_IMPORT_REDIRECTS` or any hop fails the SSRF check.
+ */
+async function safeFetchWithSsrfGuardedRedirects(initialUrl: string): Promise<Response> {
+  let currentUrl = initialUrl;
+  for (let hop = 0; hop <= MAX_IMPORT_REDIRECTS; hop++) {
+    // Validate the URL we are about to hit. The initial URL was already
+    // validated by the caller; we re-validate redirects (hop > 0).
+    if (hop > 0) {
+      await assertNonSsrfUrl(currentUrl);
+    }
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    let response: Response;
+    try {
+      response = await fetch(currentUrl, {
+        method: 'GET',
+        signal: controller.signal,
+        redirect: 'manual',
+        headers: { 'user-agent': 'Compendiq-ImageImporter/1.0' },
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
+    // Manual-redirect mode surfaces 3xx responses with the Location header.
+    // Any 3xx-with-Location → re-validate and re-fetch. 3xx-without-Location
+    // is treated as a regular response (caller will handle non-2xx).
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get('location');
+      if (location) {
+        // Resolve relative redirects against the current URL.
+        currentUrl = new URL(location, currentUrl).toString();
+        continue;
+      }
+    }
+    return response;
+  }
+  throw new Error(`Too many redirects (exceeded ${MAX_IMPORT_REDIRECTS} hops)`);
+}
+
+/**
+ * Read a response body chunk-by-chunk, aborting if the accumulated size
+ * exceeds `MAX_IMPORT_BYTES`. Defends against upstreams that lie about
+ * Content-Length (or omit it) and stream arbitrary amounts of data.
+ *
+ * Returns `{ ok: true, buffer }` on success or `{ ok: false, reason }`
+ * when the size cap fires.
+ */
+async function readBodyWithSizeCap(
+  response: Response,
+): Promise<{ ok: true; buffer: Buffer } | { ok: false; reason: 'too-large' | 'read-failed' }> {
+  if (!response.body) {
+    // Older fetch implementations expose null `.body` for empty responses.
+    return { ok: true, buffer: Buffer.alloc(0) };
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_IMPORT_BYTES) {
+        // Best-effort cancel — frees the upstream socket.
+        try { await reader.cancel(); } catch { /* upstream already gone */ }
+        return { ok: false, reason: 'too-large' };
+      }
+      chunks.push(value);
+    }
+  } catch {
+    return { ok: false, reason: 'read-failed' };
+  }
+  return { ok: true, buffer: Buffer.concat(chunks) };
+}
 
 export async function pagesCrudRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
@@ -1297,7 +1388,25 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.badRequest('Confluence not configured');
     }
 
-    await client.deletePage(existingPage.confluence_id!);
+    // Propagate the delete to Confluence. A 404 means the page is already gone
+    // remotely — the desired end state is already true, so we treat it as success
+    // and fall through to local cleanup rather than leaving an orphaned, undeletable
+    // row behind (#706). Any other error is re-thrown so we never silently drop a
+    // page when Confluence genuinely failed (e.g. 5xx, auth, permissions).
+    let alreadyGone = false;
+    try {
+      await client.deletePage(existingPage.confluence_id!);
+    } catch (err) {
+      if (err instanceof ConfluenceError && err.statusCode === 404) {
+        alreadyGone = true;
+        logger.info(
+          { pageId: existingPage.id, confluenceId: existingPage.confluence_id },
+          'Confluence page already deleted remotely (404) — cleaning up locally',
+        );
+      } else {
+        throw err;
+      }
+    }
 
     // Clean up local data (page_embeddings cascade-deleted via FK)
     await query('DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = $2', [userId, existingPage.id]);
@@ -1310,7 +1419,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     await cache.invalidate(userId, 'pages');
     await cache.invalidate(userId, 'spaces');
 
-    await logAuditEvent(userId, 'PAGE_DELETED', 'page', String(id), {}, request);
+    await logAuditEvent(userId, 'PAGE_DELETED', 'page', String(id), { alreadyGoneRemotely: alreadyGone }, request);
 
     emitWebhookEvent({
       eventType: 'page.deleted',
@@ -1320,7 +1429,11 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       },
     });
 
-    return { message: 'Page deleted' };
+    return {
+      message: alreadyGone
+        ? 'Page was already removed in Confluence — removed locally'
+        : 'Page deleted',
+    };
   });
 
   // ======== Draft-while-published (#362) ========
@@ -1601,7 +1714,20 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         const deletedConfluenceNumericIds: number[] = [];
         for (let i = 0; i < deleteResults.length; i++) {
           const result = deleteResults[i]!;
-          if (result.status === 'fulfilled') {
+          // A 404 rejection means the page is already gone in Confluence — the
+          // desired end state is already true, so we clean it up locally too
+          // rather than leaving an orphaned, undeletable row behind (#706).
+          const alreadyGone =
+            result.status === 'rejected' &&
+            result.reason instanceof ConfluenceError &&
+            result.reason.statusCode === 404;
+          if (result.status === 'fulfilled' || alreadyGone) {
+            if (alreadyGone) {
+              logger.info(
+                { pageId: confluencePages[i]!.id, confluenceId: confluencePages[i]!.confluence_id },
+                'Confluence page already deleted remotely (404) — cleaning up locally',
+              );
+            }
             deletedConfluenceIds.push(confluencePages[i]!.confluence_id!);
             deletedConfluenceNumericIds.push(confluencePages[i]!.id);
             confluenceSucceeded++;
@@ -1802,6 +1928,71 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     if (succeeded > 0) {
       processDirtyPages(userId).catch((err) => {
         logger.error({ err, userId }, 'Bulk embed: embedding processing failed');
+      });
+    }
+
+    return { succeeded, failed, errors };
+  });
+
+  // POST /api/pages/bulk/quality - re-queue multiple pages for quality re-analysis.
+  // Resets quality_status to 'pending' (clearing prior score/error/retry) so the
+  // background quality worker picks them up on its next batch. Fires the worker
+  // immediately so the user doesn't wait for the next interval tick. Quality
+  // analysis applies to both Confluence-sourced and standalone pages (the worker
+  // gates on body_text length, not source).
+  fastify.post('/pages/bulk/quality', async (request, reply) => {
+    const parsed = BulkIdsOrFilterSchema.parse(request.body);
+    const userId = request.userId;
+
+    const qualitySpaces = await getUserAccessibleSpaces(userId);
+    const selection: BulkSelection = {
+      ids: parsed.ids,
+      filter: parsed.filter,
+      expectedCount: parsed.expectedCount,
+      driftToleranceFraction: parsed.driftToleranceFraction,
+    };
+
+    let resolved;
+    try {
+      resolved = await resolveBulkSelection(userId, selection, qualitySpaces);
+    } catch (err) {
+      if (err instanceof BulkSelectionError && err.detail.kind === 'count_drift') {
+        return reply.status(409).send({
+          error: 'CountDrift',
+          message: err.detail.message,
+          expected: err.detail.expected,
+          actual: err.detail.actual,
+        });
+      }
+      throw err;
+    }
+
+    const eligibleIds = resolved.rows.map((r) => r.id);
+    let succeeded = 0;
+    if (eligibleIds.length > 0) {
+      const result = await query(
+        `UPDATE pages
+            SET quality_status = 'pending',
+                quality_score = NULL,
+                quality_error = NULL,
+                quality_retry_count = 0
+          WHERE id = ANY($1::int[]) AND deleted_at IS NULL`,
+        [eligibleIds],
+      );
+      succeeded = result.rowCount ?? 0;
+    }
+
+    const errors: string[] = resolved.notFoundIds.map((id) => `Page ${id} not found`);
+    const failed = resolved.notFoundIds.length;
+
+    await cache.invalidate(userId, 'pages');
+
+    // Fire-and-forget: kick the worker so the user sees results without waiting
+    // for the next interval tick. triggerQualityBatch is lock-guarded and no-ops
+    // if a batch is already running.
+    if (succeeded > 0) {
+      triggerQualityBatch().catch((err) => {
+        logger.error({ err, userId }, 'Bulk quality: worker trigger failed');
       });
     }
 
@@ -2200,6 +2391,220 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     } catch (err) {
       logger.error({ err, userId, pageId: id, filename }, 'Failed to save pasted image');
       throw fastify.httpErrors.internalServerError('Failed to save image');
+    }
+  });
+
+  // POST /api/pages/:id/images/import — server-side fetch an external image
+  // URL and store it as a page attachment, returning the internal URL.
+  //
+  // Companion to the upload-on-paste flow (#683): when a user pastes HTML
+  // containing `<img src="https://...">`, the frontend can't fetch the bytes
+  // itself (CORS, no auth). This route is server-side and SSRF-guarded.
+  //
+  // Scope:
+  //  - Accepts `http(s)://` URLs only (enforced by `assertNonSsrfUrl`).
+  //  - Blocks private/loopback/link-local IPs and DNS rebinding.
+  //  - Re-validates every redirect hop (no SSRF-via-Location bypass).
+  //  - Streams the body with a mid-flight size cap (defends against lying
+  //    Content-Length) at 10 MB.
+  //  - Validates `Content-Type: image/*` AND matches it against the body's
+  //    magic bytes (no serving HTML/JS masquerading as image/png).
+  //  - Stores via the same `writeAttachmentCache` path as the inline upload.
+  fastify.post('/pages/:id/images/import', async (request, reply) => {
+    const { id } = IdParamSchema.parse(request.params);
+    const userId = request.userId;
+
+    const parseResult = ImportImageSchema.safeParse(request.body);
+    if (!parseResult.success) {
+      return reply.status(400).send({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: parseResult.error.issues[0]?.message ?? 'Invalid request body',
+      });
+    }
+    const { url: sourceUrl } = parseResult.data;
+
+    // SSRF guard. `assertNonSsrfUrl` enforces protocol = http(s),
+    // blocks private/loopback/link-local IPs, blocks RFC 1918 / IPv6
+    // private ranges, and resolves DNS to mitigate rebinding. The
+    // redirect-following helper re-validates every subsequent hop.
+    try {
+      await assertNonSsrfUrl(sourceUrl);
+    } catch (err) {
+      if (err instanceof SsrfError) {
+        logger.warn({ userId, pageId: id, sourceUrl, reason: err.message }, 'Image import blocked by SSRF guard');
+        return reply.status(400).send({
+          statusCode: 400,
+          error: 'Bad Request',
+          message: 'Source URL is not reachable or not allowed',
+        });
+      }
+      throw err;
+    }
+
+    // Verify the page exists and the user has access. Mirrors the inline
+    // upload route's logic exactly so the two stay aligned.
+    const isNumericId = /^\d+$/.test(id);
+    const pageResult = await query<{
+      id: number; source: string; confluence_id: string | null;
+      created_by_user_id: string | null; space_key: string | null;
+    }>(
+      `SELECT p.id, p.source, p.confluence_id, p.created_by_user_id, p.space_key
+       FROM pages p
+       WHERE ${isNumericId ? 'p.id = $1' : 'p.confluence_id = $1'}
+         AND p.deleted_at IS NULL`,
+      [isNumericId ? Number(id) : id],
+    );
+    if (pageResult.rows.length === 0) {
+      return reply.status(404).send({
+        statusCode: 404,
+        error: 'Not Found',
+        message: 'Page not found',
+      });
+    }
+    const page = pageResult.rows[0]!;
+    if (page.source === 'standalone') {
+      if (page.created_by_user_id !== userId) {
+        return reply.status(403).send({
+          statusCode: 403,
+          error: 'Forbidden',
+          message: 'Not authorized to import images to this page',
+        });
+      }
+    } else if (page.space_key) {
+      const accessibleSpaces = await getUserAccessibleSpaces(userId);
+      if (!accessibleSpaces.includes(page.space_key)) {
+        return reply.status(403).send({
+          statusCode: 403,
+          error: 'Forbidden',
+          message: 'Not authorized to import images to this page',
+        });
+      }
+    } else {
+      return reply.status(403).send({
+        statusCode: 403,
+        error: 'Forbidden',
+        message: 'Access denied',
+      });
+    }
+
+    let response: Response;
+    try {
+      response = await safeFetchWithSsrfGuardedRedirects(sourceUrl);
+    } catch (err) {
+      if (err instanceof SsrfError) {
+        logger.warn({ userId, pageId: id, sourceUrl, reason: err.message }, 'Image import redirect blocked by SSRF guard');
+        return reply.status(400).send({
+          statusCode: 400,
+          error: 'Bad Request',
+          message: 'Source URL redirects to a disallowed destination',
+        });
+      }
+      logger.warn({ err, userId, pageId: id, sourceUrl }, 'Image import fetch failed');
+      return reply.status(502).send({
+        statusCode: 502,
+        error: 'Bad Gateway',
+        message: 'Failed to fetch source URL',
+      });
+    }
+
+    if (!response.ok) {
+      return reply.status(502).send({
+        statusCode: 502,
+        error: 'Bad Gateway',
+        message: `Source responded with HTTP ${response.status}`,
+      });
+    }
+
+    // Content-Type must be in the allowlist. We do NOT trust this completely
+    // — the magic-byte check below is the real validator — but it's a cheap
+    // first gate that avoids streaming non-image responses.
+    const contentType = (response.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase();
+    if (!contentType.startsWith('image/')) {
+      return reply.status(415).send({
+        statusCode: 415,
+        error: 'Unsupported Media Type',
+        message: `Source must be an image (got Content-Type: ${contentType || 'unknown'})`,
+      });
+    }
+    if (!ALLOWED_IMAGE_MIMES.has(contentType)) {
+      return reply.status(415).send({
+        statusCode: 415,
+        error: 'Unsupported Media Type',
+        message: `Image type not supported: ${contentType}. Allowed: png, jpg, gif, webp`,
+      });
+    }
+
+    // Defends against upstreams that lie about Content-Length: read the body
+    // chunk-by-chunk and abort once we cross the cap, rather than buffering
+    // everything before checking.
+    const declaredLength = Number(response.headers.get('content-length') ?? 0);
+    if (declaredLength > MAX_IMPORT_BYTES) {
+      return reply.status(413).send({
+        statusCode: 413,
+        error: 'Payload Too Large',
+        message: `Source image exceeds maximum size of ${MAX_IMPORT_BYTES / (1024 * 1024)} MB`,
+      });
+    }
+    const readResult = await readBodyWithSizeCap(response);
+    if (!readResult.ok) {
+      if (readResult.reason === 'too-large') {
+        return reply.status(413).send({
+          statusCode: 413,
+          error: 'Payload Too Large',
+          message: `Source image exceeds maximum size of ${MAX_IMPORT_BYTES / (1024 * 1024)} MB`,
+        });
+      }
+      logger.warn({ userId, pageId: id, sourceUrl }, 'Image import body read failed');
+      return reply.status(502).send({
+        statusCode: 502,
+        error: 'Bad Gateway',
+        message: 'Failed to read source image body',
+      });
+    }
+    const imageBuffer = readResult.buffer;
+    if (imageBuffer.length === 0) {
+      return reply.status(502).send({
+        statusCode: 502,
+        error: 'Bad Gateway',
+        message: 'Source returned an empty body',
+      });
+    }
+
+    // Magic-byte check: the bytes must match what the upstream said the
+    // Content-Type is. Defends against upstreams returning arbitrary bytes
+    // labelled as image/png (the most common "store-and-serve" abuse path).
+    if (!bufferMatchesMime(imageBuffer, contentType)) {
+      logger.warn(
+        { userId, pageId: id, sourceUrl, declaredContentType: contentType },
+        'Image import rejected: body does not match declared Content-Type',
+      );
+      return reply.status(415).send({
+        statusCode: 415,
+        error: 'Unsupported Media Type',
+        message: `Source body does not match declared Content-Type (${contentType})`,
+      });
+    }
+
+    // Derive a filename from the URL's path, falling back to a generated
+    // name if the URL doesn't yield a usable one. Sanitise to the same
+    // character class the inline-upload Zod schema enforces.
+    const filename = pickImportFilename(sourceUrl, contentType);
+
+    // Determine the attachment directory key — same logic as the inline
+    // upload route.
+    const attachmentPageId = page.source === 'standalone'
+      ? String(page.id)
+      : (page.confluence_id ?? String(page.id));
+
+    try {
+      await writeAttachmentCache(userId, attachmentPageId, filename, imageBuffer);
+      const internalUrl = `/api/attachments/${encodeURIComponent(attachmentPageId)}/${encodeURIComponent(filename)}`;
+      logger.info({ userId, pageId: id, attachmentPageId, filename, size: imageBuffer.length, sourceUrl }, 'Image imported from URL');
+      return { url: internalUrl };
+    } catch (err) {
+      logger.error({ err, userId, pageId: id, filename }, 'Failed to save imported image');
+      throw fastify.httpErrors.internalServerError('Failed to save imported image');
     }
   });
 }

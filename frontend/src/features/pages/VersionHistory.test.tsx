@@ -164,6 +164,119 @@ describe('VersionHistory', () => {
     });
   });
 
+  it('renders a custom trigger via renderTrigger and reflects open state', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockVersionsResponse());
+
+    render(
+      <VersionHistory
+        pageId="page-1"
+        model="qwen3.5"
+        renderTrigger={(open) => (
+          <button>{open ? 'History open' : 'Open history'}</button>
+        )}
+      />,
+      { wrapper: createWrapper() },
+    );
+
+    // Default trigger text must NOT be present when a custom trigger is supplied
+    expect(screen.queryByTitle('Version history')).not.toBeInTheDocument();
+    const trigger = screen.getByText('Open history');
+    expect(trigger).toBeInTheDocument();
+
+    fireEvent.click(trigger);
+    await waitFor(() => {
+      expect(screen.getByText('History open')).toBeInTheDocument();
+    });
+  });
+
+  it('shows a Restore action on older versions but not the current one', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockVersionsResponse());
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+
+    await waitFor(() => {
+      expect(screen.getByText('v3')).toBeInTheDocument();
+    });
+
+    // 3 versions; current (v3) has no restore → 2 restore buttons.
+    const restoreButtons = screen.getAllByTitle('Restore this version');
+    expect(restoreButtons).toHaveLength(2);
+  });
+
+  it('restores a version: confirms, POSTs to the restore endpoint with the current version guard', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/restore')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: 1,
+              title: 'Page v2',
+              version: 4,
+              restoredFrom: 2,
+              source: 'confluence',
+              pushedToConfluence: true,
+            }),
+            { headers: { 'Content-Type': 'application/json' } },
+          ),
+        );
+      }
+      return Promise.resolve(mockVersionsResponse());
+    });
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+    await waitFor(() => expect(screen.getByText('v2')).toBeInTheDocument());
+
+    // Restore buttons are ordered top→bottom: v2 then v1 (v3 is current).
+    const restoreButtons = screen.getAllByTitle('Restore this version');
+    fireEvent.click(restoreButtons[0]!);
+
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('Restore v2?'));
+
+    await waitFor(() => {
+      const restoreCall = fetchSpy.mock.calls.find(
+        ([input]) => (typeof input === 'string' ? input : String(input)).includes('/restore'),
+      );
+      expect(restoreCall).toBeDefined();
+      const [url, options] = restoreCall as [string, RequestInit];
+      expect(url).toContain('/pages/page-1/versions/2/restore');
+      expect(options.method).toBe('POST');
+      // Optimistic guard: the current live version (3) is sent.
+      expect(JSON.parse(options.body as string)).toEqual({ version: 3 });
+    });
+  });
+
+  it('does not POST when the restore confirm is cancelled', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockVersionsResponse());
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+    await waitFor(() => expect(screen.getByText('v2')).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByTitle('Restore this version')[0]!);
+
+    const restoreCall = fetchSpy.mock.calls.find(
+      ([input]) => (typeof input === 'string' ? input : String(input)).includes('/restore'),
+    );
+    expect(restoreCall).toBeUndefined();
+  });
+
   it('closes dialog via close button', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(

@@ -13,6 +13,13 @@ export interface OutputRules {
   stripReferences: boolean;
   referenceAction: ReferenceAction;
   verifiedSources?: string[];
+  /**
+   * Issue #705 — Swiss spelling. When true, every `ß` is replaced with `ss`
+   * and capital `ẞ` (U+1E9E) with `SS`. Switzerland abolished the eszett, so
+   * for Swiss teams every `ß` the model produces is wrong. This is a blanket
+   * replace (including fenced/inline code) — CH uses `ss` everywhere.
+   */
+  swissSpelling?: boolean;
 }
 
 // ─── Default disclaimer ───────────────────────────────────────────────────────
@@ -73,9 +80,43 @@ function allUrlsVerified(urls: string[], verifiedSources: string[]): boolean {
   return urls.every((url) => verified.has(url.toLowerCase()));
 }
 
+/**
+ * Issue #705 — enforce Swiss orthography by replacing the eszett.
+ *
+ * Swiss Standard German uses `ss` in every position where German Standard
+ * German uses `ß`, so a blanket replace is exactly correct (there are no
+ * positional exceptions). `ß` → `ss`, capital `ẞ` (U+1E9E) → `SS`.
+ */
+function applySwissSpelling(content: string): string {
+  return content.replace(/ß/g, 'ss').replace(/ẞ/g, 'SS');
+}
+
 // ─── Main sanitizer ───────────────────────────────────────────────────────────
 
 export function sanitizeLlmOutput(output: string, rules: OutputRules): OutputSanitizeResult {
+  // Run the reference-handling pass, then the Swiss-spelling pass. The two are
+  // independent rules — Swiss spelling must apply even when reference detection
+  // is disabled — so the result of the first feeds the second.
+  const referenceResult = sanitizeReferences(output, rules);
+
+  if (!rules.swissSpelling) {
+    return referenceResult;
+  }
+
+  const swissContent = applySwissSpelling(referenceResult.content);
+  return {
+    ...referenceResult,
+    content: swissContent,
+    wasModified: referenceResult.wasModified || swissContent !== referenceResult.content,
+  };
+}
+
+/**
+ * Reference-section handling (strip / flag / verified-source preservation).
+ * Returns the unmodified output when reference detection is disabled or no
+ * reference section is found.
+ */
+function sanitizeReferences(output: string, rules: OutputRules): OutputSanitizeResult {
   // Pass through if disabled
   if (!rules.stripReferences || rules.referenceAction === 'off') {
     return { content: output, wasModified: false, strippedSections: [], disclaimer: null };

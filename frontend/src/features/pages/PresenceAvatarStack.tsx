@@ -81,7 +81,7 @@ export function PresenceAvatarStack({
               <span
                 data-testid="presence-editing-badge"
                 aria-label="editing"
-                className="absolute -bottom-0.5 -right-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-primary text-primary-foreground ring-2 ring-card"
+                className="absolute -bottom-0.5 -right-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-action text-action-foreground ring-2 ring-card"
               >
                 <Pencil size={8} strokeWidth={2.5} />
               </span>

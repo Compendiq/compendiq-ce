@@ -19,29 +19,37 @@ const IMPROVEMENT_DESCRIPTIONS: Record<(typeof IMPROVEMENT_TYPES)[number], strin
 };
 
 /**
- * Improvement type selector rendered above the message area.
+ * Improvement type selector rendered just under the mode segmented control.
+ * Visual grammar matches the AI sub-header: a single `rounded-xl border` card
+ * with h-7 outlined chips so all of the AI surfaces feel like one toolbar
+ * stack rather than three different controls.
  */
 export function ImproveTypeSelector() {
   const { improvementType, setImprovementType } = useAiContext();
   return (
-    <div className="nm-toolbar mb-4 space-y-2 p-3">
-      <span className="text-sm text-muted-foreground">Improvement type:</span>
-      <div className="flex flex-wrap items-center gap-2">
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-border/40 bg-card/50 px-3 py-2 backdrop-blur-sm">
+      <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground/80">
+        Improvement type
+      </span>
+      <div className="flex flex-wrap items-center gap-1.5">
         {IMPROVEMENT_TYPES.map((type) => (
           <button
             key={type}
             onClick={() => setImprovementType(type)}
             title={IMPROVEMENT_DESCRIPTIONS[type]}
+            aria-pressed={improvementType === type}
             className={cn(
-              'rounded-md px-2.5 py-1 text-xs capitalize',
-              improvementType === type ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-foreground/5',
+              'flex h-7 items-center rounded-md border px-2.5 text-xs capitalize transition-colors',
+              improvementType === type
+                ? 'border-primary/45 bg-primary/15 text-primary-ink font-medium'
+                : 'border-border/40 text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
             )}
           >
             {type}
           </button>
         ))}
       </div>
-      <p className="text-xs text-muted-foreground/70">
+      <p className="basis-full text-xs text-muted-foreground/80">
         {IMPROVEMENT_DESCRIPTIONS[improvementType as keyof typeof IMPROVEMENT_DESCRIPTIONS]}
       </p>
     </div>
@@ -52,7 +60,7 @@ export function ImproveTypeSelector() {
  * Diff view shown after an improve stream completes.
  */
 export function ImproveDiffView() {
-  const { page, pageId, navigate, queryClient, isStreaming, showDiffView, setShowDiffView, improvedContent } = useAiContext();
+  const { page, pageId, navigate, queryClient, isStreaming, showDiffView, setShowDiffView, improvedContent, originalMarkdown } = useAiContext();
   const [isApplying, setIsApplying] = useState(false);
 
   const handleAccept = useCallback(async () => {
@@ -82,7 +90,11 @@ export function ImproveDiffView() {
 
   return (
     <DiffView
-      original={page.bodyText || page.bodyHtml}
+      // #704: diff like-for-like — the original markdown the model was fed
+      // (echoed by /llm/improve) vs the improved markdown it returned, so only
+      // genuine wording/structure edits show. Falls back to the page body only
+      // if the backend didn't supply the baseline (e.g. an aborted stream).
+      original={originalMarkdown || page.bodyText || page.bodyHtml}
       improved={improvedContent}
       onAccept={handleAccept}
       onReject={() => setShowDiffView(false)}
@@ -97,7 +109,7 @@ export function ImproveDiffView() {
 export function ImproveModeInput() {
   const {
     isStreaming, page, isPageLoading, model, pageId, includeSubPages, thinkingMode, runStream,
-    improvementType, setShowDiffView, setImprovedContent,
+    improvementType, setShowDiffView, setImprovedContent, setOriginalMarkdown,
   } = useAiContext();
   const [instruction, setInstruction] = useState('');
   const [searchWeb, setSearchWeb] = useState(false);
@@ -125,6 +137,7 @@ export function ImproveModeInput() {
 
     setShowDiffView(false);
     setImprovedContent('');
+    setOriginalMarkdown('');
 
     const body: Record<string, unknown> = {
       content: page.bodyHtml, type: improvementType, model, pageId: pageId ?? undefined, includeSubPages,
@@ -142,13 +155,18 @@ export function ImproveModeInput() {
       body,
       {
         userMessage: `Improve (${improvementType}): ${page.title}`,
-        onComplete: (accumulated) => {
+        onComplete: (accumulated, _sources, meta) => {
           setImprovedContent(accumulated);
+          // #704: store the markdown baseline echoed by the backend so the diff
+          // compares like-for-like markdown, not stripped bodyText.
+          if (meta?.originalMarkdown !== undefined) {
+            setOriginalMarkdown(meta.originalMarkdown);
+          }
           setShowDiffView(true);
         },
       },
     );
-  }, [page, model, improvementType, pageId, isStreaming, includeSubPages, thinkingMode, instruction, searchWeb, runStream, setShowDiffView, setImprovedContent]);
+  }, [page, model, improvementType, pageId, isStreaming, includeSubPages, thinkingMode, instruction, searchWeb, runStream, setShowDiffView, setImprovedContent, setOriginalMarkdown]);
 
   return (
     <div className="mt-3 flex flex-col gap-3 border-t border-border/40 pt-3">

@@ -107,23 +107,30 @@ export function GraphPage() {
   // in the URL or the user clicking "Show full graph anyway" enables it.
   const [showFullGraph, setShowFullGraph] = useState<boolean>(initialShowFullGraph);
 
-  // Mirror filter state to URL (#360 shareable views).
+  // Mirror filter state to URL (#360 shareable views). Uses the functional
+  // setSearchParams updater so the effect never reads `searchParams` — that
+  // keeps the dependency list complete (no exhaustive-deps escape) and avoids
+  // the update→re-run loop that depending on `searchParams` would cause.
   useEffect(() => {
-    const next = new URLSearchParams(searchParams);
-    const sync = (key: string, value: string | undefined | null) => {
-      if (value === undefined || value === null || value === '') next.delete(key);
-      else next.set(key, value);
-    };
-    sync('edgeTypes', edgeTypes.length > 0 ? edgeTypes.join(',') : '');
-    sync('minScore', minScore !== undefined ? minScore.toString() : '');
-    sync('labels', labels.length > 0 ? labels.join(',') : '');
-    sync('full', showFullGraph ? '1' : '');
-    // #360 multi-select: encode the space filter as a comma-separated list
-    // so it round-trips through the URL the same way edgeTypes/labels do.
-    sync('space', filterSpaces.length > 0 ? filterSpaces.join(',') : '');
-    setSearchParams(next, { replace: true });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [edgeTypes, minScore, labels, showFullGraph, filterSpaces]);
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        const sync = (key: string, value: string | undefined | null) => {
+          if (value === undefined || value === null || value === '') next.delete(key);
+          else next.set(key, value);
+        };
+        sync('edgeTypes', edgeTypes.length > 0 ? edgeTypes.join(',') : '');
+        sync('minScore', minScore !== undefined ? minScore.toString() : '');
+        sync('labels', labels.length > 0 ? labels.join(',') : '');
+        sync('full', showFullGraph ? '1' : '');
+        // #360 multi-select: encode the space filter as a comma-separated list
+        // so it round-trips through the URL the same way edgeTypes/labels do.
+        sync('space', filterSpaces.length > 0 ? filterSpaces.join(',') : '');
+        return next;
+      },
+      { replace: true },
+    );
+  }, [edgeTypes, minScore, labels, showFullGraph, filterSpaces, setSearchParams]);
 
   const filters = useMemo<LocalGraphFilters>(() => ({
     edgeTypes: edgeTypes.length > 0 ? edgeTypes : undefined,
@@ -353,7 +360,7 @@ export function GraphPage() {
     return (
       <div className="flex h-full items-center justify-center">
         <div className="nm-card flex flex-col items-center gap-4 p-8">
-          <RefreshCw className="h-8 w-8 animate-spin text-primary" />
+          <RefreshCw className="h-8 w-8 animate-spin text-action" />
           <p className="text-muted-foreground">Loading knowledge graph...</p>
         </div>
       </div>
@@ -408,7 +415,7 @@ export function GraphPage() {
                 onClick={() => setViewMode('individual')}
                 className={cn(
                   'nm-icon-button p-2',
-                  viewMode === 'individual' && 'bg-primary/15 text-primary',
+                  viewMode === 'individual' && 'bg-action/15 text-action',
                 )}
                 aria-label="Individual view"
                 data-testid="graph-view-individual"
@@ -420,7 +427,7 @@ export function GraphPage() {
                 onClick={() => setViewMode('clustered')}
                 className={cn(
                   'nm-icon-button p-2',
-                  viewMode === 'clustered' && 'bg-primary/15 text-primary',
+                  viewMode === 'clustered' && 'bg-action/15 text-action',
                 )}
                 aria-label="Cluster view"
                 data-testid="graph-view-clustered"
@@ -894,7 +901,7 @@ export function GraphFilterSidebar({
                 className={cn(
                   'rounded-full px-2 py-0.5 text-[10px] transition-colors',
                   labels.includes(label)
-                    ? 'bg-primary/20 text-primary'
+                    ? 'bg-action/20 text-action'
                     : 'bg-foreground/5 text-muted-foreground hover:text-foreground',
                 )}
                 data-testid="filter-label-chip"

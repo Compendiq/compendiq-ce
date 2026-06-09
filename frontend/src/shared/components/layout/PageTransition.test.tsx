@@ -1,16 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { LazyMotion, domAnimation } from 'framer-motion';
 import { PageTransition, routeDepth } from './PageTransition';
 
 function Wrapper({ children, initialPath = '/' }: { children: React.ReactNode; initialPath?: string }) {
   return (
-    <MemoryRouter initialEntries={[initialPath]}>
-      <LazyMotion features={domAnimation}>
-        {children}
-      </LazyMotion>
-    </MemoryRouter>
+    <MemoryRouter initialEntries={[initialPath]}>{children}</MemoryRouter>
   );
 }
 
@@ -57,35 +52,7 @@ describe('PageTransition', () => {
     expect(screen.getByText('Hello')).toBeInTheDocument();
   });
 
-  it('wraps children in a motion div', () => {
-    render(
-      <Wrapper>
-        <PageTransition>
-          <span>Test content</span>
-        </PageTransition>
-      </Wrapper>,
-    );
-    const content = screen.getByText('Test content');
-    // The content should be wrapped in a div (the m.div from PageTransition)
-    expect(content.parentElement).toBeInstanceOf(HTMLDivElement);
-  });
-
-  it('sets will-change style for GPU compositing', () => {
-    render(
-      <Wrapper>
-        <PageTransition>
-          <span>GPU test</span>
-        </PageTransition>
-      </Wrapper>,
-    );
-    const content = screen.getByText('GPU test');
-    const motionDiv = content.closest('div[style]');
-    expect(motionDiv).not.toBeNull();
-  });
-
-  it('mounts new content immediately on navigation (mode=sync)', () => {
-    // mode="sync" ensures the entering page mounts right away instead of
-    // waiting 220ms for the exiting page to finish its animation.
+  it('renders new content after navigation', () => {
     const { rerender } = render(
       <Wrapper initialPath="/">
         <PageTransition>
@@ -102,7 +69,6 @@ describe('PageTransition', () => {
         </PageTransition>
       </Wrapper>,
     );
-    // New content must be in the DOM immediately, without waiting for exit animation
     expect(screen.getByTestId('page-b')).toBeInTheDocument();
   });
 
@@ -117,21 +83,27 @@ describe('PageTransition', () => {
     expect(screen.getByText('Page view')).toBeInTheDocument();
   });
 
-  it('exit motion variant disables pointer-events so transition overlay does not swallow real clicks', async () => {
-    // Regression test for the Settings/AI panel click-loss bug. AnimatePresence
-    // mode="sync" keeps the exiting page mounted with `position: absolute;
-    // inset: 0` for ~220 ms while opacity fades out. Because <Outlet> reads
-    // from the *current* router context, both layers render the same panel —
-    // a real user click during the transition window lands on the
-    // soon-to-unmount overlay and is dropped when React unmounts the node.
-    // The fix is to set `pointerEvents: 'none'` on the exit variant so the
-    // overlay is invisible to hit-testing. Read the source directly so the
-    // test fails loudly if the property is removed by future refactors.
+  it('is a no-op pass-through — no AnimatePresence / motion machinery', async () => {
+    // Regression guard for two consecutive black-article-area bugs caused
+    // by framer-motion-based route transitions in this component:
+    //   - mode="sync" left an exit layer at position:absolute that blocked
+    //     clicks (#660).
+    //   - mode="wait" left the exit layer stuck at opacity:0 indefinitely
+    //     so the new layer never mounted (#669, this fix).
+    // The animation isn't worth the bug surface. Re-introduce only with a
+    // behavioral test that asserts the exit layer actually unmounts in jsdom.
     const fs = await import('node:fs/promises');
     const path = await import('node:path');
     const url = await import('node:url');
     const here = path.dirname(url.fileURLToPath(import.meta.url));
     const src = await fs.readFile(path.join(here, 'PageTransition.tsx'), 'utf-8');
-    expect(src).toMatch(/exit=\{[^}]*pointerEvents:\s*['"]none['"]/);
+    // Strip block + line comments so explanatory text doesn't trip the
+    // matchers (the JSDoc above PageTransition intentionally names the
+    // banned symbols as a warning to future editors).
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    expect(code).not.toMatch(/AnimatePresence/);
+    expect(code).not.toMatch(/from\s+['"]framer-motion['"]/);
+    expect(code).not.toMatch(/\bm\.div\b/);
+    expect(code).not.toMatch(/useState\b/);
   });
 });

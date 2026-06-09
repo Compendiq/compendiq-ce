@@ -69,10 +69,14 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
   return (
     <div ref={sortable.ref}>
       <div
+        // #707: mark the active row so the scroll container can find it and
+        // scroll it into view on reload (its ancestors are auto-expanded first).
+        data-active={isActive ? 'true' : undefined}
+        data-page-id={node.page.id}
         className={cn(
           'group flex items-center gap-1.5 rounded-[10px] h-9 pr-2 text-sm cursor-pointer transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
           isActive
-            ? 'nm-pill-active text-primary font-medium scale-[1.01]'
+            ? 'nm-pill-active text-action font-medium scale-[1.01]'
             : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
         )}
         style={{ paddingLeft: `${level * 16 + 10}px` }}
@@ -92,7 +96,7 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
         ) : (
           <span className="w-[20px] shrink-0" />
         )}
-        <FileText size={15} className={cn('shrink-0', isActive ? 'text-primary/80' : 'text-muted-foreground/70')} />
+        <FileText size={15} className={cn('shrink-0', isActive ? 'text-action/80' : 'text-muted-foreground/70')} />
         <span className="truncate text-sm">{node.page.title}</span>
       </div>
 

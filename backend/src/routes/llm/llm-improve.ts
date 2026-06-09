@@ -99,10 +99,13 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
     );
 
     // Check LLM cache with stampede protection
-    const cacheKey = buildLlmCacheKey(resolvedModel, systemPrompt, improveContent, chatConfig.providerId);
+    const cacheKey = buildLlmCacheKey(resolvedModel, systemPrompt, improveContent, chatConfig.providerId, { thinking: body.thinking });
     const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
-      sendCachedSSE(reply, cached.content);
+      // Echo back the markdown the model was given (#704) so the frontend can
+      // diff like-for-like (original markdown vs improved markdown) instead of
+      // comparing formatting-stripped bodyText against the markdown output.
+      sendCachedSSE(reply, cached.content, { originalMarkdown: markdown });
       return;
     }
 
@@ -117,11 +120,15 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
       improvementId = insertResult.rows[0]?.id;
     }
 
-    const improveExtras = webSources.length > 0 ? {
-      sources: webSources.map((s) => ({
+    // Always echo the markdown the model was given (#704) so the frontend can
+    // diff like-for-like (original markdown vs improved markdown). Web sources,
+    // when present, ride along in the same final SSE event.
+    const improveExtras: Record<string, unknown> = { originalMarkdown: markdown };
+    if (webSources.length > 0) {
+      improveExtras.sources = webSources.map((s) => ({
         pageTitle: s.title, spaceKey: 'Web', confluenceId: s.url, score: 1,
-      })),
-    } : undefined;
+      }));
+    }
 
     const improveMessages = [
       { role: 'system' as const, content: systemPrompt },
@@ -131,7 +138,7 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
     try {
       const postProcess = await buildOutputPostProcessor(webSources.map((s) => s.url));
 
-      const generator = streamChat(chatConfig, resolvedModel, improveMessages);
+      const generator = streamChat(chatConfig, resolvedModel, improveMessages, undefined, { thinking: body.thinking });
 
       const accumulated = await streamSSE(request, reply, generator, improveExtras, { llmCache, cacheKey, postProcess });
 

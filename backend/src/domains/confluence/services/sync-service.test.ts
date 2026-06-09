@@ -32,16 +32,24 @@ vi.mock('../../../core/utils/ssrf-guard.js', () => ({
 const mockConfluenceClientInstance: Record<string, ReturnType<typeof vi.fn>> = {
   getAllSpaces: vi.fn().mockResolvedValue([]),
   getAllPagesInSpace: vi.fn().mockResolvedValue([]),
+  getAllPageIds: vi.fn().mockResolvedValue(new Set<string>()),
   getModifiedPages: vi.fn().mockResolvedValue([]),
   getPage: vi.fn().mockResolvedValue({ id: '', title: '', body: { storage: { value: '' } }, version: { number: 1 }, metadata: { labels: { results: [] } }, ancestors: [] }),
   getPageAttachments: vi.fn().mockResolvedValue({ results: [] }),
 };
 
-vi.mock('./confluence-client.js', () => ({
-  ConfluenceClient: vi.fn(function (this: Record<string, ReturnType<typeof vi.fn>>) {
-    Object.assign(this, mockConfluenceClientInstance);
-  }),
-}));
+// Keep the real `ConfluenceError` so `instanceof` checks in the module under
+// test (the #706 404-confirmation branch) still work while `ConfluenceClient`
+// itself is stubbed.
+vi.mock('./confluence-client.js', async () => {
+  const actual = await vi.importActual<typeof import('./confluence-client.js')>('./confluence-client.js');
+  return {
+    ...actual,
+    ConfluenceClient: vi.fn(function (this: Record<string, ReturnType<typeof vi.fn>>) {
+      Object.assign(this, mockConfluenceClientInstance);
+    }),
+  };
+});
 
 vi.mock('../../../core/services/content-converter.js', () => ({
   confluenceToHtml: vi.fn().mockReturnValue('<p>test</p>'),
@@ -104,6 +112,7 @@ import { query } from '../../../core/db/postgres.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { cleanPageAttachments } from './attachment-handler.js';
 import { clearAttachmentFailures } from '../../../core/services/redis-cache.js';
+import { ConfluenceError } from './confluence-client.js';
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
@@ -337,26 +346,33 @@ describe('sync-service', () => {
     function setupSyncMocks(opts: {
       confluencePageIds: string[];
       dbPageIds: string[];
-      rbacUserCount?: number;
     }) {
-      const { confluencePageIds, dbPageIds, rbacUserCount = 1 } = opts;
+      const { confluencePageIds, dbPageIds } = opts;
+      const liveIds = new Set(confluencePageIds);
 
       // Configure the shared mock client instance
       mockConfluenceClientInstance.getAllSpaces.mockResolvedValue([{ key: 'TEST', name: 'Test Space', homepage: null }]);
       mockConfluenceClientInstance.getAllPagesInSpace.mockResolvedValue(
         confluencePageIds.map((id) => ({ id, title: `Page ${id}`, status: 'current' })),
       );
+      // Authoritative live-id listing used by deletion reconciliation (#706).
+      mockConfluenceClientInstance.getAllPageIds.mockResolvedValue(liveIds);
       mockConfluenceClientInstance.getModifiedPages.mockResolvedValue([]);
-      mockConfluenceClientInstance.getPage.mockImplementation((id: string) =>
-        Promise.resolve({
+      // Per-candidate confirmation fetch: a page absent from the live listing is
+      // confirmed gone with a 404; live pages resolve normally.
+      mockConfluenceClientInstance.getPage.mockImplementation((id: string) => {
+        if (!liveIds.has(id)) {
+          return Promise.reject(new ConfluenceError('Resource not found', 404));
+        }
+        return Promise.resolve({
           id,
           title: `Page ${id}`,
           body: { storage: { value: '<p>content</p>' } },
           version: { number: 1, when: '2025-01-01T00:00:00Z', by: { displayName: 'Author' } },
           metadata: { labels: { results: [] } },
           ancestors: [],
-        }),
-      );
+        });
+      });
       mockConfluenceClientInstance.getPageAttachments.mockResolvedValue({ results: [] });
 
       // Mock RBAC spaces
@@ -393,14 +409,6 @@ describe('sync-service', () => {
         // syncPage: upsert page
         if (sqlStr.includes('INSERT INTO pages')) {
           return emptyResult as QueryResult;
-        }
-
-        // detectDeletedPages: RBAC user count
-        if (sqlStr.includes('COUNT(DISTINCT principal_id)')) {
-          return {
-            rows: [{ count: String(rbacUserCount) }],
-            rowCount: 1, command: '', oid: 0, fields: [],
-          } as QueryResult;
         }
 
         // detectDeletedPages: existing pages in DB
@@ -488,6 +496,28 @@ describe('sync-service', () => {
       await syncUser('user-1');
 
       expect(vi.mocked(cleanPageAttachments)).toHaveBeenCalledWith('', 'page-orphan');
+    });
+
+    it('skips reconciliation when another run already claimed the space this cycle (#706 dedupe)', async () => {
+      setupSyncMocks({
+        confluencePageIds: [],
+        dbPageIds: ['page-orphan'],
+      });
+      mockRedisGet.mockResolvedValue(null);
+      // The per-space dedupe key (sync:reconcile:*) is already held → claim lost.
+      // The unrelated worker-lock SET still succeeds so the sync run proceeds.
+      mockRedisSet.mockImplementation((key: string) =>
+        Promise.resolve(typeof key === 'string' && key.startsWith('sync:reconcile:') ? null : 'OK'),
+      );
+
+      await syncUser('user-1');
+
+      // No confirmation fetch and no soft-delete — reconciliation was deduped.
+      expect(mockConfluenceClientInstance.getAllPageIds).not.toHaveBeenCalled();
+      const softDeleteCall = vi.mocked(query).mock.calls.find(
+        (call) => typeof call[0] === 'string' && call[0].includes('UPDATE pages SET deleted_at = NOW()'),
+      );
+      expect(softDeleteCall).toBeUndefined();
     });
   });
 

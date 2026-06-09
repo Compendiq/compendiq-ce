@@ -12,7 +12,7 @@ const MODE_LABELS: Record<VimMode, string> = {
 };
 
 const MODE_COLORS: Record<VimMode, string> = {
-  normal: 'bg-primary/15 text-primary',
+  normal: 'bg-action/15 text-action',
   insert: 'bg-emerald-500/15 text-emerald-400',
   visual: 'bg-amber-500/15 text-amber-400',
 };

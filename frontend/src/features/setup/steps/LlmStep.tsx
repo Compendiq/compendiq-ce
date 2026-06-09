@@ -142,7 +142,7 @@ export function LlmStep({ onNext, onBack }: LlmStepProps) {
               setTestResult(null);
               setBaseUrl(PRESET_DEFAULTS[next].baseUrl);
             }}
-            className="nm-input"
+            className="nm-select-md"
             data-testid="llm-provider-select"
           >
             <option value="local">Ollama (Local)</option>

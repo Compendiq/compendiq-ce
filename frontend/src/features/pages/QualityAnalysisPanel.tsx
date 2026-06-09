@@ -124,7 +124,7 @@ export function QualityAnalysisPanel({
         <select
           value={model}
           onChange={(e) => setModel(e.target.value)}
-          className="flex-1 rounded-md bg-foreground/5 px-2 py-1.5 text-sm outline-none"
+          className="nm-select-md flex-1"
         >
           {models.map((m) => (
             <option key={m.name} value={m.name}>{m.name}</option>

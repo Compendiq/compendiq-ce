@@ -122,7 +122,7 @@ export function AttachmentsMacroView({ editor }: NodeViewProps) {
                       href={att.url}
                       target="_blank"
                       rel="noreferrer"
-                      className="truncate text-primary hover:underline"
+                      className="truncate text-action hover:underline"
                     >
                       {att.filename}
                     </a>

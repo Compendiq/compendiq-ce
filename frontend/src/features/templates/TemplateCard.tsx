@@ -40,7 +40,7 @@ export function TemplateCard({ template, index, onUse, onPreview }: TemplateCard
     >
       {/* Header row */}
       <div className="flex items-start gap-3 mb-3">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-action/10 text-action">
           <FileText size={20} />
         </div>
         <div className="min-w-0 flex-1">
@@ -67,7 +67,7 @@ export function TemplateCard({ template, index, onUse, onPreview }: TemplateCard
       <div className="flex items-center gap-2">
         <button
           onClick={() => onUse(template)}
-          className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+          className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-action bg-transparent px-3 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
           data-testid={`template-use-${template.id}`}
         >
           <Play size={14} />

@@ -9,6 +9,7 @@ import {
 import type { LicenseInfoResponse } from '@compendiq/contracts';
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
+import { checkRedirectUriOrigin } from './oidc-redirect-uri';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -182,6 +183,14 @@ function ProviderTab({ disabled }: { disabled?: boolean }) {
     );
   }
 
+  // Warn when the Redirect URI origin diverges from the origin the admin loaded
+  // the app from. The backend builds the post-login SPA redirect (hop 3) from
+  // its FRONTEND_URL env var, not from this Redirect URI — so a mismatch here
+  // is a strong signal that FRONTEND_URL is still the localhost default and
+  // login will dead-end behind a reverse proxy (issue #710).
+  const appOrigin = window.location.origin;
+  const redirectCheck = checkRedirectUriOrigin(redirectUri, appOrigin);
+
   return (
     <div className="space-y-6" data-testid="oidc-provider-form">
       {/* Status indicator */}
@@ -330,7 +339,7 @@ function ProviderTab({ disabled }: { disabled?: boolean }) {
             type="url"
             value={redirectUri}
             onChange={(e) => setRedirectUri(e.target.value)}
-            placeholder="http://localhost:3000/api/auth/oidc/callback"
+            placeholder={`${window.location.origin}/api/auth/oidc/callback`}
             className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary disabled:opacity-60 disabled:cursor-not-allowed"
             data-testid="oidc-redirect-uri"
             disabled={disabled}
@@ -338,6 +347,49 @@ function ProviderTab({ disabled }: { disabled?: boolean }) {
           <p className="mt-1 text-xs text-muted-foreground">
             Must match the redirect URI registered with your identity provider.
           </p>
+          {redirectCheck.mismatch && (
+            <m.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              className="mt-2 flex items-start gap-2 rounded-md bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400"
+              data-testid="oidc-redirect-origin-warning"
+            >
+              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+              <div className="space-y-1">
+                <div className="font-medium">
+                  Redirect URI origin doesn&apos;t match this app&apos;s origin
+                </div>
+                <div className="text-muted-foreground">
+                  The Redirect URI uses{' '}
+                  <code className="rounded bg-foreground/10 px-1 py-0.5">
+                    {redirectCheck.redirectOrigin}
+                  </code>
+                  , but you loaded this app from{' '}
+                  <code className="rounded bg-foreground/10 px-1 py-0.5">{appOrigin}</code>.
+                  After login, the backend redirects the browser to the SPA using its{' '}
+                  <code className="rounded bg-foreground/10 px-1 py-0.5">FRONTEND_URL</code>{' '}
+                  env var — <strong>not</strong> this Redirect URI. If they diverge, login
+                  dead-ends on an unreachable host.
+                </div>
+                <div className="text-muted-foreground">
+                  Set the backend{' '}
+                  <code className="rounded bg-foreground/10 px-1 py-0.5">FRONTEND_URL</code>{' '}
+                  to your public origin:{' '}
+                  <code className="rounded bg-foreground/10 px-1 py-0.5">
+                    FRONTEND_URL={redirectCheck.redirectOrigin}
+                  </code>{' '}
+                  and restart the backend.{' '}
+                  <code className="rounded bg-foreground/10 px-1 py-0.5">FRONTEND_URL</code>{' '}
+                  doubles as the comma-separated CORS allowlist — if you already set
+                  multiple origins, append this one (
+                  <code className="rounded bg-foreground/10 px-1 py-0.5">
+                    …,{redirectCheck.redirectOrigin}
+                  </code>
+                  ) rather than overwriting the list.
+                </div>
+              </div>
+            </m.div>
+          )}
         </div>
 
         <div>
@@ -375,7 +427,7 @@ function ProviderTab({ disabled }: { disabled?: boolean }) {
         <button
           onClick={handleSave}
           disabled={disabled || saveMutation.isPending}
-          className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           data-testid="oidc-save-btn"
         >
           {saveMutation.isPending && <Loader2 size={14} className="animate-spin" />}
@@ -456,7 +508,7 @@ function MappingsTab({ disabled }: { disabled?: boolean }) {
         <button
           onClick={() => setShowForm(true)}
           disabled={disabled}
-          className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           data-testid="create-mapping-btn"
         >
           <Plus size={16} />
@@ -520,7 +572,7 @@ function MappingsTab({ disabled }: { disabled?: boolean }) {
             <button
               onClick={handleCreate}
               disabled={!oidcGroup.trim() || !roleId || createMutation.isPending}
-              className="flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-3 py-1.5 text-sm text-action transition-colors hover:bg-action hover:text-action-foreground disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
               data-testid="submit-mapping"
             >
               {createMutation.isPending && <Loader2 size={14} className="animate-spin" />}
@@ -564,7 +616,7 @@ function MappingsTab({ disabled }: { disabled?: boolean }) {
                 >
                   <td className="px-4 py-2.5 font-mono text-xs">{mapping.oidcGroup}</td>
                   <td className="px-4 py-2.5">
-                    <span className="rounded bg-primary/10 px-2 py-0.5 text-xs text-primary">
+                    <span className="rounded bg-[#ececea] px-2 py-0.5 text-xs text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]">
                       {mapping.roleName ?? `Role #${mapping.roleId}`}
                     </span>
                   </td>
@@ -643,7 +695,7 @@ export function OidcSettingsPage() {
               className={cn(
                 'flex items-center gap-1.5 rounded-md px-4 py-2 text-sm transition-colors',
                 activeTab === key
-                  ? 'bg-primary/15 text-primary font-medium'
+                  ? 'bg-action/15 text-action font-medium'
                   : 'text-muted-foreground hover:bg-foreground/5',
               )}
               data-testid={`oidc-tab-${key}`}

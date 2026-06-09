@@ -108,6 +108,9 @@ interface AiContextValue {
   setShowDiffView: (v: boolean) => void;
   improvedContent: string;
   setImprovedContent: (v: string) => void;
+  /** Markdown baseline (#704) the model was fed — diffed against `improvedContent`. */
+  originalMarkdown: string;
+  setOriginalMarkdown: (v: string) => void;
 
   // Diagram mode state
   diagramType: string;
@@ -119,16 +122,34 @@ interface AiContextValue {
 
   // Streaming helper
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  runStream: <T extends { content?: string; error?: string; done?: boolean; final?: boolean; conversationId?: string; sources?: Source[] }>(
+  runStream: <T extends StreamChunk>(
     endpoint: string,
     body: Record<string, unknown>,
     opts?: {
       onBeforeStream?: () => void;
       onContent?: (accumulated: string) => void;
-      onComplete?: (accumulated: string, sources?: Source[]) => void;
+      onComplete?: (accumulated: string, sources?: Source[], meta?: StreamMeta) => void;
       userMessage?: string;
     },
   ) => Promise<void>;
+}
+
+/** Shape of a single parsed SSE event from any `/llm/*` streaming route. */
+interface StreamChunk {
+  content?: string;
+  error?: string;
+  done?: boolean;
+  final?: boolean;
+  conversationId?: string;
+  sources?: Source[];
+  /** Improve route (#704): the original markdown the model was fed, echoed on the final event. */
+  originalMarkdown?: string;
+}
+
+/** Extra, non-content metadata surfaced to `onComplete` once a stream finishes. */
+export interface StreamMeta {
+  /** Improve route (#704): markdown baseline for like-for-like diffing. */
+  originalMarkdown?: string;
 }
 
 const AiCtx = createContext<AiContextValue | null>(null);
@@ -172,6 +193,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
   const [improvementType, setImprovementType] = useState('grammar');
   const [showDiffView, setShowDiffView] = useState(false);
   const [improvedContent, setImprovedContent] = useState('');
+  const [originalMarkdown, setOriginalMarkdown] = useState('');
   const [diagramType, setDiagramType] = useState('flowchart');
   const [diagramCode, setDiagramCode] = useState('');
   const [isInsertingDiagram, setIsInsertingDiagram] = useState(false);
@@ -202,6 +224,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
       setInput('');
       setShowDiffView(false);
       setImprovedContent('');
+      setOriginalMarkdown('');
       setDiagramCode('');
     }
   }, [pageId]);
@@ -377,13 +400,13 @@ export function AiProvider({ children }: { children: ReactNode }) {
    * Generic SSE streaming helper used by all mode handlers.
    * Manages abort controller, streaming state, thinking state, and message accumulation.
    */
-  const runStream = useCallback(async <T extends { content?: string; error?: string; done?: boolean; final?: boolean; conversationId?: string; sources?: Source[] }>(
+  const runStream = useCallback(async <T extends StreamChunk>(
     endpoint: string,
     body: Record<string, unknown>,
     opts?: {
       onBeforeStream?: () => void;
       onContent?: (accumulated: string) => void;
-      onComplete?: (accumulated: string, sources?: Source[]) => void;
+      onComplete?: (accumulated: string, sources?: Source[], meta?: StreamMeta) => void;
       userMessage?: string;
     },
   ) => {
@@ -404,6 +427,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
 
     let accumulated = '';
     let finalSources: Source[] = [];
+    let originalMarkdown: string | undefined;
 
     // Add the placeholder assistant message with a stable ID
     const assistantMsgId = nextMessageId();
@@ -443,6 +467,14 @@ export function AiProvider({ children }: { children: ReactNode }) {
         if (chunk.final && chunk.sources) {
           finalSources = chunk.sources;
         }
+        // Improve route (#704): capture the original markdown baseline so the
+        // diff compares like-for-like markdown instead of stripped bodyText.
+        // Use !== undefined (not truthiness) so an intentionally empty baseline
+        // (empty page → htmlToMarkdown('') === '') is preserved rather than
+        // falling back to the also-empty bodyText.
+        if (chunk.originalMarkdown !== undefined) {
+          originalMarkdown = chunk.originalMarkdown;
+        }
       }
       // Attach sources to the last assistant message
       if (finalSources.length > 0) {
@@ -453,7 +485,11 @@ export function AiProvider({ children }: { children: ReactNode }) {
           return updated;
         });
       }
-      opts?.onComplete?.(accumulated, finalSources.length > 0 ? finalSources : undefined);
+      opts?.onComplete?.(
+        accumulated,
+        finalSources.length > 0 ? finalSources : undefined,
+        originalMarkdown !== undefined ? { originalMarkdown } : undefined,
+      );
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') return;
       toast.error(err instanceof Error ? err.message : 'Request failed');
@@ -509,6 +545,8 @@ export function AiProvider({ children }: { children: ReactNode }) {
     setShowDiffView,
     improvedContent,
     setImprovedContent,
+    originalMarkdown,
+    setOriginalMarkdown,
     diagramType,
     setDiagramType,
     diagramCode,

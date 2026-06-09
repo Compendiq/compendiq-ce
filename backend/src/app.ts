@@ -90,6 +90,7 @@ import { initLlmQueueClusterCoordination } from './domains/llm/services/llm-queu
 import { setLlmAuditHook } from './domains/llm/services/llm-audit-hook.js';
 import { defaultLlmAuditWriter } from './domains/llm/services/llm-audit-default-writer.js';
 import { ENTERPRISE_FEATURES } from './core/enterprise/features.js';
+import type { OidcConfig } from '@compendiq/contracts';
 
 export async function buildApp() {
   // v0.4 epic §3.4 — replace the previous blanket `trustProxy: true` with a
@@ -130,7 +131,18 @@ export async function buildApp() {
 
   await app.register(sensible);
   await app.register(cookie);
-  await app.register(compress);
+  // Compression threshold raised from the @fastify/compress default of 1024
+  // bytes. The shipped EE backend (Node 24.15-alpine, @fastify/compress 8.3.1)
+  // produced empty zstd-encoded bodies for `/api/health` (1042 bytes JSON)
+  // while correctly compressing `/api/pages/:id` (1614 bytes) — deterministic
+  // and reproducible in production, not reproducible against the same plugin
+  // in isolation on Node 26. The smoking gun: response headers carry
+  // `content-encoding: zstd; content-length: 0` and the body is empty. Real
+  // bandwidth wins only start past a few KB anyway (the gzip/br/zstd header
+  // overhead eats most of the savings on sub-2KB payloads), so raising the
+  // floor is a low-cost protective measure even after a fresh image rebuild
+  // hypothetically restores the upstream behaviour.
+  await app.register(compress, { threshold: 4096 });
   await app.register(multipart, {
     limits: {
       fileSize: 20 * 1024 * 1024, // 20 MB
@@ -376,6 +388,20 @@ export async function buildApp() {
       tier: 'community',
       valid: true,
       features: [],
+    }));
+  }
+
+  // Community-mode OIDC config fallback.
+  // The EE plugin serves a richer GET /api/auth/oidc/config when OIDC_SSO is
+  // licensed (see the conditional registration below); in community mode we
+  // return a static "disabled" payload so the shared CE login page can hide
+  // the SSO button instead of 404-ing on every load.
+  if (enterprise.version === 'community') {
+    app.get('/api/auth/oidc/config', async (): Promise<OidcConfig> => ({
+      enabled: false,
+      issuer: null,
+      name: null,
+      enterpriseRequired: true,
     }));
   }
 

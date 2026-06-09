@@ -289,7 +289,7 @@ export function CommandPalette() {
                           className={cn(
                             'flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors',
                             selectedIndex === idx
-                              ? 'bg-primary/15 text-primary'
+                              ? 'bg-action/15 text-action'
                               : 'text-foreground hover:bg-foreground/5',
                           )}
                         >
@@ -332,7 +332,7 @@ export function CommandPalette() {
                           className={cn(
                             'flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors',
                             selectedIndex === idx
-                              ? 'bg-primary/15 text-primary'
+                              ? 'bg-action/15 text-action'
                               : 'text-foreground hover:bg-foreground/5',
                           )}
                         >
@@ -364,7 +364,7 @@ export function CommandPalette() {
                           className={cn(
                             'flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors',
                             selectedIndex === baseIdx
-                              ? 'bg-primary/15 text-primary'
+                              ? 'bg-action/15 text-action'
                               : 'text-foreground hover:bg-foreground/5',
                           )}
                         >

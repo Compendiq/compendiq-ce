@@ -2,19 +2,24 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   ChevronRight,
+  Cpu,
   ExternalLink,
   FileText,
   FolderOpen,
+  Gauge,
   ListTree,
   PanelRight,
   PanelRightClose,
   Pin,
   FileDown,
   Loader2,
+  RefreshCw,
   Trash2,
   Wand2,
+  History,
 } from 'lucide-react';
 import { AutoTagger } from '../../../features/pages/AutoTagger';
+import { VersionHistory } from '../../../features/pages/VersionHistory';
 import { FreshnessBadge } from '../badges/FreshnessBadge';
 import { EmbeddingStatusBadge } from '../badges/EmbeddingStatusBadge';
 import { QualityScoreBadge } from '../badges/QualityScoreBadge';
@@ -30,6 +35,9 @@ import {
   usePage,
   usePinnedPages,
   usePinPage,
+  useReembedPage,
+  useRequalityPage,
+  useResyncPage,
   useUnpinPage,
 } from '../../hooks/use-pages';
 import { useExportPdf } from '../../hooks/use-standalone';
@@ -114,7 +122,7 @@ const OutlineNodeItem = memo(function OutlineNodeItem({
         className={cn(
           'group flex items-center gap-1.5 rounded-[10px] h-9 pr-2 text-sm cursor-pointer transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
           isActive
-            ? 'nm-pill-active text-primary font-medium'
+            ? 'nm-pill-active text-action font-medium'
             : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
         )}
         style={{ paddingLeft: `${level * 16 + 8}px` }}
@@ -138,7 +146,7 @@ const OutlineNodeItem = memo(function OutlineNodeItem({
         ) : (
           <span className="w-[20px] shrink-0" />
         )}
-        <ListTree size={15} className={cn('shrink-0 opacity-70', isActive && 'text-primary opacity-100')} />
+        <ListTree size={15} className={cn('shrink-0 opacity-70', isActive && 'text-action opacity-100')} />
         <span className="truncate text-sm">{heading.text}</span>
       </div>
 
@@ -190,6 +198,9 @@ export function ArticleRightPane() {
   const deleteMutation = useDeletePage();
   const pinMutation = usePinPage();
   const unpinMutation = useUnpinPage();
+  const resyncMutation = useResyncPage();
+  const reembedMutation = useReembedPage();
+  const requalityMutation = useRequalityPage();
 
   const isPinned = pinnedData?.items.some((item) => item.id === id) ?? false;
 
@@ -377,10 +388,84 @@ export function ArticleRightPane() {
     }
   }, [deleteMutation, id, navigate]);
 
+  // Re-sync this article from Confluence. Calls the /pages/bulk/sync endpoint
+  // with a singleton ID; the bulk route already does the right per-page
+  // validation (auth, ownership, queue gating).
+  //
+  // The bulk endpoint can return `{succeeded: 0, failed: 0, errors: []}` when
+  // the page silently no-ops (e.g. confluenceId became null between render
+  // and click, or the user lost access mid-session). Treat that case as info,
+  // not an error — there's nothing wrong, just nothing to do.
+  const handleResync = useCallback(() => {
+    if (!id) return;
+    resyncMutation.mutate(id, {
+      onSuccess: (data) => {
+        if (data.succeeded > 0) {
+          toast.success('Re-synced from Confluence.');
+        } else if (data.failed > 0 || data.errors.length > 0) {
+          toast.error(data.errors[0] ?? 'Re-sync failed.');
+        } else {
+          toast.info('Nothing to re-sync.');
+        }
+      },
+      onError: (err) =>
+        toast.error(err instanceof Error ? err.message : 'Re-sync failed.'),
+    });
+  }, [id, resyncMutation]);
+
+  // Re-run quality analysis for this article. Bulk-endpoint passthrough; the
+  // route resets quality_status to 'pending' and kicks the worker. The trigger
+  // is lock-guarded — if a batch is already running, this re-queue is picked up
+  // on the next interval tick (QUALITY_CHECK_INTERVAL_MINUTES, default 60min).
+  // Same silent-no-op handling as Re-sync / Re-embed.
+  const handleRequality = useCallback(() => {
+    if (!id) return;
+    requalityMutation.mutate(id, {
+      onSuccess: (data) => {
+        if (data.succeeded > 0) {
+          toast.success('Quality re-check queued.');
+        } else if (data.failed > 0 || data.errors.length > 0) {
+          toast.error(data.errors[0] ?? 'Quality re-check failed.');
+        } else {
+          toast.info('Nothing to re-check.');
+        }
+      },
+      onError: (err) =>
+        toast.error(err instanceof Error ? err.message : 'Quality re-check failed.'),
+    });
+  }, [id, requalityMutation]);
+
+  // Re-embed this article for RAG. Same bulk-endpoint passthrough as resync.
+  // Same silent-no-op handling as Re-sync (see comment above).
+  const handleReembed = useCallback(() => {
+    if (!id) return;
+    reembedMutation.mutate(id, {
+      onSuccess: (data) => {
+        if (data.succeeded > 0) {
+          toast.success('Queued for re-embedding.');
+        } else if (data.failed > 0 || data.errors.length > 0) {
+          toast.error(data.errors[0] ?? 'Re-embed failed.');
+        } else {
+          toast.info('Nothing to re-embed.');
+        }
+      },
+      onError: (err) => {
+        const message = err instanceof Error ? err.message : 'Re-embed failed.';
+        if (message.includes('already in progress')) {
+          toast.info('Embedding is already in progress. Please wait for it to finish.');
+        } else {
+          toast.error(message);
+        }
+      },
+    });
+  }, [id, reembedMutation]);
+
   if (!id) return null;
 
   // Collapsed rail — glass pill style
   if (collapsed) {
+    const railIconBtn =
+      'rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors disabled:opacity-50';
     return (
       <AnimatePresence mode="wait">
         <m.div
@@ -395,7 +480,7 @@ export function ArticleRightPane() {
           <div className="flex h-12 w-full flex-col items-center justify-center gap-0.5">
             <button
               onClick={toggleSidebar}
-              className="rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
+              className={railIconBtn}
               aria-label="Expand article sidebar"
               title="Expand sidebar (.)"
             >
@@ -403,6 +488,130 @@ export function ArticleRightPane() {
             </button>
             <ShortcutHint shortcutId="toggle-right-panel" />
           </div>
+
+          {!editing && page && (
+            <>
+              <div className="my-1 h-px w-6 bg-[var(--glass-sidebar-divider)]" />
+              {/* min-h-0 + overflow-y-auto so the action stack scrolls on
+                  short viewports — without this, the outer overflow-hidden on
+                  the rail would clip the bottom buttons (e.g. Delete). */}
+              <div
+                className="flex min-h-0 w-full flex-1 flex-col items-center gap-0.5 overflow-y-auto p-1"
+                data-testid="article-actions-rail"
+              >
+                <button
+                  onClick={() => navigate(`/ai?mode=improve&pageId=${encodeURIComponent(id)}`)}
+                  className={railIconBtn}
+                  aria-label="AI Improve"
+                  title={`AI Improve (${formatKeysForPlatform(getShortcutHint('ai-improve') ?? '', detectMac())})`}
+                >
+                  <Wand2 size={16} />
+                </button>
+
+                {activeModel && (
+                  <AutoTagger
+                    pageId={id}
+                    currentLabels={page?.labels ?? []}
+                    model={activeModel}
+                    className={`${railIconBtn} [&>span]:hidden`}
+                  />
+                )}
+
+                <button
+                  onClick={handleExportPdf}
+                  disabled={exportPdf.isPending}
+                  className={railIconBtn}
+                  aria-label="Export PDF"
+                  title="Export as PDF"
+                >
+                  {exportPdf.isPending ? (
+                    <Loader2 size={16} className="animate-spin" />
+                  ) : (
+                    <FileDown size={16} />
+                  )}
+                </button>
+
+                <button
+                  onClick={handlePinToggle}
+                  className={cn(
+                    'rounded-lg p-1.5 transition-colors',
+                    isPinned
+                      ? 'nm-pill-active text-action'
+                      : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
+                  )}
+                  aria-label={isPinned ? 'Unpin' : 'Pin'}
+                  title={`${isPinned ? 'Unpin' : 'Pin'} (${formatKeysForPlatform(getShortcutHint('pin-page') ?? '', detectMac())})`}
+                >
+                  <Pin size={16} className={cn(isPinned && 'fill-current')} />
+                </button>
+
+                {settings?.confluenceUrl && page.confluenceId && (
+                  <a
+                    href={`${settings.confluenceUrl.replace(/\/+$/, '')}/pages/viewpage.action?pageId=${encodeURIComponent(page.confluenceId)}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className={railIconBtn}
+                    aria-label="Open in Confluence"
+                    title="Open in Confluence"
+                  >
+                    <ExternalLink size={16} />
+                  </a>
+                )}
+
+                {page.confluenceId && (
+                  <button
+                    onClick={handleResync}
+                    disabled={resyncMutation.isPending}
+                    className={railIconBtn}
+                    aria-label="Re-sync from Confluence"
+                    title="Re-sync from Confluence"
+                    data-testid="article-resync-rail-btn"
+                  >
+                    <RefreshCw size={16} className={cn(resyncMutation.isPending && 'animate-spin')} />
+                  </button>
+                )}
+
+                <button
+                  onClick={handleReembed}
+                  disabled={reembedMutation.isPending}
+                  className={railIconBtn}
+                  aria-label="Re-embed for RAG"
+                  title="Re-embed for RAG"
+                  data-testid="article-reembed-rail-btn"
+                >
+                  {reembedMutation.isPending ? (
+                    <Loader2 size={16} className="animate-spin" />
+                  ) : (
+                    <Cpu size={16} />
+                  )}
+                </button>
+
+                <button
+                  onClick={handleRequality}
+                  disabled={requalityMutation.isPending}
+                  className={railIconBtn}
+                  aria-label="Re-check quality"
+                  title="Re-check quality"
+                  data-testid="article-requality-rail-btn"
+                >
+                  {requalityMutation.isPending ? (
+                    <Loader2 size={16} className="animate-spin" />
+                  ) : (
+                    <Gauge size={16} />
+                  )}
+                </button>
+
+                <button
+                  onClick={handleDelete}
+                  className="rounded-lg p-1.5 text-destructive/80 transition-colors hover:bg-destructive/8 hover:text-destructive"
+                  aria-label="Delete article"
+                  title={`Delete (${formatKeysForPlatform(getShortcutHint('delete-page') ?? '', detectMac())})`}
+                >
+                  <Trash2 size={16} />
+                </button>
+              </div>
+            </>
+          )}
         </m.div>
       </AnimatePresence>
     );
@@ -475,6 +684,28 @@ export function ArticleRightPane() {
             />
           )}
 
+          {id && (
+            <VersionHistory
+              pageId={id}
+              model={activeModel}
+              renderTrigger={(historyOpen) => (
+                <button
+                  type="button"
+                  className={cn(
+                    'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
+                    historyOpen
+                      ? 'nm-pill-active text-primary font-medium'
+                      : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
+                  )}
+                  title="Version history"
+                >
+                  <History size={15} className="shrink-0 opacity-70" />
+                  <span className="truncate">Version history</span>
+                </button>
+              )}
+            />
+          )}
+
           <button
             onClick={handleExportPdf}
             disabled={exportPdf.isPending}
@@ -494,7 +725,7 @@ export function ArticleRightPane() {
             className={cn(
               'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
               isPinned
-                ? 'nm-pill-active text-primary font-medium'
+                ? 'nm-pill-active text-action font-medium'
                 : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
             )}
             title={`${isPinned ? 'Unpin' : 'Pin'} (${formatKeysForPlatform(getShortcutHint('pin-page') ?? '', detectMac())})`}
@@ -514,6 +745,54 @@ export function ArticleRightPane() {
               <span className="truncate">Open in Confluence</span>
             </a>
           )}
+
+          {/* Re-sync from Confluence — only for Confluence-sourced articles.
+              Locally-authored pages have no upstream to pull from. */}
+          {page.confluenceId && (
+            <button
+              onClick={handleResync}
+              disabled={resyncMutation.isPending}
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground disabled:opacity-50"
+              title="Re-sync from Confluence"
+              data-testid="article-resync-btn"
+            >
+              <RefreshCw
+                size={15}
+                className={cn('shrink-0 opacity-70', resyncMutation.isPending && 'animate-spin')}
+              />
+              <span className="truncate">Re-sync</span>
+            </button>
+          )}
+
+          <button
+            onClick={handleReembed}
+            disabled={reembedMutation.isPending}
+            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground disabled:opacity-50"
+            title="Re-embed for RAG"
+            data-testid="article-reembed-btn"
+          >
+            {reembedMutation.isPending ? (
+              <Loader2 size={15} className="shrink-0 animate-spin opacity-70" />
+            ) : (
+              <Cpu size={15} className="shrink-0 opacity-70" />
+            )}
+            <span className="truncate">Re-embed</span>
+          </button>
+
+          <button
+            onClick={handleRequality}
+            disabled={requalityMutation.isPending}
+            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background hover:bg-[var(--glass-pill-hover)] hover:text-foreground disabled:opacity-50"
+            title="Re-check quality"
+            data-testid="article-requality-btn"
+          >
+            {requalityMutation.isPending ? (
+              <Loader2 size={15} className="shrink-0 animate-spin opacity-70" />
+            ) : (
+              <Gauge size={15} className="shrink-0 opacity-70" />
+            )}
+            <span className="truncate">Re-check Quality</span>
+          </button>
 
           <button
             onClick={handleDelete}
@@ -598,7 +877,7 @@ export function ArticleRightPane() {
             </div>
             <div className="mt-2 h-1 overflow-hidden rounded-full bg-foreground/8">
               <m.div
-                className="h-full rounded-full bg-primary"
+                className="h-full rounded-full bg-action"
                 style={{ width: `${readingProgress}%` }}
                 transition={{ duration: 0.12 }}
               />
@@ -636,8 +915,8 @@ export function ArticleRightPane() {
         aria-orientation="vertical"
         onMouseDown={handleResizeStart}
         className={cn(
-          'absolute left-0 top-2 bottom-2 w-1 cursor-col-resize rounded-full transition-colors hover:bg-primary/40',
-          isResizing && 'bg-primary/60',
+          'absolute left-0 top-2 bottom-2 w-1 cursor-col-resize rounded-full transition-colors hover:bg-action/40',
+          isResizing && 'bg-action/60',
         )}
       />
     </m.aside>

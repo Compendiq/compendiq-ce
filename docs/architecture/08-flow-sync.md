@@ -49,6 +49,25 @@ sequenceDiagram
         end
 
         S->>DB: INSERT/UPDATE page_versions (snapshot)
+
+        Note over S,DB: Deletion reconciliation (#706) — every sync, incremental too
+        S->>CL: getAllPageIds(spaceKey)
+        CL->>CF: GET /rest/api/content?spaceKey=… (ids only, no expand)
+        CF-->>CL: authoritative live id set
+        CL-->>S: liveIds
+        S->>DB: SELECT confluence_id FROM pages WHERE space_key=… AND deleted_at IS NULL
+        loop per candidate (local row absent from liveIds)
+            S->>CL: getPage(confluenceId) — confirm gone
+            CL->>CF: GET /rest/api/content/{id}
+            alt 404 (genuinely deleted)
+                CF-->>S: 404
+                S->>DB: UPDATE pages SET deleted_at = NOW()
+            else 200 / 403 (still there / not visible to this principal)
+                CF-->>S: 200 / 403
+                Note over S: leave row in place (shared-space safe)
+            end
+        end
+
         S->>R: DEL sync:worker:lock
         S-->>T: done
     end
@@ -91,6 +110,46 @@ sequenceDiagram
   is written from Confluence's own version counter; no double-writes.
 - **Circuit breaker** — `core/services/circuit-breaker.ts` protects against
   runaway failure against a broken Confluence instance.
+
+## Deletion reconciliation (#706)
+
+Pages removed in Confluence are reflected locally by `detectDeletedPages`, which
+runs on **every** sync — incremental as well as the ≥24h full sync — so deletions
+surface within a normal sync cycle rather than lingering until a rare full run.
+
+- **Bounded cost.** The authoritative live id set comes from a dedicated cheap
+  listing (`getAllPageIds`: ids only, no `expand`), so a candidate set is derived
+  by set difference rather than re-fetching every page. The incremental
+  modified-pages list can't be used for this — it only holds pages that changed.
+- **Shared-space safety.** A page absent from one principal's listing is *not*
+  assumed deleted (it may simply be restricted from that user). Each candidate is
+  confirmed gone via a direct `GET /content/{id}` → **404** before its row is
+  soft-deleted; a `200`/`403` leaves the row untouched, so one user's restricted
+  view can no longer nuke pages others can still see. The number of confirmation
+  fetches per run is capped (`MAX_DELETION_CONFIRMATIONS`); a larger candidate set
+  is deferred to a later run (the whole run defers — zero soft-deletes that cycle).
+- **Trash vs. purge.** Confluence DC move-to-trash does **not** make a page 404 —
+  `GET /content/{id}` still returns `200` with `status: "trashed"`. So a page sitting
+  in the Confluence trash is treated as *still present* and is **not** reconciled;
+  reconciliation fires only once the page is hard-purged (then the id is gone from
+  `getAllPageIds` *and* the confirmation fetch returns 404). This is intentional —
+  it mirrors Confluence's own "deleted means purged" semantics and avoids removing a
+  page a Confluence admin could still restore from the trash.
+- **Per-cycle fan-out.** Reconciliation is invoked once per (user × space); a shared
+  space would otherwise repeat the listing + confirmation fetches per user each cycle.
+  A best-effort Redis `SET NX EX` guard (`sync:reconcile:{spaceKey}`) lets the first
+  run per space claim the cycle and the rest skip. It fails open when Redis is absent
+  (runs per-user, as before) and can only narrow work — a true deletion is 404 for
+  every principal, so whoever reaches the space first reconciles it.
+- **Soft delete + purge.** Reconciled rows are soft-deleted (`deleted_at`), then
+  hard-purged after 30 days by `purgeDeletedPages`. A subsequent re-appearance in
+  Confluence revives the row: `syncPage`'s upsert `ON CONFLICT … DO UPDATE` (and the
+  version-mismatch update path) both set `deleted_at = NULL`.
+
+The same 404-tolerance applies to **user-initiated delete** (`DELETE /api/pages/:id`
+and the bulk path): if Confluence answers 404 the remote page is already gone, so
+local cleanup proceeds and the delete succeeds instead of failing with
+"Resource not found". Any non-404 error still surfaces (no silent data loss).
 
 ## Content pipeline hand-off
 

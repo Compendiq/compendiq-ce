@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { m } from 'framer-motion';
 import { toast } from 'sonner';
-import { Shield, Crown, Users, Calendar, CheckCircle2, XCircle, AlertTriangle, KeyRound, Loader2, Save, Trash2 } from 'lucide-react';
+import { Crown, Users, Calendar, CheckCircle2, Lock, AlertTriangle, KeyRound, Loader2, Save, Trash2, ArrowUpRight } from 'lucide-react';
+import { PanelHeader } from '../settings/PanelHeader';
 import type { LicenseInfoResponse } from '@compendiq/contracts';
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
@@ -106,13 +107,43 @@ export function LicenseStatusCard() {
 
   return (
     <div className="space-y-6" data-testid="license-status">
-      {/* Header */}
-      <div>
-        <h2 className="text-lg font-semibold">License</h2>
-        <p className="text-sm text-muted-foreground">
-          Your current license tier and available features
-        </p>
-      </div>
+      <PanelHeader
+        title="License"
+        subtitle="Current tier and the enterprise features each tier unlocks."
+      />
+
+      {/* Community-upgrade CTA promoted to top: in CE the admin is most
+          likely here BECAUSE they want to upgrade. Lead with the action,
+          not the deny-list. Hidden once a paid tier is active. */}
+      {isCommunity && !canUpdate && (
+        <m.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className="flex items-start justify-between gap-4 rounded-lg border border-[var(--color-primary)]/30 bg-[var(--color-primary)]/[0.06] p-4"
+        >
+          <div className="flex items-start gap-3">
+            <AlertTriangle size={18} className="mt-0.5 shrink-0 text-[var(--color-warning)]" />
+            <div>
+              <div className="text-sm font-medium text-foreground">
+                Unlock enterprise features
+              </div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                SSO/OIDC, audit export, custom branding, multi-instance and priority
+                support require a Compendiq enterprise license. Contact your
+                administrator or visit the Compendiq website.
+              </div>
+            </div>
+          </div>
+          <a
+            href="https://compendiq.com/pricing"
+            target="_blank"
+            rel="noreferrer"
+            className="nm-button-primary inline-flex shrink-0 items-center gap-1.5"
+          >
+            See plans <ArrowUpRight size={14} />
+          </a>
+        </m.div>
+      )}
 
       {/* Tier card */}
       <m.div
@@ -207,7 +238,7 @@ export function LicenseStatusCard() {
             <button
               onClick={handleSave}
               disabled={!keyInput.trim() || saveMutation.isPending || clearMutation.isPending}
-              className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
               data-testid="license-key-save-btn"
             >
               {saveMutation.isPending ? (
@@ -236,10 +267,15 @@ export function LicenseStatusCard() {
         </div>
       )}
 
-      {/* Features */}
-      <div className="nm-card p-5">
-        <h3 className="mb-3 text-sm font-medium">Available Features</h3>
-        <div className="space-y-2">
+      {/* Features — flat list of rows instead of card-in-card. The active
+          state uses an emerald CheckCircle (familiar "on") and the inactive
+          state uses Lock instead of XCircle (X reads as "close", Lock reads
+          as "unavailable until you have access"). */}
+      <div>
+        <h3 className="mb-3 text-sm font-medium text-muted-foreground">
+          Enterprise feature catalogue
+        </h3>
+        <ul role="list" className="divide-y divide-border/40 rounded-lg border border-border/40">
           {[
             { key: 'oidc', label: 'SSO / OIDC Authentication', description: 'Single sign-on with your identity provider' },
             { key: 'audit-export', label: 'Audit Log Export', description: 'Export audit logs for compliance' },
@@ -249,13 +285,22 @@ export function LicenseStatusCard() {
           ].map((feature) => {
             const isAvailable = data?.features?.includes(feature.key) ?? false;
             return (
-              <div
+              <li
                 key={feature.key}
-                className="flex items-center justify-between rounded-lg border border-border/30 px-4 py-3"
+                className="flex items-center justify-between px-4 py-3"
                 data-testid={`feature-${feature.key}`}
               >
                 <div className="flex items-center gap-3">
-                  <Shield size={16} className={isAvailable ? 'text-emerald-500' : 'text-muted-foreground/40'} />
+                  <span
+                    className={cn(
+                      'inline-flex h-7 w-7 items-center justify-center rounded-md',
+                      isAvailable
+                        ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                        : 'bg-foreground/[0.04] text-muted-foreground/60',
+                    )}
+                  >
+                    {isAvailable ? <CheckCircle2 size={16} /> : <Lock size={14} />}
+                  </span>
                   <div>
                     <div className={cn('text-sm font-medium', !isAvailable && 'text-muted-foreground')}>
                       {feature.label}
@@ -263,37 +308,21 @@ export function LicenseStatusCard() {
                     <div className="text-xs text-muted-foreground">{feature.description}</div>
                   </div>
                 </div>
-                {isAvailable ? (
-                  <CheckCircle2 size={16} className="text-emerald-500" />
-                ) : (
-                  <XCircle size={16} className="text-muted-foreground/30" />
-                )}
-              </div>
+                <span
+                  className={cn(
+                    'rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider',
+                    isAvailable
+                      ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                      : 'bg-foreground/[0.04] text-muted-foreground',
+                  )}
+                >
+                  {isAvailable ? 'Active' : 'Locked'}
+                </span>
+              </li>
             );
           })}
-        </div>
+        </ul>
       </div>
-
-      {/* Upgrade notice for community deployments that cannot self-activate
-          (i.e. the CE backend is noop — no canUpdate). EE community shows
-          the form above instead, which lets the admin paste a key directly. */}
-      {isCommunity && !canUpdate && (
-        <m.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.2 }}
-          className="flex items-start gap-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-4"
-        >
-          <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-500" />
-          <div>
-            <div className="text-sm font-medium text-amber-200">Upgrade to unlock enterprise features</div>
-            <div className="mt-1 text-xs text-muted-foreground">
-              Enterprise features like SSO/OIDC, audit log export, and custom branding require a Compendiq enterprise license.
-              Contact your administrator or visit the Compendiq website for licensing options.
-            </div>
-          </div>
-        </m.div>
-      )}
     </div>
   );
 }

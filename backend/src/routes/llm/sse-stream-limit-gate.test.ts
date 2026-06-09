@@ -122,9 +122,11 @@ vi.mock('../../core/services/ai-safety-service.js', () => ({
   getAiOutputRules: vi.fn().mockResolvedValue({
     stripReferences: false,
     referenceAction: 'off',
+    swissSpelling: false,
   }),
   upsertAiGuardrails: vi.fn(),
   upsertAiOutputRules: vi.fn(),
+  SWISS_SPELLING_INSTRUCTION: "Use Swiss orthography: never use the character 'ß' (eszett); always write 'ss' instead.",
 }));
 
 vi.mock('../../domains/confluence/services/subpage-context.js', () => ({

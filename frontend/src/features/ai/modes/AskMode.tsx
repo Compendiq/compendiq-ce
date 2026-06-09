@@ -111,7 +111,7 @@ export function AskModeInput() {
           {externalUrls.map((url) => (
             <span
               key={url}
-              className="inline-flex items-center gap-1 rounded-full border border-primary/20 bg-primary/5 px-2 py-0.5 text-xs text-primary"
+              className="inline-flex items-center gap-1 rounded-full border border-primary/20 bg-primary/5 px-2 py-0.5 text-xs text-primary-ink"
             >
               <Link2 size={10} />
               {new URL(url).hostname}
@@ -137,7 +137,7 @@ export function AskModeInput() {
           />
           <button
             onClick={addUrl}
-            className="shrink-0 rounded-md px-2 py-1 text-xs text-primary hover:bg-primary/10"
+            className="shrink-0 rounded-md px-2 py-1 text-xs text-primary-ink hover:bg-primary/10"
           >
             <Plus size={12} />
           </button>
@@ -158,7 +158,7 @@ export function AskModeInput() {
             title="Attach external documentation URL"
             className={`shrink-0 rounded-md p-1.5 transition-colors ${
               showUrlInput || externalUrls.length > 0
-                ? 'bg-primary/15 text-primary'
+                ? 'bg-primary/15 text-primary-ink'
                 : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground'
             }`}
             data-testid="attach-url-button"
@@ -211,10 +211,15 @@ export function AskExamplePrompts() {
   return (
     <ul
       aria-label="Example prompts"
-      className="mt-6 grid w-full max-w-xl grid-cols-1 gap-2 sm:grid-cols-2 list-none p-0"
+      className="mt-8 grid w-full max-w-2xl grid-cols-1 gap-2 sm:grid-cols-2 list-none p-0"
     >
       {ASK_EXAMPLE_PROMPTS.map((prompt) => (
         <li key={prompt}>
+          {/* Lighter card than nm-card-interactive — the heavy neumorphic
+              extrusion fights the flat composer that sits 80 px below it
+              (May-2026 audit). A 1 px border + faint inset surface keeps the
+              prompts skim-readable as a row of suggestions, not buttons that
+              look more important than the composer. */}
           <button
             type="button"
             onClick={() => pick(prompt)}
@@ -224,10 +229,10 @@ export function AskExamplePrompts() {
                 pick(prompt);
               }
             }}
-            className="nm-card-interactive flex w-full items-start gap-2 rounded-lg p-3 text-left text-xs text-foreground/80 hover:text-foreground"
+            className="group flex w-full items-start gap-2.5 rounded-lg border border-border/45 bg-foreground/[0.03] px-3 py-2.5 text-left text-sm text-foreground/85 transition-colors hover:border-primary/40 hover:bg-foreground/[0.06] hover:text-foreground focus-visible:border-primary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
             data-testid="ask-example-prompt"
           >
-            <Sparkles size={14} className="mt-0.5 shrink-0 text-primary" />
+            <Sparkles size={14} className="mt-0.5 shrink-0 text-primary/80 transition-colors group-hover:text-primary" />
             <span>{prompt}</span>
           </button>
         </li>
