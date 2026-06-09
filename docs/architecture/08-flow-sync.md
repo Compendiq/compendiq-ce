@@ -151,6 +151,65 @@ and the bulk path): if Confluence answers 404 the remote page is already gone, s
 local cleanup proceeds and the delete succeeds instead of failing with
 "Resource not found". Any non-404 error still surfaces (no silent data loss).
 
+## Space unsync / removal (#721)
+
+An admin can permanently remove a synced Confluence space from the local store via
+`DELETE /api/spaces/:key`. The operation is **local-only** — it never contacts
+Confluence. Sequence:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant A as Admin (Settings UI)
+    participant R as DELETE /api/spaces/:key
+    participant SV as sync-service.unsyncSpace
+    participant AH as attachment-handler
+    participant DB as Postgres
+
+    A->>R: DELETE /api/spaces/:key (admin JWT)
+    R->>R: isSystemAdmin guard (403 if not admin)
+    R->>DB: SELECT source FROM spaces WHERE space_key = ?
+    alt space not found
+        DB-->>R: (empty)
+        R-->>A: 404 Not Found
+    else found
+        DB-->>R: row
+        R->>SV: unsyncSpace(spaceKey)
+        SV->>DB: SELECT id FROM pages WHERE space_key = ?
+        loop per page
+            SV->>AH: cleanPageAttachments(pageId) — purge local files
+        end
+        SV->>DB: DELETE FROM pages WHERE space_key = ? (cascades → page_embeddings, page_versions)
+        SV->>DB: DELETE FROM space_role_assignments WHERE space_key = ?
+        SV->>DB: DELETE FROM spaces WHERE space_key = ?
+        SV-->>R: { pagesDeleted }
+        R->>R: invalidateRbacCache + cache.invalidate(userId, 'spaces'/'pages')
+        R->>R: logAuditEvent(SPACE_UNSYNCED)
+        R-->>A: { key, deleted: true, pagesDeleted }
+    end
+```
+
+Key properties:
+
+- **Admin-gated** — `isSystemAdmin` check enforces system-admin role; non-admins receive 403.
+- **Read-only against Confluence** — nothing is written or deleted in Confluence DC.
+- **Cascade** — `DELETE FROM pages` cascades to `page_embeddings` and `page_versions` via FK `ON DELETE CASCADE` (migration 030).
+- **Attachment cleanup** — `cleanPageAttachments` is called per page before the rows are removed, so local files are not orphaned.
+- **Audit** — every removal emits a `SPACE_UNSYNCED` audit event.
+- **RBAC invalidation** — both the in-process RBAC cache and the per-user query cache are flushed so subsequent requests reflect the removal immediately.
+
+## Spaces tab selection and `getSelectedSyncSpaces` (#721)
+
+`GET /api/settings` previously returned `selectedSpaces` via `getUserAccessibleSpaces`,
+which for system admins returned **all** spaces (not just those explicitly assigned via
+editor role). From #721 onward, the settings endpoint calls `getSelectedSyncSpaces`
+instead, which returns only spaces where the requesting user holds an explicit **editor**
+role assignment (`space_role_assignments JOIN roles WHERE roles.name = 'editor'`).
+
+This means the Spaces tab always reflects the admin's deliberate sync selection,
+not the implicit "can see everything" fallback, and the Remove action correctly
+removes a space from that selection.
+
 ## Content pipeline hand-off
 
 The `confluenceToHtml()` call produces `body_html` and `body_text`. The
@@ -159,9 +218,12 @@ LLM. See [`11-content-pipeline.md`](./11-content-pipeline.md).
 
 ## Key files
 
-- `backend/src/domains/confluence/services/sync-service.ts`
+- `backend/src/domains/confluence/services/sync-service.ts` — `syncSpace`, `unsyncSpace`, `purgeDeletedPages`
 - `backend/src/domains/confluence/services/confluence-client.ts`
 - `backend/src/domains/confluence/services/attachment-handler.ts`
 - `backend/src/domains/confluence/services/sync-overview-service.ts`
 - `backend/src/domains/llm/services/embedding-service.ts`
 - `backend/src/routes/confluence/sync.ts`
+- `backend/src/routes/confluence/spaces.ts` — `DELETE /api/spaces/:key` (unsync)
+- `backend/src/core/services/rbac-service.ts` — `getSelectedSyncSpaces` (explicit editor assignments)
+- `frontend/src/features/settings/SpacesTab.tsx` — Remove action + empty-save guard
