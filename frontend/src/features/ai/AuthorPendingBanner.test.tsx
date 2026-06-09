@@ -125,7 +125,7 @@ describe('AuthorPendingBanner', () => {
       screen.getByTestId('author-pending-banner-count'),
     ).toHaveTextContent('3 AI outputs awaiting review');
     const link = screen.getByTestId('author-pending-banner-link');
-    expect(link).toHaveAttribute('href', '/settings/ai/ai-reviews');
+    expect(link).toHaveAttribute('href', '/settings/ai/ai-safety?sub=reviews');
   });
 
   it('uses singular text when count === 1', async () => {

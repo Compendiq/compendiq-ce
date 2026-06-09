@@ -212,7 +212,7 @@ export function NewPagePage() {
             <select
               value={spaceKey}
               onChange={(e) => handleSpaceChange(e.target.value)}
-              className="nm-input"
+              className="nm-select-md"
               data-testid="space-selector"
             >
               <option value="">Select space...</option>

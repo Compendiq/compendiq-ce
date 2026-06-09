@@ -103,7 +103,7 @@ export function NotificationBell() {
           {unreadCount > 0 && (
             <span
               className={cn(
-                'absolute -right-0.5 -top-0.5 flex items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground',
+                'absolute -right-0.5 -top-0.5 flex items-center justify-center rounded-full bg-action text-[10px] font-bold text-action-foreground',
                 unreadCount > 9 ? 'h-4.5 min-w-4.5 px-1' : 'h-4 w-4',
               )}
               data-testid="notification-badge"
@@ -118,7 +118,7 @@ export function NotificationBell() {
         <DropdownMenu.Content
           align="end"
           sideOffset={8}
-          className="w-[360px] rounded-xl border border-border/50 bg-card/90 shadow-2xl backdrop-blur-xl"
+          className="z-50 w-[360px] rounded-xl border border-border/50 bg-card/90 shadow-2xl backdrop-blur-xl"
         >
           {/* Title bar */}
           <div className="flex items-center justify-between border-b border-border/30 px-3 py-2.5">

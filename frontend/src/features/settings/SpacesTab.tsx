@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { RefreshCw, CheckSquare, Square, Loader2 } from 'lucide-react';
 import { apiFetch } from '../../shared/lib/api';
@@ -35,17 +35,14 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
   const queryClient = useQueryClient();
   const [selected, setSelected] = useState<Set<string>>(new Set(initialSelected));
 
-  // Stabilize the array reference for the effect dependency
-  const stableSelected = useMemo(
-    () => initialSelected,
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [JSON.stringify(initialSelected)],
-  );
-
-  // Sync selected state when prop changes
+  // Re-sync local selection when the incoming prop's *contents* change. Keying
+  // the effect on a primitive (its JSON serialization) means it only re-runs on real
+  // content changes — not on every render that produces a new array identity —
+  // and reconstructing from that key keeps the dependency list honest.
+  const initialSelectedKey = JSON.stringify(initialSelected);
   useEffect(() => {
-    setSelected(new Set(stableSelected));
-  }, [stableSelected]);
+    setSelected(new Set(JSON.parse(initialSelectedKey) as string[]));
+  }, [initialSelectedKey]);
 
   const { data: availableSpaces, isLoading: loadingAvailable, refetch: fetchSpaces } = useQuery<AvailableSpace[]>({
     queryKey: ['spaces', 'available'],
@@ -125,7 +122,7 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
           onClick={() => onSave({ showSpaceHomeContent: !showSpaceHomeContent })}
           className={cn(
             'relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
-            showSpaceHomeContent ? 'bg-primary' : 'bg-foreground/20',
+            showSpaceHomeContent ? 'bg-action' : 'bg-foreground/20',
           )}
           data-testid="toggle-space-home-content"
         >
@@ -153,7 +150,7 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
                 className={cn(
                   'flex w-full items-center gap-3 rounded-lg border px-4 py-3 text-left transition-colors',
                   isSelected
-                    ? 'border-primary/30 bg-primary/10'
+                    ? 'border-action/30 bg-action/10'
                     : 'border-border/50 bg-foreground/5 hover:bg-foreground/10',
                 )}
                 role="listitem"
@@ -166,7 +163,7 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
                   aria-label={`${isSelected ? 'Deselect' : 'Select'} ${space.name}`}
                 >
                   {isSelected ? (
-                    <CheckSquare size={18} className="shrink-0 text-primary" />
+                    <CheckSquare size={18} className="shrink-0 text-action" />
                   ) : (
                     <Square size={18} className="shrink-0 text-muted-foreground" />
                   )}

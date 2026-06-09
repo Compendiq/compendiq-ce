@@ -137,6 +137,46 @@ describe('SpaceHomePicker (#379)', () => {
     });
   });
 
+  it('marks the chosen result row busy while the set-home request is in flight', async () => {
+    let releaseSetHome!: () => void;
+    const setHomePending = new Promise<Response>((resolve) => {
+      releaseSetHome = () =>
+        resolve(
+          new Response(JSON.stringify({ spaceKey: 'DEV', customHomePageId: 999 }), {
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+    });
+    const json = (body: unknown) =>
+      new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+      const u = String(url);
+      if (u.includes('/permissions/check')) return json({ allowed: true });
+      if (u.includes('/search')) return json({ items: [{ id: 999, title: 'Welcome page', excerpt: '', source: 'confluence', spaceKey: 'DEV', score: 1 }], total: 1 });
+      if (u.includes('/spaces/DEV/home') && init?.method === 'PUT') return setHomePending;
+      return json({});
+    });
+
+    render(
+      <SpaceHomePicker spaceKey="DEV" resolvedHomePageId={null} customHomePageId={null} />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(await screen.findByTestId('space-home-picker-trigger-DEV'));
+    fireEvent.change(await screen.findByTestId('space-home-picker-search-DEV'), { target: { value: 'wel' } });
+    fireEvent.click(await screen.findByTestId('space-home-picker-result-999'));
+
+    // While the PUT is pending, the clicked row advertises a busy state.
+    await waitFor(() =>
+      expect(screen.getByTestId('space-home-picker-result-999')).toHaveAttribute('aria-busy', 'true'),
+    );
+
+    // Once it resolves, the picker closes (the row is gone).
+    releaseSetHome();
+    await waitFor(() => expect(screen.queryByTestId('space-home-picker-result-999')).toBeNull());
+  });
+
   it('PUTs homePageId: null when "Use Confluence default" is clicked', async () => {
     const calls = mockFetch((call) => {
       if (call.url.includes('/permissions/check')) return { allowed: true };

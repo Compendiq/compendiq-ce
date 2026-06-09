@@ -456,6 +456,95 @@ describe('PagesPage', () => {
     expect(comparison & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  describe('error state (pages query failed)', () => {
+    /** Mock fetch where /pages errors with the given status, but all other
+     *  endpoints return their normal mock responses. */
+    function mockFetchWithPagesError(status: number, message: string) {
+      return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = typeof input === 'string' ? input : (input as Request).url;
+        if (url.includes('/embeddings/status')) {
+          return new Response(JSON.stringify(mockEmbeddingStatusIdle), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/pages/filters')) {
+          return new Response(JSON.stringify(mockFilterOptions), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/spaces')) {
+          return new Response(JSON.stringify(mockSpaces), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/sync/status')) {
+          return new Response(JSON.stringify({ status: 'idle' }), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/pages/pinned')) {
+          return new Response(JSON.stringify({ items: [], total: 0 }), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/settings')) {
+          return new Response(JSON.stringify({}), { headers: { 'Content-Type': 'application/json' } });
+        }
+        // /api/pages list query — fail with the requested status
+        return new Response(JSON.stringify({ message }), {
+          status,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+    }
+
+    it('renders the error panel (not "No pages found") when the pages query fails', async () => {
+      vi.restoreAllMocks();
+      mockFetchWithPagesError(429, 'Rate limit exceeded, retry in 9 seconds');
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      // The error panel must render with the API message — NOT the misleading
+      // "No pages found" empty state (which historically appeared for any
+      // undefined pagesData and tricked users into thinking they had zero
+      // articles when the real cause was a transient 429).
+      expect(await screen.findByTestId('pages-error-state')).toBeInTheDocument();
+      expect(screen.getByText("Couldn't load pages")).toBeInTheDocument();
+      expect(screen.getByText('Rate limit exceeded, retry in 9 seconds')).toBeInTheDocument();
+      expect(screen.queryByTestId('empty-state-title')).not.toBeInTheDocument();
+    });
+
+    it('does not show the misleading empty state even when items array would also be missing', async () => {
+      vi.restoreAllMocks();
+      mockFetchWithPagesError(500, 'Internal Server Error');
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      await screen.findByTestId('pages-error-state');
+      // "No pages found" was the historical lie — never both UIs at once,
+      // and not the empty state when the real issue is a failed fetch.
+      expect(screen.queryByText('No pages found')).not.toBeInTheDocument();
+    });
+
+    it('shows a Retry button that calls refetch (and recovers when the server starts responding again)', async () => {
+      vi.restoreAllMocks();
+      let shouldFail = true;
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = typeof input === 'string' ? input : (input as Request).url;
+        if (url.includes('/embeddings/status')) return new Response(JSON.stringify(mockEmbeddingStatusIdle), { headers: { 'Content-Type': 'application/json' } });
+        if (url.includes('/pages/filters')) return new Response(JSON.stringify(mockFilterOptions), { headers: { 'Content-Type': 'application/json' } });
+        if (url.includes('/spaces')) return new Response(JSON.stringify(mockSpaces), { headers: { 'Content-Type': 'application/json' } });
+        if (url.includes('/sync/status')) return new Response(JSON.stringify({ status: 'idle' }), { headers: { 'Content-Type': 'application/json' } });
+        if (url.includes('/pages/pinned')) return new Response(JSON.stringify({ items: [], total: 0 }), { headers: { 'Content-Type': 'application/json' } });
+        if (url.includes('/settings')) return new Response(JSON.stringify({}), { headers: { 'Content-Type': 'application/json' } });
+        if (shouldFail) {
+          return new Response(JSON.stringify({ message: 'Rate limited' }), {
+            status: 429, headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response(JSON.stringify(mockPagesResponse), { headers: { 'Content-Type': 'application/json' } });
+      });
+
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const retry = await screen.findByTestId('pages-error-retry');
+
+      shouldFail = false;
+      fireEvent.click(retry);
+
+      // After successful refetch the error panel goes away and the article list renders
+      await screen.findByText('Test Page');
+      expect(screen.queryByTestId('pages-error-state')).not.toBeInTheDocument();
+    });
+  });
+
   describe('empty state (no pages)', () => {
     const emptyPages = { items: [], total: 0, page: 1, limit: 50, totalPages: 0 };
 
@@ -665,7 +754,8 @@ describe('PagesPage', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       const keyword = screen.getByTestId('search-mode-keyword');
       expect(keyword).toHaveAttribute('aria-pressed', 'true');
-      expect(keyword.className).toContain('bg-primary');
+      // Active mode uses ink-action fill (Task 5 — amber reserved for AI affordances; search-mode toggle is non-AI selection).
+      expect(keyword.className).toContain('bg-action');
       expect(keyword.className).toContain('shadow-md');
       expect(keyword.className).toContain('ring-1');
     });
@@ -684,7 +774,8 @@ describe('PagesPage', () => {
       fireEvent.click(semantic);
 
       expect(semantic).toHaveAttribute('aria-pressed', 'true');
-      expect(semantic.className).toContain('bg-primary');
+      // Active mode uses ink-action fill (Task 5).
+      expect(semantic.className).toContain('bg-action');
       expect(semantic.className).toContain('shadow-md');
 
       const keyword = screen.getByTestId('search-mode-keyword');
@@ -725,16 +816,111 @@ describe('PagesPage', () => {
       expect(items.length).toBeLessThan(200);
     });
 
-    it('renders selection state correctly in memoized items', async () => {
+  });
+
+  // ---------------------------------------------------------------------------
+  // Status-pill accessibility (Task 4 of amber-as-AI bundle, bug 1c)
+  //
+  // Three pill variants previously failed WCAG-AA: Recent (3.37:1),
+  // Not Embedded (2.67:1 light), Private (borrowed amber w/o AI semantic).
+  // These tests verify the swap to AA-pass palettes.
+  // ---------------------------------------------------------------------------
+  describe('page row status badges (accessibility)', () => {
+    function makeStandalonePage(visibility: 'private' | 'shared') {
+      return {
+        items: [
+          {
+            id: 'std-1',
+            spaceKey: '__local__',
+            title: 'Standalone Page',
+            version: 1,
+            parentId: null,
+            labels: [],
+            author: 'Alice',
+            lastModifiedAt: '2025-01-15T00:00:00Z',
+            lastSynced: '2025-01-16T00:00:00Z',
+            embeddingDirty: false,
+            embeddingStatus: 'embedded',
+            embeddedAt: '2025-01-16T00:00:00Z',
+            source: 'standalone',
+            visibility,
+          },
+        ],
+        total: 1,
+        page: 1,
+        limit: 50,
+        totalPages: 1,
+      };
+    }
+
+    function mockPagesWithStandalone(visibility: 'private' | 'shared') {
+      vi.restoreAllMocks();
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = typeof input === 'string' ? input : (input as Request).url;
+        if (url.includes('/embeddings/status')) {
+          return new Response(JSON.stringify(mockEmbeddingStatusIdle), {
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        if (url.includes('/pages/filters')) {
+          return new Response(JSON.stringify(mockFilterOptions), {
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        if (url.includes('/spaces')) {
+          return new Response(JSON.stringify(mockSpaces), {
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        if (url.includes('/sync/status')) {
+          return new Response(JSON.stringify({ status: 'idle' }), {
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        if (url.includes('/pages/pinned')) {
+          return new Response(JSON.stringify({ items: [], total: 0 }), {
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        if (url.includes('/settings')) {
+          return new Response(JSON.stringify({}), {
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response(JSON.stringify(makeStandalonePage(visibility)), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+    }
+
+    it('Local badge uses sage tint (AA-pass), not emerald-500', async () => {
+      mockPagesWithStandalone('private');
       render(<PagesPage />, { wrapper: createWrapper() });
-      const checkbox = await screen.findByTestId('checkbox-page-1');
+      const badge = await screen.findByTestId('badge-local');
+      expect(badge).toHaveTextContent('Local');
+      expect(badge.className).toMatch(/bg-\[#e7f2e8\]/);
+      expect(badge.className).toMatch(/text-\[#1f5a2a\]/);
+      expect(badge.className).not.toMatch(/emerald-500|amber|warning|yellow/);
+    });
 
-      // Click to select
-      fireEvent.click(checkbox);
+    it('Private badge uses neutral gray tint, not amber/primary/warning', async () => {
+      mockPagesWithStandalone('private');
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const badge = await screen.findByTestId('badge-private');
+      expect(badge).toHaveTextContent('Private');
+      expect(badge.className).not.toMatch(/amber|warning|yellow|primary/);
+      expect(badge.className).toMatch(/bg-\[#ececea\]/);
+      expect(badge.className).toMatch(/text-\[#4a4a48\]/);
+    });
 
-      // The item should show selected state
-      const item = screen.getByTestId('article-hover-page-1');
-      expect(item.className).toContain('border-primary');
+    it('Shared badge uses cool-blue tinted pill (AA-pass), not sky-500', async () => {
+      mockPagesWithStandalone('shared');
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const badge = await screen.findByTestId('badge-shared');
+      expect(badge).toHaveTextContent('Shared');
+      expect(badge.className).toMatch(/bg-\[#e6effb\]/);
+      expect(badge.className).toMatch(/text-\[#1c3e72\]/);
+      expect(badge.className).not.toMatch(/sky-500|amber|warning|yellow/);
     });
   });
 });

@@ -306,7 +306,7 @@ function ReportCard({
     >
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-start gap-3">
-          <FileText size={18} className="mt-0.5 shrink-0 text-primary" />
+          <FileText size={18} className="mt-0.5 shrink-0 text-action" />
           <div>
             <h3 className="text-sm font-medium tracking-tight">{entry.title}</h3>
             <p className="mt-1 text-xs text-muted-foreground">{entry.controls}</p>
@@ -411,7 +411,7 @@ export function ComplianceReportsTab() {
           className="nm-card p-6"
         >
           <div className="flex items-start gap-3">
-            <ShieldCheck size={20} className="mt-0.5 text-primary" />
+            <ShieldCheck size={20} className="mt-0.5 text-action" />
             <div>
               <h2 className="text-base font-medium">Compliance reports require an Enterprise license</h2>
               <p className="mt-1 text-sm text-muted-foreground">

@@ -606,5 +606,22 @@ describe('PageViewPage', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/ai?mode=improve&pageId=page-1');
   });
 
+  // Task 5 — drafts read as a personal/private state, not an AI affordance, so
+  // the Draft badge must use the neutral private-tier palette (no
+  // orange/amber/primary). The Playwright contrast spec in Task 6 will catch
+  // the colour combo at run-time; this guards the contract at the unit level.
+  it('Draft badge uses neutral private-tier palette, not orange/amber', () => {
+    currentMockPage = { ...mockPage, hasDraft: true } as typeof mockPage;
+    try {
+      render(<PageViewPage />, { wrapper: createWrapper() });
+      const badge = screen.getByTestId('badge-draft');
+      expect(badge.className).not.toMatch(/orange|amber|primary|warning|yellow/);
+      expect(badge.className).toMatch(/bg-\[#ececea\]/);
+      expect(badge.className).toMatch(/text-\[#4a4a48\]/);
+    } finally {
+      currentMockPage = mockPage;
+    }
+  });
+
 });
 

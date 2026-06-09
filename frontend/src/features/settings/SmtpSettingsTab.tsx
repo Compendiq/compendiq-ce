@@ -59,8 +59,8 @@ export function SmtpSettingsTab() {
   return (
     <div className="space-y-6">
       <div>
-        <h3 className="mb-4 text-lg font-semibold">Email / SMTP Configuration</h3>
-        <p className="mb-4 text-sm text-muted-foreground">
+        <h3 className="mb-2 text-lg font-semibold">Email / SMTP Configuration</h3>
+        <p className="text-sm text-muted-foreground">
           Configure SMTP to enable email notifications for sync events, knowledge requests, and comments.
         </p>
       </div>
@@ -71,7 +71,7 @@ export function SmtpSettingsTab() {
             type="checkbox"
             checked={current.enabled ?? false}
             onChange={(e) => setForm({ ...form, enabled: e.target.checked })}
-            className="accent-primary"
+            className="accent-primary h-4 w-4"
           />
           <span className="text-sm font-medium">Enable email notifications</span>
         </label>
@@ -84,7 +84,7 @@ export function SmtpSettingsTab() {
               value={current.host ?? ''}
               onChange={(e) => setForm({ ...form, host: e.target.value })}
               placeholder="smtp.example.com"
-              className="input-field w-full"
+              className="nm-input"
             />
           </div>
           <div>
@@ -93,7 +93,7 @@ export function SmtpSettingsTab() {
               type="number"
               value={current.port ?? DEFAULT_SMTP_PORT}
               onChange={(e) => setForm({ ...form, port: parseInt(e.target.value, 10) })}
-              className="input-field w-full"
+              className="nm-input"
             />
           </div>
         </div>
@@ -103,7 +103,7 @@ export function SmtpSettingsTab() {
             type="checkbox"
             checked={current.secure ?? false}
             onChange={(e) => setForm({ ...form, secure: e.target.checked })}
-            className="accent-primary"
+            className="accent-primary h-4 w-4"
           />
           <span className="text-sm">Use TLS/SSL</span>
         </label>
@@ -116,7 +116,7 @@ export function SmtpSettingsTab() {
               value={current.user ?? ''}
               onChange={(e) => setForm({ ...form, user: e.target.value })}
               placeholder="user@example.com"
-              className="input-field w-full"
+              className="nm-input"
             />
           </div>
           <div>
@@ -126,7 +126,7 @@ export function SmtpSettingsTab() {
               value={form.pass ?? ''}
               onChange={(e) => setForm({ ...form, pass: e.target.value })}
               placeholder="Enter password if changing"
-              className="input-field w-full"
+              className="nm-input"
             />
           </div>
         </div>
@@ -138,14 +138,14 @@ export function SmtpSettingsTab() {
             value={current.from ?? ''}
             onChange={(e) => setForm({ ...form, from: e.target.value })}
             placeholder="noreply@compendiq.local"
-            className="input-field w-full"
+            className="nm-input"
           />
         </div>
 
         <button
           onClick={() => saveMutation.mutate(current)}
           disabled={saveMutation.isPending}
-          className="btn-primary"
+          className="nm-button-primary"
         >
           {saveMutation.isPending ? 'Saving...' : 'Save SMTP Settings'}
         </button>
@@ -161,12 +161,12 @@ export function SmtpSettingsTab() {
             value={testEmail}
             onChange={(e) => setTestEmail(e.target.value)}
             placeholder="admin@example.com"
-            className="input-field flex-1"
+            className="nm-input flex-1"
           />
           <button
             onClick={() => testMutation.mutate(testEmail)}
             disabled={!testEmail || testMutation.isPending}
-            className="btn-secondary"
+            className="nm-button-ghost"
           >
             {testMutation.isPending ? 'Sending...' : 'Send Test'}
           </button>

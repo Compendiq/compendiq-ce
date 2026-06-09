@@ -144,7 +144,7 @@ export function AutoTagger({ pageId, currentLabels, model, className }: AutoTagg
                       className={cn(
                         'flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-medium transition-colors',
                         selectedTags.has(tag)
-                          ? 'bg-primary/20 text-primary ring-1 ring-primary/30'
+                          ? 'bg-primary/20 text-primary-ink ring-1 ring-primary/30'
                           : 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10',
                       )}
                     >

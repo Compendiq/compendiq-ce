@@ -27,6 +27,7 @@ export const GenerateRequestSchema = z.object({
   spaceKey: z.string().optional(),
   parentId: z.string().optional(),
   pdfText: z.string().max(200_000).optional(),
+  thinking: z.boolean().optional(),
   searchWeb: z.boolean().optional(),
   searchQuery: z.string().max(500).optional(),
 });
@@ -66,6 +67,7 @@ export const GenerateDiagramRequestSchema = z.object({
   model: z.string().min(1),
   diagramType: z.enum(['flowchart', 'sequence', 'state', 'mindmap']).default('flowchart'),
   pageId: z.string().optional(),
+  thinking: z.boolean().optional(),
 });
 
 export const AnalyzeQualityRequestSchema = z.object({
@@ -73,6 +75,7 @@ export const AnalyzeQualityRequestSchema = z.object({
   model: z.string().min(1),
   pageId: z.string().optional(),
   includeSubPages: z.boolean().optional(),
+  thinking: z.boolean().optional(),
 });
 
 export const ForceEmbedTreeRequestSchema = z.object({

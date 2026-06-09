@@ -19,29 +19,37 @@ const IMPROVEMENT_DESCRIPTIONS: Record<(typeof IMPROVEMENT_TYPES)[number], strin
 };
 
 /**
- * Improvement type selector rendered above the message area.
+ * Improvement type selector rendered just under the mode segmented control.
+ * Visual grammar matches the AI sub-header: a single `rounded-xl border` card
+ * with h-7 outlined chips so all of the AI surfaces feel like one toolbar
+ * stack rather than three different controls.
  */
 export function ImproveTypeSelector() {
   const { improvementType, setImprovementType } = useAiContext();
   return (
-    <div className="nm-toolbar mb-4 space-y-2 p-3">
-      <span className="text-sm text-muted-foreground">Improvement type:</span>
-      <div className="flex flex-wrap items-center gap-2">
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-border/40 bg-card/50 px-3 py-2 backdrop-blur-sm">
+      <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground/80">
+        Improvement type
+      </span>
+      <div className="flex flex-wrap items-center gap-1.5">
         {IMPROVEMENT_TYPES.map((type) => (
           <button
             key={type}
             onClick={() => setImprovementType(type)}
             title={IMPROVEMENT_DESCRIPTIONS[type]}
+            aria-pressed={improvementType === type}
             className={cn(
-              'rounded-md px-2.5 py-1 text-xs capitalize',
-              improvementType === type ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-foreground/5',
+              'flex h-7 items-center rounded-md border px-2.5 text-xs capitalize transition-colors',
+              improvementType === type
+                ? 'border-primary/45 bg-primary/15 text-primary-ink font-medium'
+                : 'border-border/40 text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
             )}
           >
             {type}
           </button>
         ))}
       </div>
-      <p className="text-xs text-muted-foreground/70">
+      <p className="basis-full text-xs text-muted-foreground/80">
         {IMPROVEMENT_DESCRIPTIONS[improvementType as keyof typeof IMPROVEMENT_DESCRIPTIONS]}
       </p>
     </div>

@@ -25,6 +25,35 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # The runtime Docker stage copies only the root node_modules. If npm's
+      # hoister demotes a backend prod dep to backend/node_modules (e.g.
+      # because a root devDep chain pins a conflicting major), the dep
+      # disappears at runtime and the container crash-loops on boot —
+      # invisible to `npm run build` and to `docker build` alike. Simulate
+      # the Docker prod-deps install in a tmpdir and assert the two
+      # historically-fragile packages stay at the root.
+      - name: Verify prod-deps hoist runtime-critical packages to root
+        run: |
+          set -euo pipefail
+          T=$(mktemp -d)
+          mkdir -p "$T/backend" "$T/packages/contracts" "$T/frontend"
+          cp package.json package-lock.json "$T/"
+          cp backend/package.json "$T/backend/"
+          cp packages/contracts/package.json "$T/packages/contracts/"
+          cp frontend/package.json "$T/frontend/"
+          (cd "$T" && npm ci --omit=dev -w backend -w @compendiq/contracts >/dev/null)
+          missing=()
+          for pkg in p-limit ipaddr.js; do
+            test -d "$T/node_modules/$pkg" || missing+=("$pkg")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::Prod deps not hoisted to root node_modules: ${missing[*]}"
+            echo "  These are listed in root package.json 'dependencies' so npm hoists them."
+            echo "  See the //deps-note in package.json for context."
+            exit 1
+          fi
+          echo "✓ p-limit + ipaddr.js hoisted to root node_modules"
+
       - name: Typecheck (contracts + backend + frontend)
         run: npm run typecheck
 

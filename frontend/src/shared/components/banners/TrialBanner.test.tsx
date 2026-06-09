@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import { TrialBanner } from './TrialBanner';
+import { useAuthStore } from '../../../stores/auth-store';
 
 interface MockLicense {
   tier: string;
@@ -19,13 +20,24 @@ function mockLicenseFetch(value: MockLicense | null, status = 200) {
   );
 }
 
+function signInAs(role: 'admin' | 'user') {
+  useAuthStore.getState().setAuth('test-token', {
+    id: '1',
+    username: role,
+    role,
+  });
+}
+
 describe('TrialBanner', () => {
   beforeEach(() => {
-    // Default: no fetch mock — individual tests configure as needed.
+    // Default: signed in as admin so the banner is allowed to render.
+    // Individual tests override via signInAs() when they need a non-admin.
+    signInAs('admin');
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    useAuthStore.getState().clearAuth();
   });
 
   it('renders nothing when /api/license/info 404s (CE deployment)', async () => {
@@ -148,5 +160,31 @@ describe('TrialBanner', () => {
     // Allow the promise rejection to propagate
     await new Promise((r) => setTimeout(r, 0));
     expect(screen.queryByTestId('trial-banner')).toBeNull();
+  });
+
+  it('renders nothing for a non-admin user, even on an active trial', async () => {
+    signInAs('user');
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    mockLicenseFetch({
+      tier: 'business',
+      type: 'trial',
+      expiresAt: '2026-05-09T23:59:59Z',
+      daysRemaining: 4,
+      isValid: true,
+    });
+    render(<TrialBanner />);
+    // Allow any pending microtasks to settle so a stray fetch would be observed.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByTestId('trial-banner')).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('renders nothing when no user is signed in', async () => {
+    useAuthStore.getState().clearAuth();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    render(<TrialBanner />);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByTestId('trial-banner')).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

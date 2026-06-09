@@ -93,13 +93,40 @@ describe('SidebarTreeView', () => {
     });
   });
 
-  it('renders nav tabs (Pages, Graph, AI) at the top of the sidebar', () => {
+  it('renders nav tabs (Pages, AI, Graph) at the top of the sidebar', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
     const nav = screen.getByRole('navigation', { name: 'Main navigation' });
     expect(nav).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Pages/ })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Graph/ })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /AI/ })).toBeInTheDocument();
+  });
+
+  it('active nav tab uses ink-action treatment, not amber text', () => {
+    // location.pathname === '/' => Pages tab is active.
+    render(<SidebarTreeView />, { wrapper: createWrapper('/') });
+    const pagesLink = screen.getByRole('link', { name: /Pages/ });
+    expect(pagesLink.className).toContain('bg-action');
+    expect(pagesLink.className).toContain('text-action-foreground');
+    expect(pagesLink.className).not.toContain('text-primary');
+  });
+
+  it('active AI tab keeps an amber icon as the AI signal even though pill is ink', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper('/ai') });
+    const aiLink = screen.getByRole('link', { name: /AI/ });
+    // At least one descendant element carries text-primary (the amber icon).
+    const amberDescendant = aiLink.querySelector('[class*="text-primary"]');
+    expect(amberDescendant).not.toBeNull();
+  });
+
+  it('inactive AI tab icon does not use amber (would fail 3:1 against light glass)', () => {
+    // Render with location.pathname === '/' so Pages is active, AI is inactive.
+    render(<SidebarTreeView />, { wrapper: createWrapper('/') });
+    const aiLink = screen.getByRole('link', { name: /AI/ });
+    // No descendant of the inactive AI link may carry text-primary — otherwise
+    // amber would sit on the light glass pill (~1.47:1 contrast, WCAG failure).
+    const amberDescendant = aiLink.querySelector('[class*="text-primary"]');
+    expect(amberDescendant).toBeNull();
   });
 
   it('renders "Pages" label in sidebar header', () => {
@@ -178,7 +205,8 @@ describe('SidebarTreeView', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper('/ai?pageId=child-1') });
     const installRef = screen.getByText('Installation');
     const row = installRef.parentElement!;
-    expect(row.className).toContain('nm-pill-active');
+    expect(row.className).toContain('bg-action');
+    expect(row.className).toContain('text-action-foreground');
   });
 
   it('shows collapsed state with expand toggle and nav icons when treeSidebarCollapsed is true', () => {

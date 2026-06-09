@@ -17,12 +17,14 @@ describe('EmbeddingStatusBadge', () => {
 
   // ---- New 4-state embeddingStatus prop ----
 
-  it('renders not_embedded state with gray styling', () => {
+  it('renders not_embedded state with neutral warm-gray styling (AA-pass)', () => {
     render(<EmbeddingStatusBadge embeddingStatus="not_embedded" />);
-    const badge = screen.getByTestId('embedding-status-badge');
+    const badge = screen.getByTestId('badge-not-embedded');
     expect(badge).toHaveTextContent('Not Embedded');
-    expect(badge.className).toContain('text-status-inactive');
-    expect(badge.className).toContain('bg-status-inactive/20');
+    // Was bg-status-inactive/20 + text-status-inactive (2.67:1 light / 3.19:1 dark, failed AA).
+    expect(badge.className).toContain('bg-[#efeeea]');
+    expect(badge.className).toContain('text-[#5f5c54]');
+    expect(badge.className).not.toMatch(/amber|warning|yellow|primary/);
     expect(badge).toHaveAttribute('data-status', 'not_embedded');
   });
 
@@ -99,7 +101,7 @@ describe('EmbeddingStatusBadge', () => {
 
   it('shows tooltip for not_embedded state', () => {
     render(<EmbeddingStatusBadge embeddingStatus="not_embedded" />);
-    const badge = screen.getByTestId('embedding-status-badge');
+    const badge = screen.getByTestId('badge-not-embedded');
     expect(badge.getAttribute('title')).toContain('not been indexed');
   });
 
@@ -171,7 +173,7 @@ describe('EmbeddingStatusBadge', () => {
 
   it('does not apply animate-pulse for non-embedding states', () => {
     const { rerender } = render(<EmbeddingStatusBadge embeddingStatus="not_embedded" />);
-    expect(screen.getByTestId('embedding-status-badge').className).not.toContain('animate-pulse');
+    expect(screen.getByTestId('badge-not-embedded').className).not.toContain('animate-pulse');
 
     rerender(<EmbeddingStatusBadge embeddingStatus="embedded" />);
     expect(screen.getByTestId('embedding-status-badge').className).not.toContain('animate-pulse');

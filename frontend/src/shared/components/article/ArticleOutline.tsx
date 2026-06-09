@@ -109,7 +109,7 @@ function OutlineItem({
               heading.level === 3 && 'pl-6 text-[13px]',
               heading.level >= 4 && 'pl-8 text-xs',
               activeId === heading.id
-                ? 'bg-primary/12 text-primary'
+                ? 'bg-action/12 text-action'
                 : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
             )}
           >
@@ -328,7 +328,7 @@ export function ArticleOutline({
 
       <div className="mb-4 h-1.5 overflow-hidden rounded-full bg-foreground/8">
         <m.div
-          className="h-full rounded-full bg-primary"
+          className="h-full rounded-full bg-action"
           style={{ width: `${readingProgress}%` }}
           transition={{ duration: 0.12 }}
         />
@@ -351,7 +351,7 @@ export function ArticleOutline({
 
       {pageId ? (
         <div className="mt-4 flex items-center gap-2 rounded-2xl bg-foreground/4 px-3 py-2 text-xs text-muted-foreground">
-          <ChevronDown size={12} className="text-primary/70" />
+          <ChevronDown size={12} className="text-action/70" />
           Synced to article {pageId}
         </div>
       ) : null}

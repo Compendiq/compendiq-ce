@@ -153,7 +153,7 @@ export function NotificationPreferences() {
               <Switch.Root
                 checked={currentPrefs[key]}
                 onCheckedChange={(checked) => handleToggle(key, checked)}
-                className="relative h-5 w-9 shrink-0 rounded-full bg-foreground/10 transition-colors data-[state=checked]:bg-primary outline-none"
+                className="relative h-5 w-9 shrink-0 rounded-full bg-foreground/10 transition-colors data-[state=checked]:bg-action outline-none"
                 data-testid={`pref-toggle-${key}`}
               >
                 <Switch.Thumb className="block h-4 w-4 translate-x-0.5 rounded-full bg-white transition-transform data-[state=checked]:translate-x-4" />

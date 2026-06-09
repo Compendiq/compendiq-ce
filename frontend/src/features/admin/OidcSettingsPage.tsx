@@ -330,7 +330,7 @@ function ProviderTab({ disabled }: { disabled?: boolean }) {
             type="url"
             value={redirectUri}
             onChange={(e) => setRedirectUri(e.target.value)}
-            placeholder="http://localhost:3000/api/auth/oidc/callback"
+            placeholder={`${window.location.origin}/api/auth/oidc/callback`}
             className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary disabled:opacity-60 disabled:cursor-not-allowed"
             data-testid="oidc-redirect-uri"
             disabled={disabled}
@@ -375,7 +375,7 @@ function ProviderTab({ disabled }: { disabled?: boolean }) {
         <button
           onClick={handleSave}
           disabled={disabled || saveMutation.isPending}
-          className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           data-testid="oidc-save-btn"
         >
           {saveMutation.isPending && <Loader2 size={14} className="animate-spin" />}
@@ -456,7 +456,7 @@ function MappingsTab({ disabled }: { disabled?: boolean }) {
         <button
           onClick={() => setShowForm(true)}
           disabled={disabled}
-          className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           data-testid="create-mapping-btn"
         >
           <Plus size={16} />
@@ -520,7 +520,7 @@ function MappingsTab({ disabled }: { disabled?: boolean }) {
             <button
               onClick={handleCreate}
               disabled={!oidcGroup.trim() || !roleId || createMutation.isPending}
-              className="flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-3 py-1.5 text-sm text-action transition-colors hover:bg-action hover:text-action-foreground disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
               data-testid="submit-mapping"
             >
               {createMutation.isPending && <Loader2 size={14} className="animate-spin" />}
@@ -564,7 +564,7 @@ function MappingsTab({ disabled }: { disabled?: boolean }) {
                 >
                   <td className="px-4 py-2.5 font-mono text-xs">{mapping.oidcGroup}</td>
                   <td className="px-4 py-2.5">
-                    <span className="rounded bg-primary/10 px-2 py-0.5 text-xs text-primary">
+                    <span className="rounded bg-[#ececea] px-2 py-0.5 text-xs text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]">
                       {mapping.roleName ?? `Role #${mapping.roleId}`}
                     </span>
                   </td>
@@ -643,7 +643,7 @@ export function OidcSettingsPage() {
               className={cn(
                 'flex items-center gap-1.5 rounded-md px-4 py-2 text-sm transition-colors',
                 activeTab === key
-                  ? 'bg-primary/15 text-primary font-medium'
+                  ? 'bg-action/15 text-action font-medium'
                   : 'text-muted-foreground hover:bg-foreground/5',
               )}
               data-testid={`oidc-tab-${key}`}

@@ -51,7 +51,7 @@ function MermaidBlockView({ node, updateAttributes, editor }: NodeViewProps) {
                   'flex items-center gap-1 rounded px-2 py-0.5 text-xs transition-colors',
                   showPreview
                     ? 'text-muted-foreground hover:bg-foreground/10 hover:text-foreground'
-                    : 'bg-primary/15 text-primary',
+                    : 'bg-action/15 text-action',
                 )}
                 title={showPreview ? 'Edit source code' : 'Show preview'}
                 type="button"

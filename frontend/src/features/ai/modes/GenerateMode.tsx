@@ -132,7 +132,7 @@ function ParentPagePicker({
               }}
               className={cn(
                 'w-full rounded-md px-3 py-1.5 text-left text-sm transition-colors hover:bg-foreground/5',
-                !parentId && 'bg-primary/10 text-primary',
+                !parentId && 'bg-primary/10 text-primary-ink',
               )}
             >
               None (root level)
@@ -153,7 +153,7 @@ function ParentPagePicker({
                 }}
                 className={cn(
                   'w-full rounded-md px-3 py-1.5 text-left text-sm transition-colors hover:bg-foreground/5',
-                  parentId === page.id && 'bg-primary/10 text-primary',
+                  parentId === page.id && 'bg-primary/10 text-primary-ink',
                 )}
               >
                 {page.title}
@@ -292,7 +292,7 @@ function PdfUploadZone({
         className={cn(
           'flex w-full items-center justify-center gap-2 rounded-lg border border-dashed px-4 py-3 text-sm transition-colors',
           isDragOver
-            ? 'border-primary bg-primary/10 text-primary'
+            ? 'border-primary bg-primary/10 text-primary-ink'
             : 'border-border/40 text-muted-foreground hover:border-border/60 hover:text-foreground',
           (isExtracting || disabled) && 'pointer-events-none opacity-50',
         )}
@@ -422,7 +422,7 @@ export function GenerateSavePanel({
                 setParentId(null);
                 setSelectedPageTitle(null);
               }}
-              className="w-full rounded-lg border border-border/40 bg-background/50 px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-primary/30"
+              className="nm-select-md w-full"
               data-testid="generate-space-select"
             >
               <option value="">Select space...</option>
@@ -484,7 +484,7 @@ export function GenerateSavePanel({
  * After generation completes, shows a save panel to publish to Confluence.
  */
 export function GenerateModeInput() {
-  const { input, setInput, isStreaming, model, setMessages, runStream } = useAiContext();
+  const { input, setInput, isStreaming, model, thinkingMode, setMessages, runStream } = useAiContext();
   const [generatedContent, setGeneratedContent] = useState('');
   const [showSavePanel, setShowSavePanel] = useState(false);
   const [searchWeb, setSearchWeb] = useState(false);
@@ -537,6 +537,9 @@ export function GenerateModeInput() {
     if (searchWeb) {
       body.searchWeb = true;
     }
+    if (thinkingMode) {
+      body.thinking = true;
+    }
 
     await runStream('/llm/generate', body, {
       onComplete: (accumulated) => {
@@ -546,7 +549,7 @@ export function GenerateModeInput() {
         }
       },
     });
-  }, [input, model, isStreaming, pdfData, pdfFilename, searchWeb, setInput, setMessages, runStream]);
+  }, [input, model, isStreaming, pdfData, pdfFilename, searchWeb, thinkingMode, setInput, setMessages, runStream]);
 
   const handleSubmit = () => handleGenerate();
 

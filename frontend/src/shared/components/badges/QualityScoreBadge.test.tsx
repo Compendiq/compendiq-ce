@@ -34,11 +34,13 @@ describe('QualityScoreBadge', () => {
 
   // ---- Failed state ----
 
-  it('renders "Analysis Failed" with red styling', () => {
+  it('renders "Analysis Failed" with soft-red tinted pill (AA-pass)', () => {
     render(<QualityScoreBadge qualityScore={null} qualityStatus="failed" />);
-    const badge = screen.getByTestId('quality-score-badge');
+    const badge = screen.getByTestId('badge-failed');
     expect(badge).toHaveTextContent('Analysis Failed');
-    expect(badge.className).toContain('text-status-disconnected');
+    expect(badge.className).toContain('bg-[#fae2e0]');
+    expect(badge.className).toContain('text-[#7a1e1a]');
+    expect(badge.className).not.toMatch(/amber|warning|yellow|primary/);
     expect(badge).toHaveAttribute('data-status', 'failed');
   });
 
@@ -50,17 +52,19 @@ describe('QualityScoreBadge', () => {
         qualityError="LLM connection timeout"
       />,
     );
-    const badge = screen.getByTestId('quality-score-badge');
+    const badge = screen.getByTestId('badge-failed');
     expect(badge.getAttribute('title')).toContain('LLM connection timeout');
   });
 
   // ---- Skipped state ----
 
-  it('renders "Skipped" with gray styling', () => {
+  it('renders "Skipped" with neutral warm-gray tint (AA-pass)', () => {
     render(<QualityScoreBadge qualityScore={null} qualityStatus="skipped" />);
-    const badge = screen.getByTestId('quality-score-badge');
+    const badge = screen.getByTestId('badge-skipped');
     expect(badge).toHaveTextContent('Skipped');
-    expect(badge.className).toContain('text-status-inactive');
+    expect(badge.className).toContain('bg-[#efeeea]');
+    expect(badge.className).toContain('text-[#5f5c54]');
+    expect(badge.className).not.toMatch(/amber|warning|yellow|primary/);
     expect(badge).toHaveAttribute('data-status', 'skipped');
   });
 
@@ -161,7 +165,7 @@ describe('QualityScoreBadge', () => {
 
   it('does not apply animate-pulse for failed state', () => {
     render(<QualityScoreBadge qualityScore={null} qualityStatus="failed" />);
-    expect(screen.getByTestId('quality-score-badge').className).not.toContain('animate-pulse');
+    expect(screen.getByTestId('badge-failed').className).not.toContain('animate-pulse');
   });
 
   // ---- Custom className ----
