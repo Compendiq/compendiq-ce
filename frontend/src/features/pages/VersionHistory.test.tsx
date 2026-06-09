@@ -286,6 +286,48 @@ describe('VersionHistory', () => {
     expect(restoreCall).toBeUndefined();
   });
 
+  it('requests a semantic diff without a model prop (server resolves the use-case)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/semantic-diff')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ diff: 'Section A changed.', v1: 1, v2: 2, pageId: 'page-1' }),
+            { headers: { 'Content-Type': 'application/json' } },
+          ),
+        );
+      }
+      return Promise.resolve(mockVersionsResponse());
+    });
+
+    // No `model` prop — matches how ArticleRightPane renders VersionHistory.
+    render(
+      <VersionHistory pageId="page-1" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+    await waitFor(() => expect(screen.getByText('v2')).toBeInTheDocument());
+
+    // Sparkles = AI semantic diff (present on non-oldest versions).
+    fireEvent.click(screen.getAllByTitle('AI semantic diff with previous version')[0]!);
+
+    await waitFor(() => {
+      const diffCall = fetchSpy.mock.calls.find(
+        ([input]) => (typeof input === 'string' ? input : String(input)).includes('/semantic-diff'),
+      );
+      expect(diffCall).toBeDefined();
+      const [, options] = diffCall as [string, RequestInit];
+      expect(options.method).toBe('POST');
+      const body = JSON.parse(options.body as string);
+      // v1/v2 are sent; model is undefined (omitted from JSON) so the backend
+      // resolves the chat use-case instead of forcing a hardcoded model.
+      expect(body.v1).toBeGreaterThan(0);
+      expect(body.v2).toBeGreaterThan(0);
+      expect(body.model).toBeUndefined();
+    });
+  });
+
   it('closes dialog via close button', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(

@@ -391,8 +391,32 @@ describe('POST /api/pages/:id/versions/semantic-diff', () => {
     const r = await app.inject({ method: 'POST', url: '/api/pages/page-1/versions/semantic-diff', payload: { v1: 1, v2: 2 } });
     expect(r.statusCode).toBe(200);
     expect(r.json().diff).toContain('updated');
-    // confluenceId + resolved client are forwarded so backfilled rows resolve.
-    expect(mockGetSemanticDiff).toHaveBeenCalledWith(7, 1, 2, 'qwen3:32b', 'page-1', mockClient);
+    // Combined contract (#718/#725 + #722/#724): with no `model` in the body the
+    // route must NOT inject a hardcoded legacy model — it passes `undefined` so
+    // getSemanticDiff resolves the `chat` use-case server-side (ADR-021) — AND it
+    // forwards the confluenceId + resolved client so backfilled rows resolve.
+    expect(mockGetSemanticDiff).toHaveBeenCalledWith(7, 1, 2, undefined, 'page-1', mockClient);
+  });
+
+  it('does not force the hardcoded qwen3:32b model when none is supplied', async () => {
+    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 3 });
+    mockSaveVersionSnapshotByPageId.mockResolvedValue(undefined);
+    mockGetSemanticDiff.mockResolvedValue('diff');
+    await app.inject({ method: 'POST', url: '/api/pages/page-1/versions/semantic-diff', payload: { v1: 1, v2: 2 } });
+    const modelArg = mockGetSemanticDiff.mock.calls[0]?.[3];
+    expect(modelArg).not.toBe('qwen3:32b');
+  });
+
+  it('passes an explicit client-supplied model through as an override', async () => {
+    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 3 });
+    mockSaveVersionSnapshotByPageId.mockResolvedValue(undefined);
+    mockGetSemanticDiff.mockResolvedValue('diff');
+    const mockClient = {};
+    mockGetClientForUser.mockResolvedValue(mockClient);
+    const r = await app.inject({ method: 'POST', url: '/api/pages/page-1/versions/semantic-diff', payload: { v1: 1, v2: 2, model: 'custom-model' } });
+    expect(r.statusCode).toBe(200);
+    // Explicit override forwarded untouched, alongside the lazy-body-resolution args.
+    expect(mockGetSemanticDiff).toHaveBeenCalledWith(7, 1, 2, 'custom-model', 'page-1', mockClient);
   });
 
   it('403 (not 500) when the user lacks access — no service calls', async () => {

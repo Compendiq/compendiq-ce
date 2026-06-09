@@ -14,7 +14,7 @@ interface AutoTagResult {
 interface AutoTaggerProps {
   pageId: string;
   currentLabels: string[];
-  model: string;
+  model?: string;
   className?: string;
 }
 
@@ -28,7 +28,7 @@ export function AutoTagger({ pageId, currentLabels, model, className }: AutoTagg
     mutationFn: () =>
       apiFetch<AutoTagResult>(`/pages/${pageId}/auto-tag`, {
         method: 'POST',
-        body: JSON.stringify({ model }),
+        body: JSON.stringify(model ? { model } : {}),
       }),
     onSuccess: (data) => {
       const newTags = data.suggestedTags.filter((t) => !currentLabels.includes(t));

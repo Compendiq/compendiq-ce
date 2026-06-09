@@ -264,13 +264,17 @@ async function resolveVersionBodyHtml(
 
 /**
  * Generate a semantic diff between two versions using LLM.
- * Sends both versions' text to Ollama and asks for a human-readable description.
+ *
+ * Sends both versions' text to the LLM and asks for a human-readable
+ * description. `model` is an optional caller override; when falsy the `chat`
+ * use-case assignment (resolved below) supplies the concrete model, so the
+ * route never has to depend on a hardcoded model name (ADR-021).
  */
 export async function getSemanticDiff(
   pageId: number,
   v1: number,
   v2: number,
-  model: string,
+  model?: string,
   confluenceId?: string | null,
   client?: ConfluenceClient | null,
 ): Promise<string> {
