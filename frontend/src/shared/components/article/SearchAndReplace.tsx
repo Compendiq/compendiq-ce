@@ -266,7 +266,7 @@ export function SearchAndReplace({ editor }: SearchAndReplaceProps) {
           className={cn(
             'rounded p-0.5 transition-colors',
             showReplace
-              ? 'bg-primary/20 text-primary'
+              ? 'bg-action/20 text-action'
               : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
           )}
         >
@@ -335,7 +335,7 @@ function ToggleButton({
       className={cn(
         'rounded p-0.5 transition-colors',
         active
-          ? 'bg-primary/20 text-primary ring-1 ring-primary/30'
+          ? 'bg-action/20 text-action ring-1 ring-action/30'
           : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
       )}
     >

@@ -139,7 +139,7 @@ function TocNodeItem({ node, activeId, collapsedIds, onToggleCollapsed, scrollTo
               heading.level === 3 && 'pl-6 text-xs',
               heading.level === 4 && 'pl-8 text-xs',
               isActive
-                ? 'bg-primary/15 text-primary'
+                ? 'bg-action/15 text-action'
                 : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
             )}
           >
@@ -276,7 +276,7 @@ export function TableOfContents({ htmlContent, headings: headingsProp, contentRe
       {/* Reading progress bar */}
       <div className="fixed left-0 top-0 z-40 h-0.5 w-full" aria-hidden="true">
         <m.div
-          className="h-full bg-primary"
+          className="h-full bg-action"
           style={{ width: `${readingProgress}%` }}
           transition={{ duration: 0.1 }}
         />
@@ -285,7 +285,7 @@ export function TableOfContents({ htmlContent, headings: headingsProp, contentRe
       {/* Mobile toggle */}
       <button
         onClick={() => setIsMobileOpen(!isMobileOpen)}
-        className="fixed bottom-4 right-4 z-40 rounded-full bg-primary p-3 text-primary-foreground shadow-lg lg:hidden"
+        className="fixed bottom-4 right-4 z-40 rounded-full border border-action bg-transparent p-3 text-action shadow-lg transition-colors hover:bg-action hover:text-action-foreground lg:hidden"
         aria-label="Toggle table of contents"
       >
         {isMobileOpen ? <X size={20} /> : <List size={20} />}

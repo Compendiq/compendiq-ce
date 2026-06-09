@@ -40,9 +40,11 @@ export function buildLlmCacheKey(
   systemPrompt: string,
   userContent: string,
   provider?: string,
+  options?: { thinking?: boolean },
 ): string {
   const providerSuffix = provider ? `provider:${provider}` : '';
-  return KEY_PREFIX + hashLlmInputs(model, systemPrompt, userContent, providerSuffix);
+  const thinkingSuffix = options?.thinking ? 'think:1' : '';
+  return KEY_PREFIX + hashLlmInputs(model, systemPrompt, userContent, providerSuffix, thinkingSuffix);
 }
 
 /**
@@ -68,6 +70,7 @@ export function buildRagCacheKey(
     externalUrls?: string[];
     searchWeb?: boolean;
     provider?: string;
+    thinking?: boolean;
   },
 ): string {
   const sortedIds = [...docIds].sort().join(',');
@@ -79,7 +82,11 @@ export function buildRagCacheKey(
     : '';
   const webSuffix = options?.searchWeb ? 'web:1' : '';
   const providerSuffix = options?.provider ? `provider:${options.provider}` : '';
-  return KEY_PREFIX + hashLlmInputs(model, question, sortedIds, subPageSuffix, externalSuffix, webSuffix, providerSuffix);
+  // Thinking-on responses are slower and reason differently — they must live
+  // in a separate cache namespace so a prior thinking-off answer can't be
+  // replayed when the user toggles Think on (and vice versa).
+  const thinkingSuffix = options?.thinking ? 'think:1' : '';
+  return KEY_PREFIX + hashLlmInputs(model, question, sortedIds, subPageSuffix, externalSuffix, webSuffix, providerSuffix, thinkingSuffix);
 }
 
 export class LlmCache {

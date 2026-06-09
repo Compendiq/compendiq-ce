@@ -62,6 +62,31 @@ interface PaginatedResponse<T> {
   _links?: { next?: string };
 }
 
+/** Raw audit record shape as returned by GET /rest/api/audit (only the fields we use). */
+interface RawAuditRecord {
+  creationDate?: number;
+  category?: string;
+  summary?: string;
+  affectedObject?: { id?: string | number; type?: string; objectType?: string; name?: string };
+}
+
+/**
+ * Normalised Confluence audit record. `affectedObject.type` is resolved from the
+ * raw `type` or `objectType` field (the field name varies across DC 9.x builds).
+ */
+export interface ConfluenceAuditRecord {
+  creationDate: number;
+  category?: string;
+  summary?: string;
+  affectedObject?: { id: string; type?: string; name?: string };
+}
+
+/** Audit-log retention period from GET /rest/api/audit/retention. */
+export interface AuditRetention {
+  number: number;
+  units: string;
+}
+
 interface RetryOptions {
   /** Maximum number of attempts (including the first). Default: 3 */
   maxAttempts?: number;
@@ -191,6 +216,71 @@ export class ConfluenceClient {
     }
 
     return spaces;
+  }
+
+  /**
+   * Fetch the configured audit-log retention period.
+   * Requires the Confluence administrator permission.
+   */
+  async getAuditRetention(): Promise<AuditRetention> {
+    return this.fetch<AuditRetention>('/rest/api/audit/retention');
+  }
+
+  /**
+   * Fetch audit-log records from `startDate` (epoch ms) up to now (or `endDate`),
+   * following pagination to completion and normalising each record. Requires the
+   * Confluence administrator permission; a 403/404 is surfaced as
+   * `AuditUnavailableError` so callers can fall back rather than treat it as a
+   * hard failure.
+   */
+  async getAuditRecords(opts: {
+    startDate: number;
+    endDate?: number;
+    start?: number;
+    limit?: number;
+  }): Promise<ConfluenceAuditRecord[]> {
+    const limit = opts.limit ?? 1000;
+    let start = opts.start ?? 0;
+    const records: ConfluenceAuditRecord[] = [];
+
+    while (true) {
+      const params = new URLSearchParams({
+        startDate: String(opts.startDate),
+        start: String(start),
+        limit: String(limit),
+      });
+      if (opts.endDate !== undefined) params.set('endDate', String(opts.endDate));
+
+      let response: PaginatedResponse<RawAuditRecord>;
+      try {
+        response = await this.fetch<PaginatedResponse<RawAuditRecord>>(`/rest/api/audit?${params.toString()}`);
+      } catch (err) {
+        if (err instanceof ConfluenceError && (err.statusCode === 403 || err.statusCode === 404)) {
+          throw new AuditUnavailableError(
+            `Confluence audit log not accessible (HTTP ${err.statusCode}); requires the Confluence administrator permission`,
+            err.statusCode,
+          );
+        }
+        throw err;
+      }
+
+      for (const raw of response.results ?? []) {
+        const ao = raw.affectedObject;
+        records.push({
+          creationDate: raw.creationDate ?? 0,
+          category: raw.category,
+          summary: raw.summary,
+          affectedObject: ao
+            ? { id: String(ao.id ?? ''), type: ao.type ?? ao.objectType, name: ao.name }
+            : undefined,
+        });
+      }
+
+      if ((response.size ?? 0) < limit || !response._links?.next) break;
+      start += limit;
+    }
+
+    return records;
   }
 
   async getPages(spaceKey: string, start = 0, limit = 50): Promise<PaginatedResponse<ConfluencePage>> {
@@ -898,6 +988,21 @@ export class ConfluenceError extends Error {
   ) {
     super(message);
     this.name = 'ConfluenceError';
+  }
+}
+
+/**
+ * Raised when the audit-log API is not accessible (HTTP 403/404 — typically the
+ * sync token lacks the Confluence administrator permission). Callers treat this
+ * as "optimization unavailable" and fall back to the full restriction sync.
+ */
+export class AuditUnavailableError extends Error {
+  constructor(
+    message: string,
+    public statusCode: number,
+  ) {
+    super(message);
+    this.name = 'AuditUnavailableError';
   }
 }
 

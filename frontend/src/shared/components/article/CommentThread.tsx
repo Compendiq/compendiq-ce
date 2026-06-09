@@ -64,7 +64,7 @@ export function CommentThread({
     >
       {/* Top-level comment */}
       <div className="flex items-start gap-2.5">
-        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/20 text-xs font-medium text-primary">
+        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-action text-xs font-medium text-action-foreground">
           {comment.authorName.charAt(0).toUpperCase()}
         </div>
         <div className="min-w-0 flex-1">

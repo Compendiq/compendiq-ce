@@ -55,7 +55,7 @@ export function KeyboardShortcutsModal() {
           {/* Header */}
           <div className="flex items-center justify-between border-b border-border/50 px-5 py-4">
             <Dialog.Title className="flex items-center gap-2 text-base font-semibold text-foreground">
-              <Keyboard size={18} className="text-primary" />
+              <Keyboard size={18} className="text-action" />
               Keyboard Shortcuts
             </Dialog.Title>
             <Dialog.Close asChild>
@@ -127,7 +127,7 @@ export function KeyboardShortcutsModal() {
                 checked={singleKeyEnabled}
                 onCheckedChange={setSingleKeyEnabled}
                 aria-label="Single-key shortcuts"
-                className="relative h-5 w-9 shrink-0 rounded-full bg-foreground/10 transition-colors data-[state=checked]:bg-primary outline-none"
+                className="relative h-5 w-9 shrink-0 rounded-full bg-foreground/10 transition-colors data-[state=checked]:bg-action outline-none"
               >
                 <Switch.Thumb className="block h-4 w-4 translate-x-0.5 rounded-full bg-white transition-transform data-[state=checked]:translate-x-4" />
               </Switch.Root>

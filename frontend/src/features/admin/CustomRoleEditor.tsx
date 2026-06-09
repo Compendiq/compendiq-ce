@@ -254,7 +254,7 @@ export function CustomRoleEditor({ open, onOpenChange, editRole }: CustomRoleEdi
           {/* Header */}
           <div className="flex items-center justify-between border-b border-border/50 px-5 py-4">
             <Dialog.Title className="flex items-center gap-2 text-base font-semibold text-foreground">
-              <Shield size={18} className="text-primary" />
+              <Shield size={18} className="text-action" />
               {isEditMode ? `Edit Role: ${editRole.displayName}` : 'Create Custom Role'}
             </Dialog.Title>
             <Dialog.Close asChild>
@@ -275,7 +275,7 @@ export function CustomRoleEditor({ open, onOpenChange, editRole }: CustomRoleEdi
                 onClick={() => setActiveSection('edit')}
                 className={`rounded-md px-3 py-1.5 text-sm transition-colors ${
                   activeSection === 'edit'
-                    ? 'bg-primary/15 text-primary font-medium'
+                    ? 'bg-action/15 text-action font-medium'
                     : 'text-muted-foreground hover:bg-foreground/5'
                 }`}
                 data-testid="tab-permissions"
@@ -286,7 +286,7 @@ export function CustomRoleEditor({ open, onOpenChange, editRole }: CustomRoleEdi
                 onClick={() => setActiveSection('assignments')}
                 className={`rounded-md px-3 py-1.5 text-sm transition-colors ${
                   activeSection === 'assignments'
-                    ? 'bg-primary/15 text-primary font-medium'
+                    ? 'bg-action/15 text-action font-medium'
                     : 'text-muted-foreground hover:bg-foreground/5'
                 }`}
                 data-testid="tab-assignments"
@@ -421,7 +421,7 @@ export function CustomRoleEditor({ open, onOpenChange, editRole }: CustomRoleEdi
                             <td className="px-4 py-2">{a.spaceKey}</td>
                             <td className="px-4 py-2">
                               <span className={`rounded px-2 py-0.5 text-xs font-medium ${
-                                a.principalType === 'group' ? 'bg-primary/10 text-primary' : 'bg-blue-500/10 text-blue-500'
+                                a.principalType === 'group' ? 'bg-action/10 text-action' : 'bg-blue-500/10 text-blue-500'
                               }`}>
                                 {a.principalType === 'group' ? 'Group' : 'User'}
                               </span>
@@ -485,7 +485,7 @@ export function CustomRoleEditor({ open, onOpenChange, editRole }: CustomRoleEdi
                 <button
                   onClick={handleSubmit}
                   disabled={!canSubmit}
-                  className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                  className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
                   data-testid="submit-role-btn"
                 >
                   {isPending && <Loader2 size={14} className="animate-spin" />}

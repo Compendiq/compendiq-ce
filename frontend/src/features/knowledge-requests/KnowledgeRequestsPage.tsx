@@ -160,7 +160,7 @@ export function KnowledgeRequestsPage() {
         </div>
         <button
           onClick={() => setShowCreateModal(true)}
-          className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
           data-testid="create-request-btn"
         >
           <Plus size={16} />
@@ -180,7 +180,7 @@ export function KnowledgeRequestsPage() {
                 className={cn(
                   'rounded-md px-3 py-1.5 text-sm transition-colors',
                   activeTab === key
-                    ? 'bg-primary/15 text-primary font-medium'
+                    ? 'bg-action/15 text-action font-medium'
                     : 'text-muted-foreground hover:bg-foreground/5',
                 )}
                 data-testid={`tab-${key}`}
@@ -194,7 +194,7 @@ export function KnowledgeRequestsPage() {
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value as RequestStatus | '')}
-            className="ml-auto rounded-md bg-foreground/5 px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-primary"
+            className="nm-select-md ml-auto"
             data-testid="status-filter"
           >
             <option value="">All Statuses</option>
@@ -278,7 +278,7 @@ export function KnowledgeRequestsPage() {
                         setFulfillRequestId(request.id);
                         setFulfillPageId('');
                       }}
-                      className="flex shrink-0 items-center gap-1 rounded-md bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary hover:bg-primary/20 transition-colors"
+                      className="inline-flex shrink-0 items-center gap-1 rounded-md border border-action bg-transparent px-2.5 py-1 text-xs font-medium text-action transition-colors hover:bg-action hover:text-action-foreground"
                       data-testid={`fulfill-${request.id}`}
                     >
                       <LinkIcon size={12} />
@@ -334,7 +334,7 @@ export function KnowledgeRequestsPage() {
                   <select
                     value={newPriority}
                     onChange={(e) => setNewPriority(e.target.value as RequestPriority)}
-                    className="w-full rounded-md bg-foreground/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary"
+                    className="nm-select-md w-full"
                     data-testid="request-priority-select"
                   >
                     <option value="low">Low</option>
@@ -353,7 +353,7 @@ export function KnowledgeRequestsPage() {
                 <button
                   onClick={handleCreate}
                   disabled={!newTitle.trim() || createMutation.isPending}
-                  className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                  className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
                   data-testid="submit-request"
                 >
                   {createMutation.isPending && <Loader2 size={14} className="animate-spin" />}
@@ -403,7 +403,7 @@ export function KnowledgeRequestsPage() {
                 <button
                   onClick={handleFulfill}
                   disabled={!fulfillPageId.trim() || fulfillMutation.isPending}
-                  className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                  className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
                   data-testid="submit-fulfill"
                 >
                   {fulfillMutation.isPending && <Loader2 size={14} className="animate-spin" />}

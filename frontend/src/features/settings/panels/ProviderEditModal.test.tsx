@@ -121,3 +121,43 @@ describe('ProviderEditModal — edit', () => {
     );
   });
 });
+
+describe('ProviderEditModal — dismissal & focus', () => {
+  beforeEach(() => {
+    useAuthStore.getState().setAuth('test-token', { id: '1', username: 'admin', role: 'admin' });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    useAuthStore.getState().clearAuth();
+  });
+
+  it('closes on Escape', () => {
+    const onClose = vi.fn();
+    const Wrapper = createWrapper();
+    render(<ProviderEditModal mode="create" open onClose={onClose} onSaved={() => {}} />, { wrapper: Wrapper });
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes when the backdrop is clicked', () => {
+    const onClose = vi.fn();
+    const Wrapper = createWrapper();
+    render(<ProviderEditModal mode="create" open onClose={onClose} onSaved={() => {}} />, { wrapper: Wrapper });
+    fireEvent.click(screen.getByTestId('provider-modal-backdrop'));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not close when the dialog body is clicked', () => {
+    const onClose = vi.fn();
+    const Wrapper = createWrapper();
+    render(<ProviderEditModal mode="create" open onClose={onClose} onSaved={() => {}} />, { wrapper: Wrapper });
+    fireEvent.click(screen.getByRole('dialog'));
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('focuses the name field when opened', () => {
+    const Wrapper = createWrapper();
+    render(<ProviderEditModal mode="create" open onClose={() => {}} onSaved={() => {}} />, { wrapper: Wrapper });
+    expect(screen.getByLabelText(/name/i)).toHaveFocus();
+  });
+});

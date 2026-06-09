@@ -10,6 +10,7 @@ import {
   startSummaryWorker,
   stopSummaryWorker,
 } from './summary-worker.js';
+import { setPiiScanHook, _resetPiiScanHookForTests } from '../../../core/services/pii-scan-hook.js';
 
 const dbAvailable = await isDbAvailable();
 
@@ -235,6 +236,53 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
       expect(result.rows[0].summary_html).toContain('test');
       expect(result.rows[0].summary_model).toBe('test-model');
       expect(result.rows[0].summary_content_hash).toHaveLength(64);
+    });
+
+    describe('PII guard (EE #119)', () => {
+      afterEach(() => {
+        _resetPiiScanHookForTests();
+      });
+
+      it('withholds the summary when the PII scanner blocks it', async () => {
+        setPiiScanHook(async () => ({
+          spans: [{ start: 0, end: 5, category: 'EMAIL', confidence: 0.99, source: 'regex' }],
+          action: 'blocked',
+        }));
+        await query(
+          `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status)
+           VALUES ('pii-block', $1, 'PII Page', $2, 'pending')`,
+          [testSpaceKey, 'C'.repeat(200)],
+        );
+
+        await runSummaryBatch('test-model');
+
+        const row = await query<{ summary_status: string; summary_text: string | null }>(
+          "SELECT summary_status, summary_text FROM pages WHERE confluence_id = 'pii-block'",
+        );
+        expect(row.rows[0].summary_status).toBe('skipped');
+        expect(row.rows[0].summary_text).toBeNull();
+      });
+
+      it('persists the redacted summary when the PII scanner redacts', async () => {
+        setPiiScanHook(async () => ({
+          spans: [{ start: 0, end: 5, category: 'EMAIL', confidence: 0.99, source: 'regex' }],
+          action: 'redacted',
+          redactedText: 'Redacted [REDACTED:EMAIL] summary.',
+        }));
+        await query(
+          `INSERT INTO pages (confluence_id, space_key, title, body_text, summary_status)
+           VALUES ('pii-redact', $1, 'PII Page', $2, 'pending')`,
+          [testSpaceKey, 'D'.repeat(200)],
+        );
+
+        await runSummaryBatch('test-model');
+
+        const row = await query<{ summary_status: string; summary_html: string }>(
+          "SELECT summary_status, summary_html FROM pages WHERE confluence_id = 'pii-redact'",
+        );
+        expect(row.rows[0].summary_status).toBe('summarized');
+        expect(row.rows[0].summary_html).toContain('REDACTED');
+      });
     });
 
     it('should detect content changes via timestamp and re-summarize', async () => {

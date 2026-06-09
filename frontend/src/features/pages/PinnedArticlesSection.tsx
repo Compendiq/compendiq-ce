@@ -33,7 +33,7 @@ export function PinnedArticlesSection() {
   return (
     <div data-testid="pinned-articles-section">
       <div className="mb-3 flex items-center gap-2">
-        <Pin size={16} className="text-primary" />
+        <Pin size={16} className="text-action" />
         <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
           Pinned Articles
         </h2>
@@ -70,7 +70,7 @@ export function PinnedArticlesSection() {
 
               {/* Metadata row */}
               <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                <span className="rounded bg-primary/10 px-1.5 py-0.5 text-primary">
+                <span className="rounded bg-[#ececea] px-1.5 py-0.5 text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]">
                   {item.spaceKey}
                 </span>
                 {item.author && (

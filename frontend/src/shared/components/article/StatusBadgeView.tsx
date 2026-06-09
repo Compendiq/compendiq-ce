@@ -120,7 +120,7 @@ export function StatusBadgeView({ node, updateAttributes, editor }: NodeViewProp
               <button
                 type="button"
                 onClick={handleApply}
-                className="w-full rounded-md bg-primary/20 px-2 py-1 text-xs font-medium text-primary hover:bg-primary/30 transition-colors"
+                className="w-full rounded-md border border-action bg-transparent px-2 py-1 text-xs font-medium text-action transition-colors hover:bg-action hover:text-action-foreground"
                 data-testid="status-apply-btn"
               >
                 Apply

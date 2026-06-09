@@ -208,67 +208,83 @@ function AiAssistantInner() {
       // height changes.
       className="flex flex-1 flex-col gap-3"
     >
-      {/* Sticky sub-header: mode selector + optional type selector.
+      {/* Sticky sub-header: mode selector | context + options.
           Sits at top-0 of the scroll container so it stays visible as
           messages grow. backdrop-blur on the inner card keeps the surface
           legible against the live content scrolling under it. An opaque
           UNDER-mask (bg-background, z-[-1]) sits behind the translucent bar
           and extends 100px UPWARD so chat content scrolling up is fully
-          occluded above the tab row — mirroring PageViewPage's edit toolbar. */}
+          occluded above the tab row — mirroring PageViewPage's edit toolbar.
+
+          Visual grammar: two clear groups separated by a thin divider.
+          Group A (left): which mode are we in. Inset segmented control.
+          Group B (right): what's the model + what's the context window +
+            what options are on. Outlined chips of uniform 28 px height. */}
       <div className="sticky top-0 z-20 isolate -mx-1 space-y-3 bg-background/85 px-1 py-1 backdrop-blur">
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 -top-[100px] z-[-1] bg-background"
+        style={{ bottom: 0 }}
+      />
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-2 rounded-xl border border-border/40 bg-card/50 px-3 py-2 backdrop-blur-sm">
+        {/* Group A — mode segmented control */}
         <div
-          aria-hidden
-          className="pointer-events-none absolute inset-x-0 -top-[100px] z-[-1] bg-background"
-          style={{ bottom: 0 }}
-        />
-        <div className="flex flex-wrap items-center gap-1 rounded-xl border border-border/40 bg-card/50 px-3 py-2 backdrop-blur-sm">
-          <div
-            role="tablist"
-            aria-label="AI mode"
-            className="flex items-center gap-1"
-            onKeyDown={(e) => {
-              if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
-                e.preventDefault();
-                const keys = MODE_BUTTONS.map((b) => b.key);
-                const idx = keys.indexOf(mode);
-                const next = e.key === 'ArrowRight'
-                  ? (idx + 1) % keys.length
-                  : (idx - 1 + keys.length) % keys.length;
-                const nextKey = keys[next];
-                if (nextKey) setMode(nextKey);
-              }
-            }}
-          >
-            {MODE_BUTTONS.map(({ key, icon: Icon, label }) => (
-              <button
-                key={key}
-                role="tab"
-                aria-selected={mode === key}
-                tabIndex={mode === key ? 0 : -1}
-                onClick={() => setMode(key)}
-                className={cn(
-                  'flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs transition-colors',
-                  mode === key
-                    ? 'bg-primary/12 font-medium text-primary'
-                    : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
-                )}
-              >
-                <Icon size={13} /> {label}
-              </button>
-            ))}
-          </div>
+          role="tablist"
+          aria-label="AI mode"
+          className="flex items-center gap-0.5 rounded-lg bg-foreground/[0.04] p-1"
+          onKeyDown={(e) => {
+            if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+              e.preventDefault();
+              const keys = MODE_BUTTONS.map((b) => b.key);
+              const idx = keys.indexOf(mode);
+              const next = e.key === 'ArrowRight'
+                ? (idx + 1) % keys.length
+                : (idx - 1 + keys.length) % keys.length;
+              const nextKey = keys[next];
+              if (nextKey) setMode(nextKey);
+            }
+          }}
+        >
+          {MODE_BUTTONS.map(({ key, icon: Icon, label }) => (
+            <button
+              key={key}
+              role="tab"
+              aria-selected={mode === key}
+              tabIndex={mode === key ? 0 : -1}
+              onClick={() => setMode(key)}
+              className={cn(
+                'flex h-7 items-center gap-1.5 rounded-md px-2.5 text-sm transition-colors',
+                mode === key
+                  // Inset honey-tinted surface (not filled) so the active tab
+                  // doesn't compete with the honey-filled primary CTA in the
+                  // mode's input bar.
+                  ? 'bg-card text-primary-ink shadow-sm ring-1 ring-primary/35 font-medium'
+                  : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
+              )}
+            >
+              <Icon size={14} /> {label}
+            </button>
+          ))}
+        </div>
 
-          <div className="flex-1" />
+        <div className="flex-1" />
 
+        {/* Group B — context + options. Each chip is 28 px tall (h-7),
+            border-border/40 at rest, tinted on active. The divider between
+            the model dropdown and the toggles separates "infrastructure" the
+            user sets once from "context flags" they flip per question. */}
+        <div className="flex flex-wrap items-center gap-1.5">
           {models.length === 0 ? (
-            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <Loader2 size={11} className="animate-spin" /> Loading models...
+            <span className="flex h-7 items-center gap-1.5 rounded-md border border-border/40 px-2.5 text-xs text-muted-foreground">
+              <Loader2 size={12} className="animate-spin" /> Loading models...
             </span>
           ) : (
             <select
               value={model}
               onChange={(e) => setModel(e.target.value)}
-              className="rounded bg-foreground/5 px-2 py-0.5 text-xs outline-none"
+              aria-label="LLM model"
+              title="LLM model"
+              className="nm-select"
             >
               {models
                 .filter((m) => !m.name.includes('embed'))
@@ -279,16 +295,22 @@ function AiAssistantInner() {
           )}
 
           {page && (
-            <span className="flex items-center gap-1 rounded bg-foreground/5 px-2 py-0.5 text-[11px] text-muted-foreground">
-              <FileText size={11} /> {page.title}
+            <span
+              className="flex h-7 items-center gap-1.5 rounded-md border border-border/40 bg-foreground/[0.03] px-2.5 text-xs text-muted-foreground"
+              title={`AI context is scoped to "${page.title}"`}
+            >
+              <FileText size={12} />
+              <span className="max-w-[180px] truncate">{page.title}</span>
             </span>
           )}
 
           {page && pageHasChildren && (
             <label
               className={cn(
-                'flex cursor-pointer items-center gap-1 rounded-md px-2 py-0.5 text-xs transition-colors',
-                includeSubPages ? 'bg-primary/12 text-primary' : 'text-muted-foreground hover:bg-foreground/5',
+                'flex h-7 cursor-pointer items-center gap-1.5 rounded-md border px-2.5 text-xs transition-colors',
+                includeSubPages
+                  ? 'border-primary/45 bg-primary/12 text-primary-ink'
+                  : 'border-border/40 text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
               )}
               title="Include sub-pages in the AI context"
             >
@@ -304,13 +326,22 @@ function AiAssistantInner() {
             </label>
           )}
 
-          {/* Thinking mode toggle (#20) */}
+          {/* Divider between "what model + what context" and "what options". */}
+          <span aria-hidden className="mx-0.5 h-5 w-px bg-border/50" />
+
+          {/* Thinking mode toggle (#20). Always render the resting surface so
+              the affordance reads as a toggle rather than collapsing into a
+              label-with-icon when off. */}
           <label
             className={cn(
-              'flex cursor-pointer items-center gap-1 rounded-md px-2 py-0.5 text-xs transition-colors',
-              thinkingMode ? 'bg-purple-500/12 text-purple-500' : 'text-muted-foreground hover:bg-foreground/5',
+              'flex h-7 cursor-pointer items-center gap-1.5 rounded-md border px-2.5 text-xs transition-colors',
+              thinkingMode
+                ? 'border-purple-500/45 bg-purple-500/15 text-purple-300'
+                : 'border-border/40 text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
             )}
-            title="Enable extended thinking for more thorough responses"
+            title={thinkingMode
+              ? 'Extended thinking is on — responses take longer but reason more carefully'
+              : 'Enable extended thinking for more thorough responses'}
           >
             <input
               type="checkbox"
@@ -323,11 +354,12 @@ function AiAssistantInner() {
             <span>Think</span>
           </label>
         </div>
+      </div>
 
-        {/* Mode-specific type selectors — included in the sticky header so
-            they stay alongside the tabs while scrolling. */}
-        {mode === 'improve' && <ImproveTypeSelector />}
-        {mode === 'diagram' && <DiagramTypeSelector />}
+      {/* Mode-specific type selectors — included in the sticky header so
+          they stay alongside the tabs while scrolling. */}
+      {mode === 'improve' && <ImproveTypeSelector />}
+      {mode === 'diagram' && <DiagramTypeSelector />}
       </div>
 
       {/* Messages — clean document-like surface, no heavy glass.
@@ -337,9 +369,18 @@ function AiAssistantInner() {
         <div className="min-h-[360px] space-y-4 p-5">
           {messages.length === 0 && (
             <div className="flex min-h-[300px] flex-col items-center justify-center text-center">
-              <Bot size={44} className="mb-4 text-muted-foreground/50" />
-              <p className="text-base font-medium">{getEmptyTitle(mode)}</p>
-              <p className="mt-1 max-w-sm text-sm text-muted-foreground">{getEmptySubtitle(mode, page)}</p>
+              {/* Robot wrapped in a honey-tinted aura so the empty state reads
+                  as "ready to help", not "page failed to load" (a complaint
+                  in the May-2026 audit). 64 px icon + soft glow vs. the prior
+                  44 px muted-grey glyph. */}
+              <div className="relative mb-5 flex h-20 w-20 items-center justify-center">
+                <div className="absolute inset-0 rounded-full bg-primary/10 blur-2xl" aria-hidden />
+                <div className="relative flex h-16 w-16 items-center justify-center rounded-full bg-primary/12 ring-1 ring-primary/25">
+                  <Bot size={32} className="text-primary" />
+                </div>
+              </div>
+              <p className="text-lg font-medium">{getEmptyTitle(mode)}</p>
+              <p className="mt-2 max-w-md text-sm text-muted-foreground">{getEmptySubtitle(mode, page)}</p>
               {mode === 'ask' && <AskExamplePrompts />}
             </div>
           )}

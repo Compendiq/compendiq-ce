@@ -10,6 +10,7 @@ interface FreshnessLevel {
   label: string;
   colorClass: string;
   bgClass: string;
+  testId?: string;
 }
 
 function getFreshnessLevel(lastModified: string): FreshnessLevel {
@@ -22,7 +23,15 @@ function getFreshnessLevel(lastModified: string): FreshnessLevel {
     return { label: 'Fresh', colorClass: 'text-success', bgClass: 'bg-success/15' };
   }
   if (diffDays < 30) {
-    return { label: 'Recent', colorClass: 'text-warning', bgClass: 'bg-warning/15' };
+    // Recent: sage green tinted pill, AA-pass in light + dark.
+    // Was amber (bg-warning/15 + text-warning) which read as a warning and
+    // failed WCAG-AA contrast (3.37:1). Sage reads as positive freshness.
+    return {
+      label: 'Recent',
+      colorClass: 'text-[#1f5a2a] dark:text-[#9ad4a8]',
+      bgClass: 'bg-[#e7f2e8] dark:bg-[#1a2a1d]',
+      testId: 'badge-recent',
+    };
   }
   if (diffDays < 90) {
     return { label: 'Aging', colorClass: 'text-status-syncing', bgClass: 'bg-status-syncing/15' };
@@ -40,6 +49,7 @@ export function FreshnessBadge({ lastModified, className }: FreshnessBadgeProps)
   return (
     <span
       title={`Last modified: ${formattedDate}`}
+      data-testid={level.testId}
       className={cn(
         'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium',
         level.bgClass,
