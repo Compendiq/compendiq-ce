@@ -9,6 +9,8 @@ const mockHtmlToConfluence = vi.fn();
 const mockConfluenceToHtml = vi.fn();
 const mockHtmlToText = vi.fn();
 const mockLogAuditEvent = vi.fn();
+const mockProtectMedia = vi.fn();
+const mockRestoreMedia = vi.fn();
 
 // Defensive mock: llm-conversations.ts doesn't call the LLM directly, but
 // other route tests might be transitively imported. Safe no-op here.
@@ -41,6 +43,8 @@ vi.mock('../../core/services/content-converter.js', () => ({
   htmlToConfluence: (...args: unknown[]) => mockHtmlToConfluence(...args),
   htmlToText: (...args: unknown[]) => mockHtmlToText(...args),
   markdownToHtml: (...args: unknown[]) => mockMarkdownToHtml(...args),
+  protectMedia: (...args: unknown[]) => mockProtectMedia(...args),
+  restoreMedia: (...args: unknown[]) => mockRestoreMedia(...args),
 }));
 
 vi.mock('../../domains/llm/services/embedding-service.js', () => ({
@@ -133,8 +137,8 @@ describe('POST /api/llm/improvements/apply', () => {
 
     // Default: page exists in DB with version 5 (Confluence source)
     mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('SELECT id, version, title, space_key, source, confluence_id FROM pages')) {
-        return Promise.resolve({ rows: [{ id: 42, version: 5, title: 'My Article', space_key: 'OPS', source: 'confluence', confluence_id: 'page-1' }] });
+      if (sql.includes('SELECT id, version, title, space_key, source, confluence_id')) {
+        return Promise.resolve({ rows: [{ id: 42, version: 5, title: 'My Article', space_key: 'OPS', source: 'confluence', confluence_id: 'page-1', body_html: '<p>Old content</p>' }] });
       }
       return Promise.resolve({ rows: [] });
     });
@@ -144,6 +148,11 @@ describe('POST /api/llm/improvements/apply', () => {
     mockHtmlToConfluence.mockReturnValue('<p class="confluence">Improved XHTML</p>');
     mockConfluenceToHtml.mockReturnValue('<p>Improved HTML content</p>');
     mockHtmlToText.mockReturnValue('Improved HTML content');
+
+    // Default: protectMedia returns empty media (no media to protect)
+    mockProtectMedia.mockReturnValue({ html: '<p>Old content</p>', media: [] });
+    // Default: restoreMedia is a passthrough
+    mockRestoreMedia.mockImplementation((html: string) => html);
 
     // Default: Confluence updatePage returns new version
     mockClient.updatePage.mockResolvedValue({
@@ -191,8 +200,8 @@ describe('POST /api/llm/improvements/apply', () => {
 
   it('returns 409 on version conflict', async () => {
     mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('SELECT id, version, title, space_key, source, confluence_id FROM pages')) {
-        return Promise.resolve({ rows: [{ id: 42, version: 10, title: 'My Article', space_key: 'OPS', source: 'confluence', confluence_id: 'page-1' }] });
+      if (sql.includes('SELECT id, version, title, space_key, source, confluence_id')) {
+        return Promise.resolve({ rows: [{ id: 42, version: 10, title: 'My Article', space_key: 'OPS', source: 'confluence', confluence_id: 'page-1', body_html: '<p>Old</p>' }] });
       }
       return Promise.resolve({ rows: [] });
     });
@@ -339,5 +348,54 @@ describe('POST /api/llm/improvements/apply', () => {
     });
 
     expect(response.statusCode).toBeGreaterThanOrEqual(400);
+  });
+
+  it('preserves drawio + image through improve→apply even if the LLM only kept the tokens (#723)', async () => {
+    const drawio = '<div class="confluence-drawio" data-diagram-name="Arch"><img src="/api/attachments/42/Arch.png"></div>';
+    const img = '<img src="/api/attachments/42/p.png" data-confluence-filename="p.png" data-confluence-image-source="attachment">';
+    const bodyHtmlWithMedia = `<p>Old</p>${drawio}${img}`;
+    const improvedHtmlFromMarkdown = '<p>Improved intro</p>\n<p>CQ_MEDIA_PLACEHOLDER_0</p>\n<p>CQ_MEDIA_PLACEHOLDER_1</p>\n';
+    const restoredHtml = `<p>Improved intro</p>\n${drawio}\n${img}\n`;
+
+    // The page has media in body_html
+    mockQuery.mockImplementation((sql: string) => {
+      if (sql.includes('SELECT id, version, title, space_key, source, confluence_id')) {
+        return Promise.resolve({ rows: [{ id: 42, version: 5, title: 'My Article', space_key: 'OPS', source: 'confluence', confluence_id: 'page-1', body_html: bodyHtmlWithMedia }] });
+      }
+      return Promise.resolve({ rows: [] });
+    });
+
+    // protectMedia returns media entries matching the page's body_html
+    const mediaEntries = [
+      { token: 'CQ_MEDIA_PLACEHOLDER_0', html: drawio },
+      { token: 'CQ_MEDIA_PLACEHOLDER_1', html: img },
+    ];
+    mockProtectMedia.mockReturnValue({ html: 'protected', media: mediaEntries });
+    // markdownToHtml returns HTML with placeholder tokens (simulating LLM kept tokens)
+    mockMarkdownToHtml.mockResolvedValue(improvedHtmlFromMarkdown);
+    // restoreMedia injects the original media back
+    mockRestoreMedia.mockReturnValue(restoredHtml);
+    mockHtmlToConfluence.mockReturnValue('<p>Improved XHTML</p>');
+    mockConfluenceToHtml.mockReturnValue(restoredHtml);
+    mockHtmlToText.mockReturnValue('Improved intro');
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/llm/improvements/apply',
+      payload: {
+        pageId: 'page-1',
+        improvedMarkdown: 'Improved intro\n\nCQ_MEDIA_PLACEHOLDER_0\n\nCQ_MEDIA_PLACEHOLDER_1\n',
+        version: 5,
+        title: 'My Article',
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    // protectMedia was called with the page's current body_html
+    expect(mockProtectMedia).toHaveBeenCalledWith(bodyHtmlWithMedia);
+    // restoreMedia was called after markdownToHtml
+    expect(mockRestoreMedia).toHaveBeenCalledWith(improvedHtmlFromMarkdown, mediaEntries);
+    // The final HTML passed to htmlToConfluence includes media
+    expect(mockHtmlToConfluence).toHaveBeenCalledWith(restoredHtml);
   });
 });

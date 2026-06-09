@@ -3,7 +3,7 @@ import { query } from '../../core/db/postgres.js';
 import { ChatMessage } from '../../domains/llm/services/prompts.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { ApplyImprovementRequestSchema } from '@compendiq/contracts';
-import { confluenceToHtml, htmlToConfluence, htmlToText, markdownToHtml } from '../../core/services/content-converter.js';
+import { confluenceToHtml, htmlToConfluence, htmlToText, markdownToHtml, protectMedia, restoreMedia } from '../../core/services/content-converter.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { IdParamSchema, ImprovementsQuerySchema } from './_helpers.js';
@@ -111,9 +111,9 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     const isNumericId = /^\d+$/.test(pageId);
     const existing = await query<{
       id: number; version: number; title: string; space_key: string;
-      source: string; confluence_id: string | null;
+      source: string; confluence_id: string | null; body_html: string | null;
     }>(
-      `SELECT id, version, title, space_key, source, confluence_id FROM pages
+      `SELECT id, version, title, space_key, source, confluence_id, body_html FROM pages
        WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'} AND deleted_at IS NULL`,
       [isNumericId ? parseInt(pageId, 10) : pageId],
     );
@@ -129,8 +129,18 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.conflict('Page has been modified since you loaded it. Please refresh and try again.');
     }
 
-    // Convert improved Markdown → HTML
-    const bodyHtml = await markdownToHtml(improvedMarkdown);
+    // #723: re-derive the same media tokens from the page's CURRENT body_html
+    // (deterministic, document order) and re-inject originals verbatim so AI
+    // Improve can never strip images/draw.io. Guard: re-append any media the LLM
+    // dropped entirely (token missing from the improved markdown).
+    const { media } = protectMedia(existingPage.body_html ?? '');
+    let bodyHtml = await markdownToHtml(improvedMarkdown);
+    bodyHtml = restoreMedia(bodyHtml, media);
+    const dropped = media.filter((m) => !bodyHtml.includes(m.html));
+    if (dropped.length > 0) {
+      bodyHtml += dropped.map((m) => m.html).join('\n');
+      fastify.log.warn({ pageId, dropped: dropped.length }, '#723: re-appended media dropped during AI Improve');
+    }
     const bodyText = htmlToText(bodyHtml);
 
     const cache = new RedisCache(fastify.redis);
