@@ -110,16 +110,46 @@ export function protectMedia(html: string): { html: string; media: ProtectedMedi
 /**
  * Re-inject protected media. Replaces `<p>TOKEN</p>` (markdown wrapped the lone
  * token in a paragraph) and bare TOKEN occurrences with the original HTML.
+ *
+ * **As-built — single combined pass with a FUNCTION replacer** (a naive
+ * per-token `replace`/`split`-`join` is unsafe and was *not* shipped):
+ * - One alternation regex over every token (raw + the turndown-escaped `\_`
+ *   spelling, so tokens survive a full `htmlToMarkdown → markdownToHtml`
+ *   round-trip) with a **function replacer**. Function replacers return their
+ *   value literally, so original media HTML containing `$`, `$&`, `$1`, `` $` ``,
+ *   `$'`, `$$` (legitimate in Confluence attachment URLs / encoded query
+ *   strings) is injected verbatim instead of being reinterpreted as
+ *   `String.replace` special patterns — **$-safe**.
+ * - A single pass is **collision-safe**: already-injected media is never
+ *   re-scanned, so an earlier entry whose original HTML literally contains a
+ *   *later* token (e.g. in an `alt` / `data-diagram-name`) can't be corrupted.
+ * - Wrapped (`<p>TOKEN</p>`) alternatives precede bare ones so the wrapping
+ *   paragraph is consumed; the bare form ends on a `(?![0-9])` boundary so
+ *   `..._1` never matches the prefix of `..._10` — **token-prefix-safe**.
  */
 export function restoreMedia(html: string, media: ProtectedMedia[]): string {
-  let out = html;
+  if (media.length === 0) return html;
+  const byMatch = new Map<string, string>();
+  const wrappedAlts: string[] = [];
+  const bareAlts: string[] = [];
   for (const { token, html: original } of media) {
-    out = out.replace(new RegExp(`<p>\\s*${token}\\s*</p>`, 'g'), original);
-    out = out.split(token).join(original);
+    const escapedToken = token.replace(/_/g, '\\_'); // CQ\_MEDIA\_PLACEHOLDER\_0
+    for (const t of [token, escapedToken]) {
+      const pat = escapeRegExp(t);
+      wrappedAlts.push(`<p>\\s*${pat}\\s*</p>`);
+      bareAlts.push(`${pat}(?![0-9])`);
+      byMatch.set(t, original);
+    }
   }
-  return out;
+  const combined = new RegExp([...wrappedAlts, ...bareAlts].join('|'), 'g');
+  return html.replace(combined, (matched) => {
+    const inner = matched.replace(/^<p>\s*/, '').replace(/\s*<\/p>$/, '').trim();
+    return byMatch.get(inner) ?? matched; // literal return — `$`-sequences not interpreted
+  });
 }
 ```
+
+> Needs a small `escapeRegExp(s)` helper (`s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')`) defined alongside these functions.
 
 > If `JSDOM` isn't directly in scope, use the same DOM-construction helper the rest of `content-converter.ts` uses (grep the file for how `htmlToConfluence` parses HTML).
 

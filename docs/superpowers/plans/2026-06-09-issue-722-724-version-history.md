@@ -10,7 +10,7 @@
 
 **Branch:** `feature/issue-722-724-version-history` off `dev`. This is the **only** unit that adds a migration (077) and edits `@compendiq/contracts`; backend tests run `fileParallelism:false` against an isolated test Postgres; rebuild contracts (`npm run build -w @compendiq/contracts`) before running consumers.
 
-**Confluence API (verified):** list = `GET /rest/api/content/{id}/version?expand=by,message&start=&limit=` (paginated, default 20/max ~200, current version included, `_links.next` for paging). Historical body = `GET /rest/api/content/{id}?status=historical&version={n}&expand=body.storage` → `body.storage.value` XHTML. Auth `Authorization: Bearer <PAT>` (already handled by the client). All read-only.
+**Confluence API (verified):** list = `GET /rest/api/content/{id}/version?expand=by,message&start=&limit=100` (paginated, current version included, `_links.next` for paging; as-built we request `limit=100` per page). Historical body = `GET /rest/api/content/{id}?status=historical&version={n}&expand=body.storage` → `body.storage.value` XHTML. Auth `Authorization: Bearer <PAT>` (already handled by the client). All read-only. **Throttle + termination live in the client:** every request flows through the private `fetchOnce`/`acquireToken` rate limiter (`CONFLUENCE_RATE_LIMIT_RPM`), and `getPageVersions` adds a defensive `maxIterations = 1000` cap plus an empty-page break (see Task 3).
 
 ---
 
@@ -210,12 +210,18 @@ export interface ConfluenceVersionMeta {
 Add methods (reuse the private `fetch<T>` helper at `:194`, which sets the Bearer header):
 
 ```ts
-  /** #722: list a page's full version history (metadata only — cheap). */
+  /** #722: list a page's full version history (metadata only — cheap). Paginates automatically. */
   async getPageVersions(pageId: string): Promise<ConfluenceVersionMeta[]> {
     const out: ConfluenceVersionMeta[] = [];
     let start = 0;
     const limit = 100;
-    for (;;) {
+    // Defensive cap: never loop forever on a misbehaving `_links.next` (e.g. a
+    // self-referential next link). 1000 pages × 100 = 100k versions is far beyond
+    // any real page. Rate-limiting is NOT done here — every `this.fetch` goes
+    // through the private `fetchOnce`, which calls `acquireToken()`
+    // (CONFLUENCE_RATE_LIMIT_RPM), so pagination is throttled automatically.
+    const maxIterations = 1000;
+    for (let i = 0; i < maxIterations; i++) {
       const res = await this.fetch<{
         results: Array<{ number: number; when: string; by?: { displayName?: string }; message?: string; minorEdit?: boolean }>;
         size: number;
@@ -224,7 +230,8 @@ Add methods (reuse the private `fetch<T>` helper at `:194`, which sets the Beare
       for (const v of res.results) {
         out.push({ number: v.number, when: v.when, author: v.by?.displayName ?? null, message: v.message ?? null, minorEdit: v.minorEdit ?? false });
       }
-      if (!res._links?.next || res.results.length < limit) break;
+      // Stop on the last page (no `next`) or an empty page (no progress).
+      if (!res._links?.next || res.results.length === 0) break;
       start += limit;
     }
     return out;
@@ -352,13 +359,19 @@ git commit -m "feat(versions): backfill version list + lazy historical body impo
 
 ---
 
-### Task 5: Contracts — `PageVersionSummary` schema
+### Task 5: Contracts — `PageVersionSummary` + `PageVersionDetail` schemas
 
 **Files:**
 - Create/modify: `packages/contracts/src/schemas/page-versions.ts` (new) + re-export from `packages/contracts/src/index.ts`
 - Test: `packages/contracts/src/schemas/page-versions.test.ts` (if the package tests schemas) — otherwise rely on type usage
 
-- [ ] **Step 1: Add the schema**
+- [ ] **Step 1: Add the schemas**
+
+As-built, the package ships **three** schemas: the per-row summary, the
+`/versions` list response, and a single-version **detail** schema (used by
+`GET /versions/:version`, whose body is nullable for metadata-only rows). The
+route **validates** both responses with `.parse(...)`; the frontend consumes the
+inferred types.
 
 ```ts
 import { z } from 'zod';
@@ -379,9 +392,23 @@ export const PageVersionsResponseSchema = z.object({
   pageId: z.string(),
 });
 export type PageVersionsResponse = z.infer<typeof PageVersionsResponseSchema>;
+
+// Single-version GET response — body may be null for backfilled (metadata-only)
+// rows that have not yet been lazily filled; metadata fields are optional.
+export const PageVersionDetailSchema = z.object({
+  versionNumber: z.number(),
+  title: z.string(),
+  bodyHtml: z.string().nullable(),
+  bodyText: z.string().nullable(),
+  editedAt: z.string().nullable().optional(),
+  author: z.string().nullable().optional(),
+  message: z.string().nullable().optional(),
+});
+export type PageVersionDetail = z.infer<typeof PageVersionDetailSchema>;
 ```
 
-Re-export both from `packages/contracts/src/index.ts` following the existing export style.
+Re-export all three from `packages/contracts/src/index.ts` following the existing
+export style.
 
 - [ ] **Step 2: Build the package**
 
@@ -392,7 +419,7 @@ Expected: builds; new exports present in `dist`.
 
 ```bash
 git add packages/contracts/src/schemas/page-versions.ts packages/contracts/src/index.ts
-git commit -m "feat(contracts): PageVersionSummary schema for version history (#722)"
+git commit -m "feat(contracts): PageVersionSummary/PageVersionsResponse/PageVersionDetail schemas for version history (#722)"
 ```
 
 ---
@@ -483,13 +510,13 @@ Fix the synthetic current row (`:112-118`) so it never emits page-load time, and
       : null;
 ```
 
-Update the historical `.map((v) => ({ ...v, isCurrent: false }))` — it already spreads the new fields from `getVersionHistory`.
+Update the historical `.map((v) => ({ ...v, isCurrent: false }))` — it already spreads the new fields from `getVersionHistory`. **As-built the list response is returned through the contract:** `return PageVersionsResponseSchema.parse({ versions, pageId: id })` (and the early "no page" path also returns a parsed empty `{ versions: [], pageId }`).
 
 > `ctx.confluenceId`: confirm `resolveAndAuthorize` exposes the page's `confluence_id`; if not, add it to that resolver's SELECT/return. Standalone pages (`confluenceId` null) skip backfill and keep local snapshots.
 
-- [ ] **Step 5: Lazy body on single-version GET**
+- [ ] **Step 5: Lazy body on single-version GET (validated with `PageVersionDetailSchema`)**
 
-In `pages-versions.ts` GET `/pages/:id/versions/:version` (`:137+`): after loading the version, if `body_html` is null and `ctx.confluenceId` is set, call `getHistoricalBody(ctx.id, ctx.confluenceId, versionNum, client)` and return its body. Add a test asserting a metadata-only version's body is fetched and persisted on first request.
+In `pages-versions.ts` GET `/pages/:id/versions/:version` (`:168+`): after loading the version, if `body_html` is null and `ctx.confluenceId` is set, fetch + persist via `getHistoricalBody(ctx.id, ctx.confluenceId, versionNum, client)` and serve its body. As-built the response is validated with `PageVersionDetailSchema.parse(...)` (so the nullable body / optional metadata contract is enforced). Add a test asserting a metadata-only version's body is fetched and persisted on first request.
 
 - [ ] **Step 6: Run tests to verify they pass**
 
@@ -501,6 +528,34 @@ Expected: PASS.
 ```bash
 git add backend/src/domains/knowledge/services/version-tracker.ts backend/src/routes/knowledge/pages-versions.ts backend/src/routes/knowledge/pages-versions.test.ts
 git commit -m "feat(versions): backfill-on-open, real metadata, lazy body, fix current-row date (#722/#724)"
+```
+
+---
+
+### Task 6b: Restore + semantic-diff data-loss guards (as-built)
+
+Backfilled version rows are **metadata-only** (`body_html IS NULL`) until previewed. Naively restoring or diffing one would blank the live page (and, for Confluence pages, push an empty body upstream) or diff as "all content removed". The shipped implementation closes both holes; the docs must reflect it.
+
+**Files:**
+- Modify: `backend/src/domains/knowledge/services/version-tracker.ts` (`restoreVersion` body-NULL guard; `getSemanticDiff` lazy-fetch both bodies + model resolution)
+- Modify: `backend/src/routes/knowledge/pages-versions.ts` (restore + semantic-diff routes lazy-fetch before calling the service)
+- Test: `backend/src/routes/knowledge/pages-versions.test.ts` (extend)
+
+- [ ] **Step 1: Restore — lazy-fetch the historical body BEFORE restoring**
+
+In the `POST /pages/:id/versions/:version/restore` route: before calling `restoreVersion`, if the target row's `body_html IS NULL` and `ctx.confluenceId` is set, call `getHistoricalBody(ctx.id, ctx.confluenceId, targetVersion, client)` to fill it. As **defense in depth**, `restoreVersion` itself runs in a `BEGIN…COMMIT` transaction and **guards** the still-empty case — if the resolved body is still NULL/empty it `ROLLBACK`s and **throws** rather than blanking the live page or pushing an empty body to Confluence. Net effect: a page can never be blanked locally or emptied upstream by restoring a metadata-only version.
+
+- [ ] **Step 2: Semantic-diff — lazy-fetch BOTH version bodies; resolve the model server-side**
+
+In `getSemanticDiff(pageId, v1, v2, model, confluenceId, client)`: for each requested version whose stored `body_html IS NULL`, lazily fetch + persist via `getHistoricalBody` before diffing (so metadata-only rows don't diff as empty → "all content removed"). The model is resolved from the **`chat`** use-case server-side — `const { config, model: resolvedModel } = await resolveUsecase('chat')` then `chat(config, model || resolvedModel, …)` — so the client request body's `model` is optional (the route's `SemanticDiffSchema` default is only a fallback; no hardcoded model is required end-to-end). The `semantic-diff` route passes the per-user Confluence client through (best-effort; logs and continues if unavailable).
+
+- [ ] **Step 3: Test + commit**
+
+Add tests: (a) restoring a metadata-only version fetches the historical body first and restores real content (never blanks the page); (b) the restore guard throws when the body cannot be resolved; (c) semantic-diff over two metadata-only versions fetches both bodies and does not report "all content removed".
+
+```bash
+git add backend/src/domains/knowledge/services/version-tracker.ts backend/src/routes/knowledge/pages-versions.ts backend/src/routes/knowledge/pages-versions.test.ts
+git commit -m "fix(versions): lazy-fetch + guard bodies before restore/semantic-diff (#722/#724)"
 ```
 
 ---
@@ -595,7 +650,7 @@ git commit -m "feat(versions): show real Confluence edit time/author/message; ho
 - Real Confluence history incl. pre-first-sync versions → Tasks 3+4+6 (list backfill on open).
 - Synced-once page shows >1 version → list import (Task 4) not local snapshots.
 - Each entry shows real edit time + author + message → Tasks 6+7.
-- Preview/compare/AI-diff/restore work on backfilled versions → Task 6 lazy body (existing restore path reads `page_versions`).
-- Backfill idempotent, respects rate limits, logs → Tasks 2 (`ON CONFLICT`) + 4 (`log()`), client paging.
+- Preview/compare/AI-diff/restore work on backfilled versions, never losing data → Task 6 (lazy body on GET) + Task 6b (restore lazy-fetch + NULL-body ROLLBACK guard; semantic-diff lazy-fetches both bodies).
+- Backfill idempotent + throttled (no silent truncation) → Task 2 (`ON CONFLICT`) + Task 3 (`getPageVersions` paginates through `fetchOnce`/`acquireToken` rate limiter with a defensive `maxIterations` cap + empty-page break).
 - Standalone pages keep working; viewing pushes nothing to Confluence → `confluenceId` guard; all calls read-only.
 - #724: current row stable across reloads; `syncedAt` never shown as edit time → Tasks 6+7.

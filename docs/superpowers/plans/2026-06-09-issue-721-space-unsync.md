@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Let an admin remove/stop-syncing a Confluence space: a new endpoint purges the space's local pages (cascading embeddings/versions), attachments, the `spaces` row, and all `space_role_assignments`; the Spaces tab gets a Remove action, can save an empty selection, and reflects deselection for admins.
+**Goal:** Let an admin remove/stop-syncing a Confluence space: a new endpoint purges the space's local pages (a raw `DELETE FROM pages` whose FK cascade removes embeddings/versions), best-effort attachment files, the `spaces` row, and all `space_role_assignments`; it also reconciles orphaned `space_key` rows (space-scoped `oidc_group_role_mappings` deleted; `templates`/`knowledge_requests` detached). The Spaces tab gets a Remove action, can save an empty selection, and reflects deselection for admins.
 
-**Architecture:** Backend adds an exported `unsyncSpace(spaceKey)` purge in the confluence domain and a `DELETE /api/spaces/:key` route (admin-gated, read-only against Confluence). `GET /settings` stops sourcing the tab's `selectedSpaces` from the admin "all spaces" view and uses the user's explicit editor assignments instead. Frontend adds a per-space Remove button with a confirm dialog and relaxes the empty-selection guard on Save.
+**Architecture:** Backend adds an exported `unsyncSpace(spaceKey)` purge in the confluence domain and a `DELETE /api/spaces/:key` route (admin-gated, read-only against Confluence). The purge wraps all row deletes/updates in a single `BEGIN`/`COMMIT` transaction on one pooled client (`getPool().connect()`), ROLLBACK + re-throw on error; filesystem attachment cleanup is best-effort and runs **before/outside** the transaction. Deleting `pages` cascades to `page_embeddings`/`page_versions` via the `page_id` FK (migration 030) — it does **not** call `purgeDeletedPages`. `GET /settings` stops sourcing the tab's `selectedSpaces` from the admin "all spaces" view and uses the user's explicit editor assignments instead. Frontend adds a per-space Remove button with a confirm dialog and relaxes the empty-selection guard on Save.
 
 **Tech Stack:** Fastify 5, Postgres (real DB in tests via `backend/src/test-db-helper.ts`), React 19 + TanStack Query, Vitest.
 
@@ -31,7 +31,7 @@ describe('unsyncSpace', () => {
   beforeEach(async () => { await setupTestDb(); await truncateAllTables(); });
   afterAll(async () => { await teardownTestDb(); });
 
-  it('deletes the space, its pages (cascading versions/embeddings), and role assignments', async () => {
+  it('deletes the space, its pages (cascading versions/embeddings), and reconciles orphaned space_key rows', async () => {
     await query(`INSERT INTO spaces (space_key, name, source) VALUES ('ENG','Engineering','confluence')`);
     const p = await query<{ id: number }>(
       `INSERT INTO pages (confluence_id, space_key, title, version, source)
@@ -40,6 +40,14 @@ describe('unsyncSpace', () => {
     await query(`INSERT INTO page_versions (page_id, version_number, title) VALUES ($1, 1, 'Page')`, [pageId]);
     await query(`INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
                  SELECT 'ENG','user', gen_random_uuid(), id FROM roles WHERE name='editor' LIMIT 1`);
+    await query(`INSERT INTO oidc_group_role_mappings (oidc_group, role_id, space_key)
+                 SELECT 'g','` /* role_id */ + `'... , 'ENG'`); // seed a space-scoped mapping
+    const tpl = await query<{ id: number }>(
+      `INSERT INTO templates (title, body_json, body_html, created_by, space_key)
+       VALUES ('T','{}','<p/>', gen_random_uuid(), 'ENG') RETURNING id`);
+    const kr = await query<{ id: number }>(
+      `INSERT INTO knowledge_requests (title, requested_by, space_key)
+       VALUES ('K', gen_random_uuid(), 'ENG') RETURNING id`);
 
     const result = await unsyncSpace('ENG');
 
@@ -48,11 +56,21 @@ describe('unsyncSpace', () => {
     expect((await query(`SELECT 1 FROM pages WHERE space_key='ENG'`)).rows).toHaveLength(0);
     expect((await query(`SELECT 1 FROM page_versions WHERE page_id=$1`, [pageId])).rows).toHaveLength(0);
     expect((await query(`SELECT 1 FROM space_role_assignments WHERE space_key='ENG'`)).rows).toHaveLength(0);
+    expect((await query(`SELECT 1 FROM oidc_group_role_mappings WHERE space_key='ENG'`)).rows).toHaveLength(0);
+    // templates / knowledge_requests are DETACHED (row kept, space_key NULLed), not deleted.
+    expect((await query(`SELECT space_key FROM templates WHERE id=$1`, [tpl.rows[0]!.id])).rows[0]!.space_key).toBeNull();
+    expect((await query(`SELECT space_key FROM knowledge_requests WHERE id=$1`, [kr.rows[0]!.id])).rows[0]!.space_key).toBeNull();
+  });
+
+  it('rolls back every row delete atomically when a statement fails mid-transaction', async () => {
+    // Seed every affected table for 'ENG'; force a failure inside the transaction
+    // (e.g. by violating a constraint) and assert ALL 'ENG' rows survive — the
+    // BEGIN/COMMIT wrapper must ROLLBACK and re-throw, leaving no partial purge.
   });
 });
 ```
 
-> Adjust the `pages` INSERT column list to the table's actual NOT NULL columns (read `backend/src/core/db/migrations` for the `pages` schema; add `body_html`/`body_text`/etc. defaults if required).
+> Adjust the `pages` INSERT column list to the table's actual NOT NULL columns (read `backend/src/core/db/migrations` for the `pages` schema; add `body_html`/`body_text`/etc. defaults if required). The `oidc_group_role_mappings` seed needs a real `role_id` (look one up from `roles`); also seed a second space (e.g. `OPS`) and assert its rows are untouched.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -61,16 +79,29 @@ Expected: FAIL — `unsyncSpace` is not exported.
 
 - [ ] **Step 3: Implement `unsyncSpace`**
 
-Add to `sync-service.ts` (ensure `cleanPageAttachments` and `logger` are imported; `cleanPageAttachments` is already imported in this module):
+Add to `sync-service.ts` (ensure `cleanPageAttachments`, `logger`, and `getPool` are imported; `cleanPageAttachments` is already imported in this module). The purge is a **raw `DELETE FROM pages`** relying on the FK cascade — **not** `purgeDeletedPages` (that is the soft-delete-reconciliation path). All row mutations run inside one transaction; the per-page attachment cleanup is best-effort and happens **before** the transaction opens so a file-cleanup failure can never abort the DB work.
 
 ```ts
 /**
  * #721: Remove a synced Confluence space and all of its local data. Read-only
- * against Confluence — only local rows/files are deleted. Deleting the `pages`
- * rows cascades to `page_embeddings` and `page_versions` (page_id FK, migration
- * 030). Attachment files/caches are cleaned per page first.
+ * against Confluence — only local rows/files are deleted.
+ *
+ * Filesystem attachment cleanup is best-effort and runs BEFORE the transaction;
+ * a file-cleanup failure is logged, never fatal. Deleting the `pages` rows
+ * cascades to `page_embeddings` and `page_versions` (page_id FK, migration 030).
+ *
+ * Orphaned `space_key` rows (no FK to `spaces`) are reconciled inside the same
+ * transaction:
+ *   - space_role_assignments — RBAC + sync selection (the old
+ *     `user_space_selections` table was migrated into this one and DROPPED in
+ *     migration 040). DELETE, scoped to the space.
+ *   - oidc_group_role_mappings — DELETE only rows whose space_key matches; global
+ *     (space_key IS NULL) rows are kept.
+ *   - templates / knowledge_requests — may hold user-authored content; NULL the
+ *     (nullable) space_key to DETACH rather than destroy work.
  */
 export async function unsyncSpace(spaceKey: string): Promise<{ pagesDeleted: number }> {
+  // Best-effort, non-transactional filesystem cleanup BEFORE the DB transaction.
   const pages = await query<{ id: number }>(
     'SELECT id FROM pages WHERE space_key = $1',
     [spaceKey],
@@ -82,11 +113,31 @@ export async function unsyncSpace(spaceKey: string): Promise<{ pagesDeleted: num
       logger.warn({ err, pageId: p.id, spaceKey }, 'unsyncSpace: attachment cleanup failed (continuing)');
     }
   }
-  const del = await query('DELETE FROM pages WHERE space_key = $1', [spaceKey]);
-  await query('DELETE FROM space_role_assignments WHERE space_key = $1', [spaceKey]);
-  await query('DELETE FROM spaces WHERE space_key = $1', [spaceKey]);
-  logger.info({ spaceKey, pagesDeleted: del.rowCount ?? 0 }, 'unsyncSpace: purged synced space');
-  return { pagesDeleted: del.rowCount ?? 0 };
+
+  const pool = getPool();
+  const conn = await pool.connect();
+  try {
+    await conn.query('BEGIN');
+    // Pages → cascades to page_embeddings + page_versions (migration 030).
+    const del = await conn.query('DELETE FROM pages WHERE space_key = $1', [spaceKey]);
+    // RBAC / sync-selection rows for the removed space.
+    await conn.query('DELETE FROM space_role_assignments WHERE space_key = $1', [spaceKey]);
+    // OIDC group→space mappings scoped to this space (NULL = global, kept).
+    await conn.query('DELETE FROM oidc_group_role_mappings WHERE space_key = $1', [spaceKey]);
+    // User-authored artifacts: detach (retain the row, NULL the space_key).
+    await conn.query('UPDATE templates SET space_key = NULL WHERE space_key = $1', [spaceKey]);
+    await conn.query('UPDATE knowledge_requests SET space_key = NULL WHERE space_key = $1', [spaceKey]);
+    // Finally the space row itself.
+    await conn.query('DELETE FROM spaces WHERE space_key = $1', [spaceKey]);
+    await conn.query('COMMIT');
+    logger.info({ spaceKey, pagesDeleted: del.rowCount ?? 0 }, 'unsyncSpace: purged synced space');
+    return { pagesDeleted: del.rowCount ?? 0 };
+  } catch (err) {
+    await conn.query('ROLLBACK').catch(() => { /* original error already surfacing */ });
+    throw err;
+  } finally {
+    conn.release();
+  }
 }
 ```
 
@@ -340,7 +391,7 @@ git commit -m "feat(spaces): Remove action + allow empty save in Spaces tab (#72
 **Files:**
 - Modify: `docs/architecture/08-flow-sync.md` (note the unsync/purge path + selection decoupling)
 
-- [ ] **Step 1:** Update `docs/architecture/08-flow-sync.md`: add the `DELETE /api/spaces/:key` → `unsyncSpace` purge path and that the Spaces tab selection now derives from explicit editor assignments.
+- [ ] **Step 1:** Update `docs/architecture/08-flow-sync.md`: add the `DELETE /api/spaces/:key` → `unsyncSpace` purge path (single transaction; raw `DELETE FROM pages` + FK cascade; orphan reconciliation of `oidc_group_role_mappings` / `templates` / `knowledge_requests`; best-effort attachment cleanup outside the transaction) and that the Spaces tab selection now derives from explicit editor assignments.
 - [ ] **Step 2:** `cd backend && npx vitest run src/domains/confluence/services/sync-service.unsync.test.ts src/routes/confluence/spaces.test.ts src/routes/foundation/settings.test.ts` — green.
 - [ ] **Step 3:** `cd backend && npm run lint && npm run typecheck` (or workspace equivalents) — clean.
 - [ ] **Step 4:** `cd frontend && npx vitest run && npx tsc --noEmit` — clean.
@@ -349,5 +400,5 @@ git commit -m "feat(spaces): Remove action + allow empty save in Spaces tab (#72
 ## Acceptance mapping (#721)
 - Admin can remove a space; stops syncing; pages gone locally; stays gone after refresh → Tasks 1+2 (+3 keeps it unchecked).
 - Works down to zero selected → Task 4 (relaxed Save guard).
-- Cleans pages/embeddings/attachments + all `space_role_assignments`; nothing in Confluence → Task 1 (cascade + cleanPageAttachments; no Confluence calls).
+- Cleans pages/embeddings/attachments (raw `DELETE FROM pages` + FK cascade + best-effort `cleanPageAttachments`), all `space_role_assignments`, and space-scoped `oidc_group_role_mappings`; detaches `templates`/`knowledge_requests`; all DB work atomic (single transaction); nothing in Confluence → Task 1.
 - Non-admin deselect still loses access, no orphaned data → Task 3 + Task 1 purge.
