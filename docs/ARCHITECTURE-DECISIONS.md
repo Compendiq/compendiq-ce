@@ -1250,7 +1250,7 @@ If the at-most-once trade-off becomes user-visible (e.g. a customer reports cach
 
 **Graceful-shutdown order:**
 
-Bound to a 60s `stop_grace_period` (set in `docker/docker-compose.ee.yml`) with the BullMQ stall detector (`stalledInterval` default 30s) as the safety net for jobs that don't complete. The actual sequence in `backend/src/index.ts:61-70`:
+Bound to a 60s `stop_grace_period` (set in `docker/docker-compose.ee.yml`) with the BullMQ stall detector (`stalledInterval` default 30s) as the safety net for jobs that don't complete. The step order is declared in `backend/src/index.ts` and executed by `createShutdownHandler()` (`backend/src/core/utils/graceful-shutdown.ts`, added for issue #745):
 
 ```
 SIGTERM
@@ -1266,8 +1266,14 @@ SIGTERM
   → closeVectorPool()            // pgvector pool
   → closePool()                  // primary Postgres pool
   → shutdownTelemetry()          // OTEL flush + transport close
-  → process.exit(0)
+  → process.exit(0 | 1)          // 0 if every step succeeded, 1 otherwise
 ```
+
+Each step is isolated in its own try/catch (a failing step — e.g. a Redis
+`quit()` against a server that is already gone — is logged and skipped, so the
+Postgres pools still close), a re-entrancy guard makes a second SIGTERM/SIGINT
+during an in-flight shutdown a no-op instead of a parallel teardown, and the
+process always reaches `process.exit` (issue #745).
 
 **Why workers-first, not the BullMQ-docs HTTP-first?** Two distinct kinds of "in-flight work" need to drain before HTTP closes:
 
@@ -1281,7 +1287,7 @@ The canonical BullMQ recommendation (HTTP-first) assumes a typical job-queue pat
 
 **No permanently orphaned `active` jobs:** any job that does not finish in 60s is interrupted, but BullMQ's stall detector reclaims and retries it. Long-running LLM streams (`LLM_STREAM_TIMEOUT_MS=300_000`) are accepted as occasional stall-and-retry casualties for v0.4. v0.5 either lowers the timeout default or moves LLM work to a dedicated worker container with a longer grace period.
 
-**No explicit timeout / SIGKILL fallback inside the handler.** If any `await` in the chain hangs, the only backstop is Docker's `stop_grace_period: 60s` followed by SIGKILL. v0.5 could add a `Promise.race(shutdown, timer(50_000))` belt-and-braces; left out of v0.4 to keep the handler simple and observable in logs.
+**Hard deadline inside the handler (v0.5, issue #745).** v0.4 had no in-process timeout — a hanging `await` waited for Docker's `stop_grace_period: 60s` + SIGKILL. `createShutdownHandler()` now arms an unref'ed 30s timer when shutdown begins; if the step chain has not finished by then, the process force-exits with code 1. Docker's `stop_grace_period` remains the outer backstop.
 
 **Trust-proxy posture (cross-reference ADR for #111):**
 
@@ -1290,6 +1296,7 @@ Multi-replica deployments sit behind a load balancer. `trustProxy` MUST be set t
 **Consequences:**
 
 - The `backend` service is safe to run with `--scale backend=N` for N≥2 from v0.4 onward, given Redis and Postgres are reachable from every replica. The compose stack does not impose a replica count; operators choose.
+- Boot-time migrations are replica-safe (issue #745): `runMigrations()` serializes on a session-level `pg_advisory_lock` taken on its dedicated pool client, and re-reads `_migrations` after acquiring the lock, so N replicas booting concurrently (rolling deploy / HPA scale-up) apply each migration exactly once. The lock is released in a `finally`; if the holding session dies, Postgres frees it automatically.
 - Every future cache that holds non-trivial cluster-wide invariants (LLM provider config, IP allowlist, SSRF allowlist, conflict-resolution policy, PII policy, license info) registers a channel in the `CacheBusChannel` union and wires both publish and `onReconnect` cold-reload. The union is the canonical inventory.
 - Process-local Maps/Sets remain acceptable for per-pod artifacts that are correct to vary per-replica: undici dispatcher pools (`openai-compatible-client.ts:21`), circuit-breaker state (`circuit-breaker.ts:158`), BullMQ client refs (`queue-service.ts:48-49`). The contract is simple — if removing the structure on one pod and re-creating it on another would observably change behaviour to the user, it must be cluster-coordinated.
 - Adding a new recurring job means picking a stable namespaced ID and using `upsertJobScheduler`. Reviewers reject any new `{ repeat: { every } }` usage. `grep -rn '{ repeat: { every' ce/backend/src overlay/backend/src` is the boundary check.

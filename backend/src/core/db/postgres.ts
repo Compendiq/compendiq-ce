@@ -68,40 +68,66 @@ export async function query<T extends pg.QueryResultRow = pg.QueryResultRow>(
   return getPool().query<T>(text, params);
 }
 
+// Cross-replica mutex for the migrations runner (issue #745). Arbitrary but
+// stable application-defined key; must stay unique among advisory-lock users
+// of this database. The lock is SESSION-scoped, so it is acquired and released
+// on the same dedicated pool client below — and it survives the per-migration
+// BEGIN/COMMIT/ROLLBACK because session-level advisory locks do not honor
+// transaction semantics. If the holding session dies mid-run, PostgreSQL
+// releases the lock automatically, so a crashed pod cannot wedge deploys.
+const MIGRATIONS_ADVISORY_LOCK_ID = 745_001;
+
 export async function runMigrations(): Promise<void> {
   const client = await getPool().connect();
   try {
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS _migrations (
-        id SERIAL PRIMARY KEY,
-        name TEXT NOT NULL UNIQUE,
-        applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
+    // Serialize replicas booting concurrently (rolling deploy / HPA scale-up):
+    // exactly one pod runs the migration loop; the rest block here until the
+    // winner finishes, then re-read _migrations below and see its work.
+    await client.query('SELECT pg_advisory_lock($1)', [MIGRATIONS_ADVISORY_LOCK_ID]);
+    try {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS _migrations (
+          id SERIAL PRIMARY KEY,
+          name TEXT NOT NULL UNIQUE,
+          applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `);
 
-    const applied = await client.query<{ name: string }>('SELECT name FROM _migrations ORDER BY id');
-    const appliedSet = new Set(applied.rows.map((r) => r.name));
+      // Must be read AFTER acquiring the lock so a pod that waited sees the
+      // migrations the winner just applied.
+      const applied = await client.query<{ name: string }>('SELECT name FROM _migrations ORDER BY id');
+      const appliedSet = new Set(applied.rows.map((r) => r.name));
 
-    const migrationsDir = path.join(__dirname, 'migrations');
-    const files = fs.readdirSync(migrationsDir).filter((f) => f.endsWith('.sql')).sort();
+      const migrationsDir = path.join(__dirname, 'migrations');
+      const files = fs.readdirSync(migrationsDir).filter((f) => f.endsWith('.sql')).sort();
 
-    for (const file of files) {
-      if (appliedSet.has(file)) continue;
+      for (const file of files) {
+        if (appliedSet.has(file)) continue;
 
-      const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf-8');
-      logger.info({ migration: file }, 'Running migration');
+        const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf-8');
+        logger.info({ migration: file }, 'Running migration');
 
-      await client.query('BEGIN');
-      try {
-        await client.query(sql);
-        await client.query('INSERT INTO _migrations (name) VALUES ($1)', [file]);
-        await client.query('COMMIT');
-        logger.info({ migration: file }, 'Migration applied');
-      } catch (err) {
-        await client.query('ROLLBACK');
-        logger.error({ err, migration: file }, 'Migration failed');
-        throw err;
+        await client.query('BEGIN');
+        try {
+          await client.query(sql);
+          await client.query('INSERT INTO _migrations (name) VALUES ($1)', [file]);
+          await client.query('COMMIT');
+          logger.info({ migration: file }, 'Migration applied');
+        } catch (err) {
+          await client.query('ROLLBACK');
+          logger.error({ err, migration: file }, 'Migration failed');
+          throw err;
+        }
       }
+    } finally {
+      // Explicit unlock so the pooled connection does not keep holding the
+      // lock when it returns to the pool. Swallow failures: if the connection
+      // is already broken, the server has released the lock with the session.
+      await client
+        .query('SELECT pg_advisory_unlock($1)', [MIGRATIONS_ADVISORY_LOCK_ID])
+        .catch((err) => {
+          logger.warn({ err }, 'Failed to release migrations advisory lock (auto-released on disconnect)');
+        });
     }
   } finally {
     client.release();
