@@ -20,6 +20,9 @@ vi.mock('../utils/logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
+import nodemailer from 'nodemailer';
+import { encryptPat, decryptPat } from '../utils/crypto.js';
+
 describe('email-service', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -112,6 +115,103 @@ describe('email-service', () => {
       });
       await initEmailService();
       expect(getSmtpConfig().enabled).toBe(true);
+    });
+  });
+
+  // issue #738 — smtp_pass is stored encrypted in admin_settings; legacy rows
+  // written before this change are plaintext and must keep working (and get
+  // re-encrypted at rest on startup).
+  describe('initEmailService smtp_pass encryption at rest (#738)', () => {
+    const lastTransportOptions = (): { auth?: { user: string; pass: string } } => {
+      const calls = (nodemailer.createTransport as ReturnType<typeof vi.fn>).mock.calls;
+      expect(calls.length).toBeGreaterThan(0);
+      return calls[calls.length - 1][0] as { auth?: { user: string; pass: string } };
+    };
+
+    const findWriteBack = () =>
+      mockDbQuery.mock.calls.find(
+        ([sql]) => typeof sql === 'string' && sql.includes('UPDATE admin_settings'),
+      );
+
+    it('decrypts an encrypted smtp_pass from admin_settings', async () => {
+      const { initEmailService, sendEmail } = await import('./email-service.js');
+      mockDbQuery.mockResolvedValueOnce({
+        rows: [
+          { setting_key: 'smtp_host', setting_value: 'db.example.com' },
+          { setting_key: 'smtp_user', setting_value: 'mailer' },
+          { setting_key: 'smtp_pass', setting_value: encryptPat('db-secret') },
+          { setting_key: 'smtp_enabled', setting_value: 'true' },
+        ],
+      });
+
+      await initEmailService();
+      await sendEmail('x@example.com', 'subject', '<p>hi</p>');
+
+      expect(lastTransportOptions().auth?.pass).toBe('db-secret');
+      // Already encrypted — nothing to migrate.
+      expect(findWriteBack()).toBeUndefined();
+    });
+
+    it('treats a legacy plaintext smtp_pass as the password and re-encrypts it at rest', async () => {
+      const { initEmailService, sendEmail } = await import('./email-service.js');
+      mockDbQuery.mockResolvedValueOnce({
+        rows: [
+          { setting_key: 'smtp_host', setting_value: 'db.example.com' },
+          { setting_key: 'smtp_user', setting_value: 'mailer' },
+          { setting_key: 'smtp_pass', setting_value: 'plain-old-secret' },
+          { setting_key: 'smtp_enabled', setting_value: 'true' },
+        ],
+      });
+
+      await initEmailService();
+
+      // The plaintext value keeps working as the live password...
+      await sendEmail('x@example.com', 'subject', '<p>hi</p>');
+      expect(lastTransportOptions().auth?.pass).toBe('plain-old-secret');
+
+      // ...and is re-encrypted in admin_settings.
+      const writeBack = findWriteBack();
+      expect(writeBack).toBeDefined();
+      const persisted = (writeBack![1] as string[])[0];
+      expect(persisted).toMatch(/^h\d+:/);
+      expect(decryptPat(persisted)).toBe('plain-old-secret');
+    });
+
+    it('uses a value that fails decryption as-is, without write-back', async () => {
+      const { initEmailService, sendEmail } = await import('./email-service.js');
+      // Structurally valid ciphertext for a key version that is not configured.
+      const undecryptable = `v9:${'a'.repeat(32)}:${'b'.repeat(32)}:${'c'.repeat(32)}`;
+      mockDbQuery.mockResolvedValueOnce({
+        rows: [
+          { setting_key: 'smtp_host', setting_value: 'db.example.com' },
+          { setting_key: 'smtp_user', setting_value: 'mailer' },
+          { setting_key: 'smtp_pass', setting_value: undecryptable },
+          { setting_key: 'smtp_enabled', setting_value: 'true' },
+        ],
+      });
+
+      await initEmailService();
+      await sendEmail('x@example.com', 'subject', '<p>hi</p>');
+
+      expect(lastTransportOptions().auth?.pass).toBe(undecryptable);
+      // Not plaintext — must NOT be double-encrypted at rest.
+      expect(findWriteBack()).toBeUndefined();
+    });
+
+    it('keeps an empty stored smtp_pass empty', async () => {
+      const { initEmailService, getSmtpConfig } = await import('./email-service.js');
+      mockDbQuery.mockResolvedValueOnce({
+        rows: [
+          { setting_key: 'smtp_host', setting_value: 'db.example.com' },
+          { setting_key: 'smtp_pass', setting_value: '' },
+          { setting_key: 'smtp_enabled', setting_value: 'true' },
+        ],
+      });
+
+      await initEmailService();
+
+      expect(getSmtpConfig().pass).toBe('');
+      expect(findWriteBack()).toBeUndefined();
     });
   });
 });

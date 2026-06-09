@@ -4,8 +4,11 @@ import sensible from '@fastify/sensible';
 import { ZodError } from 'zod';
 import { adminRoutes } from './admin.js';
 
-// Mock external dependencies
-vi.mock('../../core/utils/crypto.js', () => ({
+// Mock external dependencies. Passthrough keeps the real encryptPat/decryptPat
+// (used by PUT /admin/smtp to encrypt smtp_pass at rest, #738) while stubbing
+// the key-rotation entry point.
+vi.mock('../../core/utils/crypto.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../core/utils/crypto.js')>()),
   reEncryptPat: vi.fn().mockReturnValue(null),
 }));
 
@@ -77,6 +80,7 @@ vi.mock('../../domains/llm/services/llm-queue.js', () => ({
 
 import nodemailer from 'nodemailer';
 import { listErrors, resolveError, getErrorSummary } from '../../core/services/error-tracker.js';
+import { decryptPat, isEncryptedSecretFormat } from '../../core/utils/crypto.js';
 import { query as mockQuery } from '../../core/db/postgres.js';
 import { _resetStreamCapCache } from '../../core/services/sse-stream-limiter.js';
 import { _resetCache as _resetRateLimitsCache } from '../../core/services/rate-limit-service.js';
@@ -922,7 +926,63 @@ describe('Admin routes', () => {
       const persistedKeys = upsert?.[1][0] as string[];
       const persistedValues = upsert?.[1][1] as string[];
       expect(persistedKeys).toContain('smtp_pass');
-      expect(persistedValues[persistedKeys.indexOf('smtp_pass')]).toBe('brand-new-password');
+      // issue #738 — smtp_pass is now encrypted at rest, so the persisted
+      // value is a versioned ciphertext that decrypts to the real password,
+      // never the plaintext itself.
+      const stored = persistedValues[persistedKeys.indexOf('smtp_pass')];
+      expect(stored).not.toBe('brand-new-password');
+      expect(isEncryptedSecretFormat(stored)).toBe(true);
+      expect(decryptPat(stored)).toBe('brand-new-password');
+    });
+  });
+
+  // ========================
+  // SMTP settings — smtp_pass encrypted at rest (issue #738)
+  // ========================
+  describe('PUT /api/admin/smtp - smtp_pass encrypted at rest (#738)', () => {
+    const findAdminSettingsUpsert = () => {
+      const calls = (mockQuery as ReturnType<typeof vi.fn>).mock.calls as Array<[string, unknown[]]>;
+      return calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO admin_settings'));
+    };
+
+    it('persists smtp_pass encrypted, never plaintext', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [], rowCount: 0 });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/smtp',
+        payload: { host: 'smtp.test.local', pass: 'super-secret-smtp', enabled: true },
+      });
+      expect(response.statusCode).toBe(200);
+
+      const upsert = findAdminSettingsUpsert();
+      expect(upsert).toBeDefined();
+      const [, params] = upsert!;
+      const keys = params[0] as string[];
+      const values = params[1] as string[];
+      const stored = values[keys.indexOf('smtp_pass')];
+
+      expect(stored).not.toBe('super-secret-smtp');
+      expect(stored).toMatch(/^h\d+:/); // versioned encryptPat format
+      expect(decryptPat(stored)).toBe('super-secret-smtp');
+    });
+
+    it('persists an empty smtp_pass as an empty string so admins can clear it', async () => {
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [], rowCount: 0 });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/smtp',
+        payload: { pass: '' },
+      });
+      expect(response.statusCode).toBe(200);
+
+      const upsert = findAdminSettingsUpsert();
+      expect(upsert).toBeDefined();
+      const [, params] = upsert!;
+      const keys = params[0] as string[];
+      const values = params[1] as string[];
+      expect(values[keys.indexOf('smtp_pass')]).toBe('');
     });
   });
 });

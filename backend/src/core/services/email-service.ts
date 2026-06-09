@@ -12,6 +12,7 @@
 
 import nodemailer, { type Transporter } from 'nodemailer';
 import { logger } from '../utils/logger.js';
+import { decryptPat, encryptPat, isEncryptedSecretFormat } from '../utils/crypto.js';
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -178,6 +179,31 @@ export async function sendTestEmail(to: string): Promise<{ success: boolean; err
 }
 
 /**
+ * Resolve the smtp_pass value stored in admin_settings (issue #738).
+ *
+ * Values are persisted encrypted with the versioned `encryptPat()` helpers,
+ * but rows written before encryption-at-rest landed contain the plaintext
+ * password. Those are detected by format and kept working as-is (the caller
+ * re-encrypts them in place). A value that looks encrypted but fails to
+ * decrypt (e.g. its key version was rotated away) is used verbatim so it is
+ * never double-encrypted; SMTP auth will fail loudly instead of silently.
+ */
+function readStoredSmtpPass(stored: string): { pass: string; isLegacyPlaintext: boolean } {
+  if (stored === '') {
+    return { pass: '', isLegacyPlaintext: false };
+  }
+  if (!isEncryptedSecretFormat(stored)) {
+    return { pass: stored, isLegacyPlaintext: true };
+  }
+  try {
+    return { pass: decryptPat(stored), isLegacyPlaintext: false };
+  } catch (err) {
+    logger.warn({ err }, 'Stored smtp_pass looks encrypted but failed to decrypt; using the stored value as-is');
+    return { pass: stored, isLegacyPlaintext: false };
+  }
+}
+
+/**
  * Initialize SMTP config from admin_settings table.
  */
 export async function initEmailService(): Promise<void> {
@@ -195,17 +221,34 @@ export async function initEmailService(): Promise<void> {
     }
 
     if (Object.keys(settings).length > 0) {
+      const storedPass = settings['smtp_pass'];
+      const passResult = storedPass !== undefined ? readStoredSmtpPass(storedPass) : null;
       updateSmtpConfig({
         host: settings['smtp_host'] ?? _config.host,
         port: settings['smtp_port'] ? parseInt(settings['smtp_port'], 10) : _config.port,
         secure: settings['smtp_secure'] === 'true',
         user: settings['smtp_user'] ?? _config.user,
-        pass: settings['smtp_pass'] ?? _config.pass,
+        pass: passResult ? passResult.pass : _config.pass,
         from: settings['smtp_from'] ?? _config.from,
         // DB value is authoritative when present (issue #743) — otherwise an
         // SMTP_ENABLED=true env bootstrap could never be disabled via the UI.
         enabled: settings['smtp_enabled'] !== undefined ? settings['smtp_enabled'] === 'true' : _config.enabled,
       });
+
+      // issue #738 — migrate legacy plaintext rows to encrypted-at-rest so
+      // existing deployments converge without the admin re-saving settings.
+      if (passResult?.isLegacyPlaintext) {
+        try {
+          await query(
+            `UPDATE admin_settings SET setting_value = $1, updated_at = NOW()
+             WHERE setting_key = 'smtp_pass'`,
+            [encryptPat(passResult.pass)],
+          );
+          logger.info('Re-encrypted legacy plaintext smtp_pass in admin_settings');
+        } catch (err) {
+          logger.warn({ err }, 'Failed to re-encrypt legacy plaintext smtp_pass in admin_settings');
+        }
+      }
     }
   } catch (err) {
     logger.warn({ err }, 'Failed to load SMTP settings from admin_settings');

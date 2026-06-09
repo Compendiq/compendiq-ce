@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { query } from '../../core/db/postgres.js';
-import { reEncryptPat } from '../../core/utils/crypto.js';
+import { encryptPat, reEncryptPat } from '../../core/utils/crypto.js';
 import { getAuditLog, logAuditEvent } from '../../core/services/audit-service.js';
 import { listErrors, resolveError, getErrorSummary } from '../../core/services/error-tracker.js';
 import { logger } from '../../core/utils/logger.js';
@@ -536,7 +536,13 @@ export async function adminRoutes(fastify: FastifyInstance) {
     if (body.port !== undefined) entries.push({ key: 'smtp_port', value: String(body.port) });
     if (body.secure !== undefined) entries.push({ key: 'smtp_secure', value: String(body.secure) });
     if (body.user !== undefined) entries.push({ key: 'smtp_user', value: body.user });
-    if (body.pass !== undefined) entries.push({ key: 'smtp_pass', value: body.pass });
+    // issue #738 — encrypt at rest with the versioned PAT helpers. The masked
+    // sentinel was already stripped from `body` above (#743), so any defined
+    // value here is a real update. An empty string clears the password and is
+    // stored as-is (it is not a secret).
+    if (body.pass !== undefined) {
+      entries.push({ key: 'smtp_pass', value: body.pass ? encryptPat(body.pass) : '' });
+    }
     if (body.from !== undefined) entries.push({ key: 'smtp_from', value: body.from });
     if (body.enabled !== undefined) entries.push({ key: 'smtp_enabled', value: String(body.enabled) });
 

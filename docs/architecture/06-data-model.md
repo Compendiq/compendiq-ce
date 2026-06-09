@@ -279,7 +279,11 @@ erDiagram
   `backend/src/domains/llm/services/embedding-service.ts` (`enqueueReembedAll`).
 - **Encryption at rest.** `user_settings.confluence_pat` is stored as a
   ciphertext blob (AES-256-GCM, key from `PAT_ENCRYPTION_KEY`). Never
-  log or expose it to the frontend.
+  log or expose it to the frontend. The AES key is derived via HKDF-SHA256
+  over the full passphrase (#738); pre-HKDF ciphertexts (`v{N}:` /
+  unversioned) remain decryptable. The `smtp_pass` row in `admin_settings`
+  uses the same versioned helpers — legacy plaintext rows are detected on
+  startup and re-encrypted in place.
 - **`admin_settings`** is a key-value bag used for server-wide config
   that must survive restarts and be editable at runtime — notably the
   `license_key` (populated by the EE plugin) and the `embedding_dimensions`
