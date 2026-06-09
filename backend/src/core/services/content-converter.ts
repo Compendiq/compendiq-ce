@@ -868,6 +868,59 @@ function pathBasename(urlString: string): string {
   }
 }
 
+export interface ProtectedMedia { token: string; html: string; }
+
+const MEDIA_TOKEN_PREFIX = 'CQ_MEDIA_PLACEHOLDER_';
+const MEDIA_SELECTOR = [
+  'img',
+  'div.confluence-drawio',
+  'div.confluence-mermaid',
+  'div.mermaid',
+  'div.confluence-section',
+  'div.confluence-column',
+].join(',');
+
+/**
+ * #723: Replace rich/media nodes with opaque text tokens before the lossy
+ * HTML→Markdown→HTML round-trip used by AI Improve. Document order makes the
+ * tokens deterministic, so the same source HTML re-protected at Accept time
+ * yields the same tokens — no need to persist the map.
+ */
+export function protectMedia(html: string): { html: string; media: ProtectedMedia[] } {
+  const dom = new JSDOM(`<body>${html}</body>`);
+  const doc = dom.window.document;
+  const media: ProtectedMedia[] = [];
+  // Outermost-first: a div.confluence-drawio contains an <img>; protect the
+  // wrapper and skip its descendants.
+  const nodes = Array.from(doc.body.querySelectorAll(MEDIA_SELECTOR))
+    .filter((n) => !n.parentElement?.closest('div.confluence-drawio, div.confluence-mermaid, div.mermaid'));
+  for (const node of nodes) {
+    const token = `${MEDIA_TOKEN_PREFIX}${media.length}`;
+    media.push({ token, html: (node as Element).outerHTML });
+    node.replaceWith(doc.createTextNode(` ${token} `));
+  }
+  return { html: doc.body.innerHTML, media };
+}
+
+/**
+ * Re-inject protected media. Replaces `<p>TOKEN</p>` (markdown wrapped the lone
+ * token in a paragraph) and bare TOKEN occurrences with the original HTML.
+ * Also handles the turndown-escaped form (underscores escaped as \_) so that
+ * tokens survive a full htmlToMarkdown→markdownToHtml round-trip.
+ */
+export function restoreMedia(html: string, media: ProtectedMedia[]): string {
+  let out = html;
+  for (const { token, html: original } of media) {
+    // Build an escaped variant that turndown may have produced (e.g. CQ\_MEDIA\_PLACEHOLDER\_0)
+    const escapedToken = token.replace(/_/g, '\\_');
+    for (const t of [token, escapedToken]) {
+      out = out.replace(new RegExp(`<p>\\s*${t.replace(/[\\]/g, '\\\\')}\\s*</p>`, 'g'), original);
+      out = out.split(t).join(original);
+    }
+  }
+  return out;
+}
+
 /**
  * Converts HTML to Markdown (for LLM consumption).
  */
@@ -936,6 +989,16 @@ export function htmlToMarkdown(html: string): string {
     },
   });
 
+  // #723: draw.io diagrams — emit a fenced block carrying the diagram name so
+  // markdownToHtml can rebuild the .confluence-drawio wrapper losslessly.
+  turndownService.addRule('confluenceDrawio', {
+    filter: (node) => node.nodeName === 'DIV' && node.classList.contains('confluence-drawio'),
+    replacement: (_content, node) => {
+      const name = (node as HTMLElement).getAttribute('data-diagram-name') ?? 'diagram';
+      return `\n\n\`\`\`drawio\n${name}\n\`\`\`\n\n`;
+    },
+  });
+
   return turndownService.turndown(html);
 }
 
@@ -943,7 +1006,19 @@ export function htmlToMarkdown(html: string): string {
  * Converts Markdown to HTML (for LLM output -> editor).
  */
 export async function markdownToHtml(markdown: string): Promise<string> {
-  return await marked(markdown) as string;
+  let html = await marked(markdown) as string;
+
+  // #723: rebuild draw.io wrappers from ```drawio fences.
+  // marked emits: <pre><code class="language-drawio">NAME\n</code></pre>
+  html = html.replace(
+    /<pre><code class="language-drawio">([\s\S]*?)\n?<\/code><\/pre>/g,
+    (_m, name) => {
+      const safe = String(name).trim();
+      return `<div class="confluence-drawio" data-diagram-name="${safe.replace(/"/g, '&quot;')}"></div>`;
+    },
+  );
+
+  return html;
 }
 
 /**
