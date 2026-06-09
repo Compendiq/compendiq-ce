@@ -25,6 +25,7 @@ import { PageListQuerySchema, PageTreeQuerySchema, CreatePageSchema, UpdatePageS
 import { z } from 'zod';
 import { logger } from '../../core/utils/logger.js';
 import pLimit from 'p-limit';
+import { ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
 import { uploadLocalImagesToConfluence } from '../../domains/confluence/services/pasted-image-uploader.js';
 
 /** Escape ILIKE metacharacters so user input like "100%" doesn't match all rows. */
@@ -1387,7 +1388,25 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.badRequest('Confluence not configured');
     }
 
-    await client.deletePage(existingPage.confluence_id!);
+    // Propagate the delete to Confluence. A 404 means the page is already gone
+    // remotely — the desired end state is already true, so we treat it as success
+    // and fall through to local cleanup rather than leaving an orphaned, undeletable
+    // row behind (#706). Any other error is re-thrown so we never silently drop a
+    // page when Confluence genuinely failed (e.g. 5xx, auth, permissions).
+    let alreadyGone = false;
+    try {
+      await client.deletePage(existingPage.confluence_id!);
+    } catch (err) {
+      if (err instanceof ConfluenceError && err.statusCode === 404) {
+        alreadyGone = true;
+        logger.info(
+          { pageId: existingPage.id, confluenceId: existingPage.confluence_id },
+          'Confluence page already deleted remotely (404) — cleaning up locally',
+        );
+      } else {
+        throw err;
+      }
+    }
 
     // Clean up local data (page_embeddings cascade-deleted via FK)
     await query('DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = $2', [userId, existingPage.id]);
@@ -1400,7 +1419,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     await cache.invalidate(userId, 'pages');
     await cache.invalidate(userId, 'spaces');
 
-    await logAuditEvent(userId, 'PAGE_DELETED', 'page', String(id), {}, request);
+    await logAuditEvent(userId, 'PAGE_DELETED', 'page', String(id), { alreadyGoneRemotely: alreadyGone }, request);
 
     emitWebhookEvent({
       eventType: 'page.deleted',
@@ -1410,7 +1429,11 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       },
     });
 
-    return { message: 'Page deleted' };
+    return {
+      message: alreadyGone
+        ? 'Page was already removed in Confluence — removed locally'
+        : 'Page deleted',
+    };
   });
 
   // ======== Draft-while-published (#362) ========
@@ -1691,7 +1714,20 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         const deletedConfluenceNumericIds: number[] = [];
         for (let i = 0; i < deleteResults.length; i++) {
           const result = deleteResults[i]!;
-          if (result.status === 'fulfilled') {
+          // A 404 rejection means the page is already gone in Confluence — the
+          // desired end state is already true, so we clean it up locally too
+          // rather than leaving an orphaned, undeletable row behind (#706).
+          const alreadyGone =
+            result.status === 'rejected' &&
+            result.reason instanceof ConfluenceError &&
+            result.reason.statusCode === 404;
+          if (result.status === 'fulfilled' || alreadyGone) {
+            if (alreadyGone) {
+              logger.info(
+                { pageId: confluencePages[i]!.id, confluenceId: confluencePages[i]!.confluence_id },
+                'Confluence page already deleted remotely (404) — cleaning up locally',
+              );
+            }
             deletedConfluenceIds.push(confluencePages[i]!.confluence_id!);
             deletedConfluenceNumericIds.push(confluencePages[i]!.id);
             confluenceSucceeded++;

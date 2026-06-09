@@ -97,6 +97,7 @@ vi.mock('../../core/db/postgres.js', () => ({
 
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { cleanPageAttachments } from '../../domains/confluence/services/attachment-handler.js';
+import { ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
 
 describe('Bulk Pages Routes (Parallelized)', () => {
   let app: ReturnType<typeof Fastify>;
@@ -352,6 +353,50 @@ describe('Bulk Pages Routes (Parallelized)', () => {
       expect(body.failed).toBe(1);
       expect(body.errors).toHaveLength(1);
       expect(body.errors[0]).toContain('Confluence error');
+    });
+
+    it('treats a 404 Confluence rejection as success and removes the row locally (#706)', async () => {
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [
+          { id: 1, confluence_id: 'page-1', source: 'confluence' },
+          { id: 2, confluence_id: 'page-2', source: 'confluence' },
+        ],
+        rowCount: 2,
+      });
+
+      // page-1 deletes cleanly; page-2 is already gone in Confluence (404).
+      const client = {
+        deletePage: vi.fn().mockImplementation((id: string) =>
+          id === 'page-2'
+            ? Promise.reject(new ConfluenceError('Resource not found', 404))
+            : Promise.resolve(undefined),
+        ),
+        getPage: vi.fn(),
+        addLabels: vi.fn(),
+        removeLabel: vi.fn(),
+      };
+      (getClientForUser as ReturnType<typeof vi.fn>).mockResolvedValueOnce(client);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/delete',
+        payload: { ids: ['page-1', 'page-2'] },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      // Both count as succeeded — the 404 page's local cleanup runs too.
+      expect(body.succeeded).toBe(2);
+      expect(body.failed).toBe(0);
+      expect(body.errors).toHaveLength(0);
+
+      // The already-gone page is included in the batch row removal + attachment cleanup.
+      const pageDelete = mockQueryFn.mock.calls.find(
+        (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('DELETE FROM pages WHERE confluence_id = ANY'),
+      );
+      expect(pageDelete).toBeDefined();
+      expect(pageDelete![1]).toEqual([['page-1', 'page-2']]);
+      expect(cleanPageAttachments).toHaveBeenCalledWith('test-user-id', 'page-2');
     });
   });
 
