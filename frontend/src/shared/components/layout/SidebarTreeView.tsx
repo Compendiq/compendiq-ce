@@ -274,6 +274,17 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
   const newFolderInputRef = useRef<HTMLInputElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
   const treeScrollRef = useRef<HTMLDivElement>(null);
+  // Snapshot the tree's scroll position the instant a node is pressed — before
+  // the browser's focus-into-view runs on the freshly-focused chevron — so a
+  // user expand/collapse keeps the list where it is instead of being yanked to
+  // the active row. pendingScrollRestore marks that the next expandedIds change
+  // came from such a press, so the #707 scroll-into-view below leaves it alone.
+  const scrollTopBeforeToggle = useRef<number | null>(null);
+  const pendingScrollRestore = useRef(false);
+
+  const snapshotTreeScroll = useCallback(() => {
+    if (treeScrollRef.current) scrollTopBeforeToggle.current = treeScrollRef.current.scrollTop;
+  }, []);
 
   const closeSpaceDropdown = useCallback(() => setSpaceDropdownOpen(false), []);
   const spaceDropdownRef = useClickOutside<HTMLDivElement>(closeSpaceDropdown, spaceDropdownOpen);
@@ -359,10 +370,24 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
   // loads. We only scroll when the row is genuinely outside the container
   // viewport, leaving mid-session scrolling and navigation to an already-visible
   // page untouched.
+  //
+  // Exception: when the user expands/collapses a node themselves
+  // (pendingScrollRestore), do NOT scroll to the active row — that would yank
+  // the list to the current article on every chevron click. Instead restore the
+  // pre-press scroll position, also undoing the browser's focus-into-view jump.
   useLayoutEffect(() => {
-    if (!activePageId) return;
     const container = treeScrollRef.current;
     if (!container) return;
+
+    if (pendingScrollRestore.current) {
+      pendingScrollRestore.current = false;
+      if (scrollTopBeforeToggle.current != null) {
+        container.scrollTop = scrollTopBeforeToggle.current;
+      }
+      return;
+    }
+
+    if (!activePageId) return;
 
     function scrollActiveIntoView(scroller: HTMLElement): boolean {
       const active = scroller.querySelector<HTMLElement>('[data-active="true"]');
@@ -396,6 +421,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
   }, [activePageId, expandedIds, pages, reduceEffects]);
 
   const toggleExpand = useCallback((id: string) => {
+    pendingScrollRestore.current = true;
     setExpandedIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -636,7 +662,13 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
       )}
 
       {/* Tree content with drag-and-drop + scroll mask */}
-      <div ref={treeScrollRef} className="flex-1 overflow-y-auto p-2 scroll-mask">
+      <div
+        ref={treeScrollRef}
+        data-testid="tree-scroll"
+        onMouseDownCapture={snapshotTreeScroll}
+        onKeyDownCapture={snapshotTreeScroll}
+        className="flex-1 overflow-y-auto p-2 scroll-mask"
+      >
         {isLoading ? (
           <div className="space-y-1.5 p-2">
             {[...Array(8)].map((_, i) => (

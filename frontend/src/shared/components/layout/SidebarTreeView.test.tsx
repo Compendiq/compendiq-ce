@@ -153,6 +153,71 @@ describe('SidebarTreeView', () => {
     expect(screen.getByText('Configuration')).toBeInTheDocument();
   });
 
+  it('keeps the sidebar scroll position when a node is expanded (does not jump to the active page)', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const scroller = screen.getByTestId('tree-scroll');
+    // The user has scrolled the tree down before interacting.
+    scroller.scrollTop = 120;
+    const expandBtn = screen.getAllByLabelText('Expand')[0];
+    // mousedown must snapshot the position *before* the browser scrolls the
+    // freshly-focused chevron into view…
+    fireEvent.mouseDown(expandBtn);
+    // …which we emulate here by jumping the list to the top (the active page).
+    scroller.scrollTop = 0;
+    // Expanding the node must restore the pre-click position, not stay jumped.
+    fireEvent.click(expandBtn);
+    expect(scroller.scrollTop).toBe(120);
+    // Sanity: the node still actually expanded.
+    expect(screen.getByText('Installation')).toBeInTheDocument();
+  });
+
+  it('keeps the sidebar scroll position when a node is collapsed (snapshot is re-captured per press)', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const scroller = screen.getByTestId('tree-scroll');
+    // Expand first so the node exposes a "Collapse" chevron.
+    fireEvent.click(screen.getAllByLabelText('Expand')[0]);
+    expect(screen.getByText('Installation')).toBeInTheDocument();
+    // A *different* position than the expand test — proves the snapshot is taken
+    // fresh on this press, not reused from an earlier interaction.
+    scroller.scrollTop = 90;
+    const collapseBtn = screen.getByLabelText('Collapse'); // the chevron, not the "Collapse <title>" indent guide
+    fireEvent.mouseDown(collapseBtn);
+    scroller.scrollTop = 0; // emulate the browser's focus-into-view jump
+    fireEvent.click(collapseBtn);
+    expect(scroller.scrollTop).toBe(90);
+    // Sanity: the node actually collapsed.
+    expect(screen.queryByText('Installation')).not.toBeInTheDocument();
+  });
+
+  it('does not restore scroll on auto-expand (navigation); only a node press restores', () => {
+    // OPS has no homepage, so the full tree (incl. root-1 + its children) renders;
+    // setting it explicitly also stops the auto-select-space effect from switching
+    // to DEV (whose homepage root-1 would be hidden).
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: 'OPS' });
+    const { rerender } = render(<SidebarTreeView />, { wrapper: createWrapper('/pages/child-1') });
+    const scroller = screen.getByTestId('tree-scroll');
+    // Viewing child-1 auto-expands its ancestor root-1 on mount — no press involved.
+    expect(screen.getByText('Installation')).toBeInTheDocument();
+
+    // Leave a non-null snapshot behind via a real press (collapse root-1).
+    scroller.scrollTop = 200;
+    const collapseBtn = screen.getByLabelText('Collapse');
+    fireEvent.mouseDown(collapseBtn);
+    fireEvent.click(collapseBtn);
+    expect(screen.queryByText('Installation')).not.toBeInTheDocument();
+
+    // User scrolls; then an auto-expand fires WITHOUT a press — emulated by new
+    // tree data, which re-runs the ancestor auto-expand effect.
+    scroller.scrollTop = 50;
+    mockTreeData = { ...defaultTreeData, items: [...defaultTreeData.items] };
+    rerender(<SidebarTreeView />);
+
+    // The ancestor re-expanded, but the guard left scroll where the user put it —
+    // it was NOT yanked back to the stale 200 snapshot.
+    expect(screen.getByText('Installation')).toBeInTheDocument();
+    expect(scroller.scrollTop).toBe(50);
+  });
+
   it('shows indent guide line when a folder is expanded', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
     const expandBtn = screen.getAllByLabelText('Expand')[0];
@@ -464,6 +529,35 @@ describe('SidebarTreeView active-page scroll-into-view (#707)', () => {
     await waitFor(() => {
       expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center', behavior: 'auto' });
     });
+  });
+
+  it('does NOT scroll the active row into view when the user manually expands a node', () => {
+    // Integration with the manual-expand fix: #707 scrolls to the active row on
+    // navigation/reload, but a user pressing a chevron must not trigger it —
+    // otherwise opening any node jumps the list to the current article.
+    // root-3 is a second expandable node (unrelated to the active page); OPS has
+    // no homepage so the full tree renders.
+    mockTreeData = {
+      items: [
+        ...defaultTreeData.items,
+        { id: 'root-3', spaceKey: 'DEV', title: 'Guides', pageType: 'page' as const, parentId: null, labels: [], lastModifiedAt: '2026-03-01T00:00:00Z', embeddingDirty: false },
+        { id: 'child-3', spaceKey: 'DEV', title: 'Quickstart', pageType: 'page' as const, parentId: 'root-3', labels: [], lastModifiedAt: '2026-03-01T00:00:00Z', embeddingDirty: false },
+      ],
+      total: 6,
+    };
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: 'OPS' });
+    // Active row off-screen, so #707 *would* scroll to it on a non-press change.
+    rectByTestState = { containerTop: 0, containerBottom: 500, activeTop: 900, activeBottom: 940 };
+    render(<SidebarTreeView />, { wrapper: createWrapper('/pages/child-1') });
+    scrollIntoView.mockClear(); // ignore the legitimate scroll-to-active on mount
+
+    // Manually expand the unrelated node.
+    const expandBtn = screen.getByLabelText('Expand');
+    fireEvent.mouseDown(expandBtn);
+    fireEvent.click(expandBtn);
+
+    expect(screen.getByText('Quickstart')).toBeInTheDocument(); // it expanded…
+    expect(scrollIntoView).not.toHaveBeenCalled();              // …but did NOT jump to the active row
   });
 });
 
