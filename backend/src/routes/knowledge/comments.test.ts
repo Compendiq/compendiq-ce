@@ -17,6 +17,12 @@ vi.mock('../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
+// #733: comment routes must enforce per-page RBAC access
+const mockUserCanAccessPage = vi.fn();
+vi.mock('../../core/services/rbac-service.js', () => ({
+  userCanAccessPage: (...args: unknown[]) => mockUserCanAccessPage(...args),
+}));
+
 import { commentsRoutes } from './comments.js';
 
 const TEST_USER_ID = '11111111-1111-1111-1111-111111111111';
@@ -63,6 +69,8 @@ describe('Comments routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+    // Default: the caller can access the page (#733)
+    mockUserCanAccessPage.mockResolvedValue(true);
   });
 
   // --- GET /api/pages/:pageId/comments ---
@@ -149,14 +157,31 @@ describe('Comments routes', () => {
       expect(body.comments[0].reactions['👍']).toEqual(['testuser', 'otheruser']);
       expect(body.comments[0].reactions['❤️']).toEqual(['testuser']);
     });
+
+    // ── #733 RBAC / IDOR regressions ──────────────────────────────────
+
+    it('should return 404 when the user cannot access the page (#733)', async () => {
+      mockUserCanAccessPage.mockResolvedValue(false);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/pages/1/comments',
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(mockUserCanAccessPage).toHaveBeenCalledWith(TEST_USER_ID, 1);
+      // Critical: no comment rows may be fetched for an inaccessible page.
+      const commentFetch = mockQuery.mock.calls.find(
+        (call) => typeof call[0] === 'string' && (call[0] as string).includes('FROM comments'),
+      );
+      expect(commentFetch).toBeUndefined();
+    });
   });
 
   // --- POST /api/pages/:pageId/comments ---
 
   describe('POST /api/pages/:pageId/comments', () => {
     it('should create a top-level comment', async () => {
-      // Page exists check
-      mockQuery.mockResolvedValueOnce({ rows: [{ id: 1 }] });
       // INSERT comment
       mockQuery.mockResolvedValueOnce({
         rows: [{
@@ -185,7 +210,8 @@ describe('Comments routes', () => {
     });
 
     it('should return 404 when page does not exist', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [] }); // page check fails
+      // userCanAccessPage returns false for nonexistent pages (#733)
+      mockUserCanAccessPage.mockResolvedValue(false);
 
       const response = await app.inject({
         method: 'POST',
@@ -197,8 +223,6 @@ describe('Comments routes', () => {
     });
 
     it('should create a reply to an existing comment', async () => {
-      // Page exists
-      mockQuery.mockResolvedValueOnce({ rows: [{ id: 1 }] });
       // Parent comment exists
       mockQuery.mockResolvedValueOnce({ rows: [{ id: 5, page_id: 1 }] });
       // INSERT reply
@@ -227,8 +251,6 @@ describe('Comments routes', () => {
     });
 
     it('should extract @mentions and store them', async () => {
-      // Page exists
-      mockQuery.mockResolvedValueOnce({ rows: [{ id: 1 }] });
       // INSERT comment
       mockQuery.mockResolvedValueOnce({
         rows: [{
@@ -275,6 +297,30 @@ describe('Comments routes', () => {
       });
 
       expect(response.statusCode).toBe(400);
+    });
+
+    // ── #733 RBAC / IDOR regressions ──────────────────────────────────
+
+    it('should return 404 and not insert when the user cannot access the page (#733)', async () => {
+      mockUserCanAccessPage.mockResolvedValue(false);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/1/comments',
+        payload: { body: 'sneaky @admin ping', bodyHtml: '<p>sneaky</p>' },
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(mockUserCanAccessPage).toHaveBeenCalledWith(TEST_USER_ID, 1);
+      // Critical: no comment INSERT and no mention notifications.
+      const insertCall = mockQuery.mock.calls.find(
+        (call) => typeof call[0] === 'string' && (call[0] as string).includes('INSERT INTO comments'),
+      );
+      expect(insertCall).toBeUndefined();
+      const mentionCall = mockQuery.mock.calls.find(
+        (call) => typeof call[0] === 'string' && (call[0] as string).includes('comment_mentions'),
+      );
+      expect(mentionCall).toBeUndefined();
     });
   });
 

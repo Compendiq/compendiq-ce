@@ -30,6 +30,14 @@ vi.mock('../../core/db/postgres.js', () => ({
   closePool: vi.fn(),
 }));
 
+// #733: per-page / per-space RBAC checks on move/reorder/breadcrumb
+const mockUserCanAccessPage = vi.fn();
+const mockGetUserAccessibleSpaces = vi.fn();
+vi.mock('../../core/services/rbac-service.js', () => ({
+  userCanAccessPage: (...args: unknown[]) => mockUserCanAccessPage(...args),
+  getUserAccessibleSpaces: (...args: unknown[]) => mockGetUserAccessibleSpaces(...args),
+}));
+
 describe('Local Spaces Routes', () => {
   let app: ReturnType<typeof Fastify>;
 
@@ -74,6 +82,9 @@ describe('Local Spaces Routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Default: page access allowed; no Confluence space assignments.
+    mockUserCanAccessPage.mockResolvedValue(true);
+    mockGetUserAccessibleSpaces.mockResolvedValue([]);
   });
 
   // ── GET /api/spaces/local ─────────────────────────────────────────────
@@ -395,5 +406,155 @@ describe('Local Spaces Routes', () => {
     });
 
     expect(response.statusCode).toBe(404);
+  });
+
+  // ── #733 RBAC / IDOR regressions ──────────────────────────────────────
+
+  it('move: returns 404 when the user cannot access the source page (#733)', async () => {
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 10, parent_id: null, space_key: 'SECRET', source: 'confluence', path: '/10' }],
+    });
+    mockUserCanAccessPage.mockResolvedValue(false);
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/pages/10/move',
+      payload: { parentId: null, spaceKey: 'PROJ' },
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(mockUserCanAccessPage).toHaveBeenCalledWith('test-user-id', 10);
+    // Critical: the page must not be moved.
+    const updateCall = mockQueryFn.mock.calls.find(
+      (c) => typeof c[0] === 'string' && (c[0] as string).includes('UPDATE pages'),
+    );
+    expect(updateCall).toBeUndefined();
+  });
+
+  it('move: returns 403 when the target space is a Confluence space the user cannot access (#733)', async () => {
+    // Source page is accessible (default mock), target space is not.
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 10, parent_id: null, space_key: 'PROJ', source: 'standalone', path: '/10' }],
+    });
+    // Target space lookup → Confluence-synced space
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'confluence' }] });
+    mockGetUserAccessibleSpaces.mockResolvedValue(['OTHER']);
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/pages/10/move',
+      payload: { parentId: null, spaceKey: 'RESTRICTED' },
+    });
+
+    expect(response.statusCode).toBe(403);
+    const updateCall = mockQueryFn.mock.calls.find(
+      (c) => typeof c[0] === 'string' && (c[0] as string).includes('UPDATE pages'),
+    );
+    expect(updateCall).toBeUndefined();
+  });
+
+  it('move: returns 400 when the target space does not exist (#733)', async () => {
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 10, parent_id: null, space_key: 'PROJ', source: 'standalone', path: '/10' }],
+    });
+    // Target space lookup → no such space
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/pages/10/move',
+      payload: { parentId: null, spaceKey: 'NOPE' },
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
+  it('move: allows moving into an accessible Confluence space (#733)', async () => {
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 10, parent_id: null, space_key: 'PROJ', source: 'standalone', path: '/10' }],
+    });
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'confluence' }] });
+    mockGetUserAccessibleSpaces.mockResolvedValue(['TEAMB']);
+    // UPDATE page + descendants
+    mockQueryFn.mockResolvedValue({ rows: [] });
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/pages/10/move',
+      payload: { parentId: null, spaceKey: 'TEAMB' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.payload).spaceKey).toBe('TEAMB');
+  });
+
+  it('move: allows moving into a local space without an RBAC assignment (#733)', async () => {
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 10, parent_id: null, space_key: null, source: 'standalone', path: '/10' }],
+    });
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'local' }] });
+    mockQueryFn.mockResolvedValue({ rows: [] });
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/pages/10/move',
+      payload: { parentId: null, spaceKey: 'MYLOCAL' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    // Local spaces are accessible to all authenticated users — no RBAC lookup.
+    expect(mockGetUserAccessibleSpaces).not.toHaveBeenCalled();
+  });
+
+  it('reorder: returns 404 when the user cannot access the page (#733)', async () => {
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 10 }] });
+    mockUserCanAccessPage.mockResolvedValue(false);
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/pages/10/reorder',
+      payload: { sortOrder: 3 },
+    });
+
+    expect(response.statusCode).toBe(404);
+    const updateCall = mockQueryFn.mock.calls.find(
+      (c) => typeof c[0] === 'string' && (c[0] as string).includes('UPDATE pages'),
+    );
+    expect(updateCall).toBeUndefined();
+  });
+
+  it('breadcrumb: returns 404 when the user cannot access the page (#733)', async () => {
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 10, title: 'Restricted', parent_id: null, space_key: 'SECRET', path: '/10' }],
+    });
+    mockUserCanAccessPage.mockResolvedValue(false);
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/pages/10/breadcrumb',
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(mockUserCanAccessPage).toHaveBeenCalledWith('test-user-id', 10);
+  });
+
+  it('breadcrumb: returns the parent chain when the user can access the page (#733)', async () => {
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 10, title: 'Child', parent_id: '5', space_key: 'PROJ', path: '/5/10' }],
+    });
+    // Ancestors batch fetch
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 5, title: 'Parent' }] });
+    // Space name lookup
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ space_name: 'Project Docs', source: 'local' }] });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/pages/10/breadcrumb',
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.payload);
+    expect(body.ancestors).toEqual([{ id: 5, title: 'Parent' }]);
+    expect(body.current).toEqual({ id: 10, title: 'Child' });
   });
 });

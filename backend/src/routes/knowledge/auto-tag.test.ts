@@ -89,6 +89,12 @@ vi.mock('../../core/db/postgres.js', () => ({
   closePool: vi.fn(),
 }));
 
+// #733: routes check page access via rbac-service before tagging
+const mockUserCanAccessPage = vi.fn().mockResolvedValue(true);
+vi.mock('../../core/services/rbac-service.js', () => ({
+  userCanAccessPage: (...args: unknown[]) => mockUserCanAccessPage(...args),
+}));
+
 describe('POST /api/pages/:id/auto-tag', () => {
   let app: ReturnType<typeof Fastify>;
 
@@ -131,6 +137,7 @@ describe('POST /api/pages/:id/auto-tag', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockQueryFn.mockResolvedValue({ rows: [{ id: 1, confluence_id: 'conf-1', labels: ['existing'] }], rowCount: 1 });
+    mockUserCanAccessPage.mockResolvedValue(true);
   });
 
   it('should return suggested tags on success', async () => {
@@ -306,6 +313,7 @@ describe('PUT /api/pages/:id/labels (#442 — integer PK fix)', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockUserCanAccessPage.mockResolvedValue(true);
   });
 
   it('should add labels using integer PK in the URL', async () => {
