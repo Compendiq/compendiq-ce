@@ -1,4 +1,4 @@
-import { memo, useState, useMemo, useCallback, useEffect, useRef, lazy, Suspense } from 'react';
+import { memo, useState, useMemo, useCallback, useEffect, useLayoutEffect, useRef, lazy, Suspense } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import {
   BookOpen,
@@ -277,6 +277,20 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
   const [showNewFolderInput, setShowNewFolderInput] = useState(false);
   const newFolderInputRef = useRef<HTMLInputElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
+  const treeScrollRef = useRef<HTMLDivElement>(null);
+  // Scroll-preservation across expand/collapse: pressing a node's chevron
+  // focuses a <button>, and the browser scrolls that freshly-focused element
+  // into view — which yanks the list to the current article. We snapshot the
+  // scroll position on press (before that native focus-into-view fires) and
+  // restore it after the toggle re-render, but only when an expand/collapse
+  // actually happened (pendingScrollRestore), so unrelated re-renders are
+  // left alone.
+  const scrollTopBeforeToggle = useRef<number | null>(null);
+  const pendingScrollRestore = useRef(false);
+
+  const snapshotTreeScroll = useCallback(() => {
+    if (treeScrollRef.current) scrollTopBeforeToggle.current = treeScrollRef.current.scrollTop;
+  }, []);
 
   const closeSpaceDropdown = useCallback(() => setSpaceDropdownOpen(false), []);
   const spaceDropdownRef = useClickOutside<HTMLDivElement>(closeSpaceDropdown, spaceDropdownOpen);
@@ -356,6 +370,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
   }, [activePageId, pages, treeSidebarSpaceKey, setTreeSidebarSpaceKey]);
 
   const toggleExpand = useCallback((id: string) => {
+    pendingScrollRestore.current = true;
     setExpandedIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -363,6 +378,18 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
       return next;
     });
   }, []);
+
+  // Restore the pre-toggle scroll position before paint, undoing the browser's
+  // focus-into-view jump. Runs only after a user expand/collapse — auto-expand
+  // on navigation (no preceding press) leaves pendingScrollRestore false.
+  useLayoutEffect(() => {
+    if (pendingScrollRestore.current) {
+      if (treeScrollRef.current && scrollTopBeforeToggle.current != null) {
+        treeScrollRef.current.scrollTop = scrollTopBeforeToggle.current;
+      }
+      pendingScrollRestore.current = false;
+    }
+  }, [expandedIds]);
 
   // Collapsed rail -- nav icons + expand toggle
   if (treeSidebarCollapsed) {
@@ -640,7 +667,13 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
       )}
 
       {/* Tree content with drag-and-drop + scroll mask */}
-      <div className="flex-1 overflow-y-auto p-2 scroll-mask">
+      <div
+        ref={treeScrollRef}
+        data-testid="tree-scroll"
+        onMouseDownCapture={snapshotTreeScroll}
+        onKeyDownCapture={snapshotTreeScroll}
+        className="flex-1 overflow-y-auto p-2 scroll-mask"
+      >
         {isLoading ? (
           <div className="space-y-1.5 p-2">
             {[...Array(8)].map((_, i) => (

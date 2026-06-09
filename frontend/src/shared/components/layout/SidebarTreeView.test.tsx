@@ -120,6 +120,24 @@ describe('SidebarTreeView', () => {
     expect(screen.getByText('Configuration')).toBeInTheDocument();
   });
 
+  it('keeps the sidebar scroll position when a node is expanded (does not jump to the active page)', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const scroller = screen.getByTestId('tree-scroll');
+    // The user has scrolled the tree down before interacting.
+    scroller.scrollTop = 120;
+    const expandBtn = screen.getAllByLabelText('Expand')[0];
+    // mousedown must snapshot the position *before* the browser scrolls the
+    // freshly-focused chevron into view…
+    fireEvent.mouseDown(expandBtn);
+    // …which we emulate here by jumping the list to the top (the active page).
+    scroller.scrollTop = 0;
+    // Expanding the node must restore the pre-click position, not stay jumped.
+    fireEvent.click(expandBtn);
+    expect(scroller.scrollTop).toBe(120);
+    // Sanity: the node still actually expanded.
+    expect(screen.getByText('Installation')).toBeInTheDocument();
+  });
+
   it('shows indent guide line when a folder is expanded', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
     const expandBtn = screen.getAllByLabelText('Expand')[0];
