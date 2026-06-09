@@ -16,6 +16,9 @@ interface PageVersion {
   bodyHtml: string | null;
   bodyText: string | null;
   syncedAt: Date;
+  editedAt: Date | null;
+  author: string | null;
+  message: string | null;
 }
 
 /**
@@ -36,8 +39,12 @@ export async function getVersionHistory(
     version_number: number;
     title: string;
     synced_at: Date;
+    edited_at: Date | null;
+    author: string | null;
+    message: string | null;
   }>(
-    `SELECT pv.id, pv.page_id, p.confluence_id, pv.version_number, pv.title, pv.synced_at
+    `SELECT pv.id, pv.page_id, p.confluence_id, pv.version_number, pv.title, pv.synced_at,
+            pv.edited_at, pv.author, pv.message
      FROM page_versions pv
      JOIN pages p ON pv.page_id = p.id
      WHERE pv.page_id = $1
@@ -53,6 +60,9 @@ export async function getVersionHistory(
     versionNumber: row.version_number,
     title: row.title,
     syncedAt: row.synced_at,
+    editedAt: row.edited_at ?? null,
+    author: row.author ?? null,
+    message: row.message ?? null,
   }));
 }
 
@@ -73,8 +83,12 @@ export async function getVersion(
     body_html: string | null;
     body_text: string | null;
     synced_at: Date;
+    edited_at: Date | null;
+    author: string | null;
+    message: string | null;
   }>(
-    `SELECT pv.id, pv.page_id, p.confluence_id, pv.version_number, pv.title, pv.body_html, pv.body_text, pv.synced_at
+    `SELECT pv.id, pv.page_id, p.confluence_id, pv.version_number, pv.title, pv.body_html, pv.body_text,
+            pv.synced_at, pv.edited_at, pv.author, pv.message
      FROM page_versions pv
      JOIN pages p ON pv.page_id = p.id
      WHERE pv.page_id = $1
@@ -95,6 +109,9 @@ export async function getVersion(
     bodyHtml: row.body_html,
     bodyText: row.body_text,
     syncedAt: row.synced_at,
+    editedAt: row.edited_at ?? null,
+    author: row.author ?? null,
+    message: row.message ?? null,
   };
 }
 
