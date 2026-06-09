@@ -77,6 +77,7 @@ import { registerKnowledgeRelationshipProducers } from './domains/knowledge/serv
 import { initSsrfAllowlistBus } from './core/services/ssrf-allowlist-bus.js';
 import { initPresenceBus } from './core/services/presence-service.js';
 import { initCacheBus, close as closeCacheBus } from './core/services/redis-cache-bus.js';
+import { initUserSecurityCacheBus } from './core/services/user-security-cache.js';
 import { initProviderCacheBus } from './domains/llm/services/cache-bus.js';
 import { buildTrustProxyFn } from './core/utils/trusted-proxy.js';
 import {
@@ -232,6 +233,13 @@ export async function buildApp() {
   app.addHook('onClose', async () => {
     await closeCacheBus();
   });
+
+  // ── User security cache bus (#737) ───────────────────────────────
+  // Subscribes the per-user liveness/role cache (checked by `authenticate`
+  // on every request) to `user:security:changed` so deactivation and role
+  // changes invalidate across pods immediately. Must run AFTER initCacheBus.
+  // Without a working bus the cache's 30s TTL bounds the staleness.
+  initUserSecurityCacheBus();
 
   // ── LLM provider cache-bus subscriber (EE #113 sub-PR 1d) ────────
   // Wires the cluster subscriber for `provider:cache:bump` and

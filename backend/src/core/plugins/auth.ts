@@ -7,13 +7,30 @@ import { logger } from '../utils/logger.js';
 import { userHasPermission, userHasGlobalPermission } from '../services/rbac-service.js';
 import { enterRbacScope } from '../services/rbac-request-scope.js';
 import { logAuditEvent } from '../services/audit-service.js';
+import { getUserSecurityState } from '../services/user-security-cache.js';
 
 const JWT_ISSUER = 'compendiq';
 const ACCESS_TOKEN_EXPIRY = process.env.ACCESS_TOKEN_EXPIRY ?? '1h';
 // Validate expiry format at startup — jose accepts: Ns, Nm, Nh, Nd
-if (!/^\d+[smhd]$/.test(ACCESS_TOKEN_EXPIRY)) {
+const ACCESS_TOKEN_EXPIRY_MATCH = /^(\d+)([smhd])$/.exec(ACCESS_TOKEN_EXPIRY);
+if (!ACCESS_TOKEN_EXPIRY_MATCH) {
   throw new Error(
     `Invalid ACCESS_TOKEN_EXPIRY format: "${ACCESS_TOKEN_EXPIRY}". Expected format: <number><s|m|h|d> (e.g., "1h", "30m", "7d")`,
+  );
+}
+// #737: cap the access-token lifetime at 24h. The lifetime is the worst-case
+// window a deactivated/demoted account keeps API access if every faster
+// invalidation layer (user-security cache + cache-bus) failed, so it must
+// not be effectively unbounded (the old regex admitted e.g. '999d').
+const EXPIRY_UNIT_SECONDS: Record<string, number> = { s: 1, m: 60, h: 3_600, d: 86_400 };
+const MAX_ACCESS_TOKEN_EXPIRY_SECONDS = 24 * 3_600;
+if (
+  Number(ACCESS_TOKEN_EXPIRY_MATCH[1]) * EXPIRY_UNIT_SECONDS[ACCESS_TOKEN_EXPIRY_MATCH[2]!]! >
+  MAX_ACCESS_TOKEN_EXPIRY_SECONDS
+) {
+  throw new Error(
+    `ACCESS_TOKEN_EXPIRY "${ACCESS_TOKEN_EXPIRY}" exceeds the maximum of 24h. ` +
+      'Long-lived access tokens defeat deactivation/role-change revocation (#737) — use the 7-day refresh token for session longevity instead.',
   );
 }
 const REFRESH_TOKEN_EXPIRY_DAYS = 7;
@@ -199,6 +216,27 @@ export default fp(async (fastify: FastifyInstance) => {
     try {
       const token = authHeader.slice(7);
       const payload = await verifyToken(token);
+
+      // #737: cached liveness/role check so deactivation, hard-delete and
+      // role changes take effect on already-issued access tokens within
+      // USER_SECURITY_CACHE_TTL_MS (30s; immediate on pods that receive the
+      // cache-bus invalidation) instead of the full token lifetime. On the
+      // hot path this is a Map lookup — the DB is consulted at most once
+      // per user per TTL window. 'unknown' (DB lookup failed with nothing
+      // cached) soft-fails to the token claims so a transient DB blip
+      // cannot 401 every in-flight session.
+      const security = await getUserSecurityState(payload.sub);
+      if (security.kind === 'deactivated' || security.kind === 'missing') {
+        throw new Error(`User account is ${security.kind === 'missing' ? 'deleted' : 'deactivated'}`);
+      }
+      if (security.kind === 'active' && security.role !== payload.role) {
+        // Stale privilege claim (demoted or promoted since issuance) —
+        // reject so the client re-authenticates and gets a token whose
+        // role matches the DB. Role changes also revoke refresh tokens
+        // (admin-user-service), so a demoted admin must log in again.
+        throw new Error('Token role no longer matches the user record');
+      }
+
       request.userId = payload.sub;
       request.username = payload.username;
       request.userRole = payload.role;

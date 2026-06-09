@@ -60,6 +60,59 @@ sequenceDiagram
 and records `audit_log(action='logout')`. The access token is short-lived
 enough that blacklisting is not needed in CE; EE may add it.
 
+## Per-request revocation check (#737)
+
+`authenticate` does not trust the JWT alone: after signature verification it
+consults a per-user security-state cache so **deactivation, hard-delete and
+role changes take effect on already-issued access tokens** instead of only at
+`/login` and `/refresh`.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Client (stale token)
+    participant BE as authenticate (auth.ts)
+    participant UC as user-security-cache
+    participant DB as Postgres (users)
+    participant RB as Redis cache-bus
+
+    C->>BE: request + Bearer JWT
+    BE->>BE: jose.jwtVerify (HS256)
+    BE->>UC: getUserSecurityState(sub)
+    alt cache fresh (< 30s)
+        UC-->>BE: cached state (Map lookup, no I/O)
+    else miss / expired / invalidated
+        UC->>DB: SELECT role, deactivated_at FROM users
+        DB-->>UC: row
+        UC-->>BE: active(role) | deactivated | missing
+    end
+    alt deactivated or missing
+        BE-->>C: 401
+    else token role ≠ DB role
+        BE-->>C: 401 (client must re-authenticate)
+    else active + role matches
+        BE->>BE: proceed (RBAC scope, route handler)
+    end
+
+    Note over RB,UC: Admin deactivates / demotes / deletes a user →<br/>admin-user-service deletes refresh_tokens,<br/>clears the local cache entry and publishes<br/>`user:security:changed` — peer pods drop their entry too.
+```
+
+Properties:
+
+- **Hot-path cost**: a `Map` lookup per request; at most one indexed
+  single-row `SELECT` per user per 30s window per pod
+  (`USER_SECURITY_CACHE_TTL_MS`).
+- **Revocation latency bound**: immediate on the pod that handled the admin
+  action and on every pod subscribed to the cache-bus; ≤ 30s on pods without
+  a working bus (single-pod soft-fail mode). `ACCESS_TOKEN_EXPIRY` is capped
+  at 24h as the absolute worst-case backstop.
+- **Role change = privilege boundary**: `updateUser` revokes all refresh
+  tokens (mirroring deactivation), so a demoted admin cannot refresh back to
+  an admin token — they must log in again.
+- **Soft-fail**: if the `users` lookup fails and nothing is cached, the
+  request proceeds on the token claims (pre-#737 behaviour) so a transient DB
+  blip cannot 401 every session.
+
 ## OIDC flow (Enterprise Edition)
 
 Routes registered only when the EE plugin is loaded **and**
@@ -101,6 +154,8 @@ posts to a JSON endpoint and only then receives the real JWT.
 | Concern | File |
 |---------|------|
 | JWT plugin, decorators | `backend/src/core/plugins/auth.ts` |
+| Per-user security-state cache (#737) | `backend/src/core/services/user-security-cache.ts` |
+| Refresh-token revocation on deactivate / role change | `backend/src/core/services/admin-user-service.ts` |
 | Routes (register / login / refresh / logout) | `backend/src/routes/foundation/auth.ts` |
 | OIDC routes (EE only) | `@compendiq/enterprise` (loaded via `core/enterprise/loader.ts`) |
 | Frontend session init | `frontend/src/shared/hooks/useSessionInit.ts` |
