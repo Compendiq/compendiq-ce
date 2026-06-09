@@ -104,15 +104,19 @@ function registerWorkerDef(def: WorkerDef): void {
  * Registers repeatable jobs and starts processing.
  */
 export async function startQueueWorkers(): Promise<void> {
+  // Register worker definitions in BOTH modes: the BullMQ branch wires them
+  // into Workers below; the legacy branch needs them so enqueueJob()'s
+  // inline-processor fallback can find something to execute (issue #741 —
+  // without this, e.g. POST /api/admin/embedding/reembed silently no-oped
+  // when USE_BULLMQ=false).
+  registerAllWorkers();
+
   if (!USE_BULLMQ) {
     logger.info('BullMQ disabled (USE_BULLMQ=false), using setInterval workers');
     return startLegacyWorkers();
   }
 
   logger.info('Starting BullMQ queue workers...');
-
-  // Register all worker definitions
-  await registerAllWorkers();
 
   // Create workers for each definition
   for (const def of workerDefs) {
@@ -176,6 +180,17 @@ export async function startQueueWorkers(): Promise<void> {
     }
   }
 
+  // Schedule additional data retention job (daily, on the maintenance queue).
+  // Lives here (not in registerAllWorkers) because it opens a Redis-backed
+  // queue — registerAllWorkers also runs in legacy mode and must stay pure.
+  const retentionHours = 24;
+  const maintenanceQueue = getOrCreateQueue('maintenance');
+  await maintenanceQueue.upsertJobScheduler(
+    'data-retention-scheduler',
+    { every: retentionHours * 60 * 60 * 1000 },
+    { name: 'data-retention' },
+  );
+
   // Register analytics-aggregation queue for future EE use
   getOrCreateQueue('analytics-aggregation');
 
@@ -225,7 +240,8 @@ export async function stopQueueWorkers(): Promise<void> {
  *     That's the "collapse concurrent POSTs" semantic.
  *
  * When BullMQ is disabled (`USE_BULLMQ=false`) this runs the queue's
- * registered processor inline synchronously (legacy fallback behaviour).
+ * registered processor inline, fire-and-forget (legacy fallback behaviour).
+ * Processor errors are logged, not propagated to the caller.
  */
 export async function enqueueJob(
   queueName: string,
@@ -238,14 +254,30 @@ export async function enqueueJob(
     if (def) {
       // Fire-and-forget inline execution. We don't await so the caller
       // observes the same "enqueue returns before processing finishes"
-      // contract as the BullMQ path.
-      void def.processor({
-        id: fakeId,
-        name: queueName,
-        data,
-        updateProgress: async () => {},
-        remove: async () => {},
-      } as unknown as Job);
+      // contract as the BullMQ path. The .catch() is mandatory — a processor
+      // rejection would otherwise be an unhandled rejection (process-fatal
+      // on modern Node). Issue #741.
+      def
+        .processor({
+          id: fakeId,
+          name: queueName,
+          data,
+          updateProgress: async () => {},
+          remove: async () => {},
+        } as unknown as Job)
+        .catch((err: unknown) => {
+          logger.error(
+            { err, queueName, jobId: fakeId },
+            'Legacy inline job processor failed',
+          );
+        });
+    } else {
+      // No registered processor — surface this loudly instead of silently
+      // returning a fake id for work that will never run (issue #741).
+      logger.warn(
+        { queueName },
+        'enqueueJob: no registered worker for queue in legacy mode — job will not run',
+      );
     }
     return fakeId;
   }
@@ -334,12 +366,16 @@ export async function getQueueMetrics(): Promise<
 
 // ─── Register all workers ────────────────────────────────────────────────────
 
-async function registerAllWorkers(): Promise<void> {
+/**
+ * Populate `workerDefs`. Runs in BOTH modes (issue #741): BullMQ mode turns
+ * each def into a Worker; legacy mode uses the defs for enqueueJob()'s inline
+ * fallback. Must stay pure — no Queue creation / Redis access here.
+ */
+function registerAllWorkers(): void {
   const syncInterval = parseInt(process.env.SYNC_INTERVAL_MIN ?? '15', 10);
   const qualityInterval = parseInt(process.env.QUALITY_CHECK_INTERVAL_MINUTES ?? '60', 10);
   const summaryInterval = parseInt(process.env.SUMMARY_CHECK_INTERVAL_MINUTES ?? '60', 10);
   const tokenCleanupHours = parseInt(process.env.TOKEN_CLEANUP_INTERVAL_HOURS ?? '24', 10);
-  const retentionHours = 24;
 
   // Sync worker
   registerWorkerDef({
@@ -406,14 +442,6 @@ async function registerAllWorkers(): Promise<void> {
     },
   });
 
-  // Schedule additional data retention job (daily, on the maintenance queue)
-  const maintenanceQueue = getOrCreateQueue('maintenance');
-  await maintenanceQueue.upsertJobScheduler(
-    'data-retention-scheduler',
-    { every: retentionHours * 60 * 60 * 1000 },
-    { name: 'data-retention' },
-  );
-
   // Re-embed-all worker (issue #257) — NO repeatPattern: triggered on-demand
   // by `enqueueReembedAll` via `POST /api/admin/embedding/reembed`.
   // Concurrency 1 so a global re-embed is a true exclusive operation.
@@ -452,10 +480,15 @@ async function startLegacyWorkers(): Promise<void> {
   startTokenCleanupWorker();
   startRetentionWorker();
 
-  // Initial batches after 30s delay
-  setTimeout(async () => {
-    await triggerQualityBatch();
-    await triggerSummaryBatch();
+  // Initial batches after 30s delay. The .catch() prevents a batch failure
+  // from becoming an unhandled rejection inside the timer callback (#741).
+  setTimeout(() => {
+    (async () => {
+      await triggerQualityBatch();
+      await triggerSummaryBatch();
+    })().catch((err: unknown) => {
+      logger.error({ err }, 'Legacy initial batch trigger failed');
+    });
   }, 30_000);
 }
 
