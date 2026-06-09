@@ -102,7 +102,10 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
     const cacheKey = buildLlmCacheKey(resolvedModel, systemPrompt, improveContent, chatConfig.providerId);
     const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
-      sendCachedSSE(reply, cached.content);
+      // Echo back the markdown the model was given (#704) so the frontend can
+      // diff like-for-like (original markdown vs improved markdown) instead of
+      // comparing formatting-stripped bodyText against the markdown output.
+      sendCachedSSE(reply, cached.content, { originalMarkdown: markdown });
       return;
     }
 
@@ -117,11 +120,15 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
       improvementId = insertResult.rows[0]?.id;
     }
 
-    const improveExtras = webSources.length > 0 ? {
-      sources: webSources.map((s) => ({
+    // Always echo the markdown the model was given (#704) so the frontend can
+    // diff like-for-like (original markdown vs improved markdown). Web sources,
+    // when present, ride along in the same final SSE event.
+    const improveExtras: Record<string, unknown> = { originalMarkdown: markdown };
+    if (webSources.length > 0) {
+      improveExtras.sources = webSources.map((s) => ({
         pageTitle: s.title, spaceKey: 'Web', confluenceId: s.url, score: 1,
-      })),
-    } : undefined;
+      }));
+    }
 
     const improveMessages = [
       { role: 'system' as const, content: systemPrompt },

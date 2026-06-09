@@ -52,7 +52,7 @@ export function ImproveTypeSelector() {
  * Diff view shown after an improve stream completes.
  */
 export function ImproveDiffView() {
-  const { page, pageId, navigate, queryClient, isStreaming, showDiffView, setShowDiffView, improvedContent } = useAiContext();
+  const { page, pageId, navigate, queryClient, isStreaming, showDiffView, setShowDiffView, improvedContent, originalMarkdown } = useAiContext();
   const [isApplying, setIsApplying] = useState(false);
 
   const handleAccept = useCallback(async () => {
@@ -82,7 +82,11 @@ export function ImproveDiffView() {
 
   return (
     <DiffView
-      original={page.bodyText || page.bodyHtml}
+      // #704: diff like-for-like — the original markdown the model was fed
+      // (echoed by /llm/improve) vs the improved markdown it returned, so only
+      // genuine wording/structure edits show. Falls back to the page body only
+      // if the backend didn't supply the baseline (e.g. an aborted stream).
+      original={originalMarkdown || page.bodyText || page.bodyHtml}
       improved={improvedContent}
       onAccept={handleAccept}
       onReject={() => setShowDiffView(false)}
@@ -97,7 +101,7 @@ export function ImproveDiffView() {
 export function ImproveModeInput() {
   const {
     isStreaming, page, isPageLoading, model, pageId, includeSubPages, thinkingMode, runStream,
-    improvementType, setShowDiffView, setImprovedContent,
+    improvementType, setShowDiffView, setImprovedContent, setOriginalMarkdown,
   } = useAiContext();
   const [instruction, setInstruction] = useState('');
   const [searchWeb, setSearchWeb] = useState(false);
@@ -125,6 +129,7 @@ export function ImproveModeInput() {
 
     setShowDiffView(false);
     setImprovedContent('');
+    setOriginalMarkdown('');
 
     const body: Record<string, unknown> = {
       content: page.bodyHtml, type: improvementType, model, pageId: pageId ?? undefined, includeSubPages,
@@ -142,13 +147,18 @@ export function ImproveModeInput() {
       body,
       {
         userMessage: `Improve (${improvementType}): ${page.title}`,
-        onComplete: (accumulated) => {
+        onComplete: (accumulated, _sources, meta) => {
           setImprovedContent(accumulated);
+          // #704: store the markdown baseline echoed by the backend so the diff
+          // compares like-for-like markdown, not stripped bodyText.
+          if (meta?.originalMarkdown !== undefined) {
+            setOriginalMarkdown(meta.originalMarkdown);
+          }
           setShowDiffView(true);
         },
       },
     );
-  }, [page, model, improvementType, pageId, isStreaming, includeSubPages, thinkingMode, instruction, searchWeb, runStream, setShowDiffView, setImprovedContent]);
+  }, [page, model, improvementType, pageId, isStreaming, includeSubPages, thinkingMode, instruction, searchWeb, runStream, setShowDiffView, setImprovedContent, setOriginalMarkdown]);
 
   return (
     <div className="mt-3 flex flex-col gap-3 border-t border-border/40 pt-3">
