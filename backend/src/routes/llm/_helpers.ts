@@ -8,7 +8,7 @@ import {
   LANGUAGE_PRESERVATION_INSTRUCTION,
 } from '../../domains/llm/services/prompts.js';
 import { LlmCache, type CachedLlmResponse } from '../../domains/llm/services/llm-cache.js';
-import { getAiGuardrails, getAiOutputRules } from '../../core/services/ai-safety-service.js';
+import { getAiGuardrails, getAiOutputRules, SWISS_SPELLING_INSTRUCTION } from '../../core/services/ai-safety-service.js';
 import { sanitizeLlmOutput, type OutputSanitizeResult } from '../../core/utils/sanitize-llm-output.js';
 import { assembleSubPageContext, getMultiPagePromptSuffix } from '../../domains/confluence/services/subpage-context.js';
 import { htmlToMarkdown } from '../../core/services/content-converter.js';
@@ -86,6 +86,13 @@ export async function resolveSystemPrompt(userId: string, key: SystemPromptKey):
   const guardrails = await getAiGuardrails();
   if (guardrails.noFabricationEnabled && guardrails.noFabricationInstruction) {
     prompt += ` ${guardrails.noFabricationInstruction}`;
+  }
+
+  // Issue #705 — supplementary Swiss-spelling hint. The deterministic post-
+  // processor still enforces ß→ss; this just reduces churn before that pass.
+  const outputRules = await getAiOutputRules();
+  if (outputRules.swissSpelling) {
+    prompt += ` ${SWISS_SPELLING_INSTRUCTION}`;
   }
 
   return prompt;
@@ -243,7 +250,12 @@ export async function buildOutputPostProcessor(
   verifiedSources?: string[],
 ): Promise<((content: string) => OutputSanitizeResult) | undefined> {
   const rules = await getAiOutputRules();
-  if (!rules.stripReferences || rules.referenceAction === 'off') return undefined;
+
+  // Reference detection and Swiss spelling (#705) are independent output rules.
+  // Skip the post-processor only when BOTH are inactive — otherwise Swiss
+  // spelling would never run while reference detection is off.
+  const referenceActive = rules.stripReferences && rules.referenceAction !== 'off';
+  if (!referenceActive && !rules.swissSpelling) return undefined;
 
   return (content: string) =>
     sanitizeLlmOutput(content, {

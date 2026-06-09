@@ -278,6 +278,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
       aiGuardrailNoFabricationEnabled: guardrails.noFabricationEnabled,
       aiOutputRuleStripReferences: outputRules.stripReferences,
       aiOutputRuleReferenceAction: outputRules.referenceAction,
+      aiOutputRuleSwissSpelling: outputRules.swissSpelling,
       // Rate limits
       rateLimitGlobal: rateLimits.global.max,
       rateLimitAuth: rateLimits.auth.max,
@@ -438,7 +439,9 @@ export async function adminRoutes(fastify: FastifyInstance) {
     const hasAiGuardrailChanges =
       body.aiGuardrailNoFabrication !== undefined || body.aiGuardrailNoFabricationEnabled !== undefined;
     const hasAiOutputRuleChanges =
-      body.aiOutputRuleStripReferences !== undefined || body.aiOutputRuleReferenceAction !== undefined;
+      body.aiOutputRuleStripReferences !== undefined ||
+      body.aiOutputRuleReferenceAction !== undefined ||
+      body.aiOutputRuleSwissSpelling !== undefined;
 
     if (hasAiGuardrailChanges) {
       // Sanitize admin-supplied guardrail text to prevent prompt injection (critic fix #6)
@@ -461,6 +464,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
         {
           stripReferences: body.aiOutputRuleStripReferences,
           referenceAction: body.aiOutputRuleReferenceAction,
+          swissSpelling: body.aiOutputRuleSwissSpelling,
         },
         request.userId,
       );

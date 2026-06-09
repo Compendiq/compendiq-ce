@@ -9,6 +9,7 @@ interface AdminSettings {
   aiGuardrailNoFabricationEnabled?: boolean;
   aiOutputRuleStripReferences?: boolean;
   aiOutputRuleReferenceAction?: ReferenceAction;
+  aiOutputRuleSwissSpelling?: boolean;
   [key: string]: unknown;
 }
 
@@ -33,6 +34,7 @@ export function AiSafetyTab() {
   const [guardrailText, setGuardrailText] = useState(DEFAULT_GUARDRAIL_TEXT);
   const [stripReferences, setStripReferences] = useState(true);
   const [referenceAction, setReferenceAction] = useState<ReferenceAction>('flag');
+  const [swissSpelling, setSwissSpelling] = useState(false);
 
   // Initialize form from settings
   useEffect(() => {
@@ -41,6 +43,7 @@ export function AiSafetyTab() {
       setGuardrailText(settings.aiGuardrailNoFabrication ?? DEFAULT_GUARDRAIL_TEXT);
       setStripReferences(settings.aiOutputRuleStripReferences ?? true);
       setReferenceAction(settings.aiOutputRuleReferenceAction ?? 'flag');
+      setSwissSpelling(settings.aiOutputRuleSwissSpelling ?? false);
     }
   }, [settings]);
 
@@ -61,7 +64,8 @@ export function AiSafetyTab() {
     guardrailEnabled !== (settings?.aiGuardrailNoFabricationEnabled ?? true) ||
     guardrailText !== (settings?.aiGuardrailNoFabrication ?? DEFAULT_GUARDRAIL_TEXT) ||
     stripReferences !== (settings?.aiOutputRuleStripReferences ?? true) ||
-    referenceAction !== (settings?.aiOutputRuleReferenceAction ?? 'flag');
+    referenceAction !== (settings?.aiOutputRuleReferenceAction ?? 'flag') ||
+    swissSpelling !== (settings?.aiOutputRuleSwissSpelling ?? false);
 
   function handleSave() {
     mutation.mutate({
@@ -69,6 +73,7 @@ export function AiSafetyTab() {
       aiGuardrailNoFabrication: guardrailText,
       aiOutputRuleStripReferences: stripReferences,
       aiOutputRuleReferenceAction: referenceAction,
+      aiOutputRuleSwissSpelling: swissSpelling,
     });
   }
 
@@ -163,6 +168,26 @@ export function AiSafetyTab() {
             ))}
           </div>
         )}
+
+        {/* Swiss spelling — never use ß (#705) */}
+        <label
+          className="mt-6 flex items-start gap-2 border-t border-border/40 pt-4"
+          data-testid="ai-output-rule-swiss-spelling-toggle"
+        >
+          <input
+            type="checkbox"
+            checked={swissSpelling}
+            onChange={(e) => setSwissSpelling(e.target.checked)}
+            className="mt-1 rounded border-border/40"
+          />
+          <div>
+            <span className="text-sm font-medium">Swiss spelling — never use ß</span>
+            <p className="text-xs text-muted-foreground">
+              Replaces every ß with ss (and capital ẞ with SS) in AI Improve / Summarize / Generate
+              output. Switzerland writes ss everywhere. Off by default.
+            </p>
+          </div>
+        </label>
       </div>
 
       {/* Save button */}

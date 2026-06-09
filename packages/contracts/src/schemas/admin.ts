@@ -33,6 +33,13 @@ export const AdminSettingsSchema = z.object({
   aiGuardrailNoFabricationEnabled: z.boolean().optional(),
   aiOutputRuleStripReferences: z.boolean().optional(),
   aiOutputRuleReferenceAction: ReferenceActionSchema.optional(),
+  /**
+   * Issue #705 — Swiss spelling. When true, the output post-processor replaces
+   * every `ß` with `ss` and capital `ẞ` (U+1E9E) with `SS` on the final AI
+   * output (Improve / Summarize / Generate). Switzerland abolished the eszett,
+   * so for Swiss teams every `ß` the model emits is wrong. Default off.
+   */
+  aiOutputRuleSwissSpelling: z.boolean().optional(),
   // Rate limits (requests per minute)
   rateLimitGlobal: z.number().int().min(10).max(10000).optional(),
   rateLimitAuth: z.number().int().min(3).max(1000).optional(),
@@ -92,6 +99,8 @@ export const UpdateAdminSettingsSchema = z.object({
   aiGuardrailNoFabricationEnabled: z.boolean().optional(),
   aiOutputRuleStripReferences: z.boolean().optional(),
   aiOutputRuleReferenceAction: ReferenceActionSchema.optional(),
+  /** Issue #705 — Swiss spelling (ß→ss). Optional on update; omitted → unchanged. */
+  aiOutputRuleSwissSpelling: z.boolean().optional(),
   // Rate limits (requests per minute)
   rateLimitGlobal: z.number().int().min(10).max(10000).optional(),
   rateLimitAuth: z.number().int().min(3).max(1000).optional(),
