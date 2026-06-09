@@ -241,18 +241,24 @@ async function runPendingSyncVersionsRetention(): Promise<number> {
     // recompute targets only the rows we actually changed (no full-table
     // scan of `pages`). The CTE delete + RETURNING keeps both halves in
     // one round-trip.
+    //
+    // #744: the outer SELECT must NOT use DISTINCT — for a CTE query,
+    // `rowCount` reflects the outer SELECT's command tag, so a DISTINCT
+    // would report the number of distinct PAGES as the deleted-row count
+    // (wrong compliance attestation). Return every deleted row and dedupe
+    // page ids in JS instead.
     const result = await pool.query<{ page_id: number }>(
       `WITH deleted AS (
          DELETE FROM pending_sync_versions
           WHERE detected_at < NOW() - INTERVAL '1 day' * $1
           RETURNING page_id
        )
-       SELECT DISTINCT page_id FROM deleted`,
+       SELECT page_id FROM deleted`,
       [days],
     );
 
-    deleted = result.rowCount ?? 0;
-    const affectedPageIds = result.rows.map((r) => r.page_id);
+    deleted = result.rows.length;
+    const affectedPageIds = [...new Set(result.rows.map((r) => r.page_id))];
 
     // Recompute `pages.conflict_pending` for any page whose queue was
     // just drained. We can't unconditionally set FALSE — a page may have
