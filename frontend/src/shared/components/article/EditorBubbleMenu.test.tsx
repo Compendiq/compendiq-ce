@@ -193,3 +193,48 @@ describe('BubbleMenuContent — inline AI improve replace-range', () => {
     expect(body).not.toHaveProperty('pageId');
   });
 });
+
+describe('BubbleMenuContent — try-again replays the chosen action', () => {
+  beforeEach(() => streamSSE.mockReset());
+
+  it('replays the user-selected action, not the default "Improve writing"', async () => {
+    streamSSE.mockReturnValue(gen([{ content: 'Short.' }]));
+    const editor = await mountEditor('<p>Hello world</p>');
+    act(() => { editor.commands.setTextSelection({ from: 1, to: 12 }); });
+
+    fireEvent.click(screen.getByTestId('bubble-ai-trigger'));
+    // Run a NON-default action — "Make shorter" carries a distinctive instruction.
+    fireEvent.click(await screen.findByText('Make shorter'));
+    await waitFor(() => expect(screen.getByTestId('bubble-ai-preview')).toHaveTextContent('Short.'));
+
+    const [, firstBody] = streamSSE.mock.calls[0]!;
+    expect((firstBody as { instruction: string }).instruction).toContain('more concise');
+
+    // Try again must replay the SAME action's instruction (not the default).
+    streamSSE.mockReturnValue(gen([{ content: 'Shorter.' }]));
+    fireEvent.click(screen.getByTitle('Try again'));
+
+    await waitFor(() => expect(streamSSE).toHaveBeenCalledTimes(2));
+    const [, secondBody] = streamSSE.mock.calls[1]!;
+    expect((secondBody as { instruction: string }).instruction).toContain('more concise');
+  });
+});
+
+describe('BubbleMenuContent — empty result feedback', () => {
+  beforeEach(() => streamSSE.mockReset());
+
+  it('shows a "No changes returned" state instead of silently reverting', async () => {
+    // Stream completes but yields nothing.
+    streamSSE.mockReturnValue(gen([]));
+    const editor = await mountEditor('<p>Hello world</p>');
+    act(() => { editor.commands.setTextSelection({ from: 1, to: 6 }); });
+
+    fireEvent.click(screen.getByTestId('bubble-ai-trigger'));
+    fireEvent.click(await screen.findByText('Improve writing'));
+
+    const empty = await screen.findByTestId('bubble-ai-empty');
+    expect(empty).toHaveTextContent(/No changes returned/i);
+    // The quick-action menu must NOT be shown in the empty state.
+    expect(screen.queryByText('Fix spelling & grammar')).not.toBeInTheDocument();
+  });
+});

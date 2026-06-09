@@ -129,6 +129,9 @@ export function BubbleMenuContent({
   // the original selection even after focus moves or the selection collapses.
   const rangeRef = useRef<{ from: number; to: number } | null>(null);
   const [freeForm, setFreeForm] = useState('');
+  // The action + free-form text of the most recent run, captured so "Try again"
+  // replays the user's actual choice rather than a hardcoded default.
+  const lastRunRef = useRef<{ action: QuickAction; freeForm: string } | null>(null);
   const stream = useImproveStream();
 
   // Subscribe to active marks so the formatting buttons re-render their
@@ -164,6 +167,7 @@ export function BubbleMenuContent({
     stream.reset();
     setAi(false);
     rangeRef.current = null;
+    lastRunRef.current = null;
   }, [stream, setAi]);
 
   // Cmd/Ctrl+J opens the AI popover on the current selection (#708 optional
@@ -181,15 +185,24 @@ export function BubbleMenuContent({
   }, [editor, openAi]);
 
   const runAction = useCallback(
-    (action: QuickAction) => {
+    (action: QuickAction, freeFormText: string) => {
       const range = rangeRef.current;
       if (!range) return;
       const text = editor.state.doc.textBetween(range.from, range.to, '\n');
       if (!text.trim()) return;
-      void stream.run(text, action.type, buildInstruction(action, freeForm));
+      lastRunRef.current = { action, freeForm: freeFormText };
+      void stream.run(text, action.type, buildInstruction(action, freeFormText));
     },
-    [editor, stream, freeForm],
+    [editor, stream],
   );
+
+  // "Try again" replays the last action with its captured free-form text,
+  // falling back to the default quick action if nothing has run yet.
+  const retry = useCallback(() => {
+    const last = lastRunRef.current;
+    if (last) runAction(last.action, last.freeForm);
+    else runAction(QUICK_ACTIONS[0]!, freeForm);
+  }, [runAction, freeForm]);
 
   const replaceSelection = useCallback(() => {
     const range = rangeRef.current;
@@ -203,13 +216,22 @@ export function BubbleMenuContent({
     const range = rangeRef.current;
     if (!range || !stream.output) return;
     const { html } = buildImproveHtml(stream.output);
-    // Insert after the selection end so the original passage is preserved.
+    // Insert block HTML at the end of the selection so the original passage is
+    // preserved. Caveat: when the selection ends mid-block (e.g. mid-sentence),
+    // ProseMirror splits the containing block to place the new block-level
+    // node, so the remainder of the paragraph moves below the insertion. This
+    // matches Notion's "Insert below" (it always produces a new block) and is
+    // the expected outcome for a block-level insert; we keep it as-is rather
+    // than constraining selections to block boundaries.
     editor.chain().focus().insertContentAt(range.to, html).run();
     closeAi();
   }, [editor, stream.output, closeAi]);
 
   const isStreaming = stream.status === 'streaming';
   const hasResult = stream.output.length > 0;
+  // The stream finished but produced nothing — surface explicit feedback rather
+  // than silently dropping back to the quick-action menu.
+  const emptyResult = stream.status === 'done' && !hasResult;
   const { html: previewHtml } = buildImproveHtml(stream.output);
 
   return (
@@ -298,7 +320,7 @@ export function BubbleMenuContent({
               'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:zoom-in-95',
             )}
           >
-            {!hasResult && !isStreaming && stream.status !== 'error' && (
+            {!hasResult && !isStreaming && !emptyResult && stream.status !== 'error' && (
               <div className="flex flex-col gap-2">
                 <input
                   type="text"
@@ -308,7 +330,7 @@ export function BubbleMenuContent({
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && freeForm.trim()) {
                       e.preventDefault();
-                      runAction(QUICK_ACTIONS[0]!);
+                      runAction(QUICK_ACTIONS[0]!, freeForm);
                     }
                   }}
                   placeholder="Ask AI to edit the selection…"
@@ -320,7 +342,7 @@ export function BubbleMenuContent({
                     <button
                       key={action.key}
                       type="button"
-                      onClick={() => runAction(action)}
+                      onClick={() => runAction(action, freeForm)}
                       className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-foreground hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                     >
                       <Sparkles size={14} className="text-primary" />
@@ -367,7 +389,7 @@ export function BubbleMenuContent({
                   </button>
                   <button
                     type="button"
-                    onClick={() => runAction(QUICK_ACTIONS[0]!)}
+                    onClick={retry}
                     disabled={isStreaming}
                     title="Try again"
                     className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-foreground/5 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
@@ -393,13 +415,39 @@ export function BubbleMenuContent({
               </div>
             )}
 
+            {emptyResult && (
+              <div className="flex flex-col gap-2" data-testid="bubble-ai-empty">
+                <p className="text-sm text-muted-foreground" role="status">
+                  No changes returned. Try again or adjust your request.
+                </p>
+                <div className="flex gap-1">
+                  <button
+                    type="button"
+                    onClick={retry}
+                    title="Try again"
+                    className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                  >
+                    <RotateCcw size={13} /> Try again
+                  </button>
+                  <button
+                    type="button"
+                    onClick={closeAi}
+                    title="Discard"
+                    className="ml-auto flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                  >
+                    <X size={13} /> Discard
+                  </button>
+                </div>
+              </div>
+            )}
+
             {stream.status === 'error' && (
               <div className="flex flex-col gap-2">
                 <p className="text-sm text-destructive" role="alert">{stream.error}</p>
                 <div className="flex gap-1">
                   <button
                     type="button"
-                    onClick={() => runAction(QUICK_ACTIONS[0]!)}
+                    onClick={retry}
                     className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                   >
                     <RotateCcw size={13} /> Try again
