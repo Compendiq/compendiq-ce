@@ -9,6 +9,7 @@ import {
 import type { LicenseInfoResponse } from '@compendiq/contracts';
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
+import { checkRedirectUriOrigin } from './oidc-redirect-uri';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -182,6 +183,14 @@ function ProviderTab({ disabled }: { disabled?: boolean }) {
     );
   }
 
+  // Warn when the Redirect URI origin diverges from the origin the admin loaded
+  // the app from. The backend builds the post-login SPA redirect (hop 3) from
+  // its FRONTEND_URL env var, not from this Redirect URI — so a mismatch here
+  // is a strong signal that FRONTEND_URL is still the localhost default and
+  // login will dead-end behind a reverse proxy (issue #710).
+  const appOrigin = window.location.origin;
+  const redirectCheck = checkRedirectUriOrigin(redirectUri, appOrigin);
+
   return (
     <div className="space-y-6" data-testid="oidc-provider-form">
       {/* Status indicator */}
@@ -338,6 +347,49 @@ function ProviderTab({ disabled }: { disabled?: boolean }) {
           <p className="mt-1 text-xs text-muted-foreground">
             Must match the redirect URI registered with your identity provider.
           </p>
+          {redirectCheck.mismatch && (
+            <m.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              className="mt-2 flex items-start gap-2 rounded-md bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400"
+              data-testid="oidc-redirect-origin-warning"
+            >
+              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+              <div className="space-y-1">
+                <div className="font-medium">
+                  Redirect URI origin doesn&apos;t match this app&apos;s origin
+                </div>
+                <div className="text-muted-foreground">
+                  The Redirect URI uses{' '}
+                  <code className="rounded bg-foreground/10 px-1 py-0.5">
+                    {redirectCheck.redirectOrigin}
+                  </code>
+                  , but you loaded this app from{' '}
+                  <code className="rounded bg-foreground/10 px-1 py-0.5">{appOrigin}</code>.
+                  After login, the backend redirects the browser to the SPA using its{' '}
+                  <code className="rounded bg-foreground/10 px-1 py-0.5">FRONTEND_URL</code>{' '}
+                  env var — <strong>not</strong> this Redirect URI. If they diverge, login
+                  dead-ends on an unreachable host.
+                </div>
+                <div className="text-muted-foreground">
+                  Set the backend{' '}
+                  <code className="rounded bg-foreground/10 px-1 py-0.5">FRONTEND_URL</code>{' '}
+                  to your public origin:{' '}
+                  <code className="rounded bg-foreground/10 px-1 py-0.5">
+                    FRONTEND_URL={redirectCheck.redirectOrigin}
+                  </code>{' '}
+                  and restart the backend.{' '}
+                  <code className="rounded bg-foreground/10 px-1 py-0.5">FRONTEND_URL</code>{' '}
+                  doubles as the comma-separated CORS allowlist — if you already set
+                  multiple origins, append this one (
+                  <code className="rounded bg-foreground/10 px-1 py-0.5">
+                    …,{redirectCheck.redirectOrigin}
+                  </code>
+                  ) rather than overwriting the list.
+                </div>
+              </div>
+            </m.div>
+          )}
         </div>
 
         <div>
