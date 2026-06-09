@@ -182,3 +182,87 @@ describe('sanitizeLlmOutput', () => {
     expect(result.strippedSections).toEqual(['References']);
   });
 });
+
+// ── Swiss spelling (#705) ────────────────────────────────────────────────────
+
+describe('sanitizeLlmOutput — Swiss spelling (#705)', () => {
+  // Swiss spelling combined with reference detection disabled, so only the
+  // ß→ss transform is exercised in isolation.
+  const RULES_SWISS_ONLY: OutputRules = {
+    stripReferences: false,
+    referenceAction: 'flag',
+    swissSpelling: true,
+  };
+  const RULES_NO_SWISS: OutputRules = {
+    stripReferences: false,
+    referenceAction: 'flag',
+    swissSpelling: false,
+  };
+
+  it('replaces lowercase ß with ss', () => {
+    const result = sanitizeLlmOutput('Die Straße ist groß.', RULES_SWISS_ONLY);
+    expect(result.content).toBe('Die Strasse ist gross.');
+    expect(result.wasModified).toBe(true);
+  });
+
+  it('replaces capital ẞ (U+1E9E) with SS', () => {
+    const result = sanitizeLlmOutput('STRAẞE', RULES_SWISS_ONLY);
+    expect(result.content).toBe('STRASSE');
+    expect(result.wasModified).toBe(true);
+  });
+
+  it('replaces every occurrence, not just the first', () => {
+    const result = sanitizeLlmOutput('Maß, Fuß, Spaß', RULES_SWISS_ONLY);
+    expect(result.content).toBe('Mass, Fuss, Spass');
+    expect(result.content).not.toContain('ß');
+  });
+
+  it('leaves output with no eszett unchanged and unmodified', () => {
+    const content = 'Plain ASCII content with no special characters.';
+    const result = sanitizeLlmOutput(content, RULES_SWISS_ONLY);
+    expect(result.content).toBe(content);
+    expect(result.wasModified).toBe(false);
+  });
+
+  it('does not touch ß when swissSpelling is off (default behaviour)', () => {
+    const content = 'Die Straße ist groß.';
+    const result = sanitizeLlmOutput(content, RULES_NO_SWISS);
+    expect(result.content).toBe(content);
+    expect(result.wasModified).toBe(false);
+  });
+
+  it('also normalizes ß inside fenced code blocks (blanket replace)', () => {
+    const content = 'Run:\n```\nconst gruß = "groß";\n```';
+    const result = sanitizeLlmOutput(content, RULES_SWISS_ONLY);
+    expect(result.content).toBe('Run:\n```\nconst gruss = "gross";\n```');
+    expect(result.content).not.toContain('ß');
+  });
+
+  it('applies Swiss spelling AND strips references in the same pass', () => {
+    const content = '# Artikel\nGroße Straße.\n\n## References\n- https://fake.com';
+    const rules: OutputRules = { stripReferences: true, referenceAction: 'strip', swissSpelling: true };
+    const result = sanitizeLlmOutput(content, rules);
+    expect(result.wasModified).toBe(true);
+    expect(result.strippedSections).toEqual(['References']);
+    expect(result.content).toBe('# Artikel\nGrosse Strasse.');
+    expect(result.content).not.toContain('ß');
+  });
+
+  it('applies Swiss spelling to flagged content including the kept reference section', () => {
+    const content = '# Artikel\nGroße Straße.\n\n## References\n- https://fake.com';
+    const rules: OutputRules = { stripReferences: true, referenceAction: 'flag', swissSpelling: true };
+    const result = sanitizeLlmOutput(content, rules);
+    expect(result.wasModified).toBe(true);
+    expect(result.content).toContain('Grosse Strasse.');
+    expect(result.content).toContain('## References');
+    expect(result.content).not.toContain('ß');
+  });
+
+  it('reports wasModified=true even when only Swiss spelling changes content', () => {
+    // No reference section present, so the reference pass is a no-op; the
+    // modification flag must still reflect the ß→ss substitution.
+    const result = sanitizeLlmOutput('groß', RULES_SWISS_ONLY);
+    expect(result.wasModified).toBe(true);
+    expect(result.content).toBe('gross');
+  });
+});
