@@ -1397,6 +1397,31 @@ async function purgeDeletedPages(spaceKey: string): Promise<void> {
 }
 
 /**
+ * #721: Remove a synced Confluence space and all of its local data. Read-only
+ * against Confluence — only local rows/files are deleted. Deleting the `pages`
+ * rows cascades to `page_embeddings` and `page_versions` (page_id FK, migration
+ * 030). Attachment files/caches are cleaned per page first.
+ */
+export async function unsyncSpace(spaceKey: string): Promise<{ pagesDeleted: number }> {
+  const pages = await query<{ id: number }>(
+    'SELECT id FROM pages WHERE space_key = $1',
+    [spaceKey],
+  );
+  for (const p of pages.rows) {
+    try {
+      await cleanPageAttachments('', String(p.id));
+    } catch (err) {
+      logger.warn({ err, pageId: p.id, spaceKey }, 'unsyncSpace: attachment cleanup failed (continuing)');
+    }
+  }
+  const del = await query('DELETE FROM pages WHERE space_key = $1', [spaceKey]);
+  await query('DELETE FROM space_role_assignments WHERE space_key = $1', [spaceKey]);
+  await query('DELETE FROM spaces WHERE space_key = $1', [spaceKey]);
+  logger.info({ spaceKey, pagesDeleted: del.rowCount ?? 0 }, 'unsyncSpace: purged synced space');
+  return { pagesDeleted: del.rowCount ?? 0 };
+}
+
+/**
  * Get sync status for a user.
  *
  * Reads from Redis first, then falls back to the in-memory cache, and finally
