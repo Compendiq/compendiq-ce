@@ -93,6 +93,35 @@ Markdown is regenerated on demand because (a) LLM prompt sizes vary by
 model so partial/windowed serialisation is common, and (b) the conversion
 is cheap compared to the LLM call itself.
 
+## Client-side Markdown → HTML (inline selection improve, #708)
+
+`markdownToHtml()` normally runs on the **backend** when an `/ai`-page
+improvement is applied. The editor's **inline selection improve** (the
+Notion-style bubble menu) introduces a second, **client-side** path:
+`/llm/improve` streams Markdown for the selected fragment, and the editor
+converts it to HTML in the browser before `insertContentAt` replaces the
+captured range.
+
+- Conversion: `marked` (already a frontend dep) → DOMPurify, in
+  `frontend/src/shared/components/article/improve-markdown.ts`. A lone
+  wrapping `<p>` is unwrapped for in-place replacement so a mid-sentence
+  selection doesn't gain a block break; "Insert below" keeps the block HTML.
+- The request sends **only** the selected text as `content`, with `pageId` /
+  `includeSubPages` omitted — so the backend skips whole-page/sub-page
+  context assembly and writes **no** `llm_improvements` row (selection edits
+  are ephemeral previews, accepted via the normal editor draft/save flow).
+
+```mermaid
+flowchart LR
+    SEL["Editor selection<br/>(plain text)"]
+    IMP[("/llm/improve<br/>SSE → Markdown")]
+    MH["marked + DOMPurify<br/>(client)"]
+    ED["Editor (TipTap v3)<br/>insertContentAt"]
+    SEL -- "fragment only" --> IMP
+    IMP -- "Markdown stream" --> MH
+    MH -- "sanitized HTML" --> ED
+```
+
 ## Attachments
 
 Images, drawio diagrams, and PDFs are downloaded during sync to
