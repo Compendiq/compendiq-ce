@@ -85,6 +85,9 @@ erDiagram
         text body_html
         text body_text
         timestamptz synced_at
+        timestamptz edited_at "nullable; real Confluence edit time (migration 077)"
+        text author "nullable; Confluence author display name (migration 077)"
+        text message "nullable; Confluence version comment (migration 077)"
     }
 
     page_embeddings {

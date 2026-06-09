@@ -151,6 +151,25 @@ and the bulk path): if Confluence answers 404 the remote page is already gone, s
 local cleanup proceeds and the delete succeeds instead of failing with
 "Resource not found". Any non-404 error still surfaces (no silent data loss).
 
+## Version history backfill (#722/#724)
+
+Confluence version metadata (edit time, author, commit message) is not fetched
+during the regular sync — only the latest body and version number are written.
+Full version list import is **lazy-on-open**: when a user opens the Version History
+dialog, `GET /api/pages/:id/versions` calls `backfillVersionHistory` which hits
+`GET /rest/api/content/{id}/version?expand=by,message` and upserts each row into
+`page_versions` via `upsertVersionMetadata` (idempotent ON CONFLICT DO UPDATE with
+COALESCE). The historical body (`body_html`) for each old version is fetched even
+more lazily — only when a user previews or compares that specific version
+(`GET /api/pages/:id/versions/:version` triggers `getHistoricalBody` when
+`body_html IS NULL`). Both calls are best-effort: failures are logged and swallowed
+so the dialog still opens.
+
+The `edited_at` column holds the real Confluence edit timestamp; the existing
+`synced_at` column records when Compendiq last ingested the row. The frontend
+shows `edited_at` directly when present, and falls back to "Synced <syncedAt>"
+to make clear the displayed time is a sync time, not the author's edit time (#724).
+
 ## Content pipeline hand-off
 
 The `confluenceToHtml()` call produces `body_html` and `body_text`. The
