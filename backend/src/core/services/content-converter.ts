@@ -905,12 +905,13 @@ function pathBasename(urlString: string): string {
 export interface ProtectedMedia { token: string; html: string; }
 
 const MEDIA_TOKEN_PREFIX = 'CQ_MEDIA_PLACEHOLDER_';
-// #765: legacy section/column wrappers are NO LONGER opaque-protected here.
-// #723 froze them whole (token swap), which preserved them but made the prose
-// inside uneditable by the LLM. They now round-trip via layout boundary
-// tokens in htmlToMarkdown/markdownToHtml (see LAYOUT_TOKEN_* below) so the
-// inner content stays improvable. The labels macro placeholder IS opaque —
-// it is atomic (no prose inside) so the token pattern fits it exactly.
+// #765: legacy section/column wrappers are NO LONGER opaque-protected here
+// (with one exception — see below). #723 froze them whole (token swap), which
+// preserved them but made the prose inside uneditable by the LLM. They now
+// round-trip via layout boundary tokens in htmlToMarkdown/markdownToHtml (see
+// LAYOUT_TOKEN_* below) so the inner content stays improvable. The labels
+// macro placeholder IS opaque — it is atomic (no prose inside) so the token
+// pattern fits it exactly.
 const MEDIA_SELECTOR = [
   'img',
   'div.confluence-drawio',
@@ -918,6 +919,26 @@ const MEDIA_SELECTOR = [
   'div.mermaid',
   'div.confluence-labels-macro',
 ].join(',');
+
+// #765 review follow-up: legacy section/column wrappers nested inside
+// markdown-constrained containers (table cells, list items, blockquotes,
+// panels — which turndown renders as blockquotes) CANNOT use boundary tokens.
+// markdownToHtml's token normalization forces every token onto its own
+// paragraph, which rips it out of the containing construct (e.g. splits a GFM
+// table row, emptying the table and leaking cells as literal `| … |` text).
+// These nested wrappers keep the pre-#765 opaque freeze; boundary tokens are
+// used only for non-nested legacy sections/columns.
+const LEGACY_WRAPPER_SELECTOR = 'div.confluence-section, div.confluence-column';
+const CONSTRAINED_ANCESTOR_SELECTOR =
+  'td, th, li, blockquote, div.panel-info, div.panel-warning, div.panel-note, div.panel-tip';
+
+function isLegacyWrapper(el: Element): boolean {
+  return el.classList.contains('confluence-section') || el.classList.contains('confluence-column');
+}
+
+function isFrozenLegacyWrapper(el: Element): boolean {
+  return isLegacyWrapper(el) && el.parentElement?.closest(CONSTRAINED_ANCESTOR_SELECTOR) != null;
+}
 
 /**
  * #723: Replace rich/media nodes with opaque text tokens before the lossy
@@ -930,9 +951,22 @@ export function protectMedia(html: string): { html: string; media: ProtectedMedi
   const doc = dom.window.document;
   const media: ProtectedMedia[] = [];
   // Outermost-first: a div.confluence-drawio contains an <img>; protect the
-  // wrapper and skip its descendants.
-  const nodes = Array.from(doc.body.querySelectorAll(MEDIA_SELECTOR))
-    .filter((n) => !n.parentElement?.closest('div.confluence-drawio, div.confluence-mermaid, div.mermaid'));
+  // wrapper and skip its descendants. Same for frozen legacy section/column
+  // wrappers (#765 review), which may contain media or further nested columns.
+  const nodes = Array.from(doc.body.querySelectorAll(`${MEDIA_SELECTOR},${LEGACY_WRAPPER_SELECTOR}`))
+    .filter((n) => {
+      // Legacy section/column wrappers freeze ONLY when nested inside a
+      // markdown-constrained container; elsewhere they use boundary tokens.
+      if (isLegacyWrapper(n) && !isFrozenLegacyWrapper(n)) return false;
+      if (n.parentElement?.closest('div.confluence-drawio, div.confluence-mermaid, div.mermaid')) return false;
+      // Skip descendants of a frozen wrapper — it is protected whole. If the
+      // nearest wrapper ancestor is not frozen, no farther one can be either
+      // (frozenness propagates downward: a frozen ancestor's constrained
+      // container is an ancestor of every nested wrapper too).
+      const wrapperAncestor = n.parentElement?.closest(LEGACY_WRAPPER_SELECTOR);
+      if (wrapperAncestor && isFrozenLegacyWrapper(wrapperAncestor)) return false;
+      return true;
+    });
   for (const node of nodes) {
     const token = `${MEDIA_TOKEN_PREFIX}${media.length}`;
     media.push({ token, html: (node as Element).outerHTML });
@@ -999,10 +1033,26 @@ export function restoreMedia(html: string, media: ProtectedMedia[]): string {
   });
 }
 
+export interface HtmlToMarkdownOptions {
+  /**
+   * #765: emit [[[LAYOUT…]]] / [[[SECTION…]]] / [[[COLUMN…]]] boundary tokens
+   * around layout containers so markdownToHtml() can rebuild them after the
+   * AI-Improve round-trip. ONLY the Improve route's main-page conversion sets
+   * this — every other flow (quality scoring, auto-tagging, diagram context,
+   * version-compare summaries, sub-page context, imports) keeps the default
+   * flattened output so raw tokens never leak into prompts or user-visible
+   * text. Sub-page context in particular must stay token-free: truncated
+   * sub-page token sequences can be echoed by the model into the parent
+   * page's output and build layout that never existed on the parent.
+   */
+  layoutTokens?: boolean;
+}
+
 /**
  * Converts HTML to Markdown (for LLM consumption).
  */
-export function htmlToMarkdown(html: string): string {
+export function htmlToMarkdown(html: string, options?: HtmlToMarkdownOptions): string {
+  const layoutTokens = options?.layoutTokens === true;
   const turndownService = new TurndownService({
     headingStyle: 'atx',
     codeBlockStyle: 'fenced',
@@ -1028,62 +1078,83 @@ export function htmlToMarkdown(html: string): string {
     },
   });
 
-  // #765: layout containers — emit boundary tokens as standalone lines so the
-  // wrapper structure survives the markdown round-trip while the prose inside
-  // stays editable by the LLM. markdownToHtml() rebuilds the divs from the
-  // tokens (with a drop-guard if the LLM mangled them).
-  turndownService.addRule('confluenceLayout', {
-    filter: (node) =>
-      node.nodeName === 'DIV' && node.classList.contains('confluence-layout'),
-    replacement: (content) => `\n\n[[[LAYOUT]]]\n\n${content.trim()}\n\n[[[/LAYOUT]]]\n\n`,
-  });
+  if (layoutTokens) {
+    // #765: layout containers — emit boundary tokens as standalone lines so the
+    // wrapper structure survives the markdown round-trip while the prose inside
+    // stays editable by the LLM. markdownToHtml() rebuilds the divs from the
+    // tokens (with a drop-guard if the LLM mangled them). Opt-in: ONLY the
+    // AI-Improve main-page conversion sets `layoutTokens` (see
+    // HtmlToMarkdownOptions) — everywhere else the rules below flatten instead.
+    turndownService.addRule('confluenceLayout', {
+      filter: (node) =>
+        node.nodeName === 'DIV' && node.classList.contains('confluence-layout'),
+      replacement: (content) => `\n\n[[[LAYOUT]]]\n\n${content.trim()}\n\n[[[/LAYOUT]]]\n\n`,
+    });
 
-  turndownService.addRule('confluenceLayoutSection', {
-    filter: (node) =>
-      node.nodeName === 'DIV' && node.classList.contains('confluence-layout-section'),
-    replacement: (content, node) => {
-      const raw = (node as HTMLElement).getAttribute('data-layout-type') ?? 'single';
-      // Confluence layout types are lowercase identifiers (single, two_equal,
-      // three_with_sidebars, …) — anything else would break the token line.
-      const layoutType = /^[a-z_]+$/.test(raw) ? raw : 'single';
-      return `\n\n[[[LAYOUT-SECTION ${layoutType}]]]\n\n${content.trim()}\n\n[[[/LAYOUT-SECTION]]]\n\n`;
-    },
-  });
+    turndownService.addRule('confluenceLayoutSection', {
+      filter: (node) =>
+        node.nodeName === 'DIV' && node.classList.contains('confluence-layout-section'),
+      replacement: (content, node) => {
+        const raw = (node as HTMLElement).getAttribute('data-layout-type') ?? 'single';
+        // Confluence layout types are lowercase identifiers (single, two_equal,
+        // three_with_sidebars, …) — anything else would break the token line.
+        const layoutType = /^[a-z_]+$/.test(raw) ? raw : 'single';
+        return `\n\n[[[LAYOUT-SECTION ${layoutType}]]]\n\n${content.trim()}\n\n[[[/LAYOUT-SECTION]]]\n\n`;
+      },
+    });
 
-  turndownService.addRule('confluenceLayoutCell', {
-    filter: (node) =>
-      node.nodeName === 'DIV' && node.classList.contains('confluence-layout-cell'),
-    replacement: (content) => `\n\n[[[LAYOUT-CELL]]]\n\n${content.trim()}\n\n[[[/LAYOUT-CELL]]]\n\n`,
-  });
+    turndownService.addRule('confluenceLayoutCell', {
+      filter: (node) =>
+        node.nodeName === 'DIV' && node.classList.contains('confluence-layout-cell'),
+      replacement: (content) => `\n\n[[[LAYOUT-CELL]]]\n\n${content.trim()}\n\n[[[/LAYOUT-CELL]]]\n\n`,
+    });
 
-  // #765: legacy section/column containers — same boundary-token treatment
-  // (previously these dropped the wrapper and emitted only trimmed content).
-  turndownService.addRule('confluenceSection', {
-    filter: (node) =>
-      node.nodeName === 'DIV' && node.classList.contains('confluence-section'),
-    replacement: (content, node) => {
-      const border = (node as HTMLElement).getAttribute('data-border');
-      const attrs = border === 'true' || border === 'false' ? ` border=${border}` : '';
-      return `\n\n[[[SECTION${attrs}]]]\n\n${content.trim()}\n\n[[[/SECTION]]]\n\n`;
-    },
-  });
+    // #765: legacy section/column containers — same boundary-token treatment.
+    // (When nested inside a constrained container these never reach turndown:
+    // protectMedia froze them opaquely first.)
+    turndownService.addRule('confluenceSection', {
+      filter: (node) =>
+        node.nodeName === 'DIV' && node.classList.contains('confluence-section'),
+      replacement: (content, node) => {
+        const border = (node as HTMLElement).getAttribute('data-border');
+        const attrs = border === 'true' || border === 'false' ? ` border=${border}` : '';
+        return `\n\n[[[SECTION${attrs}]]]\n\n${content.trim()}\n\n[[[/SECTION]]]\n\n`;
+      },
+    });
 
-  turndownService.addRule('confluenceColumn', {
-    filter: (node) =>
-      node.nodeName === 'DIV' && node.classList.contains('confluence-column'),
-    replacement: (content, node) => {
-      const el = node as HTMLElement;
-      // Prefer data-cell-width; fall back to the inline flex style (mirrors
-      // htmlToConfluence). Only token-safe width values are carried.
-      let width = el.getAttribute('data-cell-width');
-      if (!width) {
-        const m = (el.getAttribute('style') ?? '').match(/flex:\s*0\s+0\s+(\S+)/);
-        if (m) width = m[1] ?? null;
-      }
-      const attrs = width && /^[\d.]+(%|px|em|rem)?$/.test(width) ? ` width=${width}` : '';
-      return `\n\n[[[COLUMN${attrs}]]]\n\n${content.trim()}\n\n[[[/COLUMN]]]\n\n`;
-    },
-  });
+    turndownService.addRule('confluenceColumn', {
+      filter: (node) =>
+        node.nodeName === 'DIV' && node.classList.contains('confluence-column'),
+      replacement: (content, node) => {
+        const el = node as HTMLElement;
+        // Prefer data-cell-width; fall back to the inline flex style (mirrors
+        // htmlToConfluence). Only token-safe width values are carried.
+        let width = el.getAttribute('data-cell-width');
+        if (!width) {
+          const m = (el.getAttribute('style') ?? '').match(/flex:\s*0\s+0\s+(\S+)/);
+          if (m) width = m[1] ?? null;
+        }
+        const attrs = width && /^[\d.]+(%|px|em|rem)?$/.test(width) ? ` width=${width}` : '';
+        return `\n\n[[[COLUMN${attrs}]]]\n\n${content.trim()}\n\n[[[/COLUMN]]]\n\n`;
+      },
+    });
+  } else {
+    // Default (all non-Improve flows): pre-#765 flattened output — wrapper
+    // structure is dropped, only the inner content survives. Modern
+    // div.confluence-layout* wrappers need no rule: turndown's default DIV
+    // handling already passes their content through.
+    turndownService.addRule('confluenceSection', {
+      filter: (node) =>
+        node.nodeName === 'DIV' && node.classList.contains('confluence-section'),
+      replacement: (content) => `\n${content.trim()}\n\n`,
+    });
+
+    turndownService.addRule('confluenceColumn', {
+      filter: (node) =>
+        node.nodeName === 'DIV' && node.classList.contains('confluence-column'),
+      replacement: (content) => `\n${content.trim()}\n`,
+    });
+  }
 
   // Custom rule for the labels macro placeholder (#765). Only reached by
   // non-Improve flows (quality/auto-tag/diagram context) — the Improve path
@@ -1139,8 +1210,10 @@ export function htmlToMarkdown(html: string): string {
 // macros) has no Markdown representation, so the AI-Improve round-trip
 // (htmlToMarkdown → LLM → markdownToHtml) used to flatten it. Unlike media
 // (#723's opaque CQ_MEDIA_PLACEHOLDER swap), layout cells contain prose the
-// LLM must still be able to edit — so htmlToMarkdown emits BOUNDARY tokens as
-// standalone lines around the (still editable) cell content:
+// LLM must still be able to edit — so htmlToMarkdown, when called with
+// `{ layoutTokens: true }` (Improve main-page conversion ONLY), emits
+// BOUNDARY tokens as standalone lines around the (still editable) cell
+// content:
 //
 //   [[[LAYOUT]]] … [[[/LAYOUT]]]
 //   [[[LAYOUT-SECTION two_equal]]] … [[[/LAYOUT-SECTION]]]
@@ -1256,16 +1329,51 @@ function rebuildLayoutStructure(html: string): string {
   });
 }
 
+// #765 review follow-up: literal token text inside code is DATA, not
+// structure (e.g. documentation about the token syntax itself). Rebuilding
+// or stripping it would mutate code content, and a stray token-shaped string
+// in a code block could poison the all-or-nothing validation for the real
+// tokens. Both the markdown normalization and the HTML rebuild/backstop
+// therefore skip code regions.
+
+// Markdown code constructs: fenced blocks (``` / ~~~, unterminated fences run
+// to end-of-input, matching marked) and inline code spans.
+const MARKDOWN_CODE_SEGMENT =
+  /(```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)|``[^`][\s\S]*?``|`[^`\n]*`)/g;
+
+/** Apply `transform` to every part of `markdown` that is NOT a code construct. */
+function transformOutsideMarkdownCode(markdown: string, transform: (segment: string) => string): string {
+  // split() with a capturing group keeps the separators at odd indexes.
+  return markdown
+    .split(MARKDOWN_CODE_SEGMENT)
+    .map((segment, i) => (i % 2 === 1 ? segment : transform(segment)))
+    .join('');
+}
+
+/** Apply `transform` to every part of `html` outside <pre>/<code> elements. */
+function transformOutsideHtmlCode(html: string, transform: (segment: string) => string): string {
+  const regions: string[] = [];
+  // <pre> first so a whole <pre><code>…</code></pre> block masks as one unit.
+  // NUL-delimited placeholders cannot collide with marked's HTML output.
+  const masked = html.replace(/<pre[\s>][\s\S]*?<\/pre\s*>|<code[\s>][\s\S]*?<\/code\s*>/gi, (m) => {
+    regions.push(m);
+    return `\u0000CQ_CODE_REGION_${regions.length - 1}\u0000`;
+  });
+  // eslint-disable-next-line no-control-regex -- NUL delimiter is intentional: it cannot occur in marked HTML output
+  return transform(masked).replace(/\u0000CQ_CODE_REGION_(\d+)\u0000/g, (m, i) => regions[Number(i)] ?? m);
+}
+
 /**
  * Converts Markdown to HTML (for LLM output -> editor).
  */
 export async function markdownToHtml(markdown: string): Promise<string> {
   // #765: force every layout boundary token onto its own paragraph so marked
   // wraps it in a lone <p>, even when the LLM merged adjacent token lines or
-  // pulled a token into surrounding prose.
-  const normalized = markdown.replace(
-    new RegExp(`[ \\t]*(${LAYOUT_TOKEN_BARE})[ \\t]*`, 'g'),
-    '\n\n$1\n\n',
+  // pulled a token into surrounding prose. Code constructs are skipped —
+  // literal token text in a fenced block must survive verbatim.
+  const tokenLine = new RegExp(`[ \\t]*(${LAYOUT_TOKEN_BARE})[ \\t]*`, 'g');
+  const normalized = transformOutsideMarkdownCode(markdown, (segment) =>
+    segment.replace(tokenLine, '\n\n$1\n\n'),
   );
 
   let html = await marked(normalized) as string;
@@ -1280,16 +1388,19 @@ export async function markdownToHtml(markdown: string): Promise<string> {
     },
   );
 
-  // #765: rebuild layout/section/column wrappers from boundary tokens.
-  html = rebuildLayoutStructure(html);
+  html = transformOutsideHtmlCode(html, (segment) => {
+    // #765: rebuild layout/section/column wrappers from boundary tokens.
+    let out = rebuildLayoutStructure(segment);
 
-  // #765 drop-guard backstop: strip any token-shaped remnant that failed
-  // structural matching (e.g. the LLM lower-cased a marker) — raw [[[…]]]
-  // text must never reach the saved page.
-  html = html.replace(
-    new RegExp(`<p>\\s*${LAYOUT_TOKEN_BARE}\\s*</p>|${LAYOUT_TOKEN_BARE}`, 'gi'),
-    '',
-  );
+    // #765 drop-guard backstop: strip any token-shaped remnant that failed
+    // structural matching (e.g. the LLM lower-cased a marker) — raw [[[…]]]
+    // text must never reach the saved page.
+    out = out.replace(
+      new RegExp(`<p>\\s*${LAYOUT_TOKEN_BARE}\\s*</p>|${LAYOUT_TOKEN_BARE}`, 'gi'),
+      '',
+    );
+    return out;
+  });
 
   return html;
 }

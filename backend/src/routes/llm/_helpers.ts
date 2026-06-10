@@ -44,7 +44,7 @@ export async function assembleContextIfNeeded(
   pageId: string | undefined,
   content: string,
   includeSubPages?: boolean,
-  opts?: { protectMedia?: boolean },
+  opts?: { protectMedia?: boolean; layoutTokens?: boolean },
 ): Promise<{ markdown: string; multiPageSuffix: string }> {
   if (includeSubPages && pageId) {
     const pageResult = await query<{ title: string }>(
@@ -62,7 +62,11 @@ export async function assembleContextIfNeeded(
 
   const html = opts?.protectMedia ? protectMedia(content).html : content;
   return {
-    markdown: htmlToMarkdown(html),
+    // #765: layout boundary tokens are opt-in — only the Improve route's
+    // main-page conversion requests them. The sub-page branch above never
+    // emits tokens (truncated sub-page token sequences could be echoed by
+    // the model into the parent page's output).
+    markdown: htmlToMarkdown(html, { layoutTokens: opts?.layoutTokens === true }),
     multiPageSuffix: '',
   };
 }

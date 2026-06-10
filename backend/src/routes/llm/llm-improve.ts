@@ -49,7 +49,9 @@ export async function llmImproveRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.badRequest(`Content too large (max ${MAX_INPUT_LENGTH} characters)`);
     }
 
-    const { markdown, multiPageSuffix } = await assembleContextIfNeeded(userId, body.pageId, content, includeSubPages, { protectMedia: true });
+    // #765: layoutTokens applies only to the main-page conversion — the
+    // sub-page branch inside assembleContextIfNeeded never emits tokens.
+    const { markdown, multiPageSuffix } = await assembleContextIfNeeded(userId, body.pageId, content, includeSubPages, { protectMedia: true, layoutTokens: true });
 
     // Sanitize before sending to LLM
     const { sanitized, warnings } = sanitizeLlmInput(markdown);
