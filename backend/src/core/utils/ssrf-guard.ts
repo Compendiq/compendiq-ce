@@ -215,6 +215,42 @@ export class SsrfError extends Error {
 }
 
 /**
+ * Non-mutating syntax + protocol validation: the URL must parse and use
+ * HTTP(S). Private/internal hosts are NOT blocked, and the process-global
+ * allowlist is neither consulted nor modified.
+ *
+ * Use for admin-gated flows that probe a caller-supplied URL WITHOUT
+ * persisting it (e.g. the setup wizard's `POST /setup/llm-test`). For such
+ * flows the effective policy of `validateUrl` on an allowlisted origin is
+ * exactly "parses + HTTP(S)"; calling this directly avoids round-tripping
+ * the global allowlist, which would transiently exempt the origin for every
+ * other flow on the pod and race concurrent allowlist mutations from the
+ * admin provider routes (PR #751 review). The caller's auth gate
+ * (`requireAdmin`) is the real control — the same trust model as the admin
+ * LLM-provider routes.
+ *
+ * Returns the parsed URL so `validateUrl` can build on it without
+ * re-parsing.
+ *
+ * @throws SsrfError when the URL fails to parse or uses a non-HTTP(S) protocol
+ */
+export function validateUrlSyntaxAndProtocol(urlString: string): URL {
+  let parsed: URL;
+  try {
+    parsed = new URL(urlString);
+  } catch {
+    throw new SsrfError('SSRF blocked: invalid URL');
+  }
+
+  // Block non-HTTP(S) protocols
+  if (!ALLOWED_PROTOCOLS.includes(parsed.protocol)) {
+    throw new SsrfError(`SSRF blocked: protocol '${parsed.protocol}' is not allowed. Only HTTP(S) permitted.`);
+  }
+
+  return parsed;
+}
+
+/**
  * Validates a URL to prevent SSRF attacks.
  * Blocks private IPs, internal hostnames, and non-HTTP(S) protocols.
  *
@@ -227,17 +263,11 @@ export class SsrfError extends Error {
  * @throws SsrfError if the URL targets a private/internal address
  */
 export function validateUrl(urlString: string): void {
-  let parsed: URL;
-  try {
-    parsed = new URL(urlString);
-  } catch {
-    throw new SsrfError('SSRF blocked: invalid URL');
-  }
-
-  // Block non-HTTP(S) protocols
-  if (!ALLOWED_PROTOCOLS.includes(parsed.protocol)) {
-    throw new SsrfError(`SSRF blocked: protocol '${parsed.protocol}' is not allowed. Only HTTP(S) permitted.`);
-  }
+  // Parse + protocol checks are shared with `validateUrlSyntaxAndProtocol`.
+  // The protocol check intentionally runs BEFORE the allowlist
+  // short-circuit below — that ordering is load-bearing (see the
+  // PROTOCOL_BLOCK / ALLOWLIST_HIT notes in routes/llm/llm-providers.ts).
+  const parsed = validateUrlSyntaxAndProtocol(urlString);
 
   // Allow explicitly trusted origins (e.g., user-configured Confluence URLs)
   if (allowedOrigins.has(parsed.origin.toLowerCase())) {

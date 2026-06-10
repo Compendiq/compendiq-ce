@@ -9,6 +9,7 @@ vi.mock('node:dns/promises', () => ({
 import {
   validateUrl,
   validateUrlWithDns,
+  validateUrlSyntaxAndProtocol,
   SsrfError,
   addAllowedBaseUrl,
   addAllowedBaseUrlSilent,
@@ -187,6 +188,56 @@ describe('SSRF Guard', () => {
         expect(e).toBeInstanceOf(SsrfError);
         expect((e as SsrfError).name).toBe('SsrfError');
       }
+    });
+  });
+
+  describe('validateUrlSyntaxAndProtocol (non-mutating, admin-trust flows)', () => {
+    afterEach(() => {
+      clearAllowedBaseUrls();
+    });
+
+    it('should allow public HTTP(S) URLs', () => {
+      expect(() => validateUrlSyntaxAndProtocol('http://api.example.com/v1')).not.toThrow();
+      expect(() => validateUrlSyntaxAndProtocol('https://api.openai.com/v1')).not.toThrow();
+    });
+
+    it('should allow private-network and loopback hosts (auth gate is the control)', () => {
+      expect(() => validateUrlSyntaxAndProtocol('http://localhost:11434/v1')).not.toThrow();
+      expect(() => validateUrlSyntaxAndProtocol('http://127.0.0.1:11434/v1')).not.toThrow();
+      expect(() => validateUrlSyntaxAndProtocol('http://10.0.0.5:8000/v1')).not.toThrow();
+      expect(() => validateUrlSyntaxAndProtocol('http://192.168.1.50:1234/v1')).not.toThrow();
+      expect(() => validateUrlSyntaxAndProtocol('http://vllm.internal:8000/v1')).not.toThrow();
+    });
+
+    it('should block non-HTTP(S) protocols', () => {
+      expect(() => validateUrlSyntaxAndProtocol('file:///etc/passwd')).toThrow(SsrfError);
+      expect(() => validateUrlSyntaxAndProtocol('ftp://internal.server/file')).toThrow(/protocol.*not allowed/);
+      expect(() => validateUrlSyntaxAndProtocol('gopher://internal.server')).toThrow(SsrfError);
+    });
+
+    it('should throw SsrfError on unparseable URLs', () => {
+      expect(() => validateUrlSyntaxAndProtocol('not-a-url')).toThrow(SsrfError);
+      expect(() => validateUrlSyntaxAndProtocol('not-a-url')).toThrow(/invalid URL/);
+      expect(() => validateUrlSyntaxAndProtocol('')).toThrow(SsrfError);
+    });
+
+    it('should never mutate the global allowlist', () => {
+      expect(getAllowedBaseUrlCount()).toBe(0);
+      validateUrlSyntaxAndProtocol('http://10.0.0.5:8000/v1');
+      expect(() => validateUrlSyntaxAndProtocol('ftp://blocked.example')).toThrow(SsrfError);
+      expect(getAllowedBaseUrlCount()).toBe(0);
+      // validateUrl must still apply full private-network blocking afterwards
+      expect(() => validateUrl('http://10.0.0.5:8000/v1')).toThrow(SsrfError);
+    });
+
+    it('should not consult the allowlist (private host passes with or without an entry)', () => {
+      addAllowedBaseUrlSilent('http://10.0.0.5:8000');
+      expect(() => validateUrlSyntaxAndProtocol('http://10.0.0.5:8000/v1')).not.toThrow();
+      removeAllowedBaseUrlSilent('http://10.0.0.5:8000');
+      expect(() => validateUrlSyntaxAndProtocol('http://10.0.0.5:8000/v1')).not.toThrow();
+      // ...but protocol restrictions hold even for allowlisted origins
+      addAllowedBaseUrlSilent('ftp://10.0.0.5:8000');
+      expect(() => validateUrlSyntaxAndProtocol('ftp://10.0.0.5:8000')).toThrow(SsrfError);
     });
   });
 

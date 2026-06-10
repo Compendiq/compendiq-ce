@@ -21,6 +21,10 @@ import {
   type ProviderConfig,
 } from '../../domains/llm/services/openai-compatible-client.js';
 import { decryptPat } from '../../core/utils/crypto.js';
+import {
+  validateUrlSyntaxAndProtocol,
+  SsrfError,
+} from '../../core/utils/ssrf-guard.js';
 import { logger } from '../../core/utils/logger.js';
 
 const SALT_ROUNDS = 12;
@@ -185,10 +189,16 @@ export async function setupRoutes(fastify: FastifyInstance) {
    * POST /api/setup/llm-test
    *
    * Tests LLM connectivity without persisting any configuration.
-   * Requires authentication (admin must be created first).
+   *
+   * Requires ADMIN (issue #736): the wizard creates and signs in the admin
+   * (POST /setup/admin returns tokens) before this step ever runs, so the
+   * legitimate first-run caller always holds the admin role. Post-setup it
+   * is an admin-only action (wizard rerun / resume). Without this gate any
+   * self-registered user could use the reflected connect/HTTP errors as a
+   * blind SSRF oracle for internal network recon (CWE-918).
    */
   fastify.post('/setup/llm-test', {
-    preHandler: fastify.authenticate,
+    preHandler: [fastify.authenticate, fastify.requireAdmin],
   }, async (request) => {
     const body = LlmTestSchema.parse(request.body);
 
@@ -199,6 +209,33 @@ export async function setupRoutes(fastify: FastifyInstance) {
       baseUrl = body.provider === 'openai' ? 'https://api.openai.com/v1' : 'http://localhost:11434/v1';
     }
     if (!baseUrl.endsWith('/v1')) baseUrl += '/v1';
+
+    // SSRF guard (issue #736) — same EFFECTIVE policy as the admin
+    // LLM-provider routes (`routes/llm/llm-providers.ts`): an authenticated
+    // admin pastes a URL and we trust the host, so only URL syntax and the
+    // HTTP(S)-protocol restriction are enforced. Private-network endpoints
+    // (local Ollama, LAN LM Studio, on-prem vLLM — including the wizard's
+    // localhost default) must pass; `requireAdmin` is the real control.
+    //
+    // The admin routes get that policy by allowlisting before validating —
+    // correct there because the origin is persisted. Nothing is persisted
+    // here, so the probe validates NON-MUTATINGLY instead of round-tripping
+    // the process-global allowlist. A previous revision did add/validate/
+    // revoke and (a) transiently exempted the origin for every other flow
+    // on this pod for the probe's full duration, and (b) raced concurrent
+    // admin provider writes for the same origin: their `addAllowedBaseUrl`
+    // no-ops on a present entry (no pub/sub broadcast), then this route's
+    // revoke stripped the persisted provider's allowlist entry until
+    // restart (PR #751 review follow-up).
+    try {
+      validateUrlSyntaxAndProtocol(baseUrl);
+    } catch (err) {
+      if (err instanceof SsrfError) {
+        logger.debug({ provider: body.provider, error: err.message }, 'LLM connection test blocked by SSRF guard');
+        return { success: false, error: err.message, models: [] };
+      }
+      throw err;
+    }
 
     const cfg: ProviderConfig = {
       providerId: 'setup-wizard',
