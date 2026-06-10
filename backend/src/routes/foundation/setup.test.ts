@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi, beforeEach } from 'vitest';
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 import cookie from '@fastify/cookie';
@@ -412,6 +412,12 @@ describe('Setup routes', () => {
         clearAllowedBaseUrls();
       });
 
+      // Hygiene: never leak entries into the module-global allowlist for
+      // other suites sharing this worker (PR #751 review follow-up).
+      afterEach(() => {
+        clearAllowedBaseUrls();
+      });
+
       it('should return 401 for unauthenticated requests without any outbound call', async () => {
         mockAuthenticate.mockRejectedValueOnce(
           Object.assign(new Error('Invalid or expired token'), { statusCode: 401 }),
@@ -469,7 +475,7 @@ describe('Setup routes', () => {
         expect(body.models).toEqual([]);
         expect(mockCheckHealth).not.toHaveBeenCalled();
         expect(mockListModels).not.toHaveBeenCalled();
-        // The speculative allowlist entry must not survive the rejection
+        // Validation is non-mutating — nothing reaches the global allowlist
         expect(getAllowedBaseUrlCount()).toBe(0);
       });
 
@@ -503,7 +509,7 @@ describe('Setup routes', () => {
         );
       });
 
-      it('should remove the ephemeral allowlist entry after a successful test', async () => {
+      it('should never mutate the global SSRF allowlist on a successful probe', async () => {
         expect(getAllowedBaseUrlCount()).toBe(0);
 
         const response = await app.inject({
@@ -519,7 +525,7 @@ describe('Setup routes', () => {
         expect(() => validateUrl('http://10.0.0.7:11434/v1')).toThrow(/SSRF blocked/);
       });
 
-      it('should remove the ephemeral allowlist entry after a failed test', async () => {
+      it('should never mutate the global SSRF allowlist on a failed probe', async () => {
         mockCheckHealth.mockRejectedValueOnce(new Error('Connection refused'));
         mockListModels.mockRejectedValueOnce(new Error('Connection refused'));
 
@@ -534,7 +540,38 @@ describe('Setup routes', () => {
         expect(getAllowedBaseUrlCount()).toBe(0);
       });
 
-      it('should keep a pre-existing allowlist entry (e.g. a configured provider origin)', async () => {
+      it('should not widen the global allowlist even transiently while the probe is in flight', async () => {
+        // Guards against the ephemeral add/revoke round-trip from a previous
+        // revision: during the (untimed) outbound probe, the origin must NOT
+        // be allowlisted for unrelated flows on this pod (e.g. image import).
+        let countDuringProbe = -1;
+        let probedOriginAllowedDuringProbe = true;
+        mockCheckHealth.mockImplementationOnce(async () => {
+          countDuringProbe = getAllowedBaseUrlCount();
+          try {
+            validateUrl('http://10.0.0.9:11434/v1');
+          } catch {
+            probedOriginAllowedDuringProbe = false;
+          }
+          return { connected: true };
+        });
+
+        const response = await app.inject({
+          method: 'POST',
+          url: '/api/setup/llm-test',
+          payload: { provider: 'ollama', baseUrl: 'http://10.0.0.9:11434' },
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(JSON.parse(response.body).success).toBe(true);
+        expect(countDuringProbe).toBe(0);
+        expect(probedOriginAllowedDuringProbe).toBe(false);
+      });
+
+      it('should leave a pre-existing allowlist entry untouched (no cross-route revocation)', async () => {
+        // A persisted provider's origin (added by the admin routes /
+        // bootstrap) must survive a probe of the same origin — the probe
+        // must not revoke entries it does not own.
         addAllowedBaseUrlSilent('http://10.1.2.3:11434');
         expect(getAllowedBaseUrlCount()).toBe(1);
 

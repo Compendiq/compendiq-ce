@@ -22,9 +22,7 @@ import {
 } from '../../domains/llm/services/openai-compatible-client.js';
 import { decryptPat } from '../../core/utils/crypto.js';
 import {
-  addAllowedBaseUrlSilent,
-  removeAllowedBaseUrlSilent,
-  validateUrl,
+  validateUrlSyntaxAndProtocol,
   SsrfError,
 } from '../../core/utils/ssrf-guard.js';
 import { logger } from '../../core/utils/logger.js';
@@ -212,29 +210,26 @@ export async function setupRoutes(fastify: FastifyInstance) {
     }
     if (!baseUrl.endsWith('/v1')) baseUrl += '/v1';
 
-    // SSRF guard (issue #736) — same policy as the admin LLM-provider routes
-    // (`routes/llm/llm-providers.ts`): allowlist BEFORE validating so
-    // private-network LLM endpoints (local Ollama, LAN LM Studio, on-prem
-    // vLLM — including the wizard's localhost default) aren't rejected by
-    // the private-network checks, while protocol restrictions (HTTP/S only)
-    // still apply because `validateUrl` runs the protocol check before the
-    // allowlist short-circuit. The trust model is "authenticated admin
-    // pastes a URL and we trust the host" — identical to the admin routes.
+    // SSRF guard (issue #736) — same EFFECTIVE policy as the admin
+    // LLM-provider routes (`routes/llm/llm-providers.ts`): an authenticated
+    // admin pastes a URL and we trust the host, so only URL syntax and the
+    // HTTP(S)-protocol restriction are enforced. Private-network endpoints
+    // (local Ollama, LAN LM Studio, on-prem vLLM — including the wizard's
+    // localhost default) must pass; `requireAdmin` is the real control.
     //
-    // Unlike the admin routes, nothing is persisted here, so the allowlist
-    // entry is strictly ephemeral: the *silent* variants skip the multi-pod
-    // broadcast, and the entry is removed after the probe unless the origin
-    // was already allowlisted (e.g. by an existing provider row), so the
-    // test never widens the SSRF allowlist for other flows.
-    const addedToAllowlist = addAllowedBaseUrlSilent(baseUrl);
-    const revokeEphemeralAllowlistEntry = () => {
-      if (addedToAllowlist) removeAllowedBaseUrlSilent(baseUrl);
-    };
-
+    // The admin routes get that policy by allowlisting before validating —
+    // correct there because the origin is persisted. Nothing is persisted
+    // here, so the probe validates NON-MUTATINGLY instead of round-tripping
+    // the process-global allowlist. A previous revision did add/validate/
+    // revoke and (a) transiently exempted the origin for every other flow
+    // on this pod for the probe's full duration, and (b) raced concurrent
+    // admin provider writes for the same origin: their `addAllowedBaseUrl`
+    // no-ops on a present entry (no pub/sub broadcast), then this route's
+    // revoke stripped the persisted provider's allowlist entry until
+    // restart (PR #751 review follow-up).
     try {
-      validateUrl(baseUrl);
+      validateUrlSyntaxAndProtocol(baseUrl);
     } catch (err) {
-      revokeEphemeralAllowlistEntry();
       if (err instanceof SsrfError) {
         logger.debug({ provider: body.provider, error: err.message }, 'LLM connection test blocked by SSRF guard');
         return { success: false, error: err.message, models: [] };
@@ -269,8 +264,6 @@ export async function setupRoutes(fastify: FastifyInstance) {
         error: message,
         models: [],
       };
-    } finally {
-      revokeEphemeralAllowlistEntry();
     }
   });
 }
