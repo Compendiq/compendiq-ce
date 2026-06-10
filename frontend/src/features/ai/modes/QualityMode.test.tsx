@@ -9,10 +9,11 @@ import { useAuthStore } from '../../../stores/auth-store';
 
 Element.prototype.scrollIntoView = vi.fn();
 
+// Replace apiFetch with a controllable mock but keep the real ApiError class
+// available — runStream branches on `err instanceof ApiError` for 403 handling.
 const apiFetchMock = vi.fn();
-vi.mock('../../../shared/lib/api', () => ({
-  apiFetch: (...args: unknown[]) => apiFetchMock(...args),
-}));
+vi.mock('../../../shared/lib/api', async () =>
+  (await import('../../../test-utils')).apiModuleMock(() => apiFetchMock));
 
 const streamSSEMock = vi.fn();
 vi.mock('../../../shared/lib/sse', () => ({

@@ -10,14 +10,11 @@ import { useAuthStore } from '../../stores/auth-store';
 // scrollIntoView is not available in jsdom
 Element.prototype.scrollIntoView = vi.fn();
 
-// Keep reference to original apiFetch mock to control per-test. Spread the
-// real module so the ApiError class stays available — runStream branches on
-// `err instanceof ApiError` for 403 handling.
+// Replace apiFetch with a controllable mock but keep the real ApiError class
+// available — runStream branches on `err instanceof ApiError` for 403 handling.
 const apiFetchMock = vi.fn();
-vi.mock('../../shared/lib/api', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../shared/lib/api')>()),
-  apiFetch: (...args: unknown[]) => apiFetchMock(...args),
-}));
+vi.mock('../../shared/lib/api', async () =>
+  (await import('../../test-utils')).apiModuleMock(() => apiFetchMock));
 
 // Mock SSE module so we can control streaming behavior
 const streamSSEMock = vi.fn();
