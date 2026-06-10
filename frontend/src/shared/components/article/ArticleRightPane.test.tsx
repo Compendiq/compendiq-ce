@@ -422,6 +422,56 @@ describe('ArticleRightPane', () => {
     expect(await screen.findByTestId('auto-tagger')).toBeInTheDocument();
   });
 
+  // --- Delete via ConfirmDialog (replaces window.confirm) ---
+  it('Delete opens the move-to-trash dialog; confirming soft-deletes and navigates home', async () => {
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByText('Delete'));
+
+    // Copy must reflect the 30-day soft-delete trash, not the old (false)
+    // "cannot be undone" claim from window.confirm.
+    expect(await screen.findByText('Move page to trash?')).toBeInTheDocument();
+    expect(
+      screen.getByText('It can be restored from Trash for 30 days, then it is permanently deleted.'),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('confirm-dialog-confirm')).toHaveTextContent('Move to trash');
+
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
+
+    await waitFor(() => {
+      expect(mockDeletePage).toHaveBeenCalledWith('page-1');
+    });
+    expect(mockNavigate).toHaveBeenCalledWith('/');
+  });
+
+  it('cancelling the move-to-trash dialog does not delete', async () => {
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByText('Delete'));
+    await screen.findByTestId('confirm-dialog');
+    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+    });
+    expect(mockDeletePage).not.toHaveBeenCalled();
+  });
+
+  it('rail Delete button drives the same move-to-trash dialog', async () => {
+    useUiStore.setState({ articleSidebarCollapsed: true });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByLabelText('Delete article'));
+
+    expect(await screen.findByText('Move page to trash?')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
+
+    await waitFor(() => {
+      expect(mockDeletePage).toHaveBeenCalledWith('page-1');
+    });
+  });
+
   // --- PDF Export ---
   it('renders the Export PDF button', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
