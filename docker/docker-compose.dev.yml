@@ -8,9 +8,9 @@
 #                  -f docker/docker-compose.dev.yml \
 #                  up -d postgres redis
 #
-# The default ports match `.env.example`:
-#   - Postgres → 5432 (test DB lives on 5433 via docker-compose.test.yml)
-#   - Redis    → 6379
+# Host ports published by this override (off-default to avoid collisions):
+#   - Postgres → 127.0.0.1:5435 (test DB lives on 5433 via docker-compose.test.yml)
+#   - Redis    → 127.0.0.1:6380
 #
 # `POSTGRES_PASSWORD` and `REDIS_PASSWORD` have no defaults in the base
 # compose file — set them in `docker/.env` (or export them) before `up`.

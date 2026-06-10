@@ -48,8 +48,8 @@ flowchart LR
 
 | Network       | internal | Members                         | Purpose |
 |---------------|----------|---------------------------------|---------|
-| `frontend-net`| no       | frontend, backend               | Browser → frontend, SPA → backend API |
-| `backend-net` | no       | backend, mcp-docs, searxng      | Backend sidecar services |
+| `frontend-net`| no       | frontend                        | Host-published entry point (browser → frontend) |
+| `backend-net` | no       | frontend, backend, mcp-docs, searxng, redis | Frontend nginx proxy → backend API; backend sidecars (mcp-docs reaches redis here) |
 | `data-net`    | **yes**  | postgres, redis (+ backend)     | No external exposure; DB/cache only reachable from backend |
 
 The `backend` container publishes **no host port** — all API traffic goes

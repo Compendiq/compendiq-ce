@@ -78,6 +78,24 @@ describe('docker/docker-compose.yml security invariants', () => {
     },
   );
 
+  it.each(['POSTGRES_PASSWORD', 'REDIS_PASSWORD'])(
+    'recommends a URL-safe generator (rand -hex) in %s error messages',
+    (varName) => {
+      // The passwords are interpolated raw into POSTGRES_URL/REDIS_URL, so the
+      // suggested generator must never emit URL-breaking chars: base64 output
+      // contains '/' ~40% of the time (plus '+'/'='), which makes
+      // pg-connection-string / new URL() throw and the backend crash-loop.
+      const messages = interpolationsOf(composeProd, varName).filter((modifier) =>
+        modifier.startsWith(':?'),
+      );
+      expect(messages.length).toBeGreaterThan(0);
+      for (const message of messages) {
+        expect(message).toMatch(/rand -hex/);
+        expect(message).not.toMatch(/rand -base64/);
+      }
+    },
+  );
+
   it('runs Redis with noeviction so BullMQ jobs are never evicted', () => {
     const redis = extractServiceBlock(composeProd, 'redis');
     expect(redis).toContain('--maxmemory-policy noeviction');

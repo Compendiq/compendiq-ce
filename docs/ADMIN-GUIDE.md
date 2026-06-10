@@ -47,8 +47,17 @@ Additionally, you need an **Ollama** server (or OpenAI-compatible API) accessibl
    Generate secure random strings:
 
    ```bash
+   # JWT_SECRET / PAT_ENCRYPTION_KEY
    openssl rand -base64 48
+
+   # POSTGRES_PASSWORD / REDIS_PASSWORD — must be URL-safe because they are
+   # interpolated raw into POSTGRES_URL/REDIS_URL ('/', '+', '=' break them)
+   openssl rand -hex 24
    ```
+
+   > **Note:** Docker Compose reads interpolation variables from `docker/.env`
+   > (the compose file's directory), not the repo-root `.env`. Copy your file
+   > there (`cp .env docker/.env`) or pass `--env-file .env` explicitly.
 
 4. **Start all services:**
 
@@ -56,11 +65,13 @@ Additionally, you need an **Ollama** server (or OpenAI-compatible API) accessibl
    docker compose -f docker/docker-compose.yml up -d
    ```
 
-   This starts four containers:
+   This starts six containers:
    - **frontend** -- nginx serving the React app (port 8081)
    - **backend** -- Node.js Fastify server (port 3051, internal)
    - **postgres** -- PostgreSQL 17 with pgvector
-   - **redis** -- Redis 8 Alpine with password auth and LRU eviction
+   - **redis** -- Redis 8 Alpine with password auth and `noeviction` (required by BullMQ — eviction would silently drop queued jobs)
+   - **mcp-docs** -- documentation-search MCP server (port 3100, internal)
+   - **searxng** -- metasearch engine used by mcp-docs (port 8080, internal)
 
 5. **Pull Ollama models** on your host machine:
 
@@ -82,7 +93,7 @@ docker compose -f docker/docker-compose.yml ps
 All services should show `(healthy)` status. You can also hit the health endpoint:
 
 ```bash
-curl http://localhost:3051/api/health
+curl http://localhost:8081/api/health
 ```
 
 ## Configuration Reference
@@ -193,7 +204,7 @@ Compendiq uses BullMQ (Redis-backed) for reliable background job processing. Six
 
 **Monitoring:** The health endpoint returns per-queue counts (waiting, active, completed, failed):
 ```bash
-curl http://localhost:3051/api/health | jq '.queues'
+curl http://localhost:8081/api/health | jq '.queues'
 ```
 
 ### LLM Request Queue
@@ -588,6 +599,51 @@ In CE-only deployments the `/api/admin/compliance-reports` and `/api/admin/compl
 
 ## Upgrade Procedure
 
+### Breaking change: `POSTGRES_PASSWORD` / `REDIS_PASSWORD` are now required
+
+`docker/docker-compose.yml` no longer ships the `changeme-postgres` /
+`changeme-redis` default passwords — `docker compose up` refuses to start
+until both variables are set (in `docker/.env` or exported in the
+environment).
+
+**Important:** PostgreSQL bakes the password into the `postgres-data`
+volume when it is first initialized. Setting a *new* `POSTGRES_PASSWORD`
+on an existing install does **not** change the password inside the volume —
+the backend will fail to authenticate and crash-loop.
+
+Pick one of the following when upgrading an existing install:
+
+- **Option A — keep the existing credentials.** Set the variables to the
+  values your volumes/containers were initialized with. If you previously
+  relied on the defaults, that is:
+
+  ```bash
+  # docker/.env
+  POSTGRES_PASSWORD=changeme-postgres
+  REDIS_PASSWORD=changeme-redis
+  ```
+
+- **Option B — rotate properly (recommended).** Change the live Postgres
+  password first, then update the env and recreate:
+
+  ```bash
+  # 1. Generate a URL-safe password (avoid base64: '/', '+', '=' break
+  #    the POSTGRES_URL/REDIS_URL interpolation)
+  openssl rand -hex 24
+
+  # 2. Change the password inside the running Postgres
+  docker compose -f docker/docker-compose.yml exec postgres \
+    psql -U kb_user -d kb_creator \
+    -c "ALTER USER kb_user WITH PASSWORD '<new-password>';"
+
+  # 3. Set POSTGRES_PASSWORD=<new-password> in docker/.env, then
+  docker compose -f docker/docker-compose.yml up -d
+  ```
+
+  Redis needs no in-place step: `requirepass` comes from the container
+  command line (no state in a volume), so setting a new `REDIS_PASSWORD`
+  and running `up -d` re-creates it with the new password.
+
 ### Docker Compose Upgrade
 
 1. **Pull the latest images:**
@@ -607,7 +663,7 @@ In CE-only deployments the `/api/admin/compliance-reports` and `/api/admin/compl
 3. **Verify the upgrade:**
 
    ```bash
-   curl http://localhost:3051/api/health
+   curl http://localhost:8081/api/health
    ```
 
 ### From Source

@@ -217,13 +217,19 @@ npm install
 
 ```bash
 cp .env.example .env
-# Edit .env -- set JWT_SECRET and PAT_ENCRYPTION_KEY to random 32+ char strings
+# Edit .env -- set four required variables:
+#   JWT_SECRET / PAT_ENCRYPTION_KEY  -> random 32+ char strings
+#   POSTGRES_PASSWORD / REDIS_PASSWORD -> URL-safe passwords (openssl rand -hex 24)
 ```
 
 ### 3. Start infrastructure
 
+Compose reads interpolation variables from `docker/.env` (the compose file's
+directory), **not** the root `.env` — copy your file there first:
+
 ```bash
-docker compose -f docker/docker-compose.yml up -d   # PostgreSQL + Redis
+cp .env docker/.env
+docker compose -f docker/docker-compose.yml up -d   # PostgreSQL + Redis + app containers
 ```
 
 ### 4. Start dev servers
