@@ -328,6 +328,58 @@ describe('queue-service', () => {
     });
   });
 
+  // ─── BullMQ mode (USE_BULLMQ=true) — startQueueWorkers ─────────────────
+  // Guards the data-retention scheduler relocation (issue #741 follow-up):
+  // the upsertJobScheduler call moved out of registerAllWorkers (which now
+  // also runs in legacy mode and must stay Redis-pure) into the BullMQ-only
+  // branch of startQueueWorkers. The legacy-purity test below only proves the
+  // call is GONE from legacy mode — this one proves it still HAPPENS in
+  // BullMQ mode, on the right queue, with the right id and repeat options.
+  describe('BullMQ mode (USE_BULLMQ=true) — scheduler registration', () => {
+    const ORIGINAL_USE_BULLMQ = process.env.USE_BULLMQ;
+
+    beforeEach(() => {
+      process.env.USE_BULLMQ = 'true';
+    });
+
+    afterEach(() => {
+      if (ORIGINAL_USE_BULLMQ === undefined) {
+        delete process.env.USE_BULLMQ;
+      } else {
+        process.env.USE_BULLMQ = ORIGINAL_USE_BULLMQ;
+      }
+    });
+
+    it('startQueueWorkers registers the daily data-retention scheduler on the maintenance queue', async () => {
+      const { startQueueWorkers } = await import('./queue-service.js');
+      await startQueueWorkers();
+
+      const maintenance = queueStubs.get('maintenance');
+      expect(maintenance).toBeDefined();
+      expect(maintenance!.upsertJobScheduler).toHaveBeenCalledWith(
+        'data-retention-scheduler',
+        { every: 24 * 60 * 60 * 1000 },
+        { name: 'data-retention' },
+      );
+    });
+
+    it('startQueueWorkers also keeps the maintenance queue repeatable (token cleanup) — two schedulers on one queue', async () => {
+      const { startQueueWorkers } = await import('./queue-service.js');
+      await startQueueWorkers();
+
+      const maintenance = queueStubs.get('maintenance')!;
+      // maintenance-scheduler comes from the workerDef repeatPattern;
+      // data-retention-scheduler from the explicit post-loop registration.
+      // Asserting both proves the relocation didn't mistarget or collapse them.
+      expect(maintenance.upsertJobScheduler).toHaveBeenCalledTimes(2);
+      expect(maintenance.upsertJobScheduler).toHaveBeenCalledWith(
+        'maintenance-scheduler',
+        { every: 24 * 60 * 60 * 1000 },
+        { name: 'maintenance' },
+      );
+    });
+  });
+
   // ─── Issue #741 — legacy mode (USE_BULLMQ=false) ──────────────────────
   // enqueueJob's inline fallback must actually execute the registered
   // processor (it previously found no workerDefs because registerAllWorkers

@@ -238,6 +238,10 @@ export async function stopQueueWorkers(): Promise<void> {
  *     NOT remove it — the duplicate `add()` is ignored by BullMQ (emitting a
  *     `duplicated` event) and the second caller observes the same jobId.
  *     That's the "collapse concurrent POSTs" semantic.
+ *   - This idempotency model is BullMQ-only: legacy mode ignores `opts.jobId`
+ *     and runs the processor for every call, so concurrent POSTs do NOT
+ *     collapse there — reembed self-guards downstream via the Redis
+ *     embedding lock instead.
  *
  * When BullMQ is disabled (`USE_BULLMQ=false`) this runs the queue's
  * registered processor inline, fire-and-forget (legacy fallback behaviour).
@@ -372,6 +376,11 @@ export async function getQueueMetrics(): Promise<
  * fallback. Must stay pure — no Queue creation / Redis access here.
  */
 function registerAllWorkers(): void {
+  // Re-entrancy guard: startQueueWorkers() is called once at startup today,
+  // but a second call must not duplicate every def (legacy enqueueJob picks
+  // the FIRST match; BullMQ mode would double-create Workers).
+  workerDefs.length = 0;
+
   const syncInterval = parseInt(process.env.SYNC_INTERVAL_MIN ?? '15', 10);
   const qualityInterval = parseInt(process.env.QUALITY_CHECK_INTERVAL_MINUTES ?? '60', 10);
   const summaryInterval = parseInt(process.env.SUMMARY_CHECK_INTERVAL_MINUTES ?? '60', 10);
