@@ -184,6 +184,31 @@ describe('useStreamingContent', () => {
     expect(result.current.displayContent).toBe('cycle 3');
   });
 
+  it('replace() swaps the buffered content wholesale (finalContent post-processing)', async () => {
+    const { result } = renderHook(() => useStreamingContent());
+
+    act(() => {
+      result.current.start();
+      result.current.append('raw streamed text');
+    });
+
+    // Output post-processing replaces the accumulated content with a cleaned version
+    act(() => {
+      result.current.replace('cleaned content');
+    });
+
+    // The buffer reflects the replacement immediately
+    expect(result.current.getContent()).toBe('cleaned content');
+
+    // And the next flush renders the replaced content, not the raw stream
+    await act(async () => {
+      vi.advanceTimersByTime(60);
+      await vi.advanceTimersByTimeAsync(20);
+    });
+
+    expect(result.current.displayContent).toBe('cleaned content');
+  });
+
   it('does not leak timers after unmount', async () => {
     const { result, unmount } = renderHook(() => useStreamingContent());
 

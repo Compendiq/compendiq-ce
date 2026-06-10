@@ -7,8 +7,8 @@ import { useLocalSpaces } from '../../../shared/hooks/use-standalone';
 import { usePages, useCreatePage, type PageFilters } from '../../../shared/hooks/use-pages';
 import { useExtractPdf, type ExtractPdfResult } from '../../../shared/hooks/use-extract-pdf';
 import { apiFetch } from '../../../shared/lib/api';
+import { improveMarkdownToHtml } from '../../../shared/components/article/improve-markdown';
 import { toast } from 'sonner';
-import { marked } from 'marked';
 import { cn } from '../../../shared/lib/cn';
 
 /** Threshold above which the backend truncates PDF text for the LLM context window. */
@@ -22,13 +22,6 @@ const PDF_TEXT_TRUNCATION_THRESHOLD = 80_000;
 function extractTitleFromMarkdown(md: string): string {
   const match = md.match(/^#{1,3}\s+(.+)$/m);
   return match?.[1]?.trim() ?? '';
-}
-
-/** Convert markdown to HTML using marked (sync). */
-function markdownToHtml(md: string): string {
-  // marked.parse can return string | Promise<string>; with async: false (default) it's sync
-  const result = marked.parse(md, { async: false });
-  return typeof result === 'string' ? result : '';
 }
 
 /** Format bytes to human-readable size. */
@@ -369,7 +362,9 @@ export function GenerateSavePanel({
 
     setIsSaving(true);
     try {
-      const bodyHtml = markdownToHtml(generatedContent);
+      // #747: shared marked + DOMPurify helper — never send unsanitized
+      // LLM-derived HTML to POST /pages.
+      const bodyHtml = improveMarkdownToHtml(generatedContent);
       const result = await createPage.mutateAsync({
         spaceKey,
         title: title.trim(),
