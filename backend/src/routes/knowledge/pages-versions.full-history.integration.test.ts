@@ -193,6 +193,8 @@ describe.skipIf(!dbAvailable)('GET /api/pages/:id/versions — full history from
     // Confluence error), not only a bare generic hint.
     expect(body.backfillDetail).toMatch(/incomplete/i);
     expect(body.backfillDetail).toMatch(/404/);
+    // PR #784 review: the reason is sanitized for the dialog — single-line.
+    expect(body.backfillDetail).not.toMatch(/\n/);
     expect(body.versions).toHaveLength(1);
     expect(body.versions[0]).toMatchObject({ versionNumber: 3, isCurrent: true });
   });

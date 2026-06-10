@@ -239,7 +239,8 @@ backfill uses the *viewing user's* credentials via `getClientForUser`) or failed
 For `failed`, the `backfillDetail` wording further distinguishes a client-construction
 failure (stored credentials unusable, e.g. PAT decryption error — Confluence was
 never contacted) from a failed Confluence import call; for the latter the underlying
-Confluence error message is appended so the dialog shows *why* the import failed (#780).
+Confluence error message is appended (whitespace-collapsed and truncated to ~200 chars
+for the dialog) so it still shows *why* the import failed (#780).
 The field is omitted for standalone pages, where no Confluence backfill applies.
 
 The `edited_at` column holds the real Confluence edit timestamp; the existing
