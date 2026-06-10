@@ -10,6 +10,9 @@
  *       time-based purge with an admin-configurable window (default 90d).
  *       Narrower than the umbrella audit_log sweep; rows that survive the
  *       narrow sweep still fall under the umbrella 365d policy.
+ *   - standalone pages in the trash (soft-deleted) for more than 30 days —
+ *       the Trash UI promises "purged after 30 days"; Confluence-synced pages
+ *       have their own purge in sync-service (upstream re-confirmation).
  *
  * Retention periods are configurable via environment variables:
  *   RETENTION_AUDIT_LOG_DAYS, RETENTION_SEARCH_ANALYTICS_DAYS,
@@ -84,6 +87,10 @@ export async function runRetentionCleanup(): Promise<Record<string, number>> {
   // Scoped by action so the umbrella retention policy for every other audit
   // action remains independently tunable.
   results['audit_log_admin_access_denied'] = await runAdminAccessDeniedRetention();
+
+  // Standalone trash purge (UX review): hard-delete standalone pages whose
+  // soft-delete is older than the 30-day window the Trash UI promises.
+  results['pages_standalone_trash'] = await purgeExpiredStandalonePages();
 
   // pending_sync_versions retention (Compendiq/compendiq-ee#118).
   // Drains the conflict-pending queue of rows that nobody resolved and are
@@ -204,6 +211,72 @@ async function runAdminAccessDeniedRetention(): Promise<number> {
     logger.error({ err, retentionDays: days }, 'ADMIN_ACCESS_DENIED retention cleanup failed');
   }
   return totalDeleted;
+}
+
+/**
+ * Days a soft-deleted standalone page survives in the trash before the
+ * maintenance job hard-deletes it. The Trash UI's `autoPurgeAt` field
+ * (GET /api/pages/trash) is computed from the same constant so the promise
+ * shown to the user and the actual purge can never drift apart.
+ */
+export const STANDALONE_TRASH_RETENTION_DAYS = 30;
+
+/**
+ * Hard-delete standalone pages whose soft-delete (`pages.deleted_at`) is older
+ * than the 30-day trash window (UX review: the Trash UI promised "purged after
+ * 30 days" but nothing ever purged standalone pages — the only purge was
+ * Confluence-sync-scoped in sync-service's `purgeDeletedPages`, which this
+ * deliberately does NOT touch: it stays `source = 'standalone'`-scoped, so
+ * Confluence rows keep their upstream re-confirmation flow).
+ *
+ * Dependent rows (pinned_pages, page_embeddings, page_versions, comments,
+ * local_attachments, page_relationships, …) are removed via their
+ * `ON DELETE CASCADE` FKs on pages(id) — same contract the Confluence purge
+ * relies on (migrations 030/033/034/036/064/069).
+ *
+ * Returns the number of pages deleted this run. Never throws (errors are
+ * logged and the promise resolves with the count so far).
+ */
+export async function purgeExpiredStandalonePages(): Promise<number> {
+  const pool = getPool();
+  let deleted = 0;
+
+  try {
+    const { rowCount } = await pool.query(
+      `DELETE FROM pages
+        WHERE source = 'standalone'
+          AND deleted_at < NOW() - INTERVAL '1 day' * $1`,
+      [STANDALONE_TRASH_RETENTION_DAYS],
+    );
+    deleted = rowCount ?? 0;
+    if (deleted > 0) {
+      logger.info(
+        { deleted, retentionDays: STANDALONE_TRASH_RETENTION_DAYS },
+        'Standalone trash purge completed',
+      );
+    }
+    // Heartbeat audit row, including zero-row sweeps — see the umbrella loop
+    // in runRetentionCleanup() for the compliance rationale (#307 Finding #4).
+    await logAuditEvent(
+      null,
+      'RETENTION_PRUNED',
+      'table',
+      'pages_standalone_trash',
+      {
+        table: 'pages',
+        source_scope: 'standalone',
+        rows_pruned: deleted,
+        retention_days: STANDALONE_TRASH_RETENTION_DAYS,
+      },
+    );
+  } catch (err) {
+    logger.error(
+      { err, retentionDays: STANDALONE_TRASH_RETENTION_DAYS },
+      'Standalone trash purge failed',
+    );
+  }
+
+  return deleted;
 }
 
 /**

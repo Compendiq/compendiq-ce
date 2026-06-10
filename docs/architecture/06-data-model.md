@@ -309,6 +309,11 @@ erDiagram
   (`00000000-0000-0000-0000-000000000000`) inside the same transaction
   before issuing the `DELETE FROM users`.
 - **Soft delete** on `pages.deleted_at` — the Trash feature filters on this.
+  Standalone pages in the trash are hard-deleted after 30 days
+  (`purgeExpiredStandalonePages` in `data-retention-service.ts`, run by the
+  daily maintenance job; dependent rows go via `ON DELETE CASCADE`).
+  Confluence-synced pages have their own purge in `sync-service.ts`
+  (`purgeDeletedPages`, with upstream re-confirmation — see 08-flow-sync).
 - **Version history & restore** (`page_versions`, keyed by `page_id`). Snapshots
   are written on sync, on draft-publish, and before a restore — so both
   Confluence-synced and standalone/local pages accumulate history. The

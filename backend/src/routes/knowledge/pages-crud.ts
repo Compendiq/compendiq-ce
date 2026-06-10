@@ -18,6 +18,7 @@ import {
   type BulkSelection,
 } from '../../core/services/bulk-page-selection.js';
 import { emitWebhookEvent } from '../../core/services/webhook-emit-hook.js';
+import { STANDALONE_TRASH_RETENTION_DAYS } from '../../core/services/data-retention-service.js';
 import { processDirtyPages, isProcessingUser } from '../../domains/llm/services/embedding-service.js';
 import { triggerQualityBatch } from '../../domains/knowledge/services/quality-worker.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
@@ -691,14 +692,18 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
   fastify.get('/pages/trash', async (request) => {
     const userId = request.userId;
 
+    // JOIN users for the deleter's username: only the owner can soft-delete a
+    // standalone article (see DELETE /pages/:id), so owner == deleter.
     const result = await query<{
       id: number; title: string; source: string; visibility: string;
-      deleted_at: Date; last_synced: Date;
+      deleted_at: Date; last_synced: Date; deleted_by: string;
     }>(
-      `SELECT id, title, source, visibility, deleted_at, last_synced
-       FROM pages
-       WHERE source = 'standalone' AND deleted_at IS NOT NULL AND created_by_user_id = $1
-       ORDER BY deleted_at DESC`,
+      `SELECT p.id, p.title, p.source, p.visibility, p.deleted_at, p.last_synced,
+              u.username AS deleted_by
+       FROM pages p
+       JOIN users u ON u.id = p.created_by_user_id
+       WHERE p.source = 'standalone' AND p.deleted_at IS NOT NULL AND p.created_by_user_id = $1
+       ORDER BY p.deleted_at DESC`,
       [userId],
     );
 
@@ -710,6 +715,12 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         visibility: row.visibility,
         deletedAt: row.deleted_at,
         createdAt: row.last_synced,
+        deletedBy: row.deleted_by,
+        // Mirrors the maintenance purge (purgeExpiredStandalonePages) so the
+        // date shown in the Trash UI matches when the row actually disappears.
+        autoPurgeAt: new Date(
+          row.deleted_at.getTime() + STANDALONE_TRASH_RETENTION_DAYS * 24 * 60 * 60 * 1000,
+        ).toISOString(),
       })),
       total: result.rows.length,
     };

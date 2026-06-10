@@ -10,16 +10,20 @@
  *   - the caller's own private standalone articles
  */
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
-import Fastify from 'fastify';
-import sensible from '@fastify/sensible';
-import { ZodError } from 'zod';
+import type { FastifyInstance } from 'fastify';
 import {
   setupTestDb,
   truncateAllTables,
   teardownTestDb,
   isDbAvailable,
 } from '../../test-db-helper.js';
-import { query } from '../../core/db/postgres.js';
+import {
+  insertUser,
+  insertLocalSpace,
+  insertStandalonePage,
+  insertConfluencePage,
+  buildKnowledgeTestApp,
+} from './pages.test-helpers.js';
 
 // --- Boundary mocks (everything else is real) ---
 
@@ -41,55 +45,13 @@ vi.mock('../../core/services/rbac-service.js', () => ({
 
 const dbAvailable = await isDbAvailable();
 
-// --- Fixtures ---
-
-let userA: string;
-let userB: string;
-let currentUserId: string;
-
-async function insertUser(username: string): Promise<string> {
-  const res = await query<{ id: string }>(
-    "INSERT INTO users (username, email, password_hash, role) VALUES ($1, $2, 'x', 'user') RETURNING id",
-    [username, `${username}@test`],
-  );
-  return res.rows[0]!.id;
-}
-
-async function insertLocalSpace(spaceKey: string, createdBy: string): Promise<void> {
-  await query(
-    `INSERT INTO spaces (space_key, space_name, source, created_by, last_synced)
-     VALUES ($1, $1, 'local', $2, NOW())`,
-    [spaceKey, createdBy],
-  );
-}
-
-async function insertStandalonePage(
-  title: string,
-  visibility: 'private' | 'shared',
-  createdBy: string,
-  spaceKey: string,
-): Promise<void> {
-  await query(
-    `INSERT INTO pages (space_key, title, body_html, body_text, version, source,
-                        visibility, created_by_user_id, embedding_dirty, embedding_status)
-     VALUES ($1, $2, '<p>x</p>', 'x', 1, 'standalone', $3, $4, FALSE, 'not_embedded')`,
-    [spaceKey, title, visibility, createdBy],
-  );
-}
-
-async function insertConfluencePage(confluenceId: string, title: string, spaceKey: string): Promise<void> {
-  await query(
-    `INSERT INTO pages (confluence_id, source, space_key, title, body_text,
-                        body_storage, body_html, inherit_perms)
-     VALUES ($1, 'confluence', $2, $3, 'text', '', '', TRUE)`,
-    [confluenceId, spaceKey, title],
-  );
-}
-
 // --- Tests ---
 
 describe.skipIf(!dbAvailable)('GET /api/pages/tree — visibility predicate (DB)', () => {
-  let app: ReturnType<typeof Fastify>;
+  let app: FastifyInstance;
+  let userA: string;
+  let userB: string;
+  let currentUserId: string;
 
   async function treeTitles(asUser: string, url = '/api/pages/tree'): Promise<string[]> {
     currentUserId = asUser;
@@ -101,25 +63,13 @@ describe.skipIf(!dbAvailable)('GET /api/pages/tree — visibility predicate (DB)
 
   beforeAll(async () => {
     await setupTestDb();
-
-    app = Fastify({ logger: false });
-    await app.register(sensible);
-    app.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) => {
-      if (error instanceof ZodError) {
-        return reply.status(400).send({ error: 'Validation failed' });
-      }
-      return reply.status(error.statusCode ?? 500).send({ error: error.message });
-    });
-    app.decorate('authenticate', async (request: { userId: string }) => {
-      request.userId = currentUserId;
-    });
-    app.decorate('requireAdmin', async (request: { userId: string }) => {
-      request.userId = currentUserId;
-    });
-    app.decorate('redis', {});
-    const { pagesCrudRoutes } = await import('./pages-crud.js');
-    await app.register(pagesCrudRoutes, { prefix: '/api' });
-    await app.ready();
+    app = await buildKnowledgeTestApp(
+      () => currentUserId,
+      async (a) => {
+        const { pagesCrudRoutes } = await import('./pages-crud.js');
+        await a.register(pagesCrudRoutes, { prefix: '/api' });
+      },
+    );
   });
 
   afterAll(async () => {

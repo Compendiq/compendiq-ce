@@ -11,16 +11,21 @@
  *   - the caller's own private standalone articles
  */
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
-import Fastify from 'fastify';
-import sensible from '@fastify/sensible';
-import { ZodError } from 'zod';
+import type { FastifyInstance } from 'fastify';
 import {
   setupTestDb,
   truncateAllTables,
   teardownTestDb,
   isDbAvailable,
 } from '../../test-db-helper.js';
-import { query } from '../../core/db/postgres.js';
+import {
+  insertUser,
+  insertLocalSpace,
+  insertStandalonePage,
+  insertConfluencePage,
+  insertEmbeddings,
+  buildKnowledgeTestApp,
+} from './pages.test-helpers.js';
 
 // --- Boundary mocks (everything else is real) ---
 
@@ -32,70 +37,13 @@ vi.mock('../../core/services/rbac-service.js', () => ({
 
 const dbAvailable = await isDbAvailable();
 
-// --- Fixtures ---
-
-let userA: string;
-let userB: string;
-let currentUserId: string;
-
-async function insertUser(username: string): Promise<string> {
-  const res = await query<{ id: string }>(
-    "INSERT INTO users (username, email, password_hash, role) VALUES ($1, $2, 'x', 'user') RETURNING id",
-    [username, `${username}@test`],
-  );
-  return res.rows[0]!.id;
-}
-
-async function insertLocalSpace(spaceKey: string, createdBy: string): Promise<void> {
-  await query(
-    `INSERT INTO spaces (space_key, space_name, source, created_by, last_synced)
-     VALUES ($1, $1, 'local', $2, NOW())`,
-    [spaceKey, createdBy],
-  );
-}
-
-async function insertStandalonePage(
-  title: string,
-  visibility: 'private' | 'shared',
-  createdBy: string,
-  spaceKey: string,
-  opts: { dirty?: boolean } = {},
-): Promise<number> {
-  const res = await query<{ id: number }>(
-    `INSERT INTO pages (space_key, title, body_html, body_text, version, source,
-                        visibility, created_by_user_id, embedding_dirty, embedding_status)
-     VALUES ($1, $2, '<p>x</p>', 'x', 1, 'standalone', $3, $4, $5, 'not_embedded')
-     RETURNING id`,
-    [spaceKey, title, visibility, createdBy, opts.dirty ?? false],
-  );
-  return res.rows[0]!.id;
-}
-
-async function insertConfluencePage(confluenceId: string, title: string, spaceKey: string): Promise<void> {
-  await query(
-    `INSERT INTO pages (confluence_id, source, space_key, title, body_text,
-                        body_storage, body_html, inherit_perms, embedding_dirty)
-     VALUES ($1, 'confluence', $2, $3, 'text', '', '', TRUE, FALSE)`,
-    [confluenceId, spaceKey, title],
-  );
-}
-
-/** Insert `chunks` embedding rows for a page (zero vector, dims match schema). */
-async function insertEmbeddings(pageId: number, chunks: number): Promise<void> {
-  const zeroVector = `[${new Array(1024).fill(0).join(',')}]`;
-  for (let i = 0; i < chunks; i++) {
-    await query(
-      `INSERT INTO page_embeddings (page_id, chunk_index, chunk_text, embedding, metadata)
-       VALUES ($1, $2, 'chunk', $3::vector, '{}')`,
-      [pageId, i, zeroVector],
-    );
-  }
-}
-
 // --- Tests ---
 
 describe.skipIf(!dbAvailable)('GET /api/llm/embedding-status — visibility scope (DB)', () => {
-  let app: ReturnType<typeof Fastify>;
+  let app: FastifyInstance;
+  let userA: string;
+  let userB: string;
+  let currentUserId: string;
 
   async function statusAs(asUser: string): Promise<{
     totalPages: number;
@@ -111,25 +59,13 @@ describe.skipIf(!dbAvailable)('GET /api/llm/embedding-status — visibility scop
 
   beforeAll(async () => {
     await setupTestDb();
-
-    app = Fastify({ logger: false });
-    await app.register(sensible);
-    app.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) => {
-      if (error instanceof ZodError) {
-        return reply.status(400).send({ error: 'Validation failed' });
-      }
-      return reply.status(error.statusCode ?? 500).send({ error: error.message });
-    });
-    app.decorate('authenticate', async (request: { userId: string }) => {
-      request.userId = currentUserId;
-    });
-    app.decorate('requireAdmin', async (request: { userId: string }) => {
-      request.userId = currentUserId;
-    });
-    app.decorate('redis', {});
-    const { knowledgeAdminRoutes } = await import('./knowledge-admin.js');
-    await app.register(knowledgeAdminRoutes, { prefix: '/api' });
-    await app.ready();
+    app = await buildKnowledgeTestApp(
+      () => currentUserId,
+      async (a) => {
+        const { knowledgeAdminRoutes } = await import('./knowledge-admin.js');
+        await a.register(knowledgeAdminRoutes, { prefix: '/api' });
+      },
+    );
   });
 
   afterAll(async () => {
