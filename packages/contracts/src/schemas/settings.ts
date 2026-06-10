@@ -36,6 +36,10 @@ export const UpdateSettingsSchema = z.object({
   syncIntervalMin: z.number().int().min(1).max(1440).optional(),
   showSpaceHomeContent: z.boolean().optional(),
   customPrompts: CustomPromptsSchema.optional(),
+  // #771: true → record dismissal of the Confluence-PAT onboarding banner
+  // (server stores NOW() in user_settings.confluence_pat_prompt_dismissed_at);
+  // false → clear the dismissal so the banner can reappear.
+  confluencePatPromptDismissed: z.boolean().optional(),
 });
 
 export const SettingsResponseSchema = z.object({
@@ -53,6 +57,10 @@ export const SettingsResponseSchema = z.object({
   confluenceConnected: z.boolean(),
   showSpaceHomeContent: z.boolean(),
   customPrompts: CustomPromptsSchema,
+  // #771: whether the user dismissed the Confluence-PAT onboarding banner.
+  // Derived server-side from confluence_pat_prompt_dismissed_at IS NOT NULL —
+  // the timestamp itself is never exposed.
+  confluencePatPromptDismissed: z.boolean(),
 });
 
 export const SyncProgressSchema = z.object({

@@ -55,6 +55,7 @@ erDiagram
         text ollama_model
         text theme
         int sync_interval_min
+        timestamptz confluence_pat_prompt_dismissed_at "PAT onboarding banner dismissed (#771)"
     }
 
     pages {

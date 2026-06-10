@@ -6,6 +6,7 @@ import {
   type AccessContext,
   type SettingsNavItem,
 } from './settings-nav';
+import { CONFLUENCE_SETTINGS_PATH } from '../../shared/lib/routes';
 
 function ctx(partial: Partial<AccessContext> = {}): AccessContext {
   return {
@@ -70,6 +71,13 @@ describe('canSeeItem', () => {
 describe('firstVisiblePath', () => {
   it('returns /settings/personal/confluence for a vanilla user (first item in first group)', () => {
     expect(firstVisiblePath(ctx())).toBe('/settings/personal/confluence');
+  });
+
+  it('stays in sync with the shared CONFLUENCE_SETTINGS_PATH constant', () => {
+    // shared/lib/routes.ts duplicates this path so shared/ components
+    // (ConfluencePatBanner) can link to it without importing features/.
+    // Guard the constant against drifting from the nav-derived path.
+    expect(firstVisiblePath(ctx())).toBe(CONFLUENCE_SETTINGS_PATH);
   });
 });
 
