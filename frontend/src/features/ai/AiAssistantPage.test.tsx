@@ -1462,11 +1462,17 @@ describe('AiAssistantPage', () => {
   });
 
   // #703 — chat content must not bleed through the translucent sticky bars.
-  // Both bars carry an opaque bg-background under-mask (z-[-1]) extending
-  // 100px past the bar, mirroring PageViewPage's edit toolbar, so scrolling
-  // messages are fully occluded above the sub-header and below the input bar.
-  describe('sticky bar under-mask (#703)', () => {
-    it('renders an opaque under-mask behind the top sub-header that extends upward', () => {
+  // Both bars carry an opaque bg-background under-mask (z-[-1]) covering
+  // exactly the bar's box (inset-0), so scrolling messages are fully occluded
+  // behind the sub-header and the input bar.
+  //
+  // #769 — the masks must NOT extend past the bar's box: the original
+  // -top-[100px] / -bottom-[100px] extensions overflowed the scroll
+  // container, and absolute overflow past the block-end edge grows the
+  // scrollable overflow region — producing ~100px of phantom vertical scroll
+  // on every mode even when content fit the viewport.
+  describe('sticky bar under-mask (#703, #769)', () => {
+    it('renders an opaque under-mask behind the top sub-header covering exactly its box', () => {
       const { container } = render(<AiAssistantPage />, { wrapper: createWrapper() });
 
       // The sticky sub-header wrapper establishes its own stacking context
@@ -1476,35 +1482,56 @@ describe('AiAssistantPage', () => {
       expect(subHeader!.className).toContain('isolate');
 
       // The under-mask is an aria-hidden, opaque bg-background div behind the
-      // bar (z-[-1]) reaching 100px upward so messages scrolling up are hidden
-      // above the tab row.
+      // bar (z-[-1]). inset-0 pins it to the bar's box: the bar sticks flush
+      // at the scrollport top, so the bar-sized mask fully occludes messages
+      // scrolling up (#703) without overflowing the bar.
       const mask = subHeader!.querySelector('[aria-hidden]');
       expect(mask).not.toBeNull();
       expect(mask!.className).toContain('bg-background');
       expect(mask!.className).not.toContain('bg-background/');
       expect(mask!.className).toContain('z-[-1]');
-      expect(mask!.className).toContain('-top-[100px]');
+      expect(mask!.className).toContain('inset-0');
       expect(mask!.className).toContain('pointer-events-none');
-      expect((mask as HTMLElement).style.bottom).toBe('0px');
     });
 
-    it('renders an opaque under-mask behind the bottom input bar that extends downward', () => {
+    it('renders an opaque under-mask behind the bottom input bar covering exactly its box', () => {
       const { container } = render(<AiAssistantPage />, { wrapper: createWrapper() });
 
       const inputBar = container.querySelector('.sticky.bottom-0');
       expect(inputBar).not.toBeNull();
       expect(inputBar!.className).toContain('isolate');
 
-      // The under-mask reaches 100px downward so messages scrolling down are
-      // hidden below the input field + submit button.
+      // The bar sticks flush at the scrollport bottom, so a bar-sized
+      // (inset-0) mask fully occludes messages scrolling down (#703) without
+      // overflowing the bar.
       const mask = inputBar!.querySelector('[aria-hidden]');
       expect(mask).not.toBeNull();
       expect(mask!.className).toContain('bg-background');
       expect(mask!.className).not.toContain('bg-background/');
       expect(mask!.className).toContain('z-[-1]');
-      expect(mask!.className).toContain('-bottom-[100px]');
+      expect(mask!.className).toContain('inset-0');
       expect(mask!.className).toContain('pointer-events-none');
-      expect((mask as HTMLElement).style.top).toBe('0px');
+    });
+
+    it('no under-mask extends past its sticky bar (regression: #769 phantom scroll)', () => {
+      const { container } = render(<AiAssistantPage />, { wrapper: createWrapper() });
+
+      const bars = [
+        container.querySelector('.sticky.top-0'),
+        container.querySelector('.sticky.bottom-0'),
+      ];
+      for (const bar of bars) {
+        expect(bar).not.toBeNull();
+        const mask = bar!.querySelector('[aria-hidden]') as HTMLElement;
+        expect(mask).not.toBeNull();
+        // Negative inset offsets (e.g. -top-[100px] / -bottom-[100px]) push
+        // the absolutely positioned mask outside the scroll container's
+        // content edge; overflow past the block-end edge adds phantom
+        // scrollable height. The mask must keep all four edges on the bar.
+        expect(mask.className).not.toMatch(/-(top|bottom|left|right|inset(-[xy])?)-\[/);
+        expect(mask.style.top).toBe('');
+        expect(mask.style.bottom).toBe('');
+      }
     });
   });
 });
