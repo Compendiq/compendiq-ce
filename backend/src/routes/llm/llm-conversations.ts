@@ -112,8 +112,10 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     const existing = await query<{
       id: number; version: number; title: string; space_key: string;
       source: string; confluence_id: string | null; body_html: string | null;
+      created_by_user_id: string | null; visibility: string;
     }>(
-      `SELECT id, version, title, space_key, source, confluence_id, body_html FROM pages
+      `SELECT id, version, title, space_key, source, confluence_id, body_html,
+              created_by_user_id, visibility FROM pages
        WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'} AND deleted_at IS NULL`,
       [isNumericId ? parseInt(pageId, 10) : pageId],
     );
@@ -122,6 +124,22 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     }
 
     const existingPage = existing.rows[0]!;
+
+    // IDOR guard (#734): a standalone page is writable only by its owner
+    // unless it is explicitly shared — same rule as PATCH /pages/:id.
+    // Respond 404 (not 403/409) so another user's private page never leaks
+    // its existence, title, or version; this must run before the version
+    // check below to avoid a 404-vs-409 existence oracle. Confluence-sourced
+    // pages are not gated here: that branch pushes through the caller's own
+    // Confluence client, so Confluence ACLs apply.
+    if (
+      existingPage.source === 'standalone' &&
+      existingPage.created_by_user_id !== userId &&
+      existingPage.visibility !== 'shared'
+    ) {
+      throw fastify.httpErrors.notFound('Page not found');
+    }
+
     const currentVersion = existingPage.version;
     const pageTitle = title ?? existingPage.title;
 
