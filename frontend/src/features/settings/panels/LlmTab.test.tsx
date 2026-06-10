@@ -78,8 +78,23 @@ const assignments = {
   },
 };
 
-function mockRoutes(options?: { concurrentStreamsCap?: number }) {
+function mockRoutes(options?: {
+  concurrentStreamsCap?: number;
+  /** `null` → field omitted from the settings payload (legacy backend). */
+  embeddingDimensions?: number | null;
+  probeDimensions?: number;
+}) {
   const cap = options?.concurrentStreamsCap ?? 3;
+  const settingsBody: Record<string, unknown> = {
+    ftsLanguage: 'simple',
+    embeddingChunkSize: 500,
+    embeddingChunkOverlap: 50,
+    drawioEmbedUrl: null,
+    llmMaxConcurrentStreamsPerUser: cap,
+  };
+  if (options?.embeddingDimensions !== null) {
+    settingsBody.embeddingDimensions = options?.embeddingDimensions ?? 1024;
+  }
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init = {}) => {
     const url = typeof input === 'string' ? input : (input as URL).toString();
     if (url.endsWith('/admin/llm-providers') && (init as RequestInit).method !== 'POST') {
@@ -98,25 +113,17 @@ function mockRoutes(options?: { concurrentStreamsCap?: number }) {
       });
     }
     if (url.endsWith('/admin/settings') && (init as RequestInit).method !== 'PUT') {
-      return new Response(
-        JSON.stringify({
-          embeddingDimensions: 1024,
-          ftsLanguage: 'simple',
-          embeddingChunkSize: 500,
-          embeddingChunkOverlap: 50,
-          drawioEmbedUrl: null,
-          llmMaxConcurrentStreamsPerUser: cap,
-        }),
-        { headers: { 'Content-Type': 'application/json' } },
-      );
+      return new Response(JSON.stringify(settingsBody), {
+        headers: { 'Content-Type': 'application/json' },
+      });
     }
     if (url.endsWith('/admin/settings') && (init as RequestInit).method === 'PUT') {
       return new Response(JSON.stringify({ message: 'Admin settings updated' }), {
         headers: { 'Content-Type': 'application/json' },
       });
     }
-    if (url.includes('/admin/embedding/dimensions')) {
-      return new Response(JSON.stringify({ dimensions: 1024 }), {
+    if (url.endsWith('/admin/embedding/probe') && (init as RequestInit).method === 'POST') {
+      return new Response(JSON.stringify({ dimensions: options?.probeDimensions ?? 1024 }), {
         headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -270,11 +277,6 @@ describe('LlmTab', () => {
           { headers: { 'Content-Type': 'application/json' } },
         );
       }
-      if (url.endsWith('/admin/embedding/dimensions')) {
-        return new Response(JSON.stringify({ dimensions: 1024 }), {
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
       return new Response(JSON.stringify([]), { headers: { 'Content-Type': 'application/json' } });
     });
 
@@ -307,5 +309,45 @@ describe('LlmTab', () => {
       const body = JSON.parse((putCall![1] as RequestInit).body as string);
       expect(body.llmMaxConcurrentStreamsPerUser).toBe(8);
     });
+  });
+
+  // ── Embedding dimensions source (UX fix, Task 10) ──
+  // GET /api/admin/embedding/dimensions does not exist on the backend, so the
+  // old dedicated query 404'd on every visit to Settings → AI Models. The
+  // value must come from the shared /admin/settings payload instead.
+
+  it('reads embedding dimensions from /admin/settings and never requests /admin/embedding/dimensions', async () => {
+    const Wrapper = createWrapper();
+    const spy = mockRoutes({ embeddingDimensions: 768, probeDimensions: 768 });
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByText('Use case assignments');
+
+    // Reveal the re-embed banner and probe so currentDimensions is displayed.
+    fireEvent.change(screen.getByTestId('usecase-embedding-provider'), {
+      target: { value: providerB.id },
+    });
+    fireEvent.click(await screen.findByRole('button', { name: /probe/i }));
+    // Probe returns the same dims → confirm copy renders the settings value.
+    await screen.findByText(/dimension stays at 768/i);
+
+    // The dead endpoint must never be requested.
+    const deadCalls = spy.mock.calls.filter(([input]) => {
+      const url = typeof input === 'string' ? input : (input as URL).toString();
+      return url.includes('/admin/embedding/dimensions');
+    });
+    expect(deadCalls).toHaveLength(0);
+  });
+
+  it('falls back to 1024 dimensions when the settings payload omits embeddingDimensions', async () => {
+    const Wrapper = createWrapper();
+    mockRoutes({ embeddingDimensions: null, probeDimensions: 1024 });
+    render(<LlmTab />, { wrapper: Wrapper });
+    await screen.findByText('Use case assignments');
+
+    fireEvent.change(screen.getByTestId('usecase-embedding-provider'), {
+      target: { value: providerB.id },
+    });
+    fireEvent.click(await screen.findByRole('button', { name: /probe/i }));
+    await screen.findByText(/dimension stays at 1024/i);
   });
 });
