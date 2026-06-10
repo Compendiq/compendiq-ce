@@ -331,7 +331,7 @@ export function SyncTab() {
               )}
             </div>
             <p className="text-sm text-muted-foreground">
-              Background worker that scores each article on completeness, clarity, structure, accuracy, and readability.
+              Background worker that scores each page on completeness, clarity, structure, accuracy, and readability.
             </p>
           </div>
 
@@ -388,7 +388,7 @@ export function SyncTab() {
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div className="space-y-1">
             <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-sm font-semibold uppercase tracking-[0.16em] text-muted-foreground">Article Summaries</h2>
+              <h2 className="text-sm font-semibold uppercase tracking-[0.16em] text-muted-foreground">Page Summaries</h2>
               {summaryStatus && (
                 <StatusBadge
                   label={summaryStatus.isProcessing ? 'Summarizing' : 'Idle'}
@@ -398,7 +398,7 @@ export function SyncTab() {
               )}
             </div>
             <p className="text-sm text-muted-foreground">
-              Background worker that generates concise summaries for each article using the LLM.
+              Background worker that generates concise summaries for each page using the LLM.
             </p>
           </div>
 

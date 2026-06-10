@@ -50,7 +50,7 @@ export function ConfluenceStep({ onNext, onBack }: ConfluenceStepProps) {
     >
       <h2 className="text-xl font-semibold">Connect Confluence</h2>
       <p className="mt-1 text-sm text-muted-foreground">
-        Connect to your Confluence Data Center instance to sync knowledge base articles. This step is optional
+        Connect to your Confluence Data Center instance to sync knowledge base pages. This step is optional
         -- you can always configure it later.
       </p>
 

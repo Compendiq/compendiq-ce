@@ -202,8 +202,10 @@ export function LicenseStatusCard() {
             key string. */}
         {storedKeyInvalid && (
           <div className="border-t border-destructive/30 bg-destructive/10 px-5 py-3 text-sm" data-testid="license-expired-banner">
+            {/* The key encodes the expiry as a UTC date — format in UTC so
+                east-of-UTC locales don't display a day-late date. */}
             {isExpired ? (
-              <>Your stored license key expired on <strong>{expiredDate!.toLocaleDateString()}</strong>. Enterprise features are locked until a new key is saved.</>
+              <>Your stored license key expired on <strong>{expiredDate!.toLocaleDateString(undefined, { timeZone: 'UTC' })}</strong>. Enterprise features are locked until a new key is saved.</>
             ) : (
               <>The stored license key is invalid. Enterprise features are locked until a valid key is saved.</>
             )}
@@ -227,7 +229,7 @@ export function LicenseStatusCard() {
                 {isExpired ? 'Expired' : 'Expires'}
               </div>
               <div className="mt-1 text-xl font-semibold">
-                {data?.expiresAt ? new Date(data.expiresAt).toLocaleDateString() : 'N/A'}
+                {data?.expiresAt ? new Date(data.expiresAt).toLocaleDateString(undefined, { timeZone: 'UTC' }) : 'N/A'}
               </div>
             </div>
           </div>

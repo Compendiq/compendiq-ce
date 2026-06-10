@@ -35,7 +35,7 @@ export function TrashPage() {
         <div>
           <h1 className="text-2xl font-bold">Trash</h1>
           <p className="text-sm text-muted-foreground">
-            Deleted articles are automatically purged after 30 days
+            Deleted pages are automatically purged 30 days after deletion
           </p>
         </div>
       </div>
@@ -50,9 +50,9 @@ export function TrashPage() {
       ) : !trashData?.items.length ? (
         <div className="nm-card flex flex-col items-center justify-center py-16 text-center" data-testid="trash-empty">
           <Trash2 size={48} className="mb-4 text-muted-foreground" />
-          <p className="text-lg font-medium">No articles in trash</p>
+          <p className="text-lg font-medium">No pages in trash</p>
           <p className="text-sm text-muted-foreground">
-            Deleted standalone articles will appear here
+            Deleted local pages will appear here
           </p>
         </div>
       ) : (

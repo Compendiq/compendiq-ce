@@ -740,7 +740,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
       {treeData && (
         <div className="px-3 py-1.5">
           <span className="text-[10px] text-muted-foreground">
-            {treeData.total} pages{treeSidebarSpaceKey ? ` in ${treeSidebarSpaceKey}` : ''}
+            {treeData.total} {treeData.total === 1 ? 'page' : 'pages'}{treeSidebarSpaceKey ? ` in ${treeSidebarSpaceKey}` : ''}
           </span>
         </div>
       )}

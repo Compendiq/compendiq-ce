@@ -334,7 +334,7 @@ export function ArticleOutline({
         />
       </div>
 
-      <nav aria-label="Article outline">
+      <nav aria-label="Page outline">
         <ul className="space-y-1">
           {tree.map((node) => (
             <OutlineItem

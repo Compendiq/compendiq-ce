@@ -97,6 +97,10 @@ describe('ServiceStatus', () => {
     await waitFor(() => {
       expect(screen.getByText('Redis is unavailable')).toBeInTheDocument();
     });
+
+    // Unlike the LLM alert, the Redis alert has no settings page to link to —
+    // it must render without any link.
+    expect(screen.queryByRole('link')).not.toBeInTheDocument();
   });
 
   it('shows network error when fetch fails', async () => {

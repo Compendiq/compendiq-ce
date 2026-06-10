@@ -122,7 +122,7 @@ export function FlowchartGenerator({
           version: pageVersion,
         }),
       });
-      toast.success('Diagram inserted into article');
+      toast.success('Diagram inserted into page');
       queryClient.invalidateQueries({ queryKey: ['pages', pageId] });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to insert diagram');
@@ -135,7 +135,7 @@ export function FlowchartGenerator({
     <button
       onClick={toggleOpen}
       className="nm-card flex items-center gap-1.5 px-3 py-1.5 text-sm hover:bg-foreground/5"
-      title="Generate diagram from article"
+      title="Generate diagram from page"
     >
       <GitBranch size={14} /> <span className="hidden sm:inline">Diagram</span>
     </button>
@@ -212,7 +212,7 @@ export function FlowchartGenerator({
             {isInserting ? (
               <><Loader2 size={14} className="animate-spin" /> Inserting...</>
             ) : (
-              <><FileInput size={14} /> Use in article</>
+              <><FileInput size={14} /> Use in page</>
             )}
           </button>
         </>

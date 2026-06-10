@@ -519,7 +519,7 @@ export function ArticleRightPane() {
             <button
               onClick={toggleSidebar}
               className={railIconBtn}
-              aria-label="Expand article sidebar"
+              aria-label="Expand page sidebar"
               title="Expand sidebar (.)"
             >
               <PanelRight size={16} />
@@ -641,7 +641,7 @@ export function ArticleRightPane() {
                 <button
                   onClick={handleDelete}
                   className="rounded-lg p-1.5 text-destructive/80 transition-colors hover:bg-destructive/8 hover:text-destructive"
-                  aria-label="Delete article"
+                  aria-label="Delete page"
                   title={`Delete (${formatKeysForPlatform(getShortcutHint('delete-page') ?? '', detectMac())})`}
                 >
                   <Trash2 size={16} />
@@ -676,7 +676,7 @@ export function ArticleRightPane() {
         <button
           onClick={toggleSidebar}
           className="flex items-center gap-0.5 rounded-lg p-1 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
-          aria-label="Collapse article sidebar"
+          aria-label="Collapse page sidebar"
           title="Collapse sidebar (.)"
         >
           <PanelRightClose size={14} />
@@ -927,7 +927,7 @@ export function ArticleRightPane() {
       <div className="flex-1 overflow-y-auto p-1.5 scroll-mask" data-testid="article-outline-tree">
         {headings.length === 0 ? (
           <div className="px-3 py-6 text-center text-xs text-muted-foreground">
-            No headings in this article.
+            No headings on this page.
           </div>
         ) : (
           <div className="space-y-0.5">
@@ -948,7 +948,7 @@ export function ArticleRightPane() {
       {/* Resize handle */}
       <div
         role="separator"
-        aria-label="Resize article sidebar"
+        aria-label="Resize page sidebar"
         aria-orientation="vertical"
         onMouseDown={handleResizeStart}
         className={cn(

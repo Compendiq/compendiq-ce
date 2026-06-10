@@ -220,8 +220,9 @@ describe('LicenseStatusCard', () => {
     expect(screen.getAllByText('Expired').length).toBeGreaterThanOrEqual(1);
     expect(screen.queryByText('Free')).not.toBeInTheDocument();
 
-    // Banner explains the expiry with the locale-formatted date
-    const expiredDateText = new Date('2026-05-15T23:59:59.999Z').toLocaleDateString();
+    // Banner explains the expiry with the locale-formatted date (UTC — the
+    // key string encodes a UTC date, so the display must not shift by TZ)
+    const expiredDateText = new Date('2026-05-15T23:59:59.999Z').toLocaleDateString(undefined, { timeZone: 'UTC' });
     const banner = screen.getByTestId('license-expired-banner');
     expect(banner.textContent).toContain('expired on');
     expect(banner.textContent).toContain(expiredDateText);

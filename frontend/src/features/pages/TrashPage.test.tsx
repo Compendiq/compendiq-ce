@@ -86,7 +86,7 @@ describe('TrashPage', () => {
     render(<TrashPage />, { wrapper: createWrapper() });
     const empty = await screen.findByTestId('trash-empty');
     expect(empty).toBeInTheDocument();
-    expect(screen.getByText('No articles in trash')).toBeInTheDocument();
+    expect(screen.getByText('No pages in trash')).toBeInTheDocument();
   });
 
   it('renders trash items fetched from GET /api/pages/trash', async () => {

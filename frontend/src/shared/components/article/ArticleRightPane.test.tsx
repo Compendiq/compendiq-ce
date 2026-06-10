@@ -166,7 +166,7 @@ describe('ArticleRightPane', () => {
   it('collapses to a slim rail when the collapse button is clicked', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    fireEvent.click(screen.getByLabelText('Collapse article sidebar'));
+    fireEvent.click(screen.getByLabelText('Collapse page sidebar'));
 
     expect(screen.getByTestId('article-right-pane-rail')).toBeInTheDocument();
     expect(screen.queryByTestId('article-right-pane')).not.toBeInTheDocument();
@@ -179,7 +179,7 @@ describe('ArticleRightPane', () => {
 
     expect(screen.getByTestId('article-right-pane-rail')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByLabelText('Expand article sidebar'));
+    fireEvent.click(screen.getByLabelText('Expand page sidebar'));
 
     expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
   });
@@ -363,7 +363,7 @@ describe('ArticleRightPane', () => {
   it('shows empty message when there are no headings', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    expect(screen.getByText('No headings in this article.')).toBeInTheDocument();
+    expect(screen.getByText('No headings on this page.')).toBeInTheDocument();
   });
 
   it('renders version and space key in the footer', () => {
@@ -376,7 +376,7 @@ describe('ArticleRightPane', () => {
   it('has a resize handle', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    expect(screen.getByRole('separator', { name: 'Resize article sidebar' })).toBeInTheDocument();
+    expect(screen.getByRole('separator', { name: 'Resize page sidebar' })).toBeInTheDocument();
   });
 
   it('renders QualityScoreBadge in properties when quality score is present', () => {
@@ -462,7 +462,7 @@ describe('ArticleRightPane', () => {
 
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    fireEvent.click(screen.getByLabelText('Delete article'));
+    fireEvent.click(screen.getByLabelText('Delete page'));
 
     expect(await screen.findByText('Move page to trash?')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));

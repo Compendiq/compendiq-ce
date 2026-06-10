@@ -60,11 +60,16 @@ const mockUsers = [
   },
 ];
 
+// Mutable list returned by the fetch mock — tests can override before render
+// (e.g. to simulate an instance where no user has an email address).
+let mockUsersList: typeof mockUsers = mockUsers;
+
 describe('UsersAdminPage', () => {
   beforeEach(() => {
     // Default: bulk feature OFF. Tests that need the bulk UI flip this
     // before render.
     mockHasFeature = () => false;
+    mockUsersList = mockUsers;
 
     // Pretend we're logged in as alice so self-actions are hidden.
     useAuthStore.setState({
@@ -79,7 +84,7 @@ describe('UsersAdminPage', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = typeof input === 'string' ? input : (input as Request).url;
       if (url.endsWith('/api/admin/users') && (input as Request).method !== 'POST') {
-        return new Response(JSON.stringify({ users: mockUsers }), {
+        return new Response(JSON.stringify({ users: mockUsersList }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
         });
@@ -189,6 +194,24 @@ describe('UsersAdminPage', () => {
     expect(roleSelect.tagName).toBe('SELECT');
     expect(roleSelect.className).toContain('nm-select-md');
     expect(roleSelect).toHaveValue('user');
+  });
+
+  it('shows the Email column when at least one user has an email', async () => {
+    render(<UsersAdminPage />, { wrapper: createWrapper() });
+    await waitFor(() => screen.getByText('alice'));
+
+    expect(screen.getByText('Email')).toBeInTheDocument();
+    expect(screen.getByText('alice@example.com')).toBeInTheDocument();
+  });
+
+  it('hides the Email column entirely when no user has an email', async () => {
+    mockUsersList = mockUsers.map((u) => ({ ...u, email: null })) as unknown as typeof mockUsers;
+    render(<UsersAdminPage />, { wrapper: createWrapper() });
+    await waitFor(() => screen.getByText('alice'));
+
+    // Neither the header nor the "—" placeholder cells render.
+    expect(screen.queryByText('Email')).not.toBeInTheDocument();
+    expect(screen.queryByText('—')).not.toBeInTheDocument();
   });
 
   // ── EE #116 — bulk UI gating ───────────────────────────────────────────

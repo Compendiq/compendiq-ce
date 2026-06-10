@@ -538,7 +538,7 @@ describe('AiAssistantPage', () => {
 
       // Verify success toast
       await waitFor(() => {
-        expect(toastSuccessMock).toHaveBeenCalledWith('Article updated and synced to Confluence');
+        expect(toastSuccessMock).toHaveBeenCalledWith('Page updated and synced to Confluence');
       });
     });
 
@@ -750,8 +750,8 @@ describe('AiAssistantPage', () => {
     });
   });
 
-  describe('diagram mode - Use in article', () => {
-    it('shows "Use in article" button after diagram generation when page is selected', async () => {
+  describe('diagram mode - Use in page', () => {
+    it('shows "Use in page" button after diagram generation when page is selected', async () => {
       mockPageData = {
         data: { id: 'p1', title: 'My Article', bodyHtml: '<p>Content</p>', bodyText: 'Content', version: 3 },
       };
@@ -794,11 +794,11 @@ describe('AiAssistantPage', () => {
 
       // Wait for stream to complete and button to appear
       await waitFor(() => {
-        expect(screen.getByText('Use in article')).toBeInTheDocument();
+        expect(screen.getByText('Use in page')).toBeInTheDocument();
       });
     });
 
-    it('does not show "Use in article" button when no page is selected', async () => {
+    it('does not show "Use in page" button when no page is selected', async () => {
       mockPageData = { data: undefined };
 
       apiFetchMock.mockImplementation((path: string) => {
@@ -820,10 +820,10 @@ describe('AiAssistantPage', () => {
       fireEvent.click(screen.getByText('Diagram'));
 
       // The button should not appear (no page context)
-      expect(screen.queryByText('Use in article')).not.toBeInTheDocument();
+      expect(screen.queryByText('Use in page')).not.toBeInTheDocument();
     });
 
-    it('calls apiFetch with PUT when "Use in article" is clicked in diagram mode', async () => {
+    it('calls apiFetch with PUT when "Use in page" is clicked in diagram mode', async () => {
       mockPageData = {
         data: { id: 'p1', title: 'My Article', bodyHtml: '<p>Content</p>', bodyText: 'Content', version: 3 },
       };
@@ -866,13 +866,13 @@ describe('AiAssistantPage', () => {
       const diagramBtn = btns.find((b) => b.textContent?.includes('Generate Diagram'))!;
       fireEvent.click(diagramBtn);
 
-      // Wait for "Use in article" button
+      // Wait for "Use in page" button
       await waitFor(() => {
-        expect(screen.getByText('Use in article')).toBeInTheDocument();
+        expect(screen.getByText('Use in page')).toBeInTheDocument();
       });
 
-      // Click "Use in article"
-      fireEvent.click(screen.getByText('Use in article'));
+      // Click "Use in page"
+      fireEvent.click(screen.getByText('Use in page'));
 
       // Verify the PUT call was made
       await waitFor(() => {
@@ -890,7 +890,7 @@ describe('AiAssistantPage', () => {
 
       // Verify success toast
       await waitFor(() => {
-        expect(toastSuccessMock).toHaveBeenCalledWith('Diagram inserted into article');
+        expect(toastSuccessMock).toHaveBeenCalledWith('Diagram inserted into page');
       });
     });
   });
@@ -1111,7 +1111,7 @@ describe('AiAssistantPage', () => {
       // Should NOT show Q&A message
       expect(screen.queryByText('Ask questions about your knowledge base')).not.toBeInTheDocument();
       // Should NOT show "Open a page first" from other modes bleeding through
-      expect(screen.queryByText('AI will create a full article based on your prompt')).not.toBeInTheDocument();
+      expect(screen.queryByText('AI will create a full page based on your prompt')).not.toBeInTheDocument();
     });
 
     it('shows only Q&A empty state in ask mode', () => {

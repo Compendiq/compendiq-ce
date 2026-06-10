@@ -318,7 +318,7 @@ export function NewPagePage() {
             <Editor
               content=""
               onChange={setBodyHtml}
-              placeholder="Start writing your article..."
+              placeholder="Start writing your page..."
               draftKey={NEW_PAGE_DRAFT_KEY}
               naked
               hideToolbar

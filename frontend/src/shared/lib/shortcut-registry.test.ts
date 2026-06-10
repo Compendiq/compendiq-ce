@@ -119,7 +119,7 @@ describe('shortcut-registry', () => {
       const shortcut = SHORTCUTS.find((s) => s.id === 'save');
       expect(shortcut).toBeDefined();
       expect(shortcut!.keys).toBe('ctrl+s');
-      expect(shortcut!.label).toBe('Save article');
+      expect(shortcut!.label).toBe('Save page');
       expect(shortcut!.category).toBe('editor');
     });
 

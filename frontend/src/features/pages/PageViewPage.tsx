@@ -206,7 +206,7 @@ export function PageViewPage() {
     setEditTitle(page.title);
     const draft = getDraft(`page-${id}`);
     if (draft && draft !== page.bodyHtml) {
-      const restoreDraft = window.confirm('A draft was found for this article. Restore it?');
+      const restoreDraft = window.confirm('A draft was found for this page. Restore it?');
       setEditHtml(restoreDraft ? draft : page.bodyHtml);
     } else {
       setEditHtml(page.bodyHtml);
@@ -246,9 +246,9 @@ export function PageViewPage() {
       });
       if (draftKey) clearDraft(draftKey);
       setEditing(false);
-      toast.success('Article saved.');
+      toast.success('Page saved.');
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to save article.';
+      const message = error instanceof Error ? error.message : 'Failed to save page.';
       if (message.includes('modified since you loaded')) {
         toast.error('Version conflict detected.', {
           action: {
@@ -381,7 +381,7 @@ export function PageViewPage() {
       key: 'Ctrl+S',
       keys: ['s'],
       mod: true,
-      description: 'Save current article',
+      description: 'Save current page',
       category: 'editor',
       action: () => {
         if (editing) handleSave();
@@ -454,7 +454,7 @@ export function PageViewPage() {
     return (
       <div className="nm-card flex min-h-[18rem] flex-col items-center justify-center gap-3 py-16 text-center">
         <FileText size={42} className="text-muted-foreground" />
-        <h1 className="text-xl font-semibold text-foreground">Article not found</h1>
+        <h1 className="text-xl font-semibold text-foreground">Page not found</h1>
         <p className="max-w-md text-sm text-muted-foreground">
           The selected page is unavailable or no longer accessible in the synced space tree.
         </p>
@@ -657,7 +657,7 @@ export function PageViewPage() {
                   value={editTitle}
                   onChange={(event) => setEditTitle(event.target.value)}
                   className="w-full bg-transparent text-3xl font-bold leading-tight tracking-[-0.02em] text-foreground outline-none placeholder:text-muted-foreground/40"
-                  placeholder="Article title…"
+                  placeholder="Page title…"
                 />
               </div>
             </div>
@@ -728,7 +728,7 @@ export function PageViewPage() {
               />
             )}
 
-            <FeatureErrorBoundary featureName="Article Viewer">
+            <FeatureErrorBoundary featureName="Page Viewer">
               <ArticleViewer
                 content={page.bodyHtml}
                 confluenceUrl={settings?.confluenceUrl}
@@ -804,7 +804,7 @@ function FeedbackWidget({ pageId }: { pageId: string | undefined }) {
 
   return (
     <div className="mt-12 border-t border-border/25 pt-6" data-testid="feedback-widget">
-      <p className="mb-3 text-sm font-medium text-muted-foreground">Was this article helpful?</p>
+      <p className="mb-3 text-sm font-medium text-muted-foreground">Was this page helpful?</p>
       <div className="flex gap-2">
         <button
           onClick={() => handleFeedback(true)}

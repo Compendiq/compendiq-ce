@@ -54,7 +54,7 @@ export const SHORTCUTS: ShortcutRegistryEntry[] = [
   { id: 'close-modal', keys: 'esc', label: 'Close dialog / modal', category: 'panels' },
 
   // -- Editor --
-  { id: 'save', keys: 'ctrl+s', label: 'Save article', category: 'editor' },
+  { id: 'save', keys: 'ctrl+s', label: 'Save page', category: 'editor' },
   { id: 'toggle-edit', keys: 'ctrl+e', label: 'Toggle Edit Mode', category: 'editor' },
 
   // -- Editor (diagram lightbox) --

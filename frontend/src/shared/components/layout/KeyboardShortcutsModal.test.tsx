@@ -43,7 +43,7 @@ describe('KeyboardShortcutsModal', () => {
     expect(screen.getByText('Toggle Right Panel')).toBeInTheDocument();
     expect(screen.getByText('Zen Mode')).toBeInTheDocument();
     // Editor
-    expect(screen.getByText('Save article')).toBeInTheDocument();
+    expect(screen.getByText('Save page')).toBeInTheDocument();
     expect(screen.getByText('Toggle Edit Mode')).toBeInTheDocument();
   });
 
@@ -111,7 +111,7 @@ describe('KeyboardShortcutsModal', () => {
     render(<KeyboardShortcutsModal />);
 
     expect(screen.getByText('Formatting (Editor)')).toBeInTheDocument();
-    expect(screen.getByText('Active when editing an article')).toBeInTheDocument();
+    expect(screen.getByText('Active when editing a page')).toBeInTheDocument();
   });
 
   it('shows TipTap formatting shortcut labels', () => {

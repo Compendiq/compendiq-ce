@@ -100,7 +100,7 @@ describe('QualityMode', () => {
   });
 
   it('exports correct empty state constants', () => {
-    expect(QUALITY_EMPTY_TITLE).toBe('Analyze article quality across multiple dimensions');
+    expect(QUALITY_EMPTY_TITLE).toBe('Analyze page quality across multiple dimensions');
     expect(qualityEmptySubtitle(undefined)).toContain('Navigate to a page');
     expect(qualityEmptySubtitle({ title: 'My Article' })).toContain('My Article');
   });

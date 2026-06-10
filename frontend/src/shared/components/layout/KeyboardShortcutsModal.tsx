@@ -95,7 +95,7 @@ export function KeyboardShortcutsModal() {
                 <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
                   {getCategoryLabel('formatting')}
                 </h3>
-                <p className="mb-2 text-[10px] text-muted-foreground/60">Active when editing an article</p>
+                <p className="mb-2 text-[10px] text-muted-foreground/60">Active when editing a page</p>
                 <div className="space-y-1.5">
                   {TIPTAP_SHORTCUTS.map((shortcut) => (
                     <div
@@ -133,7 +133,7 @@ export function KeyboardShortcutsModal() {
               </Switch.Root>
             </div>
             <p className="text-[11px] text-muted-foreground">
-              Shortcuts are disabled when typing in an input, textarea, or the article editor.
+              Shortcuts are disabled when typing in an input, textarea, or the page editor.
             </p>
           </div>
         </Dialog.Content>

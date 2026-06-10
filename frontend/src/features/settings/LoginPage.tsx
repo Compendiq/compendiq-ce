@@ -27,6 +27,8 @@ export function LoginPage() {
   const [isRegister, setIsRegister] = useState(false);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [confirmError, setConfirmError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [oidcConfig, setOidcConfig] = useState<OidcConfig | null>(null);
 
@@ -55,6 +57,14 @@ export function LoginPage() {
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
+
+    // Client-side confirmation check (register mode only) — block the
+    // request entirely on mismatch.
+    if (isRegister && password !== confirmPassword) {
+      setConfirmError("Passwords don't match");
+      return;
+    }
+    setConfirmError(null);
     setLoading(true);
 
     try {
@@ -135,7 +145,29 @@ export function LoginPage() {
               className="nm-input"
               placeholder="Enter password"
             />
+            {isRegister && (
+              <p className="mt-1.5 text-xs text-muted-foreground">At least 8 characters</p>
+            )}
           </div>
+
+          {isRegister && (
+            <div>
+              <label htmlFor="login-confirm-password" className="mb-1.5 block text-sm font-medium">Confirm password</label>
+              <input
+                id="login-confirm-password"
+                type="password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                required
+                minLength={8}
+                className="nm-input"
+                placeholder="Re-enter password"
+              />
+              {confirmError && (
+                <p role="alert" className="mt-1.5 text-xs text-red-500">{confirmError}</p>
+              )}
+            </div>
+          )}
 
           <button
             type="submit"
@@ -149,7 +181,11 @@ export function LoginPage() {
         <p className="mt-6 text-center text-sm text-muted-foreground">
           {isRegister ? 'Already have an account?' : "Don't have an account?"}{' '}
           <button
-            onClick={() => setIsRegister(!isRegister)}
+            onClick={() => {
+              setIsRegister(!isRegister);
+              setConfirmPassword('');
+              setConfirmError(null);
+            }}
             className="text-action hover:underline"
           >
             {isRegister ? 'Sign in' : 'Create one'}

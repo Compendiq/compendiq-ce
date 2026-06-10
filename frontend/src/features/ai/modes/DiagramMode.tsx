@@ -69,7 +69,7 @@ export function DiagramTypeSelector() {
 
 /**
  * Rendered after a diagram stream completes: shows the Mermaid preview
- * and an "Use in article" button.
+ * and an "Use in page" button.
  */
 export function DiagramPreview() {
   const { page, pageId, isStreaming, queryClient, diagramCode, isInsertingDiagram, setIsInsertingDiagram } = useAiContext();
@@ -88,7 +88,7 @@ export function DiagramPreview() {
           version: page.version,
         }),
       });
-      toast.success('Diagram inserted into article');
+      toast.success('Diagram inserted into page');
       queryClient.invalidateQueries({ queryKey: ['pages', pageId] });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to insert diagram');
@@ -111,7 +111,7 @@ export function DiagramPreview() {
           {isInsertingDiagram ? (
             <><Loader2 size={14} className="animate-spin" /> Inserting...</>
           ) : (
-            <><FileInput size={14} /> Use in article</>
+            <><FileInput size={14} /> Use in page</>
           )}
         </button>
       )}

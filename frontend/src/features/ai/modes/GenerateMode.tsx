@@ -392,7 +392,7 @@ export function GenerateSavePanel({
     >
       <div className="flex items-center gap-2 text-sm font-medium text-primary">
         <FolderOpen size={16} />
-        Save Article
+        Save Page
       </div>
 
       <div className="space-y-3">
@@ -593,7 +593,7 @@ export function GenerateModeInput() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSubmit()}
-            placeholder={pdfData ? 'Instructions for generating from PDF...' : 'Describe the article to generate...'}
+            placeholder={pdfData ? 'Instructions for generating from PDF...' : 'Describe the page to generate...'}
             disabled={isStreaming}
             className="flex-1 bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
           />
@@ -611,5 +611,5 @@ export function GenerateModeInput() {
   );
 }
 
-export const GENERATE_EMPTY_TITLE = 'Describe the article you want to generate';
-export const GENERATE_EMPTY_SUBTITLE = 'AI will create a full article based on your prompt';
+export const GENERATE_EMPTY_TITLE = 'Describe the page you want to generate';
+export const GENERATE_EMPTY_SUBTITLE = 'AI will create a full page based on your prompt';

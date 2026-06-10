@@ -889,4 +889,23 @@ describe('SidebarTreeNode memoization', () => {
       expect(screen.queryByText('Sync a Space')).not.toBeInTheDocument();
     });
   });
+
+  describe('footer stats pluralization', () => {
+    it('uses plural "pages" when total is not 1', () => {
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+      expect(screen.getByText('4 pages')).toBeInTheDocument();
+    });
+
+    it('uses singular "page" when total is 1', () => {
+      mockTreeData = { ...defaultTreeData, items: [defaultTreeData.items[0]!], total: 1 };
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+      expect(screen.getByText('1 page')).toBeInTheDocument();
+    });
+
+    it('keeps the space-key suffix when a space is selected', () => {
+      useUiStore.setState({ treeSidebarSpaceKey: 'DEV' });
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+      expect(screen.getByText('4 pages in DEV')).toBeInTheDocument();
+    });
+  });
 });
