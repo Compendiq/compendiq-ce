@@ -50,9 +50,19 @@ vi.mock('../../core/services/rbac-service.js', () => ({
 }));
 
 const mockQueryFn = vi.fn();
+// Transaction client returned by getPool().connect() — since #766 the delete
+// route finishes local cleanup in a BEGIN…COMMIT on a dedicated client.
+const mockTxQueryFn = vi.fn();
+const mockTxRelease = vi.fn();
 vi.mock('../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQueryFn(...args),
-  getPool: vi.fn().mockReturnValue({}),
+  getPool: vi.fn().mockReturnValue({
+    connect: () =>
+      Promise.resolve({
+        query: (...args: unknown[]) => mockTxQueryFn(...args),
+        release: (...args: unknown[]) => mockTxRelease(...args),
+      }),
+  }),
   runMigrations: vi.fn(),
   closePool: vi.fn(),
 }));
@@ -97,6 +107,7 @@ describe('DELETE /api/pages/:id RBAC space access checks', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
+    mockTxQueryFn.mockResolvedValue({ rows: [], rowCount: 0 });
   });
 
   it('returns 403 when Confluence page is in a space the user cannot access, and deletePage is not called', async () => {
@@ -275,14 +286,17 @@ describe('DELETE /api/pages/:id RBAC space access checks', () => {
     expect(mockDeletePage).toHaveBeenCalledWith('page-100');
 
     // Local cleanup must still run: the page row, pins and attachments are removed.
-    const pageDelete = mockQueryFn.mock.calls.find(
+    // Since #766 the hard cleanup runs inside one transaction on a dedicated client.
+    const pageDelete = mockTxQueryFn.mock.calls.find(
       (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('DELETE FROM pages WHERE id = $1'),
     );
     expect(pageDelete).toBeDefined();
-    const pinDelete = mockQueryFn.mock.calls.find(
+    const pinDelete = mockTxQueryFn.mock.calls.find(
       (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('DELETE FROM pinned_pages'),
     );
     expect(pinDelete).toBeDefined();
+    expect(mockTxQueryFn).toHaveBeenCalledWith('BEGIN');
+    expect(mockTxQueryFn).toHaveBeenCalledWith('COMMIT');
     expect(cleanPageAttachments).toHaveBeenCalledWith(TEST_USER, 'page-100');
   });
 
@@ -305,6 +319,10 @@ describe('DELETE /api/pages/:id RBAC space access checks', () => {
           }],
         });
       }
+      // The #766 delete-intent soft-delete reports it updated the row.
+      if (typeof sql === 'string' && sql.includes('UPDATE pages SET deleted_at = NOW()')) {
+        return Promise.resolve({ rows: [{ id: 10 }], rowCount: 1 });
+      }
       return Promise.resolve({ rows: [], rowCount: 0 });
     });
 
@@ -319,10 +337,87 @@ describe('DELETE /api/pages/:id RBAC space access checks', () => {
 
     // Critical: the local row must NOT be deleted when the remote delete failed
     // for any reason other than 404 — otherwise we silently lose the page.
-    const pageDelete = mockQueryFn.mock.calls.find(
+    const pageDelete = mockTxQueryFn.mock.calls.find(
       (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('DELETE FROM pages WHERE id = $1'),
     );
     expect(pageDelete).toBeUndefined();
     expect(cleanPageAttachments).not.toHaveBeenCalled();
+
+    // #766: the delete intent recorded before the upstream call is rolled back,
+    // so the article stays fully live — neither side changed.
+    const intentRestore = mockQueryFn.mock.calls.find(
+      (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('UPDATE pages SET deleted_at = NULL'),
+    );
+    expect(intentRestore).toBeDefined();
+    expect(intentRestore![1]).toEqual([10]);
+  });
+
+  // ── #766: delete intent ordering + post-upstream failure containment ───────
+
+  it('records the local delete intent (soft-delete) BEFORE calling Confluence', async () => {
+    const mockDeletePage = vi.fn().mockResolvedValue(undefined);
+    mockGetClientForUser.mockResolvedValue({ deletePage: mockDeletePage });
+
+    let intentOrder = -1;
+    let callIndex = 0;
+    mockQueryFn.mockImplementation((sql: string) => {
+      callIndex++;
+      if (typeof sql === 'string' && sql.includes('id, source, created_by_user_id')) {
+        return Promise.resolve({
+          rows: [{ id: 10, source: 'confluence', created_by_user_id: null, confluence_id: 'page-100', space_key: 'DEV' }],
+        });
+      }
+      if (typeof sql === 'string' && sql.includes('UPDATE pages SET deleted_at = NOW()')) {
+        intentOrder = callIndex;
+        // The upstream call must not have happened yet at this point.
+        expect(mockDeletePage).not.toHaveBeenCalled();
+        return Promise.resolve({ rows: [{ id: 10 }], rowCount: 1 });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    });
+
+    const response = await app.inject({ method: 'DELETE', url: '/api/pages/page-100' });
+
+    expect(response.statusCode).toBe(200);
+    expect(intentOrder).toBeGreaterThan(0); // the intent soft-delete actually ran
+    expect(mockDeletePage).toHaveBeenCalledWith('page-100');
+  });
+
+  it('leaves the row soft-deleted (hidden, NOT live) when local cleanup fails after a successful upstream delete', async () => {
+    const mockDeletePage = vi.fn().mockResolvedValue(undefined);
+    mockGetClientForUser.mockResolvedValue({ deletePage: mockDeletePage });
+
+    mockQueryFn.mockImplementation((sql: string) => {
+      if (typeof sql === 'string' && sql.includes('id, source, created_by_user_id')) {
+        return Promise.resolve({
+          rows: [{ id: 10, source: 'confluence', created_by_user_id: null, confluence_id: 'page-100', space_key: 'DEV' }],
+        });
+      }
+      if (typeof sql === 'string' && sql.includes('UPDATE pages SET deleted_at = NOW()')) {
+        return Promise.resolve({ rows: [{ id: 10 }], rowCount: 1 });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    });
+    // The hard-cleanup transaction blows up on the page row delete.
+    mockTxQueryFn.mockImplementation((sql: string) => {
+      if (typeof sql === 'string' && sql.includes('DELETE FROM pages')) {
+        return Promise.reject(new Error('connection terminated'));
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    });
+
+    const response = await app.inject({ method: 'DELETE', url: '/api/pages/page-100' });
+
+    // The user-visible outcome (page gone on both sides) is achieved — the row is
+    // soft-deleted (hidden) and sync purges it later; the request succeeds.
+    expect(response.statusCode).toBe(200);
+    expect(mockTxQueryFn).toHaveBeenCalledWith('ROLLBACK');
+
+    // Crucially the delete intent is NOT rolled back — the row must stay hidden,
+    // never resurface as a live orphan (#766).
+    const intentRestore = mockQueryFn.mock.calls.find(
+      (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('UPDATE pages SET deleted_at = NULL'),
+    );
+    expect(intentRestore).toBeUndefined();
   });
 });

@@ -522,11 +522,14 @@ describe('sync-service', () => {
   });
 
   describe('purgeDeletedPages', () => {
-    it('runs DELETE for pages with deleted_at older than 30 days', async () => {
+    it('runs DELETE for confirmed-gone pages with deleted_at older than 30 days', async () => {
       // Configure the shared mock client instance for a minimal sync
       mockConfluenceClientInstance.getAllSpaces.mockResolvedValue([{ key: 'TEST', name: 'Test Space', homepage: null }]);
       mockConfluenceClientInstance.getAllPagesInSpace.mockResolvedValue([]);
       mockConfluenceClientInstance.getModifiedPages.mockResolvedValue([]);
+      // Purge re-confirms each candidate is still gone upstream before the
+      // irreversible local delete (#766 review) — answer 404 (genuinely gone).
+      mockConfluenceClientInstance.getPage.mockRejectedValue(new ConfluenceError('Resource not found', 404));
 
       vi.mocked(getUserAccessibleSpaces).mockResolvedValue(['TEST']);
       mockRedisSet.mockResolvedValue('OK');
@@ -549,17 +552,27 @@ describe('sync-service', () => {
         if (sqlStr.includes('COUNT(DISTINCT principal_id)')) {
           return { rows: [{ count: '1' }], rowCount: 1, command: '', oid: 0, fields: [] } as QueryResult;
         }
+        // purgeDeletedPages: candidate SELECT (>30-day soft-deleted rows)
+        if (sqlStr.includes('SELECT id, confluence_id FROM pages') && sqlStr.includes('deleted_at <')) {
+          return {
+            rows: [{ id: 11, confluence_id: 'purged-1' }],
+            rowCount: 1, command: '', oid: 0, fields: [],
+          } as QueryResult;
+        }
         if (sqlStr.includes('SELECT confluence_id FROM pages')) {
           return emptyResult as QueryResult;
         }
         if (sqlStr.includes('DELETE FROM pages') && sqlStr.includes('deleted_at <')) {
-          return { rows: [], rowCount: 0, command: 'DELETE', oid: 0, fields: [] } as QueryResult;
+          return { rows: [{ confluence_id: 'purged-1' }], rowCount: 1, command: 'DELETE', oid: 0, fields: [] } as QueryResult;
         }
         if (sqlStr.includes('UPDATE spaces SET last_synced')) return emptyResult as QueryResult;
         return emptyResult as QueryResult;
       });
 
       await syncUser('user-1');
+
+      // The candidate was re-confirmed gone upstream before the DELETE.
+      expect(mockConfluenceClientInstance.getPage).toHaveBeenCalledWith('purged-1');
 
       const queryCalls = vi.mocked(query).mock.calls;
       const purgeCall = queryCalls.find(
@@ -568,13 +581,15 @@ describe('sync-service', () => {
           && call[0].includes("deleted_at < NOW() - INTERVAL '30 days'"),
       );
       expect(purgeCall).toBeDefined();
-      expect(purgeCall![1]).toEqual(['TEST']);
+      expect(purgeCall![1]).toEqual([[11]]);
     });
 
     it('calls cleanPageAttachments and clearPageFailures for each purged page', async () => {
       mockConfluenceClientInstance.getAllSpaces.mockResolvedValue([{ key: 'TEST', name: 'Test Space', homepage: null }]);
       mockConfluenceClientInstance.getAllPagesInSpace.mockResolvedValue([]);
       mockConfluenceClientInstance.getModifiedPages.mockResolvedValue([]);
+      // Both candidates confirm gone upstream (404) so both are purged.
+      mockConfluenceClientInstance.getPage.mockRejectedValue(new ConfluenceError('Resource not found', 404));
 
       vi.mocked(getUserAccessibleSpaces).mockResolvedValue(['TEST']);
       mockRedisSet.mockResolvedValue('OK');
@@ -596,6 +611,13 @@ describe('sync-service', () => {
         }
         if (sqlStr.includes('COUNT(DISTINCT principal_id)')) {
           return { rows: [{ count: '1' }], rowCount: 1, command: '', oid: 0, fields: [] } as QueryResult;
+        }
+        // purgeDeletedPages: candidate SELECT (>30-day soft-deleted rows)
+        if (sqlStr.includes('SELECT id, confluence_id FROM pages') && sqlStr.includes('deleted_at <')) {
+          return {
+            rows: [{ id: 21, confluence_id: 'purged-1' }, { id: 22, confluence_id: 'purged-2' }],
+            rowCount: 2, command: '', oid: 0, fields: [],
+          } as QueryResult;
         }
         if (sqlStr.includes('SELECT confluence_id FROM pages')) {
           return emptyResult as QueryResult;

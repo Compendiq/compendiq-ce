@@ -55,15 +55,17 @@ sequenceDiagram
         CL->>CF: GET /rest/api/content?spaceKey=… (ids only, no expand)
         CF-->>CL: authoritative live id set
         CL-->>S: liveIds
+        S->>DB: UPDATE pages SET deleted_at = NULL<br/>WHERE deleted_at older than grace window AND id ∈ liveIds
+        Note over S,DB: revival cross-check (#766) — a trash-restored page is live again<br/>but never re-upserted by incremental sync (no new version);<br/>grace window protects in-flight delete intents
         S->>DB: SELECT confluence_id FROM pages WHERE space_key=… AND deleted_at IS NULL
         loop per candidate (local row absent from liveIds)
             S->>CL: getPage(confluenceId) — confirm gone
             CL->>CF: GET /rest/api/content/{id}
-            alt 404 (genuinely deleted)
-                CF-->>S: 404
+            alt 404 or 200 status:"trashed" (deleted — #766)
+                CF-->>S: 404 / 200 trashed
                 S->>DB: UPDATE pages SET deleted_at = NOW()
-            else 200 / 403 (still there / not visible to this principal)
-                CF-->>S: 200 / 403
+            else 200 current / 403 (still there / not visible to this principal)
+                CF-->>S: 200 current / 403
                 Note over S: leave row in place (shared-space safe)
             end
         end
@@ -123,18 +125,40 @@ surface within a normal sync cycle rather than lingering until a rare full run.
   modified-pages list can't be used for this — it only holds pages that changed.
 - **Shared-space safety.** A page absent from one principal's listing is *not*
   assumed deleted (it may simply be restricted from that user). Each candidate is
-  confirmed gone via a direct `GET /content/{id}` → **404** before its row is
-  soft-deleted; a `200`/`403` leaves the row untouched, so one user's restricted
-  view can no longer nuke pages others can still see. The number of confirmation
-  fetches per run is capped (`MAX_DELETION_CONFIRMATIONS`); a larger candidate set
-  is deferred to a later run (the whole run defers — zero soft-deletes that cycle).
-- **Trash vs. purge.** Confluence DC move-to-trash does **not** make a page 404 —
-  `GET /content/{id}` still returns `200` with `status: "trashed"`. So a page sitting
-  in the Confluence trash is treated as *still present* and is **not** reconciled;
-  reconciliation fires only once the page is hard-purged (then the id is gone from
-  `getAllPageIds` *and* the confirmation fetch returns 404). This is intentional —
-  it mirrors Confluence's own "deleted means purged" semantics and avoids removing a
-  page a Confluence admin could still restore from the trash.
+  confirmed gone via a direct `GET /content/{id}` — a **404** *or* a **200 with
+  `status: "trashed"`** — before its row is soft-deleted; a `200` (`current`) / `403`
+  leaves the row untouched, so one user's restricted view can no longer nuke pages
+  others can still see. The number of confirmation fetches per run is capped
+  (`MAX_DELETION_CONFIRMATIONS`); a larger candidate set is deferred to a later run
+  (the whole run defers — zero soft-deletes that cycle).
+- **Trash counts as deleted (#766).** Confluence DC's `DELETE /rest/api/content/{id}`
+  on a current page moves it to the space **Trash** rather than purging it, and —
+  depending on the DC version — `GET /content/{id}` may still answer `200` with
+  `status: "trashed"` instead of 404. #719 originally treated such a page as *still
+  present*, which meant pages deleted via Compendiq's **own Delete button** (which
+  trashes upstream) were never reconciled if a post-delete local failure left a row
+  behind. Reconciliation now treats `trashed` as gone: trashed content is already
+  absent from the live listing (only `current` content is listed), so a trashed
+  confirmation can only mean "deleted", never "restricted from this principal".
+  Restorability is preserved on the Compendiq side: the local row is *soft*-deleted
+  and survives (hidden) for 30 days before `purgeDeletedPages` — mirroring the
+  Confluence trash's own recoverability — and a page restored from the Confluence
+  trash is revived locally by the reconciliation revival cross-check (below).
+- **Revival cross-check (#766 review).** Restoring a page from the Confluence trash
+  creates **no new version** (`lastmodified` is unchanged), so the incremental
+  sync's `lastmodified >=` CQL window never re-upserts it — the upsert path
+  (`deleted_at = NULL` on `ON CONFLICT … DO UPDATE`) revives a row only when the
+  page is *also modified upstream* or a full sync (≥24h-stale `last_synced`) runs.
+  `detectDeletedPages` therefore cross-checks the already-fetched live id listing
+  against locally soft-deleted rows for the space and clears `deleted_at` for
+  matches, so a trash-restore converges within one reconciliation cycle.
+  **Grace window**: the delete routes record their delete *intent* as a soft-delete
+  *before* calling Confluence — until that upstream DELETE lands, the page is still
+  in the live listing, and a concurrent reconciliation would otherwise resurrect a
+  row that is mid-delete. Only rows whose `deleted_at` is older than
+  `REVIVAL_GRACE_SECONDS` (15 min — far above the Confluence client's 30–120s HTTP
+  timeouts) are revived; a genuine trash-restore is unaffected because its row was
+  soft-deleted in an earlier cycle, so the grace has long elapsed.
 - **Per-cycle fan-out.** Reconciliation is invoked once per (user × space); a shared
   space would otherwise repeat the listing + confirmation fetches per user each cycle.
   A best-effort Redis `SET NX EX` guard (`sync:reconcile:{spaceKey}`) lets the first
@@ -143,13 +167,52 @@ surface within a normal sync cycle rather than lingering until a rare full run.
   every principal, so whoever reaches the space first reconciles it.
 - **Soft delete + purge.** Reconciled rows are soft-deleted (`deleted_at`), then
   hard-purged after 30 days by `purgeDeletedPages`. A subsequent re-appearance in
-  Confluence revives the row: `syncPage`'s upsert `ON CONFLICT … DO UPDATE` (and the
-  version-mismatch update path) both set `deleted_at = NULL`.
+  Confluence revives the row via the reconciliation revival cross-check above;
+  `syncPage`'s upsert `ON CONFLICT … DO UPDATE` (and the version-mismatch update
+  path) also set `deleted_at = NULL`, but only fire when the page is modified
+  upstream or a full sync runs. **Purge re-confirms before the point of no
+  return (#766 review)**: purge irreversibly destroys the row and all local
+  enrichment (embeddings, version history via FK cascade), so each candidate is
+  re-confirmed gone upstream (`GET /content/{id}` → 404 or `status: "trashed"`)
+  first. A `200 current` answer skips the purge (the page exists upstream — left
+  for reconciliation); an inconclusive answer (403/5xx/network) defers to a later
+  cycle. Confirmations are capped at `MAX_DELETION_CONFIRMATIONS` per run, oldest
+  first; a larger backlog converges over subsequent cycles.
 
 The same 404-tolerance applies to **user-initiated delete** (`DELETE /api/pages/:id`
 and the bulk path): if Confluence answers 404 the remote page is already gone, so
 local cleanup proceeds and the delete succeeds instead of failing with
 "Resource not found". Any non-404 error still surfaces (no silent data loss).
+
+### User-initiated delete ordering (#766)
+
+The delete routes used to call Confluence first and then run several separate
+local statements with no transaction — any post-upstream failure stranded a
+**live** local row whose Confluence counterpart was already gone, and nothing
+converged it. The routes now order the work so the two stores can never diverge
+visibly:
+
+1. **Record the delete intent locally first** — soft-delete the row
+   (`deleted_at = NOW()`, one atomic UPDATE). Every user-facing query filters
+   `deleted_at IS NULL`, so the article disappears immediately.
+2. **Call Confluence** (`DELETE /rest/api/content/{id}` — irreversible; trashes
+   the page upstream).
+3. **On upstream success or 404** — finish the hard local cleanup
+   (`pinned_pages` + `pages`; embeddings/versions cascade via FK) inside **one**
+   `BEGIN…COMMIT` on a dedicated pool client. Attachment files are cleaned
+   best-effort after commit (filesystem can't join the transaction).
+4. **On upstream failure (non-404)** — clear the soft-delete (only if this
+   request set it) and surface the error: **neither side changed**.
+
+Failure containment: a crash between 1 and 2 leaves a hidden row for a page
+that still exists upstream — the reconciliation revival cross-check restores it
+once the soft-delete is older than the grace window (the sync upsert would also
+restore it, but only if the page is modified upstream or a full sync runs).
+A local failure after a successful upstream delete leaves at worst a hidden
+soft-deleted row that `purgeDeletedPages` removes within the standard 30-day
+window — never a live orphan. The bulk path applies the same shape per batch
+(intent for all candidates up front, per-page restore for upstream failures,
+one cleanup transaction for the upstream-deleted set).
 
 ## Version history backfill (#722/#724)
 
