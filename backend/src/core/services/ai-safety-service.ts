@@ -224,3 +224,12 @@ export async function upsertAiOutputRules(
   }
 }
 
+// Test seam — mirrors `_resetForTests()` in `sync-conflict-policy-service.ts`.
+// Clears the in-process 60s TTL caches so test suites start each test with a
+// cold cache regardless of execution order (a previous test's primed cache
+// would otherwise leak into the next one's GET assertions).
+export function _resetAiSafetyCachesForTests(): void {
+  guardrailCache = null;
+  outputRuleCache = null;
+}
+
