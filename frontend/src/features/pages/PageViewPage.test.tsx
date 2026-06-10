@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -579,14 +579,44 @@ describe('PageViewPage', () => {
     expect(deleteShortcut!.category).toBe('actions');
   });
 
-  it('Alt+Shift+D action triggers delete confirmation', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValueOnce(true);
+  it('Alt+Shift+D opens the move-to-trash dialog; confirming soft-deletes the page', async () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
     const deleteShortcut = capturedShortcuts.find((s) => s.key === 'Alt+Shift+D');
     expect(deleteShortcut).toBeDefined();
-    await deleteShortcut!.action();
-    expect(window.confirm).toHaveBeenCalledWith('Delete this article? This cannot be undone.');
-    expect(mockDeleteMutateAsync).toHaveBeenCalledWith('page-1');
+    act(() => {
+      deleteShortcut!.action();
+    });
+
+    // ConfirmDialog replaces window.confirm — copy must reflect the 30-day
+    // soft-delete trash, not the old (false) "cannot be undone" claim.
+    expect(await screen.findByText('Move page to trash?')).toBeInTheDocument();
+    expect(
+      screen.getByText('It can be restored from Trash for 30 days, then it is permanently deleted.'),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
+
+    await waitFor(() => {
+      expect(mockDeleteMutateAsync).toHaveBeenCalledWith('page-1');
+    });
+    expect(mockNavigate).toHaveBeenCalledWith('/');
+  });
+
+  it('cancelling the move-to-trash dialog does not delete', async () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    const deleteShortcut = capturedShortcuts.find((s) => s.key === 'Alt+Shift+D');
+    expect(deleteShortcut).toBeDefined();
+    act(() => {
+      deleteShortcut!.action();
+    });
+
+    await screen.findByTestId('confirm-dialog');
+    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+    });
+    expect(mockDeleteMutateAsync).not.toHaveBeenCalled();
   });
 
   it('registers an Alt+I shortcut for AI Improve', () => {

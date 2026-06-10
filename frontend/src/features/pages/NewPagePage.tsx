@@ -162,13 +162,25 @@ export function NewPagePage() {
                 <LayoutTemplate size={14} />
                 Use Template
               </button>
-              <button
-                onClick={handleCreate}
-                disabled={isCreateDisabled}
-                className="nm-button-primary"
+              {/* The hint span (not the button) carries the title: nm-button-primary
+                  sets pointer-events:none on :disabled, so a tooltip on the button
+                  itself would never show while it is disabled — exactly when the
+                  user needs to know why. */}
+              <span
+                title={
+                  isCreateDisabled && !createMutation.isPending
+                    ? 'Enter a title and select a space first'
+                    : undefined
+                }
               >
-                <Save size={14} /> {createMutation.isPending ? 'Creating...' : 'Create Page'}
-              </button>
+                <button
+                  onClick={handleCreate}
+                  disabled={isCreateDisabled}
+                  className="nm-button-primary"
+                >
+                  <Save size={14} /> {createMutation.isPending ? 'Creating...' : 'Create Page'}
+                </button>
+              </span>
             </div>
           </div>
 

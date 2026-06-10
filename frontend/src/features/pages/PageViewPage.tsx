@@ -33,6 +33,7 @@ import type { TocHeading } from '../../shared/components/article/TableOfContents
 import { PageViewSkeleton } from '../../shared/components/feedback/Skeleton';
 import { TagEditor } from '../../shared/components/TagEditor';
 import { ShortcutHint } from '../../shared/components/ShortcutHint';
+import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
 import { usePresence } from './use-presence';
 import { PresenceAvatarStack } from './PresenceAvatarStack';
 
@@ -144,6 +145,7 @@ export function PageViewPage() {
   const [lightboxSrc, setLightboxSrc] = useState<{ alt: string; src: string } | null>(null);
   const [drawioEditingDiagram, setDrawioEditingDiagram] = useState<string | null>(null);
   const [drawioXml, setDrawioXml] = useState<string>('');
+  const [confirmTrashOpen, setConfirmTrashOpen] = useState(false);
 
   // Vim mode state — lifted here so we can pass it to the external toolbar
   const [vimEnabled, setVimEnabled] = useState(() =>
@@ -353,14 +355,23 @@ export function PageViewPage() {
     });
   }, [id, isPinned, page, pinMutation, unpinMutation]);
 
-  const handleDeletePage = useCallback(async () => {
-    if (!id || !window.confirm('Delete this article? This cannot be undone.')) return;
+  // Deleting soft-deletes into the 30-day trash, so the confirm copy must
+  // not claim the action "cannot be undone". ConfirmDialog replaces the
+  // native window.confirm to match the neumorphic design system.
+  const handleDeletePage = useCallback(() => {
+    if (!id) return;
+    setConfirmTrashOpen(true);
+  }, [id]);
+
+  const handleConfirmMoveToTrash = useCallback(async () => {
+    if (!id) return;
+    setConfirmTrashOpen(false);
     try {
       await deleteMutation_page.mutateAsync(id);
       navigate('/');
-      toast.success('Article deleted.');
+      toast.success('Page moved to trash.');
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to delete article.');
+      toast.error(error instanceof Error ? error.message : 'Failed to move page to trash.');
     }
   }, [deleteMutation_page, id, navigate]);
 
@@ -753,6 +764,16 @@ export function PageViewPage() {
           drawioUrl={drawioSettings?.drawioEmbedUrl}
         />
       )}
+
+      <ConfirmDialog
+        open={confirmTrashOpen}
+        title="Move page to trash?"
+        description="It can be restored from Trash for 30 days, then it is permanently deleted."
+        confirmLabel="Move to trash"
+        destructive
+        onConfirm={handleConfirmMoveToTrash}
+        onCancel={() => setConfirmTrashOpen(false)}
+      />
     </m.div>
   );
 }

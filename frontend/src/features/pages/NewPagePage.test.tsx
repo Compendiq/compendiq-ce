@@ -217,6 +217,27 @@ describe('NewPagePage', () => {
     });
   });
 
+  it('explains the disabled Create Page button via a hover hint', () => {
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    const createBtn = screen.getByText('Create Page').closest('button')!;
+    expect(createBtn).toBeDisabled();
+    // nm-button-primary sets pointer-events:none on :disabled, which swallows
+    // a title tooltip placed on the button itself — the wrapping span carries it.
+    const hintCarrier = createBtn.closest('[title]');
+    expect(hintCarrier).not.toBeNull();
+    expect(hintCarrier).toHaveAttribute('title', 'Enter a title and select a space first');
+  });
+
+  it('drops the hover hint once the Create Page button is enabled', async () => {
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'My Page' } });
+    fireEvent.change(screen.getByTestId('space-selector'), { target: { value: '__local__' } });
+    await waitFor(() => {
+      expect(screen.getByText('Create Page').closest('button')).not.toBeDisabled();
+    });
+    expect(screen.getByText('Create Page').closest('[title]')).toBeNull();
+  });
+
   it('submit uses the selected local spaceKey (not hardcoded __local__)', async () => {
     mockCreateMutateAsync.mockResolvedValueOnce({ id: 'new-page-id', title: 'My Notes Page', version: 1 });
 

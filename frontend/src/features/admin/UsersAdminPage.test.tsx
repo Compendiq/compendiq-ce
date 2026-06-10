@@ -133,6 +133,64 @@ describe('UsersAdminPage', () => {
     expect(screen.getByText('Create', { selector: 'button[type="submit"]' })).toBeInTheDocument();
   });
 
+  it('delete opens a ConfirmDialog naming the user; confirming sends the DELETE', async () => {
+    render(<UsersAdminPage />, { wrapper: createWrapper() });
+    await waitFor(() => screen.getByText('bob'));
+
+    fireEvent.click(screen.getByText('Delete'));
+
+    // ConfirmDialog replaces window.confirm — user deletion really IS permanent.
+    expect(await screen.findByText('Permanently delete "bob"?')).toBeInTheDocument();
+    expect(screen.getByText('This cannot be undone.')).toBeInTheDocument();
+    expect(screen.getByTestId('confirm-dialog-confirm')).toHaveTextContent('Delete user');
+
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
+
+    await waitFor(() => {
+      const deleteCall = vi
+        .mocked(globalThis.fetch)
+        .mock.calls.find(
+          ([input, init]) =>
+            String(input).includes('/api/admin/users/bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb') &&
+            init?.method === 'DELETE',
+        );
+      expect(deleteCall).toBeDefined();
+    });
+    // Dialog closes after confirm
+    await waitFor(() => {
+      expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+    });
+  });
+
+  it('cancelling the delete ConfirmDialog does not send a DELETE', async () => {
+    render(<UsersAdminPage />, { wrapper: createWrapper() });
+    await waitFor(() => screen.getByText('bob'));
+
+    fireEvent.click(screen.getByText('Delete'));
+    await screen.findByTestId('confirm-dialog');
+    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+    });
+    const deleteCall = vi
+      .mocked(globalThis.fetch)
+      .mock.calls.find(([, init]) => init?.method === 'DELETE');
+    expect(deleteCall).toBeUndefined();
+  });
+
+  it('styles the role select with the design-system nm-select-md utility', async () => {
+    render(<UsersAdminPage />, { wrapper: createWrapper() });
+    await waitFor(() => screen.getByText('bob'));
+
+    const roleSelect = screen.getByTestId(
+      'user-role-select-bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb',
+    );
+    expect(roleSelect.tagName).toBe('SELECT');
+    expect(roleSelect.className).toContain('nm-select-md');
+    expect(roleSelect).toHaveValue('user');
+  });
+
   // ── EE #116 — bulk UI gating ───────────────────────────────────────────
 
   it('does not show bulk import or select checkboxes when feature is off', async () => {

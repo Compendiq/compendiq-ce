@@ -13,6 +13,7 @@ import { apiFetch } from '../../shared/lib/api';
 import type { AdminUser, AdminUserRole } from '@compendiq/contracts';
 import { useAuthStore } from '../../stores/auth-store';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
+import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
 import { BulkUserImportModal } from './BulkUserImportModal';
 import { UserBulkActionDialog } from './UserBulkActionDialog';
 
@@ -39,6 +40,8 @@ export function UsersAdminPage() {
   const [showBulkImport, setShowBulkImport] = useState(false);
   const [showBulkAction, setShowBulkAction] = useState(false);
   const [selectedUserIds, setSelectedUserIds] = useState<Set<string>>(new Set());
+  // User awaiting delete confirmation (ConfirmDialog replaces window.confirm).
+  const [pendingDelete, setPendingDelete] = useState<AdminUser | null>(null);
 
   const { data, isLoading } = useQuery<AdminUserListResponse>({
     queryKey: ['admin', 'users'],
@@ -249,12 +252,13 @@ export function UsersAdminPage() {
                   <td className="p-3 text-muted-foreground">{u.email ?? '—'}</td>
                   <td className="p-3">
                     <select
-                      className="rounded-md border bg-background px-2 py-1 text-xs"
+                      className="nm-select-md"
                       value={u.role}
                       disabled={u.id === currentUserId || updateRole.isPending}
                       onChange={(e) =>
                         updateRole.mutate({ id: u.id, role: e.target.value as AdminUserRole })
                       }
+                      data-testid={`user-role-select-${u.id}`}
                     >
                       <option value="user">user</option>
                       <option value="admin">admin</option>
@@ -299,11 +303,7 @@ export function UsersAdminPage() {
                       <button
                         type="button"
                         className="text-xs text-red-700 underline dark:text-red-400"
-                        onClick={() => {
-                          if (window.confirm(`Permanently delete "${u.username}"? This cannot be undone.`)) {
-                            remove.mutate(u.id);
-                          }
-                        }}
+                        onClick={() => setPendingDelete(u)}
                         disabled={remove.isPending}
                       >
                         Delete
@@ -316,6 +316,21 @@ export function UsersAdminPage() {
           </table>
         </div>
       )}
+
+      {/* Unlike page deletion (30-day trash), user deletion is permanent —
+          the copy keeps the hard "cannot be undone" warning. */}
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        title={`Permanently delete "${pendingDelete?.username ?? ''}"?`}
+        description="This cannot be undone."
+        confirmLabel="Delete user"
+        destructive
+        onConfirm={() => {
+          if (pendingDelete) remove.mutate(pendingDelete.id);
+          setPendingDelete(null);
+        }}
+        onCancel={() => setPendingDelete(null)}
+      />
 
       {showCreate && (
         <UserCreateDialog
