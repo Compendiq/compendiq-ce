@@ -10,6 +10,7 @@ import { CommandPalette } from './CommandPalette';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 import { ServiceStatus } from '../badges/ServiceStatus';
 import { TrialBanner } from '../banners/TrialBanner';
+import { ConfluencePatBanner } from '../banners/ConfluencePatBanner';
 import { UserMenu } from './UserMenu';
 import { SidebarTreeView } from './SidebarTreeView';
 import { SettingsSidebar } from './SettingsSidebar';
@@ -278,6 +279,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
       <div className="shrink-0 px-4 sm:px-6">
         <ServiceStatus />
         <TrialBanner />
+        <ConfluencePatBanner />
       </div>
 
       {/* Below header: sidebar + content area, edge-to-edge with borders. */}
